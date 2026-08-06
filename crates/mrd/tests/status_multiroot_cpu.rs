@@ -1,72 +1,27 @@
-//! **The perf lanes multi-root profile — the shape `status_walltime.rs` cannot see.**
-//! `status_walltime.rs` gates 1000 ms and passed green for the whole life of the W2 defect,
-//! while the real verb took 20-22 s in the field. The reason is its fixture, not its budget: it
-//! sets `HOME` to a bare temp dir, so the machine mount table is EMPTY, so the eager loader had
-//! no roots to walk. **The gate removed the input that dominated the cost and then reported a
-//! bound it had never tested.** A perf gate whose fixture deletes the dominant input is not a
-//! slow gate — it is a green light with no lamp behind it. So this target measures `mrd status`
-//! with a **populated** mount table: four declared roots, each a dirent-heavy corpus, none of
-//! them named by any lock address in the workspace under test. Post-W2 (`load_mounts_for` +
-//! `lock_addressed_roots`, `a8fdb356`) status builds none of those four corpora and pays the
-//! ambient workspace only.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
+//! The perf lane's multi-root profile — the shape `status_walltime.rs`
+//! cannot see: its fixture sets `HOME` to a bare temp dir, so the machine
+//! mount table is empty and the eager loader has no roots to walk. This
+//! target measures `mrd status` with a populated mount table: four declared
+//! roots, each a dirent-heavy corpus, none named by any lock address in the
+//! workspace under test — status must build none of those corpora and pay
+//! the ambient workspace only.
 
 use std::time::{Duration, Instant};
 
 mod multiroot_fixture;
 use multiroot_fixture as fixture;
 
-/// **The CPU budget.** See the module header for why it is CPU and not wall. MEASURED, never
-/// copied forward from the 1000 ms wall budget next door — that number bounds a different verb
-/// shape on a different clock, and inheriting it would be the same unasked question this file
-/// exists to ask.
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// The CPU budget — measured, never copied from the 1000 ms wall budget next
+/// door, which bounds a different verb shape on a different clock.
 const CPU_BUDGET: Duration = Duration::from_millis(600);
 
 #[test]
 fn status_cpu_under_budget_with_a_populated_mount_table() {
     let sb = fixture::sandbox();
 
-    // Four declared roots — the input the sibling gate deletes — the workspace under test, and the
-    // fixtures own anti-blindness assert. All three live in [`multiroot_fixture`] since W5, so the
-    // three multi-root CPU gates measure through ONE table and cannot drift into measuring three
-    // different ones.
+    // Roots, workspace and anti-blindness assert all live in
+    // [`multiroot_fixture`], so the three multi-root CPU gates measure through
+    // one table.
     let names = fixture::plant_declared_roots(&sb);
     let ws = fixture::init_workspace(&sb);
     fixture::assert_table_is_populated(&sb, &ws, &names);
@@ -77,9 +32,9 @@ fn status_cpu_under_budget_with_a_populated_mount_table() {
     let wall_start = Instant::now();
     let out = fixture::run(&sb, &ws, &["status"]);
     let wall = wall_start.elapsed();
-    // `RUSAGE_CHILDREN` is cumulative and monotonic, so the later read can only be the larger one
-    // — but the checked form says so rather than trusting it, and an underflow here would print as
-    // a wildly under-budget PASS.
+    // `RUSAGE_CHILDREN` is cumulative and monotonic; the checked form says so
+    // rather than trusting it — an underflow would print as an under-budget
+    // PASS.
     let cpu = fixture::children_cpu()
         .checked_sub(cpu_before)
         .expect("children CPU is cumulative, so it never goes backwards");
@@ -111,8 +66,7 @@ fn status_cpu_under_budget_with_a_populated_mount_table() {
         CPU_BUDGET.as_millis(),
     );
 
-    // Perf-lane hygiene: any auto-spawned resident dies with the sandbox, not after it. `status`
-    // itself is pure-local today; the Drop + explicit call still close the class if a future probe
-    // starts a daemon.
+    // Perf-lane hygiene: any auto-spawned resident dies with the sandbox, not
+    // after it.
     fixture::teardown_daemon(&sb);
 }

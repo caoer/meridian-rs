@@ -1,13 +1,5 @@
 //! End-to-end gates for `mrd walk` (U2.3), driving the REAL binary (`CARGO_BIN_EXE_mrd`) over
 //! its process boundary against a three-doc chain fixture on disk.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -37,17 +29,14 @@ struct Chain {
     a_rev: String,
     b_rev: String,
     c_rev: String,
-    /// The PINNED tokens — what each entrys `rev=` renders. Distinct from the citations above and
-    /// they must not be conflated: the citation says which bytes were read, the token says what was
-    /// claimed.
+    /// The PINNED tokens — what each entrys `rev=` renders. Not the citations
+    /// above: the citation says which bytes were read, the token what was claimed.
     b_pin: String,
     c_pin: String,
 }
 
 /// The live fingerprint token of a pages document root — what a CORRECT R4 pin holds. Minted
-/// through the engines own mint over the same parse the corpus builder runs, so the fixture
-/// cannot pin a token the reader would not recompute.
-///
+/// through the engines own mint over the same parse the corpus builder runs.
 fn live_fingerprint(raw: &str) -> String {
     let doc = model::build(raw.to_string(), syntax::parse(raw));
     model::fingerprint::fingerprint(&doc, &doc.root)
@@ -58,14 +47,6 @@ fn live_fingerprint(raw: &str) -> String {
 /// One whole-body R4 pin on `object` at `token`, hand-written in the exact bytes `lock::render`
 /// emits. `path: []` is the body without frontmatter — the document root the token was minted
 /// over.
-///
-///
-///
-///
-///
-///
-///
-///
 fn lock_block(object: &str, token: &str) -> String {
     format!(
         "```meridian-lock\nversion: 2\npins:\n  - object: \"[[{object}]]\"\n    \
@@ -218,10 +199,8 @@ fn walk_down_depth_one_is_direct_dependents_only() {
     assert_eq!(entries[0]["selector"], "b.md");
     assert_eq!(entries[0]["depth"], 1);
     assert_eq!(entries[0]["color"], "green");
-    // `rev` is the PINNED value — bs pin OF c, which under R4 is cs fingerprint token, NOT cs doc
-    // rev. The two are different facts and this assertion used to be able to conflate them because
-    // a `^inputs` pin held a node_rev, making pinned-value and doc-rev the same string.
-    //
+    // `rev` is the PINNED value — bs pin OF c, which under R4 is cs fingerprint
+    // token, NOT cs doc rev.
     assert_eq!(entries[0]["rev"], ch.c_pin);
 
     // Unbounded down reaches the transitive a.md too — the bound above dropped it.

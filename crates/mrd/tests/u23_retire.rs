@@ -1,28 +1,8 @@
-//! U23 gates for `mrd retire` — the type-2 retirement DSL, driven through the REAL binary over
-//! its process boundary. Every pin here is a detector, and a detector is only known by having
-//! been red Each gate names the MUTATION that must redden it, in its own doc comment, and most
-//! carry a VACUITY CONTROL in the same test — a second arm proving the assertion can still fail
-//! when the world changes. The mutations are executed by `tools/u23-mutation-proof.py`, which
-//! carries the two measured harness cures (stamp restored files forward; refuse to read
-//! `running 0 tests` as a pass).
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
+//! U23 gates for `mrd retire` — the type-2 retirement DSL, driven through the
+//! REAL binary over its process boundary. Each gate names the MUTATION that must
+//! redden it in its own doc comment, and most carry a VACUITY CONTROL in the same
+//! test: a second arm proving the assertion can still fail when the world
+//! changes. `tools/u23-mutation-proof.py` executes the mutations.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -181,15 +161,8 @@ fn fingerprint(sb: &Sandbox, ws: &Path) -> String {
 // Pin 1 — idempotence
 // ---------------------------------------------------------------------------
 
-/// **Pin 1.** Mark twice. The second run writes zero bytes, leaves the workspace fingerprint
-/// BYTE-IDENTICAL, and still prints its count.
-///
-///
-///
-///
-///
-///
-///
+/// Pin 1. Mark twice: the second run writes zero bytes, leaves the workspace
+/// fingerprint BYTE-IDENTICAL, and still prints its count.
 #[test]
 fn a_second_mark_writes_nothing() {
     let sb = sandbox();
@@ -233,15 +206,10 @@ fn a_second_mark_writes_nothing() {
 // Pin 2 — the positive control
 // ---------------------------------------------------------------------------
 
-/// **Pin 2.** A retirement whose declared control matches nothing refuses
-/// `retire-control-silent`. *Mutation:* drop the `counts.control == 0` arm, and the sweep
-/// proceeds on a scan it cannot vouch for. *Vacuity control, same test:* the identical vault
-/// with a control that DOES match must NOT raise this reason — otherwise the pin passes in a
-/// build where everything refuses.
-///
-///
-///
-///
+/// Pin 2. A retirement whose declared control matches nothing refuses
+/// `retire-control-silent`. *Mutation:* drop the `counts.control == 0` arm, and
+/// the sweep proceeds on a scan it cannot vouch for. *Vacuity control:* the same
+/// vault with a control that DOES match must not raise this reason.
 #[test]
 fn a_blind_control_refuses_and_a_seeing_one_does_not() {
     let sb = sandbox();
@@ -280,16 +248,9 @@ fn a_blind_control_refuses_and_a_seeing_one_does_not() {
 // Pin 3 — engine-block safety
 // ---------------------------------------------------------------------------
 
-/// **Pin 3.** A term inside bytes the ENGINE writes refuses
-/// `retire-would-corrupt-engine-block`; an ordinary code fence only SKIPS, with a count.
-///
-///
-///
-///
-///
-///
-///
-///
+/// Pin 3. A term inside bytes the ENGINE writes refuses
+/// `retire-would-corrupt-engine-block`; an ordinary code fence only SKIPS, with
+/// a count.
 #[test]
 fn an_engine_written_block_refuses_but_a_code_fence_only_skips() {
     let sb = sandbox();
@@ -336,15 +297,14 @@ fn an_engine_written_block_refuses_but_a_code_fence_only_skips() {
     );
 }
 
+// ---------------------------------------------------------------------------
 // Pin 4 — count honesty and its denominator
-//
-//
+// ---------------------------------------------------------------------------
 
-/// **Pin 4.** Over a fixture with a KNOWN occurrence count, run 2's `already` equals run 1's
-/// `marked`, and the report always carries its denominator. *Mutation:* count `already` from
-/// anything other than this run's documents, and the equality breaks.
-///
-///
+/// Pin 4. Over a fixture with a KNOWN occurrence count, run 2's `already` equals
+/// run 1's `marked`, and the report always carries its denominator. *Mutation:*
+/// count `already` from anything other than this run's documents, and the
+/// equality breaks.
 #[test]
 fn the_second_runs_already_equals_the_first_runs_marked() {
     let sb = sandbox();
@@ -378,11 +338,9 @@ fn the_second_runs_already_equals_the_first_runs_marked() {
 // Pin 5 — orphan detection
 // ---------------------------------------------------------------------------
 
-/// **Pin 5.** A marker whose id no declaration carries is REPORTED with its file and its id,
-/// and exits 1. *Mutation:* make the orphan path a silent skip, and a reader following the
-/// marker reaches nothing, forever, with a green board.
-///
-///
+/// Pin 5. A marker whose id no declaration carries is REPORTED with its file and
+/// its id, and exits 1. *Mutation:* make the orphan path a silent skip, and a
+/// reader following the marker reaches nothing, forever, with a green board.
 #[test]
 fn an_undeclared_marker_id_is_reported_not_skipped() {
     let sb = sandbox();
@@ -411,21 +369,13 @@ fn an_undeclared_marker_id_is_reported_not_skipped() {
     );
 }
 
+// ---------------------------------------------------------------------------
 // Pin 6 — the refusal contract, and the reader/writer split
-//
-//
+// ---------------------------------------------------------------------------
 
-/// **Pin 6.** Every refusal carries the house four properties — subject, cause, partial state,
-/// and a fix naming a RUNNABLE COMMAND — and the READER's partial-state clause differs from the
-/// WRITERS'. That last clause is the point.
-///
-///
-///
-///
-///
-///
-///
-///
+/// Pin 6. Every refusal carries the house four properties — subject, cause,
+/// partial state, and a fix naming a RUNNABLE COMMAND — and the READER's
+/// partial-state clause differs from the WRITERS'.
 #[test]
 fn the_refusals_are_not_one_assertion_wearing_many_names() {
     let sb = sandbox();
@@ -471,17 +421,14 @@ fn the_refusals_are_not_one_assertion_wearing_many_names() {
     );
 }
 
+// ---------------------------------------------------------------------------
 // Pin 7 — code-span wrapping, asserted on RENDERED text
-//
-//
+// ---------------------------------------------------------------------------
 
-/// **Pin 7.** A term inside an inline code span is wrapped OUTSIDE the backticks, so the
-/// rendered output strikes the term. *Mutation:* wrap inside the backticks. The raw bytes still
-/// look plausible — `` `~~hpath_text~~` `` is a perfectly ordinary string — which is why the
-/// instrument here is the RENDERED text and never the bytes. Rendered, the mutated form emits
-/// the tilde characters literally and strikes nothing.
-///
-///
+/// Pin 7. A term inside an inline code span is wrapped OUTSIDE the backticks, so
+/// the rendered output strikes the term. *Mutation:* wrap inside the backticks —
+/// the raw bytes still look plausible, which is why the instrument here is the
+/// RENDERED text and never the bytes.
 #[test]
 fn a_code_span_term_is_struck_in_the_rendered_text_not_merely_in_the_bytes() {
     let sb = sandbox();
@@ -500,8 +447,7 @@ fn a_code_span_term_is_struck_in_the_rendered_text_not_merely_in_the_bytes() {
         "and never sit inside them, where markdown reads them as literal text: {raw}"
     );
 
-    // The instrument that distinguishes the two: the RENDERED face, asked
-    // through the same projection the engine serves.
+    // The RENDERED face, asked through the same projection the engine serves.
     let read = sb.run(&ws, &["read", "guide.md"]);
     assert_eq!(code(&read), 0, "read: {}", stderr(&read));
     let rendered = stdout(&read);
@@ -511,30 +457,14 @@ fn a_code_span_term_is_struck_in_the_rendered_text_not_merely_in_the_bytes() {
     );
 }
 
-// Pin 8 — the arm the control cannot see (all-hands 3)
-//
-//
+// ---------------------------------------------------------------------------
+// Pin 8 — the arm the control cannot see
+// ---------------------------------------------------------------------------
 
-/// **Pin 8.** A term that matches nothing, with no marker of its id anywhere, refuses
-/// `retire-term-never-matched`. Both arms, stated — this pin exists BECAUSE of a two-arm check
-/// The positive control proves the scanner REACHED THE FILES. It cannot see the term at all: -
-/// **Arm A, healthy and complete:** term 0, control > 0. - **Arm C, term never right:** term 0,
-/// control > 0 — *byte-identical to A*.
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// Pin 8. A term that matches nothing, with no marker of its id anywhere,
+/// refuses `retire-term-never-matched`. The control proves the scanner reached
+/// the files, so arm A (healthy) and arm C (term never right) read
+/// byte-identically: term 0, control > 0 in both.
 #[test]
 fn a_term_that_never_matched_refuses_rather_than_reporting_a_clean_sweep() {
     let sb = sandbox();
@@ -581,10 +511,9 @@ fn a_term_that_never_matched_refuses_rather_than_reporting_a_clean_sweep() {
 // Q4's ruling, executable
 // ---------------------------------------------------------------------------
 
-/// `mark` demands a world guard, and a STALE one refuses at the write door. *Mutation:* make
-/// the flag optional, and the sweep can land on a vault that moved under it — U9b's measured
-/// failure, industrialized.
-///
+/// `mark` demands a world guard, and a STALE one refuses at the write door.
+/// *Mutation:* make the flag optional, and the sweep can land on a vault that
+/// moved under it.
 #[test]
 fn mark_demands_a_world_guard_and_a_stale_one_refuses() {
     let sb = sandbox();
@@ -625,17 +554,15 @@ fn mark_demands_a_world_guard_and_a_stale_one_refuses() {
     );
 }
 
+// ---------------------------------------------------------------------------
 // The design position, executable
-//
-//
+// ---------------------------------------------------------------------------
 
-/// The report keeps `measured` and `declared` in separate keys, says in the data that it
-/// verified none of the declared evidence, and holds a retirement with no declared proof
-/// `open`. *Mutation:* merge the two objects into one flat table, and a reader can no longer
-/// tell which numbers the tool measured and which it was told — the failure the whole §3
-/// position exists to prevent.
-///
-///
+/// The report keeps `measured` and `declared` in separate keys, says in the data
+/// that it verified none of the declared evidence, and holds a retirement with
+/// no declared proof `open`. *Mutation:* merge the two objects into one flat
+/// table, and a reader can no longer tell which numbers the tool measured and
+/// which it was told.
 #[test]
 fn the_report_never_mixes_what_it_measured_with_what_it_was_told() {
     let sb = sandbox();
@@ -668,11 +595,10 @@ fn the_report_never_mixes_what_it_measured_with_what_it_was_told() {
     );
 }
 
-/// The ruled link is an ARRAY, and it must be the thing that actually resolves: a holding hpath
-/// addressing no section refuses `retire-holding-unresolvable`. *Mutation:* skip the
-/// `section_span` resolution, and every marker the sweep writes points at nothing, with no
-/// complaint.
-///
+/// The ruled link is an ARRAY, and it must be the thing that actually resolves:
+/// a holding hpath addressing no section refuses `retire-holding-unresolvable`.
+/// *Mutation:* skip the `section_span` resolution, and every marker the sweep
+/// writes points at nothing, with no complaint.
 #[test]
 fn a_holding_hpath_that_addresses_nothing_refuses() {
     let sb = sandbox();
@@ -694,28 +620,15 @@ fn a_holding_hpath_that_addresses_nothing_refuses() {
     );
 }
 
+// ---------------------------------------------------------------------------
 // The refusal-contract sweep — all eight reason words, four properties each
-//
-//
+// ---------------------------------------------------------------------------
 
-/// The four-property contract, asserted PER REFUSAL on its own structured fields. This is the
-/// house `assert_refusal_contract` shape (`crates/testsuite/tests/u4a2_composed_read.rs`)
-/// re-authored for this surface, which is the sanctioned form: where a refusal needs different
-/// properties, ADD a per-surface contract assertion, never loosen the shared one.
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// The four-property contract, asserted PER REFUSAL on its own structured
+/// fields — the house `assert_refusal_contract` shape
+/// (`crates/testsuite/tests/u4a2_composed_read.rs`) re-authored for this
+/// surface. Where a refusal needs different properties, ADD a per-surface
+/// contract assertion rather than loosening the shared one.
 fn assert_contract(reason: &str, r: &Value) {
     let get = |k: &str| -> String {
         r[k].as_str()
@@ -748,21 +661,9 @@ fn assert_contract(reason: &str, r: &Value) {
     );
 }
 
-/// **The coverage gate.** Every one of the eight reason words is TRIGGERED by its own fixture
-/// and put through [`assert_contract`]. Why a table and not eight tests Coverage is the
-/// property being asserted, and coverage is a claim about the SET.
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// The coverage gate: every one of the eight reason words is TRIGGERED by its
+/// own fixture and put through [`assert_contract`]. A table rather than eight
+/// tests, because coverage is a claim about the SET.
 fn contract_cases() -> Vec<(&'static str, Vec<(&'static str, String)>)> {
     vec![
         (
@@ -887,16 +788,8 @@ fn every_reason_word_carries_the_four_property_contract() {
         covered.push((*reason).to_owned());
     }
 
-    // THE CENSUS — and it reads the ENGINE, not a copy of the engine. `Reason::ALL` is the crate's
-    // own list, kept honest at its definition site by two exhaustive matches and a bijection test.
-    //
-    //
-    //
-    //
-    //
-    //
-    //
-    //
+    // The census reads the ENGINE, not a copy of it: `Reason::ALL` is the crate's
+    // own list, kept honest at its definition site.
     let mut engine: Vec<String> = mrd::retire_cmd::Reason::ALL
         .iter()
         .map(|r| (*r).word().to_owned())

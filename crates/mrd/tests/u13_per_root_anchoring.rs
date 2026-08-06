@@ -1,12 +1,10 @@
-//! **U13 — per-root anchoring, driven through the REAL `mrd status`.**
+//! U13 — per-root anchoring, driven through the real `mrd status`: the
+//! blob-anchoring check runs against that root's own git repo — six roots,
+//! six object stores, one law.
 //!
-//! Ratified `2026-07-24-cross-root-addressing.md` §4, verbatim: *"The
-//! blob-anchoring check ... runs against **that root's** git repo — six roots,
-//! six object stores, one law."*
-//!
-//! The fixture is built so that **no single-store implementation can produce its
-//! numbers.** Two object ids each appear under TWO roots, and each is
-//! `pending-anchor` in one of them and absent from the other:
+//! The fixture is built so no single-store implementation can produce its
+//! numbers. Two object ids each appear under two roots, and each is
+//! `pending-anchor` in one and absent from the other:
 //!
 //! | pin `object` | `hash` | store asked | state | debt |
 //! |---|---|---|---|---|
@@ -17,25 +15,12 @@
 //! | `beta:not-here` | B | beta | never-anchored | — |
 //! | `local` | D | ambient workspace | pending-anchor | **+D** |
 //!
-//! R4 retired the top-level `objects:` table; the blob hash rides the pin row it
-//! was minted for, so the six entries above are six PINS carrying six hashes.
+//! The six entries are six pins carrying six hashes, so the gauge reads
+//! 3 blobs with a byte sum of exactly `B + C + D`; one store asked for all
+//! six entries cannot land there — the oid is not the variable, the store is.
 //!
-//! So the gauge reads **3 blobs**, and its byte sum is exactly `B + C + D`.
-//! Asking one store for all six entries cannot land there whatever it does with
-//! the root prefix: the ambient repository alone reads 1 blob (`D`), alpha alone
-//! reads `B`, beta alone reads `C`. **The oid is not the variable — the store
-//! is.**
-//!
-//! Both arms of S3-R8(c) ride in that one reading: anchoring **succeeds** in the
-//! correct store (`alpha:anchored` is found anchored, and `alpha:pending`
-//! is found owed) **and degrades honestly** when the blob is absent from the
-//! store asked (`alpha:not-here` / `beta:not-here` classify
-//! `never-anchored` rather than borrowing the other root's answer).
-//!
-//! The remaining gates ride their own fixtures: a mounted root that is **not a
-//! git repository** (honest degradation, never a fabricated sha), a root the
-//! mount table does not bind at all, and — on every one of them — **`mrd
-//! status`'s exit triad is UNCHANGED** (R12): the gauge is a meter, never a gate.
+//! The remaining gates ride their own fixtures, and on every one the exit
+//! triad is unchanged (R12): the gauge is a meter, never a gate.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -124,23 +109,16 @@ fn mount_block(name: &str, path: &Path, kind: &str) -> String {
     )
 }
 
-/// A hand-written R4 (`version: 2`) `meridian-lock` retrieval plane — the gate
-/// depends on the CLI's own reader, never on the writer that produced the bytes.
+/// A hand-written R4 (`version: 2`) `meridian-lock` retrieval plane — the
+/// gate depends on the CLI's own reader, never on the writer.
 ///
-/// R4 retired the shared top-level `objects:` table and moved the git blob hash
-/// onto the PIN ROW that needs it, so there is no successor table: each former
-/// `objects:` entry is now a whole-page pin (`path: []`) whose `hash` is that
-/// blob. `object` is the wiki-link inner text and is carried VERBATIM by the
-/// parser, so it is spelled here exactly as the key it replaces named the target
-/// — that spelling is what says WHICH root's object store is being asked, and it
-/// is this file's whole subject.
+/// Each entry is a whole-page pin (`path: []`) whose `hash` is the blob;
+/// `object` is carried verbatim by the parser, and its spelling is what says
+/// which root's object store is asked — this file's whole subject.
 ///
-/// The `fingerprint` is a well-formed token that matches nothing: every gate here
-/// reads `composed.vibe_debt`, and a pin's CLAIM colour is a different plane that
-/// neither the gauge nor the exit triad reads (R12).
-///
-/// NOTE FOR REVIEWERS: `version: 1` became `version: 2`. That is the LOCK FILE
-/// schema version, not the wire protocol version.
+/// The `fingerprint` is a well-formed token that matches nothing: every gate
+/// here reads `composed.vibe_debt`, and a pin's claim colour is a different
+/// plane (R12).
 fn lock_page(objects: &[(&str, &str)]) -> String {
     use std::fmt::Write as _;
     let token = format!("fp1.span2.b3.{}", "0".repeat(64));
@@ -237,14 +215,8 @@ fn sandbox(mounts: &[(&str, &Path, &str)]) -> Sandbox {
     sb
 }
 
-/// **GATE 1 + 2 — six roots, six object stores, one law, proven across THREE distinct stores in
-/// ONE reading.** Per-root anchoring is a per-CRITERION claim, so one root proving its own
-/// surface would not be a proof of it.
-///
-///
-///
-///
-///
+/// Six roots, six object stores, one law — proven across three distinct
+/// stores in one reading.
 #[test]
 fn the_anchoring_check_runs_against_that_roots_own_object_store() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -282,9 +254,8 @@ fn the_anchoring_check_runs_against_that_roots_own_object_store() {
     distinct.dedup();
     assert_eq!(distinct.len(), 4, "four distinct blobs: {distinct:?}");
 
-    // BASELINE — the ambient arm ALONE, so the instrument is shown reading a measured value before
-    // the rooted keys are added. Without this, the reading below could not be told from a gauge
-    // that only ever reports one number.
+    // Baseline — the ambient arm alone, so the instrument is shown reading a
+    // measured value before the rooted keys are added.
     std::fs::write(sb.ws.join("effect.md"), lock_page(&[("local", &oid_d)])).expect("write");
     let (ambient, code) = sb.gauge();
     assert_eq!(code, 0, "the exit triad is unchanged by any gauge reading");
@@ -339,13 +310,9 @@ fn the_anchoring_check_runs_against_that_roots_own_object_store() {
     );
 }
 
-/// **GATE 3 — a mounted root that is NOT a git repository degrades honestly.** The existing
-/// `Repo` convention: `GitFail::NotARepo`, surfaced as the gauges `unknown` with the ROOT NAMED
-/// — never a fabricated sha, and never a silent fall back to the ambient store, which would
-/// answer a different repositorys question in this roots name. The degradation is ASSERTED, not
-/// merely the absence of a crash.
-///
-///
+/// A mounted root that is not a git repository degrades honestly: surfaced as
+/// the gauge's `unknown` with the root named — never a fabricated sha, and
+/// never a silent fallback to the ambient store.
 #[test]
 fn a_mounted_root_that_is_not_a_git_repo_degrades_honestly() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -389,12 +356,9 @@ fn a_mounted_root_that_is_not_a_git_repo_degrades_honestly() {
     );
 }
 
-/// **A root the mount table does not bind is unmeasurable, never ambient.** The false negative
-/// this closes: silently resolving `ghost:payload.md` in the ambient store would ask the WRONG
-/// object database and answer confidently — `never-anchored` for a blob that is anchored where
-/// it actually lives. The gauge says it cannot be asked, and teaches the declaration.
-///
-///
+/// A root the mount table does not bind is unmeasurable, never ambient:
+/// silently resolving `ghost:payload.md` in the ambient store would ask the
+/// wrong object database and answer confidently.
 #[test]
 fn an_unbound_root_is_unmeasurable_never_silently_ambient() {
     let sb = sandbox(&[]);
@@ -423,22 +387,16 @@ fn an_unbound_root_is_unmeasurable_never_silently_ambient() {
     );
 }
 
-/// **A key that is not an address names no store — so git cannot be asked.**
-/// `addr::Addr::parse` refuses a malformed root rather than reading it as a literal path,
-/// precisely so a typo cannot degrade into a confident lookup somewhere else. That refusal is
-/// carried into the gauge as the SAME reading a malformed sha produces, because it is the same
-/// reading: the question cannot be put to git.
-///
-///
+/// A key that is not an address names no store, so git cannot be asked:
+/// `addr::Addr::parse` refuses a malformed root rather than reading it as a
+/// literal path, and the refusal is carried into the gauge as `unknown`.
 #[test]
 fn a_key_that_names_no_store_is_unknown_not_ambient() {
     let sb = sandbox(&[]);
     let oid = eager_blob(&sb.ws, "payload.md", PENDING_IN_PROJECT);
-    // Two colons in the head — refused by the address grammar, never reinterpreted. The `.md` is
-    // kept ON PURPOSE where every other object in this file drops it: the subject here is a
-    // spelling that is NOT an address, so there is no vault path to canonicalize, and the parser
-    // carries the objects inner text verbatim — the reading must name it exactly as written.
-    //
+    // Two colons in the head — refused by the address grammar, never
+    // reinterpreted. The `.md` is kept on purpose: this spelling is not an
+    // address, and the reading must name it exactly as written.
     std::fs::write(
         sb.ws.join("effect.md"),
         lock_page(&[("a:b:payload.md", &oid)]),

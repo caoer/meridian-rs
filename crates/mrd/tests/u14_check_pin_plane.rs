@@ -1,57 +1,8 @@
-//! **U14 — `mrd check` must SEE THE PIN PLANE, or the fence is a false green by construction.**
-//! Every gate here drives the REAL binary (`CARGO_BIN_EXE_mrd`) over its process boundary.
-//! Amendment — the journal plane this file argues against is GONE Everything below narrates the
-//! pin planes blind spot in terms of the journal plane that could not see it. That framing is
-//! history: ZT ruled the engine keeps no memory (*"History is pin to git when we lock. Anything
-//! between locks is not history."*), so the journal plane was deleted whole. The files SUBJECT
-//! is unchanged and its refusals still gate — what changed is that the isolation it used to
-//! establish by counting journal rows is now structural. Read the journal-plane prose below as
-//! the argument for why this test exists, not as a description of what `check` reads today.
-//! What is left after u14i and U32, stated so a green cannot be misread (S3-R58) u14i
-//! downgraded the *claim* (a baseline it cannot date is `grey(cannot-assess)`, never green) and
-//! U32 gave the governed splice its journal row. Together they make a green `mrd check` mean
-//! *"baseline provable AND nothing the JOURNAL plane can see"* — **a true statement about the
-//! journal plane that stays silent about the pin plane.** The silence is the debt, and it is
-//! this units. The corpus, and why the OBVIOUS one proves nothing *Pin, then edit the pinned
-//! bytes in place, then write* does **not** exhibit the debt, and measuring that was the first
-//! thing this unit did.
+//! U14 — `mrd check` must see the pin plane, or the fence is a false green by
+//! construction. Every gate drives the real binary over its process boundary.
 //!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
+//! The obvious corpus — pin, edit the pinned bytes in place, write — does not
+//! exhibit the debt; the clone/pull shape ([`pulled_corpus`]) does.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -63,7 +14,7 @@ use wire_serve::write::{CreateArgs, create};
 
 // ── harness ──────────────────────────────────────────────────────────────────
 
-/// The binary under test. `MRD_BIN` names another artifact (the fixv convention), so the SAME
+/// The binary under test. `MRD_BIN` names another artifact, so the same
 /// asserts can be pointed at a pre-change build to show them redden.
 fn mrd_bin() -> PathBuf {
     std::env::var_os("MRD_BIN")
@@ -196,10 +147,8 @@ fn root_of(ws: &Path) -> WorkspaceRoot {
     WorkspaceRoot(workspace::canonicalize(ws).expect("canonicalize"))
 }
 
-/// Birth `path` through the PRODUCTION guarded-create write path — a real governed write, so
-/// the corpus under test is one the engine actually made. (It was the **baseline refresher**
-/// when a journal rows `root_after` re-anchored the baseline; there is no baseline plane to
-/// refresh now.)
+/// Birth `path` through the production guarded-create write path — a real
+/// governed write, so the corpus under test is one the engine actually made.
 fn produce(root: &WorkspaceRoot, path: &str, body: &str) {
     let args = CreateArgs {
         id: None,
@@ -217,22 +166,8 @@ fn produce(root: &WorkspaceRoot, path: &str, body: &str) {
 const SOURCE_PINNED: &str = "# Source\n\n## Guideline\n\nthe pinned body\n";
 const CLAIM: &str = "# Claim\n\nwe rely on the guideline.\n";
 
-/// A `meridian-lock` block carrying ONE pin, in the canonical R4 bytes the engine itself mints
-/// (quoted scalars, `version: 2`). R4 retired the top-level `objects:` table and moved the blob
-/// hash onto the pin row, so the RETRIEVAL plane can no longer be put in front of `check` on
-/// its own — a hash arrives only as some pins `hash`.
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// A `meridian-lock` block carrying one pin, in the canonical R4 bytes the
+/// engine itself mints. The blob hash rides the pin row.
 fn objects_lock(object: &str, fingerprint: &str) -> String {
     format!(
         "```meridian-lock\nversion: 2\npins:\n  - object: \"[[{object}]]\"\n    \
@@ -241,10 +176,9 @@ fn objects_lock(object: &str, fingerprint: &str) -> String {
     )
 }
 
-/// The LIVE whole-page fingerprint of `raw` — what a CORRECT whole-page pin holds, minted
-/// through the engines own hasher over the same parse `fs::build_corpus` runs, so a fixture
-/// cannot pin a token the reader would not recompute.
-///
+/// The live whole-page fingerprint of `raw` — what a correct whole-page pin
+/// holds, minted through the engine's own hasher over the same parse
+/// `fs::build_corpus` runs.
 fn live_fingerprint(raw: &str) -> String {
     let doc = model::build(raw.to_string(), syntax::parse(raw));
     model::fingerprint::fingerprint(&doc, &doc.root)
@@ -276,19 +210,9 @@ fn pinned_corpus(sb: &Sandbox, name: &str, vibe: bool) -> PathBuf {
     ws
 }
 
-/// **The corpus that leaves the journal plane with NOTHING to report while a pin is red — the
-/// clone/pull shape, and it is the ordinary one.** A lock is minted in one working copy against
-/// the original bytes; another working copy receives that lock **and a source that has since
-/// moved**.
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// The clone/pull shape, and it is the ordinary one: a lock is minted in one
+/// working copy against the original bytes; another working copy receives
+/// that lock and a source that has since moved.
 fn pulled_corpus(sb: &Sandbox, name: &str) -> PathBuf {
     let minted = pinned_corpus(sb, &format!("{name}-origin"), false);
     let original = std::fs::read_to_string(minted.join("source.md")).expect("minted source");
@@ -316,42 +240,17 @@ fn pulled_corpus(sb: &Sandbox, name: &str) -> PathBuf {
     ws
 }
 
-/// Land ONE governed write so this corpus is decisive: anything `check` refuses from here on,
-/// it refuses because of the pin plane and nothing else. **That isolation used to be
-/// ESTABLISHED and is now STRUCTURAL.** This function counted journal rows (0 on a fresh clone,
-/// 1 after the write) to prove the journal plane was spotless and could not be the cause of a
-/// refusal.
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// Land one governed write so this corpus is decisive: anything `check`
+/// refuses from here on, it refuses because of the pin plane and nothing
+/// else.
 fn establish_a_spotless_baseline(root: &WorkspaceRoot) {
     produce(root, "note.md", "# Note\n\ngoverned birth\n");
 }
 
 // ── the REFUSAL: a drifted pin on a SPOTLESS journal plane ───────────────────
 
-/// **The debt S3-R58 names, measured on this tree.** The journal plane has nothing whatever to
-/// report — one row, current baseline, no chain to break — and the pin in `claim.md` claims
-/// content `source.md` no longer carries. `mrd check` must refuse.
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// The pin in `claim.md` claims content `source.md` no longer carries, and
+/// nothing else on the corpus is at fault: `mrd check` must refuse.
 #[test]
 fn check_refuses_a_drifted_pin_with_no_write_history_plane_to_blame() {
     let sb = sandbox();
@@ -362,12 +261,8 @@ fn check_refuses_a_drifted_pin_with_no_write_history_plane_to_blame() {
     let out = sb.run(&ws, &["check"]);
     let text = said(&out);
 
-    // The CONTROL: the refusal below must come from the pin plane and nothing else. This used to
-    // be established — the render said `chain: green` and `foreign_edit: none`, so the journal
-    // plane demonstrably had no complaint. It is STRUCTURAL now: there is no write-history plane,
-    // and the surface says so in its own words. A verb that assesses no write history cannot
-    // refuse over one.
-    //
+    // The control: the refusal below must come from the pin plane and nothing
+    // else — there is no write-history plane, and the surface says so.
     assert!(
         text.contains(check::WRITE_HISTORY_NOT_ASSESSED),
         "no write-history plane exists to be the thing refusing, and the surface \
@@ -412,14 +307,8 @@ fn check_refuses_a_drifted_pin_with_no_write_history_plane_to_blame() {
 
 // ── the ACCEPTANCE: a fully governed, fully anchored corpus ──────────────────
 
-/// **S3-R8(c), on its own corpus.** Every write governed, the pinned content untouched, the
-/// pinned blob reachable from a commit. `mrd check` must be GREEN and exit 0.
-///
-///
-///
-///
-///
-///
+/// The acceptance: every write governed, the pinned content untouched, the
+/// pinned blob reachable from a commit — `mrd check` must be green and exit 0.
 #[test]
 fn check_accepts_a_fully_governed_anchored_corpus() {
     let sb = sandbox();
@@ -457,19 +346,10 @@ fn check_accepts_a_fully_governed_anchored_corpus() {
     );
 }
 
-/// **The acceptance arm that nearly did not exist, and the measurement that forced it (S3-R8(c)
-/// again, from the other side).** Wiring the anchoring refusal to `pending-anchor` — the state
-/// criterion 5 names — reddened all three legs of `u35_journaled_doors.rs`, which drive a REAL
-/// `git commit` through the RATIFIED fence over FULLY GOVERNED corpora.
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// The ordinary pin lifecycle passes through two non-durable states
+/// (never-anchored, then pending-anchor) and is accepted in all of them —
+/// wiring the anchoring refusal to `pending-anchor` would refuse every
+/// governed commit.
 #[test]
 fn the_ordinary_pin_lifecycle_passes_through_two_non_durable_states_and_is_accepted_in_all_of_them()
 {
@@ -540,20 +420,14 @@ fn the_ordinary_pin_lifecycle_passes_through_two_non_durable_states_and_is_accep
 
 // ── GAP A: the pending-anchor refusal, the fence's SECOND job ────────────────
 
-/// **GAP A.** The ratified fence refuses a *pending-anchor* commit, and **no
-/// journal row will ever carry that fact** — the anchoring state is git's, not the
-/// receipt journal's.
+/// The defect the fence must catch is the orphan: a `--vibe` eager blob that
+/// no ref reaches and that the file no longer hashes to, so no commit of that
+/// file will ever anchor it — prunable at `gc.pruneExpire`, after which the
+/// pin can be verified against nothing.
 ///
-/// The defect the fence must catch is the ORPHAN: a `--vibe` eager blob that no ref
-/// reaches **and that the file no longer hashes to**, so no commit of that file
-/// will ever anchor it. It is prunable at `gc.pruneExpire` and then the pin can be
-/// verified against nothing.
-///
-/// # The corpus isolates the anchoring finding from the content one
-/// The out-of-band edit lands in `## Notes`, **outside** the pinned `## Guideline`
-/// section: the pin's fingerprint covers the section, so the CLAIM plane stays
-/// green, while the `objects:` blob is whole-FILE and moves. One defect, one word —
-/// a refusal that also cried `content-drifted` here would be a second wrong answer.
+/// The corpus isolates the anchoring finding from the content one: the
+/// out-of-band edit lands outside the pinned section, so the claim plane
+/// stays green while the whole-file blob moves. One defect, one word.
 #[test]
 fn check_refuses_an_orphaned_pinned_blob() {
     let sb = sandbox();
@@ -608,13 +482,9 @@ fn check_refuses_an_orphaned_pinned_blob() {
     );
     assert_eq!(out.status.code(), Some(1), "on the finding leg: {text}");
 
-    // **THE CONTROL, and it is not "the journal plane is silent" — it cannot be.** Orphaning the
-    // blob means editing the file, which moves the tree root, which leaves the journal baseline
-    // stale: the journal plane is grey here and there is no honest corpus where it is not. So the
-    // discriminator is the VERDICT CLASS, which grey cannot reach: a `cannot-assess` report
-    // carries `red: false`, and only a FINDING sets `red: true`. The exit alone would be satisfied
-    // by the journals grey and would prove nothing about this unit.
-    //
+    // The control: the discriminator is the verdict class — a `cannot-assess`
+    // report carries `red: false`, and only a finding sets `red: true`, so
+    // the refusal is attributable to the anchoring finding.
     let js = sb.run(&ws, &["check", "--json"]);
     let value: serde_json::Value = serde_json::from_slice(&js.stdout).expect("json");
     assert_eq!(
@@ -650,14 +520,8 @@ fn check_refuses_an_orphaned_pinned_blob() {
 
 // ── the three planes over ONE corpus, in ONE run ─────────────────────────────
 
-/// **The door form (S3-R60: this is a RUN, not a `const`).** *Three planes agreeing on the
-/// VERDICTS over a corpus* is a runtime property of data — no `const` can assert it, and trying
-/// would produce the weakened middle S3-R23(4) forbids.
-///
-///
-///
-///
-///
+/// Three planes agreeing on the verdicts over a corpus is a runtime property
+/// of data — no `const` can assert it.
 #[test]
 fn walk_status_and_check_agree_on_one_corpus_in_one_run() {
     let sb = sandbox();
@@ -691,9 +555,8 @@ fn walk_status_and_check_agree_on_one_corpus_in_one_run() {
         said(&check)
     );
 
-    // ── ARM 2: the pulled copy — the lock arrived with its pin, the source arrived changed, one
-    // governed write leaves the journal plane SPOTLESS. All three planes must now read the same
-    // red pin. ────────────────────
+    // ── ARM 2: the pulled copy — the lock arrived with its pin, the source
+    // arrived changed. All three planes must now read the same red pin. ─────
     let ws = pulled_corpus(&sb, "three-planes-pulled");
     establish_a_spotless_baseline(&root_of(&ws));
 
@@ -733,12 +596,10 @@ fn walk_status_and_check_agree_on_one_corpus_in_one_run() {
 
 // ── honest degradation (gate 5) ──────────────────────────────────────────────
 
-/// **Honest degradation, typed.** A workspace with no git repository behind it cannot be asked
-/// about anchoring at all. `check` must say so — never read the unanswerable question as a
-/// clean bill. The refusal rides the same closed triad with the ruled reason word: this is a
-/// `cannot-assess`, not a finding, and the word is the one that already exists.
-///
-///
+/// Honest degradation: a workspace with no git repository cannot be asked
+/// about anchoring at all, and `check` must say so — never read the
+/// unanswerable question as a clean bill. This is a `cannot-assess`, not a
+/// finding.
 #[test]
 fn check_degrades_honestly_when_there_is_no_git_repository() {
     let sb = sandbox();
@@ -747,11 +608,9 @@ fn check_degrades_honestly_when_there_is_no_git_repository() {
     write(&ws, "claim.md", CLAIM);
     let root = root_of(&ws);
 
-    // R4 makes a pins `hash` mandatory, so `mrd pin` REFUSES outright where git cannot answer —
-    // which is exactly here. To put a blob sha in front of a missing repository the lock is
-    // therefore written by hand, with the CLAIM plane held GREEN (the live whole-page token) so
-    // the only thing left for `check` to be unhappy about is the store it cannot ask.
-    //
+    // `mrd pin` refuses outright where git cannot answer, so the lock is
+    // written by hand, with the claim plane held green — the only thing left
+    // for `check` to be unhappy about is the store it cannot ask.
     write(
         &ws,
         "claim.md",
@@ -784,34 +643,10 @@ fn check_degrades_honestly_when_there_is_no_git_repository() {
     );
 }
 
-/// **THE DISCLOSURE PIN — a cross-root pin is SKIPPED AND STATED, and the fence still passes**
-/// (ruling End-to-end, through the real binary. This tests subject was replaced by a ruling,
-/// not repaired It was `check_cannot_ask_another_roots_object_store_and_says_so` and it
-/// asserted the opposite: exit non-zero, `grey(cannot-assess)`. That refusal was correct on its
-/// own terms and unchanged since v1 — but R4 made `hash` mandatory on every pin, so what used
-/// to reach it (cross-root `objects:` rows, which nobody wrote) became EVERY cross-root pin,
-/// and **the fence began refusing every commit in any repo holding one**.
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// A cross-root pin is skipped and stated, and the fence still passes:
+/// refusing it as `grey(cannot-assess)` would make the fence refuse every
+/// commit in any repo holding a cross-root pin, since R4 makes `hash`
+/// mandatory on every pin.
 #[test]
 fn a_cross_root_pin_is_skipped_and_disclosed_and_does_not_refuse_the_fence() {
     let sb = sandbox();
@@ -832,7 +667,6 @@ fn a_cross_root_pin_is_skipped_and_disclosed_and_does_not_refuse_the_fence() {
     let out = sb.run(&ws, &["check"]);
     let text = said(&out);
 
-    // THE DISCLOSURE — the human face names the population it did not measure.
     assert!(
         text.contains("anchoring scope:") && text.contains("alpha"),
         "the sight line is STATED, naming the root outside it: {text}"
@@ -842,7 +676,6 @@ fn a_cross_root_pin_is_skipped_and_disclosed_and_does_not_refuse_the_fence() {
         "and it says plainly that those blobs were not measured: {text}"
     );
 
-    // AND THE ANCHORING PLANE DID NOT GREY ON IT — the scoping is not a refusal.
     assert!(
         !text.contains(check::GREY_CANNOT_ASSESS),
         "a question outside this gate's jurisdiction is not `cannot-assess`: {text}"

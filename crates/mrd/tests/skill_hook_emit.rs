@@ -1,48 +1,18 @@
-//! **`mrd skill hook` — the emitted document IS the contract, so the document is
-//! what these arms measure.**
+//! `mrd skill hook` — the emitted document is the contract, so the document
+//! is what these arms measure. The verb's whole product is a stream of bytes
+//! on stdout: the stream is the artifact, the document and the engine must
+//! agree, and the refusal rules that used to be installer code must be
+//! legible as prose.
 //!
-//! The predecessor plane (`mrd hook install | uninstall | status`) is deleted.
-//! Its tests were the OLD contract's: they drove an installer, and there is no
-//! installer. What replaces them is not a smaller version of the same thing —
-//! it is a different subject. The verb's whole product is a stream of bytes on
-//! stdout, so:
+//! Two devices keep these arms falsifiable: the engine's constants
+//! (`mrd::hook`) are the expectation, never a literal; and the body is
+//! executed, not read (`sh -n`, plus the real-git arms in
+//! `hook_plane_fence.rs` and `u15_hook_fence_e2e.rs`, which place this
+//! document's body and drive real commits through it).
 //!
-//! - **the stream is the artifact** — anything else on it is corruption, and
-//!   [`the_document_is_the_whole_of_stdout_and_stderr_stays_empty`] fails on a
-//!   single stray header line;
-//! - **the document and the engine must agree** — a document declaring a
-//!   generation, a door set or a marker the reader in `crates/mrd/src/hook.rs`
-//!   does not judge by would place fences this engine cannot report on
-//!   ([`the_documents_generation_is_the_one_this_engine_judges_placed_fences_by`],
-//!   [`the_document_names_every_door_this_engine_reads`]);
-//! - **the rules that used to be code must be legible** — the refusal conditions
-//!   the installer enforced imperatively are now prose an agent acts on, and
-//!   prose that is missing is a rule that silently stopped existing
-//!   ([`every_refusal_the_retired_installer_enforced_is_legible_in_the_document`]).
-//!
-//! # THE TRAP THIS FILE IS WRITTEN AGAINST
-//! A document test that greps for words the author just typed proves the author
-//! typed them. Two devices make these arms falsifiable against a plausible wrong
-//! document rather than an empty one:
-//!
-//! 1. **The engine's constants are the expectation, never a literal.** The
-//!    generation, the door names and the marker come from `mrd::hook`, so a body
-//!    edit without a bump fails here rather than shipping.
-//! 2. **The body is executed, not read.** [`the_body_is_a_shell_program_that_parses`]
-//!    runs `sh -n` over the extracted block, and
-//!    [`the_bypass_is_announced_and_only_the_bypass_is_announced`] asserts over
-//!    the `case` legs' actual structure. The real-git arms live in
-//!    `crates/mrd/tests/hook_plane_fence.rs` and
-//!    `crates/mrd/tests/u15_hook_fence_e2e.rs`, which place THIS document's body
-//!    and drive real commits through it.
-//!
-//! # The lag this contract closes
-//! The retired fence ran `mrd check --staged`, which asks whether the whole write
-//! history is true. Past the first chain break that answer is permanently `1`, so
-//! the fence stopped varying with what was staged (S4-R19). `--commit-gate` asks
-//! the per-commit question instead, and
-//! [`the_body_asks_the_scoped_question_and_not_the_permanent_one`] is the arm that
-//! fails against every fence this repository shipped before this contract.
+//! The retired fence ran `mrd check --staged`, whose answer is permanently 1
+//! past the first chain break; `--commit-gate` asks the per-commit question
+//! instead (S4-R19).
 
 use std::process::{Command, Output};
 
@@ -75,12 +45,10 @@ fn document() -> String {
     stdout(&out)
 }
 
-/// The fence body, extracted the way the document says to extract it: **the one fenced block,
-/// and it is the file**. The extraction is deliberately naive — an agent following the document
-/// does exactly this — so a document that grew a second fenced block breaks it, which is the
-/// point of [`exactly_one_fenced_block_so_the_extraction_is_unambiguous`].
-///
-///
+/// The fence body, extracted the way the document says to: the one fenced
+/// block, and it is the file. The extraction is deliberately naive — an agent
+/// following the document does exactly this — so a second fenced block
+/// breaks it.
 fn fence_body(doc: &str) -> String {
     let mut lines = doc.lines();
     let mut body = String::new();
@@ -104,12 +72,9 @@ fn fence_body(doc: &str) -> String {
 
 // ── the stream is the artifact ───────────────────────────────────────────────
 
-/// **Stdout carries the document and nothing else, and stderr stays empty.** A caller pipes
-/// this into a file or into an agents context. One `emitting…` line, one trailing byte count,
-/// one blank line of politeness, and the artifact is corrupt — so the arm asserts the stream
-/// EQUALS the document rather than merely containing it.
-///
-///
+/// Stdout carries the document and nothing else, and stderr stays empty: the
+/// arm asserts the stream equals the document rather than merely containing
+/// it.
 #[test]
 fn the_document_is_the_whole_of_stdout_and_stderr_stays_empty() {
     let out = mrd(&["skill", "hook"]);
@@ -132,14 +97,8 @@ fn the_document_is_the_whole_of_stdout_and_stderr_stays_empty() {
     );
 }
 
-/// **The emitter touches no disk and needs no world.** It runs in a directory that is not a git
-/// repository, not a meridian workspace, and holds nothing — and leaves it holding nothing.
-///
-///
-///
-///
-///
-///
+/// The emitter touches no disk and needs no world: it runs in a bare
+/// directory and leaves it holding nothing.
 #[test]
 fn the_emitter_writes_nothing_and_needs_neither_repository_nor_workspace() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -176,14 +135,8 @@ fn the_emitter_writes_nothing_and_needs_neither_repository_nor_workspace() {
 
 // ── the document and the engine are one fact ─────────────────────────────────
 
-/// The generation the document declares is the one `crates/mrd/src/hook.rs` judges placed
-/// fences by. **This is the arm a body change without a bump fails on.
-///
-///
-///
-///
-///
-///
+/// The generation the document declares is the one `mrd::hook` judges placed
+/// fences by — the arm a body change without a bump fails on.
 #[test]
 fn the_documents_generation_is_the_one_this_engine_judges_placed_fences_by() {
     let doc = document();
@@ -224,11 +177,9 @@ fn the_document_names_every_door_this_engine_reads() {
 
 // ── the body ─────────────────────────────────────────────────────────────────
 
-/// **The extraction the document prescribes must be unambiguous.** "The one fenced block, and
-/// it is the file" is only an instruction if there is exactly one — a second block (a placement
-/// snippet, an example) turns a mechanical extraction into a choice, and the reader placing the
-/// wrong one places a file that is not a fence.
-///
+/// The extraction the document prescribes must be unambiguous: "the one
+/// fenced block, and it is the file" is only an instruction if there is
+/// exactly one.
 #[test]
 fn exactly_one_fenced_block_so_the_extraction_is_unambiguous() {
     let doc = document();
@@ -250,17 +201,9 @@ fn exactly_one_fenced_block_so_the_extraction_is_unambiguous() {
     );
 }
 
-/// **The scoped question, which is the lag this contract closes.**
-///
-/// The retired fence ran `mrd check --staged`: the right interval, the WRONG
-/// question. That asks whether the whole write history is true, and past the
-/// first chain break the answer is permanently `1` — so the fence's verdict
-/// stopped varying with what was staged, and the per-commit enforcement it
-/// existed for was destroyed (S4-R19). `--commit-gate` implies `--staged` and
-/// asks the per-commit question instead.
-///
-/// This arm fails against every fence body this repository shipped before this
-/// contract.
+/// The scoped question: the retired fence ran `mrd check --staged`, whose
+/// answer is permanently 1 past the first chain break; `--commit-gate`
+/// implies `--staged` and asks the per-commit question instead (S4-R19).
 #[test]
 fn the_body_asks_the_scoped_question_and_not_the_permanent_one() {
     let body = fence_body(&document());
@@ -273,21 +216,17 @@ fn the_body_asks_the_scoped_question_and_not_the_permanent_one() {
         "the superseded invocation is still in the body — it asks a permanent question \
          and answers every commit with it"
     );
-    // The exit-2 leg is the cutover leg, and it must name the flag it actually passes. A skew
-    // message naming a flag the body does not use sends the operator to test the wrong thing.
-    //
+    // The exit-2 leg must name the flag it actually passes — a skew message
+    // naming a different flag sends the operator to test the wrong thing.
     assert!(
         body.contains("does not carry --commit-gate"),
         "the skew teaching names the flag whose absence causes the 2 it is explaining"
     );
 }
 
-/// The extracted block is a shell program, parsed by a shell. A grep-only suite passes over a
-/// body with an unbalanced quote, and the reader places a file whose every invocation is a
-/// syntax error — which git reports as a non-zero hook exit, i.e. as a fence refusing every
-/// commit for a reason nobody can read.
-///
-///
+/// The extracted block is a shell program, parsed by a shell: a grep-only
+/// suite would pass over an unbalanced quote, shipping a fence that refuses
+/// every commit for a reason nobody can read.
 #[test]
 fn the_body_is_a_shell_program_that_parses() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -306,13 +245,10 @@ fn the_body_is_a_shell_program_that_parses() {
     );
 }
 
-/// **The force grammar is one law, and the document states it twice on purpose:** once as the
-/// `case` the shell runs, once as the table a reader acts on. Nothing but this arm keeps them
-/// in step. The shell spells its case-fold as a character-class glob, so that is what is
-/// searched for — searching for `true` would also match the prose and prove nothing.
-///
-///
-///
+/// The force grammar is one law stated twice: once as the `case` the shell
+/// runs, once as the table a reader acts on. The shell spells its case-fold
+/// as a character-class glob, so that is what is searched for — `true` alone
+/// would also match the prose.
 #[test]
 fn the_force_grammar_is_one_law_in_both_of_its_spellings() {
     let doc = document();
@@ -379,9 +315,8 @@ fn the_bypass_is_announced_and_only_the_bypass_is_announced() {
     );
 }
 
-/// The ratified bound (silver §5), asserted rather than promised. A fence that grew a selector,
-/// a rev or a colour word would be a second gate — and refusals legal home is engine-side.
-///
+/// The ratified bound (silver §5): a fence that grew a selector, a rev or a
+/// colour word would be a second gate — refusal's legal home is engine-side.
 #[test]
 fn the_body_holds_no_markdown_semantics() {
     let body = fence_body(&document());
@@ -403,14 +338,9 @@ fn the_body_holds_no_markdown_semantics() {
 
 // ── the rules that used to be code ───────────────────────────────────────────
 
-/// **Every refusal the retired installer enforced is legible here.**
-///
-/// This is the arm that keeps the deletion honest. `hook install` refused a
-/// submodule, a redirected `core.hooksPath`, a foreign hook, a fence from a newer
-/// engine, an undeclarable generation, a workspace below the worktree top-level,
-/// and a non-repository — each with a teaching. Those were guards in code; they
-/// are now instructions to a reader. A missing instruction is a rule that stopped
-/// existing without anyone deciding to remove it.
+/// Every refusal the retired installer enforced is legible here. Those were
+/// guards in code and are now instructions to a reader; a missing instruction
+/// is a rule that stopped existing without anyone deciding to remove it.
 #[test]
 fn every_refusal_the_retired_installer_enforced_is_legible_in_the_document() {
     let doc = document();

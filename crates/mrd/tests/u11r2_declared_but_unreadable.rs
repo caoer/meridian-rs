@@ -1,33 +1,8 @@
-//! **U11 round 2 (S3-R43) — a DECLARED root this machine cannot read must not be called "not
-//! bound".** Round 1 collapsed two causes onto one reason word. The teaching for an
-//! *undeclared* root is *"declare it in `~/MERIDIAN.md`"*; on a root that IS declared and
-//! merely unreadable that sentence is **false and the prescribed fix is already done** — the
-//! user follows it, nothing changes, and nothing points at the real cause. **This file is the
-//! CLI half of the redden, and it exists because round 1's reachability analysis drew the wrong
-//! conclusion.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
+//! U11 round 2 (S3-R43) — a declared root this machine cannot read must not
+//! be called "not bound". The teaching for an *undeclared* root is "declare
+//! it in `~/MERIDIAN.md`"; on a root that is declared and merely unreadable
+//! that sentence is false and the prescribed fix is already done. This file
+//! is the CLI half of the redden.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -57,17 +32,12 @@ fn config_raw(path: &Path) -> String {
     )
 }
 
-/// `declared_at` is written into `MERIDIAN.md`; `create_it` decides whether that
-/// One R4 pin per `(object, fingerprint)`, hand-written in the exact bytes
-/// `lock::render` emits — so these gates depend on the CLI's own READER, never
-/// on the writer that produced the bytes.
+/// One R4 pin per object, hand-written in the exact bytes `lock::render`
+/// emits, so these gates depend on the CLI's own reader, never on the writer.
 ///
-/// These fixtures pin CROSS-ROOT targets whose roots are unreadable on purpose;
-/// the pins are never green and the fingerprints are deliberately fake, because
-/// the subject is the ROOT grey, not the content compare.
-///
-/// NOTE FOR REVIEWERS: `version: 2` is the LOCK FILE schema version, not the
-/// wire protocol version.
+/// These fixtures pin cross-root targets whose roots are unreadable on
+/// purpose; the fingerprints are deliberately fake, because the subject is
+/// the root grey, not the content compare.
 fn lock_block(objects: &[&str]) -> String {
     use std::fmt::Write as _;
     let mut out = String::from("```meridian-lock\nversion: 2\npins:\n");
@@ -83,8 +53,9 @@ fn lock_block(objects: &[&str]) -> String {
     out
 }
 
-/// directory actually exists. The DECLARATION is identical either way — which is
-/// what makes the pair a controlled comparison.
+/// `create_it` decides whether the declared directory actually exists; the
+/// declaration is identical either way, making the pair a controlled
+/// comparison.
 fn sandbox(create_it: bool) -> Sandbox {
     let tmp = tempfile::tempdir().expect("tempdir");
     let home = tmp.path().join("home");
@@ -153,14 +124,9 @@ impl Sandbox {
     }
 }
 
-/// **THE REDDEN, and the gate.** A root DECLARED in `MERIDIAN.md` whose path cannot be read
-/// must NOT be reported with the undeclared root's reason word, and its detail must name the
-/// PATH rather than prescribe a declaration that already exists.
-///
-///
-///
-///
-///
+/// A root declared in `MERIDIAN.md` whose path cannot be read must not be
+/// reported with the undeclared root's reason word, and its detail must name
+/// the path rather than prescribe a declaration that already exists.
 #[test]
 fn a_declared_but_unreadable_root_is_not_reported_as_undeclared() {
     let sb = sandbox(false); // declared, but the directory does not exist
@@ -201,10 +167,9 @@ fn a_declared_but_unreadable_root_is_not_reported_as_undeclared() {
     );
 }
 
-/// **The ACCEPTANCE half (S3-R8(c)), and the control that makes the test above mean
-/// something.** The SAME declaration, with the directory actually present, must still bind and
-/// resolve. Without this, a build that reported every root as unreadable would pass the gate
-/// above.
+/// The acceptance half: the same declaration, with the directory actually
+/// present, must still bind and resolve — without this, a build that reported
+/// every root as unreadable would pass the gate above.
 #[test]
 fn the_same_declaration_with_a_readable_path_still_binds_and_resolves() {
     let sb = sandbox(true); // identical MERIDIAN.md — the path exists
@@ -235,12 +200,9 @@ fn the_same_declaration_with_a_readable_path_still_binds_and_resolves() {
     );
 }
 
-/// **The third cause round 1 also collapsed:** declared, `Bound` per the mount table, but the
-/// corpus could not be built. It must not borrow the undeclared root's word either. Constructed
-/// by making the root a FILE where a directory is expected — the table binds a path that
-/// exists, and the corpus build is what fails.
-///
-///
+/// The third cause: declared, `Bound` per the mount table, but the corpus
+/// could not be built. It must not borrow the undeclared root's word either.
+/// Constructed by making the root a file where a directory is expected.
 #[test]
 fn a_declared_root_whose_corpus_cannot_be_built_is_not_reported_as_undeclared() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -274,16 +236,9 @@ fn a_declared_root_whose_corpus_cannot_be_built_is_not_reported_as_undeclared() 
     assert_eq!(reason, addr::PATH_UNSEEABLE_REASON_WORD);
 }
 
-/// **BOTH ARMS DISTINCT, IN ONE RUN** — the round-2 gate. One `MERIDIAN.md` DECLARES `sessions`
-/// at an unreadable path and says nothing at all about `assets`. One page pins a ref into each.
-///
-///
-///
-///
-///
-///
-///
-///
+/// Both root greys distinct in one run: one `MERIDIAN.md` declares `sessions`
+/// at an unreadable path and says nothing about `assets`; one page pins a ref
+/// into each.
 #[test]
 fn both_root_greys_are_distinct_in_one_run_and_both_refuse() {
     let sb = sandbox(false); // `sessions` declared, path absent; `assets` undeclared
@@ -350,14 +305,8 @@ fn both_root_greys_are_distinct_in_one_run_and_both_refuse() {
     );
 }
 
-/// **THE PINNING GATE — pins THE STRING PRODUCTION EMITS, ON THE SURFACE PRODUCTION RENDERS
-/// IT.** The round-1 pinning test asserted a `const` against a renderer that nothing called — a
-/// wording pinned and never emitted, which is the weakened middle
-///
-///
-///
-///
-///
+/// The pinning gate — pins the string production emits, on the surface
+/// production renders it, never a `const` nothing calls.
 #[test]
 fn the_emitted_teaching_is_pinned_verbatim_on_the_surface_that_renders_it() {
     let sb = sandbox(false);
@@ -386,12 +335,9 @@ fn the_emitted_teaching_is_pinned_verbatim_on_the_surface_that_renders_it() {
     );
 }
 
-/// **The PINNING GATE for the second word**, same rule: the string PRODUCTION EMITS, on the
-/// surface production renders it. The path is a tempdir, so it is substituted rather than
-/// hardcoded — but every other byte is pinned, including the clause that must NOT appear. A
-/// drift in the wording fails here, where a user would see it.
-///
-///
+/// The pinning gate for the second word, same rule. The path is a tempdir, so
+/// it is substituted rather than hardcoded — every other byte is pinned,
+/// including the clause that must not appear.
 #[test]
 fn the_emitted_path_unseeable_teaching_is_pinned_verbatim() {
     let sb = sandbox(false);

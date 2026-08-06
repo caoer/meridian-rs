@@ -1,10 +1,10 @@
-//! V3 gates for `mrd sql` / `mrd view status` — the client side of the `DuckDB`
-//! view-organ (design `tournament-duckdb/team-a` §Q5). The real binary
-//! (`CARGO_BIN_EXE_mrd`) is driven over its process boundary with an isolated
-//! cache root (`XDG_CACHE_HOME`) + `HOME`; `MERIDIAN_DAEMON_BIN=/nonexistent`
-//! forces the daemon-absent degrade where a test wants it.
+//! Gates for `mrd sql` / `mrd view status` — the client side of the `DuckDB`
+//! view organ. The real binary (`CARGO_BIN_EXE_mrd`) is driven over its
+//! process boundary with an isolated cache root (`XDG_CACHE_HOME`) + `HOME`;
+//! `MERIDIAN_DAEMON_BIN=/nonexistent` forces the daemon-absent degrade where
+//! a test wants it.
 //!
-//! Covered (task §Quality Gates / §Encode as tests):
+//! Covered:
 //! - §Q5 gate: query returns correct rows; staleness surfaced (`as_of != live`
 //!   after a mutation → STALE, both fingerprints travel); daemon-absent degrades
 //!   by tier; the `view_path` client path against a live daemon.
@@ -299,16 +299,14 @@ fn q5_stale_surfaces_after_mutation_both_fingerprints_travel() {
 // the SAME fold, so identical state gets the same verdict on both paths
 // ---------------------------------------------------------------------------
 
-/// **The ephemeral build stamps the workspace's own fold, prefix included.**
+/// The ephemeral build stamps the workspace's own fold, prefix included:
+/// `mdfs_config.yaml` declares `version: 2`, so every honest fold of this
+/// corpus is a `b3b:` token (§12.3), and a refold under a hardcoded version
+/// would report STALE over a correct, current answer.
 ///
-/// `mdfs_config.yaml` declares `version: 2`, so every honest fold of this corpus
-/// is a `b3b:` token (§12.3). The ephemeral build used to REFOLD the projected
-/// docs under a hardcoded version 0 — same hex, `b3:` prefix — so the
-/// post-result comparison against the live `b3b:` fold reported STALE over a
-/// correct, current answer (G14, dogfood pass 3).
-///
-/// The two arms run over the SAME unmutated state, ephemeral first (nothing is
-/// published yet, so the daemon-absent degrade lands on the ephemeral build).
+/// The two arms run over the same unmutated state, ephemeral first (nothing
+/// is published yet, so the daemon-absent degrade lands on the ephemeral
+/// build).
 #[test]
 fn g14_versioned_domain_ephemeral_and_daemon_agree_on_identical_state() {
     let sb = sandbox();

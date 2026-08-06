@@ -1,49 +1,23 @@
-//! **fixv — the CROSS-SURFACE gate.** Advisor R25's binding correction, executed:
-//! *an exit criterion is verified across every surface it names, in ONE run, by
-//! someone who did not write the units.* Aggregating per-unit evidence is not
-//! verification of a cross-surface claim — *"per-unit proof and per-criterion
-//! proof are different objects"* (R26, the re-verifier's formulation).
+//! fixv — the cross-surface gate: an exit criterion is verified across every
+//! surface it names, in one run, over one corpus (R25/R26).
 //!
-//! Every other suite in this workspace proves one unit's surface. This one proves
-//! a CRITERION: it builds ONE corpus and reads it with all the surfaces the
-//! criterion names, in one run, asserting the criterion's own sentence.
+//! `MRD_BIN` overrides the binary, so the same asserts run against
+//! `CARGO_BIN_EXE_mrd` in the workspace suite and against the installed
+//! `~/.local/bin/mrd` for the fixv evidence run.
 //!
-//! ## The engine under test
+//! Surface grain (R26): `mrd walk` is a user verb with per-pin rows and
+//! reasons; `mrd status` is a user verb whose grain is a worst-of rollup only;
+//! board-color is test-visible only, via `open_board` — no shipped verb
+//! publishes it.
 //!
-//! `MRD_BIN` overrides the binary, so the same asserts run twice with no edit:
-//! against `CARGO_BIN_EXE_mrd` in the workspace suite, and against the INSTALLED
-//! `~/.local/bin/mrd` for the fixv evidence run. The point of the criterion is the
-//! artifact the fleet actually holds, not a build of it.
+//! Every *resolving* pin here is a heading ref: a bare `#^anchor` span is its
+//! host line, which `anchor_removals` strips, so decoy and target hash
+//! identically and every plane reads green regardless of resolution. The only
+//! bare-anchor refs are fixtures that assert refusal or never-green.
 //!
-//! ## What each surface is allowed to prove (R26 — three DIFFERENT kinds of visibility)
-//!
-//! | Plane | Kind of visibility | Grain |
-//! |---|---|---|
-//! | `mrd walk` | user-reachable verb | **per-pin**, with reason |
-//! | `mrd status` | user-reachable verb | **worst-of rollup ONLY**, never per-state |
-//! | board-color | **test/example only** — no shipped verb publishes it | per-pin, via `open_board` |
-//!
-//! Asserting a per-state verdict out of `mrd status` would re-widen a claim R26
-//! narrowed, so [`criterion_3_one_corpus_every_state_three_kinds_of_visibility`]
-//! asserts the *aggregate shape* instead: one rollup, one reason word, a pin count.
-//!
-//! ## The fixture trap this suite is audited against
-//!
-//! A pin-verdict fixture whose ref is a bare `#^anchor` proves NOTHING — the
-//! anchor node's span is its host line, `anchor_removals` strips exactly that
-//! line, and blake3-of-empty matches in EVERY document, so decoy and target hash
-//! identically and every plane reads green regardless of resolution (fix3's
-//! false-gate self-catch). Every *resolving* pin here is a HEADING ref. The one
-//! bare-anchor ref is the `dangling-anchor` fixture, which by construction never
-//! resolves, and the R31 fixtures, which assert refusal and never-green. Where a
-//! gate compares two documents, `the_two_targets_fingerprint_differently` is the
-//! control that the comparison measures something.
-//!
-//! Isolation matters and is not decoration: `mrd read` DIALS a resident daemon, so
-//! an unsandboxed drive can be served by a stale daemon built from another tree.
-//! Every drive here runs under its own `XDG_CACHE_HOME`/`HOME`, and the auto-spawn
-//! is pointed at nowhere, so the only daemon that can answer is one a test started
-//! itself on its own socket ([`Sandbox::start_daemon`], PATH A's decorate half).
+//! Isolation: `mrd read` dials a resident daemon, so every drive runs under
+//! its own `XDG_CACHE_HOME`/`HOME` with auto-spawn pointed at nowhere — only a
+//! daemon a test started itself ([`Sandbox::start_daemon`]) can answer.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -54,9 +28,8 @@ use wire_serve::write::{SpliceArgs, splice};
 
 // ── the engine under test ───────────────────────────────────────────────────
 
-/// The binary every CLI drive in this file goes through. `MRD_BIN` names the
-/// INSTALLED artifact for the fixv evidence run; the workspace suite uses the
-/// build under test.
+/// The binary every CLI drive goes through; `MRD_BIN` selects the installed
+/// artifact for the fixv evidence run.
 fn mrd_bin() -> PathBuf {
     std::env::var_os("MRD_BIN")
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_mrd")), PathBuf::from)
@@ -87,11 +60,8 @@ impl Sandbox {
             .current_dir(cwd)
             .env("XDG_CACHE_HOME", &self.cache_home)
             .env("HOME", &self.home)
-            // Auto-spawn-impossible: no daemon from another tree may serve these
-            // drives, so nothing but the engine under test can answer. `mrd`
-            // pings before it spawns, so a daemon this sandbox started itself
-            // ([`Sandbox::start_daemon`]) still answers on this socket — that is
-            // the ONE resident host allowed here, and it is built from this tree.
+            // Auto-spawn disabled: only a daemon this sandbox started itself
+            // ([`Sandbox::start_daemon`]) may answer these drives.
             .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
             .env_remove("MERIDIAN_WORKSPACE");
         cmd
@@ -103,15 +73,9 @@ impl Sandbox {
         self.cache_home.join("meridian")
     }
 
-    /// Start the resident daemon IN-PROCESS, bound to this sandbox's own socket.
-    ///
-    /// This is `crates/registry/src/server.rs` — the host `page_decorations`'
-    /// **one production caller** lives in (`server.rs:905`). A `mrd read` from
-    /// this sandbox dials it through `default_socket_path()`, which resolves under
-    /// the sandbox's `XDG_CACHE_HOME`, so no daemon from another tree can answer
-    /// and none is left behind: dropping the handle stops it. The reaper and
-    /// prewarm intervals are set past any test's lifetime — a decoration must not
-    /// depend on a background thread's timing.
+    /// Start the resident daemon in-process on this sandbox's own socket.
+    /// Dropping the handle stops it. Reaper and prewarm intervals are set past
+    /// any test's lifetime so no assertion depends on background timing.
     #[allow(clippy::duration_suboptimal_units)]
     fn start_daemon(&self) -> registry::RunningServer {
         let reg_dir = self.cache_root().join("registry");
@@ -154,8 +118,7 @@ impl Sandbox {
     }
 
     /// A git-backed workspace, declared a root by `mrd init`. Git is real
-    /// because the `objects:` plane and the vibe-debt gauge both ask git real
-    /// questions, and it is what anchors the ladder (`git-root`).
+    /// because the blob plane and the vibe-debt gauge ask it real questions.
     fn workspace(&self, name: &str) -> PathBuf {
         let ws = self.tmp.path().join(name);
         std::fs::create_dir_all(&ws).expect("mkdir");
@@ -241,21 +204,16 @@ fn token_on_disk(ws: &Path, rel: &str) -> String {
         .to_owned()
 }
 
-/// The R4 blob hash a fixture pin carries when the test is not measuring the
-/// retrieval plane. R4 makes `hash` MANDATORY — *"if hash is missing, we lost the
-/// explicit target meaning"* — so there is no pin without one.
+/// The blob hash a fixture pin carries when the test is not measuring the
+/// retrieval plane (R4 makes `hash` mandatory on every pin row).
 const FIXTURE_BLOB: &str = "9ae3f1deadbeef";
 
 /// A hand-authored `meridian-lock` page — the fixture depends on the CLI's own
 /// READER, never on the writer that produced the bytes.
 ///
-/// `declared_ref` is the `page[#A/B]` convenience spelling, split into the R4
-/// `object` wiki link and the `path` ARRAY at this one door — nothing downstream
-/// ever sees a joined string, because R4 admits none on a row. A `#^id` fragment
-/// stays a single-element array, which is what makes it the anchor arm.
-///
-/// NOTE FOR REVIEWERS: `version: 1` became `version: 2` across these fixtures.
-/// That is the LOCK FILE schema version, not the wire protocol version.
+/// `declared_ref` is the `page[#A/B]` convenience spelling, split here into
+/// the R4 `object` wiki link and the `path` array; a `#^id` fragment stays a
+/// single-element array (the anchor arm).
 fn locked_page(title: &str, declared_ref: &str, fingerprint: &str) -> String {
     format!(
         "# {title}\n\nclaim.\n\n{}\n",
@@ -319,12 +277,8 @@ fn fp_tokens(text: &str) -> Vec<String> {
 }
 
 /// The sole wikilink in a render, split at its alias pipe: `(dest, label)`,
-/// both without the `[[`/`]]` delimiters.
-///
-/// The split is what makes a decoration checkable at all: the token is only ever
-/// honest in the DEST half, because the put-side strip parses the address and
-/// never reads the label. One owner for the split, so no assertion here grows a
-/// second spelling of where the slot is.
+/// both without the `[[`/`]]` delimiters. The token is only ever honest in the
+/// dest half — the put-side strip parses the address and never reads the label.
 fn sole_link(rendered: &str) -> (String, String) {
     let node = rendered
         .split("[[")
@@ -349,14 +303,10 @@ struct BoardRow {
     reason: String,
 }
 
-/// The board plane over a live workspace directory, through the SAME path
-/// `crates/mrd/examples/board_colors.rs` uses — `fs::domain_snapshot` →
-/// `fs::build_corpus` → `view::read_face::open_board`.
-///
-/// **This is not a shipped verb and this function does not pretend otherwise**
-/// (R26): `open_board` has no production caller, and `input_lock` is absent from
-/// `SCHEMA_SQL` so `mrd sql` cannot reach it either. Publishing the board is a
-/// named stage-3 item. What this reads is exactly what a TEST can see.
+/// The board plane over a live workspace directory: `fs::domain_snapshot` →
+/// `fs::build_corpus` → `view::read_face::open_board`. Not a shipped verb
+/// (R26): `open_board` has no production caller and `mrd sql` cannot reach it,
+/// so this reads exactly what a test can see.
 fn board_rows(ws: &Path) -> Vec<BoardRow> {
     let canonical = workspace::canonicalize(ws).expect("canonicalize");
     let root = fs::WorkspaceRoot(canonical);
@@ -387,31 +337,20 @@ fn board_rows(ws: &Path) -> Vec<BoardRow> {
 // CRITERION 3 — one corpus, every state, three kinds of visibility
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// **Criterion 3, as worded by R39.** *"A meridian-lock pin is visible with green
-/// / red(drifted) / red(dangling) / grey via the reason-carrying Color model,
-/// across three planes with three DIFFERENT KINDS of visibility … The three agree
-/// on any pin they all see."*
+/// Criterion 3 (R39): a meridian-lock pin is visible as green / red(drifted) /
+/// red(dangling) / grey via the reason-carrying Color model, across three
+/// planes with three different kinds of visibility, which agree on any pin
+/// they all see.
 ///
-/// The hole this closes is review finding 10: the five-states evidence was an
-/// IN-PROCESS unit test, and `red(dangling)` plus both fingerprint-greys never ran
-/// through the CLI at all. Here every state is built in ONE corpus and read by
-/// `mrd walk`, `mrd status` and the board **in one run**, with the per-state rows
-/// asserted value-for-value between the two per-pin planes.
-///
-/// Both dangling flavours are built, not one: `dangling-anchor` (the page resolves,
-/// the anchor does not) and `selector-unresolved` (the page does not exist). The
-/// criterion says "red(dangling)"; proving one spelling and naming it "dangling"
-/// would be the aggregation defect in miniature.
-/// The ONE corpus criterion 3 is read over. Building it is a separate function
-/// from reading it, because the criterion's claim is about the READING: one
-/// corpus, three surfaces, one run.
+/// Builds the one corpus criterion 3 is read over, with both dangling
+/// flavours: `dangling-anchor` (the page resolves, the anchor does not) and
+/// `selector-unresolved` (the page does not exist).
 ///
 /// Returns the `(page, expected walk verdict)` table, so the states the corpus
 /// contains and the states the planes are checked against cannot drift apart.
 fn build_every_state_corpus(sb: &Sandbox, ws: &Path) -> Vec<(&'static str, &'static str)> {
-    // TWO targets. One shared target would drift BOTH pins and there would be no
-    // green row left to prove the planes distinguish states rather than agree by
-    // rendering everything the same colour.
+    // Two targets: one shared target would drift both pins and leave no green
+    // row to prove the planes distinguish states.
     write(ws, "t_ok.md", "# T\n\n## Section\n\nthe body\n");
     write(ws, "t_drift.md", "# T\n\n## Section\n\nthe body\n");
     write(ws, "green.md", "# green\n\nclaim.\n");
@@ -438,9 +377,8 @@ fn build_every_state_corpus(sb: &Sandbox, ws: &Path) -> Vec<(&'static str, &'sta
     );
 
     // ── THE FIXTURE-TRAP CONTROL ────────────────────────────────────────────
-    // A third real mint over the EDITED t_drift.md. If the two documents did not
-    // fingerprint differently, this token would equal the one `drifted.md` holds
-    // and every red below would be a fixture artefact rather than a measurement.
+    // A third real mint over the edited t_drift.md: if the two documents did
+    // not fingerprint differently, every red below would be a fixture artefact.
     let out = sb.run(ws, &["pin", "control.md", "t_drift.md#T/Section"]);
     assert_eq!(code(&out), 0, "control pin: {}", said(&out));
     let control_token = token_on_disk(ws, "control.md");
@@ -450,9 +388,8 @@ fn build_every_state_corpus(sb: &Sandbox, ws: &Path) -> Vec<(&'static str, &'sta
          DIFFERENTLY, or every red in this corpus proves nothing"
     );
 
-    // The live digest of an untouched target — the payload for the grey that
-    // carries a CORRECT digest under a triple this build does not implement. A
-    // grey that only ever wraps a wrong digest never tests "grey never green".
+    // The live digest of an untouched target: the grey fixture below carries a
+    // correct digest under an unimplemented triple, not merely a wrong digest.
     let live_digest = token_on_disk(ws, "green.md")
         .rsplit('.')
         .next()
@@ -486,9 +423,8 @@ fn build_every_state_corpus(sb: &Sandbox, ws: &Path) -> Vec<(&'static str, &'sta
         &locked_page("malformed", "t_ok.md#T/Section", "not-a-token"),
     );
     // An unterminated quoted scalar — the lock itself refuses to parse. The
-    // version is CURRENT on purpose: a stale `version: 1` block refuses for an
-    // entirely different reason (the unsupported-version door), and this fixture
-    // must trigger the malformed-grammar refusal the assertions below name.
+    // version is current on purpose: a stale one refuses through the
+    // unsupported-version door, not the malformed-grammar refusal named below.
     write(
         ws,
         "refused.md",
@@ -558,13 +494,9 @@ fn read_walk_plane(
     seen
 }
 
-/// **Plane 2** — `mrd status`, the user-reachable verb whose grain is a WORST-OF
-/// ROLLUP and nothing finer.
-///
-/// R26 removed the per-state reading of this plane, so asserting a per-state
-/// verdict here would test a claim the ruling deleted. What is asserted instead
-/// is the AGGREGATE SHAPE: one colour, ONE reason word for a corpus carrying six,
-/// and a pin count. That is the claim R26 actually left standing, encoded.
+/// **Plane 2** — `mrd status`, whose grain is a worst-of rollup and nothing
+/// finer (R26). Asserts the aggregate shape only: one colour, one reason word
+/// for a corpus carrying six, and a pin count.
 fn read_status_plane(sb: &Sandbox, ws: &Path) {
     let out = sb.run(ws, &["status"]);
     assert_eq!(code(&out), 0, "status: {}", said(&out));
@@ -642,9 +574,7 @@ fn criterion_3_one_corpus_every_state_three_kinds_of_visibility() {
     );
 
     // ── THE AGREEMENT ASSERT: walk vs board, value-for-value, per state ───────
-    // The two PER-PIN planes are the two that can disagree about one pin, and
-    // finding 6 / finding 17 were exactly that. `mrd status` is excluded from this
-    // comparison on purpose — it has no per-pin grain to compare (R26).
+    // `mrd status` is excluded on purpose — it has no per-pin grain (R26).
     for (page, walk_label) in &walk_seen {
         let row = board
             .iter()
@@ -671,9 +601,9 @@ fn criterion_3_one_corpus_every_state_three_kinds_of_visibility() {
 // CRITERION 2 — the read-mint gate, normal + VIBE
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// One engine session: a `ReadMintStore` held across a read call and then a pin
-/// call — the H1 shape (plan §9). Two CLI processes could not model it, because a
-/// session ledger is what the gate is keyed on.
+/// One engine session: a `ReadMintStore` held across a read call and then a
+/// pin call. Two CLI processes could not model it — the gate is keyed on a
+/// session ledger.
 fn session_read(
     root: &fs::WorkspaceRoot,
     store: &receipt::read_mint::ReadMintStore,
@@ -719,18 +649,11 @@ fn vibe_pin_args(actor: &str, selector: &str, vibe: bool) -> SpliceArgs {
     }
 }
 
-/// **Criterion 2, as worded by R39** — *"the read-mint gate is enforced on the
-/// agent path, normal + vibe"*.
-///
-/// Review finding 23: the exit package claimed the gate holds "normal + vibe" and
-/// **no vibe pin ever ran through the gate** — the vibe tests exercised the blob
-/// plane with no actor, so the gate arm never executed on that path. This is that
-/// missing half, and it asserts the REFUSAL (never a colour, never a blob count):
-/// a fix that admitted an un-read vibe pin and merely rendered it grey would pass
-/// any output-shape assertion and still mint an attestation nobody read.
-///
-/// The normal arm runs beside it in the same session over the same store, so the
-/// two are proven to share one gate rather than two look-alike ones.
+/// Criterion 2 (R39): the read-mint gate is enforced on the agent path,
+/// normal + vibe. Asserts the refusal, never a colour — a fix that admitted an
+/// un-read vibe pin and merely rendered it grey would still mint an
+/// attestation nobody read. The normal arm runs in the same session over the
+/// same store, so the two are proven to share one gate.
 #[test]
 fn criterion_2_the_gate_refuses_an_unread_vibe_pin_and_admits_a_read_one() {
     const PINNER: &str = "---\ntitle: Plan\n---\n\n# Plan\n\ndraws from the guide.\n";
@@ -778,8 +701,8 @@ fn criterion_2_the_gate_refuses_an_unread_vibe_pin_and_admits_a_read_one() {
     );
     assert_eq!(store.len(), 0, "a refusal mints no receipt of its own");
 
-    // A read of the WRONG selector does not open the vibe door either — the
-    // receipt is selector-grained, and vibe does not soften that.
+    // A read of the wrong selector does not open the vibe door either — the
+    // receipt is selector-grained.
     session_read(&root, &store, "agent-7", "guide.md", "Guide/Other");
     let err = splice(&root, None, &vibe, &[], Some(&store))
         .expect_err("a sibling section's read does not authorize this pin");
@@ -813,11 +736,10 @@ fn criterion_2_the_gate_refuses_an_unread_vibe_pin_and_admits_a_read_one() {
     assert_eq!(err.code, ErrorCode::ReadMintRequired);
 }
 
-/// The CLI half of criterion 2 — *"verified through the CLI"* (R39). `mrd pin` is
-/// the local-operator-trusted door (D16, no actor), so what the CLI proves is the
-/// MINT: a real `fp1` token, a real lock block on disk, and — for `--vibe` — the
-/// eager blob, counted by the vibe-debt gauge that exists to make that debt
-/// visible rather than free.
+/// The CLI half of criterion 2. `mrd pin` is the local-operator-trusted door
+/// (D16, no actor), so what the CLI proves is the mint: a real `fp1` token, a
+/// lock block on disk, and — for `--vibe` — the eager blob counted by the
+/// vibe-debt gauge.
 #[test]
 fn criterion_2_the_cli_mints_a_real_pin_normal_and_vibe() {
     let sb = sandbox();
@@ -845,10 +767,6 @@ fn criterion_2_the_cli_mints_a_real_pin_normal_and_vibe() {
             && claim.contains("pins:")
             && claim.contains("hash:")
             && claim.contains("fingerprint:"),
-        // R4 retired the top-level `objects:` table this used to look for; the
-        // blob rides the pin row as its MANDATORY `hash`, so checking `hash:`
-        // and `fingerprint:` is the successor check — and a stronger one, since
-        // both are now required on every row rather than optional planes.
         "a canonical lock block landed:\n{claim}"
     );
     let gauge = sb.run(&ws, &["status", "--json"]);
@@ -899,30 +817,18 @@ fn criterion_2_the_cli_mints_a_real_pin_normal_and_vibe() {
 // CRITERION 4 — the decorate → strip round trip, at document grain
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// **Criterion 4, as worded by R39** — *"No WRITE introduces an `@fp` token in a
-/// claim-link position on disk; a pre-existing token is left exactly as found.
-/// Not 'no `@` anywhere' — code fences are deliberately not stripped."*
+/// Criterion 4 (R39): no write introduces an `@fp` token in a claim-link
+/// position on disk; a pre-existing token is left exactly as found. Code
+/// fences are deliberately not stripped.
 ///
-/// The ROUND TRIP end to end: a real `mrd pin` mints, the DECORATE side mints the
-/// tone token into the claim link, an agent copies that decorated link back —
-/// twice, which is finding 2's doubled-token shape — and the write lands stripped.
+/// The decorate half of the round trip, through the pair the resident daemon
+/// itself calls — `page_decorations` over a warm corpus, then `composed_read`
+/// with those decorations. The bare `mrd read` CLI passes `NO_DECORATIONS` by
+/// design.
 ///
-/// The decorate half runs through `wire_serve::read::page_decorations` +
-/// `composed_read`, which is **the exact pair `crates/registry/src/server.rs:905`
-/// calls** — the resident daemon is the one host that holds a corpus, so it is the
-/// one host that decorates. The bare `mrd read` CLI passes `NO_DECORATIONS` by
-/// design (`read.rs:309`), so the decorate half is reachable through the daemon,
-/// not through a daemonless CLI drive. Stated rather than glossed: this test
-/// drives production functions for the decorate half and the INSTALLED binary for
-/// the strip half.
-/// The DECORATE half of the round trip, through the pair the resident daemon
-/// itself calls at `crates/registry/src/server.rs:905` — `page_decorations` over
-/// a warm corpus, then `composed_read` with those decorations.
-///
-/// Returns the decorated claim link, verbatim, for the strip half to feed back.
-/// The R22 assertions live here because they are assertions about DECORATING: the
-/// tone rides always, it rides the block-ref slot, and the raw section face beside
-/// it stays undecorated (A-K1).
+/// Returns the decorated claim link, verbatim, for the strip half to feed
+/// back. Asserts the R22 decorate contracts: the tone rides always, in the
+/// block-ref slot, and the raw section face stays undecorated (A-K1).
 fn decorate_the_way_the_daemon_does(ws: &Path, rel: &str, section: &str) -> String {
     let canonical = workspace::canonicalize(ws).expect("canonicalize");
     let root = fs::WorkspaceRoot(canonical);
@@ -1047,15 +953,10 @@ fn criterion_4_the_decorate_strip_round_trip_lands_clean_through_the_cli() {
     );
 }
 
-/// **The four disk-landing paths from the blocking review, re-driven.** Findings
-/// 1 (label absorption), 2 (doubled token), 13 (`create.title`) and 22 (the create
-/// path's exclusions). Two are CLI-reachable and are driven through the binary;
-/// two are agent-path-only and are driven through the production functions.
-///
-/// **Reachability, stated rather than assumed:** `plan_edits` has ZERO CLI doors —
-/// all three `mrd` call sites (`pin_cmd.rs:75`, `put_cmd.rs:67`,
-/// `test_cmd.rs:533`) pass `Vec::new()`. `write::create`'s CLI doors are
-/// `mrd new` / `mrd unfold` (via `preset`) and the `mrd test` scenario runner.
+/// The four disk-landing paths: findings 1 (label absorption), 2 (doubled
+/// token), 13 (`create.title`) and 22 (the create path's exclusions). Two are
+/// CLI-reachable and driven through the binary; two are agent-path-only and
+/// driven through the production functions (`plan_edits` has no CLI door).
 #[test]
 fn criterion_4_the_four_disk_landing_paths_leave_no_token() {
     let sb = sandbox();
@@ -1065,28 +966,15 @@ fn criterion_4_the_four_disk_landing_paths_leave_no_token() {
     path_d_create_position_exclusions();
 }
 
-/// **PATH A (finding 1, P0)** — label absorption, driven through the surface that
-/// actually DECORATES. The label deliberately REPEATS its own block ref: decorate
-/// located the slot by a whole-node `rfind`, so the label's copy won the search,
-/// absorbed the minted token, and the put-side strip — which parses the address
-/// and never reads the label — could not find it again, so it reached disk. No
-/// adversarial author needed: a page that cites itself is ordinary prose.
+/// PATH A (finding 1) — label absorption. The label deliberately repeats its
+/// own block ref: decorate located the slot by a whole-node `rfind`, so the
+/// label's copy absorbed the minted token where the put-side strip — which
+/// parses the address and never reads the label — could not find it.
 ///
-/// **Why this path runs a resident daemon, stated rather than assumed.**
-/// `wire_serve::read::page_decorations` has exactly ONE production caller —
-/// `crates/registry/src/server.rs:905`, the resident daemon, the one host that
-/// holds a corpus — and the bare CLI passes `NO_DECORATIONS` by design
-/// (`read_cmd.rs`). So a drive that only runs `mrd pin` **never invokes decorate
-/// at all**, and stays green with finding 1 restored: a vacuous gate on a forgery
-/// finding, which is the false-green class this suite exists to close. The daemon
-/// is started in-process on this sandbox's own socket, and the read's `source`
-/// field is asserted to be `daemon` FIRST — a degrade to the ephemeral engine
-/// decorates nothing, and must fail loudly here rather than pass by proving
-/// nothing.
-///
-/// Both halves of the round trip are asserted, because finding 1 is a defect in
-/// their relationship: the mint rides the ADDRESS half (mechanism), and the
-/// agent's copy-back lands with nothing token-shaped on disk (consequence).
+/// Runs a resident daemon because the daemon is `page_decorations`' one
+/// production caller and the bare CLI passes `NO_DECORATIONS`; the read's
+/// `source` field is asserted `daemon` first, since a degrade to the ephemeral
+/// engine decorates nothing and would pass by proving nothing.
 fn path_a_label_absorption(sb: &Sandbox) {
     const PROSE: &str = "draws from [[guide#^goal|cf. guide#^goal]].";
 
@@ -1153,10 +1041,10 @@ fn path_a_label_absorption(sb: &Sandbox) {
     );
 }
 
-/// **PATH B (finding 2, P0)** — a DOUBLED token, through the CLI. A single-pass
-/// strip turns `@a@b` into a WELL-FORMED token: a forged claim indistinguishable
-/// from a mint. The assert is that nothing token-shaped survives, so "stripped to
-/// something valid" fails exactly like "not stripped at all".
+/// PATH B (finding 2) — a doubled token, through the CLI. A single-pass strip
+/// turns `@a@b` into a well-formed token: a forged claim indistinguishable
+/// from a mint. The assert is that nothing token-shaped survives, so "stripped
+/// to something valid" fails exactly like "not stripped at all".
 fn path_b_doubled_token(sb: &Sandbox) {
     let ws = sb.workspace("c4-doubled");
     write(&ws, "guide.md", "# Guide\n\n## Goal\n\nthe goal body\n");
@@ -1188,10 +1076,9 @@ fn path_b_doubled_token(sb: &Sandbox) {
     );
 }
 
-/// **PATH C (finding 13, P2)** — `plan_edits.create.title`, the agent path. The
-/// lowering interpolates the title into HEADING bytes, and the old strip walked a
-/// list of payload fields that never named it. At document grain the heading is
-/// just part of the candidate.
+/// PATH C (finding 13) — `plan_edits.create.title`, the agent path. The
+/// lowering interpolates the title into heading bytes; at document grain the
+/// heading is just part of the candidate.
 fn path_c_create_title() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(
@@ -1237,13 +1124,10 @@ fn path_c_create_title() {
     );
 }
 
-/// **PATH D (finding 22, P2)** — the create path, at exactly the ruled width.
-///
-/// Frontmatter, HTML comments and indented code are NOT claim-link positions, for
-/// the same reason a fence is not (R22): the dialect parse mints no link node
-/// there, so the DECORATE side can never put a token there either. The criterion's
-/// claim is about claim-link POSITIONS, and stating it wider than its proof is the
-/// defect this whole loop exists to stop.
+/// PATH D (finding 22) — the create path, at exactly the ruled width.
+/// Frontmatter, HTML comments and indented code are not claim-link positions,
+/// for the same reason a fence is not (R22): the dialect parse mints no link
+/// node there, so the decorate side can never put a token there either.
 fn path_d_create_position_exclusions() {
     const TOKEN: &str = "@green.b3af12cd";
 
@@ -1295,17 +1179,12 @@ fn path_d_create_position_exclusions() {
 // THE FIX-LOOP REGRESSIONS — F4 forge, F6 dedupe, F12 refusal, in one pass
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// **F4 (P1) — the gate guards the DOOR; the ARTIFACT is guarded separately.**
-///
-/// The reviewer's reproduction: one actor, one empty `ReadMintStore`, two requests.
-/// `splice.pin` refuses `ReadMintRequired`, and then an ordinary `edits` batch
-/// writes the very same `meridian-lock` bytes as page text and the verify plane
-/// reads them **Green** — a claim nobody computed, by an actor with zero receipts.
-///
-/// The assert is on the WRITE, not on the colour (the re-verifier's rule): a fix
-/// that let the forged block commit and merely rendered it grey would pass a
-/// colour assertion and still have shipped the forgery. Driven through the
-/// INSTALLED `mrd put`, which is a real ungated door a human can reach today.
+/// F4 — the gate guards the door; the artifact is guarded separately (R25).
+/// `splice.pin` refuses `ReadMintRequired`, yet an ordinary `edits` batch
+/// could write the same `meridian-lock` bytes as page text and read Green — a
+/// claim nobody computed. The assert is on the write, not the colour: a forged
+/// block that committed and rendered grey would still be a shipped forgery.
+/// Driven through the installed `mrd put`, a real ungated door.
 #[test]
 fn f4_the_artifact_guard_refuses_a_forged_lock_through_the_ordinary_edit_door() {
     let sb = sandbox();
@@ -1367,14 +1246,10 @@ fn f4_the_artifact_guard_refuses_a_forged_lock_through_the_ordinary_edit_door() 
     );
 }
 
-/// **F6 (P1) — `mrd walk` must not drop a red pin.** Two pins on ONE canonical
-/// selector, one live and one drifted: walk deduped the listing, so it printed a
-/// single GREEN row and exited 0 while `mrd status` rolled the same corpus up
-/// `lock red content-drifted [2 pins]`. It failed in the dangerous direction, on
-/// the surface most likely to be glanced at rather than read.
-///
-/// The assert carries both halves: the red row EXISTS and the green row is still
-/// beside it. A "fix" that dropped the green instead would fail the count.
+/// F6 — `mrd walk` must not drop a red pin. Two pins on one canonical
+/// selector, one live and one drifted: walk deduped the listing to a single
+/// green row while `mrd status` rolled the same corpus up red. Both halves are
+/// asserted: the red row exists and the green row is still beside it.
 #[test]
 fn f6_walk_renders_both_pins_that_share_one_selector_and_status_agrees() {
     let sb = sandbox();
@@ -1428,29 +1303,12 @@ fn f6_walk_renders_both_pins_that_share_one_selector_and_status_agrees() {
     );
 }
 
-/// **F12 (P2) — a REFUSED pin leaves the target byte-unchanged.** The promotion
-/// used to run before the refusal, so a refused pin exited 2 having written a
-/// `^slug` into a DIFFERENT file from the one the request named. Deterministic,
-/// so unlike the accepted G3 orphan it never healed.
+/// F12 — a refused pin leaves the target byte-unchanged, and the refusal
+/// carries its cause, not a bare error class (R24).
 ///
-/// Re-driven with the R24 half beside it: the refusal must carry its CAUSE, not a
-/// bare error class.
-///
-/// **U14 REPOINTED THE FIXTURE, not the expectation** (all-hands #2). This test
-/// drove a `/`-bearing heading, whose refusal U14 RULED DEAD — an R4 `path`
-/// array carries `["Guide", "A/B"]` unambiguously, so `/` no longer makes a
-/// heading unrepresentable. Left alone, the old fixture still went red, but via
-/// `pin_target_missing` (the sanitized `Guide/A-B` addresses nothing now)
-/// instead of the representability refusal this test NAMES. Updating the
-/// expected string would have left a green test permanently exercising a
-/// selector typo.
-///
-/// So the fixture moved to the refusal that SURVIVES at the same door and in
-/// the same family: a `#`-bearing heading. `#` is still a live delimiter in the
-/// ingress grammars (wikilinks, `path#fragment`), nothing has ruled it
-/// representable end to end, and the refusal fires at exactly the rung the
-/// promotion used to precede — so the byte-identity claim below is tested on
-/// the same path it always was.
+/// The fixture drives a `#`-bearing heading: `#` is a live delimiter in the
+/// ingress grammars, and its refusal fires at the rung the `^slug` promotion
+/// must not precede.
 #[test]
 fn f12_a_refused_pin_leaves_the_target_byte_identical_and_says_why() {
     let sb = sandbox();
@@ -1470,8 +1328,8 @@ fn f12_a_refused_pin_leaves_the_target_byte_identical_and_says_why() {
         said(&out)
     );
     let said = said(&out);
-    // The REASON, precisely (all-hands #24): this must be the representability
-    // refusal, not a selector miss that happens to be red.
+    // Must be the representability refusal, not a selector miss that happens
+    // to be red.
     assert!(
         said.contains("carries a `#`") && said.contains("^id"),
         "R24: the refusal names the CAUSE and the way forward, never a bare \
@@ -1493,19 +1351,15 @@ fn f12_a_refused_pin_leaves_the_target_byte_identical_and_says_why() {
 // R31 — the empty-span class, end to end on the shipped binary
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// **R31/R38, re-driven end to end.** *"A fingerprint must not be able to match
-/// content it does not cover."* A hash of empty bytes is a universal match, so a
-/// pin over an empty normalized span can never drift — the purest false green
-/// there is, in the module whose whole product is that green means green.
+/// R31/R38: a fingerprint must not match content it does not cover. A hash of
+/// empty bytes is a universal match, so a pin over an empty normalized span
+/// can never drift. Every enumerated form is driven at the pin door, and the
+/// assert is the refusal, never a colour — a pin accepted and rendered grey
+/// would still be one that cannot drift.
 ///
-/// Every form in fix7's enumeration table is driven at the pin door on the shipped
-/// binary, and **the assert is the REFUSAL, never a colour** (R31's own test
-/// shape): a build that accepted a bare-anchor pin and rendered it grey would pass
-/// a colour assertion and still ship a pin that cannot drift.
-///
-/// The control matters as much as the class: a list-item-hosted anchor MINTS,
-/// because R1 removes only ` ^id` and the item text survives. A refusal that
-/// swallowed the honest case too would be a false-red generator.
+/// The control: a list-item-hosted anchor mints, because R1 removes only
+/// ` ^id` and the item text survives. A refusal that swallowed the honest case
+/// would be a false-red generator.
 #[test]
 fn r31_every_empty_span_form_refuses_at_the_pin_door() {
     let sb = sandbox();
@@ -1518,7 +1372,7 @@ fn r31_every_empty_span_form_refuses_at_the_pin_door() {
         "ownline_ind.md",
         "# T\n\nintro\n\n  ^indented\n\nmore\n",
     );
-    // Rows 4-5: the fragment-LESS whole-page ref — the form R31 did not predict.
+    // Rows 4-5: the fragment-less whole-page refs.
     write(&ws, "empty.md", "");
     write(&ws, "anchors_only.md", "^a\n^b\n");
     // The control: an anchor hosted by a list item. Its span is the item LINE.
@@ -1580,13 +1434,9 @@ fn r31_every_empty_span_form_refuses_at_the_pin_door() {
     );
 }
 
-/// The verify-side half, which R38 named the LOAD-BEARING one: the mint refusal is
-/// not what closes the class, because the reachable door is a hand- or
-/// tool-authored lock. A stored pin carrying the empty-span digest must NEVER read
-/// green on any plane, in any document.
-///
-/// On the base build this exact fixture rendered `depth 1 green` on all three
-/// pages and **stayed green after every target was rewritten end to end**.
+/// The verify-side half: the reachable door is a hand- or tool-authored lock,
+/// so a stored pin carrying the empty-span digest must never read green on any
+/// plane, in any document — even after every target is rewritten.
 #[test]
 fn r31_a_stored_empty_span_pin_never_reads_green_on_any_plane() {
     let sb = sandbox();
@@ -1638,8 +1488,7 @@ fn r31_a_stored_empty_span_pin_never_reads_green_on_any_plane() {
         );
     }
 
-    // And it stays non-green after the targets are rewritten end to end — the
-    // property that makes this a PERMANENT false green rather than a stale one.
+    // Still non-green after the targets are rewritten end to end.
     write(
         &ws,
         "ownline.md",
@@ -1663,14 +1512,10 @@ fn r31_a_stored_empty_span_pin_never_reads_green_on_any_plane() {
 // F26 — a malformed `objects:` sha is UNKNOWN, never a clean zero
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// **Finding 26 (R27: IN — "a false green wearing different clothes").** A digest
-/// that is not an object id was dropped before the vibe-debt gauge counted it, so a
-/// corrupt retrieval plane read as a TRUE ZERO — `vibe-debt 0 blobs (0 bytes)`,
-/// which is what a clean workspace reports.
-///
-/// The whole grey axis exists so that unverifiable never renders as verified. The
-/// assert is on the JSON, because that is the shape a machine consumes and the one
-/// a human render could paper over.
+/// F26: a digest that is not an object id was dropped before the vibe-debt
+/// gauge counted it, so a corrupt retrieval plane read as a true zero — what a
+/// clean workspace reports. The assert is on the JSON, the shape a machine
+/// consumes.
 #[test]
 fn f26_a_malformed_objects_sha_reports_unknown_never_a_clean_zero() {
     let sb = sandbox();
@@ -1691,9 +1536,8 @@ fn f26_a_malformed_objects_sha_reports_unknown_never_a_clean_zero() {
     );
     assert_eq!(clean["composed"]["vibe_debt"]["blobs"], 0);
 
-    // Corrupt the retrieval plane: the pin's blob value is no longer an object id.
-    // R4 retired the top-level `objects:` table — the hash rides the pin row it
-    // was minted for — so the plane this fixture corrupts is the `hash:` field.
+    // Corrupt the retrieval plane: the pin's `hash:` value is no longer an
+    // object id.
     let text = read(&ws, "claim.md");
     let corrupted = text
         .lines()
@@ -1724,10 +1568,6 @@ fn f26_a_malformed_objects_sha_reports_unknown_never_a_clean_zero() {
         gauge["unknown"]
             .as_str()
             .is_some_and(|s| s.contains("claim.md") && s.contains("pin `t`")),
-        // R24 is that the reading NAMES what it could not ask about. It used to
-        // be spelled `claim.md objects.t`; with the table retired it is
-        // `claim.md pin `t``. The assertion now pins the PIN as well as the
-        // page, so it names the offender more precisely than before, not less.
         "the unknown NAMES what it could not ask about (R24): {gauge}"
     );
     assert!(
