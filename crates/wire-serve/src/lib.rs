@@ -36,7 +36,7 @@ pub const PROTO: u32 = 1;
 /// spelling `crates/mrd/build.rs` bakes, carried unchanged to
 /// `hello.identity.build`. One constant so the two hosts and the build script
 /// cannot drift into two spellings of the same unknown
-/// (`docs/wire-contract-v3-identity-amendment.md`).
+/// (`docs/wire-contract.md`).
 pub const UNKNOWN_BUILD: &str = "unknown";
 
 /// Whether `rev` is a contract rev the server serves (v3 amendment). Unknown rev refused loud at hello; never silent downgrade.

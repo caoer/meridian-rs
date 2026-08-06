@@ -1,6 +1,6 @@
 # tools/wire-contract
 
-`docs/wire-contract-v2.md` is **generated**. Do not edit it.
+`docs/wire-contract.md` is **generated**. Do not edit it.
 
 The citation-bearing master lives in the wiki domain
 (`domains/knowledge/meridian-rs/wire-contract-v2.footnoted.md`) and is the ONE
@@ -19,7 +19,7 @@ tools/wire-contract/derivation-test.sh            # check
 tools/wire-contract/derivation-test.sh --regen    # regenerate from the master
 ```
 
-The check asserts `docs/wire-contract-v2.md == strip(master)` byte for byte,
+The check asserts `docs/wire-contract.md == strip(master)` byte for byte,
 with the master pinned by wiki path + sha256. Two ways it fails, each naming its
 own fix:
 

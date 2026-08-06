@@ -70,7 +70,7 @@ fn test_config(tmp: &TempDir) -> Config {
     // R1: a build sha, so the hello pin covers the shape a DEPLOYED daemon
     // emits. Left unset, `identity` would be absent and the pin would freeze
     // the identity-less variant — exhaustive over a body no production host
-    // sends (`docs/wire-contract-v3-identity-amendment.md`).
+    // sends (`docs/wire-contract.md`).
     config.build_sha = Some("pinfixturebuild01".to_owned());
     config
 }
@@ -289,7 +289,7 @@ fn the_frame_envelope_carries_exactly_one_payload() {
 /// **R1 (2026-08-05) — the expected set grew an eighth key, `identity`,
 /// deliberately.** The daemon now echoes its build identity on a v3 handshake
 /// so a client can tell a resident daemon from the binary it just deployed
-/// (`docs/wire-contract-v3-identity-amendment.md`). The pin stays exhaustive;
+/// (`docs/wire-contract.md`). The pin stays exhaustive;
 /// only the expected list moved, and the fixture configures a sha precisely so
 /// this assertion covers the shape a deployed daemon emits rather than the
 /// identity-less one a bare fixture would produce.

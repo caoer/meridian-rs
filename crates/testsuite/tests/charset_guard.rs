@@ -1,4 +1,4 @@
-//! CHARSET-GUARD discrimination gate (ruling 011 / wire-contract-v2 §2.4).
+//! CHARSET-GUARD discrimination gate (ruling 011 / wire-contract.md §2.4).
 //!
 //! The one block-id charset `[A-Za-z0-9-]`, both planes. This module rides the
 //! `data/charset-guard/discrimination.json` pack authored for the downstream units: every

@@ -2,7 +2,7 @@
 //!
 //! The third-grain-defect backstop. TWO grain defects (anchor-grain, fm-key-grain)
 //! survived earlier gates because frozen worked span/rev/root values lacked byte pins;
-//! this module pins EVERY worked value the FROZEN `wire-contract-v2.md` prints —
+//! this module pins EVERY worked value the FROZEN `wire-contract.md` prints —
 //! enumerated in `results/pf-fixtures/frozen-value-enumeration.md` (137 occurrences) — as
 //! a fixture assertion recomputed by the engine, so a wrong-grain value fails a test
 //! rather than shipping. Every value is derived (`model::build` revs/spans,

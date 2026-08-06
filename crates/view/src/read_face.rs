@@ -130,7 +130,7 @@ CREATE VIEW board_residue AS
         FROM input_lock il
         WHERE il.verdict_color IS NULL;
 
--- board — U5.1's colours layer (d2 §5.3 'colors = board view'; wire-contract-v2
+-- board — U5.1's colours layer (d2 §5.3 'colors = board view'; wire-contract
 -- colors-amendment § Colors). Exactly ONE colour row per lock edge, in the
 -- DEFAULT face, no pack. The colour is 'traces read through workflow vocabulary'.
 --

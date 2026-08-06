@@ -102,7 +102,7 @@ pub struct Config {
     /// It is carried rather than read here: `MRD_BUILD_SHA` is baked into the
     /// `mrd` crate's compilation environment alone, so this crate cannot see
     /// it. `mrd daemon` supplies it
-    /// (`docs/wire-contract-v3-identity-amendment.md`).
+    /// (`docs/wire-contract.md`).
     pub build_sha: Option<String>,
 }
 
@@ -912,7 +912,7 @@ fn hello_body(
         // is the frozen path and never grows the key; a daemon with no
         // configured sha publishes no identity at all, which is a different
         // fact from publishing `unknown`
-        // (`docs/wire-contract-v3-identity-amendment.md`).
+        // (`docs/wire-contract.md`).
         identity: match (rev, build_sha) {
             (Rev::V3, Some(build)) => Some(wire::Identity {
                 build: build.to_string(),

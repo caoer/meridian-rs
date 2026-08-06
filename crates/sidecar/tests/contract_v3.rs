@@ -1,4 +1,4 @@
-//! Contract-rev negotiation (docs/wire-contract-v3-amendment.md) via live serve.
+//! Contract-rev negotiation (docs/wire-contract.md) via live serve.
 //! v2 session: `root`, never `fingerprint`. v3 session: `fingerprint`, never
 //! `root`. No dual-emit within one rev. Also pins U7 meta, U2 extract facts,
 //! and frozen v2 extract key-set.

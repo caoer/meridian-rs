@@ -1,6 +1,6 @@
 //! U2.2 — selector grammar + ambiguity through live serve: duplicate heads,
 //! refuse-ambiguous-only, node-index disambiguation, dangling refuse, taxonomy
-//! (`docs/wire-contract-v2-refusal-amendment.md`).
+//! (`docs/wire-contract.md`).
 
 use std::io::Write as _;
 use std::path::Path;
@@ -156,7 +156,7 @@ fn dangling_anchor_selector_refuses_ref_not_found() {
 }
 
 /// Taxonomy conformance (U4.1 law): every refusal reason U2.2 touches binds to a
-/// row in `docs/wire-contract-v2-refusal-amendment.md`, and the frozen wire
+/// row in `docs/wire-contract.md`, and the frozen wire
 /// `code → recovery` binding matches the class the amendment declares. No code
 /// is invented; each is reused with its declared recovery class.
 #[test]
@@ -165,7 +165,7 @@ fn refusals_conform_to_the_amendment_taxonomy() {
 
     let doc = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../docs/wire-contract-v2-refusal-amendment.md"),
+            .join("../../docs/wire-contract.md"),
     )
     .expect("refusal amendment doc");
 

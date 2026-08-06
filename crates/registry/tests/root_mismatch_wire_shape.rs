@@ -1,6 +1,6 @@
 //! Served `root_mismatch` wire shape — read from the daemon socket.
 //!
-//! Contract (`docs/wire-contract-v2.md` §5.1, §8, §18 row 2) names
+//! Contract (`docs/wire-contract.md` §5.1, §8, §18 row 2) names
 //! `root_mismatch{expected,actual,changed}`. The engine serves `expected` and
 //! `actual` only; `changed` is **implemented-absent**: `world_guard` sees two
 //! root hashes, and a merkle root is not invertible. Serving "what drifted"

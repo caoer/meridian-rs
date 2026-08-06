@@ -88,7 +88,7 @@ pub fn serve(
     let mut subs: Vec<SubState> = Vec::new();
     let mut watch = watch::WatchState::new(root);
     // Per-session contract rev, negotiated at `hello`
-    // (docs/wire-contract-v3-amendment.md). Default v2 = frozen contract.
+    // (docs/wire-contract.md). Default v2 = frozen contract.
     let mut rev = rev::Rev::V2;
     let mut line = String::new();
     loop {

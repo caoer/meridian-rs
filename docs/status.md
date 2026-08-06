@@ -1,68 +1,59 @@
----
-updated: 2026-07-29
----
-
 # Status
 
 A snapshot of what is built and verified today. Numbers here are reproducible
 from the commands shown — prefer running them over trusting this prose.
 
+> **Standing:** Design law is `wire-contract.md` (one contract). Mint addresses = segments only. Receipts = armed wire facts. DuckDB/`view_path` not agent core. **Doc correct > code correct; docs first.** See `README.md`.
+
+**How to read this file.** The CLI inventory and per-verb behaviour are
+**descriptive** of the operator surface as shipped. Wire **design law** lives
+only in `wire-contract.md` . Where this
+page and design law conflict, **design wins** — doc correct > code correct.
+See `README.md` for process.
+
 ## Build
 
 - Toolchain: Rust edition 2024, `rust-version = 1.96`.
 - `cargo build` builds the twenty-seven default members (the engine planes plus
-  the `workspace` / `cache` / `registry` / `mrd` CLI foundation, and stage-2's
-  `git` plumbing leaf); `perfsuite` is out of default-members and builds under
-  `cargo build -p perfsuite`.
+ the `workspace` / `cache` / `registry` / `mrd` CLI foundation, and attestation's
+ `git` plumbing leaf); `perfsuite` is out of default-members and builds under
+ `cargo build -p perfsuite`.
 - Fork: `pulldown-cmark` is consumed via a `[patch.crates-io]` rev pin (the
-  `obsidian` branch); see the workspace `Cargo.toml`.
+ `obsidian` branch); see the workspace `Cargo.toml`.
 
 ## Wire surface
 
-The sidecar answers protocol 1 as `meridian-sidecar/2.0`. Armed v2
-capabilities, reported in the `hello` handshake (`crates/sidecar/src/lib.rs`,
-`CAPS`) — frozen:
+**Design law:** `wire-contract.md` — one standing contract. Content-hash
+noun is **`fingerprint`**. Mint addresses are **segments only**. Ops include
+`hello`, `toc`, `cat`, `extract`, `read`, `resolve`, `links`, `splice` (only
+write), `fingerprint`, `diff`, `sub`, plus standing additives (`plan_edits`,
+`pin`, `create`, `hello.identity`, …).
+
+**As shipped (may lag design — treat gaps as debt, not law):**
+
+The sidecar answers protocol 1 as `meridian-sidecar/2.0`. Live binaries still
+carry a dual negotiation path and some legacy `root` / `if_root` spellings in
+code and caps tables; **standing emission and agent teaching use
+`fingerprint` / `if_fingerprint` / segments** per `wire-contract.md`.
+
+Standing capabilities agents should assume (design):
 
 ```
-toc  cat  extract  resolve  resolve.content
-links  links.require_root
-splice  splice.if_node_rev  splice.if_root  splice.dry  splice.receipt  splice.verdicts
-root  diff  sub
+hello (+ identity.build)
+toc cat extract read
+resolve links links.require_fingerprint
+splice splice.if_node_rev splice.if_fingerprint splice.dry
+splice.receipt splice.verdicts splice.plan_edits splice.pin
+fingerprint diff sub create
 ```
 
-Every op in `docs/wire-contract-v2.md` is armed. `hello` answers but is not
-itself a capability. A v2 session is byte-for-byte unchanged (a live-consumer
-trace pins this in `crates/sidecar/tests/v2_compat_e2e.rs`).
+Also on the standing surface: `meta.duration_us` on dispatched responses;
+composed-read authz facts (`span` / `content_span` / `anchors[]`); read-mint
+into session memory when `actor` is present; pin/error codes as in
+`wire-contract.md` § A.
 
-A client-declared contract v3 session
-(`docs/wire-contract-v3-amendment.md`) additionally serves, on BOTH hosts
-(sidecar + registry daemon):
-
-- the `root` → `fingerprint` vocabulary,
-- the composed `read` op (advertised as the v3-only cap `read`): addressing +
-  content + rendered text at one engine snapshot,
-- `meta.duration_us` in-band timing on every dispatched response frame,
-- `extract` heading nodes enriched with the host-face addressing facts
-  (`n` / `hpath_text` / `words`).
-
-Stage 2 (2026-07-25) adds, all v3-only and additive
-(`docs/wire-contract-v3-amendment.md` § Stage-2 additive surface):
-
-- composed-read **authz facts** — `span` + `content_span` on every `toc` row,
-  and the `^id` block anchors in their OWN always-emitted `anchors[]` array.
-  The anchor plane is a property of the RESPONSE, not the mode: it is emitted in
-  toc mode and sections mode alike, and `[]` means "no addressable anchor here"
-  and nothing else. This is what let ccc-statusd delete its markdown mirror,
-- the **read-is-the-mint receipt** — the composed read's `actor` slot, unread in
-  M1, now mints `{actor, path, selector, sec_rev}` into daemon session memory.
-  Section reads only; a blank or absent actor mints nothing,
-- **`splice.pin`** — one optional sibling field lowering a pin through the
-  existing `commit_batch` two-file-under-one-flock primitive. No `Op::Pin`, no
-  `pin.actor` field; advertised in `caps` as `splice.pin` **by the v3 projection
-  only**, since a v2 session refuses the field,
-- four **error codes**: `read_mint_required` and `pin_target_missing` (both
-  `fix`), plus the pin firing conditions on `write_conflict` (`refresh`) and
-  `workspace_busy` (`retry`).
+Residual host fields that still emit a **joined display string** are **debt,
+not address law**.
 
 ## Workspace CLI
 
@@ -70,75 +61,96 @@ Stage 2 (2026-07-25) adds, all v3-only and additive
 
 ```
 mrd init [PATH] [--name NAME]
-                         declare the root (PATH's own MERIDIAN.md,
-                         `type: meridian-root`), register its drawer, reconcile
-                         shadowed descendant drawers (amendment M2)
-mrd unregister [PATH]    drop the daemon entry (if a daemon answers) + the drawer
-mrd resolve [PATH]       report how a path resolves — the tier that answered and
-                         the root it named (read-only; writes nothing)
-mrd links [PATH]         the corpus edge map (whole corpus, or one file),
-                         answered by the daemon (auto-spawned) or in-process
+ declare the root (PATH's own MERIDIAN.md,
+ `type: meridian-root`), register its drawer, reconcile
+ shadowed descendant drawers (amendment M2)
+mrd unregister [PATH] drop the daemon entry (if a daemon answers) + the drawer
+mrd resolve [PATH] report how a path resolves — the tier that answered and
+ the root it named (read-only; writes nothing)
+mrd links [PATH] the corpus edge map (whole corpus, or one file),
+ answered by the daemon (auto-spawned) or in-process
 mrd read <PATH>[#FRAG] [--section SEL]
-                         the composed read: addressing + content + render at
-                         ONE engine snapshot (daemon or in-process; human
-                         output is the rendered text verbatim)
+ the composed read: addressing + content + render at
+ ONE engine snapshot (daemon or in-process; human
+ output is the rendered text verbatim)
 mrd put <PATH> [--dry | --validate] [--force] [--actor A] [--now T]
-        [--if-fingerprint FP] [--receipt PATH#ANCHOR]
-                         the batch write: the edits ride stdin as a BARE JSON
-                         array — the VALUE of the wire §4.4 `edits` field, not
-                         the request object around it (id / op / path are
-                         argv's here) — through the production splice
-                         choke-point (CAS + armed gate + write flock)
+ [--if-fingerprint FP] [--receipt PATH#ANCHOR]
+ the batch write: the edits ride stdin as a BARE JSON
+ array — the VALUE of the wire §4.4 `edits` field, not
+ the request object around it (id / op / path are
+ argv's here) — through the production splice
+ choke-point (CAS + armed gate + write flock)
 mrd pin <PAGE> <TARGET>#<SELECTOR> [--vibe] [--dry] [--json]
-                         mint a meridian-lock pin: PAGE records the claim,
-                         TARGET#SELECTOR is the content being attested
-                         (sanitized heading path, `^id`, or dewey ordinal)
+ mint a meridian-lock pin: PAGE records the claim,
+ TARGET#SELECTOR is the content being attested
+ (heading path / `^id` / dewey — see § mrd pin)
 mrd repair [PAGE] [--dry] [--json]
-                         lost-pin repair: walk the repository's own history for
-                         the content of pins whose evidence is gone (both planes
-                         dark — the live target no longer verifies the
-                         fingerprint AND git no longer holds the recorded blob),
-                         and repoint each recovered pin's hash at the durable
-                         blob carrying it. No match anywhere in history is a TRUE
-                         LOSS, reported and never auto-fixed
+ lost-pin repair: walk the repository's own history for
+ the content of pins whose evidence is gone (both planes
+ dark — the live target no longer verifies the
+ fingerprint AND git no longer holds the recorded blob),
+ and repoint each recovered pin's hash at the durable
+ blob carrying it. No match anywhere in history is a TRUE
+ LOSS, reported and never auto-fixed
 mrd walk <PAGE> [--down] [--depth N]
-                         the context-assembly listing over the pin graph;
-                         every answer cites the revs it read
+ the context-assembly listing over the pin graph;
+ every answer cites the revs it read
 mrd rules [PATH] [--workspace | --user]
-                         the effective-rules print verb: what governs at PATH
-                         after id-based override resolution — winner first, the
-                         pages it shadows beneath it, plus a separate armed
-                         column read from the attested armed set (read-only)
-mrd check [--core]       the pure READ validity verb: receipt-chain continuity
-                         + the foreign_edit trace; writes nothing. Refuses
-                         grey(cannot-assess) when the journal cannot date the
-                         live tree (no rows, or a stale last receipt)
-mrd status [--cwd PATH]  the bare drift + freshness summary (pure-local,
-                         O(armed), fetch-less)
-mrd sql <QUERY>          client-side SQL over the daemon-published DuckDB view
-mrd view status          per-workspace view freshness + refresh telemetry
+ the effective-rules print verb: what governs at PATH
+ after id-based override resolution — winner first, the
+ pages it shadows beneath it, plus a separate armed
+ column read from the attested armed set (read-only)
+mrd check [--core] the pure READ validity verb: receipt-chain continuity
+ + the foreign_edit trace; writes nothing. Refuses
+ grey(cannot-assess) when the journal cannot date the
+ live tree (no rows, or a stale last receipt)
+mrd status [--cwd PATH] the bare drift + freshness summary (pure-local,
+ O(armed), fetch-less)
+mrd sql <QUERY> **optional view organ** — client SQL over a
+ daemon-published DuckDB file (NOT agent core; see
+ § Optional view organ below)
+mrd view status **optional view organ** — view freshness / refresh
+ telemetry (NOT a peer of toc/cat/read/splice)
 mrd test --corpus <SPEC> the pre-arming corpus runner over synthetic changes
 mrd test --history <WS> --rule <PAGE> [--spec <PAGE>]
-                         the same law replayed against the workspace's own past;
-                         --spec names the spec page whose ```golden fence
-                         declares the exceptions (its `rule:` must name <PAGE>)
-mrd run <PAGE> [TASK]    run a task block declared in the page's frontmatter
-mrd new <KIND> <ID>      file birth: fill the def's template, validate, birth
-                         the first rev through the guarded create
-mrd unfold <PRESET>      materialize a preset's declared scaffold
-mrd reconcile <PRESET>   reconcile the tree toward a preset's declared scaffold
-mrd realise <PAGE>       the reconciliation loop: observe -> check -> apply
-                         (only on drift, once) -> re-check
-mrd cache ls             list the on-disk cache drawers
-mrd cache clean [--all]  reap stale / orphaned / retired drawers
-mrd daemon               run the registry daemon in the foreground
-mrd --version            the build identity, one line: package version + the
-                         commit the build read (`unknown` when it could reach
-                         no repository — read, never invented)
+ the same law replayed against the workspace's own past;
+ --spec names the spec page whose ```golden fence
+ declares the exceptions (its `rule:` must name <PAGE>)
+mrd run <PAGE> [TASK] run a task block declared in the page's frontmatter
+mrd new <KIND> <ID> file birth: fill the def's template, validate, birth
+ the first rev through the guarded create
+mrd unfold <PRESET> materialize a preset's declared scaffold
+mrd reconcile <PRESET> reconcile the tree toward a preset's declared scaffold
+mrd realise <PAGE> the reconciliation loop: observe -> check -> apply
+ (only on drift, once) -> re-check
+mrd cache ls list the on-disk cache drawers
+mrd cache clean [--all] reap stale / orphaned / retired drawers
+mrd daemon run the registry daemon in the foreground
+mrd --version the build identity, one line: package version + the
+ commit the build read (`unknown` when it could reach
+ no repository — read, never invented)
 ```
 
 `mrd help` is the authoritative surface — flags, refusal legs, and per-verb
 exit codes live there.
+
+### Optional view organ — `mrd sql` / `mrd view status` (NOT agent core)
+
+**Normative framing (`wire-contract.md` §10.3–§10.4; `README.md` standing C):**
+
+- Agent core = parse + hash + §4 fact ops (`toc` / `cat` / `extract` / `read` /
+ `splice` / … as contracted). Orientation surfaces that assume a SQL board
+ are **not** wire ops and must not be taught as the agent path.
+- Nothing on the agent path assumes SQL/DB. No wire op, field, or error
+ **names DuckDB** under either organ-ratification outcome (§10.4).
+- Live `Op::ViewPath` / a published `view.duckdb` path is a **design-open**
+ residue (open ZT: keep / reshape / drop). Until ruled, treat it as an
+ optional organ implementation face — **may lag, fail, or be absent on a
+ real corpus**. Do not route agent read/write through it.
+- `mrd sql` and `mrd view status` are **operator convenience** over that organ.
+ They are **not** peers of `mrd read` / `mrd put` / wire `splice`. Harness
+ green on tiny workspaces does **not** prove the view organ on a real corpus
+ (see § Tests — harness caveat).
 
 ### `mrd repair` — lost-pin repair (U22 / H1)
 
@@ -151,60 +163,68 @@ blob is still held is ordinary drift with its evidence intact, and this verb doe
 not touch it.
 
 - **The walk** is ONE `git log` plus ONE `cat-file --batch` for the whole run,
-  never a spawn per pin or per commit. Each recorded version of a lost target is
-  rebuilt and put to the SAME `classify_pin` the walk, `status` and `check`
-  colour with; a green answer means those bytes are the pinned content.
+ never a spawn per pin or per commit. Each recorded version of a lost target is
+ rebuilt and put to the SAME `classify_pin` the walk, `status` and `check`
+ colour with; a green answer means those bytes are the pinned content.
 - **Recovery is possible because the grain differs.** The `hash` is the blob of
-  the whole FILE while the fingerprint covers ONE SECTION, so a commit whose
-  file bytes differ elsewhere can still carry the pinned section — which is what
-  the walk finds.
+ the whole FILE while the fingerprint covers ONE SECTION, so a commit whose
+ file bytes differ elsewhere can still carry the pinned section — which is what
+ the walk finds.
 - **The forgery invariant.** Repair rewrites the pin's `hash` and nothing else;
-  `object`, `selector` and `fingerprint` are never touched. A target that
-  genuinely drifted is STILL RED after a successful repair, and that is the
-  correct outcome — rewriting the claim to fit what history held would be forgery
-  wearing a repair.
+ `object`, `selector` and `fingerprint` are never touched. A target that
+ genuinely drifted is STILL RED after a successful repair, and that is the
+ correct outcome — rewriting the claim to fit what history held would be forgery
+ wearing a repair.
 - **TRUE LOSS** — no version in that path's history carries the pinned content —
-  is reported and never auto-fixed. The engine invents no evidence.
+ is reported and never auto-fixed. The engine invents no evidence.
 - **Jurisdiction:** the ambient root only. A pin naming another root names
-  another object store; those pins are skipped and their count is stated.
+ another object store; those pins are skipped and their count is stated.
 - **`--dry`** is the skip-the-final-write rehearsal (the walk runs, the lock
-  write does not), never a diff face. Progress counts ride stderr, so `--json`
-  on stdout stays machine-clean.
+ write does not), never a diff face. Progress counts ride stderr, so `--json`
+ on stdout stays machine-clean.
 - **The write** goes through the existing guarded `lock_write` door, so the U12
-  byte-landing door census is unchanged.
+ byte-landing door census is unchanged.
 - **Exit triad:** 0 nothing lost or all repaired (or `--dry` rehearsed) / 1 at
-  least one TRUE LOSS / 2 bad invocation or a tool failure.
+ least one TRUE LOSS / 2 bad invocation or a tool failure.
 
 ### `mrd pin` — the attestation verb
 
 `mrd pin` mints a real `meridian-lock` pin through the same write choke-point
-every other write uses: one flock, one rename (`docs/wire-contract-v3-amendment.md`
-§ Stage-2 item 8).
+every other write uses: one flock, one rename (`wire-contract.md`
+`wire-contract.md` § A.3).
 
 - **Addressing** is `PAGE TARGET#SELECTOR`, two positionals, the `#` splitting
-  on its first occurrence. A page-level pin is REFUSED on purpose: a change
-  anywhere in the page would redden every dependent, which is what
-  section-level pins exist to avoid.
-- **The selector** is a sanitized heading path (`Guide/Leader's-Guideline`), a
-  block anchor (`^id`), or a dewey ordinal (`1.2`). A dewey ordinal resolves but
-  is never carried — the canonical hpath is what the lock and the receipt use.
+ on its first occurrence. A page-level pin is REFUSED on purpose: a change
+ anywhere in the page would redden every dependent, which is what
+ section-level pins exist to avoid.
+- **The selector** (CLI host face) may be a **heading chain**, a **block
+ anchor** (`^id`), or a **dewey ordinal** (`1.2`). Machine mint-plane address
+ is **segments only** — e.g.
+ `{"hpath":[{"h":"Guide"},{"h":"Leader's Guideline"}]}` or
+ `{"anchor":"r-000042"}` — never a joined writeable form
+ (`Guide/Leader's-Guideline`, `Guide>…`, sanitized slug) as the canonical
+ address (`wire-contract.md` §2.1; segments-only law). A dewey ordinal may
+ **resolve** for operator convenience but must **not** be carried as the
+ canonical write address when the lock stores path arrays / segment form.
+ Receipts and armed wire facts are normative (design stance); do not paste a
+ display-joined string into a later `put`.
 - **`--vibe`** additionally writes the target's blob into git's object store
-  (`git hash-object -w`), so the pin is retrievable before any commit references
-  it. Without it, the oid is computed read-only. When git cannot answer, the
-  retrieval plane carries no entry — never a fabricated sha.
+ (`git hash-object -w`), so the pin is retrievable before any commit references
+ it. Without it, the oid is computed read-only. When git cannot answer, the
+ retrieval plane carries no entry — never a fabricated sha.
 - **`--dry`** rehearses and writes nothing. **`--json`** prints the whole
-  projected splice response under a `pin` key; human output is a confirmation
-  line plus the minted fingerprint, the anchor, the blob, and the new workspace
-  fingerprint.
+ projected splice response under a `pin` key; human output is a confirmation
+ line plus the minted fingerprint, the anchor, the blob, and the new workspace
+ fingerprint.
 - **No `--actor`.** The read-mint gate keys on a daemon-derived session
-  identity, and a CLI invocation has no session: the bare `mrd pin` is
-  local-operator-trusted and bypasses the gate, exactly as `mrd put` bypasses
-  the host's authz. An `--actor` flag here would either be a meaningless label
-  or a way to spell an identity the process does not have.
+ identity, and a CLI invocation has no session: the bare `mrd pin` is
+ local-operator-trusted and bypasses the gate, exactly as `mrd put` bypasses
+ the host's authz. An `--actor` flag here would either be a meaningless label
+ or a way to spell an identity the process does not have.
 - **Exit triad:** 0 pinned (or `--dry` rehearsed) / 1 refused
-  (`read_mint_required`, `pin_target_missing`, `write_conflict`,
-  `workspace_busy`, an armed gate refusal — the engine's verbatim message) / 2
-  bad invocation.
+ (`read_mint_required`, `pin_target_missing`, `write_conflict`,
+ `workspace_busy`, an armed gate refusal — the engine's verbatim message) / 2
+ bad invocation.
 
 A pin written through the resident daemon or MCP is gated: the actor must have
 read that exact selector in this session, in mode `sections`. "You cannot attest
@@ -219,56 +239,56 @@ it (registration ruling § 7).
 
 ```text
 rules at sessions/s1
-  workspace  /var/…/ws
-  user-scope /Users/zt  (anchor /Users/zt/MERIDIAN.md)
-  armed-set  none  (meridian/armed-rules.md absent)
-  task.review-notify  armed=-
-      winner    sessions/s1/notify.md  rev=018b942787febb31  scope=workspace:2  kinds=hook
-      shadowed  notify.md  rev=e0dc53f2203c5969  scope=workspace:0  kinds=hook
-  collide.here  REFUSED collision at scope=workspace:2 — this id resolves to nothing
-      tied      sessions/s1/a.md  rev=936e2eddf8bdf331  scope=workspace:2  kinds=hook
-      tied      sessions/s1/b.md  rev=cefb207bdf220b88  scope=workspace:2  kinds=hook
+ workspace /var/…/ws
+ user-scope «local-path» (anchor «local-path»)
+ armed-set none (meridian/armed-rules.md absent)
+ task.review-notify armed=-
+ winner sessions/s1/notify.md rev=018b942787febb31 scope=workspace:2 kinds=hook
+ shadowed notify.md rev=e0dc53f2203c5969 scope=workspace:0 kinds=hook
+ collide.here REFUSED collision at scope=workspace:2 — this id resolves to nothing
+ tied sessions/s1/a.md rev=936e2eddf8bdf331 scope=workspace:2 kinds=hook
+ tied sessions/s1/b.md rev=cefb207bdf220b88 scope=workspace:2 kinds=hook
 ```
 
 - **The chain is never collapsed.** Per id, the winning page then every page it
-  shadows, in ladder order (`git config --show-origin`). A collided id renders
-  `REFUSED` naming every tied page: it resolves to nothing, so printing an
-  arbitrary winner would be a coin-flip dressed as law.
+ shadows, in ladder order (`git config --show-origin`). A collided id renders
+ `REFUSED` naming every tied page: it resolves to nothing, so printing an
+ arbitrary winner would be a coin-flip dressed as law.
 - **Scope ladder**, outermost to innermost: user space (rules under the
-  `MERIDIAN.md` anchor's scope) → workspace root → folder/session tree.
-  Resolution is **narrowed** to PATH's own chain, so a same-id page on a sibling
-  chain is no conflict — the normal case once sessions copy rule templates.
-  `--workspace` prints the workspace-root layer alone, `--user` the user layer
-  alone.
+ `MERIDIAN.md` anchor's scope) → workspace root → folder/session tree.
+ Resolution is **narrowed** to PATH's own chain, so a same-id page on a sibling
+ chain is no conflict — the normal case once sessions copy rule templates.
+ `--workspace` prints the workspace-root layer alone, `--user` the user layer
+ alone.
 - **The user layer is bounded by an anchor, deliberately.** Its candidates are
-  `<user-scope>/rules/**.md` where the user scope is the directory containing the
-  resolved `MERIDIAN.md`. No anchor ⇒ an empty user layer that says so — never a
-  `$HOME` walk, because a machine that never declared a user scope has not
-  implicitly declared all of it.
+ `<user-scope>/rules/**.md` where the user scope is the directory containing the
+ resolved `MERIDIAN.md`. No anchor ⇒ an empty user layer that says so — never a
+ `$HOME` walk, because a machine that never declared a user scope has not
+ implicitly declared all of it.
 - **`armed=` is a separate column**, read from the attested armed set
-  (`meridian/armed-rules.md`) and joined on `(id, arm root)` narrowed to PATH —
-  never on id alone, never recomputed. `-` registered but unarmed · `<mode>`
-  armed on the page that governs · `<mode>@<page>` armed on a DIFFERENT page,
-  which is the freeze in visible form (arming pins resolution; later discovery
-  never moves it) · `(drifted)`/`(missing)` when the pinned page no longer
-  stands. A corrupt artifact reads `UNREADABLE`, never "nothing armed".
+ (`meridian/armed-rules.md`) and joined on `(id, arm root)` narrowed to PATH —
+ never on id alone, never recomputed. `-` registered but unarmed · `<mode>`
+ armed on the page that governs · `<mode>@<page>` armed on a DIFFERENT page,
+ which is the freeze in visible form (arming pins resolution; later discovery
+ never moves it) · `(drifted)`/`(missing)` when the pinned page no longer
+ stands. A corrupt artifact reads `UNREADABLE`, never "nothing armed".
 - **One resolver, two consumers.** The verb calls `policy`'s own
-  `RuleIndex::discover` → `narrowed_to` → `resolve` and
-  `ArmedArtifact::verify_at` — the ONE composition of select-then-verify, not
-  `select_at` + `verify` assembled at the call site (C3 gate finding F-4). The
-  CLI layer holds no override law, and a test asserts that structurally. A second
-  resolver here could report a law the write door does not enforce — the exact
-  failure the verb exists to prevent.
+ `RuleIndex::discover` → `narrowed_to` → `resolve` and
+ `ArmedArtifact::verify_at` — the ONE composition of select-then-verify, not
+ `select_at` + `verify` assembled at the call site (C3 gate finding F-4). The
+ CLI layer holds no override law, and a test asserts that structurally. A second
+ resolver here could report a law the write door does not enforce — the exact
+ failure the verb exists to prevent.
 - **Read-only:** arms nothing, mints no receipt, spends no cap. A gate drives
-  every view and asserts the workspace's merkle root *and* its whole file tree
-  are unchanged afterwards.
+ every view and asserts the workspace's merkle root *and* its whole file tree
+ are unchanged afterwards.
 - **Exit triad:** 0 clean / 1 a finding (a collision, a refused rule page, a red
-  armed row, an unreadable armed set) / 2 bad invocation, or a PATH outside the
-  workspace or not on disk — refused rather than quietly answered at the root.
-  The not-on-disk refusal forecloses nothing: a folder that does not exist yet
-  can mount no rules of its own, so `mrd rules <nearest-existing-ancestor>`
-  answers the hypothetical exactly. The refusal only declines to dress a typo
-  as an answer.
+ armed row, an unreadable armed set) / 2 bad invocation, or a PATH outside the
+ workspace or not on disk — refused rather than quietly answered at the root.
+ The not-on-disk refusal forecloses nothing: a folder that does not exist yet
+ can mount no rules of its own, so `mrd rules <nearest-existing-ancestor>`
+ answers the hypothetical exactly. The refusal only declines to dress a typo
+ as an answer.
 
 **Refusal scoping — LANDED.** The registration ruling's § 3 "Refusal scoping"
 amendment (2026-08-01) rules that refusals are narrowed exactly like rules, and
@@ -280,27 +300,27 @@ shape the narrowing amendment already rejected for rules; fail-loud survives
 where enforcement lives.
 
 - **`RegisterError` carries its own mount scope**, path-derived: `mount_dir`
-  needs no frontmatter, so "cannot be answered" applies to the page's
-  registration TAG and never to its mount. A refused page therefore answers the
-  same mount question a registered one does — through the same `mount_dir_of`,
-  `rules/`-parent lift included. **One mount law, not two.**
+ needs no frontmatter, so "cannot be answered" applies to the page's
+ registration TAG and never to its mount. A refused page therefore answers the
+ same mount question a registered one does — through the same `mount_dir_of`,
+ `rules/`-parent lift included. **One mount law, not two.**
 - **`narrowed_to` filters refusals through the same predicate it filters rules
-  through.** The CLI gained no split of its own — § 7's no-mount-arithmetic-in-
-  the-CLI rule is intact, and the verb prints what `policy` handed it.
+ through.** The CLI gained no split of its own — § 7's no-mount-arithmetic-in-
+ the-CLI rule is intact, and the verb prints what `policy` handed it.
 - **Fail-CLOSED on the refusal itself is unchanged:** a page whose frontmatter
-  does not parse never registers, from any path. Scoping decides who HEARS about
-  a broken rule page, never whether it is enforced.
+ does not parse never registers, from any path. Scoping decides who HEARS about
+ a broken rule page, never whether it is enforced.
 - **`mrd rules` on meridian-rs itself now exits 0**, and a named e2e gate
-  (`meridian_rs_itself_is_clean_while_a_refusal_still_reddens_its_own_subtree`)
-  measures that on the real repo alongside the other half — a refusal still
-  reddening its own subtree, and the corpus-wide walk still naming it. Narrowing
-  alone could not have delivered the repo half: walks report every refusal
-  always, so the testsuite's deliberately-malformed schema fixture
-  (`crates/testsuite/data/meridian-md/refusals/frontmatter-unparseable.md`) had
-  to leave the **hash domain**, which it did through a declared, documented
-  ignore in `meridian/domain.md`. The fixture is still on disk and still tested
-  by the schema pack; it is simply no longer attested content that every
-  discovery consumer sweeps.
+ (`meridian_rs_itself_is_clean_while_a_refusal_still_reddens_its_own_subtree`)
+ measures that on the real repo alongside the other half — a refusal still
+ reddening its own subtree, and the corpus-wide walk still naming it. Narrowing
+ alone could not have delivered the repo half: walks report every refusal
+ always, so the testsuite's deliberately-malformed schema fixture
+ (`meridian-md refusal fixtures`) had
+ to leave the **hash domain**, which it did through a declared, documented
+ ignore in `meridian/domain.md`. The fixture is still on disk and still tested
+ by the schema pack; it is simply no longer attested content that every
+ discovery consumer sweeps.
 
 ### `mrd check` — grey when it cannot date the tree
 
@@ -388,7 +408,7 @@ pin green · lock none · anchor at-tip (anchor as-known) · convention off · v
 
 | axis | answers | values |
 |---|---|---|
-| `pin` | the ARMED SET's evidence drift — each armed row's live PAGE rev against the `rev` its armed-rules row attested (PAGE rev uniformly, `arming-from-zero.md` §4; the pinned-`armed_rev` `CHECK.md` surface is retired) | `green` · `red content-drifted` |
+| `pin` | the ARMED SET's evidence drift — each armed row's live PAGE rev against the `rev` its armed-rules row attested (PAGE rev uniformly, `armed-plane.md` §4; the pinned-`armed_rev` `CHECK.md` surface is retired) | `green` · `red content-drifted` |
 | `lock` | every `meridian-lock` pin's FINGERPRINT verdict, rolled up | `none` · `<color> [N pins]` · `unreadable (<why>)` |
 | `anchor` | how current the working copy is against origin's tip, plus the trust of that knowledge | `at-tip` / `behind`, qualified — see the colors amendment § The anchor axis |
 | `convention` | whether armed law refuses this change | `off` · `warn` · `block` |
@@ -427,7 +447,7 @@ a reader could mistake for "not checked".
 
 Output is JSON under `--json`, a human table otherwise; exit codes are 0 clean /
 1 findings / 2 tool failure. The workspace it ran over is printed with the tier
-that answered — `status  <root> (git-root)` — and `--json` carries the same word
+that answered — `status <root> (git-root)` — and `--json` carries the same word
 as `source`, because a status line that named only a path would leave the reader
 to guess which root it judged.
 
@@ -448,9 +468,9 @@ choice, not this engine's business:
 
 **Every resolution states which tier answered and which root it named** — this
 is the ruling's requirement, not a rendering preference, and it is enforced by
-the type: `Answer` has no public path field, `root()` returns `None` on
+the type: `Answer` has no public path field, `root` returns `None` on
 `cwd-default`, and reaching the defaulted path takes the greppable
-`root_or_cwd()`. `mrd resolve` prints both (`source:` plus the path); `mrd status`
+`root_or_cwd`. `mrd resolve` prints both (`source:` plus the path); `mrd status`
 prints both on its header line; `mrd init` prints the ladder's answer for the
 directory it just declared.
 
@@ -587,24 +607,39 @@ merely looked at comes away byte-identical, including the roots that refuse.
 
 ## Tests
 
-`cargo test --workspace` — full suite green. The stage-2 integration branch
+`cargo test --workspace` — full suite green. The attestation integration branch
 `stage2-core` gates every merge, most recently **1267 passed / 0 failed / 2
 ignored** (M1 shipped at 1117). Export `CARGO_PROFILE_TEST_DEBUG=0` before the
 run: a full-debug `target/` in this workspace costs ~26G, and it is the repo's
 own CI lever. The
 `testsuite` crate carries the frozen ground-truth pack (rung-1 parse truth:
 every node reproduced byte-for-byte) plus the U0 read/put parity pack
-(`data/parity/`, captured from the live Go host face): `u0_read_parity`
+(`data/parity/`, captured from the live host face): `u0_read_parity`
 (addressing facts), `u4a1_render_parity` (rendered text), and
 `u4a2_composed_read` (the composed op through the live serve loop, refusal
 texts included) replay it. The CLI foundation's end-to-end gates live in
 `crates/mrd/tests/e2e.rs`.
 
+### Harness caveat (standing C)
+
+Green tests on **tiny synthetic workspaces** are not a claim that every surface
+is proven on a **real corpus**. In particular:
+
+- optional view-organ faces (`mrd sql`, view freshness, any `view_path` /
+ DuckDB projection) may lag, fail, or be absent on production trees;
+- address and write paths must be verified against segment form and armed
+ receipts, not against display-joined strings that only appear in harness
+ fixtures.
+
+Do not claim “proven end-to-end” without that caveat. Session pressure that
+forced this wording: `05-19-meridian-socket-mcp-leg` (read→write address break;
+view organ vs real corpus).
+
 ## Performance
 
 `perfsuite` carries a claims registry (`crates/perfsuite/claims.toml`) whose
 verdicts are computed, not asserted, and written to
-`crates/perfsuite/results/RESULTS.md`. Current tally: **3 PASS, 1 MEASURED, 11
+`crates/perfsuite/`. Current tally: **3 PASS, 1 MEASURED, 11
 UNTESTED** — the untested claims are perf rungs whose baselines land on the
 first fleet run; the passing ones cover cold ingest and codec bulk cost. Run
 the benches to refresh:
@@ -617,30 +652,30 @@ cargo bench -p perfsuite
 
 - Perf rungs are largely UNTESTED pending baselines (see the tally above).
 - `policy` verdicts ride every splice response as `[]` until rule packs are
-  loaded; where packs are sourced is the host's concern.
+ loaded; where packs are sourced is the host's concern.
 - `transport-proto` is an opt-in typed path; the default transport is the
-  untyped NDJSON codec.
+ untyped NDJSON codec.
 
-Stage-2 accepted residuals — documented, not prevented. Full statements in
-`docs/wire-contract-v3-amendment.md` § Named residuals.
+Accepted residuals (attestation surfaces) — documented, not prevented. Full statements in
+`wire-contract.md` § Named residuals.
 
 - **G1** a `--vibe` blob is reachable from no ref, so `gc.pruneExpire` (git
-  default two weeks) is its durability horizon. The vibe-debt gauge measures the
-  window; committing the file is the only durable anchor.
+ default two weeks) is its durability horizon. The vibe-debt gauge measures the
+ window; committing the file is the only durable anchor.
 - **G2** the write flock serializes COOPERATING writers only. An out-of-band
-  write is detected by the drift color, never prevented — the git pre-commit
-  hook fence is stage-3.
+ write is detected by the drift color, never prevented — the git pre-commit
+ hook fence is stage-3.
 - **G3** a pin writes two inodes and is not all-or-nothing. A failure between
-  them leaves a rev-neutral, slug-derived anchor that a re-pin reuses and heals,
-  never silent corruption.
+ them leaves a rev-neutral, slug-derived anchor that a re-pin reuses and heals,
+ never silent corruption.
 - **G4** refs are intra-root only. Cross-root addressing, the mount table, and
-  the MERIDIAN.md config engine are stage-3; stage 2 only keeps the seam open
-  and never entrenches "there is exactly one root".
+ the MERIDIAN.md config engine are stage-3; stage 2 only keeps the seam open
+ and never entrenches "there is exactly one root".
 - **G5** anchor promotion into an unowned target churns that file's CAS token.
-  Accepted for the core loop because the promotion is rev-neutral; the fence and
-  the authz tightening are stage-3.
+ Accepted for the core loop because the promotion is rev-neutral; the fence and
+ the authz tightening are stage-3.
 
 Also stage-3, and NOT shipped: the receipt / `predicate_type` representation
 unification (the read-mint ledger and the persisted `^receipt` projection are
-still two representations of one receipt family), the `defsarm` Go-legs drop,
+still two representations of one receipt family), the defsarm bridge-legs drop,
 and full-document re-attest.

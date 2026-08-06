@@ -6,8 +6,8 @@
 //! **Owns:** the wire nouns (`path`/`span`/`node_rev`/`root`), the §2.1 mint
 //! address grammar, the op request/response shapes, the node object, and the
 //! error envelope — everything that crosses the process boundary, exactly as
-//! the frozen contract states it (`docs/wire-contract-v2.md` plus additive
-//! amendment `docs/wire-contract-v2-effects-amendment.md`; the contract text is
+//! the frozen contract states it (`docs/wire-contract.md` plus additive
+//! amendment `docs/wire-contract.md`; the contract text is
 //! normative, this crate transcribes it and never restates its rules).
 //!
 //! **Never does:** framing, transport, I/O, business logic. Dependencies are serde
@@ -44,7 +44,7 @@
 //!   retirement §18 row 6): FROZEN.
 //! - Rung 5 (`links` §4.6 view-shaped fact op + the §10.1 staleness triple +
 //!   `stale_view` §10.2): contract v2 §4.6, §10 — FROZEN (Q5-LINKS).
-//! - M1 v3-only additive amendments (`docs/wire-contract-v3-amendment.md`,
+//! - M1 v3-only additive amendments (`docs/wire-contract.md`,
 //!   never on a v2 frame): the composed `read` op (D6 — addressing, content,
 //!   and render at one engine snapshot); `check_write` (M1 U8c) serves the
 //!   I4 def-conformance verdict — candidate rebuild and severity ladder over
@@ -585,7 +585,7 @@ pub struct Request {
 pub enum Op {
     /// v2 §3.2 version handshake; `caps` discovery, never version sniffing.
     ///
-    /// `contract` is the v3-amendment negotiation knob (`docs/wire-contract-v3-amendment.md`):
+    /// `contract` is the v3-amendment negotiation knob (`docs/wire-contract.md`):
     /// an OPTIONAL client-DECLARED contract rev, absent or `"v2"` ⇒ the frozen
     /// v2 vocabulary (byte-for-byte), `"v3"` ⇒ the `fingerprint` vocabulary from
     /// the hello response onward. A DECLARED rev is not the §3.2-forbidden
@@ -1084,7 +1084,7 @@ pub struct CheckWriteRepair {
 /// present-but-unknown identity and an absent one are different facts (a host
 /// that cannot name its build vs a host that publishes no build identity), and
 /// a client's mismatch policy needs both. Law:
-/// `docs/wire-contract-v3-identity-amendment.md`.
+/// `docs/wire-contract.md`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Identity {
     pub build: String,
@@ -1230,7 +1230,7 @@ pub enum ResponseBody {
     /// cannot separate two builds of one contract, which is precisely the case
     /// a deploy check must catch. Populated under a negotiated v3 session only,
     /// so the frozen v2 hello body never grows a key. Law:
-    /// `docs/wire-contract-v3-identity-amendment.md`.
+    /// `docs/wire-contract.md`.
     Hello {
         proto: u32,
         server: String,

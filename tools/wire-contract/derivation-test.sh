@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Derivation test: docs/wire-contract-v2.md is GENERATED, never hand-edited.
+# Derivation test: docs/wire-contract.md is GENERATED, never hand-edited.
 #
 #   derivation-test.sh            # check (exit 1 on drift)
 #   derivation-test.sh --regen    # regenerate the published copy from the master
@@ -11,7 +11,7 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$here/../.." && pwd)"
 
-published="$repo/docs/wire-contract-v2.md"
+published="$repo/docs/wire-contract.md"
 
 # The master, pinned by wiki path + checksum. The path resolves through the
 # wiki-home env var so this is not bound to one machine; the checksum is the
@@ -25,7 +25,7 @@ master="${wiki:+${wiki%/}/$master_rel}"
 fail=0
 note() { echo "  FAIL: $*"; fail=1; }
 
-echo "== derivation: docs/wire-contract-v2.md =="
+echo "== derivation: docs/wire-contract.md =="
 
 if [ -z "$master" ] || [ ! -f "$master" ]; then
   # No wiki checkout: gate D (published == strip(master)) is unverifiable.
@@ -49,7 +49,7 @@ if [ "$actual_sha256" != "$master_sha256" ]; then
   echo "        on disk: $actual_sha256"
   echo "        master:  $master"
   echo
-  echo "  The wiki master is law; docs/wire-contract-v2.md is generated from it."
+  echo "  The wiki master is law; docs/wire-contract.md is generated from it."
   echo "  The master changed, so the derivative is stale. Fix forward:"
   echo "      tools/wire-contract/derivation-test.sh --regen"
   echo "  then commit the regenerated doc and the bumped pin together."
@@ -66,7 +66,7 @@ if [ "${1:-}" = "--regen" ]; then
 fi
 
 if ! diff -u <("$here/strip-footnotes.sh" "$master") "$published" > /tmp/derivation-drift.$$ 2>&1; then
-  echo "  FAIL: docs/wire-contract-v2.md != strip(master)."
+  echo "  FAIL: docs/wire-contract.md != strip(master)."
   echo
   echo "  The wiki master is law; this file is generated. Someone hand-edited"
   echo "  the derivative, which cannot hold — the next regeneration erases it."

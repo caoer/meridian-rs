@@ -40,7 +40,7 @@
 //!   never both, never neither. Both are **arrays only, no string form** ("machine lock
 //!   file. convenient buys nothing but chaos"), and `[]` means *all* on either arm — the
 //!   whole body without frontmatter, or every frontmatter key.
-//! - **`fingerprint`** — a full `fp1.…` CID-token (`docs/norm-v2-spec.md` §2), carried
+//! - **`fingerprint`** — a full `fp1.…` CID-token (`docs/fingerprint-norm-spec.md` §2), carried
 //!   VERBATIM by this crate. Classifying it (green / red / grey unverifiable) is the
 //!   verify plane's job, never the parser's.
 //! - **Free-form extra keys** (`claim:`, and any unknown legacy key) are allowed on a pin
@@ -339,7 +339,7 @@ pub struct PinEntry {
     pub hash: String,
     /// `path` XOR `properties` — see [`Selector`].
     pub selector: Selector,
-    /// The `fingerprint` — a full `fp1.…` token (norm-v2-spec §2), verbatim.
+    /// The `fingerprint` — a full `fp1.…` token (fingerprint-norm-spec §2), verbatim.
     pub fingerprint: String,
     /// Free-form extra keys, **engine-ignored and carried verbatim**: the
     /// value is the raw text after `: `, untouched.

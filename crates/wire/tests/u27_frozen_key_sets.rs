@@ -116,7 +116,7 @@ fn hpath_segment_key_set_is_frozen() {
 /// **U27 finding 3:** neither binding field is declared in any `docs/`
 /// amendment, so their standing on a v2 handshake rests on a code comment.
 /// Reported, not fixed here. `identity` does not share that gap — it is
-/// declared in `docs/wire-contract-v3-identity-amendment.md`, and it never
+/// declared in `docs/wire-contract.md`, and it never
 /// appears on a v2 handshake at all, because both hosts populate it under a
 /// negotiated v3 session only.
 #[test]
@@ -390,7 +390,7 @@ fn splice_body_key_set_is_frozen_plus_the_v3_pin_fact() {
 ///   rev WITHOUT A FOLLOW-UP TOC; latency only, correctness stays fingerprint
 ///   and `root_after`; ABSENT ON DRY, because nothing was written; same family
 ///   as [`DeltaFile::file_rev_after`] and a subsequent `toc` `file_rev`.
-/// - `effects` — `docs/wire-contract-v2-effects-amendment.md`, reaction
+/// - `effects` — `docs/wire-contract.md`, reaction
 ///   envelopes under `body.armed.effects`, omitted when empty.
 ///
 /// Neither is demoted and neither is v3-split. The live half

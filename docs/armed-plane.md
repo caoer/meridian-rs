@@ -1,9 +1,17 @@
-# Arming from zero — the manual bootstrap ladder (U4.4)
+# Armed plane — bootstrap ladder + gate seam
 
-Status: normative for the floor-convention arming ladder. Law: plan §4 Block 4,
-U4.4; `docs/laws.md` § Amendment — the policy gate (ATTACK-034 scoping);
-`docs/wire-contract-v2-refusal-amendment.md` (§11.1 block-is-a-feature, the §8
-refusal taxonomy, the genesis-epoch grey render).
+> **Standing:** Design law is `wire-contract.md` (one contract). Mint addresses = segments only. Receipts = armed wire facts. DuckDB/`view_path` not agent core. **Doc correct > code correct; docs first.** See `README.md`.
+
+Status: normative for the floor-convention arming ladder (U4.4) and the U4.2 `gate()` seam.
+Law also: `laws.md` § policy gate; refusal taxonomy in `wire-contract.md` § A.2 / §8.
+
+---
+
+# Part A — Arming from zero (U4.4)
+
+Status: normative for the floor-convention arming ladder. Law: U4.4;
+`laws.md` § policy gate; `wire-contract.md` § A.2 (block-is-a-feature, refusal
+taxonomy, genesis-epoch grey).
 
 Arming a workspace's law is a **documented manual bootstrap, not tooling.** There
 is no `mrd arm` command and no arming automation — arming is a reviewer act,
@@ -93,7 +101,7 @@ is attestable on exactly the same terms as a check page, the activation field is
 `off|armed`, and armed rows of both kinds now reach their surface — check rows the
 write door, hook rows the reaction feeder. The legacy surface that pinned
 `blake3(CHECK.md)` and left a HOOK-only convention permanently fail-closed is
-retired. The composed `pin` axis of `mrd status` (`docs/status.md` § The
+retired. The composed `pin` axis of `mrd status` (`status.md` § The
 composed status line) rolls up exactly this PAGE-rev drift — it ships no
 `CHECK.md`-rev surface.
 
@@ -109,7 +117,7 @@ approval is refused, never silently armed.
 
 **The attested rev is the PAGE rev, uniformly.** `armed-rev = page_rev(page
 bytes) = blake3(bytes)[:16]` (`crates/policy/src/registration.rs`,
-`docs/node-rev-merkle-spec.md`). There is no per-kind fingerprint: check pages and
+`node-rev-merkle-spec.md`). There is no per-kind fingerprint: check pages and
 hook pages are attested by the same function. This is the grain that closed the
 original attestation blocker — under the retired special-casing the pinned rev was
 a specific FILE's hash, so a reaction-only convention had nothing to hash and could
@@ -203,3 +211,84 @@ a stronger claim. The genesis epoch renders grey, never green. Out-of-band
 mutation (an offline pre-push git rewrite, a root-preserving forged journal row)
 is caught by the git witness plus the receipt-engine-only write restriction, or
 it is a named residual — it is never rendered green by refusal.
+
+---
+
+# Part B — Gate byte landing (U4.2)
+
+Status: enforcement doc for the U4.2 `gate()` seam. Law: U4.2; `wire-contract.md` § A.2; `laws.md` § the policy gate.
+
+**Measured at `b7c92d5a`, 2026-07-26.** This page states a law and describes an
+instrument. It contains no census — see § Why the census is gone.
+
+## The law
+
+`gate()` refuses an armed change **after CAS, before bytes land**
+(`wire-contract.md` § A.2). Every gated site evaluates the SAME
+`policy::gate(change, armed_set)` over a `rulepack-api@2` change surface built
+from the before/after states. The armed set is loaded and verified from the
+workspace's OWN attested INDEX + once-armed marker inside the trusted write
+path (`wire_serve::gate::load_armed_set` / `run::gate::load_armed_set`), never
+a caller-supplied set — so no caller can weaken the decision at any gated site.
+
+## What is derived from source
+
+`crates/wire-serve/tests/u12_door_enumeration.rs` is the only instrument that
+reads the tree. Stated exactly, because the difference matters:
+
+It walks every crate's production `src/` except `model`, truncates each file at
+its first `#[cfg(test)]`, skips lines beginning with `//`, and looks for two
+constructor names — `candidate_of_body(` and `candidate_of_batch(`. A file
+carrying at least one such call is recorded **once**. The test then asserts that
+this **set of FILES** equals the set its pinned table names.
+
+At `b7c92d5a` that derived set is **three files**:
+
+- `crates/wire-serve/src/write.rs`
+- `crates/mrd/src/realise_cmd.rs`
+- `crates/run/src/fp.rs`
+
+**That is the entire source-derived claim: three file names.** It fails when a
+candidate is minted in a file not on that list — which is a real and useful
+guarantee, and is the whole of it.
+
+## What is NOT derived — do not read it as checked
+
+The same test carries a hand-written table classifying eight doors by
+`file::function`, and two further assertions. None of the following is measured
+against the tree:
+
+- **Which function in a file mints.** The set comparison keeps the file column
+  and discards the function column, so every `file::function` row is prose. It
+  is accurate prose, written by U12; it is not a check.
+- **A new mint inside a file already on the list.** The scan records a file once
+  and stops reading it. A ninth mint added to `write.rs` changes the derived set
+  not at all.
+- **The door count.** The assertion that the table holds eight rows measures the
+  hand-written array against itself.
+- **Whether any door calls the policy gate.** A guard is a call, not a type, and
+  no assertion attributes a call to a function. The test that counts guard calls
+  in `write.rs` counts lines in a file; moving a call between functions in that
+  file does not fail it.
+
+Gate coverage is therefore **not stated on this page and not derived anywhere**.
+Determining it is a source-reading exercise whose result rots; the standing gap
+is recorded with the Core lane rather than restated here as prose nobody checks.
+
+## Why the census is gone
+
+This page carried a six-row prose census whose load-bearing claim was that the
+list was complete. It was last measured at `340c4de6` (2026-07-23) and carried
+no measurement stamp. By `b7c92d5a` it had rotted past repair: one row named
+`wire_serve::write::pin_lock` and a `crates/pin` crate, **neither of which
+exists** (see `crates/mrd/tests/retired_verbs.rs`); another row's migrate kit
+has no crate in-tree; the anchor promotion in `write.rs` and the `realise`
+deploy door were never in it; and it dismissed `wire_serve::write::commit_batch`
+as *"not a separate byte-lander"* on the strength of a **caller count** — a
+criterion the code itself has since rejected in `commit_batch`'s own comment.
+
+**Re-derive or strike, no third state** (standing-rule). The predicate this page
+needed — *lands bytes, gated or exempt* — is not the predicate the instrument
+derives, and re-deriving it means building a second instrument. So the census is
+struck rather than restated, relocated, or re-pinned in another form. What
+survives above is the law, and an honest description of what one test checks.

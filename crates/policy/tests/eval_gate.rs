@@ -163,7 +163,7 @@ fn p6_eval_gate1_worked_verdict_over_wsfix_s2() {
         "exactly the `Goals` section fires: {verdicts:?}"
     );
     let v = &verdicts[0];
-    // The frozen §11.1 verdict (wire-contract-v2.md L617–619), field for field.
+    // The frozen §11.1 verdict (wire-contract.md L617–619), field for field.
     assert_eq!(v.rule, "blurb-required");
     assert_eq!(v.severity, Severity::Warn);
     assert_eq!(v.path, "notes/plan.md");

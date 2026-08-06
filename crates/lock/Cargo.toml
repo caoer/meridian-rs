@@ -1,6 +1,6 @@
 [package]
 name = "lock"
-description = "The meridian-lock fenced block: the R4 v2 schema (pins only; object wiki link + blob hash + path XOR properties + fingerprint, free-form keys engine-ignored), engine-sole-writer canonical format, v2-only fail-loud reader (decision 2026-07-24-meridian-lock-block; pin fingerprints are norm-v2-spec CID-tokens)"
+description = "The meridian-lock fenced block: the R4 v2 schema (pins only; object wiki link + blob hash + path XOR properties + fingerprint, free-form keys engine-ignored), engine-sole-writer canonical format, v2-only fail-loud reader (decision 2026-07-24-meridian-lock-block; pin fingerprints are fingerprint-norm-spec CID-tokens)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

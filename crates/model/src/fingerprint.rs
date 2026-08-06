@@ -1,5 +1,5 @@
 //! Fingerprint plane — attestation content identity as a self-describing
-//! CID-token (`docs/norm-v2-spec.md`; decision
+//! CID-token (`docs/fingerprint-norm-spec.md`; decision
 //! 2026-07-24-fingerprint-cid-representation).
 //!
 //! # Three hash planes, never conflated (spec §1)

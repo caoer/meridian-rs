@@ -545,7 +545,7 @@ fn workspace_less_hello_is_a_pure_version_handshake() {
 
 // ---------------------------------------------------------------------------
 // R1 — `hello.identity`: the build the daemon was made from
-// (`docs/wire-contract-v3-identity-amendment.md`)
+// (`docs/wire-contract.md`)
 // ---------------------------------------------------------------------------
 
 /// The configured sha reaches the wire as `identity.build`, and the field is
