@@ -106,11 +106,9 @@ mrd check [--core] the pure READ validity verb: receipt-chain continuity
  live tree (no rows, or a stale last receipt)
 mrd status [--cwd PATH] the bare drift + freshness summary (pure-local,
  O(armed), fetch-less)
-mrd sql <QUERY> **optional view organ** — client SQL over a
- daemon-published DuckDB file (NOT agent core; see
- § Optional view organ below)
-mrd view status **optional view organ** — view freshness / refresh
- telemetry (NOT a peer of toc/cat/read/splice)
+mrd sql <QUERY> **operator face** — SQL over an ephemeral in-process
+ `:memory:` projection of the corpus (NOT agent core;
+ see § Operator SQL face below)
 mrd test --corpus <SPEC> the pre-arming corpus runner over synthetic changes
 mrd test --history <WS> --rule <PAGE> [--spec <PAGE>]
  the same law replayed against the workspace's own past;
@@ -134,7 +132,7 @@ mrd --version the build identity, one line: package version + the
 `mrd help` is the authoritative surface — flags, refusal legs, and per-verb
 exit codes live there.
 
-### Optional view organ — `mrd sql` / `mrd view status` (NOT agent core)
+### Operator SQL face — `mrd sql` (NOT agent core)
 
 **Normative framing (`wire-contract.md` §10.3–§10.4; `README.md` standing C):**
 
@@ -142,15 +140,16 @@ exit codes live there.
  `splice` / … as contracted). Orientation surfaces that assume a SQL board
  are **not** wire ops and must not be taught as the agent path.
 - Nothing on the agent path assumes SQL/DB. No wire op, field, or error
- **names DuckDB** under either organ-ratification outcome (§10.4).
-- Live `Op::ViewPath` / a published `view.duckdb` path is a **design-open**
- residue (open ZT: keep / reshape / drop). Until ruled, treat it as an
- optional organ implementation face — **may lag, fail, or be absent on a
- real corpus**. Do not route agent read/write through it.
-- `mrd sql` and `mrd view status` are **operator convenience** over that organ.
- They are **not** peers of `mrd read` / `mrd put` / wire `splice`. Harness
- green on tiny workspaces does **not** prove the view organ on a real corpus
- (see § Tests — harness caveat).
+ **names DuckDB** (§10.4).
+- **RULED — DROP (§10.4, 2026-08-06):** the `view_path` wire op, the
+ daemon-published `view.duckdb` file, and `mrd view status` (whose subject
+ was that file's freshness) are deleted. The former "keep / reshape / drop"
+ line is closed.
+- `mrd sql` is **operator convenience**: it builds an ephemeral `:memory:`
+ projection of the corpus per query, writes nothing to disk, and folds
+ post-result for an honest freshness frame. It is **not** a peer of
+ `mrd read` / `mrd put` / wire `splice`, and its per-query build cost is
+ O(corpus) — on a large tree it is a slow operator tool, by design.
 
 ### `mrd repair` — lost-pin repair (U22 / H1)
 
@@ -625,8 +624,9 @@ texts included) replay it. The CLI foundation's end-to-end gates live in
 Green tests on **tiny synthetic workspaces** are not a claim that every surface
 is proven on a **real corpus**. In particular:
 
-- optional view-organ faces (`mrd sql`, view freshness, any `view_path` /
- DuckDB projection) may lag, fail, or be absent on production trees;
+- the operator SQL face (`mrd sql`, an ephemeral DuckDB projection) rebuilds
+ the whole corpus per query — slow on production trees, by design (the
+ published-view organ was dropped by ruling, §10.4 2026-08-06);
 - address and write paths must be verified against segment form and armed
  receipts, not against display-joined strings that only appear in harness
  fixtures.

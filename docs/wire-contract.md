@@ -620,7 +620,9 @@ Nothing on the agent path assumes SQL/DB access: every op in §4 is served from 
 
 ### §10.4 The rung-5 view organ — optional, wire-agnostic
 
-Nothing on this contract **names DuckDB** (or any SQL engine). A view organ, if present, is implementation under §10.3: orientation is not a wire op. Live `Op::ViewPath` / `view.duckdb` paths are **implementation debt**, not design. Open: keep, reshape, or drop.
+Nothing on this contract **names DuckDB** (or any SQL engine). A view organ, if present, is implementation under §10.3: orientation is not a wire op.
+
+**RULED — DROP (ZT, 2026-08-06, session `06-05-meridian-mcp-leg-2`).** The former "keep, reshape, or drop" question is closed. `Op::ViewPath`, its reply shape, and the daemon-published `view.duckdb` file are deleted from the wire surface and from both hosts — the op violated this contract twice (it returned an engine-named artifact path, and it put an orientation surface on the wire), and on a real corpus its synchronous rebuild could never meet a request deadline (measured ~6 min at 22k files, non-convergent while the fleet writes; session `05-19`, task `g5c`). Any future view organ returns as a **non-wire face** — an operator surface over its own build — never as a wire op. The daemonless `:memory:` build behind `mrd sql` is such a face and carries no wire vocabulary.
 
 ## §11 Rules as data — the compatibility surface
 
