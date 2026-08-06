@@ -839,8 +839,7 @@ mod tests {
         );
         assert_eq!(items[0].to_sel, "Design");
 
-        // And the root is now readable as a VALUE — the thing sixteen sites
-        // could not do, and the reason this unit exists.
+        // The root is readable as a VALUE, not a spelling.
         let root = items[0]
             .declared_addr
             .as_ref()

@@ -102,9 +102,6 @@ fn gate_lock_read_face_primitive() {
     );
 }
 
-// Doctored-verdict law now on fingerprint plane:
-// `board_pin_verdict_gates::gate_board_renders_the_same_verdict_the_walk_renders`.
-
 /// Projection keyed on `doc_rev` — rev change is stale; rebuild refreshes (§2.1/§8).
 #[test]
 fn gate_stale_projection() {

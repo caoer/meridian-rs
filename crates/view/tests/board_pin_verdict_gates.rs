@@ -234,8 +234,7 @@ fn gate_board_renders_the_same_verdict_the_walk_renders() {
         "a judged pin never renders `superseded-algo` — that was the two-plane divergence",
     );
 
-    // board_red agrees with board.
-    // the greys are not (grey measured nothing, so it can never be a red).
+    // board_red agrees with board — greys never appear there.
     let red_srcs: Vec<String> = {
         let mut stmt = conn
             .prepare("SELECT src_path FROM board_red ORDER BY src_path")
