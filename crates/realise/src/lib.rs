@@ -1,54 +1,31 @@
-//! The realise engine (S1, U3.5a) — **observe → check → apply per claim** on the shipped
-//! run plane (plan §4 Block 3; d2 §3 realise; §5.4 the agentic bridge).
+//! The realise engine (S1, U3.5a) — observe → check → apply per claim on the
+//! shipped run plane (d2 §3; §5.4).
 //!
-//! # Charter
-//! **Owns:** the convergence loop and the terminal-state classifier over a set of
-//! [`Claim`]s. Per claim: observe the current tree and CHECK it (a pure read — "check =
-//! rev compare", §5.4), then, on drift, APPLY the claim's program through the shipped run
-//! plane ([`run::runner::run`], the ordinary loop) until the check converges or the retry
-//! budget is spent. The engine classifies each claim's outcome with the **A4 mechanical
-//! classifier** (d2 §2.1) and never judges beyond it.
+//! Owns the convergence loop and the terminal-state classifier over a set of
+//! [`Claim`]s: observe and check (a pure read), then on drift apply the
+//! claim's program through [`run::runner::run`] until the check converges or
+//! the retry budget is spent. Never defines what a check MEANS (the [`Check`]
+//! trait is the caller's), invents a second write path, or carries a
+//! per-consumer branch — the storm (U3.3) is an ordinary effect page realised
+//! through this loop.
 //!
-//! **Never does:** define what a claim's check MEANS (the [`Check`] trait is the caller's
-//! — the built-in [`FieldEquals`] is one instance, the storm's census is another), invent
-//! a second write path (apply rides the run plane's one write path, [`run::executor`]),
-//! or carry any per-consumer path. The storm (U3.3) is an ordinary effect page realised
-//! through THIS loop — there is no storm branch here.
+//! The A4 mechanical classifier (d2 §2.1):
+//! - check failed ∧ no apply-capable claim → [`ClaimState::PendingAgent`]
+//!   (one board card, guarded create);
+//! - apply declared ∧ retry budget exhausted → [`ClaimState::NonConvergent`];
+//! - check converged → [`ClaimState::Converged`].
 //!
-//! # The A4 mechanical classifier (d2 §2.1, verbatim)
-//! - check failed ∧ **no apply-capable claim** declared in scope →
-//!   [`ClaimState::PendingAgent`] (and one board card, born through the U2.6 guarded
-//!   create — §5.4 emit).
-//! - **apply declared** ∧ retry budget exhausted → [`ClaimState::NonConvergent`].
-//! - check converged → [`ClaimState::Converged`] (the green terminal).
-//!
-//! The core never judges: the engine reads the [`CheckOutcome`] the claim reports and
-//! applies the mechanical rule above — it does not decide WHETHER a divergence is
-//! legitimate.
-//!
-//! # Laws held here
-//! - **No apply lands unrecorded** (d2 §3): every apply runs with a receipt address, so
-//!   the run plane's one write path mints a receipt line for every committed batch; the
-//!   engine surfaces [`RealiseError::UnrecordedApply`] if a committed apply ever lacked a
-//!   receipt (unreachable by construction — the assertion keeps it honest).
-//! - **Caps = exactly the union of the claims' declared caps; the verb adds none** (d2
-//!   §3): [`RealiseReport::caps_union`] is the fold of every apply-capable claim's
-//!   resolved [`run::caps::CapSet`] — the realise verb's total authority. Enforcement
-//!   stays per-apply at the executor choke point; this is the declared surface (and the
-//!   `--dry-run` blast radius).
-//! - **Board card idempotency by claim selector** (§5.4): the card path derives from the
-//!   claim selector, so a re-realise of the same pending-agent claim hits the guarded
-//!   create's `if_absent` CAS and is treated as already scheduled — never a second card,
-//!   never an error.
-//! - **§9 identity/time**: the engine mints no clock and no identity; the base invocation
-//!   id, `now`, actor, and scratch dir are all caller-supplied on [`RealiseSpec`].
-//!   Per-apply invocation ids and receipt anchors derive deterministically from the base
-//!   plus a monotonic attempt counter.
-//!
-//!
-//!
-//!
-//!
+//! Laws held here:
+//! - No apply lands unrecorded (d2 §3): every apply runs with a receipt
+//!   address; [`RealiseError::UnrecordedApply`] surfaces a violation.
+//! - Caps = exactly the union of the claims' declared caps; the verb adds
+//!   none (d2 §3): [`RealiseReport::caps_union`]. Enforcement stays per-apply
+//!   at the executor choke point.
+//! - Board card idempotency by claim selector (§5.4): the card path derives
+//!   from the selector, so a re-realise hits the `if_absent` CAS — already
+//!   scheduled, never a second card.
+//! - §9 identity/time: the engine mints no clock and no identity; everything
+//!   is caller-supplied on [`RealiseSpec`].
 
 use std::collections::BTreeMap;
 use std::io;
@@ -66,8 +43,7 @@ use run::runner::{self, RunSpec, TaskOutcome};
 const REALISE_RECEIPT_PATH: &str = "receipts/realise.md";
 
 /// The verdict of observing and checking one claim against the current tree —
-/// a pure read, no write, no cap (d2 §5.4: "detect (core: check = rev
-/// compare)"). A [`Check`] returns exactly this.
+/// a pure read, no write, no cap (d2 §5.4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CheckOutcome {
     /// The claim holds: the observed state matches what the claim asserts.
@@ -81,10 +57,8 @@ pub enum CheckOutcome {
 }
 
 /// How to observe the current tree and decide a claim's convergence. Pure
-/// detection: an implementation READS the workspace and returns a
-/// [`CheckOutcome`]; it never writes and needs no capability. The engine is
-/// general over this trait — the built-in [`FieldEquals`] is one instance, the
-/// storm's corpus census is another (added additively, never a branch here).
+/// detection: an implementation reads the workspace and returns a
+/// [`CheckOutcome`]; it never writes and needs no capability.
 pub trait Check {
     /// Observe the current tree and check the claim.
     ///
@@ -112,9 +86,8 @@ impl std::fmt::Display for CheckError {
 impl std::error::Error for CheckError {}
 
 /// The built-in check: a frontmatter field's current value equals `expected`
-/// (d2 §5.4 "check = rev compare", at value grain). Converged iff the field is
-/// present with exactly `expected`; drifted otherwise, naming the observed
-/// value. Reads disk only — no cap.
+/// (d2 §5.4). Converged iff the field is present with exactly `expected`;
+/// drifted otherwise, naming the observed value. Reads disk only — no cap.
 #[derive(Debug, Clone)]
 pub struct FieldEquals {
     /// The page carrying the field (workspace-relative).
@@ -188,10 +161,9 @@ pub struct Claim {
     /// Card idempotency is keyed on this (§5.4).
     pub selector: String,
     /// The id of the rule this claim realises (`policy::RuleId` grammar), when
-    /// the caller declared one. A minted board card carries it as a REFERENCE
+    /// the caller declared one. A minted board card carries it as a reference
     /// — the rule lives at its own page and the card never copies its body
-    /// (requirements decision 8, verdict 18.1). `None` ⇒ the claim names no
-    /// rule and the card carries no rule key.
+    /// (verdict 18.1). `None` ⇒ no rule key on the card.
     pub rule: Option<String>,
     /// Observe + check: reads the current tree, returns convergence. Pure.
     pub check: Box<dyn Check>,
@@ -211,14 +183,10 @@ pub enum ClaimState {
     Converged,
     /// Check failed and no apply-capable claim is declared in scope: a human /
     /// agent is needed. One board card was minted (or already present —
-    /// idempotent), its PATH carried here when this run minted it.
+    /// idempotent).
     PendingAgent {
         /// The born card's workspace-relative path when THIS run minted it;
-        /// `None` when the card already existed (idempotent — already
-        /// scheduled). It carried the guarded-create journal anchor until the
-        /// journal was removed (ZT 2026-08-02); the path is the identifier that
-        /// survives, and the Some/None arity — "did this run mint it" — is the
-        /// fact callers actually read, unchanged.
+        /// `None` when the card already existed (already scheduled).
         card: Option<String>,
     },
     /// Apply was declared but the retry budget was exhausted with the check
@@ -347,10 +315,6 @@ impl std::error::Error for RealiseError {}
 /// Realise a set of claims: observe → check → apply each, classify with the A4
 /// mechanical classifier, and mint a board card for every pending-agent claim.
 ///
-/// The cutover order (walk → pin → attest → realise → status) is law elsewhere
-/// (d2 §6.2); this is the ENGINE the storm (U3.3) and every later consumer
-/// drives — general, no per-consumer branch.
-///
 /// # Errors
 /// [`RealiseError`] on the first faulting claim; prior claims' committed applies
 /// stand (no rollback). A clean [`ClaimState::PendingAgent`] /
@@ -362,7 +326,7 @@ pub fn realise(
     spec: &RealiseSpec,
 ) -> Result<RealiseReport, RealiseError> {
     // Caps = the union of every apply-capable claim's declared caps, resolved
-    // once up front (the verb's authority + the dry-run blast-radius input).
+    // once up front.
     let mut caps_union = CapSet::none();
     for claim in claims {
         if let Some(binding) = &claim.apply {
@@ -546,9 +510,8 @@ fn mint_board_card(
         spec.board_dir.trim_end_matches('/'),
         card_slug(selector)
     );
-    // The card's `created:` is RFC3339 or nothing (verdict 15.7). The clock is
-    // the caller's (§9) — a malformed one is refused loud here rather than
-    // stamped onto a governed page, and an absent one stays absent.
+    // `created:` is RFC3339 or nothing (verdict 15.7): a malformed caller
+    // clock is refused loud, never stamped onto a governed page.
     if let Some(now) = spec.now.as_deref()
         && !wire::now_is_rfc3339(now)
     {
@@ -569,8 +532,7 @@ fn mint_board_card(
     };
     match wire_serve::write::create(root, None, &args, &[]) {
         Ok(_) => Ok(Some(path)),
-        // The card already exists: the guarded create refuses the occupied path
-        // with a CAS mismatch — that IS the idempotency (already scheduled).
+        // The card already exists — the CAS refusal IS the idempotency.
         Err(e) if is_cas_mismatch(&e) => Ok(None),
         Err(e) => Err(RealiseError::CardMint {
             selector: selector.to_owned(),
@@ -603,13 +565,11 @@ fn card_slug(selector: &str) -> String {
 /// Render a pending-agent board card: a governed markdown page an agent pulls
 /// from the board and works through the same doors as any editor (§5.4).
 ///
-/// **A card references its rule, it never embeds it** (requirements decision 8,
-/// verdict 18.1 — rule-vs-fix-task embedding). The rule lives at its own page,
-/// registered under its `id:`; the card carries that id in `rule:` plus one
-/// wikilink, so the law has exactly one home and a card can never drift from
-/// the rule it names. `created:` is RFC3339 (verdict 15.7) and comes from the
-/// caller's `now` — this function reads no clock, so a fixed `now` renders a
-/// byte-identical card.
+/// A card references its rule, it never embeds it (verdict 18.1): the card
+/// carries the rule id in `rule:` plus one wikilink, so the law has exactly
+/// one home. `created:` is RFC3339 (verdict 15.7) from the caller's `now` —
+/// this function reads no clock, so a fixed `now` renders a byte-identical
+/// card.
 fn render_card(selector: &str, rule: Option<&str>, detail: &str, now: Option<&str>) -> String {
     let created = now.map_or_else(String::new, |now| format!("created: {now}\n"));
     let (rule_key, rule_ref) = rule.map_or_else(
@@ -627,16 +587,14 @@ fn render_card(selector: &str, rule: Option<&str>, detail: &str, now: Option<&st
 }
 
 /// Resolve one apply binding's declared caps through the run plane's own
-/// authority resolution (explicit frontmatter > the root's own `MERIDIAN.md`
-/// `run.caps.<pattern>` convention > deny) — the same resolution `runner::run`
-/// applies, read here for the union and the dry-run blast radius without
-/// running the block.
+/// authority resolution (explicit frontmatter > the root's `MERIDIAN.md`
+/// convention > deny) — the same resolution `runner::run` applies, read here
+/// without running the block.
 ///
-/// A BASH binding contributes [`CapSet::none()`]: it declares no capability,
-/// because capabilities do not apply to it (`docs/laws.md` § Amendment). That
-/// is the honest fold for a union OF DECLARED CAPS — and it is not a claim
-/// that the binding is bounded. `caps_union` under-describes a bash claim by
-/// construction; naming a shell's reach is a question this fold cannot answer.
+/// A bash binding contributes [`CapSet::none()`]: capabilities do not apply
+/// to it (`docs/laws.md` § Amendment), so `caps_union` under-describes a bash
+/// claim by construction — it is a union of DECLARED caps, not a boundedness
+/// claim.
 fn resolve_binding_caps(
     root: &fs::WorkspaceRoot,
     declaring_root: Option<&Path>,
