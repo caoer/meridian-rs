@@ -2,22 +2,6 @@
 //!
 //! Pins: `..` / absolute / `root:` paths → `bad_path` + victim bytes untouched;
 //! in-workspace path still commits (S3-R8(c) acceptance).
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use wire::{Edit, EditShape, ErrorCode, HpathSeg, Path as WPath, SecRef};
 use wire_serve::write::{SpliceArgs, splice};
@@ -28,7 +12,6 @@ const PAGE: &str = "# Alpha\n\n## Beta\n\nkeep this.\n";
 const VICTIM: &str = "# Alpha\n\n## Beta\n\nsecret.\n";
 
 /// Outer dir with workspace + sibling victim (`../victim.md` is real).
-///
 fn workspace() -> (tempfile::TempDir, fs::WorkspaceRoot, std::path::PathBuf) {
     let outer = tempfile::tempdir().expect("tempdir");
     let ws = outer.path().join("ws");
@@ -76,9 +59,6 @@ fn args_for(path: &str) -> SpliceArgs {
 }
 
 /// `..` path → `bad_path`; victim bytes untouched.
-///
-///
-///
 #[test]
 fn splice_refuses_a_dot_dot_path_and_leaves_the_victim_untouched() {
     let (_outer, root, victim) = workspace();
@@ -98,8 +78,6 @@ fn splice_refuses_a_dot_dot_path_and_leaves_the_victim_untouched() {
 }
 
 /// Absolute path → `bad_path` (`Path::join` discards root).
-///
-///
 #[test]
 fn splice_refuses_an_absolute_path_and_leaves_the_victim_untouched() {
     let (_outer, root, victim) = workspace();
@@ -116,8 +94,6 @@ fn splice_refuses_an_absolute_path_and_leaves_the_victim_untouched() {
 }
 
 /// Acceptance (S3-R8(c)): ordinary in-workspace path still commits.
-///
-///
 #[test]
 fn splice_still_commits_an_ordinary_in_workspace_path() {
     let (_outer, root, _victim) = workspace();
@@ -137,8 +113,6 @@ fn splice_still_commits_an_ordinary_in_workspace_path() {
 }
 
 /// `root:`-bearing path (§4.2 / D11) → `bad_path` at the door.
-///
-///
 #[test]
 fn splice_refuses_a_root_prefixed_path() {
     let (_outer, root, _victim) = workspace();

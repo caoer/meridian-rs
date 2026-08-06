@@ -1,13 +1,10 @@
 //! U11 gates: the **mismatch-recovery ladder** on `cas_mismatch` (R1.2).
 //!
-//! The law under test: a fingerprint mismatch NEVER instructs a whole-file read.
-//! The refusal carries the richest rung it can compute — diff, else new content
+//! The law: a fingerprint mismatch NEVER instructs a whole-file read. The
+//! refusal carries the richest rung it can compute — diff, else new content
 //! plus the new fingerprint, else the bare floor — so the caller re-plans and
-//! resends WITHOUT a read call. Every scope rule the unit was ruled with gets a
-//! named test, and every rung asserts its MESSAGE TEXT.
-//!
-//! The extras ride the EXISTING `cas_mismatch` code with its bound
-//! `Recovery::Refresh` (P14). No new error code exists to test for.
+//! resends WITHOUT a read call. The extras ride the existing `cas_mismatch`
+//! code with its bound `Recovery::Refresh`; no new error code exists.
 
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -72,12 +69,10 @@ fn stale_match(target: SecRef, old: &str) -> Edit {
     }
 }
 
-/// The LADDER's own refusal contract — its own assertion, never a loosening of
-/// the shared `assert_refusal_contract` (the precedent `assert_both_planes_contract`
-/// and `assert_guard_contract` set). Four properties plus one negative: the
-/// subject, the cause, the partial state, a fix the caller can act on — and
-/// NEVER an instruction to read the whole file, which is the standing law this
-/// unit exists to keep.
+/// The ladder's own refusal contract — never a loosening of the shared
+/// `assert_refusal_contract`. Four properties plus one negative: the subject,
+/// the cause, the partial state, a fix the caller can act on — and NEVER an
+/// instruction to read the whole file (the standing law).
 fn assert_ladder_contract(ctx: &str, message: &str) {
     assert!(
         message.contains("memo.md"),
@@ -207,12 +202,9 @@ fn rung_one_falls_to_rung_two_when_the_diff_exceeds_the_size_cap() {
     assert!(content.contains("current line 0") && content.contains("current line 199"));
     assert_ladder_contract("cap fallback", err.message.as_deref().expect("message"));
 
-    // THE DISCRIMINATOR. Without it this test proves only that SOMETHING sent
-    // rung 2 — a missing baseline would do it just as well, and the test would
-    // read green while exercising a path it does not name. Same document, same
-    // target, same edit shape: only the picture's DISTANCE changes. A near
-    // picture must come back rung 1, which leaves the cap as the sole cause of
-    // the fallback above.
+    // Discriminator: same document, target, and edit shape; only the picture's
+    // DISTANCE changes. A near picture must come back rung 1, leaving the cap
+    // as the sole cause of the fallback above.
     let mut near = String::from("## Public\n\n");
     for i in 0..200 {
         let line = if i == 100 {

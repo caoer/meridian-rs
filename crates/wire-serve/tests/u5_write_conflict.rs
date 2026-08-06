@@ -3,17 +3,6 @@
 //! Pins: no torn file; busy → typed `workspace_busy`/retry; under flock
 //! `present == ok` exactly (no lost update among cooperating writers);
 //! refused token absent. Out-of-band `write_conflict`: `crates/fs` gates.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, Barrier};
@@ -24,8 +13,6 @@ use wire_serve::write::{SpliceArgs, splice};
 const PAGE: &str = "---\ntitle: Race\n---\n# Log\n\nseed line\n";
 
 /// Guardless racer: unique `put at:end` token (engine conflict only, not CAS).
-///
-///
 fn racer_args(i: usize) -> SpliceArgs {
     SpliceArgs {
         id: None,
@@ -85,8 +72,6 @@ fn concurrent_splices_refuse_typed_and_never_tear() {
             }
             Err(e) => {
                 // Cooperating refusal is only typed `workspace_busy` (U6).
-                //
-                //
                 assert_eq!(
                     e.code,
                     ErrorCode::WorkspaceBusy,
@@ -105,8 +90,6 @@ fn concurrent_splices_refuse_typed_and_never_tear() {
     eprintln!("u5/u6 race: ok={} workspace_busy={busy}", ok.len());
 
     // No tear: base intact; each extra line is one complete token.
-    //
-    //
     let after = std::fs::read_to_string(dir.path().join("log.md")).expect("read back");
     assert!(
         after.starts_with(PAGE.trim_end_matches('\n')) || after.starts_with(PAGE),
@@ -127,8 +110,6 @@ fn concurrent_splices_refuse_typed_and_never_tear() {
         );
     }
     // `present == ok` exactly (no lost update; refused writes land nothing).
-    //
-    //
     assert_eq!(
         present, ok,
         "under the flock, landed tokens equal ok racers exactly (no lost update)"

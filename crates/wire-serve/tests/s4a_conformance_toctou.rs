@@ -3,34 +3,18 @@
 //! Closes check→apply TOCTOU: `splice` re-runs `check_write::verdict` on live
 //! pre-image. Fixture: `Answer` required-before-terminal; terminal write legal
 //! with Answer filled, refuses when foreign writer empties Answer.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use wire::{Edit, EditShape, ErrorCode, Path as WPath, PutAt, Recovery, ResponseBody, SecRef};
 use wire_serve::write::{SpliceArgs, splice};
 
 /// Unique kind `s4aprobe` (avoids `$UCC_HOME/defs` / parent-walk shadow).
-///
-///
 const DEF: &str = "---\ntype: def\ndefines: s4aprobe\nversion: 1\n---\n\n# Properties\n\n```yaml\ntype:      {shape: line, required: true, default: s4aprobe}\nstatus:    {shape: line, required: true, suggest: [open], terminal: [done]}\nclosed_at: {shape: iso, stamp: close}\n```\n^properties\n\n# Sections\n\n## section: Answer\n```yaml\nrequired-before-terminal: true\n```\n";
 
 /// Host-read record: Answer non-empty, open; empty `closed_at` → repair stamp.
-///
-///
-///
 const REC: &str =
     "---\ntype: s4aprobe\nstatus: open\nclosed_at:\n---\n\n# Answer\n\nthe answer body\n";
 
 /// Foreign writer (G2, outside flock) empties Answer.
-///
 const REC_DRIFTED: &str = "---\ntype: s4aprobe\nstatus: open\nclosed_at:\n---\n\n# Answer\n\n";
 
 /// Def layer + record workspace.
@@ -44,8 +28,6 @@ fn workspace() -> (tempfile::TempDir, fs::WorkspaceRoot) {
 }
 
 /// Pending write: native `fm_key` upsert `status: done` (same intent as pre-flight).
-///
-///
 fn splice_args(dry: bool) -> SpliceArgs {
     SpliceArgs {
         id: None,
@@ -100,26 +82,20 @@ fn refusal(body: &ResponseBody) -> Option<&wire::CheckWriteRefuse> {
 }
 
 /// TOCTOU: pre-flight pass + foreign empty Answer → apply refuses, no write.
-///
-///
 #[test]
 fn foreign_write_between_check_and_apply_can_no_longer_split_the_verdict() {
     let (dir, root) = workspace();
 
     // Round-trip 1: pre-flight PASSes (Answer non-empty).
-    //
     assert!(
         refusal(&pre_flight(&root)).is_none(),
         "pre-flight must PASS on the bytes the host read"
     );
 
     // Window: foreign writer empties Answer.
-    //
     std::fs::write(dir.path().join("rec.md"), REC_DRIFTED).expect("foreign write");
 
     // Apply: live pre-image fails required-before-terminal; nothing lands.
-    //
-    //
     let err = splice(&root, None, &splice_args(false), &[], None)
         .expect_err("the internalized verdict must refuse the drifted write");
     assert_eq!(
@@ -152,7 +128,6 @@ fn foreign_write_between_check_and_apply_can_no_longer_split_the_verdict() {
 }
 
 /// Control: undrifted same request lands (gate, not blanket refuse).
-///
 #[test]
 fn undrifted_write_still_lands() {
     let (dir, root) = workspace();
@@ -168,8 +143,6 @@ fn undrifted_write_still_lands() {
 }
 
 /// Dry run refuses where real write would (no split-verdict rehearsal).
-///
-///
 #[test]
 fn dry_run_refuses_where_the_real_write_would() {
     let (dir, root) = workspace();
@@ -186,8 +159,6 @@ fn dry_run_refuses_where_the_real_write_would() {
 }
 
 /// One owner: standalone `check_write` and internalized splice agree on message.
-///
-///
 #[test]
 fn standalone_op_and_internalized_run_agree_on_the_drifted_pre_image() {
     let (dir, root) = workspace();
@@ -210,8 +181,6 @@ fn standalone_op_and_internalized_run_agree_on_the_drifted_pre_image() {
 }
 
 /// No def layer: ordinary write still lands (undeclared ≠ contract).
-///
-///
 #[test]
 fn no_def_layer_leaves_ordinary_writes_alone() {
     let dir = tempfile::tempdir().expect("tempdir");

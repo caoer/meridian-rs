@@ -1,21 +1,8 @@
-//! `read` refusal contract (issue-05 site 8): both-selector-planes contradiction.
+//! `read` refusal contract: both-selector-planes contradiction.
 //!
-//! Pins as PROPERTIES not bytes (`d9419c03`): message must name file, disclose
-//! partial state ("Nothing was read" / "no rev was minted"), carry `Fix:`, and
-//! keep the two-plane distinction ("scopes the whole call").
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
+//! Pins properties, not bytes: message must name the file, disclose partial
+//! state ("Nothing was read" / "no rev was minted"), carry `Fix:`, and keep
+//! the two-plane distinction ("scopes the whole call").
 
 use wire::{ErrorCode, Path as WPath};
 use wire_serve::read::{NO_DECORATIONS, ReadParams, composed_read};
@@ -28,8 +15,6 @@ fn doc() -> model::Document {
 
 /// Both `#fragment` and `sections[]` is undefined (planes disagree); refusal
 /// must meet the exemplar bar (file + partial state + Fix + distinction).
-///
-///
 #[test]
 fn both_selector_planes_refuses_at_the_exemplar_bar() {
     let d = doc();
@@ -58,13 +43,9 @@ fn both_selector_planes_refuses_at_the_exemplar_bar() {
         .expect("the refusal is a sentence, not a bare code");
 
     // 1. File named.
-    //
-    //
     assert!(m.contains("notes.md"), "names the file: {m}");
 
     // 2. Partial state: nothing read, no rev minted.
-    //
-    //
     assert!(
         m.contains("Nothing was read") && m.contains("no rev was minted"),
         "discloses the partial state: {m}"
@@ -74,8 +55,6 @@ fn both_selector_planes_refuses_at_the_exemplar_bar() {
     assert!(m.contains("Fix:"), "carries a fix clause: {m}");
 
     // 4. Two-plane distinction kept.
-    //
-    //
     assert!(
         m.contains("scopes the whole call"),
         "keeps the distinction the original taught: {m}"

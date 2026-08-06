@@ -1,9 +1,7 @@
-//! U10 gates: **fingerprint-or-force** at the wire-origin splice intake.
+//! U10 gates: fingerprint-or-force at the wire-origin splice intake.
 //!
-//! The law under test (requirements decision 12 / R1.1): via the wire, no
-//! content change reaches disk without its fingerprint; `force` is the ONLY
-//! bypass. Every scope rule the unit was ruled with gets a named test here, so
-//! none of them can rot back into an accident.
+//! The law (R1.1): via the wire, no content change reaches disk without its
+//! fingerprint; `force` is the ONLY bypass. Every scope rule gets a named test.
 
 use std::path::PathBuf;
 
@@ -202,9 +200,8 @@ fn wire_edit_with_force_succeeds_and_names_the_bypassed_planes() {
     );
 }
 
-/// Security finding S3, as a regression test: the law is CONTENT-CHANGE-scoped,
-/// never replace-shaped. An append changes existing content and is guarded like
-/// any other change — the "replace-shaped" reading is what let it escape.
+/// S3 regression: the law is CONTENT-CHANGE-scoped, never replace-shaped — an
+/// append changes existing content and is guarded like any other change.
 #[test]
 fn s3_append_on_existing_content_is_guarded() {
     let (_d, root) = ws();
@@ -224,9 +221,8 @@ fn s3_append_on_existing_content_is_guarded() {
     splice(&root, None, &ok, &[], None).expect("a guarded append lands");
 }
 
-/// **R4, the door U10 could not build.** A plan `append` carries its own node
-/// token now, so a wire-origin plan append can SATISFY the guard through its own
-/// face instead of being refused every time with only `force` as a way out.
+/// A plan `append` carries its own node token (R4), so a wire-origin plan
+/// append can satisfy the guard through its own face.
 #[test]
 fn a_plan_append_carrying_its_section_rev_lands() {
     let (_d, root) = ws();
@@ -306,8 +302,7 @@ fn a_stale_fingerprint_still_refuses_at_cas() {
     assert_eq!(err.code, ErrorCode::CasMismatch);
 }
 
-/// `force` is wired to CAS — the two mechanisms were disconnected before this
-/// unit (`force` escaped only the armed gate, never the fingerprint plane).
+/// `force` is wired to CAS, not only the armed gate.
 #[test]
 fn force_is_wired_to_cas() {
     let (_d, root) = ws();
@@ -460,10 +455,8 @@ fn an_empty_batch_is_unaffected() {
     );
 }
 
-/// The in-process path is not a wire door, so the ruling does not reach it and
-/// its behaviour is unchanged. Tested so the scope boundary cannot rot into an
-/// accident — this is SCOPE, not a trust class: no door is exempted for who is
-/// behind it.
+/// The in-process path is not a wire door, so the ruling does not reach it.
+/// This is SCOPE, not a trust class: no door is exempted for who is behind it.
 #[test]
 fn the_in_process_path_is_outside_the_rulings_reach() {
     let (_d, root) = ws();
@@ -515,9 +508,8 @@ fn the_fix_clause_names_the_slot_the_caller_actually_has() {
     let err = splice(&root, None, &plan_append, &[], None).expect_err("append is guarded (S3)");
     let message = err.message.as_deref().expect("a message");
     assert_guard_contract("plan append", message, "NODE grain");
-    // R4 retired the unslotted fix text. `append` now carries its own `rev`, so
-    // the fix names that field — the same door `match` is sent to — instead of
-    // routing the caller to a native `edits` batch or `force`.
+    // `append` carries its own `rev` (R4), so the fix names that field — the
+    // same door `match` is sent to.
     assert!(
         message.contains("`rev` on the plan edit"),
         "the append face is told about its own `rev`: {message}"
@@ -528,10 +520,9 @@ fn the_fix_clause_names_the_slot_the_caller_actually_has() {
     );
 }
 
-/// **The test P2 exists for.** A guard mounted at plan lowering is MCP-only: a
-/// native `edits` payload never goes through lowering, so a field rename walks
-/// straight around it. The guard mounts post-lowering at the intake, so the
-/// native face is guarded by the SAME rung — this asserts the bypass is closed.
+/// A guard mounted at plan lowering would be MCP-only: a native `edits`
+/// payload never goes through lowering, so a field rename walks around it.
+/// The guard mounts post-lowering at the intake — the bypass is closed.
 #[test]
 fn the_field_rename_bypass_is_closed() {
     let (_d, root) = ws();
@@ -551,17 +542,11 @@ fn the_field_rename_bypass_is_closed() {
     );
 }
 
-// ── Frame legality vs semantic refusal (the ZT ruling, 2026-08-03) ───────────
+// ── Frame legality vs semantic refusal ──────────────────────────────────────
 //
-// > Content-mutating writes on every wire door require fingerprint match or
-// > force; guard fields stay schema-optional; force is any client's
-// > refuse→rewrite path; MCP is the main agent client that implements that
-// > path, not a separate trust plane.
-//
-// Decision 007's SCHEMA half survives whole: a guardless splice is still a legal
-// frame that DECODES. Only its behavioural half is superseded — the write is
-// refused semantically, after decode. These two tests are the seam; if either
-// inverts, the ruling is violated rather than merely this module's intent.
+// A guardless splice is still a legal frame that DECODES; guard fields stay
+// schema-optional. Only the write is refused, semantically, after decode.
+// These two tests are the seam.
 
 /// A guardless splice frame is STILL A LEGAL FRAME: it decodes clean. Guard
 /// fields stay schema-optional — the refusal must never be a decode failure.
@@ -614,15 +599,10 @@ fn the_refusal_is_semantic_never_frame_illegality() {
     );
 }
 
-/// ORDERING: a target that does not resolve is not this rung's to answer.
-///
-/// The guard is scoped to edits that mutate EXISTING content, so a dangling or
-/// ambiguous target has nothing for it to demand — the resolution rung answers
-/// with the refusal that names the caller's real mistake. Demanding a
-/// fingerprint first would send them to read a rev for a node that does not
-/// exist, and would bury `ref_not_found` / `ambiguous_ref` behind a refusal
-/// that describes the wrong problem. `sidecar::selector_ambiguity` covers the
-/// same law end-to-end; this pins it at the unit.
+/// Ordering: a target that does not resolve is not this rung's to answer —
+/// the resolution rung refuses (`ref_not_found` / `ambiguous_ref`) so the
+/// caller's real mistake is named, not buried behind a fingerprint demand.
+/// `sidecar::selector_ambiguity` covers the law end-to-end; this pins the unit.
 #[test]
 fn a_target_that_does_not_resolve_is_not_this_rungs_to_answer() {
     let (_d, root) = ws();

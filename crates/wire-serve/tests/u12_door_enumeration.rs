@@ -1,106 +1,35 @@
-//! **U12's door enumeration, keyed by SITE and bound PER DOOR.**
+//! U12's door enumeration, keyed by SITE and bound PER DOOR.
 //!
-//! U31 made the candidate document a TYPE the `fs` byte-landing primitives
-//! demand, so *"which doors land bytes"* stopped being prose and became *"which
-//! sites mint a `model::CandidateDocument`"* — a set the compiler maintains.
-//! This test pins that set and states, per door, what U12 does at it.
+//! U31 made the candidate document a type the `fs` byte-landing primitives
+//! demand, so "which doors land bytes" is measured as "which sites mint a
+//! `model::CandidateDocument`". This test pins that set and states, per door,
+//! what U12 does at it. The equivalence is one-directional: every byte landing
+//! mints a candidate, but a mint is not proof of a landing — see
+//! [`Door::ReadOnly`]. The compiler enumerates the type's uses; what it cannot
+//! say is whether a door that HOLDS a candidate also GUARDS it — a guard is a
+//! call, not a type.
 //!
-//! **Amended by C3 (2026-08-01): that equivalence is now ONE-directional.** Every
-//! byte landing still mints a candidate, but a mint is no longer proof of one —
-//! `candidate_of_body` is also the only production mint that gives a document its
-//! own PATH, and the reaction feeder needs that to match a HOOK's `paths:` scope
-//! without landing anything. Such a site is pinned like every other, in the
-//! [`Door::ReadOnly`] class, which owes the reader why its value cannot land. The
-//! census still measures the same set from the tree; what changed is that
-//! membership no longer classifies a site on its own.
+//! Census rules:
 //!
-//! **Why a test and not the compiler.** U31's own rung is compiler-enumerated
-//! and this unit inherits its result; what the compiler cannot say is whether a
-//! door that HOLDS a candidate also GUARDS it, because a guard is a call, not a
-//! type. So this is the ladder's middle rung, used exactly where a list is all a
-//! test can give you.
-//!
-//! # What F2 found, and what the key had to become (S3-R82)
-//!
-//! The first version of this census pinned the same data it does now — the
-//! `(file, function)` pair was already in `DOORS` — and then **compared only the
-//! FILE PATHS**. Eight doors over three files, so the assertion compared
-//! `{write.rs, realise_cmd.rs, fp.rs}` against itself: **a ninth mint in any
-//! file it already knew moved neither side.** Its guard arm was a **bag count** —
-//! `stored_form_guard_lazy(` occurrences against a count of `DOORS` rows — so
-//! deleting the guard at the `create` birth door and duplicating one at `splice`
-//! left the total unchanged and the gate green, with a `TranslatedAndGuarded`
-//! door landing bytes unguarded.
-//!
-//! Both evasions were measured GREEN on the shipped census
-//! (`results/f2-door-census-mutation-harness.sh`, `MUT_Ma_EXIT=0`,
-//! `MUT_Mb_EXIT=0` at `797c4e8e`), and the fix is not a wider scan — it is the
-//! ASSERTION meeting the granularity the data always had:
-//!
-//! - **the census key is the SITE** — `(file, mint_fn)`, never the file;
-//! - **each site's mint count is pinned**, so a second mint inside a function the
+//! - the census key is the SITE — `(file, mint_fn)`, never the file;
+//! - each site's mint count is pinned, so a second mint inside a function the
 //!   census already knows is a change too;
-//! - **the guard is bound to the door that owes it** — per-site discharge, never
-//!   a total.
-//!
-//! **Keyed by `file::function`, never by line**, which was right the first time
-//! and is unchanged: a line number rots on the next edit and a rotted pin teaches
-//! a reader to ignore the check. *Measured before re-keying: all eight mints sat
-//! in eight DISTINCT functions, so no site needs a line number to be named. The
-//! census is seven since DECISION 26 retired the `lock_migrate` door; the
-//! distinct-function property is unchanged by a deletion.*
-//!
-//! # The partition the key stands on (the second half of F2)
-//!
-//! Re-keying the census left it standing on a broken production/test partition,
-//! and **all four of the new site-keyed reads went through it** — so the fix was
-//! green on its own terms and blind in the join. The old partition truncated the
-//! file at the FIRST literal `#[cfg(test)]`, which is sound only if that marker
-//! always opens a trailing test module. **Rust allows the attribute at ITEM
-//! level, and the counter-example ships here:** `crates/policy/src/pack.rs` is
-//! 1212 lines, its first marker at :214 is an item attribute on
-//! `pub(crate) fn facts_from_markdown`, and the real `mod tests` does not open
-//! until :841 — so truncating kept **213 lines and discarded 999 of 1212
-//! (82.4%)**, roughly twenty production functions, in which a door would have
-//! been invisible and the gate GREEN.
-//!
-//! **Measured population, so this partition covers the shapes that exist rather
-//! than the shapes it imagines: 74 markers across 69 production files — 72 gate a
-//! `mod`, 2 gate a `fn` (both in `pack.rs`), and exactly ONE file's FIRST marker
-//! is item-level.** Three gated shapes exist: `mod name {`, `fn name(…) {`, and
-//! `mod tests;` (semicolon, no body — measured as the LAST line of all three
-//! files that use it, so gating it must not hunt a brace that does not exist).
-//!
-//! **Bound, stated rather than overclaimed: this was LATENT, not an open hole.**
-//! `pack.rs` mints zero candidates anywhere in the file, and the markers in
-//! `write.rs` and `fs/src/lib.rs` do open trailing test modules, so their
-//! below-marker mints were discarded correctly and still are. Population intact,
-//! instrument broken — the same shape as the keying defect beside it.
-//!
-//! # Precision, measured before the check was written (S3-R23 ①)
-//!
-//! The scan reads production `src/` only, skips doc comments and the definition
-//! site itself, and classifies every hit. A new mint anywhere in the workspace is
-//! reported as *unclassified*, never guessed at — the false positive that would
-//! get this instrument deleted.
-//!
-//! **Every unrecognised shape resolves toward NOT gating, deliberately.** Test
-//! code read as production reddens LOUDLY as an unpinned site; production code
-//! read as test goes INVISIBLE. Only the second direction agrees with the failure
-//! this census exists to catch, so the ambiguous cases are pushed into the first
-//! (S3-R25 on error direction). One consequence is worth naming: `config`'s tests
-//! are gated in the PARENT module (`mod tests;`), so `crates/config/src/tests.rs`
-//! carries no marker of its own and is read whole as production source. Measured:
-//! it mints zero candidates, and a mint appearing there would redden as an
-//! unpinned site rather than hide.
+//! - the guard is bound to the door that owes it — per-site, never a total;
+//! - keyed by `file::function`, never by line (a line number rots on the next
+//!   edit, and a rotted pin teaches a reader to ignore the check);
+//! - test gating is per ITEM, never by file truncation, and every
+//!   unrecognised shape resolves toward NOT gating: test code read as
+//!   production reddens loudly as an unpinned site, while production code
+//!   read as test goes invisible — only the first direction fails safe;
+//! - the scan reads production `src/` only, skips doc comments and the
+//!   definition site, and reports a new mint as unclassified, never guessed.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 /// A door's identity: the workspace-relative file, and the function whose body
-/// holds the `candidate_of_*` call. **This pair is the census key** — the unit F2
-/// found the assertion had dropped.
+/// holds the `candidate_of_*` call. This pair is the census key.
 type Site = (String, String);
 
 const WRITE_RS: &str = "crates/wire-serve/src/write.rs";
@@ -121,27 +50,15 @@ enum Door {
     /// law) or an anchor promotion — so there is nothing to translate, and the
     /// guard is what says so rather than a comment claiming it.
     Guarded,
-    /// **NOT COVERED BY THIS UNIT**, stated rather than absorbed (S3-R4). The
-    /// door lives outside U12's named files (`write.rs` + `read.rs`), and
-    /// closing it would mean a SECOND transform, which this unit's card
-    /// forbids. Reported to the leader as a gap with its population.
+    /// NOT covered by this unit, stated rather than absorbed: the door lives
+    /// outside U12's named files (`write.rs` + `read.rs`).
     OutsideThisUnit,
-    /// **Not a door: the mint lands no bytes.** The site mints a candidate to
-    /// give a document its own PATH, reads it, and drops it — the value never
-    /// reaches an `fs` byte-landing primitive.
-    ///
-    /// This class exists because it falsifies the equivalence this census was
-    /// built on (module header: *"which doors land bytes … became which sites
-    /// mint a `model::CandidateDocument`"*). That was true while the candidate
-    /// type had exactly one use. C3's reaction feeder needs a document's path to
-    /// match a HOOK's `paths:` scope, and `candidate_of_body` is the production
-    /// mint that carries one, so a read-only caller now mints too.
-    ///
-    /// **The equivalence is one-directional from here on:** every byte landing
-    /// still mints, but a mint is no longer proof of a byte landing. A site
-    /// entering this class owes the reader the reason its value cannot land —
-    /// for the one member, `feed_landed_change` takes `&Document` and returns
-    /// effects, so there is no path from the mint to a write.
+    /// Not a door: the mint lands no bytes. The site mints a candidate to give
+    /// a document its own PATH (the reaction feeder matches a HOOK's `paths:`
+    /// scope against it), reads it, and drops it. A site entering this class
+    /// owes the reason its value cannot land — for the one member,
+    /// `feed_landed_change` takes `&Document` and returns effects, so there is
+    /// no path from the mint to a write.
     ReadOnly,
 }
 
@@ -212,14 +129,9 @@ const DOORS: &[DoorPin] = &[
         class: Door::Guarded,
     },
     // ---- outside U12's named files ----
-    // ---- retired with the registration cutover ----
-    // `realise --truth index|file` and `policy::binding::converge` are DELETED by
-    // ruling, so their two door pins go with them: a byte-landing door that no
-    // longer exists cannot be enumerated, and a pin naming a deleted function is
-    // the enumeration failing open — it would read as "still audited". The
-    // redesigned `--truth` (convergence over artifact + marker, atomic with the
-    // marker) is re-owed in `[[arm-disk-edge]]`, and it owes its own door pins
-    // when it lands with the writer it needs.
+    // Retired doors are deleted, not tombstoned: every pin is verified to
+    // exist at its file and function, so a pin naming a deleted function is
+    // the enumeration failing open. Successor doors owe their own pins.
     DoorPin {
         file: "crates/run/src/fp.rs",
         door_fn: "candidate",
@@ -228,31 +140,10 @@ const DOORS: &[DoorPin] = &[
         label: "the run plane's candidate (run::fp::candidate)",
         class: Door::OutsideThisUnit,
     },
-    // ---- mrd/journal_cmd.rs — TWO DOORS RETIRED, and the census shrank with them
-    // `journal genesis` pinned two mints here: `write_archive` (the archive page
-    // the reset moved rows into) and `truncate_journal` (emptying the live journal
-    // once the archive was durable). Both landed the ENGINE's own bytes on a CLI
-    // path, and both are DELETED with the verb and the ledger it reset — nothing
-    // is being reset any more (U6).
-    //
-    // Removed rather than kept as a tombstone entry, because this census is a
-    // census OF THE TREE: every pin is verified to exist at its file and function,
-    // so a pin naming a deleted file is not a record, it is a census that cannot
-    // run. The record of the retirement lives in the git history of this file and
-    // in U6's seam note; the DOOR COUNT is what this file is for, and it is now 7
-    // (U9b added the `lock_migrate` door and DECISION 26 deleted it again; U20b
-    // moved one without changing the count — a relocation is not a retirement).
-    // ---- wire-serve/watch.rs — C3's reaction feeder, the first mint that is
-    // NOT a door. `external_effects` needs each externally-changed document to
-    // carry its own path, because a HOOK matches `paths:` against it; the
-    // watcher's other mint (`doc_of`) leaves the path empty. The candidate is
-    // read by `feed_landed_change` and dropped — no `fs` primitive ever sees it.
-    //
-    // MOVED by U20b (`crates/sidecar` → `crates/wire-serve`), when the registry
-    // became a second host of the classifier. The door itself is byte-identical;
-    // only its address changed. This census caught the move on its own, which is
-    // the behaviour it exists for — a door that relocates silently is a door
-    // nobody is enumerating any more.
+    // ---- wire-serve/watch.rs — the reaction feeder, a mint that is NOT a
+    // door. `external_effects` needs each externally-changed document to carry
+    // its own path (a HOOK matches `paths:` against it); the candidate is read
+    // by `feed_landed_change` and dropped — no `fs` primitive ever sees it.
     DoorPin {
         file: "crates/wire-serve/src/watch.rs",
         door_fn: "external_effects",
@@ -320,11 +211,10 @@ struct Scoped<'a> {
 
 /// The function name declared by `trimmed`, if it declares one.
 ///
-/// Qualifiers are stripped token by token, and **a comment line is never a
-/// declaration** — the brief's S3-R89 sibling clause, met twice in this milestone
-/// by counts that read a `//!` header as code. A declaration this misses costs a
-/// LOUD failure, never a silent pass: its mints fall to an outer scope or to
-/// [`FILE_SCOPE`], neither of which any pinned site carries.
+/// Qualifiers are stripped token by token; a comment line is never a
+/// declaration. A declaration this misses costs a LOUD failure, never a
+/// silent pass: its mints fall to an outer scope or to [`FILE_SCOPE`],
+/// neither of which any pinned site carries.
 fn declared_fn(trimmed: &str) -> Option<&str> {
     const QUALIFIERS: &[&str] = &[
         "pub",
@@ -358,27 +248,15 @@ fn declared_fn(trimmed: &str) -> Option<&str> {
 /// Every line of `text`, each carrying the name of the INNERMOST function
 /// enclosing it and whether it is `#[cfg(test)]`-gated.
 ///
-/// **Scopes close by indentation:** a scope ends on the line that is exactly its
-/// declaration's own indent followed by `}`. Sound here because
-/// `cargo fmt --check` is a gate on this workspace, so a function's closing brace
-/// sits at the function's own indent. A nested `fn` is therefore attributed to
-/// ITSELF, which is what a door means: the innermost site holding the call.
+/// Scopes close by indentation — sound because `cargo fmt --check` gates this
+/// workspace, so a closing brace sits at its declaration's indent.
 ///
-/// **Test gating is per ITEM, never by truncation** — the F2 partition defect. A
-/// `#[cfg(test)]` line gates the item that follows it, and the gate closes with
-/// that item:
-///
-/// - `mod name {` / `fn name(…) {` — gated to the matching-indent `}`;
-/// - `mod tests;` — one line, gated alone, no region opened (measured: this form
-///   is the last line of every file using it, so hunting a closing brace would
-///   swallow the rest of a file that has no rest);
-/// - **anything else — NOT GATED, deliberately.** An unrecognised shape leaves
-///   test code readable as production, which reddens LOUDLY as an unpinned site;
-///   the opposite mistake makes production code INVISIBLE, and only that
-///   direction agrees with the failure this census exists to catch.
-///
-/// The same reasoning covers a misparse of either kind: it pushes a mint into a
-/// site the pinned list does not carry, which fails loud.
+/// Test gating is per ITEM, never by truncation. A `#[cfg(test)]` line gates
+/// the item that follows it: `mod name {` / `fn name(…) {` to the
+/// matching-indent `}`; `mod tests;` gated alone, no region opened; anything
+/// else NOT gated, deliberately (see the module header on error direction).
+/// A misparse of either kind pushes a mint into a site the pinned list does
+/// not carry, which fails loud.
 fn scoped_lines(text: &str) -> Vec<Scoped<'_>> {
     let mut fns: Vec<(usize, &str)> = Vec::new();
     let mut gate: Option<usize> = None;
@@ -427,12 +305,9 @@ fn read_pinned(rel: &str) -> String {
     fs::read_to_string(workspace_root().join(rel)).expect("a pinned file is readable")
 }
 
-/// **Every production candidate MINT, keyed by SITE, counted.**
-///
-/// Two deliberate differences from the census F2 found: the key is the
-/// `(file, function)` SITE rather than the file, and there is **no `break`** — a
-/// second mint inside a function this list already knows is a change, and the
-/// early exit is what made it invisible.
+/// Every production candidate MINT, keyed by SITE, counted. The key is the
+/// `(file, function)` SITE rather than the file, and there is no `break` — a
+/// second mint inside a known function is a change too.
 fn mint_sites() -> BTreeMap<Site, usize> {
     let root = workspace_root();
     let mut sites: BTreeMap<Site, usize> = BTreeMap::new();
@@ -541,16 +416,13 @@ fn the_byte_landing_door_set_is_exactly_the_pinned_list() {
     );
 }
 
-/// **Each pinned site mints exactly once, and the total is the pinned total.**
+/// Each pinned site mints exactly once, and the total is the pinned total —
+/// the left-hand side is MEASURED FROM THE TREE, not the const.
 ///
-/// This is the assertion that replaces `assert_eq!(DOORS.len(), 8)` — a tautology
-/// over the hardcoded const, which asserted that a literal list has the length of
-/// that literal list. Here the left-hand side is MEASURED FROM THE TREE.
-///
-/// *Fails on:* a SECOND mint added inside a function the census already pins (the
-/// one evasion a site-keyed SET still cannot see, because the key does not move)
-/// · two `DOORS` rows pinning one site, which would let a duplicate pin satisfy
-/// the set comparison · any change to the total mint population.
+/// *Fails on:* a SECOND mint added inside a function the census already pins
+/// (the one evasion a site-keyed SET cannot see, because the key does not
+/// move) · two `DOORS` rows pinning one site · any change to the total mint
+/// population.
 #[test]
 fn every_pinned_site_mints_exactly_once_and_the_total_matches_the_pin() {
     let measured = mint_sites();
@@ -585,15 +457,15 @@ fn every_pinned_site_mints_exactly_once_and_the_total_matches_the_pin() {
     );
 }
 
-/// **The arithmetic closes** (R32): every door is accounted for exactly once,
-/// and each class is NON-EMPTY (S3-R37 — a gate whose population empties is the
-/// quietest way for coverage to disappear).
+/// The arithmetic closes: every door is accounted for exactly once, and each
+/// class is NON-EMPTY (an emptied population is the quietest way for coverage
+/// to disappear).
 ///
-/// *Fails on:* a door re-classified in `DOORS` without its class count following
-/// · a class emptying · the `write.rs` share drifting from the guarded classes.
-/// **These are pin-consistency assertions over the const**, not measurements of
-/// the tree: they make an edit to `DOORS` deliberate. The tree-facing arithmetic
-/// is [`every_pinned_site_mints_exactly_once_and_the_total_matches_the_pin`].
+/// *Fails on:* a door re-classified in `DOORS` without its class count
+/// following · a class emptying · the `write.rs` share drifting from the
+/// guarded classes. Pin-consistency over the const; the tree-facing
+/// arithmetic is
+/// [`every_pinned_site_mints_exactly_once_and_the_total_matches_the_pin`].
 #[test]
 fn the_arithmetic_closes_and_no_class_is_empty() {
     let translated = DOORS
@@ -645,18 +517,13 @@ fn the_arithmetic_closes_and_no_class_is_empty() {
     );
 }
 
-/// **Every door in U12's own file BINDS its own guard.**
+/// Every door in U12's own file BINDS its own guard. The comparison is per
+/// discharge SITE, so moving a guard between doors changes both sides in
+/// opposite directions instead of cancelling out.
 ///
-/// The census F2 found counted `stored_form_guard_lazy(` occurrences against a
-/// count of `DOORS` rows: a bag against a bag, with nothing tying a call to a
-/// door. **Here the comparison is per discharge SITE**, so moving a guard from
-/// one door to another changes both sides in opposite directions instead of
-/// cancelling out.
-///
-/// *Fails on:* the guard deleted at any door (its site's count falls to zero and
-/// the key vanishes) · a guard duplicated anywhere (that site counts 2) · a guard
-/// appearing in a function no door pins (an unexpected key) · a door in `write.rs`
-/// pinned with no discharge site at all.
+/// *Fails on:* the guard deleted at any door · a guard duplicated anywhere ·
+/// a guard appearing in a function no door pins · a door in `write.rs` pinned
+/// with no discharge site at all.
 #[test]
 fn every_door_in_this_units_file_binds_its_own_guard() {
     let mut expected: BTreeMap<String, usize> = BTreeMap::new();
@@ -683,18 +550,14 @@ fn every_door_in_this_units_file_binds_its_own_guard() {
     );
 }
 
-/// **Every pinned name exists in the tree, exactly once.**
+/// Every pinned name exists in the tree, exactly once. A pin naming a missing
+/// function would report *zero guards at that site* — an alarm produced by
+/// the pin, not the code; a name declared TWICE would merge two functions
+/// into one site and could hide a door inside another door's body.
 ///
-/// The brief's S3-R89 sibling clause, applied to this census: a name matched
-/// across files written by different hands is a statement about the spelling
-/// until the spelling is confirmed present. A pin naming a function that does not
-/// exist would otherwise report *zero guards at that site* — an alarming answer
-/// produced by the pin, not by the code. A name declared TWICE would merge two
-/// functions into one site and could hide a door inside another door's body.
-///
-/// *Fails on:* a pinned `door_fn` / `mint_fn` / `guard_fn` that no longer exists
-/// (a rename) · a pinned name declared more than once in its file · a pinned file
-/// that has moved.
+/// *Fails on:* a pinned `door_fn` / `mint_fn` / `guard_fn` that no longer
+/// exists (a rename) · a pinned name declared more than once in its file · a
+/// pinned file that has moved.
 #[test]
 fn every_pinned_name_is_declared_exactly_once_in_its_file() {
     for door in DOORS {
@@ -764,18 +627,14 @@ fn a_door_reaches_its_own_mint_and_its_own_guard() {
     );
 }
 
-/// **The partition gates ITEMS, not the rest of the file.**
+/// The partition gates ITEMS, not the rest of the file. A fixture is the only
+/// way to measure a partition rather than the tree it was written against,
+/// and it cannot rot: the shapes are literals here.
 ///
-/// The F2 partition defect had no failing signal on this tree — `pack.rs` mints
-/// nothing, so the census stayed green with 82% of that file unread. **A fixture
-/// is the only way to measure a partition rather than the tree it was written
-/// against**, and it cannot rot: the shapes are literals here, not another
-/// crate's structure, so refactoring `pack.rs` can never redden this.
-///
-/// *Fails on:* a partition that truncates at the first marker instead of gating
-/// the item (the `pack.rs` shape — `after_an_item_level_gate` disappears) · a
-/// gated `mod` leaking its contents · the semicolon form swallowing the lines
-/// after it · an unrecognised shape being gated instead of left visible.
+/// *Fails on:* a partition that truncates at the first marker instead of
+/// gating the item (`after_an_item_level_gate` disappears) · a gated `mod`
+/// leaking its contents · the semicolon form swallowing the lines after it ·
+/// an unrecognised shape being gated instead of left visible.
 #[test]
 fn the_partition_gates_items_not_the_rest_of_the_file() {
     // Every gated shape measured in this workspace, plus the ambiguous one.
@@ -839,17 +698,15 @@ fn after_an_unrecognised_shape() {
     );
 }
 
-/// **Each class claims exactly the guard its position entitles it to.**
+/// Each class claims exactly the guard its position entitles it to.
 ///
-/// *Fails on:* an `OutsideThisUnit` door quietly given a discharge site (which
-/// would make the gap read as closed) · a door in U12's own file classed as
-/// outside it · a guarded door outside U12's named file · a `ReadOnly` site
-/// claiming a guard, which would assert a byte landing it does not perform.
+/// *Fails on:* an `OutsideThisUnit` door quietly given a discharge site · a
+/// door in U12's own file classed as outside it · a guarded door outside
+/// U12's named file · a `ReadOnly` site claiming a guard, which would assert
+/// a byte landing it does not perform.
 ///
-/// Matched exhaustively on the CLASS rather than tested with an `if`/`else`: the
-/// arms then cannot silently absorb a class added later — which is exactly how
-/// C3's `ReadOnly` site first arrived here, classified by an `else` written when
-/// every mint was a door.
+/// Matched exhaustively on the CLASS rather than `if`/`else`, so the arms
+/// cannot silently absorb a class added later.
 #[test]
 fn each_class_claims_exactly_the_guard_its_position_entitles_it_to() {
     for door in DOORS {

@@ -2,13 +2,6 @@
 //!
 //! `splice`/`create`/`remove` take exclusive `LOCK_NB` on `.meridian/write.lock`;
 //! held → typed `workspace_busy`/retry; G2 lock I/O → `io_error{cause}`.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use std::time::{Duration, Instant};
 
@@ -58,13 +51,6 @@ fn busy(e: &wire::ErrorBody) {
 
 /// Splice with documented recovery: retry `workspace_busy` (2 s bound).
 /// Fork+clone can briefly keep flock after close; retry is the contract.
-///
-///
-///
-///
-///
-///
-///
 fn splice_retrying(root: &fs::WorkspaceRoot, args: &SpliceArgs) {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
@@ -79,9 +65,6 @@ fn splice_retrying(root: &fs::WorkspaceRoot, args: &SpliceArgs) {
 }
 
 /// Held lock refuses splice/create/remove busy; release → same splice lands.
-///
-///
-///
 #[test]
 fn held_lock_refuses_all_write_ops_then_retry_succeeds() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -145,7 +128,6 @@ fn held_lock_refuses_all_write_ops_then_retry_succeeds() {
 }
 
 /// Dry splice also takes the lock and refuses busy.
-///
 #[test]
 fn dry_splice_also_refuses_busy() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -160,8 +142,6 @@ fn dry_splice_also_refuses_busy() {
 }
 
 /// G2: unmakeable lock dir → typed `io_error{cause}` (not panic).
-///
-///
 #[test]
 fn lock_io_failure_is_typed_io_error() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -186,9 +166,6 @@ fn lock_io_failure_is_typed_io_error() {
 }
 
 /// Child holder: env `MERIDIAN_U6_HOLD_WS` → acquire, marker, wait for release.
-///
-///
-///
 #[test]
 fn hold_write_lock_helper() {
     let Ok(ws) = std::env::var("MERIDIAN_U6_HOLD_WS") else {
@@ -206,9 +183,6 @@ fn hold_write_lock_helper() {
 }
 
 /// Two-process (A-C2): remote holder → busy; release → same request lands.
-///
-///
-///
 #[test]
 fn cross_process_holder_refuses_busy_then_retry_lands() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -224,8 +198,6 @@ fn cross_process_holder_refuses_busy_then_retry_lands() {
         .expect("spawn the holder process");
 
     // Wait for child.locked (generous ceiling under cold parallel build).
-    //
-    //
     let locked_marker = dir.path().join("child.locked");
     let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline && !locked_marker.exists() {

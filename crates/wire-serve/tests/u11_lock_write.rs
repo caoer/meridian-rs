@@ -1,9 +1,5 @@
 //! U11: guarded `lock_write` path (locate/create, EOF placement, CAS, flock,
 //! atomic replace, corrupt fail-loud). Format law lives in `crates/lock`.
-//!
-//!
-//!
-//!
 
 use wire::{ErrorCode, NodeRev, Path as WPath, Recovery};
 use wire_serve::write::{LockWriteArgs, lock_write};
@@ -33,7 +29,6 @@ fn file_rev(root: &fs::WorkspaceRoot, rel: &str) -> NodeRev {
 }
 
 /// Real root-node fingerprint (`fp1.span2.b3.<64hex>`), not synthetic.
-///
 fn minted_fingerprint(root: &fs::WorkspaceRoot) -> String {
     let doc = fs::load(root, std::path::Path::new("page.md")).expect("load");
     model::fingerprint::fingerprint(&doc, &doc.root)
@@ -42,8 +37,6 @@ fn minted_fingerprint(root: &fs::WorkspaceRoot) -> String {
 }
 
 /// Sample R4 pin (object, hash, `path: []`, real fingerprint).
-///
-///
 fn sample_lock(root: &fs::WorkspaceRoot) -> lock::Lock {
     let mut l = lock::Lock::new();
     l.upsert_pin(lock::PinEntry::new(
@@ -73,8 +66,6 @@ fn fence_count(raw: &str) -> usize {
 }
 
 /// Birth: one lock at EOF (placement law), round-trip, root advances.
-///
-///
 #[test]
 fn birth_lands_at_eof_and_round_trips() {
     let (_d, root) = ws(&[("page.md", PAGE)]);
@@ -119,8 +110,6 @@ fn birth_lands_at_eof_and_round_trips() {
 }
 
 /// Update: in-place replace, still one block; surrounding content byte-identical.
-///
-///
 #[test]
 fn update_replaces_in_place_exactly_one_block() {
     let (_d, root) = ws(&[("page.md", PAGE)]);
@@ -151,8 +140,6 @@ fn update_replaces_in_place_exactly_one_block() {
 }
 
 /// Same lock rewrite is byte-stable (file rev / root hold).
-///
-///
 #[test]
 fn rewriting_same_lock_is_byte_stable() {
     let (_d, root) = ws(&[("page.md", PAGE)]);
@@ -169,7 +156,6 @@ fn rewriting_same_lock_is_byte_stable() {
 }
 
 /// CAS: stale `if_file_rev` → `cas_mismatch`; page untouched.
-///
 #[test]
 fn cas_drift_refuses_citing_revs() {
     let (_d, root) = ws(&[("page.md", PAGE)]);
@@ -189,7 +175,6 @@ fn cas_drift_refuses_citing_revs() {
 }
 
 /// Dry: no disk write; still reports after-rev and `created`.
-///
 #[test]
 fn dry_writes_nothing() {
     let (_d, root) = ws(&[("page.md", PAGE)]);
@@ -205,7 +190,6 @@ fn dry_writes_nothing() {
 }
 
 /// D9: held flock → `workspace_busy`/retry; nothing lands.
-///
 #[test]
 fn held_flock_refuses_workspace_busy() {
     let (_d, root) = ws(&[("page.md", PAGE)]);
@@ -218,9 +202,7 @@ fn held_flock_refuses_workspace_busy() {
     assert_eq!(read(&root, "page.md"), PAGE, "nothing landed");
 }
 
-/// Corrupt: two hand-written lock blocks → teaching `bad_request` (#8 §3).
-///
-///
+/// Corrupt: two hand-written lock blocks → teaching `bad_request`.
 #[test]
 fn two_hand_written_blocks_refuse_loud() {
     let forged =

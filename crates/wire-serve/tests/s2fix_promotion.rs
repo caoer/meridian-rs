@@ -1,4 +1,4 @@
-//! fix2b — promotion correctness: rev-neutral, gated, genuinely last (findings 7, 9, 12).
+//! Promotion correctness: rev-neutral, gated, genuinely last.
 //!
 //! Production `write::splice` against real workspaces. Refusals assert byte-identity of
 //! both files; rev-neutrality asserts fingerprint equality (with controls that prove the
@@ -15,7 +15,6 @@ fn workspace(pinner: &str, target: &str) -> (tempfile::TempDir, fs::WorkspaceRoo
     std::fs::write(dir.path().join("plan.md"), pinner).expect("pinner");
     std::fs::write(dir.path().join("guide.md"), target).expect("target");
     // Git: R4 pin row needs a `hash`.
-    //
     for args in [
         vec!["init", "-q"],
         vec!["config", "user.email", "s2fix@example.invalid"],
@@ -120,31 +119,6 @@ const SLASH_TARGET: &str = "# Guide\n\n## A/B\n\nreview before you close.\n";
 
 /// U14 tripwire: `/` in heading no longer refuses — pin COMMITS (machine surface).
 /// Scope: `/` only; `#`-in-heading refusal still lives.
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
 #[test]
 fn a_slash_bearing_heading_is_no_longer_refused_and_the_pin_commits() {
     let (_dir, root) = workspace(PINNER, SLASH_TARGET);
@@ -190,7 +164,7 @@ fn the_promotion_the_refusal_withholds_is_a_real_byte_change() {
     );
 }
 
-/// Target last line is an unterminated heading — promotion at EOF must stay rev-neutral (finding 7).
+/// Target last line is an unterminated heading — promotion at EOF must stay rev-neutral.
 const EOF_TARGET: &str = "# Guide\n\n## Alpha\n\nalpha body.\n\n## Omega";
 
 #[test]
