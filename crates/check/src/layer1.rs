@@ -1,37 +1,20 @@
-//! Layer 1 — the workspace's armed RULES evaluated read-only (d2 §3 check: "Layer 1:
-//! armed rules packs evaluated read-only — same rule, same citation as the write gate").
+//! Layer 1 — the workspace's armed RULES evaluated read-only: same rule, same
+//! citation as the write gate.
 //!
-//! Each armed rule's `check_change` runs over the change through the page loader — the
-//! SAME surface the door mounts (U4.2). A refusal here is byte-for-byte the refusal the
-//! door would mint: this layer surfaces [`policy::Refusal`]s verbatim, it does not
-//! re-interpret them. It performs no I/O — the law is pre-resolved and the change is
-//! pre-derived, so a layer-1 run mutates nothing.
+//! Each armed rule's `check_change` runs over the change through the page loader —
+//! the SAME surface the door mounts. A refusal here is byte-for-byte the refusal
+//! the door would mint: this layer surfaces [`policy::Refusal`]s verbatim. It
+//! performs no I/O — the law is pre-resolved and the change pre-derived.
 //!
-//! # The armed set is not this layer's to assemble
-//! The input is `&[`[`policy::ArmedRule`]`]` — the rules [`policy::resolve_armed_law`]
-//! resolved AT THE WRITE'S OWN PATH — and an `ArmedRule` cannot be built any other way,
-//! its construction being sealed to that resolver. So this layer cannot be handed an
-//! armed set the door would not have honoured: row selection, the pinned-rev freeze
-//! check, and each page's own load gate are all upstream of the only value it accepts.
-//! That seal is what makes "byte-for-byte the door's refusal" a property rather than a
-//! promise. A local armed-rule struct of this crate's own — `{ slug, enforcement,
-//! convention }`, assembled by whoever called — was exactly the gap, and it is why the
-//! id, not a folder slug, is now the key: the id is the name the artifact attests and
-//! every report labels with (ruling D1).
+//! The armed set is not this layer's to assemble: the input is
+//! `&[`[`policy::ArmedRule`]`]`, whose construction is sealed to
+//! [`policy::resolve_armed_law`], so this layer cannot be handed an armed set the
+//! door would not have honoured.
 //!
-//! # A fault has ONE name, and it is `policy`'s
-//! A rule that will not EVALUATE over the change in hand is
-//! [`policy::ArmedFault::Unevaluable`] here, never a fault type of this crate's.
-//! `ArmedFault` is the one armed-law fault vocabulary and its `Display` is the one
-//! renderer, so a host chooses the CHANNEL it reports on and never the words — and that
-//! variant's own doc rules the point for consumers: it "joins this vocabulary rather than
-//! the consumer's because it is the same fact as the others: a rule the workspace
-//! attested is not governing the write". The door mints precisely that fault at precisely
-//! this seam (`policy::gate`'s per-rule eval), and a layer that claims to carry the
-//! door's refusal byte-for-byte cannot spell the door's faults differently.
-//!
-//!
-//!
+//! A fault has one name, and it is `policy`'s: a rule that will not evaluate is
+//! [`policy::ArmedFault::Unevaluable`], never a fault type of this crate's — a
+//! layer that carries the door's refusal byte-for-byte cannot spell the door's
+//! faults differently.
 
 use policy::armed::Mode;
 use policy::{ArmedFault, ArmedRule, Change, Refusal, RuleId};
@@ -65,14 +48,12 @@ pub struct ArmedReport {
 
 impl ArmedReport {
     /// The armed layer found a lie: a `block` finding, or a fault the ruled kind
-    /// split says must not be survived. A `warn` finding annotates but does not, on
-    /// its own, redden the read.
+    /// split says must not be survived. A `warn` finding annotates but does not,
+    /// on its own, redden the read.
     ///
-    /// Faults are ASKED [`ArmedFault::refuses`] rather than merely counted, because
-    /// whether an unevaluable rule may be survived is a ruled split — a check that
-    /// cannot evaluate has silently disabled a gate, while a reaction that cannot
-    /// evaluate may not veto on the strength of its own failure — and a consumer
-    /// re-deriving that split is how two planes come to disagree about one fact.
+    /// Faults are asked [`ArmedFault::refuses`] rather than counted: whether an
+    /// unevaluable rule may be survived is a ruled split, and a consumer
+    /// re-deriving it is how two planes come to disagree about one fact.
     #[must_use]
     pub fn is_red(&self) -> bool {
         self.faults.iter().any(ArmedFault::refuses)
@@ -100,9 +81,8 @@ pub fn evaluate(armed: &[ArmedRule], change: &Change) -> ArmedReport {
         }
         let outcome = match rule.rule().check_change(change) {
             Ok(outcome) => outcome,
-            // Fail closed, in the door's words: a budget/parse/runtime fault never
-            // reads as a pass, and the row it carries is the attested row so the
-            // report can say WHICH page at WHICH rev could not answer.
+            // Fail closed, in the door's words: a fault never reads as a pass,
+            // and the attested row says WHICH page at WHICH rev could not answer.
             Err(error) => {
                 faults.push(ArmedFault::Unevaluable {
                     row: rule.row().clone(),
@@ -113,30 +93,21 @@ pub fn evaluate(armed: &[ArmedRule], change: &Change) -> ArmedReport {
         };
         for refusal in outcome.refusals {
             match rule.mode() {
-                // The check-ENFORCEMENT vocabulary, and the whole reason a finding
-                // carries its mode: `block` is what the door would refuse on, so it
-                // reddens the read; `warn` is carried and rendered and does not.
+                // `block` is what the door would refuse on, so it reddens the
+                // read; `warn` is carried and rendered and does not.
                 Mode::Block | Mode::Warn => findings.push(ArmedFinding {
                     id: rule.id().clone(),
                     mode: rule.mode(),
                     refusal,
                 }),
-                // `off` is attested-inert and never reaches a resolved law at all.
-                // `armed` is a HOOK's mode, and a reaction has no veto. THIS report
-                // is what reddens a read, and a red read is an enforcement voice —
-                // so admitting a hook's output here would hand it, through the read
-                // verb's back door, the one power the check/hook split exists to
-                // withhold. Dropping it is not silence: an armed hook's firing is
-                // `policy::evaluate_hooks`'s to report, on the reaction plane, and
-                // this layer declining to speak for it is what keeps two planes from
-                // double-reporting one act.
-                //
-                // The arm is unreachable twice over today — `policy::armed::arm`
-                // refuses a dual-kind page, so an `armed` row's page carries only the
-                // hook leg, and `Rule::check_change` over a page with no CHECK leg is
-                // silent by construction. It is written anyway, and the match kept
-                // exhaustive over `Mode`, so that relaxing either upstream law cannot
-                // make THIS the place a hook quietly acquires a veto.
+                // `off` is attested-inert and never reaches a resolved law.
+                // `armed` is a HOOK's mode, and a reaction has no veto —
+                // admitting it here would hand a hook enforcement power through
+                // the read verb; its firing is the reaction plane's to report.
+                // Unreachable today (a dual-kind page refuses to arm; a hook
+                // page has no check leg), but kept exhaustive over `Mode` so a
+                // relaxed upstream law cannot make this the place a hook
+                // quietly acquires a veto.
                 Mode::Off | Mode::Armed => {}
             }
         }
@@ -212,15 +183,12 @@ def on_change(event):
         }
     }
 
-    /// ARM every `(page path, bytes, id, mode)` at the workspace root and resolve the
-    /// law governing a write at `at_path` — the fixture's stand-in for the disk edge
-    /// (`wire_serve::armed_disk::resolve_at`), with the once-armed marker standing in
-    /// as the resolver's `ever_armed` argument.
+    /// ARM every `(page path, bytes, id, mode)` at the workspace root and
+    /// resolve the law governing a write at `at_path`.
     ///
-    /// Going through the real ARM act and the real resolver is not ceremony: an
-    /// [`ArmedRule`] has no other constructor, so a fixture that wanted to hand
-    /// `evaluate` a hand-built armed set could not, which is the seal the module doc
-    /// describes doing its job on the tests too.
+    /// Goes through the real ARM act and resolver: an [`ArmedRule`] has no
+    /// other constructor, so a fixture cannot hand `evaluate` a hand-built
+    /// armed set.
     fn law_at(pages: &[(&str, &str, &str, Mode)], at_path: &str) -> ArmedLaw {
         let index = RuleIndex::discover(pages.iter().map(|(path, bytes, ..)| PageRef {
             layer: ScopeLayer::Workspace,
@@ -347,12 +315,9 @@ def on_change(event):
         assert!(!report.is_red());
     }
 
-    /// A change outside the rule's `paths:` scope is never evaluated — the rule is
-    /// not that document's concern.
-    ///
-    /// The row still GOVERNS the path: it was armed at the workspace root, whose arm
-    /// root contains every path, so the law resolves it here. What excludes it is its
-    /// own declared scope, which is the distinction this test pins.
+    /// A change outside the rule's `paths:` scope is never evaluated. The row
+    /// still GOVERNS the path (armed at the workspace root); what excludes it
+    /// is its own declared scope.
     #[test]
     fn out_of_scope_change_is_not_evaluated() {
         let before = doc_of("notes/n.md", "---\nowner: agent:alice\n---\n# N\n\nx\n");
@@ -386,9 +351,8 @@ def on_change(event):
         );
     }
 
-    /// A `warn`-armed rule ANNOTATES: its refusal is carried verbatim and the read
-    /// stays green. The severity axis is check vocabulary — the reason a finding
-    /// records its mode instead of a report counting findings.
+    /// A `warn`-armed rule ANNOTATES: its refusal is carried verbatim and the
+    /// read stays green.
     #[test]
     fn a_warn_armed_rule_annotates_without_reddening_the_read() {
         let change = close_change("agent:alice"); // owner self-close: fires

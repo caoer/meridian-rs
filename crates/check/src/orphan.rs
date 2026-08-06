@@ -1,36 +1,18 @@
 //! The orphan lint (G3): run receipts that record an authorisation with no completion.
 //!
-//! # What an orphan is
-//! The run plane writes up to two receipt lines per invocation, joined by the invocation
-//! id: a PRE-EXEC receipt anchored `^p-run-<invocation>` when a run is authorised, and a
-//! COMPLETION receipt anchored `^r-run-<invocation>` when it finishes. A pre-exec with no
-//! completion means the record cannot show that run finished — a run that died mid-exec
-//! is exactly this shape, and the pre-exec receipt exists to make it visible.
+//! The run plane writes up to two receipt lines per invocation, joined by the
+//! invocation id: a PRE-EXEC receipt anchored `^p-run-<invocation>` when a run is
+//! authorised, and a COMPLETION receipt anchored `^r-run-<invocation>` when it
+//! finishes. A pre-exec with no completion means the record cannot show that run
+//! finished.
 //!
-//! The design named this lint three times and nobody built it, so until now nothing read
-//! the receipts back. An anchor whose reader does not exist is a plan, not a detector.
-//!
-//! # The era boundary, and why it is derived from the page itself
-//! Builds before the completion marker landed wrote NO completion receipt when a task
-//! emitted no descriptors — so a zero-effect run that genuinely succeeded left exactly
-//! the bytes an abandoned run leaves. Those invocations are **unauditable by
-//! construction**: the record cannot prove they finished, and a lint that quietly excused
-//! them would assert what the bytes do not support.
-//!
-//! They are still orphans and still flagged. What changes is the RENDERING: four
-//! permanently-red items that can never clear train exactly the bump-without-reading
-//! habit that made stale pins go green for weeks, so the era is named where a reader sees
-//! it.
-//!
-//! The boundary is read off the page rather than configured: the first completion receipt
-//! proves the writer was capable of emitting one, so pre-exec receipts BEFORE it belong
-//! to the era that could not, and any after it is a live incident. No build id, no date,
-//! no external state — the evidence for the boundary is in the same bytes as the finding.
-//!
-//!
-//!
-//!
-//!
+//! Era boundary: builds before the completion marker landed wrote NO completion
+//! receipt when a task emitted no descriptors, so those invocations are
+//! unauditable by construction. They are still orphans and still flagged; only the
+//! RENDERING differs, so permanently-red items do not train the
+//! bump-without-reading habit. The boundary is read off the page itself — the
+//! first completion receipt proves the writer could emit one — no build id, no
+//! date, no external state.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -102,15 +84,9 @@ fn orphans_on_page(page: &str, raw: &str) -> Vec<OrphanedRun> {
 /// The page's lines that may carry a receipt, paired with their index —
 /// everything OUTSIDE a fenced code block.
 ///
-/// Found the hard way: the first live run of this lint flagged an invocation on
-/// `s4-u4-adoption-evidence.md`, a page whose whole purpose is to QUOTE a
-/// receipt line while explaining this defect. A lint that reads documentation
-/// of a problem as an instance of it reports its own evidence file, and the
-/// same shape — the instrument observing itself — has now cost this lane a
-/// measurement, a negative control, and this.
-///
-/// Fence tracking, not full parsing: a receipt line is a top-level list item
-/// and the only realistic false positive is prose quoting the format.
+/// Fence tracking, not full parsing: a page may QUOTE a receipt line while
+/// documenting the format, and a lint that reads documentation of a problem as
+/// an instance of it reports its own evidence file.
 fn receipt_lines(raw: &str) -> impl Iterator<Item = (usize, &str)> {
     let mut in_fence = false;
     raw.lines().enumerate().filter(move |(_, line)| {

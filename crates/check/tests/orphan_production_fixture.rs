@@ -12,7 +12,6 @@
 //!
 //! The anchors are copied verbatim; the JSON bodies are elided to the fields that matter,
 //! because the lint joins on the anchor and must not depend on payload shape.
-//!
 
 use check::orphan::{orphaned_runs, render};
 use model::Document;
