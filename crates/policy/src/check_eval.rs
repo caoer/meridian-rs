@@ -3,42 +3,6 @@
 //! source-size, and nesting. [`CheckError`] is the typed failure surface.
 //! Capability ceiling for CHECK globals is enforced at load; evaluation is
 //! pure over the injected change facts.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use std::cell::RefCell;
 
@@ -55,10 +19,10 @@ use starlark::values::structs::AllocStruct;
 use crate::change::{Change, DocFacts, Edge, EditFact, NodeFact, TargetFact};
 use crate::declaration::Refusal;
 
-/// Deterministic bounds on one `check_change` evaluation — the FULL limit set
-/// (plan §4 preamble): tick + heap + call-depth + source-size, plus the parser
-/// nesting cap ([`MAX_NESTING_DEPTH`]). Distinct from [`crate::EvalBudget`] (the
-/// `@1` `{steps, mem}` load-gate budget) — the `@2` door surface meters all five
+/// Deterministic bounds on one `check_change` evaluation — the full limit set:
+/// tick + heap + call-depth + source-size, plus the parser nesting cap
+/// ([`MAX_NESTING_DEPTH`]). Distinct from [`crate::EvalBudget`] (the `@1`
+/// `{steps, mem}` load-gate budget) — the `@2` door surface meters all five
 /// guards, never fuel alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CheckLimits {

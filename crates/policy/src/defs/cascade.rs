@@ -87,8 +87,7 @@ fn merge_def(near: Option<Def>, far: Def) -> Def {
 
 /// The default layer ladder for a record path: every `defs/` directory from
 /// the record's own directory upward (nearest first), then `$UCC_HOME/defs`.
-/// Same walk the Go daemon runs today (to the filesystem root; documented in
-/// the U9 re-attest — the engine process performs the stat ladder now).
+/// Same walk the Go daemon runs, to the filesystem root.
 pub fn discover_layers(record_path: &Path) -> Vec<PathBuf> {
     let mut layers = Vec::new();
     let mut dir = record_path

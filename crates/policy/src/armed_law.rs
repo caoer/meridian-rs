@@ -5,46 +5,6 @@
 //! [`resolve_armed_law`] pivots on the once-armed marker so a workspace that
 //! has ever been armed fails CLOSED rather than reading as "nothing armed".
 //! Output is the [`ArmedLaw`] the gate consumes at the write's own path.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use crate::armed::{ARMED_RULES_PATH, ArmedRow, Mode, PageSource, RedRow, Redness, parse_artifact};
 use crate::check_eval::CheckLimits;
@@ -91,13 +51,9 @@ pub enum ArmedFault {
         error: RuleLoadError,
     },
     /// A row loaded, but its law could not be EVALUATED over the change in hand —
-    /// a budget, parse, or runtime fault in the predicate.
-    ///
-    /// It joins this vocabulary rather than the consumer's because it is the same
-    /// fact as the others: a rule the workspace attested is not governing the
-    /// write. It is the only fault a consumer can raise, which is why the row it
-    /// carries is [`resolve_armed_law`]'s and the fault is not constructible from
-    /// a bare id.
+    /// a budget, parse, or runtime fault in the predicate. The only fault a
+    /// consumer can raise; the row it carries is [`resolve_armed_law`]'s, so it
+    /// is not constructible from a bare id.
     Unevaluable {
         /// The attested row whose law faulted.
         row: ArmedRow,
@@ -260,9 +216,8 @@ impl ArmedLaw {
     /// still stands — the binding law's question.
     ///
     /// Red and unloadable rows are included deliberately: a row is bound by the
-    /// ARM act that attested it, not by whether it loaded a moment ago. Excluding
-    /// them would make a drifted page freely editable, which is the one state
-    /// where the binding most needs to teach.
+    /// ARM act that attested it, and excluding them would make a drifted page
+    /// freely editable.
     pub fn armed_pages(&self) -> impl Iterator<Item = &str> {
         self.rules
             .iter()
@@ -336,9 +291,8 @@ pub fn resolve_armed_law(
         return broken(ArmedFault::Disarmed { path: path() });
     }
 
-    // ONE call — `verify_at` composes selection and the freeze check in the only
-    // order correct in both directions, and its own docs carry why neither
-    // hand-composition is. Red rows are faults here rather than silent absences.
+    // One call — `verify_at` composes selection and the freeze check in the
+    // correct order. Red rows are faults here, not silent absences.
     let verdict = artifact.verify_at(at_path, pages);
     let mut faults: Vec<ArmedFault> = verdict.red().iter().cloned().map(ArmedFault::Red).collect();
     let mut rules = Vec::with_capacity(verdict.firing().len());
@@ -360,14 +314,12 @@ pub fn resolve_armed_law(
 
 /// Load one firing row's pinned page into a [`Rule`], or say why it could not be.
 ///
-/// The load goes through [`load_rule`] — the ONE enforcement point for the kind
-/// seam — rather than a per-leg loader. A leg loader called directly here would be
-/// a second enforcement point, and the filename-shaped one still asserts a `kind:`
-/// key that tag registration replaced, so an armed page in the ruled shape (tag,
-/// no `kind:`) could arm and never fire.
+/// Loads through [`load_rule`] — the one enforcement point for the kind seam.
+/// The filename-shaped leg loaders still assert a `kind:` key tag registration
+/// replaced, so calling one directly would let a page in the ruled shape arm and
+/// never fire.
 ///
-/// The layer is `Workspace` because an armed row's `page` is a workspace path: the
-/// artifact is per workspace and its rows are what THIS workspace attested.
+/// The layer is `Workspace` because an armed row's `page` is a workspace path.
 fn load_row(
     row: &ArmedRow,
     pages: &dyn PageSource,
@@ -375,17 +327,15 @@ fn load_row(
 ) -> Result<Rule, Box<ArmedFault>> {
     let red = |why: Redness| Box::new(ArmedFault::Red(RedRow::new(row.clone(), why)));
 
-    // `verify_at` read these bytes moments ago through the same source, so a miss
-    // here is the page vanishing mid-write — the same redness verification would
-    // have found one call earlier.
+    // A miss here is the page vanishing mid-write — the same redness `verify_at`
+    // would have found one call earlier.
     let bytes = pages.read(row.page()).map_err(|e| {
         red(Redness::Missing {
             detail: e.to_string(),
         })
     })?;
-    // Verification already reddens a row whose page registers no admitting kind, so
-    // reaching the else arm means the page stopped being a rule page between the two
-    // reads. Same fact, same words.
+    // Reaching the else arm means the page stopped being a rule page between the
+    // two reads; verification would have reddened it the same way.
     let Ok(Some(registration)) = register_page(PageRef {
         layer: ScopeLayer::Workspace,
         page: row.page(),
@@ -516,10 +466,9 @@ mod tests {
 
     // ── F2: the row-deletion disarm ───────────────────────────────────────────
 
-    /// **F2.** The deletion LOOKS legitimate — a well-formed artifact page with a
-    /// title, the preamble, the byte-exact § 4 header, and zero data rows — which is
-    /// exactly what deleting every row leaves behind. Before the once-armed pivot
-    /// this parsed clean and armed nothing: a silent TOTAL disarm.
+    /// F2: deleting every row leaves a well-formed artifact page — title,
+    /// preamble, § 4 header, zero data rows — which must refuse rather than
+    /// read as a silent total disarm.
     #[test]
     fn a_well_formed_empty_artifact_on_a_once_armed_workspace_refuses_instead_of_disarming() {
         let empty = ArmedArtifact::default().render();
@@ -542,8 +491,7 @@ mod tests {
         );
     }
 
-    /// The other half of F2's law, and why `Disarmed` is not simply "no armed rows":
-    /// an attested-`off` row IS an attestation, so a workspace that deliberately
+    /// An attested-`off` row IS an attestation: a workspace that deliberately
     /// enforces nothing gates nothing and faults not at all.
     #[test]
     fn rows_attested_off_are_a_legitimate_disarm_and_never_a_fault() {
@@ -555,9 +503,8 @@ mod tests {
 
     // ── F-1: one bad row must not silence the rules beside it ─────────────────
 
-    /// **F-1.** Two rules govern the path; one page registers but does not load.
-    /// The faulting row is reported BY NAME and the other rule still governs — the
-    /// defect was `?` out of the per-row loop, which dropped both.
+    /// F-1: two rules govern the path; one page registers but does not load.
+    /// The faulting row is reported by name and the other rule still governs.
     #[test]
     fn one_unloadable_row_does_not_silence_the_rules_beside_it() {
         // Registers by tag (so it arms) but declares no hook — the two layers.
@@ -610,10 +557,8 @@ mod tests {
         }
     }
 
-    /// The `kind:` key is gone from registration, so a page in the ruled shape —
-    /// tag, id, no `kind:` — must LOAD. The filename-shaped hook loader still
-    /// asserts `kind: hook`, and reaching it from here would let a page arm and
-    /// never fire.
+    /// A page in the ruled shape — tag, id, no `kind:` — must load; the
+    /// filename-shaped hook loader still asserts `kind: hook`.
     #[test]
     fn a_hook_page_in_the_ruled_shape_loads_without_a_kind_key() {
         let page = hook_page("a.hook");
@@ -628,10 +573,9 @@ mod tests {
         );
     }
 
-    /// Selection is by ARM ROOT; a rule's `paths:` scope is the consumer's filter.
-    /// The two are different questions and this surface answers only the first —
-    /// folding `paths:` in here would make an out-of-scope write look unarmed and
-    /// hide the faults governing it.
+    /// Selection is by ARM ROOT; a rule's `paths:` scope is the consumer's
+    /// filter — folding `paths:` in here would make an out-of-scope write look
+    /// unarmed and hide the faults governing it.
     #[test]
     fn selection_is_by_arm_root_and_declared_scope_stays_the_consumers() {
         let (artifact, pages) =

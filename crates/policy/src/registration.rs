@@ -13,47 +13,6 @@
 //! Nothing here arms: discovery makes a page known; only the attested ARM act
 //! activates it. Workspace root and folder/session tree are one layer,
 //! separated by [`Scope::depth`].
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use std::borrow::Borrow;
 use std::collections::BTreeMap;
@@ -75,8 +34,8 @@ pub const MAX_ID_LEN: usize = 64;
 // ── Registration kind ─────────────────────────────────────────────────────────
 
 /// Which rule plane a page registers into. The tag suffix after
-/// [`REGISTRATION_NAMESPACE`] IS the kind, so the page's identity never couples to
-/// the engine's name (`meridian/hook` was rejected for exactly that coupling).
+/// [`REGISTRATION_NAMESPACE`] IS the kind, so the page's identity never couples
+/// to the engine's name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RuleKind {
     /// `rules/check` — the law leg. A check may refuse a write.
@@ -377,19 +336,17 @@ impl Registration {
     }
 }
 
-/// The directory a page mounts at — the mount law (ruling § 3, amended 2026-08-01).
+/// The directory a page mounts at — the mount law (ruling § 3).
 ///
 /// A page mounts at its containing directory, with ONE exception: when that
-/// directory is named `rules`, the page mounts at the directory's PARENT. A folder
-/// named `rules/` is where rules are KEPT, not a scope they govern — without the
-/// lift, collecting a workspace's rules into `rules/` would silently shrink every
-/// one of them to governing that folder, and authors would have to choose between
-/// tidiness and reach.
+/// directory is named `rules`, the page mounts at the directory's PARENT. A
+/// `rules/` folder is where rules are KEPT, not a scope they govern — without
+/// the lift, collecting a workspace's rules into `rules/` would silently shrink
+/// every one of them to governing that folder.
 ///
-/// The lift is exactly one level and never recursive: only the IMMEDIATE container
-/// counts, so `rules/sub/x.md` mounts at `rules/sub`. A rule filed deeper has been
-/// deliberately filed deeper, and a recursive lift would let a nested layout folder
-/// escape upward through directories its author never named.
+/// The lift is exactly one level and never recursive: only the IMMEDIATE
+/// container counts, so `rules/sub/x.md` mounts at `rules/sub` — a rule filed
+/// deeper has been deliberately filed deeper.
 #[must_use]
 fn mount_dir_of(page: &str) -> &str {
     /// The layout folder the mount law lifts out of.
@@ -432,13 +389,9 @@ fn governs(layer: ScopeLayer, mount_dir: &str, path: &str) -> bool {
 /// register is a rule that silently stopped being enforced, so every refusal
 /// names its page.
 ///
-/// # The mount scope is path-derived, and that is what makes scoping possible
-/// (§ 3 "Refusal scoping", 2026-08-01)
-/// A refused page has no [`Registration`] to carry a [`Scope`], but it does not
-/// need one: [`mount_dir_of`] reads the PATH alone, and a path is exactly what a
-/// refusal always has. "Cannot be answered" applies to the page's registration
-/// TAG, never to its mount. So a refusal carries the same mount law a
-/// registration does — ONE law, computed by the same function — and
+/// The mount scope is path-derived: a refused page has no [`Registration`] to
+/// carry a [`Scope`], but [`mount_dir_of`] reads the PATH alone — so a refusal
+/// carries the same mount law a registration does, and
 /// [`RuleIndex::narrowed_to`] can narrow refusals exactly like rules.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegisterError {
@@ -576,11 +529,9 @@ pub enum RegisterFault {
 
 /// The page rev: `blake3(page bytes)[:16]`, 16 lowercase hex.
 ///
-/// This is the node-rev-merkle-spec law applied at the document root, whose span
-/// is the whole file (§ 2 hashes the node's span bytes; § 3's file leaf is the
-/// same bytes). ONE fingerprint law for check pages and hook pages alike — the
-/// grain that dissolved the `blake3(CHECK.md)` special-casing: the INDEX's pinned
-/// rev, the tag-indexed artifact's `rev` column, and the gate's drift check all call
+/// The node-rev-merkle-spec law applied at the document root, whose span is the
+/// whole file. ONE fingerprint law for check and hook pages alike: the INDEX's
+/// pinned rev, the artifact's `rev` column, and the gate's drift check all call
 /// THIS function. There is no second fingerprint and no per-kind rev.
 #[must_use]
 pub fn page_rev(bytes: &str) -> String {
@@ -643,9 +594,7 @@ pub struct PageRef<'a> {
 pub fn register_page(offered: PageRef<'_>) -> Result<Option<Registration>, RegisterError> {
     let PageRef { layer, page, bytes } = offered;
     // Every refusal below is a bare fault; the page and its mount scope are
-    // attached HERE, once, by the same `Scope::of` a registration uses. That is
-    // what "one mount law, not two" buys: a refusal cannot be minted with a
-    // scope computed some other way, because no other site mints one.
+    // attached here, once, by the same `Scope::of` a registration uses.
     let refuse = |fault: RegisterFault| RegisterError {
         page: page.to_string(),
         scope: Scope::of(layer, page),
@@ -825,40 +774,23 @@ impl RuleIndex {
         &self.refused
     }
 
-    /// Narrow to the candidates that may govern `path` — the § 3 amendment of
-    /// 2026-08-01, which rules resolution NARROWED rather than workspace-global.
+    /// Narrow to the candidates that may govern `path` — resolution is NARROWED
+    /// rather than workspace-global (§ 3).
     ///
-    /// The candidate set at a path is exactly the pages mounted AT-OR-ABOVE it: the
-    /// path's own folder chain up to the workspace root, then all of user space (the
-    /// outermost rung, which the ladder already ranks below every workspace page at
-    /// any depth). `path` may name a file or a directory; either way it is the
-    /// directory chain that is compared, with the separator explicit so `a/bc.md`
-    /// never reads as living under `a/b`.
+    /// The candidate set at a path is exactly the pages mounted AT-OR-ABOVE it:
+    /// the path's own folder chain up to the workspace root, then all of user
+    /// space. `path` may name a file or a directory; the directory chain is
+    /// compared with the separator explicit, so `a/bc.md` never reads as living
+    /// under `a/b`. Two SIBLING scopes carrying the same id are no conflict —
+    /// each governs its own subtree; a collision is same id, same scope, on ONE
+    /// chain.
     ///
-    /// The consequence the ruling draws: two SIBLING scopes carrying the same id are
-    /// no conflict — neither is on the other's chain, so each governs its own subtree
-    /// and both may arm. A collision is therefore same id, same scope, on ONE chain.
-    /// The alternative (global) reading was rejected because it couples independent
-    /// scopes through the id namespace, letting any writer refuse an id
-    /// workspace-wide.
-    ///
-    /// # Refusals narrow EXACTLY like rules (§ 3 "Refusal scoping", 2026-08-01)
-    /// A refused page's mount is path-derived ([`RegisterError::mount_dir`]), so a
-    /// refusal answers the same at-or-above question a registration does and rides
-    /// the same predicate here — one narrowing law, applied twice, never two.
-    ///
-    /// The consequence is the point: a scoped query sees a broken rule page over
-    /// EXACTLY the subtree that page would have governed, and nowhere else. The
-    /// rejected alternative — carrying refusals through unnarrowed — re-couples
-    /// independent scopes through diagnostics, which is the denial shape the
-    /// narrowing ruling already rejected for rules: any writer dropping one
-    /// malformed page anywhere would redden every scoped query in the workspace,
-    /// permanently, from paths that page could never have governed.
-    ///
-    /// **Fail-loud survives where enforcement lives.** This is the SCOPED
-    /// consumer's step; a corpus-wide walk reads [`RuleIndex::refused`] on the
-    /// un-narrowed index and therefore still reports ALL refusals, always. A broken
-    /// rule page stays loud at every arming and at every query under its own scope.
+    /// Refusals narrow exactly like rules: a refused page's mount is
+    /// path-derived ([`RegisterError::mount_dir`]), so a scoped query sees a
+    /// broken rule page over exactly the subtree that page would have governed,
+    /// and nowhere else. Fail-loud survives where enforcement lives: a
+    /// corpus-wide walk reads [`RuleIndex::refused`] on the un-narrowed index
+    /// and still reports ALL refusals.
     #[must_use]
     pub fn narrowed_to(&self, path: &str) -> RuleIndex {
         RuleIndex {
@@ -1100,12 +1032,10 @@ mod tests {
         assert_eq!(got.kinds(), &[RuleKind::Check]);
     }
 
-    /// **A named gap, pinned rather than hidden.** A page may carry BOTH
-    /// registration tags. Discovery records what the page declares — it does not
-    /// mint a "one tag per page" refusal the ruling never stated. What a dual-kind
-    /// page ARMS is the arming card's question (§4 splits mode vocabulary by kind:
-    /// `off|warn|block` for checks, `off|armed` for hooks), and answering it here
-    /// would be minting law inside the loader.
+    /// A page may carry BOTH registration tags: discovery records what the page
+    /// declares. What a dual-kind page ARMS is the arming path's question (§ 4
+    /// splits mode vocabulary by kind); answering it here would be minting law
+    /// inside the loader.
     #[test]
     fn a_page_may_carry_both_registration_tags() {
         let body = "---\ntags: [rules/check, rules/hook]\nid: dual\n---\n";
@@ -1509,7 +1439,7 @@ mod tests {
         );
     }
 
-    // ── narrowing (§ 3 amendment, 2026-08-01) ─────────────────────────────────
+    // ── narrowing (§ 3) ───────────────────────────────────────────────────────
 
     #[test]
     fn narrowing_keeps_the_chain_at_or_above_the_path() {
@@ -1550,8 +1480,8 @@ mod tests {
     fn narrowing_makes_siblings_stop_colliding() {
         use ScopeLayer::Workspace;
         // The SAME id in two sibling sessions. Globally this is a collision that
-        // refuses the id workspace-wide; narrowed, each governs its own subtree and
-        // both resolve — the denial vector the amendment rejects global for.
+        // refuses the id workspace-wide; narrowed, each governs its own subtree
+        // and both resolve.
         let index = index_of(&[
             (Workspace, "sessions/a/rules.md", "shared"),
             (Workspace, "sessions/b/rules.md", "shared"),
@@ -1584,7 +1514,7 @@ mod tests {
         );
     }
 
-    // ── refusal scoping (§ 3, 2026-08-01) ─────────────────────────────────────
+    // ── refusal scoping (§ 3) ─────────────────────────────────────────────────
 
     /// A page that offers itself to registration and is refused. Its bytes carry a
     /// registration tag and no `id:`, so the refusal is about the page rather than
@@ -1763,9 +1693,6 @@ mod tests {
                 .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
         );
         assert_ne!(page_rev("a"), page_rev("b"));
-        // There is no second fingerprint function left to disagree with this one:
-        // the `blake3(CHECK.md)` alias was deleted rather than kept delegating, so
-        // "one law" is now structural instead of asserted.
     }
 
     #[test]
@@ -1775,12 +1702,9 @@ mod tests {
         assert_eq!(Scope::of(ScopeLayer::Workspace, "a/b/c.md").depth(), 2);
     }
 
-    /// **The mount law** (ruling § 3, amended 2026-08-01). A `rules/` folder is
-    /// where rules are KEPT, so a page whose immediate container is named `rules`
-    /// mounts at that folder's parent — otherwise tidying a workspace's rules into
-    /// one folder would silently shrink every one of them to governing that folder.
-    /// The lift is one level and never recursive: a page filed deeper was filed
-    /// deeper deliberately.
+    /// The mount law (ruling § 3): a page whose immediate container is named
+    /// `rules` mounts at that folder's parent. The lift is one level and never
+    /// recursive.
     #[test]
     fn an_immediate_rules_folder_lifts_the_mount_to_its_parent() {
         for (path, mount, depth) in [
@@ -1803,12 +1727,9 @@ mod tests {
         }
     }
 
-    /// **The case the lift exists for**, measured as a narrowing outcome rather
-    /// than as a mount string. A workspace's rules kept in `<root>/rules/` were
-    /// mounted at `rules`, so `narrowed_to("tasks/x.md")` excluded them and an
-    /// armed id resolved to nothing at the very paths it was written to govern —
-    /// C3 hit this as a live fixture failure. Lifted, the same page is in play at
-    /// every path in the workspace.
+    /// The case the lift exists for, measured as a narrowing outcome: rules kept
+    /// in `<root>/rules/` used to mount at `rules`, so `narrowed_to("tasks/x.md")`
+    /// excluded them. Lifted, the same page is in play at every workspace path.
     #[test]
     fn a_workspace_rules_folder_governs_the_whole_workspace() {
         use ScopeLayer::Workspace;

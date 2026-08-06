@@ -2,32 +2,6 @@
 //! [`derive_event`] turns a landed [`Change`] into the `on_change(event)`
 //! argument a HOOK predicate reads. Attaches values behind `fields_changed`
 //! and frontmatter; drops `actor` — the engine must not observe the observer.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use effects::{ChangeEvent, ChangeFact, ChangeFactKind, EventFacts};
 
@@ -158,17 +132,9 @@ mod tests {
         derive_event(&change, "fp-before", "fp-after", 0)
     }
 
-    /// **THE ACCEPTANCE TEST.** The founding rule page's predicate
-    /// (`foundation-panel/round-2/demo/rules/task-review-notify.md`, 2026-07-18),
-    /// with `owner` renamed to `reviewer` per ZT 24-01, translated onto the
-    /// ratified `on_change(event)` entry — the panel's `when(delta, facts, now)` is
-    /// this same entry under the design's older name, so the signature was always
-    /// going to be rewritten.
-    ///
-    /// `send` stands in for the panel's `intent(...)`: `intent` and `receipt_addr`
-    /// are C2's constructors and are deliberately NOT pulled forward. What this
-    /// card owes is that the PAYLOAD can express the predicate; C2 owes the
-    /// intent shape and the receipt.
+    /// The founding rule page's predicate, translated onto the ratified
+    /// `on_change(event)` entry. `send` stands in for `intent(...)`:
+    /// `intent`/`receipt_addr` are deliberately not pulled forward here.
     const FOUNDING_PREDICATE: &str = "\
 def on_change(event):
     for delta in event.changes:
@@ -189,9 +155,8 @@ def on_change(event):
         .expect("the founding predicate evaluates")
     }
 
-    /// The founding page's first fixture: `test_move_to_review_arms_one_intent`.
-    /// A move to review arms exactly ONE effect, aimed at the reviewer named on the
-    /// card — the target read off the document, which is the whole of gap 2.
+    /// A move to review arms exactly one effect, aimed at the reviewer named on
+    /// the card — the target is read off the document.
     #[test]
     fn move_to_review_arms_one_effect_aimed_at_the_card_s_reviewer() {
         let event = event_for(&card("in-progress", ""), &card("review", ""));
@@ -209,7 +174,6 @@ def on_change(event):
         );
     }
 
-    /// The founding page's second fixture: `test_other_key_changes_are_silent`.
     #[test]
     fn other_key_changes_are_silent() {
         let event = event_for(
@@ -282,11 +246,9 @@ def on_change(event):
         assert_eq!(run(&fires).len(), 1, "the baseline still arms one effect");
     }
 
-    /// 🔴 **The observer exclusion, enforced structurally.** `policy::Change`
-    /// carries an actor; the payload does not, so a predicate reaching for one gets
-    /// a NameError-shaped fault rather than an answer. This is the law *"the engine
-    /// must not observe the observer"* made unrepresentable instead of merely
-    /// forbidden.
+    /// The observer exclusion, enforced structurally: `policy::Change` carries
+    /// an actor; the payload does not, so a predicate reaching for one faults
+    /// rather than getting an answer.
     #[test]
     fn the_payload_cannot_observe_the_observer() {
         let event = event_for(&card("in-progress", ""), &card("review", ""));
@@ -327,13 +289,10 @@ def on_change(event):
         println!("POPULATION now() -> {err}");
     }
 
-    /// 🔴 **S-2 does not reach this payload, and S-1 does not either** — the reason
-    /// C0's ruling pointed C1a at `derive_change` rather than at Delta node entries.
-    ///
-    /// The gated close (status flip AND an appended `## Verdict`, one put) is the
-    /// exact shape where `model::delta` emitted NOTHING and, appended alone, named
-    /// only the PARENT section. The state diff names the parent, the sibling whose
-    /// span moved, AND the new section by its own hpath.
+    /// The gated close (status flip AND an appended `## Verdict`, one put) is
+    /// the shape where `model::delta` emitted nothing and, appended alone, named
+    /// only the parent section. The state diff names the parent, the sibling
+    /// whose span moved, and the new section by its own hpath.
     #[test]
     fn the_delta_grain_findings_do_not_reach_the_derived_payload() {
         let before = card("in-progress", "");

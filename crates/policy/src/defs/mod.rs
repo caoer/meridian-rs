@@ -1,37 +1,6 @@
 //! I4 def-conformance (U8c) — engine-side port of meridian-go's write-time
 //! def validator. Pure verdict over (prev, candidate) documents the put path
 //! consults before any splice. Byte-exact against the U0 defs goldens.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 // Verbatim-port pedantic allowances: function shapes mirror the Go source for
 // side-by-side auditability (too_many_lines, manual_let_else, match_same_arms);
