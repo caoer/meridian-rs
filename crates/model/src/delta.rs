@@ -1,8 +1,7 @@
 //! Delta change-fact computation (contract §7, D3-DELTA — wire-lane-owned).
 //!
-//! Computes Delta FACTS only (no-serde charter); `wire-map` projects to
-//! `wire::Delta`; sidecar owns the envelope (seq/roots/actor/now — engine
-//! records nothing it wasn't given, §9).
+//! Computes Delta facts only (no-serde charter); `wire-map` projects to
+//! `wire::Delta`; the sidecar owns the envelope (seq/roots/actor/now, §9).
 //!
 //! **Deepest-changed-node (D-C7, §7.1):** entries name the deepest
 //! mint-addressable node per changed byte range (sections, anchor host-blocks,
@@ -35,7 +34,7 @@ pub enum NodeChangeKind {
     Removed,
 }
 
-/// One node-grain change fact: identity in THE §2.1 grammar ([`Ref`]), rev
+/// One node-grain change fact: identity in the §2.1 grammar ([`Ref`]), rev
 /// transition, span after. Absences follow §7.1: no `node_rev_before` on
 /// `added`, no `node_rev_after`/`span_after` on `removed`.
 #[derive(Debug, Clone, PartialEq)]
@@ -58,9 +57,9 @@ pub struct FileDelta {
 }
 
 /// Compute one path's change facts between two states. `None` when nothing
-/// changed (identical bytes) or both states are absent. Created/deleted
-/// files carry no node entries — the file-level fact is the change; the node
-/// inventory is re-readable via `toc` (never duplicated, §7.1 posture).
+/// changed (identical bytes) or both states are absent. Created/deleted files
+/// carry no node entries — the file-level fact is the change, and the node
+/// inventory is re-readable via `toc` (§7.1).
 #[must_use]
 pub fn file_delta(before: Option<&Document>, after: Option<&Document>) -> Option<FileDelta> {
     match (before, after) {
@@ -96,12 +95,11 @@ pub fn file_delta(before: Option<&Document>, after: Option<&Document>) -> Option
 /// - **After-side** (`added`/`edited`): the deepest addressable node
 ///   containing the after-range. A range ending in a line terminator is
 ///   matched with that final terminator trimmed — block-leaf spans exclude
-///   their terminator by the §1 span law, so an appended anchor block (the
-///   worked E3 receipts pattern) matches the BLOCK, not its host section.
+///   their terminator by the §1 span law, so an appended anchor block matches
+///   the block, not its host section.
 /// - **Before-side** (`removed`): the shallowest before-nodes intersecting
-///   the before-range whose identity no longer resolves — a removed
-///   subtree's descendants stay implicit (never duplicated), mirroring the
-///   ancestor-implicitness law.
+///   the before-range whose identity no longer resolves; a removed subtree's
+///   descendants stay implicit.
 ///
 /// A pure append has an empty before-range (no removed scan); a pure
 /// deletion has an empty after-range (no added/edited entry).
@@ -153,9 +151,9 @@ fn trim_final_terminator(raw: &str, r: ByteSpan) -> ByteSpan {
 }
 
 /// DFS for removed identities: a node intersecting the changed range whose
-/// identity fails to resolve in `after` is a `removed` entry; its subtree
-/// stays implicit (no recursion below a removed node). A resolving ancestor
-/// recurses — a removed child may hide under a surviving parent.
+/// identity fails to resolve in `after` is a `removed` entry, and its subtree
+/// stays implicit. A resolving ancestor recurses — a removed child may hide
+/// under a surviving parent.
 fn collect_removed(
     before: &Document,
     after: &Document,
@@ -231,8 +229,8 @@ fn walk_candidates<'d>(
         let better = best
             .as_ref()
             .is_none_or(|(_, b)| node.span.len() <= b.span.len());
-        // resolve the identity to ITS node — for fm_key the entry node is
-        // the key line, not the frontmatter block
+        // Resolve the identity to its own node — for fm_key the entry node is
+        // the key line, not the frontmatter block.
         if better && let Ok(t) = resolve(doc, &target) {
             let entry = find_by_span(&doc.root, &t.span).unwrap_or(node);
             *best = Some((target, entry));
@@ -283,7 +281,7 @@ mod tests {
         build(raw.to_string(), syntax::parse(raw))
     }
 
-    /// D-C7: an edit inside a nested section names the DEEPEST section, not
+    /// D-C7: an edit inside a nested section names the deepest section, not
     /// its ancestors, and never duplicates ancestor entries.
     #[test]
     fn edited_names_deepest_section_only() {
@@ -310,9 +308,8 @@ mod tests {
         assert_eq!(d.span_after.as_ref(), Some(&(5..a.raw.len())));
     }
 
-    /// An appended anchor-bearing block echoes as the ANCHOR added (the
-    /// worked E3 receipts pattern) — the host section's rev change stays
-    /// implicit.
+    /// An appended anchor-bearing block echoes as the anchor added; the host
+    /// section's rev change stays implicit.
     #[test]
     fn appended_anchor_block_is_added_anchor_entry() {
         let b = doc("# R\n");
@@ -358,7 +355,7 @@ mod tests {
         assert_eq!(d.span_after, None);
     }
 
-    /// A frontmatter edit refines to the changed key LINE (`fm_key` — the
+    /// A frontmatter edit refines to the changed key line (`fm_key` — the
     /// §2.1 frontmatter plane), not the whole block.
     #[test]
     fn frontmatter_edit_names_the_key_line() {
@@ -394,9 +391,8 @@ mod tests {
         ])
     }
 
-    /// C0 control 1 — the `status:` line alone names `fm_key`. This is the
-    /// biting control for the gated-close case: it proves the probe can see
-    /// an `fm_key` entry at all.
+    /// C0 control 1 — the `status:` line alone names `fm_key`; the control that
+    /// proves the probe can see an `fm_key` entry at all.
     #[test]
     fn c0_status_alone_names_fm_key() {
         let b = doc(&task_card("in-progress", "pending"));
@@ -408,9 +404,8 @@ mod tests {
         assert_eq!(got[0].change, NodeChangeKind::Edited);
     }
 
-    /// C0 control 2 — the `## Verdict` body alone names its `hpath`. The
-    /// biting control for the section half: it proves the probe can see an
-    /// `Hpath` entry at all.
+    /// C0 control 2 — the `## Verdict` body alone names its `hpath`; the control
+    /// that proves the probe can see an `Hpath` entry at all.
     #[test]
     fn c0_verdict_section_alone_names_hpath() {
         let b = doc(&task_card("in-progress", "pending"));
@@ -422,20 +417,20 @@ mod tests {
         assert_eq!(got[0].change, NodeChangeKind::Edited);
     }
 
-    /// C0 case 3 — one-put gated close: `status:` AND `## Verdict` in ONE
-    /// splice yields **no node entries**. Each half alone produces one; the
-    /// joint edit is one contiguous range only the Document root contains, and
-    /// `identity_of` has no `NodeKind::Document` arm. File-level fact survives.
+    /// C0 case 3 — one-put gated close: `status:` and `## Verdict` in one splice
+    /// yields no node entries. The joint edit is one contiguous range only the
+    /// Document root contains, and `identity_of` has no `NodeKind::Document`
+    /// arm; the file-level fact survives.
     ///
     /// Pins observed behaviour, not a ratified §7.1 answer for "no addressable
-    /// node contains the range". Emitting entries later must fail this test.
+    /// node contains the range".
     #[test]
     fn c0_gated_close_one_put_emits_no_node_entries() {
         let b = doc(&task_card("in-progress", "pending"));
         let a = doc(&task_card("review", "passed - gates green"));
 
-        // the mechanism precondition: ONE range spanning frontmatter → body.
-        // Without this the emptiness below could pass vacuously.
+        // Precondition: one range spanning frontmatter → body, without which
+        // the emptiness below could pass vacuously.
         let (_, ar) = changed_ranges(&b.raw, &a.raw).expect("bytes differ");
         let changed = &a.raw[ar.clone()];
         assert!(
@@ -450,16 +445,16 @@ mod tests {
             "observed 2026-07-30: no node entries for the joint edit; got {got:?}"
         );
 
-        // the file-level fact is unaffected — only the node inventory is empty
+        // The file-level fact is unaffected — only the node inventory is empty.
         let fd = file_delta(Some(&b), Some(&a)).expect("file changed");
         assert_eq!(fd.change, FileChangeKind::Modified);
         assert!(fd.file_rev_before.is_some() && fd.file_rev_after.is_some());
         assert!(fd.nodes.is_empty(), "{:?}", fd.nodes);
     }
 
-    /// C0 case 3b — append `## Verdict` while flipping `status:` in one splice:
-    /// still empty. A truly-added section yields no `added` entry because the
-    /// after-range opens inside frontmatter. Collapse is not edit-shape-dependent.
+    /// C0 case 3b — appending `## Verdict` while flipping `status:` in one
+    /// splice is still empty: the after-range opens inside frontmatter, so a
+    /// truly-added section yields no `added` entry either.
     #[test]
     fn c0_gated_close_appending_verdict_also_emits_nothing() {
         let b = doc(
@@ -470,13 +465,10 @@ mod tests {
                      # Task: widget-rollout\n\n## Objective\n\nShip the widget.\n\n\
                      ## Verdict\n\npassed - gates green\n");
 
-        // Control: append without status flip is visible — emptiness below is
-        // from the joint edit, not an invisible append.
-        //
-        // Append alone names the PARENT `# Task: …` as `Edited`, never
-        // `## Verdict` as `Added`. Changed range opens with the blank line that
-        // ends `## Objective`, so `## Verdict` does not contain it.
-        // `trim_final_terminator` trims trailing terminators only.
+        // Control: append without the status flip is visible, so the emptiness
+        // below comes from the joint edit. Append alone names the parent
+        // `# Task: …` as `Edited` — the changed range opens with the blank line
+        // ending `## Objective`, which `## Verdict` does not contain.
         let alone = node_deltas(
             &doc(
                 "---\ntype: task\nstatus: in-progress\nowner: e4201e72\n---\n\n\

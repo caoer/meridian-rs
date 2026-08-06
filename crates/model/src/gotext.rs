@@ -1,21 +1,20 @@
-//! FROZEN Go-text heading predicate — sole engine owner (stage-2 S0).
+//! Frozen Go-text heading predicate — sole engine owner.
 //!
 //! `sanitize_heading` is the address law for every heading-derived name.
 //! Byte-for-byte with meridian-go `sanitizeHeading` / `sanitizeHeadingHost`
 //! (`map.go`, `readsidecar.go:350`): `TrimSpace`, `/`→`-`, ASCII space→`-`,
 //! empty→`"untitled"`. Frozen — reproduced, not improved.
 //!
-//! Lives in `model` (not `wire-map`) so three consumers cannot drift:
-//! `wire-map::facts`, `policy::defs::rebuild`, and (until S2) the Go host
-//! mirror. Frozen character-class primitive only; projection (dewey, hpath
-//! assembly) stays in `wire-map` (law 3).
+//! Lives in `model` (not `wire-map`) so its three consumers —
+//! `wire-map::facts`, `policy::defs::rebuild`, the Go host mirror — cannot
+//! drift. Character-class primitive only; projection (dewey, hpath assembly)
+//! stays in `wire-map` (law 3).
 //!
 //! `is_go_space` pins the trim character class as an explicit table so stdlib
 //! Unicode revisions cannot skew the address law.
 
-/// Go `unicode.IsSpace`: the Unicode `White_Space` property, as an explicit
-/// pinned table (stable since Unicode 6.3 — U+180E left the property then,
-/// and Go's and Rust's current tables both agree with this set).
+/// Go `unicode.IsSpace`: the Unicode `White_Space` property as an explicit
+/// pinned table (stable since Unicode 6.3, when U+180E left the property).
 #[must_use]
 pub const fn is_go_space(c: char) -> bool {
     matches!(
@@ -55,9 +54,8 @@ pub fn sanitize_heading(title: &str) -> String {
 mod tests {
     use super::*;
 
-    /// The pinned `White_Space` membership — the A-C1 divergence classes:
-    /// NBSP and NEL ARE spaces; ZWSP, ZWNJ, BOM, and the Unicode-6.3-removed
-    /// Mongolian vowel separator are NOT.
+    /// Pinned `White_Space` membership: NBSP and NEL are spaces; ZWSP, ZWNJ,
+    /// BOM, and the Unicode-6.3-removed U+180E are not.
     #[test]
     fn go_space_table_membership() {
         let spaces = [
@@ -77,7 +75,7 @@ mod tests {
     }
 
     /// `sanitizeHeadingHost` verbatim: trim is `White_Space`-wide, replacement
-    /// is `/` and ASCII space ONLY — interior NBSP/tab survive.
+    /// is `/` and ASCII space only — interior NBSP/tab survive.
     #[test]
     fn sanitize_heading_matches_go_host() {
         assert_eq!(sanitize_heading("Lab state"), "Lab-state");
@@ -99,11 +97,8 @@ mod tests {
 
     /// Every heading of the Go-side drift-guard corpus
     /// (`ccc-statusd/internal/mcpserver/testdata/parity/corpus`, 61 headings
-    /// over 14 roots), paired with the output of the REAL Go
-    /// `sanitizeHeadingHost` (`puttoc.go:144`) over the same input. This is
-    /// the engine-side successor of `sanitize_drift_guard_test.go`: when S2
-    /// deletes the host mirror, this table is what keeps the address law
-    /// pinned to Go's bytes.
+    /// over 14 roots), paired with the real Go `sanitizeHeadingHost`
+    /// (`puttoc.go:144`) output over the same input.
     const DRIFT_GUARD_CORPUS: &[(&str, &str)] = &[
         ("Tasks", "Tasks"),                                 // authz/agents/other999.md:6
         ("Handoff", "Handoff"),                             // authz/agents/other999.md:10
@@ -170,7 +165,7 @@ mod tests {
 
     #[test]
     fn sanitize_heading_matches_drift_guard_corpus() {
-        // Vacuity guard: the corpus must be the WHOLE 61, not a truncation.
+        // Vacuity guard: the corpus must be all 61, not a truncation.
         assert_eq!(
             DRIFT_GUARD_CORPUS.len(),
             61,

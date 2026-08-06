@@ -1,4 +1,4 @@
-//! U-SPEC golden fixtures for `docs/fingerprint-norm-spec.md` (fingerprint hash domain;
+//! Golden fixtures for `docs/fingerprint-norm-spec.md` (fingerprint hash domain;
 //! decision 2026-07-24-fingerprint-cid-representation).
 //!
 //! `reference` = spec-verbatim norm-v2 (§4) + token (§2). Production
@@ -12,7 +12,7 @@ use model::{Node, NodeKind, build};
 mod reference {
     use std::ops::Range;
 
-    /// §4.1 — anchor identification: the syntax lexer over the WHOLE file is
+    /// §4.1 — anchor identification: the syntax lexer over the whole file is
     /// the one normative grammar; norm-v2 consumes the marker spans verbatim.
     pub(crate) fn anchor_markers(input: &str) -> Vec<Range<usize>> {
         syntax::parse(input)
@@ -41,7 +41,7 @@ mod reference {
                     // sits inside the removed line).
                     out.push(line_start..m.end + p + 1);
                 } else {
-                    // R2b: last line, no terminator — take the PRECEDING
+                    // R2b: last line, no terminator — take the preceding
                     // line's terminator instead, so terminator-exclusive
                     // slices stay neutral under own-line promotion at EOF.
                     let mut t = line_start;
@@ -54,7 +54,7 @@ mod reference {
                     out.push(t..file.len());
                 }
             } else {
-                // R1: the marker plus exactly ONE preceding space/tab — the
+                // R1: the marker plus exactly one preceding space/tab — the
                 // exact inverse of what promotion inserts (#6 §2). The lexer
                 // guarantees the preceding byte is a space or tab here.
                 out.push(m.start - 1..m.end);
@@ -241,7 +241,7 @@ fn canonical_goldens_hold() {
 }
 
 /// §5.1 — promotion never moves the fingerprint, at document grain.
-/// §5.2 — the same promotion MUST move `node_rev` (CAS sees real bytes).
+/// §5.2 — the same promotion must move `node_rev` (CAS sees real bytes).
 #[test]
 fn neutrality_document_grain() {
     assert_eq!(reference::norm_v2(X0).as_slice(), X0.as_bytes());
@@ -258,10 +258,9 @@ fn neutrality_document_grain() {
         "CAS must see the promotion byte-change at document grain"
     );
 
-    // PRODUCTION mint agrees with reference and golden.
-    // `.expect` is the non-vacuity guard, not ceremony: the mint returns a
-    // Result now, and two `Err`s compare EQUAL — an undischarged neutrality
-    // assert would pass on two documents that both fingerprint nothing.
+    // Production mint agrees with reference and golden. `.expect` is the
+    // non-vacuity guard: two `Err`s compare equal, so an undischarged
+    // neutrality assert would pass on two documents that fingerprint nothing.
     let pf0 = model::fingerprint::fingerprint(&d0, &d0.root).expect("X0 root has content");
     let pf1 = model::fingerprint::fingerprint(&d1, &d1.root).expect("X1 root has content");
     assert_eq!(pf0, pf1, "production: false drift at document grain");
@@ -270,7 +269,7 @@ fn neutrality_document_grain() {
 
 /// §5 at section grain: the promoted paragraph lives in section A; section A's
 /// fingerprint holds, its `node_rev` moves, and untouched section B is inert on
-/// BOTH planes.
+/// both planes.
 #[test]
 fn neutrality_section_grain() {
     let (d0, d1) = (doc(X0), doc(X1));
@@ -284,7 +283,7 @@ fn neutrality_section_grain() {
     assert_eq!(reference::fingerprint(&c0), reference::fingerprint(&c1));
     assert_ne!(a0.node_rev, a1.node_rev, "CAS must move at section grain");
 
-    // PRODUCTION section-grain mint agrees with reference.
+    // Production section-grain mint agrees with reference.
     let (p0, p1) = (
         model::fingerprint::fingerprint(&d0, a0).expect("section A of X0 has content"),
         model::fingerprint::fingerprint(&d1, a1).expect("section A of X1 has content"),
@@ -317,7 +316,7 @@ fn neutrality_own_line_at_eof() {
     );
     assert_ne!(apre.node_rev, apost.node_rev);
 
-    // PRODUCTION R2b agreement at section grain.
+    // Production R2b agreement at section grain.
     assert_eq!(
         model::fingerprint::fingerprint(&dpre, apre).expect("pre-promotion A has content"),
         model::fingerprint::fingerprint(&dpost, apost).expect("post-promotion A has content"),
@@ -325,7 +324,7 @@ fn neutrality_own_line_at_eof() {
     );
 }
 
-/// §4.3 grain consistency — the model re-spans an Anchor node to its HOST
+/// §4.3 grain consistency — the model re-spans an Anchor node to its host
 /// block line; norm-v2 of that host span yields the pre-promotion block bytes.
 #[test]
 fn anchor_host_block_grain() {
@@ -358,7 +357,7 @@ fn token_mint_and_roundtrip() {
             .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
     );
 
-    // PRODUCTION parse agrees field-for-field.
+    // Production parse agrees field-for-field.
     let parts = model::fingerprint::parse_fingerprint(&tok).expect("production parses");
     assert_eq!(
         (parts.version, parts.codec, parts.hashfn, parts.digest),
@@ -393,7 +392,7 @@ fn token_malformed_rejected() {
 }
 
 /// §2.4 — self-describing survives its implementations: an unknown version,
-/// codec, or hashfn PARSES (grey `unverifiable` downstream), it is not
+/// codec, or hashfn parses (grey `unverifiable` downstream), it is not
 /// malformed; digest length is unchecked for an unknown hashfn.
 #[test]
 fn token_unknown_version_codec_or_hashfn_parses() {
@@ -410,7 +409,7 @@ fn token_unknown_version_codec_or_hashfn_parses() {
     assert_eq!(hashfn, "xx");
     assert_eq!(digest, "0123abc");
 
-    // PRODUCTION: unknown codec/hashfn parse (grey downstream), not malformed.
+    // Production: unknown codec/hashfn parse (grey downstream), not malformed.
     assert!(model::fingerprint::parse_fingerprint(&format!("fp1.zzz9.b3.{hex64}")).is_some());
     assert!(model::fingerprint::parse_fingerprint("fp1.span2.xx.0123abc").is_some());
 }

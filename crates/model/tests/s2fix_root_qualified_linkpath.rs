@@ -1,4 +1,4 @@
-//! R44/fix3 — root-level path arm of `resolve_linkpath` subpath narrowing.
+//! Root-level path arm of `resolve_linkpath` subpath narrowing.
 //!
 //! Subpath `a/b` matches paths ending in `a/b.md`: nested (`/a/b.md` suffix) or
 //! vault-root (`lower == qualified`, no leading separator). Nested-only fixtures
@@ -7,9 +7,8 @@
 
 use model::CorpusIndex;
 
-/// The linking page: in neither candidate's directory, so the source-relative
-/// preference is silent and the pick falls to shortest-then-lexicographic — the
-/// tie-break that answers `setup.md` when the qualifier is not applied.
+/// In neither candidate's directory: the source-relative preference is silent,
+/// so the unqualified pick falls to the tie-break and answers `setup.md`.
 const FROM: &str = "notes/plan.md";
 
 /// The root-level qualified path and its bare-basename collision.
@@ -25,12 +24,9 @@ fn index() -> CorpusIndex {
     index
 }
 
-/// **The guard.** `[[guide/setup]]` in a corpus holding both `guide/setup.md`
-/// and `setup.md` addresses the qualified path. Revert the `lower == qualified`
-/// arm and the narrowed set is empty — no path ends in `/guide/setup.md`, the
-/// root-level one having no leading separator — so the resolution degrades to
-/// the bare-basename set and answers `setup.md`: a different document, under one
-/// address.
+/// `[[guide/setup]]` must address the qualified path. Without the
+/// `lower == qualified` arm the narrowed set is empty and resolution degrades
+/// to the bare-basename pick, answering `setup.md`.
 #[test]
 fn a_root_level_subpath_beats_its_bare_basename_collision() {
     let index = index();
@@ -47,11 +43,9 @@ fn a_root_level_subpath_beats_its_bare_basename_collision() {
     );
 }
 
-/// **The anti-vacuity CONTROL.** The guard is only evidence while the fallback
-/// answers something ELSE: same index, same pick function, same `from`, the
-/// qualifier removed. If this fixture ever stops being ambiguous — `setup.md`
-/// dropped, the basename key changed, the tie-break reordered — the guard would
-/// pass for a reason it does not test. This fails LOUD first.
+/// Anti-vacuity control: the guard above is only evidence while the
+/// unqualified fallback answers the other document. Fails first if the
+/// fixture stops being ambiguous.
 #[test]
 fn the_bare_basename_fallback_answers_the_other_document() {
     assert_eq!(

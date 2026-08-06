@@ -1,13 +1,10 @@
-//! U11 r2 — two root greys are distinct causes/words at the resolver
-//! (S3-R43 / S3-R49).
+//! Two root greys are distinct causes/words at the resolver (S3-R43 / S3-R49).
 //!
 //! Declared-but-unreadable is unreachable via `mrd walk` (one pass builds
-//! `MountSet` + corpora together). Population is constructed here: a
-//! `MountSet`/`RootedCorpus` pair that deliberately disagree — name declared,
-//! corpus absent (§ 8 M6). Without this, the arm would compile unexercised.
-//!
-//! Collapse to `Unmounted` for both arms yields a false "declare it" teaching
-//! on an already-declared root.
+//! `MountSet` + corpora together), so the disagreeing pair — name declared,
+//! corpus absent (§ 8 M6) — is constructed here; without it the arm would
+//! compile unexercised. Collapsing both arms to `Unmounted` yields a false
+//! "declare it" teaching on an already-declared root.
 
 use addr::{MountName, MountSet};
 use model::{CorpusIndex, Document, RefResolution, RootKind, RootedCorpus};
@@ -28,8 +25,6 @@ fn corpus_with(paths: &[&str]) -> BTreeMap<String, Document> {
     docs
 }
 
-/// **ARM (a) — a root NOTHING declares is `Unmounted`**, and its teaching is the
-/// one that says *declare it*. That teaching is correct here and only here.
 #[test]
 fn a_root_nothing_declares_is_unmounted_and_teaches_the_declaration() {
     let ambient = corpus_with(&["notes.md"]);
@@ -55,12 +50,8 @@ fn a_root_nothing_declares_is_unmounted_and_teaches_the_declaration() {
     );
 }
 
-/// **ARM (b) — a root the table DECLARES but cannot read is `PathUnseeable`**,
-/// carrying the PATH, and its teaching must never prescribe the declaration.
-///
-/// The `MountSet` and the `RootedCorpus` are built to DISAGREE: the table knows
-/// `sessions`, the corpus holds nothing for it. That is the pairing production
-/// cannot currently produce and U12/U13 will.
+/// The `MountSet` and `RootedCorpus` deliberately disagree — the pairing
+/// production cannot yet produce.
 #[test]
 fn a_declared_but_unreadable_root_is_path_unseeable_and_teaches_the_path() {
     let ambient = corpus_with(&["notes.md"]);
@@ -95,9 +86,8 @@ fn a_declared_but_unreadable_root_is_path_unseeable_and_teaches_the_path() {
     );
 }
 
-/// **The two arms do not share a word.** Asserted directly, because the whole
-/// defect was that they did — and a test that checked each arm separately would
-/// have passed on the collapsed build too.
+/// The two arms must answer differently — asserted directly, since per-arm
+/// checks would pass on a collapsed build too.
 #[test]
 fn the_two_root_greys_never_share_a_reason_word() {
     let ambient = corpus_with(&["notes.md"]);
@@ -121,9 +111,9 @@ fn the_two_root_greys_never_share_a_reason_word() {
     assert!(matches!(unseeable, RefResolution::PathUnseeable { .. }));
 }
 
-/// **The ACCEPTANCE half (S3-R8(c)).** A declared root that IS readable still
-/// resolves into its own corpus. Without this, a build that reported every root
-/// as unreadable would satisfy both refusal tests above.
+/// Acceptance half (S3-R8(c)): a declared, readable root still resolves into
+/// its own corpus — else a build reporting every root unreadable would satisfy
+/// both refusal tests above.
 #[test]
 fn a_declared_and_readable_root_still_resolves_into_its_own_corpus() {
     let ambient = corpus_with(&["notes.md"]);
@@ -143,8 +133,6 @@ fn a_declared_and_readable_root_still_resolves_into_its_own_corpus() {
     );
 }
 
-/// **`is_bound` and `unreachable` are mutually exclusive**, so no caller can see
-/// a name as both bound and unreadable and pick whichever it likes.
 #[test]
 fn a_name_is_never_both_bound_and_unreachable() {
     let set = MountSet::new([name("sessions")]).with_unreachable(name("sessions"), "/gone", "why");

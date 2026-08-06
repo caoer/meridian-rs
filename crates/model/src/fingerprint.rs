@@ -1,20 +1,18 @@
 //! Fingerprint plane — attestation content identity as a self-describing
-//! CID-token (`docs/fingerprint-norm-spec.md`; decision
-//! 2026-07-24-fingerprint-cid-representation).
+//! CID-token (`docs/fingerprint-norm-spec.md`).
 //!
 //! # Three hash planes, never conflated (spec §1)
 //! One hash family (BLAKE3-256), three domains:
 //!
-//! - **`node_rev`** ([`crate::NodeRev`]) — RAW span bytes, 16 hex, CAS race
-//!   detector. Unchanged here.
-//! - **Workspace merkle** ([`crate::merkle_root`]) — RAW file bytes → 32-byte
-//!   guard cursor (`b3:`). Unchanged here.
+//! - **`node_rev`** ([`crate::NodeRev`]) — raw span bytes, 16 hex, CAS race
+//!   detector.
+//! - **Workspace merkle** ([`crate::merkle_root`]) — raw file bytes → 32-byte
+//!   guard cursor (`b3:`).
 //! - **fingerprint** — `fp1.span2.b3.<64hex>`: BLAKE3 over **norm-v2**
 //!   span bytes ([`syntax::anchor_removals`]). The rev a pin holds.
 //!
 //! Anchor promotion (#6 §2): writing ` ^block-id` moves `node_rev` and the
-//! workspace root (bytes changed) and never moves the fingerprint (no false
-//! drift).
+//! workspace root and never moves the fingerprint (no false drift).
 //!
 //! # No hash-time graph walk (spec §3, §6)
 //! `span2` hashes the span's own bytes — an `![[embed]]` contributes link
@@ -26,7 +24,7 @@
 //! - [`RevClass::Content`] — fingerprint token (blake3 over norm-v2; sole
 //!   engine hasher).
 //! - [`RevClass::Object`] — git object id at `commit:location`, verified by
-//!   equality; engine never computes it.
+//!   equality; the engine never computes it.
 
 use crate::{ByteSpan, Document, Node};
 
@@ -41,21 +39,20 @@ pub const HASHFN_B3: &str = "b3";
 /// Full-length in `meridian-lock` / receipts (#4 §5); renderers abbreviate the
 /// digest (`@40b167ed`, #6 §4).
 ///
-/// **Field private (R31):** the only constructor path is mint; mint refuses an
-/// empty normalized span. A public constructor would reintroduce tokens the
-/// owner refuses. Read via [`Fingerprint::as_str`] / [`Fingerprint::into_string`].
+/// **Field private (R31):** the only constructor path is mint, which refuses an
+/// empty normalized span. Read via [`Fingerprint::as_str`] /
+/// [`Fingerprint::into_string`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fingerprint(String);
 
 impl Fingerprint {
-    /// The token text, borrowed — for comparison and rendering.
+    /// The token text, borrowed.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
-    /// The token text, taken — for a caller that stores it (a lock block, a
-    /// receipt, a wire fact). Consumes the fingerprint, so nothing is cloned.
+    /// The token text, taken — for a caller that stores it.
     #[must_use]
     pub fn into_string(self) -> String {
         self.0
@@ -68,10 +65,9 @@ impl std::fmt::Display for Fingerprint {
     }
 }
 
-/// A grammar-parsed token (spec §2.4): parse is codec-agnostic, so tokens
-/// minted by newer codecs/hash-fns still parse — self-describing survives its
-/// implementations. Whether THIS build can verify it is [`verify_content`]'s
-/// question, not parse's.
+/// A grammar-parsed token (spec §2.4). Parse is codec-agnostic, so tokens
+/// minted by newer codecs/hash-fns still parse; whether this build can verify
+/// one is [`verify_content`]'s question.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FingerprintParts {
     pub version: String,
@@ -82,17 +78,15 @@ pub struct FingerprintParts {
 
 /// Empty norm-v2 span — fingerprint cannot exist (R31).
 ///
-/// `blake3("")` is a universal match (identical token for every empty span),
-/// so it covers nothing: **a fingerprint must not match content it does not
-/// cover.** Typed refusal at mint; verdict never green
-/// ([`ContentVerdict::EmptySpan`]). Unit error so callers must discharge it (R5).
+/// `blake3("")` is a universal match — the identical token for every empty
+/// span — so it covers nothing. Typed refusal at mint; the verdict is never
+/// green ([`ContentVerdict::EmptySpan`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EmptySpan;
 
 /// Mint the `span2` fingerprint of `node` in `doc` (spec §3):
-/// `b3(norm2(raw[span]))` under the whole-file anchor-removal law.
-/// Convenience over [`fingerprint_with_removals`] — computing removals once
-/// per document and reusing them across nodes is the batch path.
+/// `b3(norm2(raw[span]))` under the whole-file anchor-removal law. For a batch,
+/// use [`fingerprint_with_removals`] and compute the removals once per document.
 ///
 /// # Errors
 /// [`EmptySpan`] when the node's normalized span is empty — see that type.
@@ -115,9 +109,8 @@ pub fn fingerprint_with_removals(
 }
 
 /// Mint over a resolved span (spec §3). Sole owner of the mint expression and
-/// the empty-span refuse (R31): only place norm-v2 bytes meet the hasher
-/// ([`syntax::norm_v2_slice`] has this sole caller). Guards the property, not
-/// an enumerated ref-form list. `&Node` forms delegate here.
+/// the empty-span refusal (R31) — the only place norm-v2 bytes meet the hasher.
+/// The `&Node` forms delegate here.
 ///
 /// # Errors
 /// [`EmptySpan`] when `norm_v2_slice` yields no bytes.
@@ -137,9 +130,9 @@ pub fn fingerprint_span(
 }
 
 /// Grammar-only parse (spec §2.4). `None` = malformed — not a fingerprint
-/// token at all (this includes the superseded spellings: bare 16-hex
-/// `node_rev`s and the `b3:`+64hex workspace-merkle form). Digest LENGTH is
-/// validated only when the hashfn is known (`b3` → 64).
+/// token at all, which includes bare 16-hex `node_rev`s and the `b3:`+64hex
+/// workspace-merkle form. Digest length is validated only when the hashfn is
+/// known (`b3` → 64).
 #[must_use]
 pub fn parse_fingerprint(s: &str) -> Option<FingerprintParts> {
     let mut it = s.split('.');
@@ -169,11 +162,10 @@ pub fn parse_fingerprint(s: &str) -> Option<FingerprintParts> {
     })
 }
 
-/// A content-class verification outcome (spec §2.4). Four-way on purpose:
-/// `Unverifiable` (recognized token, codec/hash-fn this build does not
-/// implement — grey `unverifiable-fingerprint`, the fingerprint-plane home of
-/// the law that was `superseded-algo`) is NOT `Malformed` (not a token) and
-/// neither is `Red` (verified, drifted).
+/// A content-class verification outcome (spec §2.4). `Unverifiable`
+/// (recognized token, codec/hash-fn this build does not implement — grey
+/// `unverifiable-fingerprint`) is distinct from `Malformed` (not a token) and
+/// from `Red` (verified, drifted).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContentVerdict {
     /// Recomputed fingerprint equals the pinned token.
@@ -182,10 +174,8 @@ pub enum ContentVerdict {
     /// fingerprint (the re-pin candidate).
     Red { actual: Fingerprint },
     /// Parses, but some member of the self-describing triple is not
-    /// implemented here — grey, never green, never red. All THREE members are
-    /// carried verbatim so a render names WHICH one is unknown: an
-    /// `fp9.span2.b3` token that reported only `(codec, hashfn)` would print a
-    /// live-looking pair and hide that the VERSION is the unknown member
+    /// implemented here — grey, never green, never red. All three members are
+    /// carried verbatim so a render names which one is unknown
     /// ([`ContentVerdict::unknown_members`]).
     Unverifiable {
         version: String,
@@ -195,22 +185,21 @@ pub enum ContentVerdict {
     /// Not a fingerprint token.
     Malformed,
     /// Live span normalizes empty ([`EmptySpan`]) — no fingerprint to compare.
-    /// **Never green** (R31): `Green` requires a recomputed token;
+    /// Never green (R31): `Green` requires a recomputed token, and
     /// [`fingerprint_span`] cannot produce one. Mint refuses empty spans, so
-    /// this arm bites hand-/tool-authored pins. A digest equal to `blake3("")`
-    /// needs no special case — empty → here, non-empty → ordinary red.
+    /// this arm bites hand-/tool-authored pins.
     EmptySpan,
 }
 
 impl ContentVerdict {
-    /// The triple members THIS build does not implement, in token order
+    /// The triple members this build does not implement, in token order
     /// (`version` / `codec` / `hashfn`) — empty for every verdict but
     /// [`ContentVerdict::Unverifiable`].
     ///
-    /// The single owner of "what this build implements": a grey render asks
-    /// HERE rather than re-comparing against [`FP_VERSION`] / [`CODEC_SPAN2`] /
-    /// [`HASHFN_B3`] itself, so the answer cannot drift from
-    /// [`verify_content`]'s own dispatch.
+    /// The single owner of "what this build implements" — a grey render asks
+    /// here instead of re-comparing against [`FP_VERSION`] / [`CODEC_SPAN2`] /
+    /// [`HASHFN_B3`], so the answer cannot drift from [`verify_content`]'s
+    /// dispatch.
     #[must_use]
     pub fn unknown_members(&self) -> Vec<&'static str> {
         let ContentVerdict::Unverifiable {
@@ -235,17 +224,15 @@ impl ContentVerdict {
 
 /// Verify a **content-class** pin: parse the pinned token, dispatch on its
 /// self-described prefix, recompute, compare (spec §2.4). Old tokens stay
-/// verifiable as long as their codec is implemented; unknown prefixes are
-/// grey — migration lives inside the identifier (#4 §1).
+/// verifiable as long as their codec is implemented; unknown prefixes are grey.
 #[must_use]
 pub fn verify_content(doc: &Document, node: &Node, pinned: &str) -> ContentVerdict {
     verify_content_span(doc, &node.span, pinned)
 }
 
-/// [`verify_content`] over a resolved SPAN rather than a `&Node` handle — the
-/// same law, for a caller holding a resolved [`crate::Target`] (the pin-color
-/// plane, [`crate::selector::classify_pin`]). THE owner of the verdict
-/// dispatch; [`verify_content`] delegates here.
+/// [`verify_content`] over a resolved span rather than a `&Node` handle, for a
+/// caller holding a resolved [`crate::Target`]. Owns the verdict dispatch;
+/// [`verify_content`] delegates here.
 #[must_use]
 pub fn verify_content_span(doc: &Document, span: &ByteSpan, pinned: &str) -> ContentVerdict {
     let Some(parts) = parse_fingerprint(pinned) else {
@@ -258,8 +245,8 @@ pub fn verify_content_span(doc: &Document, span: &ByteSpan, pinned: &str) -> Con
             hashfn: parts.hashfn,
         };
     }
-    // R31: the recompute is fallible, so `Green` below is reachable only for a
-    // span that HAS canonical bytes. An empty one never reaches the compare.
+    // R31: the recompute is fallible, so `Green` is reachable only for a span
+    // with canonical bytes; an empty one never reaches the compare.
     let Ok(actual) = fingerprint_span(doc, span, &syntax::anchor_removals(&doc.raw)) else {
         return ContentVerdict::EmptySpan;
     };
@@ -270,17 +257,16 @@ pub fn verify_content_span(doc: &Document, span: &ByteSpan, pinned: &str) -> Con
     }
 }
 
-/// The class of a pinned rev (design 2 §2.3, A2). The class DECISION is the
-/// caller's (which refs are pointed effects is domain meaning); computing and
-/// verifying BOTH classes is core, under ONE engine hasher (blake3, for the
-/// content class only).
+/// The class of a pinned rev (design 2 §2.3). Choosing the class is the
+/// caller's; computing and verifying both classes is core, under one engine
+/// hasher (blake3, for the content class only).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RevClass {
     /// A fingerprint token — the engine's blake3 over norm-v2 span bytes. The
     /// default.
     Content,
-    /// The git object id at `commit:location` — a source-2 fact carried
-    /// verbatim, verified by equality; the engine never computes it.
+    /// The git object id at `commit:location`, carried verbatim and verified by
+    /// equality; the engine never computes it.
     Object,
 }
 
@@ -296,38 +282,29 @@ impl RevClass {
 }
 
 /// Verify an **object-class** pin: pure equality of the pinned git object id
-/// against the one git observed now (design 2 §2.3). The engine performs NO
-/// hashing here — git owns the content-addressing (the one-hasher law: blake3
-/// is the engine's only hash family, used for the content class alone). Green
-/// iff the ids are byte-equal.
+/// against the one git observed now (design 2 §2.3). The engine performs no
+/// hashing here — git owns the content-addressing.
 #[must_use]
 pub fn verify_object(pinned: &str, observed_git_oid: &str) -> bool {
     pinned == observed_git_oid
 }
 
-// Property arm (R4 18a.2): lock pin is path XOR properties; body arm is
-// `span2` above. Lives here so sealed [`Fingerprint`] mint and the sole blake3
-// hasher stay one site.
+// Property arm (R4 18a.2): a lock pin is path XOR properties; the body arm is
+// `span2` above. Lives here so the sealed [`Fingerprint`] mint and the sole
+// blake3 hasher stay one site.
 
-/// Property-fingerprint codec — **distinct from [`CODEC_SPAN2`]**.
-///
-/// Properties are a different digest domain (never-conflate-hash-planes).
-/// [`verify_content`] matches codec and returns
-/// [`ContentVerdict::Unverifiable`] for unknowns, so a props token on the span
-/// verifier refuses loudly instead of a silent wrong recompute.
+/// Property-fingerprint codec — distinct from [`CODEC_SPAN2`], because
+/// properties are a different digest domain. [`verify_content`] matches codec
+/// and returns [`ContentVerdict::Unverifiable`] for unknowns, so a props token
+/// handed to the span verifier refuses instead of silently recomputing.
 pub const CODEC_PROPS1: &str = "props1";
 
-/// Domain-separation prefix for property canonical bytes.
-///
-/// Complements [`CODEC_PROPS1`]: label claims domain; these bytes are what the
-/// hasher actually ran over — so a props digest cannot equal a span digest
-/// under mislabeling.
+/// Domain-separation prefix for property canonical bytes, so a props digest
+/// cannot equal a span digest under mislabeling.
 pub const PROPS_DOMAIN: &str = "props1\n";
 
 /// Frontmatter property state — three states, three fingerprints (R4 18a.2).
-///
-/// Absent (key missing) ≠ null (bare `status:` / null spellings). Fixed-column
-/// tables collapse them; a keyed map cannot.
+/// Absent (key missing) ≠ null (bare `status:` / null spellings).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PropValue {
     /// The key is omitted from the map entirely.
@@ -335,9 +312,8 @@ pub enum PropValue {
     /// The key is present and null — bare `status:`, or an explicit null
     /// spelling ([`NULL_SPELLINGS`]).
     Null,
-    /// A present, non-null value in its WIRE FORM verbatim. Nothing is coerced,
-    /// so true types survive and `status: ""` stays the empty string — which is
-    /// neither absent nor null.
+    /// A present, non-null value in its wire form verbatim. Nothing is coerced,
+    /// so `status: ""` stays the empty string — neither absent nor null.
     Scalar(String),
 }
 
@@ -399,9 +375,9 @@ pub fn canonical_property_bytes(map: &crate::YamlMap, keys: &[String]) -> String
 
 /// Property fingerprint of `keys` in `map` (R4 `properties` arm).
 ///
-/// Infallible: [`PROPS_DOMAIN`] keeps the hash input non-empty (R31 hazard
-/// cannot arise). Empty selection is a distinct statement. Caller must refuse
-/// duplicate selector keys (R4); this assumes a validated selection.
+/// Infallible: [`PROPS_DOMAIN`] keeps the hash input non-empty, so the R31
+/// hazard cannot arise. Assumes a validated selection — the caller must refuse
+/// duplicate selector keys (R4).
 #[must_use]
 pub fn properties_fingerprint(map: &crate::YamlMap, keys: &[String]) -> Fingerprint {
     Fingerprint(format!(
@@ -426,9 +402,8 @@ mod tests {
         n.children.iter().find_map(|c| find_section(c, name))
     }
 
-    /// The U-SPEC cross-link: the production mint reproduces the pinned golden
-    /// token of the fixtures' `X0` doc (`norm_v2_fixtures.rs`; spec §2.1's
-    /// worked example). One literal, two suites — the hash domain cannot fork.
+    /// The production mint reproduces the pinned golden token of the fixtures'
+    /// `X0` doc (`norm_v2_fixtures.rs`; spec §2.1's worked example).
     #[test]
     fn x0_token_matches_spec_golden() {
         let d = doc("# A\nintro\n\n# B\nbody\n");
@@ -438,9 +413,8 @@ mod tests {
         );
     }
 
-    /// LOAD-BEARING — the promotion-neutrality split (spec §1/§5): one anchor
-    /// promotion, two planes, opposite obligations. Fingerprint holds at
-    /// document AND section grain; `node_rev` moves at both.
+    /// Promotion neutrality (spec §1/§5): the fingerprint holds at document and
+    /// section grain; `node_rev` moves at both.
     #[test]
     fn anchor_promotion_neutral_on_fingerprint_visible_to_cas() {
         let d0 = doc("# A\nintro\n\n# B\nbody\n");
@@ -467,16 +441,14 @@ mod tests {
         );
         assert_ne!(a0.node_rev, a1.node_rev);
 
-        // A REAL edit reddens: fingerprint is normalization, not blindness.
+        // A real edit still reddens.
         let d2 = doc("# A\nintro edited\n\n# B\nbody\n");
         assert_ne!(fingerprint(&d0, &d0.root), fingerprint(&d2, &d2.root));
     }
 
-    /// THE NEW LAW (spec §3/§6, supersedes `compose_rev`): `span2` performs NO
-    /// hash-time embed expansion. Editing the embedded document moves the
-    /// embedded doc's own fingerprint and the workspace merkle — never the
-    /// embedding doc's fingerprint. Cross-document drift is the lock plane's
-    /// job (lock-is-content, #8 §5), minted at pin time, stage 2.
+    /// `span2` performs no hash-time embed expansion (spec §3/§6). Editing the
+    /// embedded document moves the embedded doc's own fingerprint and the
+    /// workspace merkle — never the embedding doc's fingerprint.
     #[test]
     fn embeds_do_not_expand() {
         let embedding = "# Doc\n\nintro\n\n![[embedded]]\n";
@@ -486,7 +458,6 @@ mod tests {
         let host = doc(embedding);
         let (e1, e2) = (doc(embedded_v1), doc(embedded_v2));
 
-        // The embedding doc's fingerprint is a pure function of ITS bytes.
         let host_fp = fingerprint(&host, &host.root);
         assert_eq!(
             host_fp,
@@ -512,8 +483,7 @@ mod tests {
             0,
         );
         assert_ne!(root_v1.0, root_v2.0);
-        // …while the embedding doc's fingerprint (same bytes) is untouched —
-        // the link is bytes in the span; the linked content is not.
+        // …while the embedding doc's fingerprint (same bytes) is untouched.
         assert_eq!(host_fp, fingerprint(&host, &host.root));
     }
 
@@ -541,8 +511,7 @@ mod tests {
                 hashfn: "b3".to_string()
             }
         );
-        // Unknown VERSION parses too (a future fp2 token is grey here, never
-        // malformed — migration lives inside the identifier).
+        // An unknown version parses too: grey, never malformed.
         assert_eq!(
             verify_content(&d1, &d1.root, &format!("fp9.span2.b3.{hex64}")),
             ContentVerdict::Unverifiable {
@@ -560,7 +529,7 @@ mod tests {
             }
         );
 
-        // Superseded spellings are NOT tokens: bare node_rev, b3:-prefixed root.
+        // Bare node_rev and b3:-prefixed root are not tokens.
         for malformed in [
             "780d2fb4cf68f60f",
             &format!("b3:{hex64}"),
@@ -575,10 +544,7 @@ mod tests {
         }
     }
 
-    /// The `Unverifiable` arm NAMES the unknown triple member. Before the
-    /// version was carried, an `fp9.span2.b3` grey reported codec=span2 /
-    /// hashfn=b3 — both live-looking — and could not say WHICH member this
-    /// build does not implement.
+    /// The `Unverifiable` arm names the unknown triple member.
     #[test]
     fn unverifiable_names_the_unknown_triple_member() {
         let d = doc("# A\nbody\n");
@@ -601,7 +567,7 @@ mod tests {
             );
         }
 
-        // A verifiable verdict names nothing — the list is the grey's alone.
+        // A verifiable verdict names nothing.
         let pin = fingerprint(&d, &d.root).expect("d has content").0;
         assert!(
             verify_content(&d, &d.root, &pin)
@@ -615,15 +581,13 @@ mod tests {
         );
     }
 
-    /// OBJECT-CLASS REV — an object-class pin verifies against THE git object
-    /// id. The ground-truth id is produced by `git hash-object` itself; the
-    /// engine only compares equality (no second hasher).
+    /// An object-class pin verifies against the git object id, produced by
+    /// `git hash-object` itself; the engine only compares equality.
     #[test]
     fn object_class_verifies_against_git_object_id() {
         let content = b"section body v1\n";
         let oid = git_hash_object(content);
-        // Sanity: a real git blob oid is 40 lowercase hex (sha1) — not a
-        // fingerprint token. The class is genuinely git's, not ours.
+        // A real git blob oid is 40 lowercase hex (sha1), not a fingerprint token.
         assert_eq!(oid.len(), 40, "git blob oid is 40 hex");
         assert!(oid.chars().all(|c| c.is_ascii_hexdigit()));
 
@@ -639,13 +603,12 @@ mod tests {
             "the object-class pin reddens against a different git object id"
         );
 
-        // The class spelling is stable for the lock/edge surface.
         assert_eq!(RevClass::Object.as_str(), "object");
         assert_eq!(RevClass::Content.as_str(), "content");
     }
 
     /// The canonical git object id of a blob: `git hash-object --stdin` over
-    /// `content`. Test-only ground truth — the engine never computes this.
+    /// `content`. Test-only ground truth.
     fn git_hash_object(content: &[u8]) -> String {
         use std::io::Write;
         use std::process::{Command, Stdio};
@@ -679,10 +642,8 @@ mod tests {
         walk(&doc(raw).root).expect("the fixture has frontmatter")
     }
 
-    /// **The whole reason the property arm gets its own codec** (ruled
-    /// 2026-08-03): a props token handed to the SPAN verifier must refuse
-    /// loudly, never recompute span bytes and answer confidently about a digest
-    /// that never covered them.
+    /// A props token handed to the span verifier must refuse, never recompute
+    /// span bytes against a digest that never covered them.
     #[test]
     fn a_props_token_is_unverifiable_to_the_span_verifier() {
         let d = doc("---\nstatus: open\n---\n\n# A\nbody\n");
@@ -692,8 +653,7 @@ mod tests {
             token.as_str().starts_with("fp1.props1.b3."),
             "the token names its own domain: {token}"
         );
-        // It is a well-formed token — the refusal below is about the CODEC, not
-        // about the grammar (without this, `Unverifiable` proves nothing).
+        // Well-formed, so the refusal below is about the codec, not the grammar.
         let parts = parse_fingerprint(token.as_str()).expect("a props token is grammatical");
         assert_eq!(parts.codec, CODEC_PROPS1);
 
@@ -701,16 +661,14 @@ mod tests {
             ContentVerdict::Unverifiable { codec, .. } => assert_eq!(codec, CODEC_PROPS1),
             other => panic!("a props token must not be verified as span bytes: {other:?}"),
         }
-        // Had the arms shared `span2`, this same call would have returned Red
-        // with a confident, meaningless `actual`.
         assert_ne!(CODEC_PROPS1, CODEC_SPAN2);
     }
 
     /// The canonical keyed map is length-prefixed, so no key or value can forge
-    /// a delimiter: two DIFFERENT maps must not serialize identically.
+    /// a delimiter: two different maps must not serialize identically.
     #[test]
     fn canonical_property_bytes_cannot_be_forged() {
-        // `a` = "b=Sx" vs a key literally spelled to imitate the encoding.
+        // A value spelled to imitate the encoding vs the map it imitates.
         let one = fm("---\na: \"b=S1:c\"\n---\n\nbody\n");
         let two = fm("---\na: b\nc: d\n---\n\nbody\n");
         assert_ne!(
