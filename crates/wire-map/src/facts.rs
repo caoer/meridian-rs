@@ -1,17 +1,16 @@
-//! The host-face read facts (M1 U2): the addressing/render table ccc-statusd's
-//! `buildTocEntries` (`readsidecar.go:215`) re-derived host-side, computed
-//! engine-side ONCE — dewey ordinal, sanitized hpath address, raw title, word
-//! count, CAS token — from the SAME input space the Go code consumed: the toc
-//! row projection ([`crate::project_toc`]) plus the raw file bytes.
+//! The host-face read facts: the addressing/render table, computed
+//! engine-side ONCE — dewey ordinal, hpath address, raw title, word count,
+//! CAS token — from the toc row projection ([`crate::project_toc`]) plus the
+//! raw file bytes.
 //!
-//! Mirrored, not repaired (A-S2: the authoritative target is the U0 captured
-//! golden corpus). Two deliberate Go behaviors ride along:
+//! Mirrored, not repaired (the authoritative target is the captured golden
+//! corpus). Two deliberate Go behaviors ride along:
 //!
 //! - Only rows of kind `"heading"` and `"list_item"` become facts. An anchor
 //!   whose HOST block is a task/callout/fence/table/paragraph projects under
 //!   that kind and is DROPPED — exactly as the Go `switch` drops it, so e.g.
 //!   a `- [ ] item ^t1` task anchor is NOT addressable on the read face (the
-//!   U0 `basic` golden pins `^task1` unresolved).
+//!   `basic` golden pins `^task1` unresolved).
 //! - Selector resolution returns the FIRST match in row order (duplicate
 //!   headings: read resolves the first occurrence; refusing ambiguous writes
 //!   is the write plane's job, never last-wins).
@@ -29,20 +28,11 @@ pub struct ReadFact {
     pub depth: u32,
     /// RAW title: the last hpath segment verbatim (anchor rows: the id).
     pub title: String,
-    /// **The address, as RAW SEGMENTS** (U14) — the same grammar `put` takes in
-    /// `target.hpath`, carried verbatim so the address this face publishes is
-    /// one the write plane accepts. Empty on anchor rows (their put grammar is
-    /// `{"anchor":id}`, and `^id` is charset-restricted, so nothing is lost).
-    ///
-    /// This field WAS the sanitized joined address, with the array beside it as
-    /// `hpath_raw`. [`sanitize_heading`] is MANY-TO-ONE — `Scratch notes`,
-    /// `Scratch-notes` and `Scratch/notes` all collapse to `Scratch-notes` —
-    /// so the joined form was a projection no consumer could invert, and it is
-    /// gone from every machine surface (decision 14). The render plane derives
-    /// its own human spelling from these segments at its own door.
-    ///
-    /// Per-segment `n` rides ONLY where the raw text is ambiguous among its
-    /// same-parent siblings ([`raw_addresses`]).
+    /// The address as raw segments — the same grammar `put` takes in
+    /// `target.hpath`, carried verbatim so this face publishes an address the
+    /// write plane accepts. Empty on anchor rows (their put grammar is
+    /// `{"anchor":id}`). Per-segment `n` rides only where the raw text is
+    /// ambiguous among its same-parent siblings ([`raw_addresses`]).
     pub hpath: Vec<wire::HpathSeg>,
     /// `strings.Fields` word count over the content-span bytes (0 for anchor
     /// rows and content-less headings).
@@ -96,13 +86,9 @@ pub fn read_facts(rows: &[wire::TocNode], raw: &[u8]) -> Vec<ReadFact> {
                     n: format!("^{anchor}"),
                     depth: 0,
                     title: anchor.to_string(),
-                    // The anchor plane's put grammar is `{"anchor":id}` and the
-                    // id is charset-restricted (`[A-Za-z0-9-]`, §2.4), so an
-                    // anchor row has no HEADING address and is not given a
-                    // fabricated one. It is addressed through
-                    // `ReadSel::Anchor`, off the `anchor` field below — which
-                    // is why the anchor plane no longer has to disguise itself
-                    // as a `"^id"` heading address to be selectable.
+                    // an anchor row has no HEADING address and is not given a
+                    // fabricated one; it is addressed through
+                    // `ReadSel::Anchor`, off the `anchor` field below
                     hpath: Vec::new(),
                     words: 0,
                     sec_rev: row.node_rev.0.clone(),
@@ -120,29 +106,21 @@ pub fn read_facts(rows: &[wire::TocNode], raw: &[u8]) -> Vec<ReadFact> {
     out
 }
 
-/// The RAW put-grammar address for every row, indexed BY ROW (non-heading rows
-/// get an empty address). This is the seam that closes the read→put loop: the
-/// sanitized `hpath` string is many-to-one and cannot be inverted, so the read
-/// face carries the pre-image instead of asking the caller to reconstruct it.
+/// The raw put-grammar address for every row, indexed by row (non-heading rows
+/// get an empty address) — the seam that closes the read→put loop.
 ///
-/// `n` rides a segment ONLY where the raw text is ambiguous among its
-/// same-parent siblings. `n: None` *demands* uniqueness in
-/// `model::resolve_hpath_node`, so an unconditional `n` would publish an
-/// address that keeps silently resolving after a duplicate appears — a
-/// prepended `# Notes` would silently retarget a held `n:1` onto the
-/// interloper. Minimal addresses instead start REFUSING when the world changes,
-/// which is the write plane's never-silently-picks law holding across time.
+/// `n` rides a segment only where the raw text is ambiguous among its
+/// same-parent siblings: `n: None` demands uniqueness in
+/// `model::resolve_hpath_node`, so a minimal address starts refusing once a
+/// duplicate appears rather than silently resolving to one of them. The
+/// occurrence counted is the one `resolve_hpath_node` counts — position among
+/// siblings sharing the raw text under the same parent, never position among
+/// all siblings and never document order.
 ///
-/// The occurrence counted is the one `resolve_hpath_node` counts: position
-/// among siblings sharing the RAW TEXT under the same parent — never position
-/// among all sibling sections, and never document order. A different basis
-/// would still be well-formed and would land on the wrong section silently.
-///
-/// Two passes, because ambiguity is a whole-document fact: a first occurrence
-/// cannot know a later duplicate exists. Pass 1 assigns each heading row its
-/// containment parent, raw text, and occurrence; pass 2 turns the totals into
-/// `n` and clones each parent's finished address (parents precede children in
-/// document order, so the prefix is always ready).
+/// Two passes, because ambiguity is a whole-document fact: pass 1 assigns each
+/// heading row its containment parent, raw text, and occurrence; pass 2 turns
+/// the totals into `n` and clones each parent's finished address (parents
+/// precede children in document order, so the prefix is always ready).
 fn raw_addresses(rows: &[wire::TocNode]) -> Vec<Vec<wire::HpathSeg>> {
     struct Seg {
         /// Row index of the containment parent; `None` at the top level.
@@ -226,15 +204,6 @@ pub fn slice_span<'a>(raw: &'a [u8], span: &wire::Span) -> &'a [u8] {
 /// Match a TAGGED selector against the facts — FIRST match wins (duplicate
 /// headings resolve to the first occurrence on the read face; refusing an
 /// ambiguous WRITE is the write plane's job, never this one's).
-///
-/// **U14 — this was `f.hpath == sel || f.n == sel` over one string, and that
-/// was three grammars sharing a namespace.** A heading address, a dewey
-/// ordinal and a `^id` all arrived spelled the same way, so which plane the
-/// caller meant was decided by whichever comparison matched first. Two
-/// consequences were live, not hypothetical: a heading whose sanitized text is
-/// `1.2` shadowed (or was shadowed by) the dewey row of that name, and a
-/// heading whose text begins with `^` collided with the anchor plane — the
-/// same delimiter-collision class ZT named in decision 20, one layer up.
 /// [`wire::ReadSel`] states the plane, so nothing is inferred from spelling.
 ///
 /// The heading arm compares SEGMENTS, per segment, on raw text. A selector
@@ -269,7 +238,7 @@ fn hpath_matches(sel: &[wire::HpathSeg], row: &[wire::HpathSeg]) -> bool {
 /// (`renderSectionsSidecar`, `readsidecar.go:295`): a heading's
 /// heading-excluded content span, or a block leaf's full span with the
 /// trailing `^id` marker stripped. RAW face — the render plane never elides
-/// here (D's U0 pin: `meridian-*` blocks ride the raw read face verbatim).
+/// here (`meridian-*` blocks ride the raw read face verbatim).
 #[must_use]
 pub fn section_content(fact: &ReadFact, raw: &[u8]) -> Vec<u8> {
     match (&fact.content_span, &fact.anchor) {
@@ -299,10 +268,9 @@ pub fn strip_anchor_marker(b: &[u8], anchor: &str) -> Vec<u8> {
 /// subtree — the section itself plus descendants by hpath prefix. An empty
 /// result under a non-empty `frag` is the caller's "no section at" refusal.
 ///
-/// This is the HEADING plane, whole: `toc_text` renders exactly these rows and
-/// the composed read's `toc` array carries exactly these rows, so the captured
-/// Go toc bytes stay frozen AND no `toc` consumer can meet a second row class.
-/// The `^id` anchor plane is [`anchor_rows`], served in its own array.
+/// This is the heading plane, whole: `toc_text` and the composed read's `toc`
+/// array carry exactly these rows, so no `toc` consumer can meet a second row
+/// class. The `^id` anchor plane is [`anchor_rows`], served in its own array.
 #[must_use]
 pub fn toc_rows<'a>(facts: &'a [ReadFact], frag: &[wire::HpathSeg]) -> Vec<&'a ReadFact> {
     facts
@@ -312,26 +280,17 @@ pub fn toc_rows<'a>(facts: &'a [ReadFact], frag: &[wire::HpathSeg]) -> Vec<&'a R
         .collect()
 }
 
-/// The `^id` ANCHOR plane (stage-2 s1c): the block-anchor facts alone, in
-/// document order — the authz plane the host reads. Put derives a write's
-/// governing sections by byte containment (`containingSectionTitles`,
-/// `puttoc.go:86`: every heading whose span contains the anchor block's start
-/// byte), which needs the anchor spans and the heading spans — but NOT in one
-/// array: containment is absolute-byte arithmetic, so the two planes are
-/// independent. Serving these rows is what retires the host's
-/// `sanitizeHeadingHost` markdown mirror.
+/// The `^id` anchor plane: the block-anchor facts alone, in document order.
+/// Put derives a write's governing sections by byte containment (every heading
+/// whose span contains the anchor block's start byte), which is absolute-byte
+/// arithmetic — so the two planes stay independent, and serving anchors out of
+/// the [`toc_rows`] array is what keeps a `toc` consumer from meeting a row
+/// class it does not expect.
 ///
-/// s1c moved them OUT of the [`toc_rows`] array (S1 mixed both classes there).
-/// A row class an iterating consumer cannot receive is the only guard that
-/// holds: ccc-statusd's `readText` indents by `depth-1` and panicked "negative
-/// Repeat count" on an anchor row's `depth 0` — a documented discriminator
-/// would have rested on every future client remembering to check it.
-///
-/// Under a non-empty `frag` the anchor rows are scoped by the SAME byte
-/// containment the host applies (start byte inside a scoped heading's
-/// subtree-inclusive span), so a scoped read never leaks a row from outside
-/// the requested subtree. An empty `frag` is the whole document: every anchor
-/// row rides, including anchors above the first heading.
+/// Under a non-empty `frag` the anchor rows are scoped by that same byte
+/// containment, so a scoped read never leaks a row from outside the requested
+/// subtree. An empty `frag` is the whole document, including anchors above the
+/// first heading.
 #[must_use]
 pub fn anchor_rows<'a>(facts: &'a [ReadFact], frag: &[wire::HpathSeg]) -> Vec<&'a ReadFact> {
     let scope: Vec<wire::Span> = toc_rows(facts, frag).iter().map(|f| f.span).collect();
@@ -344,14 +303,6 @@ pub fn anchor_rows<'a>(facts: &'a [ReadFact], frag: &[wire::HpathSeg]) -> Vec<&'
 
 /// The `frag` subtree predicate for a heading row: the section itself plus
 /// descendants by SEGMENT prefix; an empty `frag` is the whole document.
-///
-/// **U14 — this was `starts_with("{frag}/")` over the joined sanitized
-/// string.** Containment is a tree fact, and a string prefix is not: the old
-/// form had to re-synthesize the `/` delimiter it had just joined on to keep
-/// `Note` from scoping `Notes`, and it answered on SANITIZED text, so two
-/// sections whose raw texts differ but sanitize alike scoped each other's
-/// descendants. Comparing the segment arrays is the same question asked of the
-/// structure that actually holds the answer.
 fn in_frag(f: &ReadFact, frag: &[wire::HpathSeg]) -> bool {
     frag.is_empty() || (f.hpath.len() >= frag.len() && hpath_matches(frag, &f.hpath[..frag.len()]))
 }
@@ -419,7 +370,7 @@ mod tests {
 
     /// A task-hosted anchor (`- [ ] x ^t1`) projects kind `task` → DROPPED
     /// (the Go switch default); a plain `list_item` anchor projects a `^id`
-    /// row. The U0 `basic` golden pins the task case unresolved.
+    /// row. The `basic` golden pins the task case unresolved.
     #[test]
     fn task_anchor_dropped_list_item_anchor_kept() {
         let raw = "# H\n\n- [ ] boxed ^t1\n- plain item ^p1\n";
@@ -460,11 +411,10 @@ mod tests {
         );
     }
 
-    /// s1c (supersedes S1's `read_rows_surface_anchors_contained_in_their_
-    /// governing_headings`, which asserted ONE interleaved row set): the two
-    /// planes are disjoint — `toc_rows` is heading-only, `anchor_rows` is
-    /// anchor-only — and containment still resolves across them, because it is
-    /// absolute-byte arithmetic and never needed the interleaving.
+    /// The two planes are disjoint — `toc_rows` is heading-only,
+    /// `anchor_rows` is anchor-only — and containment still resolves across
+    /// them, because it is absolute-byte arithmetic and never needed the
+    /// interleaving.
     #[test]
     fn the_two_planes_are_disjoint_and_containment_still_crosses_them() {
         let raw = "# Tasks\n\n- top item ^t1\n\n## Sub\n\n- nested item ^n1\n\n# Notes\n\nbody\n";
@@ -558,15 +508,10 @@ mod tests {
         );
     }
 
-    /// The published address is the PRE-IMAGE the sanitized one destroyed.
-    /// Three headings that `sanitize_heading` collapses onto ONE spelling keep
-    /// three distinct published addresses, none carrying `n` (each raw text is
-    /// unique among its siblings — the collision existed only in the sanitized
-    /// projection), and each resolves back to its OWN row.
-    ///
-    /// Before U14 the first of these three answered all three selectors,
-    /// because the joined sanitized string was what `resolve_selector`
-    /// compared: a caller could not address the second or third section at all.
+    /// Three headings that `sanitize_heading` collapses onto one spelling keep
+    /// three distinct published addresses, none carrying `n` — each raw text is
+    /// unique among its siblings, so the collision existed only in the
+    /// sanitized projection — and each resolves back to its own row.
     #[test]
     fn headings_that_sanitize_alike_keep_distinct_addresses_and_each_resolves_to_its_own_row() {
         let got = facts("# Scratch notes\n\na\n\n# Scratch-notes\n\nb\n\n# Scratch/notes\n\nc\n");
@@ -598,16 +543,10 @@ mod tests {
         }
     }
 
-    /// **The `/`-bearing heading, end to end** (U14 ruling, 2026-08-03): a
-    /// heading whose RAW text contains `/` is published, addressed, and
-    /// resolved with no ambiguity, because the address is an ARRAY and `/` is
-    /// not a delimiter in it.
-    ///
-    /// The discriminator is the two-segment sibling: `["Scratch", "notes"]` is
-    /// a DIFFERENT address from `["Scratch/notes"]`, and any implementation
-    /// that joins or re-splits on `/` makes them the same one. This is the
-    /// fixture U8 gave up to ask-don't-widen; it is the proof the refusal it
-    /// had to respect is gone.
+    /// A heading whose raw text contains `/` is addressable without ambiguity,
+    /// because the address is an array and `/` is not a delimiter in it:
+    /// `["Scratch", "notes"]` is a different address from `["Scratch/notes"]`,
+    /// and any implementation joining or re-splitting on `/` merges them.
     #[test]
     fn a_slash_bearing_heading_is_addressable_and_never_collides_with_a_two_segment_path() {
         let got = facts("# Scratch/notes\n\nflat\n\n# Scratch\n\nx\n\n## notes\n\nnested\n");
@@ -646,13 +585,11 @@ mod tests {
         );
     }
 
-    /// `n` counts occurrences among SAME-TEXT siblings under the SAME parent —
+    /// `n` counts occurrences among same-text siblings under the same parent,
     /// the occurrence `model::resolve_hpath_node` counts. Two duplicate `# A`
-    /// sections each hold a `## B`: the A segments are numbered, and neither B
-    /// is, because each B is unique under its own parent. An implementation
-    /// counting identical FULL PATHS instead would number both Bs and send
-    /// `A#2/B#2` to a parent holding one B — a well-formed address resolving
-    /// to nothing.
+    /// sections each hold a `## B`: the A segments are numbered and neither B
+    /// is. An implementation counting identical full paths would number both Bs
+    /// and send `A#2/B#2` to a parent holding one B.
     #[test]
     fn occurrence_index_counts_same_text_siblings_never_identical_full_paths() {
         let got = facts("# A\n\nx\n\n## B\n\ny\n\n# A\n\nz\n\n## B\n\nw\n");
@@ -689,10 +626,9 @@ mod tests {
         );
     }
 
-    /// The three grammars are three PLANES now, and each stays in its own.
-    /// A heading whose raw text spells a dewey ordinal, and one whose raw text
-    /// opens with `^`, are reachable only through the heading arm — and neither
-    /// shadows the row the ordinal or the anchor plane actually names.
+    /// Each grammar stays in its own plane: a heading whose raw text spells a
+    /// dewey ordinal, or opens with `^`, is reachable only through the heading
+    /// arm and shadows neither the ordinal nor the anchor plane.
     #[test]
     fn the_planes_do_not_shadow_each_other_across_grammars() {
         let got = facts("# 1.2\n\na\n\n# Real\n\nb\n\n- item ^1.2\n");
