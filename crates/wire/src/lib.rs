@@ -1025,12 +1025,25 @@ pub struct ReadSectionOut {
 }
 
 /// One `check_write` plan edit (M1 U8c, v3-only): the put-plan vocabulary the
-/// daemon face speaks (Go `body.Edit` as `plansToBodyEdits` builds it). `at`
-/// is a heading path, `^id`/`#^id` block, new section name, or fm key.
+/// daemon face speaks (Go `body.Edit` as `plansToBodyEdits` builds it).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckWriteEdit {
     pub op: String,
-    pub at: String,
+    /// The address, as SEGMENTS — the same `{h, n?}` grammar `sec.hpath` takes
+    /// and the read face publishes.
+    ///
+    /// **C-08 (ZT, ratified): "the put path is an array, no ambiguility."** This
+    /// was a joined `String` matched against a [`sanitize_heading`]-joined chain,
+    /// and `sanitize_heading` maps ASCII space AND `/` both to `-` (C-11: the
+    /// lossy selector). A read face publishing `Title/Results` therefore minted
+    /// an address whose only key here was `Title-with-spaces-dashed/Results` —
+    /// so the pre-flight refused, with `E_NO_MATCH`, the very address the
+    /// committer accepts. The committer has taken segments since R5; this is the
+    /// same shape, so the two can no longer be two answers to one question.
+    ///
+    /// The single-segment forms ride here too: `[{h:"^task1"}]` for a block,
+    /// `[{h:"status"}]` for a frontmatter key.
+    pub at: Vec<HpathSeg>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub find: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]

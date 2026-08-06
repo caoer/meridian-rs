@@ -83,7 +83,7 @@ fn pre_flight(root: &fs::WorkspaceRoot) -> ResponseBody {
         "2026-07-25T09:00:00Z",
         &[wire::CheckWriteEdit {
             op: "set_property".into(),
-            at: "status".into(),
+            at: vec![wire::HpathSeg { h: "status".into(), n: None }],
             find: String::new(),
             body: "done".into(),
             rev: String::new(),

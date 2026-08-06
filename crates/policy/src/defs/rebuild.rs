@@ -25,11 +25,20 @@
 
 use super::BodyError;
 use super::go_fmt::go_quote;
-// The heading address law has ONE owner (stage-2 S0): the frozen Go-text
-// predicate in `model`, which `wire-map`'s projection re-exports. The local
-// copy here trimmed with Rust's ambient `.trim()` — a set that agrees with Go
-// today but is not pinned to it.
-use model::gotext::sanitize_heading;
+
+/// Render segments for a HUMAN to read — refusal strings and context values
+/// only, NEVER an address anything resolves against. C-08 rules the address
+/// itself is the array; this join exists for the same reason the read face's
+/// does, and for no other: "it existed only to make the read path pretty."
+///
+/// It is the ESCAPING encoding (`/` inside a segment writes `\/`, a literal
+/// `\` doubles), so it stays injective and a refusal names exactly one address.
+fn hpath_display(segs: &[String]) -> String {
+    segs.iter()
+        .map(|s| s.replace('\\', r"\\").replace('/', r"\/"))
+        .collect::<Vec<_>>()
+        .join("/")
+}
 
 /// One put-plan edit (Go `body.Edit` as `plansToBodyEdits` builds it: the
 /// daemon face's vocabulary; `Old` is never set on this face).
@@ -37,8 +46,11 @@ use model::gotext::sanitize_heading;
 pub struct PlanEdit {
     /// replace | append | `replace_section` | `create_section` | `set_property`
     pub op: String,
-    /// heading path, `^id` / `#^id` block, new section name, or fm key
-    pub target: String,
+    /// The address as SEGMENTS (C-08): a heading path one segment per heading,
+    /// or a single segment carrying a `^id` / `#^id` block, a new section name,
+    /// or a frontmatter key. Never a joined string — see [`PlanEdit`]'s wire
+    /// twin `wire::CheckWriteEdit::at` for why the join was the bug.
+    pub target: Vec<String>,
     pub find: String,
     pub body: String,
     pub rev: String,
@@ -112,7 +124,10 @@ pub fn rebuild(
 struct SecX {
     /// dewey ordinal ("1.2") — display/address convenience
     n: String,
-    hpath: String,
+    /// The containment chain as RAW heading text, one entry per ancestor
+    /// (self last). Was a `sanitize_heading`-joined string; see
+    /// [`DocView::resolve_section`].
+    hpath: Vec<String>,
     title: String,
     /// content span [start,end): heading line excluded, subtree-inclusive
     start: usize,
@@ -169,22 +184,18 @@ impl<'a> DocView<'a> {
                 ord.push(1);
                 odepth.push(sec.depth);
             }
-            // sanitized hpath chain
+            // raw hpath chain (C-08: no sanitize, the address is the array)
             while hstack.last().is_some_and(|(d, _)| *d >= sec.depth) {
                 hstack.pop();
             }
-            hstack.push((sec.depth, sanitize_heading(&sec.title)));
+            hstack.push((sec.depth, sec.title.clone()));
             sections.push(SecX {
                 n: ord
                     .iter()
                     .map(ToString::to_string)
                     .collect::<Vec<_>>()
                     .join("."),
-                hpath: hstack
-                    .iter()
-                    .map(|(_, s)| s.as_str())
-                    .collect::<Vec<_>>()
-                    .join("/"),
+                hpath: hstack.iter().map(|(_, s)| s.clone()).collect(),
                 title: sec.title.clone(),
                 start: sec.content_span.start,
                 end: sec.content_span.end,
@@ -205,20 +216,36 @@ impl<'a> DocView<'a> {
         }
     }
 
-    /// Go `resolveSection`: hpath matches a section's qualified `HPath` or its
-    /// Title. Zero = `E_NO_MATCH`; >1 = `E_AMBIGUOUS` with candidate ordinals.
-    fn resolve_section(&self, hpath: &str) -> Result<&SecX, BodyError> {
+    /// Go `resolveSection`, re-grained to SEGMENTS (C-08): the address matches a
+    /// section's full containment chain, byte-exactly on RAW heading text, or —
+    /// as the single-segment shorthand the Go face has always had — its bare
+    /// title. Zero = `E_NO_MATCH`; >1 = `E_AMBIGUOUS` with candidate ordinals.
+    ///
+    /// Comparison is segment-wise and never re-derives a boundary from text, so
+    /// a heading whose own text contains `/` stays addressable (`["A/B"]`) and
+    /// distinct from the nested path `["A","B"]` — the u14/R5 collision class,
+    /// closed here rather than merely bounded.
+    fn resolve_section(&self, hpath: &[String]) -> Result<&SecX, BodyError> {
+        let bare = match hpath {
+            [only] => Some(only.as_str()),
+            _ => None,
+        };
         let hits: Vec<&SecX> = self
             .sections
             .iter()
-            .filter(|s| s.hpath == hpath || s.title == hpath)
+            .filter(|s| s.hpath == hpath || bare.is_some_and(|b| s.title == b))
             .collect();
         match hits.len() {
             0 => Err(BodyError {
                 code: "E_NO_MATCH".to_string(),
-                message: format!("no section addressed by {}", go_quote(hpath)),
-                remedy: "run `md toc` to list the document's section paths".to_string(),
-                context: vec![("hpath".to_string(), hpath.to_string())],
+                message: format!(
+                    "no section addressed by {}",
+                    go_quote(&hpath_display(hpath))
+                ),
+                remedy: "address the section by its `hpath` segments, exactly as `md toc` \
+                     publishes them — one array entry per heading, raw text, no joining"
+                    .to_string(),
+                context: vec![("hpath".to_string(), hpath_display(hpath))],
             }),
             1 => Ok(hits[0]),
             n => {
@@ -230,7 +257,7 @@ impl<'a> DocView<'a> {
                     code: "E_AMBIGUOUS".to_string(),
                     message: format!(
                         "{} is ambiguous: {} sections share this heading",
-                        go_quote(hpath),
+                        go_quote(&hpath_display(hpath)),
                         n
                     ),
                     remedy: format!(
@@ -238,7 +265,7 @@ impl<'a> DocView<'a> {
                         cands.join(", ")
                     ),
                     context: vec![
-                        ("hpath".to_string(), hpath.to_string()),
+                        ("hpath".to_string(), hpath_display(hpath)),
                         ("candidates".to_string(), cands.join(", ")),
                     ],
                 })
@@ -260,7 +287,7 @@ impl<'a> DocView<'a> {
                 let b = hits[0];
                 Ok(SecX {
                     n: format!("^{id}"),
-                    hpath: format!("^{id}"),
+                    hpath: vec![format!("^{id}")],
                     title: id.to_string(),
                     start: b.start,
                     end: b.end,
@@ -292,7 +319,7 @@ impl<'a> DocView<'a> {
     #[allow(clippy::type_complexity)]
     fn resolve_edit_target(&self, e: &PlanEdit) -> Result<(Option<SecX>, String), BodyError> {
         if e.op == "create_section" {
-            return Ok((None, e.target.clone()));
+            return Ok((None, hpath_display(&e.target)));
         }
         if e.op == "set_property" {
             return Ok((None, String::new()));
@@ -350,11 +377,17 @@ fn collect_blocks(node: &model::Node, raw: &str, out: &mut Vec<BlockX>) {
     }
 }
 
-fn block_ref(target: &str) -> Option<&str> {
-    if let Some(id) = target.strip_prefix("#^") {
+/// The block-ref arm of an address: a `^id` / `#^id` block is a SINGLE segment
+/// by construction (a block id is `[A-Za-z0-9-]`, so it can carry no path), and
+/// a multi-segment address is therefore never one — checking only the lone
+/// segment keeps a heading literally named `^x` nested under a parent from
+/// being read as a block.
+fn block_ref(target: &[String]) -> Option<&str> {
+    let [only] = target else { return None };
+    if let Some(id) = only.strip_prefix("#^") {
         return Some(id);
     }
-    target.strip_prefix('^')
+    only.strip_prefix('^')
 }
 
 /// The frontmatter key index: per top-level key, the VALUE span on its line
@@ -440,11 +473,11 @@ fn plan_append(
             code: "E_FAIL_LOUD".to_string(),
             message: format!(
                 "append to a block anchor {} is not supported: it would splice before the block's \" ^id\" marker and orphan it",
-                go_quote(&e.target)
+                go_quote(&hpath_display(&e.target))
             ),
             remedy: "append targets a section (pass the containing heading path); to change the block's line use replace with a Find anchor".to_string(),
             context: vec![
-                ("block".to_string(), e.target.clone()),
+                ("block".to_string(), hpath_display(&e.target)),
                 ("section".to_string(), section.to_string()),
             ],
         })
@@ -507,9 +540,12 @@ fn plan_create_section(view: &DocView<'_>, e: &PlanEdit) -> Result<Vec<SpliceOp>
     if view.resolve_section(&e.target).is_ok() {
         return Err(BodyError {
             code: "E_EXISTS".to_string(),
-            message: format!("section {} already exists", go_quote(&e.target)),
+            message: format!(
+                "section {} already exists",
+                go_quote(&hpath_display(&e.target))
+            ),
             remedy: "target the existing section with append/replace_section, or create under a distinct heading".to_string(),
-            context: vec![("section".to_string(), e.target.clone())],
+            context: vec![("section".to_string(), hpath_display(&e.target))],
         });
     }
     let mut b: Vec<u8> = Vec::new();
@@ -517,7 +553,12 @@ fn plan_create_section(view: &DocView<'_>, e: &PlanEdit) -> Result<Vec<SpliceOp>
         b.push(b'\n');
     }
     b.extend_from_slice(b"# ");
-    b.extend_from_slice(e.target.as_bytes());
+    // PRESERVED BYTE-EXACTLY, and known wrong (Leader ruling, own card): the
+    // committer creates the LAST segment under the parent the earlier segments
+    // name, so a candidate heading spelled `Notes/Fresh` is a section that will
+    // never exist. Left alone here because it is a policy-evaluation defect, not
+    // an addressing one, and it predates this change.
+    b.extend_from_slice(hpath_display(&e.target).as_bytes());
     b.push(b'\n');
     b.extend_from_slice(&ensure_trailing_nl(&e.body));
     let at = view.raw.len();
@@ -529,7 +570,11 @@ fn plan_create_section(view: &DocView<'_>, e: &PlanEdit) -> Result<Vec<SpliceOp>
 }
 
 fn plan_set_property(view: &DocView<'_>, e: &PlanEdit) -> Result<Vec<SpliceOp>, BodyError> {
-    let (key, val) = (&e.target, &e.body);
+    // A frontmatter key is a SINGLE segment (`yaml_safe_key` is `[A-Za-z0-9_-]+`,
+    // which admits no path). A multi-segment address is refused by that charset
+    // owner below rather than silently taking a piece of itself.
+    let joined = hpath_display(&e.target);
+    let (key, val) = (&joined, &e.body);
     // The key passes the ONE charset owner here — the composed line is
     // `{key}: {value}`, so an unvalidated KEY forges frontmatter exactly as an
     // unvalidated VALUE does.

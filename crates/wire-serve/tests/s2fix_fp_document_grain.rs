@@ -93,7 +93,10 @@ fn a_token_in_create_title_is_stripped_with_the_body() {
         &args(
             Vec::new(),
             vec![PlanEdit::Create {
-                parent_hpath: vec![wire::HpathSeg { h: "Plan".into(), n: None }],
+                parent_hpath: vec![wire::HpathSeg {
+                    h: "Plan".into(),
+                    n: None,
+                }],
                 title: format!("Draws from [[guide#^task1{TOKEN}|Task One]]"),
                 body: format!("body [[guide#^task1{TOKEN}|B]]"),
             }],
@@ -125,7 +128,10 @@ fn every_payload_shape_is_covered_without_a_field_list() {
         &args(
             Vec::new(),
             vec![PlanEdit::Append {
-                hpath: vec![wire::HpathSeg { h: "Plan".into(), n: None }],
+                hpath: vec![wire::HpathSeg {
+                    h: "Plan".into(),
+                    n: None,
+                }],
                 rev: None,
                 body: format!("appended [[guide#^a{TOKEN}|A]]"),
             }],
@@ -146,7 +152,16 @@ fn every_payload_shape_is_covered_without_a_field_list() {
         &args(
             Vec::new(),
             vec![PlanEdit::ReplaceSection {
-                hpath: vec![wire::HpathSeg { h: "Plan".into(), n: None }, wire::HpathSeg { h: "Sub".into(), n: None }],
+                hpath: vec![
+                    wire::HpathSeg {
+                        h: "Plan".into(),
+                        n: None,
+                    },
+                    wire::HpathSeg {
+                        h: "Sub".into(),
+                        n: None,
+                    },
+                ],
                 body: format!("replaced [[guide#^b{TOKEN}|B]]"),
                 rev: Some(section_rev(&root, "Plan/Sub")),
             }],
@@ -435,7 +450,7 @@ fn check_write_and_splice_agree_on_a_decorated_address() {
         "2026-07-25T00:00:00Z",
         &[CheckWriteEdit {
             op: "replace".into(),
-            at: decorated.clone(),
+            at: vec![wire::HpathSeg { h: decorated.clone(), n: None }],
             find: "the goal line".into(),
             body: "the goal line, rewritten".into(),
             rev: String::new(),
@@ -487,7 +502,7 @@ fn the_pre_flight_judges_the_stripped_candidate() {
         &prev,
         &[CheckWriteEdit {
             op: "append".into(),
-            at: "Plan".into(),
+            at: vec![wire::HpathSeg { h: "Plan".into(), n: None }],
             find: String::new(),
             body: format!("added [[guide#^goal{TOKEN}|G]]"),
             rev: String::new(),

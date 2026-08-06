@@ -79,12 +79,24 @@ fn plan_batch_equals_the_host_built_native_batch() {
                     rev: None,
                 },
                 PlanEdit::Append {
-                    hpath: vec![HpathSeg { h: "Memo".into(), n: None }, HpathSeg { h: "Tasks".into(), n: None }],
+                    hpath: vec![
+                        HpathSeg {
+                            h: "Memo".into(),
+                            n: None,
+                        },
+                        HpathSeg {
+                            h: "Tasks".into(),
+                            n: None,
+                        },
+                    ],
                     body: "- item three".into(),
                     rev: None,
                 },
                 PlanEdit::Create {
-                    parent_hpath: vec![HpathSeg { h: "Archive".into(), n: None }],
+                    parent_hpath: vec![HpathSeg {
+                        h: "Archive".into(),
+                        n: None,
+                    }],
                     title: "Log".into(),
                     body: "created".into(),
                 },
@@ -190,7 +202,16 @@ fn replace_section_and_match_all_land_expected_bytes() {
         &plan_args(
             "card.md",
             vec![PlanEdit::Match {
-                hpath: vec![HpathSeg { h: "Memo".into(), n: None }, HpathSeg { h: "Tasks".into(), n: None }],
+                hpath: vec![
+                    HpathSeg {
+                        h: "Memo".into(),
+                        n: None,
+                    },
+                    HpathSeg {
+                        h: "Tasks".into(),
+                        n: None,
+                    },
+                ],
                 old: "item".into(),
                 new: "task".into(),
                 all: true,
@@ -217,7 +238,16 @@ fn replace_section_and_match_all_land_expected_bytes() {
         &plan_args(
             "card.md",
             vec![PlanEdit::ReplaceSection {
-                hpath: vec![HpathSeg { h: "Memo".into(), n: None }, HpathSeg { h: "Tasks".into(), n: None }],
+                hpath: vec![
+                    HpathSeg {
+                        h: "Memo".into(),
+                        n: None,
+                    },
+                    HpathSeg {
+                        h: "Tasks".into(),
+                        n: None,
+                    },
+                ],
                 body: "- done".into(),
                 rev: Some(fresh),
             }],
@@ -245,7 +275,16 @@ fn plan_rev_threads_into_the_native_cas_guard() {
         &plan_args(
             "card.md",
             vec![PlanEdit::ReplaceSection {
-                hpath: vec![HpathSeg { h: "Memo".into(), n: None }, HpathSeg { h: "Tasks".into(), n: None }],
+                hpath: vec![
+                    HpathSeg {
+                        h: "Memo".into(),
+                        n: None,
+                    },
+                    HpathSeg {
+                        h: "Tasks".into(),
+                        n: None,
+                    },
+                ],
                 body: "- clobber".into(),
                 rev: Some("0000000000000000".into()),
             }],
@@ -365,7 +404,7 @@ fn plan_set_property_refuses_forged_keys_at_both_doors_and_writes_nothing() {
         &prev,
         &[policy::defs::PlanEdit {
             op: "set_property".into(),
-            target: FORGED.into(),
+            target: vec![FORGED.to_string()],
             body: "x".into(),
             ..policy::defs::PlanEdit::default()
         }],
@@ -469,7 +508,10 @@ fn golden_target_class_refusals_fire_engine_side() {
         &plan_args(
             "card.md",
             vec![PlanEdit::Match {
-                hpath: vec![HpathSeg { h: "^task1".into(), n: None }],
+                hpath: vec![HpathSeg {
+                    h: "^task1".into(),
+                    n: None,
+                }],
                 old: "one".into(),
                 new: "two".into(),
                 all: false,
