@@ -1,40 +1,31 @@
-//! The TOON-compact encoder (U15, DECISION 27 · requirements D1 / decision 14 / R1.6):
-//! **our own**, over a fixed-shape value model.
+//! The TOON-compact encoder (U15): our own, over a fixed-shape value model.
 //!
-//! `toon-format/spec` (v4.1 working draft, 2026-07-26) and `toon-rust` were read as
-//! REFERENCE and are not depended on. The render face encodes a handful of
-//! statically-known shapes — a header object plus one uniform row table — so a
-//! serde-driven general encoder would buy a generality this plane never spends, and what
-//! it would cost is a dependency on someone else's quoting law at the exact seam where
-//! the goldens pin bytes. The spec's normative rules are reproduced here as code and
-//! named at each predicate.
+//! `toon-format/spec` and `toon-rust` were read as reference and are not
+//! depended on: the render face encodes a handful of statically-known shapes,
+//! and a general encoder would cost a dependency on someone else's quoting law
+//! at the exact seam where the goldens pin bytes. The spec's normative rules
+//! are reproduced here as code and named at each predicate.
 //!
 //! # The subset this encoder emits
 //! - scalars — `key: value`, exactly one space after the colon (spec §12)
 //! - nested objects — `key:` then the object one indent deeper (§8)
 //! - arrays of scalars — the inline form, `key[N]: a,b,c` (§9.1)
-//! - arrays of objects, **tabular** (§9.3) — `key[N]{f1,f2}:` then one delimiter-joined
-//!   row per element, including the **nested-uniform** column groups `f{sub1,sub2}` that
-//!   flatten a struct-valued field into sub-columns in place, recursively and unboundedly
+//! - arrays of objects, tabular (§9.3) — `key[N]{f1,f2}:` then one
+//!   delimiter-joined row per element, including nested-uniform column groups
+//!   `f{sub1,sub2}` that flatten a struct-valued field in place, recursively
 //! - arrays that do not classify as tabular — the list form (§9.4)
 //! - empty arrays — `key: []`; the legacy `key[0]:` header MUST NOT be emitted
 //!
-//! # Not emitted
-//! The keyed-tabular form (§9.5) and non-comma delimiters (§11) are legal TOON this plane
-//! has no shape for. They are absent rather than stubbed: an unexercised branch in an
-//! encoder is a byte format nothing pins.
+//! The keyed-tabular form (§9.5) and non-comma delimiters (§11) are legal TOON
+//! this plane has no shape for — absent rather than stubbed.
 //!
 //! # Type fidelity is the quoting law
-//! A string is quoted whenever emitting it bare would decode back as something else — a
-//! number (including the zero-padded `007` that is a string wearing a number's clothes),
-//! a bool, a null, the empty string — or whenever it carries a byte the grammar owns.
-//! Quoting is decided per scalar, never per column, so a table where one cell needs
-//! quotes does not pay for it in every row. The predicate is exact rather than
-//! conservative: over-quoting would be lossless but this face is read by humans (R1.6 —
-//! *arrays for machines, TOON for humans*), and a document where every cell wears quotes
-//! is the noise the format exists to remove.
-//!
-//!
+//! A string is quoted whenever emitting it bare would decode back as something
+//! else — a number (including the zero-padded `007`), a bool, a null, the
+//! empty string — or when it carries a byte the grammar owns. Quoting is
+//! decided per scalar, never per column. The predicate is exact rather than
+//! conservative: this face is read by humans (R1.6), and a document where
+//! every cell wears quotes is the noise the format exists to remove.
 
 use std::fmt::Write as _;
 
@@ -51,9 +42,8 @@ const INDENT: &str = "  ";
 /// A fixed-shape value: exactly what this plane projects, and no more.
 ///
 /// Objects carry their fields as an ordered `Vec` rather than a map, because
-/// the emitted field ORDER is part of the pinned face — a `BTreeMap` would
-/// silently alphabetize the columns and a `HashMap` would reorder them per
-/// run. The order is the caller's, verbatim.
+/// the emitted field order is part of the pinned face — a `BTreeMap` would
+/// silently alphabetize the columns. The order is the caller's, verbatim.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
     /// A string. Quoted on emission only when bare bytes would not decode back
@@ -195,10 +185,9 @@ fn write_array(out: &mut String, key: &str, items: &[Value], depth: usize) {
         return;
     }
 
-    // The list form (§9.4): the array did not classify as tabular, so no
-    // header is minted. A header over the UNION of the elements' fields would
-    // have to invent a value for every element missing one — and an invented
-    // empty cell is indistinguishable from an authored empty string.
+    // The list form (§9.4): no header is minted — a header over the union of
+    // the elements' fields would have to invent a value for every element
+    // missing one, indistinguishable from an authored empty string.
     let _ = writeln!(out, "{pad}{key}[{n}]:");
     for item in items {
         match item {
@@ -281,11 +270,10 @@ fn collect_cells(item: &Value, columns: &[Column], out: &mut Vec<String>) {
 
 /// Classify an array into tabular columns, or `None` when it does not qualify.
 ///
-/// Tabular requires every element to be a NON-EMPTY object over the same key
+/// Tabular requires every element to be a non-empty object over the same key
 /// set, and every column to be uniform-primitive or nested-uniform (§9.3).
-/// The emitted field order is the FIRST element's encounter order; later
-/// elements may spell their fields in another order and are read by name, per
-/// the spec's "order per object MAY vary".
+/// The emitted field order is the first element's encounter order; later
+/// elements may spell their fields in another order and are read by name.
 fn tabular_columns(items: &[Value]) -> Option<Vec<Column>> {
     let first = match items.first()? {
         Value::Obj(fields) if !fields.is_empty() => fields,
@@ -293,7 +281,7 @@ fn tabular_columns(items: &[Value]) -> Option<Vec<Column>> {
     };
     let names: Vec<&str> = first.iter().map(|(k, _)| k.as_str()).collect();
 
-    // Same key SET everywhere, and no element is a non-object or empty object.
+    // Same key set everywhere, and no element is a non-object or empty object.
     for item in items {
         let Value::Obj(fields) = item else {
             return None;
@@ -388,14 +376,13 @@ pub fn scalar_str(s: &str) -> String {
     if must_quote { quoted(s) } else { s.to_string() }
 }
 
-/// The spec's numeric-like predicate (§7.2), over the SPELLING:
+/// The spec's numeric-like predicate (§7.2), over the spelling:
 /// `^[+-]?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$`, ASCII digits only.
 ///
-/// Written as a scanner rather than delegated to `str::parse::<f64>()`, which
-/// answers a different question: it accepts `inf`, `NaN`, and the trailing-dot
-/// `1.`, and it rejects nothing for having a leading zero. The zero-padded
-/// `007` is exactly the case that matters here — a string wearing a number's
-/// clothes, which must be quoted or the round trip loses its type.
+/// A scanner rather than `str::parse::<f64>()`, which answers a different
+/// question: it accepts `inf`, `NaN`, and the trailing-dot `1.`, and rejects
+/// nothing for a leading zero — the zero-padded `007` must be quoted or the
+/// round trip loses its type.
 fn numeric_like(s: &str) -> bool {
     let b = s.as_bytes();
     let mut i = 0;
@@ -482,10 +469,9 @@ mod tests {
         );
     }
 
-    /// A struct-valued field is a NESTED-UNIFORM column: it flattens into
+    /// A struct-valued field is a nested-uniform column: it flattens into
     /// sub-columns declared as a group in the header and expanded depth-first
-    /// in place in every row — not a nested table, and not a fallback to the
-    /// list form. Spec §9.3, Appendix A's `orders` example.
+    /// in place in every row (§9.3).
     #[test]
     fn struct_cells_flatten_into_nested_uniform_column_groups() {
         let order = |id: u64, name: &str, country: &str, total: u64| {
@@ -537,10 +523,9 @@ mod tests {
         assert_eq!(encode(&doc), "rows[2]:\n  - a: 1\n    b: 2\n  - a: 3");
     }
 
-    /// The same field SET in another ORDER is still one shape: the header is
-    /// the first element's order and later rows are read BY NAME, so the
-    /// second element's `b,a` spelling lands in the `a,b` columns rather than
-    /// silently transposing its values.
+    /// The same field set in another order is still one shape: the header is
+    /// the first element's order and later rows are read by name, so `b,a`
+    /// lands in the `a,b` columns rather than silently transposing.
     #[test]
     fn field_order_may_vary_per_element_and_rows_are_read_by_name() {
         let doc = Value::obj([(
@@ -584,7 +569,7 @@ mod tests {
     }
 
     /// The quoting law, one case per trigger. Each of these decodes back to a
-    /// DIFFERENT value if emitted bare — that is the whole predicate.
+    /// different value if emitted bare — that is the whole predicate.
     #[test]
     fn a_string_is_quoted_exactly_when_bare_would_lie() {
         // number lookalikes, including the zero-padded and exponent spellings

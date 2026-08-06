@@ -1,31 +1,21 @@
-//! The COMPILED-IN render plane (M1 U4a1, decision D-Render-min): the [`Renderer`] trait
-//! with ONE production impl ([`ToonRenderer`]) and the node-grain walker ([`walk`]) — no
-//! pack API, no `Manifest`, no load gate; fixtures are ordinary golden tests.
+//! The compiled-in render plane (M1 U4a1, D-Render-min): the [`Renderer`]
+//! trait with one production impl ([`ToonRenderer`]) and the node-grain walker
+//! ([`walk`]) — no pack API, no `Manifest`, no load gate.
 //!
-//! # Charter
-//! **Owns:** the token-efficient projection of a read — the TOON-compact face (U15,
-//! DECISION 27 · requirements D1 / decision 14 / R1.6), encoded by [`toon`] and pinned by
-//! the reviewed fixtures under `crates/testsuite/data/toon-goldens/` — and the two
-//! decoration hook points the marathon decisions reserve (seam now, behavior later):
-//! block elision by fenced-language tag (#8) at the walker — BUILT in U4b, opt-in via
-//! [`ToonRenderer::with_meridian_elision`] (the render-face production configuration;
-//! `default()` stays inert, which is the elision law: render-face only, and never on by
-//! accident) — and the `Link/Wikilink` visitor point (#6), NO-OP passthrough in M1 (A-K1:
-//! stored bytes and the raw read/cat face never change — byte pin
-//! #4: `meridian-*` blocks ride the raw face VERBATIM, elision is
-//! RENDER-face only).
+//! Owns: the token-efficient projection of a read — the TOON-compact face
+//! (U15), encoded by [`toon`] and pinned by the goldens under
+//! `crates/testsuite/data/toon-goldens/` — plus two decoration hook points:
+//! block elision by fenced-language tag (#8), opt-in via
+//! [`ToonRenderer::with_meridian_elision`] (`default()` stays inert — elision
+//! is render-face only and never on by accident; stored bytes and the raw
+//! read/cat face never change, A-K1), and the `Link/Wikilink` visitor point
+//! (#6).
 //!
-//! **Never does:** wire shapes (the composed read op is `wire-serve`'s), addressing
-//! computation (`wire-map::facts`), parsing (`syntax`), disk (`fs`).
+//! Never does: wire shapes (`wire-serve`), addressing computation
+//! (`wire-map::facts`), parsing (`syntax`), disk (`fs`).
 //!
-//! # G1 (panic-free law)
-//! The walker returns a typed [`RenderFailed`] `{node_kind, node_ref, reason}` — it NEVER
-//! panics; the sidecar serve loop is panic-free by law.
-//!
-//!
-//!
-//!
-//!
+//! G1 (panic-free law): the walker returns a typed [`RenderFailed`] — it
+//! never panics; the sidecar serve loop is panic-free by law.
 
 use std::collections::BTreeMap;
 
@@ -35,27 +25,24 @@ use wire_map::gotext::fields_count;
 pub mod toon;
 pub mod walk;
 
-/// One claim-link address **as written in the body**: the link's target
-/// spelling plus its block id, verbatim off the parsed node.
+/// One claim-link address as written in the body: the link's target spelling
+/// plus its block id, verbatim off the parsed node.
 ///
 /// The address is the key, not a resolution: this crate never resolves a
-/// linkpath, never reads a lock, and never computes a fingerprint. The CALLER
-/// resolves — it is the one holding the corpus and the pin — and hands back a
-/// map keyed by exactly the spellings its own document uses. That is what keeps
+/// linkpath, reads a lock, or computes a fingerprint. The caller resolves and
+/// hands back a map keyed by the spellings its own document uses — keeping
 /// the rejected `render → lock → fingerprint` coupling out of here (D10), and
-/// it is also why a decoration can never point at an address the body does not
+/// guaranteeing a decoration can never point at an address the body does not
 /// literally contain.
 ///
-/// **D12:** `target` is opaque to this crate. A later `root:` prefix rides
-/// inside it untouched — the slot is reserved by not being parsed.
+/// D12: `target` is opaque to this crate. A later `root:` prefix rides inside
+/// it untouched — the slot is reserved by not being parsed.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ClaimLink {
     /// The link's target spelling, verbatim (`guide`, `sub/guide.md`, …).
     pub target: String,
     /// The link's block id, verbatim — the promoted `^slug` a pin's target
-    /// carries. The slug is a HANDLE, never the pin's identity: the pin's
-    /// fingerprint covers the section span its `ref` resolves to, and an
-    /// anchor node's span is only its host line.
+    /// carries. The slug is a handle, never the pin's identity.
     pub block: String,
 }
 
@@ -66,10 +53,8 @@ pub struct ClaimLink {
 pub type Decorations = BTreeMap<ClaimLink, String>;
 
 /// The empty decoration map — the one spelling of "nothing to decorate".
-///
-/// A host with no corpus (the per-request sidecar, the bare CLI) passes THIS
-/// rather than an `Option`, so an absent map and an empty map cannot mean two
-/// different things — the same discipline s1c applied to the anchor plane.
+/// A host with no corpus passes this rather than an `Option`, so an absent
+/// map and an empty map cannot mean two different things.
 pub static NO_DECORATIONS: Decorations = Decorations::new();
 
 /// Typed render failure (G1): named node kind + a human-addressable node ref
@@ -96,28 +81,22 @@ impl std::fmt::Display for RenderFailed {
 
 impl std::error::Error for RenderFailed {}
 
-/// The header line facts (`readText` line 1): the display path is the HOST
-/// face's spelling (the engine never invents paths — the caller passes the
-/// string the consumer expects, e.g. an absolute session path).
+/// The header line facts (`readText` line 1): the display path is the host
+/// face's spelling — the engine never invents paths.
 #[derive(Debug, Clone)]
 pub struct Header<'a> {
     pub display_path: &'a str,
     pub file_rev: &'a str,
     /// The ambient corpus fingerprint this read was served at — the `b3b:…`
-    /// world-grain token `mrd put --if-fingerprint` takes.
-    ///
-    /// **Read face v2 (dogfood G8).** The guard wanted a value the human face
-    /// never printed, so a terminal user had to drop to `--json` to obtain the
-    /// argument the flag they were being offered required. It rides the header
-    /// because it is ONE fact about the whole read — a per-row column would
-    /// re-type the same 70-odd bytes on every line, which is the very cost
-    /// G2 is about.
+    /// world-grain token `mrd put --if-fingerprint` takes. Rides the header
+    /// because it is one fact about the whole read; a per-row column would
+    /// re-type the same bytes on every line (G8/G2).
     pub fingerprint: &'a str,
     pub words_total: u64,
-    /// Stage-2 S10: the claim-link decorations for this render (D10). It rides
-    /// the HEADER, so it is an input to the render as a whole and not to one
-    /// mode — a toc render simply has no link to decorate. Empty
-    /// ([`NO_DECORATIONS`]) is the inert input and the M1 behavior exactly.
+    /// Stage-2 S10: the claim-link decorations for this render (D10). Rides
+    /// the header — an input to the render as a whole, not to one mode; a toc
+    /// render simply has no link to decorate. Empty ([`NO_DECORATIONS`]) is
+    /// the inert input.
     pub decorations: &'a Decorations,
 }
 
@@ -128,19 +107,13 @@ pub struct SectionRow<'a> {
     pub fact: &'a ReadFact,
 }
 
-/// **The human address, derived HERE (U14).** A read fact carries its address
-/// as raw segments; this is the joined, sanitized spelling a person reads —
+/// The human address, derived here (U14): a read fact carries its address as
+/// raw segments; this is the joined, sanitized spelling a person reads —
 /// `Notes/Slash-Title-Here`, or `^id` on a block-anchor row.
 ///
-/// It is the same projection the read face used to CARRY as `ReadFact.hpath`,
-/// moved to the one plane that wants it. Decision 14: arrays for machines,
-/// text for humans — so the lossy many-to-one spelling is minted at the render
-/// door, where being lossy costs nothing, and no machine surface publishes it
+/// Decision 14 (arrays for machines, text for humans): the lossy many-to-one
+/// spelling is minted at the render door, and no machine surface publishes it
 /// as if it were an address.
-///
-/// Because it is derived from the same segments and by the same
-/// [`wire_map::gotext::sanitize_heading`] owner, the rendered bytes are
-/// unchanged by the promotion.
 #[must_use]
 pub fn address_text(fact: &ReadFact) -> String {
     match &fact.anchor {
@@ -155,14 +128,14 @@ pub fn address_text(fact: &ReadFact) -> String {
 }
 
 /// One rendered section: the emitted content plus its recomputed word count
-/// (`renderSectionsSidecar` recounts over the RETURNED content, so a block
-/// leaf counts its words here even though its fact carries 0).
+/// (recounted over the returned content, so a block leaf counts its words
+/// here even though its fact carries 0).
 #[derive(Debug, Clone)]
 pub struct RenderedSection {
     /// The row's dewey ordinal (`2.1`), or `^id` on a block-anchor row — the
     /// short address that opens this body and re-reads it (read face v2).
     pub n: String,
-    /// The row's RAW title, verbatim off the heading.
+    /// The row's raw title, verbatim off the heading.
     pub title: String,
     pub sec_rev: String,
     pub words: u64,
@@ -172,14 +145,14 @@ pub struct RenderedSection {
 /// A render job: the toc shape table, or selected sections' content.
 #[derive(Debug, Clone)]
 pub enum RenderJob<'a> {
-    /// The shape table over ALREADY-FILTERED rows (`wire_map::facts::
+    /// The shape table over already-filtered rows (`wire_map::facts::
     /// toc_rows` applies the frag scope; refusals are the op layer's).
     Toc {
         header: Header<'a>,
         rows: &'a [&'a ReadFact],
     },
     /// Selected sections, content emitted through the walker (elision hook
-    /// point), plus the PARTIAL-read notice when selectors went unresolved.
+    /// point), plus the partial-read notice when selectors went unresolved.
     Sections {
         header: Header<'a>,
         rows: &'a [SectionRow<'a>],
@@ -195,7 +168,7 @@ pub struct Rendered {
     pub sections: Vec<RenderedSection>,
 }
 
-/// The render seam — ONE compiled-in impl in M1 (no `dyn`, no registry):
+/// The render seam — one compiled-in impl in M1 (no `dyn`, no registry):
 /// callers hold a [`ToonRenderer`] directly; the trait names the seam a
 /// later pack tier extends.
 pub trait Renderer {
@@ -207,29 +180,24 @@ pub trait Renderer {
 }
 
 /// The production renderer: the TOON-compact face (U15), with the block
-/// elision predicate as the U4b hook. `default()` is INERT (elide nothing) —
-/// the gates construct both configurations and pin the contrast, which is what
-/// keeps "elision is opt-in and render-face only" a tested claim rather than a
-/// remembered one. The production configuration is
-/// [`ToonRenderer::with_meridian_elision`].
+/// elision predicate as the U4b hook. `default()` is inert (elide nothing);
+/// the production configuration is [`ToonRenderer::with_meridian_elision`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ToonRenderer {
     /// The block-elision hook (#8 seam): a fenced block whose info-string
-    /// matches is dropped from RENDERED section content — never from the
-    /// raw read/cat face. `None` = emit everything (the golden-pinned
-    /// default).
+    /// matches is dropped from rendered section content — never from the
+    /// raw read/cat face. `None` = emit everything.
     pub elide_lang: Option<ElideBy>,
 }
 
 impl ToonRenderer {
-    /// The render-face production configuration (U4b): blocks THE ENGINE
-    /// EMITS are elided from rendered section content. The raw read/cat face
+    /// The render-face production configuration (U4b): blocks the engine
+    /// emits are elided from rendered section content. The raw read/cat face
     /// never routes through render and stays verbatim (byte pin #4).
     ///
-    /// Elision is **per-language, not per-namespace** (U36). A `meridian-lock`
-    /// is machine-written and elided; a `meridian-mount` is content the user
-    /// authored, so it renders. The name is kept for its call sites; the law it
-    /// selects is [`ElideBy::EngineEmitted`].
+    /// Elision is per-language, not per-namespace (U36): a `meridian-lock` is
+    /// machine-written and elided; a `meridian-mount` is user-authored and
+    /// renders.
     #[must_use]
     pub fn with_meridian_elision() -> Self {
         ToonRenderer {
@@ -238,19 +206,16 @@ impl ToonRenderer {
     }
 }
 
-/// The elision law: drop fenced blocks whose bytes THE ENGINE EMITTED.
-///
+/// The elision law: drop fenced blocks whose bytes the engine emitted.
 /// The predicate is [`lock::is_engine_emitted`] — derived in `lock` from the
-/// registered canonical writers. Render owns no list and never grew one; it
-/// also does not decide the law, only that elision is on.
+/// registered canonical writers; render owns no list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ElideBy {
-    /// Elide the blocks the engine writes: languages with a registered
-    /// canonical writer, decided by [`lock::is_engine_emitted`].
-    ///
-    /// Deliberately **not** the `meridian-*` namespace: reservation answers
-    /// "is this ours?", readership answers "should a reader see it?", and a
-    /// human-authored `meridian-mount` block answers those two differently.
+    /// Elide the blocks the engine writes, decided by
+    /// [`lock::is_engine_emitted`]. Deliberately not the `meridian-*`
+    /// namespace: reservation answers "is this ours?", readership answers
+    /// "should a reader see it?", and a human-authored `meridian-mount` block
+    /// answers those two differently.
     EngineEmitted,
 }
 
@@ -307,33 +272,16 @@ fn header_fields(header: &Header<'_>) -> Vec<(String, toon::Value)> {
 }
 
 /// The toc face: one TOON document — the header scalars, then the section map
-/// as the tabular array the format exists for.
+/// as a tabular array.
 ///
-/// The dewey `n` is a STRING (`2.1` is an ordinal, not a float) and the
-/// encoder quotes it for exactly that reason. `depth` carries what the retired
-/// text face carried as leading indentation: a table cannot indent, and
-/// dropping the depth would lose the tree shape a toc is read for.
-///
-/// **Read face v2 — the RELATIVE toc (ZT, 2026-08-04; dogfood G2).** The
-/// address column was the FULL sanitized heading path, so every row re-typed
-/// its ancestors: on a real 7319-word decision page a 106-char prefix was
-/// repeated across 23 rows — 2438 of the map's 5473 bytes, 44%, and 23 of 24
-/// rows past 120 columns. The discriminating text sat behind a wall of
-/// identical prose and every terminal wrapped it, which defeats the
-/// compactness TOON exists for.
-///
-/// So the column is the row's own RAW `title` and nothing else. The tree it
-/// hangs from is not dropped, it is carried by the two columns that already
-/// carry it losslessly: `depth` gives the level and `n` gives the dewey
-/// position, so a reader reconstructs the path by eye and a machine addresses
-/// any row by its `n` verbatim. Raw, not sanitized: `sanitize_heading` is
-/// many-to-one, so the sanitized spelling was a projection a reader could not
-/// invert back to the heading actually on the page — while `mrd put` takes
-/// exactly the raw text this column now prints.
-///
-/// The structured `toc[]` rows are unchanged and still carry `hpath` as
-/// segments (decision 14: arrays for machines, text for humans), so nothing a
-/// machine addressed by is lost here.
+/// The dewey `n` is a string (`2.1` is an ordinal, not a float) and the
+/// encoder quotes it for exactly that reason. The title column is the row's
+/// own raw `title` and nothing else (the relative toc, G2): the tree is
+/// carried losslessly by `depth` and `n`, so no row re-types its ancestors.
+/// Raw, not sanitized — `sanitize_heading` is many-to-one, and `mrd put`
+/// takes exactly the raw text this column prints. The structured `toc[]` rows
+/// still carry `hpath` as segments (decision 14: arrays for machines, text
+/// for humans).
 #[must_use]
 pub fn toc_toon(header: &Header<'_>, rows: &[&ReadFact]) -> String {
     let mut fields = header_fields(header);
@@ -353,53 +301,34 @@ pub fn toc_toon(header: &Header<'_>, rows: &[&ReadFact]) -> String {
     toon::encode(&toon::Value::Obj(fields))
 }
 
-/// The marker that opens one section's body in the sections face.
-///
-/// **Read face v2 (dogfood G2).** It was the full sanitized heading path, so a
-/// deep section printed its 199-char address twice — once in the head's row,
-/// once as the banner — around an 800-byte body: roughly half the response was
-/// address. The marker is now the row's `n` alone.
-///
-/// `n` is not merely shorter, it is the SELECTOR: a dewey ordinal (or `^id`)
-/// is exactly what `--section` takes, so the line that opens a body also says
-/// how to ask for that body again. The title, rev, words and byte length stay
-/// in the head, where each is stated once.
+/// The marker that opens one section's body in the sections face: the row's
+/// `n` alone (G2). `n` is the selector — a dewey ordinal (or `^id`) is
+/// exactly what `--section` takes, so the line that opens a body also says
+/// how to ask for it again. Title, rev, words and byte length stay in the
+/// head, each stated once.
 fn body_marker(n: &str) -> String {
     format!("== {n} ==")
 }
 
-/// The sections face: a TOON HEAD carrying the fixed-shape facts, then the
-/// section BODIES verbatim, one per row, each opened by its `== n ==` marker.
+/// The sections face: a TOON head carrying the fixed-shape facts, then the
+/// section bodies verbatim, one per row, each opened by its `== n ==` marker.
 ///
-/// **Why the bodies are not TOON.** The format has no block scalar (spec §7.1:
-/// a newline inside a string is the `\n` escape, and that is the only
-/// mechanism offered). Encoding a markdown section as a quoted TOON scalar
-/// would be perfectly machine-legible and unreadable to a person — the exact
-/// inverse of R1.6's *arrays for machines, TOON for humans*, on the one face
-/// whose whole job is delivering prose to a reader. So the FACTS about the
-/// sections are the TOON document and the sections themselves stay prose: the
-/// head is a valid TOON document a machine parses to know what follows, and
-/// the bodies are the bytes the read exists to serve.
+/// The bodies are not TOON: the format has no block scalar, and a markdown
+/// section as a quoted TOON scalar would be unreadable to a person — the
+/// facts about the sections are the TOON document, the sections themselves
+/// stay prose. `notice` rides the head, so a partial read is a field a reader
+/// can look up.
 ///
-/// `notice` rides the head too, so a partial read is a FIELD a reader can look
-/// up rather than a sentence to notice at the bottom.
+/// The marker is not the boundary — any section's prose may contain a
+/// `== n ==` line. The head carries each body's `bytes` (UTF-8 length), and
+/// that is where a body ends; content cannot forge a boundary because no
+/// boundary is ever found by scanning. Escaping the prose instead would edit
+/// the bytes the read exists to serve verbatim (the A-K1 class).
 ///
-/// **The marker is not the boundary.** A `== n ==` line is ordinary text
-/// and any section's prose may contain one — a document ABOUT this face
-/// certainly does. So the head carries each body's `bytes` (its UTF-8 length),
-/// and that is where a body ends: a reader takes the bodies in the head's
-/// order, each running exactly its declared length after its marker line. The
-/// marker is for the human eye, and content cannot forge a boundary because no
-/// boundary is ever found by scanning for one. The alternative — escaping or
-/// fencing the prose so the marker becomes unspellable — would edit the bytes
-/// the read exists to serve verbatim, which is the A-K1 class.
-///
-/// **So the face is never trimmed at the end.** The final body's trailing
-/// newlines are bytes the head already counted; tidying them off the tail would
-/// leave the last body shorter than its own declaration and break the only
-/// sanctioned parse (dogfood G12 — it declared 75 and served 74, and every
-/// `sections-*` golden had frozen the short face, so the suite was green on the
-/// defect). The property gate lives at `testsuite::g12_declared_bytes`.
+/// So the face is never trimmed at the end: the final body's trailing
+/// newlines are bytes the head already counted, and tidying them off would
+/// leave the last body shorter than its own declaration (G12). The property
+/// gate lives at `testsuite::g12_declared_bytes`.
 #[must_use]
 pub fn sections_toon(
     header: &Header<'_>,
@@ -414,12 +343,10 @@ pub fn sections_toon(
     b
 }
 
-/// The sections face's HEAD, alone: the TOON document that declares what
-/// bodies follow and how long each one is.
-///
-/// Split out so the head is one expression with one owner — the gate that
-/// asserts the head is valid TOON encodes it through this same function, and a
-/// head that only existed inline could be asserted about but never re-derived.
+/// The sections face's head, alone: the TOON document that declares what
+/// bodies follow and how long each one is. Split out so the head is one
+/// expression with one owner — the gate that asserts the head is valid TOON
+/// encodes it through this same function.
 #[must_use]
 pub fn sections_head(
     header: &Header<'_>,
@@ -451,7 +378,7 @@ mod tests {
     use super::*;
     use wire_map::facts::{read_facts, resolve_selector, toc_rows};
 
-    /// A selector from its human spelling, through the ONE ingress door.
+    /// A selector from its human spelling, through the one ingress door.
     fn sel(s: &str) -> wire::ReadSel {
         wire::ReadSel::parse(s)
     }
@@ -464,15 +391,10 @@ mod tests {
 
     const RAW: &str = "---\ntype: note\n---\n\n# Todo\n\n- [ ] first item\n\n# Notes\n\nseed note line one\n\n## Slash/Title Here\n\ndeep content\n";
 
-    /// The toc face is ONE TOON document: header scalars, then the section map
-    /// as a tabular array. The dewey ordinals arrive quoted because they are
-    /// strings — `2.1` bare would decode as a float.
-    ///
-    /// Read face v2's claim rides here as the deep row: its column is the RAW
-    /// leaf title, so a nested heading costs its own name and not its
-    /// ancestors' — and `Slash/Title Here` proves the "raw" half, because the
-    /// sanitized spelling of that heading (`Slash-Title-Here`) is a different
-    /// string that `mrd put` does not take.
+    /// The toc face is one TOON document: header scalars, then the section
+    /// map as a tabular array. Dewey ordinals arrive quoted (strings, not
+    /// floats); the deep row proves the relative-toc claim — its column is
+    /// the raw leaf title, not its ancestors' path.
     #[test]
     fn the_toc_face_is_one_toon_document() {
         let (doc, facts) = doc_and_facts(RAW);
@@ -524,11 +446,9 @@ mod tests {
         assert!(toc_toon(&header, &rows).ends_with("\ntoc: []"));
     }
 
-    /// The sections face is a TOON HEAD then verbatim bodies (advisor-ruled
-    /// 2026-08-04, U15). Two claims, and the first is the one that makes the
-    /// hybrid honest: the head is not merely TOON-*shaped*, it IS the document
-    /// [`sections_head`] encodes — asserted by re-deriving it, so a head that
-    /// drifted from the encoder would redden here.
+    /// The sections face is a TOON head then verbatim bodies (U15). The head
+    /// is not merely TOON-shaped, it is the document [`sections_head`]
+    /// encodes — asserted by re-deriving it.
     #[test]
     fn the_sections_face_is_a_toon_head_then_verbatim_bodies() {
         let (doc, facts) = doc_and_facts(RAW);
@@ -586,14 +506,10 @@ mod tests {
         assert!(out.sections[0].content.contains("## Slash/Title Here"));
     }
 
-    /// The positive control the advisor's ruling asks for: a body whose PROSE
-    /// contains a line spelled exactly like a boundary marker.
-    ///
-    /// The marker is not the boundary — the head's `bytes` is — so the
-    /// lookalike is served verbatim and changes nothing about where the body
-    /// ends. This is the claim stated as a test rather than as a comment,
-    /// because "content cannot forge a boundary" is precisely the kind of
-    /// assertion that rots silently.
+    /// Positive control: a body whose prose contains a line spelled exactly
+    /// like a boundary marker. The marker is not the boundary — the head's
+    /// `bytes` is — so the lookalike is served verbatim and changes nothing
+    /// about where the body ends.
     #[test]
     fn prose_that_spells_a_marker_does_not_move_the_boundary() {
         let raw = "# Notes\n\nthe face writes a line like\n\n== 1 ==\n\nand this section is ABOUT that line\n";
@@ -626,7 +542,7 @@ mod tests {
             content.contains("\n== 1 ==\n"),
             "the fixture really carries a lookalike marker: {content}"
         );
-        // ONE section was read, so the head declares ONE row — the second
+        // One section was read, so the head declares one row — the second
         // `== 1 ==` in the face is prose, and the head knows nothing of it.
         let head = sections_head(&header, &out.sections, None);
         assert!(head.contains("sections[1]{"), "{head}");
@@ -638,10 +554,9 @@ mod tests {
         assert_eq!(out.text.matches("== 1 ==").count(), 2);
     }
 
-    /// The U4b hook is INERT by default: a `meridian-*` fenced block renders
-    /// verbatim (Go parity, the U0 meridian-block golden), and the named
-    /// production configuration elides exactly that block from the RENDERED
-    /// face only.
+    /// The U4b hook is inert by default: a `meridian-*` fenced block renders
+    /// verbatim, and the named production configuration elides exactly that
+    /// block from the rendered face only.
     #[test]
     fn elision_hook_inert_by_default_active_by_predicate() {
         let raw = "# H\n\nbefore\n\n```meridian-lock\nv: 1\n```\n\nafter\n";
@@ -683,10 +598,10 @@ mod tests {
         assert!(out.sections[0].content.contains("after"));
     }
 
-    /// The S10 claim-link hook, same law as the elision hook: an EMPTY
-    /// decoration map emits the raw slice byte-identically (the U0 goldens
-    /// depend on it), and an inhabited one decorates exactly the addresses it
-    /// names — never a neighbour that merely shares a slug or a target.
+    /// The S10 claim-link hook, same law as the elision hook: an empty
+    /// decoration map emits the raw slice byte-identically, and an inhabited
+    /// one decorates exactly the addresses it names — never a neighbour that
+    /// merely shares a slug or a target.
     #[test]
     fn decoration_hook_inert_when_empty_and_exact_when_inhabited() {
         let raw = "# H\n\nsee [[guide#^goal|Goal]] and [[other#^goal|Other]] and \
@@ -771,14 +686,11 @@ mod tests {
         );
     }
 
-    /// F1: the token rides the ADDRESS slot, located structurally — not the last
-    /// byte-match of `#^<block>` anywhere in the link. A label that quotes its own
-    /// block ref (an ordinary sentence, no adversarial author) used to absorb the
-    /// mint: the strip then could not see it, and the token reached disk.
-    ///
-    /// The claim is asserted as the PROPERTY — `syntax::fp_removals` over the
-    /// rendered bytes finds the token, and the strip returns them to the inert
-    /// render. A decoration the strip cannot remove fails here by construction.
+    /// F1: the token rides the address slot, located structurally — not the
+    /// last byte-match of `#^<block>` anywhere in the link, so a label that
+    /// quotes its own block ref cannot absorb the mint. Asserted as the
+    /// property: `syntax::fp_removals` finds the token and the strip returns
+    /// the bytes to the inert render.
     #[test]
     fn decoration_rides_the_address_slot_when_the_label_repeats_the_ref() {
         let raw = "# H\n\nsee [[guide#^goal|guide#^goal in full]] and \
