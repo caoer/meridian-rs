@@ -1,25 +1,16 @@
-//! The named model→wire projection seam (review C1 ruling, 4/4 lenses):
-//! tree-flatten + `text_prefix_16b` + node ordering as a **tested library
-//! function, never bin code**.
+//! The named model→wire projection seam: tree-flatten + `text_prefix_16b` +
+//! node ordering as a tested library function, never bin code.
 //!
-//! # Charter
-//! **Owns:** the projection from `model`'s governed tree (non-serializable, by
+//! Owns the projection from `model`'s governed tree (non-serializable, by
 //! law) to `wire`'s flat node list (contract §5.2): flattening, kind mapping,
-//! the frozen prefix law, and the frozen total node order.
+//! the frozen prefix law, and the frozen total node order. Never does I/O,
+//! framing, parsing, business logic, or body formatting.
 //!
-//! **Never does:** I/O, framing, parsing, business logic, body formatting.
-//!
-//! # Law 3, as amended (review C1)
-//! Original wording: "only the bin sees wire and model together." Amended:
-//! **"only the named wire-map seam and the bin see both."** This crate IS that
-//! seam — the one place projection behavior lives and is tested; `sidecar`
-//! stays wiring-only. Growing projection pressure lands here, never in a bin.
-//!
-//! # Rungs
-//! Rung 1: `project` (toc/extract node lists). Rung 2+: projection of resolve
-//! targets and splice verdicts joins additively; M1 U2 adds the Go-exact
-//! host-face addressing semantics ([`gotext`]) and the read-fact table
-//! ([`facts`]) built from them.
+//! Only this named seam and the bin see wire and model together
+//! (`docs/laws.md` Law 3); `sidecar` stays wiring-only. Growing projection
+//! pressure lands here, never in a bin. [`gotext`] carries the Go-exact
+//! host-face addressing semantics; [`facts`] builds the read-fact table from
+//! them.
 
 pub mod facts;
 pub mod gotext;
@@ -66,8 +57,8 @@ fn flatten(node: &model::Node, raw: &[u8], out: &mut Vec<wire::Node>) {
             unterminated: unterminated.then_some(true),
             info,
             node_rev: Some(wire::NodeRev(node.node_rev.0.clone())),
-            // U2 addressing facts are attached by the extract arm under v3
-            // sessions only — the projection itself stays rev-agnostic.
+            // addressing facts are attached by the extract arm under v3
+            // sessions only — the projection itself stays rev-agnostic
             n: None,
             words: None,
         });

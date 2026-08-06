@@ -1,4 +1,4 @@
-//! Go-exact text semantics for host-face addressing facts (M1 U2).
+//! Go-exact text semantics for host-face addressing facts.
 //!
 //! Primitives replicate Go stdlib semantics (byte-identity with
 //! `readsidecar.go`), never idiomatic-Rust near-equivalents:
@@ -13,18 +13,8 @@
 //! [`is_go_space`] / [`sanitize_heading`] re-export [`model::gotext`] (one
 //! owner). Word count and dewey stay here (projection facts, law 3).
 //!
-//! Parity target: U0 golden corpus. Unit tests pin divergence classes
+//! Parity target: the golden corpus. Unit tests pin divergence classes
 //! (NBSP/NEL space, ZWSP not, level jumps, empty headings).
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 pub use model::gotext::{is_go_space, sanitize_heading};
 
@@ -128,7 +118,7 @@ mod tests {
         assert_eq!(got, ["1", "1.1", "1.2", "1.2.1", "1.3", "2"]);
     }
 
-    /// A-C1 malformed classes: the H1→H3 jump pushes one rung (no phantom
+    /// Malformed classes: the H1→H3 jump pushes one rung (no phantom
     /// levels), the H6→H1 reset pops to the top, and the H3-then-H2 fold
     /// yields the Go stack's non-unique "1.1" — reproduced, not repaired.
     #[test]

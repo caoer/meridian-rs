@@ -1,12 +1,5 @@
-//! B1-SUPERSET: four wire-observable superset-by-embedding predicates
-//! (contract §15 B1) at `wire_map::project`. Real parsed documents only.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
+//! Four wire-observable superset-by-embedding predicates (contract §15 B1)
+//! at `wire_map::project`. Real parsed documents only.
 
 use wire::NodeKind as K;
 
@@ -16,9 +9,6 @@ fn project(raw: &str) -> Vec<wire::Node> {
 }
 
 /// Predicate 1: every dialect construct is wire-representable (11-kind enum).
-///
-///
-///
 #[test]
 fn every_dialect_construct_is_wire_representable() {
     let src = "---\ntitle: Superset\n---\n\
@@ -111,9 +101,6 @@ fn fence_unterminated_rides_the_wire() {
 }
 
 /// Predicate 4: frontmatter `keys` preserve document order, never sorted.
-///
-///
-///
 #[test]
 fn frontmatter_key_order_preserved_in_keys() {
     // deliberately non-alphabetical: a sort would betray itself
@@ -137,10 +124,10 @@ fn frontmatter_key_order_preserved_in_keys() {
     );
 }
 
-/// M2-PROJECT gate: the frozen total order holds over the projected list —
-/// span.start asc, span.end desc (container before contained), kind ordinal
-/// as tiebreak (contract §5.2) — property-asserted pairwise over a document
-/// exercising every construct, nested sections included.
+/// The frozen total order holds over the projected list — span.start asc,
+/// span.end desc (container before contained), kind ordinal as tiebreak
+/// (contract §5.2) — property-asserted pairwise over a document exercising
+/// every construct, nested sections included.
 #[test]
 fn projection_emits_frozen_total_order() {
     let src = "---\ntitle: T\n---\n\
