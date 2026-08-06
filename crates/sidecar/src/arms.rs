@@ -244,12 +244,10 @@ fn diff_op(
 /// v2 §3.2: proto, server name, armed caps. `root` optional — present when
 /// the walk computes, absent on I/O failure.
 ///
-/// R1 identity: under v3 the sidecar publishes the field with the honest value
-/// `unknown`. It bakes no build sha — it has no build script, and it is on
-/// death row — so `unknown` is the true answer for it rather than a
-/// placeholder. It publishes the field anyway so one v3 client speaks to both
-/// hosts through one code path. Under v2 the field is `None` and the frozen
-/// hello body is byte-identical.
+/// Under v3 the sidecar publishes `identity.build` with the honest value
+/// `unknown` — it bakes no build sha — so one v3 client speaks to both hosts
+/// through one code path. Under v2 the field is `None` and the frozen hello
+/// body is byte-identical.
 fn hello(root: &fs::WorkspaceRoot, v3: bool) -> ResponseBody {
     ResponseBody::Hello {
         proto: crate::PROTO,

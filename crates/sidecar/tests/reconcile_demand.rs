@@ -9,7 +9,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use serde_json::Value;
 
-/// The s0 corpus root — the same standing oracle the F5-WATCH gates use.
+/// The s0 corpus root.
 const R0: &str = "b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9";
 
 /// The E3 splice, guarded on R0 (`splice_e2e`'s frozen request, verbatim).
@@ -250,9 +250,7 @@ fn the_fold_budget_is_the_demand_law() {
     );
 }
 
-/// The card's own case: a `cat` is the WHOLE session. Under the old loop this
-/// cost two full corpus folds — at a 63k-file root, seconds for a 1 KiB read.
-/// It now costs zero, cold, with nothing primed.
+/// A `cat` as the whole session costs zero folds, cold, with nothing primed.
 #[test]
 fn a_one_shot_cat_pays_no_fold_at_all() {
     let _g = counter_guard();
@@ -361,13 +359,10 @@ fn arm3_diff_over_an_unreconciled_change_answers_correctly() {
     assert_eq!(batches[0]["delta"]["files"][0]["change"], "created");
 }
 
-/// **Arm 3, degrade leg — PINNED AS DATA.** The one tense the demand law moves:
-/// the epoch baseline is primed at the first RING observation, so a root the
-/// client learned from a ring-blind op (`toc` here) before that point is not an
-/// anchorable position. The answer is `root_unknown` → resync — the §7.1 late
-/// law's existing category, and the ruled degrade direction. Never wrong data,
-/// and never silent: if this ever answers batches instead, the baseline moved
-/// and someone must re-rule it.
+/// **Arm 3, degrade leg.** The epoch baseline is primed at the first ring
+/// observation, so a root the client learned from a ring-blind op (`toc`
+/// here) before that point is not an anchorable position. The answer is
+/// `root_unknown` → resync (§7.1) — never wrong data, never silent.
 #[test]
 fn arm3_diff_anchored_before_the_baseline_refuses_root_unknown() {
     let _g = counter_guard();
@@ -469,13 +464,11 @@ fn splice_root_guard_still_folds_fresh_after_ring_blind_lines() {
     assert_eq!(fresh[1].1["body"]["root_before"], live);
 }
 
-/// **The verdict fold is uncached** — the primitive `mrd check`
-/// (`check_cmd.rs`), `realise` (`realise_cmd.rs`) and the splice guards all
-/// call. Driven through the exact failure the spec rejected the stat cache for
-/// and the verdict reproduced on APFS: a same-length rewrite with mtime
-/// restored leaves `(size, mtime)` bit-identical while the bytes differ. The
-/// fold reports the change because it compares BYTES, and it runs once per
-/// call — this card added a counter to that primitive, never a cache.
+/// **The verdict fold is uncached** — the primitive `mrd check`, `realise`
+/// and the splice guards all call. Driven through the failure the spec
+/// rejected the stat cache for: a same-length rewrite with mtime restored
+/// leaves `(size, mtime)` bit-identical while the bytes differ. The fold
+/// compares bytes and runs once per call.
 #[test]
 fn the_verdict_fold_is_uncached_in_the_lie_window() {
     let _g = counter_guard();

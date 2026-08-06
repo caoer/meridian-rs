@@ -97,9 +97,9 @@ fn e3_request() -> wire_serve::write::CommitRequest {
 }
 
 /// The frozen §4.4 E4 worked request: guardless-node `put at:end` on Goals>Q4
-/// (the append carries its own leading `\n`? No — S1 plan ends in a
-/// terminator, so the appended item is exactly `- new item\n`) + the E4
-/// receipt append at the S1 receipt file's EOF (249 bytes).
+/// (S1 plan ends in a terminator, so the appended item is exactly
+/// `- new item\n`) + the E4 receipt append at the S1 receipt file's EOF
+/// (249 bytes).
 fn e4_request() -> wire_serve::write::CommitRequest {
     wire_serve::write::CommitRequest {
         content_path: "notes/plan.md".into(),
@@ -222,10 +222,10 @@ fn replay_equals_live_e3_e4_through_the_commit_path() {
     assert_eq!(receipts_after.len(), 474, "S2 receipts bytes (§0.3)");
 }
 
-/// Gate 2, named: the receipt node appears in ITS file's Delta entry with the
-/// anchor-grain worked values COMPUTED — `[26,248]`/`639a2dca46f6fcc8` is the
-/// host-block-leaf grain (anchor-grain fix, live since cb3f366), derived here
-/// by the real parse of the just-committed bytes.
+/// Gate 2, named: the receipt node appears in its file's Delta entry with the
+/// anchor-grain worked values computed — `[26,248]`/`639a2dca46f6fcc8` is the
+/// host-block-leaf grain, derived by the real parse of the just-committed
+/// bytes.
 #[test]
 fn receipt_node_rides_its_files_delta_entry_computed() {
     let (_d, root) = s0();
@@ -311,35 +311,15 @@ fn refused_batch_emits_no_delta() {
 // condition that made it necessary
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// **Two live workspaces in one process, each committing a REAL frame through
-/// its own lock, and neither touching the other's bytes.**
+/// Two live workspaces in one process, each committing a real frame through
+/// its own lock, and neither touching the other's bytes.
 ///
-/// # What this pins, and why it is shaped this way
-/// `commit_batch` used to take `root: &WorkspaceRoot` and `flock: &WriteLock`
-/// as two independent parameters that had to agree, with nothing relating them.
-/// The witness therefore proved *a* lock was held, never that it was *this*
-/// workspace's — a real guard pointed one inch off the thing it names.
-///
-/// The cure was not an assert. `commit_batch` now takes the workspace FROM the
-/// lock, so **a mismatched pair is unrepresentable rather than detected** —
-/// there is no second value left to disagree with. That is why this test
-/// contains no "mismatch refuses" arm: the mismatch cannot be spelled, so the
-/// negative case is a COMPILE error and there is no runtime behaviour to
-/// assert. A test asserting a refusal here would be asserting something the
-/// type already makes unreachable.
-///
-/// # Why two workspaces rather than one
-/// The enabling condition is not hypothetical: the registry daemon holds six
-/// maps keyed by workspace path and builds a fresh `WorkspaceRoot` per call, so
-/// the wrong root is always in scope in production. This test reproduces that
-/// condition — two roots live simultaneously, two locks held simultaneously —
-/// and shows each commit landing in the workspace ITS OWN lock names.
-///
-/// # Both arms carry real frames
-/// Each arm drives the frozen §4.4 E3 request through the real commit path and
-/// asserts on the returned `DeltaFrame` and the bytes on disk — production
-/// output, not a recomputation. An empty-ring or no-op arm would pass for the
-/// trivial reason and prove nothing about which workspace was written.
+/// `commit_batch` takes the workspace FROM the lock, so a mismatched
+/// root/lock pair is unrepresentable — there is no "mismatch refuses" arm
+/// because the mismatch cannot be spelled. Two roots and two locks are live
+/// simultaneously, reproducing the registry daemon's production condition
+/// (fresh `WorkspaceRoot` per call), and each commit lands in the workspace
+/// its own lock names.
 #[test]
 fn two_live_workspaces_each_commit_through_their_own_lock() {
     let (_da, root_a) = s0();
@@ -354,20 +334,15 @@ fn two_live_workspaces_each_commit_through_their_own_lock() {
          attributable to which one was written"
     );
 
-    // Both locks held AT ONCE — the condition under which a stray root could
-    // previously have been paired with the wrong witness.
+    // Both locks held at once.
     let lock_a = flock(&root_a);
     let lock_b = flock(&root_b);
 
     let frame_a = wire_serve::write::commit_batch(None, &lock_a, &e3_request()).expect("A commits");
     let frame_b = wire_serve::write::commit_batch(None, &lock_b, &e3_request()).expect("B commits");
 
-    // THE DECISIVE ASSERTION RUNS FIRST, DELIBERATELY. Every other check in
-    // this test is a precondition, and a precondition that fails first SHADOWS
-    // the claim the test is named for — a mutation then reddens the row for a
-    // neighbouring reason and the decisive line is never exercised (#16). Both
-    // mutation controls for this test trip HERE now, which is the only reason
-    // the byte comparison is a defended line rather than a decorative one.
+    // The decisive assertion runs first: a precondition failing first would
+    // shadow the claim the test is named for.
     let now_a = std::fs::read_to_string(root_a.0.join("notes/plan.md")).expect("A post");
     let now_b = std::fs::read_to_string(root_b.0.join("notes/plan.md")).expect("B post");
     assert_ne!(
@@ -379,7 +354,7 @@ fn two_live_workspaces_each_commit_through_their_own_lock() {
         "B's commit changed B — the write reached the workspace B's lock names"
     );
 
-    // REAL frames, not empty ones: each carries the edited file with node-grain
+    // Real frames, not empty ones: each carries the edited file with node-grain
     // detail computed by the engine's own parse of the just-written bytes.
     for (label, frame) in [("A", &frame_a), ("B", &frame_b)] {
         let plan = frame

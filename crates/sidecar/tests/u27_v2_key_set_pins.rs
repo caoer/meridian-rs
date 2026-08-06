@@ -738,18 +738,10 @@ fn guard_required_error_key_set_is_pinned() {
 // §11.1 Verdict — the rules-as-data surface, FROM THE WIRE
 // ---------------------------------------------------------------------------
 //
-// This section exists because U27 got it wrong the first time. The type-plane
-// half pins `Verdict` from a hand-built value, and the U27 report claimed the
-// shape was unreachable on the wire ("uninhabited until P6"). It is not:
-// `crates/sidecar/tests/verdicts_e2e.rs` loads a compiled rules pack and the
-// engine serves real verdicts. A pin over a value the test itself constructed
-// tests its own construction — that is exactly the defect U27 reported as
-// finding 2 against `root_mismatch.changed`, committed inside the suite that
-// named the law. So the shape gets a WIRE pin here.
-//
-// The pack below is the minimum that admits: `verdicts_e2e.rs` is the worked
-// exemplar and owns the §11.1 worked VALUES; this one owns only the KEY SET,
-// so its rule is the smallest one that fires.
+// The shape is pinned from the wire, not from a hand-built value: a pin over
+// a value the test itself constructed tests its own construction. The pack
+// below is the minimum that admits; `verdicts_e2e.rs` owns the §11.1 worked
+// values, this one owns only the key set.
 
 /// In-memory pack-file resolver (the `verdicts_e2e.rs` stand-in for the disk
 /// reads the sidecar injects in production).
