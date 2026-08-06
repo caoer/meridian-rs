@@ -1,19 +1,14 @@
-//! **Positional address grammar** (`docs/address-grammar.md` § 9) — ONE owner of
+//! Positional address grammar (`docs/address-grammar.md` § 9) — one owner of
 //! where an agent-plane address may occupy a document, and of agent/stored
-//! translations. **Cross-root law lives here.**
+//! translations. Cross-root law lives here.
 //!
-//! # Transform is POSITIONAL, never a byte transform (A-1)
+//! # Transform is positional, never a byte transform
+//! `root:` is a live YAML frontmatter key in shipped preset/def grammar, so a
+//! blanket token rewrite would corrupt defs and silently invalidate pins whose
+//! fingerprint covers those bytes. Addresses are identified by position in the
+//! candidate; only owned positions are translated (`strip_fp_candidate` shape).
 //!
-//! `root:` is a live YAML frontmatter key in shipped preset/def grammar. Blanket
-//! token rewrite would corrupt defs and **silently invalidate pins** whose
-//! fingerprint covers those bytes. Frontmatter is not an address position
-//! (S10/R22).
-//!
-//! Identify addresses **by position in the candidate**; translate only owned
-//! positions (`strip_fp_candidate` shape).
-//!
-//!
-//! # Four positions; this module touches two (A-4)
+//! # Four positions; this module touches two
 //!
 //! | # | Position | This module |
 //! |---|---|---|
@@ -22,41 +17,19 @@
 //! | 3 | `meridian-lock` `ref:` | **identity** (ratified) |
 //! | 4 | `meridian-lock` `objects:` | **identity** (ratified) |
 //!
-//! 3–4 stay canonical `root:` form (agent plane, never URI). U10 TYPE reaches
-//! them; transform is identity. Translating the lock would break ratified form.
-//!
-//!
+//! 3–4 stay canonical `root:` form (agent plane, never URI); translating the
+//! lock would break its ratified form.
 //!
 //! # Mask from the parser, never a second byte reading
+//! Code samples and fences (`root:page.md` inside) are left alone (§ 9.4).
+//! Position 1 is masked by `syntax::parse`; position 2 scans with the same
+//! parse's Fence / `InlineCode` / Frontmatter spans — one parse, one masking
+//! law.
 //!
-//! Code sample / fence (`root:page.md` inside) left alone (§ 9.4 P2). Position 1
-//! masked by `syntax::parse`. Position 2 scans with the SAME parse's Fence /
-//! `InlineCode` / Frontmatter spans — one parse, one masking law.
-//!
-//!
-//!
-//!
-//! # Canonical agent-plane cross-root spelling is the WIKILINK
-//!
-//! Stored form is always markdown link (`[display](obsidian://…)`). Reverse
-//! picks wikilink. ADDRESS round-trips; surrounding markdown converges on one
-//! spelling ([`crate::positions::tests`]).
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
+//! # Canonical agent-plane cross-root spelling is the wikilink
+//! Stored form is always a markdown link (`[display](obsidian://…)`); reverse
+//! picks the wikilink, so the address round-trips and surrounding markdown
+//! converges on one spelling.
 
 use std::ops::Range;
 
@@ -69,7 +42,7 @@ pub(crate) enum Form {
     Wikilink,
     /// Position 1, transcluding — `![[target]]`. Refused: no `obsidian://` URI
     /// transcludes, so translating one would silently turn an embed into a
-    /// link and change what the page SAYS.
+    /// link and change what the page says.
     Embed,
     /// Position 2 — `[label](url)`.
     Markdown,
@@ -102,22 +75,18 @@ impl Occupant {
 }
 
 /// Why a translation refused. Every variant names the address it refused and
-/// teaches the fix — a refusal a human cannot act on is worse than none.
+/// teaches the fix.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TranslateError {
-    /// The address names a root **nothing declares here**, so there is no vault
-    /// name to store. Grey's write-side twin: you cannot store a link to a
-    /// place you cannot see from here.
+    /// The address names a root nothing declares here, so there is no vault
+    /// name to store — grey's write-side twin.
     Unmounted { address: String, root: String },
-    /// The address names a root the mount table **declares** and this machine
-    /// **cannot read** — the path is absent, unreadable, or holds no corpus.
+    /// The address names a root the mount table declares and this machine
+    /// cannot read — the path is absent, unreadable, or holds no corpus.
     ///
-    /// A separate variant from [`TranslateError::Unmounted`] because the fix is
-    /// a different action (S3-R43/S3-R50): telling a user to declare a root
-    /// their config already declares prescribes a COMPLETED action, spends
-    /// their trust and their time, and leaves no signal pointing at the real
-    /// cause. The reason word is [`addr::PATH_UNSEEABLE_REASON_WORD`], REUSED
-    /// from the one source rather than re-spelled here.
+    /// A separate variant from [`TranslateError::Unmounted`] because the fix
+    /// differs: the declaration the other refusal prescribes is already done.
+    /// The reason word is [`addr::PATH_UNSEEABLE_REASON_WORD`].
     PathUnseeable {
         address: String,
         root: String,
@@ -132,7 +101,7 @@ pub(crate) enum TranslateError {
         address: String,
         source: stored::StoredError,
     },
-    /// A cross-root EMBED. No URI transcludes; translating would change the
+    /// A cross-root embed. No URI transcludes; translating would change the
     /// document's meaning rather than its spelling.
     Embed { address: String },
     /// An `@fp` decoration reached a position about to be stored. The
@@ -231,10 +200,9 @@ fn wikilink_spelling(target: &str, heading: Option<&str>, block: Option<&str>) -
 /// `(whole span, label, url)`.
 ///
 /// Deliberately conservative: no nested brackets in the label, no newline in
-/// either part, and an image (`![…](…)`) is NOT a link position — § 9.1 names
-/// four positions and an image URL is not among them. A shape this scanner
-/// declines to claim is left byte-untouched, which is the safe direction: the
-/// guard that follows refuses anything a translation should have reached.
+/// either part, and an image (`![…](…)`) is not a link position (§ 9.1). A
+/// shape this scanner declines to claim is left byte-untouched; the guard that
+/// follows refuses anything a translation should have reached.
 fn markdown_links(raw: &str, mask: &[Range<usize>]) -> Vec<(Range<usize>, String, String)> {
     let bytes = raw.as_bytes();
     let mut out = Vec::new();
@@ -286,67 +254,32 @@ fn markdown_links(raw: &str, mask: &[Range<usize>]) -> Vec<(Range<usize>, String
     out
 }
 
-/// Every AGENT-PLANE cross-root address in an owned position of `raw`, span
+/// Every agent-plane cross-root address in an owned position of `raw`, span
 /// order.
 ///
-/// An address with no root is ambient and untouched — the overwhelming majority
-/// of refs, and the acceptance half that keeps this grammar from swallowing the
-/// ordinary corpus.
+/// An address with no root is ambient and untouched — the overwhelming
+/// majority of refs.
 ///
-/// # The two positions do NOT ask the same question, and the reason is measured
+/// # The two positions do not ask the same question
+/// In position 1 a rooted spelling is unambiguously an address, so an unbound
+/// root refuses there. In position 2 it is not:
+/// `Addr::parse("https://example.com")` succeeds with root `https`, as does
+/// every other absolute URI. Position 2 therefore claims only what the mount
+/// table declares; a rooted markdown URL naming a root nothing declares is left
+/// untouched, indistinguishable from a URI whose scheme this engine does not
+/// own.
 ///
-/// **In position 1 a rooted spelling is unambiguously an address.** `[[x:y]]` is
-/// a wikilink and nothing else, so an unbound root REFUSES there — the write
-/// side of the grey rule: you cannot store a link to a place you cannot see
-/// from here.
+/// # The predicate is declared, not bound
+/// `is_bound` is false both for `https` (not ours — leave verbatim) and for a
+/// root `~/MERIDIAN.md` declares that this machine has not checked out (ours,
+/// no stored form — refuse). Skipping declared-but-unbound roots disarmed the
+/// transform and [`crate::write::stored_form_guard`] together, letting
+/// agent-plane bytes reach disk at exit 0. [`addr::MountSet::is_declared`]
+/// keeps the two apart; an occupant on an unreachable root refuses through
+/// [`stored_text`] as [`TranslateError::PathUnseeable`].
 ///
-/// **In position 2 it is not.** Measured while building this scan:
-/// `Addr::parse("https://example.com")` SUCCEEDS with root `https` and path
-/// `//example.com` — `https` is a well-formed [`addr::MountName`]
-/// (`[a-z0-9-]`), and the colon law has no fallback by design. So does
-/// `mailto:someone@example.com`, and so does every other absolute URI. A scan
-/// that refused an unbound root in a markdown URL would therefore **refuse every
-/// write containing an ordinary external link** — an instrument that cries wolf
-/// on the majority case, which S3-R23(1) rules is deleted by the next person it
-/// inconveniences, leaving the invariant with no guard at all.
-///
-/// **So in position 2 the engine claims only what its mount table DECLARES.**
-/// This is the same principle [`stored_occupants`] applies from the other side
-/// (a URI naming a vault this machine does not bind is left verbatim), and it is
-/// stated here rather than discovered: a rooted markdown URL naming a root
-/// **nothing declares** is left untouched, because at that position it is
-/// indistinguishable from a URI whose scheme this engine does not own.
-///
-/// # The predicate is DECLARED, not BOUND — and the difference was a false green
-///
-/// **Position 2 asked [`addr::MountSet::is_bound`] and that answered the wrong
-/// question.** `is_bound` is false for `https` — a scheme nobody declares — and
-/// equally false for a root `~/MERIDIAN.md` DECLARES that this machine has not
-/// checked out. **The two are opposite obligations wearing one answer:** the
-/// first is not ours and must be left verbatim; the second is ours, has no vault
-/// name, and therefore has no stored form at all.
-///
-/// So a declared-but-unbound root was `continue`d — never collected, never
-/// translated. And because [`crate::write::stored_form_guard`] scans with THIS
-/// FUNCTION, the same skip removed it from the guard's population too: **one
-/// `continue` disarmed the transform and the guard together**, and agent-plane
-/// bytes reached disk at exit 0 with no signal. The ordinary laptop case, not a
-/// corner: `mrd config` one command away named the root's path correctly the
-/// whole time.
-///
-/// [`addr::MountSet::is_declared`] is the question that keeps the two apart.
-/// Everything downstream already existed: an occupant on an unreachable root
-/// refuses through [`stored_text`] as [`TranslateError::PathUnseeable`], naming
-/// the PATH to check rather than prescribing a declaration that is already made
-/// (S3-R43/S3-R50). **The vocabulary for refusing this was built before the
-/// scanner could ever hand it a root** — the fix is the population, not a new
-/// word.
-///
-/// **The two callers share this scan deliberately.** The guard exists to catch a
-/// door that reaches bytes WITHOUT the translation, so its population must be
-/// the translation's population — two definitions would drift, and the arm that
-/// drifted would be the silent one. Sharing is the invariant; the defect was
-/// that the shared predicate answered a question neither caller was asking.
+/// Both callers share this scan: the guard catches a door that reaches bytes
+/// without the translation, so its population must be the translation's.
 pub(crate) fn agent_plane_occupants(raw: &str, mounts: &MountSet) -> Vec<Occupant> {
     let nodes = syntax::parse(raw);
     let mask = code_mask(&nodes);
@@ -387,7 +320,7 @@ pub(crate) fn agent_plane_occupants(raw: &str, mounts: &MountSet) -> Vec<Occupan
         let Ok(addr) = Addr::parse(&url) else {
             continue;
         };
-        // The DECLARED test, not merely a rooted test — see the doc comment above.
+        // The declared test, not merely a rooted test — see the doc comment above.
         if !addr.root().is_some_and(|root| mounts.is_declared(root)) {
             continue;
         }
@@ -403,7 +336,7 @@ pub(crate) fn agent_plane_occupants(raw: &str, mounts: &MountSet) -> Vec<Occupan
     out
 }
 
-/// The STORED spelling of one occupant — `[display](obsidian://…)`.
+/// The stored spelling of one occupant — `[display](obsidian://…)`.
 ///
 /// # Errors
 /// [`TranslateError`], each naming the address it refused.
@@ -415,10 +348,9 @@ pub(crate) fn stored_text(
     if occupant.form == Form::Embed {
         return Err(TranslateError::Embed { address });
     }
-    // The `@fp` decoration never reaches stored bytes OR a display field. The
-    // splice door has already stripped every token this write introduces
-    // (`strip_fp_candidate` runs first); this is the artifact-grain backstop for
-    // any door that reaches a stored position another way.
+    // The `@fp` decoration never reaches stored bytes or a display field. The
+    // splice door already stripped every token this write introduces; this is
+    // the backstop for any door that reaches a stored position another way.
     if let Some(fp) = occupant.addr.fp() {
         return Err(TranslateError::Fingerprint {
             address,
@@ -430,10 +362,9 @@ pub(crate) fn stored_text(
         .root()
         .expect("an occupant carries a root by construction");
     if !mounts.is_bound(root) {
-        // TWO causes, TWO words (S3-R43): a root nobody declares, and a root
-        // the file declares that this machine cannot read. The second one's
-        // prescribed fix is already done, so sharing one refusal would send the
-        // user to edit a config that is already right.
+        // Two causes, two words: a root nobody declares, and a root the file
+        // declares that this machine cannot read — whose prescribed fix is
+        // already done.
         return Err(match mounts.unreachable(root) {
             Some(u) => TranslateError::PathUnseeable {
                 address,
@@ -464,7 +395,7 @@ pub(crate) fn stored_text(
         }
     })?;
     let display = occupant.display.clone().unwrap_or_else(|| {
-        // A bare wikilink's display IS its address, so the round trip can tell
+        // A bare wikilink's display is its address, so the round trip can tell
         // "no alias" from "an alias that happens to read like the address".
         match selector {
             Some(sel) => format!("{address}#{sel}"),
@@ -478,8 +409,7 @@ pub(crate) fn stored_text(
 /// replaced by its stored form.
 ///
 /// # Errors
-/// The FIRST refusal, so the caller reports one actionable sentence rather than
-/// a list a human has to triage.
+/// The first refusal, so the caller reports one actionable sentence.
 pub(crate) fn to_stored(raw: &str, mounts: &MountSet) -> Result<String, TranslateError> {
     let occupants = agent_plane_occupants(raw, mounts);
     if occupants.is_empty() {
@@ -497,13 +427,12 @@ pub(crate) fn to_stored(raw: &str, mounts: &MountSet) -> Result<String, Translat
     Ok(out)
 }
 
-/// Every STORED cross-root form in `raw` this machine governs, with the
+/// Every stored cross-root form in `raw` this machine governs, with the
 /// agent-plane text it reads back to — span order.
 ///
-/// A URI naming a vault this machine does not bind is **left verbatim**: it is
-/// an ordinary link a human wrote to a vault meridian does not govern, and
-/// claiming it would make every such page unreadable. A URI naming a BOUND
-/// vault IS the engine's, so a hand-edited one refuses loudly here rather than
+/// A URI naming a vault this machine does not bind is left verbatim — an
+/// ordinary link to a vault meridian does not govern. A URI naming a bound
+/// vault is the engine's, so a hand-edited one refuses loudly here rather than
 /// resolving to something plausible.
 ///
 /// # Errors
@@ -553,15 +482,12 @@ pub(crate) fn stored_occupants(
     Ok(out)
 }
 
-/// **Might this text carry a cross-root position at all?** The cheap gate that
+/// Might this text carry a cross-root position at all? The cheap gate that
 /// keeps the ordinary single-root corpus from ever paying for a mount table.
 ///
-/// Deliberately a SUPERSET and lexical only: it decides whether to LOAD the
-/// table, never what gets translated. `https://example.com` fires it (its head
-/// parses as root `https` — the measurement on [`agent_plane_occupants`]);
-/// nothing is translated when the table then says `https` is not bound. A false
-/// positive costs one small file read; a false negative would skip the
-/// translation entirely, so the bias is deliberate and one-directional.
+/// Deliberately a superset and lexical only: it decides whether to load the
+/// table, never what gets translated. A false positive costs one small file
+/// read; a false negative would skip the translation entirely.
 pub(crate) fn may_carry_cross_root(raw: &str) -> bool {
     if raw.contains(stored::OBSIDIAN_SCHEME) {
         return true;
@@ -598,23 +524,21 @@ pub(crate) fn may_carry_cross_root(raw: &str) -> bool {
         .any(|(_, _, url)| rooted(url))
 }
 
-/// **Might this text carry a STORED form?** The read plane's gate — a plain
-/// byte search for the scheme, which is exact for that direction: a stored form
-/// is an `obsidian://` URI and nothing else is.
+/// Might this text carry a stored form? The read plane's gate — a plain byte
+/// search for the scheme, which is exact for that direction: a stored form is
+/// an `obsidian://` URI and nothing else is.
 pub(crate) fn may_carry_stored(text: &str) -> bool {
     text.contains(stored::OBSIDIAN_SCHEME)
 }
 
-/// The mount table as this plane needs it: **loaded from the machine's
-/// `MERIDIAN.md`, lazily, and never fatally.**
+/// The mount table as this plane needs it: loaded from the machine's
+/// `MERIDIAN.md`, lazily, and never fatally.
 ///
-/// A missing, unparseable or unbindable config yields the EMPTY projection, not
-/// an error: absence is the topology working as designed (§ 8 M6), and failing
-/// here would brick every write on every single-root machine on the planet. The
-/// consequence is stated rather than implied — with an empty projection a
-/// cross-root wikilink REFUSES with [`TranslateError::Unmounted`], which is the
-/// honest answer (there is no vault name to store), and every ordinary write is
-/// untouched.
+/// A missing, unparseable or unbindable config yields the empty projection, not
+/// an error: absence is the topology working as designed (§ 8), and failing
+/// here would brick every write on every single-root machine. With an empty
+/// projection a cross-root wikilink refuses with [`TranslateError::Unmounted`]
+/// and every ordinary write is untouched.
 pub(crate) fn machine_mounts() -> MountSet {
     let Ok(resolution) = config::resolve(&config::Env::from_process()) else {
         return MountSet::default();
@@ -625,12 +549,12 @@ pub(crate) fn machine_mounts() -> MountSet {
     table.projection()
 }
 
-/// The `vault=` parameter of a URI the strict decode REFUSED — the one fact
+/// The `vault=` parameter of a URI the strict decode refused — the one fact
 /// needed to decide whether the refusal is this engine's to raise.
 ///
-/// Lexical and deliberately forgiving: it answers *"whose vault is this?"*, not
-/// *"is this URI canonical?"*. The strict [`stored::decode`] answers the second
-/// and is what the caller propagates.
+/// Lexical and deliberately forgiving: it answers whose vault this is, not
+/// whether the URI is canonical. The strict [`stored::decode`] answers the
+/// second and is what the caller propagates.
 fn governed_vault_guess(url: &str) -> Option<String> {
     let rest = url.strip_prefix(stored::OBSIDIAN_SCHEME)?;
     let (_, query) = rest.split_once('?')?;
@@ -645,7 +569,7 @@ fn governed_vault_guess(url: &str) -> Option<String> {
 /// spelling.
 ///
 /// # Errors
-/// [`stored::StoredError`] — a governed URI that is not canonical fails LOUDLY
+/// [`stored::StoredError`] — a governed URI that is not canonical fails loudly
 /// rather than resolving to something plausible.
 pub(crate) fn to_agent_plane(raw: &str, mounts: &MountSet) -> Result<String, stored::StoredError> {
     let occupants = stored_occupants(raw, mounts)?;
@@ -674,9 +598,8 @@ mod tests {
         // `assets` is bound WITHOUT a vault name — the git-folder row.
     }
 
-    /// § 9.4 P1/P2 — frontmatter and code are NOT address positions, asserted
-    /// with the positive half (P3) in the same breath so the untouched
-    /// assertion cannot be satisfied by a transform that touches nothing.
+    /// § 9.4 — frontmatter and code are not address positions, asserted with
+    /// the positive half beside it.
     #[test]
     fn frontmatter_and_code_are_untouched_and_the_wikilink_is_not() {
         let raw = "---\nroot: SESSION.md\ntitle: x\n---\n\n\
@@ -710,11 +633,9 @@ mod tests {
         );
     }
 
-    /// The gate: the agent-plane form round-trips through the stored form
-    /// byte-identically. The wikilink IS the canonical agent-plane spelling
-    /// (module docs), so it round-trips whole; the markdown-link spelling
-    /// converges on it, and that convergence is ASSERTED rather than left to be
-    /// discovered.
+    /// The agent-plane form round-trips through the stored form
+    /// byte-identically: the wikilink round-trips whole, and the markdown-link
+    /// spelling converges on it.
     #[test]
     fn the_agent_plane_form_round_trips_byte_identically() {
         let mounts = mounts();
@@ -735,9 +656,8 @@ mod tests {
             );
         }
 
-        // § 9.4 P4 — a markdown link carrying an agent-plane URL translates (U3
-        // rules it), and reads back as the canonical wikilink: same address,
-        // same display, one spelling.
+        // § 9.4 — a markdown link carrying an agent-plane URL translates, and
+        // reads back as the canonical wikilink.
         let stored = to_stored("[the retro](sessions:notes.md)", &mounts).expect("translates");
         assert_eq!(
             stored,
@@ -749,9 +669,8 @@ mod tests {
         );
     }
 
-    /// The positive half of criterion 4: the stored form IS an `obsidian://`
-    /// URI carrying the VAULT NAME — not the agent-plane `root:` spelling, and
-    /// not a device-local vault id.
+    /// The stored form is an `obsidian://` URI carrying the vault name — not
+    /// the agent-plane `root:` spelling, and not a device-local vault id.
     #[test]
     fn the_stored_form_carries_the_vault_name_not_the_root_name() {
         let out = to_stored("[[sessions:notes.md#Design]]", &mounts()).expect("translates");
@@ -766,13 +685,9 @@ mod tests {
              spelled in vault names: {out}",
         );
 
-        // **The DISPLAY of a bare wikilink is its agent-plane address, and that
-        // is deliberate.** A-3 forbids an agent-plane `root:` spelling in
-        // positions 1 and 2 — the wikilink TARGET and the markdown link URL. A
-        // display field is neither, and it is what makes the round trip exact:
-        // it is how read-back tells "no alias" from "an alias that happens to
-        // read like the address". What criterion 4 forbids in a display field is
-        // the FINGERPRINT, asserted separately.
+        // The display of a bare wikilink is its agent-plane address: a display
+        // field is not an owned position, and this is how read-back tells "no
+        // alias" from "an alias that happens to read like the address".
         let (display, url) = out
             .split_once("](")
             .expect("the stored form is a markdown link");
@@ -786,19 +701,11 @@ mod tests {
         );
     }
 
-    /// **The two refusal classes the shipped pin never watched fail** (U21).
-    ///
-    /// `the_refusals_name_the_address_and_the_ordinary_corpus_still_passes`
-    /// covers `Unmounted`, `NoVault`, `Embed` and `Fingerprint`. It covers
-    /// neither `PathUnseeable` nor `Stored` — so two refusals shipped that had
-    /// never been observed red, and **a refusal never observed red is not known
-    /// to fire.** Both are constructible today; here they are, each named.
+    /// The two refusal classes the sibling test never watched fail:
+    /// `PathUnseeable` and `Stored`.
     #[test]
     fn the_two_unwatched_refusal_classes_fire_and_name_what_they_refused() {
-        // PATH-UNSEEABLE — declared in the file, unreadable on this machine.
-        // Distinct from Unmounted BECAUSE THE FIX IS DIFFERENT: the mount entry
-        // is already right, so telling the user to declare it sends them to
-        // edit a config that is already correct.
+        // Path-unseeable — declared in the file, unreadable on this machine.
         let declared = addr::MountName::parse("declared").expect("a name");
         let table = MountSet::new([]).with_unreachable(
             declared.clone(),
@@ -816,7 +723,7 @@ mod tests {
             "a DECLARED but unreadable root refuses with the PATH, never with              the declare-it teaching whose action is already done",
         );
 
-        // STORED — the stored grammar itself refuses. A path that is not a
+        // Stored — the stored grammar itself refuses. A path that is not a
         // confined corpus path has no stored spelling at all.
         let escape = to_stored("[[sessions:../escape.md]]", &mounts());
         assert!(
@@ -831,9 +738,8 @@ mod tests {
         );
     }
 
-    /// Every refusal class, each naming what it refused — and the ACCEPTANCE
-    /// half beside it, so none of these is satisfied by a transform that
-    /// refuses everything.
+    /// Every refusal class, each naming what it refused — with the acceptance
+    /// half beside it.
     #[test]
     fn the_refusals_name_the_address_and_the_ordinary_corpus_still_passes() {
         let mounts = mounts();
@@ -863,13 +769,9 @@ mod tests {
             to_stored("[[sessions:a.md#^claim@fp1.span2.b3.beef]]", &mounts),
             Err(TranslateError::Fingerprint { .. }),
         ));
-        // ACCEPTANCE: the ordinary corpus passes through byte-identically.
-        //
-        // The URL rows are the ones that matter and they are MEASURED, not
-        // assumed: `https://example.com` parses as an `Addr` with root `https`,
-        // and `mailto:a@b.example` as root `mailto`. Before the bound test, this
-        // transform refused BOTH — every external link in the corpus. The rows
-        // stay here as the standing control on that defect.
+        // Acceptance: the ordinary corpus passes through byte-identically.
+        // `https://example.com` parses as root `https` and `mailto:a@b.example`
+        // as root `mailto` — this transform once refused both.
         for ordinary in [
             "# A page\n\nno addresses at all\n",
             "[[ambient.md]] and [[ambient.md#H]]\n",
@@ -887,8 +789,7 @@ mod tests {
     }
 
     /// A hand-edited stored URI fails loudly on read-back; a URI naming a vault
-    /// this machine does not govern is left verbatim, because claiming it would
-    /// make every page carrying an ordinary obsidian link unreadable.
+    /// this machine does not govern is left verbatim.
     #[test]
     fn read_back_refuses_a_governed_hand_edit_and_ignores_a_foreign_vault() {
         let mounts = mounts();
@@ -915,10 +816,9 @@ mod tests {
         }
     }
 
-    /// Positions 3 and 4 are the IDENTITY (A-4): a `meridian-lock` block keeps
-    /// the canonical `root:` form, never the URI. The block is fenced, so the
-    /// mask already covers it — this test pins the CONSEQUENCE rather than the
-    /// mechanism, because a future parser change that stopped masking the block
+    /// Positions 3 and 4 are the identity: a `meridian-lock` block keeps the
+    /// canonical `root:` form, never the URI. Pins the consequence, not the
+    /// mask that implements it — a parser change that stopped masking the block
     /// would break the ratified stored form silently.
     #[test]
     fn the_lock_block_keeps_the_canonical_root_form() {
@@ -948,29 +848,16 @@ mod tests {
 
 #[cfg(test)]
 mod superset_probe {
-    //! GATE 1 probe (U21): is `may_carry_cross_root` a TRUE SUPERSET of the
-    //! spellings whose LINK-PLANE answer depends on the address plane?
+    //! Probe: is `may_carry_cross_root` a true superset of the spellings whose
+    //! link-plane answer depends on the address plane?
     use super::*;
-
-    // The predicate is imported UNDER ITS OWN NAME. It was aliased here as
-    // `head_has_colon`, and a second NAME for one predicate is the cheapest way
-    // to lose the sharing this probe exists to protect: the whole finding is
-    // that nothing TESTS the sharing, so a reader who meets two names concludes
-    // there are two functions. One question, one predicate, one name.
 
     #[test]
     fn may_carry_admits_every_spelling_whose_answer_depends_on_the_address_plane() {
-        // `answerable` is a HAND-AUTHORED ORACLE: does the address plane have
-        // anything to say about this spelling — a resolution OR a refusal?
-        //
-        // **It must never be computed by the function under test.** It was:
-        // both `lexical_gate` and `answerable` called the same predicate, so
-        // `answerable && !lexical_gate` and `!answerable && lexical_gate` were
-        // false BY CONSTRUCTION and neither list could ever be populated. The
-        // acceptance half — the assertion that this gate is not an
-        // admit-everything gate — therefore could not fail. A test comparing a
-        // function against itself passes for the same reason a test that never
-        // runs passes.
+        // `answerable` is a hand-authored oracle — does the address plane have
+        // anything to say about this spelling, a resolution or a refusal? It
+        // must never be computed by the function under test, or the slip lists
+        // are empty by construction.
         let cases = [
             (
                 "sessions:notes.md",
@@ -1024,10 +911,9 @@ mod superset_probe {
             }
         }
 
-        // MEASURED, and this is the gate-1 finding: `may_carry_cross_root` is a
-        // superset of WELL-FORMED rooted spellings only. A malformed rooted
-        // spelling has an address-plane answer — a REFUSAL — and this gate does
-        // not admit it.
+        // `may_carry_cross_root` is a superset of well-formed rooted spellings
+        // only: a malformed rooted spelling has an address-plane answer — a
+        // refusal — and this gate does not admit it.
         assert_eq!(
             translate_slips,
             [
@@ -1040,17 +926,15 @@ mod superset_probe {
             "the translation gate's measured blind spot must not drift silently",
         );
 
-        // THE CORRECTED GATE. Lexical, so it admits the refusals too — a TRUE
-        // superset, and it is the SAME predicate `resolve_linkpath`'s own C-3
-        // guard uses (`model/src/lib.rs:1692`), which is the guard whose `None`
-        // the degrade exists to compensate for. One question, one predicate.
+        // The corrected gate is lexical, so it admits the refusals too — a
+        // true superset, and the same predicate `resolve_linkpath`'s own guard
+        // uses.
         assert!(
             lexical_slips.is_empty(),
             "the lexical gate must admit every address-plane answer: {lexical_slips:?}"
         );
-        // ACCEPTANCE HALF — a gate that admits everything is not a gate. An
-        // ambient link and a colon-after-slash path must both stay OUT, or the
-        // degrade fires on the whole ordinary corpus.
+        // Acceptance half — an ambient link and a colon-after-slash path must
+        // both stay out, or the degrade fires on the whole ordinary corpus.
         assert!(
             lexical_overadmits.is_empty(),
             "the lexical gate must NOT admit an ambient spelling: {lexical_overadmits:?}"

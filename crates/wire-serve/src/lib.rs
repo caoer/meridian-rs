@@ -1,15 +1,13 @@
-//! Shared typed edge: strict decode + read-op arms for both hosts (A6: lift, don't duplicate).
+//! Shared typed edge: strict decode + read-op arms for both hosts.
 //!
 //! Owns [`decode`] (§3.2: unknown fields/enums refuse loud — serde `deny_unknown_fields`
 //! does not compose with `flatten`), [`read`] over borrowed model state, and
-//! [`write::splice`] (W1 choke-point). Read arms never own corpus/disk. Write is stateful
-//! but one shared impl. `root`/`diff` stay per-host (cursor/history plumbing).
+//! [`write::splice`] (the write choke-point). Read arms never own corpus/disk. Write is
+//! stateful but one shared impl. `root`/`diff` stay per-host (cursor/history plumbing).
 //!
-//! [`ring`] and [`watch`] are the DELTA plane (U20b): one retention law, one external-change
-//! classifier. Per-host DRIVER only (sidecar at serve-loop line boundary; registry at
+//! [`ring`] and [`watch`] are the delta plane: one retention law, one external-change
+//! classifier. Per-host driver only (sidecar at serve-loop line boundary; registry at
 //! subscription detection cycle) — never the classification.
-//!
-//!
 
 pub mod armed_disk;
 pub mod check_write;
@@ -34,9 +32,7 @@ pub const PROTO: u32 = 1;
 
 /// The build sha a host publishes when its build could not name a commit — the
 /// spelling `crates/mrd/build.rs` bakes, carried unchanged to
-/// `hello.identity.build`. One constant so the two hosts and the build script
-/// cannot drift into two spellings of the same unknown
-/// (`docs/wire-contract.md`).
+/// `hello.identity.build`.
 pub const UNKNOWN_BUILD: &str = "unknown";
 
 /// Whether `rev` is a contract rev the server serves (v3 amendment). Unknown rev refused loud at hello; never silent downgrade.
@@ -53,19 +49,13 @@ pub fn bad_request(message: impl Into<String>) -> Box<ErrorBody> {
     Box::new(e)
 }
 
-/// Section-address recovery clause — ONE place the engine says how to find a
-/// real selector (no refusal invents its own spelling).
+/// Section-address recovery clause — one place the engine says how to find a
+/// real selector.
 ///
 /// Selector-aware: hpath/dewey ride `toc`; `^` anchors ride `anchors[]` (not
-/// printed by `render::toc_text`). Anchor-miss recovery must not send callers
-/// to a section listing that never had their anchor.
+/// printed by `render::toc_text`).
 ///
-///
-///
-///
-/// `display_path` is `None` on plan-lowering (doc held, path unknown) — names
-/// the act without inventing a command path.
-///
+/// `display_path` is `None` on plan-lowering (doc held, path unknown).
 #[must_use]
 pub fn section_recovery(selector: &str, display_path: Option<&str>) -> String {
     match (selector.starts_with('^'), display_path) {
@@ -87,10 +77,9 @@ pub fn section_recovery(selector: &str, display_path: Option<&str>) -> String {
 }
 
 /// Display-only spelling of a segment address — segments joined on `/`, a
-/// pinned occurrence as `#k`. **Nothing parses this**; it exists so a refusal
-/// can name back what the caller asked for. The machine grammar is the segment
-/// array itself (U14), and this joined form is deliberately NOT invertible —
-/// re-deriving an address from it is the collision R5 removed.
+/// pinned occurrence as `#k`. Not invertible: the machine grammar is the
+/// segment array itself, and re-deriving an address from this joined form
+/// re-creates a known collision.
 #[must_use]
 pub fn display_hpath(hpath: &[wire::HpathSeg]) -> String {
     hpath
@@ -103,9 +92,8 @@ pub fn display_hpath(hpath: &[wire::HpathSeg]) -> String {
         .join("/")
 }
 
-/// The write plane's partial-state disclosure. A refused batch lands NOTHING,
-/// so the refusal says so and a reader never has to guess which edits took —
-/// the write-side twin of `config::NO_PARTIAL_LOAD_CLAUSE`.
+/// The write plane's partial-state disclosure: a refused batch lands nothing.
+/// Write-side twin of `config::NO_PARTIAL_LOAD_CLAUSE`.
 pub const NO_PARTIAL_WRITE_CLAUSE: &str = "No edit was applied; the batch is refused whole.";
 
 /// `fs::load` with §8 error split: `file_not_found` / `invalid_utf8` / `io_error{cause}`.
@@ -258,7 +246,7 @@ mod tests {
             wire::PlanEdit::Match { all: true, rev: Some(r), .. } if r == "r"));
     }
 
-    /// S7 pin: v3-only, strict keys, no actor key (D13); pin-only splice is a complete batch.
+    /// Pin: v3-only, strict keys, no actor key; pin-only splice is a complete batch.
     #[test]
     fn v3_splice_pin_decodes_and_carries_no_actor() {
         let frame = json!({"op": "splice", "path": "plan.md",
@@ -290,7 +278,7 @@ mod tests {
         );
         assert_eq!(pin.vibe, Some(true));
 
-        // D13: no pin.actor — identity is splice's daemon-derived actor only.
+        // No pin.actor — identity is splice's daemon-derived actor only.
         let forged = json!({"op": "splice", "path": "plan.md",
             "pin": {"target": "guide.md", "selector": {"hpath": [{"h": "Q3"}]},
                     "actor": "someone-else"}});
@@ -465,7 +453,7 @@ mod tests {
         }
     }
 
-    /// R4: `append` carries its own node token, so the decoder must admit `rev`
+    /// `append` carries its own node token, so the decoder must admit `rev`
     /// on that shape — the field wall would otherwise refuse the guarded door.
     #[test]
     fn v3_append_admits_its_rev_token() {

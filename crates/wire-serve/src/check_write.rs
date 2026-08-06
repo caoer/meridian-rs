@@ -1,40 +1,34 @@
-//! M1 U8c: serve the `check_write` op — the engine-side `meridiandefs.CheckWrite`.
+//! Serve the `check_write` op — the engine-side `meridiandefs.CheckWrite`.
 //!
-//! Pipeline (Go `pkg/defs.CheckWrite` verbatim): rebuild the CANDIDATE from
-//! put-plan-vocabulary edits over the prev document (`policy::defs::rebuild` —
-//! the `ApplyForConformance` port), then run the I4 severity ladder
+//! Rebuild the candidate from put-plan-vocabulary edits over the prev document
+//! (`policy::defs::rebuild`), then run the I4 severity ladder
 //! (`policy::defs::conformance`) over prev→candidate. Rebuild failures come
-//! back `class:"rebuild"` (the host renders Go's `cerr` wrap: "def-conformance
-//! check could not run: CODE: …"); ladder refusals come back `class:"verdict"`.
-//! This OP is never a write path: no flock, no I3, no CAS, no journal, no disk
-//! mutation — it is the host's PRE-FLIGHT (D4), and it keeps that role.
+//! back `class:"rebuild"`; ladder refusals come back `class:"verdict"`. This op
+//! is never a write path — no flock, no I3, no CAS, no journal, no disk
+//! mutation; it is the host's pre-flight (D4).
 //!
-//! # The ladder has ONE owner (S4a, D4)
-//! [`verdict`] is the single place `policy::defs::conformance` is invoked. This
-//! op reaches it after rebuilding its candidate; `write::splice` reaches it
-//! INSIDE the D9 write flock, over the `after_doc` it already built. The verdict
-//! that AUTHORIZES bytes is the one under the flock — a foreign writer landing
-//! between a host's pre-flight and its apply can no longer split the two.
+//! [`verdict`] is the single place `policy::defs::conformance` is invoked: this
+//! op after rebuilding its candidate, `write::splice` inside the D9 write flock
+//! over the `after_doc` it built. The verdict that authorizes bytes is the one
+//! under the flock.
 
 use wire::{CheckWriteEdit, CheckWriteRefuse, CheckWriteRepair, ResponseBody};
 
-/// The markdown parse for def FILES read during resolution and for candidate
-/// rebuilds — the `syntax` edge `policy` leaves to its caller, in ONE place so
+/// The markdown parse for def files read during resolution and for candidate
+/// rebuilds — the `syntax` edge `policy` leaves to its caller, in one place so
 /// the two entry points cannot parse differently.
 #[must_use]
 pub fn build_doc(raw: &str) -> model::Document {
     model::build(raw.to_string(), syntax::parse(raw))
 }
 
-/// **The ONE I4 conformance-ladder invocation** (S4a, D4 — one owner, two entry
-/// points): judge `prev`→`next` against the def layer discovered from `target`,
-/// the record's ABSOLUTE path spelling (`discover_layers` walks upward from it,
-/// and the refusal strings quote it verbatim).
+/// The one I4 conformance-ladder invocation (S4a, D4): judge `prev`→`next`
+/// against the def layer discovered from `target`, the record's absolute path
+/// spelling (`discover_layers` walks upward from it, and the refusal strings
+/// quote it verbatim).
 ///
-/// `force` is fixed `false`: the put face exposes no caller force path (Go
-/// parity), so neither entry point escapes a warning-rung refusal. Callers map
-/// the result onto their own face — this op renders `class:"verdict"`, `splice`
-/// refuses typed before bytes land.
+/// `force` is fixed `false`: the put face exposes no caller force path, so
+/// neither entry point escapes a warning-rung refusal.
 #[must_use]
 pub fn verdict(
     prev: &model::Document,
@@ -54,20 +48,14 @@ pub fn verdict(
     })
 }
 
-/// An `at` address with its `@fp` decoration peeled — the pre-flight's spelling
-/// of the peel `read::to_model_ref` applies to a `SecRef::Anchor` (S10 finding
-/// 15). Only the BLOCK-REF forms carry a claim-link slot; a heading path is not
-/// one, so it rides verbatim exactly as `to_model_ref` leaves an `hpath`.
-/// `split_fp` (one peel, the address owner's rule) is used rather than the
-/// document strip, so a laundered address refuses in BOTH entry points instead of
-/// resolving in one.
+/// An `at` address with its `@fp` decoration peeled — the same peel
+/// `read::to_model_ref` applies to a `SecRef::Anchor`. Only the block-ref forms
+/// carry a claim-link slot; a heading path rides verbatim. Uses `split_fp`
+/// rather than the document strip, so a laundered address refuses in both entry
+/// points instead of resolving in one.
 fn strip_fp_address(at: &[wire::HpathSeg]) -> Vec<policy::defs::Seg> {
-    // Only the BLOCK-REF forms carry a claim-link slot, and a block ref is a
-    // lone segment. A heading segment rides verbatim, `n` INCLUDED: the rebuild
-    // plane resolves occurrences by `resolve_hpath_node`'s law, so the address
-    // the read face publishes over duplicate headings pre-flights to the same
-    // section the committer picks (dropping `n` here made the pre-flight refuse
-    // E_AMBIGUOUS an address the splice below resolves — two answers again).
+    // Heading segments keep `n`: dropping it made the pre-flight refuse
+    // E_AMBIGUOUS on addresses the splice resolves over duplicate headings.
     if let [only] = at {
         for prefix in ["#^", "^"] {
             if let Some(id) = only.h.strip_prefix(prefix) {
@@ -87,25 +75,19 @@ fn strip_fp_address(at: &[wire::HpathSeg]) -> Vec<policy::defs::Seg> {
         .collect()
 }
 
-/// **The CANDIDATE this op judges** — the plan lowered over `prev`, carrying the
-/// same `@fp` law `splice` applies to the bytes it commits. `pub` because the
-/// equivalence of the two entry points is a property worth testing at its own
-/// grain, not only through a verdict.
+/// The candidate this op judges — the plan lowered over `prev`, carrying the
+/// same `@fp` law `splice` applies to the bytes it commits. `pub` so the
+/// equivalence of the two entry points is testable at its own grain.
 ///
-/// Stage-2 S10, re-grained by advisor R25 (finding 15): a pre-flight that judges
-/// different bytes from the ones `splice` commits is two answers to one question.
-/// `splice` peels ADDRESSES at their owner and strips PAYLOADS at document grain,
-/// so this builder does both in the same order:
+/// Peels addresses at their owner and strips payloads at document grain, in
+/// `splice`'s order — a pre-flight must judge the bytes `splice` commits:
 ///
-/// - `at` is an address (`^id`, a section path). It rides the same
-///   `syntax::split_fp` peel `read::to_model_ref` applies to a `SecRef`, so a
-///   decorated block ref resolves here exactly as it resolves there — that
-///   divergence was the pre-flight refusing the address the committer accepted.
-/// - `find` is a NEEDLE against stored bytes (which never carry a token) — peeled
-///   for the same reason `Match{old}` is.
-/// - `body` rides VERBATIM into the rebuild and is stripped over the CANDIDATE,
-///   at the one grain the write path uses, so a token the document law calls a
-///   code sample survives here exactly as it survives there.
+/// - `at` rides the same `syntax::split_fp` peel `read::to_model_ref` applies
+///   to a `SecRef`, so a decorated block ref resolves here exactly as there.
+/// - `find` is a needle against stored bytes (which never carry a token) —
+///   peeled for the same reason `Match{old}` is.
+/// - `body` rides verbatim into the rebuild and is stripped over the candidate
+///   at the one grain the write path uses.
 ///
 /// # Errors
 /// The rebuild's own `BodyError` (the host renders it `class:"rebuild"`).

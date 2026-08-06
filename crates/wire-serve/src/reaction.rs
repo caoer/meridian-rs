@@ -1,9 +1,9 @@
 //! Reaction-mode evaluation for one landed document change.
 //!
-//! Shared feeder leaf for both hosts (Law 3): resolves armed HOOKs for a landed
+//! Shared feeder leaf for both hosts (Law 3): resolves armed hooks for a landed
 //! change from the same before/after model states, evaluates them, and reports
 //! faults. Does not interpret `how:`, deliver an intent, or claim delivery.
-//! Resolution is one call (`resolve_armed_law`); the once-armed MARKER is the
+//! Resolution is one call (`resolve_armed_law`); the once-armed marker is the
 //! pivot (not artifact presence — silent-disarm). Faults ride the frame as
 //! [`wire::EffectFinding::ArmedFault`], isolated per row so one bad page cannot
 //! silence the path. A reaction never vetoes.
@@ -14,7 +14,7 @@ use policy::armed_law::ArmedFault;
 
 use crate::armed_disk;
 
-/// Evaluate armed in-scope HOOKs for a landed change; report every fault that kept one from running.
+/// Evaluate armed in-scope hooks for a landed change; report every fault that kept one from running.
 ///
 /// Revisions come from the supplied model states (receipt cursor). Empty evaluations
 /// are dropped (no-effects wire bytes); fault envelopes are never dropped. No error
@@ -154,7 +154,7 @@ mod tests {
     use policy::armed::{ArmRequest, ArmRoot};
     use policy::{PageRef, RuleId, RuleIndex, ScopeLayer, page_rev};
 
-    /// First tag-registered HOOK page: registration keys + C1 declaration keys (feeder uses registration only).
+    /// Hook page fixture: registration keys + declaration keys (feeder uses registration only).
     const HOOK_ID: &str = "task.review-notify";
 
     fn hook_page(paths: &str) -> String {
@@ -418,7 +418,7 @@ def on_change(event):
         );
     }
 
-    /// Corrupt artifact on armed workspace must reach the operator (was silent disarm).
+    /// Corrupt artifact on an armed workspace must reach the operator.
     #[test]
     fn a_corrupt_artifact_on_an_armed_workspace_reaches_the_operator() {
         let (temp, root) = armed_root();
@@ -441,7 +441,7 @@ def on_change(event):
         assert!(detail.contains("is corrupt"), "{detail}");
     }
 
-    /// F2: emptied well-formed artifact on armed workspace reports disarm, does not obey it.
+    /// Emptied well-formed artifact on armed workspace reports disarm, does not obey it.
     #[test]
     fn an_emptied_artifact_on_an_armed_workspace_reports_the_disarm_rather_than_obeying_it() {
         let (temp, root) = armed_root();
@@ -459,7 +459,7 @@ def on_change(event):
         assert!(detail.contains("attests no row at all"), "{detail}");
     }
 
-    /// F-1: one unloadable row must not silence other reactions at the path.
+    /// One unloadable row must not silence other reactions at the path.
     #[test]
     fn one_unloadable_row_does_not_silence_the_other_reactions_at_the_path() {
         let good = hook_page("\"tasks/*.md\"");

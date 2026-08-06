@@ -19,15 +19,12 @@ struct HeadingFacts {
     content_span: Option<(usize, usize)>,
 }
 
-/// Host-face put index: the read face's OWN address table + fm keys in order.
+/// Host-face put index: the read face's own address table + fm keys in order.
 ///
-/// **R5 — this was a `HashMap` keyed on the sanitized joined chain, Go
-/// last-wins.** [`sanitize_heading`] maps `/` and ASCII space both to `-`, so
-/// `# A/B` and `# A B` produced one key; the later heading evicted the earlier,
-/// and a write addressed to the earlier landed on the later, silently. The
-/// index is now the same [`wire_map::facts::read_facts`] table the read plane
-/// resolves against, so there is ONE address grammar and one occurrence law
-/// across both planes — a read publishes an address the plan face accepts.
+/// The index is the same [`wire_map::facts::read_facts`] table the read plane
+/// resolves against, so one address grammar and one occurrence law span both
+/// planes. (A sanitized-join key map made `# A/B` and `# A B` one key,
+/// last-wins, so a write could land on the wrong section silently.)
 struct PlanIndex {
     headings: Vec<HeadingFacts>,
     fm_keys: Vec<String>,
@@ -67,10 +64,8 @@ impl PlanIndex {
     /// Resolve an address to exactly one section, or say why not.
     ///
     /// The occurrence law is `model::resolve_hpath_node`'s, not the read face's
-    /// first-wins: a selector segment with `n: None` DEMANDS uniqueness, and an
-    /// ambiguous address refuses. The write plane never silently picks — that
-    /// is the whole point of this unit, and picking "first" instead of "last"
-    /// would only move which section got the wrong write.
+    /// first-wins: a selector segment with `n: None` demands uniqueness, and an
+    /// ambiguous address refuses — the write plane never silently picks.
     fn get(&self, addr: &[HpathSeg]) -> Result<&HeadingFacts, Miss> {
         if addr.is_empty() {
             return Err(Miss::NotFound);
@@ -84,7 +79,7 @@ impl PlanIndex {
     }
 }
 
-/// Per-segment address equality against a PUBLISHED address: same length, raw
+/// Per-segment address equality against a published address: same length, raw
 /// text byte-equal, and an occurrence that either abstains (`n: None`) or names
 /// the section's own. A published `n: None` means "unique among its siblings",
 /// i.e. occurrence 1 — so `n: Some(1)` against a unique heading matches, as it
@@ -98,11 +93,8 @@ fn seg_chain_matches(addr: &[HpathSeg], f: &HeadingFacts) -> bool {
 
 /// The section-miss refusal, shared by every addressing arm.
 ///
-/// The `^` arm survives the migration as a TEACHING check only: a caller who
-/// spells `[{"h":"^task1"}]` meant the anchor plane, and gets sent to
-/// `anchors[]` rather than to the section listing that will never hold it.
-/// It steers the message, never the resolution — the grammar collision u14
-/// removed does not come back through this door.
+/// The `^` arm steers the message only, never the resolution: an anchor-shaped
+/// address is sent to `anchors[]` rather than to a section listing.
 fn section_miss(addr: &[HpathSeg], miss: &Miss) -> Box<ErrorBody> {
     let shown = crate::display_hpath(addr);
     if let Miss::Ambiguous(n) = miss {
@@ -237,7 +229,7 @@ fn lower_match(
     rev: Option<&str>,
 ) -> Result<Edit, Box<ErrorBody>> {
     let node = idx.get(hpath).map_err(|m| section_miss(hpath, &m))?;
-    // S10: peel `@fp` from `old` (needle in stored bytes) before search; `new` is payload.
+    // Peel `@fp` from `old` (needle in stored bytes) before search; `new` is payload.
     let old = &*syntax::strip_fp(old);
     let if_node_rev = rev
         .filter(|r| !r.is_empty())
@@ -335,7 +327,7 @@ fn lower_create(
     if parent_hpath.is_empty() {
         return Err(cannot_place());
     }
-    // An ambiguous PARENT says so by name: `cannot_place` would claim the
+    // An ambiguous parent says so by name: `cannot_place` would claim the
     // parent is absent when the document holds several of it.
     let parent = idx.get(parent_hpath).map_err(|m| match m {
         Miss::NotFound => cannot_place(),
@@ -388,7 +380,7 @@ fn lower_property_group(
     let mut quoted: std::collections::BTreeMap<policy::defs::SafeKey<'_>, String> =
         std::collections::BTreeMap::new();
     for (k, v) in &keyed {
-        // D11: newline in value forges frontmatter keys — refuse, never sanitize.
+        // A newline in a value forges frontmatter keys — refuse, never sanitize.
         let safe = policy::defs::yaml_safe_value(v).map_err(|_| {
             bad_request(format!(
                 "property value for {} contains a newline — frontmatter values are single-line in v1; put multi-line content in a body section",
@@ -425,7 +417,7 @@ fn lower_property_group(
             absent_lines.push('\n');
             absent_lines.push_str(&line(*k));
         }
-        // Inserts after LAST key; fold into Put{all} if that key is itself being set.
+        // Inserts after the last key; fold into Put{all} if that key is itself being set.
         let last = idx
             .fm_keys
             .last()
@@ -499,7 +491,7 @@ mod tests {
         assert_eq!(text, "\nadded\n", "leading NL against a bare final line");
     }
 
-    /// Block replace refuses (goldens p-replace-on-block); no `put: ` prefix.
+    /// Block replace refuses; no `put: ` prefix.
     #[test]
     fn replace_on_block_refuses_no_section_addressed() {
         let err = lower1(
@@ -513,9 +505,8 @@ mod tests {
             },
         )
         .expect_err("block replace target refuses");
-        // The anchor arm of the recovery: `toc` does not carry `^` anchors, so
-        // this miss must NOT send the reader to the section listing (issue-05 /
-        // gaps § 3.1).
+        // `toc` carries no `^` anchors, so this miss must not send the reader
+        // to the section listing.
         assert_eq!(
             err.message.as_deref(),
             Some(
@@ -558,8 +549,6 @@ mod tests {
             },
         )
         .expect_err("miss refuses");
-        // Names an ACT the caller can perform, never the internal mode name they
-        // never selected (issue-05), and discloses that nothing landed.
         assert_eq!(
             err.message.as_deref(),
             Some(
@@ -570,7 +559,7 @@ mod tests {
         );
     }
 
-    /// Top-level create refuses (goldens p-create-top).
+    /// Top-level create refuses.
     #[test]
     fn create_top_level_refuses() {
         let err = lower1(
@@ -806,10 +795,8 @@ mod tests {
         assert_eq!(text, "note: ");
     }
 
-    /// R5 — duplicate headings REFUSE; they used to resolve to the last (Go map
-    /// overwrite). An `n`-less address over two `# Notes` names both, and the
-    /// write plane never silently picks: it refuses and teaches the occurrence.
-    /// Picking "last" (or "first") only chose which section got the wrong write.
+    /// Duplicate headings refuse without an occurrence rather than silently
+    /// picking one.
     #[test]
     fn duplicate_headings_refuse_without_an_occurrence() {
         let raw = "# Notes\n\nfirst\n\n# Notes\n\nsecond\n";
@@ -855,17 +842,14 @@ mod tests {
         assert_eq!(text, "\n2nd\n");
     }
 
-    /// R5: `sanitize_heading` is non-injective, so two DIFFERENT headings share
-    /// one plan-face key. `# A/B` and `# A B` both sanitize to `A-B`; the index
-    /// keeps the LAST, and the first section becomes unaddressable — a write
-    /// aimed at it lands on the other one, silently. Each heading must have an
-    /// address that reaches it and nothing else.
+    /// `sanitize_heading` is non-injective (`# A/B` and `# A B` both sanitize
+    /// to `A-B`), so a sanitize-keyed index made one of them unaddressable.
+    /// Each heading must have an address that reaches it and nothing else.
     #[test]
     fn each_colliding_heading_keeps_its_own_address() {
         let raw = "# A/B\n\nfirst\n\n# A B\n\nsecond\n";
-        // The premise, pinned in the test itself: under the OLD grammar these
-        // two headings were one key. Anything that reintroduces sanitize
-        // keying on this face fails the assertions below.
+        // Pinned premise: under a sanitize-keyed grammar these two headings
+        // were one key.
         assert_eq!(wire_map::gotext::sanitize_heading("A/B"), "A-B");
         assert_eq!(wire_map::gotext::sanitize_heading("A B"), "A-B");
 
@@ -905,24 +889,14 @@ mod tests {
         assert_eq!(text, "\n2nd\n", "reaches `A B`, not `A/B`");
     }
 
-    /// **The corruption claim R5 was authorized on.** A write must land on the
-    /// section the caller ADDRESSED — never on a different one while reporting
-    /// success.
-    ///
-    /// Under the sanitized joined grammar this was reachable and SILENT: `# A/B`
-    /// and `# A B` both keyed `A-B`, the index kept the last, and an edit
-    /// addressed to `A/B` lowered to a target on `A B` and returned `Ok`. The
-    /// caller was told it worked. Nothing in the response named the substitution,
-    /// so the loss was unobservable from the outside — that is what separates
-    /// this from the merely-loud arm above, and it is why the migration is a
-    /// correctness fix rather than tidiness.
-    ///
-    /// If this test ever fails, silent wrong-section writes are reachable again.
-    /// It is not an addressing nit — read the arms before "fixing" it.
+    /// A write must land on the section the caller addressed — never on a
+    /// different one while reporting success. The sanitized-join grammar made
+    /// this reachable and silent: an edit addressed to `A/B` lowered to a
+    /// target on `A B` and returned `Ok`.
     #[test]
     fn a_write_addressed_to_one_section_never_lands_on_another() {
-        // The anchor text is present in BOTH sections, so a wrong-section write
-        // SUCCEEDS instead of refusing — the silent path, not the loud one.
+        // The anchor text is present in both sections, so a wrong-section write
+        // succeeds instead of refusing — the silent path, not the loud one.
         let raw = "# A/B\n\nnote here\n\n# A B\n\nnote here\n";
 
         for (addressed, other) in [("A/B", "A B"), ("A B", "A/B")] {
@@ -954,12 +928,8 @@ mod tests {
         }
     }
 
-    /// R5 — the POLARITY of this test is inverted, deliberately. It pinned
-    /// "the raw title misses, the sanitized address resolves"; the plan face now
-    /// speaks raw segments, so the raw title is THE address and the sanitized
-    /// spelling is just a different string that names no heading. This is the
-    /// asymmetry closing: `mrd read` publishes `My Section`, and that is now
-    /// exactly what a plan edit takes back.
+    /// The plan face speaks raw segments: the raw title is the address, and
+    /// the sanitized spelling names no heading.
     #[test]
     fn raw_title_addresses_and_the_sanitized_spelling_misses() {
         let raw = "# My Section\n\nx\n";

@@ -16,7 +16,7 @@ pub(crate) const SPLICE_V2_FIELDS: [&str; 8] = [
     "path", "actor", "now", "receipt", "if_root", "dry", "force", "edits",
 ];
 
-/// v3 `splice` fields: ONE owner of the set; amendments = V3 \\ V2 (R23 caps).
+/// v3 `splice` fields: one owner of the set; amendments = V3 \\ V2.
 pub(crate) const SPLICE_V3_FIELDS: [&str; 10] = [
     "path",
     "actor",
@@ -33,7 +33,7 @@ pub(crate) const SPLICE_V3_FIELDS: [&str; 10] = [
 /// Strict-decode one request into [`wire::Op`] by hand (§3.2). Shared by both hosts.
 ///
 /// `rev` gates only `splice`'s field list (`plan_edits` under v3); other ops are
-/// rev-agnostic (v3-only ops gate at DISPATCH).
+/// rev-agnostic (v3-only ops gate at dispatch).
 ///
 /// # Errors
 /// `bad_request` / `bad_path` / `unsupported_proto` / `unknown_op` as appropriate.
@@ -119,7 +119,7 @@ pub fn decode(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody>> 
             })
         }
         "sub" => {
-            // v2 §4.7 push path: reserved shape, live at T5-SUB.
+            // v2 §4.7 push path.
             check_fields(obj, op, &["from_seq"])?;
             Ok(Op::Sub {
                 from_seq: req_u64(obj, op, "from_seq")?,
@@ -142,7 +142,7 @@ pub fn decode(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody>> 
     }
 }
 
-/// Composed `read` (v3-only at DISPATCH; decode is rev-agnostic).
+/// Composed `read` (v3-only at dispatch; decode is rev-agnostic).
 fn decode_read(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
     let op = "read";
     check_fields(
@@ -150,13 +150,9 @@ fn decode_read(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
         op,
         &["path", "frag", "sections", "display_path", "actor"],
     )?;
-    // U14 (decision 14): `sections` and `frag` are STRUCTURED on the wire. They
-    // were arrays of joined strings, and a string address on a machine surface
-    // is exactly what this docket row removes — the caller states the plane it
-    // means (`{"hpath":[…]}` / `{"n":"1.2"}` / `{"anchor":"id"}`) instead of
-    // spelling three grammars into one field and letting match order decide.
-    // A pre-U14 caller's string arrives here and is REFUSED by name: the door
-    // it wants is `wire::ReadSel::parse`, on its own side.
+    // `sections` and `frag` are structured on the wire: the caller states the
+    // plane it means, so match order never decides. A joined-string address is
+    // refused by name; its door is `wire::ReadSel::parse`, on the caller's side.
     let sections = match obj.get("sections") {
         None => None,
         Some(v @ Value::Array(_)) => Some(
@@ -198,12 +194,12 @@ fn decode_read(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
         frag,
         sections,
         display_path: opt_str(obj, op, "display_path")?,
-        // §9 read-provenance (D-Actor/B): wire input, never ambient.
+        // §9 read-provenance: wire input, never ambient.
         actor: opt_str(obj, op, "actor")?,
     })
 }
 
-/// `check_write` (v3-only at DISPATCH). `target` is a raw host path (`req_str`).
+/// `check_write` (v3-only at dispatch). `target` is a raw host path (`req_str`).
 fn decode_check_write(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
     let op = "check_write";
     check_fields(obj, op, &["path", "target", "actor", "now", "edits"])?;
@@ -241,7 +237,7 @@ fn decode_check_write(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
 /// Birth-op fields. No `force` — guarded door has no forced-birth escape.
 pub(crate) const CREATE_FIELDS: [&str; 6] = ["path", "body", "actor", "now", "if_root", "dry"];
 
-/// Strict-decode `create`. Rev-agnostic; v3 gate at DISPATCH. `now` is RFC 3339.
+/// Strict-decode `create`. Rev-agnostic; v3 gate at dispatch. `now` is RFC 3339.
 fn decode_create(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
     let op = "create";
     check_fields(obj, op, &CREATE_FIELDS)?;
@@ -284,7 +280,7 @@ fn decode_splice(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody
         None => Vec::new(),
         Some(v) => decode_plan_edits(v)?,
     };
-    // S7: pin is a write; pin-only batch is complete. Decode before edits gate.
+    // Pin is a write; a pin-only batch is complete. Decode before the edits gate.
     let pin = match obj.get("pin") {
         None => None,
         Some(v) => Some(decode_pin(v)?),
@@ -299,7 +295,7 @@ fn decode_splice(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody
             decode_edits(edits_v)?
         }
         None if plan_edits.is_empty() && pin.is_none() => {
-            // Frozen v2 refusal, verbatim (C note 6).
+            // Frozen v2 refusal, verbatim.
             return Err(bad_request("missing `edits` on `splice`"));
         }
         None => Vec::new(),
@@ -318,16 +314,15 @@ fn decode_splice(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody
     })
 }
 
-/// `splice.pin` (S7): `{target, selector, vibe?}`. No `actor` — identity is D13.
+/// `splice.pin`: `{target, selector, vibe?}`. No `actor` — identity is
+/// splice's daemon-derived actor only.
 fn decode_pin(v: &Value) -> Result<wire::PinSpec, Box<ErrorBody>> {
     let Some(obj) = v.as_object() else {
         return Err(bad_request("`pin` must be an object on `splice`"));
     };
     check_fields(obj, "pin", &["target", "selector", "vibe"])?;
-    // U14: the pin selector is TAGGED on the wire (decision 14 — `PinSpec` is a
-    // machine surface). A joined string here re-created the `/` delimiter
-    // collision one layer up from the lock-ref grammar it was removed from, so
-    // the string form is refused by name and pointed at its own door.
+    // The pin selector is tagged on the wire: a joined string re-creates the
+    // `/` delimiter collision, so the string form is refused by name.
     let Some(raw_sel) = obj.get("selector") else {
         return Err(bad_request("missing `selector` on `pin`"));
     };
@@ -424,9 +419,8 @@ fn decode_plan_edits(v: &Value) -> Result<Vec<PlanEdit>, Box<ErrorBody>> {
                 PlanEdit::SetProperty {
                     key: req_str(b, "set_property", "key")?,
                     value: req_str(b, "set_property", "value")?,
-                    // U10/P3: the FILE-grain doc-root token. Optional at the
-                    // wall (the shape stays decodable without it); the U10
-                    // guard is what DEMANDS it on a wire-origin write.
+                    // File-grain doc-root token: optional at the wall; the guard
+                    // demands it on a wire-origin write.
                     rev: opt_str(b, "set_property", "rev")?,
                 }
             }
@@ -440,11 +434,9 @@ fn decode_plan_edits(v: &Value) -> Result<Vec<PlanEdit>, Box<ErrorBody>> {
     Ok(out)
 }
 
-/// A plan edit's REQUIRED address field, as §2.1 segments (R5). The same
-/// `{h, n?}` grammar `sec.hpath` takes and the read face publishes — decoded
-/// through the SAME [`decode_seg`] door, so the two planes cannot drift apart
-/// again. An empty array decodes: it is the joined grammar's empty string, and
-/// the LOWERING arms own what it means (top-level `create` refuses by name).
+/// A plan edit's required address field, as §2.1 segments — the same `{h, n?}`
+/// grammar `sec.hpath` takes, decoded through the same [`decode_seg`] door. An
+/// empty array decodes; the lowering arms own what it means.
 fn req_segs(
     obj: &Map<String, Value>,
     shape: &str,
@@ -699,8 +691,7 @@ fn decode_anchor(v: &Value) -> Result<SecRef, Box<ErrorBody>> {
     let Value::String(id) = v else {
         return Err(bad_request("`anchor` must be a string"));
     };
-    // S10: strip `@fp` before mint-guard (first of two sites; makes decorated
-    // addresses agent-plane). Unrecognized `@` shapes still refuse below.
+    // Strip `@fp` before mint-guard; unrecognized `@` shapes still refuse below.
     let id = syntax::split_fp(id).0;
     // mint-guard: one block-id charset, both planes (§2.4)
     match model::Ref::anchor(id.to_owned()) {
@@ -758,7 +749,7 @@ fn decode_seg(v: &Value) -> Result<HpathSeg, Box<ErrorBody>> {
     }
 }
 
-/// `extract.kinds` vs closed enum: unknown → `bad_request{unknown_kinds}` (D-C5).
+/// `extract.kinds` vs closed enum: unknown → `bad_request{unknown_kinds}`.
 fn decode_kinds(v: &Value) -> Result<Vec<String>, Box<ErrorBody>> {
     let Value::Array(items) = v else {
         return Err(bad_request("`kinds` must be an array of strings"));

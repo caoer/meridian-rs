@@ -1,50 +1,28 @@
-//! U11 — **mismatch-recovery ladder** (R1.2 / decision 12).
+//! Mismatch-recovery ladder.
 //!
-//! # Standing law
-//! On fingerprint mismatch, **never instruct a whole-file read.** Refusal carries
-//! the richest rung it can COMPUTE:
+//! On fingerprint mismatch, never instruct a whole-file read. Refusal carries
+//! the richest rung it can compute:
 //!
-//! 1. CHANGE DIFF, when computable;
-//! 2. else NEW CONTENT of the node + new fingerprint;
+//! 1. change diff, when computable;
+//! 2. else new content of the node + new fingerprint;
 //! 3. else bare mismatch.
 //!
-//! Skipping a re-read is the feature (S4), not a side benefit.
+//! `guard_required` is rung zero: additive over the existing `cas_mismatch` +
+//! `Recovery::Refresh` — no new error code.
 //!
-//! # One continuous path, not a second mechanism
-//! U10 `guard_required` is **rung ZERO** of this ladder. Force is refuse→rewrite:
-//! write → refuse (+rung) → rewrite is ONE act. Adds v3-additive extras to the
-//! EXISTING `cas_mismatch` + `Recovery::Refresh` (P14). **No new error code**;
-//! does not replace U10's refusal.
+//! The engine stores no prior versions: the baseline is the caller's picture in
+//! the request (`match.old`); rung 1 diffs it against current bytes.
+//! [`DIFF_CAP_BYTES`] keeps rung 1 richer than rung 2 — a far-apart picture
+//! trips the cap and falls to rung 2.
 //!
-//! # Baseline and the cap
-//! Engine stores no prior versions: baseline is the caller's picture in the
-//! request (`match.old`). Rung-1 diffs caller's `old` vs current bytes.
+//! Form follows the fingerprint scope that tripped: section/block → unified
+//! line diff; frontmatter → ops form (a line diff teaches the wrong edit).
+//! Scope picks form; no content sniff.
 //!
-//! [`DIFF_CAP_BYTES`] keeps rung 1 richer than rung 2: a far-apart picture trips
-//! the cap and falls to rung 2 (ETag-412-with-body).
-//!
-//!
-//!
-//! # Form follows the fingerprint scope that tripped
-//! Section/block → **unified line diff**. Frontmatter → **ops form** (property
-//! map; line diff teaches the wrong edit). Scope picks form; no content sniff.
-//!
-//! # Scope is a SECURITY rule (S4)
-//! A rung discloses the caller's **targeted node only**. Caller already addressed
-//! it and held its fingerprint. Bytes outside would be unasked disclosure.
-//! Pinned by `rung_one_discloses_nothing_outside_the_callers_targeted_section`.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
+//! # Scope is a security rule
+//! A rung discloses the caller's targeted node only — bytes outside would be
+//! unasked disclosure. Pinned by
+//! `rung_one_discloses_nothing_outside_the_callers_targeted_section`.
 
 use std::fmt::Write as _;
 
@@ -52,15 +30,14 @@ use wire::{Edit, EditShape, ErrorBody, NodeRev, Path, SecRef};
 
 /// The rung-1 size cap, in bytes of rendered diff. Past it the diff has stopped
 /// being the cheaper answer and rung 2 is sent instead. Sized at one screen of
-/// context — large enough that an ordinary concurrent edit still diffs, small
-/// enough that a stale picture cannot smuggle a whole section through as "diff".
+/// context.
 pub const DIFF_CAP_BYTES: usize = 2048;
 
 /// The caller's targeted node, as the ladder sees it.
 struct Rungs<'a> {
     /// How the node is named back to the caller.
     subject: String,
-    /// The caller's OWN picture of the node's bytes, when the request carried
+    /// The caller's own picture of the node's bytes, when the request carried
     /// one. `None` ⇒ rung 1 is not computable.
     baseline: Option<&'a str>,
     /// The node's current bytes — the caller's targeted node, whole, and
@@ -68,22 +45,20 @@ struct Rungs<'a> {
     current: String,
     /// The token to resend with.
     new_fingerprint: NodeRev,
-    /// Did the FRONTMATTER scope trip? It picks the diff form.
+    /// Set when the frontmatter scope tripped; picks the diff form.
     frontmatter_key: Option<String>,
 }
 
-/// **The ladder.** Enrich a `cas_mismatch` envelope with the richest rung that
-/// is COMPUTABLE for the edit that tripped, leaving `code`, `recovery`,
+/// The ladder: enrich a `cas_mismatch` envelope with the richest rung that is
+/// computable for the edit that tripped, leaving `code`, `recovery`,
 /// `expected`, and `actual` exactly as the caller's contract already binds them.
 ///
 /// `edits` is the effective (post-lowering) batch, so the plan face reaches this
 /// with its `old` intact and needs no separate path.
 ///
-/// Always stamps `rung`: a `cas_mismatch` without one would make a caller probe
-/// the extras to learn what it was given.
+/// Always stamps `rung`, so a caller never probes the extras to learn what it
+/// was given.
 pub fn enrich(e: &mut ErrorBody, doc: &model::Document, edits: &[Edit], path: &Path) {
-    // The same envelope slot U10's rung 0 fills, so a caller reads one shape
-    // across the whole refuse→rewrite path.
     e.path = Some(path.clone());
     let file = path.0.as_str();
     let Some(r) = tripped(doc, edits) else {
@@ -124,9 +99,8 @@ pub fn enrich(e: &mut ErrorBody, doc: &model::Document, edits: &[Edit], path: &P
 }
 
 /// Rung 3 — the floor. Nothing about the node is computable here (its target no
-/// longer resolves, or no guarded edit is identifiable), so the refusal says
-/// exactly that and sends the caller to the ONE node it asked about. It still
-/// never instructs a whole-file read.
+/// longer resolves, or no guarded edit is identifiable), so the refusal sends
+/// the caller to the one node it asked about — still never a whole-file read.
 pub fn floor(e: &mut ErrorBody, file: &str) {
     e.rung = Some(3);
     e.message = Some(format!(
@@ -138,7 +112,7 @@ pub fn floor(e: &mut ErrorBody, file: &str) {
     ));
 }
 
-/// WHICH edit tripped: the first guarded edit whose pinned token is not its
+/// Which edit tripped: the first guarded edit whose pinned token is not its
 /// target's current one — the same first-failure order `model::validate` uses,
 /// so the rung describes the edit the verdict is about.
 fn tripped<'a>(doc: &model::Document, edits: &'a [Edit]) -> Option<Rungs<'a>> {
@@ -160,10 +134,8 @@ fn tripped<'a>(doc: &model::Document, edits: &'a [Edit]) -> Option<Rungs<'a>> {
             subject: subject_of(&edit.target),
             baseline: match &edit.edit {
                 EditShape::Match { old, .. } => Some(old.as_str()),
-                // `put` states what to WRITE, never what the caller believed was
-                // there. Treating it as a baseline would diff the caller's
-                // intent against reality and call it a change — rung 2 is the
-                // honest answer for every put shape.
+                // `put` states what to write, not what the caller believed was
+                // there — no baseline; rung 2 is the honest answer.
                 EditShape::Put { .. } => None,
             },
             new_fingerprint: NodeRev(resolved.node_rev.0.clone()),
@@ -177,8 +149,7 @@ fn tripped<'a>(doc: &model::Document, edits: &'a [Edit]) -> Option<Rungs<'a>> {
     None
 }
 
-/// How the targeted node is named back — the same spelling U10's refusal uses,
-/// so rung 0 and rungs 1–3 read as one path.
+/// How the targeted node is named back — the same spelling rung 0's refusal uses.
 fn subject_of(target: &SecRef) -> String {
     match target {
         SecRef::Hpath { hpath } => format!(
@@ -194,17 +165,15 @@ fn subject_of(target: &SecRef) -> String {
     }
 }
 
-/// The FRONTMATTER form: one JSON-Patch-shaped op that carries the key's current
-/// value. A property map is edited by key, so an op teaches the edit a caller
-/// can actually make; a line diff over `key: value` would teach a text splice
-/// into a plane that has no text grain.
+/// The frontmatter form: one JSON-Patch-shaped op carrying the key's current
+/// value — a property map is edited by key, and a line diff over `key: value`
+/// would teach a text splice into a plane that has no text grain.
 ///
 /// Scoped by construction: exactly one op, for exactly the key the caller
-/// addressed. `current` is that key's line, so no other key can appear.
+/// addressed.
 fn ops_form(key: &str, current: &str) -> String {
-    // The resolved fm-key span is the `key: value` line; the value is what the
-    // op replaces with. A line that does not carry the separator is left whole
-    // rather than guessed at.
+    // The resolved fm-key span is the `key: value` line. A line without the
+    // separator is left whole rather than guessed at.
     let value = current
         .split_once(':')
         .map_or(current.trim(), |(_, v)| v.trim());
@@ -238,34 +207,24 @@ fn json_escape(s: &str) -> String {
 }
 
 /// Lines of unchanged context carried on each side of a changed run — the
-/// conventional unified-diff window.
-///
-/// **This bound is what makes rung 1 the RICHER rung rather than merely a
-/// different one.** With full context a diff is always at least as large as the
-/// content it describes, so it could never be the cheaper answer and rung 1
-/// would collapse into a worse-shaped rung 2 for every node big enough to
-/// matter. Bounded context is what lets a one-line change in a 200-line section
-/// ship as seven lines.
+/// conventional unified-diff window. Bounded context is what keeps a diff
+/// cheaper than the content it describes.
 const DIFF_CONTEXT_LINES: usize = 3;
 
-/// The SECTION-BODY form: a unified line diff from the caller's pinned picture
+/// The section-body form: a unified line diff from the caller's pinned picture
 /// to the node's current bytes, in hunks with [`DIFF_CONTEXT_LINES`] of context.
+/// Headers name the sides — `pinned` (caller's), `current` (document's) —
+/// rather than `a/`/`b/`, which would name files neither side is.
 ///
-/// The headers say WHOSE side each is — `pinned` is the caller's, `current` is
-/// the document's — because `a/` and `b/` would name files neither side is.
-///
-/// `None` when the two pictures have no line-level difference at all: there is
-/// no change to teach, so rung 1 has nothing to say and the caller is better
-/// served by rung 2's bytes.
+/// `None` when the two pictures have no line-level difference; rung 2's bytes
+/// serve the caller better.
 fn unified_line_diff(pinned: &str, current: &str) -> Option<String> {
     unified_diff("pinned", "current", pinned, current)
 }
 
-/// The same renderer with the two side names spelled by the caller — ONE line
-/// diff in the tree, so a rehearsal preview (`mrd put --dry`, D3) and a
-/// `cas_mismatch` rung 1 cannot drift into two diff dialects. The labels are
-/// the only thing that differs: a rehearsal's sides are `current`/`candidate`,
-/// a mismatch's are `pinned`/`current`, and neither pair is `a/`-`b/` files.
+/// The same renderer with the two side names spelled by the caller — one line
+/// diff in the tree, shared by the rehearsal preview (`mrd put --dry`) and
+/// `cas_mismatch` rung 1.
 ///
 /// `None` when the two sides have no line-level difference at all.
 #[must_use]
@@ -287,9 +246,8 @@ pub fn unified_diff(
     let first = *changed.first()?;
 
     let mut out = format!("--- {before_label}\n+++ {after_label}\n");
-    // Group changed runs into hunks: two runs share a hunk when the gap between
-    // them is small enough that their context windows would touch, which is the
-    // rule that keeps neighbouring edits from printing the same lines twice.
+    // Two changed runs share a hunk when their context windows would touch —
+    // keeps neighbouring edits from printing the same lines twice.
     let mut start = first;
     let mut prev = first;
     for &i in changed.iter().skip(1) {
@@ -309,9 +267,8 @@ fn emit_hunk(out: &mut String, lines: &[Numbered<'_>], first: usize, last: usize
     let hi = (last + DIFF_CONTEXT_LINES + 1).min(lines.len());
     let slice = &lines[lo..hi];
 
-    // Counts are of the lines each SIDE contributes; the starts are 1-based, and
-    // a side that contributes nothing starts at 0 — the unified-diff convention
-    // for an empty range.
+    // Counts are per side; starts are 1-based, and a side contributing nothing
+    // starts at 0 — the unified-diff convention for an empty range.
     let before_len = slice
         .iter()
         .filter(|l| matches!(l.op, Op::Keep(_) | Op::Del(_)))
@@ -378,8 +335,7 @@ enum Op<'a> {
 }
 
 /// Longest-common-subsequence line ops. A textbook DP rather than a dependency:
-/// the inputs are one node's lines, both already bounded by the cap's neighbourhood,
-/// so the quadratic table is smaller than the crate that would replace it.
+/// the inputs are one node's lines, bounded by the cap's neighbourhood.
 fn lcs_ops<'a>(before: &[&'a str], after: &[&'a str]) -> Vec<Op<'a>> {
     let (n, m) = (before.len(), after.len());
     let mut table = vec![0usize; (n + 1) * (m + 1)];

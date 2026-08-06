@@ -101,16 +101,10 @@ pub fn project_response(frame: &mut Value) {
                 }
                 caps.push(Value::String("read".to_string()));
                 caps.push(Value::String("check_write".to_string()));
-                // M1 U8b: plan-level splice batch — v3-only composite cap.
                 caps.push(Value::String("splice.plan_edits".to_string()));
-                // S3/R23: pin field amendment as dotted op.field cap.
                 caps.push(Value::String("splice.pin".to_string()));
-                // Birth op at OP grain (no dotted create.<field>).
+                // Birth op at op grain (no dotted create.<field>).
                 caps.push(Value::String("create".to_string()));
-                // R1: build identity as a FIELD amendment to the hello answer,
-                // so it takes the dotted grain. The bare `hello` cap stays
-                // absent — hello is the door discovery comes through, never a
-                // capability a client asks for.
                 caps.push(Value::String("hello.identity".to_string()));
             }
             body.insert("contract".to_string(), Value::String("v3".to_string()));
@@ -137,46 +131,21 @@ pub fn project_response(frame: &mut Value) {
     }
 }
 
-/// Demote a response for a FROZEN v2 session: drop the v3-ADDITIVE error extras
+/// Demote a response for a frozen v2 session: drop the v3-additive error extras
 /// a v2 caller was never promised. Returns `None` when the frame already carries
 /// none, so the frozen path serializes the typed value directly and stays
-/// byte-identical — the round-trip is paid only by the frames that grew.
+/// byte-identical.
 ///
-/// The extras are U11's mismatch-recovery ladder. They are v3-only for the same
-/// reason the v3 caps are pushed in [`project_response`] rather than declared on
-/// the typed value: the amendment's law is that a v2 session never grows a field.
+/// Two propositions, deliberately not merged:
 ///
-/// **Two propositions, deliberately not merged (leader ruling, 2026-08-04).**
-/// `ladder::enrich` authors SIX slots and demotion clears all six, so a frozen
-/// v2 `cas_mismatch` prints exactly the `{code, recovery, expected, actual}` it
-/// always printed. But the six divide:
-///
-/// - **VINTAGE** — `rung`, `diff`, `new_content`, `new_fingerprint` postdate
-///   frozen v2. That is a static schema fact, true whoever wrote the value, so
-///   they are rows in [`V2_RESERVED_FIELDS`] and cleared from the table.
-/// - **PROVENANCE** — `message` and `path` are **v2-LEGAL fields**. Vintage
-///   cannot speak to them; only the LADDER's are stripped, and `rung` is the
-///   mark that proves the ladder wrote them. A registry row here would strip
-///   legitimate messages from every non-ladder refusal, U10's rung-0 refusals
-///   included — a regression, not a migration.
-///
-/// The two coincide for every input reachable today (`ladder::enrich` is the
-/// sole author of all six, called from one site, `write.rs`), so this factoring
-/// changes no observable behaviour. It is written this way because the vintage
-/// half must keep holding if a later unit ever sets one of those four without a
-/// rung.
-///
-/// This is the ONE place the ladder meets contract rev. The engine mints the
-/// richest rung it can regardless; whether the caller is entitled to read it is
-/// a vocabulary question, decided here at the projection seam, so no arm learns
-/// about revs.
+/// - Vintage — `rung`, `diff`, `new_content`, `new_fingerprint` postdate frozen
+///   v2, so they are rows in [`V2_RESERVED_FIELDS`].
+/// - Provenance — `message` and `path` are v2-legal fields; only the ladder's
+///   are stripped, keyed on `rung` as the ladder's authorship mark.
 #[must_use]
 pub fn demote_v2(response: &wire::Response) -> Option<wire::Response> {
     let error = match &response.payload {
         wire::ResponsePayload::Error { error } => error,
-        // The BODY side: a splice response's `armed.effects` postdates the
-        // freeze exactly as the notification-side `effects` does — one producer
-        // (`write.rs`) fills one value and writes it to two exits.
         wire::ResponsePayload::Body { body } => {
             return demote_body_v2(body).map(|body| wire::Response {
                 id: response.id,
@@ -221,7 +190,7 @@ pub fn demote_v2(response: &wire::Response) -> Option<wire::Response> {
     Some(demoted)
 }
 
-/// Attach `meta: {duration_us}` beside body/error (U7 timing; v3-only by caller).
+/// Attach `meta: {duration_us}` beside body/error (v3-only by caller).
 pub fn attach_meta(frame: &mut Value, duration_us: u64) {
     if let Some(obj) = frame.as_object_mut() {
         obj.insert(
@@ -320,7 +289,7 @@ mod tests {
         assert_eq!(frame["error"]["changed"], json!(["x.md"]));
     }
 
-    /// R23: every v3-era splice field amendment advertised as `splice.<field>`,
+    /// Every v3-era splice field amendment advertised as `splice.<field>`,
     /// derived from `SPLICE_V3_FIELDS \ SPLICE_V2_FIELDS` (not hand-copied).
     #[test]
     fn v3_splice_amendments_are_all_advertised() {
@@ -382,9 +351,6 @@ mod tests {
                 "splice.plan_edits",
                 "splice.pin",
                 "create",
-                // R1: the hello answer's own field amendment, dotted like the
-                // splice ones. Its VALUE is the host's to supply; the
-                // projection only advertises the field.
                 "hello.identity"
             ])
         );
@@ -464,8 +430,8 @@ mod tests {
 // The v2-reserved-field registry (v2 demotion law)
 // ---------------------------------------------------------------------------
 
-/// WHERE in a frame a reserved field appears. A key is stripped at its declared
-/// position only — "a key by this name, anywhere" would be a search, not a law.
+/// Where in a frame a reserved field appears. A key is stripped at its declared
+/// position only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Position {
     /// The root of a Notification frame (`{"delta":…}`, no `id`).
@@ -474,10 +440,7 @@ pub enum Position {
     ResponseRoot,
     /// Inside a response's `error` payload.
     ErrorPayload,
-    /// Inside a splice response's `body.armed` fact. Named for where the field
-    /// actually sits rather than folded into [`Position::ResponseRoot`]: a
-    /// position that lies about depth would send the next implementer to strip
-    /// at the wrong level.
+    /// Inside a splice response's `body.armed` fact.
     ResponseArmed,
 }
 
@@ -488,48 +451,27 @@ pub struct ReservedField {
     pub key: &'static str,
     /// Where it appears.
     pub position: Position,
-    /// WHO added it — recorded because the exposing unit is usually not the
-    /// author, which is the whole reason this table is shared rather than a
-    /// per-unit authorship mark.
+    /// Who added it.
     pub author: &'static str,
     /// Why it postdates v2, in one line.
     pub why: &'static str,
 }
 
-/// **THE TABLE — append-only.** Every field that postdates frozen v2, in one
-/// place, consulted by the v2 projection at BOTH hosts (Law 3: one
+/// The table — append-only. Every field that postdates frozen v2, in one
+/// place, consulted by the v2 projection at both hosts (Law 3: one
 /// implementation, two hosts).
 ///
-/// # Why a shared table and not a per-unit mark
-/// A per-unit authorship mark cannot gate a leak whose author is not the unit
-/// exposing it. Measured case: U20b served `sub` from the resident daemon and
-/// its notification frames carry ZERO U20b-authored fields — there was nothing
-/// for a U20b mark to key on, while the leaking field (`effects`) belongs to the
-/// C3 reaction plane and rides a surface both hosts emit. Two hosts re-applying
-/// one mark is two chances to diverge; one table consulted twice is neither.
-///
 /// # The discipline
-/// A new v3-additive field ships with its row **in the same commit**. The
-/// key-set pins (`u20b_v2_notification_shape.rs` and the U11 ladder's frozen
-/// frame) are what catch a field that forgets its row: they assert an exact key
-/// set, so a new key fails loudly rather than passing silently. A value-pinning
-/// sweep cannot see this class at all — a v3-only FIELD changes no VALUE.
-/// # Vintage, not provenance — what belongs in this table and what cannot
-/// A row asserts a FIELD VINTAGE: this key postdates frozen v2, so a v2 session
-/// never sees it, **regardless of who wrote the value**. That is a static schema
-/// fact.
+/// A new v3-additive field ships with its row in the same commit. The key-set
+/// pins (`u20b_v2_notification_shape.rs` and the ladder's frozen frame) assert
+/// an exact key set, so a field that forgets its row fails loudly; a
+/// value-pinning sweep cannot see this class.
 ///
-/// It is NOT the same question as provenance — "did unit X write this value?" —
-/// which is dynamic and per-envelope. The distinction is load-bearing and was
-/// paid for: U11's ladder clears SIX slots on demotion, but two of them
-/// (`message`, `path`) are **v2-LEGAL fields**. They have no vintage answer at
-/// all, so a row for them would strip legitimate messages from every non-ladder
-/// refusal — including the rung-0 refusals U11 exists to leave alone. Those two
-/// stay keyed on the ladder's own authorship mark, in `demote_v2`.
-///
-/// So: a field with a vintage answer belongs here; a v2-legal field whose
-/// removal depends on WHO wrote it does not, and keying it here would be a
-/// regression wearing the shape of a migration.
+/// # Vintage, not provenance
+/// A row asserts a field vintage: this key postdates frozen v2, regardless of
+/// who wrote the value. Provenance is per-envelope and stays in `demote_v2` —
+/// `message` and `path` are v2-legal fields, so a row for them would strip
+/// legitimate messages from every non-ladder refusal.
 pub const V2_RESERVED_FIELDS: &[ReservedField] = &[
     ReservedField {
         key: "effects",
@@ -548,8 +490,7 @@ pub const V2_RESERVED_FIELDS: &[ReservedField] = &[
               response body, so one field leaked at two exits; absent from the \
               frozen §4.4/§5.2 armed key set {path, edits}",
     },
-    // U11's mismatch-recovery ladder: the four slots that genuinely postdate v2.
-    // `message`/`path` are deliberately ABSENT — see the vintage/provenance note.
+    // The ladder's four post-v2 slots; `message`/`path` are deliberately absent.
     ReservedField {
         key: "rung",
         position: Position::ErrorPayload,
