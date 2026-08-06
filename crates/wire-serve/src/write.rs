@@ -251,13 +251,7 @@ pub fn splice(
     ) {
         model::SpliceVerdict::Validated(b) => b,
         refused => {
-            return Err(verdict_to_wire(
-                &refused,
-                effective_edits,
-                &doc,
-                &before_facts,
-                &args.path,
-            ));
+            return Err(verdict_to_wire(&refused, effective_edits, &doc, &args.path));
         }
     };
 
@@ -448,7 +442,7 @@ pub fn splice(
     )
     .map_err(|e| match e {
         CommitError::Refused(v) => {
-            verdict_to_wire(&v, effective_edits, &doc, &before_facts, &args.path)
+            verdict_to_wire(&v, effective_edits, &doc, &args.path)
         }
         CommitError::Env(err) => err,
         CommitError::Io(err) => commit_io_to_wire(&err, &args.path),
@@ -2265,10 +2259,11 @@ fn splice_index(doc: &model::Document, sealed: &model::ValidatedBatch) -> (Inser
 }
 
 /// Which request edit produced the sealed region — by the target span the model
-/// itself resolved, never by text similarity. `validate_batch` refuses a batch
-/// whose target spans are not pairwise disjoint (containment counts), so a
-/// non-empty region has at most one container; a region contested past the
-/// boundary rule below is `None` (refuse, never guess).
+/// itself resolved, never by text similarity. Disjointness is region-grain
+/// (§4.4), so TARGET spans may nest: a non-empty region can sit inside two
+/// nested targets, and a region contested past the boundary rule below is
+/// `None` (refuse, never guess) — the callers turn that into a loud
+/// `bad_request` rather than attributing an `@fp`/cross-root payload blind.
 ///
 /// # The boundary rule, which containment alone cannot decide
 /// Sections are contiguous: a section's span ends on the byte where its next
@@ -2916,6 +2911,44 @@ fn receipt_input(
     ))
 }
 
+/// A target in the caller's own spelling, for refusal messages.
+fn target_display(sec: &SecRef) -> String {
+    match sec {
+        SecRef::Hpath { hpath } => crate::display_hpath(hpath),
+        SecRef::Anchor { anchor } => format!("^{anchor}"),
+        SecRef::FmKey { fm_key } => fm_key.clone(),
+    }
+}
+
+/// The §4.4 overlap refusal, loud (§8): names the offending edits by batch
+/// index and target, and teaches the fix. An index one past the caller's
+/// edits is the engine-minted edit (receipt append).
+fn overlap_refusal(offending: &[usize], edits: &[Edit]) -> ErrorBody {
+    let mut e = ErrorBody::new(ErrorCode::BadRequest);
+    let name = |i: &usize| {
+        edits.get(*i).map_or_else(
+            || "the engine-minted receipt append".to_string(),
+            |edit| format!("edits[{i}] (target \"{}\")", target_display(&edit.target)),
+        )
+    };
+    let names: Vec<String> = offending.iter().map(name).collect();
+    e.message = Some(format!(
+        "batch edits must rewrite disjoint bytes (§4.4): {} rewrite overlapping \
+         regions of the file — re-anchor one so they touch different bytes, or \
+         split them into separate splice calls",
+        names.join(" and ")
+    ));
+    let overlapping: Vec<SecRef> = offending
+        .iter()
+        .filter_map(|&i| edits.get(i))
+        .map(|edit| edit.target.clone())
+        .collect();
+    if !overlapping.is_empty() {
+        e.overlap = Some(overlapping);
+    }
+    e
+}
+
 /// The §5.2 failure split, mapped: every refusal verdict to its wire frame
 /// (code + required recovery + the frozen extras). `edits` is the effective
 /// batch (post-lowering) — the request targets the extras echo.
@@ -2923,7 +2956,6 @@ fn verdict_to_wire(
     verdict: &model::SpliceVerdict,
     edits: &[Edit],
     doc: &model::Document,
-    before_facts: &[model::Target],
     path: &Path,
 ) -> Box<ErrorBody> {
     let e = match verdict {
@@ -2995,22 +3027,10 @@ fn verdict_to_wire(
             e.matches = Some(u32::try_from(*matches).unwrap_or(u32::MAX));
             e
         }
-        model::SpliceVerdict::Overlap { spans } => {
-            let mut e = ErrorBody::new(ErrorCode::BadRequest);
-            e.message = Some("batch targets must be disjoint (§4.4)".into());
-            // Echo the overlapping request targets: those whose resolved
-            // pre-batch spans are the overlap pair.
-            let overlapping: Vec<SecRef> = edits
-                .iter()
-                .zip(before_facts)
-                .filter(|(_, fact)| spans.contains(&fact.span))
-                .map(|(edit, _)| edit.target.clone())
-                .collect();
-            if !overlapping.is_empty() {
-                e.overlap = Some(overlapping);
-            }
-            e
-        }
+        model::SpliceVerdict::Overlap {
+            edits: offending,
+            spans: _,
+        } => overlap_refusal(offending, edits),
         model::SpliceVerdict::WouldCorrupt { lost } => {
             let mut e = ErrorBody::new(ErrorCode::WouldCorrupt);
             e.lost = Some(
@@ -3587,6 +3607,122 @@ mod guarded_create_remove {
             plan_edits: Vec::new(),
             pin: None,
         }
+    }
+
+    /// §4.4 region grain: an append at the child's span-end plus an append at
+    /// the parent's span-end (the `create` lowering's shape) commit as ONE
+    /// batch — one Delta, one root advance — the F2 mixed-batch fix.
+    #[test]
+    fn nested_target_appends_commit_as_one_batch() {
+        let (dir, root) = ws();
+        create(
+            &root,
+            None,
+            &create_args("notes/plan.md", "# Alpha\n\n## Beta\n\nw0\n"),
+            &[],
+        )
+        .expect("birth");
+
+        let mut args = splice_args("notes/plan.md", "", "");
+        args.edits = vec![
+            Edit {
+                target: SecRef::Hpath {
+                    hpath: vec![
+                        HpathSeg {
+                            h: "Alpha".into(),
+                            n: None,
+                        },
+                        HpathSeg {
+                            h: "Beta".into(),
+                            n: None,
+                        },
+                    ],
+                },
+                edit: EditShape::Put {
+                    at: wire::PutAt::End,
+                    text: "appended\n".into(),
+                },
+                if_node_rev: None,
+            },
+            Edit {
+                target: SecRef::Hpath {
+                    hpath: vec![HpathSeg {
+                        h: "Alpha".into(),
+                        n: None,
+                    }],
+                },
+                edit: EditShape::Put {
+                    at: wire::PutAt::End,
+                    text: "\n## Gamma\n\nborn\n".into(),
+                },
+                if_node_rev: None,
+            },
+        ];
+        let out = splice(&root, None, &args, &[], None)
+            .unwrap_or_else(|e| panic!("mixed nested-target batch refused: {:?}", e.message));
+        out.committed.expect("one commit, one Delta");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("notes/plan.md")).unwrap(),
+            "# Alpha\n\n## Beta\n\nw0\nappended\n\n## Gamma\n\nborn\n",
+            "both zero-width inserts landed in one atomic batch"
+        );
+    }
+
+    /// §4.4/§8: the overlap refusal names the offending edits by batch index
+    /// and target, and teaches the fix — never a bare `bad_request`.
+    #[test]
+    fn overlap_refusal_names_the_offending_edits() {
+        let (dir, root) = ws();
+        create(
+            &root,
+            None,
+            &create_args("notes/plan.md", "# Alpha\n\n## Beta\n\nship by August\n"),
+            &[],
+        )
+        .expect("birth");
+
+        let mut args = splice_args("notes/plan.md", "ship by August", "a");
+        args.edits.push(Edit {
+            target: SecRef::Hpath {
+                hpath: vec![
+                    HpathSeg {
+                        h: "Alpha".into(),
+                        n: None,
+                    },
+                    HpathSeg {
+                        h: "Beta".into(),
+                        n: None,
+                    },
+                ],
+            },
+            edit: EditShape::Match {
+                old: "August".into(),
+                new: "b".into(),
+            },
+            if_node_rev: None,
+        });
+        let err = splice(&root, None, &args, &[], None)
+            .expect_err("overlapping matched regions must refuse");
+        assert_eq!(err.code, ErrorCode::BadRequest);
+        assert_eq!(
+            err.message.as_deref(),
+            Some(
+                "batch edits must rewrite disjoint bytes (§4.4): edits[0] (target \
+                 \"Alpha/Beta\") and edits[1] (target \"Alpha/Beta\") rewrite overlapping \
+                 regions of the file — re-anchor one so they touch different bytes, or \
+                 split them into separate splice calls"
+            )
+        );
+        assert_eq!(
+            err.overlap.as_ref().map(Vec::len),
+            Some(2),
+            "the overlap extra echoes both offending targets"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("notes/plan.md")).unwrap(),
+            "# Alpha\n\n## Beta\n\nship by August\n",
+            "refused whole — no byte landed"
+        );
     }
 
     /// The write door's own gate: every splice moves the ambient root, and no

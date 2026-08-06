@@ -967,9 +967,14 @@ pub enum SpliceVerdict {
     NoMatch { matches: usize },
     /// `old` occurred 2+ times → `not_unique{matches}` (fix, §5.2).
     NotUnique { matches: usize },
-    /// Two edits' targets are not disjoint → `bad_request{overlap}` (§4.4). The
-    /// overlapping target spans ride along.
-    Overlap { spans: Vec<ByteSpan> },
+    /// Two edits' replaced regions are not disjoint → `bad_request{overlap}`
+    /// (§4.4 region grain). `edits` are the offending pair's batch-order
+    /// indices (the engine-minted edit, when present, indexes one past the
+    /// caller's edits); `spans` are their replaced regions.
+    Overlap {
+        edits: Vec<usize>,
+        spans: Vec<ByteSpan>,
+    },
     /// The post-apply reparse loses containment → `would_corrupt{lost}` (§4.4).
     /// `lost` = the hpath chains of sections destroyed outside the edited
     /// regions (byte-disjoint from every replaced region, yet gone after
@@ -1130,7 +1135,6 @@ pub fn validate_batch(
                 return v;
             }
             planned.push(PlannedEdit {
-                target: plan.target_span,
                 region: plan.region,
                 text: plan.text,
             });
@@ -1172,11 +1176,7 @@ pub fn validate_batch(
         if let Err(v) = guard_char_aligned(raw, &region) {
             return v;
         }
-        planned.push(PlannedEdit {
-            target: resolved.span,
-            region,
-            text,
-        });
+        planned.push(PlannedEdit { region, text });
     }
 
     // 2b. The engine-minted span edit joins the planned set after the caller's
@@ -1188,9 +1188,11 @@ pub fn validate_batch(
         }
     }
 
-    // 3. Disjointness (§4.4): targets must not overlap (containment counts).
-    if let Some(spans) = first_overlap(&planned) {
-        return SpliceVerdict::Overlap { spans };
+    // 3. Disjointness (§4.4, region grain): the replaced regions must not
+    // overlap. Targets may nest — an append to a child and an append under its
+    // parent rewrite different bytes and compose legally.
+    if let Some((edits, spans)) = first_overlap(&planned) {
+        return SpliceVerdict::Overlap { edits, spans };
     }
 
     // 4. One simulated reparse (§4.4): a post-apply parse that loses containment
@@ -1215,10 +1217,9 @@ pub fn validate_batch(
     })
 }
 
-/// A resolved-and-planned edit: the full target span (for disjointness), the
-/// replaced byte region, and the replacement text.
+/// A resolved-and-planned edit: the replaced byte region (the §4.4
+/// disjointness grain) and the replacement text.
 struct PlannedEdit {
-    target: ByteSpan,
     region: ByteSpan,
     text: String,
 }
@@ -1265,23 +1266,28 @@ fn guard_char_aligned(raw: &str, region: &ByteSpan) -> Result<(), SpliceVerdict>
 fn plan_engine_edit(raw: &str, engine: &EngineEdit) -> Result<PlannedEdit, SpliceVerdict> {
     guard_char_aligned(raw, &engine.span)?;
     Ok(PlannedEdit {
-        target: engine.span.clone(),
         region: engine.span.clone(),
         text: engine.text.clone(),
     })
 }
 
-/// The first pair of non-disjoint target spans (§4.4), or `None`. Containment
-/// counts as overlap (a section and a section it contains are not disjoint).
-/// Touching boundaries (`[a,b)` then `[b,c)`) are disjoint.
-fn first_overlap(planned: &[PlannedEdit]) -> Option<Vec<ByteSpan>> {
+/// The first pair of non-disjoint replaced regions (§4.4 region grain), or
+/// `None`, as (batch-order indices, regions). Containment of a non-empty
+/// region counts as overlap. Touching boundaries (`[a,b)` then `[b,c)`) and
+/// zero-width regions at a shared byte are disjoint — same-point inserts
+/// apply in request order ([`ValidatedBatch`]'s stable sort).
+fn first_overlap(planned: &[PlannedEdit]) -> Option<(Vec<usize>, Vec<ByteSpan>)> {
     let mut idx: Vec<usize> = (0..planned.len()).collect();
-    idx.sort_by_key(|&i| planned[i].target.start);
+    // (start, end) key: at a shared start byte the zero-width insert sorts
+    // before the non-empty region, so a boundary insert reads disjoint
+    // regardless of batch order — the verdict must be order-independent.
+    idx.sort_by_key(|&i| (planned[i].region.start, planned[i].region.end));
     for w in idx.windows(2) {
-        let (a, b) = (&planned[w[0]].target, &planned[w[1]].target);
-        // sorted by start: overlap iff a extends past b's start.
+        let (a, b) = (&planned[w[0]].region, &planned[w[1]].region);
+        // sorted by start: overlap iff a extends past b's start. Zero-width
+        // regions at one byte satisfy `a.end <= b.start` and read disjoint.
         if a.end > b.start {
-            return Some(vec![a.clone(), b.clone()]);
+            return Some((vec![w[0], w[1]], vec![a.clone(), b.clone()]));
         }
     }
     None
@@ -2647,19 +2653,92 @@ mod tests {
         assert_eq!(vb.edits[0].span, 139..139, "insert at Q4 span-end");
     }
 
-    /// GATE 4a (§4.4 disjointness): two edits whose targets nest are not
-    /// disjoint → `overlap` (`bad_request`), carrying the overlapping spans.
+    /// GATE 4a (§4.4 disjointness, region grain): two edits whose replaced
+    /// regions overlap refuse `overlap` (`bad_request`), carrying the
+    /// offending batch indices + regions.
     #[test]
     fn gate4_overlap_bad_request() {
+        let doc = plan_s2();
+        let b = batch(vec![
+            put_edit(hpath(&["Goals"]), PutAt::All, "# Goals\n\nrewritten\n"),
+            match_edit(hpath(&["Goals", "Q3"]), "September", "October", None),
+        ]);
+        let SpliceVerdict::Overlap { edits, spans } = validate_batch(&doc, None, &b, None) else {
+            panic!("a whole-tree rewrite plus an edit inside it must refuse overlap");
+        };
+        assert_eq!(edits, vec![0, 1], "the offending pair, batch order");
+        assert_eq!(spans, vec![20..150, 64..73], "Goals rewrite ⊃ Q3 match bytes");
+    }
+
+    /// The region-grain mirror of gate 4a: NESTED TARGETS whose replaced
+    /// regions touch different bytes compose in one batch (§4.4 amended
+    /// 2026-08-06) — an append at the parent's span-end plus a `match` inside
+    /// a child is the mixed-batch shape the target-grain law wrongly refused.
+    #[test]
+    fn gate4_nested_targets_disjoint_regions_validate() {
         let doc = plan_s2();
         let b = batch(vec![
             put_edit(hpath(&["Goals"]), PutAt::End, "x\n"),
             match_edit(hpath(&["Goals", "Q3"]), "September", "October", None),
         ]);
-        let SpliceVerdict::Overlap { spans } = validate_batch(&doc, None, &b, None) else {
-            panic!("nested targets must refuse overlap");
+        let SpliceVerdict::Validated(vb) = validate_batch(&doc, None, &b, None) else {
+            panic!("nested targets with disjoint regions must validate");
         };
-        assert_eq!(spans, vec![20..150, 49..75], "Goals ⊃ Q3");
+        let applied = apply_validated(&doc.raw, &vb);
+        assert_eq!(
+            applied,
+            format!("{}x\n", doc.raw.replace("September", "October")),
+            "match landed in Q3, append landed at Goals span-end"
+        );
+    }
+
+    /// The F2 mixed-batch shape at model grain: append to a section plus a
+    /// sibling-section birth lowered as `put at:"end"` on the PARENT (the
+    /// engine's `create` lowering) — one batch, both zero-width inserts land.
+    #[test]
+    fn gate4_append_plus_sibling_birth_one_batch() {
+        let doc = plan_s2();
+        let b = batch(vec![
+            put_edit(hpath(&["Goals", "Q3"]), PutAt::End, "- probe\n"),
+            put_edit(hpath(&["Goals"]), PutAt::End, "\n## Q5\n\nborn\n"),
+        ]);
+        let SpliceVerdict::Validated(vb) = validate_batch(&doc, None, &b, None) else {
+            panic!("append + sibling birth must validate as one batch");
+        };
+        let applied = apply_validated(&doc.raw, &vb);
+        let mut expected = doc.raw.clone();
+        expected.insert_str(75, "- probe\n"); // Q3 span-end
+        expected.push_str("\n## Q5\n\nborn\n"); // Goals span-end (EOF)
+        assert_eq!(applied, expected);
+
+        // Order-independence: the reversed batch validates identically.
+        let rev = batch(vec![
+            put_edit(hpath(&["Goals"]), PutAt::End, "\n## Q5\n\nborn\n"),
+            put_edit(hpath(&["Goals", "Q3"]), PutAt::End, "- probe\n"),
+        ]);
+        let SpliceVerdict::Validated(vb) = validate_batch(&doc, None, &rev, None) else {
+            panic!("the reversed mixed batch must validate too");
+        };
+        assert_eq!(apply_validated(&doc.raw, &vb), expected);
+    }
+
+    /// Two zero-width inserts at ONE byte (append to the last child + birth
+    /// under the parent, both at EOF) are disjoint and apply in request order.
+    #[test]
+    fn gate4_same_point_inserts_apply_in_request_order() {
+        let doc = plan_s2();
+        let b = batch(vec![
+            put_edit(hpath(&["Goals", "Q4"]), PutAt::End, "- tail\n"),
+            put_edit(hpath(&["Goals"]), PutAt::End, "\n## Q5\n\nborn\n"),
+        ]);
+        let SpliceVerdict::Validated(vb) = validate_batch(&doc, None, &b, None) else {
+            panic!("same-point inserts must validate");
+        };
+        assert_eq!(
+            apply_validated(&doc.raw, &vb),
+            format!("{}- tail\n\n## Q5\n\nborn\n", doc.raw),
+            "request order at the shared byte: Q4's tail before Q5's birth"
+        );
     }
 
     /// GATE 4b (§4.4 `would_corrupt`): a separator-less `at:"end"` on a non-final
