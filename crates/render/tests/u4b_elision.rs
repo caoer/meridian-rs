@@ -1,17 +1,16 @@
-//! U4b fixtures: `meridian-*` block elision on the RENDER face ONLY.
+//! U4b fixtures: `meridian-*` block elision on the render face only.
 //!
-//! The page carries a REAL canonical lock block (built by `lock::render` — the
-//! engine-sole-writer byte form, #8 §3) plus a `meridian-journal` block and an ordinary
-//! `rust` fence, mirroring the U0 `meridian-block` corpus doc. Byte pin #4: the raw
-//! read/cat face carries `meridian-*` blocks VERBATIM and never routes through render;
-//! elision lives behind [`ToonRenderer::with_meridian_elision`].
+//! The page carries a real canonical lock block (built by `lock::render`)
+//! plus a `meridian-journal` block and an ordinary `rust` fence. Byte pin #4:
+//! the raw read/cat face carries `meridian-*` blocks verbatim and never
+//! routes through render; elision lives behind
+//! [`ToonRenderer::with_meridian_elision`].
 //!
-//! **U36:** the predicate is `lock::is_engine_emitted` — derived from the registered
-//! canonical writers, not from the `meridian-*` namespace. So the lock elides (the engine
-//! writes it) while `meridian-journal`, which no writer claims, renders. Reservation
-//! stays uniform (`lock::is_meridian_lang`, #8 §1); readership is per-language.
-//!
-//!
+//! U36: the predicate is `lock::is_engine_emitted` — derived from the
+//! registered canonical writers, not from the `meridian-*` namespace. The
+//! lock elides (the engine writes it) while `meridian-journal`, which no
+//! writer claims, renders. Reservation stays uniform; readership is
+//! per-language.
 
 use render::{Header, RenderJob, RenderedSection, Renderer, SectionRow, ToonRenderer};
 use wire_map::facts::{ReadFact, read_facts, resolve_selector};
@@ -24,11 +23,8 @@ fn build(raw: &str) -> (model::Document, Vec<ReadFact>) {
 
 /// A populated lock in the canonical engine-written byte form.
 fn lock_block() -> String {
-    // FIXTURE REPAIR ONLY (U14): U8 replaced the `objects:` plane and the
-    // `declared_ref` row with the R4 shape — `object` + `hash` + a `path`
-    // ARRAY selector — so this fixture no longer compiled. Rebuilt in the
-    // current shape; this test is about fence-language ELISION, so all it
-    // needs from the lock is that it renders as the engine's block.
+    // This test is about fence-language elision; all it needs from the lock
+    // is that it renders as the engine's block, in the current R4 shape.
     let mut l = lock::Lock::new();
     l.upsert_pin(lock::PinEntry::new(
         "corpus/other",
@@ -74,8 +70,8 @@ fn content_slice<'a>(raw: &'a str, fact: &ReadFact) -> &'a str {
     &raw[usize::try_from(cs.0).expect("start fits")..usize::try_from(cs.1).expect("end fits")]
 }
 
-/// The U4b acceptance fixture: a page with a REAL `meridian-lock` block
-/// renders ELIDED on the render/readText face, VERBATIM on the raw face.
+/// The U4b acceptance fixture: a page with a real `meridian-lock` block
+/// renders elided on the render/readText face, verbatim on the raw face.
 #[test]
 fn real_lock_elided_on_render_face_verbatim_on_raw() {
     let block = lock_block();
@@ -85,14 +81,14 @@ fn real_lock_elided_on_render_face_verbatim_on_raw() {
         resolve_selector(&facts, &wire::ReadSel::parse("Config")).expect("Config resolves");
     let code = resolve_selector(&facts, &wire::ReadSel::parse("Code")).expect("Code resolves");
 
-    // RAW face (read/cat = the content span bytes): VERBATIM — pin #4.
+    // Raw face (read/cat = the content span bytes): verbatim — pin #4.
     assert!(
         content_slice(&raw, config).contains(&block),
         "raw face carries the canonical lock bytes verbatim"
     );
     assert!(content_slice(&raw, code).contains("```meridian-journal"));
 
-    // RENDER face, production configuration: every meridian-* block gone.
+    // Render face, production configuration: every meridian-* block gone.
     let rows = [
         SectionRow {
             sel: &wire::ReadSel::parse("Config"),
@@ -109,17 +105,10 @@ fn real_lock_elided_on_render_face_verbatim_on_raw() {
         "lock block elided: {}",
         out.text
     );
-    // U36 re-based this assertion, and the reason is a MEASUREMENT: nothing in
-    // the engine emits a `meridian-journal` block. The language appears in this
-    // fixture and in one `lock` unit test and NOWHERE in `src/` — the receipt
-    // journal is a page of `^receipt` LINES (`crates/receipt/src/journal.rs`),
-    // not a fenced block. So it has no canonical writer, elision is now derived
-    // from having one, and a reserved language the engine does not write renders.
-    //
-    // It therefore stands here as the THIRD-LANGUAGE case (neither mount, nor
-    // tool, nor an engine block), whose rule is: readership follows authorship.
-    // The engine-emitted direction is carried by `meridian-lock` above, and by a
-    // freshly registered writer in
+    // U36: `meridian-journal` has no canonical writer (nothing in the engine
+    // emits it), and elision is derived from having one — so a reserved
+    // language the engine does not write renders. The engine-emitted
+    // direction is carried by `meridian-lock` above and by
     // `crates/testsuite/tests/u36_per_language_elision.rs`.
     assert!(
         out.text.contains("meridian-journal"),
@@ -138,7 +127,7 @@ fn real_lock_elided_on_render_face_verbatim_on_raw() {
         out.text
     );
 
-    // The rendered word recount excludes the elided bytes; the FACT keeps
+    // The rendered word recount excludes the elided bytes; the fact keeps
     // the raw-face count (addressing is untouched by render).
     let rendered_config: &RenderedSection = &out.sections[0];
     assert!(
@@ -149,7 +138,7 @@ fn real_lock_elided_on_render_face_verbatim_on_raw() {
     );
 }
 
-/// The golden-pinned default stays INERT against the REAL canonical lock
+/// The golden-pinned default stays inert against the real canonical lock
 /// bytes (the U0 gates construct `ToonRenderer::default()`).
 #[test]
 fn default_renderer_emits_real_lock_verbatim() {
@@ -169,15 +158,12 @@ fn default_renderer_emits_real_lock_verbatim() {
     );
 }
 
-/// Fully-elided ≠ empty (coordinator ruling): a page whose ONLY body is its
-/// lock block still renders the page's non-lock STRUCTURE — the TOON head's
-/// row for the section, and the section's body marker — never a bare empty
-/// string. The raw face carries the block verbatim regardless (pin #4).
-///
-/// U15 made this claim harder to lose rather than softer: the section survives
-/// as a declared ROW carrying its own `rev`, so "the read served this section
-/// and it rendered to nothing" is now a fact in the head, not an inference
-/// from a banner's presence.
+/// Fully-elided ≠ empty: a page whose only body is its lock block still
+/// renders the page's non-lock structure — the TOON head's row for the
+/// section, and the section's body marker — never a bare empty string. The
+/// section survives as a declared row carrying its own `rev` (U15), so "the
+/// read served this section and it rendered to nothing" is a fact in the
+/// head.
 #[test]
 fn all_lock_page_renders_structure_not_empty() {
     let block = lock_block();

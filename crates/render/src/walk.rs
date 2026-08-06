@@ -1,20 +1,19 @@
-//! The node-grain section walker: emits a section's RENDERED content with the
-//! block-elision hook applied pre-emit (decision #8 seam). With the hook inert (the M1
-//! default) the emission is byte-identical to the raw content slice — the U0 goldens pin
-//! that identity; the raw read/cat face NEVER routes through here.
+//! The node-grain section walker: emits a section's rendered content with the
+//! block-elision hook applied pre-emit (#8 seam). With the hook inert the
+//! emission is byte-identical to the raw content slice — the U0 goldens pin
+//! that identity; the raw read/cat face never routes through here.
 //!
-//! G1: every failure is a typed [`RenderFailed`] — no indexing without a bounds check, no
-//! panics.
-//!
+//! G1: every failure is a typed [`RenderFailed`] — no indexing without a
+//! bounds check, no panics.
 
 use crate::{ClaimLink, Decorations, ElideBy, RenderFailed};
 use wire_map::facts::ReadFact;
 
-/// One rewrite the emission applies to the raw content span: replace
-/// `range` with `text`. An elided block is a removal (empty text); a
-/// claim-link decoration is an insertion (empty range). Both are the same
-/// shape so ONE ordered cursor pass applies them — two passes over shifting
-/// coordinates is how byte-exact walkers go wrong.
+/// One rewrite the emission applies to the raw content span: replace `range`
+/// with `text`. An elided block is a removal (empty text); a claim-link
+/// decoration is an insertion (empty range). Both are the same shape so one
+/// ordered cursor pass applies them — two passes over shifting coordinates is
+/// how byte-exact walkers go wrong.
 struct Rewrite<'a> {
     range: (usize, usize),
     text: &'a str,
@@ -30,9 +29,8 @@ struct Rewrite<'a> {
 ///
 /// Anchor facts emit the raw block-leaf content (marker-stripped) — a leaf
 /// hosts no fenced block, and its bytes are re-cut in a different coordinate
-/// space by the marker strip, so NEITHER hook fires there. A block-leaf read
-/// therefore serves the raw face, which is honest: an undecorated link claims
-/// nothing.
+/// space by the marker strip, so neither hook fires there. A block-leaf read
+/// serves the raw face; an undecorated link claims nothing.
 ///
 /// # Errors
 /// Typed [`RenderFailed`] when a span exceeds the document bytes (a
@@ -51,7 +49,7 @@ pub fn emit_section(
     };
     let (start, end) = checked_bounds(cs, raw.len(), fact)?;
     if elide.is_none() && decorations.is_empty() {
-        // both hooks inert: the emission IS the raw slice (U0 byte-parity)
+        // both hooks inert: the emission is the raw slice (U0 byte-parity)
         return Ok(String::from_utf8_lossy(&raw[start..end]).into_owned());
     }
 
@@ -91,7 +89,7 @@ pub fn emit_section(
     Ok(String::from_utf8_lossy(&out).into_owned())
 }
 
-/// Recursively collect the REMOVAL rewrites for `CodeBlock` nodes within
+/// Recursively collect the removal rewrites for `CodeBlock` nodes within
 /// `[start, end)` whose info-string the predicate matches — the block's span
 /// plus its own line's trailing newline, so an elided block leaves no blank
 /// line behind.
@@ -119,19 +117,17 @@ fn collect_elided(
     }
 }
 
-/// Recursively collect the INSERTION rewrites for claim-links within
+/// Recursively collect the insertion rewrites for claim-links within
 /// `[start, end)`: a `Wikilink`/`Embed` whose (target, block) address the
 /// caller decorated gains its shaped `@fp` token immediately after the block
 /// id, inside the link's own bytes.
 ///
-/// The insertion point is the end of the block-ref SLOT, and the slot comes
-/// from `syntax::block_slot` — this walker does not own the wikilink grammar
-/// and must not grow a second spelling of it. Locating the slot by searching
-/// the node's bytes for `#^<block>` was that second spelling, and a label
-/// quoting its own block ref (`[[guide#^goal|guide#^goal in full]]`) won the
-/// search: the token landed in the label, where the put-side strip cannot see
-/// it, and reached disk. Decorate and strip now read the slot from one owner,
-/// so a token this crate mints is one that crate removes.
+/// The insertion point comes from `syntax::block_slot` — this walker does not
+/// own the wikilink grammar and must not grow a second spelling of it
+/// (searching the node's bytes for `#^<block>` let a label quoting its own
+/// block ref absorb the token, where the put-side strip cannot see it).
+/// Decorate and strip read the slot from one owner, so a token this crate
+/// mints is one that crate removes.
 fn collect_decorations<'a>(
     node: &model::Node,
     start: usize,
