@@ -1,42 +1,17 @@
-//! **U27 — the frozen-v2 key-set pin suite (TYPE plane).**
+//! The frozen-v2 key-set pin suite, type plane: what each frozen-v2 response
+//! TYPE admits, with every optional field populated.
 //!
-//! The second half of the U27 detector pair. Its sibling,
-//! `crates/sidecar/tests/u27_v2_key_set_pins.rs`, pins what a LIVE v2 session
-//! actually serves; this file pins what each frozen-v2 response TYPE admits,
-//! with **every optional field populated**.
+//! Its sibling `crates/sidecar/tests/u27_v2_key_set_pins.rs` pins what a live
+//! v2 session actually serves, and neither half subsumes the other: a field
+//! added to a frozen struct reddens this file even before any path populates
+//! it, while a flipped population rule on an existing `Option` reddens the live
+//! half with `git diff -- crates/wire/` empty.
 //!
-//! # Why both halves exist — neither subsumes the other
+//! Every assertion is `assert_eq!` on the full sorted key list — a subset check
+//! is byte-identical in the passing and the failing world.
 //!
-//! The two worlds each half tells apart are different:
-//!
-//! - The LIVE half distinguishes "this v2 session serves exactly the frozen
-//!   keys" from "it serves one more (or one fewer)". It sees a changed
-//!   POPULATION RULE on an existing `Option` — a leak that leaves
-//!   `git diff -- crates/wire/` completely empty — and it sees nothing about a
-//!   field no live path populates yet.
-//! - This TYPE half distinguishes "the frozen shape has these fields" from "a
-//!   field was added to (or removed from) it". It sees the field the moment it
-//!   is declared, before any path populates it, and it is blind to which
-//!   session vintage ends up receiving it.
-//!
-//! A v3-additive field added to a frozen struct and populated only on the v3
-//! path reddens THIS file and not the live one. A population rule flipped so a
-//! v2 session starts receiving an existing optional field reddens the LIVE file
-//! and not this one. That is why the pair is the unit and not either file.
-//!
-//! # The form is load-bearing
-//!
-//! Every assertion is `assert_eq!` on the FULL sorted key list. A `contains` or
-//! subset check is byte-identical in the passing and the failing world — it is
-//! a decoration, not a control (All-Hands #3).
-//!
-//! # What a key beyond the frozen contract means here
-//!
-//! Where this file's list exceeds the frozen §-reference in its doc comment,
-//! the extra key is annotated with its authority: an amendment doc, or **a U27
-//! finding** where no authority exists. Nothing here silently blesses an
-//! unauthorized field — the finding is named in the pin and reported on the
-//! card.
+//! Where a list exceeds the frozen §-reference in its doc comment, the extra
+//! key is annotated with its authority.
 
 use std::collections::BTreeMap;
 use wire::{
@@ -45,7 +20,7 @@ use wire::{
     ResponseBody, ResponsePayload, Root, SecRef, Severity, Span, TocNode, Verdict,
 };
 
-/// **The pin primitive.** EXHAUSTIVE `assert_eq!` on the full sorted key list.
+/// The pin primitive: exhaustive `assert_eq!` on the full sorted key list.
 #[track_caller]
 fn pin_keys<T: serde::Serialize>(value: &T, expected: &[&str], what: &str) {
     let v = serde_json::to_value(value).expect("serializes");
@@ -88,7 +63,7 @@ fn target() -> SecRef {
 // The §2.1 address grammar — the shape every ref-carrying surface echoes
 // ---------------------------------------------------------------------------
 
-/// v2 §2.1 as amended (decision 20): the segment is the OBJECT form `{h, n?}`
+/// v2 §2.1 as amended (decision 20): the segment is the object form `{h, n?}`
 /// in both directions. `n` rides only on a disambiguating segment.
 #[test]
 fn hpath_segment_key_set_is_frozen() {
@@ -108,17 +83,11 @@ fn hpath_segment_key_set_is_frozen() {
 // ---------------------------------------------------------------------------
 
 /// Frozen §3.2 prints `{proto, server, caps, root}`. The type admits three
-/// more: `storage` and `workspace`, the resident-daemon binding facts, declared
-/// in the type's own doc as optional additive fields under the §3.2 evolution
-/// law and populated by the daemon host only (the sidecar emits neither — see
-/// the live half); and `identity`, the v3-only build identity.
-///
-/// **U27 finding 3:** neither binding field is declared in any `docs/`
-/// amendment, so their standing on a v2 handshake rests on a code comment.
-/// Reported, not fixed here. `identity` does not share that gap — it is
-/// declared in `docs/wire-contract.md`, and it never
-/// appears on a v2 handshake at all, because both hosts populate it under a
-/// negotiated v3 session only.
+/// more: `storage` and `workspace`, the resident-daemon binding facts populated
+/// by the daemon host only (no `docs/` amendment declares them — their standing
+/// on a v2 handshake rests on the type's own doc); and `identity`, the v3-only
+/// build identity from `docs/wire-contract.md`, which both hosts populate under
+/// a negotiated v3 session only.
 #[test]
 fn hello_body_key_set_is_frozen_plus_the_two_daemon_binding_fields_and_identity() {
     let hello = ResponseBody::Hello {
@@ -163,9 +132,8 @@ fn toc_body_key_set_is_frozen() {
     pin_keys(&toc, &["file_rev", "nodes", "path", "root"], "Toc body");
 }
 
-/// Frozen §4.1 row: the complete write kit. Every optional is populated here,
-/// so the pin is the union of the frontmatter, heading and anchor row classes
-/// — a NEW row field appears in this list even if no class emits it yet.
+/// Frozen §4.1 row, maximal: the union of the frontmatter, heading and anchor
+/// row classes, so a new row field appears here even if no class emits it yet.
 #[test]
 fn toc_row_key_set_is_frozen() {
     let row = TocNode {
@@ -221,31 +189,15 @@ fn extract_body_key_set_is_frozen() {
     pin_keys(&nodes, &["nodes", "path"], "Nodes body");
 }
 
-/// The frozen v1 §5.2 node object, maximal — INCLUDING the two v3-additive
-/// host-face fields (`n`, `words`) that share the struct. They are the
-/// All-Hands #1 sighting's own family: `Option` + `skip_serializing_if` is not
-/// a version gate, so only the live half can say they stay off a v2 wire. This
-/// pin says what the type admits, so a THIRD such field cannot be added
-/// silently.
+/// The frozen v1 §5.2 node object, maximal — including the two v3-additive
+/// host-face fields (`n`, `words`) that share the struct. `Option` +
+/// `skip_serializing_if` is not a version gate, so only the live half can say
+/// they stay off a v2 wire; this pin says what the type admits, so a third such
+/// field cannot be added silently.
 ///
-/// **It was a TRIO when U27 measured it, and it is a PAIR here.** U27 branched
-/// from a tree that predates the removal, so its pin named a field the assembly
-/// does not have, and the pin fired at the assembly gate.
-///
-/// **THE AUTHORISATION FOR THIS EDIT, so a reader can tell it from a quiet
-/// loosening: DECISION 14.** `hpath_text` — the sanitized joined ADDRESS — was
-/// removed as ruled work: it was a string address on a machine surface, and a
-/// lossy one, since `sanitize_heading` is many-to-one and no consumer could
-/// invert it back into something `put` accepts. `hpath` carries the same address
-/// as SEGMENTS and round-trips; the joined human spelling is the render plane's
-/// to derive.
-///
-/// The pin was NOT wrong and was NOT loosened. This suite exists so that any
-/// key-set change must be DELIBERATE, and it met a change that was — so the
-/// correct outcome is the pin updated WITH its citation, in the same change as
-/// the edit. A firing that met an UNRULED change would be a finding to report,
-/// not a pin to update. Neither branch was wrong about its own tree; only the
-/// merge can state the live key set.
+/// The sanitized joined address `hpath_text` was removed by decision 14:
+/// `sanitize_heading` is many-to-one, so no consumer could invert it back into
+/// something `put` accepts. `hpath` carries the same address as segments.
 #[test]
 fn extract_node_key_set_is_frozen_plus_the_v3_host_face_pair() {
     let node = Node {
@@ -323,9 +275,8 @@ fn extract_info_key_sets_are_frozen() {
     );
 }
 
-/// Frozen §4.5: location facts only — and NO rev field exists on this type to
-/// return (D-C2, the mint partition as a type-level fact). This pin is that
-/// law's executable form: a rev field added here appears in the list.
+/// Frozen §4.5: location facts only — no rev field exists on this type to
+/// return (D-C2, the mint partition). A rev added here appears in the list.
 #[test]
 fn resolve_body_key_set_is_frozen_and_carries_no_rev() {
     let resolve = ResponseBody::Resolve {
@@ -341,9 +292,8 @@ fn resolve_body_key_set_is_frozen_and_carries_no_rev() {
 // ---------------------------------------------------------------------------
 
 /// Frozen §4.4 splice body: `armed`, `receipt`, `root_before`, `root_after`,
-/// `seq`, `dry`, `verdicts`. The type admits one more — `pin`, the stage-2 S7
-/// `splice.pin` fact, v3-only at decode (a v2 session cannot mint one; the
-/// live half pins that).
+/// `seq`, `dry`, `verdicts`. The type admits one more — `pin`, the `splice.pin`
+/// fact, v3-only at decode (the live half pins that).
 #[test]
 fn splice_body_key_set_is_frozen_plus_the_v3_pin_fact() {
     let splice = ResponseBody::Splice {
@@ -381,20 +331,15 @@ fn splice_body_key_set_is_frozen_plus_the_v3_pin_fact() {
     );
 }
 
-/// **`Armed` — v2 §4.4 AS AMENDED (requirements decision 21, ZT, 2026-08-04;
-/// personal freeze authority per v2 §18).** The type admits exactly the frozen
-/// `{path, edits}` plus two declared passengers:
+/// `Armed` — v2 §4.4 as amended (decision 21). The type admits the frozen
+/// `{path, edits}` plus two declared passengers, neither demoted nor v3-split:
 ///
-/// - `file_rev_after` — ratified ON V2 by decision 21. ZT's semantics: the
-///   whole-file rev AFTER a committed splice, so a client learns the new file
-///   rev WITHOUT A FOLLOW-UP TOC; latency only, correctness stays fingerprint
-///   and `root_after`; ABSENT ON DRY, because nothing was written; same family
-///   as [`DeltaFile::file_rev_after`] and a subsequent `toc` `file_rev`.
-/// - `effects` — `docs/wire-contract.md`, reaction
-///   envelopes under `body.armed.effects`, omitted when empty.
-///
-/// Neither is demoted and neither is v3-split. The live half
-/// (`u27_v2_key_set_pins.rs`) pins the served forms, committed and dry.
+/// - `file_rev_after` — the whole-file rev after a committed splice, so a
+///   client learns it without a follow-up `toc`; latency only, correctness
+///   stays fingerprint and `root_after`; absent on dry, since nothing was
+///   written. Same family as [`DeltaFile::file_rev_after`].
+/// - `effects` — reaction envelopes under `body.armed.effects`, omitted when
+///   empty (`docs/wire-contract.md`).
 #[test]
 fn armed_key_set_is_frozen_plus_two_passengers() {
     let armed = Armed {
@@ -408,8 +353,7 @@ fn armed_key_set_is_frozen_plus_two_passengers() {
         }],
         effects: vec![],
     };
-    // `effects` is `skip_serializing_if = "Vec::is_empty"`, so the maximal
-    // form needs a populated envelope — the empty vec would hide the field.
+    // `effects` skips when empty, so the maximal form re-inserts the key.
     let mut v = serde_json::to_value(&armed).expect("serializes");
     v.as_object_mut()
         .expect("object")
@@ -428,10 +372,8 @@ fn armed_key_set_is_frozen_plus_two_passengers() {
     );
 }
 
-/// The uncontested members of the §4.4 write response: one armed edit (target
-/// identity in THE §2.1 grammar, rev transition, span after) and the §6.3
-/// receipt fact. Neither is touched by the `armed` dispute — the doc and the
-/// fixture agree on both, so both are minted.
+/// The §4.4 write response's other members: one armed edit (target identity in
+/// the §2.1 grammar, rev transition, span after) and the §6.3 receipt fact.
 #[test]
 fn armed_edit_and_receipt_fact_key_sets_are_frozen() {
     pin_keys(
@@ -456,17 +398,13 @@ fn armed_edit_and_receipt_fact_key_sets_are_frozen() {
     );
 }
 
-/// v2 §11.1: the rules-as-data verdict — `policy`'s `Violation` verbatim,
-/// projected into THE grammar. The shape rode every splice response as `[]`
-/// from birth, so a field added here changes bytes the frozen contract prints.
+/// v2 §11.1: the rules-as-data verdict — `policy`'s `Violation` projected into
+/// the grammar. The shape rides every splice response as `[]`, so a field added
+/// here changes bytes the frozen contract prints.
 ///
-/// TYPE-plane only, and deliberately so. This value is hand-built, which makes
-/// it a statement about the struct and NOT about the wire — U27 first shipped
-/// it as the shape's only pin, on the mistaken belief that no live path could
-/// serve a verdict. `crates/sidecar/tests/u27_v2_key_set_pins.rs::
-/// verdict_key_set_is_frozen_on_the_wire` is the wire half, taken from a real
-/// pack through the real serve loop. Read the two together: this one catches a
-/// field added to the struct, that one catches what a v2 client receives.
+/// Type plane only: the value is hand-built, so it says nothing about the wire.
+/// `crates/sidecar/tests/u27_v2_key_set_pins.rs::
+/// verdict_key_set_is_frozen_on_the_wire` is the wire half.
 #[test]
 fn verdict_key_set_is_frozen() {
     let verdict = Verdict {
@@ -539,9 +477,7 @@ fn root_and_diff_body_key_sets_are_frozen() {
 /// Frozen §7.1, maximal: `renamed` carries `from_path`, `created` drops
 /// `file_rev_before`, `deleted` drops `file_rev_after` — the union is pinned so
 /// a new file-grain fact cannot appear in any of those classes unseen.
-///
-/// `DeltaFrame.effects` is declared by the effects amendment ("A `DeltaFrame`
-/// may carry an `effects` array beside `delta`", omitted when empty).
+/// `DeltaFrame.effects` rides beside `delta`, omitted when empty.
 #[test]
 fn delta_frame_file_and_node_key_sets_are_frozen() {
     let node = DeltaNode {
@@ -551,7 +487,7 @@ fn delta_frame_file_and_node_key_sets_are_frozen() {
         node_rev_after: Some(rev()),
         span_after: Some(Span(49, 75)),
     };
-    // `DeltaNode` FLATTENS its SecRef, so the grammar's key rides the node.
+    // `DeltaNode` flattens its SecRef, so the grammar's key rides the node.
     pin_keys(
         &node,
         &[
@@ -612,8 +548,7 @@ fn delta_frame_file_and_node_key_sets_are_frozen() {
         "Delta (maximal)",
     );
 
-    // `effects` skips when empty, so the maximal frame is asserted on the
-    // re-inserted key — the frozen `delta` sibling is what must not move.
+    // `effects` skips when empty, so the maximal frame re-inserts the key.
     let frame = DeltaFrame {
         delta,
         effects: vec![],
@@ -666,14 +601,13 @@ fn response_frame_key_sets_are_frozen() {
     pin_keys(&err, &["error", "id", "ok"], "Response (error)");
 }
 
-/// §8: `code` + the REQUIRED closed `recovery` class + optional `message` +
+/// §8: `code` + the required closed `recovery` class + optional `message` +
 /// code-specific extras beside them, never nested further. Maximal here, so a
 /// new extra appears in the list the moment it is declared.
 ///
-/// The last four — `rung`, `diff`, `new_content`, `new_fingerprint` — are U11's
-/// **v3-additive** mismatch-recovery ladder. `rung` is the authorship mark
-/// `rev::demote_v2` keys off to strip all six authored slots from a v2 frame;
-/// the live half is what proves the stripping happens.
+/// The last four — `rung`, `diff`, `new_content`, `new_fingerprint` — are the
+/// v3-additive mismatch-recovery ladder. `rung` is the authorship mark
+/// `rev::demote_v2` keys off to strip the authored slots from a v2 frame.
 #[test]
 fn error_body_key_set_is_frozen_plus_the_v3_ladder_extras() {
     let err = ErrorBody {
@@ -740,13 +674,12 @@ fn error_body_key_set_is_frozen_plus_the_v3_ladder_extras() {
 }
 
 // ---------------------------------------------------------------------------
-// The pin primitive's own control (All-Hands #43)
+// The pin primitive's own control
 // ---------------------------------------------------------------------------
 
-/// **The twin of `u27_v2_key_set_pins.rs::the_pin_primitive_rejects_a_superset`.**
-/// See that test for why the two `pin_keys` copies exist and cannot be merged;
-/// this one holds THIS crate's copy to the same contract, so a drift in either
-/// is caught where it happens rather than by whoever notices later.
+/// Twin of `u27_v2_key_set_pins.rs::the_pin_primitive_rejects_a_superset` — the
+/// two `pin_keys` copies cannot be merged, so each is held to the contract in
+/// the crate where it lives.
 #[test]
 fn the_pin_primitive_rejects_a_superset() {
     #[derive(serde::Serialize)]

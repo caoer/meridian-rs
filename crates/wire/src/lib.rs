@@ -2,63 +2,22 @@
 //! (`SecRef`/`HpathSeg`) + op/request/response/error types (serde-only, zero
 //! I/O) — the only Go-visible surface.
 //!
-//! # Charter
-//! **Owns:** the wire nouns (`path`/`span`/`node_rev`/`root`), the §2.1 mint
-//! address grammar, the op request/response shapes, the node object, and the
-//! error envelope — everything that crosses the process boundary, exactly as
-//! the frozen contract states it (`docs/wire-contract.md` plus additive
-//! amendment `docs/wire-contract.md`; the contract text is
-//! normative, this crate transcribes it and never restates its rules).
+//! Owns everything that crosses the process boundary, exactly as the frozen
+//! contract states it (`docs/wire-contract.md` is normative; this crate
+//! transcribes it and never restates its rules). Never does framing,
+//! transport, I/O, or business logic; dependencies are serde only, so any
+//! client can consume it without dragging a runtime.
 //!
-//! **Never does:** framing, transport, I/O, business logic. Dependencies are serde
-//! only, by law — this crate must be consumable by any future client (tests, Go
-//! codegen, fixture tooling) without dragging a runtime.
-//!
-//! # Law enforcement (this crate's part), law 3 as re-attested 2026-07-24
 //! `model`'s types carry no serde derives; only this crate's types serialize.
-//! **Bridge behavior lives in the two named organs** — the `wire-map`
-//! projection seam and the `wire-serve` serve choke-point; the hosts
-//! (`sidecar`, `registry`), clients, and test members consume those organs
-//! and never grow a second home for projection or dispatch behavior
-//! (`docs/laws.md` Law 3).
+//! Bridge behavior lives in the `wire-map` projection seam and the
+//! `wire-serve` serve choke-point (`docs/laws.md` Law 3).
 //!
-//! # Rungs (contract v2 §4 op table)
-//! - Rung 1 (`hello`, error envelope, node object): v1 FROZEN 2026-07-18
-//!   (`proto: 1`), as amended by contract v2 (W2-AMEND): `Node.hpath` carries
-//!   `HpathSeg` (v2 §2.1), the error envelope is the nested
-//!   `{code, recovery, …}` object (v2 §8). **Freeze amendment, requirements
-//!   decision 20 (ZT, personal freeze authority per v2 §18):** W2-AMEND's
-//!   dual-deserialization of the v1 bare string was TRANSITIONAL and is
-//!   retired — the object form is the only form in BOTH directions. The bare
-//!   string cannot carry the occurrence index `n`, so the dual grammar was
-//!   incomplete, not merely loose; retiring it kills the same leftover
-//!   liberality as decision 14 / R1.6 / R4.
-//! - Rung 2 (`toc` v2 response, `cat`, `extract` + D-C5, `resolve` walk plane,
-//!   `SecRef` mint grammar): contract v2 §4.1–§4.5, §2.1 — FROZEN.
-//! - Rung 3 (`root` reshape, `diff` request, `root_mismatch`/`root_unknown`,
-//!   `guard` DELETED per D-C8): contract v2 §4.7, §8 — FROZEN. The Delta
-//!   noun + the Delta-bearing `diff` response body: contract v2 §7 — FROZEN
-//!   (D3-DELTA; node-grain at birth per decision 012, §7.4).
-//! - Rung 4 (`splice` §4.4 batch shape, armed-facts response, receipts §6,
-//!   `no_match`/`not_unique`/`would_corrupt`/`lock_timeout`, the `not_found`
-//!   retirement §18 row 6): FROZEN.
-//! - Rung 5 (`links` §4.6 view-shaped fact op + the §10.1 staleness triple +
-//!   `stale_view` §10.2): contract v2 §4.6, §10 — FROZEN (Q5-LINKS).
-//! - M1 v3-only additive amendments (`docs/wire-contract.md`,
-//!   never on a v2 frame): the composed `read` op (D6 — addressing, content,
-//!   and render at one engine snapshot); `check_write` (M1 U8c) serves the
-//!   I4 def-conformance verdict — candidate rebuild and severity ladder over
-//!   the def layer — engine-side; NEVER a write path (no flock, no CAS, no
-//!   journal).
-//!
-//! # Build-out obligations (contract laws the types alone cannot enforce)
-//! - **v2 §3.2 evolution, server side:** unknown request fields MUST be rejected
-//!   with `bad_request` — serde's default ignores them, and `deny_unknown_fields`
-//!   does not compose with `flatten`; the dispatch build-out owes a strict
-//!   decode pass.
-//! - **v2 §3.2 evolution, client side:** a client-side consumer of these types
-//!   must tolerate unknown error codes — dispatching on the closed `recovery`
-//!   class alone (v2 §8) — and ignore unknown open-kind strings.
+//! Contract laws the types alone cannot enforce:
+//! - Server side (v2 §3.2): unknown request fields MUST be rejected with
+//!   `bad_request` — serde's default ignores them, and `deny_unknown_fields`
+//!   does not compose with `flatten`; dispatch owes a strict decode pass.
+//! - Client side (v2 §3.2): tolerate unknown error codes, dispatching on the
+//!   closed `recovery` class alone (v2 §8); ignore unknown open-kind strings.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -75,7 +34,7 @@ use std::collections::BTreeMap;
 pub struct Path(pub String);
 
 /// Half-open byte range `[start, end)` into raw on-disk bytes (v2 §1 span
-/// sub-laws). UTF-8 **bytes**, never chars, never UTF-16. Serializes as the
+/// sub-laws). UTF-8 bytes, never chars, never UTF-16. Serializes as the
 /// two-element array `[start, end]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Span(pub u64, pub u64);
@@ -105,20 +64,13 @@ pub type RequestId = u64;
 
 /// One hpath segment: raw heading text `h` + optional 1-based occurrence
 /// index `n` (document order among identical raw texts at that position —
-/// v2 §2.1). Per-segment byte-equality against the real containment tree; no
-/// join string exists, so `#A#a/b` vs `#A#a#b` is unrepresentable.
+/// v2 §2.1). Per-segment byte-equality against the real containment tree.
 ///
 /// The object form `{"h":…}` / `{"h":…,"n":…}` is the ONLY form, both
-/// directions (v2 §2.1 as amended; requirements decision 20). The v1 bare
-/// string (`"Goals"`) was accepted on input by the transitional W2-AMEND
-/// dual-in bridge; that bridge is retired here and the bare form is refused
-/// loud. The bare form could never carry `n`, so the dual grammar was
-/// incomplete — one dialect strictly less expressive than the other, forcing
-/// two spellings where the loose one cannot address every node.
-/// The one refusal text for the retired v1 bare-string segment, shared by
-/// every door that can meet it (this type's `Deserialize`, `wire-serve`'s
-/// decode) — a refusal message is a contract, single-sourced. Each door
-/// appends the offending value, so the refusal names what it refused.
+/// directions (v2 §2.1); the v1 bare string is refused loud. This refusal
+/// text is single-sourced and shared by every door that can meet it (this
+/// type's `Deserialize`, `wire-serve`'s decode); each door appends the
+/// offending value.
 pub const HPATH_SEG_V1_REFUSAL: &str =
     "hpath segment must be the object form `{h, n?}`; the v1 bare string is refused (v2 §2.1)";
 
@@ -134,9 +86,8 @@ impl<'de> Deserialize<'de> for HpathSeg {
     where
         D: serde::Deserializer<'de>,
     {
-        // The string arm survives ONLY to name the refusal: matching it here
-        // turns a retired v1 spelling into a message that says so, instead of
-        // serde's generic "invalid type" for an unmatched variant.
+        // The string arm survives only to name the refusal — without it a
+        // retired v1 spelling gets serde's generic "invalid type".
         #[derive(Deserialize)]
         #[serde(untagged)]
         enum Repr {
@@ -173,24 +124,15 @@ pub enum SecRef {
     FmKey { fm_key: String },
 }
 
-/// The composed-read section selector (M1 U14, ZT decision 14) — the READ
-/// face's addressing grammar, tagged.
+/// The composed-read section selector — the read face's addressing grammar,
+/// tagged, with one arm per plane.
 ///
-/// It replaces a plain `String` that carried **three grammars at once**:
-/// `resolve_selector` matched `f.hpath == sel || f.n == sel`, so one string
-/// was a heading address, a dewey ordinal, and a `^id` anchor depending on
-/// what happened to match first. Which grammar a caller MEANT was never
-/// stated, so the read face guessed — and a heading whose raw text is `1.2`
-/// or begins with `^` was addressable by accident, in the wrong plane.
+/// The heading arm carries segments — the same §2.1 grammar `put` takes in
+/// `target.hpath` and [`ReadRow::hpath`] publishes — so a read-then-write loop
+/// closes with no join, no split, and no projection to invert. The dewey and
+/// anchor arms carry opaque ids, which are not addresses.
 ///
-/// The arms are separate because the planes are separate. The heading arm
-/// carries SEGMENTS — the same §2.1 grammar `put` takes in `target.hpath` and
-/// [`ReadRow::hpath`] publishes — so a read-then-write loop closes with no
-/// join, no split, and no sanitize-projection to invert (R1.6: arrays for
-/// machines). The dewey and anchor arms carry opaque ids, which have never
-/// been addresses.
-///
-/// Conversion from a human string happens ONCE, at an ingress door, through
+/// Conversion from a human string happens once, at an ingress door, through
 /// [`ReadSel::parse`] — never inward of it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -198,7 +140,7 @@ pub enum ReadSel {
     /// `{"hpath":[{"h":"Goals"},{"h":"Q3"}]}` — the heading plane, per-segment
     /// byte-equality on RAW heading text. A segment's `n` pins the occurrence
     /// among same-text siblings; absent, the read face's first-match-wins law
-    /// applies (v2 §2.1 semantics for `n` itself are unchanged).
+    /// applies.
     Hpath { hpath: Vec<HpathSeg> },
     /// `{"n":"1.2.1"}` — the dewey ordinal the read face mints per heading
     /// row. Positional and NOT round-trippable across an edit; it addresses a
@@ -210,24 +152,20 @@ pub enum ReadSel {
 }
 
 impl ReadSel {
-    /// The ONE human-string→selector door: a CLI `--section`, a `#Fragment`
+    /// The one human-string→selector door: a CLI `--section`, a `#Fragment`
     /// on a ref, a `pin` spec. Three disjoint spellings, decided in order:
     ///
     /// - `^id` → [`ReadSel::Anchor`].
     /// - digits and dots only (`1`, `1.2.1`) → [`ReadSel::Dewey`].
-    /// - anything else → [`ReadSel::Hpath`], `/`-split into RAW heading texts.
+    /// - anything else → [`ReadSel::Hpath`], `/`-split into raw heading texts.
     ///
     /// The order is the disambiguation: a heading literally named `1.2` is
-    /// unaddressable from a human string here, which is the SAME collision the
-    /// old joined form had — but now it is one door's stated rule instead of a
-    /// match-order accident three layers in, and the structured arm is always
-    /// available to a caller that means the heading.
+    /// unaddressable from a human string here, and the structured arm is what
+    /// a caller meaning the heading uses.
     ///
-    /// Heading text is taken VERBATIM: no sanitize, no `#n` sub-grammar. The
-    /// occurrence index rides the structured form only, because a `#` inside a
-    /// human string is itself a live ingress delimiter (wikilinks, `path#frag`)
-    /// and re-spelling it here would rebuild the delimiter collision decision
-    /// 20 removed.
+    /// Heading text is taken verbatim — no sanitize, no `#n` sub-grammar, since
+    /// `#` inside a human string is itself a live ingress delimiter (wikilinks,
+    /// `path#frag`), so the occurrence index rides the structured form only.
     #[must_use]
     pub fn parse(s: &str) -> Self {
         if let Some(id) = s.strip_prefix('^') {
@@ -249,9 +187,9 @@ impl ReadSel {
         }
     }
 
-    /// The caller's own spelling, for a REFUSAL message to name back. Display
+    /// The caller's own spelling, for a refusal message to name back. Display
     /// only — nothing addresses anything with this string, and no door parses
-    /// it back (that is what [`ReadSel::parse`] being the only ingress means).
+    /// it back.
     #[must_use]
     pub fn display(&self) -> String {
         match self {
@@ -274,11 +212,10 @@ impl ReadSel {
 // ---------------------------------------------------------------------------
 
 /// The §9 `now` format law, transcribed: RFC 3339 date-time —
-/// `YYYY-MM-DDTHH:MM:SS[.frac](Z|±HH:MM)` — format-VALIDATED, never
-/// generated (the engine reads no wall clock; a malformed `now` is the
-/// server's `bad_request`). Pure predicate, zero dependencies — a law
-/// transcription like [`ErrorCode::recovery`], not business logic; the
-/// dispatch strict-decode pass is its caller (W4-ACTOR / D4-SPLICE).
+/// `YYYY-MM-DDTHH:MM:SS[.frac](Z|±HH:MM)` — format-validated, never generated
+/// (the engine reads no wall clock; a malformed `now` is the server's
+/// `bad_request`). Pure predicate, zero dependencies; the dispatch
+/// strict-decode pass is its caller.
 #[must_use]
 pub fn now_is_rfc3339(s: &str) -> bool {
     let b = s.as_bytes();
@@ -381,20 +318,18 @@ pub enum PutAt {
     All,
     /// Replace the content span, heading preserved.
     Content,
-    /// Insert `text` at the span-end byte — the append verb. RAW byte
-    /// concatenation, NO synthesized separator (Edit-model exact): `text`
-    /// that must begin a new line carries its own leading `\n`; against a
-    /// terminator-less final line a separator-less `text` is the caller's to
-    /// get right, and a result that loses containment refuses
-    /// `would_corrupt`.
+    /// Insert `text` at the span-end byte — the append verb. Raw byte
+    /// concatenation with no synthesized separator: `text` that must begin a
+    /// new line carries its own leading `\n`, and a result that loses
+    /// containment refuses `would_corrupt`.
     End,
-    /// Set a frontmatter key (create-or-replace) — the property UPSERT verb,
-    /// valid ONLY on an `fm_key` target. `text` is the VALUE (not the whole
-    /// line): the server composes `{key}: {value}` from the target key, so the
+    /// Set a frontmatter key (create-or-replace) — the property upsert verb,
+    /// valid only on an `fm_key` target. `text` is the value, not the whole
+    /// line: the server composes `{key}: {value}` from the target key, so the
     /// `fm_key` is the single source of truth. Replaces the key's line when it
     /// exists; creates it (synthesizing the `---` frontmatter block when the
-    /// file has none) when absent. The insertion offset is SERVER-derived from
-    /// the document structure — no client byte offset (D-C1). A NON-`fm_key`
+    /// file has none) when absent. The insertion offset is server-derived from
+    /// the document structure — no client byte offset (D-C1). A non-`fm_key`
     /// target or a multi-line value is `bad_request`.
     Upsert,
 }
@@ -407,116 +342,81 @@ pub struct ReceiptAddr {
     pub anchor: String,
 }
 
-/// The **pin** riding a splice (stage-2 S7, D7): a Splice-SIBLING optional
-/// field, never its own op. The splice's `path` is the PINNING page (the page
-/// whose `meridian-lock` block records the claim); these two fields say what it
-/// pins.
+/// The pin riding a splice: a splice-sibling optional field, never its own op.
+/// The splice's `path` is the pinning page (the page whose `meridian-lock`
+/// block records the claim); these two fields say what it pins.
 ///
-/// # There is deliberately NO actor field (D13)
-/// A pin's mint identity IS the gate identity IS the splice's own `actor` — one
-/// daemon-derived session identity behind the `bodyActor` wall. The sibling
-/// `check_write` op carries a caller-settable actor; a pin must not, or a caller
-/// forges a pin as somebody else. Adding an actor here is a security regression,
-/// not a convenience.
+/// No actor field: a pin's mint identity is the splice's own `actor`, and a
+/// caller-settable one here would let a caller forge a pin as somebody else.
 ///
-/// # D12 (cross-root seam)
-/// `target` is carried VERBATIM into the lock's `ref` and `objects:` key — this
-/// type parses no address, so a later `root:` prefix rides through untouched.
+/// `target` is carried verbatim into the lock's `ref` and `objects:` key —
+/// this type parses no address, so a later `root:` prefix rides through
+/// untouched.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PinSpec {
     /// The page holding the pinned content (workspace-relative).
     pub target: Path,
-    /// The selector inside `target`, TAGGED (U14, ruled 2026-08-03).
-    ///
-    /// **It was a joined string, and that is how the delimiter collision
-    /// survived its own removal.** U14 lifted the `/`-in-heading refusal on the
-    /// grounds that an R4 `path` array carries `["A/B"]` unambiguously — true,
-    /// and not sufficient: this field still split `"Guide/A/B"` into THREE
-    /// segments, so the heading became representable in storage while staying
-    /// unpinnable. The disease decision 20 named did not die with the lock-ref
-    /// grammar; it MOVED here. Decision 14 applies unchanged — `PinSpec` is a
-    /// wire machine surface, so it carries structure.
-    ///
-    /// The human spelling lives in the CLI coat (`mrd pin --section`), which
-    /// converts through [`ReadSel::parse`] at its own door. That coat still
-    /// splits on `/`, so a `/`-bearing heading is pinnable through THIS field
-    /// and not through the CLI sugar — ZT's input-coat vs carried-canonical
-    /// split, with C2 reserved.
+    /// The selector inside `target`, tagged. The human spelling lives in the
+    /// CLI coat (`mrd pin --section`), which converts through
+    /// [`ReadSel::parse`] at its own door; that coat splits on `/`, so a
+    /// `/`-bearing heading is pinnable through this field and not through the
+    /// CLI sugar.
     pub selector: ReadSel,
-    /// `--vibe`: additionally WRITE the target's blob into git's object store
+    /// `--vibe`: additionally write the target's blob into git's object store
     /// (`git hash-object -w`), so the pin is retrievable before any commit
     /// references it. Absent/`false` computes the oid read-only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vibe: Option<bool>,
 }
 
-/// What a pin actually minted (stage-2 S7) — the response half of [`PinSpec`],
-/// present only when the request carried one.
+/// What a pin actually minted — the response half of [`PinSpec`], present
+/// only when the request carried one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PinFact {
     /// The pinned page, as given.
     pub target: Path,
-    /// The CANONICAL selector the engine resolved (never the caller's spelling,
-    /// never a dewey ordinal) — the same key the read-mint gate looked up,
-    /// STRUCTURED since U14 so the two cannot drift into two spellings of one
-    /// address.
+    /// The canonical selector the engine resolved (never the caller's spelling,
+    /// never a dewey ordinal) — the same key the read-mint gate looked up.
     pub selector: ReadSel,
-    // U14 (ruling 2026-08-03, decision 14): `declared_ref` — the joined
-    // `"<target>#<selector>"` echo — is GONE. The R4 lock row it was named
-    // after carries `object` + a `path` ARRAY and has had no `ref:` field
-    // since U8, so this string echoed a grammar nothing writes and nothing
-    // reads back inward; `target` and `selector` above carry the same fact
-    // structurally. Dropping it is what retires the joined `page#A/B` spelling
-    // from the wire, and with it the `/`-in-heading refusal that existed only
-    // to protect that spelling's delimiter.
     /// The minted `fp1.…` CID-token over the selector's own span.
     pub fingerprint: String,
     /// The lock's `objects[]` blob oid for the target file; absent when git
     /// could not answer (honest degradation — never a fabricated sha).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blob: Option<String>,
-    /// The target's stable block id (D15, slug-derived) — the handle a claim
+    /// The target's stable block id (slug-derived) — the handle a claim
     /// link decorates and a later rename-heal relocates by.
     pub anchor: String,
-    /// `true` when THIS pin wrote `anchor` into the target (a re-pin reuses the
+    /// `true` when this pin wrote `anchor` into the target (a re-pin reuses the
     /// id and promotes nothing).
     pub promoted: bool,
 }
 
-/// One v3 PLAN-level splice edit (M1 U8b, `splice.plan_edits`): the put-plan
-/// vocabulary the Go daemon's `buildSpliceEdit`/`buildPropertyEdits` emulation
-/// spoke, moved behind the wire. Externally tagged.
+/// One v3 plan-level splice edit (`splice.plan_edits`): the put-plan
+/// vocabulary, externally tagged.
 ///
-/// **R5 — addresses are SEGMENTS ([`HpathSeg`]), the same §2.1 grammar
-/// [`SecRef::Hpath`] takes and [`ReadRow::hpath`] publishes.** They were the
-/// HOST-face sanitized joined forms (`"A/B"`), inherited from u8b's mirror of
-/// meridian-go's put index. [`sanitize_heading`] is LOSSY and NON-INJECTIVE —
-/// `/` and ASCII space both become `-` — so `# A/B` and `# A B` shared one plan
-/// key, the index kept the last, and a write aimed at the first landed on the
-/// second while reporting success. The read plane shed that collision at u14 /
-/// u26; those units never opened `plan.rs`, so the write side kept it. Segments
-/// close the loop: an address a read publishes is an address a plan edit
-/// accepts, and two headings that differ cannot collide.
+/// Addresses are segments ([`HpathSeg`]) — the same §2.1 grammar
+/// [`SecRef::Hpath`] takes and [`ReadRow::hpath`] publishes — so an address a
+/// read publishes is an address a plan edit accepts, and two headings that
+/// differ cannot collide.
 ///
-/// The engine LOWERS each shape to native [`Edit`]s at the splice intake
-/// (`wire-serve::plan`) — byte-faithful to the deleted Go arms, so the lowered
-/// batch is identical to what the host used to build. v3-only AT DECODE
-/// (rider 1): a v2 session's `plan_edits` hits the frozen unknown-field wall.
+/// The engine lowers each shape to native [`Edit`]s at the splice intake
+/// (`wire-serve::plan`). v3-only at decode: a v2 session's `plan_edits` hits
+/// the frozen unknown-field wall.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanEdit {
     /// Append to a section's content end — `ensureTrailingNL` + the
-    /// leading-`\n` discipline applied ENGINE-side (the U8b directive).
-    /// `rev` is the NODE-grain guard token (R4), threaded to `if_node_rev`
-    /// exactly as `match`/`replace_section` carry theirs: an append changes
-    /// existing content and is guarded like every other change (U10 S3).
+    /// leading-`\n` discipline applied engine-side. `rev` is the node-grain
+    /// guard token, threaded to `if_node_rev`: an append changes existing
+    /// content and is guarded like every other change.
     Append {
         hpath: Vec<HpathSeg>,
         body: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rev: Option<String>,
     },
-    /// Anchored replace; `all: true` replaces EVERY occurrence (the host's
+    /// Anchored replace; `all: true` replaces every occurrence (the host's
     /// read-modify-write moved engine-side). `rev` is the v2-domain node rev
     /// (blake3) threaded to `if_node_rev`; empty/absent = the relaxed write.
     Match {
@@ -535,31 +435,23 @@ pub enum PlanEdit {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rev: Option<String>,
     },
-    /// Create a new section — PARENT-APPEND placement (emulation-faithful;
-    /// the `check_write` candidate's EOF placement is the U8b NAMED residual,
-    /// G-class: invisible while no def governs created sections). An empty
-    /// `parent_hpath` (top-level create) refuses — M2 note carried forward.
+    /// Create a new section — parent-append placement. An empty
+    /// `parent_hpath` (top-level create) refuses.
     Create {
         parent_hpath: Vec<HpathSeg>,
         title: String,
         body: String,
     },
     /// Frontmatter set — value-span replace / insert-after-last-key /
-    /// conditional quote (`yaml_safe_value`), the `buildPropertyEdits` dance
-    /// reproduced engine-side (NOT native `at:upsert`: model's upsert inserts
-    /// absent keys at FIRST-key position; the Go dance inserts after the LAST
-    /// key — divergent bytes).
+    /// conditional quote (`yaml_safe_value`). Not native `at:upsert`: upsert
+    /// inserts absent keys at first-key position, this inserts after the last
+    /// key — divergent bytes.
     SetProperty {
         key: String,
         value: String,
-        /// U10 (plan decision P3): the FILE-grain guard — the doc-root token
-        /// this property write is decided against. Frontmatter semantics are
-        /// file-scoped, so a key-line rev would guard the wrong grain; this
-        /// carries the document's `file_rev`.
-        ///
-        /// v3-ADDITIVE on a v3-only shape: `plan_edits` never existed under
-        /// frozen v2, so admitting an optional field here changes no v2 byte
-        /// (serialization skips it when absent).
+        /// The file-grain guard: frontmatter semantics are file-scoped, so a
+        /// key-line rev would guard the wrong grain; this carries the
+        /// document's `file_rev`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rev: Option<String>,
     },
@@ -585,21 +477,17 @@ pub struct Request {
 pub enum Op {
     /// v2 §3.2 version handshake; `caps` discovery, never version sniffing.
     ///
-    /// `contract` is the v3-amendment negotiation knob (`docs/wire-contract.md`):
-    /// an OPTIONAL client-DECLARED contract rev, absent or `"v2"` ⇒ the frozen
-    /// v2 vocabulary (byte-for-byte), `"v3"` ⇒ the `fingerprint` vocabulary from
-    /// the hello response onward. A DECLARED rev is not the §3.2-forbidden
-    /// version sniffing (the client states its rev; the server never guesses).
-    /// Absent ⇒ serialized away, so the v2 request stays byte-identical.
+    /// `contract` is an optional client-declared contract rev: absent or
+    /// `"v2"` ⇒ the frozen v2 vocabulary (byte-for-byte), `"v3"` ⇒ the
+    /// `fingerprint` vocabulary from the hello response onward. Absent ⇒
+    /// serialized away, so the v2 request stays byte-identical.
     ///
-    /// `workspace` is the resident-engine handshake's workspace-target
-    /// (`[[0002-resident-daemon]]` §4): the host path the client binds this
-    /// connection to. The daemon resolves it (the ancestor walk), pins its
-    /// storage drawer, warms its resident engine, and serves subsequent read ops
-    /// from that binding — one round trip. Absent ⇒ a pure version handshake
-    /// that binds nothing (the sidecar's per-process stdio hello never sends it,
-    /// so the v2 request stays byte-identical). An OPTIONAL additive field on the
-    /// frozen shape, exactly like `contract`.
+    /// `workspace` is the resident-daemon handshake's workspace-target: the
+    /// host path the client binds this connection to. The daemon resolves it
+    /// (the ancestor walk), pins its storage drawer, warms its resident
+    /// engine, and serves subsequent ops from that binding. Absent ⇒ a pure
+    /// version handshake that binds nothing. An optional additive field on the
+    /// frozen shape, like `contract`.
     Hello {
         proto: u32,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -620,8 +508,7 @@ pub enum Op {
         sec: Option<SecRef>,
     },
     /// v2 §4.3 full node inventory; `kinds` filters. An unknown value in
-    /// `kinds` is `bad_request{unknown_kinds}`, loud (D-C5 — reverses v1's
-    /// "unknown names match nothing"; deviation row v2 §18 row 7).
+    /// `kinds` is `bad_request{unknown_kinds}`, loud.
     Extract {
         path: Path,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -629,9 +516,9 @@ pub enum Op {
     },
     /// v2 §4.5 the walk plane: best-effort app-compatible two-stage walk over
     /// the raw Obsidian linktext. Location facts only — the response type has
-    /// no rev field to return (D-C2, mint partition as type law). `from` is
-    /// mandatory: resolution is source-relative. `content:true` additionally
-    /// returns the fragment bytes — still no rev.
+    /// no rev field to return. `from` is mandatory: resolution is
+    /// source-relative. `content:true` additionally returns the fragment
+    /// bytes — still no rev.
     Resolve {
         from: Path,
         #[serde(rename = "ref")]
@@ -639,15 +526,15 @@ pub enum Op {
         #[serde(skip_serializing_if = "Option::is_none")]
         content: Option<bool>,
     },
-    /// v2 §4.4 the only write op UNDER V2, batch-only (v3 adds the birth op
-    /// [`Op::Create`]; `splice` remains the only op that EDITS an existing
-    /// file): the Edit-tool semantic model IS
-    /// the wire write grammar (D-C1). No client span field exists anywhere in
-    /// a request — the class of wrong-offset writes is unrepresentable.
-    /// Guardless, actor-less, receipt-less frames are legal at the wire
-    /// forever; whether a scope REQUIRES them is the Go ratchet (§5.3).
-    /// `actor`/`now` are wire inputs, never ambient (§9): opaque string and
-    /// RFC 3339 string, recorded into receipts and Deltas, never generated.
+    /// v2 §4.4 the only write op under v2, batch-only (v3 adds the birth op
+    /// [`Op::Create`]; `splice` stays the only op that edits an existing
+    /// file): the Edit-tool semantic model is the wire write grammar. No
+    /// client span field exists anywhere in a request, so wrong-offset writes
+    /// are unrepresentable. Guardless, actor-less, receipt-less frames are
+    /// legal at the wire forever; whether a scope requires them is the host's
+    /// ratchet (§5.3). `actor`/`now` are wire inputs, never ambient (§9):
+    /// opaque string and RFC 3339 string, recorded into receipts and Deltas,
+    /// never generated.
     Splice {
         path: Path,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -655,11 +542,11 @@ pub enum Op {
         #[serde(skip_serializing_if = "Option::is_none")]
         now: Option<String>,
         /// Receipts are per-request, never a wire requirement (§6.1): when
-        /// named, the receipt append commits in the SAME batch as the content
-        /// edit — one exchange, one reparse, ONE root advance (D-C3).
+        /// named, the receipt append commits in the same batch as the content
+        /// edit — one exchange, one reparse, one root advance (D-C3).
         #[serde(skip_serializing_if = "Option::is_none")]
         receipt: Option<ReceiptAddr>,
-        /// World-grain guard, checked FIRST (§5.1): mismatch fails the whole
+        /// World-grain guard, checked first (§5.1): mismatch fails the whole
         /// batch `root_mismatch` → re-plan.
         #[serde(skip_serializing_if = "Option::is_none")]
         if_root: Option<Root>,
@@ -667,46 +554,40 @@ pub enum Op {
         /// `root_after:null`, no receipt written.
         #[serde(skip_serializing_if = "Option::is_none")]
         dry: Option<bool>,
-        /// U4.3 the sanctioned bypass (refusal-amendment §11.1 pt 3, decision
-        /// #6): a `--force` write ESCAPES an armed binding-break / block refusal
-        /// — the skip is journaled AND rendered, never silent. Absent/`false` is
-        /// an ordinary gated write. Additive by the tolerant-code law: a v2
-        /// client that never sends it writes exactly as before.
+        /// The sanctioned bypass (§11.1 pt 3): a `--force` write escapes an
+        /// armed binding-break / block refusal, and the skip is journaled and
+        /// rendered, never silent. Absent/`false` is an ordinary gated write.
         #[serde(skip_serializing_if = "Option::is_none")]
         force: Option<bool>,
         edits: Vec<Edit>,
-        /// M1 U8b `splice.plan_edits` (v3-only at decode, rider 1): the
-        /// plan-level batch, mutually exclusive with `edits` — the engine
-        /// lowers these to native edits at the splice intake. Empty = the
-        /// native form; serialization skips it so the frozen v2 request
-        /// bytes never change.
+        /// `splice.plan_edits` (v3-only at decode): the plan-level batch,
+        /// mutually exclusive with `edits` — the engine lowers these to
+        /// native edits at the splice intake. Empty = the native form;
+        /// serialization skips it so the frozen v2 request bytes never change.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         plan_edits: Vec<PlanEdit>,
-        /// Stage-2 S7 `splice.pin` (v3-only at decode): the pin rides the write
-        /// choke-point as a SIBLING field, so its lock write lands in the same
-        /// `commit_batch` — one flock, one rename — instead of a second flocked
-        /// call (D7). A pin-only splice carries no `edits`. Serialization skips
-        /// it, so the frozen v2 request bytes never change.
+        /// `splice.pin` (v3-only at decode): the pin rides the write
+        /// choke-point as a sibling field, so its lock write lands in the same
+        /// `commit_batch` — one flock, one rename — instead of a second
+        /// flocked call. A pin-only splice carries no `edits`. Serialization
+        /// skips it, so the frozen v2 request bytes never change.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pin: Option<PinSpec>,
     },
-    /// The BIRTH op (v3-ONLY at dispatch, like `read`/`check_write`): born one
-    /// file through the SAME guarded door every in-process caller uses
+    /// The birth op (v3-only at dispatch): births one file through the same
+    /// guarded door every in-process caller uses
     /// (`wire_serve::write::create`) — path confinement → reserved-journal
-    /// guard → world guard → the four birth guards (`@fp` strip at document
-    /// grain, stored-form translation, the cross-root artifact guard, the
-    /// `meridian-lock` artifact guard) → the gate seam → the `if_absent` CAS at
-    /// the disk edge → root advance → birth Delta → journal row. There is no
-    /// second birth path: this op FORWARDS, it does not re-implement.
+    /// guard → world guard → the four birth guards → the gate seam → the
+    /// `if_absent` CAS at the disk edge → root advance → birth Delta →
+    /// journal row. This op forwards; it does not re-implement.
     ///
     /// `body` is the newborn's full bytes, byte-transparent — the engine mints
-    /// no template here (templating is `preset`'s `^template` plane). An
-    /// occupied path refuses `cas_mismatch` (recovery `refresh`) and nothing
-    /// lands; there is no clobbering birth.
+    /// no template here. An occupied path refuses `cas_mismatch` (recovery
+    /// `refresh`) and nothing lands.
     ///
-    /// There is deliberately **no `force` field**: the guarded door carries no
-    /// forced-birth escape, so admitting the key would advertise a bypass that
-    /// does not exist. A `force` on this op hits the strict field wall.
+    /// No `force` field: the guarded door carries no forced-birth escape, so
+    /// admitting the key would advertise a bypass that does not exist. A
+    /// `force` on this op hits the strict field wall.
     Create {
         path: Path,
         /// The newborn's full bytes, verbatim (no template, no engine authoring).
@@ -714,7 +595,7 @@ pub enum Op {
         /// §9: recorded exactly as given into the birth Delta and journal row.
         #[serde(skip_serializing_if = "Option::is_none")]
         actor: Option<String>,
-        /// §9: RFC 3339, format-VALIDATED never generated — the journal row's
+        /// §9: RFC 3339, format-validated never generated — the journal row's
         /// clock comes from the caller, so a malformed `now` is `bad_request`.
         #[serde(skip_serializing_if = "Option::is_none")]
         now: Option<String>,
@@ -732,61 +613,47 @@ pub enum Op {
     /// `splice.if_root`, §5.1; the v1 scoped/`path` variant is gone with
     /// `guard`).
     Root,
-    /// v2 §4.7 replay, reserved AT the integrity rung with its shape frozen
-    /// now (A6/L55 — the compound front door). The response carries Delta
-    /// batches byte-identical to the live notification frames (§7.3); the
-    /// Delta-bearing response body lands with the Delta noun (D3-DELTA).
+    /// v2 §4.7 replay. The response carries Delta batches byte-identical to
+    /// the live notification frames (§7.3).
     Diff { from_root: Root, to_root: Root },
-    /// v2 §4.6 the corpus fact op (the 188-call read-as-oracle pattern, made
-    /// an op): the outgoing edge map, `resolvedLinks`/`unresolvedLinks`
-    /// shape. `path` absent → whole-corpus edge map. Corpus-wide ⇒ the
-    /// response carries the §10.1 staleness triple; `require_root` is the
-    /// opt-in strictness knob → `stale_view` refusal (§10.2), retry class.
+    /// v2 §4.6 the corpus fact op: the outgoing edge map,
+    /// `resolvedLinks`/`unresolvedLinks` shape. `path` absent → whole-corpus
+    /// edge map. Corpus-wide ⇒ the response carries the §10.1 staleness
+    /// triple; `require_root` is the opt-in strictness knob → `stale_view`
+    /// refusal (§10.2), retry class.
     Links {
         #[serde(skip_serializing_if = "Option::is_none")]
         path: Option<Path>,
         #[serde(skip_serializing_if = "Option::is_none")]
         require_root: Option<Root>,
     },
-    /// v2 §4.7 the push path, live at T5-SUB: `{"op":"sub","from_seq":N}` →
-    /// ok (the ack reuses the `{root, seq}` body — the subscription's anchor
-    /// tense; advisor-ruled, no frozen frame prints one), then Notification
-    /// frames each carrying one Delta batch — the §7.1 noun, transport only
-    /// (A6). `from_seq` catchup is valid only within one epoch (§7.1 late
-    /// law); outside the retained history → `root_unknown` → diff-by-root.
+    /// v2 §4.7 the push path: `{"op":"sub","from_seq":N}` → ok (the ack
+    /// reuses the `{root, seq}` body), then Notification frames each carrying
+    /// one Delta batch (§7.1). `from_seq` catchup is valid only within one
+    /// epoch; outside the retained history → `root_unknown` → diff-by-root.
     Sub { from_seq: u64 },
-    /// The COMPOSED read op (M1 U4a2, decision D6): addressing + content +
-    /// render at ONE engine snapshot — one round trip replacing the
-    /// `extract`→`cat`→render 3-hop split (whose non-atomicity created the
-    /// `fingerprint_mismatch` retry race, A-K5). **v3-ONLY**: absent from the
-    /// frozen v2 `caps`, so a v2 session answers `unknown_op` (§3.2 discovery
-    /// honesty); the v3 hello projection advertises it.
+    /// The COMPOSED read op (v3-only): addressing + content + render at ONE
+    /// engine snapshot — one round trip replacing the `extract`→`cat`→render
+    /// 3-hop split. Absent from the frozen v2 `caps`, so a v2 session
+    /// answers `unknown_op`; the v3 hello projection advertises it.
     ///
-    /// `sections` selects by sanitized hpath, dewey ordinal, or `^anchor` and
-    /// IS the mode: present → a sections read, absent → the toc read (A5
-    /// retired the `mode` vocabulary at both ends; an explicit `mode` on the
-    /// wire is now an unknown field the strict decode refuses). `frag` scopes
-    /// to one section subtree; `display_path` is the caller's path spelling for the
-    /// rendered header line (defaults to `path`) — the engine renders the
-    /// string the consumer expects, it never invents host paths.
+    /// `sections` IS the mode: present → a sections read, absent → the toc
+    /// read (an explicit `mode` on the wire is an unknown field the strict
+    /// decode refuses). `frag` scopes to one section subtree; `display_path`
+    /// is the caller's path spelling for the rendered header line (defaults
+    /// to `path`) — the engine never invents host paths.
     ///
-    /// `actor` is the §9 read-provenance slot (D-Actor/B, review C4): the
-    /// DAEMON-derived actor stamped on the request — a wire input, never
-    /// ambient, never MCP-caller-settable (the mint door stays the host's).
-    /// M1 carries it so stage-2 read-mint receipts are additive (the engine
-    /// already knows which actor read what at which rev); no receipt is
-    /// minted in M1.
+    /// `actor` is the §9 read-provenance slot: the daemon-derived actor
+    /// stamped on the request — a wire input, never ambient, never
+    /// MCP-caller-settable.
     Read {
         path: Path,
-        /// The whole-call subtree scope, as SEGMENTS (U14): the section itself
-        /// plus its descendants, matched per-segment. It was a sanitized
-        /// joined string tested with `starts_with("{frag}/")`, which made
-        /// scoping a string-prefix question over an address nothing could
-        /// invert.
+        /// The whole-call subtree scope, as segments: the section itself
+        /// plus its descendants, matched per-segment.
         #[serde(skip_serializing_if = "Option::is_none")]
         frag: Option<Vec<HpathSeg>>,
         /// Document-absolute section selectors, each in the tagged read
-        /// grammar ([`ReadSel`], U14).
+        /// grammar ([`ReadSel`]).
         #[serde(skip_serializing_if = "Option::is_none")]
         sections: Option<Vec<ReadSel>>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -794,20 +661,17 @@ pub enum Op {
         #[serde(skip_serializing_if = "Option::is_none")]
         actor: Option<String>,
     },
-    /// M1 U8c the I4 def-conformance verdict op (v3-only, like `read`): the
-    /// Go `meridiandefs.CheckWrite` seam served by the engine — rebuild the
-    /// candidate from put-plan-vocabulary `edits` over the CURRENT bytes at
+    /// The def-conformance verdict op (v3-only, like `read`): rebuild the
+    /// candidate from put-plan-vocabulary `edits` over the current bytes at
     /// `path`, judge prev→candidate against the def layer, return the
-    /// refuse/repairs/forced verdict. NEVER a write path: no flock, no CAS,
+    /// refuse/repairs/forced verdict. Never a write path: no flock, no CAS,
     /// no journal, no disk mutation.
     ///
-    /// `target` is the caller's ABSOLUTE path spelling (a raw host string
-    /// like `view_path.cwd`, not a wire [`Path`]): it labels the refusal
-    /// strings verbatim AND anchors the def-layer discovery walk — exactly
-    /// the `target` the Go daemon passed to `CheckWrite`. `now` is the caller's
-    /// clock (RFC3339); close-stamp repairs derive from it (§9: the engine
-    /// mints no time). `actor` rides for verdict context, never authz (I3 is
-    /// the host's).
+    /// `target` is the caller's absolute path spelling (a raw host string, not
+    /// a wire [`Path`]): it labels the refusal strings verbatim and anchors
+    /// the def-layer discovery walk. `now` is the caller's clock
+    /// (RFC3339); close-stamp repairs derive from it (§9: the engine mints no
+    /// time). `actor` rides for verdict context, never authz.
     CheckWrite {
         path: Path,
         target: String,
@@ -815,19 +679,16 @@ pub enum Op {
         now: String,
         edits: Vec<CheckWriteEdit>,
     },
-    /// V2 §Q2 the view-organ **path forwarder** — resolve `cwd` → workspace,
-    /// publish `view.duckdb` (the daemon is the sole builder), and return the
-    /// stamped filesystem PATH plus a pre-open freshness hint. It marshals
-    /// **no rows**, executes no query, maps no result-set errors — a
-    /// row-returning `sql` op is a brand-new tabular surface, explicitly
-    /// round-2 and OUT of scope. `fresh:true` asks the daemon for a bounded
-    /// rebuild (§Q3). Served by the resident daemon only; a per-process sidecar
-    /// (which cannot publish — C2 forbids `sidecar`→`view`) answers
-    /// `daemon_only`.
+    /// §Q2 the view-organ path forwarder — resolve `cwd` → workspace, publish
+    /// `view.duckdb` (the daemon is the sole builder), and return the stamped
+    /// filesystem path plus a pre-open freshness hint. It marshals no rows,
+    /// executes no query, maps no result-set errors. `fresh:true` asks the
+    /// daemon for a bounded rebuild (§Q3). Served by the resident daemon only;
+    /// a per-process sidecar answers `daemon_only`.
     ViewPath {
         /// The consumer's working directory — the daemon resolves it to a
-        /// workspace (ancestor walk) and its drawer. A raw HOST path
-        /// (absolute), NOT a workspace-relative wire [`Path`], so it carries no
+        /// workspace (ancestor walk) and its drawer. A raw host path
+        /// (absolute), not a workspace-relative wire [`Path`], so it carries no
         /// path-law and is a plain string.
         cwd: String,
         /// `true` ⇒ the bounded `--fresh` rebuild (§Q3); absent/`false` ⇒ serve
@@ -860,9 +721,8 @@ pub enum NodeKind {
 }
 
 /// The wire node (v1 §5.2, as amended): kind + span + prefix window, `hpath`
-/// on headings only — now in the §2.1 mint grammar (`HpathSeg`, the one v2
-/// touch on this FROZEN shape; dual-deserialization keeps v1 string arrays
-/// readable), `unterminated` present only when true, `info` per-kind.
+/// on headings only — in the §2.1 mint grammar (`HpathSeg`) —
+/// `unterminated` present only when true, `info` per-kind.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Node {
     pub kind: NodeKind,
@@ -881,20 +741,12 @@ pub struct Node {
     /// `splice ∈ caps`; clients MUST tolerate its absence.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub node_rev: Option<NodeRev>,
-    /// v3-ADDITIVE (M1 U2, host-face addressing): the dewey ordinal ("1.2.1")
-    /// on heading nodes. NEVER emitted on a v2 session — the frozen v2 bytes
-    /// carry no such key (`contract_v2.rs` goldens).
+    /// v3-additive: the dewey ordinal ("1.2.1") on heading nodes. Never
+    /// emitted on a v2 session — the frozen v2 bytes carry no such key.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub n: Option<String>,
-    // U14 (D2, decision 14): `hpath_text` — the sanitized joined ADDRESS
-    // ("Notes/Slash-Title-Here") — is GONE. It was a string address on a
-    // machine surface, and a lossy one: `sanitize_heading` is many-to-one, so
-    // no consumer could invert it back to something `put` accepts. This node
-    // already carries `hpath` as SEGMENTS, which is the address that
-    // round-trips; the joined human spelling is the render plane's to derive
-    // at its own door, and it derives it there now.
-    /// v3-ADDITIVE (M1 U2): the `strings.Fields` word count over the
-    /// heading's SUBTREE-inclusive content span.
+    /// v3-additive: the `strings.Fields` word count over the heading's
+    /// subtree-inclusive content span.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub words: Option<u64>,
 }
@@ -902,7 +754,7 @@ pub struct Node {
 /// One `toc` row (v2 §4.1): the complete write kit for one node. Row shapes,
 /// worked in the contract: frontmatter rows carry `keys`; heading rows carry
 /// `level` + `hpath` + `content_span`; anchor-bearing block rows carry
-/// `anchor` and echo their HOST block kind (the worked anchor row is
+/// `anchor` and echo their host block kind (the worked anchor row is
 /// `"kind":"list_item"` — outside the closed extract enum, so `kind` here is
 /// the open string the tolerant-client law already covers, v2 §3.2).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -915,7 +767,7 @@ pub struct TocNode {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub anchor: Option<String>,
     pub span: Span,
-    /// Serves heading-preserving display; mints NOTHING (v2 §1 — one rev per
+    /// Serves heading-preserving display; mints nothing (v2 §1 — one rev per
     /// node, over full span bytes).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content_span: Option<Span>,
@@ -925,98 +777,76 @@ pub struct TocNode {
     pub keys: Option<Vec<String>>,
 }
 
-/// One composed-read toc row (M1 U4a2, v3-only): the host-face addressing
-/// facts — dewey ordinal `n`, heading `depth`, RAW `title`, the sanitized
-/// joined `hpath` ADDRESS, `strings.Fields` `words` over the
-/// subtree-inclusive content span, and the section CAS token `sec_rev`.
+/// One composed-read toc row (v3-only): the host-face addressing facts —
+/// dewey ordinal `n`, heading `depth`, raw `title`, the `hpath` address,
+/// `strings.Fields` `words` over the subtree-inclusive content span, and the
+/// section CAS token `sec_rev` — plus the authz facts `span` and
+/// `content_span`. With the [`ReadAnchor`] plane, the response answers
+/// governing-section derivation by byte containment: keep every heading row
+/// whose span contains an anchor's start byte.
 ///
-/// Stage-2 S1 adds the AUTHZ facts (v3-additive; the v2 plane carries no
-/// composed read at all, so no frozen byte moves): `span` and `content_span`.
-/// With them plus the [`ReadAnchor`] plane, the response answers
-/// governing-section derivation by BYTE CONTAINMENT — the host's
-/// `containingSectionTitles` (`puttoc.go:86`) walks these heading rows and
-/// keeps every one whose span contains an anchor's start byte — so
-/// ccc-statusd's put authz needs no markdown of its own (residual #4: the
-/// `sanitizeHeadingHost` mirror dies against this row).
+/// One row shape, the heading: `depth >= 1` always; `content_span` present
+/// when the section has content (heading-excluded, subtree-inclusive). The
+/// `^id` anchor rows live in `anchors[]`, never in this array — a consumer
+/// that iterates `toc` structurally cannot meet a second row class.
 ///
-/// ONE row shape: a HEADING. `depth >= 1` always; `content_span` present when
-/// the section has content (heading-excluded, subtree-inclusive). Stage-2 s1c
-/// moved the `^id` anchor rows out of this array into `anchors[]` — a
-/// consumer that iterates `toc` structurally cannot meet a second row class
-/// (S1 mixed them here and crashed ccc-statusd's `depth-1` indent).
-///
-/// D12: `hpath` stays root-prefix-learnable — a later `root:` prefix rides in
-/// front of the address string (`root:Notes/Deep`) with no row reshape, and
-/// spans are intra-file byte offsets, which are root-independent by
-/// construction.
+/// `hpath` stays root-prefix-learnable, and spans are intra-file byte
+/// offsets, root-independent by construction.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadRow {
     pub n: String,
     pub depth: u32,
     pub title: String,
-    /// **U14 (D2): the address, as SEGMENTS.** The §2.1 grammar `put` takes in
+    /// The address, as segments — the §2.1 grammar `put` takes in
     /// `target.hpath`, so the address this row publishes is one the write
-    /// plane accepts, unmodified — the read→put loop closes off this row with
-    /// no second read and no reconstruction.
+    /// plane accepts unmodified; the read→put loop closes off this row.
     ///
-    /// It was the SANITIZED joined string (`"Notes/Slash-Title-Here"`) with the
-    /// array riding beside it as `hpath_raw` (fix-08, the half-landing). The
-    /// string is gone: `sanitize_heading` is many-to-one — `Scratch notes`,
-    /// `Scratch-notes` and `Scratch/notes` all collapse to `Scratch-notes` —
-    /// so it was a projection nothing could invert, published on the machine
-    /// surface as if it were an address. The joined human spelling is the
-    /// render plane's, derived at the render door from these segments.
-    ///
-    /// Per-segment `n` rides ONLY where the raw text is ambiguous among its
-    /// same-parent siblings — the same occurrence `resolve_hpath_node` counts.
-    /// An unconditional `n` would keep silently resolving after a duplicate
-    /// appeared; a minimal address refuses loud instead.
+    /// Per-segment `n` rides only where the raw text is ambiguous among its
+    /// same-parent siblings. An unconditional `n` would keep silently
+    /// resolving after a duplicate appeared; a minimal address refuses loud
+    /// instead.
     pub hpath: Vec<HpathSeg>,
     pub words: u64,
     pub sec_rev: NodeRev,
-    /// Full node span, heading-inclusive AND subtree-inclusive — the
+    /// Full node span, heading-inclusive and subtree-inclusive — the
     /// containment fact an anchor's start byte is tested against.
     pub span: Span,
-    /// The heading-EXCLUDED, subtree-inclusive content span. Absent on
+    /// The heading-excluded, subtree-inclusive content span. Absent on
     /// content-less headings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_span: Option<Span>,
 }
 
-/// One composed-read `^id` ANCHOR (stage-2 s1c): the block-anchor plane of
-/// the addressing table, served in its OWN always-emitted array so no `toc`
-/// consumer can receive a row class it does not expect.
+/// One composed-read `^id` anchor: the block-anchor plane of the addressing
+/// table, served in its own always-emitted array so no `toc` consumer can
+/// receive a row class it does not expect.
 ///
-/// It carries exactly what containment needs: the block id and the block-leaf
-/// span. The host keys its anchor map on `anchor` and tests `span.0` against
-/// the heading rows' spans — a two-plane join over absolute bytes, which
-/// never required the two classes to ride one array in document order.
-///
-/// D12: spans are intra-file byte offsets, root-independent by construction.
+/// Carries exactly what containment needs: the block id and the block-leaf
+/// span. Spans are intra-file byte offsets, root-independent by
+/// construction.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadAnchor {
-    /// The block id WITHOUT the `^` marker.
+    /// The block id without the `^` marker.
     pub anchor: String,
     /// The block-leaf span.
     pub span: Span,
 }
 
-/// One composed-read resolved section (M1 U4a2, v3-only): the selector that
-/// hit, its address + CAS token, the RAW content — the verbatim bytes
-/// `sec_rev` was minted over, so the row is self-verifying and a `put` built
-/// from it round-trips (op-owner ruling 2026-07-24: elision applies to
-/// `rendered_text` ONLY) — and the word count over that raw content.
+/// One composed-read resolved section (v3-only): the selector that hit, its
+/// address + CAS token, the raw content — the verbatim bytes `sec_rev` was
+/// minted over, so the row is self-verifying and a `put` built from it
+/// round-trips (elision applies to `rendered_text` only) — and the word count
+/// over that raw content.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadSectionOut {
-    /// The selector that hit, echoed in the caller's own TAGGED grammar
-    /// (U14) — so a caller pairing responses with requests compares structure
-    /// to structure and never re-parses a string to learn which plane it asked
-    /// about.
+    /// The selector that hit, echoed in the caller's own tagged grammar — a
+    /// caller pairing responses with requests compares structure to structure,
+    /// never re-parsing a string to learn which plane it asked about.
     pub sel: ReadSel,
-    /// The section's address as SEGMENTS (U14 — see [`ReadRow::hpath`]).
-    /// EMPTY on `^id` sections: their put grammar is `{"anchor":id}`, and the
-    /// id rides `sel` un-sanitized, so there is no heading address to publish
-    /// and none is invented.
+    /// The section's address as segments (see [`ReadRow::hpath`]). Empty on
+    /// `^id` sections: their put grammar is `{"anchor":id}`, and the id rides
+    /// `sel` un-sanitized, so there is no heading address to publish and none
+    /// is invented.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hpath: Vec<HpathSeg>,
     pub sec_rev: NodeRev,
@@ -1024,25 +854,16 @@ pub struct ReadSectionOut {
     pub content: String,
 }
 
-/// One `check_write` plan edit (M1 U8c, v3-only): the put-plan vocabulary the
-/// daemon face speaks (Go `body.Edit` as `plansToBodyEdits` builds it).
+/// One `check_write` plan edit (v3-only): the put-plan vocabulary the
+/// daemon face speaks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckWriteEdit {
     pub op: String,
-    /// The address, as SEGMENTS — the same `{h, n?}` grammar `sec.hpath` takes
-    /// and the read face publishes.
-    ///
-    /// **C-08 (ZT, ratified): "the put path is an array, no ambiguility."** This
-    /// was a joined `String` matched against a [`sanitize_heading`]-joined chain,
-    /// and `sanitize_heading` maps ASCII space AND `/` both to `-` (C-11: the
-    /// lossy selector). A read face publishing `Title/Results` therefore minted
-    /// an address whose only key here was `Title-with-spaces-dashed/Results` —
-    /// so the pre-flight refused, with `E_NO_MATCH`, the very address the
-    /// committer accepts. The committer has taken segments since R5; this is the
-    /// same shape, so the two can no longer be two answers to one question.
-    ///
-    /// The single-segment forms ride here too: `[{h:"^task1"}]` for a block,
-    /// `[{h:"status"}]` for a frontmatter key.
+    /// The address, as segments — the same `{h, n?}` grammar `sec.hpath`
+    /// takes and the read face publishes; the committer takes the same
+    /// shape, so pre-flight and committer cannot be two answers to one
+    /// question. The single-segment forms ride here too: `[{h:"^task1"}]`
+    /// for a block, `[{h:"status"}]` for a frontmatter key.
     pub at: Vec<HpathSeg>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub find: String,
@@ -1054,10 +875,9 @@ pub struct CheckWriteEdit {
     pub all: bool,
 }
 
-/// The `check_write` refusal (M1 U8c): `class` picks the host's render template
-/// — `rebuild` (the candidate could not be built: resolve/anchor/ECAS/
-/// would-corrupt, Go's `cerr` wrap) vs `verdict` (the I4 severity ladder
-/// refused). `code`/`message`/`remedy` are the Go strings VERBATIM.
+/// The `check_write` refusal: `class` picks the host's render template —
+/// `rebuild` (the candidate could not be built) vs `verdict` (the severity
+/// ladder refused). `code`/`message`/`remedy` ride verbatim.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckWriteRefuse {
     pub class: String,
@@ -1067,8 +887,8 @@ pub struct CheckWriteRefuse {
     pub remedy: String,
 }
 
-/// One close-stamp autofill (M1 U8c): the host folds it into the SAME atomic
-/// write as a system-authored property set.
+/// One close-stamp autofill: the host folds it into the same atomic write as
+/// a system-authored property set.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckWriteRepair {
     pub key: String,
@@ -1077,14 +897,11 @@ pub struct CheckWriteRepair {
 
 /// The answering binary's build identity, carried by a v3 `hello` body.
 ///
-/// An OBJECT rather than a bare string so a later fact joins it without
-/// re-typing the slot. `build` is the commit sha baked at compile time — the
-/// same value `mrd --version` prints — and it is the literal `unknown` when the
-/// build could not name a commit. `unknown` reaches the wire VERBATIM: a
-/// present-but-unknown identity and an absent one are different facts (a host
-/// that cannot name its build vs a host that publishes no build identity), and
-/// a client's mismatch policy needs both. Law:
-/// `docs/wire-contract.md`.
+/// An object rather than a bare string so a later fact joins it without
+/// re-typing the slot. `build` is the commit sha baked at compile time (the
+/// value `mrd --version` prints), or the literal `unknown` — which reaches the
+/// wire verbatim: a present-but-unknown identity and an absent one are
+/// different facts, and a client's mismatch policy needs both.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Identity {
     pub build: String,
@@ -1103,7 +920,7 @@ pub enum Info {
     },
     /// `wikilink` and `embed` share this shape. `heading` and `block` are
     /// mutually exclusive; `block` uses the block-id charset `[A-Za-z0-9-]+`
-    /// (ONE charset, both planes — v2 §2.4, decision 011).
+    /// (one charset, both planes — v2 §2.4).
     Wikilink {
         target: String,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -1150,32 +967,31 @@ pub enum ResponsePayload {
 }
 
 /// Success bodies per op. Untagged: field shape discriminates on the wire;
-/// typed clients match on what they asked for. Variant ORDER is load-bearing
+/// typed clients match on what they asked for. Variant order is load-bearing
 /// for deserialization: a shape-superset variant must precede its subset
 /// (Toc before Nodes, Cat before Splice; Read first — `rendered_text` is
 /// unique to it).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ResponseBody {
-    /// The composed-read reply (M1 U4a2, v3-only): every fact at ONE engine
-    /// snapshot — `file_rev` + ambient `root` (the atomicity witness), the
-    /// host-face addressing table (`toc`, mode toc) or the selected sections
-    /// (`sections`, mode sections; `truncated`+`notice` = the PARTIAL-read
-    /// rule), the `anchors` plane, and `rendered_text` (the `readText`
-    /// projection, byte-parity with the U0 goldens).
+    /// The composed-read reply (v3-only): every fact at one engine snapshot —
+    /// `file_rev` + ambient `root` (the atomicity witness), the host-face
+    /// addressing table (`toc`, mode toc) or the selected sections
+    /// (`sections`, mode sections; `truncated`+`notice` = the partial-read
+    /// rule), the `anchors` plane, and `rendered_text`.
     Read {
         path: Path,
         file_rev: NodeRev,
         root: Root,
         words_total: u64,
-        /// The HEADING plane, `frag`-scoped. Mode toc only.
+        /// The heading plane, `frag`-scoped. Mode toc only.
         #[serde(skip_serializing_if = "Option::is_none")]
         toc: Option<Vec<ReadRow>>,
-        /// The `^id` ANCHOR plane (stage-2 s1c), `frag`-scoped by the same
-        /// byte containment the host applies. ALWAYS emitted — empty means
-        /// "this scope has no addressable block anchor", never "ask again
-        /// with a flag". `serde(default)` keeps decoding tolerant of a
-        /// pre-s1c recorded frame; serialization is unconditional.
+        /// The `^id` anchor plane, `frag`-scoped by the same byte containment
+        /// the host applies. Always emitted — empty means "this scope has no
+        /// addressable block anchor", never "ask again with a flag".
+        /// `serde(default)` keeps decoding tolerant of older recorded frames;
+        /// serialization is unconditional.
         #[serde(default)]
         anchors: Vec<ReadAnchor>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -1186,51 +1002,36 @@ pub enum ResponseBody {
         notice: Option<String>,
         rendered_text: String,
     },
-    /// M1 U8c the `check_write` verdict (v3-only). `refuse` absent = the write
-    /// may proceed; `repairs` are autofill edits the host folds into the SAME
-    /// atomic write; `forced` echoes overridden warn rule-ids (empty while
-    /// the face pins force=false). `repairs`/`forced` always serialize so the
-    /// body is never shapeless.
+    /// The `check_write` verdict (v3-only). `refuse` absent = the write may
+    /// proceed; `repairs` are autofill edits the host folds into the same
+    /// atomic write; `forced` echoes overridden warn rule-ids.
+    /// `repairs`/`forced` always serialize so the body is never shapeless.
     CheckWrite {
         #[serde(skip_serializing_if = "Option::is_none")]
         refuse: Option<CheckWriteRefuse>,
         repairs: Vec<CheckWriteRepair>,
         forced: Vec<String>,
     },
-    /// v2 §3.2: `proto` in effect, server name, the COMPLETE op-name set
+    /// v2 §3.2: `proto` in effect, server name, the complete op-name set
     /// (`caps` includes dotted `op.field` strings for field-only amendments),
     /// optional first ambient `root`.
     ///
-    /// `storage` is the pinned storage drawer (`[[0002-resident-daemon]]` §4
-    /// storage pin): the cache drawer directory the daemon pinned for the
-    /// hello'd workspace, via the canonicalize → deny-ceiling → sentinel path.
-    /// Absent on a workspace-less handshake (nothing to pin) and on the sidecar
-    /// (which opens its drawer client-side). An OPTIONAL additive field on the
-    /// frozen shape.
+    /// `storage` is the pinned storage drawer for the hello'd workspace.
+    /// Absent on a workspace-less handshake (nothing to pin) and on the
+    /// sidecar (which opens its drawer client-side). An optional additive
+    /// field on the frozen shape.
     ///
-    /// `workspace` is the canonical root that ACTUALLY BOUND — the second
-    /// optional additive field on this shape, by the same §3.2 evolution law
-    /// `storage` already exercised ("tolerant client — unknown response fields
-    /// … are ignored"), so it needs no proto bump and no cap string.
+    /// `workspace` is the canonical root that actually bound — it may differ
+    /// from the string the caller declared, because canonicalization rewrites
+    /// symlinks and on-disk case, so the caller learns the real root here
+    /// rather than assuming its own spelling survived. Absent exactly when
+    /// `storage` is.
     ///
-    /// It exists because the marker-retirement ruling requires every resolution
-    /// to name the tier and root that answered, never silently — and a binding
-    /// IS a resolution. `storage` cannot serve this: it is a hashed drawer
-    /// directory, so it identifies the drawer without naming the tree. Even
-    /// under the exact-or-refuse law of `registry::Registry::pin_declared`, the
-    /// bound root may differ from the string the caller declared, because
-    /// canonicalization rewrites symlinks and on-disk case. The caller learns
-    /// the real root here rather than assuming its own spelling survived.
-    /// Absent exactly when `storage` is: a workspace-less handshake binds
-    /// nothing.
-    /// `identity` is the answering binary's BUILD identity — v3-only, and the
-    /// one hello fact that is about the SERVER PROCESS rather than the corpus
-    /// or the binding. A resident daemon outlives the deploy that replaced its
-    /// binary, and every other hello fact reads correct while it does; `proto`
-    /// cannot separate two builds of one contract, which is precisely the case
-    /// a deploy check must catch. Populated under a negotiated v3 session only,
-    /// so the frozen v2 hello body never grows a key. Law:
-    /// `docs/wire-contract.md`.
+    /// `identity` is the answering binary's build identity — v3-only, the one
+    /// hello fact about the server process rather than the corpus or the
+    /// binding (`proto` cannot separate two builds of one contract, which is
+    /// what a deploy check must catch). Populated under a negotiated v3
+    /// session only, so the frozen v2 hello body never grows a key.
     Hello {
         proto: u32,
         server: String,
@@ -1264,7 +1065,7 @@ pub enum ResponseBody {
         node_rev: NodeRev,
         content: String,
     },
-    /// v2 §4.5: location facts only — NO rev field exists to return (D-C2, the
+    /// v2 §4.5: location facts only — no rev field exists to return (D-C2, the
     /// mint partition as a type-level fact). `content` rides only when the
     /// request set `content:true`; still no rev.
     Resolve {
@@ -1273,9 +1074,9 @@ pub enum ResponseBody {
         #[serde(skip_serializing_if = "Option::is_none")]
         content: Option<String>,
     },
-    /// v2 §4.4: what the write ARMED — target identities, rev transitions,
+    /// v2 §4.4: what the write armed — target identities, rev transitions,
     /// spans after, the receipt fact, the root transition — never delivery
-    /// claims (A7). ONE response shape for every batch, dry included.
+    /// claims (A7). One response shape for every batch, dry included.
     Splice {
         armed: Armed,
         /// Present iff the request named a receipt (§6.1) and the batch hit
@@ -1283,7 +1084,7 @@ pub enum ResponseBody {
         #[serde(skip_serializing_if = "Option::is_none")]
         receipt: Option<ReceiptFact>,
         root_before: Root,
-        /// ALWAYS serialized — `null` on a dry run (§4.4 worked dry frame),
+        /// Always serialized — `null` on a dry run (§4.4 worked dry frame),
         /// the one place absence-vs-null is contractual on this shape.
         root_after: Option<Root>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -1291,17 +1092,16 @@ pub enum ResponseBody {
         #[serde(skip_serializing_if = "Option::is_none")]
         dry: Option<bool>,
         /// The rules-as-data surface (§11): shape present from birth, empty
-        /// until rung 6 — [`Verdict`] is uninhabited until P6-VERDICTS, so
-        /// the type ADMITS only `[]` today and the shape never changes.
+        /// until rule packs land.
         verdicts: Vec<Verdict>,
-        /// Stage-2 S7: what the request's `pin` minted. Absent unless the
-        /// request carried a pin, so the frozen v2 response bytes are untouched.
-        /// Boxed: the fact is wide next to every other response body, and the
-        /// enum is passed by value on every reply.
+        /// What the request's `pin` minted. Absent unless the request carried
+        /// a pin, so the frozen v2 response bytes are untouched. Boxed: the
+        /// fact is wide next to every other response body, and the enum is
+        /// passed by value on every reply.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pin: Option<Box<PinFact>>,
     },
-    /// The BIRTH reply (the `create` op, v3-only): what the birth LANDED —
+    /// The birth reply (the `create` op, v3-only): what the birth landed —
     /// the born path, its whole-file rev, and the root transition. Never a
     /// delivery claim (A7), exactly like `splice`.
     ///
@@ -1315,7 +1115,7 @@ pub enum ResponseBody {
         /// on a dry run too (a fact about the spec, not about the disk).
         file_rev_after: NodeRev,
         root_before: Root,
-        /// ALWAYS serialized — `null` on a dry run, the same absence-vs-null
+        /// Always serialized — `null` on a dry run, the same absence-vs-null
         /// contract `splice` carries.
         root_after: Option<Root>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -1332,77 +1132,73 @@ pub enum ResponseBody {
     Root { root: Root, seq: u64 },
     /// v2 §4.7/§7.3 replay: the byte-identical Delta objects that were (or
     /// would have been) emitted as live notifications between the two roots —
-    /// each batch IS a notification frame body ([`DeltaFrame`]), so catchup
+    /// each batch is a notification frame body ([`DeltaFrame`]), so catchup
     /// consumers and live subscribers parse one shape. There is no second
     /// diff dialect.
     Diff { batches: Vec<DeltaFrame> },
     /// v2 §4.6: the outgoing edge map under the §10.1 staleness triple —
     /// `as_of_root` (the root the answer was computed at), `live_root` (the
     /// root now), `changes_seq` (the Delta counter at `as_of_root`, §7.1
-    /// per-daemon-epoch semantics). **No lag bounds are promised, ever**
-    /// (§10.1 honest-tense law): `as_of_root ≠ live_root` is a legal frame,
-    /// never an error. `files` keys are corpus paths; see [`FileLinks`].
+    /// per-daemon-epoch semantics). No lag bounds are promised (§10.1
+    /// honest-tense law): `as_of_root ≠ live_root` is a legal frame, never an
+    /// error. `files` keys are corpus paths; see [`FileLinks`].
     Links {
         as_of_root: Root,
         live_root: Root,
         changes_seq: u64,
         files: BTreeMap<String, FileLinks>,
     },
-    /// V2 §Q2 the `view_path` reply: a stamped **PATH** plus a **pre-open**
-    /// freshness hint — never rows. `path` is authoritative; the fingerprints,
-    /// `state`, and `live_source` are a PRE-OPEN hint the consumer discards once
-    /// it opens the file and re-reads the `_meridian_view` stamp (a concurrent
+    /// §Q2 the `view_path` reply: a stamped path plus a pre-open freshness
+    /// hint — never rows. `path` is authoritative; the fingerprints, `state`,
+    /// and `live_source` are a pre-open hint the consumer discards once it
+    /// opens the file and re-reads the `_meridian_view` stamp (a concurrent
     /// rebuild's rename can stale the reply's fingerprints — §Q3). The
-    /// fingerprint slots carry the v2 `root` vocabulary (`as_of_root`/`live_root`)
-    /// so the v3 projection re-keys them to `as_of_fingerprint`/`live_fingerprint`
-    /// through the ONE existing rename table (`wire-serve::rev`), never a second
-    /// dialect.
+    /// fingerprint slots carry the v2 `root` vocabulary; the v3 projection
+    /// re-keys them to `as_of_fingerprint`/`live_fingerprint` through the one
+    /// rename table (`wire-serve::rev`), never a second dialect.
     ///
-    /// Placed last in this untagged enum: its shape is unique (`path` +
-    /// `state` + `live_source` + `refresh_in_progress`, and NO `files`), so no
-    /// earlier variant captures a `view_path` frame and it captures none of
-    /// theirs.
+    /// Placed last in this untagged enum: its shape is unique, so no earlier
+    /// variant captures a `view_path` frame and it captures none of theirs.
     ViewPath {
-        /// The stamped `view.duckdb` filesystem path — **authoritative**, the
-        /// one field the consumer trusts (it opens THIS inode).
+        /// The stamped `view.duckdb` filesystem path — authoritative, the one
+        /// field the consumer trusts (it opens this inode).
         path: String,
-        /// PRE-OPEN hint: the fingerprint the published file was built at (the
+        /// Pre-open hint: the fingerprint the published file was built at (the
         /// daemon's `at_fingerprint` at publish). v2 `root` vocabulary; v3 →
         /// `as_of_fingerprint`. Non-authoritative — re-read the opened file's
         /// `_meridian_view` stamp for the real `as_of`.
         as_of_root: Root,
-        /// PRE-OPEN hint: the daemon's live fingerprint sample (its warm
+        /// Pre-open hint: the daemon's live fingerprint sample (its warm
         /// `at_fingerprint`, a disk fold that may lag). v2 `root` vocabulary;
         /// v3 → `live_fingerprint`.
         live_root: Root,
         /// The per-daemon-epoch delta counter at the sample (§7.1); `0` until
-        /// the delta ring lands (the resident daemon holds none in round-1,
-        /// mirroring `Root`/`Links` which already report `0`).
+        /// the delta ring lands.
         changes_seq: u64,
-        /// The daemon's pre-open freshness ASSESSMENT (`as_of` vs `live`) — a
+        /// The daemon's pre-open freshness assessment (`as_of` vs `live`) — a
         /// hint label, never a verdict (`stale` stays null).
         state: ViewState,
         /// Provenance of `live_root`: `watch` (the daemon's warm hint) or `none`
-        /// (no sample). NEVER `fold` on a pre-open hint — a `fold` verdict comes
-        /// only from a consumer's POST-result sample (§Q3 C3).
+        /// (no sample). Never `fold` on a pre-open hint — a `fold` verdict comes
+        /// only from a consumer's post-result sample (§Q3 C3).
         live_source: ViewLiveSource,
-        /// **ALWAYS null** on this pre-open hint (B5+C3): a hint is never a
-        /// freshness verdict. The consumer folds `live` AFTER its own result to
-        /// reach `true`/`false`. Serialized as `null`, never omitted.
+        /// Always null on this pre-open hint: a hint is never a freshness
+        /// verdict. The consumer folds `live` after its own result to reach
+        /// `true`/`false`. Serialized as `null`, never omitted.
         stale: Option<bool>,
-        /// OD7 advisory telemetry (daemon memory): a rebuild is in flight.
-        /// Round-1 rebuilds are SYNCHRONOUS (done before this reply), so it is
-        /// always `false`; the async executor is round-2.
+        /// Advisory telemetry (daemon memory): a rebuild is in flight.
+        /// Round-1 rebuilds are synchronous (done before this reply), so it
+        /// is always `false`.
         refresh_in_progress: bool,
-        /// OD7 advisory telemetry (daemon memory): the last rebuild failure, if
-        /// any — it explains WHY a view is stale, never gates freshness.
+        /// Advisory telemetry (daemon memory): the last rebuild failure, if
+        /// any — it explains why a view is stale, never gates freshness.
         #[serde(skip_serializing_if = "Option::is_none")]
         last_error: Option<RefreshError>,
     },
 }
 
 /// The daemon's pre-open freshness assessment for a `view_path` reply (§Q3
-/// state machine, querier vantage). A HINT label on the reply — decoupled from
+/// state machine, querier vantage). A hint label on the reply — decoupled from
 /// the null `stale` verdict, which only a consumer's post-result fold can set.
 /// Round-1 emits exactly these three; the wider state machine (`REBUILDING`,
 /// `NO_VIEW`, `UNKNOWN`) is a query-frame / error concern, never a `view_path`
@@ -1410,7 +1206,7 @@ pub enum ResponseBody {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ViewState {
-    /// `as_of == live` at the daemon's sample — fresh AT that instant, never
+    /// `as_of == live` at the daemon's sample — fresh at that instant, never
     /// timeless (§Q3).
     FreshAtSample,
     /// `as_of != live` — a legal frame, never an error; both fingerprints ride
@@ -1429,7 +1225,7 @@ pub enum ViewState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ViewLiveSource {
-    /// A real post-result `fs::domain_snapshot` fold — a VERDICT source.
+    /// A real post-result `fs::domain_snapshot` fold — a verdict source.
     Fold,
     /// The daemon's warm `at_fingerprint` hint (may lag disk) — never a verdict.
     Watch,
@@ -1437,10 +1233,10 @@ pub enum ViewLiveSource {
     None,
 }
 
-/// OD7 refresh-failure telemetry (daemon memory, never the immutable stamp): a
+/// Refresh-failure telemetry (daemon memory, never the immutable stamp): a
 /// rebuild that failed. Advisory only — it explains why a view is stale and
-/// never gates a freshness verdict. `fingerprint_attempted` is vocabulary-neutral
-/// (like `expected`/`actual`), so the v3 projection leaves it untouched.
+/// never gates a freshness verdict. `fingerprint_attempted` is
+/// vocabulary-neutral, so the v3 projection leaves it untouched.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RefreshError {
     pub code: RefreshErrorCode,
@@ -1453,9 +1249,8 @@ pub struct RefreshError {
     pub message: String,
 }
 
-/// The closed refresh-failure class (OD7). Flat lowercase `snake_case` on the
-/// wire. Round-1 populates what the synchronous rebuild can distinguish; the
-/// richer executor taxonomy (backoff, retry) lands with the round-2 async path.
+/// The closed refresh-failure class. Flat lowercase `snake_case` on the
+/// wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RefreshErrorCode {
@@ -1480,39 +1275,26 @@ pub enum RefreshErrorCode {
 pub struct FileLinks {
     pub resolved: BTreeMap<String, u64>,
     pub unresolved: BTreeMap<String, u64>,
-    /// v2 §4.6, U21 — edges that resolved INSIDE a mounted root, keyed by root
-    /// name and then by the path inside THAT root.
-    ///
-    /// **Two levels, never one joined `root:path` key** (U21 Q5): a rooted
-    /// destination is two facts, and folding them into one string would put a
-    /// joined address in a machine surface (decision 14 / R1.6) and collide
-    /// with any ambient path that legitimately contains a colon.
-    ///
-    /// Omitted when empty, so a single-root corpus serializes exactly the bytes
-    /// it served before U21.
+    /// v2 §4.6 — edges that resolved inside a mounted root, keyed by root
+    /// name and then by the path inside that root. Two levels, never one
+    /// joined `root:path` key: a joined string would collide with any ambient
+    /// path that legitimately contains a colon. Omitted when empty, so a
+    /// single-root corpus's bytes are unchanged.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub resolved_rooted: BTreeMap<String, BTreeMap<String, u64>>,
-    /// v2 §4.6, U21 — edges the address plane REFUSED, keyed by the linkpath as
-    /// written.
-    ///
-    /// **Separate from `unresolved`, because Q3 ruled they are different facts
-    /// with different exit codes.** An ambient dangling link is an ordinary
-    /// authoring state in a working vault and stays first-class in
-    /// `unresolved`. A refused edge means the author believed a mount
+    /// v2 §4.6 — edges the address plane refused, keyed by the linkpath as
+    /// written. Separate from `unresolved`: a dangling link is an ordinary
+    /// authoring state; a refused edge means the author believed a mount
     /// relationship that does not hold, or wrote something that is not an
-    /// address — and before U21 both were reported as `unresolved` at exit 0.
-    ///
-    /// Omitted when empty, for the same reason `resolved_rooted` is.
+    /// address. Omitted when empty.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub refused: BTreeMap<String, RefusedEdge>,
 }
 
-/// One refused edge on the §4.6 map: the colour plane's own verdict, rendered.
-///
-/// The `color`/`reason`/`detail` triple is the SAME vocabulary the walk plane
-/// renders (`view::walk::color_tone` / `color_reason` / `color_detail`) — a
-/// second spelling of a tone or a reason word here would be the cross-crate
-/// re-spelling S3-R6 forbids, and it is how a board and a walk start
+/// One refused edge on the §4.6 map: the colour plane's own verdict,
+/// rendered. The `color`/`reason`/`detail` triple is the same vocabulary the
+/// walk plane renders (`view::walk::color_tone` / `color_reason` /
+/// `color_detail`) — a second spelling here is how a board and a walk start
 /// disagreeing about one address.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RefusedEdge {
@@ -1537,9 +1319,9 @@ pub struct RefusedEdge {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Armed {
     pub path: Path,
-    /// The whole-file rev AFTER the batch commits — same family/width as
+    /// The whole-file rev after the batch commits — same family/width as
     /// [`DeltaFile::file_rev_after`] and a subsequent `toc`'s `file_rev`, so a
-    /// consumer learns the new file rev WITHOUT a follow-up `toc`. A latency
+    /// consumer learns the new file rev without a follow-up `toc`. A latency
     /// fact only; correctness stays the fingerprint/`root_after` world grain.
     /// Absent on a dry run — nothing was written, so the post-write rev does
     /// not exist yet (mirrors `root_after`'s dry-null at file grain).
@@ -1553,7 +1335,7 @@ pub struct Armed {
     pub effects: Vec<EffectEnvelope>,
 }
 
-/// One armed edit: target identity echoed in THE grammar (§2.1), rev
+/// One armed edit: target identity echoed in the §2.1 grammar, rev
 /// transition, span after.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ArmedEdit {
@@ -1574,15 +1356,11 @@ pub struct ReceiptFact {
     pub span_after: Span,
 }
 
-/// A rules-as-data verdict (v2 §11.1): a typed FINDING from a loaded rule pack,
-/// never a decision (T1 — whether an `error` blocks is Go's action mapping, not
-/// engine behavior). The shape rode every splice response as `[]` from birth
-/// (D4-SPLICE); P6-VERDICTS inhabits it without changing that shape. The field
-/// set is `crates/policy`'s `Violation` verbatim, projected into THE grammar
-/// (§2.1): `hpath` segments carry `{h, n?}`, not bare strings. Worked (§11.1):
-/// `{rule:"blurb-required", severity:"warn", path:"notes/plan.md",
-/// hpath:[{"h":"Goals"}], span:[20,150], node_rev:"5a8faa717fbcdb04",
-/// message:"section has no blurb line"}`. `budget_exceeded` is a finding in this
+/// A rules-as-data verdict (v2 §11.1): a typed finding from a loaded rule
+/// pack, never a decision (whether an `error` blocks is the host's action
+/// mapping, not engine behavior). The field set is `crates/policy`'s
+/// `Violation` verbatim, projected into the §2.1 grammar: `hpath` segments
+/// carry `{h, n?}`, not bare strings. `budget_exceeded` is a finding in this
 /// array (§8), never a wire error.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Verdict {
@@ -1596,11 +1374,11 @@ pub struct Verdict {
     pub message: String,
 }
 
-/// Verdict severity (v2 §11.1): descriptive policy data — how bad, per the pack's
-/// convention — never what to DO about it (Go's action mapping). Serialized flat
-/// lowercase (`"error"`/`"warn"`/`"info"`). Independent of `policy::Severity` by
-/// construction: the sidecar projects one to the other, so no wire→policy edge
-/// exists (the fence holds at the type level, not just cargo tree).
+/// Verdict severity (v2 §11.1): descriptive policy data — how bad, per the
+/// pack's convention — never what to do about it. Serialized flat lowercase
+/// (`"error"`/`"warn"`/`"info"`). Independent of `policy::Severity` by
+/// construction: the sidecar projects one to the other, so no wire→policy
+/// edge exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
@@ -1610,27 +1388,24 @@ pub enum Severity {
 }
 
 // ---------------------------------------------------------------------------
-// v2 §7 the Delta noun — the fifth noun, born frozen (A6)
+// v2 §7 the Delta noun
 // ---------------------------------------------------------------------------
 
-/// One live notification frame body: `{"delta":{…}}` (v2 §7.1 worked frames —
-/// events carry no `id`, §3.1 classification). `diff.batches` elements are
-/// exactly this shape, byte-identical to the live emission (§7.3 replay ≡
-/// live).
+/// One live notification frame body: `{"delta":{…}}` (v2 §7.1; events carry
+/// no `id`, §3.1 classification). `diff.batches` elements are exactly this
+/// shape, byte-identical to the live emission (§7.3 replay ≡ live).
 ///
 /// The reaction plane is an additive sibling of the frozen [`Delta`]. Each
 /// envelope owns reaction outputs at one evaluation boundary, so a later
-/// schedule consumer can add `wake_at` beside `intents` without reshaping the
-/// slice-1 field.
+/// schedule consumer can add `wake_at` beside `intents` without reshaping
+/// the existing field.
 ///
-/// **`effects` postdates frozen v2 and is stripped for a v2 session by the
-/// PROJECTION, not by `skip_serializing_if`.** This doc previously claimed that
-/// "no effects serializes the pre-amendment frame byte-for-byte" — true, but a
-/// COINCIDENCE rather than a guarantee: `skip_serializing_if` skips on an empty
-/// VALUE, never on a v2 SESSION, so a fired HOOK put the field on a v2 wire.
-/// The guarantee is `wire_serve::rev::V2_RESERVED_FIELDS`, the shared
-/// append-only table both hosts consult before writing a v2 frame. A new
-/// v3-additive field here ships with its row in the same commit.
+/// `effects` postdates frozen v2 and is stripped for a v2 session by the
+/// projection, not by `skip_serializing_if` (which skips on an empty value,
+/// never on a v2 session). The guarantee is
+/// `wire_serve::rev::V2_RESERVED_FIELDS`, the shared append-only table both
+/// hosts consult before writing a v2 frame; a new v3-additive field here
+/// ships with its row in the same commit.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeltaFrame {
     pub delta: Delta,
@@ -1638,11 +1413,11 @@ pub struct DeltaFrame {
     pub effects: Vec<EffectEnvelope>,
 }
 
-/// One reaction evaluation's wire envelope. Slice 1 carries the complete C2
-/// HOOK outcome; later reaction consumers extend this object additively.
+/// One reaction evaluation's wire envelope: the complete hook outcome;
+/// later reaction consumers extend this object additively.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EffectEnvelope {
-    /// Intents admitted by the HOOK's declared capability ceiling.
+    /// Intents admitted by the hook's declared capability ceiling.
     pub intents: Vec<Intent>,
     /// Complete intents dropped by the capability ceiling, retained as report
     /// data rather than silently discarded.
@@ -1681,11 +1456,11 @@ pub enum EffectFinding {
         mem: u64,
     },
     /// The workspace's attested armed law could not be honored, so a reaction the
-    /// artifact attests did not run. REPORTED, never a refusal: everything on the
+    /// artifact attests did not run. Reported, never a refusal: everything on the
     /// reaction plane runs after the write has landed, and failing a write on a
     /// reaction's behalf would hand a hook the veto the ruling denies it.
     ///
-    /// This is the reaction host's channel onto the ONE artifact-fault surface
+    /// This is the reaction host's channel onto the one artifact-fault surface
     /// (`policy::armed_law::ArmedFault`); `detail` is that surface's own rendering,
     /// so the operator reads the same words the door refuses with.
     ArmedFault {
@@ -1698,18 +1473,14 @@ pub enum EffectFinding {
     },
 }
 
-/// The fifth wire noun (v2 §7.1, frozen at contract birth): one Delta = one
-/// batch = one root advance. `seq` is the monotone per-workspace batch
-/// counter, **per-daemon-epoch** — a daemon restart resets it (no counter
-/// survives on disk, §14), so `from_seq` catchup is valid only within one
-/// epoch and cross-epoch catchup is diff-by-root (§4.7), the root being the
-/// only restart-durable handle. External changes carry `actor`/`now` ABSENT —
-/// the engine never invents identity or time it wasn't given (A8/§9).
-///
-/// Node-grain at birth (decision 012, v2 §7.4): the grain is exactly
-/// [`DeltaNode`]. Key-grain arrives later, if ever, ONLY via the additive
-/// amendment path named in the contract prose — no such code path exists
-/// here.
+/// The fifth wire noun (v2 §7.1): one Delta = one batch = one root advance.
+/// `seq` is the monotone per-workspace batch counter, per-daemon-epoch — a
+/// daemon restart resets it (no counter survives on disk, §14), so `from_seq`
+/// catchup is valid only within one epoch and cross-epoch catchup is
+/// diff-by-root (§4.7), the root being the only restart-durable handle.
+/// External changes carry `actor`/`now` absent — the engine never invents
+/// identity or time it wasn't given (§9). The grain is exactly
+/// [`DeltaNode`] (v2 §7.4).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Delta {
     pub seq: u64,
@@ -1749,10 +1520,10 @@ pub enum FileChange {
     Renamed,
 }
 
-/// One node-grain change entry (v2 §7.1/§7.2): identity echoed in THE §2.1
+/// One node-grain change entry (v2 §7.1/§7.2): identity echoed in the §2.1
 /// grammar (flattened [`SecRef`] — same vocabulary as toc rows and armed
 /// facts: one projection, three tenses), rev transition, span after. Entries
-/// name the DEEPEST section containing each changed byte range — ancestor
+/// name the deepest section containing each changed byte range — ancestor
 /// revs change implicitly and are re-readable via `toc`, never duplicated
 /// into the delta.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1784,7 +1555,7 @@ pub enum NodeChange {
 // v2 §8 error taxonomy — six recovery classes
 // ---------------------------------------------------------------------------
 
-/// The CLOSED six-class recovery enum (v2 §8). Every error frame carries one;
+/// The closed six-class recovery enum (v2 §8). Every error frame carries one;
 /// a client that doesn't recognize a `code` dispatches on `recovery` alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1804,14 +1575,11 @@ pub enum Recovery {
 }
 
 /// Error codes (v2 §8 table; flat lowercase `snake_case` on the wire). Each
-/// code is statically bound to exactly one recovery class — [`ErrorCode::recovery`]
-/// is that binding, verbatim from the frozen table. Clients treat unrecognized
-/// codes as `recovery`-dispatched.
-///
-/// `daemon_only` (rule packs, rung 6) lands with P6-VERDICTS — the last v2 code;
-/// `stale_view` joined with `links` (Q5-LINKS). v1 `not_found` is RETIRED (§18
-/// row 6, split `file_not_found`/`ref_not_found`) — its string no longer parses,
-/// pinned by the retirement deviation fixture.
+/// code is statically bound to exactly one recovery class —
+/// [`ErrorCode::recovery`] is that binding, verbatim from the frozen table.
+/// Clients treat unrecognized codes as `recovery`-dispatched. v1 `not_found`
+/// is retired (split `file_not_found`/`ref_not_found`) — its string no longer
+/// parses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
@@ -1820,8 +1588,7 @@ pub enum ErrorCode {
     UnknownOp,
     UnsupportedProto,
     BadPath,
-    /// v2 §8/§4.4: guard-passed zero occurrences of `old` in the target —
-    /// provably your typo (the diagnosis `--if` buys).
+    /// v2 §8/§4.4: guard-passed zero occurrences of `old` in the target.
     NoMatch,
     /// v2 §8/§4.4: `old` occurs 2+ times. Extras: `matches` (the count) —
     /// add context bytes to `old`.
@@ -1829,18 +1596,15 @@ pub enum ErrorCode {
     /// v2 §8/§4.4: the post-apply reparse would lose containment. Extras:
     /// `lost` (the hpaths that would vanish).
     WouldCorrupt,
-    /// v2 §8: the world outside the workspace — the file is gone. Half of the
-    /// v1 `not_found` retirement (§18 row 6); echoes `path`.
+    /// v2 §8: the world outside the workspace — the file is gone. Echoes
+    /// `path`.
     FileNotFound,
-    /// v2 §8: I/O failure with its `cause` — the other retirement half.
+    /// v2 §8: I/O failure with its `cause`.
     IoError,
     InvalidUtf8,
-    /// v2 §8/§11.3: the env code that names the engine's own deployment — a
-    /// corpus-class rule pack (its WHEN needs the resident corpus name index,
-    /// e.g. `link_resolves` §11.2) loaded against a sidecar-mode engine that has
-    /// no resident index cannot run, so it is refused LOUD at admission
-    /// (`BudgetClass::Corpus` law). A single-file op never raises it (every §4
-    /// op is served from disk bytes alone, §10.3).
+    /// v2 §8/§11.3: a corpus-class capability (one that needs the resident
+    /// corpus index) requested of a sidecar-mode engine that has none —
+    /// refused loud at admission. A single-file op never raises it.
     DaemonOnly,
     Internal,
     CasMismatch,
@@ -1852,8 +1616,7 @@ pub enum ErrorCode {
     AmbiguousRef,
     /// v2 §8/§5.1: a failed world guard (`if_root`) — the plan is invalid,
     /// not one node's picture. Extras: `expected`/`actual` (roots) +
-    /// `changed`. Ships WITHOUT the repo-reserved `scope` field (§18 row 2,
-    /// WAIVED: no scoped-root construct exists for it to describe).
+    /// `changed`.
     RootMismatch,
     /// v2 §4.7: a root range outside the retained history — full resync; the
     /// root is the only restart-durable handle. No extras.
@@ -1864,73 +1627,54 @@ pub enum ErrorCode {
     /// retry class (retryable, never silent). Extras: `required` (the
     /// demanded root) + `as_of_root`/`live_root` (the world as sampled).
     StaleView,
-    /// Refusal-amendment row 6 (U4.2 armed change plane): the armed law cannot
-    /// be honored — an attested INDEX is absent on an once-armed workspace, is
-    /// corrupt/unparseable, or an armed convention cannot load or evaluate. The
-    /// door fails CLOSED, bytes never land. Extras: `path` (the INDEX page) +
-    /// `message` (names the INDEX/convention). Env class — the workspace's own
-    /// armed state is broken, not one request. Additive by the tolerant-code
-    /// law (§8): a v2 client that never heard it dispatches on `recovery` alone.
+    /// The armed law cannot be honored — an attested index is absent on a
+    /// once-armed workspace, is corrupt/unparseable, or an armed convention
+    /// cannot load or evaluate. The door fails closed, bytes never land.
+    /// Extras: `path` (the index page) + `message`. Env class — the
+    /// workspace's own armed state is broken, not one request.
     ConventionFault,
-    /// Refusal-amendment row 7 (U4.2 gating / U1.4 arming): an armed
-    /// convention's live evidence rev no longer equals its pinned armed rev
-    /// (report-rev ≠ armed-rev). Extras: `expected` (`armed_rev`) + `actual`
-    /// (`report_rev`). Refresh class — re-arm at the live rev, or revert the law.
+    /// An armed convention's live evidence rev no longer equals its pinned
+    /// armed rev. Extras: `expected` (`armed_rev`) + `actual` (`report_rev`).
+    /// Refresh class — re-arm at the live rev, or revert the law.
     ArmedDrift,
-    /// Refusal-amendment row 9 (U4.3 binding law): a one-sided file↔index
-    /// change stops at the door. An ordinary write to the engine-managed
-    /// attested INDEX (a checkbox flip) or a direct edit of an armed
-    /// convention's `CHECK.md` is refused — the two sides must move through the
-    /// ONE-act arming path, `--truth`, or realise. Extras: `path` (the
-    /// engine-managed file) + `message` (names the broken side + the legal
-    /// path). Fix class — change the request (arm properly, or `--force`).
-    /// Additive by the tolerant-code law: an unknown code dispatches on
-    /// `recovery` alone.
+    /// A one-sided file↔index change stops at the door: an ordinary write to
+    /// the engine-managed attested index or a direct edit of an armed
+    /// convention's `CHECK.md` is refused — the two sides must move through
+    /// the one-act arming path, `--truth`, or realise. Extras: `path` +
+    /// `message`. Fix class — arm properly, or `--force`.
     BindingBreak,
-    /// Refusal-amendment row 10 (U4.3 INDEX-integrity floor): deletion or
-    /// rename of the attested INDEX or the once-armed marker is refused, citing
-    /// the floor convention. A structural guard on the enforcement substrate —
-    /// NOT force-escapable (security F2: a silent disarm by deleting the marker
-    /// is the attack this defeats). Extras: `path` (the protected file) +
-    /// `message`. Fix class. Additive by the tolerant-code law.
+    /// Deletion or rename of the attested index or the once-armed marker is
+    /// refused. A structural guard on the enforcement substrate — not
+    /// force-escapable (a silent disarm by deleting the marker is the attack
+    /// this defeats). Extras: `path` + `message`. Fix class.
     IndexIntegrity,
-    /// M1 TOCTOU-gap fix (D8): the splice target's live disk bytes no longer
-    /// equal the bytes the sealed batch validated against — an out-of-band
-    /// writer landed between validate and commit. The engine refuses rather
-    /// than blind-splice validated spans into drifted bytes (silent mid-file
-    /// corruption). Extras: `path` (the drifted file) + `message`. Refresh
-    /// class — re-read the file and re-plan the batch. Additive by the
-    /// tolerant-code law: an unknown code dispatches on `recovery` alone.
+    /// TOCTOU refusal: the splice target's live disk bytes no longer equal
+    /// the bytes the sealed batch validated against — an out-of-band writer
+    /// landed between validate and commit; refusing beats blind-splicing
+    /// validated spans into drifted bytes. Extras: `path` + `message`.
+    /// Refresh class — re-read the file and re-plan the batch.
     WriteConflict,
-    /// M1 xproc-race fix (D9): another cooperating meridian writer holds the
-    /// workspace write lock (`.meridian/write.lock`) — the choke-point refuses
-    /// fast (`LOCK_NB`, never a wait) instead of interleaving read→rename.
-    /// Extras: `message`. Retry class — transient; the same request may
-    /// succeed. Additive by the tolerant-code law.
+    /// Another cooperating meridian writer holds the workspace write lock
+    /// (`.meridian/write.lock`) — the choke-point refuses fast (`LOCK_NB`,
+    /// never a wait). Extras: `message`. Retry class.
     WorkspaceBusy,
-    /// Stage-2 S7/S6 (D16): a `splice.pin` from a real session actor whose
-    /// selector no receipt covers — **you cannot attest content that was never
-    /// in your context**. Extras: `path` (the pin target) + `message` (names the
-    /// selector and the read that would mint it). Fix class — read the exact
-    /// selector in sections mode, then pin. The bare CLI (`actor` absent) is
-    /// local-operator-trusted and never raises it. Additive by the
-    /// tolerant-code law; only the v3 pin path can emit it.
+    /// A `splice.pin` from a real session actor whose selector no receipt
+    /// covers — you cannot attest content that was never in your context.
+    /// Extras: `path` + `message`. Fix class — read the exact selector in
+    /// sections mode, then pin. The bare CLI (`actor` absent) is
+    /// local-operator-trusted and never raises it; only the v3 pin path can
+    /// emit it.
     ReadMintRequired,
-    /// Stage-2 S7: the `splice.pin` target page or selector does not exist, so
-    /// there is nothing to fingerprint. Extras: `path` (the target) + `message`.
-    /// Fix class — a pin over an address that does not resolve would mint a
-    /// dangling claim, which the drift plane could only ever render
-    /// `red(dangling)`; refusing at mint time is the honest door. Additive by
-    /// the tolerant-code law.
+    /// The `splice.pin` target page or selector does not exist, so there is
+    /// nothing to fingerprint — a pin over an unresolvable address would mint
+    /// a dangling claim; refusing at mint time is the honest door. Extras:
+    /// `path` + `message`. Fix class.
     PinTargetMissing,
-    /// U10 (requirements decision 12 / R1.1): a WIRE-ORIGIN write that changes
-    /// existing content carried no fingerprint and no `force`. Extras: `path`
-    /// (the file) + `message` — a TEACHING message that names the subject, the
-    /// grain the guard is demanded at, and the runnable command that mints the
-    /// token, so the caller proceeds without a second guess. Fix class — change
-    /// the request (send the token, or `force`). The CLI in-process door is
-    /// exempt (local-operator trust) and never raises it. Additive by the
-    /// tolerant-code law: an unknown code dispatches on `recovery` alone.
+    /// A wire-origin write that changes existing content carried no
+    /// fingerprint and no `force`. Extras: `path` + `message` (names the
+    /// grain and the runnable command that mints the token). Fix class —
+    /// send the token, or `force`. The CLI in-process door is exempt
+    /// (local-operator trust) and never raises it.
     GuardRequired,
 }
 
@@ -1977,7 +1721,7 @@ impl ErrorCode {
 }
 
 /// v2 §8: the error envelope — a nested object under the response's `error`
-/// key: `code` + the REQUIRED closed `recovery` class + optional human
+/// key: `code` + the required closed `recovery` class + optional human
 /// `message` + code-specific extras beside them (never nested further).
 /// Serde-only constraint (no `serde_json::Value` grab-bag) makes the extras
 /// typed options — absent unless their code sets them. Construct via
@@ -2025,7 +1769,7 @@ pub struct ErrorBody {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dest: Option<Path>,
     /// `ambiguous_ref`: each candidate named exactly in the §2.1 mint grammar
-    /// (occurrence index or anchor) — a ref-carrying surface, so THE grammar.
+    /// (occurrence index or anchor) — a ref-carrying surface.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub candidates: Option<Vec<SecRef>>,
     /// `bad_request` on `extract` (D-C5, v2 §4.3): the unknown `kinds` values,
@@ -2041,7 +1785,7 @@ pub struct ErrorBody {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub matches: Option<u32>,
     /// `would_corrupt`: the hpaths the post-apply parse would lose (v2 §4.4
-    /// batch laws) — identities in THE grammar's segments.
+    /// batch laws) — identities in the §2.1 grammar's segments.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lost: Option<Vec<Vec<HpathSeg>>>,
     /// `io_error`: the underlying cause, carried (v2 §8).
@@ -2051,17 +1795,16 @@ pub struct ErrorBody {
     /// targets echoed in the §2.1 grammar (a ref-carrying surface).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overlap: Option<Vec<SecRef>>,
-    /// `cas_mismatch` (**v3-additive**, U11 / R1.2): WHICH RUNG of the
-    /// mismatch-recovery ladder this refusal reached — `1` change diff, `2` new
-    /// content + new fingerprint, `3` the bare mismatch floor. The discriminant
-    /// is what lets a caller dispatch on richness without probing which extras
-    /// happen to be present.
+    /// `cas_mismatch` (v3-additive): which rung of the mismatch-recovery ladder
+    /// this refusal reached — `1` change diff, `2` new content + new
+    /// fingerprint, `3` the bare mismatch floor. The discriminant lets a caller
+    /// dispatch on richness without probing which extras happen to be present.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rung: Option<u32>,
-    /// `cas_mismatch` rung 1: the change from the caller's OWN pinned picture to
+    /// `cas_mismatch` rung 1: the change from the caller's own pinned picture to
     /// the node's current bytes — a unified line diff for section bodies, ops
     /// form for frontmatter. Scoped to the target the caller addressed and
-    /// capped by size; a caller applies it and resends WITHOUT a re-read.
+    /// capped by size; a caller applies it and resends without a re-read.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diff: Option<String>,
     /// `cas_mismatch` rung 2: the targeted node's current bytes, whole. The
@@ -2071,7 +1814,7 @@ pub struct ErrorBody {
     pub new_content: Option<String>,
     /// `cas_mismatch` rungs 1–2: the token to resend with. It rides whichever
     /// rung carries recoverable content, because that is the rung the caller
-    /// resends FROM — a rung that made the read unnecessary must not send them
+    /// resends from — a rung that made the read unnecessary must not send them
     /// back for the token.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_fingerprint: Option<NodeRev>,
