@@ -1,33 +1,26 @@
-//! The `serde_yaml` confinement instrument (S3-R14(b)).
+//! The `serde_yaml` confinement instrument.
 //!
 //! `crates/policy/Cargo.toml` and `crates/config/Cargo.toml` both state one topology
-//! claim: `serde_yaml` is taken as a DIRECT production dependency by exactly two crates.
-//! Until this module existed the claim was a comment — violated once (U6's second edge)
-//! and caught only because a worker read it. An invariant nobody can violate loudly is
-//! not an invariant.
+//! claim: `serde_yaml` is taken as a direct production dependency by exactly two crates.
 //!
-//! The taker set is DERIVED from `cargo metadata --no-deps`, never hand-maintained.
-//! `--no-deps` reports each workspace member's OWN manifest edges, so the
-//! direct/transitive distinction is structural: `wire-serve` reaches `serde_yaml` through
-//! `policy` and is absent from this data, rather than filtered out by a heuristic that
-//! could misread it as a violation. `kind` carries the same split for dev and build
-//! edges: `null` is a production edge, `"dev"` and `"build"` are not.
-//!
+//! The taker set is derived from `cargo metadata --no-deps`, never hand-maintained.
+//! `--no-deps` reports each workspace member's own manifest edges, so the
+//! direct/transitive distinction is structural: `wire-serve` reaches `serde_yaml`
+//! through `policy` and is absent from this data. `kind` carries the same split for
+//! dev and build edges: `null` is a production edge, `"dev"` and `"build"` are not.
 
 use serde_json::Value;
 use std::collections::BTreeSet;
 
-/// The permitted takers. `policy` is the P6-COMPILE decision; `config` is U6's
-/// stated deviation — user frontmatter is arbitrary YAML and schema §4 requires
-/// the parser's own message, so a hand-rolled scanner cannot serve it
-/// (S3-R14(b): *"the violation was forced, not chosen, and I accept it"*).
+/// The permitted takers. `policy` is the compile decision; `config` is a
+/// stated deviation — user frontmatter is arbitrary YAML and schema §4
+/// requires the parser's own message, so a hand-rolled scanner cannot serve
+/// it.
 const PERMITTED: [&str; 2] = ["config", "policy"];
 
-/// Workspace metadata, read live. Fails LOUD if cargo cannot be run: an
-/// instrument that skips itself when its input is missing produces the same
-/// silence as a green tree, which is the false-negative shape this whole
-/// milestone kept meeting. `env!("CARGO")` is always populated under `cargo
-/// test`, so the failure branch means something is genuinely wrong.
+/// Workspace metadata, read live. Fails loud if cargo cannot be run: an
+/// instrument that skips itself when its input is missing is silent in the
+/// same way a green tree is.
 fn workspace_metadata() -> Value {
     let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
     let out = std::process::Command::new(env!("CARGO"))
@@ -88,10 +81,9 @@ fn declared_kinds(meta: &Value, pkg: &str, dep: &str) -> Vec<String> {
         .collect()
 }
 
-/// THE assertion: exactly `{config, policy}` take `serde_yaml` as a direct
+/// The assertion: exactly `{config, policy}` take `serde_yaml` as a direct
 /// production dependency. Equality, not containment — a third crate taking it
-/// reddens and is NAMED, and a permitted crate dropping it reddens too, so the
-/// guard is never proven only by what it blocks (S3-R8(c)).
+/// reddens and is named, and a permitted crate dropping it reddens too.
 #[test]
 fn serde_yaml_direct_production_takers_are_exactly_the_permitted_crates() {
     let meta = workspace_metadata();
@@ -114,15 +106,10 @@ fn serde_yaml_direct_production_takers_are_exactly_the_permitted_crates() {
     );
 }
 
-/// The distinction that IS the instrument: a crate reaching `serde_yaml`
-/// THROUGH another crate is not a taker. `wire-serve` depends on `policy` and
-/// so appears under `serde_yaml` in `cargo tree -i` — an assertion that could
-/// not tell that edge apart would read it as a violation and get deleted by the
-/// next person who ran it.
-///
-/// The control is kept live: the transitive path is asserted to still exist, so
-/// this cannot quietly become a test that `wire-serve` is absent because it
-/// stopped depending on `policy` at all.
+/// A crate reaching `serde_yaml` through another crate is not a taker:
+/// `wire-serve` depends on `policy` and so appears under `serde_yaml` in
+/// `cargo tree -i`. The control is kept live: the transitive path is asserted
+/// to still exist.
 #[test]
 fn transitive_dependents_are_not_reported_as_takers() {
     let meta = workspace_metadata();

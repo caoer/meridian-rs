@@ -1,25 +1,15 @@
-//! G12 (dogfood pass-2) — **the bytes-boundary property, asserted rather than frozen.**
+//! G12 — the bytes-boundary property, asserted rather than frozen.
 //!
-//! The registered rule (W1/U15, `docs/laws.md` § render) is that a sections body is
-//! *"bounded by the head's declared `bytes` rather than by their markers"*. That makes
-//! declared-length the ONLY sanctioned parse: a reader takes each body's declared byte
-//! count after its marker line and never scans for a boundary, because content may spell
-//! one.
+//! The registered rule (`docs/laws.md` § render) is that a sections body is
+//! bounded by the head's declared `bytes` rather than by its markers: a reader
+//! takes each body's declared byte count after its marker line and never scans
+//! for a boundary, because content may spell one.
 //!
-//! # Why this file is not a golden
-//! Every `sections-*` golden froze the face AS IT WAS, so each one baked the defect in
-//! and the suite was green ON it — including `sections-marker-lookalike`, the fixture
-//! that exists to prove content cannot forge a boundary, which declared 75 bytes and
-//! served 74. A regenerated golden is green either way, so a golden can never be the gate
-//! for this class. The gate has to be the PROPERTY: for every body in a sections read,
-//! head-declared `bytes` equals bytes served.
-//!
-//! The parse below is deliberately the *strict* reader the law describes — it consumes
-//! each body by its declared length and then requires the face to end exactly there. A
-//! face whose last body is short by even one byte cannot satisfy it.
-//!
-//!
-//!
+//! Not a golden: a regenerated golden freezes the face as it is, defect
+//! included, so a golden can never gate this class. The gate is the property —
+//! for every body in a sections read, head-declared `bytes` equals bytes
+//! served. The parse below is the strict reader the law describes: it consumes
+//! each body by its declared length and requires the face to end exactly there.
 
 use serde_json::{Value, json};
 

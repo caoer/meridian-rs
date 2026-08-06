@@ -1,35 +1,21 @@
-//! PF-FIXTURES frozen-worked-value SWEEP (pack §10.5 gate 4 + advisor A1–A7).
+//! Frozen-worked-value sweep: every worked value the frozen
+//! `wire-contract.md` prints is pinned as a fixture assertion recomputed by
+//! the engine, so a wrong-grain value fails a test rather than shipping.
+//! Every value is derived (`model::build` revs/spans, `wire_map::project_toc`
+//! `content_span`/`prefix16`, `model::merkle_root` roots, `model::walk`
+//! resolve, `transport::scan_id` lexemes) from the committed `wsfix/` S0
+//! bytes + the frozen §4.4 edits, never transcribed.
 //!
-//! The third-grain-defect backstop. TWO grain defects (anchor-grain, fm-key-grain)
-//! survived earlier gates because frozen worked span/rev/root values lacked byte pins;
-//! this module pins EVERY worked value the FROZEN `wire-contract.md` prints —
-//! enumerated in `results/pf-fixtures/frozen-value-enumeration.md` (137 occurrences) — as
-//! a fixture assertion recomputed by the engine, so a wrong-grain value fails a test
-//! rather than shipping. Every value is derived (`model::build` revs/spans,
-//! `wire_map::project_toc` `content_span`/`prefix16`, `model::merkle_root` roots,
-//! `model::walk` resolve, `transport::scan_id` lexemes) from the COMMITTED `wsfix/` S0
-//! bytes + the frozen §4.4 edits, never transcribed. The independent Python oracle (§12.2
-//! `root_of`) recomputes the same values green — two derivations that must agree. Any
-//! mismatch is grain-defect-#3: STOP + card via the Leader, never an in-unit engine fix.
-//!
-//! ## Grain discipline (advisor dispositions, pinned as explicit assertions)
-//! - **A4/A5 — two DISTINCT terminator-grain families, never collapsed.**
-//!   Newline-INCLUSIVE (heading/section + frontmatter-container): receipts H1
-//!   `content_span [26,249]`, whole-receipts `[0,474]`, frontmatter `[0,20]`.
-//!   Terminator-EXCLUDED (leaf block): `r-000042 [26,248]`, `r-000043 [249,473]`, `fm_key
-//!   [4,15]`. The file-length↔span-end off-by-one (249 vs `[26,248]`; 474 vs `[249,473]`)
-//!   is asserted AS-IS, never normalized.
-//! - **A7 — full-token root compare, prefix included.** The §12.3 v1 bump `b3a:83b4…8f68`
-//!   is 64-hex-identical to R2 `b3:83b4…8f68`; a hex-tail-only compare FALSE-PASSES.
-//!   Tokens asserted unequal AND hex-tails equal.
-//! - **A3 — by-design equality named.** receipts `file_rev@S1` == receipts H1 `node_rev`
-//!   == `2731acfa39bbb92c` (the lone H1 spans the whole file), pinned deliberately to the
-//!   SAME value so a distinctness lint cannot false-positive.
-//! - **A2/A6 — single-sourced values re-derived, not copied.** Goals@S2
-//!   `[20,150]`/`5a8faa717fbcdb04` (only printed in the §11.1 verdict) and the S2 resolve
-//!   spans `[49,75]`/`[0,474]` are recomputed by build/walk here.
-//!
-//!
+//! Grain discipline, pinned as explicit assertions:
+//! - A4/A5 — two distinct terminator-grain families, never collapsed:
+//!   newline-inclusive (heading/section + frontmatter container) vs
+//!   terminator-excluded (leaf block). The file-length↔span-end off-by-one is
+//!   asserted as-is, never normalized.
+//! - A7 — full-token root compare, prefix included: the §12.3 v1 bump `b3a:…`
+//!   is 64-hex-identical to R2 `b3:…`; a hex-tail-only compare false-passes.
+//! - A3 — by-design equality named: receipts `file_rev@S1` == receipts H1
+//!   `node_rev` (the lone H1 spans the whole file).
+//! - A2/A6 — single-sourced values re-derived, not copied.
 
 use model::walk::{Location, Miss, Stage, walk};
 use model::{CorpusIndex, Document, build, merkle_root};

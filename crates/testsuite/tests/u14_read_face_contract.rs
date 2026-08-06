@@ -1,34 +1,14 @@
-//! **The read face's own contract, over the U0 corpus** — the gate that REPLACES the
-//! retired Go-parity golden replays (U14, docket row P9).
+//! The read face's own contract, over the U0 corpus — the gate that replaces
+//! the retired Go-parity golden replays.
 //!
-//! # Why the goldens retired here, and what that cost
-//! `data/parity/goldens/` held 11 captures of meridian-go's read face: the request each
-//! step sent, the `text` it rendered, and the `structured` body it returned. Four gates
-//! replayed them — `u0_read_parity` (engine facts vs `structured`), `u4a1_render_parity`
-//! (the `text` bytes), `u4a2_composed_read` (the same over the wire), and
-//! `s1_authz_facts::extended_rows_match_the_captured_go_toc_rows`.
-//!
-//! Every one of them fed a CAPTURED REQUEST into the engine's selector API:
-//! `args["ref"]`, `args["sections"]` — joined strings, in the grammar U14 removed. That
-//! grammar is not a spelling those gates could be updated to stop using; it is the thing
-//! under test. And the captures cannot be re-taken: meridian-go is a dying bridge
-//! (`CLAUDE.md`, end-state ruling 2026-07-22 plus the 2026-07-26 amendment), it never
-//! served the redesigned contract, and the remaining legs owe it no byte parity. A
-//! capture you cannot re-take against a contract you have redesigned is not a gate; it is
-//! a snapshot of a world that has been superseded.
-//!
-//! **Following the `u4a2` precedent exactly** (ruling `d9419c03`, and the U0/U5/U5b
-//! refusal-pin retirements before it): the byte pins are CONVERTED into contracts over
-//! the engine's own stated laws, per case, and no shared assertion is loosened to make
-//! room. The corpus itself is NOT a capture — it is 11 hand-built input documents — so it
-//! stays, and this file replays every one of them. What is gone is the claim that the
-//! engine must agree with meridian-go's bytes. What replaces it is the claim that the
-//! engine agrees with ITSELF, which is the property a consumer actually depends on.
-//!
-//! U15 mints the TOON goldens that re-pin the rendered face.
-//!
-//!
-//!
+//! The retired goldens fed captured requests in a selector grammar the engine
+//! removed, and the captures cannot be re-taken against a redesigned contract.
+//! The byte pins are converted into contracts over the engine's own stated
+//! laws, per case, and no shared assertion is loosened. The corpus itself is
+//! not a capture — it is 11 hand-built input documents — so it stays, and this
+//! file replays every one of them: the engine agrees with itself, which is the
+//! property a consumer actually depends on. The TOON goldens re-pin the
+//! rendered face.
 
 use wire_map::facts::{ReadFact, anchor_rows, read_facts, resolve_selector, section_content};
 
@@ -91,20 +71,9 @@ fn facts_of(doc: &str, rel: &str) -> (String, Vec<ReadFact>) {
     (raw, facts)
 }
 
-/// **The law D2 exists to establish, over the whole corpus: every address the
-/// read face publishes resolves back to the row that published it.**
-///
-/// This is the property the retired `u0_read_parity` could not state. It
-/// asserted that the engine's `hpath` string equalled Go's `hpath` string —
-/// which both engines computed by the same lossy `sanitize_heading` join, so
-/// they agreed precisely where the address was WRONG. Three headings collapsing
-/// onto one spelling passed that gate and left an agent unable to address two
-/// of them.
-///
-/// The negative half is what makes it bite: resolving each published address
-/// must land on its OWN row, not merely on some row. An implementation that
-/// went back to comparing sanitized strings would still resolve every address
-/// to something, and would still fail here.
+/// Every address the read face publishes resolves back to the row that
+/// published it. The negative half is what makes it bite: resolving each
+/// published address must land on its own row, not merely on some row.
 #[test]
 fn every_published_address_resolves_back_to_its_own_row() {
     let mut rows_checked = 0_u32;
@@ -135,21 +104,13 @@ fn every_published_address_resolves_back_to_its_own_row() {
     );
 }
 
-/// **The dewey plane is POSITIONAL, and it is not even unique.** Measured, not
-/// assumed: this test first asserted that every ordinal addresses its own row,
-/// and the `level-jumps` corpus document falsified it.
-///
-/// `# One` → `1`, then `### Jump Three` (a level SKIP) and `## Back Two` both
-/// land on `1.1`. `DeweyCounter` numbers by the level SEQUENCE it walks, so a
-/// document that skips a level and later pops back reuses an ordinal. Two rows,
-/// one ordinal, and `resolve_selector` hands back the FIRST — the documented
-/// read-face law, applied to a genuinely ambiguous key.
-///
-/// So this test pins the two halves that are true, and they are why
-/// `write::canonical_selector` canonicalizes a dewey to the row's STRUCTURAL
-/// address before a pin records it: an ordinal is not a stable name for a
-/// section even within one snapshot, let alone across an edit. Carrying one
-/// into a lock would record an address that silently means a different section.
+/// The dewey plane is positional, and not even unique: `# One` → `1`, then
+/// `### Jump Three` (a level skip) and `## Back Two` both land on `1.1`.
+/// `DeweyCounter` numbers by the level sequence it walks, so a document that
+/// skips a level and later pops back reuses an ordinal; `resolve_selector`
+/// hands back the first. This is why `write::canonical_selector` canonicalizes
+/// a dewey to the row's structural address before a pin records it — an
+/// ordinal is not a stable name for a section.
 #[test]
 fn a_dewey_ordinal_resolves_first_match_and_is_not_a_unique_address() {
     // Half 1: resolving an ordinal always lands on the FIRST row carrying it.
@@ -221,9 +182,8 @@ fn section_content_is_the_raw_span_and_its_words_are_counted_over_it() {
     assert!(checked >= 40, "sections exercised: {checked}");
 }
 
-/// The two planes stay disjoint corpus-wide (s1c's law): no anchor fact reaches
-/// a `toc` consumer, and no heading fact reaches an `anchors` consumer. This
-/// was previously observable only through the captured Go table.
+/// The two planes stay disjoint corpus-wide: no anchor fact reaches a `toc`
+/// consumer, and no heading fact reaches an `anchors` consumer.
 #[test]
 fn the_heading_and_anchor_planes_stay_disjoint_over_the_whole_corpus() {
     for (doc, rel) in corpus_docs() {
@@ -244,15 +204,11 @@ fn the_heading_and_anchor_planes_stay_disjoint_over_the_whole_corpus() {
     }
 }
 
-/// **Assert the absence where a law died.** `wire::Node` carried `hpath_text`
-/// — the sanitized joined ADDRESS on a machine surface — and U14 removed it
-/// under ZT decision 14 ("no string address forms in machine surfaces"). The
-/// enriched v3 `extract` face must never grow it back.
-///
-/// This is a tripwire, not a coverage test: a restoration would otherwise pass
-/// every other gate in this workspace silently, because adding a field breaks
-/// nothing. It names the ruling so whoever trips it knows what they are
-/// re-opening.
+/// Assert the absence where a law died: `wire::Node` carried `hpath_text` — a
+/// sanitized joined address on a machine surface — and it was removed ("no
+/// string address forms in machine surfaces"). The enriched v3 `extract` face
+/// must never grow it back. A tripwire: a restoration would pass every other
+/// gate silently, because adding a field breaks nothing.
 #[test]
 fn the_extract_face_never_republishes_a_joined_string_address() {
     let (raw, _) = facts_of("basic", "corpus/basic.md");
