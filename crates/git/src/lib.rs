@@ -1,49 +1,32 @@
 //! Git plumbing: the one organ that shells out to `git` for content-addressing.
 //!
-//! # Charter
-//! **Owns:** the operational blob-sha path (`git hash-object`, and the eager `-w` write),
-//! the object-reachability probe (`git rev-list --objects --all` computed ONCE into a
-//! [`ReachableSet`]), and object presence/size lookups (one batched `git cat-file
-//! --batch-check`), and **the write history** — the first-parent `git log --name-status`
-//! walk ([`Repo::path_history`]) plus the batched blob read that recovers each side's
-//! bytes ([`Repo::blobs_at`], one `git cat-file --batch`). History is git's by law (.
-//! Every call runs against a [`Repo`] handle — a path plus the git program to run — so a
-//! later per-root world constructs one handle per root and nothing here changes.
+//! **Owns:** the operational blob-sha path (`git hash-object`, and the eager `-w`
+//! write), the object-reachability probe (`git rev-list --objects --all` computed
+//! ONCE into a [`ReachableSet`]), object presence/size lookups (one batched
+//! `git cat-file --batch-check`), and the write history — the first-parent
+//! `git log --name-status` walk ([`Repo::path_history`]) plus the batched blob
+//! read ([`Repo::blobs_at`]). Every call runs against a [`Repo`] handle — a path
+//! plus the git program — so a per-root world constructs one handle per root.
 //!
-//! **Never does:** compute an object id itself. **git owns content-addressing** (the
-//! ratified law): this crate asks git and reports what git said. When git is absent, or
-//! the handle's root is not a repository, every call returns a typed [`GitFail`] — a
-//! fabricated or guessed oid is a correctness breach, not a fallback (plan §5, S5 rescue
-//! row).
+//! **Never does:** compute an object id itself — git owns content-addressing;
+//! this crate asks git and reports what git said. When git is absent, or the
+//! root is not a repository, every call returns a typed [`GitFail`] — a
+//! fabricated or guessed oid is a correctness breach, not a fallback. It also
+//! never names a workspace, resolves a root, or holds a global.
 //!
-//! **Never does (2):** name a workspace, resolve a root, or hold a global. The caller
-//! supplies the root; there is no ambient "the repo" here.
+//! **Dependencies:** `std` only — the whole shell-out surface is one auditable
+//! leaf.
 //!
-//! **Dependencies:** `std` only. The whole shell-out surface is one auditable leaf, so
-//! `git`-invocation churn is a one-crate event (the corollary the `syntax`/pulldown-cmark
-//! edge already sets), and every consumer — `mrd`, `wire-serve`, `view` — can take the
-//! edge without dragging `model`/`wire` in.
+//! This is NOT the fingerprint hasher: `model::fingerprint` owns the engine's
+//! content identity; this crate is the operational path that produces git's oid.
+//! The two never merge.
 //!
-//! # This is NOT the fingerprint hasher
-//! `model::fingerprint` owns the engine's content identity (`fp1.span2.b3.…` over
-//! normalized span bytes) and `model::fingerprint::verify_object` is pure equality
-//! against a git oid the engine did not compute. THIS crate is the operational path that
-//! produces that oid for the `objects:` plane. The two never merge: one is the engine's
-//! hash, the other is git's.
+//! Filters are applied deliberately: [`Repo::blob_oid`] hashes through git's
+//! default path-based rules, so the returned oid is the blob git would store.
+//! `--no-filters` would mint an id that never appears in the object database.
 //!
-//! # Filters are applied, deliberately
-//! [`Repo::blob_oid`] hashes a work-tree path through git's default path-based rules, so
-//! `.gitattributes` clean filters and eol conversion apply — the oid it returns is **the
-//! blob git would store**, identical to `git rev-parse HEAD:<path>` after a commit of the
-//! same bytes. `--no-filters` would return a different id for a filtered path, and that
-//! id would never appear in the object database, so every reachability answer over it
-//! would be wrong. The gate proving this is
-//! `tests/plumbing.rs::blob_oid_matches_the_committed_blob_under_a_clean_filter`.
-//!
-//! # The three-state anchoring check
-//! This crate gathers the facts; `receipt::anchor::ObjectAnchor` classifies them (the
-//! same fact/classify split the origin-anchor axis already uses). One check, one
-//! `rev-list`:
+//! The three-state anchoring check: this crate gathers the facts;
+//! `receipt::anchor::ObjectAnchor` classifies them. One check, one `rev-list`:
 //!
 //! ```no_run
 //! # use std::path::Path;
@@ -60,10 +43,6 @@
 //! # Ok(())
 //! # }
 //! ```
-//!
-//!
-//!
-//!
 
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
@@ -151,13 +130,9 @@ impl Repo {
     /// (`git hash-object -w`) — the vibe eager write: the blob exists before any
     /// commit references it, so a pin can be verified against it immediately.
     ///
-    /// # Named residual G1 — the pending-anchor TTL is `gc.pruneExpire`
     /// A blob written this way is unreachable from every ref until the file is
-    /// committed. Git prunes unreachable objects once they age past the
-    /// repository's `gc.pruneExpire` (default `2.weeks.ago`), so the
-    /// pending-anchor state has a **local-config TTL that this engine documents
-    /// and does not prevent** (plan §5, residual G1). Committing the file is the
-    /// only durable anchor; until then the gauge counts vibe debt.
+    /// committed, so git may prune it once it ages past `gc.pruneExpire`
+    /// (default `2.weeks.ago`). Committing the file is the only durable anchor.
     ///
     /// # Errors
     /// As [`Repo::blob_oid`].
@@ -328,25 +303,21 @@ impl Repo {
     /// **Every recorded write, oldest first** — one [`PathChange`] per (commit,
     /// path) pair on the first-parent walk.
     ///
-    /// This is the engine's ONLY history. The engine keeps no memory of its own
-    /// (ZT 2026-08-03: *"Engine does not have memory. It should not have. History
-    /// is pin to git when we lock. Anything between locks is not history."*), so
-    /// archaeology is a git question and this is where it is asked.
+    /// This is the engine's ONLY history: the engine keeps no memory of its
+    /// own, so archaeology is a git question and this is where it is asked.
     ///
     /// `pathspec` narrows the walk the way `git log -- <path>…` does; an empty
     /// slice walks the whole tree.
     ///
-    /// **ONE process for the whole walk.** `--name-status -z` is not optional:
-    /// without `-z` git quotes unusual paths and a quoted path matches nothing on
-    /// disk (the `nul_paths` lesson, held here too).
+    /// ONE process for the whole walk. `-z` is not optional: without it git
+    /// quotes unusual paths and a quoted path matches nothing on disk.
     ///
-    /// A rename or copy reports the DESTINATION path — that is the path whose
-    /// bytes the commit recorded, and the only one a reader can ask about at that
-    /// commit.
+    /// A rename or copy reports the DESTINATION path — the path whose bytes the
+    /// commit recorded.
     ///
     /// # Errors
-    /// As [`Repo::blob_oid`]; a repository with no commits yet answers empty
-    /// rather than failing, because "nothing recorded" is a history, not a fault.
+    /// As [`Repo::blob_oid`]; a repository with no commits answers empty rather
+    /// than failing — "nothing recorded" is a history, not a fault.
     pub fn path_history(&self, pathspec: &[&str]) -> Result<Vec<PathChange>, GitFail> {
         self.require_repo()?;
         if !self.head_exists()? {
@@ -372,9 +343,8 @@ impl Repo {
         let mut out = Vec::new();
         let mut head: Option<(String, String, String)> = None;
         // `--format` terminates with a newline that `-z` does not swallow, so a
-        // status token arrives as "\nM" and a header as "\n\u{1}<sha>…". Trimming
-        // it is what makes the token classifiable at all — without this every
-        // status reads as "not A, not D" and the whole walk renders as splices.
+        // status token arrives as "\nM" and a header as "\n\u{1}<sha>…" — trim
+        // it or every status reads as "not A, not D".
         let mut fields = text
             .split('\0')
             .map(|f| f.trim_matches('\n'))
@@ -389,9 +359,8 @@ impl Repo {
                 continue;
             }
             let Some((commit, author, now)) = head.clone() else {
-                // A status token before any commit header cannot be attributed,
-                // and an unattributed write is not a fact — skip it rather than
-                // inventing the commit it belongs to.
+                // A status token before any commit header cannot be attributed;
+                // skip it rather than inventing the commit it belongs to.
                 continue;
             };
             let status = ChangeStatus::of(field);
@@ -437,13 +406,10 @@ impl Repo {
     /// **The oid AND the bytes at each `<rev>:<path>` spec, in input order** —
     /// [`Repo::blobs_at`] without discarding the identity git already printed.
     ///
-    /// `cat-file --batch` heads every answer with `<oid> <type> <size>`, so the
-    /// object's id arrives in the SAME stream as its content. A caller that needs
-    /// both — a history walk that recovers content and must then name the durable
-    /// object carrying it — reads them from one pipe rather than re-deriving the
-    /// oid with a second spawn per hit. Re-deriving is also not the same question:
-    /// `hash-object --path` applies the clean filter, so a filtered repository
-    /// would mint an id that is not the one history holds.
+    /// `cat-file --batch` heads every answer with `<oid> <type> <size>`, so a
+    /// caller needing both reads them from one pipe. Re-deriving the oid is
+    /// also a different question: `hash-object --path` applies the clean
+    /// filter, so a filtered repository would mint an id history does not hold.
     ///
     /// # Errors
     /// As [`Repo::blobs_at`].
@@ -481,38 +447,21 @@ impl Repo {
     /// **What the INDEX carries, for exactly the paths where the worktree would
     /// answer about something else** — the bytes a commit is about to record.
     ///
-    /// Each entry is a [`StagedPath`] — a path relative to [`Repo::root`], and
-    /// what the index holds for it:
+    /// Each entry is a [`StagedPath`]: `Some(bytes)` — the index holds these
+    /// bytes and a commit will record them; `None` — this commit REMOVES the
+    /// path (`git rm --cached`). Paths where index and worktree agree are
+    /// absent, so the answer is an OVERLAY; an empty answer means the two
+    /// intervals coincide.
     ///
-    /// - `Some(bytes)` — the index holds these bytes and a commit will record
-    ///   them, whatever the worktree says;
-    /// - `None` — this commit REMOVES the path, even though the worktree may
-    ///   still carry a file there (`git rm --cached`).
+    /// Only git knows what the index holds — including WHICH index:
+    /// `git commit <pathspec>` builds a temporary index and hands the hook
+    /// `GIT_INDEX_FILE`, which every query here inherits. The bytes are the
+    /// BLOB's, so a clean filter or eol conversion yields what history will
+    /// carry, not the worktree's smudged form.
     ///
-    /// Paths where the index and the worktree agree are **absent**, so the answer
-    /// is an OVERLAY: applied over a worktree read it yields the tree the commit
-    /// will record for every tracked path, and the caller's own bytes everywhere
-    /// else. An empty answer means the two intervals coincide — the caller's
-    /// worktree read already spans the commit.
-    ///
-    /// # Why this is git's question and not the filesystem's
-    /// Only git knows what the index holds — **including which index git means.**
-    /// `git commit <pathspec>` builds a TEMPORARY index and hands the hook
-    /// `GIT_INDEX_FILE`; every query here inherits that environment, so the answer
-    /// is about the index that commit will write and never about a stale
-    /// `.git/index`.
-    ///
-    /// # The bytes are the BLOB's, which is the point
-    /// `cat-file blob` returns the content git will store, so a repository with a
-    /// clean filter or eol conversion gets the bytes `git show HEAD:<path>` will
-    /// print after the commit — the interval history carries — rather than the
-    /// worktree's smudged form.
-    ///
-    /// # Unmerged paths are skipped, deliberately
-    /// A path with no stage-0 index entry is mid-merge, and git refuses to commit
-    /// with unmerged paths before any hook runs — so the fence never meets one.
-    /// Skipping leaves the caller's worktree bytes in place for a state no commit
-    /// can reach, instead of guessing which stage a merge will resolve to.
+    /// Unmerged paths (no stage-0 entry) are skipped deliberately: git refuses
+    /// to commit with unmerged paths before any hook runs, so the fence never
+    /// meets one.
     ///
     /// # Errors
     /// As [`Repo::blob_oid`].
@@ -648,20 +597,12 @@ impl Repo {
     /// The **common** git directory — `git rev-parse --git-common-dir`, made
     /// absolute against [`Repo::root`].
     ///
-    /// # Why the COMMON dir and not the git dir (U15 / D11)
-    /// A linked worktree has its own `--git-dir`
-    /// (`<main>/.git/worktrees/<name>`) and shares `--git-common-dir` with every
-    /// other worktree of the same repository. **`hooks/` lives under the shared
-    /// one**, so N worktrees are N meridian workspaces behind ONE hook
-    /// directory. A caller that installed per `--git-dir` would write N hooks of
-    /// which git runs exactly the one belonging to the worktree that is
-    /// committing — and a caller that installed per worktree top-level would
-    /// overwrite its own file N times.
+    /// The COMMON dir, not the git dir: a linked worktree has its own
+    /// `--git-dir` and shares `--git-common-dir`; `hooks/` lives under the
+    /// shared one, so N worktrees sit behind ONE hook directory.
     ///
-    /// Note this answer **ignores `core.hooksPath`**: it is where git keeps the
-    /// repository's own hooks, not necessarily where git will look for them.
-    /// [`Repo::hooks_path`] is the other half, and a caller that means "where do
-    /// hooks run from" needs both.
+    /// This answer ignores `core.hooksPath` — [`Repo::hooks_path`] is the other
+    /// half, and a caller that means "where do hooks run from" needs both.
     ///
     /// # Errors
     /// As [`Repo::blob_oid`]; [`GitFail::Unexpected`] when git prints no path.
@@ -725,12 +666,9 @@ impl Repo {
     /// of one — `git rev-parse --show-superproject-working-tree` — and `None`
     /// when it is not.
     ///
-    /// # This is the deciding artifact, and the neighbouring one answers wrong
-    /// A `.git` that is a FILE rather than a directory is the tempting test and
-    /// it is **not** the question: a linked worktree's `.git` is a file too, and
-    /// a submodule cloned before git 1.7.8 has a real `.git` directory. This
-    /// command asks git the question directly and answers empty for both of
-    /// those, which is why the submodule refusal is wired to it.
+    /// Asked of git directly rather than testing whether `.git` is a file: a
+    /// linked worktree's `.git` is a file too, and an old-style submodule has a
+    /// real `.git` directory.
     ///
     /// # Errors
     /// As [`Repo::common_dir`].
@@ -769,13 +707,9 @@ impl Repo {
     }
 
     fn hash_object(&self, path: &Path, write: bool) -> Result<String, GitFail> {
-        // Read-only `hash-object` ANSWERS OUTSIDE A REPOSITORY: git happily
-        // content-addresses loose bytes with no `.gitattributes` context, so the
-        // oid it returns there is not "the blob this repo would store" — it is a
-        // number about nothing, and a pin recording it claims a repo that does
-        // not exist. Ask for the git dir first so a non-repo root degrades
-        // typed. (`-w` already refuses without an object database; the guard
-        // makes both paths answer alike.)
+        // Read-only `hash-object` answers OUTSIDE a repository too — an oid
+        // with no `.gitattributes` context is a number about nothing. Ask for
+        // the git dir first so a non-repo root degrades typed.
         self.require_repo()?;
 
         let mut cmd = self.command();
@@ -958,14 +892,9 @@ pub struct PathChange {
     /// The full commit id that recorded this write.
     pub commit: String,
     /// The commit's author NAME, as git spells it — deliberately without the
-    /// email.
-    ///
-    /// The name is the field that can equal an identity a page declares (a
-    /// task's `owner:`, a reviewer handle). `Name <email>` never equals one, so
-    /// carrying the email would leave every actor-vs-owner rule structurally
-    /// unable to fire — a whole class of law silently disabled, which is worse
-    /// than a coarse answer. The engine holds no email-to-handle mapping and does
-    /// not invent one.
+    /// email: the name is the field that can equal an identity a page declares
+    /// (a task's `owner:`), and `Name <email>` never equals one. The engine
+    /// holds no email-to-handle mapping and does not invent one.
     pub author: String,
     /// The author date, ISO-8601 with offset (git's `%aI`).
     pub now: String,
