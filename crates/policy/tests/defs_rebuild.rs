@@ -537,7 +537,7 @@ fn a_segment_may_contain_the_joiner_and_stays_distinct() {
                 ..PlanEdit::default()
             }],
         ),
-        "E_NO_MATCH: no section addressed by \"Notes/Slash/Title Here\" — address the section by its `hpath` segments, exactly as `md toc` publishes them — one array entry per heading, raw text, no joining",
+        "E_NO_MATCH: no section addressed by \"Notes/Slash/Title Here\" — address the section by its `hpath` segments, exactly as the read face's toc publishes them — one array entry per heading, raw text, no joining",
         "split-of-a-slash-bearing-segment-falls-closed",
     );
 }
@@ -560,7 +560,7 @@ fn the_sanitized_spelling_is_not_an_address() {
                 ..PlanEdit::default()
             }],
         ),
-        "E_NO_MATCH: no section addressed by \"Dogfood-—-the-socket-MCP-surface,-exercised-by-a-working-agent/Results\" — address the section by its `hpath` segments, exactly as `md toc` publishes them — one array entry per heading, raw text, no joining",
+        "E_NO_MATCH: no section addressed by \"Dogfood-—-the-socket-MCP-surface,-exercised-by-a-working-agent/Results\" — address the section by its `hpath` segments, exactly as the read face's toc publishes them — one array entry per heading, raw text, no joining",
         "sanitized-spelling-refused",
     );
 }
@@ -662,7 +662,7 @@ fn occurrence_abstention_refuses_and_out_of_range_falls_closed() {
                 ..PlanEdit::default()
             }],
         ),
-        "E_NO_MATCH: no section addressed by \"Log/Entry#3\" — address the section by its `hpath` segments, exactly as `md toc` publishes them — one array entry per heading, raw text, no joining",
+        "E_NO_MATCH: no section addressed by \"Log/Entry#3\" — address the section by its `hpath` segments, exactly as the read face's toc publishes them — one array entry per heading, raw text, no joining",
         "out-of-range-occurrence-falls-closed",
     );
 }
