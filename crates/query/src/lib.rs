@@ -10,7 +10,7 @@
 //! **Never does:** apply edits (a rename plan is a list of splices; application goes
 //! through `model` validation + `fs` execution like every other write), own the corpus
 //! index (borrowed from `model` — sibling of `policy`, no edge between them), serialize
-//! (no-serde law: `wire` twins these shapes; the sidecar converts).
+//! (no-serde law: `wire` twins these shapes; the serving host converts).
 //!
 //! Edge-map resolution is the walk plane's stage 1 only
 //! (`CorpusIndex::resolve_linkpath` — `getFirstLinkpathDest` parity, contract §4.5): the

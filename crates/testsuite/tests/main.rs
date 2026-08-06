@@ -4,6 +4,7 @@
 
 mod armed_disk_agreement;
 mod charset_guard;
+mod daemon_door;
 mod delta_e3e4;
 mod g12_declared_bytes;
 mod gt_pack_smoke;

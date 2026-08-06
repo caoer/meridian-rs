@@ -19,7 +19,8 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 # Per-drawer advisory flock (m3): flock(2) has no std wrapper. libc is already a
 # graph-wide transitive dep (MIT OR Apache-2.0, passes cargo deny); a direct edge
-# here adds no new crate to the graph. Unix-only crate by design (like sidecar).
+# here adds no new crate to the graph. Unix-only crate by design (like the
+# daemon's unix-socket host).
 libc = "0.2"
 
 [dev-dependencies]

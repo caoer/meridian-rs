@@ -419,8 +419,8 @@ pub fn write_conflict(path: &Path) -> io::Error {
 /// The cross-process WRITE lock: an exclusive advisory `flock(2)` on
 /// `.meridian/write.lock`, held by the wire write choke-point across its
 /// whole critical section (pre-batch read → validate → verify → renames), so
-/// two cooperating meridian writers — sidecar process, resident registry
-/// daemon, `mrd` — can never interleave read→rename (the lost-update window
+/// two cooperating meridian writers — resident registry daemon, `mrd` — can
+/// never interleave read→rename (the lost-update window
 /// the in-memory CAS guards cannot see). `LOCK_NB` acquire: a held lock is
 /// [`io::ErrorKind::WouldBlock`], surfaced by the caller as the fast typed
 /// `workspace_busy` refusal — it never waits, so a hung holder can never make
@@ -968,7 +968,7 @@ fn fsync_dir(dir: &Path) -> io::Result<()> {
 /// Filesystem watcher: the DETECTION primitive — a §12
 /// domain baseline plus byte-level change classification against a fresh
 /// snapshot. The watcher detects; root folding is `model`'s, Delta emission
-/// is the sidecar's, and hook *dispatch* (running agent work on change)
+/// is the serving host's, and hook *dispatch* (running agent work on change)
 /// stays Go — Rust never executes agent work.
 #[derive(Debug)]
 pub struct Watcher {

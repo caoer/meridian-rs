@@ -1,11 +1,10 @@
 //! The root-history ring (§7.3): host-held process state, RAM-only, bound
 //! 256 — one ring per epoch.
 //!
-//! Shared by both hosts. The sidecar holds one ring per serve lifetime; the
-//! registry holds one per workspace, born at first use and dropped on the
-//! `read_mints` horizon (`Registry::reap`). The hosts differ in what an epoch
-//! is and what drives detection; the retention law is identical, which is why
-//! it lives here and not in either host.
+//! Host-held: the registry daemon (the one wire door since the sidecar's
+//! DROP, §3.3) holds one ring per workspace, born at first use and dropped on
+//! the `read_mints` horizon (`Registry::reap`). The retention law lives here,
+//! not in the host, so a host change can never rewrite it.
 //!
 //! Transport, not memory: a bounded in-flight buffer for a live channel. It
 //! reconstructs no history, answers a gap with `root_unknown` → resync, and

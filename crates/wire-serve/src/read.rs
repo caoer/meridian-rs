@@ -157,7 +157,7 @@ pub(crate) fn mint_actor(actor: Option<&str>) -> Option<&str> {
 ///
 /// `mint` is the read-is-the-mint ledger: present only for a host that holds
 /// a daemon-session layer (the registry daemon). A host with no session — the
-/// per-request sidecar, the bare CLI — passes `None` and mints nothing.
+/// bare CLI, any in-process caller — passes `None` and mints nothing.
 /// Minting is sections-mode only.
 ///
 /// `decorations` is the claim-link input, built by the caller
@@ -313,8 +313,8 @@ fn read_anchor(f: &wire_map::facts::ReadFact) -> Option<wire::ReadAnchor> {
 ///
 /// The caller side of the render seam — outside `render`, which never reads a
 /// lock and never computes a fingerprint. It needs the corpus, so only a host
-/// that holds one calls it (the registry daemon); the per-request sidecar and
-/// the bare CLI pass [`render::NO_DECORATIONS`].
+/// that holds one calls it (the registry daemon); the bare CLI passes
+/// [`render::NO_DECORATIONS`].
 ///
 /// Four rules, each closing a way a decoration could lie:
 ///
@@ -855,7 +855,7 @@ pub fn resolve(
 }
 
 /// The wire→model ref bridge (the crates never share a type — no-serde law).
-/// `pub` because the sidecar's write path (splice) resolves the same §2.1
+/// `pub` because the host's write path (splice) resolves the same §2.1
 /// targets through it — one bridge, not two.
 ///
 /// The `@fp` strip is ordered here, and that ordering is the guarantee:
@@ -896,7 +896,7 @@ pub fn to_model_ref(sec: &SecRef) -> Result<model::Ref, Box<ErrorBody>> {
 /// §2.1 occurrence index) and its block id (`^block`) when it carries one.
 /// `candidates` holds the machine-addressable `n=` forms; duplicate block ids
 /// share one id that cannot disambiguate them, so their `candidates` stays
-/// `[]` — never prose inside the grammar field. `pub` because the sidecar's
+/// `[]` — never prose inside the grammar field. `pub` because the host's
 /// write path raises the same refusal against a splice target.
 #[must_use]
 pub fn ambiguous(sec: &SecRef, doc: &model::Document, candidates: &[model::Target]) -> ErrorBody {

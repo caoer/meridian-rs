@@ -64,16 +64,16 @@ fn generation_is_deterministic() {
 }
 
 #[test]
-fn inventory_sidecars_sum_to_corpus_inventory() {
+fn per_file_inventories_sum_to_corpus_inventory() {
     let recipe = Recipe::new(dense_profile(), 7, None);
     let tmp = std::env::temp_dir().join(format!("bench-inv-{}", std::process::id()));
     corpus::generate_into(&tmp, &recipe).unwrap();
     let corpus_inv = corpus::load_inventory(&tmp).unwrap();
-    // Sum the per-file sidecars.
+    // Sum the per-file inventories.
     let mut summed = Inventory::new();
     for (rel, _) in corpus::load_files(&tmp).unwrap() {
-        let sidecar = tmp.join(format!("{rel}.inventory.json"));
-        let text = std::fs::read_to_string(&sidecar).unwrap();
+        let inv_path = tmp.join(format!("{rel}.inventory.json"));
+        let text = std::fs::read_to_string(&inv_path).unwrap();
         summed.merge(&serde_json::from_str(&text).unwrap());
     }
     assert_eq!(summed, corpus_inv);

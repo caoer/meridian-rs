@@ -6,8 +6,8 @@
 //! the frozen prefix law, and the frozen total node order. Never does I/O,
 //! framing, parsing, business logic, or body formatting.
 //!
-//! Only this named seam and the bin see wire and model together
-//! (`docs/laws.md` Law 3); `sidecar` stays wiring-only. Growing projection
+//! Only this named seam and the serving host see wire and model together
+//! (`docs/laws.md` Law 3); the host stays wiring-only. Growing projection
 //! pressure lands here, never in a bin. [`gotext`] carries the Go-exact
 //! host-face addressing semantics; [`facts`] builds the read-fact table from
 //! them.

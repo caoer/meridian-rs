@@ -1,7 +1,7 @@
 //! Delta change-fact computation (contract §7, D3-DELTA — wire-lane-owned).
 //!
 //! Computes Delta facts only (no-serde charter); `wire-map` projects to
-//! `wire::Delta`; the sidecar owns the envelope (seq/roots/actor/now, §9).
+//! `wire::Delta`; the serving host owns the envelope (seq/roots/actor/now, §9).
 //!
 //! **Deepest-changed-node (D-C7, §7.1):** entries name the deepest
 //! mint-addressable node per changed byte range (sections, anchor host-blocks,

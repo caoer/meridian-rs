@@ -1,6 +1,6 @@
 [package]
 name = "wire-serve"
-description = "The shared typed edge: the hand-rolled strict-decode pass (wire §3.2 server law) plus the read-op arms served over BORROWED parsed state. One implementation for both hosts — the per-workspace sidecar (which builds the corpus per request) and the resident registry daemon (which serves from its warm engine). Wiring only: parsing is fs/syntax's, tree law is model's, projection is wire-map's, edges are query's."
+description = "The shared typed edge: the hand-rolled strict-decode pass (wire §3.2 server law) plus the read-op arms served over BORROWED parsed state. One implementation, one host — the resident registry daemon serving from its warm engine (the one wire door since the sidecar's DROP, wire-contract §3.3, 2026-08-06). Wiring only: parsing is fs/syntax's, tree law is model's, projection is wire-map's, edges are query's."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

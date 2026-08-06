@@ -12,7 +12,7 @@
 //! (law 3), body formatting.
 //!
 //! **No serde on any public type** — model facts reach the wire only via
-//! `sidecar` (law 3).
+//! the serving host's projection seam (law 3).
 
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -26,7 +26,7 @@ pub mod selector;
 pub mod walk;
 
 /// Half-open byte range into a file's raw bytes. Distinct from the wire's
-/// serializable span on purpose — converting between them is `sidecar`'s job.
+/// serializable span on purpose — converting between them is the host's job.
 pub type ByteSpan = Range<usize>;
 
 /// Engine-minted `hash-algo` label — `blake3-256(span bytes)[:16]` (contract v2
@@ -83,7 +83,7 @@ pub struct Node {
 
 /// Model node kinds — the policy-schema §2 vocabulary. Richer than the wire's
 /// flat kind enum (sections, paragraphs, lists exist here); the wire projection
-/// is `sidecar`'s.
+/// is the host's.
 #[derive(Debug, Clone, PartialEq)]
 pub enum NodeKind {
     Document {
@@ -480,7 +480,7 @@ fn kind_ordinal(kind: &NodeKind) -> u8 {
 
 /// One hpath segment — heading text + optional 1-based occurrence among
 /// identical siblings (contract §2.1). Model twin of `wire::HpathSeg` (no shared
-/// type; sidecar converts).
+/// type; the host converts).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HpathSeg {
     /// Heading text, matched **byte-exactly** against the containment tree

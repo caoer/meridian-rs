@@ -24,7 +24,6 @@ model = { workspace = true }
 wire = { workspace = true }
 wire-map = { workspace = true }
 render = { workspace = true }
-sidecar = { workspace = true }
 fs = { workspace = true }
 transport = { workspace = true }
 # The MERIDIAN.md config plane (U6), driven against U2's 37-case pack under
@@ -52,4 +51,9 @@ blake3 = "1"
 wire-serve = { workspace = true }
 fs = { workspace = true }
 lock = { workspace = true }
+# test-only: the one remaining wire host (hosts ruling, wire-contract §3.3,
+# 2026-08-06 — the stdio sidecar is DROPPED). The frame-layer tests drive the
+# registry daemon's connection-serve path in-process (`registry::serve_lines`),
+# so byte-level NDJSON coverage lives on the door that ships.
+registry = { workspace = true }
 tempfile = "3"

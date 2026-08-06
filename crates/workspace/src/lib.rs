@@ -32,7 +32,7 @@
 //!
 //! **Dependencies:** `std` plus a single edge to `cache`, the one owner of cache-root
 //! resolution (the deny ceiling must name the same root the drawer addressing uses). No
-//! `wire`, `model`, or `sidecar` edge; `cache` is a leaf utility, not a Go-facing crate.
+//! `wire`, `model`, or host edge; `cache` is a leaf utility, not a Go-facing crate.
 //!
 //! # Identity is [`canonicalize`]
 //! Every path comparison runs over the canonical form. On this target (macOS/APFS,

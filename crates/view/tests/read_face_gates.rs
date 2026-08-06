@@ -29,8 +29,8 @@ fn is_external_access_refusal(msg: &str) -> bool {
 #[test]
 fn gate_blocked_attach() {
     let tmp = tempfile::tempdir().unwrap();
-    let sidecar = tmp.path().join("sidecar.duckdb");
-    let attach = format!("ATTACH '{}' AS x", sidecar.display());
+    let db_file = tmp.path().join("attached.duckdb");
+    let attach = format!("ATTACH '{}' AS x", db_file.display());
 
     // Positive control: without lock, ATTACH succeeds.
     let control = Connection::open_in_memory().unwrap();

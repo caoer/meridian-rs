@@ -110,7 +110,7 @@ impl PackFiles for MemFiles {
     }
 }
 
-/// The real parse→facts builder the sidecar injects into the load gate — fixtures
+/// The real parse→facts builder the serving host injects into the load gate — fixtures
 /// demonstrate over the SAME fact plane `evaluate` runs (P6-VERDICTS unification);
 /// the signature stays in policy vocabulary (no `syntax::`/`model::` type crosses it).
 fn real_facts(path: &str, body: &str) -> policy::FactDoc {

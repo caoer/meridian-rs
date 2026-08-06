@@ -513,12 +513,8 @@ fn next_prewarm_delay(
     current.saturating_mul(2).min(quiet_max.max(base)).max(base)
 }
 
-/// Serve one connection: NDJSON in, one NDJSON response per line (R1: one
-/// vocabulary on the socket). Families by `op`:
-/// - **admin** (`ping`/`register`/`unregister`/`resolve_ws`/`list`) — daemon-
-///   internal, absent from wire `caps`;
-/// - **`hello`** — contract rev, pin, warm, bind connection (§4; subsumes deleted `attach`);
-/// - **wire ops** — frozen contract from the bound workspace's warm engine.
+/// Serve one connection: the request-line loop over the accepted socket, then —
+/// if a `sub` armed the connection — the push plane.
 fn serve_conn(
     stream: &UnixStream,
     registry: &Registry,
@@ -528,11 +524,74 @@ fn serve_conn(
 ) -> io::Result<()> {
     let reader = BufReader::new(stream.try_clone()?);
     let mut writer = stream.try_clone()?;
+    match serve_lines(registry, reader, &mut writer, build_sha)? {
+        ServeOutcome::Eof => Ok(()),
+        // U20b framing: the request loop is left for good; the connection is
+        // push-only from here. Desync is unrepresentable. Dual planes ⇒ two
+        // connections.
+        ServeOutcome::Armed {
+            workspace,
+            rev,
+            from_seq,
+        } => push_loop(
+            registry,
+            &workspace,
+            &mut writer,
+            rev,
+            from_seq,
+            shutdown,
+            deadlines,
+        ),
+    }
+}
+
+/// How the request-line loop of one connection ended.
+#[derive(Debug)]
+pub enum ServeOutcome {
+    /// The client closed the stream with the connection still in request mode.
+    Eof,
+    /// An accepted `sub` armed the connection for push: the caller owns the
+    /// push plane from here (`serve_conn` enters `push_loop`; a socketless
+    /// caller has no push plane to enter).
+    Armed {
+        /// The bound workspace (canonical) the subscription reads.
+        workspace: PathBuf,
+        /// The contract rev the session negotiated at `hello`.
+        rev: Rev,
+        /// The subscription anchor the accepted `sub` declared.
+        from_seq: u64,
+    },
+}
+
+/// The request-line half of one connection: NDJSON in, one NDJSON response per
+/// line (R1: one vocabulary on the socket). Families by `op`:
+/// - **admin** (`ping`/`register`/`unregister`/`resolve_ws`/`list`) — daemon-
+///   internal, absent from wire `caps`;
+/// - **`hello`** — contract rev, pin, warm, bind connection (§4; subsumes deleted `attach`);
+/// - **wire ops** — frozen contract from the bound workspace's warm engine.
+///
+/// Transport-generic (any `BufRead`/`Write`), so the frame layer is testable
+/// without a socket — the daemon's socket is the one wire door (hosts ruling,
+/// `docs/wire-contract.md` §3.3), and this is that door's line dialogue.
+/// `serve_conn` drives it over the accepted `UnixStream`.
+///
+/// # Errors
+/// Stream I/O failure only — never a content condition.
+///
+/// # Panics
+/// Never in practice: an accepted `sub` proves a bound workspace (`dispatch_read`
+/// refuses `sub` before `hello` binds one), so the `expect` below is an invariant.
+pub fn serve_lines(
+    registry: &Registry,
+    input: impl BufRead,
+    writer: &mut impl Write,
+    build_sha: Option<&str>,
+) -> io::Result<ServeOutcome> {
     // Bound workspace (canonical), set by `hello`. Per-connection.
     let mut attached: Option<PathBuf> = None;
     // Negotiated contract rev (one epoch, one rev). Default v2 = frozen path.
     let mut rev = Rev::V2;
-    for line in reader.lines() {
+    for line in input.lines() {
         let line = line?;
         if line.trim().is_empty() {
             continue;
@@ -552,24 +611,33 @@ fn serve_conn(
         writer.write_all(out.as_bytes())?;
         writer.flush()?;
         if let Some(from_seq) = armed {
-            // U20b framing: leave the request loop; connection is push-only.
-            // Desync is unrepresentable. Dual planes ⇒ two connections.
-            let ws = attached
-                .as_deref()
-                .expect("an accepted sub proves a bound workspace")
-                .to_path_buf();
-            return push_loop(
-                registry,
-                &ws,
-                &mut writer,
+            let workspace = attached
+                .take()
+                .expect("an accepted sub proves a bound workspace");
+            return Ok(ServeOutcome::Armed {
+                workspace,
                 rev,
                 from_seq,
-                shutdown,
-                deadlines,
-            );
+            });
         }
     }
-    Ok(())
+    Ok(ServeOutcome::Eof)
+}
+
+/// An in-process registry for a socketless [`serve_lines`] — the same
+/// construction [`RunningServer::start`] performs (directory prepared, state
+/// loaded, drawers under the cache root) minus the singleton lock, the socket,
+/// and the background threads. Wiring only: what it serves is exactly what the
+/// daemon's socket serves.
+///
+/// # Errors
+/// Returns an error when the registry directory cannot be prepared or is
+/// world-writable.
+pub fn in_process_registry(config: &Config) -> io::Result<Registry> {
+    prepare_dir(config.registry_dir())?;
+    let store = StateStore::new(config.state_path.clone());
+    let entries = store.load();
+    Ok(Registry::new(store, config.cache_root.clone(), entries))
 }
 
 /// How often a subscriber checks for undelivered frames.
@@ -1074,7 +1142,7 @@ fn dispatch_read(
             }
             Ok(out.body)
         }
-        // Birth op — v3-only; same guarded door as the sidecar (`write::create`).
+        // Birth op — v3-only; the shared guarded door (`write::create`).
         // Bare commit, numbered on the same ring as `splice`.
         Op::Create {
             path,

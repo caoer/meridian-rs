@@ -19,7 +19,6 @@ default-members = [
     "crates/query",
     "crates/wire-serve",
     "crates/render",
-    "crates/sidecar",
     "crates/testsuite",
     "crates/workspace",
     "crates/cache",
@@ -56,7 +55,6 @@ wire = { path = "crates/wire", version = "0.0.0" }
 wire-map = { path = "crates/wire-map", version = "0.0.0" }
 wire-serve = { path = "crates/wire-serve", version = "0.0.0" }
 render = { path = "crates/render", version = "0.0.0" }
-sidecar = { path = "crates/sidecar", version = "0.1.0" }
 receipt = { path = "crates/receipt", version = "0.0.0" }
 transport = { path = "crates/transport", version = "0.0.0" }
 policy = { path = "crates/policy", version = "0.0.0" }

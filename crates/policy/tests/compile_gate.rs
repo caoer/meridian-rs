@@ -27,7 +27,7 @@ fn compile(
 }
 
 /// In-memory pack file resolver — the test-side stand-in for the disk reads
-/// `fs`/`sidecar` inject in production.
+/// `fs`/the serving host inject in production.
 struct MemFiles(HashMap<String, String>);
 
 impl MemFiles {
@@ -234,7 +234,9 @@ fn conforming_pack_is_admitted() {
 
 /// The ruleset budget class is the max over used assertions (schema L188): a
 /// pack whose rule page uses the corpus-class `link_resolves` surfaces `Corpus`
-/// — the seam P6-VERDICTS reads to refuse it sidecar-mode (`daemon_only`).
+/// — the seam P6-VERDICTS read to refuse it on an index-less engine
+/// (`daemon_only`, RETIRED with the sidecar host — §3.3/§8: every wire door
+/// is daemon-backed now; the class law stands).
 #[test]
 fn corpus_class_rule_surfaces_corpus_budget_class() {
     // A corpus-class rule page: its prose names the `link_resolves` assertion

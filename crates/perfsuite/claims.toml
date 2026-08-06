@@ -72,12 +72,12 @@ note = "UNTESTED by dependency, not by dormancy: wire_map::project landed 8883e5
 
 [[claim]]
 id = "roundtrip.op.p99"
-title = "Sidecar end-to-end op latency p99 (NDJSON in → response out)"
+title = "Wire-host end-to-end op latency p99 (NDJSON in → response out)"
 metric = "ms"
 direction = "lower"
 harness = "benches/roundtrip.rs"
 recipe = "vault-2026 seed=1 files=2000"
-note = "rung 1+; the number Go actually feels — composes parse+assemble+project+codec"
+note = "rung 1+; the number a caller actually feels — composes parse+assemble+project+codec. Host is the registry daemon's serve path (the one wire door since the sidecar's DROP, wire-contract §3.3)"
 
 [[claim]]
 id = "transport.codec.ndjson_roundtrip_p99"

@@ -188,7 +188,7 @@ mod tests {
     use crate::NO_DECORATIONS;
 
     /// G1: a corrupted span surfaces as a typed `render_failed`, never a
-    /// panic — the sidecar loop is panic-free by law.
+    /// panic — the host's serve loop is panic-free by law.
     #[test]
     fn oversized_span_is_typed_error() {
         let raw = "# H\n\nbody\n";

@@ -33,7 +33,9 @@ pub use client::Client;
 pub use engine::{WarmOutcome, WorkspaceEngine};
 pub use protocol::{DenyKind, Request, Response, WorkspaceEntry};
 pub use registry::{RegisterOutcome, Registry, ResolveOutcome};
-pub use server::{Config, RunningServer, default_socket_path};
+pub use server::{
+    Config, RunningServer, ServeOutcome, default_socket_path, in_process_registry, serve_lines,
+};
 
 /// Idle-reap horizon: unused entry (and its warm engine) dropped from memory
 /// and state. Reaper never touches the drawer (`cache::gc` 30-day horizon).

@@ -11,14 +11,14 @@
 //! path with byte-equal content → `renamed` + `from_path`. Else delete+create,
 //! `from_path` unwired.
 //!
-//! **Stated degrade — sidecar only:** an external write in the same window as an
-//! internal commit can break ring-chain contiguity → `root_unknown` resync
+//! **Stated degrade — line-boundary reconcile only** (the deleted sidecar's
+//! mode; no shipping driver runs it): an external write in the same window as
+//! an internal commit can break ring-chain contiguity → `root_unknown` resync
 //! (§7.3: re-derive, never wrong data). The registry detector snapshots under
 //! the write flock, never mid-landing.
 //!
 //! Shared here: the three-way disposition, the rename ruling, the wire
-//! projection. Per-host driver: sidecar at its serve-loop line boundary;
-//! registry on its subscription detection cycle.
+//! projection. Host driver: the registry, on its subscription detection cycle.
 
 use wire::{DeltaFile, DeltaFrame, ErrorBody, FileChange, NodeRev, Path, Root};
 

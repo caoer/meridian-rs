@@ -22,7 +22,7 @@ fn compile(
 // ── shared harness ───────────────────────────────────────────────────────────
 
 /// In-memory pack file resolver — the test-side stand-in for the disk reads
-/// `fs`/`sidecar` inject in production.
+/// `fs`/the serving host inject in production.
 struct MemFiles(HashMap<String, String>);
 
 impl MemFiles {
@@ -62,7 +62,7 @@ fn wsfix(rel: &str) -> PathBuf {
 }
 
 /// Build a real `model::Document` from fixture bytes and stamp its path — exactly
-/// what `fs`/`sidecar` do at the disk edge (the path is a caller-supplied fact;
+/// what `fs`/the serving host do at the disk edge (the path is a caller-supplied fact;
 /// `model::build` leaves it empty, being I/O-free).
 fn build_doc(raw: String, path: &str) -> model::Document {
     let nodes = syntax::parse(&raw);

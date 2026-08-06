@@ -42,7 +42,8 @@ pub(crate) fn parse_manifest(source: &str) -> Result<Manifest, CompileError> {
 
 /// Ruleset-level budget class = max class over used assertions, surfaced by
 /// `compile` so corpus-class-ness is detectable at load (a corpus-class pack
-/// loaded sidecar-mode is later refused `daemon_only`, not defined here). A
+/// needs the resident index; the `daemon_only` refusal that once enforced
+/// this at an index-less host is RETIRED — §3.3/§8). A
 /// conservative textual scan of rule-page sources for the §4 file/corpus
 /// assertion names; over-classification is the safe direction for a load gate.
 pub(crate) fn classify_budget_class(rule_sources: &[String]) -> BudgetClass {
