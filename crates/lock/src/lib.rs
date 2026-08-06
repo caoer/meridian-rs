@@ -1,27 +1,13 @@
-//! The `meridian-lock` fenced block — a machine-owned lockfile in the page (decision
-//! `2026-07-24-meridian-lock-block`, "#8"; schema **R4**, settled in session `86449b4e`
-//! 08-01 including the 17:20 ruling that removed the top-level `objects:` table).
+//! The `meridian-lock` fenced block — a machine-owned lockfile in the page
+//! (schema R4, v2).
 //!
-//! # Nature (#8): a lockfile
-//! Cargo.lock's species: machine-written, hand-editing is a bug, humans open it only when
-//! something is broken. Consequences carried here:
-//!
-//! - **Engine sole-writer** (#8 §3): [`render`] emits ONE canonical byte form —
-//!   deterministic field order, quoting, indentation. There is no "style".
-//! - **Strict reader, fail-loud**: [`parse`] accepts exactly the canonical grammar;
-//!   anything else is a typed [`LockError`] naming the line — a malformed lock is
-//!   corruption (or a hand edit), never something to guess through. Absence of a lock is
-//!   `Ok(None)` from [`find`]; a PRESENT but broken lock is never silently treated as
-//!   absent.
-//! - **Lock-is-content** (#8 §5): the block sits inside the page's span, so the page's
-//!   fingerprint covers its lock — that containment is what makes the transitive pin
-//!   graph complete, and it is a property of WHERE the block lives, not of this crate's
-//!   code (fixtured all the same).
-//!
-//! # The R4 schema (v2) — pins only
-//! A lock is a version plus a list of pins. There is no retrieval-plane table: the blob
-//! hash rides the pin row that needs it, so a hash can never outlive the claim it was
-//! written for.
+//! - **Engine sole-writer** (#8 §3): [`render`] emits ONE canonical byte form.
+//! - **Strict reader, fail-loud**: [`parse`] accepts exactly the canonical
+//!   grammar; anything else is a typed [`LockError`] naming the line. Absence
+//!   is `Ok(None)` from [`find`]; a present but broken lock is never treated
+//!   as absent.
+//! - **Lock-is-content** (#8 §5): the block sits inside the page's span, so
+//!   the page's fingerprint covers its lock.
 //!
 //! ```meridian-lock
 //! version: 2
@@ -32,54 +18,32 @@
 //!     fingerprint: "fp1.span2.b3.a8222f5a"
 //! ```
 //!
-//! - **`object`** — a wiki link, resolved EXACTLY as Obsidian resolves it. The inner text
-//!   is carried verbatim; resolution is the walk plane's job.
-//! - **`hash`** — the git blob hash of the target file, NEVER omitted ("if hash is
-//!   missing, we lost the explicit target meaning").
-//! - **`path` XOR `properties`** ([`Selector`]) — the body arm or the frontmatter arm,
-//!   never both, never neither. Both are **arrays only, no string form** ("machine lock
-//!   file. convenient buys nothing but chaos"), and `[]` means *all* on either arm — the
-//!   whole body without frontmatter, or every frontmatter key.
-//! - **`fingerprint`** — a full `fp1.…` CID-token (`docs/fingerprint-norm-spec.md` §2), carried
-//!   VERBATIM by this crate. Classifying it (green / red / grey unverifiable) is the
-//!   verify plane's job, never the parser's.
-//! - **Free-form extra keys** (`claim:`, and any unknown legacy key) are allowed on a pin
-//!   row and **engine-ignored**, carried verbatim (ZT 08-03: *"user can or can not use
-//!   claim, its free to use anything"*).
+//! - `object` — a wiki link's inner text, carried verbatim; resolution is the
+//!   walk plane's job.
+//! - `hash` — the git blob hash of the target file, never omitted. It rides
+//!   the pin row so a hash cannot outlive the claim it was written for.
+//! - `path` XOR `properties` ([`Selector`]) — arrays only, no string form;
+//!   `[]` means *all* on either arm.
+//! - `fingerprint` — a full `fp1.…` CID-token (`docs/fingerprint-norm-spec.md`
+//!   §2), carried verbatim; classifying it is the verify plane's job.
+//! - Free-form extra keys are engine-ignored and carried verbatim.
 //!
-//! Settled semantics riding the schema: **latest only** (no `was` field — history
-//! recovery rides git blobs), **self-lock is legal**, and `inputs` is dead as vocabulary
-//! AND as a storage key (R1.3).
+//! Latest only (no history field); self-lock is legal.
 //!
-//! # The three-states rule (R4 18a.2)
 //! `absent` · `null` · `empty` are three different facts about a property and
-//! **fingerprint differently**. The mechanism lives in `model::fingerprint` (canonical
-//! keyed map, sorted keys, length-prefixed) because the `Fingerprint` seal and the one
-//! blake3 hasher live there; this crate owns the SELECTOR half — [`property_fingerprint`]
-//! refuses a duplicate selector key rather than deduping it.
+//! fingerprint differently (R4 18a.2). The hashing half lives in
+//! `model::fingerprint`; this crate owns the selector half —
+//! [`property_fingerprint`] refuses a duplicate selector key, never dedupes.
 //!
-//! # v1 is not readable here (plan decision P4)
-//! [`VERSION`] is `2` and this crate reads v2 ONLY: a v1 file is
-//! [`LockError::UnsupportedVersion`], naming the file. That is fail-loud BY DESIGN —
-//! *refuse loudly, never guess*. The v1 parser lives in the migration tool, quarantined,
-//! so no reader can drift back into reinterpreting an old shape as a new one.
+//! [`VERSION`] is `2` and this crate reads v2 only (P4): a v1 file is
+//! [`LockError::UnsupportedVersion`], naming the file. The v1 parser lives in
+//! the migration tool.
 //!
-//! # Namespace (#8 §1) — and readership, which is a different question (U36)
-//! The whole `meridian-*` prefix is reserved as the engine's block-language namespace —
-//! [`is_meridian_lang`] is the one predicate for *"is this ours?"*, uniform over the
-//! prefix, so tooling never grows an enumerated list.
-//!
-//! **Reservation is not readership.** *"Should a reader see it?"* is answered by
+//! The `meridian-*` prefix is the engine's reserved block-language namespace —
+//! [`is_meridian_lang`], one predicate, never an enumerated list (#8 §1).
+//! Reservation is not readership (U36): render elision follows
 //! [`is_engine_emitted`], derived from the registered canonical writers
-//! ([`EngineEmitted`], [`engine_emits!`]). The two answers come apart exactly where it
-//! matters: the engine writes a `meridian-lock`, so it is elided from the render face; a
-//! human writes a `meridian-mount` and `config` only PARSES it, so it renders. One
-//! predicate serving both is what made a config file render as a config file that
-//! declares nothing.
-//!
-//!
-//!
-//!
+//! ([`EngineEmitted`], [`engine_emits!`]).
 
 use model::{ByteSpan, Document, Node, NodeKind, YamlMap};
 use std::collections::BTreeMap;
@@ -90,16 +54,12 @@ pub const LANG: &str = "meridian-lock";
 /// The engine's reserved block-language namespace prefix (#8 §1).
 pub const NAMESPACE_PREFIX: &str = "meridian-";
 
-/// The one live root-object version — **R4's v2 shape**.
-///
-/// The bump from 1 is the `objects:` removal: a breaking shape change bumps the
-/// schema version, and the field is schema-only, never a tool version. There is
-/// no v1 read path here (P4).
+/// The one live root-object version — R4's v2 shape. Schema-only, never a
+/// tool version; there is no v1 read path here (P4).
 pub const VERSION: u32 = 2;
 
-/// Is this fence info string an ENGINE block (`meridian-*`)? The first
-/// whitespace token decides — one law for elision and any future engine
-/// block, never an enumerated list (#8 §1).
+/// Is this fence info string an engine block (`meridian-*`)? The first
+/// whitespace token decides (#8 §1).
 #[must_use]
 pub fn is_meridian_lang(lang: &str) -> bool {
     lang.split_whitespace()
@@ -115,32 +75,17 @@ pub fn is_lock_lang(lang: &str) -> bool {
 
 // ── The engine-emits property: READERSHIP, per language (U36) ──────────────
 //
-// A namespace answers *"is this ours?"* — [`is_meridian_lang`], uniform over
-// `meridian-*`, and it does not move. Elision answers a DIFFERENT question,
-// *"should a reader see it?"*, and the two answers come apart exactly where it
-// matters: the engine writes a `meridian-lock`, so no human authored it and the
-// render face elides it as noise; a human writes a `meridian-mount`, and
-// `config` only PARSES it, so the render face must show it. One predicate
-// serving both questions is what made a config file render as a config file
-// that declares nothing, with no signal.
-//
-// The property is *"does the ENGINE EMIT this block's bytes?"* — never *"does a
-// crate NAME this language?"*. `config` names `meridian-mount` in a `pub const`
-// and parses it; a mention-keyed predicate would elide it and reproduce the
-// defect wearing derivation clothes.
-//
-// It is derived, never listed. `#8 §1` bars an enumerated list wherever it
-// lives, because a list silently omits new members. Here the set is assembled
-// by the LINKER from declarations that live beside their writers, so there is
-// no list to omit from — and a declaration cannot be written without a writer,
-// which is what [`EngineEmittedLang::of`]'s bound enforces.
+// Elision follows "does the ENGINE EMIT this block's bytes?", never "does a
+// crate name this language?" — a language the engine only parses must render.
+// The set is derived, never listed (#8 §1): the linker assembles it from
+// declarations beside their writers, and a declaration cannot exist without a
+// writer ([`EngineEmittedLang::of`]'s bound).
 
-/// A block language whose bytes THE ENGINE EMITS: the engine owns its one
-/// canonical writer (#8 §3, engine sole-writer).
+/// A block language whose bytes the engine emits: the engine owns its one
+/// canonical writer (#8 §3).
 ///
-/// Implementing this is what makes a language engine-emitted, and therefore
-/// render-elided. A language the engine only PARSES has no impl and is not
-/// elided — the user authored those bytes on purpose.
+/// Implementing this makes a language engine-emitted, and therefore
+/// render-elided. A language the engine only parses has no impl and renders.
 pub trait EngineEmitted {
     /// The fence info-string first token this writer emits under.
     const LANG: &'static str;
@@ -154,9 +99,7 @@ pub trait EngineEmitted {
 /// leaves beside itself, collected by the linker.
 ///
 /// The field is private and [`of`](Self::of) is the only constructor, so this
-/// value cannot be minted for a language that has no writer. That seal is what
-/// separates this from a list of names: a registration is *evidence of a
-/// writer*, not an assertion about one.
+/// value cannot be minted for a language that has no writer.
 #[derive(Debug)]
 pub struct EngineEmittedLang {
     lang: &'static str,
@@ -183,9 +126,8 @@ inventory::collect!(EngineEmittedLang);
 pub use inventory;
 
 /// Declare `$t` the engine's canonical writer for its block language, and
-/// register that language as engine-emitted — ONE motion, invoked beside the
-/// writer, so a new engine block's readership consequence cannot be forgotten
-/// separately from the block.
+/// register that language as engine-emitted — one motion, invoked beside the
+/// writer.
 ///
 /// ```
 /// struct MyBlock;
@@ -199,8 +141,6 @@ pub use inventory;
 /// lock::engine_emits!(MyBlock);
 ///
 /// fn main() {
-///     // The declaration is what makes it engine-emitted, so the render face
-///     // elides it — with no elision predicate edited anywhere.
 ///     assert!(lock::is_engine_emitted("meridian-myblock"));
 ///     // A reserved language nobody writes stays visible to readers.
 ///     assert!(!lock::is_engine_emitted("meridian-unwritten"));
@@ -224,14 +164,12 @@ impl EngineEmitted for Lock {
 
 engine_emits!(Lock);
 
-/// Does the ENGINE EMIT this fence info string's block? The first whitespace
-/// token decides, matching every other reader.
+/// Does the engine emit this fence info string's block? The first whitespace
+/// token decides.
 ///
-/// This is the elision law (#8 §1 as applied per-language by U36) and it is
-/// **not** [`is_meridian_lang`]. Reservation is uniform; readership is not.
-/// A `meridian-*` language with no registered writer is a human's bytes — a
-/// declaration the engine parses, or one no reader claims yet — and a reader
-/// sees it.
+/// The elision law (U36), and it is **not** [`is_meridian_lang`]: a
+/// `meridian-*` language with no registered writer is a human's bytes, and a
+/// reader sees it.
 #[must_use]
 pub fn is_engine_emitted(lang: &str) -> bool {
     let Some(tok) = lang.split_whitespace().next() else {
@@ -245,17 +183,11 @@ pub fn is_engine_emitted(lang: &str) -> bool {
 // ── R4 §1: the selector — `path` XOR `properties` ──────────────────────────
 
 /// Which arm of the target a pin claims: body path segments, or frontmatter
-/// property keys. **Exactly one** — R4's `path` XOR `properties`.
+/// property keys. Exactly one — R4's `path` XOR `properties`.
 ///
-/// The XOR is a TYPE here, not a validation rule, so a pin carrying both or
-/// neither is unrepresentable rather than merely rejected. That is the same
-/// shape as the historical `declared_ref: String → addr::Addr` retype: move the
-/// discipline into the type and every construction site discharges it or fails
-/// to compile.
-///
-/// Both arms are **arrays and only arrays** — R4 admits no string spelling on
-/// either, because a machine surface gains nothing from a convenient form and
-/// inherits every escaping question it brings.
+/// The XOR is a type, not a validation rule: a pin carrying both or neither
+/// is unrepresentable. Both arms are arrays only — R4 admits no string
+/// spelling on either.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Selector {
     /// The body arm: heading/anchor segments, root → leaf. `[]` is the whole
@@ -293,19 +225,16 @@ impl Selector {
 
     /// Is this the `[]` form — *all* of this arm?
     ///
-    /// A pin pair of `Path([])` + `Properties([])` on one object is the
-    /// **whole-file lock**: body and frontmatter, two co-existing rows. R4 has
-    /// no single "whole file" spelling, and does not need one.
+    /// `Path([])` + `Properties([])` on one object is the whole-file lock:
+    /// two co-existing rows. R4 has no single "whole file" spelling.
     #[must_use]
     pub fn is_all(&self) -> bool {
         self.elements().is_empty()
     }
 
-    /// The first duplicate key, if this is a `properties` selector carrying one.
-    ///
-    /// `path` arrays may legitimately repeat — `["Design", "Design"]` is a
-    /// section named `Design` nested under one — so the rule is the frontmatter
-    /// arm's alone.
+    /// The first duplicate key, if this is a `properties` selector carrying
+    /// one. `path` arrays may legitimately repeat (nested same-name sections),
+    /// so the rule is the frontmatter arm's alone.
     #[must_use]
     pub fn duplicate_property(&self) -> Option<&str> {
         let Selector::Properties(keys) = self else {
@@ -323,31 +252,21 @@ impl Selector {
 /// One pin — the whole claim plane of R4. There is no second plane.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PinEntry {
-    /// The `object` — a wiki link's INNER text, verbatim (`notes` for
-    /// `[[notes]]`).
-    ///
-    /// Carried, never resolved: R4 requires resolution to match Obsidian's own
-    /// EXACTLY — *"100% match or it is a critical trust failure"* — and that is
-    /// the walk plane's index, not a parser's guess. Storing the inner text
-    /// verbatim is what lets this crate round-trip a link it cannot resolve.
+    /// The `object` — a wiki link's inner text, verbatim (`notes` for
+    /// `[[notes]]`). Carried, never resolved: resolution is the walk plane's
+    /// index, and verbatim storage round-trips a link this crate cannot
+    /// resolve.
     pub object: String,
-    /// The `hash` — the git blob hash of the target FILE, verbatim.
-    ///
-    /// Never omitted: *"if hash is missing, we lost the explicit target
-    /// meaning"*. It rides the pin row rather than a shared table precisely so
-    /// it cannot outlive the claim it was written for.
+    /// The `hash` — the git blob hash of the target file, verbatim. Never
+    /// omitted; it rides the pin row so it cannot outlive its claim.
     pub hash: String,
     /// `path` XOR `properties` — see [`Selector`].
     pub selector: Selector,
     /// The `fingerprint` — a full `fp1.…` token (fingerprint-norm-spec §2), verbatim.
     pub fingerprint: String,
-    /// Free-form extra keys, **engine-ignored and carried verbatim**: the
-    /// value is the raw text after `: `, untouched.
-    ///
-    /// This is the `claim:` slot and every unknown legacy key at once. A
-    /// `BTreeMap` because the canonical byte form admits no ordering freedom
-    /// and duplicate keys are not representable — the same two properties the
-    /// reader would otherwise have to enforce by hand.
+    /// Free-form extra keys, engine-ignored and carried verbatim: the value is
+    /// the raw text after `: `. A `BTreeMap` because the canonical byte form
+    /// admits no ordering freedom and no duplicate keys.
     pub extra: BTreeMap<String, String>,
 }
 
@@ -373,11 +292,8 @@ impl PinEntry {
         }
     }
 
-    /// The identity a pin is upserted by: the object AND the selector.
-    ///
-    /// Both, because R4's whole-file lock is *two rows on one object* — keying
-    /// on the object alone would make the second row silently replace the
-    /// first, which is precisely the case the plan calls out to test.
+    /// The identity a pin is upserted by: the object AND the selector. Both,
+    /// because the whole-file lock is two rows on one object.
     #[must_use]
     pub fn key(&self) -> (&str, &Selector) {
         (&self.object, &self.selector)
@@ -428,18 +344,14 @@ impl Lock {
 }
 
 /// Mint the fingerprint of a `properties` selector over a page's frontmatter
-/// (R4 18a.2, the three-states rule).
-///
-/// This crate owns the SELECTOR half of the rule and `model::fingerprint` owns
-/// the hashing half — see [`model::fingerprint::properties_fingerprint`] for
-/// why the mint lives there (the `Fingerprint` seal, the one hasher).
+/// (R4 18a.2, the three-states rule). The hashing half lives in
+/// [`model::fingerprint::properties_fingerprint`].
 ///
 /// # Errors
-/// - [`LockError::DuplicateSelectorKey`] — R4 refuses duplicates, never
-///   dedupes: a selector naming `status` twice is a bug in whoever wrote it,
-///   and silently collapsing it would fingerprint a selection nobody asked for.
+/// - [`LockError::DuplicateSelectorKey`] — duplicates are refused, never
+///   deduped.
 /// - [`LockError::WrongSelectorArm`] — the `path` arm has no property
-///   fingerprint; its bytes are the body's, which is `model`'s span plane.
+///   fingerprint; its bytes belong to the span plane.
 pub fn property_fingerprint(
     map: &YamlMap,
     selector: &Selector,
@@ -464,13 +376,9 @@ pub fn property_fingerprint(
 pub enum LockError {
     /// The slice does not open with the ` ```meridian-lock ` fence.
     NotALockBlock,
-    /// A version this reader does not implement — the upgrade slot working as
-    /// designed (#8 §2): refuse loudly, never guess.
-    ///
-    /// **This is the v1 door, and it is shut on purpose** (P4). `file` names
-    /// the page when the caller knew it ([`find`] does), because "some lock
-    /// somewhere is v1" is not an actionable message for an operator running a
-    /// migration over a vault.
+    /// A version this reader does not implement (#8 §2): refuse loudly, never
+    /// guess. This is the v1 door, shut on purpose (P4). `file` names the
+    /// page when the caller knew it ([`find`] does).
     UnsupportedVersion {
         /// The version spelling found, verbatim.
         found: String,
@@ -483,29 +391,27 @@ pub enum LockError {
     /// More than one `meridian-lock` block on the page — sole-writer emits
     /// exactly one; two is corruption.
     MultipleBlocks,
-    /// An `object` value that is not a `[[wiki link]]`. R4 types the field as a
-    /// wiki link, and a machine file that disagrees is damage to NAME.
+    /// An `object` value that is not a `[[wiki link]]`.
     BadObject {
         /// 1-based line within the block slice.
         line: usize,
         /// The rejected spelling, verbatim.
         found: String,
     },
-    /// A `properties` selector naming the same key twice — **refused, never
-    /// deduped** (R4 18a.2). `line` is 0 when the refusal came from a value in
+    /// A `properties` selector naming the same key twice — refused, never
+    /// deduped (R4 18a.2). `line` is 0 when the refusal came from a value in
     /// memory rather than from a parse.
     DuplicateSelectorKey { line: usize, key: String },
-    /// A property fingerprint was asked of a `path` selector. The arms are not
-    /// interchangeable; the body arm's bytes belong to the span plane.
+    /// A property fingerprint was asked of a `path` selector; the body arm's
+    /// bytes belong to the span plane.
     WrongSelectorArm {
         /// The arm that was passed.
         found: &'static str,
     },
 }
 
-/// The refusal reason, one line — THE spelling of why a lock is unreadable, so
-/// a write refusal and a read face's `grey lock-refused` row name the damage
-/// identically.
+/// The one-line refusal spelling, shared by write refusals and the read
+/// face's `grey lock-refused` rows.
 impl std::fmt::Display for LockError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -555,8 +461,7 @@ pub struct Found {
 /// `Err` when one exists but is malformed, or when more than one exists. A
 /// present-but-broken lock is never reported as absent.
 ///
-/// A refusal is enriched with the page path when the document carries one, so
-/// an operator sweeping a vault is told WHICH file to fix.
+/// A refusal is enriched with the page path when the document carries one.
 ///
 /// # Errors
 /// [`LockError`] per its variants.
@@ -591,16 +496,11 @@ fn name_the_file(err: LockError, doc: &Document) -> LockError {
     LockError::UnsupportedVersion { found, file: path }
 }
 
-/// Every `meridian-lock` block's RAW bytes in document order — the lock
-/// ARTIFACT as it sits on disk, with no parse in the way.
+/// Every `meridian-lock` block's raw bytes in document order — the lock
+/// artifact as it sits on disk, no parse in the way.
 ///
-/// [`find`] answers "what does the lock SAY", which needs the grammar and
-/// therefore refuses corruption. This answers "which bytes ARE the lock", which
-/// a guard comparing two documents needs to work even when one of them is
-/// malformed or carries two blocks: a diff over parsed values could not see a
-/// change from one broken block to a different broken block, and byte-identity
-/// is the property the artifact guard states (advisor R25 — guard the artifact,
-/// not the verb).
+/// Unlike [`find`] this works on malformed or duplicated blocks, which an
+/// artifact guard comparing two documents by byte identity requires.
 #[must_use]
 pub fn block_texts(doc: &Document) -> Vec<&str> {
     block_spans(doc)
@@ -609,19 +509,13 @@ pub fn block_texts(doc: &Document) -> Vec<&str> {
         .collect()
 }
 
-/// Every `meridian-lock` block's fence-to-fence SPAN, in document order.
+/// Every `meridian-lock` block's fence-to-fence span, in document order.
 ///
-/// The locating half of [`block_texts`], and it parses nothing — the spans come
-/// from the fence info string alone. That is the whole point: a page carrying a
-/// **v1** lock cannot be located through [`find`], because `find` reads the
-/// grammar and a v1 body is [`LockError::UnsupportedVersion`] BY DESIGN (P4).
-/// The migration door needs the span of a block it is not allowed to
-/// understand, and this is how it gets one without a v1 read path existing
-/// anywhere in the engine.
-///
-/// **This is not a parser and must never become one.** It answers *"which bytes
-/// are a lock block"*, never *"what does the lock say"* — the second question
-/// has exactly one answer-giver, [`parse`], and it speaks v2 only.
+/// The locating half of [`block_texts`]; the spans come from the fence info
+/// string alone. That lets the migration door locate a v1 block that [`find`]
+/// refuses (P4) without a v1 read path existing in the engine. This must
+/// never become a parser — "what does the lock say" belongs to [`parse`]
+/// alone.
 #[must_use]
 pub fn block_spans(doc: &Document) -> Vec<ByteSpan> {
     let mut spans: Vec<ByteSpan> = Vec::new();
@@ -739,10 +633,8 @@ fn parse_pins(it: &mut BodyIter<'_>, out: &mut Vec<PinEntry>) -> Result<(), Lock
             found: raw_object.clone(),
         })?;
 
-        // Continuations, in canonical order: hash, path|properties,
-        // fingerprint, then the free-form extras. `n` is the row's own line —
-        // a row TRUNCATED by the closing fence has no line of its own to blame,
-        // so the refusal names the row that is incomplete.
+        // Continuations in canonical order. `n` is the row's own line: a row
+        // truncated by the closing fence is blamed on the row that opened it.
         let hash = read_field(it, "hash", n)?;
         let (selector, sel_line) = read_selector(it, n)?;
         if let Some(dup) = selector.duplicate_property() {
@@ -771,9 +663,8 @@ fn unwrap_wikilink(raw: &str) -> Option<String> {
     (!inner.is_empty()).then(|| inner.to_string())
 }
 
-/// The refusal a pin row earns by omitting `hash`. Named because d2 §5.3's
-/// carrier asserts this exact spelling — a refusal test that does not name its
-/// refusal cannot tell its own case from a neighbouring one.
+/// The refusal a pin row earns by omitting `hash`. Named so a refusal test
+/// can assert this exact spelling.
 pub const MISSING_HASH: &str = "pin row needs `    hash: \"…\"` after its object";
 
 /// The refusal a pin row earns by omitting `fingerprint`. See [`MISSING_HASH`].
@@ -829,7 +720,7 @@ fn read_selector(it: &mut BodyIter<'_>, row: usize) -> Result<(Selector, usize),
 }
 
 /// `["a", "b"]` → the elements; `[]` → empty. No string form is accepted on
-/// either arm — that is R4's rule, not a convenience this reader may relax.
+/// either arm (R4).
 fn read_array(s: &str, line: usize) -> Result<Vec<String>, LockError> {
     let inner = s
         .strip_prefix('[')
@@ -860,8 +751,7 @@ fn read_array(s: &str, line: usize) -> Result<Vec<String>, LockError> {
 }
 
 /// The free-form tail of a pin row: any `    key: <raw>` line that is not a
-/// reserved field. Values are carried VERBATIM — the engine ignores them, so
-/// it has no business normalizing them either.
+/// reserved field. Values are carried verbatim, never normalized.
 fn read_extras(it: &mut BodyIter<'_>) -> Result<BTreeMap<String, String>, LockError> {
     let mut out = BTreeMap::new();
     while let Some((n, line)) = it.peek().copied() {
@@ -923,8 +813,7 @@ pub fn render(lock: &Lock) -> String {
             out.push_str("    fingerprint: ");
             push_quoted(&mut out, &pin.fingerprint);
             out.push('\n');
-            // `BTreeMap` order: sorted, so one byte form per value. The engine
-            // ignores these keys, but it still owns the file's canonical form.
+            // BTreeMap order: sorted, so one byte form per value.
             for (key, value) in &pin.extra {
                 out.push_str("    ");
                 out.push_str(key);
@@ -1032,38 +921,14 @@ mod tests {
         find_fm(&doc(raw).root).expect("the fixture has frontmatter")
     }
 
-    /// **The carrier of d2 §5.3, after the board arm that used to carry it.**
-    ///
-    /// "An ungated close renders grey, never green" was enforced by a board
-    /// detection arm — a declared-but-unpinned edge coloured grey. R1.3 retired
-    /// the `^inputs` plane that was the only way to reach it, and under R4 the
-    /// state that arm described is not merely unobserved but UNREPRESENTABLE:
-    /// the pin row IS the declaration, so there is no "declared without a minted
-    /// pin" to detect. The law did not retire; its enforcement changed category,
-    /// from board detection to SCHEMA REFUSAL.
-    ///
-    /// So the grammar is what holds the line, and this is the test that watches
-    /// it. It is mutation-provable in BOTH directions by construction: the
-    /// complete row parses, and dropping either mandatory field from that SAME
-    /// row makes it refuse. If the schema ever grows an optional-fingerprint or
-    /// optional-hash arm, this screams — which is exactly when the law would
-    /// need re-ruling rather than silently lapsing.
-    ///
-    /// `hash` is mandatory because *"if hash is missing, we lost the explicit
-    /// target meaning"* (R4); `fingerprint` is mandatory because it is the
-    /// claim — a row without one asserts nothing and could only ever be granted
-    /// a colour, never compute one.
+    /// The carrier of d2 §5.3: `hash` and `fingerprint` are mandatory, and
+    /// dropping either from a complete row refuses at parse. If the schema
+    /// ever grows an optional arm, this screams.
     #[test]
     fn a_pin_row_missing_a_mandatory_field_refuses_at_parse() {
-        // TWO pins, and the mutation is always applied to the FIRST — so the
-        // dropped field is followed by MORE ROW, never by the end of the block.
-        //
-        // This is load-bearing, and it was measured rather than assumed. With a
-        // ONE-pin fixture, `fingerprint` is the row's LAST field, so dropping it
-        // refuses with `pin row ended before its required fields` — the generic
-        // TRUNCATION rule, which is a different law from "fingerprint is
-        // mandatory". The test still went red, so it looked like a proof; it was
-        // resting on the wrong rule and could not have told the two apart.
+        // Two pins, mutation always applied to the FIRST, so the dropped field
+        // is followed by more row — a one-pin fixture would trip the generic
+        // truncation rule instead of the field-mandatory rule.
         let complete = format!(
             "```meridian-lock\n\
              version: 2\n\
@@ -1081,20 +946,17 @@ mod tests {
             fp("cd")
         );
 
-        // The positive control: the complete block parses, and to TWO pins.
+        // Positive control: the complete block parses, to two pins.
         let ok = parse(&complete).expect("the complete R4 rows are legal");
         assert_eq!(ok.pins.len(), 2, "the control block parses to two pins");
 
-        // Drop `fingerprint` from that same row — it must refuse, not default.
+        // Drop `fingerprint` — must refuse, and the reason string pins the
+        // refusal to the fingerprint requirement, not some other failure.
         let no_fingerprint = complete
             .lines()
             .filter(|l| !l.trim_start().starts_with("fingerprint:"))
             .collect::<Vec<_>>()
             .join("\n");
-        // NAMING the refusal, not just demanding one: a bare `is_err()` passes
-        // when the fixture trips some OTHER refusal, which is a refusal test
-        // that cannot tell its own case from a neighbouring one. The reason
-        // string is what pins this to the fingerprint requirement.
         match parse(&no_fingerprint) {
             Err(LockError::Malformed { reason, .. }) => assert_eq!(
                 reason, MISSING_FINGERPRINT,
@@ -1107,7 +969,7 @@ mod tests {
             ),
         }
 
-        // Drop `hash` from that same row — it must refuse too.
+        // Drop `hash` — must refuse too.
         let no_hash = complete
             .lines()
             .filter(|l| !l.trim_start().starts_with("hash:"))
@@ -1142,7 +1004,7 @@ mod tests {
         assert_eq!(render(&sample()), expected);
     }
 
-    /// Round-trip of BOTH pin arms, extras included — value → bytes → value →
+    /// Round-trip of both pin arms, extras included — value → bytes → value →
     /// bytes is a fixpoint.
     #[test]
     fn round_trip_of_both_arms() {
@@ -1153,7 +1015,6 @@ mod tests {
             Selector::Properties(vec!["status".into(), "description".into()]),
             &fp("cd"),
         );
-        // A free-form key rides along, engine-ignored and verbatim.
         props
             .extra
             .insert("claim".into(), "owns the verdict".into());
@@ -1176,16 +1037,13 @@ mod tests {
         assert_eq!(parse(&b).expect("empty lock parses"), empty);
     }
 
-    /// **The three-states rule (R4 18a.2) — the gate that matters most.**
-    /// absent · null · empty are three different facts, and all three
-    /// pairwise-differ. A fixed-column table would collapse the first two.
+    /// The three-states rule (R4 18a.2): absent · null · empty pairwise-differ.
     #[test]
     fn three_states_fingerprint_differently() {
         let absent = frontmatter("---\ntitle: A\n---\n\nbody\n");
         let null = frontmatter("---\ntitle: A\nstatus:\n---\n\nbody\n");
         let empty = frontmatter("---\ntitle: A\nstatus: \"\"\n---\n\nbody\n");
 
-        // The classifier sees three states before any hashing happens.
         assert_eq!(
             model::fingerprint::classify_property(&absent, "status"),
             PropValue::Absent
@@ -1212,12 +1070,9 @@ mod tests {
         assert_ne!(fn_, fe, "null must not fingerprint as empty");
         assert_ne!(fa, fe, "absent must not fingerprint as empty");
 
-        // PINNED GOLDENS. The inequalities above are satisfied by any three
-        // distinct digests, including three produced by a serialization that
-        // silently changed meaning. These literals make the canonical form
-        // itself the thing under test: a change to key sorting, to the
-        // length-prefix encoding, to `PROPS_DOMAIN`, or to the codec token
-        // fails HERE, loudly, instead of silently re-pinning the whole corpus.
+        // Pinned goldens: the inequalities alone would pass under a silently
+        // changed serialization; the literals put the canonical form itself
+        // under test.
         assert_eq!(
             fa,
             "fp1.props1.b3.c36eba93c2f4218e860e9d796c4db60af76d38f1c57faddc3e3027db2ca8c7a5"
@@ -1232,9 +1087,8 @@ mod tests {
         );
     }
 
-    /// **Pinned parser behavior**: bare `status:` is NULL, and so is every
-    /// other YAML null spelling. This crate hand-parses frontmatter, so the
-    /// rule is ours to keep true — the assertion is what survives a swap.
+    /// Pinned parser behavior: bare `status:` and every other YAML null
+    /// spelling classify as null.
     #[test]
     fn bare_key_parses_as_null() {
         for spelling in ["status:", "status: ~", "status: null", "status: NULL"] {
@@ -1245,8 +1099,8 @@ mod tests {
                 "`{spelling}` is YAML null"
             );
         }
-        // And the near-misses are NOT null — a classifier that answered Null
-        // for everything would pass the loop above.
+        // Near-misses are NOT null — a classifier answering Null for
+        // everything would pass the loop above.
         for spelling in ["status: \"\"", "status: nullish", "status: 0"] {
             let map = frontmatter(&format!("---\n{spelling}\n---\n\nbody\n"));
             assert!(
@@ -1259,7 +1113,7 @@ mod tests {
         }
     }
 
-    /// A duplicate selector key is REFUSED, never deduped (R4) — at the mint,
+    /// A duplicate selector key is refused, never deduped (R4) — at the mint,
     /// and at the parse.
     #[test]
     fn duplicate_selector_key_is_refused() {
@@ -1287,8 +1141,8 @@ mod tests {
             })
         );
 
-        // A repeated PATH segment is legal — a section nested under a section
-        // of the same name. The refusal is the frontmatter arm's alone.
+        // A repeated PATH segment is legal — the refusal is the frontmatter
+        // arm's alone.
         let path_block = block.replace(
             "properties: [\"status\", \"status\"]",
             "path: [\"Design\", \"Design\"]",
@@ -1296,8 +1150,8 @@ mod tests {
         assert!(parse(&path_block).is_ok(), "path arrays may repeat");
     }
 
-    /// Selector ORDER does not change the fingerprint — the canonical keyed map
-    /// sorts, so order-independence is by construction, not by discipline.
+    /// Selector order does not change the fingerprint — the canonical keyed
+    /// map sorts.
     #[test]
     fn selector_order_does_not_change_the_fingerprint() {
         let map = frontmatter("---\nstatus: open\ndescription: d\ntitle: T\n---\n\nbody\n");
@@ -1307,8 +1161,7 @@ mod tests {
             property_fingerprint(&map, &one).expect("mints"),
             property_fingerprint(&map, &two).expect("mints")
         );
-        // Acceptance half: a DIFFERENT selection really does differ, so the
-        // equality above is not a fingerprint that ignores its input.
+        // Acceptance half: a different selection really does differ.
         let three = Selector::Properties(vec!["status".into(), "title".into()]);
         assert_ne!(
             property_fingerprint(&map, &one).expect("mints"),
@@ -1323,8 +1176,7 @@ mod tests {
         assert!(Selector::Properties(vec![]).is_all());
         assert!(!Selector::Path(vec!["A".into()]).is_all());
 
-        // The properties arm's `[]` really selects every key: it moves when a
-        // key nobody named moves.
+        // `[]` really selects every key: it moves when a key nobody named moves.
         let all = Selector::Properties(vec![]);
         let before = frontmatter("---\nstatus: open\ntitle: T\n---\n\nbody\n");
         let after = frontmatter("---\nstatus: open\ntitle: CHANGED\n---\n\nbody\n");
@@ -1333,7 +1185,7 @@ mod tests {
             property_fingerprint(&after, &all).expect("mints"),
             "`[]` covers every key, including ones no selector names"
         );
-        // And it equals the explicit enumeration of the same keys.
+        // It equals the explicit enumeration of the same keys.
         let explicit = Selector::Properties(vec!["title".into(), "status".into()]);
         assert_eq!(
             property_fingerprint(&before, &all).expect("mints"),
@@ -1341,10 +1193,9 @@ mod tests {
         );
     }
 
-    /// **The whole-file lock is TWO co-existing rows** — `path: []` plus
-    /// `properties: []` on one object. R4 has no single "whole file" spelling,
-    /// so the upsert key must be (object, selector) or the second row silently
-    /// replaces the first.
+    /// The whole-file lock is two co-existing rows — `path: []` plus
+    /// `properties: []` on one object — so the upsert key must be
+    /// (object, selector).
     #[test]
     fn whole_file_lock_is_two_rows_on_one_object() {
         let mut l = Lock::new();
@@ -1368,8 +1219,7 @@ mod tests {
         assert!(bytes.contains("    properties: []"));
         assert_eq!(parse(&bytes).expect("round-trips"), l);
 
-        // Upserting the SAME arm again replaces in place — the key is the pair,
-        // so this is an update, not a third row.
+        // Upserting the SAME arm again replaces in place, not a third row.
         l.upsert_pin(PinEntry::new(
             "notes",
             "blob2",
@@ -1380,7 +1230,7 @@ mod tests {
         assert_eq!(l.pins[0].hash, "blob2");
     }
 
-    /// The v1 door is SHUT (P4), and the refusal names the file.
+    /// The v1 door is shut (P4), and the refusal names the file.
     #[test]
     fn version_one_fails_loud_naming_the_file() {
         // Bare slice: no document, so no file to name.
@@ -1406,15 +1256,14 @@ mod tests {
             "the refusal names the file and the version: {err}"
         );
 
-        // A FUTURE version refuses identically — the slot guesses in neither
-        // direction.
+        // A FUTURE version refuses identically.
         assert!(matches!(
             parse("```meridian-lock\nversion: 3\n```"),
             Err(LockError::UnsupportedVersion { .. })
         ));
     }
 
-    /// An `object` that is not a wiki link is damage to NAME.
+    /// An `object` that is not a wiki link refuses.
     #[test]
     fn object_must_be_a_wikilink() {
         let block = |obj: &str| {
@@ -1424,7 +1273,7 @@ mod tests {
                 fp("ab")
             )
         };
-        // ACCEPTANCE first — without it, a predicate refusing everything passes.
+        // Acceptance first — a predicate refusing everything must not pass.
         let ok = parse(&block("[[sessions/notes]]")).expect("a wiki link parses");
         assert_eq!(ok.pins[0].object, "sessions/notes", "inner text, verbatim");
 
@@ -1463,15 +1312,15 @@ mod tests {
     #[test]
     fn malformed_cases_name_their_line() {
         let head = "```meridian-lock\nversion: 2\npins:\n  - object: \"[[a]]\"\n";
-        // Lines are 1-based over the SLICE — the opening fence is line 1.
+        // Lines are 1-based over the slice — the opening fence is line 1.
         for (slice, want_line) in [
             ("```yaml\nversion: 2\n```".to_string(), 0), // not a lock (line unused)
             ("```meridian-lock\n```".to_string(), 1),    // no version
             ("```meridian-lock\nversion: x\n```".to_string(), 2), // non-integer
             ("```meridian-lock\nversion: 2\nwhat\n```".to_string(), 3), // unrecognized
             ("```meridian-lock\nversion: 2".to_string(), 2), // no closing fence
-            // A row TRUNCATED by the closing fence is blamed on the line the
-            // ROW opened on (4) — there is no later line to point at.
+            // A row truncated by the closing fence is blamed on the line the
+            // row opened on (4).
             (format!("{head}```"), 4), // pin row without its hash
             (format!("{head}    hash: \"h\"\n```"), 4), // no selector
             // a STRING selector — R4 admits arrays only
@@ -1511,11 +1360,8 @@ mod tests {
         assert_eq!(bytes.lines().count(), 8);
     }
 
-    /// LOCK-IS-CONTENT (#8 §5): the block sits inside the page span, so the
-    /// PAGE fingerprint covers the lock — updating a pinned fingerprint moves
-    /// the page's own fingerprint (transitive drift by construction). Also:
-    /// the lock rides inside a FENCE, so nothing in it can ever scan as an
-    /// anchor (norm-v2 masks fenced code) — lock bytes are hash-domain-stable.
+    /// Lock-is-content (#8 §5): the block sits inside the page span, so a
+    /// lock update moves the page's own fingerprint.
     #[test]
     fn lock_is_content_moves_page_fingerprint() {
         let mut l = sample();
@@ -1534,7 +1380,7 @@ mod tests {
             model::fingerprint::fingerprint(&d2, &d2.root),
             "a lock update must move the page fingerprint"
         );
-        // And the pinned tokens themselves parse as fingerprints.
+        // The pinned tokens themselves parse as fingerprints.
         let found = find(&d1).expect("ok").expect("present");
         for pin in &found.lock.pins {
             assert!(
@@ -1544,12 +1390,9 @@ mod tests {
         }
     }
 
-    /// The engine-emits property (U36): READERSHIP, derived from the registered
-    /// canonical writers — not from the namespace, and not from a list of names.
-    ///
-    /// The two predicates are asserted against each other here, because the
-    /// whole point is that they DISAGREE for a reserved language the engine does
-    /// not write.
+    /// The engine-emits property (U36): readership derives from registered
+    /// writers, and disagrees with the namespace for a reserved language the
+    /// engine does not write.
     #[test]
     fn engine_emits_is_not_the_namespace() {
         // Emitted: `Lock` implements `EngineEmitted` and declares itself.
@@ -1569,26 +1412,20 @@ mod tests {
             );
         }
 
-        // Outside the namespace: neither predicate fires (the acceptance half —
-        // without it, "not emitted" is satisfied by a predicate returning false
-        // for everything).
+        // Outside the namespace: neither predicate fires.
         for lang in ["rust", "yaml", "meridian", ""] {
             assert!(!is_meridian_lang(lang));
             assert!(!is_engine_emitted(lang));
         }
     }
 
-    /// The namespace law (#8 §1): one predicate for every engine block. This is
-    /// RESERVATION and it did not move — U36 changed readership only.
+    /// The namespace law (#8 §1): one predicate for every engine block.
     #[test]
     fn namespace_predicate() {
         assert!(is_meridian_lang("meridian-lock"));
         assert!(is_meridian_lang("meridian-journal"));
         assert!(is_meridian_lang("meridian-lock extra-token"));
         assert!(!is_meridian_lang("meridian"));
-        // (This fixture used to read `yaml ^inputs`. `inputs` is dead as
-        // vocabulary AND as a storage key — R1.3 — so it does not survive even
-        // as a test string; the property under test is the trailing token.)
         assert!(!is_meridian_lang("yaml extra-token"));
         assert!(!is_meridian_lang(""));
         assert!(is_lock_lang("meridian-lock"));
