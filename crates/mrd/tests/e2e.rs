@@ -2,7 +2,6 @@
 //! process boundary with an overridden cache root (`XDG_CACHE_HOME`) and `HOME`. This is the
 //! phase integration evidence: the landed `workspace` / `cache` / `registry` crates wired into
 //! the settled verb surface, exercised as an operator would.
-//!
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -87,10 +86,8 @@ fn e2e_init_ls_unregister_lifecycle() {
     let out = sb.run(&ws, &["init"]);
     assert!(out.status.success(), "init failed: {}", stderr(&out));
 
-    // init's product is the root's own self-declaration, and the gate reads it
-    // back through the OWNER of what a valid declaration is (`config`) rather
-    // than asserting the file merely exists — existence-only belief is the
-    // defect the retired marker embodied.
+    // init's product is the root's own self-declaration, read back through the owner of what
+    // a valid declaration is (`config`) rather than asserting the file merely exists.
     let declaration = ws.join("MERIDIAN.md");
     assert!(declaration.exists(), "the root declaration is written");
     let decl = config::mount::read_root_declaration(&canonical)
@@ -151,14 +148,11 @@ fn e2e_m2_init_supersedes_descendant_drawer() {
     }
 }
 
-/// The M2 guard the marker retirement made necessary: a descendant that is its
-/// OWN root is NOT retired.
+/// The M2 guard: a descendant that is its own root is not retired.
 ///
-/// Under the marker tier an init target out-resolved a nearer `.git`, so every
-/// descendant genuinely was shadowed. The ladder now returns the NEAREST `.git`,
-/// so a descendant repository resolves to itself — stamping its drawer
-/// `superseded_by` would make a later `cache clean` reap a LIVE workspace's
-/// cache. Weakening this to "retire every descendant" is the regression.
+/// The ladder returns the nearest `.git`, so a descendant repository resolves to itself —
+/// stamping its drawer `superseded_by` would make a later `cache clean` reap a live
+/// workspace's cache.
 #[test]
 fn e2e_m2_spares_a_descendant_that_is_its_own_git_root() {
     let sb = sandbox();
@@ -231,7 +225,7 @@ fn e2e_tier4_no_daemon_is_ephemeral_and_writes_nothing() {
 fn e2e_downgrade_future_schema_sentinel_is_cold_exit0() {
     let sb = sandbox();
     let ws = sb.dir("marked");
-    // Anchored by a `.git` entry — the retired marker no longer anchors.
+    // Anchored by a `.git` entry.
     std::fs::create_dir_all(ws.join(".git")).unwrap();
     let canonical = std::fs::canonicalize(&ws).unwrap();
 
@@ -275,10 +269,9 @@ fn e2e_init_in_home_is_denied_exit2() {
         "typed deny reason on stderr: {}",
         stderr(&out)
     );
-    // Refused BEFORE any write: no declaration, no drawer. This gate is now
-    // load-bearing rather than incidental — `MERIDIAN.md` is the reserved
-    // filename the MACHINE config uses at $HOME (`type: meridian-config`), so
-    // the deny ceiling is the whole reason init cannot clobber it.
+    // Refused before any write: no declaration, no drawer. `MERIDIAN.md` is the reserved
+    // filename the machine config uses at $HOME, so the deny ceiling is what keeps init from
+    // clobbering it.
     assert!(
         !sb.home.join("MERIDIAN.md").exists(),
         "no declaration written into $HOME"
@@ -289,10 +282,8 @@ fn e2e_init_in_home_is_denied_exit2() {
 // Gate: init declares the root, and SAYS which tier/root the ladder answers
 // ---------------------------------------------------------------------------
 
-/// A tree declared BELOW a git root still resolves to the git root — the
-/// declaration plane is `config`'s, not the ladder's. init must say so, because
-/// the retired marker used to win here and whoever relied on that gets a
-/// changed answer.
+/// A tree declared below a git root still resolves to the git root — the declaration plane
+/// is `config`'s, not the ladder's — and init must say so.
 #[test]
 fn e2e_init_below_a_git_root_names_the_tier_and_root_it_resolves_to() {
     let sb = sandbox();
@@ -326,8 +317,7 @@ fn e2e_init_below_a_git_root_names_the_tier_and_root_it_resolves_to() {
         "init states the two are not the same directory"
     );
 
-    // The human surface teaches the fix rather than leaving the change to be
-    // discovered: this is the sentence that replaces the marker.
+    // The human surface teaches the fix rather than leaving the change to be discovered.
     let out = sb.run(&inner, &["init"]);
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(
@@ -496,13 +486,10 @@ fn graceful_kill(child: &mut std::process::Child) {
 
 // P1 (decision 0002 §3): the engine-client path — `mrd links` auto-spawns the resident daemon
 // on first use and degrades to an in-process ephemeral engine.
-//
-//
 
 impl Sandbox {
-    /// An ANCHORED workspace `tmp/<name>` (a `.git` entry, so the ladder answers git-root and never
-    /// needs a daemon) seeded with `files`. Returns its canonical path.
-    ///
+    /// An anchored workspace `tmp/<name>` (a `.git` entry, so the ladder answers git-root and
+    /// never needs a daemon) seeded with `files`. Returns its canonical path.
     fn anchored_ws(&self, name: &str, files: &[(&str, &str)]) -> PathBuf {
         let ws = self.dir(name);
         std::fs::create_dir_all(ws.join(".git")).expect("git anchor");
@@ -524,9 +511,8 @@ impl Sandbox {
     }
 
     /// Like [`Self::wait_daemon_pid`], but when `exclude` is set, poll until the pidfile names a
-    /// DIFFERENT pid — so a respawn is not confused with the killed daemon's stale pidfile (SIGKILL
-    /// leaves it behind until the fresh daemon overwrites it).
-    ///
+    /// different pid — so a respawn is not confused with the killed daemon's stale pidfile
+    /// (SIGKILL leaves it behind until the fresh daemon overwrites it).
     fn wait_daemon_pid_since(&self, exclude: Option<i32>, timeout: Duration) -> Option<i32> {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
@@ -651,9 +637,9 @@ fn e2e_links_spawn_impossible_degrades_and_answers_correctly() {
         ],
     );
 
-    // No daemon is running, and spawning one is impossible (the override names a binary that does
-    // not exist), so `ensure_daemon` fails and the client degrades — the run still succeeds.
-    //
+    // No daemon is running, and spawning one is impossible (the override names a binary that
+    // does not exist), so `ensure_daemon` fails and the client degrades — the run still
+    // succeeds.
     let out = sb
         .base(mrd_bin())
         .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")

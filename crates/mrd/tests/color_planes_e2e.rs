@@ -1,20 +1,10 @@
-//! Cross-surface gates for the color planes — ONE corpus read by BOTH `mrd walk`
+//! Cross-surface gates for the color planes — one corpus read by both `mrd walk`
 //! and `mrd status`, over the real binary (`CARGO_BIN_EXE_mrd`).
 //!
-//! Every gate here is a plane-vs-plane agreement, not a rendering check. Each was
-//! a shipped defect where two surfaces answered ONE question differently, and the
-//! wrong answer was the reassuring one:
-//!
-//! - **finding 6** — `walk` deduped its listing by canonical selector, so two
-//!   pins on one ref (one live, one drifted) rendered as the live one alone:
-//!   `walk` printed green and exited 0 while `status` rolled the same corpus up
-//!   `lock red content-drifted [2 pins]`.
-//! - **finding 17** — a `meridian-lock` fence trailed by an `^inputs` anchor was
-//!   read twice, once as the form-3 pin it is and once as a form-2 chain block,
-//!   so ONE pin projected TWO rows carrying two verdicts.
-//! - **finding 26** — an `objects:` value that is not an object id was dropped
-//!   before the vibe-debt gauge counted it, so a corrupt retrieval plane read as
-//!   a true zero.
+//! Every gate is a plane-vs-plane agreement, not a rendering check: finding 6 (a
+//! red pin deduped away behind a green one on the same ref), finding 17 (one pin
+//! projected as two rows with two verdicts), finding 26 (a malformed `objects:`
+//! value dropped before the vibe-debt gauge counted it, reading as a true zero).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -105,10 +95,8 @@ fn lock_block(pins: &[(&str, &str)]) -> String {
 }
 
 /// [`lock_block`] with each pin's blob `hash` spelled out — for the gates that measure the
-/// RETRIEVAL plane, which R4 moved onto the pin row. NOTE FOR REVIEWERS: `version: 1` became
-/// `version: 2` here. That is the LOCK FILE schema version, not the wire protocol version.
-///
-///
+/// retrieval plane (R4 moved it onto the pin row). `version: 2` is the lock-file schema
+/// version, not the wire protocol version.
 fn lock_block_with_hashes(pins: &[(&str, &str, &str)]) -> String {
     use std::fmt::Write as _;
     let mut out = String::from("```meridian-lock\nversion: 2\npins:\n");
@@ -149,20 +137,8 @@ fn walk_rows(human: &str) -> Vec<String> {
 
 // ── finding 6 — a red pin must not vanish behind a green one ────────────────
 
-/// F6 GATE — two pins on ONE ref, one live and one drifted: `mrd walk` renders the RED row and
-/// exits 1 (its red contract), and `mrd status` agrees on the same corpus. The claim is the
-/// assert: the red row EXISTS in the listing, the green row is still there beside it, and the
-/// exit code is the finding leg.
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// F6 gate — two pins on one ref, one live and one drifted: `mrd walk` renders the red row
+/// beside the green one and exits 1, and `mrd status` agrees on the same corpus.
 #[test]
 fn walk_renders_the_red_pin_that_shares_a_ref_with_a_green_one() {
     let sb = sandbox();
@@ -220,31 +196,13 @@ fn walk_renders_the_red_pin_that_shares_a_ref_with_a_green_one() {
     );
 }
 
-// ── finding 17 — one pin, one row, one verdict ──────────────────────────────
-
 // ── finding 17 — RETIRED WITH ITS SUBJECT ──────────────────────────────────
-// `a_lock_fence_trailed_by_an_inputs_anchor_is_one_pin_one_row` asserted that a
-// `meridian-lock` fence trailed by an `^inputs` block anchor projects ONE row, not two.
-//
-//
-//
-//
-//
-//
-//
-//
-//
-//
 
 // ── finding 26 — a malformed `objects:` sha is unknown, never zero ──────────
 
-/// F26 GATE — an `objects:` value that is not an object id lands in the vibe-debt gauge's
-/// `unknown` slot. git cannot be asked about a value that is not an oid, so that entry's debt
-/// is unmeasurable. Dropping it read a corrupt retrieval plane as a true `0 blobs (0 bytes)` —
-/// a false clean in the one gauge whose whole purpose is to prevent one. The claim is the
-/// assert: `unknown` is SET and names the damaged entry.
-///
-///
+/// F26 gate — an `objects:` value that is not an object id lands in the vibe-debt gauge's
+/// `unknown` slot: git cannot be asked about it, so that entry's debt is unmeasurable, and
+/// dropping it would read a corrupt retrieval plane as a true zero.
 #[test]
 fn a_malformed_objects_sha_is_counted_unknown_not_dropped_to_zero() {
     let sb = sandbox();
@@ -305,33 +263,24 @@ fn empty_span_fingerprint() -> String {
     format!("fp1.span2.b3.{}", blake3::hash(b"").to_hex())
 }
 
-/// **R31 GATE — a stored empty-span pin can never read green.**
+/// R31 gate — a stored empty-span pin can never read green.
 ///
-/// The empty-span class is unreachable through `mrd pin` (every ref form refuses
-/// at mint — `s2fix_empty_span_mint.rs` asserts that door by door), so it
-/// reaches the product exactly one way: a HAND- or TOOL-AUTHORED `meridian-lock`
-/// block. This gate drives that door on the real binary, which is why it lives
-/// here and hand-writes its lock rather than minting one.
+/// The empty-span class is unreachable through `mrd pin` (every ref form refuses at mint),
+/// so it reaches the product exactly one way: a hand- or tool-authored `meridian-lock`
+/// block — which is why this gate drives the real binary and hand-writes its lock.
 ///
-/// Verbatim on the base build, both forms: `depth 1  green  …` and exit 0 —
-/// before ANY edit and again after the targets were rewritten end to end. A pin
-/// no edit anywhere could ever turn red, in the module whose entire product is
-/// that green means green.
-///
-/// The claim is the assert, and it is a REFUSAL of the green, not a colour
-/// preference: neither row may say `green`, on either plane, in either state.
-/// A fix that rendered these grey and left the pin in place would still ship a
-/// pin that cannot drift — so the row must be RED and the walk must exit 1.
+/// The assert is a refusal of the green, not a colour preference: neither row may say
+/// `green`, on either plane, in either state. Grey would still ship a pin that cannot
+/// drift, so the row must be red and the walk must exit 1.
 #[test]
 fn a_hand_authored_empty_span_pin_never_reads_green() {
     let sb = sandbox();
     let ws = sb.workspace("emptyspan");
     std::fs::create_dir_all(ws.join("sources")).expect("sources dir");
 
-    // Two of the enumerated empty-normalizing forms, at the product surface: an own-line `^anchor`
-    // (the Block form) and a whole-page ref over a file that is nothing but an own-line anchor
-    // (the Page form — the one the ruling did not predict).
-    //
+    // Two of the enumerated empty-normalizing forms, at the product surface: an own-line
+    // `^anchor` (the Block form) and a whole-page ref over a file that is nothing but an
+    // own-line anchor (the Page form).
     let ownline_v1 = "# H\n\n^guideline\n\noriginal body\n";
     let anchors_only = "^a\n";
     std::fs::write(ws.join("sources/ownline.md"), ownline_v1).expect("write ownline");
@@ -394,10 +343,8 @@ fn a_hand_authored_empty_span_pin_never_reads_green() {
             "{state}: status rolls the same corpus up red: {status}"
         );
 
-        // Rewrite both targets end to end. On the base build this changed nothing — the pins stayed
-        // green. The second pass proves the verdict does not depend on the target's bytes at all,
-        // because there are no bytes it covers.
-        //
+        // Rewrite both targets end to end: the second pass proves the verdict does not depend
+        // on the target's bytes at all, because there are no bytes it covers.
         std::fs::write(
             ws.join("sources/ownline.md"),
             "# H\n\n^guideline\n\nTOTALLY DIFFERENT BODY\n",

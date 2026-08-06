@@ -1,37 +1,11 @@
-//! `mrd config` end to end, against the REAL binary (U6). This is the user-reachable surface
-//! criterion 1s evidence is measured on. Two others were measured OUT before it was written,
-//! and neither was ruled out by reading a `--help` line: - `mrd read` routes through the render
-//! face, which elides every `meridian-*` block — it prints the configs prose
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
+//! `mrd config` end to end, against the real binary (U6).
 
 use std::path::Path;
 use std::process::{Command, Output};
 
-/// The two-root config, over roots that live INSIDE the sandbox and really declare
-/// themselves. **Changed by U7, stated rather than absorbed.** This fixture used to name
-/// `/Users/Shared/projects/field-notes` and `/Users/Shared/repos/archive` literally. Binding
-/// now canonicalizes every mount path, passes it through the `workspace` deny ceiling, and
-/// reads each roots own declaration — so absolute machine paths made the verbs exit depend
-/// on what happened to be checked out on the runner, and both roots refused
-/// (`grey(undeclared)`, `grey(path-unseeable)`). Sandbox roots keep every assertion below
-/// measuring what it was written to measure, and remove a machine dependency that was
-/// always latent. The LINE LAYOUT is unchanged on purpose: `line 13` is asserted verbatim
-/// by [`a_malformed_config_refuses_on_exit_one_and_publishes_nothing`], so only the path
-/// values differ from the original.
-///
-///
-///
-///
-///
+/// The two-root config, over roots that live inside the sandbox and really declare
+/// themselves. The line layout matters: `line 13` is asserted verbatim by
+/// [`a_malformed_config_refuses_on_exit_one_and_publishes_nothing`].
 fn single(home: &Path) -> String {
     single_named(home, "field-notes", "archive")
 }
@@ -87,12 +61,9 @@ fn run(home: &Path, meridian_config: Option<&Path>, args: &[&str]) -> Output {
     run_bridged(home, meridian_config, args, None, None)
 }
 
-/// The same invocation with the two BRIDGED variables driven explicitly (U9). `run` clears
-/// both, so every other test in this file measures a determinate `unset` bridge rather than
-/// inheriting whatever the runner exports — the developer machine really does export
-/// `CCC_LLM_WIKI_PATH`, which would otherwise make the bridge section of this verbs output
-/// depend on who ran it.
-///
+/// The same invocation with the two bridged variables driven explicitly (U9). `run` clears
+/// both, so every other test measures a determinate `unset` bridge rather than inheriting
+/// whatever the runner exports (developer machines really do export `CCC_LLM_WIKI_PATH`).
 fn run_bridged(
     home: &Path,
     meridian_config: Option<&Path>,
@@ -127,10 +98,9 @@ fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
-/// The acceptance: the verb PUBLISHES the parsed mount table, in document order, with the
+/// The acceptance: the verb publishes the parsed mount table, in document order, with the
 /// configs own rev and fingerprint beside it. Without this half, every refusal assertion below
 /// is satisfied by a build that refuses everything (S3-R8(c)).
-///
 #[test]
 fn the_verb_publishes_the_parsed_mount_table_and_the_config_rev() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -165,27 +135,13 @@ fn the_verb_publishes_the_parsed_mount_table_and_the_config_rev() {
         )),
         "the git-folder root, which carries no vault name: {text}"
     );
-    // REPLACED by u31b, stated rather than absorbed. This line read *"a
-    // git-folder root has no vault leg"* — it encoded the shipped behaviour,
-    // which is the behaviour criterion 2 rejects: the leg is absent BY
-    // CONSTRUCTION and the face must SAY so. The artifact that adjudicates the
-    // swap is the criterion itself (`ccc-compound/plan.md` §9.2), untouched by
-    // this unit; it was never this assertion (S3-R30).
-    //
-    // And it COULD NOT HAVE FAILED as written: the declared path always sits
-    // between `git-folder` and any `vault:` token, so the second `contains` was
-    // false for every row this verb can print, and `!B` carried the whole
-    // disjunct. A green arm over an unreachable condition (S3-R23(1)).
     assert!(
         mount_row(&text, "archive").ends_with("  vault:(none)  bound"),
         "the git-folder root STATES its absent vault leg: {text}"
     );
 
-    // U7: the CANONICAL path is published beside the declared one whenever the two differ — and on
+    // The canonical path is published beside the declared one whenever the two differ — and on
     // this runner they do, because the sandbox lives under `/var`, a symlink to `/private/var`.
-    // That is the mount laws collapse made visible at the verb rather than only asserted in a unit
-    // test: an operator reading this line sees which tree the name is actually bound to.
-    //
     let canonical =
         std::fs::canonicalize(roots.join("field-notes")).expect("the sandbox root canonicalizes");
     if canonical != roots.join("field-notes") {
@@ -225,12 +181,9 @@ fn rev_line(text: &str) -> String {
         .to_string()
 }
 
-/// The ONE output line for a mount, by canonical root name. Returned whole so an assertion pins
-/// a cell **at its leg**. A `contains` over the entire output would also pass when the token
-/// turned up in some other roots row, in the tools list, or in the bridge section — which is
-/// the difference between measuring the row and measuring the page.
-///
-///
+/// The one output line for a mount, by canonical root name. Returned whole so an assertion
+/// pins a cell at its leg — a `contains` over the entire output would also pass when the
+/// token turned up in another roots row or section.
 fn mount_row(text: &str, name: &str) -> String {
     text.lines()
         .find(|l| l.trim_start().starts_with(&format!("{name}  ")))
@@ -238,25 +191,13 @@ fn mount_row(text: &str, name: &str) -> String {
         .to_string()
 }
 
-/// **Criterion 2 — a leg that is absent BY CONSTRUCTION is STATED, never left
-/// blank.**
+/// Criterion 2 — a leg that is absent by construction is stated, never left blank.
 ///
-/// The three-way map is total on the name↔path axis and **partial on the vault
-/// axis**: `Mount::vault` is `Some` iff `kind: vault`, because the parser
-/// *refuses* a `vault:` line on a `git-folder` entry
-/// (`mount-vault-on-git-folder`). So a git-folder root's vault leg is not
-/// missing — it cannot exist, and the criterion asks this face to say which.
-///
-/// **A blank cell is byte-identical to a dropped value.** Before the marker,
-/// `archive  git-folder  /…/archive  bound` was the same bytes a build that
-/// lost the vault name between the parser and the renderer would print. The
-/// reader had no way to tell the two apart, which is the whole of U6's
-/// byte-identity lesson read at the row level.
-///
-/// **Both halves, and the second is what makes the first mean anything
-/// (S3-R8(c)):** the git-folder row carries the marker at its vault leg, and
-/// the vault root carries its NAME there and no marker. A build that printed
-/// the marker in *every* vault cell satisfies the first half on its own.
+/// `Mount::vault` is `Some` iff `kind: vault` (the parser refuses a `vault:` line on a
+/// `git-folder` entry), so a git-folder root's vault leg cannot exist — and a blank cell is
+/// byte-identical to a dropped value. Both halves matter (S3-R8(c)): the git-folder row
+/// carries the marker at its vault leg, and the vault root carries its name there and no
+/// marker.
 #[test]
 fn a_structurally_absent_vault_leg_renders_a_marker_never_a_blank() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -266,10 +207,8 @@ fn a_structurally_absent_vault_leg_renders_a_marker_never_a_blank() {
     assert_eq!(out.status.code(), Some(0), "clean: {}", stderr(&out));
     let text = stdout(&out);
 
-    // The refusal half. `ends_with` rather than `contains`, so the assertion fails on a blank cell
-    // AND on a marker rendered at the wrong leg — an assertion a blank could satisfy is not the
-    // assertion (S3-R29s insensitivity class).
-    //
+    // The refusal half. `ends_with` rather than `contains`, so the assertion fails on a blank
+    // cell and on a marker rendered at the wrong leg.
     let folder = mount_row(&text, "archive");
     assert!(
         folder.ends_with("  vault:(none)  bound"),
@@ -288,9 +227,8 @@ fn a_structurally_absent_vault_leg_renders_a_marker_never_a_blank() {
          that calls every vault absent: {vault}"
     );
 
-    // S3-R37: the population this arm iterates is asserted non-empty, so the fixture losing its
-    // git-folder root retires the coverage loudly instead of silently.
-    //
+    // S3-R37: the population this arm iterates is asserted non-empty, so the fixture losing
+    // its git-folder root retires the coverage loudly instead of silently.
     assert_eq!(
         text.matches("vault:(none)").count(),
         1,
@@ -298,14 +236,8 @@ fn a_structurally_absent_vault_leg_renders_a_marker_never_a_blank() {
     );
 }
 
-/// **The `--json` face is NOT changed by the marker, and this is the guard that keeps it that
-/// way.** `null` at a **present key** is already the statement there; *dropping* the key would
-/// have been the omission.
-///
-///
-///
-///
-///
+/// The `--json` face is not changed by the marker: `null` at a present key is already the
+/// statement there; dropping the key would have been the omission.
 #[test]
 fn the_json_face_states_absence_as_null_and_never_carries_the_human_marker() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -334,7 +266,6 @@ fn the_json_face_states_absence_as_null_and_never_carries_the_human_marker() {
 
 /// State A: no config file. Not an error and not a warning — every machine starts here, and the
 /// verb says so rather than printing a bare empty table a reader would take for a failure.
-///
 #[test]
 fn an_absent_config_exits_clean_and_says_what_absent_means() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -453,20 +384,9 @@ fn the_json_face_carries_the_same_facts() {
     );
 }
 
-/// **U33.** The verb publishes the resolutions ORIGIN — which rung of the bootstrap chain
-/// supplied the path — and it does so **where the two rungs resolve to the SAME path**, which
-/// is the only case the printed path cannot answer on its own. Measured before this was
-/// written: `MERIDIAN_CONFIG=$HOME/MERIDIAN.md mrd config` and `mrd config` with the variable
-/// unset produced **byte-identical output**.
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// U33 — the verb publishes the resolutions origin (which rung of the bootstrap chain
+/// supplied the path), even where the two rungs resolve to the same path: the only case the
+/// printed path cannot answer on its own.
 #[test]
 fn the_verb_names_which_rung_supplied_the_path_even_when_both_agree() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -541,19 +461,10 @@ fn a_bad_invocation_is_exit_two() {
 }
 
 // The bridge period, end to end (U9)
-//
-//
 
-/// **BOTH arms through the process boundary** (S3-R8(c)). Agreement binds **silently** and
-/// names the mount it resolved onto; divergence prints its note, the FILE WINS, and **the exit
-/// code does not move** — a bridge period whose mismatch is fatal is not a bridge,
-///
-///
-///
-///
-///
-///
-///
+/// Both arms through the process boundary (S3-R8(c)): agreement binds silently and names the
+/// mount it resolved onto; divergence prints its note, the file wins, and the exit code does
+/// not move — a bridge period whose mismatch is fatal is not a bridge.
 #[test]
 fn the_bridge_agrees_silently_diverges_loudly_and_never_moves_the_exit_code() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -575,10 +486,8 @@ fn the_bridge_agrees_silently_diverges_loudly_and_never_moves_the_exit_code() {
         "the symlinked spelling resolves onto the bound root, and the STATE CHANGE is \
          named — which mount now exists for this variable (R40): {text}"
     );
-    // Asserted on the BRIDGEs own words, not on the token `note:`. This verb already prints a
-    // render-face elision note on every run, so a bare `!contains("note:")` is a check that fails
-    // for a reason unrelated to the thing it names — measured here, on the first run of this gate.
-    //
+    // Asserted on the bridges own words, not on the token `note:` — this verb already prints
+    // a render-face elision note on every run.
     assert!(
         !text.contains("the FILE WINS"),
         "agreement is SILENT — a note on every agreement is what gets the variable unset: {text}"

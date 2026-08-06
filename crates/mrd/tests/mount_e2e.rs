@@ -1,23 +1,6 @@
-//! The mount table end to end, against the REAL binary (U7). Criterion 2 — *"the mount table is
-//! the single authority for the three-way translation … verified through a user-reachable
-//! verb"* — is measured HERE, on `mrd config`, because that is the verb that publishes the
-//! table. Two others were measured out before it: `mrd read` elides `meridian-*` blocks and
-//! `mrd resolve` answers the workspace-identity sense of the word.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
+//! The mount table end to end, against the real binary (U7). Criterion 2 — the mount table is
+//! the single authority for the three-way translation, verified through a user-reachable verb
+//! — is measured here, on `mrd config`, because that is the verb that publishes the table.
 
 use std::path::Path;
 use std::process::{Command, Output};
@@ -83,13 +66,9 @@ fn state_of(out: &Output) -> String {
         .to_string()
 }
 
-/// **Gate 4 at the verb, both arms.** An undeclared root renders `grey(undeclared)` — in the
-/// human line AND in `--json`, the same spelling — and it **refuses on exit 1**, per S3-R6.
-/// Then the root declares itself, and the same config binds on exit 0. The assert is the
-/// transition. A build that always greyed, and a build that always bound, each fail exactly one
-/// half.
-///
-///
+/// Gate 4 at the verb, both arms. An undeclared root renders `grey(undeclared)` — in the
+/// human line and in `--json`, the same spelling — and refuses on exit 1 (S3-R6). Then the
+/// root declares itself, and the same config binds on exit 0. The assert is the transition.
 #[test]
 fn an_undeclared_root_greys_on_exit_one_and_binds_once_it_declares() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -142,10 +121,9 @@ fn an_undeclared_root_greys_on_exit_one_and_binds_once_it_declares() {
     assert_eq!(state_of(&run(home.path(), &["--json"])), "bound");
 }
 
-/// **Gate 1 at the verb.** A mount binding `$HOME` fails the WHOLE parse, and the verb
-/// publishes **no table at all** — not a partial one with the legal root in it. The legal root
-/// is declared first precisely so a partial build would have something to print.
-///
+/// Gate 1 at the verb. A mount binding `$HOME` fails the whole parse, and the verb publishes
+/// no table at all — not a partial one with the legal root in it. The legal root is declared
+/// first precisely so a partial build would have something to print.
 #[test]
 fn a_mount_binding_home_fails_the_whole_verb_and_publishes_no_table() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -175,23 +153,16 @@ fn a_mount_binding_home_fails_the_whole_verb_and_publishes_no_table() {
         stdout(&out)
     );
 
-    // The acceptance half: with the poisoned block gone, the same legal root binds and the table
-    // publishes. So the refusal above is the ceiling, not the fixture.
-    //
+    // The acceptance half: with the poisoned block gone, the same legal root binds and the
+    // table publishes. So the refusal above is the ceiling, not the fixture.
     write_config(home.path(), &vault_mount("field-notes", &legal, None));
     let clean = run(home.path(), &[]);
     assert_eq!(clean.status.code(), Some(0), "{}", stderr(&clean));
     assert!(stdout(&clean).contains("mounts (1):"));
 }
 
-/// **Gate 5 at the verb — mount-as-claim, end to end.** A mount pins the root it declares; the
-/// verb reports it **bound** on exit 0.
-///
-///
-///
-///
-///
-///
+/// Gate 5 at the verb — mount-as-claim, end to end. A mount pins the root it declares; the
+/// verb reports it bound on exit 0.
 #[test]
 fn a_pinned_root_binds_and_reddens_when_its_declaration_drifts() {
     let home = tempfile::tempdir().expect("tempdir");

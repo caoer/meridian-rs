@@ -4,18 +4,6 @@
 //! projection and nothing else, so a person got a correct answer from a slower path with no
 //! signal at all — and roughly twenty measurements taken on this engine were measurements of
 //! the wrong path, unknowably.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

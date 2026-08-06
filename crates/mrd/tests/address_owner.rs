@@ -2,37 +2,15 @@
 //! spelling into the SAME document. This test crate is where the two planes meet: `view::walk`
 //! computes the color `mrd walk` / `mrd status` render, and
 //! `wire_serve::read::page_decorations` mints the `@fp` tone word a read carries.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use std::collections::BTreeMap;
 
 use model::Document;
 
-/// The corpus: `a/b.md` carries the pinned section; `b.md` is the decoy that shares its
-/// basename and carries a section of the SAME title with different bytes, so resolving to it is
-/// not merely wrong but MEASURABLY wrong. The ref is a HEADING (`a/bSection`), which is what a
-/// pins fingerprint actually covers.
-///
-///
-///
-///
-///
-///
+/// The corpus: `a/b.md` carries the pinned section; `b.md` is a decoy with the same basename
+/// and a same-titled section of different bytes, so resolving to it is measurably wrong. The
+/// ref is a heading (`a/bSection`), which is what a pin fingerprint covers.
 fn corpus() -> (BTreeMap<String, Document>, String) {
-    // Same title, same heading path, different bytes: the pinned selector RESOLVES in both
-    // documents, so picking the wrong one yields a wrong VERDICT rather than an unresolved address
-    // that would be red for the wrong reason.
-    //
     let target = "# Page\n\n## Section\n\nthe pinned body\n";
     let decoy = "# Page\n\n## Section\n\nDIFFERENT bytes entirely\n";
 
@@ -40,9 +18,7 @@ fn corpus() -> (BTreeMap<String, Document>, String) {
     docs.insert("a/b.md".to_string(), doc(target));
     docs.insert("b.md".to_string(), doc(decoy));
 
-    // The live fingerprint of `a/b.mdPage/Section`, minted the way the engine mints it (the
-    // resolved span, anchor lines removed) — so the pin is a true GREEN on `a/b.md`, and a plane
-    // that answers `b.md` measures drift instead.
+    // Fingerprint minted the way the engine mints it, so the pin is genuinely green on `a/b.md`.
     let fingerprint = live_fingerprint(&docs, "a/b.md", "Page/Section");
     let src = format!(
         "# Src\n\ndraws from [[a/b#^section]]\n\n{}\n",
@@ -71,13 +47,6 @@ fn doc(raw: &str) -> Document {
 
 /// One R4 (`version: 2`) pin, hand-written in the exact bytes `lock::render` emits, so this
 /// gate depends on the readers own parser and not on the writer that produced the row.
-///
-///
-///
-///
-///
-///
-///
 fn lock_block(declared_ref: &str, fingerprint: &str) -> String {
     let (target, fragment) = match declared_ref.split_once('#') {
         Some((t, f)) => (t, f),
@@ -113,13 +82,9 @@ fn live_fingerprint(docs: &BTreeMap<String, Document>, path: &str, selector: &st
         .into_string()
 }
 
-/// F18 GATE — the walk color and the `@fp` tone word are computed over the SAME document for
-/// one ref. `a/b` names `a/b.md`: it is a full-path ref written without its extension, and the
-/// pin is green there. A plane that resolves it to `b.md` instead measures the decoys bytes and
-/// mints `@red` — one pin, two documents, two answers, and the read face would carry the answer
-/// nobody measured.
-///
-///
+/// F18 gate — the walk color and the `@fp` tone word are computed over the same document for
+/// one ref. `a/b` names `a/b.md` and the pin is green there; a plane that resolves it to
+/// `b.md` instead measures the decoy bytes and mints `@red`.
 #[test]
 fn the_pin_plane_and_the_decoration_plane_resolve_one_ref_to_one_document() {
     let (docs, _) = corpus();
@@ -166,17 +131,12 @@ fn the_pin_plane_and_the_decoration_plane_resolve_one_ref_to_one_document() {
 
 /// The precedence itself, stated once at the owner: every plane that turns a spelling into a
 /// document calls `CorpusIndex::resolve_ref`, and the three rules are exact key, key + `.md`,
-/// then linkpath parity. Two planes carrying two copies of this is what finding 18 measured.
-///
+/// then linkpath parity.
 #[test]
 fn the_address_owner_answers_the_subpath_spelling_with_the_subpath_document() {
     let (docs, _) = corpus();
     let index = view::read_face::corpus_index(&docs);
 
-    // U11: the corpus parameter is root-keyed and the mount table is injected (D4a). The AMBIENT
-    // arm below is byte-for-byte the pre-U11 behaviour — the three rules are unchanged and the
-    // single-root world is `RootedCorpus:: ambient` with no mounts bound.
-    //
     let corpus = model::RootedCorpus::ambient(&docs);
     let no_mounts = addr::MountSet::default();
 

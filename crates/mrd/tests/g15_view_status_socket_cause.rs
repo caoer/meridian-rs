@@ -2,20 +2,7 @@
 //! read as "this workspace has no view". Dogfood pass-3 ran `mrd view status` under an
 //! over-long `XDG_CACHE_HOME`. No daemon can bind or dial a socket at or over `sun_path`, so
 //! the command fell back to the cold drawer and printed `source: absent`, `state: NO_VIEW` at
-//! exit 0 with an EMPTY stderr.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
+//! exit 0 with an empty stderr.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

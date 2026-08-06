@@ -1,47 +1,16 @@
-//! **`mrd check` pays for the roots its addresses NAME, and for no others** (W5). The sibling
-//! of `walk_multiroot_cpu.rs`, and the same defect class W2 fixed in `status` and left standing
-//! here. Read that files header for why the needed set turned out to be one computation for all
-//! three verbs; this one records what is different about `check`. `check` needed a REORDER, not
-//! just a narrower call `status` and `walk` already held their corpus when they loaded the
-//! mount table, so narrowing was a one-line change of call. `check` loaded the table FIRST and
-//! built its corpus after, inside `assess` — and the roots worth building are a question about
-//! that very corpus. So the corpora are now built before the table, `assess` takes documents
-//! instead of bytes, and the parse happens exactly once per interval rather than once to ask
-//! and once to answer.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
+//! `mrd check` pays for the roots its addresses name, and for no others (W5). Sibling of
+//! `walk_multiroot_cpu.rs` — same fixture, same narrowing. `check` builds its corpora before
+//! the mount table, `assess` takes documents instead of bytes, and the parse happens exactly
+//! once per interval.
 
 use std::time::{Duration, Instant};
 
 mod multiroot_fixture;
 use multiroot_fixture as fixture;
 
-/// **The CPU budget.** See `walk_multiroot_cpu.rs` for the budgets derivation — same fixture,
-/// same narrowing, same host. `check` does strictly more ambient work than `walk` (the fold and
-/// the fence reading), and it measured 60 ms against walks 30 ms, so the same 600 ms bound
-/// carries 10× of headroom over the fix and sits 9× under the 5 480 ms defect arm.
-///
+/// The CPU budget. See `walk_multiroot_cpu.rs` for the derivation — same fixture, same host.
+/// `check` measured 60 ms against walks 30 ms, so the same 600 ms bound carries 10× headroom
+/// over the fix and sits 9× under the 5 480 ms defect arm.
 const CPU_BUDGET: Duration = Duration::from_millis(600);
 
 #[test]

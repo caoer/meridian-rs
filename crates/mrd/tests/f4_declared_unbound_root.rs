@@ -1,33 +1,8 @@
-//! **F4 — a root DECLARED in `MERIDIAN.md` but NOT BOUND on this machine.** The ordinary laptop
-//! case: `~/MERIDIAN.md` declares a root that is not checked out here. `bind_one` renders it
+//! F4 — a root declared in `MERIDIAN.md` but not bound on this machine: the ordinary laptop
+//! case, `~/MERIDIAN.md` declaring a root that is not checked out here. `bind_one` renders it
 //! `MountState::PathUnseeable` (never an error — failing there would brick every machine that
 //! does not hold all declared roots), so `projection()` files it under `MountSet::unreachable`
-//! and `is_bound` is FALSE. **Why the shipped corpus could not exhibit this.**
-//! `u12_stored_form_e2e.rs` has exactly two fixture states — `sessions` BOUND to a real
-//! directory, or no mount block at all. **There is no state that DECLARES a root at a path
-//! which does not exist**, which is the one state this finding lives in. The corpus could not
-//! have shown it (S3-R43's question, asked of the fixture rather than of the code).
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
+//! and `is_bound` is false.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -178,10 +153,9 @@ const PAGE: &str = "# Page\n\n## Body\n\nseed\n";
 // The fixture's own control — the state under test is real
 // ---------------------------------------------------------------------------
 
-/// **The fixture asserts its own premise.** `mrd config` must report `notes` as DECLARED and
+/// The fixture asserts its own premise: `mrd config` must report `notes` as declared and
 /// unreachable, distinctly from an undeclared root — otherwise every gate below is measuring
 /// some other state and passing for the wrong reason.
-///
 #[test]
 fn the_fixture_really_declares_an_unreachable_root() {
     let sb = sandbox();
@@ -205,12 +179,9 @@ fn the_fixture_really_declares_an_unreachable_root() {
 // F4 — THE DEFECT, at both positions
 // ---------------------------------------------------------------------------
 
-/// **THE FINDING.** A markdown link naming a DECLARED-but-unbound root reaches disk in its
-/// agent-plane spelling, untranslated and unguarded, at exit 0. `root:` is the AGENT plane's
-/// spelling and is unresolvable garbage to Obsidian on disk — which is the clause criterion 4
-/// states verbatim. This is inside criterion 4's measured population, not outside it.
-///
-///
+/// The finding: a markdown link naming a declared-but-unbound root reaches disk in its
+/// agent-plane spelling, untranslated and unguarded, at exit 0. `root:` is the agent plane's
+/// spelling and is unresolvable garbage to Obsidian on disk (criterion 4).
 #[test]
 fn a_markdown_link_to_a_declared_unbound_root_must_not_reach_disk_raw() {
     let sb = sandbox();
@@ -236,14 +207,9 @@ fn a_markdown_link_to_a_declared_unbound_root_must_not_reach_disk_raw() {
     );
 }
 
-/// **The refusal must TEACH the right thing** — it names the PATH to check, not
-/// a declaration that already exists.
-///
-/// A teaching refusal that prescribes a COMPLETED ACTION ("declare it in
-/// `~/MERIDIAN.md`") is worse than a bare class: the mount entry is already
-/// correct, so it spends the user's trust and their time and points at nothing
-/// (S3-R43/S3-R50, the law this engine already implements one frame away in
-/// `stored_text`).
+/// The refusal must teach the right thing — it names the path to check, not a declaration
+/// that already exists: the mount entry is already correct, so prescribing "declare it in
+/// `~/MERIDIAN.md`" spends the user's trust and points at nothing (S3-R43/S3-R50).
 #[test]
 fn the_refusal_names_the_path_never_a_declaration_already_made() {
     let sb = sandbox();
@@ -261,12 +227,9 @@ fn the_refusal_names_the_path_never_a_declaration_already_made() {
     );
 }
 
-/// **The asymmetry, stated as a gate.** Position 1 (wikilink) already refuses this root;
-/// position 2 (markdown link) did not. The tell R83 names: *the arm with coverage held, the arm
-/// without it failed.* Both arms are asserted here so a future edit cannot fix one and silently
-/// regress the other.
-///
-///
+/// The asymmetry, stated as a gate: position 1 (wikilink) already refuses this root; position
+/// 2 (markdown link) did not. Both arms are asserted so a future edit cannot fix one and
+/// silently regress the other.
 #[test]
 fn both_positions_refuse_a_declared_unbound_root_identically() {
     for body in ["see [[notes:a.md]]\n", "see [x](notes:a.md)\n"] {
@@ -340,14 +303,8 @@ fn a_bound_root_still_translates_at_both_positions() {
     );
 }
 
-/// **ACCEPTANCE 2 — the ordinary corpus is untouched.** This is the control the bound test was
-/// introduced for, and the one a naive fix breaks: an external URL parses as an address with
-/// root `https`, so a scan that refused
-///
-///
-///
-///
-///
+/// Acceptance 2 — the ordinary corpus is untouched: an external URL parses as an address with
+/// root `https`, so a naive refusal scan would cry wolf on the majority case.
 #[test]
 fn ordinary_external_links_are_still_untouched() {
     let sb = sandbox();
@@ -397,13 +354,10 @@ fn a_document_with_no_cross_root_position_writes_clean() {
     );
 }
 
-/// **ACCEPTANCE 4 — a RETAINED address is still not this write's to move.** A
-/// declared-but-unbound address the document already carried, in a section this write does not
-/// touch, must not turn every unrelated edit into a refusal. Without this gate the fix would
-/// make any page that ever mentioned an unreachable root permanently unwritable — the failure
-/// mode that gets a guard deleted by the next person it inconveniences (S3-R23(1)).
-///
-///
+/// Acceptance 4 — a retained address is still not this write's to move: a
+/// declared-but-unbound address in a section this write does not touch must not turn every
+/// unrelated edit into a refusal, or any page that ever mentioned an unreachable root becomes
+/// permanently unwritable.
 #[test]
 fn a_retained_unbound_address_does_not_block_an_unrelated_edit() {
     let sb = sandbox();

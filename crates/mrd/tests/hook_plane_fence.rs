@@ -1,72 +1,23 @@
-//! **The fence body's gates, each proved able to say NO — as PLACED from the
-//! emitted contract.**
+//! The fence body's gates, each proved able to say no — as placed from the emitted contract.
 //!
-//! Every arm here drives a real fence through a real `git` operation and reads
-//! what git did. Nothing is asserted about a hand-transcribed hook: the artifact
-//! under test is **the body `mrd skill hook` emits**, extracted from that verb's
-//! stdout exactly as its document tells a reader to extract it and placed exactly
-//! where its document says to place it ([`Fixture::place`]).
+//! Every arm drives a real fence through a real `git` operation and reads what git did. The
+//! artifact under test is the body `mrd skill hook` emits, extracted from that verb's stdout
+//! exactly as its document tells a reader to and placed exactly where it says
+//! ([`Fixture::place`]). `crates/mrd/tests/skill_hook_emit.rs` measures the document's
+//! claims; this file measures whether following them fences a repository.
 //!
-//! That is what makes these design tests of the NEW contract rather than survivors
-//! of the old one. The installer they used to call is deleted; the document is the
-//! contract now, and a document whose body does not fence is a contract that lies.
-//! `crates/mrd/tests/skill_hook_emit.rs` measures the document's CLAIMS; this file
-//! measures whether following them fences a repository.
+//! A hook fix tested by running the hook and asserting exit 0 has built an instrument with
+//! precisely the defect it was sent to fix: a silently-exiting broken predicate and a
+//! legitimately passing hook are indistinguishable at the exit code. So every gate carries
+//! the arm that proves it says yes and the arm that proves it says no, in the same run.
 //!
-//! # THE TRAP THIS FILE IS WRITTEN AGAINST
-//! **A hook fix tested by running the hook and asserting exit 0 has built an
-//! instrument with precisely the defect it was sent to fix.** A silently-exiting
-//! broken predicate and a legitimately passing hook are indistinguishable at the
-//! exit code — which IS the defect row 22 reports. So every gate here carries the
-//! arm that proves it says YES and the arm that proves it says NO, in the same
-//! run, and the refusal arms below fail against the pre-fix fence:
-//!
-//! - the force grammar's refusal spellings (`0`, `false`, `no`, `off`, `" "`) all
-//!   FORCED under `[ -n "${MRD_HOOK_FORCE:-}" ]`, and the unparseable ones did too;
-//! - the force path printed NOTHING, so no arm could tell a forced commit from an
-//!   honest one;
-//! - `git merge` and `git am` landed commits past a door set of one.
-//!
-//! # THE INSTRUMENT'S OWN CONTROL
-//! These arms need a tree the fence is actively refusing, so anything that lands
-//! landed past a fence that was trying to say no. **That precondition is ASSERTED,
-//! never assumed** — [`Fixture::refusing`] runs the verb the body runs and fails
-//! loudly if it ever stops refusing, because a green answer would make every
-//! refusal arm below pass for the wrong reason and look exactly like a working
-//! fence.
-//!
-//! # HOW THAT TREE IS BUILT CHANGED — and this is a REAL reduction, recorded
-//! It used to be free. *A scratch workspace with no receipt journal* was already a
-//! refusing tree: with no baseline, `mrd check --commit-gate` answered
-//! `grey(cannot-assess)` and refused. Emptiness itself was the refusal.
-//!
-//! Under ZT's ruling (2026-08-03) the engine keeps no memory, the gate reads the
-//! **pin plane alone**, and a workspace with no pins is vacuously clean — it exits
-//! **0** (U5 corpus row 09). So five arms here began passing a control that had
-//! silently become false: they type-checked perfectly and measured nothing. **That
-//! was the honest signal that enforcement reduced, and the fix is not to weaken the
-//! control.** [`Fixture::refusing`] still asserts a refusal; what changed is that
-//! the fixture must now CONSTRUCT one — [`Fixture::drift_a_pin`] pins real content
-//! and then rewrites it out of band, so the gate refuses for a reason it can
-//! actually see.
-//!
-//! **The accounting entry:** the fence's fail-closed behaviour on a corpus that
-//! claims nothing moved from IMPLICIT (every fresh workspace refused) to OPT-IN
-//! (the caller asks for it with `--require-pins`).
-//!
-//! # WHY THE OPT-IN FLAG IS NOT USED HERE, though it exists
-//! The ruling that restored fail-closed-on-empty as `mrd check --commit-gate
-//! --require-pins` would rebuild this file's original mechanism exactly. It is
-//! deliberately NOT used, for a reason this file already states at
-//! [`Fixture::refusing`]: **the shipped fence body runs bare `mrd check
-//! --commit-gate`** (`crates/mrd/src/skills/hook.md`), and *"a control on a
-//! different invocation than the body runs is a control over a different verdict —
-//! which is how the fence came to ship asking a permanent question in the first
-//! place."* A control passing `--require-pins` would assert a refusal the real
-//! fence never receives, and every `git commit` arm below drives the real fence.
-//! The flag's own coverage lives with the gate, in
-//! `crates/mrd/tests/s4r19_commit_gate.rs`, where the invocation under test IS the
-//! flag.
+//! The refusing tree is asserted, never assumed — [`Fixture::refusing`] runs the verb the
+//! body runs and fails loudly if it ever stops refusing. The gate reads the pin plane alone
+//! and a workspace with no pins is vacuously clean, so the fixture constructs a refusal:
+//! [`Fixture::drift_a_pin`] pins real content and rewrites it out of band. The opt-in
+//! `--require-pins` flag is deliberately not used here: the shipped fence body runs bare
+//! `mrd check --commit-gate`, and a control on a different invocation is a control over a
+//! different verdict (the flag's coverage lives in `crates/mrd/tests/s4r19_commit_gate.rs`).
 
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
@@ -80,9 +31,8 @@ fn mrd_bin() -> PathBuf {
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_mrd")), PathBuf::from)
 }
 
-/// The system directories a `git commit` needs. The fixtures `bin/` is prepended, so OUR `mrd`
+/// The system directories a `git commit` needs. The fixtures `bin/` is prepended, so our `mrd`
 /// shadows any deployed one — the ordering is the isolation.
-///
 const SYSTEM_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
 
 /// A scratch repository that is also a meridian workspace, with an `mrd` of our
@@ -130,18 +80,10 @@ impl Fixture {
         fixture
     }
 
-    /// **Build the refusing tree the whole file rests on.** Pin `claim.md` to a section of
-    /// `source.md` through the shipped CLI, then rewrite that section by hand — an out-of-band edit
-    /// to PINNED content, which the surviving pin plane reads as `red content-drifted`. The gate
+    /// Build the refusing tree the whole file rests on. Pin `claim.md` to a section of
+    /// `source.md` through the shipped CLI, then rewrite that section by hand — an out-of-band
+    /// edit to pinned content, which the pin plane reads as `red content-drifted`. The gate
     /// the fence runs therefore refuses, and it refuses over a fact about this corpus.
-    ///
-    ///
-    ///
-    ///
-    ///
-    ///
-    ///
-    ///
     fn drift_a_pin(&self) {
         let pin = self.mrd(&["pin", "claim.md", "source.md#Source/Guideline"]);
         assert_eq!(pin.status.code(), Some(0), "mrd pin: {}", said(&pin));
@@ -158,13 +100,9 @@ impl Fixture {
         );
     }
 
-    /// **Undo [`Fixture::drift_a_pin`]** — restore the pinned section to the bytes the lock names,
-    /// and stage that. The corpus becomes one with a real pin and no lie told against it. This
-    /// exists for [`the_refusing_fixture_is_two_directional`], which is the condition on the whole
-    /// rebuild: a control that only ever refuses has not been shown to depend on the thing it
-    /// guards.
-    ///
-    ///
+    /// Undo [`Fixture::drift_a_pin`] — restore the pinned section to the bytes the lock names,
+    /// and stage that. Exists for [`the_refusing_fixture_is_two_directional`]: a control that
+    /// only ever refuses has not been shown to depend on the thing it guards.
     fn heal_the_pin(&self) {
         self.write("source.md", "# Source\n\n## Guideline\n\nthe pinned body\n");
         git_ok(&self.ws, &["add", "-A"]);
@@ -237,21 +175,9 @@ impl Fixture {
         stdout(&out)
     }
 
-    /// **The instruments control, asserted rather than assumed.** Every refusal arm below rests on
-    /// this tree being one the fence is actively refusing; a green answer would make all of them
-    /// pass for the wrong reason, and pass silently. It asks the question THE FENCE ASKS.
-    ///
-    ///
-    ///
-    ///
-    ///
-    ///
-    ///
-    ///
-    ///
-    ///
-    ///
-    ///
+    /// The instruments control, asserted rather than assumed. Every refusal arm below rests on
+    /// this tree being one the fence is actively refusing; a green answer would make all of
+    /// them pass for the wrong reason, and pass silently. It asks the question the fence asks.
     fn refusing(&self) {
         let out = self.mrd(&["check", "--commit-gate"]);
         assert_ne!(
@@ -290,9 +216,7 @@ impl Fixture {
             .expect("a commit count")
     }
 
-    /// The checkouts fence coverage, off the face that reports it now: `mrd check`s `fence` block.
-    /// The retired `hook status` verb was a second reader of the same doors; there is one.
-    ///
+    /// The checkouts fence coverage, off the face that reports it: `mrd check`s `fence` block.
     fn fence_json(&self) -> serde_json::Value {
         let out = self.mrd(&["check", "--json"]);
         let value: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap_or_else(|e| {
@@ -324,31 +248,9 @@ fn fence_body(doc: &str) -> String {
 
 // ── THE FIXTURE'S OWN MUTATION PROOF ─────────────────────────────────────────
 
-/// **THE CONDITION ON THIS FILES REBUILD: the control varies with the world.** Every other arm
-/// here rests on [`Fixture::refusing`], and a control that refuses is worth nothing until it is
-/// also shown to PASS when nothing is wrong. That is not a hypothetical worry — it is the exact
-/// defect this file just came out of. What the old controls actually were Before the ruling,
-/// `refusing()` passed over a corpus of `plan.md` and nothing else: no pin, no out-of-band
-/// write, **nothing wrong at all**. The refusal came from the journal being empty, so the gate
-/// answered `grey(cannot-assess)`. The five arms asserted exit 1 for a reason unrelated to what
-/// the fence guards.
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// The condition on this file: the control varies with the world. Every other arm rests on
+/// [`Fixture::refusing`], and a control that refuses is worth nothing until it is also shown
+/// to pass when nothing is wrong.
 #[test]
 fn the_refusing_fixture_is_two_directional() {
     let fx = Fixture::new("mutation");
@@ -410,16 +312,8 @@ fn the_refusing_fixture_is_two_directional() {
 
 // ── ROW 22 — the force value is PARSED, and the force path is RENDERED ───────
 
-/// **The two-sided grammar, both sides in one run.** Refusal side: every spelling an operator
-/// means as *"do NOT force"* must leave the fence running, so the commit is refused.
-///
-///
-///
-///
-///
-///
-///
-///
+/// The two-sided grammar, both sides in one run. Refusal side: every spelling an operator
+/// means as "do NOT force" must leave the fence running, so the commit is refused.
 #[test]
 fn the_force_value_is_parsed_and_both_sides_of_the_grammar_answer_apart() {
     let fx = Fixture::new("grammar");
@@ -471,11 +365,8 @@ fn the_force_value_is_parsed_and_both_sides_of_the_grammar_answer_apart() {
     }
 }
 
-/// **The third leg: a value nobody can read is not permission.** Under the shipped predicate
-/// every one of these FORCED, because non-emptiness was the whole test. The fence fails closed
-/// instead, and names the value it could not parse rather than guessing past it.
-///
-///
+/// The third leg: a value nobody can read is not permission. The fence fails closed and names
+/// the value it could not parse rather than guessing past it.
 #[test]
 fn an_unparseable_force_value_refuses_the_commit_and_names_itself() {
     let fx = Fixture::new("third-leg");
@@ -501,11 +392,8 @@ fn an_unparseable_force_value_refuses_the_commit_and_names_itself() {
     }
 }
 
-/// **Rendered on the force path, and SILENT on every other path.** The specificity half is the
-/// one that matters: a notice that fired unconditionally would be no notice at all. A forced
-/// commit and an honest one were indistinguishable afterwards, which is what made the escape
-/// unauditable.
-///
+/// Rendered on the force path, and silent on every other path. The specificity half is the
+/// one that matters: a notice that fired unconditionally would be no notice at all.
 #[test]
 fn the_bypass_is_announced_and_only_the_bypass_is_announced() {
     let fx = Fixture::new("rendered");
@@ -552,26 +440,15 @@ fn the_bypass_is_announced_and_only_the_bypass_is_announced() {
 
 // ── ROW 20 — the door set is a claim about coverage ──────────────────────────
 
-/// **Following the documents placement instruction leaves every door git dispatches for a
-/// commit built from a prepared index carrying the fence, and carrying the SAME bytes —
-/// executable.
-///
-///
-///
-///
-///
-///
-///
-///
+/// Following the documents placement instruction leaves every door git dispatches for a
+/// commit built from a prepared index carrying the fence — the same bytes — executable.
 #[test]
 fn placing_covers_every_door_and_one_body_serves_them_all() {
     let fx = Fixture::new("doors");
     fx.place();
 
-    // NAMED, not read off the constant under test. An arm parameterised by the set it is measuring
-    // cannot fail when that set shrinks — measured: with `FENCED_HOOKS` cut back to
-    // `["pre-commit"]` the `for name in FENCED_HOOKS` form below still passed, and only these
-    // three literals caught it.
+    // Named literals, not read off the constant under test: an arm parameterised by the set
+    // it is measuring cannot fail when that set shrinks.
     for name in ["pre-commit", "pre-merge-commit", "pre-applypatch"] {
         assert!(
             fx.door(name).exists(),
@@ -610,12 +487,9 @@ fn placing_covers_every_door_and_one_body_serves_them_all() {
     );
 }
 
-/// **`git merge` and `git am` are refused; `git cherry-pick` LANDS, as declared.** The merge
-/// and the patch are the doors that closed: both landed commits past the shipped install set
-/// with the fence printing nothing. The cherry-pick is the declared limit, asserted so it
-/// cannot regress into a silent surprise and so a future reader sees it was chosen rather than
-/// missed.
-///
+/// `git merge` and `git am` are refused; `git cherry-pick` lands, as declared. The
+/// cherry-pick is the declared limit, asserted so it cannot regress into a silent surprise
+/// and so a future reader sees it was chosen rather than missed.
 #[test]
 fn the_closed_doors_refuse_and_the_declared_open_one_still_lands() {
     let fx = Fixture::new("merge");
@@ -669,10 +543,9 @@ fn the_closed_doors_refuse_and_the_declared_open_one_still_lands() {
     assert_eq!(fx.head_count(), before, "R40 — HEAD must not have moved");
     let _ = fx.git(&["am", "--abort"], None);
 
-    // ACCEPTANCE OF THE DECLARED LIMIT — cherry-pick dispatches no veto-capable hook that can read
-    // the index, and this states it out loud. If a future change closes this door, this arm fails
-    // and the declaration gets rewritten deliberately instead of drifting.
-    //
+    // ACCEPTANCE OF THE DECLARED LIMIT — cherry-pick dispatches no veto-capable hook that can
+    // read the index. If a future change closes this door, this arm fails and the declaration
+    // gets rewritten deliberately instead of drifting.
     let before = fx.head_count();
     let picked = fx.git(&["cherry-pick", &side_sha], None);
     assert!(
@@ -683,13 +556,10 @@ fn the_closed_doors_refuse_and_the_declared_open_one_still_lands() {
     assert_eq!(fx.head_count(), before + 1, "and it produced a commit");
 }
 
-/// **A root carrying only `pre-commit` reports the PARTIAL state, not `installed`** — and it is
-/// a real bypass, proved by a real `git merge` landing through the door nobody placed. The
-/// reporting half alone would be satisfied by a word; the merge is what makes
-/// `installed-partial` mean something. Completing the set closes it, in the same run, so the
-/// arm cannot pass by refusing everything.
-///
-///
+/// A root carrying only `pre-commit` reports the partial state, not `installed` — and it is
+/// a real bypass, proved by a real `git merge` landing through the door nobody placed.
+/// Completing the set closes it, in the same run, so the arm cannot pass by refusing
+/// everything.
 #[test]
 fn a_root_fenced_at_one_door_is_partial_and_a_merge_walks_through_the_others() {
     let fx = Fixture::new("partial");
@@ -730,9 +600,8 @@ fn a_root_fenced_at_one_door_is_partial_and_a_merge_walks_through_the_others() {
         said(&merged)
     );
 
-    // ACCEPTANCE, same run: placing at every door closes it, and the same merge shape is refused.
-    // Without this half the arm passes on a fence that refuses nothing at all.
-    //
+    // ACCEPTANCE, same run: placing at every door closes it, and the same merge shape is
+    // refused. Without this half the arm passes on a fence that refuses nothing at all.
     fx.place();
     assert_eq!(fx.fence_json()["state"], "installed");
     git_ok(&fx.ws, &["checkout", "-q", "side"]);

@@ -122,18 +122,6 @@ fn cli_unfold_births_the_scaffold_and_new_refuses_an_invalid_def() {
     for path in ["SESSION.md", "tasks/index.md", "results/notes.md"] {
         assert!(ws.join(path).exists(), "{path} not materialized");
     }
-    // **The birth-receipt count is GONE, and no count replaces it.** This asserted three
-    // `op=create` rows in `meridian/journal.md` — one per scaffold file — as the proof that each
-    // birth went through the governed door. There is no journal: the engine keeps no memory , so a
-    // write leaves no in-engine trace to count.
-    //
-    //
-    //
-    //
-    //
-    //
-    //
-    //
     assert!(
         !ws.join("meridian/journal.md").exists(),
         "and nothing mints a ledger any more — a page here would mean the journal \

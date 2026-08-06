@@ -1,32 +1,14 @@
-//! **The staged interval's roots are in the set `mrd check` builds** (W5).
+//! The staged interval's roots are in the set `mrd check` builds (W5).
 //!
-//! W5 narrowed `check`'s mount corpora to the roots its own lock addresses name.
-//! `check --staged` assesses TWO corpora against ONE table (F1, the second
-//! interval), so the needed set has to be the UNION over both — and the failure
-//! mode of getting that wrong is silent-looking rather than loud: the staged
-//! corpus's cross-root pin would resolve into a root whose corpus this process
-//! never built.
+//! `check --staged` assesses two corpora against one table (F1), so the needed set is the
+//! union over both; getting it wrong is silent-looking — a staged cross-root pin resolving
+//! into a root whose corpus this process never built.
 //!
-//! # Why an absent target is the sharp instrument here, and no fingerprint is minted
-//! `model::CorpusIndex::resolve_ref` distinguishes the two states this gate is
-//! about *before* it ever compares bytes:
-//!
-//! - root bound **and its corpus loaded** → the miss is a measured absence
-//!   inside that root (`NotFound { root: Some(..) }`);
-//! - root bound and **its corpus NOT loaded** → `PathUnseeable`, carrying the
-//!   named refusal *"the mount table binds this root, but no corpus for it was
-//!   loaded in this process"*.
-//!
-//! So a cross-root pin at a page that does not exist separates "the union
-//! included this root" from "the union missed it" exactly, and it does so
-//! without minting a fingerprint over transplanted bytes (the heavier recipe
-//! `f6_check_sees_the_mount_table.rs` needs, because it measures COLOUR). This
-//! gate measures REACHABILITY, which is the thing the union can break.
-//!
-//! That refusal string is also the whole safety argument for narrowing at all:
-//! an under-collecting caller gets a named refusal, never a false green. This
-//! file is the gate that keeps that promise honest for the one caller whose
-//! needed set spans two corpora.
+//! An absent target is the sharp instrument: `resolve_ref` answers `NotFound` when the
+//! root's corpus is loaded but `PathUnseeable` ("…no corpus for it was loaded in this
+//! process") when it is not, so a cross-root pin at a missing page separates "union included
+//! this root" from "union missed it" without minting a fingerprint. This gate measures
+//! reachability; an under-collecting caller gets a named refusal, never a false green.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

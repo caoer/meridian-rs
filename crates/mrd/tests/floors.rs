@@ -1,35 +1,7 @@
 //! U4.4 floor rules — the full enumerated suite, gated across the two surviving `mrd test`
-//! tiers, plus the refusals whose TEXT no tier can assert and the genesis reading the retired
-//! scenario tier used to own. The six floor rules live under `tests/floors/rules/<id>.md` — one
-//! PAGE each, tag-registered and identified by frontmatter `id:`. This file: - **corpus tier**
-//! — drives `mrd test --corpus` over the six committed specs
-//! (`tests/floors/corpus/specs/*.md`): fire-where-expected + zero dead rules, exit 0 each. -
-//! **genesis** — the reader-side semantics of a NEVER-ARMED workspace: absent artifact + absent
-//! marker is unarmed, the door is a bit-for-bit no-op, and the write still lands and is still
-//! grey.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
+//! tiers, plus the refusals whose text no tier can assert and the genesis reading of a
+//! never-armed workspace. The six floor rules live under `tests/floors/rules/<id>.md` — one
+//! page each, tag-registered and identified by frontmatter `id:`.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -120,22 +92,8 @@ fn the_bounce_re_decision_is_admitted_by_the_close_verdict_floor() {
 /// The bytes a genesis write lands.
 const GENESIS_PAGE: &str = "# Genesis\n\nthe first write on a never-armed workspace.\n";
 
-/// Gate 7, REWRITTEN — the genesis epoch, read from the artifact + marker pair. The retired
-/// scenarios subject was the birth of `conventions/INDEX.md`, a file this cutover deletes. The
-/// BEHAVIOUR it guarded is unchanged, so it is re-expressed against what replaced that file:
+/// Gate 7 — the genesis epoch, read from the artifact + marker pair:
 /// `meridian/armed-rules.md` plus the `meridian/attested` marker.
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
 #[test]
 fn the_genesis_epoch_is_unarmed_ungated_and_grey() {
     let dir = tempfile::tempdir().expect("tmpdir");
@@ -184,17 +142,6 @@ fn the_genesis_epoch_is_unarmed_ungated_and_grey() {
         "a never-armed write carries no enforcement verdict: {:?}",
         out.verdicts
     );
-
-    // LOST, and deliberately: "ungated is not UNRECORDED" used to be asserted here by reading the
-    // writes row out of the receipt journal. ZT ruled the engine keeps no memory ( — an ungated
-    // write between two locks is not history at all — so there is no in-engine record to assert
-    // and
-    //
-    //
-    //
-    //
-    //
-    //
 
     // And the bytes really landed.
     let landed =
@@ -327,18 +274,8 @@ fn verdict_bind_refusal_names_the_reviewer() {
     assert_eq!(r[0].passing_scenario, "bound-verdict");
 }
 
-/// Ruling D, asserted rather than reviewed: **no floor refusal cites a page that is absent from
-/// the tree.** Every `passing =` used to be a `scenarios/<name>.md` path into the tier that
-/// retired, so after the deletion each of those citations named a file nobody could open — a
-/// refusal whose legal path teaches nothing.
-///
-///
-///
-///
-///
-///
-///
-///
+/// Ruling D, asserted rather than reviewed: no floor refusal cites a page that is absent
+/// from the tree — a refusal whose legal path names a file nobody can open teaches nothing.
 #[test]
 fn no_floor_refusal_cites_a_page_that_is_not_in_the_tree() {
     let ids = [
@@ -407,12 +344,9 @@ fn write(dir: &Path, rel: &str, body: &str) {
     std::fs::write(path, body).unwrap();
 }
 
-/// Commit the whole working tree AS `author` — the actor of the write. The author is the point,
-/// not decoration: history is git , so the commit author IS the acting writer the rule compares
-/// against a tasks `owner:`. It used to be an `actor=` token the engine wrote into a journal
-/// row itself.
-///
-///
+/// Commit the whole working tree as `author` — the actor of the write. The author is the
+/// point, not decoration: history is git, so the commit author is the acting writer the rule
+/// compares against a tasks `owner:`.
 fn commit_as(dir: &Path, author: &str, message: &str) {
     git(dir, &["add", "-A"]);
     git(
@@ -429,8 +363,7 @@ fn commit_as(dir: &Path, author: &str, message: &str) {
 }
 
 /// The full commit id of `HEAD` — half of an item id (`<commit>:<path>`), which is what a
-/// golden list declares against now that rows have no `^r-NNNNNN` anchor to be named by.
-///
+/// golden list declares against.
 fn head(dir: &Path) -> String {
     let out = Command::new("git")
         .arg("-C")
@@ -453,8 +386,6 @@ const FIX_NOTE: &str =
 /// create by worker-b, C1 an owner-self-close by worker-a (would-refuse), C2 a reviewer edit by
 /// reviewer-b (passes). Returns the workspace and C1s commit id, because C1 is the row the
 /// golden list has to name.
-///
-///
 fn seeded_workspace() -> (tempfile::TempDir, String) {
     let dir = tempfile::tempdir().expect("tmpdir");
     let ws = dir.path();
@@ -507,15 +438,9 @@ fn run_history(ws: &Path, extra: &[&str]) -> (i32, Value) {
     (code, report)
 }
 
-/// The history tier reconstructs the workspaces GIT history, fires the owner-self-close as an
-/// UNDECLARED would-refuse (exit 1), then a GOLDEN declaration flips it to a declared exception
-/// (exit 0). This is the `--history` tier recording.
-///
-///
-///
-///
-///
-///
+/// The history tier reconstructs the workspaces git history, fires the owner-self-close as an
+/// undeclared would-refuse (exit 1), then a golden declaration flips it to a declared
+/// exception (exit 0). This is the `--history` tier recording.
 #[test]
 fn history_owner_self_close_is_a_would_refuse_then_declared() {
     let (dir, c1) = seeded_workspace();
@@ -543,10 +468,7 @@ fn history_owner_self_close_is_a_would_refuse_then_declared() {
     );
 
     // Declare it in the GOLDEN list — a `golden` fence in a SPEC page that names the rule it
-    // excepts (D2a). The spec is passed with `--spec`; nothing about where it sits binds it to the
-    // rule, the `rule:` reference does. The item id is `<commit>:<path>` — gits two facts about
-    // one write, since there is no `^r-NNNNNN` anchor to name any more.
-    //
+    // excepts (D2a). The item id is `<commit>:<path>` — gits two facts about one write.
     let golden = format!(
         "---\nrule: ../rules/reviewer-not-owner.md\n---\n\n# Golden list\n\n\
          ```golden\n\

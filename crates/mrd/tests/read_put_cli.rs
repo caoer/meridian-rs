@@ -1,12 +1,5 @@
 //! U1 end-to-end gates for `mrd read` / `mrd put` — the ratified read/put naming at the CLI
-//! face, driving the REAL binary over its process boundary.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
+//! face, driving the real binary over its process boundary.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -190,19 +183,11 @@ fn read_section_selects_and_serves_content() {
 /// A page whose deep heading has a title distinct from every spelling of its PATH: the
 /// ancestors are long, and `Slash/Title Here` sanitizes to something else again, so "the row
 /// prints its raw title" and "the row prints its full address" cannot both pass.
-///
 const DEEP: &str = "# Architecture and its discontents\n\nintro words\n\n\
     ## Storage layer considered as a whole\n\nlayer words\n\n\
     ### Slash/Title Here\n\nleaf words\n";
 
-/// Gate G2 — the human toc row carries the leaf's RAW title and NOT its ancestors. The dogfood
-/// measured a 106-char address prefix re-typed on all 23 rows of a real page: 44% of the map's
-/// bytes, and 23 of 24
-///
-///
-///
-///
-///
+/// Gate G2 — the human toc row carries the leaf's raw title and not its ancestors.
 #[test]
 fn the_human_toc_prints_raw_titles_and_never_re_types_ancestors() {
     let sb = sandbox();
@@ -229,13 +214,7 @@ fn the_human_toc_prints_raw_titles_and_never_re_types_ancestors() {
 }
 
 /// Gate G8 — the human toc prints the fingerprint, and it is the value `put --if-fingerprint`
-/// accepts. The dogfood's G8 was not "the token is wrong" — the token round-trips.
-///
-///
-///
-///
-///
-///
+/// accepts: the token round-trips.
 #[test]
 fn the_fingerprint_the_human_toc_prints_is_the_guard_the_put_takes() {
     let sb = sandbox();
@@ -267,13 +246,9 @@ fn the_fingerprint_the_human_toc_prints_is_the_guard_the_put_takes() {
     );
 }
 
-/// Gate G3/G4 — a toc read's `--json` serves the structured rows ALONE. `toc[]` and
-/// `rendered_text` carried the same facts twice (5473 chars of duplication on one real page,
-/// per call). An agent reading JSON wants the rows; it should not pay for a render of them. The
-/// other half of the claim is asserted beside it: where a BODY was requested, `rendered_text`
-/// is prose and still rides.
-///
-///
+/// Gate G3/G4 — a toc read's `--json` serves the structured rows alone: an agent reading JSON
+/// wants the rows, not a render of them. Where a body was requested, `rendered_text` is prose
+/// and still rides.
 #[test]
 fn json_serves_the_map_once_and_the_prose_only_when_a_body_was_asked_for() {
     let sb = sandbox();
@@ -302,12 +277,9 @@ fn json_serves_the_map_once_and_the_prose_only_when_a_body_was_asked_for() {
     );
 }
 
-/// Gate G2 (sections) — a body opens with its `n`, not with its full address. Run 05 printed a
-/// 199-char hpath twice around an 800-byte section: once in the head row, once as the banner.
-/// The marker is now the dewey ordinal — and that ordinal is a `--section` selector, so the
-/// line that opens a body also says how to ask for it again.
-///
-///
+/// Gate G2 (sections) — a body opens with its `n`, not with its full address. The marker is
+/// the dewey ordinal — and that ordinal is a `--section` selector, so the line that opens a
+/// body also says how to ask for it again.
 #[test]
 fn a_section_body_opens_with_its_ordinal_not_its_full_address() {
     let sb = sandbox();
@@ -342,10 +314,9 @@ fn read_frag_miss_is_the_engines_verbatim_refusal() {
     );
 }
 
-/// Gate — A5: `--mode` is RETIRED, so it is an unknown flag (exit 2), not a quietly-accepted
+/// Gate — A5: `--mode` is retired, so it is an unknown flag (exit 2), not a quietly-accepted
 /// word. The selector alone says which face the caller wants, and a stale invocation learns
 /// that here rather than getting a toc it did not ask for.
-///
 #[test]
 fn read_mode_flag_is_retired_and_unknown() {
     let sb = sandbox();
@@ -377,24 +348,13 @@ fn read_without_path_is_exit_2() {
 }
 
 // ---------------------------------------------------------------------------
-// read → put round-trip (fix-08): the address `read` publishes IS a `put`
-// target
+// read → put round-trip: the address `read` publishes IS a `put` target
 // ---------------------------------------------------------------------------
 //
-// The defect these gates close: `read` published only `hpath`, the sanitized
-// joined string, and `sanitize_heading` is MANY-TO-ONE (`Scratch notes`,
-// `Scratch-notes` and `Scratch/notes` all map to `Scratch-notes`). `put` takes
-// the RAW segment array. So the output grammar was a lossy projection of the
-// input grammar and nothing in the read output recovered the pre-image — the
-// agent loop (read a document, decide an edit, write it) could not close by
-// copying.
-//
-// **U14 finished it.** fix-08 closed the loop by adding `hpath_raw` BESIDE the
-// joined string; U14 promoted that array into `hpath` and deleted the string
-// (ZT decision 14: no string address forms on machine surfaces). So the read
-// face now publishes ONE address, it is the segment array, and it is the
-// grammar `put` accepts — there is no longer a lossy spelling on this face for
-// a caller to pick up by mistake. These gates assert the finished shape.
+// `sanitize_heading` is many-to-one (`Scratch notes`, `Scratch-notes` and
+// `Scratch/notes` all map to `Scratch-notes`), so a sanitized string can never
+// recover its pre-image. The read face publishes one address — the raw segment
+// array — and it is the grammar `put` accepts. These gates assert that shape.
 
 /// Read `doc.md`'s toc rows as JSON.
 fn toc_rows(sb: &Sandbox, ws: &Path) -> Vec<Value> {
@@ -404,11 +364,8 @@ fn toc_rows(sb: &Sandbox, ws: &Path) -> Vec<Value> {
     v["read"]["toc"].as_array().expect("toc rows").clone()
 }
 
-/// The published address of one toc row, asserted to be a real segment array. U14: this reads
-/// `hpath`, which IS the raw array now. Before U14 it read the `hpath_raw` sidecar that rode
-/// beside a joined `hpath`; the sidecar is gone because the array took the name.
-///
-///
+/// The published address of one toc row, asserted to be a real segment array (U14: `hpath` is
+/// the raw array).
 fn published_address(row: &Value) -> Value {
     let raw = row.get("hpath").unwrap_or(&Value::Null);
     assert!(
@@ -491,21 +448,8 @@ fn the_sanitized_address_does_not_round_trip() {
     );
 }
 
-/// Gate — the collision case: three headings that SANITIZE to one address each round-trip to
-/// their OWN section. **U14 changed what this gate can observe, and the subject survives.**
-/// Before, the read face published the sanitized `Scratch-notes` for all three (so a
-/// `--section` selector silently served the first) and only the `hpath_raw` sidecar told them
-/// apart.
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// Gate — the collision case: three headings that sanitize to one address each round-trip to
+/// their own section.
 #[test]
 fn each_collider_round_trips_to_its_own_section() {
     let sb = sandbox();
@@ -560,7 +504,6 @@ fn each_collider_round_trips_to_its_own_section() {
 /// ambiguous among its siblings: duplicate `Notes` sections publish `n`, and the `Child` unique
 /// under its parent publishes none (an unconditional `n` there would be a lie the resolver
 /// rejects). The published `n` then selects the right duplicate.
-///
 #[test]
 fn occurrence_index_rides_only_where_the_raw_text_is_ambiguous() {
     let sb = sandbox();
@@ -602,12 +545,10 @@ fn occurrence_index_rides_only_where_the_raw_text_is_ambiguous() {
     );
 }
 
-/// Gate — the case that PROVES `n`-only-where-ambiguous, per leader 2702bc87. A duplicate
-/// PREPENDED above the original invalidates every published address to it. Under an
-/// unconditional `n` the address would read `n=1` and silently retarget onto the interloper — a
-/// wrong write, no refusal. Under only-where-ambiguous the address carries no `n`, so the same
-/// address now refuses LOUD. Assert the refusal, and that neither section moved.
-///
+/// Gate — the case that proves `n`-only-where-ambiguous: a duplicate prepended above the
+/// original invalidates every published address to it. Under an unconditional `n` the address
+/// would read `n=1` and silently retarget onto the interloper — a wrong write, no refusal.
+/// Under only-where-ambiguous it carries no `n`, so the same address now refuses loud.
 #[test]
 fn a_prepended_duplicate_makes_the_published_address_refuse_loud() {
     let sb = sandbox();
@@ -640,20 +581,9 @@ fn a_prepended_duplicate_makes_the_published_address_refuse_loud() {
     );
 }
 
-/// ACCEPTANCE CRITERION (merge owner d9419c03) — read and put must agree on what `n` COUNTS.
-/// `put` resolves `n` among siblings sharing the RAW TEXT (`model::resolve_hpath_node`). If the
-/// read face numbered on any other basis — position among all sibling sections, document order,
-/// dewey — the published `{h:"Notes",n:2}` would still be well-formed and would land on the
-/// wrong section SILENTLY, at exit 0.
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// Read and put must agree on what `n` counts. `put` resolves `n` among siblings sharing the
+/// raw text (`model::resolve_hpath_node`); numbered on any other basis the published
+/// `{h:"Notes",n:2}` would still be well-formed and land on the wrong section silently.
 #[test]
 fn the_n_carrying_address_round_trips_and_n_counts_same_text_siblings() {
     let sb = sandbox();
@@ -711,11 +641,8 @@ fn sections_mode_publishes_the_round_trippable_address() {
             "read",
             "doc.md",
             "--section",
-            // U14 / D2, user-visible: `--section` takes the RAW heading text.
-            // The sanitized `Scratch-notes/Findings` spelling addressed this
-            // section before U14 and addresses NOTHING now, because the read
-            // face publishes the raw address and the CLI converts that same
-            // spelling at its door. What you read is what you type.
+            // U14 / D2: `--section` takes the RAW heading text — what you read
+            // is what you type.
             "Scratch notes/Findings",
             "--json",
         ],
@@ -848,9 +775,8 @@ fn put_dry_json_carries_the_diff_as_a_field() {
     );
 }
 
-/// Gate — D3: `--validate` is the SILENT check. A rehearsal that passes says NOTHING and
+/// Gate — D3: `--validate` is the silent check. A rehearsal that passes says nothing and
 /// answers with exit 0 alone; a line of reassurance is what would stop it being a silent check.
-///
 #[test]
 fn put_validate_is_silent_on_a_pass() {
     let sb = sandbox();
@@ -890,9 +816,8 @@ fn put_validate_findings_exit_nonzero_with_the_refusal_body() {
     );
 }
 
-/// Gate — D3: `--dry` and `--validate` are the two faces of ONE rehearsal, so asking for both
+/// Gate — D3: `--dry` and `--validate` are the two faces of one rehearsal, so asking for both
 /// is a contradiction (exit 2), never a silent precedence rule a caller has to learn.
-///
 #[test]
 fn put_dry_and_validate_together_refuse_loudly() {
     let sb = sandbox();
@@ -999,14 +924,8 @@ fn put_malformed_now_is_exit_2() {
     );
 }
 
-/// Gate (G9, dogfood run 14) — the §4.4 REQUEST object on stdin is refused, and the refusal
-/// names the mistake instead of leaving a caller with "expected a sequence" and the doc that
-/// misled them.
-///
-///
-///
-///
-///
+/// Gate (G9) — the §4.4 REQUEST object on stdin is refused, and the refusal names the mistake
+/// instead of leaving a caller with "expected a sequence" and the doc that misled them.
 #[test]
 fn the_wire_request_envelope_on_stdin_is_refused_by_name() {
     let sb = sandbox();
@@ -1114,19 +1033,11 @@ fn root_mismatch_names_the_failure_and_gives_a_fix() {
     );
 }
 
-// The G6 half of this card's stdin work is W4's
-// `the_wire_request_envelope_on_stdin_is_refused_by_name` above — it names the
-// envelope mistake, conditionally, which is the correct base. What W3 keeps is
-// the UNCONDITIONAL clause, gated across the malformed family by
-// `a_malformed_stdin_refusal_leaves_the_document_byte_unchanged` below.
-
-/// Gate — the malformed-stdin refusal CLAIMS nothing was written, and that claim is true for a
-/// structural reason: `read_stdin_edits` runs before the workspace is resolved and before any
-/// splice, so the exit happens with zero engine contact. **Nothing but this gate holds that
-/// ordering in place** — move the stdin decode after resolve/splice setup and the sentence
-/// becomes a lie no other test would notice. Pinned across the malformed FAMILY, not one
-/// spelling, because the clause is on all of them.
-///
+/// Gate — the malformed-stdin refusal claims nothing was written, and that claim is true for
+/// a structural reason: `read_stdin_edits` runs before the workspace is resolved and before
+/// any splice, so the exit happens with zero engine contact. Nothing but this gate holds that
+/// ordering in place. Pinned across the malformed family, not one spelling, because the
+/// clause is on all of them.
 #[test]
 fn a_malformed_stdin_refusal_leaves_the_document_byte_unchanged() {
     for stdin in [

@@ -1,20 +1,13 @@
-//! G13 gates: `mrd sql`'s daemon-absent degrade gets a VOICE — the same voice
+//! G13 gates: `mrd sql`'s daemon-absent degrade gets a voice — the same voice
 //! G1 gave `mrd read`, not a second one.
 //!
-//! Dogfood pass-3 measured `mrd sql` degrading at **248×** the warm cost on a
-//! valid query (0.24s → 59.63s) and ~140× on the error path (0.70s → 99s), with
-//! **stdout, stderr and the exit code byte-identical** between the two. A person
-//! paid a minute for an answer and had no channel that could tell them why.
-//!
-//! These gates pin the fix together with the three constraints that make it
-//! safe, because any one alone is satisfiable by a wrong change:
+//! These gates pin the fix together with the constraints that make it safe,
+//! because any one alone is satisfiable by a wrong change:
 //!
 //! 1. degraded → stderr names the source and the timing caveat;
-//! 2. warm → stderr is EMPTY;
-//! 3. **stdout and the exit code are byte-identical across the two**, on the
-//!    success path AND the error path — the error path is where the worst
-//!    measured silence was, so voicing only the success arm would leave the
-//!    expensive case mute;
+//! 2. warm → stderr is empty;
+//! 3. stdout and the exit code are byte-identical across the two, on the
+//!    success path and the error path;
 //! 4. tier-4 bare stays silent: `:memory:` is that tier's designed path, not a
 //!    degrade, and a voice there would train the reader to ignore the line.
 
@@ -165,8 +158,6 @@ fn stderr(out: &Output) -> String {
 }
 
 // Gate 1: the degrade speaks — and says both things a reader needs.
-//
-//
 
 #[test]
 fn g13_degraded_sql_voices_the_source_on_stderr() {
@@ -191,8 +182,6 @@ fn g13_degraded_sql_voices_the_source_on_stderr() {
 }
 
 // Gate 2 + 3: the A/B. Warm is silent; degraded speaks; stdout is IDENTICAL.
-//
-//
 
 #[test]
 fn g13_warm_is_silent_and_stdout_is_byte_identical_to_the_degrade() {
@@ -228,13 +217,9 @@ fn g13_warm_is_silent_and_stdout_is_byte_identical_to_the_degrade() {
     );
 }
 
-// Gate 3b: the ERROR path — the most expensive silence the dogfood measured.
-//
-//
+// Gate 3b: the ERROR path.
 
-/// A refused query degraded 0.70s → 99s with stderr byte-identical, so the worst case was the
-/// mute one. The refusal text and the exit code must survive unchanged; the voice is additive.
-///
+/// The refusal text and the exit code must survive unchanged; the voice is additive.
 #[test]
 fn g13_the_error_path_degrade_speaks_without_changing_the_refusal() {
     let sb = sandbox();
@@ -273,13 +258,10 @@ fn g13_the_error_path_degrade_speaks_without_changing_the_refusal() {
 }
 
 // Gate 4: tier-4 bare is NOT a degrade, and stays silent.
-//
-//
 
-/// `:memory:` is tier-4's designed path (§tier-4 — never the daemon, never a drawer). Crying
-/// degrade on every correct run in an unregistered directory would teach a reader to filter the
-/// line out, which costs the voice exactly where it matters.
-///
+/// `:memory:` is tier-4's designed path (never the daemon, never a drawer). Crying degrade on
+/// every correct run in an unregistered directory would teach a reader to filter the line
+/// out, which costs the voice exactly where it matters.
 #[test]
 fn g13_tier4_bare_is_the_designed_path_and_says_nothing() {
     let sb = sandbox();
@@ -293,28 +275,11 @@ fn g13_tier4_bare_is_the_designed_path_and_says_nothing() {
     );
 }
 
-// Gate 4b: the `--json` face — voiced on stderr, OD9 document UNTOUCHED.
-//
-//
+// Gate 4b: the `--json` face — voiced on stderr, OD9 document untouched.
 
-/// **The one policy fork this unit had, ruled by ZT-proxy (supervisor, overnight ): RULING A.**
-/// `mrd read --json` already carried `"source"` before G1, so G1 never added a field — it only
-/// voiced the human face. `mrd sql --json` has no such field, and minting one would be a new
-/// surface on a VERSIONED document with existing consumers: architecture, which this unit has
-/// PARKED. So the machine face gets the same stderr voice and its OD9 stdout stays
-/// byte-for-byte what it was. A structural `source` field, if it is ever wanted, is a
-/// deliberate OD9 amendment.
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// Ruling A: the machine face gets the same stderr voice and its OD9 stdout stays
+/// byte-for-byte what it was — minting a `source` field would be a new surface on a versioned
+/// document with existing consumers, a deliberate OD9 amendment if ever wanted.
 #[test]
 fn g13_json_face_is_voiced_on_stderr_with_the_od9_document_unchanged() {
     let sb = sandbox();
@@ -367,8 +332,6 @@ fn g13_json_face_is_voiced_on_stderr_with_the_od9_document_unchanged() {
 }
 
 // Gate 5: the named cause — a socket path no daemon can bind.
-//
-//
 
 /// The exact hazard G1 and G13 were both found through: an `XDG_CACHE_HOME` long enough that
 /// `<cache>/meridian/registry/daemon.sock` exceeds `sun_path`. No daemon can bind it and none
