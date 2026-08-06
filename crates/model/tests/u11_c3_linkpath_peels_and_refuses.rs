@@ -1,11 +1,9 @@
-//! U11 / C-3 — `resolve_linkpath` peels and refuses (address-grammar § 5.1 F5):
-//! a raw `&str` with a `:` head reaching this function must return `None`, never
-//! the ambient same-basename file. Permanent guard inside the owner.
+//! `resolve_linkpath` peels and refuses (address-grammar § 5.1 F5): a raw
+//! `&str` with a `:` head must return `None`, never the ambient same-basename
+//! file.
 
 use model::CorpusIndex;
 
-/// FINDING 03's input, verbatim: a body wikilink carrying a `root:` prefix
-/// basenames onto the AMBIENT root's same-basename file — a wrong SUCCESS.
 #[test]
 fn finding_03_a_rooted_linkpath_must_not_answer_the_ambient_file() {
     let mut index = CorpusIndex::new();
@@ -20,8 +18,7 @@ fn finding_03_a_rooted_linkpath_must_not_answer_the_ambient_file() {
     );
 }
 
-/// The no-slash CONTROL — FINDING 03 needs the slash, and C-4 requires the two
-/// spellings to converge on ONE answer.
+/// No-slash control: both spellings must converge on one answer (C-4).
 #[test]
 fn finding_03_control_the_no_slash_spelling_answers_the_same() {
     let mut index = CorpusIndex::new();

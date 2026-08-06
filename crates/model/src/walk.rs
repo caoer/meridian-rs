@@ -11,7 +11,7 @@
 //!
 //! Out-of-grammar input never reaches here (mint `bad_request` first). A
 //! `_`-bearing block id is not a grammar error here — the app never indexes it,
-//! so the walk misses (silent drop; decision 013 consequence 3).
+//! so the walk misses it (silent drop).
 //!
 //! **D-C2 (§4.5):** return type is location only (`dest` + `span`), never
 //! `NodeRev` — type-level mint partition (`no_rev_field` compile test).
@@ -28,8 +28,7 @@ pub struct Location {
     pub span: ByteSpan,
 }
 
-/// Which stage a walk reached — observable in every failure transcript (§4.5:
-/// `dest` rides every stage-2 outcome, success or failure).
+/// Which stage a walk reached (§4.5: `dest` rides every stage-2 outcome).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
     /// `getFirstLinkpathDest` — the linkpath resolved to no file (no `dest`).
@@ -100,7 +99,7 @@ pub fn walk(
     }
 }
 
-/// `parseLinktext` parity: split on the FIRST `#` into `(linkpath, subpath)`.
+/// `parseLinktext` parity: split on the first `#` into `(linkpath, subpath)`.
 /// The returned subpath excludes that leading `#`. No `#` ⇒ empty subpath.
 fn parse_linktext(link: &str) -> (&str, &str) {
     match link.find('#') {
@@ -122,8 +121,8 @@ fn stage2(doc: &Document, subpath: &str) -> Option<ByteSpan> {
     walk_headings(&headings(doc), &segs)
 }
 
-/// Every heading as `(level, text, span)` in document order — the flat list the
-/// walk scans (the walk is anywhere-after, so it is NOT scoped to the tree).
+/// Every heading as `(level, text, span)` in document order — flat, because the
+/// walk is anywhere-after rather than tree-scoped.
 fn headings(doc: &Document) -> Vec<(u8, &str, ByteSpan)> {
     let mut out = Vec::new();
     collect_headings(&doc.root, &mut out);
@@ -146,7 +145,7 @@ fn collect_headings<'a>(node: &'a Node, out: &mut Vec<(u8, &'a str, ByteSpan)>) 
 
 /// Match heading segments in order: each next segment is the first heading —
 /// scanning forward from the last match, anywhere-after — that is
-/// case-insensitively equal AND strictly deeper than the previous match's level
+/// case-insensitively equal and strictly deeper than the previous match's level
 /// (so level 1→3 skips the intermediate; a same-or-lower level never matches).
 /// First match on duplicate headings, silent.
 fn walk_headings(heads: &[(u8, &str, ByteSpan)], segs: &[&str]) -> Option<ByteSpan> {
@@ -170,10 +169,10 @@ fn walk_headings(heads: &[(u8, &str, ByteSpan)], segs: &[&str]) -> Option<ByteSp
     matched
 }
 
-/// Block-id lookup over the tree's anchor nodes, case-insensitive, **last-wins**
-/// on duplicates (silent — the app overwrites its block map, contract §2.1). A
-/// `_`-bearing id never appears among anchor nodes (the lexer drops it, app-exact
-/// charset §2.4), so the walk misses it exactly as the app does.
+/// Block-id lookup over the tree's anchor nodes, case-insensitive, last-wins on
+/// duplicates (the app overwrites its block map, contract §2.1). A `_`-bearing
+/// id never appears among anchor nodes (the lexer drops it, §2.4), so the walk
+/// misses it exactly as the app does.
 fn block_span(doc: &Document, id: &str) -> Option<ByteSpan> {
     let want = id.to_lowercase();
     let mut hits: Vec<ByteSpan> = Vec::new();
@@ -196,16 +195,11 @@ mod tests {
     use super::*;
     use crate::{NodeRev, build};
 
-    /// D-C2 (frozen §4.5): the walk return type has NO rev field — a type-level
-    /// fact, not a discipline. The exhaustive destructure (no `..`) binds every
-    /// field into an explicitly-typed tuple; adding a `node_rev: NodeRev` field
-    /// to `Location` or `Miss` would fail to COMPILE here. `NodeRev` is imported
-    /// purely to prove it is nameable yet absent from these types.
+    /// D-C2 (§4.5): the walk return type has no rev field. The exhaustive
+    /// destructures (no `..`) into explicitly-typed tuples below fail to
+    /// compile if a `node_rev: NodeRev` field is added to `Location` or `Miss`.
     #[test]
     fn no_rev_field_on_walk_return_type() {
-        // Returning the fully-typed tuple forces both the exhaustive destructure
-        // (no `..`) and each field's type — a `node_rev: NodeRev` field would
-        // break the pattern or the return type.
         fn _location_is_location_facts_only(loc: Location) -> (String, ByteSpan) {
             let Location { dest, span } = loc;
             (dest, span)
@@ -214,7 +208,7 @@ mod tests {
             let Miss { stage, dest } = miss;
             (stage, dest)
         }
-        // A NodeRev exists in this crate; it is simply not a field above.
+        // `NodeRev` is nameable in this crate; it is simply not a field above.
         let _: fn(String) -> NodeRev = NodeRev;
     }
 
@@ -231,8 +225,6 @@ mod tests {
 
     #[test]
     fn stage1_resolves_frontmatter_alias_case_insensitively() {
-        // §4.5 stage 1 resolves frontmatter aliases (walkvault has none, so the
-        // alias path is proven on its own fixture). `codename` → alias-target.md.
         let (index, docs) = corpus(&[
             ("notes/plan.md", "# Plan\n"),
             (
@@ -274,11 +266,9 @@ mod tests {
         );
     }
 
-    /// The §0.3/§6.3 S1 receipts state (249 B): the `# Receipts` heading + the E3
-    /// receipt list item carrying `^r-000042` at end-of-block (Form A). Built the
-    /// way the contract's verify.py builds it — heading bytes + the receipt line
-    /// interpolating R0 — with a 249-byte transcription guard (no S1 fixture is on
-    /// disk; wsfix carries only s0/s2).
+    /// The §0.3/§6.3 S1 receipts state (249 B): the `# Receipts` heading plus the
+    /// E3 receipt list item carrying `^r-000042` at end-of-block (Form A). No S1
+    /// fixture is on disk, so it is rebuilt here under a 249-byte guard.
     fn receipts_s1() -> String {
         const R0_HEX: &str = "74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9";
         let receipts_v0 = "# Receipts \u{2014} 2026-07-18\n"; // em dash = 3-byte UTF-8
@@ -291,16 +281,10 @@ mod tests {
         raw
     }
 
-    /// GATE 2 (ANCHOR-GRAIN walk plane): block lookup for `^r-000042` over the S1
-    /// receipts state returns the anchor's HOST BLOCK-LEAF span (`[26,248]` — the
-    /// list-item line, terminator excluded, §1/§4.1/§6.3), NOT the 9-byte
-    /// `[239,248]` inline marker. The walk plane shares the model `Anchor` node
-    /// span with the mint plane, so the one build-side fix corrects both.
-    ///
-    /// APP-ORACLE grain note (Gate 4, DATA not contract law): the Obsidian app
-    /// resolves a `#^id` block ref to the whole host block, never the bare marker;
-    /// `block_span` mirrors that grain. The only `^id` app-oracle probe pinned in
-    /// the pack is WX-6 (`^under-probe_x` → `ref_not_found`, grain-independent).
+    /// Block lookup for `^r-000042` over the S1 receipts state returns the
+    /// anchor's host block-leaf span (`[26,248]` — the list-item line,
+    /// terminator excluded, §1/§4.1/§6.3), not the `[239,248]` inline marker:
+    /// the app resolves `#^id` to the whole host block.
     #[test]
     fn block_span_serves_host_block_leaf_s1_receipts() {
         let raw = receipts_s1();
@@ -309,7 +293,6 @@ mod tests {
         let mut docs = BTreeMap::new();
         index.insert("receipts/2026-07-18.md", &doc);
         docs.insert("receipts/2026-07-18.md".to_string(), doc);
-        // empty linkpath ⇒ the source file itself; subpath `^r-000042` ⇒ block lookup.
         let loc = walk(&index, &docs, "receipts/2026-07-18.md", "#^r-000042")
             .expect("walk resolves the ^r-000042 block anchor");
         assert_eq!(loc.dest, "receipts/2026-07-18.md");

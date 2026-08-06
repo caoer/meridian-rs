@@ -5,15 +5,14 @@
 //! **Owns:** derived world model from `syntax`'s dialect stream — governed tree
 //! (policy-schema §2), `node_rev` / Merkle roots, `#hpath`/`#^anchor` resolve,
 //! CAS splice validation, node-level diff. Corpus name index (derived,
-//! disposable; `query`/`policy` borrow). FROZEN Go-text heading predicate
+//! disposable; `query`/`policy` borrow). Frozen Go-text heading predicate
 //! ([`gotext`]) shared by `wire-map` and `policy` so they cannot drift.
 //!
 //! **Never:** file I/O (`fs`), persistence (law 2: cold rebuild), protocol types
 //! (law 3), body formatting.
 //!
-//! # Law enforcement
-//! **No serde on any public type** — wire cannot leak inward; model facts reach
-//! the wire only via `sidecar`. Law 3 is a compile error, not a convention.
+//! **No serde on any public type** — model facts reach the wire only via
+//! `sidecar` (law 3).
 
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -33,7 +32,6 @@ pub type ByteSpan = Range<usize>;
 /// Engine-minted `hash-algo` label — `blake3-256(span bytes)[:16]` (contract v2
 /// §1; node-rev-merkle-spec §1). Non-native labels stay out of node-rev compare
 /// ([`is_native_algo`]) and can never be green. Sole owner so `pin`/`view` agree.
-/// Foreign-algo rendering is fingerprint-plane `unverifiable-fingerprint` (R4).
 pub const NODE_REV_ALGO: &str = "node-rev";
 
 /// Effect-page `hash-algo` for the v1→v2 supersede (design-2 §6.3: merkle-v1
@@ -57,11 +55,9 @@ pub struct NodeRev(pub String);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MerkleRoot(pub String);
 
-/// Parsed frontmatter, DOCUMENT ORDER preserved (the M2-PROJECT ordered-keys
-/// amendment: wire `keys` must echo document order, B1 predicate 4 — a sorted
-/// map betrayed the order). Flat `(key, value)` pairs, first occurrence wins;
-/// no YAML library (no-serde crate law; nesting deferred to the rung that
-/// needs it).
+/// Parsed frontmatter, document order preserved — wire `keys` must echo
+/// document order (B1 predicate 4). Flat `(key, value)` pairs, first occurrence
+/// wins; no YAML library (no-serde crate law).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct YamlMap(pub Vec<(String, String)>);
 
@@ -142,36 +138,33 @@ pub enum NodeKind {
     Tag {
         name: String,
     },
-    /// Wire-observable leaf (M2-PROJECT vocabulary amendment — the B1
-    /// predicate-1 gap, closed: every dialect construct is representable).
+    /// Wire-observable leaf — every dialect construct is representable.
     InlineCode,
-    /// Wire-observable leaf (same amendment).
+    /// Wire-observable leaf.
     Comment,
 }
 
-/// One parsed file: the tree plus the raw bytes it was derived from (spans
-/// index into `raw`; keeping them together makes span-law violations testable).
+/// One parsed file: the tree plus the raw bytes it was derived from — spans
+/// index into `raw`.
 #[derive(Debug, Clone)]
 pub struct Document {
     pub raw: String,
     pub root: Node,
 }
 
-/// Build the governed tree from `syntax`'s dialect stream: assemble sections,
-/// parse frontmatter, compute hpath chains and revs. The syntax→model seam.
+/// Build the governed tree from `syntax`'s dialect stream — the syntax→model
+/// seam.
 ///
 /// Structure: `Document` root (span = whole file) → an optional `Frontmatter`
-/// node then heading-nested `Section` nodes; leaf dialect constructs (fences,
-/// anchors, wikilinks, …) attach to the deepest section that spans them. Every
-/// node carries `node_rev = blake3-256(span bytes)[:16]` (contract §1); the
-/// root node's span is the whole file, so its `node_rev` equals `file_rev`
-/// by construction (`blake3-256(whole file)[:16]`).
+/// node then heading-nested `Section` nodes; leaf dialect constructs attach to
+/// the deepest section that spans them. Every node carries
+/// `node_rev = blake3-256(span bytes)[:16]` (contract §1), so the root's
+/// `node_rev` equals `file_rev` by construction.
 #[must_use]
 pub fn build(raw: String, nodes: Vec<syntax::DialectNode>) -> Document {
     use syntax::DialectKind as D;
 
     let mut frontmatter: Option<Node> = None;
-    // (start, level, heading_text) in document order; section spans derived below.
     let mut headings: Vec<(usize, u8, String)> = Vec::new();
     let mut leaves: Vec<Node> = Vec::new();
 
@@ -179,10 +172,10 @@ pub fn build(raw: String, nodes: Vec<syntax::DialectNode>) -> Document {
         let syntax::DialectNode { kind, span } = node;
         match kind {
             D::Frontmatter { .. } => {
-                // Fence-to-fence, terminator-inclusive (§18 row 3): `syntax` trims
-                // the closing fence's terminator (leaf-block trim), but the model
-                // frontmatter node is span-lawed with the section (newline-inclusive)
-                // family — extend the end over that one terminator.
+                // Fence-to-fence, terminator-inclusive (§18 row 3): the model
+                // frontmatter node is span-lawed with the section
+                // (newline-inclusive) family, so extend over the terminator
+                // `syntax` trimmed off the closing fence.
                 let span = span.start..extend_terminator(raw.as_bytes(), span.end);
                 let map = parse_frontmatter(&raw, &span);
                 frontmatter = Some(leaf_node(&raw, NodeKind::Frontmatter { map }, span));
@@ -190,10 +183,9 @@ pub fn build(raw: String, nodes: Vec<syntax::DialectNode>) -> Document {
             D::Heading { level, text } => headings.push((span.start, level, text)),
             other => {
                 if let Some(kind) = leaf_kind(other) {
-                    // An anchor's model node carries its HOST BLOCK-LEAF span, not
-                    // the inline `^id` marker span `syntax` emits (§2.1 write-target
-                    // / §4.1 / §6.3): mint `resolve_anchor` + walk `block_span` read
-                    // block grain from one node. Every other leaf keeps its span.
+                    // An anchor's model node carries its host block-leaf span,
+                    // not the inline `^id` marker span `syntax` emits (§2.1 /
+                    // §4.1 / §6.3). Every other leaf keeps its span.
                     let span = match kind {
                         NodeKind::Anchor { .. } => anchor_host_span(raw.as_bytes(), &span),
                         _ => span,
@@ -204,8 +196,6 @@ pub fn build(raw: String, nodes: Vec<syntax::DialectNode>) -> Document {
         }
     }
 
-    // Sections, leaves, and the frontmatter node fold into one containment forest
-    // under the document root.
     let mut items = section_nodes(&raw, &headings);
     items.extend(leaves);
     items.extend(frontmatter);
@@ -229,23 +219,17 @@ pub fn build(raw: String, nodes: Vec<syntax::DialectNode>) -> Document {
 
 /// The host block-leaf span for an anchor whose inline `^id` marker occupies
 /// `marker`: the marker's own line, start-of-line → line end with the final
-/// terminator excluded (contract §1 leaf-block law; §2.1 write-target; the §4.1 /
-/// §6.3 worked `^r-000042` → `[26,248]`). `syntax` emits the inline marker span
-/// (delimiter-included — a legitimate §1 inline fact, untouched); the model
-/// write-target is the host block the anchor keys, so mint `resolve_anchor` and
-/// walk `block_span` read block grain from one node, no per-consumer derivation.
+/// terminator excluded (contract §1 leaf-block law; §2.1 write-target; §4.1 /
+/// §6.3 worked `^r-000042` → `[26,248]`). The write-target is the host block the
+/// anchor keys, not the marker span `syntax` emits.
 ///
-/// A heading-line anchor keys the heading LINE leaf (terminator excluded),
-/// distinct from the newline-inclusive heading SECTION span — a rule-derived
-/// consequence of the same line rule + §1 leaf law, not new law.
+/// A heading-line anchor keys the heading line leaf (terminator excluded),
+/// distinct from the newline-inclusive heading section span.
 fn anchor_host_span(bytes: &[u8], marker: &ByteSpan) -> ByteSpan {
-    // start of the marker's line: the byte after the previous `\n`, or 0.
     let start = bytes[..marker.start]
         .iter()
         .rposition(|&b| b == b'\n')
         .map_or(0, |p| p + 1);
-    // line end, final terminator excluded: the next `\n` at/after the marker end
-    // (EOF if none), dropping a preceding `\r` of a CRLF pair.
     let mut end = bytes[marker.end..]
         .iter()
         .position(|&b| b == b'\n')
@@ -295,7 +279,6 @@ fn section_nodes(raw: &str, headings: &[(usize, u8, String)]) -> Vec<Node> {
 /// Fold a flat node list into a containment forest: sort so a container precedes
 /// everything it spans (start asc, end desc), then stack — an item the stack top
 /// spans becomes its child, otherwise the top closes and joins its own parent.
-/// Handles frontmatter, sections, and leaves uniformly, with no panicking `unwrap`.
 fn nest_by_containment(mut items: Vec<Node>) -> Vec<Node> {
     items.sort_by(span_order);
     let mut stack: Vec<Node> = Vec::new();
@@ -350,11 +333,9 @@ fn extend_terminator(bytes: &[u8], mut end: usize) -> usize {
 }
 
 /// Exclude a single trailing line terminator (`\n` or the full `\r\n` pair) —
-/// the §1 leaf-block law (a leaf node excludes its final terminator). The exact
-/// inverse of [`extend_terminator`]: `extend` grows the fence-to-fence container
-/// over its terminator (§18 row 3), `trim` holds the `fm_key` leaf inside it at
-/// terminator-excluded grain (`[4,15]` = `title: Plan`, §4.4). Full terminator,
-/// never a naive `-1`: `\n` ⇒ 1, `\r\n` ⇒ 2, a terminator-less line ⇒ 0.
+/// the §1 leaf-block law, and the exact inverse of [`extend_terminator`]. Full
+/// terminator, never a naive `-1`: `\n` ⇒ 1, `\r\n` ⇒ 2, a terminator-less
+/// line ⇒ 0.
 fn trim_terminator(bytes: &[u8], start: usize, mut end: usize) -> usize {
     if end > start && bytes[end - 1] == b'\n' {
         end -= 1;
@@ -365,12 +346,10 @@ fn trim_terminator(bytes: &[u8], start: usize, mut end: usize) -> usize {
     end
 }
 
-/// Model's OWN flat-frontmatter parse (top-level `key: value`, column 0) — the
-/// keys authority per the R1 forward-note, NOT `syntax`'s best-effort list. No
-/// serde/YAML crate: the no-serde crate law forbids it and the corpus frontmatter
-/// is flat; a full YAML library is deferred to the rung that needs nesting.
-/// Key order is document order (first occurrence wins) — the wire `keys`
-/// surface echoes it verbatim (B1 predicate 4).
+/// Model's own flat-frontmatter parse (top-level `key: value`, column 0) — the
+/// keys authority, not `syntax`'s best-effort list. No serde/YAML crate
+/// (no-serde crate law). Key order is document order, first occurrence wins —
+/// the wire `keys` surface echoes it verbatim (B1 predicate 4).
 fn parse_frontmatter(raw: &str, span: &ByteSpan) -> YamlMap {
     let block = raw.get(span.clone()).unwrap_or_default();
     let mut pairs: Vec<(String, String)> = Vec::new();
@@ -398,7 +377,7 @@ fn parse_frontmatter(raw: &str, span: &ByteSpan) -> YamlMap {
 
 /// Map a leaf dialect construct to its model node kind. `Heading`/`Frontmatter`
 /// are handled structurally (sections / fm node); `InlineCode`/`Comment` have no
-/// model kind yet (B1-SUPERSET's fail-first surface) and are dropped.
+/// model kind yet and are dropped.
 fn leaf_kind(dk: syntax::DialectKind) -> Option<NodeKind> {
     use syntax::DialectKind as D;
     Some(match dk {
@@ -508,9 +487,8 @@ pub struct HpathSeg {
     /// (the mint plane never case-folds — that is the walk plane's job).
     pub h: String,
     /// 1-based occurrence among identical sibling heading texts. `None` demands
-    /// uniqueness: a duplicate with no disambiguator resolves `Ambiguous` (loud),
-    /// never silently picked (contract §2.1, the mint plane's never-silently-picks
-    /// law).
+    /// uniqueness: a duplicate with no disambiguator resolves `Ambiguous`
+    /// (contract §2.1) — the mint plane never silently picks.
     pub n: Option<u32>,
 }
 
@@ -533,25 +511,21 @@ pub enum Ref {
 }
 
 /// A mint-plane anchor id outside the one block-id charset (`[A-Za-z0-9-]`,
-/// decision 011 / contract §2.4) — e.g. a legacy `_`-bearing id. `model` is
-/// wire-blind, so this is the model-side refusal; the dispatch boundary maps it
-/// to the wire `bad_request` (§2.4). The walk plane does NOT use this — it
-/// follows the app (the pack-pinned answer), where the same id is silently
-/// dropped (decision 013 consequence 3: both dispositions conform).
+/// contract §2.4). `model` is wire-blind, so this is the model-side refusal; the
+/// dispatch boundary maps it to the wire `bad_request`. The walk plane does not
+/// use it — there the same id is silently dropped (decision 013).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BadAnchorId {
     pub id: String,
 }
 
 impl Ref {
-    /// Build a mint-plane anchor ref, enforcing the one block-id charset — the
-    /// mint-guard (CHARSET-GUARD). Every mint position that constructs an anchor
-    /// ref from untrusted input (dispatch strict-decode, splice targets, receipt
-    /// anchors) routes through here rather than `Ref::Anchor` directly.
+    /// Build a mint-plane anchor ref, enforcing the one block-id charset. Every
+    /// mint position that builds an anchor ref from untrusted input routes
+    /// through here rather than `Ref::Anchor` directly.
     ///
     /// # Errors
-    /// [`BadAnchorId`] when `id` is empty or bears a char outside `[A-Za-z0-9-]`
-    /// (the dead `_` superset is refused here → `bad_request`).
+    /// [`BadAnchorId`] when `id` is empty or bears a char outside `[A-Za-z0-9-]`.
     pub fn anchor(id: impl Into<String>) -> Result<Self, BadAnchorId> {
         let id = id.into();
         if syntax::is_block_id(&id) {
@@ -573,16 +547,15 @@ pub struct Target {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ResolveError {
     NotFound,
-    /// Duplicate hpaths — carries the candidate list (meridian's duplicate-hpath
-    /// candidate-list error, preserved verbatim; wire code reserved, undecided).
+    /// Duplicate hpaths — carries the candidate list.
     Ambiguous(Vec<Target>),
 }
 
 /// The strict mint-plane lookup (contract §2.1) backing `cat`/`toc`/splice
 /// targets: an `hpath` walked byte-exactly down the containment tree, an exact
 /// block `anchor`, or a top-level `fm_key`. Section span = heading line through
-/// end of subtree (what makes the vision's splice example coherent). Never
-/// case-folds, never silently picks — that is the [`walk`] plane's job.
+/// end of subtree. Never case-folds, never silently picks — that is the [`walk`]
+/// plane's job.
 ///
 /// # Errors
 /// [`ResolveError::NotFound`] for a missing (or empty) ref; [`ResolveError::Ambiguous`]
@@ -597,10 +570,9 @@ pub fn resolve(doc: &Document, r#ref: &Ref) -> Result<Target, ResolveError> {
 
 /// A fully resolved target: the full node span, its content span (heading
 /// stripped for sections; == full span for headingless nodes), and the CAS
-/// token. The content span backs `put{at:"content"}` (§4.4); the full span
-/// backs `put{at:"all"}`, `put{at:"end"}` (at its end byte), and `match`
-/// (search over the full span bytes). Internal to validation — the public
-/// [`resolve`] projects it to [`Target`].
+/// token. The content span backs `put{at:"content"}`; the full span backs
+/// `put{at:"all"}`, `put{at:"end"}` and `match` (§4.4). Internal to validation —
+/// the public [`resolve`] projects it to [`Target`].
 struct Resolved {
     span: ByteSpan,
     content_span: ByteSpan,
@@ -629,8 +601,7 @@ fn resolved_of(node: &Node, bytes: &[u8]) -> Resolved {
 /// The content span of a node (contract §1 rev sub-laws / §4.4 `put{at:"content"}`):
 /// for a `Section`, the bytes after the heading line's terminator to the section
 /// end (heading preserved). Every other node has no heading to preserve, so its
-/// content span IS its full span — rule-derived (`at:"content"` ≡ `at:"all"`
-/// where "heading preserved" is vacuous; no bytes are lost either way).
+/// content span is its full span.
 fn content_span(node: &Node, bytes: &[u8]) -> ByteSpan {
     match &node.kind {
         NodeKind::Section { .. } => {
@@ -712,19 +683,13 @@ fn collect_anchors<'a>(node: &'a Node, id: &str, hits: &mut Vec<&'a Node>) {
     }
 }
 
-/// A top-level frontmatter key → its full VALUE grain (span + rev). The node the
-/// contract names is the key line PLUS any multi-line block value that hangs off
-/// it (indented continuation lines), never the whole fence-to-fence block.
+/// A top-level frontmatter key → its full value grain (span + rev): the key line
+/// plus any indented continuation lines, never the whole fence-to-fence block.
 ///
 /// A scalar or flow value (`title: Plan`, `tags: [a, b]`) has no continuation,
-/// so the grain is the single key line — the frozen §4.4 leaf (`[4,15]` =
-/// `title: Plan`, §1 leaf law: terminator-excluded). A block value (`inputs:`
-/// plus indented `- item` lines) extends the grain over every item, so an
-/// upsert/replace addresses the WHOLE value and can never orphan the tail
-/// (U2.11 — the line-oriented edit could formerly reach only the key line,
-/// minting a rev over a silently corrupted block sequence). The frontmatter
-/// CONTAINER node stays fence-to-fence, terminator-inclusive (`[0,20]`, §18 row
-/// 3) and is minted elsewhere; nothing here touches it.
+/// so the grain is the single key line, terminator-excluded (§1 leaf law; frozen
+/// §4.4 `[4,15]`). A block value extends the grain over every item, so an
+/// upsert/replace addresses the whole value and can never orphan the tail.
 fn resolve_fm_key_resolved(doc: &Document, key: &str) -> Result<Resolved, ResolveError> {
     let Some(fm) = find_frontmatter(&doc.root) else {
         return Err(ResolveError::NotFound);
@@ -735,8 +700,7 @@ fn resolve_fm_key_resolved(doc: &Document, key: &str) -> Result<Resolved, Resolv
     while line_start < block.end {
         let line_end = fm_line_end(bytes, line_start, block.end);
         let line = &doc.raw[line_start..line_end];
-        // top-level keys sit at column 0 (the fm-parse convention); match the
-        // key byte-exactly up to its colon.
+        // top-level keys sit at column 0; match byte-exactly up to the colon.
         if !line.starts_with([' ', '\t'])
             && line
                 .split_once(':')
@@ -754,7 +718,7 @@ fn resolve_fm_key_resolved(doc: &Document, key: &str) -> Result<Resolved, Resolv
     Err(ResolveError::NotFound)
 }
 
-/// The end byte (terminator INCLUDED) of the frontmatter line starting at
+/// The end byte (terminator included) of the frontmatter line starting at
 /// `start`, clamped to the block end.
 fn fm_line_end(bytes: &[u8], start: usize, block_end: usize) -> usize {
     bytes[start..block_end]
@@ -771,14 +735,12 @@ fn fm_line_is_blank(bytes: &[u8], start: usize, end: usize) -> bool {
         .all(|&b| matches!(b, b' ' | b'\t' | b'\r' | b'\n'))
 }
 
-/// The full grain span of a top-level frontmatter key whose LINE starts at
-/// `key_line_start`: the key line, extended over every INDENTED continuation
-/// line of a block value (block sequence or block mapping). A blank line is
-/// carried only when a later indented line follows — trailing blanks belong to
-/// the inter-key gap, not the value. The scan stops at the next column-0
-/// non-blank line (the next key or the closing fence) or the block end. The
-/// returned end EXCLUDES the last content line's terminator (§1 leaf law), so a
-/// single-line key keeps its frozen terminator-excluded grain.
+/// The full grain span of a top-level frontmatter key whose line starts at
+/// `key_line_start`: the key line, extended over every indented continuation
+/// line of a block value. A blank line is carried only when a later indented
+/// line follows — trailing blanks belong to the inter-key gap. The scan stops at
+/// the next column-0 non-blank line or the block end; the returned end excludes
+/// the last content line's terminator (§1 leaf law).
 fn fm_key_grain_span(bytes: &[u8], key_line_start: usize, block_end: usize) -> ByteSpan {
     let key_line_end = fm_line_end(bytes, key_line_start, block_end);
     let mut grain_end = trim_terminator(bytes, key_line_start, key_line_end);
@@ -789,12 +751,9 @@ fn fm_key_grain_span(bytes: &[u8], key_line_start: usize, block_end: usize) -> B
             // tentative — a blank line joins the value only if a later indented
             // line extends the grain past it.
         } else if matches!(bytes.get(cursor), Some(b' ' | b'\t')) {
-            // an indented continuation line: the block value extends over it
-            // (and any blank lines skipped since the last content line, since
-            // the grain is the contiguous `[key_line_start, grain_end)` region).
             grain_end = trim_terminator(bytes, cursor, line_end);
         } else {
-            // column-0 non-blank: the next key or the closing fence — value ends.
+            // column-0 non-blank: the next key or the closing fence.
             break;
         }
         cursor = line_end;
@@ -820,9 +779,9 @@ struct FmUpsertPlan {
     before_rev: NodeRev,
 }
 
-/// Plan a frontmatter-key upsert against the PRE-batch document — the
+/// Plan a frontmatter-key upsert against the pre-batch document — the
 /// create-or-replace site for `{key}: {value}` (`PutAt::Upsert`). The insertion
-/// offset is SERVER-derived (never a client byte offset, D-C1):
+/// offset is server-derived (never a client byte offset, D-C1):
 /// - key present → replace its full line span; before-rev is the line's rev.
 /// - key absent, frontmatter present → insert `{key}: {value}\n` right after the
 ///   opening `---\n` fence (first-key position); before-rev is the empty
@@ -873,11 +832,9 @@ fn fm_insert_offset(bytes: &[u8], block: &ByteSpan) -> usize {
     if i < block.end { i + 1 } else { block.start }
 }
 
-/// The pre-batch armed BEFORE fact for an `fm_key` upsert target: the existing
+/// The pre-batch armed before-fact for an `fm_key` upsert target: the existing
 /// key line's span + rev when present, else the empty insertion point's span +
-/// the empty-span rev (`blake3("")[:16]` — a create has no prior node). The
-/// dispatch write path uses this to arm `node_rev_before` without re-deriving the
-/// synthesis site ([`plan_fm_upsert`]); `value` does not affect the before fact.
+/// the empty-span rev (a create has no prior node). `value` does not affect it.
 #[must_use]
 pub fn fm_upsert_before(doc: &Document, key: &str) -> Target {
     let plan = plan_fm_upsert(doc, key, "");
@@ -897,66 +854,62 @@ pub enum PutAt {
     /// Replace the content span, heading preserved (§1 content-span law; ==
     /// full span for a headingless target — see [`content_span`]).
     Content,
-    /// Insert `text` at the span-end byte — the append verb: RAW byte
-    /// concatenation, NO synthesized separator (§4.4 `at:"end"` law). `text`
-    /// that must begin a new line carries its own leading `\n`; a result that
-    /// loses containment refuses [`SpliceVerdict::WouldCorrupt`].
+    /// Insert `text` at the span-end byte — raw byte concatenation, no
+    /// synthesized separator (§4.4 `at:"end"` law). `text` that must begin a new
+    /// line carries its own leading `\n`; a result that loses containment
+    /// refuses [`SpliceVerdict::WouldCorrupt`].
     End,
-    /// Set a frontmatter key (create-or-replace) — valid ONLY on a
-    /// [`Ref::FmKey`] target. `text` is the VALUE; the server composes
-    /// `{key}: {value}` and either replaces the key's existing line, inserts a
-    /// new line into the frontmatter block, or synthesizes a `---` block when
-    /// the file has none (see [`plan_fm_upsert`]). The insertion offset is
-    /// derived from the document — never client-supplied (D-C1).
+    /// Set a frontmatter key (create-or-replace) — valid only on a
+    /// [`Ref::FmKey`] target. `text` is the value; the server composes
+    /// `{key}: {value}` and replaces, inserts, or synthesizes the `---` block
+    /// (see [`plan_fm_upsert`]). The insertion offset is derived from the
+    /// document — never client-supplied (D-C1).
     Upsert,
 }
 
 /// The two edit shapes (contract §4.4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EditKind {
-    /// Edit-exact: `old` must occur exactly ONCE in the target's full span
+    /// Edit-exact: `old` must occur exactly once in the target's full span
     /// bytes; replaced by `new`. Zero → `no_match`, two+ → `not_unique{matches}`
-    /// (§5.2). No regex, no fuzz; matched SERVER-side.
+    /// (§5.2). No regex, no fuzz; matched server-side.
     Match { old: String, new: String },
     /// Whole-slot write at a [`PutAt`] position.
     Put { at: PutAt, text: String },
 }
 
 /// One edit in a batch: a target ref, the edit shape, an optional per-node CAS
-/// guard. There is NO span field — a client cannot supply a byte offset, so the
-/// wrong-offset write is UNREPRESENTABLE (D-C1, §4.4). The model twin of
+/// guard. There is no span field — a client cannot supply a byte offset, so the
+/// wrong-offset write is unrepresentable (D-C1, §4.4). The model twin of
 /// `wire::Edit`; the crates never share a type (no-serde law).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Edit {
     pub target: Ref,
     pub edit: EditKind,
     /// Node-grain guard (§5.1): compared against `blake3(target's full span
-    /// bytes)[:16]` re-derived from the PRE-BATCH state. `None` = unguarded (a
+    /// bytes)[:16]` re-derived from the pre-batch state. `None` = unguarded (a
     /// legal wire frame — requiredness is the Go ratchet, §5.3).
     pub if_node_rev: Option<NodeRev>,
 }
 
 /// A batch splice request (contract §4.4 — `splice` is batch-only, one response
-/// shape). Every target and guard resolves against the PRE-BATCH state; targets
-/// must be disjoint. There is NO span field anywhere request-side (D-C1). This
-/// is the reshape of the v1 single `{span, if_node_rev, text}` splice.
+/// shape). Every target and guard resolves against the pre-batch state; targets
+/// must be disjoint. There is no span field anywhere request-side (D-C1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpliceRequest {
-    /// World-grain guard, checked FIRST (§5.1) — a mismatch fails the WHOLE
+    /// World-grain guard, checked first (§5.1) — a mismatch fails the whole
     /// batch (`root_mismatch` → resync). `None` = unguarded.
     pub if_root: Option<MerkleRoot>,
     pub edits: Vec<Edit>,
-    /// The ONE engine-minted span edit riding inside the same batch (stage-2
-    /// S7). `None` for every caller-shaped batch.
+    /// The one engine-minted span edit riding inside the same batch.
+    /// `None` for every caller-shaped batch.
     pub engine: Option<EngineEdit>,
 }
 
-/// Engine-minted span edit inside the batch (stage-2 S7) — not resolved from a
-/// caller [`Ref`]. Sole inhabitant: `meridian-lock` (span from `lock::find` /
-/// EOF birth; bytes from `lock::render`). §2.1 grammar cannot address a fenced
-/// lock block; engine is sole writer (#8 §3). No wire shape produces this —
-/// clients cannot mint one (D-C1: request-side spans banned; this is not
-/// request-side). Validated with planned edits (char-align, disjointness,
+/// Engine-minted span edit inside the batch — not resolved from a caller
+/// [`Ref`]. Sole inhabitant: `meridian-lock`, whose fenced block the §2.1
+/// grammar cannot address. No wire shape produces this, so clients cannot mint
+/// one (D-C1). Validated with the planned edits (char-align, disjointness,
 /// reparse).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EngineEdit {
@@ -966,22 +919,20 @@ pub struct EngineEdit {
     pub text: String,
 }
 
-/// A receipt append riding INSIDE the sealed batch (§6.1, D-C3): the receipt
-/// file's append position (its EOF) and the pre-rendered line bytes. The bytes
-/// are rendered by the `receipt` crate and folded in by the caller BEFORE
-/// validation, so the append commits in the SAME batch and single root advance
-/// as the content edits. Model seals it; it never renders (body formatting is
-/// not this crate's, per charter).
+/// A receipt append riding inside the sealed batch (§6.1, D-C3): the receipt
+/// file's append position (its EOF) and the pre-rendered line bytes. Folded in
+/// by the caller before validation, so the append commits in the same batch and
+/// single root advance as the content edits. Model seals it, never renders it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReceiptAppend {
     pub span: ByteSpan,
     pub text: String,
 }
 
-/// One validated edit: the exact PRE-BATCH byte span to replace and the
+/// One validated edit: the exact pre-batch byte span to replace and the
 /// replacement text — the write instruction `fs` executes. Spans index the
-/// pre-batch bytes; the batch's edits are disjoint (validated), so `fs` applies
-/// them in one pass.
+/// pre-batch bytes and the batch's edits are disjoint, so `fs` applies them in
+/// one pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidatedEdit {
     pub span: ByteSpan,
@@ -997,7 +948,7 @@ pub struct ValidatedEdit {
 pub enum SpliceVerdict {
     /// All guards passed; the sealed batch is ready for `fs`.
     Validated(ValidatedBatch),
-    /// `if_root` failed (world-grain, checked FIRST) — the whole batch is
+    /// `if_root` failed (world-grain, checked first) — the whole batch is
     /// refused, recovery `resync` (§5.1).
     RootMismatch {
         expected: MerkleRoot,
@@ -1011,26 +962,24 @@ pub enum SpliceVerdict {
     /// `if_node_rev` failed → `cas_mismatch` (refresh, §5.2). The retryable
     /// one: re-`cat`, re-derive, splice again.
     CasMismatch { expected: NodeRev, actual: NodeRev },
-    /// Guard PASSED and `old` was absent → `no_match` (fix, §5.2): provably a
-    /// typo. `matches` is 0 (carried for wire-frame parity).
+    /// Guard passed and `old` was absent → `no_match` (fix, §5.2). `matches` is
+    /// 0 (carried for wire-frame parity).
     NoMatch { matches: usize },
-    /// `old` occurred 2+ times → `not_unique{matches}` (fix, §5.2). Add context
-    /// bytes to `old`, exactly as with the Edit tool.
+    /// `old` occurred 2+ times → `not_unique{matches}` (fix, §5.2).
     NotUnique { matches: usize },
     /// Two edits' targets are not disjoint → `bad_request{overlap}` (§4.4). The
     /// overlapping target spans ride along.
     Overlap { spans: Vec<ByteSpan> },
     /// The post-apply reparse loses containment → `would_corrupt{lost}` (§4.4).
-    /// `lost` = the hpath chains of sections destroyed OUTSIDE the edited
-    /// regions (rule-derived: a section byte-disjoint from every replaced region
-    /// that no longer resolves after reparse was corrupted, not rewritten).
+    /// `lost` = the hpath chains of sections destroyed outside the edited
+    /// regions (byte-disjoint from every replaced region, yet gone after
+    /// reparse: corrupted, not rewritten).
     WouldCorrupt { lost: Vec<Vec<String>> },
     /// A replaced region would split a multi-byte UTF-8 character →
-    /// `bad_request` (§1 write-side multibyte refusal; the reparse-gate
-    /// guarantor). Unreachable through the public `match`/`put` API — valid-UTF-8
-    /// edits at char-aligned resolved spans are self-synchronizing, so a
-    /// mid-char write is unrepresentable (parallel to D-C1) — the guard is
-    /// retained so any mid-char region refuses LOUD rather than corrupting bytes.
+    /// `bad_request` (§1 write-side multibyte refusal). Unreachable through the
+    /// public `match`/`put` API — valid-UTF-8 edits at char-aligned resolved
+    /// spans are self-synchronizing — but retained so any mid-char region
+    /// refuses loudly rather than corrupting bytes.
     MultibyteSplit,
 }
 
@@ -1057,9 +1006,8 @@ pub struct ValidatedBatch {
 }
 
 /// Write-plane candidate — bytes about to land. Inner `Document` is private;
-/// only mint path is [`candidate_of_body`] / [`candidate_of_batch`]. `fs`
-/// byte-landing primitives accept nothing else (R5: type discharge, not
-/// convention). Seal is compile-level:
+/// the only mint path is [`candidate_of_body`] / [`candidate_of_batch`], and
+/// `fs` byte-landing primitives accept nothing else. Seal is compile-level:
 ///
 /// ```compile_fail
 /// // The field is private, so this fails to compile outside `model`.
@@ -1073,8 +1021,7 @@ pub struct ValidatedBatch {
 pub struct CandidateDocument(Document);
 
 impl CandidateDocument {
-    /// The candidate document, borrowed — what every gate, verdict and rev
-    /// reads.
+    /// The candidate document, borrowed.
     #[must_use]
     pub fn document(&self) -> &Document {
         &self.0
@@ -1086,21 +1033,17 @@ impl CandidateDocument {
         &self.0.raw
     }
 
-    /// The candidate document, taken — for a caller that stores it past the
-    /// write.
+    /// The candidate document, taken.
     #[must_use]
     pub fn into_document(self) -> Document {
         self.0
     }
 }
 
-/// Mint the candidate for a WHOLE-FILE write: parse `raw` — the exact bytes
-/// that will reach disk — and stamp the document's own path (`build` is
-/// I/O-free and leaves it empty; the armed gate SCOPES its rules by that value,
-/// so an unstamped candidate is a page no path-scoped convention can see).
-///
-/// The birth door (`create`), the lock writer and the `--truth file` INDEX
-/// deploy all land whole files, and each reaches disk through this mint.
+/// Mint the candidate for a whole-file write: parse `raw` — the exact bytes that
+/// will reach disk — and stamp the document's own path. `build` is I/O-free and
+/// leaves the path empty, but the armed gate scopes its rules by that value, so
+/// an unstamped candidate is invisible to every path-scoped convention.
 #[must_use]
 pub fn candidate_of_body(path: &str, raw: String) -> CandidateDocument {
     let nodes = syntax::parse(&raw);
@@ -1112,15 +1055,9 @@ pub fn candidate_of_body(path: &str, raw: String) -> CandidateDocument {
     CandidateDocument(doc)
 }
 
-/// Mint the candidate a SEALED BATCH produces: dry-apply the validated span
-/// edits to `pre_image` (the bytes the spans index — read#2's validated bytes,
-/// §4.4's one-reparse law) and parse the result ONCE.
-///
-/// This is the single owner of an apply-then-reparse that `wire-serve` and
-/// `run` previously each implemented for themselves. Two copies of one
-/// computation is how the wire and run planes came to judge candidates built by
-/// different code; the seal forces them onto one mint because the constructor
-/// cannot leave this crate.
+/// Mint the candidate a sealed batch produces: dry-apply the validated span
+/// edits to `pre_image` (the bytes the spans index) and parse the result once
+/// (§4.4's one-reparse law). The single owner of apply-then-reparse.
 #[must_use]
 pub fn candidate_of_batch(
     path: &str,
@@ -1128,9 +1065,8 @@ pub fn candidate_of_batch(
     sealed: &ValidatedBatch,
 ) -> CandidateDocument {
     let mut raw = pre_image.to_owned();
-    // The sealed edits are disjoint and sorted by span start (validated), so
-    // splicing back-to-front keeps every remaining span in pre-image
-    // coordinates — no shift arithmetic.
+    // The sealed edits are disjoint and sorted by span start, so splicing
+    // back-to-front keeps every remaining span in pre-image coordinates.
     for edit in sealed.edits.iter().rev() {
         raw.replace_range(edit.span.clone(), &edit.text);
     }
@@ -1138,13 +1074,13 @@ pub fn candidate_of_batch(
 }
 
 /// Validate a batch splice against a live `Document` (contract §4.4/§5). The
-/// order (§5.1): `if_root` FIRST (world-grain, fails the whole batch), then per
+/// order (§5.1): `if_root` first (world-grain, fails the whole batch), then per
 /// edit resolve → CAS → match/put, then batch-wide disjointness and one
 /// simulated reparse (`would_corrupt`). `live_root` is the caller's ambient
-/// corpus root for the `if_root` comparison (`None` = the caller is not guarding
-/// the world root — §5.3); `receipt` is a pre-rendered append the caller folds
-/// in so it rides inside the sealed batch. On success, mints the sealed
-/// [`ValidatedBatch`] — the only path to `fs`.
+/// corpus root for the `if_root` comparison (`None` = not guarding the world
+/// root, §5.3); `receipt` is a pre-rendered append that rides inside the sealed
+/// batch. On success, mints the sealed [`ValidatedBatch`] — the only path to
+/// `fs`.
 #[must_use]
 pub fn validate_batch(
     doc: &Document,
@@ -1152,7 +1088,7 @@ pub fn validate_batch(
     batch: &SpliceRequest,
     receipt: Option<ReceiptAppend>,
 ) -> SpliceVerdict {
-    // 1. World guard FIRST (§5.1): compared only when the client guarded AND the
+    // 1. World guard (§5.1): compared only when the client guarded and the
     // caller supplied the live root; a mismatch fails the whole batch.
     if let (Some(expected), Some(actual)) = (&batch.if_root, live_root)
         && expected != actual
@@ -1169,12 +1105,10 @@ pub fn validate_batch(
     // first failure (in edit order) is returned — the §5.2 single-error shape.
     let mut planned: Vec<PlannedEdit> = Vec::with_capacity(batch.edits.len());
     for edit in &batch.edits {
-        // Upsert on an `fm_key` target is the ONE create-or-replace shape: the
-        // key may not exist yet, so it plans BEFORE the resolve gate (which
-        // would refuse a missing key `RefNotFound`). CAS compares the honest
-        // before-rev (§5.1) — the existing line's rev, or the empty insertion
-        // point's rev for a create. Non-`fm_key` upserts fall through to the
-        // normal path (the dispatch write path refuses them first).
+        // Upsert on an `fm_key` target plans before the resolve gate: the key
+        // may not exist yet, and resolve would refuse it `RefNotFound`. CAS
+        // compares the honest before-rev (§5.1) — the existing line's rev, or
+        // the empty insertion point's rev for a create.
         if let (
             EditKind::Put {
                 at: PutAt::Upsert,
@@ -1207,8 +1141,8 @@ pub fn validate_batch(
             Err(ResolveError::NotFound) => return SpliceVerdict::RefNotFound,
             Err(ResolveError::Ambiguous(c)) => return SpliceVerdict::Ambiguous(c),
         };
-        // CAS (§5.1): the ONE derivation — blake3 of the target's full span
-        // bytes, already minted as `node_rev`.
+        // CAS (§5.1): blake3 of the target's full span bytes, already minted as
+        // `node_rev`.
         if let Some(expected) = &edit.if_node_rev
             && *expected != resolved.node_rev
         {
@@ -1234,8 +1168,7 @@ pub fn validate_batch(
             }
         };
         // Write-side multibyte guarantor (§1): the replaced region must fall on
-        // char boundaries. Char-aligned resolved spans + valid-UTF-8 edits make
-        // this hold by construction; the guard refuses loud if it ever does not.
+        // char boundaries.
         if let Err(v) = guard_char_aligned(raw, &region) {
             return v;
         }
@@ -1246,8 +1179,8 @@ pub fn validate_batch(
         });
     }
 
-    // 2b. The engine-minted span edit (S7) joins the planned set HERE — after the
-    // caller's edits, before every batch-wide rung.
+    // 2b. The engine-minted span edit joins the planned set after the caller's
+    // edits, before every batch-wide rung.
     if let Some(engine) = &batch.engine {
         match plan_engine_edit(raw, engine) {
             Ok(planned_engine) => planned.push(planned_engine),
@@ -1290,7 +1223,7 @@ struct PlannedEdit {
     text: String,
 }
 
-/// Locate the exactly-one occurrence of `old` within the target's FULL span
+/// Locate the exactly-one occurrence of `old` within the target's full span
 /// bytes (§4.4), returning the absolute replaced region. `str`-level matching is
 /// char-aligned by construction (a valid-UTF-8 needle in a valid-UTF-8 haystack
 /// is self-synchronizing), so a byte count == char-aligned occurrence count.
@@ -1303,8 +1236,7 @@ fn match_region(raw: &str, span: &ByteSpan, old: &str) -> Result<ByteSpan, Splic
     let Some((first, _)) = hits.next() else {
         return Err(SpliceVerdict::NoMatch { matches: 0 });
     };
-    // Count the rest without re-scanning from zero: non-overlapping, left→right
-    // (Edit-tool semantics), so 1 + the remaining tail.
+    // Non-overlapping, left→right: 1 + the count over the remaining tail.
     let count = 1 + hay[first + old.len()..].matches(old).count();
     if count > 1 {
         return Err(SpliceVerdict::NotUnique { matches: count });
@@ -1326,10 +1258,10 @@ fn guard_char_aligned(raw: &str, region: &ByteSpan) -> Result<(), SpliceVerdict>
     }
 }
 
-/// Plan the one [`EngineEdit`]: its span IS its address, so nothing resolves —
-/// but an out-of-range span is still refused by the same char-alignment
-/// guarantor (`is_char_boundary` is false past the end), so a mis-minted span can
-/// never splice into invented bytes.
+/// Plan the one [`EngineEdit`]: its span is its address, so nothing resolves.
+/// An out-of-range span is still refused by the char-alignment guarantor
+/// (`is_char_boundary` is false past the end), so a mis-minted span can never
+/// splice into invented bytes.
 fn plan_engine_edit(raw: &str, engine: &EngineEdit) -> Result<PlannedEdit, SpliceVerdict> {
     guard_char_aligned(raw, &engine.span)?;
     Ok(PlannedEdit {
@@ -1339,7 +1271,7 @@ fn plan_engine_edit(raw: &str, engine: &EngineEdit) -> Result<PlannedEdit, Splic
     })
 }
 
-/// The first pair of non-disjoint TARGET spans (§4.4), or `None`. Containment
+/// The first pair of non-disjoint target spans (§4.4), or `None`. Containment
 /// counts as overlap (a section and a section it contains are not disjoint).
 /// Touching boundaries (`[a,b)` then `[b,c)`) are disjoint.
 fn first_overlap(planned: &[PlannedEdit]) -> Option<Vec<ByteSpan>> {
@@ -1347,8 +1279,7 @@ fn first_overlap(planned: &[PlannedEdit]) -> Option<Vec<ByteSpan>> {
     idx.sort_by_key(|&i| planned[i].target.start);
     for w in idx.windows(2) {
         let (a, b) = (&planned[w[0]].target, &planned[w[1]].target);
-        // sorted by start; a nests-or-precedes b — overlap iff a extends past
-        // b's start.
+        // sorted by start: overlap iff a extends past b's start.
         if a.end > b.start {
             return Some(vec![a.clone(), b.clone()]);
         }
@@ -1357,12 +1288,11 @@ fn first_overlap(planned: &[PlannedEdit]) -> Option<Vec<ByteSpan>> {
 }
 
 /// Apply the planned edits to the raw bytes and reparse; report the hpath chains
-/// of any pre-batch section that was byte-DISJOINT from every replaced region
+/// of any pre-batch section that was byte-disjoint from every replaced region
 /// yet no longer resolves — containment lost (§4.4 `would_corrupt`). A section
-/// inside an edited region is legitimately rewritten (not "lost"); one outside
-/// every edit whose heading was destroyed by a neighbouring edit bleeding into
-/// it (e.g. a separator-less `at:"end"`) is corruption. Returns `None` when
-/// containment holds.
+/// inside an edited region is legitimately rewritten; one outside every edit
+/// whose heading a neighbouring edit destroyed (e.g. a separator-less
+/// `at:"end"`) is corruption. `None` when containment holds.
 fn would_corrupt(doc: &Document, planned: &[PlannedEdit]) -> Option<Vec<Vec<String>>> {
     let new_raw = apply_regions(&doc.raw, planned);
     let new_doc = build(new_raw.clone(), syntax::parse(&new_raw));
@@ -1391,13 +1321,10 @@ fn collect_lost(
                     n: None,
                 })
                 .collect();
-            // Containment is LOST only when the section vanished entirely
-            // (`NotFound`). A pre-existing OR newly-created duplicate heading
-            // resolves `Ambiguous` — the section still exists, merely un-unique
-            // — so an unrelated byte-disjoint edit to such a file is NOT
-            // corruption (the F6 refuse-all death mode: a stray duplicate must
-            // not poison every write to the file; ambiguity surfaces only when a
-            // caller ADDRESSES the duplicate, refuse-ambiguous-only, U2.2).
+            // Containment is lost only when the section vanished entirely
+            // (`NotFound`). A duplicate heading resolves `Ambiguous` — the
+            // section still exists — so a stray duplicate must not poison every
+            // byte-disjoint write to the file (refuse-ambiguous-only).
             if matches!(
                 resolve_full(new_doc, &Ref::Hpath(segs)),
                 Err(ResolveError::NotFound)
@@ -1456,8 +1383,7 @@ pub fn merkle_root(files: &[(&str, &[u8])], version: u32) -> MerkleRoot {
 }
 
 /// A directory in the merkle tree — named entries, each a file (raw bytes,
-/// leaf-hashed on fold) or a subdirectory. Built from file paths alone, so a
-/// directory carries ≥1 descendant unless explicitly emptied.
+/// leaf-hashed on fold) or a subdirectory.
 #[derive(Default)]
 struct MerkleDir {
     entries: BTreeMap<String, MerkleEntry>,
@@ -1470,9 +1396,9 @@ enum MerkleEntry {
 
 impl MerkleDir {
     /// Insert one file at its `/`-split path (last write wins on a duplicate
-    /// path, matching the oracle's dict). Empty segments are dropped; a
-    /// path that collides with an existing file prefix is ignored (a real hash
-    /// domain never mixes a file and a directory at one name).
+    /// path). Empty segments are dropped; a path that collides with an existing
+    /// file prefix is ignored — a hash domain never mixes a file and a directory
+    /// at one name.
     fn insert(&mut self, path: &str, bytes: &[u8]) {
         let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
         let Some((file_name, dirs)) = segs.split_last() else {
@@ -1523,7 +1449,6 @@ impl MerkleDir {
 }
 
 /// Unsigned LEB128 (the §12.2 varint): low 7 bits per byte, high bit = "more".
-/// A value below 128 emits a single byte — the fixture case the contract notes.
 fn write_uleb128(out: &mut Vec<u8>, mut value: usize) {
     loop {
         let byte = u8::try_from(value & 0x7f).unwrap_or(0);
@@ -1552,12 +1477,10 @@ fn root_prefix(version: u32) -> String {
     format!("b3{suffix}:")
 }
 
-/// The resident corpus name index (rung 4+ daemon state). Model state —
-/// derived, disposable (law 2). `query` and `policy` borrow it as a capability
-/// parameter (`Option<&CorpusIndex>`); neither owns it, and there is no
-/// policy→query dependency — both are siblings over model.
+/// The resident corpus name index — derived, disposable model state (law 2).
+/// `query` and `policy` borrow it as a capability parameter; neither owns it.
 ///
-/// It houses the vault name/alias index the walk plane's stage 1 needs
+/// Houses the vault name/alias index the walk plane's stage 1 needs
 /// (`getFirstLinkpathDest` parity, contract §4.5): file basename → paths and
 /// frontmatter alias → paths, both lowercased (stage 1 is case-insensitive).
 #[derive(Debug, Default)]
@@ -1588,39 +1511,17 @@ impl CorpusIndex {
     /// shortest-unambiguous match, frontmatter aliases included. An unresolved
     /// linkpath returns `None` — unresolved is first-class (§4.5).
     ///
-    /// The multi-candidate tie-break is a §13.4 pack-pinned unknown (harness
-    /// probe WX-3): this records a deterministic, source-relative-then-shortest
-    /// pick — it is never asserted against an assumed oracle answer.
+    /// The multi-candidate tie-break is a §13.4 pack-pinned unknown: this is a
+    /// deterministic source-relative-then-shortest pick, not an oracle answer.
     #[must_use]
     pub fn resolve_linkpath(&self, linkpath: &str, from: &str) -> Option<String> {
-        // C-3 (address-grammar § 5.1) — THE BODY CARRIES ITS OWN GUARD, because
-        // the retype does not reach it. A `linkpath` whose HEAD carries a `:` is
-        // a programming error at this seam: the caller was supposed to peel the
-        // root and select the target root's corpus first.
-        //
-        // Without this, FINDING 03 reproduces exactly: the basename fallback
-        // below does `rsplit('/')`, so `sessions:24-01-retro/notes.md` becomes
-        // the base `notes` and matches the AMBIENT root's `notes.md` — a wrong
-        // SUCCESS with the wrong bytes, on the link plane, while the pin plane
-        // refuses the same address. The `sessions:` prefix was never examined;
-        // it was discarded with the rest of the path.
-        //
-        // Refusing here is what makes the fallback INTRA-ROOT BY CONSTRUCTION
-        // (C-1): it is reachable only after the root has been peeled and the
-        // mount lookup has chosen the corpus to search. A future caller passing
-        // a raw `&str` cannot reproduce FINDING 03 silently — it gets `None`.
-        //
-        // Scoped to EXACTLY the head-colon rule C-3 states, deliberately not the
-        // wider `addr::confined`: a linkpath is a vault address, not a corpus
-        // path, and rejecting (say) a `..` spelling here would refuse inputs
-        // this seam answers correctly today. An instrument that cries wolf is
-        // deleted by the next person it inconveniences (S3-R23(1)).
-        // The predicate is `addr`'s, not a local re-spelling. The link plane's
-        // in-process degrade asks the SAME question — *could the address plane
-        // have something to say about this spelling?* — and a degrade gate that
-        // merely AGREED with this guard would drift the moment either was
-        // edited, letting a spelling this guard refuses reach a path that never
-        // degraded. One question, one function, one edit site.
+        // C-3 (address-grammar § 5.1): a `linkpath` whose head carries a `:`
+        // must be root-peeled by the caller first — otherwise the basename
+        // fallback turns `sessions:24-01-retro/notes.md` into `notes` and
+        // matches the ambient root's `notes.md`. Refusing here makes the
+        // fallback intra-root by construction (C-1). Scoped to the head-colon
+        // rule only, not the wider `addr::confined`: a `..` spelling is a vault
+        // address this seam answers correctly.
         if addr::head_carries_root_separator(linkpath) {
             return None;
         }
@@ -1651,22 +1552,15 @@ impl CorpusIndex {
         pick_source_relative(candidates, from)
     }
 
-    /// Sole address owner: resolve a REF spelling (`meridian-lock` ref,
+    /// Sole address owner: resolve a ref spelling (`meridian-lock` ref,
     /// wikilink, etc.) to a corpus path. Every plane that turns a spelling into
     /// a document calls this — two owners hash two documents.
     ///
-    /// Precedence:
+    /// Resolution is a mount lookup: parse address, peel root, then run the
+    /// precedence against the corpus that root selects —
     /// 1. spelling is a corpus key (full vault path with `.md`);
     /// 2. spelling + `.md` is a corpus key;
     /// 3. [`CorpusIndex::resolve_linkpath`] (basename/alias).
-    ///
-    /// **D12 (U11):** resolution is a mount lookup — parse address, peel root,
-    /// mount table selects which corpus the three rules run against (not a
-    /// flat-map ride of `root:` inside the spelling).
-    ///
-    /// **D4a:** mount table injected (`mounts: &MountSet`); corpus is
-    /// root-keyed ([`RootedCorpus`]). Stays in `model`; type is upstream
-    /// `addr` so `model` never names `config`.
     ///
     /// `mounts` = names this machine binds; `corpus` = roots loaded. Bound but
     /// unreadable ⇒ grey (§ 8 M6), not parse failure / `file_not_found`.
@@ -1696,7 +1590,7 @@ impl CorpusIndex {
         };
 
         // S3-R43: unknown name → grey unmounted (declare it); declared-but-
-        // unreadable → different cause, name the PATH (do not prescribe declare).
+        // unreadable → name the path instead of prescribing a declaration.
         if !mounts.is_bound(&root) {
             return match mounts.unreachable(&root) {
                 Some(u) => RefResolution::PathUnseeable {
@@ -1737,8 +1631,8 @@ impl CorpusIndex {
             });
         }
 
-        // Three rules on TARGET root only (C-2: no ambient fallback). Miss ⇒
-        // file_not_found scoped to that root (not grey).
+        // Three rules on the target root only (C-2: no ambient fallback). Miss ⇒
+        // file_not_found scoped to that root, not grey.
         match mounted.index.three_rules(addr.path(), from, mounted.docs) {
             Some(path) => RefResolution::Rooted { root, path },
             None => RefResolution::NotFound {
@@ -1749,8 +1643,8 @@ impl CorpusIndex {
         }
     }
 
-    /// Three rules over one root's corpus (key / key+`.md` / linkpath). Shared by
-    /// ambient and mounted arms of [`resolve_ref`] — one copy of the precedence.
+    /// Three rules over one root's corpus (key / key+`.md` / linkpath), shared
+    /// by the ambient and mounted arms of [`resolve_ref`].
     fn three_rules(
         &self,
         spelling: &str,
@@ -1768,16 +1662,16 @@ impl CorpusIndex {
     }
 }
 
-/// What kind of tree a mounted root is — the fact that decides whether a
-/// `#selector` into it can address anything.
+/// What kind of tree a mounted root is — decides whether a `#selector` into it
+/// can address anything.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RootKind {
     /// A parsed vault: sections are addressable, selectors are legal.
     Vault,
-    /// An OPAQUE root — no parse, no sections (`git-folder`). Pin grain is the
+    /// An opaque root — no parse, no sections (`git-folder`). Pin grain is the
     /// file and the fingerprint is a raw CID of the bytes, so an address into
-    /// one MUST NOT carry a `#selector` (§ 10.1, G-1). Carries the kind word as
-    /// the mount table spells it, so the refusal can name it.
+    /// one must not carry a `#selector` (§ 10.1, G-1). Carries the kind word as
+    /// the mount table spells it so the refusal can name it.
     Opaque(String),
 }
 
@@ -1804,17 +1698,12 @@ impl MountedRoot<'_> {
     }
 }
 
-/// **The root-keyed corpus** (`docs/address-grammar.md` § 7.2): the ambient
-/// root's documents, plus one entry per MOUNTED root, keyed by canonical mount
-/// name.
+/// The root-keyed corpus (`docs/address-grammar.md` § 7.2): the ambient root's
+/// documents, plus one entry per mounted root, keyed by canonical mount name.
 ///
-/// `model`'s own type, keyed by [`addr::MountName`] — by the time resolution
-/// runs, `config`/`fs` have already loaded each root's documents into it, so the
-/// resolver needs no paths and `model` needs no filesystem.
-///
-/// **Borrowed, never owning.** A corpus is large and already lives in the
-/// caller's hands; copying it per resolution would make the root-keyed form cost
-/// what the flat form does not, and the flat form is the majority case.
+/// `config`/`fs` load each root's documents into it before resolution runs, so
+/// the resolver needs no paths and `model` needs no filesystem. Borrowed, never
+/// owning — a corpus is large and already lives in the caller's hands.
 #[derive(Debug)]
 pub struct RootedCorpus<'a> {
     ambient: &'a BTreeMap<String, Document>,
@@ -1822,10 +1711,7 @@ pub struct RootedCorpus<'a> {
 }
 
 impl<'a> RootedCorpus<'a> {
-    /// The single-root world: an ambient corpus and no mounts. This is what
-    /// every caller that has not yet grown a mount table passes, and it makes
-    /// the pre-U11 behaviour the explicit `ambient` case rather than an implied
-    /// one.
+    /// The single-root world: an ambient corpus and no mounts.
     #[must_use]
     pub fn ambient(docs: &'a BTreeMap<String, Document>) -> Self {
         RootedCorpus {
@@ -1880,7 +1766,7 @@ impl<'a> RootedCorpus<'a> {
 pub enum RefResolution {
     /// Ambient root → corpus path.
     Ambient(String),
-    /// Mounted root → path inside THAT root (never ambient same-basename).
+    /// Mounted root → path inside that root (never ambient same-basename).
     Rooted {
         /// Canonical root the address named.
         root: MountName,
@@ -1889,18 +1775,17 @@ pub enum RefResolution {
     },
     /// Root undeclared. **Grey**, never red / `file_not_found`.
     Unmounted(MountName),
-    /// Root declared but unreadable (S3-R43). Grey; refusal names the PATH.
+    /// Root declared but unreadable (S3-R43). Grey; refusal names the path.
     PathUnseeable {
         root: MountName,
         /// Bound path; empty only when the caller loaded no corpus for a bound root.
         path: String,
         detail: String,
     },
-    /// Well-formed, root bound+readable, path missing in THAT root's corpus.
+    /// Well-formed, root bound+readable, path missing in that root's corpus.
     /// Carries root/path/selector so the refusal can scope `file_not_found` to
-    /// the miss (address-grammar § 5.2 F4; R1.6) — bare `NotFound` forced wrong
-    /// `selector-unresolved` on cross-vault misses. Parts from the parsed
-    /// address; callers must not re-split joined spellings (decision 14).
+    /// the miss (address-grammar § 5.2 F4). Parts come from the parsed address;
+    /// callers must not re-split joined spellings (decision 14).
     NotFound {
         /// Root of the miss — `None` = ambient.
         root: Option<MountName>,
@@ -1931,7 +1816,7 @@ impl RefResolution {
         }
     }
 
-    /// Did this address name a root that is DECLARED but unreadable here?
+    /// Did this address name a root that is declared but unreadable here?
     #[must_use]
     pub fn path_unseeable(&self) -> Option<(&MountName, &str, &str)> {
         match self {
@@ -1960,8 +1845,8 @@ fn push_unique(bucket: &mut Vec<String>, value: &str) {
 }
 
 /// Frontmatter aliases (lowercased) for stage-1 alias resolution. The flat
-/// frontmatter parse keeps the `aliases` value as one string; parse the inline
-/// list `[a, b]` (or a bare single value) — the corpus alias forms.
+/// frontmatter parse keeps the `aliases` value as one string, so the inline list
+/// `[a, b]` (or a bare single value) is parsed here.
 fn doc_aliases(doc: &Document) -> Vec<String> {
     let Some(fm) = find_frontmatter(&doc.root) else {
         return Vec::new();
@@ -1990,7 +1875,7 @@ fn parse_alias_list(value: &str) -> Vec<String> {
 
 /// Source-relative shortest-unambiguous pick over stage-1 candidates: prefer a
 /// match in the source's own directory, then the shortest path, then the
-/// lexicographically first — deterministic (see `resolve_linkpath`'s WX-3 note).
+/// lexicographically first.
 fn pick_source_relative(candidates: &[String], from: &str) -> Option<String> {
     let from_dir = from.rsplit_once('/').map(|(dir, _)| dir);
     candidates
@@ -2025,12 +1910,9 @@ mod tests {
         node.children.iter().find_map(|c| find(c, pred))
     }
 
-    /// A subpath linkpath (`a/b`) resolves to the path ENDING in `a/b.md`, not to
-    /// an unrelated file sharing the basename `b` — getFirstLinkpathDest honors the
-    /// subdirs (§4.5). Fixture: FIVE `caveman.md` basename collisions plus the real
-    /// `sources/git/caveman/CAVEMAN.md`; `[[caveman/CAVEMAN]]` must pick the last.
-    /// Falsified by the bare basename: without the subpath narrow it would collide
-    /// with (and, source-relative, prefer) `effects/skills/caveman.md`.
+    /// A subpath linkpath (`a/b`) resolves to the path ending in `a/b.md`, not to
+    /// an unrelated file sharing the basename `b` — getFirstLinkpathDest honors
+    /// the subdirs (§4.5).
     #[test]
     fn resolve_linkpath_honors_subpath_over_basename_collision() {
         let mut index = CorpusIndex::new();
@@ -2043,21 +1925,17 @@ mod tests {
         ] {
             index.insert(p, &empty);
         }
-        // From the effect page, the bare `caveman` would be source-relative to the
-        // effect page itself; the SUBPATH `caveman/CAVEMAN` must override that.
         assert_eq!(
             index.resolve_linkpath("caveman/CAVEMAN", "effects/skills/caveman.md"),
             Some("sources/git/caveman/CAVEMAN.md".to_string()),
             "the subpath qualifier selects the path ending in caveman/CAVEMAN.md",
         );
-        // A bare basename still resolves best-effort over the collision set.
         assert!(
             index
                 .resolve_linkpath("caveman", "effects/skills/caveman.md")
                 .is_some(),
             "a bare basename still resolves (source-relative pick over the set)",
         );
-        // A subpath that matches no path suffix falls back to the basename set.
         assert!(
             index
                 .resolve_linkpath("nowhere/caveman", "sources/caveman.md")
@@ -2068,8 +1946,7 @@ mod tests {
 
     #[test]
     fn frontmatter_node_is_fence_to_fence_terminator_inclusive() {
-        // §18 row 3: the frontmatter node is span-lawed with the section
-        // (newline-inclusive) family — [0,20], NOT syntax's trimmed [0,19).
+        // §18 row 3: [0,20], not syntax's trimmed [0,19).
         assert_eq!(PLAN_S0.len(), 136);
         let doc = build_plan();
         let fm = find(&doc.root, &|n| {
@@ -2092,8 +1969,7 @@ mod tests {
 
     #[test]
     fn root_node_rev_equals_file_rev_over_whole_file_bytes() {
-        // file_rev is DEFINED over whole-file bytes, independent of tree shape;
-        // the root node's span is the whole file, so the identity must hold.
+        // file_rev is defined over whole-file bytes, independent of tree shape.
         let doc = build_plan();
         let independent = blake3::hash(doc.raw.as_bytes()).to_hex().as_str()[..16].to_string();
         assert_eq!(independent, "e3c4acaceb75b907", "oracle file_rev(plan_v0)");
@@ -2130,10 +2006,7 @@ mod tests {
 
     #[test]
     fn ref_anchor_guard_refuses_underscore_ids() {
-        // CHARSET-GUARD: the mint-plane anchor constructor enforces the one
-        // block-id charset (ruling 011 / contract §2.4). Clean ids mint; a
-        // `_`-bearing (or otherwise out-of-charset) id is refused, carrying the
-        // offending lexeme for the wire `bad_request` frame downstream.
+        // The refusal carries the offending lexeme for the wire `bad_request`.
         assert_eq!(Ref::anchor("r-000042"), Ok(Ref::Anchor("r-000042".into())));
         assert_eq!(Ref::anchor("clean-1"), Ok(Ref::Anchor("clean-1".into())));
         assert_eq!(
@@ -2169,12 +2042,11 @@ mod tests {
         let q3 = resolve(&doc, &Ref::Hpath(vec![seg("Goals"), seg("Q3")])).expect("Q3");
         assert_eq!(q3.span, 49..72);
         assert_eq!(q3.node_rev.0, "33d5b0e1b27cb48b");
-        // byte-exact: the mint plane never case-folds (that is the walk plane).
+        // byte-exact: the mint plane never case-folds.
         assert_eq!(
             resolve(&doc, &Ref::Hpath(vec![seg("goals")])),
             Err(ResolveError::NotFound)
         );
-        // a missing deeper segment, and the empty ref, both miss.
         assert_eq!(
             resolve(&doc, &Ref::Hpath(vec![seg("Goals"), seg("Q9")])),
             Err(ResolveError::NotFound)
@@ -2189,16 +2061,14 @@ mod tests {
     fn resolve_fm_key_targets_the_key_line() {
         let doc = build_plan();
         let title = resolve(&doc, &Ref::FmKey("title".to_string())).expect("title fm_key");
-        // Frozen §4.4: the fm_key LEAF span is terminator-EXCLUDED — `[4,15]` =
-        // `title: Plan` (§1 leaf law: leaf block nodes exclude the final line
-        // terminator). NOT the fence-to-fence container `[0,20]` (§18 row 3).
+        // Frozen §4.4: the fm_key leaf span is terminator-excluded — `[4,15]`,
+        // not the fence-to-fence container `[0,20]` (§18 row 3).
         assert_eq!(title.span, 4..15);
         assert_eq!(&doc.raw[title.span.clone()], "title: Plan");
         let independent =
             blake3::hash(&doc.raw.as_bytes()[4..15]).to_hex().as_str()[..16].to_string();
         assert_eq!(title.node_rev.0, independent);
-        // Independent blake3 over the frozen leaf bytes pins the frozen §4.4
-        // `node_rev_before` verbatim — the value cannot drift silently.
+        // the frozen §4.4 `node_rev_before`.
         assert_eq!(independent, "fa77480c79a853bc");
         assert_eq!(
             resolve(&doc, &Ref::FmKey("nope".to_string())),
@@ -2207,17 +2077,15 @@ mod tests {
     }
 
     /// GATE 2 (frozen §4.4 dry example): the armed-write transition
-    /// `title: Plan` → `title: Plan v2` COMPUTED through model's own
-    /// resolve → `validate_batch` → apply, never quoted. Lands `span_after`
-    /// `[4,18]` and `node_rev_after` `fb49e9df2257fab8`, both terminator-excluded.
+    /// `title: Plan` → `title: Plan v2` through resolve → `validate_batch` →
+    /// apply lands `span_after` `[4,18]` and `node_rev_after`
+    /// `fb49e9df2257fab8`, both terminator-excluded.
     #[test]
     fn fm_key_armed_write_lands_frozen_span_after_and_rev() {
         let doc = build_plan(); // S0
-        // node_rev_before: the terminator-excluded leaf [4,15] = fa77480c… (§4.4).
         let before = resolve(&doc, &Ref::FmKey("title".to_string())).expect("title S0");
         assert_eq!(before.span, 4..15);
         assert_eq!(before.node_rev.0, "fa77480c79a853bc");
-        // Arm "Plan" → "Plan v2" over the fm_key leaf through model's sealed path.
         let b = batch(vec![match_edit(
             Ref::FmKey("title".to_string()),
             "Plan",
@@ -2229,7 +2097,6 @@ mod tests {
         };
         let s1_raw = apply_validated(&doc.raw, &vb);
         let s1 = build(s1_raw.clone(), syntax::parse(&s1_raw));
-        // span_after [4,18] = "title: Plan v2" (14 bytes), terminator still excluded.
         let after = resolve(&s1, &Ref::FmKey("title".to_string())).expect("title S1");
         assert_eq!(after.span, 4..18);
         assert_eq!(&s1.raw[after.span.clone()], "title: Plan v2");
@@ -2240,13 +2107,11 @@ mod tests {
     }
 
     // U2.11 — frontmatter multi-line block-sequence write grain
-    // Clean: `inputs:` block seq + trailing `finalized_at:`. Wedged: live
-    // corruption at df4198ba8ba4ab02 with `finalized_at:` between `inputs:` and items.
 
     /// Pre-corruption specimen — well-formed `inputs:` block sequence.
     const SPECIMEN_FM_CLEAN: &str = "---\ntype: review\nsession: 22-01-meridian-attestation-module\nowner: \"[[a475ccfc]]\"\nrole: adversary (team-3, workflow-first arm)\nstatus: final\ncreated_at: 2026-07-22T23:45-04:00\ntags: [type/review, round2, cross-review, adversary]\ninputs:\n  - \"results/round2/design-1.md@d8536666b42dc8fd\"\n  - \"results/round2/design-2.md@a895cd0c580edf7b\"\n  - \"results/round2/design-3.md@32ed1508fb3396fa\"\n  - \"decisions/2026-07-22-meridian-go-end-state.md\"\n  - \"decisions/2026-07-22-pin-vocabulary-and-gating.md\"\n  - \"results/design-law-brief.md\"\n  - \"results/round-1-report.md\"\n  - \"results/engine-analysis.md\"\n  - \"[[substrate]]\"\n  - \"[[reconciliation]]\"\n  - \"[[attestation-tournament]]\"\nfinalized_at: 2026-07-23T00:20-04:00\n---\n\n# Cross-review — a475ccfc (team-3 adversary)\n\nbody\n";
 
-    /// Live bytes at df4198ba8ba4ab02 — `finalized_at:` wedged under `inputs:`.
+    /// Corruption specimen — `finalized_at:` wedged under `inputs:`.
     const SPECIMEN_FM_WEDGED: &str = "---\ntype: review\nsession: 22-01-meridian-attestation-module\nowner: \"[[a475ccfc]]\"\nrole: adversary (team-3, workflow-first arm)\nstatus: final\ncreated_at: 2026-07-22T23:45-04:00\ntags: [type/review, round2, cross-review, adversary]\ninputs:\nfinalized_at: 2026-07-23T00:20-04:00\n  - \"results/round2/design-1.md@d8536666b42dc8fd\"\n  - \"results/round2/design-2.md@a895cd0c580edf7b\"\n  - \"results/round2/design-3.md@32ed1508fb3396fa\"\n  - \"decisions/2026-07-22-meridian-go-end-state.md\"\n  - \"decisions/2026-07-22-pin-vocabulary-and-gating.md\"\n  - \"results/design-law-brief.md\"\n  - \"results/round-1-report.md\"\n  - \"results/engine-analysis.md\"\n  - \"[[substrate]]\"\n  - \"[[reconciliation]]\"\n  - \"[[attestation-tournament]]\"\n---\n\n# Cross-review — a475ccfc (team-3 adversary)\n\nbody\n";
 
     fn specimen_clean() -> Document {
@@ -2261,9 +2126,7 @@ mod tests {
     #[test]
     fn fm_key_multiline_block_sequence_grain_spans_full_value() {
         let doc = specimen_clean();
-        // `inputs:` (block sequence) → the grain covers the key line AND all 11
-        // indented items, ending at the last item (terminator excluded), never
-        // bleeding into the next key `finalized_at:`.
+        // block sequence → grain covers the key line and all 11 indented items.
         let inputs = resolve(&doc, &Ref::FmKey("inputs".to_string())).expect("inputs fm_key");
         let grain = &doc.raw[inputs.span.clone()];
         assert!(grain.starts_with("inputs:\n  - \"results/round2/design-1.md"));
@@ -2272,7 +2135,7 @@ mod tests {
             !grain.contains("finalized_at"),
             "grain must stop before the next top-level key"
         );
-        // honest CAS: the rev covers the FULL block value, not just the key line.
+        // the rev covers the full block value, not just the key line.
         let independent = blake3::hash(grain.as_bytes()).to_hex().as_str()[..16].to_string();
         assert_eq!(inputs.node_rev.0, independent);
 
@@ -2282,18 +2145,14 @@ mod tests {
             &doc.raw[tags.span.clone()],
             "tags: [type/review, round2, cross-review, adversary]"
         );
-        // `status:` (scalar) → grain is exactly the key line (frozen leaf law).
+        // `status:` (scalar) → grain is exactly the key line.
         let status = resolve(&doc, &Ref::FmKey("status".to_string())).expect("status fm_key");
         assert_eq!(&doc.raw[status.span.clone()], "status: final");
     }
 
-    /// U2.11 corrupting-patch fixture: the `put` properties patch that formerly
-    /// orphaned the block sequence (a rev minted over silent corruption) now
-    /// ENCODES CORRECTLY — the upsert replaces the WHOLE `inputs:` value, the 11
-    /// items are gone, every sibling key survives byte-identical, and the reparse
-    /// is clean. No silent-corrupt path remains: the only write that validates is
-    /// one whose applied bytes reparse to exactly the intended frontmatter, and
-    /// the minted rev is the honest rev over the clean new value.
+    /// U2.11: the upsert replaces the whole `inputs:` value — the 11 items are
+    /// gone, every sibling key survives byte-identical, and the minted rev is
+    /// the rev over the clean new value.
     #[test]
     fn fm_multiline_upsert_encodes_correctly_no_orphan() {
         let doc = specimen_clean();
@@ -2308,7 +2167,7 @@ mod tests {
         let out = apply_validated(&doc.raw, &vb);
         let new_doc = build(out.clone(), syntax::parse(&out));
 
-        // `inputs` is now the intended scalar — the block items are GONE (no orphan).
+        // `inputs` is now the intended scalar — no orphaned block items.
         let inputs = resolve(&new_doc, &Ref::FmKey("inputs".to_string())).expect("inputs after");
         assert_eq!(
             &new_doc.raw[inputs.span.clone()],
@@ -2324,7 +2183,7 @@ mod tests {
                 "orphaned block item survived: {orphan}"
             );
         }
-        // every sibling key survives byte-identical (the write touched only inputs).
+        // every sibling key survives byte-identical.
         for (k, v) in [
             ("type", "type: review"),
             (
@@ -2336,7 +2195,6 @@ mod tests {
             let r = resolve(&new_doc, &Ref::FmKey(k.to_string())).expect(k);
             assert_eq!(&new_doc.raw[r.span.clone()], v, "sibling {k} corrupted");
         }
-        // the minted rev is the HONEST rev over the clean new value.
         let honest = blake3::hash(b"inputs: [design-1, design-2]")
             .to_hex()
             .as_str()[..16]
@@ -2344,10 +2202,8 @@ mod tests {
         assert_eq!(inputs.node_rev.0, honest);
     }
 
-    /// U2.11 round-trip byte-stability: reading the `inputs:` block sequence and
-    /// writing the SAME bytes back through the sealed splice path leaves the file
-    /// byte-identical — the grain the reader sees is exactly the grain the writer
-    /// replaces (`at:all`), so a no-op patch is a no-op on disk.
+    /// U2.11 round-trip byte-stability: the grain the reader sees is exactly the
+    /// grain the writer replaces (`at:all`), so a no-op patch is a no-op on disk.
     #[test]
     fn fm_multiline_block_roundtrip_byte_stable() {
         let doc = specimen_clean();
@@ -2383,7 +2239,7 @@ mod tests {
         // `inputs:` is immediately followed by a column-0 key → empty value grain.
         let inputs = resolve(&doc, &Ref::FmKey("inputs".to_string())).expect("inputs fm_key");
         assert_eq!(&doc.raw[inputs.span.clone()], "inputs:");
-        // the block items now hang off `finalized_at:` (the wedge's visible effect).
+        // the block items now hang off `finalized_at:`.
         let fin = resolve(&doc, &Ref::FmKey("finalized_at".to_string())).expect("finalized_at");
         let grain = &doc.raw[fin.span.clone()];
         assert!(
@@ -2395,8 +2251,6 @@ mod tests {
     }
 
     /// Full-terminator trim (`\n`⇒1, `\r\n`⇒2, none⇒0) — §1 leaf law mechanics.
-    /// No frozen worked value exercises `\r\n`; fixtures pin data, not law.
-    /// Tripwire: a contradicting frozen value must stop and report, not re-pin.
     #[test]
     fn trim_terminator_excludes_full_terminator_derived_data() {
         let lf = b"title: Plan\n";
@@ -2459,14 +2313,10 @@ mod tests {
         );
     }
 
-    /// GATE 1 (ANCHOR-GRAIN mint plane): on the §6.3 worked S1 receipts fixture,
-    /// `resolve_anchor` serves the anchor's HOST BLOCK-LEAF — the `^r-000042`
-    /// list-item line, terminator excluded (`[26,248]`, rev `639a2dca46f6fcc8`) —
-    /// NOT the 9-byte `[239,248]` inline `^id` marker span. §2.1: "an anchor
-    /// becomes a write target by the same one-hop path as a section"; §4.1/§6.3
-    /// pin the worked span/rev; §1: "leaf block nodes exclude the final line
-    /// terminator". The marker span stays a legitimate `syntax` §1 inline fact
-    /// (untouched); the model re-derives the write-target grain at `build`.
+    /// On the §6.3 worked S1 receipts fixture, `resolve_anchor` serves the
+    /// anchor's host block-leaf — the `^r-000042` list-item line, terminator
+    /// excluded (`[26,248]`, rev `639a2dca46f6fcc8`) — not the 9-byte
+    /// `[239,248]` inline `^id` marker span (§1 / §2.1 / §4.1 / §6.3).
     #[test]
     fn resolve_anchor_serves_host_block_leaf_s1_receipts() {
         let raw = merkle_fixtures().receipts_v1;
@@ -2482,10 +2332,8 @@ mod tests {
             t.node_rev.0, "639a2dca46f6fcc8",
             "§6.3 rev over the block-leaf bytes"
         );
-        // the 9-byte inline marker grain must never be the mint write-target.
         assert_ne!(t.span, 239..248, "marker-grain defect must not resurface");
-        // independent rev check over exactly the block-leaf bytes (no reliance on
-        // model's own hashing for the ground truth).
+        // independent rev check over exactly the block-leaf bytes.
         let independent =
             blake3::hash(&raw.as_bytes()[26..248]).to_hex().as_str()[..16].to_string();
         assert_eq!(
@@ -2543,7 +2391,7 @@ mod tests {
     }
 
     /// Reconstruct the applied bytes from a sealed batch's public edits — the
-    /// pass `fs` will make. Proves the sealed spans/texts are usable downstream.
+    /// pass `fs` will make.
     fn apply_validated(raw: &str, vb: &ValidatedBatch) -> String {
         let mut edits = vb.edits.clone();
         edits.sort_by_key(|e| e.span.start);
@@ -2559,8 +2407,7 @@ mod tests {
     }
 
     /// GATE 1a (§5.2 frame 88): the client holds S0's Q3 rev (33d5…) against
-    /// S2 where Q3 is 41f6… → `cas_mismatch{expected,actual}`, refresh. Actual
-    /// is RE-DERIVED with blake3 here (no reliance on model's own hashing).
+    /// S2 where Q3 is 41f6… → `cas_mismatch{expected,actual}`, refresh.
     #[test]
     fn gate1_cas_mismatch_expected_actual() {
         let doc = plan_s2();
@@ -2582,8 +2429,8 @@ mod tests {
         );
     }
 
-    /// GATE 1b (§5.2 frame 89): guard PASSES (41f6…), old-string absent →
-    /// `no_match{matches:0}`, fix — provably a typo. Count computed.
+    /// GATE 1b (§5.2 frame 89): guard passes (41f6…), old-string absent →
+    /// `no_match{matches:0}`.
     #[test]
     fn gate1_no_match_guard_passed() {
         let doc = plan_s2();
@@ -2605,7 +2452,7 @@ mod tests {
     }
 
     /// GATE 1c (§5.2 frame 91): `item` occurs twice in Q4@S2 (`- item one`,
-    /// `- new item`) → `not_unique{matches:2}`, fix. Count computed.
+    /// `- new item`) → `not_unique{matches:2}`.
     #[test]
     fn gate1_not_unique_matches_two() {
         let doc = plan_s2();
@@ -2626,10 +2473,9 @@ mod tests {
         );
     }
 
-    /// GATE 2 (compile-level): no request-side type carries a byte span. The
-    /// only fields are the match-based grammar; a `SpliceRequest`/`Edit` cannot
-    /// name an offset (D-C1 — the wrong-offset write is unrepresentable). This
-    /// test compiling at all IS the gate; the field-shape assert documents it.
+    /// GATE 2 (compile-level): no request-side type carries a byte span — a
+    /// `SpliceRequest`/`Edit` cannot name an offset (D-C1). This test compiling
+    /// at all is the gate.
     #[test]
     fn gate2_no_span_field_request_side() {
         let e = match_edit(hpath(&["Goals", "Q3"]), "a", "b", None);
@@ -2646,9 +2492,9 @@ mod tests {
         } = batch(vec![e]);
     }
 
-    /// The engine-minted span edit (S7) is sealed like any other edit: it lands
-    /// in the sealed batch, it is checked for disjointness against the caller's
-    /// edits, and it is char-alignment guarded.
+    /// The engine-minted span edit is sealed like any other edit: it lands in
+    /// the sealed batch, is checked for disjointness against the caller's edits,
+    /// and is char-alignment guarded.
     #[test]
     fn an_engine_edit_rides_the_sealed_batch_and_obeys_every_batch_rung() {
         let raw = "# A\n\nbody\n";
@@ -2666,7 +2512,7 @@ mod tests {
         assert_eq!(sealed.edits.len(), 1);
         assert_eq!(sealed.edits[0].span, raw.len()..raw.len());
 
-        // Beside a caller edit on a DISJOINT target: both seal, in offset order.
+        // Beside a caller edit on a disjoint target: both seal, in offset order.
         let mut both = batch(vec![match_edit(hpath(&["A"]), "body", "BODY", None)]);
         both.engine = req.engine.clone();
         let SpliceVerdict::Validated(sealed) = validate_batch(&doc, None, &both, None) else {
@@ -2675,8 +2521,7 @@ mod tests {
         assert_eq!(sealed.edits.len(), 2);
         assert!(sealed.edits[0].span.start < sealed.edits[1].span.start);
 
-        // OVERLAPPING the caller's target span: the batch-wide disjointness rung
-        // refuses, exactly as it does for two caller edits.
+        // Overlapping the caller's target span: the disjointness rung refuses.
         let mut clash = batch(vec![put_edit(hpath(&["A"]), PutAt::All, "# A\n")]);
         clash.engine = Some(EngineEdit {
             span: 2..4,
@@ -2715,10 +2560,9 @@ mod tests {
         );
     }
 
-    /// GATE 3 (seal, positive): only `model` mints a `ValidatedBatch`; a valid
-    /// batch yields the capability token `fs` demands. The NEGATIVE half — that
-    /// no external crate can construct one — is the `compile_fail` doctest on
-    /// [`ValidatedBatch`] (the private `_sealed` field).
+    /// GATE 3 (seal, positive): a valid batch yields the capability token `fs`
+    /// demands. The negative half is the `compile_fail` doctest on
+    /// [`ValidatedBatch`].
     #[test]
     fn gate3_seal_minted_on_success() {
         let doc = plan_s1();
@@ -2735,9 +2579,8 @@ mod tests {
         assert!(vb.receipt.is_none());
     }
 
-    /// The receipt append rides INSIDE the sealed batch (§6.1): a pre-rendered
-    /// append folded into validation is carried on the sealed token, to commit
-    /// in the same batch. Model seals it; it never renders the bytes.
+    /// The receipt append rides inside the sealed batch (§6.1) so it commits in
+    /// the same batch.
     #[test]
     fn seal_carries_receipt_append() {
         let doc = plan_s1();
@@ -2759,7 +2602,7 @@ mod tests {
     }
 
     /// A clean E3 match applies as raw replacement: Q3 August→September on S0
-    /// yields `plan_v1` byte-exact (validated span/text usable by `fs`).
+    /// yields `plan_v1` byte-exact.
     #[test]
     fn validated_match_applies_to_s1() {
         let doc = build_plan(); // S0
@@ -2780,9 +2623,8 @@ mod tests {
     }
 
     /// GATE 5 (§4.4 at:end raw-concat): E4 appends `- new item\n` at Q4's
-    /// span-end (EOF) → `plan_v2` by PURE byte concatenation, NO synthesized
-    /// separator. Verified both against the frozen S2 bytes and against
-    /// `plan_v1 + text` (the raw-concat law itself).
+    /// span-end (EOF) → `plan_v2` by pure byte concatenation, no synthesized
+    /// separator.
     #[test]
     fn gate5_at_end_raw_concat() {
         let doc = plan_s1();
@@ -2802,13 +2644,11 @@ mod tests {
             format!("{}{}", f.plan_v1, "- new item\n"),
             "pure raw concat — no synthesized separator"
         );
-        // the append is a zero-width insert at span-end (EOF here).
         assert_eq!(vb.edits[0].span, 139..139, "insert at Q4 span-end");
     }
 
-    /// GATE 4a (§4.4 disjointness): two edits whose TARGETS nest are not
-    /// disjoint → `overlap` (`bad_request`). Goals ⊃ Q3, both resolve+match, then
-    /// the batch-wide check refuses with the overlapping target spans.
+    /// GATE 4a (§4.4 disjointness): two edits whose targets nest are not
+    /// disjoint → `overlap` (`bad_request`), carrying the overlapping spans.
     #[test]
     fn gate4_overlap_bad_request() {
         let doc = plan_s2();
@@ -2822,11 +2662,9 @@ mod tests {
         assert_eq!(spans, vec![20..150, 49..75], "Goals ⊃ Q3");
     }
 
-    /// GATE 4b (§4.4 `would_corrupt`): a separator-less `at:"end"` on a NON-final
+    /// GATE 4b (§4.4 `would_corrupt`): a separator-less `at:"end"` on a non-final
     /// section bleeds into the next heading and destroys it — the reparse loses
-    /// containment → `would_corrupt{lost}`. RULE-DERIVED DATA: a section
-    /// byte-disjoint from every replaced region that no longer resolves was
-    /// corrupted, not rewritten (the at:end law's own warning, §4.4).
+    /// containment → `would_corrupt{lost}`.
     #[test]
     fn gate4_would_corrupt_lost() {
         let doc = plan_s2();
@@ -2845,8 +2683,7 @@ mod tests {
 
     /// A well-formed `at:"end"` on the same non-final section (leading `\n`
     /// carried by the caller) preserves containment → validates. The mirror of
-    /// gate 4b: the raw-concat law puts the separator on the caller, and getting
-    /// it right keeps `## Q4` at line start.
+    /// gate 4b.
     #[test]
     fn at_end_with_separator_preserves_containment() {
         let doc = plan_s2();
@@ -2865,21 +2702,16 @@ mod tests {
         );
     }
 
-    /// U2.2 refuse-ambiguous-only + the F6 fix: a file with a DUPLICATE heading
-    /// refuses ONLY the write that addresses the ambiguous selector — an
-    /// unambiguous sibling still validates, and the duplicate is addressable by
-    /// node index. Before the fix, `collect_lost` re-resolved each disjoint
-    /// section's bare hpath and counted an `Ambiguous` result as `would_corrupt`,
-    /// so one stray duplicate refused EVERY write to the file (the F6 refuse-all
-    /// death mode that forced outside-jail repair).
+    /// U2.2 refuse-ambiguous-only: a file with a duplicate heading refuses only
+    /// the write that addresses the ambiguous selector — an unambiguous sibling
+    /// still validates, and the duplicate is addressable by node index.
     #[test]
     fn duplicate_heading_refuses_ambiguous_only_sibling_serves() {
         // two `## Objective` under `# Task`, plus an unambiguous `## Notes`.
         let raw = "# Task\n\n## Objective\n\nalpha ^a1b2c3\n\n## Objective\n\nbeta ^d4e5f6\n\n## Notes\n\ngamma\n".to_string();
         let doc = build(raw.clone(), syntax::parse(&raw));
 
-        // (a) a write at the AMBIGUOUS bare selector refuses `Ambiguous`, naming
-        // both duplicate targets — refuse-ambiguous-only.
+        // (a) a write at the ambiguous bare selector refuses, naming both targets.
         let amb = batch(vec![put_edit(
             hpath(&["Task", "Objective"]),
             PutAt::Content,
@@ -2890,8 +2722,8 @@ mod tests {
         };
         assert_eq!(cands.len(), 2, "both duplicates are named candidates");
 
-        // (b) a write at the UNAMBIGUOUS sibling still SERVES — the F6 fix: a
-        // stray duplicate elsewhere no longer poisons a byte-disjoint write.
+        // (b) a write at the unambiguous sibling still serves — a stray
+        // duplicate elsewhere does not poison a byte-disjoint write.
         let sibling = batch(vec![put_edit(
             hpath(&["Task", "Notes"]),
             PutAt::Content,
@@ -2905,7 +2737,7 @@ mod tests {
             "an unambiguous sibling write must validate despite the file's duplicate heading"
         );
 
-        // (c) the duplicate is addressable by node index (`n=`) — the write serves.
+        // (c) the duplicate is addressable by node index (`n=`).
         let by_index = batch(vec![put_edit(
             Ref::Hpath(vec![seg("Task"), seg_n("Objective", 1)]),
             PutAt::Content,
@@ -2968,7 +2800,6 @@ mod tests {
                 actual: live.clone(),
             }
         );
-        // equal guard → proceeds past the world check to a clean validation.
         b.if_root = Some(live.clone());
         assert!(matches!(
             validate_batch(&doc, Some(&live), &b, None),
@@ -2987,14 +2818,9 @@ mod tests {
         );
     }
 
-    /// GATE 6 (§1 write-side multibyte refusal). The guarantor: a replaced
-    /// region off a UTF-8 char boundary refuses `bad_request`. This is exercised
-    /// WHITE-BOX because the wrong state is unrepresentable through the public
-    /// `match`/`put` API — valid-UTF-8 edits at char-aligned resolved spans are
-    /// self-synchronizing, so a mid-char region cannot arise from a batch
-    /// (parallel to D-C1). Design, not dodge: the guard exists so any mid-char
-    /// region refuses loud; the black-box half proves legitimate multibyte
-    /// content splices cleanly.
+    /// GATE 6 (§1 write-side multibyte refusal): a replaced region off a UTF-8
+    /// char boundary refuses `bad_request`. White-box, because the state is
+    /// unrepresentable through the public `match`/`put` API.
     #[test]
     fn gate6_multibyte_split_guarantor() {
         // `日` = E6 97 A5 (bytes 0..3); byte 1 and 2 are mid-character.
@@ -3012,8 +2838,7 @@ mod tests {
     }
 
     /// GATE 6 black-box: a `match` over multibyte content validates and applies
-    /// cleanly — the self-synchronizing property in action (the refusal above is
-    /// for the unrepresentable case, not legitimate non-ASCII edits).
+    /// cleanly.
     #[test]
     fn gate6_multibyte_match_validates() {
         let raw = "# Café ☕\n\ncafé ☕ 日本語 tea\n".to_string();
@@ -3048,11 +2873,9 @@ mod tests {
     const GH_README: &str = "# CI notes\n";
     const DRAFT_TMP: &str = "scratch\n";
 
-    /// The six-root corpus fixtures, built the way the oracle builds them: raw
-    /// plan/receipts bytes across S0→S2, each receipts file interpolating the
-    /// prior root token + the Q3/Q4 section revs (every value pinned in
-    /// an independent oracle). Byte-length asserts guard the
-    /// transcription; the roots themselves are the ultimate check.
+    /// The six-root corpus fixtures: raw plan/receipts bytes across S0→S2, each
+    /// receipts file interpolating the prior root token + the Q3/Q4 section
+    /// revs. Byte-length asserts guard the transcription.
     struct MerkleFixtures {
         plan_v0: String,
         plan_v1: String,
@@ -3151,8 +2974,8 @@ mod tests {
 
     /// Gate roots 5–6: the §12.3 domain bump pair. v0 keeps `drafts/tmp.md`
     /// (version 0 ⇒ `b3:`); v1 ignores it and bumps the version (⇒ `b3a:`).
-    /// v1's surviving set equals R2's, so the HEX repeats — yet the tokens never
-    /// compare equal, a foreign `b3:` cursor can't silently match a `b3a:` world.
+    /// v1's surviving set equals R2's, so the hex repeats — yet the tokens never
+    /// compare equal.
     #[test]
     fn merkle_root_domain_bump_12_3() {
         let f = merkle_fixtures();
@@ -3170,13 +2993,13 @@ mod tests {
         assert_eq!(bump_v1.0, format!("b3a:{R2_HEX}"));
 
         let r2 = merkle_root(&[plan, receipts], 0);
-        // bump_hex_equals_R2: identical hex …
+        // identical hex …
         assert_eq!(
             bump_v1.0.strip_prefix("b3a:"),
             r2.0.strip_prefix("b3:"),
             "bump_hex_equals_R2",
         );
-        // … yet the tokens never compare equal (the entire point of the bump).
+        // … yet the tokens never compare equal.
         assert_ne!(bump_v1, r2, "different prefix ⇒ tokens never equal");
         assert_ne!(bump_v0, bump_v1);
     }
