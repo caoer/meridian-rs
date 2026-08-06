@@ -9,7 +9,6 @@
 //! `flock` locks are associated with the open file description, so two independent opens
 //! of one directory — even within a single process — contend: a held exclusive lock makes
 //! another exclusive `try_acquire` return `None`.
-//!
 
 use std::fs::File;
 use std::io;
@@ -17,41 +16,24 @@ use std::os::unix::io::AsRawFd;
 use std::path::Path;
 
 /// An exclusive advisory lock on a drawer directory, released on drop — by an
-/// EXPLICIT unlock, not by the fd close (see the [`Drop`] impl: relying on the
-/// close leaks the lock into any concurrently forking subprocess, and this lock
-/// is the one whose leak HANGS).
+/// explicit unlock, not by the fd close (see the [`Drop`] impl: relying on the
+/// close leaks the lock into any concurrently forking subprocess).
 #[derive(Debug)]
 pub struct DrawerLock {
     // Held open for its fd; released by the explicit `flock(LOCK_UN)` in Drop.
     dir: File,
 }
 
-/// Release the lock EXPLICITLY, before the fd closes — the S7/R19 fix, applied
-/// here third, and here it matters most.
+/// Release the lock explicitly, before the fd closes (S7/R19 fix).
 ///
-/// # Why the fd close is not enough (measured on the two siblings, not theorised)
-/// A `flock` lock belongs to the open file DESCRIPTION, and a `fork` duplicates
-/// every descriptor. Any thread in this process spawning any subprocess — the
-/// `git` the registry daemon's connection threads fork inside `splice`, a bash
-/// task, anything — transiently holds a copy of this fd between its fork and its
-/// exec, even with `FD_CLOEXEC` set (CLOEXEC acts at exec, not at fork). If this
-/// guard dropped in that window, closing our fd would NOT release the lock: the
-/// child's copy keeps the description alive until it execs.
-///
-/// **The consequence here is worse than on either sibling.** [`Self::acquire`]
-/// is the only blocking acquire in the codebase (`LOCK_EX` with no `LOCK_NB`),
-/// so a leaked description does not degrade to `fs::WriteLock`'s and
-/// `run::executor::WorkspaceLock`'s fast typed `workspace_busy` refusal — it
-/// degrades to a HANG on a lock whose holder has already finished. The two live
-/// paths, both inside the registry daemon: the process-lifetime singleton, whose
-/// leak makes a successor refuse *"another daemon is already running"* for a
-/// daemon that has exited; and the per-drawer lock [`crate::register`] takes
-/// from a connection thread.
-///
-/// `LOCK_UN` acts on the description itself, so one unlock here releases the
-/// lock no matter how many copies of the fd exist. Pinned by
-/// `tests/drawer_lock_release.rs`, whose control test proves the fork window it
-/// measures is genuinely open.
+/// A `flock` lock belongs to the open file description, and `fork` duplicates
+/// every descriptor: a concurrently forking thread transiently holds a copy of
+/// this fd between fork and exec even with `FD_CLOEXEC` (CLOEXEC acts at exec,
+/// not fork), so closing our fd alone would not release the lock. Since
+/// [`Self::acquire`] blocks (`LOCK_EX`, no `LOCK_NB`), a leaked description is
+/// a hang, not a typed refusal. `LOCK_UN` acts on the description itself, so
+/// one explicit unlock releases the lock no matter how many fd copies exist.
+/// Pinned by `tests/drawer_lock_release.rs`.
 impl Drop for DrawerLock {
     fn drop(&mut self) {
         // SAFETY: flock on a valid open fd we own; the fd outlives the call.

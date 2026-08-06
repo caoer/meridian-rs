@@ -94,7 +94,7 @@ fn future_schema_is_cold_start_and_never_clobbered() {
         "future schema is a cold-start miss"
     );
 
-    // An older binary registering must NOT overwrite the newer format.
+    // An older binary registering must not overwrite the newer format.
     let before = fs::read(dir.join(SENTINEL)).unwrap();
     let s = register(&dir, Path::new("/ws")).unwrap();
     let after = fs::read(dir.join(SENTINEL)).unwrap();

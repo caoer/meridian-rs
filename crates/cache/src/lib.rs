@@ -6,7 +6,7 @@
 //! 1. **Addressing** — [`cache_root`], [`drawer_key`], [`drawer_dir`] map a canonical
 //!    workspace path to `<cache-root>/<sha256(path)[:16]>/<ver>-<salt>/`.
 //! 2. **Registration** — [`register`] writes the [`Sentinel`] (`registered.json`) with
-//!    crash-safe atomic + create-exclusive semantics; `mkdir` is NOT the registration
+//!    crash-safe atomic + create-exclusive semantics; `mkdir` is not the registration
 //!    signal, the sentinel is (amendment C1).
 //! 3. **Probing** — [`probe`] stats the *sentinel*, never the directory. A half-created
 //!    drawer, a corrupt sentinel, or a future-schema sentinel is a plain [`Probe::Miss`] —
@@ -43,19 +43,18 @@ pub use locking::DrawerLock;
 pub use sentinel::{Probe, Sentinel, probe, register, stamp_last_use, supersede};
 pub use sweep::{DrawerInfo, GcReport, gc, list_drawers, remove_drawer};
 
-/// Schema salt — the discriminator bumped whenever the on-disk *payload* schema
-/// changes (amendment M4). It rides the drawer path segment (`<ver>-<salt>`), so
-/// a bump lands payloads in a fresh directory and old drawers accumulate
-/// harmlessly for `gc`/`clean` to reap — never a decode-into-the-wrong-struct.
-/// A bare version segment corrupts on downgrade and dev builds (which all report
-/// the same version); the salt is the real discriminator. Start `"s0"`.
+/// Schema salt — the discriminator bumped whenever the on-disk *payload*
+/// schema changes (amendment M4). It rides the drawer path segment
+/// (`<ver>-<salt>`), so a bump lands payloads in a fresh directory for
+/// `gc`/`clean` to reap — never a decode-into-the-wrong-struct. A bare version
+/// segment corrupts on downgrade and dev builds; the salt is the real
+/// discriminator.
 pub const SCHEMA_SALT: &str = "s0";
 
 /// Default GC threshold: a drawer whose last-use is older than this is reapable.
 /// 30 days, mirroring Cargo's registry auto-GC horizon. A path-keyed drawer store
 /// without a reaper is the Bazel/VSCode disk-leak class (decision 0001 round 4).
-// `Duration::from_days` is not const-stable at MSRV 1.96, so the seconds form is
-// the only option here; silence the "use a larger unit" pedantic lint.
+// `Duration::from_days` is not const-stable at MSRV 1.96.
 #[allow(clippy::duration_suboptimal_units)]
 pub const DEFAULT_GC_THRESHOLD: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 

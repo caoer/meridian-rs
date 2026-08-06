@@ -1,47 +1,23 @@
-//! The m3 drawer flock releases when its guard drops — even while this process has a
-//! forked child holding a copy of the lock fd.
+//! The m3 drawer flock releases when its guard drops — even while this process
+//! has a forked child holding a copy of the lock fd (R19).
 //!
-//! # The bug this pins (R19's third instance, and the worst of the three)
-//! A `flock` lock belongs to the open file DESCRIPTION, and `fork` duplicates every
-//! descriptor; `FD_CLOEXEC` acts at exec, not at fork. So any thread spawning any
-//! subprocess transiently holds a copy of every open fd between its fork and its exec.
-//! `DrawerLock` had **no `Drop` impl at all** — it released by letting its `File` field
-//! close — so a guard dropped inside that window did NOT release the lock: the child's
-//! copy kept the description alive.
+//! A `flock` lock belongs to the open file description; `fork` duplicates
+//! every descriptor and `FD_CLOEXEC` acts at exec, not fork. A guard that
+//! released by letting its `File` close would leak the lock into any fork
+//! window — and `DrawerLock::acquire` blocks (`LOCK_EX`, no `LOCK_NB`), so
+//! the leak is a hang, not a typed refusal.
 //!
-//! `fs::WriteLock` and `run::executor::WorkspaceLock` carried the identical defect and
-//! were fixed first (measured on the fs one: 12 of 60 unrelated writes refused). This
-//! lock is the same defect with a **worse failure mode**, because it is the only BLOCKING
-//! acquire in the codebase: `DrawerLock::acquire` takes `LOCK_EX` without `LOCK_NB`, so a
-//! leaked description does not degrade to the fast typed `workspace_busy` refusal its two
-//! fixed siblings give — it degrades to a **HANG**.
+//! Two live paths, both inside the registry daemon: the process-lifetime
+//! singleton (a leaked description makes a successor daemon's `try_acquire`
+//! refuse for a daemon that has exited) and the per-drawer lock
+//! `cache::register` takes from a connection thread (the next `register`
+//! hangs). Each is asserted through the acquire mode its production site uses.
 //!
-//! # The two live paths, both inside the registry daemon
-//! 1. **The process-lifetime singleton.** `registry::server` takes a `DrawerLock` on the
-//!    registry directory for the daemon's whole lifetime (`server.rs:159`, `_singleton`)
-//!    while its connection threads fork `git` inside `splice` (`server.rs:843` →
-//!    `wire_serve::write::splice` → `write.rs:1674` `git::Repo::at` → `git/src/lib.rs:312`
-//!    `Command::new`). The leak bites at **shutdown**: a successor daemon's `try_acquire`
-//!    returns `None` and it refuses *"another meridian registry daemon is already
-//!    running"* (`server.rs:160`) for a daemon that has already exited.
-//! 2. **Per-drawer locks** taken by `cache::register` (`sentinel.rs:150`) from a
-//!    connection thread. Here the leak is the hang: the next `register` on that drawer
-//!    waits forever on a holder that is gone.
-//!
-//! Both paths are asserted below, each through the acquire mode its production site uses
-//! — non-blocking `try_acquire` for the singleton, blocking `acquire` for the drawer.
-//!
-//! # Why this file forks by hand
-//! `Command::spawn` returns only after the child has exec'd, and exec closes the
-//! `O_CLOEXEC` lock fd, so a spawn-driven test has no live fd copy at the moment of the
-//! drop and passes with the defect fully restored (measured on the fs sibling: 400/400
-//! with the explicit unlock reverted, two reviewers independently). The child here parks
-//! on `pause()` and never execs, so the window is held open on demand rather than raced
-//! for — and the control test below asserts that it really is open, so this file cannot
-//! go quietly vacuous.
-//!
-//!
-//!
+//! This file forks by hand: `Command::spawn` returns only after the child has
+//! exec'd (which closes the `O_CLOEXEC` lock fd), so a spawn-driven test has
+//! no live fd copy at the moment of the drop. The child parks on `pause()`
+//! and never execs, holding the window open; the control test asserts the
+//! window really is open, so this file cannot go quietly vacuous.
 
 use std::io;
 use std::os::unix::io::AsRawFd;
@@ -52,37 +28,23 @@ use std::time::Duration;
 
 /// How long a blocking acquire may take before this harness calls it hung.
 ///
-/// **Why a bound exists at all:** the defect's signature on the blocking path is
-/// a wait that never ends. A test that simply calls `DrawerLock::acquire` and
-/// waits for the truth would, on the un-fixed tree, hang the whole suite instead
-/// of reporting a failure. So the wait is bounded and the bound IS the assert.
-///
-/// **How the number was chosen:** the operation under test is one `flock(2)` on
-/// an fd that was just opened. When the lock is free it returns in microseconds
-/// — a single uncontended syscall, no I/O and no wait — so ten seconds is about
-/// six orders of magnitude of headroom. A timeout here cannot be scheduler noise
-/// or build contention on a loaded host; it is the lock genuinely still held.
-/// Shorter would trade that certainty for nothing (the green path never spends
-/// it); longer would only make a red run slower to report. The bound also caps
-/// this file's worst case: a regression costs seconds, never forever.
+/// The defect's signature on the blocking path is a wait that never ends, so
+/// the wait is bounded and the bound is the assert. The operation under test
+/// is one uncontended `flock(2)` — microseconds when free — so ten seconds is
+/// six orders of magnitude of headroom: a timeout is the lock genuinely still
+/// held, never scheduler noise.
 const ACQUIRE_BOUND: Duration = Duration::from_secs(10);
 
-/// Every test in this file is serialized, not just the forking ones.
-///
-/// A forked holder parks on EVERY fd this process had open at its fork, so an
-/// overlapping test's *held lock* — or its parked blocking waiter — would be
-/// pinned by a sibling test's child, and the tests would read locks as held by
-/// the wrong child. (Measured on the fs sibling: its first draft used a release
-/// pipe and the sibling test's holder kept the pipe's write end open — the very
-/// hazard under test, arriving through the harness.) Other test binaries are
-/// separate processes and share no descriptors, so this lock is enough.
+/// Every test in this file is serialized, not just the forking ones: a forked
+/// holder parks on every fd this process had open at its fork, so an
+/// overlapping test's held lock would be pinned by a sibling test's child.
+/// Other test binaries are separate processes and share no descriptors.
 static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// A child forked while a lock is held, parked so that it OUTLIVES the parent's
-/// release while still holding its inherited copy of the lock fd.
-///
-/// The child never execs, so `FD_CLOEXEC` never fires: this is the fork→exec
-/// window of the real hazard, held open on demand instead of raced for.
+/// A child forked while a lock is held, parked so that it outlives the
+/// parent's release while still holding its inherited copy of the lock fd.
+/// It never execs, so `FD_CLOEXEC` never fires — the fork→exec window of the
+/// real hazard, held open on demand instead of raced for.
 struct ForkedFdHolder {
     pid: libc::pid_t,
 }
@@ -109,8 +71,7 @@ impl ForkedFdHolder {
         Self { pid }
     }
 
-    /// Is the child still parked — i.e. is the fork window open AT THIS MOMENT?
-    ///
+    /// Is the child still parked — i.e. is the fork window open right now?
     /// Asserted immediately before every reacquire, so a child that died early
     /// fails the test loudly instead of passing it vacuously.
     fn is_parked(&self) -> bool {
@@ -132,9 +93,8 @@ impl ForkedFdHolder {
 
 /// Run a blocking acquire on a helper thread and wait at most [`ACQUIRE_BOUND`].
 ///
-/// `None` means it did not finish inside the bound. On a blocking `LOCK_EX` that
-/// is not an inconclusive result — it IS the observable defect: the lock is
-/// still held and the caller is hanging.
+/// `None` means it did not finish inside the bound — on a blocking `LOCK_EX`
+/// that is the observable defect, not an inconclusive result.
 ///
 /// The helper thread is left parked on timeout. It completes on its own once the
 /// lock frees (every test here frees it by reaping its child), and its value is
@@ -166,26 +126,17 @@ fn raw_flock_try(path: &Path) -> Option<std::fs::File> {
     (unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0).then_some(file)
 }
 
-/// `DrawerLock` locks the drawer DIRECTORY fd, so the control must lock a
-/// directory too — otherwise it would be proving the hazard on a different kind
-/// of inode from the one production uses.
+/// `DrawerLock` locks the drawer directory fd, so the control must lock a
+/// directory too — the same kind of inode production uses.
 fn open_for_lock(path: &Path) -> std::fs::File {
     std::fs::File::open(path).expect("open the directory to lock")
 }
 
-/// THE CONTROL — it proves the fork window is open, and it is the reason every
-/// regression test below cannot go quietly vacuous.
-///
-/// Release by fd close, the pre-fix mechanism verbatim, against a raw `flock`
-/// that `cache` does not own: while the forked child is parked, closing our fd
-/// must leave the lock HELD. It is asserted through BOTH probes, because the two
-/// production paths use different acquire modes — the drawer path blocks
-/// (`LOCK_EX`) and the daemon singleton does not (`LOCK_EX | LOCK_NB`).
-///
-/// It also validates [`within_bound`] itself, in both directions: the bounded
-/// probe must report a timeout while the lock is held, and must report success
-/// once the child is reaped. A helper that could only ever time out, or only
-/// ever succeed, would make every assert below meaningless.
+/// The control — proves the fork window is open, so the regression tests
+/// below cannot go quietly vacuous. Release by fd close (the pre-fix
+/// mechanism) against a raw `flock` this crate does not own: while the forked
+/// child is parked, closing our fd must leave the lock held, through both
+/// acquire modes. Also validates [`within_bound`] in both directions.
 #[test]
 fn the_fork_window_is_real_a_forked_child_holds_the_lock_past_our_close() {
     let _serialized = ONE_AT_A_TIME
@@ -207,8 +158,8 @@ fn the_fork_window_is_real_a_forked_child_holds_the_lock_past_our_close() {
     // Probe 1, the singleton's mode: a non-blocking try must refuse.
     let refused_while_parked = raw_flock_try(&dir).is_none();
 
-    // Probe 2, the drawer's mode: a blocking acquire must NOT complete. This is
-    // the hang, observed as a bounded wait that expires.
+    // Probe 2, the drawer's mode: a blocking acquire must not complete — the
+    // hang, observed as a bounded wait that expires.
     let probe_dir = dir.clone();
     let hung_while_parked = within_bound(move || raw_flock_blocking(&probe_dir)).is_none();
 
@@ -226,10 +177,8 @@ fn the_fork_window_is_real_a_forked_child_holds_the_lock_past_our_close() {
          and either way the bounded asserts below prove nothing"
     );
 
-    // And the acceptance, in the same breath (S3-R8(c)): with the child reaped
-    // the lock must be free, through both probes. This is what proves the
-    // child's fd copy was the SOLE holder, and that a bounded probe can report
-    // success at all.
+    // The acceptance: with the child reaped the lock must be free, through
+    // both probes — proving the child's fd copy was the sole holder.
     let free_dir = dir.clone();
     assert!(
         within_bound(move || raw_flock_blocking(&free_dir)).is_some(),
@@ -243,14 +192,10 @@ fn the_fork_window_is_real_a_forked_child_holds_the_lock_past_our_close() {
     );
 }
 
-/// PATH 2, at the seam: the guard's drop releases the drawer lock even though a
-/// forked child is holding a copy of its fd at that instant.
-///
-/// The assert IS the claim — `DrawerLock::acquire` completing while the window
-/// is provably open. Without the explicit `LOCK_UN` this does not fail fast: it
-/// HANGS, because the control above proves the child's copy keeps the
-/// description alive and this acquire has no `LOCK_NB`. The bound is what turns
-/// that hang into a report.
+/// Path 2, at the seam: the guard's drop releases the drawer lock even though
+/// a forked child holds a copy of its fd at that instant. Without the
+/// explicit `LOCK_UN` this hangs rather than failing fast; the bound turns
+/// the hang into a report.
 #[test]
 fn dropping_a_drawer_lock_releases_it_across_a_forked_child() {
     let _serialized = ONE_AT_A_TIME
@@ -261,9 +206,8 @@ fn dropping_a_drawer_lock_releases_it_across_a_forked_child() {
     std::fs::create_dir(&drawer).expect("create the drawer directory");
 
     let lock = cache::DrawerLock::acquire(&drawer).expect("the drawer lock must be free to start");
-    // Forked WHILE the lock is held: the child takes no lock of its own, it only
-    // has to still be holding the inherited fd when the guard drops below. This
-    // is the `git` a connection thread forks inside `splice`.
+    // Forked while the lock is held: the child takes no lock of its own, it
+    // only has to still hold the inherited fd when the guard drops below.
     let child = ForkedFdHolder::fork();
     drop(lock);
 
@@ -288,14 +232,10 @@ fn dropping_a_drawer_lock_releases_it_across_a_forked_child() {
     }
 }
 
-/// PATH 2, at the production entry point: `cache::register` is the caller whose
-/// hang this defect produces, so it is asserted by name and not only by its
-/// lock.
-///
-/// `register` takes the same blocking `DrawerLock::acquire` at `sentinel.rs:150`
-/// that the test above takes directly. Here the released guard is the previous
-/// registrar's and the victim is the next `register` on that drawer — the
-/// connection-thread shape of live path 2, verbatim.
+/// Path 2, at the production entry point: `cache::register` takes the same
+/// blocking `DrawerLock::acquire` the test above takes directly. The released
+/// guard is the previous registrar's; the victim is the next `register` on
+/// that drawer.
 #[test]
 fn register_completes_after_a_drawer_lock_drops_across_a_forked_child() {
     let _serialized = ONE_AT_A_TIME
@@ -340,20 +280,12 @@ fn register_completes_after_a_drawer_lock_drops_across_a_forked_child() {
     );
 }
 
-/// PATH 1: the registry daemon's process-lifetime singleton releases at
-/// shutdown, so a SUCCESSOR daemon can start.
-///
-/// `registry::server` takes this lock with `try_acquire` on the registry
-/// directory (`server.rs:159`) and holds it for the whole process lifetime while
-/// connection threads fork `git` inside `splice`. The child forked here is that
-/// `git`; the drop is the daemon exiting; the second `try_acquire` is the
-/// successor's. `None` there is verbatim the *"another meridian registry daemon
-/// is already running"* refusal at `server.rs:160` — issued for a daemon that
-/// has already exited.
-///
-/// This asserts the seam rather than booting a daemon: `registry` depends on
-/// `cache`, so the assert lives on the `cache` side of that edge, in the acquire
-/// mode and release shape the daemon uses.
+/// Path 1: the registry daemon's process-lifetime singleton releases at
+/// shutdown, so a successor daemon can start. The child forked here is the
+/// `git` a connection thread forks inside `splice`; the drop is the daemon
+/// exiting; the second `try_acquire` is the successor's. Asserted at the
+/// `cache` seam rather than by booting a daemon, in the acquire mode and
+/// release shape the daemon uses.
 #[test]
 fn the_daemon_singleton_lock_releases_across_a_forked_child() {
     let _serialized = ONE_AT_A_TIME
@@ -366,8 +298,7 @@ fn the_daemon_singleton_lock_releases_across_a_forked_child() {
     let singleton = cache::DrawerLock::try_acquire(&registry_dir)
         .expect("try_acquire must not error on a fresh registry directory")
         .expect("the singleton must be free before the first daemon starts");
-    // The `git` a connection thread forks inside `splice`, still between its
-    // fork and its exec when the daemon exits.
+    // The forked `git`, still between its fork and its exec at daemon exit.
     let child = ForkedFdHolder::fork();
     drop(singleton); // the daemon exits
 
@@ -389,14 +320,10 @@ fn the_daemon_singleton_lock_releases_across_a_forked_child() {
     );
 }
 
-/// The other half, unchanged by the fix: a lock that is genuinely HELD still
-/// excludes, through both acquire modes.
-///
-/// A release that fires too eagerly would pass every test above and destroy the
-/// guard's whole purpose — the reaper racing a live workspace is the hazard m3
-/// exists to prevent. So the refusal and the acceptance are asserted in one
-/// breath: held ⇒ `try_acquire` refuses AND a blocking `acquire` genuinely waits
-/// past the bound; dropped ⇒ both succeed.
+/// The other half, unchanged by the fix: a genuinely held lock still excludes
+/// through both acquire modes. A release that fired too eagerly would pass
+/// every test above and let the reaper race a live workspace — the hazard m3
+/// exists to prevent.
 #[test]
 fn a_genuinely_held_drawer_lock_still_excludes_both_acquire_modes() {
     let _serialized = ONE_AT_A_TIME
