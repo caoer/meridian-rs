@@ -251,10 +251,8 @@ pub fn render_markdown(report: &RunReport, claims: &[Claim]) -> String {
             claim.note.as_deref().unwrap_or(""),
         );
     }
-    // The tally is DERIVED from the rows above and names its own population, so
-    // a reader (or a doc quoting this file) can see WHAT it counted. A tally that
-    // does not say how many claims it covered reads the same whether it covered
-    // all of them or a subset — which is how ten rows once sat in no tally at all.
+    // The tally names its own population — without the count, a partial tally
+    // reads the same as a complete one.
     let _ = writeln!(
         md,
         "\n**Tally:** {} — over **{} claims registered** in `claims.toml` at this run.",

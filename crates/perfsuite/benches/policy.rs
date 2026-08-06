@@ -1,35 +1,31 @@
-//! Seam bench: `policy::evaluate` — rung-6 per-eval wall-time p99 + declared budgets.
+//! Seam bench: `policy::evaluate` — per-eval wall-time p99 + declared budgets.
 //!
-//! # Engine shape (ruling 008): fenced Starlark predicates, EvalBudget{steps,mem}
-//! A rule page is literate markdown whose predicate is a fenced ` ```starlark ` `def
-//! check(doc)` block, evaluated in-engine via starlark-rust over the injected world-model
-//! fact surface, metered per-eval by `EvalBudget{steps, mem}`. That splits budget
-//! enforcement in two, mirroring this harness's criterion-vs-hdr split:
+//! Budget enforcement splits in two (ruling 008), mirroring this harness's
+//! criterion-vs-hdr split:
 //!
-//! - **Step/mem budgets** — deterministic post-eval accounting (`get_total_tick_count()`
-//!   for steps, PEAK heap-arena bytes for mem): same bytes + same facts ⇒ same count,
-//!   forever. Platform-free, so the budget *envelope* is data (staged as a claim value),
-//!   and budget *conformance* is a test/finding, not a wall-time bench.
-//! - **Wall-time p99** — real latency of one `policy::evaluate` call on real hardware:
-//!   THIS bench's hdr job, on the fleet runner.
+//! - Step/mem budgets — deterministic post-eval accounting: same bytes + same
+//!   facts ⇒ same count. Platform-free, so the budget *envelope* is data
+//!   (staged as a claim value) and budget *conformance* is a test/finding,
+//!   not a wall-time bench.
+//! - Wall-time p99 — real latency of one `policy::evaluate` call on real
+//!   hardware: this bench's hdr job, on the fleet runner.
 //!
 //! # Metric contract (claims.toml)
-//! - `policy.evaluate.p99.{vault_1gb,fence_bomb}` — µs per `policy::evaluate` over one
-//!   real `model::build` AST, p99 via the hdr path. `threshold_source = "ruleset"`: gates
-//!   come from each rule's manifest budget once `policy::vocab()` lands, never from
-//!   claims.toml — so a local number renders MEASURED, never a false PASS/FAIL (risk R2's
-//!   "measured not asserted").
-//! - `policy.eval.budget.{steps,mem}.vault_1gb` — the `EvalBudget` the compiled pack was
-//!   admitted under (`CompiledRuleset::budget()`), staged as data; runtime grounding
-//!   logged: how many of the sample's evals emitted a `budget_exceeded` finding (0 ⇒ the
-//!   declared envelope holds at scale).
-//! - `policy.assertion.p99` / `policy.pack_load.fixtures` — the generic per-rule and
-//!   pack-load claims; their gates land with `policy::vocab()`.
+//! - `policy.evaluate.p99.{vault_1gb,fence_bomb}` — µs per `policy::evaluate`
+//!   over one real `model::build` AST, p99 via the hdr path.
+//!   `threshold_source = "ruleset"`: gates come from each rule's manifest
+//!   budget, never from claims.toml — a local number renders MEASURED, never
+//!   a false PASS/FAIL.
+//! - `policy.eval.budget.{steps,mem}.vault_1gb` — the `EvalBudget` the
+//!   compiled pack was admitted under, staged as data; runtime grounding
+//!   logged: how many evals emitted a `budget_exceeded` finding.
+//! - `policy.assertion.p99` / `policy.pack_load.fixtures` — the generic
+//!   per-rule and pack-load claims; their gates land with `policy::vocab()`.
 //!
-//! Carry-forward: the in-process Starlark step/heap guards are BEST-EFFORT (they stop a
-//! runaway, not a single allocating expression); the exact post-eval accounting is the
-//! metering layer; the HARD bound is subprocess/OS limits — a daemon concern. Nothing
-//! here (row, note, or code) asserts a hard in-process bound.
+//! The in-process Starlark step/heap guards are best-effort (they stop a
+//! runaway, not a single allocating expression); the hard bound is
+//! subprocess/OS limits — a daemon concern. Nothing here asserts a hard
+//! in-process bound.
 
 #![allow(
     clippy::cast_precision_loss,

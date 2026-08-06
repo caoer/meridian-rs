@@ -1,18 +1,16 @@
-//! Corpus cache: `<meridian-cache-root>/corpora/<recipe-id>/`, generated on first use,
-//! keyed by recipe hash. Corpora are never committed — the recipe is the artifact.
+//! Corpus cache: `<meridian-cache-root>/corpora/<recipe-id>/`, generated on
+//! first use, keyed by recipe hash. Corpora are never committed — the recipe
+//! is the artifact.
 //!
-//! The cache lives under the per-user meridian cache root (`$XDG_CACHE_HOME/meridian`,
-//! else `$HOME/.cache/meridian`), NEVER inside the repo: the repo is a registerable
-//! workspace, and an in-tree corpus enters its §12 hash domain — a 180k-file perf vault
-//! under `target/corpora/` made the resident daemon warm multi-GB engines and re-read the
-//! whole corpus every pre-warm tick (2026-07-31). The deny ceiling already refuses the
-//! cache root as a workspace, so corpora there are structurally un-warmable. Regeneration
-//! is byte-identical on a given platform; across platforms libm (`ln`/`cos`) may differ
-//! in the last ulp, shifting sampled sizes by bytes, so cross-platform bit-identity is
-//! deliberately not claimed. Claim runs always generate-or-reuse locally, so measurements
-//! never depend on it.
-//!
-//!
+//! The cache lives under the per-user meridian cache root
+//! (`$XDG_CACHE_HOME/meridian`, else `$HOME/.cache/meridian`), never inside
+//! the repo: the repo is a registerable workspace, and an in-tree corpus
+//! enters its §12 hash domain — a 180k-file perf vault once made the resident
+//! daemon warm multi-GB engines every pre-warm tick. The deny ceiling refuses
+//! the cache root as a workspace, so corpora there are structurally
+//! un-warmable. Regeneration is byte-identical on a given platform; across
+//! platforms libm may differ in the last ulp, so cross-platform bit-identity
+//! is deliberately not claimed.
 
 use std::fs;
 use std::io;

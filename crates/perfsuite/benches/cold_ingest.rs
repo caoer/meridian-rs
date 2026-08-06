@@ -1,25 +1,21 @@
-//! `cold-ingest` — the real-world smoke detector (. The warm criterion lane asks "did the
-//! parser get 5% slower?"; this lane asks "does opening a huge vault still feel sane?" —
-//! a 10× swing is cache/OS noise we accept, 100×+ means something is structurally broken,
-//! and one run is enough to see that. Page-cache state is deliberately NOT controlled:
-//! this measures the experience, not the microarchitecture.
+//! `cold-ingest` — the real-world smoke detector. The warm criterion lane asks
+//! "did the parser get 5% slower?"; this lane asks "does opening a huge vault
+//! still feel sane?" — a 10× swing is cache/OS noise we accept, 100×+ means
+//! something is structurally broken. Page-cache state is deliberately NOT
+//! controlled: this measures the experience, not the microarchitecture.
 //!
 //! Two phases, each a single timed pass, each staging one claim:
 //! - `ingest.cold.<profile>` — walk + read every file from disk
-//! - `ingest.codec.ndjson.<profile>` — every file through `NdjsonCodec` encode+decode as
-//!   a splice-shaped request (1 GB of real JSON cost)
+//! - `ingest.codec.ndjson.<profile>` — every file through `NdjsonCodec`
+//!   encode+decode as a splice-shaped request
 //!
-//! Message construction is pre-built OUTSIDE the timed window so the codec claim measures
-//! encode+decode, not `String` clones. When rung 1 lands, `syntax::parse` joins as a
-//! fourth phase and the claims keep their history.
+//! Message construction is pre-built outside the timed window so the codec
+//! claim measures encode+decode, not `String` clones.
 //!
-//! Hand-written `main`, `harness = false` (roundtrip.rs pattern): under the PR smoke lane
-//! (`cargo bench -- --test`) it downshifts to a 50-file subsample and stages nothing —
-//! hosted runners never generate 1 GB. The full run is the perf lane's (or a local)
-//! `cargo bench -p perfsuite --bench cold-ingest`.
-//!
-//!
-//!
+//! Hand-written `main`, `harness = false`: under the PR smoke lane
+//! (`cargo bench -- --test`) it downshifts to a 50-file subsample and stages
+//! nothing — hosted runners never generate 1 GB. The full run is the perf
+//! lane's `cargo bench -p perfsuite --bench cold-ingest`.
 
 #![allow(
     clippy::cast_precision_loss,

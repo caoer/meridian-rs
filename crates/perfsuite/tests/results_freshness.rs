@@ -1,15 +1,8 @@
-//! The committed report must cover the whole registry.
-//!
-//! `claims.toml` is the population; `results/RESULTS.md` is the computed report over it.
-//! Nothing used to fail when the two drifted: the registry grew by nine claims between
-//! the last run and 2026-07-26 while the report kept rendering `3 PASS · 1 MEASURED · 11
-//! UNTESTED` = 15. A tally over a SUBSET reads exactly like a tally over all of it unless
-//! you count the registry yourself.
-//!
-//! These tests are the arm that carries the property (S3-R28(c)): a tally that merely
-//! matches today proves nothing — the check that survives is the one that fails when the
-//! registry MOVES. Add a claim and `covers_every_registered_claim` reddens until someone
-//! recomputes the report.
+//! The committed report must cover the whole registry. `claims.toml` is the
+//! population; `results/RESULTS.md` is the computed report over it. A tally
+//! over a subset reads exactly like a tally over all of it, so the check that
+//! survives is the one that fails when the registry MOVES: add a claim and
+//! `covers_every_registered_claim` reddens until the report is recomputed.
 
 use std::fs;
 use std::path::{Path, PathBuf};

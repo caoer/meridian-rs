@@ -12,8 +12,7 @@
 //! Hand-written `main` (not `criterion_main!`): criterion runs first, then the hdr claim
 //! run records its measurement. In the PR smoke lane (`cargo bench -- --test`) the claim
 //! run downshifts to the 200-file criterion corpus and stages NOTHING — a subsampled
-//! number would lie under a full-corpus claim id (`cold_ingest.rs` established the
-//! split).
+//! number would lie under a full-corpus claim id.
 
 use std::hint::black_box;
 use std::io;

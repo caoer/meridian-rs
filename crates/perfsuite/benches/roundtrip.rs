@@ -142,13 +142,10 @@ fn record_codec_claim() {
     }
 }
 
-/// D-C1 (risk R2): the server-side `match{old,new}` scan p99 per edit, measured on
-/// the REAL `model::validate_batch` path. The row was UNTESTED-BY-DESIGN while
-/// `model::validate_splice` was `todo!()`; M4-VALIDATE landed `validate_batch`, which
-/// arms the scan on the splice path this bench drives. One large section, one match
-/// edit whose `old` sits at the section tail so the scan walks the full span — the
-/// bounded cost D-C1 describes. Measured, never asserted (`threshold_source =
-/// ruleset`): a local number renders MEASURED, never a false PASS/FAIL.
+/// D-C1: the server-side `match{old,new}` scan p99 per edit, measured on the
+/// real `model::validate_batch` path. One large section, one match edit whose
+/// `old` sits at the section tail so the scan walks the full span. Measured,
+/// never asserted (`threshold_source = ruleset`).
 fn record_match_scan_claim() {
     // A single large section (fence-bomb / vault-1gb section-span shape): a heading
     // plus ~800 body lines, the unique `old` marker at the tail.
