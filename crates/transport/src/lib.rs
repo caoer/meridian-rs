@@ -9,15 +9,6 @@
 //!
 //! **Never does:** know what ops mean, validate op fields (typed edge is
 //! `wire` at the `sidecar` boundary), touch the filesystem or the model.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, Write};
