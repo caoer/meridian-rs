@@ -224,8 +224,8 @@ fn bundled_claims_load_and_render() {
 
 #[test]
 fn validate_rejects_size_bounds_that_would_panic_sampling() {
-    // max_bytes < 64 passes the old median/max check but makes sample_size call
-    // `clamp(64, max_bytes)` with min > max, which panics. validate must reject.
+    // max_bytes < 64 makes sample_size call `clamp(64, max_bytes)` with
+    // min > max, which panics. validate must reject.
     let mut profile = dense_profile();
     profile.size = SizeDist {
         median_bytes: 32,

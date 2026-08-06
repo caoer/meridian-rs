@@ -268,13 +268,11 @@ pub fn generate_file(recipe: &Recipe, index: u32) -> GeneratedFile {
                 tables -= 1;
             }
             Block::TaskList => {
-                // Indentation only nests when a parent item is already open:
-                // at block start (or after a jump of ≥2 levels) the same spaces
-                // are an indented code block, and pulldown emits no
-                // `TaskListMarker`. Clamp each line to at most one level deeper
-                // than the item above it — the first line is therefore depth 0 —
-                // so every planted line stays a recognizable list item. The draw
-                // is unchanged, so the rng stream is identical to before.
+                // Indentation only nests when a parent item is already open —
+                // otherwise the same spaces are an indented code block and no
+                // `TaskListMarker` is emitted. Clamp each line to at most one
+                // level deeper than the item above it (first line depth 0) so
+                // every planted line stays a recognizable list item.
                 let mut max_depth = 0usize;
                 for _ in 0..tasks.max(1) {
                     let depth = range(&mut rng, 0, 3).min(max_depth);
