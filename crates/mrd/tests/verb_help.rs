@@ -86,7 +86,7 @@ fn address_of(synopsis: &str) -> Vec<&str> {
 fn every_verb_in_the_listing_answers_its_own_help() {
     let listing = listing();
     let verbs = verb_lines(&listing);
-    assert_eq!(verbs.len(), 27, "verbs in the listing:\n{listing}");
+    assert_eq!(verbs.len(), 26, "verbs in the listing:\n{listing}");
 
     for (_, synopsis) in &verbs {
         let address = address_of(synopsis);
@@ -332,7 +332,7 @@ fn the_write_mark_travels_into_the_verb_page() {
 /// The count is in the test NAME on purpose — a classification whose total can
 /// drift silently is one nobody reviews.
 #[test]
-fn the_write_classification_is_thirteen_of_twenty_seven() {
+fn the_write_classification_is_thirteen_of_twenty_six() {
     let listing = listing();
     let (writers, readers): (Vec<_>, Vec<_>) = verb_lines(&listing)
         .into_iter()
@@ -366,14 +366,14 @@ fn the_write_classification_is_thirteen_of_twenty_seven() {
     );
     assert_eq!(
         readers.len(),
-        14,
+        13,
         "the rest are reads: {:?}",
         named(&readers)
     );
 }
 
-/// `mrd test` writes only into temporary directories, and `mrd sql` reads a
-/// published view — both stand unmarked.
+/// `mrd test` writes only into temporary directories, and `mrd sql` queries an
+/// ephemeral in-memory projection — both stand unmarked.
 #[test]
 fn the_tempdir_and_read_only_verbs_are_not_marked() {
     let listing = listing();
@@ -413,8 +413,6 @@ fn every_usage_refusal_leads_with_its_reason() {
         (vec![], "mrd: no subcommand given"),
         (vec!["cache"], "mrd: cache needs a subcommand (ls | clean)"),
         (vec!["cache", "nope"], "mrd: unknown cache subcommand: nope"),
-        (vec!["view"], "mrd: view needs a subcommand (status)"),
-        (vec!["view", "nope"], "mrd: unknown view subcommand: nope"),
     ] {
         let out = mrd(&args);
         assert_eq!(code(&out), 2, "{args:?}");
