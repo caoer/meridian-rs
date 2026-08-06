@@ -97,12 +97,10 @@ fn custom_ignore_removes_from_hash_domain_only() {
     assert!(hashed.contains(&PathBuf::from("notes/plan.md")));
 }
 
-/// The pruning gate. `hash_domain` no longer walks everything and filters —
-/// it declines to descend into soundly-ignored directories. That is only
-/// legitimate if it computes the SAME SET, so this asserts the equivalence
-/// directly against the definition it replaced: `walk().filter(contains)`.
-///
-/// A wrong answer here is a wrong merkle root, not a slow walk.
+/// The pruning gate: `hash_domain` declines to descend into soundly-ignored
+/// directories, which is legitimate only if it computes the same set as the
+/// definition it replaced, `walk().filter(contains)`. A wrong answer here is a
+/// wrong merkle root, not a slow walk.
 #[test]
 fn pruning_computes_the_same_set_as_filtering() {
     let tmp = tempfile::tempdir().unwrap();
@@ -218,8 +216,8 @@ fn markdown_config_declares_the_domain() {
         "the `ignore:` block in the BODY is prose, not configuration — reading \
          it would silently widen the ignore list"
     );
-    // The named wrinkle, asserted rather than assumed: a .md config is itself
-    // attested, so editing the ignore list moves the root.
+    // A .md config is itself attested, so editing the ignore list moves the
+    // root.
     assert!(
         hashed.contains(&PathBuf::from("meridian/domain.md")),
         "the file defining the attested surface is itself attested"
@@ -247,9 +245,8 @@ fn two_domain_configs_refuse_rather_than_pick() {
     assert!(msg.contains("Remedy:"), "the refusal must teach the fix");
 }
 
-/// A config page with no frontmatter declares nothing — and therefore ignores
-/// nothing. It must not be read as an empty-but-authoritative domain in some
-/// other way, nor error.
+/// A config page with no frontmatter declares nothing, and therefore ignores
+/// nothing — neither an error nor an authoritative empty domain.
 #[test]
 fn markdown_config_without_frontmatter_is_the_default_domain() {
     let domain = Domain::from_markdown("# Domain\n\nNotes, but no frontmatter.\n");
@@ -269,15 +266,9 @@ fn reserved_paths_are_never_pruned_away() {
     );
 }
 
-/// **The other half of the law: a directory stops being unprunable when it stops
-/// holding substrate.**
-///
-/// `conventions/` was unprunable because it held the attested INDEX. The
-/// registration cutover retired the folder loader and the INDEX with it, so the
-/// directory is now ordinary content and an ignore list that names it must be
-/// obeyed. Asserted positively rather than by deleting the old leg: a carve-out
-/// that outlives its subject is a hole in the hash domain kept open for nothing,
-/// and only a test that says so keeps it closed.
+/// The other half: a directory stops being unprunable when it stops holding
+/// substrate. `conventions/` holds no reserved path anymore, so an ignore list
+/// naming it must be obeyed.
 #[test]
 fn a_directory_that_no_longer_holds_substrate_is_prunable_again() {
     let domain = Domain::from_config("version: 1\nignore:\n  - \"conventions/**\"\n");

@@ -4,23 +4,16 @@
 //! # Charter
 //! **Owns:** the disk boundary. Reading workspace files (refusing non-UTF-8 — spans must
 //! denote exact disk bytes or splice corrupts files), walking the corpus, watching for
-//! changes (rung 4), and *executing* validated splices atomically (tmp + fsync + rename —
-//! meridian's write discipline relocates verbatim). Feeds `model` and nothing else.
+//! changes, and *executing* validated splices atomically (tmp + fsync + rename).
+//! Feeds `model` and nothing else.
 //!
 //! **Never does:** writing bytes it didn't splice, caching anything to disk (law 2: no
-//! snapshot files, no second database — the moment memory can't be thrown away, the
-//! architecture has been violated), interpreting content.
+//! snapshot files, no second database), interpreting content.
 //!
-//! # Law enforcement (candidate thesis, this crate's part)
+//! # Law enforcement
 //! Write execution demands `model::ValidatedBatch` — a token only `model`'s CAS
 //! validation can mint. An unvalidated write cannot reach disk by construction; the
 //! splice pipeline (validate in `model`, execute here) is enforced by types, not review.
-//!
-//! # Rungs
-//! Rung 1: read + walk. Rung 2: atomic splice execution. Rung 4: watch feeds the daemon's
-//! change feed.
-//!
-//!
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -61,7 +54,7 @@ pub fn load(root: &WorkspaceRoot, rel_path: &Path) -> io::Result<model::Document
 /// sorted. This is the ADDRESSABLE set — dot-dir md files (`.github/README.md`)
 /// are included, since they stay `load`-able even when ignored for hashing
 /// (§12.1). Cold rebuild of the whole world model from this walk is the
-/// recovery path — measured 2.16 s. Symlinks are not followed.
+/// recovery path. Symlinks are not followed.
 ///
 /// # Errors
 /// I/O failure traversing the root.
@@ -97,34 +90,19 @@ pub const USER_RULES_DIR: &str = "rules";
 /// The USER rung of the registration scope ladder: every rule-page candidate
 /// under the user scope, as `(page path relative to the user scope, raw bytes)`.
 ///
-/// `anchor` is the resolved `MERIDIAN.md` path — the config plane's answer
-/// (`config::resolve_path`), never a guess made here. **The user scope is the
-/// directory containing that file**, and an anchor that is not an existing file
-/// yields an EMPTY user layer.
+/// `anchor` is the resolved `MERIDIAN.md` path (`config::resolve_path`), never
+/// a guess made here. The user scope is the directory containing that file, and
+/// an anchor that is not an existing file yields an empty user layer.
 ///
-/// # Why the anchor, and why `rules/` alone (ruled 2026-08-01)
-/// A workspace bounds its own rule candidates with a declared hash domain; the
-/// user scope has no such declaration, and on a real machine it is `$HOME` —
-/// where a recursive markdown walk would read the operator's whole home
-/// directory to answer a read-only question. So the user rung is bounded two
-/// ways, and both are laws rather than optimisations:
-///
-/// 1. **The anchor must exist.** No `MERIDIAN.md` ⇒ no user scope ⇒ no user-layer
-///    rules. The absent anchor is never widened into "walk `$HOME` and see" — a
-///    machine that never declared a user scope has not implicitly declared all
-///    of it.
-/// 2. **Only [`USER_RULES_DIR`].** `<user-scope>/rules/**.md` is the layout
-///    folder the mount law already names for this scope (a page directly inside
-///    a directory named `rules` mounts at that directory's PARENT, so
-///    `~/rules/x.md` governs the user scope at depth 0). Registration is still
-///    by TAG — this bounds where the engine LOOKS in a directory that is not a
-///    corpus, and decides nothing about what registers.
+/// The user scope has no declared hash domain and on a real machine it is
+/// `$HOME`, so the rung is bounded twice: no anchor ⇒ no user layer (never
+/// widened into "walk `$HOME` and see"), and only [`USER_RULES_DIR`] is looked
+/// at. Registration itself is still by tag.
 ///
 /// The md-only + dot-segment floor of the hash domain (§12.1) applies:
 /// non-markdown files never register, and a dot-prefixed segment is outside the
 /// domain at any depth. Symlinks are not followed. Paths are returned
-/// `rules/…`-prefixed and sorted, so tagging them as the `policy` registration
-/// layer `ScopeLayer::User` is the only thing the caller adds.
+/// `rules/…`-prefixed and sorted.
 ///
 /// # Errors
 /// I/O failure reading the `rules/` tree once the anchor and the directory are
@@ -181,22 +159,13 @@ fn walk_user_rules_dir(abs_dir: &Path, rel_dir: &Path, out: &mut Vec<PathBuf>) -
 /// never `load` — an ignored md file is absent here yet still addressable by
 /// path (`hash ⊂ addressable`, §12.1).
 ///
-/// # Why this is its own traversal and not `walk().filter()`
-/// Ignore-for-corpus and addressable-on-demand are DIFFERENT SETS, so they get
-/// different walks. [`walk`] must keep descending everywhere — that is what
-/// makes `.github/README.md` addressable (§12.1) — while this walk may decline
-/// to descend at all, because nothing under a soundly-pruned directory can
-/// reach the root.
-///
-/// Filtering after a full walk pays `stat` for every entry it then discards;
-/// on a real vault the discarded majority IS the cost (the walk is
-/// syscall-bound, not parse-bound). Pruning is sound only where re-inclusion
-/// is impossible — [`domain::Domain::prunes_dir`] carries that proof, and
-/// declines whenever a `!` rule could reach beneath.
-///
-/// Dot-directories are pruned structurally: [`domain::Domain::contains`] holds
-/// the dot rule ABOVE custom rules precisely so no `!` can lift a dot path,
-/// which makes not descending them equivalent to filtering them out.
+/// This is its own traversal rather than `walk().filter()`: [`walk`] must keep
+/// descending everywhere to keep `.github/README.md` addressable (§12.1), while
+/// this walk may prune whole directories. Pruning is sound only where
+/// re-inclusion is impossible — [`domain::Domain::prunes_dir`] declines
+/// whenever a `!` rule could reach beneath. Dot-directories are pruned
+/// structurally, since [`domain::Domain::contains`] holds the dot rule above
+/// custom rules so no `!` can lift a dot path.
 ///
 /// # Errors
 /// I/O failure traversing the root.
@@ -236,34 +205,23 @@ fn walk_domain_dir(
 
 /// A cheap, stat-only fingerprint of the hash domain: the same walk
 /// [`hash_domain`] runs, folded over each file's `(relative path, mtime, size)`
-/// instead of its bytes. **Never a correctness signal — a change DETECTOR.**
+/// instead of its bytes. Never a correctness signal — a change detector that
+/// pays one `stat` per domain file and reads no content.
 ///
-/// # Why a second, weaker signal exists
-/// [`domain_snapshot`] is described as "the cheap half" because it does not
-/// PARSE. Against a real corpus that framing is misleading: it still reads and
-/// folds every domain file's bytes, so on a 20 GB vault it costs a fifth of a
-/// core when run once a second. This signal reads no file bytes at all — it
-/// pays one `stat` per domain file and nothing else, so a poller can ask "did
-/// anything change?" without touching content.
-///
-/// # What it may and may not decide
-/// Equality means "no file's path, size, or mtime moved", which is evidence of
-/// an unchanged corpus, not proof of one — a write that restores the previous
-/// size within the filesystem's mtime granularity is invisible here. So it may
-/// only gate WORK THAT IS PURE LATENCY: skipping a pre-warm sweep costs a later
-/// query one rebuild it would have paid anyway. It must never stand in for the
-/// content root, which remains the warm-engine reuse key and the only thing a
-/// served answer is stamped with.
+/// Equality means "no file's path, size, or mtime moved" — evidence of an
+/// unchanged corpus, not proof (a write restoring the previous size within the
+/// filesystem's mtime granularity is invisible). So it may only gate work that
+/// is pure latency, such as skipping a pre-warm sweep; it must never stand in
+/// for the content root, which stays the warm-engine reuse key and the only
+/// thing a served answer is stamped with.
 ///
 /// # Errors
 /// I/O failure loading the domain config or traversing the root.
 pub fn domain_stat_signature(root: &WorkspaceRoot) -> io::Result<u64> {
     let domain = domain::Domain::load(root)?;
     let rels = hash_domain(root, &domain)?;
-    // FNV-1a, not the production merkle fold: this crate's hashing law puts the
-    // real root in `model` (M3-MERKLE), and a detector that borrowed the root's
-    // machinery would read as a second, weaker root. A non-cryptographic fold
-    // over stat metadata cannot be mistaken for one.
+    // FNV-1a, not the production merkle fold: a non-cryptographic fold over
+    // stat metadata cannot be mistaken for a second, weaker root.
     let mut fold = FNV_OFFSET;
     let mut eat = |bytes: &[u8]| {
         for byte in bytes {
@@ -299,15 +257,11 @@ static FOLD_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// How many full-corpus folds [`domain_snapshot`] has run in this process.
 ///
-/// **An instrument, not a cache** — it counts folds, it never skips one. It is
-/// always on because a fold is milliseconds at corpus scale against one relaxed
-/// increment, and because a host's per-request fold budget is a CONTRACT (the
-/// sidecar's demand law, `sidecar::watch::observes_ring`): a budget nothing
-/// asserts regresses silently back to the per-read rescan it replaced, and a
-/// stopwatch cannot tell a fold that was skipped from a machine that was fast.
+/// An instrument, not a cache — it counts folds, it never skips one, so a
+/// host's per-request fold budget is assertable rather than timed.
 ///
 /// Process-global and monotonic: read it before and after the work under test
-/// and assert the DIFFERENCE. Tests asserting exact counts must not run
+/// and assert the difference. Tests asserting exact counts must not run
 /// concurrently with other folding work in the same process.
 #[must_use]
 pub fn fold_count() -> u64 {
@@ -319,11 +273,10 @@ pub fn fold_count() -> u64 {
 /// folded over exactly those bytes — one read, one fold, so a consumer parses
 /// the same bytes the root describes and the answer cannot drift from its stamp.
 ///
-/// This is the CHEAP half of a resident rebuild: it reads and folds but does not
-/// parse. The daemon uses the returned root as the corpus content hash — the
-/// warm-engine reuse key (decision 0002 risk R5: the corpus content hash, not
-/// the workspace-identity Merkle). Pass the returned files to [`build_corpus`]
-/// for the parse (they are the same bytes the root folded — no second read).
+/// This is the CHEAP half of a resident rebuild: it reads and folds but does
+/// not parse. The daemon uses the returned root as the corpus content hash —
+/// the warm-engine reuse key. Pass the returned files to [`build_corpus`] for
+/// the parse (they are the same bytes the root folded — no second read).
 ///
 /// # Errors
 /// I/O failure loading the domain config, traversing the root, or reading a file.
@@ -348,25 +301,20 @@ pub fn domain_snapshot(root: &WorkspaceRoot) -> io::Result<(DomainFiles, model::
 /// overlay of the bytes another interval carries, folded by the same domain
 /// filter and the same fold.
 ///
-/// # Why this exists — a byte check is only as wide as the interval it spans
-/// [`domain_snapshot`] reads the WORKTREE. A pre-commit fence is asked about the
-/// INDEX, and the two are different intervals: staging a forged file and then
-/// restoring the worktree leaves a snapshot that describes bytes no commit will
-/// record, and a check over it cannot speak about what is being committed. The
-/// overlay is how a caller that HAS the other interval's bytes folds them
-/// through the one fold instead of a second one of its own.
+/// [`domain_snapshot`] reads the worktree, while a pre-commit fence is asked
+/// about the index: staging a forged file and restoring the worktree leaves a
+/// snapshot that describes bytes no commit will record. The overlay is how a
+/// caller holding the other interval's bytes folds them through the one fold.
 ///
 /// `overlay` is `(workspace-relative path, content)`: `Some(bytes)` replaces or
 /// adds a file, `None` removes one. Entries outside the hash domain are ignored
 /// here — they are not hashed in either interval — so a caller may pass whatever
 /// its producer reported without filtering it first.
 ///
-/// # Ordering is the fold's correctness, not a detail
-/// The files are re-keyed by [`PathBuf`] so the emitted order is byte-for-byte
-/// the order [`walk`] produces (it sorts `PathBuf`s, and so does the map). A
-/// snapshot folded in any other order would hash the same content to a different
-/// root, and every baseline compare against it would refuse a tree that is
-/// actually current.
+/// Ordering is correctness: the files are re-keyed by [`PathBuf`] so the emitted
+/// order is byte-for-byte the order [`walk`] produces. Any other order hashes
+/// the same content to a different root, and every baseline compare against it
+/// would refuse a tree that is actually current.
 #[must_use]
 pub fn overlay_snapshot(
     worktree: &DomainFiles,
@@ -435,11 +383,11 @@ pub fn build_corpus(
 /// file name.
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// The typed write-conflict marker (M1 TOCTOU-gap fix, D8): the splice
-/// target's live disk bytes no longer equal the validated pre-image — an
-/// out-of-band writer landed between validate and commit. Carried inside an
-/// [`io::Error`] (via [`write_conflict`]); callers split it from ordinary I/O
-/// failure with [`is_write_conflict`] and map it to their typed refusal.
+/// The typed write-conflict marker: the splice target's live disk bytes no
+/// longer equal the validated pre-image — an out-of-band writer landed
+/// between validate and commit. Carried inside an [`io::Error`] (via
+/// [`write_conflict`]); callers split it from ordinary I/O failure with
+/// [`is_write_conflict`] and map it to their typed refusal.
 #[derive(Debug)]
 pub struct WriteConflict {
     /// The workspace-relative (or staged destination) path that drifted.
@@ -468,23 +416,22 @@ pub fn write_conflict(path: &Path) -> io::Error {
     })
 }
 
-/// The cross-process WRITE lock (M1 D9, xproc-race fix): an exclusive advisory
-/// `flock(2)` on `.meridian/write.lock`, held by the wire write choke-point
-/// across its whole critical section (pre-batch read → validate → verify →
-/// renames), so two cooperating meridian writers — sidecar process, resident
-/// registry daemon, `mrd` — can never interleave read→rename (the lost-update
-/// window the in-memory CAS guards cannot see). `LOCK_NB` acquire: a held lock
-/// is [`io::ErrorKind::WouldBlock`], surfaced by the caller as the fast typed
+/// The cross-process WRITE lock: an exclusive advisory `flock(2)` on
+/// `.meridian/write.lock`, held by the wire write choke-point across its
+/// whole critical section (pre-batch read → validate → verify → renames), so
+/// two cooperating meridian writers — sidecar process, resident registry
+/// daemon, `mrd` — can never interleave read→rename (the lost-update window
+/// the in-memory CAS guards cannot see). `LOCK_NB` acquire: a held lock is
+/// [`io::ErrorKind::WouldBlock`], surfaced by the caller as the fast typed
 /// `workspace_busy` refusal — it never waits, so a hung holder can never make
-/// callers hang. Released on drop — by an EXPLICIT unlock, not by the fd close
-/// (see [`WriteLock`]'s Drop: relying on the close leaks the lock into any
-/// concurrently forking subprocess).
+/// callers hang. Released on drop — by an EXPLICIT unlock, not by the fd
+/// close (see [`WriteLock`]'s Drop).
 ///
-/// STATED residuals: out-of-band writers (editors, git, bash) do not take this
-/// lock — they are covered by DETECTION (the D8 pre-rename verify →
-/// `write_conflict`), not prevention (G3). The run plane serializes on its own
-/// `.meridian/run.lock`; run applies and wire splices do not serialize against
-/// each other until the two planes unify on one lock file (G4, named).
+/// Stated residuals: out-of-band writers (editors, git, bash) do not take this
+/// lock — they are covered by detection (the pre-rename verify →
+/// `write_conflict`), not prevention. The run plane serializes on its own
+/// `.meridian/run.lock`; run applies and wire splices do not serialize
+/// against each other.
 ///
 /// `flock` locks belong to the open file description, so two independent
 /// acquires contend even within one process — in-process concurrent writers
@@ -493,36 +440,18 @@ pub fn write_conflict(path: &Path) -> io::Error {
 pub struct WriteLock {
     // Held open for its fd; released by the explicit `flock(LOCK_UN)` in Drop.
     file: File,
-    /// **The workspace this lock was acquired ON.**
-    ///
-    /// Held so the witness proves *this* workspace's lock rather than merely
-    /// *a* lock. `acquire` already receives the root and used to drop it, which
-    /// made the type say "a lock is held" where every caller's invariant means
-    /// "this workspace's lock is held" — a real guard pointed one inch off the
-    /// thing it names. Retaining it costs one clone at acquisition and lets the
-    /// write door take its workspace identity FROM the lock, so a lock and a
-    /// root cannot be paired wrongly because they are no longer two values.
+    /// The workspace this lock was acquired on. The write door takes its
+    /// workspace identity from the lock, so a lock and a root cannot be
+    /// paired wrongly.
     root: WorkspaceRoot,
 }
 
-/// Release the lock EXPLICITLY, before the fd closes.
-///
-/// # Why the fd close is not enough (measured, not theoretical)
-/// A `flock` lock belongs to the open file DESCRIPTION, and a `fork` duplicates
-/// every descriptor. Any other thread in this process spawning any subprocess —
-/// `git`, a bash task, anything — transiently holds a copy of this fd between
-/// its fork and its exec, even with `FD_CLOEXEC` set (CLOEXEC acts at exec, not
-/// at fork). If this guard dropped in that window, closing our fd would NOT
-/// release the lock: the child's copy keeps the description alive until it
-/// execs, and every other writer meanwhile refuses `workspace_busy` for a
-/// critical section that already finished.
-///
-/// `LOCK_UN` acts on the description itself, so one unlock here releases the
-/// lock no matter how many copies of the fd exist. Measured before the fix:
-/// 12/60 unrelated writes refused spuriously while a sibling thread spawned
-/// short-lived children. The refusal was never WRONG (`workspace_busy` is
-/// contractually the Retry class), but it was avoidable noise on a door that
-/// should only close for a real concurrent writer.
+/// Release the lock explicitly, before the fd closes: a `flock` lock belongs to
+/// the open file description, and a concurrent `fork` in any other thread holds
+/// a copy of this fd until its exec (`FD_CLOEXEC` acts at exec, not at fork).
+/// Closing our fd in that window would leave the lock held by the child's copy,
+/// so every other writer refuses `workspace_busy` for a critical section that
+/// already finished. `LOCK_UN` acts on the description itself.
 impl Drop for WriteLock {
     fn drop(&mut self) {
         // SAFETY: flock on a valid open fd we own; the fd outlives the call.
@@ -538,7 +467,7 @@ impl WriteLock {
     /// # Errors
     /// [`io::ErrorKind::WouldBlock`] when another writer holds the lock; any
     /// other I/O failure creating or locking the lockfile (the caller maps it
-    /// to a typed engine error — G2: never unwrap).
+    /// to a typed engine error, never unwraps).
     pub fn acquire(root: &WorkspaceRoot) -> io::Result<Self> {
         let dir = root.0.join(".meridian");
         fs::create_dir_all(&dir)?;
@@ -557,13 +486,10 @@ impl WriteLock {
         })
     }
 
-    /// The workspace this lock is held on.
-    ///
-    /// This is what makes the lock a witness to *this* workspace rather than to
-    /// *a* workspace. A door that needs both a lock and the workspace being
-    /// written takes the workspace from HERE instead of accepting it as a
-    /// second parameter — two values that must agree become one value that
-    /// cannot disagree.
+    /// The workspace this lock is held on. A door that needs both a lock and
+    /// the workspace being written takes the workspace from HERE instead of
+    /// accepting it as a second parameter — two values that must agree become
+    /// one value that cannot disagree.
     #[must_use]
     pub fn root(&self) -> &WorkspaceRoot {
         &self.root
@@ -580,62 +506,53 @@ pub fn is_write_conflict(e: &io::Error) -> bool {
 /// Execute a validated batch as a two-file atomic commit (contract §6.5, §6.1).
 ///
 /// The batch is the sealed [`model::ValidatedBatch`] — the ONLY entry to disk.
-/// Its private `_sealed` field means only `model`'s CAS validation mints one, so
-/// an unvalidated write is unconstructable at this call site (the token demand
-/// is compile-enforced, not reviewed). `content_path` receives the content edits
-/// (`batch.edits`); when `batch.receipt` is `Some`, `receipt_path` MUST also be
-/// `Some` and names the (distinct) receipt file that receives the append. Paths
-/// are threaded separately because the seal is deliberately path-less (M4) —
-/// this is the seam D4 consumes when it folds the receipt address onto the
-/// batch.
+/// Its private `_sealed` field means only `model`'s CAS validation mints one,
+/// so an unvalidated write is unconstructable at this call site. `content_path`
+/// receives the content edits (`batch.edits`); when `batch.receipt` is `Some`,
+/// `receipt_path` MUST also be `Some` and names the (distinct) receipt file
+/// that receives the append. Paths are threaded separately because the seal is
+/// deliberately path-less.
 ///
-/// # The validated pre-image — the TOCTOU-gap fix (M1 D8)
+/// # The validated pre-image
 /// `expected_content` is the content file's EXACT bytes the caller validated
 /// the batch against (the bytes whose offsets `batch.edits` spans index). The
 /// splice SOURCE is these bytes — this function never re-reads the file to
 /// splice into, so validated spans can never land in drifted bytes. Before the
 /// renames commit anything, the live destination is compared against this
-/// pre-image (and the receipt file against its stage-time read): a mismatch —
-/// an out-of-band writer landed between validate and commit — refuses with the
-/// typed [`write_conflict`] error and no file is touched. The residual window
-/// (verify → rename) is stated: cooperating engine writers are serialized by
-/// the write flock; out-of-band writers in that gap are a detectable-at-next-
-/// read lost update, never a torn or corrupted file.
+/// pre-image (and the receipt file against its stage-time read): a mismatch
+/// refuses with the typed [`write_conflict`] error and no file is touched. The
+/// residual window (verify → rename) is stated: cooperating engine writers are
+/// serialized by the write flock; out-of-band writers in that gap are a
+/// detectable-at-next-read lost update, never a torn or corrupted file.
 ///
 /// # Commit discipline — the atomic-write law (§6.5 + §14)
-/// Every byte reaches disk via **tmp + fsync + rename**; no in-place write path
-/// exists. Both temp files are fully written and fsync'd FIRST, then the content
-/// file is renamed (committing it), then the receipt file is renamed — each
+/// Every byte reaches disk via **tmp + fsync + rename**; no in-place write
+/// path exists. Both temp files are fully written and fsync'd FIRST, then the
+/// content file is renamed (committing it), then the receipt file — each
 /// rename made durable by an fsync of its parent directory.
 ///
-/// # Crash window — a STATED limit (§6.5 / §13 item 6, risk R3)
+/// # Crash window — a STATED limit (§6.5)
 /// A crash BETWEEN the two renames lands content-without-receipt: the content
-/// commit is durable, the receipt's is not yet. This window is not hidden or
-/// papered over. Because each file is replaced by an atomic rename, no file is
-/// ever torn — recovery is re-derive (a cold rebuild yields the correct root of
-/// whatever landed, never wrong data) and the orphaned intent (content edited,
-/// receipt missing) is exactly what a receipt lint finds. Multi-file atomicity
-/// is a rung-3 amendment candidate, not assumed here.
+/// commit is durable, the receipt's is not yet. Because each file is replaced
+/// by an atomic rename, no file is ever torn — recovery is re-derive (a cold
+/// rebuild yields the correct root of whatever landed) and the orphaned
+/// intent is exactly what a receipt lint finds.
 ///
-/// # Seam contract (enforced fail-loud for D4)
+/// # Seam contract (enforced fail-loud)
 /// `receipt_path` presence MUST match `batch.receipt` presence, and
 /// `receipt_path` MUST differ from `content_path` — a same-file receipt would
-/// let the second rename clobber the first, and the frozen text models two
-/// distinct files (§6.5 "two files", §6.1 "both files"). Both violations return
-/// [`io::ErrorKind::InvalidInput`] before any byte is written. The receipt
-/// append must be an empty span (an EOF append) — a replacing receipt span is
-/// the same `InvalidInput` refusal.
+/// let the second rename clobber the first (§6.5 "two files"). Both
+/// violations return [`io::ErrorKind::InvalidInput`] before any byte is
+/// written. The receipt append must be an empty span (an EOF append) — a
+/// replacing receipt span is the same `InvalidInput` refusal.
 ///
-/// # The candidate is DEMANDED, and it must be the bytes that land (U31)
+/// # The candidate
 /// `candidate` is the sealed [`model::CandidateDocument`] the caller gated —
-/// the document this commit is about to produce. Only `model`'s mints build
-/// one, so a door that lands bytes without ever building a candidate does not
-/// compile. Unlike the whole-file primitives, this one's bytes are COMPUTED
-/// (batch applied to pre-image) rather than supplied, so the tie is checked:
-/// a candidate whose bytes differ from the splice result is `InvalidInput`
-/// before any temp is written. Without that check the parameter would be a
-/// token a caller may satisfy with an unrelated document — R5's ignorable
-/// helper wearing a type's clothes.
+/// only `model` mints one, so a door that lands bytes without building a
+/// candidate does not compile. This primitive's bytes are computed (batch
+/// applied to pre-image) rather than supplied, so the tie is checked: a
+/// candidate whose bytes differ from the splice result is `InvalidInput`
+/// before any temp is written.
 ///
 /// # Errors
 /// The seam-contract violations above (`InvalidInput`), a candidate that is not
@@ -663,15 +580,13 @@ pub fn apply_batch(
 
 /// Birth one file: write the sealed `candidate`'s bytes to `rel_path`
 /// atomically (tmp+fsync+rename, the crate's one write discipline — never in
-/// place), refusing if the destination is already occupied (the `if_absent` CAS
-/// at file grain, d2 §2.5 C3). Parent directories are created first — a birth
-/// may name a fresh subtree.
+/// place), refusing if the destination is already occupied (the `if_absent`
+/// CAS at file grain). Parent directories are created first — a birth may
+/// name a fresh subtree.
 ///
-/// # The candidate is DEMANDED (U31)
+/// # The candidate
 /// The bytes ARE [`model::CandidateDocument::raw`], so the document the caller
-/// gated and the bytes that land are the same object by construction. Only
-/// `model` mints a candidate, so a birth door that never built one does not
-/// compile.
+/// gated and the bytes that land are the same object by construction.
 ///
 /// # `if_absent` is a logical CAS, not a hardware one (stated limit)
 /// The occupancy check (`symlink_metadata`, so a symlink or a dangling link
@@ -703,9 +618,9 @@ pub fn create_file(
     commit_rename(&stage_file(&dst, candidate.raw().as_bytes())?)
 }
 
-/// Death of one file: remove `rel_path`, then fsync its parent directory so the
-/// deletion survives a crash (the rename-durability discipline, applied to
-/// unlink). The rev-CAS (remove-what-you-read, d2 §2.5 C3) is the CALLER's — it
+/// Death of one file: remove `rel_path`, then fsync its parent directory so
+/// the deletion survives a crash (the rename-durability discipline, applied
+/// to unlink). The rev-CAS (remove-what-you-read) is the CALLER's — it
 /// compares the read rev against the live file before calling; this only
 /// executes the death.
 ///
@@ -719,22 +634,16 @@ pub fn remove_file(root: &WorkspaceRoot, rel_path: &Path) -> io::Result<()> {
 }
 
 /// Overwrite one existing file's whole bytes with the sealed `candidate`'s,
-/// atomically (tmp+fsync+rename beside the destination — the crate's one write
-/// discipline, never in place). Unlike [`create_file`] this carries NO
-/// `if_absent` guard:
-/// the caller (the pin lock writer, d2 §2.5) has already CAS-guarded the file's
-/// read rev, so the overwrite is the committed edge of a checked write. The
-/// destination's parent must exist (a whole-file overwrite never mints a fresh
-/// subtree); a missing file is the caller's CAS-drift concern, surfaced here as
-/// the rename's own I/O error, never silently created.
+/// atomically (tmp+fsync+rename beside the destination — the crate's one
+/// write discipline, never in place). Unlike [`create_file`] this carries NO
+/// `if_absent` guard: the caller has already CAS-guarded the file's read rev,
+/// so the overwrite is the committed edge of a checked write. The
+/// destination's parent must exist (a whole-file overwrite never mints a
+/// fresh subtree); a missing file is the caller's CAS-drift concern, surfaced
+/// here as the rename's own I/O error, never silently created.
 ///
-/// # The candidate is DEMANDED (U31)
-/// As with [`create_file`], the bytes ARE
-/// [`model::CandidateDocument::raw`] — gated document and landed bytes are one
-/// object by construction. This closed three doors that had no candidate at
-/// all: the lock writer, the pin's anchor promotion, and `mrd realise
-/// --truth file`'s INDEX deploy (which reached disk through a bare
-/// `std::fs::write`).
+/// As with [`create_file`], the bytes ARE [`model::CandidateDocument::raw`] —
+/// gated document and landed bytes are one object by construction.
 ///
 /// # Errors
 /// Any I/O failure at tmp-write, fsync, or rename.
@@ -766,11 +675,11 @@ pub fn append_line(root: &WorkspaceRoot, rel_path: &Path, line: &str) -> io::Res
     commit_rename(&stage_file(&dst, &bytes)?)
 }
 
-/// A two-file commit staged to temp files (written + fsync'd), awaiting the two
-/// renames. Separating staging from the renames is what lets the crash-honesty
-/// test drive a kill BETWEEN the renames deterministically (§6.5). Each staged
-/// file carries the pre-image its new bytes were derived from — the D8
-/// pre-rename verify compares the live destination against it.
+/// A two-file commit staged to temp files (written + fsync'd), awaiting the
+/// two renames. Separating staging from the renames is what lets the
+/// crash-honesty test drive a kill BETWEEN the renames deterministically
+/// (§6.5). Each staged file carries the pre-image its new bytes were derived
+/// from — the pre-rename verify compares the live destination against it.
 struct StagedCommit {
     content: StagedFile,
     /// The content file's validated pre-image (read#2's bytes — what the
@@ -797,8 +706,7 @@ struct StagedFile {
 /// read here, reconciled against the append's EOF span) and write the result to
 /// a fsync'd temp beside the destination. No destination is touched here —
 /// staging is entirely off to the side, so a failure (or a crash) before
-/// [`StagedCommit::commit`] leaves every real file intact (the property gate 2
-/// checks).
+/// [`StagedCommit::commit`] leaves every real file intact.
 fn stage_batch(
     root: &WorkspaceRoot,
     content_path: &Path,
@@ -807,7 +715,7 @@ fn stage_batch(
     expected_content: &[u8],
     candidate: &model::CandidateDocument,
 ) -> io::Result<StagedCommit> {
-    // Seam contract, enforced BEFORE any disk write (fail-loud for D4).
+    // Seam contract, enforced BEFORE any disk write (fail-loud).
     match (receipt_path, batch.receipt.as_ref()) {
         (Some(rp), Some(_)) if rp == content_path => {
             return Err(io::Error::new(
@@ -825,7 +733,7 @@ fn stage_batch(
     }
 
     // Content file: apply the validated span edits verbatim to the VALIDATED
-    // pre-image (D8) — the spans index exactly these bytes by construction, so
+    // pre-image — the spans index exactly these bytes by construction, so
     // the splice can never land in drifted bytes. The live destination is
     // verified against this pre-image at commit, before any rename.
     let content_dst = root.0.join(content_path);
@@ -834,7 +742,7 @@ fn stage_batch(
         batch.edits.iter().map(|e| (&e.span, e.text.as_str())),
     );
 
-    // The candidate must BE the splice result (U31): the document the caller
+    // The candidate must BE the splice result: the document the caller
     // gated and the bytes this commit lands are one object, or the commit
     // refuses before staging a temp.
     if content_new != candidate.raw().as_bytes() {
@@ -877,7 +785,7 @@ fn stage_batch(
 /// Returns the staged handle plus the pre-image read (the commit's verify
 /// baseline). Factored out so content-temp cleanup on error has one site.
 ///
-/// # The append reconcile (D8, receipt half)
+/// # The append reconcile (receipt half)
 /// The append span was computed as `len..len` when the receipt line was
 /// rendered — against the receipt file as it stood THEN. A non-empty span is
 /// seam misuse (`InvalidInput`); an empty span whose offset no longer equals
@@ -975,14 +883,13 @@ fn apply_spans<'a>(
 
 impl StagedCommit {
     /// Commit both files: verify both live destinations still equal their
-    /// pre-images (the D8 final pre-rename check — refuse [`write_conflict`]
-    /// on drift, cleaning the staged temps), then rename the content file
-    /// (which COMMITS it), then the receipt file. The gap between the two
-    /// renames is the STATED §6.5 crash window; nothing here narrows it away —
-    /// it is honestly the limit. The verify→rename gap is the D8 residual
-    /// window: cooperating writers are serialized by the write flock;
-    /// out-of-band writers in that gap lose their update detectably (each file
-    /// is still fully-old-or-fully-new — never torn).
+    /// pre-images (refuse [`write_conflict`] on drift, cleaning the staged
+    /// temps), then rename the content file (which COMMITS it), then the
+    /// receipt file. The gap between the two renames is the STATED §6.5 crash
+    /// window. The verify→rename gap is the stated residual window:
+    /// cooperating writers are serialized by the write flock; out-of-band
+    /// writers in that gap lose their update detectably (each file is still
+    /// fully-old-or-fully-new — never torn).
     fn commit(self) -> io::Result<()> {
         if let Err(conflict) = self.verify_pre_images() {
             self.discard();
@@ -993,7 +900,7 @@ impl StagedCommit {
         self.rename_receipt()
     }
 
-    /// The D8 verify: the content destination must still hold the validated
+    /// The pre-rename verify: the content destination must still hold the validated
     /// pre-image (gone ⇒ conflict too — read#2 saw a real file), and the
     /// receipt destination must still hold its stage-time bytes (absent stays
     /// legal only while the pre-image is empty — the first append creates it).
@@ -1058,7 +965,7 @@ fn fsync_dir(dir: &Path) -> io::Result<()> {
     File::open(dir)?.sync_all()
 }
 
-/// Filesystem watcher (rung 5, F5-WATCH): the DETECTION primitive — a §12
+/// Filesystem watcher: the DETECTION primitive — a §12
 /// domain baseline plus byte-level change classification against a fresh
 /// snapshot. The watcher detects; root folding is `model`'s, Delta emission
 /// is the sidecar's, and hook *dispatch* (running agent work on change)
@@ -1195,9 +1102,8 @@ mod tests {
         }
     }
 
-    /// Obtain a sealed `ValidatedBatch` — the ONLY way is through `model`'s
-    /// `validate_batch` (the seal is the sole entry; there is no other
-    /// constructor). This is the token-demand chain gate 3 rests on.
+    /// Obtain a sealed `ValidatedBatch` — the only way is through `model`'s
+    /// `validate_batch`.
     fn validated(receipt: Option<model::ReceiptAppend>) -> model::ValidatedBatch {
         let doc = model::build(PLAN_S0.to_string(), syntax::parse(PLAN_S0));
         let req = model::SpliceRequest {
@@ -1211,17 +1117,16 @@ mod tests {
         }
     }
 
-    /// The sealed candidate the three byte-landing primitives DEMAND (U31),
-    /// for this fixture's batch over `PLAN_S0`. Only `model` mints one — these
-    /// tests cannot fabricate a candidate any more than a production door can.
+    /// The sealed candidate the byte-landing primitives demand, for this
+    /// fixture's batch over `PLAN_S0`.
     fn candidate(vb: &model::ValidatedBatch) -> model::CandidateDocument {
         model::candidate_of_batch("notes/plan.md", PLAN_S0, vb)
     }
 
     /// The receipt lint (§6.5 recovery): does the receipt file record the anchor
-    /// a committed batch should have written? A TEST helper only — `fs` never
+    /// a committed batch should have written? A test helper only — `fs` never
     /// interprets content (crate charter), and §6.4 puts the production lint in
-    /// the policy/Go layer. This is what makes the crash-window orphan LOUD.
+    /// the policy/Go layer.
     fn receipt_recorded(receipt_bytes: &[u8], anchor: &str) -> bool {
         let needle = format!("^{anchor}");
         std::str::from_utf8(receipt_bytes).is_ok_and(|s| s.contains(&needle))
@@ -1261,9 +1166,8 @@ mod tests {
         let (dir, root) = workspace();
         let vb = validated(Some(receipt_append()));
 
-        // Stage both temps, commit ONLY the content rename, then "crash" before
-        // the receipt rename (drop the staged commit — the receipt is never
-        // renamed). This is the §6.5 window, driven deterministically.
+        // Stage both temps, commit only the content rename, then "crash" before
+        // the receipt rename — the §6.5 window, driven deterministically.
         let staged = stage_batch(
             &root,
             &content_rel(),
@@ -1430,7 +1334,7 @@ mod tests {
         );
     }
 
-    /// GATE 3 support + seam contract: the batch reaching `fs` is the sealed
+    /// Seam contract: the batch reaching `fs` is the sealed
     /// token (obtained only via `validate_batch`), and the presence-mismatch /
     /// same-file guards refuse fail-loud BEFORE any write.
     #[test]
@@ -1483,23 +1387,17 @@ mod tests {
         );
     }
 
-    /// U31 (the seal is not decoration): `apply_batch`'s candidate must BE the
-    /// splice result. The whole-file primitives get this by construction — their
-    /// bytes ARE the candidate's — but this one's bytes are computed from the
-    /// batch, so a caller could otherwise satisfy the type with any document it
-    /// happened to hold and the gates would have judged something else.
-    ///
-    /// # Both halves, per S3-R8(c)
-    /// The refusal is only meaningful next to its acceptance: the SAME call with
-    /// the true candidate commits. A guard proven only by what it blocks is
-    /// indistinguishable from one that blocks everything.
+    /// `apply_batch`'s candidate must BE the splice result: its bytes are
+    /// computed from the batch, so a caller could otherwise satisfy the type
+    /// with any document it happened to hold. Both halves are asserted — the
+    /// same call with the true candidate commits.
     #[test]
     fn apply_batch_refuses_a_candidate_that_is_not_the_splice_result() {
         let (dir, root) = workspace();
         let vb = validated(None);
 
-        // An honestly-minted candidate — of the WRONG bytes. `model` built it;
-        // nothing about the type is forged. Only the tie is broken.
+        // An honestly-minted candidate of the wrong bytes — only the tie is
+        // broken, nothing about the type is forged.
         let impostor = model::candidate_of_body("notes/plan.md", "# Not this batch\n".to_owned());
         let err = apply_batch(
             &root,
@@ -1519,8 +1417,8 @@ mod tests {
         );
         assert!(!any_tmp_in(&dir.path().join("notes")));
 
-        // THE ACCEPTANCE (S3-R8(c)): the identical call with the true candidate
-        // lands — so the refusal above discriminates rather than blocks.
+        // The identical call with the true candidate lands, so the refusal
+        // above discriminates rather than blocks.
         apply_batch(
             &root,
             &content_rel(),
@@ -1617,16 +1515,14 @@ mod tests {
         );
     }
 
-    // ---- D8 TOCTOU-gap fix: external-writer conflicts, driven ----
-    // ---- DETERMINISTICALLY through the stage/commit seam (A-C2: ----
-    // ---- the replay harness cannot contain these interleaves).  ----
+    // ── TOCTOU external-writer conflicts, driven deterministically ──────────
+    // ── through the stage/commit seam ───────────────────────────────────────
 
-    /// D8 GATE (external overwrite): an out-of-band writer replaces the content
+    /// External overwrite: an out-of-band writer replaces the content
     /// file between staging (validate) and the rename — the commit refuses the
     /// typed write-conflict, the external bytes SURVIVE untouched (never
     /// clobbered by stale validated spans), the receipt never lands, and no
-    /// staged temp litters the tree. Pre-fix behavior: the stale splice landed
-    /// over the external bytes silently.
+    /// staged temp litters the tree.
     #[test]
     fn d8_external_overwrite_refuses_write_conflict() {
         const EXTERNAL: &str = "# Rewritten by an external editor\n";
@@ -1666,7 +1562,7 @@ mod tests {
         );
     }
 
-    /// D8 GATE (external delete): the content file VANISHES between staging and
+    /// External delete: the content file VANISHES between staging and
     /// the rename. A blind rename would silently resurrect the (stale-derived)
     /// bytes over the deletion — instead the commit refuses the typed conflict
     /// and the path stays deleted.
@@ -1695,7 +1591,7 @@ mod tests {
         assert!(!any_tmp_in(&dir.path().join("notes")));
     }
 
-    /// D8 GATE (receipt moved before staging): the receipt file gained rows
+    /// Receipt moved before staging: the receipt file gained rows
     /// between the append's render (span = len..len against the THEN bytes)
     /// and the commit. Blind application would land the row MID-file; the
     /// reconcile refuses the typed conflict and nothing — content included —
@@ -1729,9 +1625,9 @@ mod tests {
         );
     }
 
-    /// D8 GATE (receipt shrunk): the receipt file was truncated below the
-    /// rendered span offset. Pre-fix this PANICKED (slice out of bounds in
-    /// `apply_spans`); now it is the same typed conflict refusal.
+    /// Receipt shrunk: the receipt file was truncated below the rendered span
+    /// offset — the same typed conflict refusal, never a panic (a blind
+    /// `apply_spans` would slice out of bounds).
     #[test]
     fn d8_receipt_shrunk_refuses_write_conflict_not_panic() {
         let (dir, root) = workspace();
@@ -1750,7 +1646,7 @@ mod tests {
         assert!(is_write_conflict(&err), "typed write-conflict: {err}");
     }
 
-    /// D8 GATE (receipt drifts between stage and rename): the receipt gains a
+    /// Receipt drifts between stage and rename: the receipt gains a
     /// row after staging but before the renames. The pre-rename verify catches
     /// it BEFORE the content rename — refusing the whole commit, never landing
     /// content while dropping the foreign receipt row.
@@ -1785,7 +1681,7 @@ mod tests {
         );
     }
 
-    /// D9: the write flock contends across independent acquires (flock is
+    /// The write flock contends across independent acquires (flock is
     /// per-open-file-description — even in one process), refuses fast with
     /// `WouldBlock` (never waits), is re-acquirable after release, and mints
     /// `.meridian/write.lock` on first use.
@@ -1868,11 +1764,9 @@ mod tests {
         pages.iter().map(|(page, _)| page.as_str()).collect()
     }
 
-    /// **The anchor-absent arm, tested rather than assumed** (ruled 2026-08-01).
-    /// No `MERIDIAN.md` ⇒ the user layer is EMPTY. Note what the fixture holds:
-    /// a `rules/` tree full of candidates, and a `$HOME`-shaped sibling tree that
-    /// a widened walk would have to read. Neither is reached, because the scope
-    /// was never declared.
+    /// No `MERIDIAN.md` ⇒ an empty user layer. The fixture holds both a
+    /// `rules/` tree of candidates and a `$HOME`-shaped sibling tree a widened
+    /// walk would read; neither is reached.
     #[test]
     fn an_absent_anchor_yields_an_empty_user_layer_and_walks_nothing() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1954,7 +1848,7 @@ mod tests {
     }
 }
 
-/// G11 design tests for [`domain_stat_signature`]: the cheap change signal that
+/// Design tests for [`domain_stat_signature`]: the cheap change signal that
 /// replaced a per-second read of the whole corpus.
 #[cfg(test)]
 mod stat_signature_tests {
@@ -2010,11 +1904,8 @@ mod stat_signature_tests {
         assert_eq!(grown, removed, "and removal must return to the prior shape");
     }
 
-    /// **The load-bearing claim, proven rather than asserted: this signal reads
-    /// no file CONTENT.** A domain file with no read permission is invisible to
-    /// `domain_snapshot` (it fails) and fully visible here (it signs). That is
-    /// the whole of G11 — 28.6% of a core against 20 GB was the content read,
-    /// and only a signal that never opens a file removes it.
+    /// The signal reads no file content: a domain file with no read permission
+    /// is invisible to `domain_snapshot` (it fails) and fully visible here.
     #[test]
     fn the_signature_stats_the_corpus_without_reading_a_byte_of_it() {
         let (tmp, root) = workspace(&[("a.md", "# A\n")]);

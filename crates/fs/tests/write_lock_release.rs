@@ -1,37 +1,19 @@
-//! The D9 write flock releases when its guard drops — even while this process has a
+//! The write flock releases when its guard drops — even while this process has a
 //! forked child holding a copy of the lock fd.
 //!
-//! # The bug this pins (measured, stage-2 S7)
-//! A `flock` lock belongs to the open file DESCRIPTION, and `fork` duplicates every
-//! descriptor. So any thread spawning any subprocess — `git` under the pin path, a bash
-//! task, anything — transiently holds a copy of the lock fd between its fork and its
-//! exec, `FD_CLOEXEC` notwithstanding (CLOEXEC acts at exec). While `WriteLock` released
-//! by closing its fd, dropping the guard inside that window did NOT release the lock: the
-//! child's copy kept the description alive, and unrelated writers refused
-//! `workspace_busy` for a critical section that had already finished. Measured on the S7
-//! pin suite: 12 of 60 unrelated writes.
+//! A `flock` lock belongs to the open file description, and `fork` duplicates
+//! every descriptor, so a guard released by closing its fd stays held while any
+//! forked child holds a copy — `FD_CLOEXEC` acts at exec, not at fork.
+//! `WriteLock::drop` therefore unlocks explicitly with `LOCK_UN`, which acts on
+//! the description itself.
 //!
-//! `WriteLock::drop` now unlocks EXPLICITLY (`LOCK_UN` acts on the description, so one
-//! unlock releases every copy). The refusal was never wrong — it is contractually the
-//! Retry class — but a door that closes when no writer is there teaches the wrong thing.
-//!
-//! # Why this file forks by hand (the first version of it was not a test)
-//! The shipped regression test drove the window with `Command::spawn`, and it passed
-//! **400/400 with the explicit unlock reverted** — two reviewers, independently.
-//! `Command::spawn` returns only after the child has exec'd, and `exec` closes the
-//! `O_CLOEXEC` lock fd, so a sequential acquire → spawn → drop → reacquire never has a
-//! live fd copy at the moment of the drop. The window it aimed at was already shut.
-//!
-//! So the mechanism here is a raw `fork(2)` whose child parks on a pipe and **never
-//! execs** — its inherited copy of the lock fd stays open for exactly as long as the test
-//! wants it to, with no timing and no sleep. And because a harness that silently stops
-//! opening the window would make the regression test vacuous again, the window itself is
-//! a test: `the_fork_window_is_real_…` asserts, against a raw `flock` that this crate
-//! does not own, that closing the fd does NOT release a lock while the child is parked.
-//! That control fails the day the mechanism stops reproducing the hazard.
-//!
-//!
-//!
+//! The window is opened with a raw `fork(2)` whose child parks and never execs:
+//! `Command::spawn` returns only after the child has exec'd, closing the
+//! `O_CLOEXEC` lock fd, so a spawn-driven test passes even with the explicit
+//! unlock reverted. `the_fork_window_is_real_…` is the control — against a raw
+//! `flock` this crate does not own, it asserts that closing the fd does not
+//! release a lock while the child is parked, and fails the day the mechanism
+//! stops reproducing the hazard.
 
 use std::io;
 use std::os::unix::io::AsRawFd;
@@ -40,10 +22,8 @@ use std::path::Path;
 /// Only one forked holder may exist in this process at a time. A holder parks
 /// on EVERY fd this process had open at its fork, so two overlapping holders
 /// would each pin the other's lock fd and both tests would read a lock as held
-/// by the wrong child. (Measured: the first draft of this file used a release
-/// pipe, and the sibling test's holder kept the pipe's write end open — the very
-/// hazard under test, arriving through the harness.) Other test binaries are
-/// separate processes and share no descriptors, so this lock is enough.
+/// by the wrong child. Other test binaries are separate processes and share no
+/// descriptors, so this lock is enough.
 static ONE_HOLDER_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// A child forked while a lock is held, parked so that it OUTLIVES the parent's
@@ -111,15 +91,11 @@ fn raw_flock(path: &Path) -> Option<std::fs::File> {
     (unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0).then_some(file)
 }
 
-/// THE CONTROL — it proves the window is open, and it is the reason the
-/// regression test below cannot go quietly vacuous.
-///
-/// Release by fd close, the pre-fix mechanism, against a raw `flock` that
-/// `fs` does not own: while the forked child is parked, closing our fd must
-/// leave the lock HELD, and reaping the child must free it. If this test ever
-/// passes trivially — second acquire succeeds while the child is parked — the
-/// fork window is not open on this platform and every conclusion the next test
-/// draws is worthless.
+/// The control: release by fd close, the pre-fix mechanism, against a raw
+/// `flock` that `fs` does not own. While the forked child is parked, closing our
+/// fd must leave the lock held, and reaping the child must free it. A trivial
+/// pass here means the fork window is not open on this platform, and the
+/// regression test below proves nothing.
 #[test]
 fn the_fork_window_is_real_a_forked_child_holds_the_lock_past_our_close() {
     let _serialized = ONE_HOLDER_AT_A_TIME
@@ -130,7 +106,7 @@ fn the_fork_window_is_real_a_forked_child_holds_the_lock_past_our_close() {
 
     let held = raw_flock(&path).expect("the control lock must be free to start");
     let child = ForkedFdHolder::fork();
-    drop(held); // fd close = the pre-R19 release mechanism, verbatim
+    drop(held); // fd close = the pre-fix release mechanism, verbatim
 
     assert!(
         child.is_parked(),
@@ -154,12 +130,8 @@ fn the_fork_window_is_real_a_forked_child_holds_the_lock_past_our_close() {
 }
 
 /// The regression proper: the guard's drop releases the lock even though a
-/// forked child is holding a copy of its fd at that instant.
-///
-/// The assert IS the claim — `WriteLock::acquire` succeeding while the window is
-/// provably open. With the explicit `LOCK_UN` reverted to a bare fd close this
-/// fails deterministically, because the control above proves the child's copy
-/// keeps the description alive.
+/// forked child holds a copy of its fd at that instant. With the explicit
+/// `LOCK_UN` reverted to a bare fd close this fails deterministically.
 #[test]
 fn dropping_the_lock_releases_it_across_a_forked_child() {
     let _serialized = ONE_HOLDER_AT_A_TIME
@@ -190,7 +162,7 @@ fn dropping_the_lock_releases_it_across_a_forked_child() {
     });
 }
 
-/// The other half, unchanged by the fix: a lock that is genuinely HELD refuses
+/// The other half, unchanged by the fix: a lock that is genuinely held refuses
 /// the second acquire immediately (`WouldBlock`, never a wait) — in-process
 /// contention included, since `flock` contends per open file description.
 #[test]

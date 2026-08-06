@@ -1,12 +1,12 @@
-//! **The interval overlay (F1): a snapshot of bytes that are not the worktree's, folded
-//! by the same fold.**
+//! The interval overlay: a snapshot of bytes that are not the worktree's,
+//! folded by the same fold.
 //!
-//! `domain_snapshot` reads the worktree; a pre-commit fence is asked about the git index.
-//! `overlay_snapshot` is how a caller holding the other interval's bytes folds them
-//! through ONE fold rather than a second one of its own — and the gate that matters most
-//! here is the boring one: **an overlay that changes nothing must fold to the same
-//! root.** If it does not, every governed commit greys, because the fold no longer
-//! matches the `root_after` a receipt recorded.
+//! `domain_snapshot` reads the worktree; a pre-commit fence is asked about the
+//! git index. `overlay_snapshot` is how a caller holding the other interval's
+//! bytes folds them through one fold rather than a second of its own. The gate
+//! that matters most is that an overlay changing nothing folds to the same root
+//! — otherwise every governed commit greys, because the fold no longer matches
+//! the `root_after` a receipt recorded.
 
 use std::path::Path;
 
@@ -31,13 +31,10 @@ fn corpus(root: &Path) {
     write(root, "zz.md", "# ZZ\n");
 }
 
-/// **THE INVARIANT: an overlay that changes nothing folds to the SAME root.**
-///
-/// This is the one that decides whether the fence is usable at all. The staged
-/// interval's fold is compared against the `root_after` a receipt recorded over the
-/// worktree, so a fold that differs merely because the files were re-keyed and
-/// re-sorted would refuse every governed commit — a fence that blocks everything,
-/// which satisfies its refusal clause and is useless.
+/// The invariant: an overlay that changes nothing folds to the same root. The
+/// staged interval's fold is compared against the `root_after` a receipt
+/// recorded over the worktree, so a fold that differed merely because the files
+/// were re-keyed and re-sorted would refuse every governed commit.
 #[test]
 fn an_empty_overlay_folds_to_the_same_root_as_the_worktree_snapshot() {
     let tmp = tempfile::tempdir().unwrap();
@@ -59,9 +56,8 @@ fn an_empty_overlay_folds_to_the_same_root_as_the_worktree_snapshot() {
     );
 }
 
-/// **An overlay that restates the worktree's own bytes is also a no-op** — the
-/// ordinary case where a path is staged and identical, and the producer reports it
-/// anyway.
+/// An overlay restating the worktree's own bytes is also a no-op — the ordinary
+/// case where a path is staged, identical, and reported anyway.
 #[test]
 fn an_overlay_restating_the_same_bytes_changes_nothing() {
     let tmp = tempfile::tempdir().unwrap();
@@ -78,9 +74,9 @@ fn an_overlay_restating_the_same_bytes_changes_nothing() {
     assert_eq!(overlaid_fold.0, fold.0, "restating bytes is not a change");
 }
 
-/// **Replacing bytes MOVES the root, and the replacement is what gets folded** —
-/// the arm that proves the overlay is not silently ignored. Without it every gate
-/// above passes over a function that returns its input.
+/// Replacing bytes moves the root, and the replacement is what gets folded —
+/// without this arm every gate above would pass over a function that returns
+/// its input.
 #[test]
 fn replacing_one_path_folds_the_replacement_and_moves_the_root() {
     let tmp = tempfile::tempdir().unwrap();
@@ -104,8 +100,7 @@ fn replacing_one_path_folds_the_replacement_and_moves_the_root() {
         "and the OVERLAY's bytes are the ones in the snapshot"
     );
 
-    // The same replacement, written to disk, folds to the same root — the overlay
-    // describes a real tree, not a private arithmetic of its own.
+    // The same replacement, written to disk, folds to the same root.
     write(tmp.path(), "a/b.md", "# A/B FORGED\n");
     let (_, on_disk) = domain_snapshot(&root).unwrap();
     assert_eq!(
@@ -115,7 +110,7 @@ fn replacing_one_path_folds_the_replacement_and_moves_the_root() {
     );
 }
 
-/// **A removal drops the file from the interval** — a path this commit deletes is
+/// A removal drops the file from the interval — a path this commit deletes is
 /// not part of the tree it records.
 #[test]
 fn a_removal_drops_the_path_from_the_interval() {
@@ -139,13 +134,10 @@ fn a_removal_drops_the_path_from_the_interval() {
     );
 }
 
-/// **A path OUTSIDE the hash domain is ignored.** The producer reports whatever
-/// git says diverges (code, assets, dot paths), and neither interval hashes those.
-///
-/// The reserved journal was a third case here — root-excluded by NAMED law rather
-/// than by the md-only floor or the dot rule. That carve-out is retired with the
-/// journal (ZT 2026-08-02): `meridian/journal.md` is an ordinary in-domain page
-/// now, so it WOULD move the root, and asserting otherwise would be false.
+/// A path outside the hash domain is ignored: the producer reports whatever git
+/// says diverges (code, assets, dot paths), and neither interval hashes those.
+/// `meridian/journal.md` carries no carve-out — it is an ordinary in-domain
+/// page and would move the root.
 #[test]
 fn paths_outside_the_hash_domain_are_ignored() {
     let tmp = tempfile::tempdir().unwrap();
