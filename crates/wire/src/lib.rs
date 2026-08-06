@@ -139,8 +139,9 @@ pub enum SecRef {
 pub enum ReadSel {
     /// `{"hpath":[{"h":"Goals"},{"h":"Q3"}]}` — the heading plane, per-segment
     /// byte-equality on RAW heading text. A segment's `n` pins the occurrence
-    /// among same-text siblings; absent, the read face's first-match-wins law
-    /// applies.
+    /// among same-text siblings; absent, a unique match resolves and matching
+    /// more than one node refuses `ambiguous_ref` naming the candidates
+    /// (wire-contract A.3 — the strict plane never silently picks).
     Hpath { hpath: Vec<HpathSeg> },
     /// `{"n":"1.2.1"}` — the dewey ordinal the read face mints per heading
     /// row. Positional and NOT round-trippable across an edit; it addresses a

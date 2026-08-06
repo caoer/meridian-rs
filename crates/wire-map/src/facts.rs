@@ -201,26 +201,45 @@ pub fn slice_span<'a>(raw: &'a [u8], span: &wire::Span) -> &'a [u8] {
     &raw[start..end]
 }
 
-/// Match a TAGGED selector against the facts — FIRST match wins (duplicate
-/// headings resolve to the first occurrence on the read face; refusing an
-/// ambiguous WRITE is the write plane's job, never this one's).
-/// [`wire::ReadSel`] states the plane, so nothing is inferred from spelling.
+/// Every fact a TAGGED selector addresses, in document order — the read op's
+/// resolution primitive (wire-contract A.3). [`wire::ReadSel`] states the
+/// plane, so nothing is inferred from spelling.
 ///
-/// The heading arm compares SEGMENTS, per segment, on raw text. A selector
-/// segment with `n: None` matches any occurrence (first wins, the read law);
-/// `n: Some(k)` demands that occurrence exactly. So the addresses this face
-/// publishes — minimal, carrying `n` only where ambiguous ([`raw_addresses`])
-/// — resolve back to the row they were published from, and a caller that pins
-/// an occurrence gets the one it named.
+/// The heading arm compares SEGMENTS, per segment, on raw text, and returns
+/// ALL matching rows: a selector segment with `n: None` matches any occurrence,
+/// so a bare duplicate yields >1 and the caller refuses `ambiguous_ref` naming
+/// the candidates — the strict plane never silently picks (§2.1). `n: Some(k)`
+/// demands that occurrence exactly, so the addresses this face publishes —
+/// minimal, carrying `n` only where ambiguous ([`raw_addresses`]) — resolve
+/// back to the one row they were published from.
+///
+/// The dewey and anchor arms stay first-match (≤1 entry): a dewey ordinal is a
+/// positional row handle whose duplicates are a numbering artifact, not an
+/// ambiguity (see `write::canonical_selector`), and a duplicate block id
+/// cannot be disambiguated by naming more of it.
+#[must_use]
+pub fn selector_matches<'a>(facts: &'a [ReadFact], sel: &wire::ReadSel) -> Vec<&'a ReadFact> {
+    match sel {
+        wire::ReadSel::Hpath { hpath } => facts
+            .iter()
+            .filter(|f| hpath_matches(hpath, &f.hpath))
+            .collect(),
+        wire::ReadSel::Dewey { n } => facts.iter().find(|f| &f.n == n).into_iter().collect(),
+        wire::ReadSel::Anchor { anchor } => facts
+            .iter()
+            .find(|f| f.anchor.as_deref() == Some(anchor))
+            .into_iter()
+            .collect(),
+    }
+}
+
+/// [`selector_matches`] collapsed to the unique case: the fact when exactly
+/// one row matches, `None` on a miss — and `None` on an ambiguous heading
+/// selector, which a read-op caller must instead refuse with candidates.
 #[must_use]
 pub fn resolve_selector<'a>(facts: &'a [ReadFact], sel: &wire::ReadSel) -> Option<&'a ReadFact> {
-    match sel {
-        wire::ReadSel::Hpath { hpath } => facts.iter().find(|f| hpath_matches(hpath, &f.hpath)),
-        wire::ReadSel::Dewey { n } => facts.iter().find(|f| &f.n == n),
-        wire::ReadSel::Anchor { anchor } => {
-            facts.iter().find(|f| f.anchor.as_deref() == Some(anchor))
-        }
-    }
+    let matches = selector_matches(facts, sel);
+    if matches.len() == 1 { Some(matches[0]) } else { None }
 }
 
 /// Per-segment address equality: same length, same raw text, and a selector
@@ -385,13 +404,23 @@ mod tests {
     /// Duplicate headings: both occurrences get rows (dewey disambiguates),
     /// and selector resolution returns the FIRST — never last-wins.
     #[test]
-    fn duplicate_headings_first_occurrence_wins() {
+    fn duplicate_headings_are_ambiguous_until_pinned() {
         let raw = "# Notes\n\nfirst\n\n# Notes\n\nsecond\n\n## Child\n\nchild body\n";
         let got = facts(raw);
         let ns: Vec<&str> = got.iter().map(|f| f.n.as_str()).collect();
         assert_eq!(ns, vec!["1", "2", "2.1"]);
-        let hit = resolve_selector(&got, &sel("Notes")).expect("resolves");
-        assert_eq!(hit.n, "1", "first occurrence");
+        // A bare duplicate matches BOTH rows — the caller refuses with
+        // candidates, never a silent first pick (wire-contract A.3).
+        let matches = selector_matches(&got, &sel("Notes"));
+        assert_eq!(
+            matches.iter().map(|f| f.n.as_str()).collect::<Vec<_>>(),
+            vec!["1", "2"],
+            "both occurrences are candidates"
+        );
+        assert!(
+            resolve_selector(&got, &sel("Notes")).is_none(),
+            "an ambiguous selector does not resolve"
+        );
         // subtree words: second + ## + Child + child + body
         assert_eq!(resolve_selector(&got, &sel("2")).map(|f| f.words), Some(5));
         // and the occurrence index addresses the second one exactly
@@ -407,7 +436,7 @@ mod tests {
             )
             .map(|f| f.n.as_str()),
             Some("2"),
-            "`n` names the occurrence; abstaining takes the first"
+            "`n` names the occurrence exactly"
         );
     }
 

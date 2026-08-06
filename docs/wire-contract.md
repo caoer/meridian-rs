@@ -865,6 +865,12 @@ When a workspace is **armed** (attested INDEX present), after CAS and before byt
 | `create` | File birth through the guarded door; full body bytes. |
 | `hello.identity` | Optional `{build: sha|unknown}` for deploy identity. |
 
+**Composed-`read` selector resolution (2026-08-06, dogfood F4–F6):**
+
+- A section selector matching **more than one** node refuses `ambiguous_ref` naming each candidate's machine address (its `n`-carrying segment array) — §2.1's "the strict plane never silently picks" applies to strict reads exactly as to `cat` and `splice`. Never a silent first match, never `ref_not_found`.
+- When **all** selectors fail, the refusal names **every** failed selector with its own reason (no match / ambiguous), symmetric with the partial-read `notice`, which names them the same way.
+- Refusal **remedies speak the operation, not one host's tool name**: the recovery clause names the toc read in each surface's own dialect (MCP `mode:"toc"`, CLI `--section`-less read) and never prescribes a binary the caller may not have.
+
 CLI inventory (descriptive): `status.md`. Cross-root agent address grammar: `address-grammar.md`. Config parse: `meridian-md-schema.md`.
 
 ### A.4 What this document does not teach as core

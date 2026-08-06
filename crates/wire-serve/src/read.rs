@@ -465,6 +465,68 @@ struct SectionsRender {
     notice: Option<String>,
 }
 
+/// One failed section selector with its honest reason (wire-contract A.3): a
+/// miss, or an ambiguity carrying each candidate's machine address.
+enum SelFail {
+    Miss {
+        display: String,
+    },
+    Ambiguous {
+        display: String,
+        candidates: Vec<String>,
+    },
+}
+
+impl SelFail {
+    fn display(&self) -> &str {
+        match self {
+            SelFail::Miss { display } | SelFail::Ambiguous { display, .. } => display,
+        }
+    }
+
+    /// The all-fail refusal's per-selector clause. The miss arm keeps the
+    /// standing single-miss spelling byte-for-byte; the ambiguous arm never
+    /// says "no section addressed" — two sections matched, and the honest
+    /// answer names both and how to pin one (dogfood F4).
+    fn phrase(&self) -> String {
+        match self {
+            SelFail::Miss { display } => format!("no section addressed by \"{display}\""),
+            SelFail::Ambiguous {
+                display,
+                candidates,
+            } => format!(
+                "\"{display}\" is ambiguous ({} matches — pin one occurrence by its machine \
+                 address, or its dewey ordinal from the toc: {})",
+                candidates.len(),
+                candidates.join(" or ")
+            ),
+        }
+    }
+
+    /// The partial-read notice's per-selector entry — same facts as
+    /// [`SelFail::phrase`], in the notice's established bare-selector shape.
+    fn notice_entry(&self) -> String {
+        match self {
+            SelFail::Miss { display } => display.clone(),
+            SelFail::Ambiguous {
+                display,
+                candidates,
+            } => format!(
+                "{display} (ambiguous, {} matches: {})",
+                candidates.len(),
+                candidates.join(" or ")
+            ),
+        }
+    }
+}
+
+/// A candidate's machine address — the verbatim `[{"h":…,"n":…}]` segment
+/// array the read face publishes and `put`/`sections[]` take back.
+fn machine_addr(hpath: &[wire::HpathSeg]) -> String {
+    // hpathSeg is strings + ints; serialization is infallible.
+    serde_json::to_string(hpath).unwrap_or_default()
+}
+
 /// The sections-mode leg of [`composed_read`]: selector resolution (first
 /// match; partial-read notice), the walker-emitted content, and the rendered
 /// text — refusal messages in the Go host face's verbatim spelling.
@@ -482,33 +544,48 @@ fn composed_sections(
             "read: a section read needs a selector, and none was given. Nothing was read \
              and no rev was minted. Fix: pass one or more section selectors (a heading \
              path, a dewey ordinal, or a ^anchor), or scope the whole read with a \
-             `#Fragment` on the ref — or run `mrd read {display}` with no --section to \
-             list this document's section paths."
+             `#Fragment` on the ref — or list this document's section paths with a toc \
+             read of {display} (MCP read: mode:\"toc\"; CLI: no --section)."
         )));
     }
     let mut rows: Vec<render::SectionRow<'_>> = Vec::new();
-    let mut missing: Vec<String> = Vec::new();
+    let mut failures: Vec<SelFail> = Vec::new();
     for sel in sels {
-        match wire_map::facts::resolve_selector(facts, sel) {
-            Some(fact) => rows.push(render::SectionRow { sel, fact }),
-            None => missing.push(sel.display()),
+        let matches = wire_map::facts::selector_matches(facts, sel);
+        match matches.as_slice() {
+            &[fact] => rows.push(render::SectionRow { sel, fact }),
+            [] => failures.push(SelFail::Miss {
+                display: sel.display(),
+            }),
+            many => failures.push(SelFail::Ambiguous {
+                display: sel.display(),
+                candidates: many.iter().map(|f| machine_addr(&f.hpath)).collect(),
+            }),
         }
     }
-    if rows.is_empty() && !missing.is_empty() {
-        let mut e = ErrorBody::new(ErrorCode::RefNotFound);
+    if rows.is_empty() && !failures.is_empty() {
+        // A.3: the all-fail refusal names EVERY failed selector with its own
+        // reason, symmetric with the partial-read notice below. All-ambiguous
+        // is the fix-class `ambiguous_ref`; any miss keeps `ref_not_found`.
+        let all_ambiguous = failures
+            .iter()
+            .all(|f| matches!(f, SelFail::Ambiguous { .. }));
+        let mut e = ErrorBody::new(if all_ambiguous {
+            ErrorCode::AmbiguousRef
+        } else {
+            ErrorCode::RefNotFound
+        });
+        let phrases: Vec<String> = failures.iter().map(SelFail::phrase).collect();
         e.message = Some(format!(
-            "read: no section addressed by \"{}\" in {display}. Nothing was read and no \
-             rev was minted. {}",
-            missing[0],
-            crate::section_recovery(&missing[0], Some(display))
+            "read: {} in {display}. Nothing was read and no rev was minted. {}",
+            phrases.join("; "),
+            crate::section_recovery(failures[0].display(), Some(display))
         ));
         return Err(Box::new(e));
     }
-    let notice = (!missing.is_empty()).then(|| {
-        format!(
-            "unresolved selectors (no rev minted): {}",
-            missing.join(", ")
-        )
+    let notice = (!failures.is_empty()).then(|| {
+        let entries: Vec<String> = failures.iter().map(SelFail::notice_entry).collect();
+        format!("unresolved selectors (no rev minted): {}", entries.join(", "))
     });
     let job = render::RenderJob::Sections {
         header,

@@ -276,8 +276,9 @@ impl<'a> DocView<'a> {
                     "no section addressed by {}",
                     go_quote(&hpath_display(hpath))
                 ),
-                remedy: "address the section by its `hpath` segments, exactly as `md toc` \
-                     publishes them — one array entry per heading, raw text, no joining"
+                remedy: "address the section by its `hpath` segments, exactly as the read \
+                     face's toc publishes them — one array entry per heading, raw text, \
+                     no joining"
                     .to_string(),
                 context: vec![("hpath".to_string(), hpath_display(hpath))],
             }),

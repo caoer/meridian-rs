@@ -502,8 +502,9 @@ fn golden_target_class_refusals_fire_engine_side() {
         err.message.as_deref(),
         Some(
             "no section addressed by \"^task1\". No edit was applied; the batch is \
-             refused whole. Fix: read the page with --json and use its `anchors[]` — the \
-             section map does not list `^` anchors."
+             refused whole. Fix: the section map does not list `^` anchors — find \
+             the id inline in the section's content, or via CLI `--json` in its \
+             `anchors[]`."
         )
     );
 

@@ -511,8 +511,9 @@ mod tests {
             err.message.as_deref(),
             Some(
                 "no section addressed by \"^task1\". No edit was applied; the batch is \
-                 refused whole. Fix: read the page with --json and use its `anchors[]` — \
-                 the section map does not list `^` anchors."
+                 refused whole. Fix: the section map does not list `^` anchors — find \
+                 the id inline in the section's content, or via CLI `--json` in its \
+                 `anchors[]`."
             )
         );
     }
@@ -553,8 +554,8 @@ mod tests {
             err.message.as_deref(),
             Some(
                 "no section addressed by \"Ghost\". No edit was applied; the batch is \
-                 refused whole. Fix: read the page with no selector to list its section \
-                 paths."
+                 refused whole. Fix: list the document's section paths with a toc read \
+                 (MCP read: mode:\"toc\"; CLI: a read with no --section)."
             )
         );
     }
@@ -966,8 +967,8 @@ mod tests {
             err.message.as_deref(),
             Some(
                 "no section addressed by \"My-Section\". No edit was applied; the batch \
-                 is refused whole. Fix: read the page with no selector to list its \
-                 section paths."
+                 is refused whole. Fix: list the document's section paths with a toc \
+                 read (MCP read: mode:\"toc\"; CLI: a read with no --section)."
             )
         );
     }

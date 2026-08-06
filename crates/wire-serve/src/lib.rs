@@ -55,24 +55,28 @@ pub fn bad_request(message: impl Into<String>) -> Box<ErrorBody> {
 /// Selector-aware: hpath/dewey ride `toc`; `^` anchors ride `anchors[]` (not
 /// printed by `render::toc_text`).
 ///
+/// The engine serves more than one caller surface, so the clause names the
+/// OPERATION in each surface's own dialect — never one host's tool name alone
+/// (wire-contract A.3; dogfood F5: an MCP agent has no `mrd`).
+///
 /// `display_path` is `None` on plan-lowering (doc held, path unknown).
 #[must_use]
 pub fn section_recovery(selector: &str, display_path: Option<&str>) -> String {
     match (selector.starts_with('^'), display_path) {
         (true, Some(p)) => format!(
-            "Fix: run `mrd read {p} --json` and read its `anchors[]` — the section map \
-             does not list `^` anchors."
+            "Fix: the section map does not list `^` anchors — find the id inline in the \
+             section's content, or via CLI `mrd read {p} --json` in its `anchors[]`."
         ),
-        (true, None) => "Fix: read the page with --json and use its `anchors[]` — the \
-             section map does not list `^` anchors."
+        (true, None) => "Fix: the section map does not list `^` anchors — find the id \
+             inline in the section's content, or via CLI `--json` in its `anchors[]`."
             .to_owned(),
         (false, Some(p)) => format!(
-            "Fix: run `mrd read {p}` with no --section to list this document's section \
-             paths."
+            "Fix: list this document's section paths with a toc read of {p} (MCP read: \
+             mode:\"toc\"; CLI: `mrd read {p}` with no --section)."
         ),
-        (false, None) => {
-            "Fix: read the page with no selector to list its section paths.".to_owned()
-        }
+        (false, None) => "Fix: list the document's section paths with a toc read (MCP \
+             read: mode:\"toc\"; CLI: a read with no --section)."
+            .to_owned(),
     }
 }
 
