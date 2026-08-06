@@ -1,17 +1,9 @@
-//! End-to-end gates for the `check` engine, driven through the PRODUCTION write path (a
-//! guarded `create` / `splice` — no in-memory double), over a real tree.
+//! End-to-end gates for the `check` engine, driven through the PRODUCTION write
+//! path (a guarded `create` / `splice` — no in-memory double), over a real tree.
 //!
-//! # What this file used to gate, and why it does not any more
-//! Every fixture here once seeded the reserved receipt journal and asserted the journal
-//! TRACE: a spliced row reddening the chain recompute, a stale baseline greying both
-//! detectors, the `foreign_edit` withdrawal. **That plane is deleted and is not
-//! re-derived**, so those arms are gone with it rather than being reshaped into something
-//! that looks like coverage without being any.
-//!
-//! What remains is gated here honestly: the planes `check` still reads, driven the same
-//! production way — and, explicitly, **the law itself**
-//! ([`the_engine_keeps_no_memory_and_this_pins_it`]), so that the engine's memorylessness
-//! is a pinned, visible fact rather than an absence a later reader has to infer.
+//! Gates the planes `check` still reads — and the law itself
+//! ([`the_engine_keeps_no_memory_and_this_pins_it`]), so the engine's
+//! memorylessness is a pinned, visible fact rather than an absence to infer.
 
 use fs::WorkspaceRoot;
 use wire::Path as WirePath;
@@ -78,12 +70,10 @@ fn core_over(root: &WorkspaceRoot) -> check::CoreReport {
     check::core(root, &docs, &[], &[]).expect("core read")
 }
 
-/// A governed corpus reads GREEN, and the green is EARNED — the write path really
-/// ran, the tree really moved, and every plane `check` holds was really read.
-///
-/// Load-bearing against the opposite failure: a verb that lost its planes and
-/// returned green unconditionally would also pass this arm, which is why
-/// [`a_drifted_pin_still_reddens_after_the_journal_died`] runs beside it.
+/// A governed corpus reads GREEN, and the green is EARNED — the write path
+/// really ran and the tree really moved.
+/// [`a_drifted_pin_still_reddens_after_the_journal_died`] guards the opposite
+/// failure.
 #[test]
 fn a_governed_corpus_is_green_on_every_plane_check_still_holds() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -107,21 +97,13 @@ fn a_governed_corpus_is_green_on_every_plane_check_still_holds() {
     assert_eq!(report.grey_summary(), None);
 }
 
-/// **THE LAW, PINNED** (ZT, 2026-08-03): *"Engine does not have memory. It should
-/// not have. History is pin to git when we lock. Anything between locks is not
-/// history."*
+/// THE LAW, PINNED: the engine does not have memory — history is pinned to git
+/// at lock; anything between locks is not history.
 ///
-/// An out-of-band edit — a plain filesystem write behind the engine's back, exactly
-/// what the journal's stale-baseline grey once caught — is followed by nothing that
-/// re-reads it. `check` returns GREEN, because it answers at-rest truth only: does
-/// the world still match the pins. It does, so it says so.
-///
-/// **This arm asserts that on purpose, and it is not an apology.** The engine is
-/// ruled not to keep memory, so non-detection here is the DESIGN, not a hole the
-/// engine tolerates. Anyone who arrives wanting to "fix" it fails this test and has
-/// to read the ruling first — a detector would be this engine reaching back into
-/// memory it is ruled not to have. Archaeology is git; attribution is transcript
-/// JSONL.
+/// An out-of-band edit is followed by nothing that re-reads it. `check` returns
+/// GREEN, because it answers at-rest truth only. Non-detection here is the
+/// DESIGN: a detector would rebuild memory the engine is ruled not to have.
+/// Archaeology is git; attribution is transcript JSONL.
 #[test]
 fn the_engine_keeps_no_memory_and_this_pins_it() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -157,11 +139,8 @@ fn the_engine_keeps_no_memory_and_this_pins_it() {
     );
 }
 
-/// The surviving plane still reddens end-to-end: a pin whose target drifted is a
-/// finding, over a real corpus, through the real core.
-///
-/// This is the arm that makes the two greens above mean something — a core that had
-/// lost its remaining planes too would pass those and fail this one.
+/// The surviving plane still reddens end-to-end: a pin whose target drifted is
+/// a finding. This arm is what makes the two greens above mean something.
 #[test]
 fn a_drifted_pin_still_reddens_after_the_journal_died() {
     use std::collections::BTreeMap;
@@ -186,18 +165,14 @@ fn a_drifted_pin_still_reddens_after_the_journal_died() {
     );
 }
 
-/// **Honest degradation survives the journal.** An object store that cannot be
-/// asked leaves the retrieval plane UNREAD — grey, never an empty reading a caller
-/// could bank as clean. The false green this closes is one plane over from the one
-/// the engine is ruled not to hold, and it is still closed.
+/// An object store that cannot be asked leaves the retrieval plane UNREAD —
+/// grey, never an empty reading a caller could bank as clean.
 #[test]
 fn an_unaskable_object_store_is_still_grey_and_never_a_clean_reading() {
     use std::collections::BTreeMap;
 
     let root = WorkspaceRoot(std::path::PathBuf::from("/nonexistent"));
-    // Rendered through `lock::render`, never hand-written: the pre-R4 fixture
-    // here was a `version: 1` `objects:` table that kept COMPILING after the
-    // schema it described was retired, and failed only at run time.
+    // Rendered through `lock::render`, never hand-written.
     let mut lock = lock::Lock::new();
     lock.upsert_pin(lock::PinEntry::new(
         "source",

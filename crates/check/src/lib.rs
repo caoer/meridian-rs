@@ -1,52 +1,23 @@
-//! The `check` engine (U2.10) — the pure READ verb of the reconciliation loop (d2 §3
-//! check: "what lies? (validity)").
+//! The `check` engine — the pure READ verb of the reconciliation loop:
+//! `status = freshness, check = validity`.
 //!
-//! # What check is
-//! `status = freshness, check = validity` (d2 §3). `check` reads a workspace and answers
-//! whether it LIES — without writing a byte, minting a receipt, or spending a cap. Two
-//! layers, split by whether the workspace has armed anything:
+//! `check` reads a workspace and answers whether it LIES — without writing a byte,
+//! minting a receipt, or spending a cap. Two layers:
 //!
-//! - **Layer 0 — rule-free core** ([`layer0`]). Two pack-free reads: 1. **claims
-//!   realised** — observe each claim against the current tree and report the drifted ones
-//!   (the realise engine's pure detection, run here read-only — no apply, no cap). 2.
-//!   **the pin plane** — the CLAIM plane (did the pinned content drift?) and the
-//!   RETRIEVAL plane (is the pinned blob durably anchored?).
+//! - **Layer 0 — rule-free core** ([`layer0`]): claims realised (observe each
+//!   claim against the current tree, report the drifted ones) and the pin plane
+//!   (did the pinned content drift? is the pinned blob durably anchored?).
+//! - **Layer 1 — armed rules read-only** ([`layer1`]): each armed rule's
+//!   `check_change` runs through the SAME surface the door mounts, so a refusal
+//!   here is byte-for-byte the refusal the door would mint.
 //!
-//! # Why check holds no write-history plane — the LAW (ZT, 2026-08-03)
-//! Verbatim: *"Engine does not have memory. It should not have. History is pin to git
-//! when we lock. Anything between locks is not history."*
+//! `check` holds no write-history plane by law: the engine keeps no memory —
+//! history is pinned to git at lock. It answers at-rest truth only: does the world
+//! still match the pins. The narrowed green is disclosed, not silent: both faces
+//! carry [`WRITE_HISTORY_NOT_ASSESSED`] with the reason.
 //!
-//! `check` therefore answers **at-rest / at-touch truth only: does the world still match
-//! the pins.** The receipt journal is deleted, and chain continuity, baseline dating and
-//! interval accounting are **never rebuilt as check memory** — they were never this
-//! engine's to carry. Archaeology lives in git; attribution lives in transcript JSONL.
-//!
-//! An out-of-band edit followed by a governed write is not detected here. That is
-//! **outside the engine's domain by design**, not a tolerated defect.
-//!
-//! One consequence is disclosed rather than absorbed: a corpus that once read grey (*"I
-//! cannot date your write history"*) now reads green (*"the world still matches the
-//! pins"*). The claim is SMALLER, not stronger, so both faces carry
-//! [`WRITE_HISTORY_NOT_ASSESSED`] together with the reason — a reader must never carry
-//! the old, wider green forward.
-//!
-//! - **Layer 1 — armed rules read-only** ([`layer1`]). Each armed rule's `check_change`
-//!   runs over the change through the page loader — the SAME surface the door mounts
-//!   (U4.2), so a refusal here is byte-for-byte the refusal the door would mint. Its
-//!   input is the law [`policy::resolve_armed_law`] already resolved at the write's own
-//!   path, so this layer performs no I/O and cannot be handed an armed set the door would
-//!   not have honoured.
-//!
-//! Session-property integrity is exactly this verb run over a session tree as a workspace
-//! (d2 §3).
-//!
-//! # It never writes
-//! Every read here is a pure function of the tree bytes and the pinned evidence. The
-//! engine holds no write path, mints no receipt, and takes no cap — the whole surface is
+//! Every read is a pure function of the tree bytes and the pinned evidence:
 //! `&WorkspaceRoot` / `&Change` in, a report out.
-//!
-//!
-//!
 
 pub mod layer0;
 pub mod layer1;
@@ -61,27 +32,21 @@ pub use layer0::{
     ClaimFinding, GREY_CANNOT_ASSESS, OrphanedBlob, PinPlane, PinRow, WRITE_HISTORY_NOT_ASSESSED,
     claims_realised, pin_plane,
 };
-// Layer 1 exports no armed-input type and no fault type of its own: the input is
-// `policy::ArmedRule` (sealed to `policy::resolve_armed_law`) and an evaluation
-// fault is `policy::ArmedFault::Unevaluable`, the one armed-law fault vocabulary.
-// See `layer1`'s module doc for why both belong to `policy` and not here.
+// Layer 1 exports no armed-input or fault type of its own: the input is
+// `policy::ArmedRule` and a fault is `policy::ArmedFault::Unevaluable`.
 pub use layer1::{ArmedFinding, ArmedReport, evaluate};
 
 /// The layer-0 (rule-free core) verdict over a workspace: the claims-realised
 /// findings and the PIN PLANE. Green ⇔ every claim converged, every pin holds and
 /// every pinned blob is anchored.
 ///
-/// **A green here says nothing about write history**, because this report holds no
-/// write-history plane at all — not a grey one, none. The engine keeps no memory by
-/// design (ZT 2026-08-03), so that is the law rather than a gap. It is narrower than
-/// the green this struct once returned, and the renderers disclose it
+/// A green here says nothing about write history — this report holds no
+/// write-history plane at all; the renderers disclose it
 /// ([`WRITE_HISTORY_NOT_ASSESSED`]) rather than letting the old meaning ride.
 ///
-/// # The planes fail INDEPENDENTLY (U14)
-/// A lock that arrives by clone or pull while its source has moved, and a pinned
-/// blob no ref reaches, are facts no journal row ever carried — which is why the pin
-/// plane outlived the journal plane. The fence reads this verb, so the verb has to
-/// hold every plane it claims or the fence is a false green by construction.
+/// The planes fail independently: a lock arriving by clone or pull while its
+/// source moved, and a pinned blob no ref reaches, are facts no journal row
+/// ever carried.
 #[derive(Debug)]
 pub struct CoreReport {
     /// The claims whose observation drifted (not realised) — empty ⇔ all realised.
@@ -90,14 +55,10 @@ pub struct CoreReport {
     pub pins: PinPlane,
     /// The run plane: pre-exec receipts with no completion (G3).
     ///
-    /// **REPORTED, never gated on** — it does not move [`is_red`](Self::is_red)
-    /// or the exit code, following the fence line's precedent. The reason is the
-    /// T1 lesson rather than timidity: receipts written before the completion
-    /// marker are unauditable by construction and can NEVER clear, so gating on
-    /// them would install a permanent red, and a permanent red is how readers
-    /// learn to bump past a plane without reading it. Gating on LIVE orphans
-    /// once the historic era has aged out is a separate decision that changes
-    /// exit codes, so it needs its own ruling.
+    /// REPORTED, never gated on — it does not move [`is_red`](Self::is_red) or
+    /// the exit code: such receipts are unauditable by construction and can
+    /// never clear, so gating would install a permanent red. Gating on LIVE
+    /// orphans is a separate decision that needs its own ruling.
     pub orphans: Vec<orphan::OrphanedRun>,
 }
 
@@ -109,11 +70,10 @@ impl CoreReport {
         !self.drifted_claims.is_empty() || self.pins.is_red()
     }
 
-    /// The core could not assess something: the journal detectors (no baseline, or
-    /// one it cannot show is current — S3-R5, S3-R8), a pin outside sight, or an
-    /// object store it could not ask. Grey sits above green and below red in the
-    /// worst-of order — a report can be grey and red at once (a drifted pin on an
-    /// undatable journal), and red is what it is called then.
+    /// The core could not assess something: a pin outside sight, or an object
+    /// store it could not ask. Grey sits above green and below red in the
+    /// worst-of order — a report can be grey and red at once, and red is what
+    /// it is called then.
     #[must_use]
     pub fn cannot_assess(&self) -> bool {
         self.pins.cannot_assess()
@@ -122,17 +82,13 @@ impl CoreReport {
     /// The grey render — everything that could not be assessed and why — or `None`
     /// when the core had the evidence to answer every question it put.
     ///
-    /// One line per unassessable plane, because they are unassessable for
-    /// DIFFERENT reasons with different fixes: a journal that cannot date the tree
-    /// is not an object store that cannot be reached, and collapsing the two would
-    /// teach a reader to look in the wrong place (S3-R43/S3-R50).
+    /// One line per unassessable plane: they are unassessable for different
+    /// reasons with different fixes.
     #[must_use]
     pub fn grey_summary(&self) -> Option<String> {
         let mut lines = Vec::new();
-        // A grey PIN carries its own word (`unmounted`, `path-unseeable`, …) in
-        // its label, so prefixing it with `cannot-assess` would collapse two
-        // distinct causes into one tone — S3-R43 read backwards, which cost a
-        // round once already. One vocabulary, distinct words.
+        // A grey PIN carries its own reason word in its label; prefixing it
+        // with `cannot-assess` would collapse two distinct causes into one.
         for pin in &self.pins.grey {
             lines.push(format!("pin: {}", render_pin(pin)));
         }
@@ -142,9 +98,8 @@ impl CoreReport {
         (!lines.is_empty()).then(|| lines.join("\n"))
     }
 
-    /// A red render naming every core finding, or `None` when the core is green.
-    /// Composes the journal TRACE render with one line per drifted claim, per red
-    /// pin, and per blob no ref reaches.
+    /// A red render naming every core finding, or `None` when the core is
+    /// green — one line per drifted claim, red pin, and orphaned blob.
     #[must_use]
     pub fn red_summary(&self) -> Option<String> {
         if !self.is_red() {
@@ -219,26 +174,16 @@ pub fn core(
 ///
 /// `docs` and `pins` are the corpus built from that interval's bytes. `root` is
 /// used for the OBJECT STORE alone — blob reachability is a property of the
-/// repository, not of an interval, and the same store answers for both.
+/// repository, not of an interval.
 ///
-/// # Why an interval-bearing entry point still exists (F1)
-/// The pre-commit fence's whole job is to speak about what is being committed, and
-/// what is being committed is the INDEX. A verdict computer reachable only through
-/// a worktree read can be given the right question and still answer about the wrong
-/// bytes — a false green with every gate intact. So the interval stays a PARAMETER,
-/// and [`core`] is this function with the worktree supplied.
+/// The interval stays a parameter because the pre-commit fence speaks about the
+/// INDEX: a verdict computer reachable only through a worktree read could be
+/// asked the right question and still answer about the wrong bytes. [`core`] is
+/// this function with the worktree supplied.
 ///
-/// **There is no longer a separate staged entry point.** `core_of_staged` existed
-/// solely to date a staged interval against the RECORD instead of its own last row,
-/// because a legitimately staged intermediate state is not the current one and
-/// refusing it was a false red. With the journal deleted there is no record and no
-/// dating, so the two entry points collapsed into this one — the staged and
-/// worktree intervals now differ only in which bytes built the corpus.
-///
-/// **Claims are not evaluated over a foreign interval.** A claim's observation is a
-/// live read against the tree ([`claims_realised`] takes the root), so it cannot be
-/// re-pointed at bytes on no disk; the worktree pass owns that plane and this one
-/// reports it empty rather than pretending to have asked.
+/// Claims are not evaluated over a foreign interval: a claim's observation is a
+/// live read against the tree, so that plane is reported empty rather than
+/// pretending to have asked.
 #[must_use]
 pub fn core_of(
     root: &WorkspaceRoot,
@@ -272,20 +217,12 @@ impl std::error::Error for CoreError {}
 
 #[cfg(test)]
 mod honesty {
-    //! **The honesty law, proven structurally rather than asserted.**
-    //!
-    //! Coherence finding C1 caught the original spec asserting honesty while the
-    //! risk map denied it, so it is a thing this crate PROVES: `check` must hold no
-    //! member — type or word — that can report a property it no longer observes.
-    //! These arms fail the moment someone reintroduces one.
+    //! The honesty law, proven structurally: `check` must hold no member —
+    //! type or word — that can report a property it no longer observes.
 
-    /// The whole point, in one arm: **no verdict member can say "clean" or
-    /// "verified" about a plane `check` does not read.**
-    ///
-    /// `CoreReport`'s fields ARE the planes it observes. A journal/chain/baseline
-    /// field reappearing here means the write-history plane came back without the
-    /// evidence to support it — which is the false green the unit exists to close.
-    /// The source text is the structural surface, because a field can be added
+    /// No verdict member can say "clean" or "verified" about a plane `check`
+    /// does not read. `CoreReport`'s fields ARE the planes it observes; the
+    /// source text is the structural surface because a field can be added
     /// without any existing arm noticing.
     #[test]
     fn no_core_report_field_claims_a_property_check_no_longer_observes() {
@@ -315,9 +252,7 @@ mod honesty {
         }
     }
 
-    /// **`is_red` and `cannot_assess` may only consult planes that were READ.**
-    /// A verdict that consulted a journal field would be reporting an unobserved
-    /// property even if the field itself were honestly named.
+    /// `is_red` and `cannot_assess` may only consult planes that were READ.
     #[test]
     fn the_verdict_consults_only_the_planes_that_were_read() {
         let src = include_str!("lib.rs");
@@ -336,11 +271,8 @@ mod honesty {
         }
     }
 
-    /// **The narrowing is DISCLOSED, not silent** (advisor gate 1 §2, mandatory).
-    /// A corpus that once read grey now reads green, and the claim behind that green
-    /// is smaller. The constant is what stops a reader carrying the old, wider green
-    /// forward — deleting it would make the narrowing invisible, which is the whole
-    /// failure this condition guards.
+    /// The narrowing is DISCLOSED, not silent: the constant is what stops a
+    /// reader carrying the old, wider green forward.
     #[test]
     fn the_narrowed_green_carries_its_disclosure() {
         assert_eq!(
