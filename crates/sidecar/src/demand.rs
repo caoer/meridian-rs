@@ -29,15 +29,14 @@ pub(crate) const fn observes_ring(op: &Op) -> bool {
         | Op::Splice { .. }
         | Op::Create { .. } => true,
         // Ring-blind: O(target) or self-folded root. `resolve` walks the §4.5
-        // plane (not the ring). `view_path` refuses `daemon_only` first.
+        // plane (not the ring).
         Op::Hello { .. }
         | Op::Toc { .. }
         | Op::Cat { .. }
         | Op::Extract { .. }
         | Op::Read { .. }
         | Op::CheckWrite { .. }
-        | Op::Resolve { .. }
-        | Op::ViewPath { .. } => false,
+        | Op::Resolve { .. } => false,
     }
 }
 
@@ -55,7 +54,6 @@ pub(crate) const fn advances_ring(op: &Op) -> bool {
         | Op::Read { .. }
         | Op::CheckWrite { .. }
         | Op::Resolve { .. }
-        | Op::ViewPath { .. }
         | Op::Root
         | Op::Diff { .. }
         | Op::Links { .. }

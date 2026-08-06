@@ -784,7 +784,7 @@ const SERVER_NAME: &str = "meridian-daemon/0.1";
 /// cap. Field-only caps name surfaces the arms honor; `splice.verdicts` is
 /// §11.1, served `[]` (no pack loaded). `splice ∈ caps` ⇒ `node_rev` on every
 /// `toc`/`cat`/`extract` node (shared read arms).
-const CAPS: [&str; 17] = [
+const CAPS: [&str; 16] = [
     "toc",
     "cat",
     "extract",
@@ -800,8 +800,6 @@ const CAPS: [&str; 17] = [
     "splice.dry",
     "splice.receipt",
     "splice.verdicts",
-    // V2 §Q2 path forwarder — daemon-exclusive (OD6 sole builder).
-    "view_path",
     // U20b push channel (§4.7). `sub` converts this connection to push-only.
     "sub",
 ];
@@ -956,10 +954,6 @@ fn dispatch_read(
     op: Op,
     v3: bool,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
-    // V2 §Q2: `view_path` self-resolves `cwd` — routed before the bind guard.
-    if let Op::ViewPath { cwd, fresh } = &op {
-        return registry.view_path(cwd, (*fresh).unwrap_or(false));
-    }
     let Some(ws) = attached else {
         return Err(wire_serve::bad_request(
             "no workspace bound — send `hello` with a `workspace` first",
@@ -1037,10 +1031,6 @@ fn dispatch_read(
             r#ref,
             content,
         } => resolve_cold(ws, &from, &r#ref, content.unwrap_or(false)),
-        // Routed before the bind guard (self-resolves `cwd`).
-        Op::ViewPath { .. } => {
-            unreachable!("view_path is handled before the bound-workspace guard")
-        }
         // Write path: bare meridian-fs commit via shared choke-point.
         // No rule packs (`&[]` ⇒ `verdicts: []`). Writes disk; warm engine
         // rebuilds on next read (fingerprint moved). Numbered on the workspace ring.

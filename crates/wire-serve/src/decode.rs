@@ -127,14 +127,6 @@ pub fn decode(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody>> 
         }
         "read" => decode_read(obj),
         "check_write" => decode_check_write(obj),
-        "view_path" => {
-            // `cwd` is a raw host absolute path — `req_str`, not `req_path`.
-            check_fields(obj, op, &["cwd", "fresh"])?;
-            Ok(Op::ViewPath {
-                cwd: req_str(obj, op, "cwd")?,
-                fresh: opt_bool(obj, op, "fresh")?,
-            })
-        }
         "splice" => decode_splice(obj, rev),
         "create" => decode_create(obj),
         // §3.2: only genuinely unknown names land here.

@@ -466,7 +466,7 @@ fn rebuild_candidate_bytes_match_go_plan_semantics() {
 
 /// The dogfood shape that shipped broken: an H1 whose text carries an em-dash,
 /// a comma and — decisively — SPACES, with a child addressed beneath it.
-const G2D: &str = "---\ntype: note\n---\n\n# Dogfood — the socket MCP surface, exercised by a working agent\n\nintro\n\n## Results\n\nresult body\n\n## The `view_path` finding\n\nfinding body\n";
+const G2D: &str = "---\ntype: note\n---\n\n# Dogfood — the socket MCP surface, exercised by a working agent\n\nintro\n\n## Results\n\nresult body\n\n## The `splice` finding\n\nfinding body\n";
 
 /// The requirement, as a round trip: `read` publishes the containment chain as
 /// segments; those exact segments, handed back verbatim, must address the
@@ -478,7 +478,7 @@ const G2D: &str = "---\ntype: note\n---\n\n# Dogfood — the socket MCP surface,
 fn published_multisegment_address_is_writable() {
     let parent = "Dogfood — the socket MCP surface, exercised by a working agent";
 
-    for leaf in ["Results", "The `view_path` finding"] {
+    for leaf in ["Results", "The `splice` finding"] {
         let got = run(
             G2D,
             &[PlanEdit {

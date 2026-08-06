@@ -11,12 +11,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
-use wire::{ErrorBody, ErrorCode, ResponseBody, Root};
-
 use crate::engine::{WarmOutcome, WorkspaceEngine};
 use crate::now_secs;
 use crate::protocol::{DenyKind, WorkspaceEntry};
-use crate::refresh::{RefreshState, view_err_to_refresh};
 use crate::state::StateStore;
 
 /// The outcome of a [`Registry::register`] call.
@@ -69,13 +66,6 @@ pub enum PinOutcome {
 pub struct Registry {
     inner: RwLock<HashMap<PathBuf, WorkspaceEntry>>,
     engines: RwLock<HashMap<PathBuf, WorkspaceEngine>>,
-    /// V2 §Q2 per-workspace publish mutex (OD6/B1). Sole persistent writer;
-    /// held across build + post-build sample so concurrent `view_path` on one
-    /// workspace serializes. Distinct workspaces never contend.
-    publish_locks: Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>,
-    /// OD7 refresh telemetry (daemon memory, advisory). Also `as_of` proxy:
-    /// last successful publish fingerprint within this epoch.
-    refresh_state: RwLock<HashMap<PathBuf, RefreshState>>,
     /// S6 read-is-the-mint ledger per workspace (D6/H1). Not on
     /// [`WorkspaceEngine`]: rebuilds replace the engine and would evaporate
     /// receipts. Session memory; dropped on idle-reap only.
@@ -83,8 +73,6 @@ pub struct Registry {
     /// U20b delta plane, one ring per workspace — same create/reap as
     /// [`Self::read_mints`]. S6: key is canonical path (not a global ring).
     rings: Mutex<HashMap<PathBuf, Arc<crate::ring::WorkspaceRing>>>,
-    /// Instance epoch token (`built_epoch`); restart mints a new one.
-    epoch: String,
     /// G11 pre-warm quiet map: last [`fs::domain_stat_signature`] per warm
     /// workspace. Matching signature skips the corpus fold. Advisory only —
     /// missing/stale costs one extra snapshot, never a wrong answer.
@@ -113,12 +101,9 @@ impl Registry {
             inner: RwLock::new(inner),
             // Cold: no engines; first `warm_or_build` rebuilds from disk.
             engines: RwLock::new(HashMap::new()),
-            publish_locks: Mutex::new(HashMap::new()),
-            refresh_state: RwLock::new(HashMap::new()),
             read_mints: Mutex::new(HashMap::new()),
             // Cold: no rings; pre-restart `from_seq` ⇒ `root_unknown` (§7.1).
             rings: Mutex::new(HashMap::new()),
-            epoch: now_secs().to_string(),
             prewarm_signatures: Mutex::new(HashMap::new()),
             requests: AtomicU64::new(0),
             // Clock starts at birth so idle-exit can age an unused daemon.
@@ -286,110 +271,6 @@ impl Registry {
         f(engines.get(canonical))
     }
 
-    /// V2 §Q2 `view_path`: resolve `cwd`, publish/serve `view.duckdb`, return
-    /// stamped path + pre-open freshness hint — never rows. Sole builder (OD6).
-    /// Under the per-workspace publish mutex (B1). Branches: `fresh` ⇒ bounded
-    /// rebuild (§Q3); known `as_of` ⇒ serve last-good (no rebuild); else first
-    /// build. Publish failure with last-good serves it + OD7 `last_error`.
-    ///
-    /// # Errors
-    /// `bad_request` (deny), `io_error` (resolve/fold/build with no last-good),
-    /// `invalid_utf8`.
-    pub fn view_path(&self, cwd: &str, fresh: bool) -> Result<ResponseBody, Box<ErrorBody>> {
-        let (workspace, drawer, dir) = self.resolve_drawer(cwd)?;
-        let dest = dir.join("view.duckdb");
-
-        // Publish mutex across build + post-build sample.
-        let lock = self.publish_lock(&workspace);
-        let _publish = lock.lock().unwrap_or_else(PoisonError::into_inner);
-
-        // Known as_of + file present ⇒ serve without rebuild; else build.
-        let served = self
-            .last_ok_fingerprint(&workspace)
-            .filter(|_| dest.exists());
-        let built = if fresh {
-            self.bounded_fresh(&workspace, &drawer)
-        } else if let Some(as_of) = served {
-            let live = sample_fingerprint(&workspace)?;
-            let state = view_state(&as_of, &live);
-            Ok((as_of, live, state))
-        } else {
-            self.build_once(&workspace, &drawer)
-        };
-
-        let (as_of, live, state) = match built {
-            Ok(triple) => triple,
-            // Failed build: last-good if present (OD7 telemetry); else error.
-            Err(op_err) => {
-                if dest.exists()
-                    && let Some(as_of) = self.last_ok_fingerprint(&workspace)
-                {
-                    let live = sample_fingerprint(&workspace)?;
-                    let state = view_state(&as_of, &live);
-                    (as_of, live, state)
-                } else {
-                    return Err(op_err);
-                }
-            }
-        };
-
-        let (refresh_in_progress, last_error) = self.refresh_telemetry(&workspace);
-        Ok(ResponseBody::ViewPath {
-            path: dest.to_string_lossy().into_owned(),
-            as_of_root: Root(as_of.0),
-            live_root: Root(live.0),
-            // Not the ring tip — same `0` as `Root`/`Links` arms.
-            changes_seq: 0,
-            state,
-            // Live sampled from warm fold; hint only (§Q3 C3).
-            live_source: wire::ViewLiveSource::Watch,
-            // Pre-open hint is never a verdict (B5+C3).
-            stale: None,
-            refresh_in_progress,
-            last_error,
-        })
-    }
-
-    /// Resolve `cwd` → workspace + drawer under this registry's `cache_root`
-    /// (via [`pin_for_cwd`](Self::pin_for_cwd); honors test cache roots).
-    fn resolve_drawer(
-        &self,
-        cwd: &str,
-    ) -> Result<(PathBuf, cache::CacheDrawer, PathBuf), Box<ErrorBody>> {
-        let workspace = match self.pin_for_cwd(Path::new(cwd)) {
-            PinOutcome::Pinned { workspace, .. } => workspace,
-            PinOutcome::Denied(reason) => {
-                return Err(wire_serve::bad_request(format!(
-                    "cannot resolve `{cwd}` to a workspace: it is the {reason} (deny ceiling)"
-                )));
-            }
-            PinOutcome::Error(message) => {
-                let mut e = ErrorBody::new(ErrorCode::IoError);
-                e.cause = Some(message);
-                return Err(Box::new(e));
-            }
-        };
-        let dir = cache::drawer_dir(&self.cache_root, &workspace);
-        let drawer = cache::CacheDrawer::Disk {
-            dir: dir.clone(),
-            workspace: workspace.clone(),
-        };
-        Ok((workspace, drawer, dir))
-    }
-
-    /// The per-workspace publish mutex, created on first use (V2 §Q2 / OD6).
-    fn publish_lock(&self, workspace: &Path) -> Arc<Mutex<()>> {
-        let mut locks = self
-            .publish_locks
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        Arc::clone(
-            locks
-                .entry(workspace.to_path_buf())
-                .or_insert_with(|| Arc::new(Mutex::new(()))),
-        )
-    }
-
     /// Workspace delta ring, created on first use. `workspace` must be
     /// canonical — S6 isolation key (hello bind supplies it). [`Arc`] so a
     /// parked subscriber never holds this map's lock.
@@ -417,131 +298,6 @@ impl Registry {
                 .entry(workspace.to_path_buf())
                 .or_insert_with(|| Arc::new(receipt::read_mint::ReadMintStore::new())),
         )
-    }
-
-    /// The last successful publish fingerprint (daemon-memory `as_of` proxy), or
-    /// `None` when this daemon has not published this workspace.
-    fn last_ok_fingerprint(&self, workspace: &Path) -> Option<model::MerkleRoot> {
-        self.refresh_state
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(workspace)
-            .and_then(|s| s.last_ok_fingerprint.clone())
-    }
-
-    /// The OD7 reply telemetry: `refresh_in_progress` (always `false` —
-    /// rebuilds are synchronous, done before the reply) + the last failure.
-    fn refresh_telemetry(&self, workspace: &Path) -> (bool, Option<wire::RefreshError>) {
-        let states = self
-            .refresh_state
-            .read()
-            .unwrap_or_else(PoisonError::into_inner);
-        let last_error = states.get(workspace).and_then(|s| s.last_error.clone());
-        (false, last_error)
-    }
-
-    /// Build + publish `view.duckdb` at the current disk fold, then sample
-    /// `live` after — the absent/first-build path (§Q3 post-result fold shape,
-    /// no retry). `FRESH_AT_SAMPLE` iff `F0 == F_now`, else `STALE`.
-    fn build_once(
-        &self,
-        workspace: &Path,
-        drawer: &cache::CacheDrawer,
-    ) -> Result<(model::MerkleRoot, model::MerkleRoot, wire::ViewState), Box<ErrorBody>> {
-        let f0 = self.publish_now(workspace, drawer)?;
-        let f_now = sample_fingerprint(workspace)?;
-        let state = view_state(&f0, &f_now);
-        Ok((f0, f_now, state))
-    }
-
-    /// The bounded `--fresh` rebuild (§Q3): build at `F0`, sample `live = F_now`
-    /// after; equal ⇒ `FRESH_AT_SAMPLE`; else retry once; still differing ⇒
-    /// `RACED` with both fingerprints. Never loops, never labels fresh.
-    fn bounded_fresh(
-        &self,
-        workspace: &Path,
-        drawer: &cache::CacheDrawer,
-    ) -> Result<(model::MerkleRoot, model::MerkleRoot, wire::ViewState), Box<ErrorBody>> {
-        let f0 = self.publish_now(workspace, drawer)?;
-        let f_now = sample_fingerprint(workspace)?;
-        if f0 == f_now {
-            return Ok((f0, f_now, wire::ViewState::FreshAtSample));
-        }
-        // The workspace raced the build — one bounded retry.
-        let f0b = self.publish_now(workspace, drawer)?;
-        let f_nowb = sample_fingerprint(workspace)?;
-        let state = if f0b == f_nowb {
-            wire::ViewState::FreshAtSample
-        } else {
-            wire::ViewState::Raced
-        };
-        Ok((f0b, f_nowb, state))
-    }
-
-    /// Warm, snapshot fingerprint+docs out of the engines lock, then
-    /// `view::publish` (publish mutex only — slow `DuckDB` must not block warm
-    /// inserts). Records OD7 telemetry. Returns built fingerprint `F0`.
-    fn publish_now(
-        &self,
-        workspace: &Path,
-        drawer: &cache::CacheDrawer,
-    ) -> Result<model::MerkleRoot, Box<ErrorBody>> {
-        self.warm_or_build(workspace)
-            .map_err(|e| warm_err_to_wire(&e))?;
-        // Clone out of the read lock before slow publish I/O.
-        let Some((f0, docs)) = self.with_engine(workspace, |engine| {
-            engine.map(|e| (e.at_fingerprint.clone(), e.docs.clone()))
-        }) else {
-            // Idle-reap race between warm and borrow — transient.
-            return Err(Box::new(ErrorBody::new(ErrorCode::Internal)));
-        };
-
-        let stamp = view::PublishStamp {
-            workspace: workspace.to_string_lossy().into_owned(),
-            as_of_fingerprint: f0.0.clone(),
-            epoch: self.epoch.clone(),
-            seq: 0,
-        };
-        match view::publish(&docs, drawer, &stamp) {
-            Ok(_path) => {
-                self.record_publish_ok(workspace, f0.clone());
-                Ok(f0)
-            }
-            Err(e) => {
-                self.record_publish_err(workspace, &f0, &e);
-                let mut err = ErrorBody::new(ErrorCode::IoError);
-                err.cause = Some(e.to_string());
-                Err(Box::new(err))
-            }
-        }
-    }
-
-    /// Adopt `fingerprint` as the workspace's last-good and clear its error
-    /// (OD7 recovery).
-    fn record_publish_ok(&self, workspace: &Path, fingerprint: model::MerkleRoot) {
-        self.refresh_state
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .entry(workspace.to_path_buf())
-            .or_default()
-            .record_ok(fingerprint, now_secs());
-    }
-
-    /// Record a publish failure against the workspace (OD7); the last-good
-    /// fingerprint is left untouched (the old file is still published).
-    fn record_publish_err(
-        &self,
-        workspace: &Path,
-        attempted: &model::MerkleRoot,
-        e: &view::ViewError,
-    ) {
-        let error = view_err_to_refresh(e, attempted, now_secs());
-        self.refresh_state
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .entry(workspace.to_path_buf())
-            .or_default()
-            .record_err(error);
     }
 
     /// Pre-warm every already-warm workspace (P2 watch driver). Rebuilds only
@@ -730,40 +486,6 @@ impl Registry {
         let map = self.inner.read().unwrap_or_else(PoisonError::into_inner);
         self.persist(&map);
     }
-}
-
-/// Sample a workspace's current disk fingerprint — a full-corpus fold
-/// (`fs::domain_snapshot`, the cheap half, no parse), the §Q3 live sample.
-fn sample_fingerprint(workspace: &Path) -> Result<model::MerkleRoot, Box<ErrorBody>> {
-    let root = fs::WorkspaceRoot(workspace.to_path_buf());
-    Ok(fs::domain_snapshot(&root)
-        .map_err(|e| warm_err_to_wire(&e))?
-        .1)
-}
-
-/// The §Q3 pre-open state from an `as_of`/`live` fingerprint pair:
-/// `FRESH_AT_SAMPLE` on equality, else `STALE` (a legal frame, never an error).
-/// `RACED` is a `--fresh`-only outcome, decided in [`Registry::bounded_fresh`],
-/// so it never arises here.
-fn view_state(as_of: &model::MerkleRoot, live: &model::MerkleRoot) -> wire::ViewState {
-    if as_of == live {
-        wire::ViewState::FreshAtSample
-    } else {
-        wire::ViewState::Stale
-    }
-}
-
-/// Map a `warm_or_build` / `domain_snapshot` I/O failure onto its wire frame: a
-/// non-UTF-8 corpus file is `invalid_utf8` (refused, never lossy-decoded);
-/// anything else carries its cause on `io_error`. Mirrors the daemon read
-/// path's `warm_err_to_wire` (`server.rs`).
-fn warm_err_to_wire(e: &io::Error) -> Box<ErrorBody> {
-    if e.kind() == io::ErrorKind::InvalidData {
-        return Box::new(ErrorBody::new(ErrorCode::InvalidUtf8));
-    }
-    let mut err = ErrorBody::new(ErrorCode::IoError);
-    err.cause = Some(e.to_string());
-    Box::new(err)
 }
 
 #[cfg(test)]

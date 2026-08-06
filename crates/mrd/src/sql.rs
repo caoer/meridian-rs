@@ -1,37 +1,31 @@
-//! `mrd sql <query>` — client-side `DuckDB` over the daemon-published, read-only,
-//! fingerprint-stamped view file, under the honest-tense freshness frame.
+//! `mrd sql <query>` — operator SQL over an ephemeral in-process `:memory:`
+//! projection of the corpus, under the honest-tense freshness frame. Writes
+//! nothing to disk; carries no wire vocabulary (the published-view organ and
+//! its `view_path` wire op were DROPPED by ruling — `wire-contract.md` §10.4,
+//! 2026-08-06).
 //!
 //! # Order of operations (§Q3, buffered)
-//! 1. `view_path` → a candidate path (the reply's fingerprints are a pre-open
-//!    hint only, discarded here);
-//! 2. B1 reader-side pre-open check — a present `view.duckdb.wal` OR a
-//!    non-read-only file ⇒ never open;
-//! 3. open the file, read `as_of = SELECT as_of_fingerprint FROM _meridian_view`
-//!    — the authoritative `as_of`, never the reply's hint;
-//! 4. apply the `--execution-profile` sandbox (B5 order), execute the query to
+//! 1. fold `F0` + build the `:memory:` view from the corpus;
+//! 2. apply the `--execution-profile` sandbox (B5 order), execute the query to
 //!    completion, materialise all rows;
-//! 5. sample `live` = a full-corpus disk fold ([`fs::domain_snapshot`]) last, so
-//!    it post-dates the result — only under `--verify`/`--fresh`;
-//! 6. `FRESH_AT_SAMPLE` iff `as_of == live`, else `STALE` (or `RACED` under a
+//! 3. sample `live` = a full-corpus disk fold ([`fs::domain_snapshot`]) last,
+//!    so it post-dates the result — an ephemeral build MUST fold post-result
+//!    to be correct;
+//! 4. `FRESH_AT_SAMPLE` iff `as_of == live`, else `STALE` (or `RACED` under a
 //!    bounded `--fresh` that could not converge).
 //!
 //! # Three-valued freshness (C3)
-//! `live_source ∈ {fold, watch, none}`, `stale ∈ {true, false, null}`. Only a
-//! real post-result fold sets `stale = true|false`; a skipped fold is
-//! `live_source=none, stale=null` (`state=UNVERIFIED`), never a watcher value.
-//! The default path over a published view runs no fold; fold is opt-in via
-//! `--verify`/`--fresh`. An ephemeral `:memory:` build is exempt — it MUST fold
-//! post-result to be correct (§tier-4).
+//! `live_source ∈ {fold, none}`, `stale ∈ {true, false, null}`. Only a real
+//! post-result fold sets `stale = true|false`; a SQL error yields no rows to
+//! certify, so it reports `live_source=none, stale=null` (`state=UNVERIFIED`).
 
 use std::path::{Path, PathBuf};
 
-use cache::CacheDrawer;
 use duckdb::Connection;
 use duckdb::types::ValueRef;
-use registry::Client;
 use serde_json::{Value, json};
 
-use crate::resolve::{Source, resolve_runtime};
+use crate::resolve::resolve_runtime;
 use crate::{Fail, current_dir};
 
 /// The buffered top-level JSON document's schema version (OD9).
@@ -85,24 +79,15 @@ impl ExecProfile {
 struct SqlArgs {
     query: String,
     fresh: bool,
-    verify: bool,
     json: bool,
     profile: ExecProfile,
     cwd: Option<PathBuf>,
 }
 
 impl SqlArgs {
-    /// Whether the post-result `live` fold runs on the published-view path.
-    /// `--verify` opts in; `--fresh` implies it (a bounded rebuild is pointless
-    /// without the honest post-check).
-    fn folds(&self) -> bool {
-        self.verify || self.fresh
-    }
-
     fn parse(tail: &[String]) -> Result<Self, Fail> {
         let mut query: Option<String> = None;
         let mut fresh = false;
-        let mut verify = false;
         let mut json = false;
         let mut profile = ExecProfile::Local;
         let mut cwd: Option<PathBuf> = None;
@@ -117,7 +102,9 @@ impl SqlArgs {
             };
             match flag {
                 "--fresh" => fresh = true,
-                "--verify" => verify = true,
+                // `--verify` was the opt-in fold on the (dropped) published-view
+                // path; the ephemeral build always folds, so accept-and-ignore
+                // would lie. Refused as unknown below.
                 "--json" => json = true,
                 "--execution-profile" => {
                     let v = take_value(flag, inline, tail, &mut i)?;
@@ -145,7 +132,6 @@ impl SqlArgs {
         Ok(SqlArgs {
             query,
             fresh,
-            verify,
             json,
             profile,
             cwd,
@@ -196,8 +182,7 @@ impl QueryState {
 }
 
 /// The provenance of the `live` value (§Q3 C3): `fold` (a real post-result fold
-/// ran) or `none`. Never `watch` — a watcher value is a daemon-side pre-open
-/// hint, never a delivered result's verdict.
+/// ran) or `none` (a SQL error left no rows to certify).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LiveSource {
     Fold,
@@ -228,16 +213,10 @@ struct Frame {
     live_source: LiveSource,
     stale: Option<bool>,
     state: QueryState,
-    /// Present only when the daemon served the file (it has an epoch); omitted
-    /// on any daemonless path (OD9).
-    changes_seq: Option<u64>,
     columns: Vec<ColMeta>,
     rows: Vec<Vec<Value>>,
     /// A SQL execution error (buffered into the OD9 doc), if any.
     error: Option<String>,
-    /// OD7: the daemon's last-refresh-failure telemetry, for the enriched STALE
-    /// banner. Only ever set on the daemon-served path.
-    last_error: Option<Value>,
 }
 
 impl Frame {
@@ -250,11 +229,9 @@ impl Frame {
             live_source: LiveSource::None,
             stale: None,
             state: QueryState::NoView,
-            changes_seq: None,
             columns: Vec::new(),
             rows: Vec::new(),
             error: Some(message),
-            last_error: None,
         }
     }
 }
@@ -263,35 +240,22 @@ impl Frame {
 // entry point
 // ---------------------------------------------------------------------------
 
-/// Run `mrd sql <query> [--fresh] [--verify] [--json]
+/// Run `mrd sql <query> [--fresh] [--json]
 /// [--execution-profile local|agent] [--cwd PATH]`.
 ///
 /// # Errors
-/// The cwd/workspace cannot be resolved, the view cannot be opened, or (in human
+/// The cwd/workspace cannot be resolved, the view cannot be built, or (in human
 /// mode) the SQL fails. A `NO_VIEW`/`STALE`/`UNVERIFIED` frame is a success, not
 /// an error — the frame is the honest report.
 pub(crate) fn run(tail: &[String]) -> Result<(), Fail> {
     let args = SqlArgs::parse(tail)?;
-    let (frame, path) = execute(&args)?;
-    emit(&args, &frame, path)
+    let frame = execute(&args)?;
+    emit(&args, &frame)
 }
 
-/// Which path served this run, for the degrade voice only — not the freshness
-/// frame (a cold last-published file is `UNVERIFIED` exactly as a warm one is).
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ServedBy {
-    /// The resident daemon answered `view_path` and its file was queried.
-    Daemon,
-    /// A tiers-1-3 workspace whose daemon did not answer — the cold-file or
-    /// in-process degrade ran instead.
-    Degrade,
-    /// Tier-4 bare: `:memory:` is this tier's designed path, never a fallback,
-    /// so it is silent.
-    Tier4,
-}
-
-/// The §Q3 order-of-operations, dispatched by resolution tier.
-fn execute(args: &SqlArgs) -> Result<(Frame, ServedBy), Fail> {
+/// The §Q3 order-of-operations: resolve the workspace, build the ephemeral
+/// `:memory:` view, query it under the post-result fold.
+fn execute(args: &SqlArgs) -> Result<Frame, Fail> {
     let cwd = match &args.cwd {
         Some(p) => p.clone(),
         None => current_dir()?,
@@ -302,272 +266,15 @@ fn execute(args: &SqlArgs) -> Result<(Frame, ServedBy), Fail> {
             cwd.display()
         ))
     })?;
-
-    match resolved.source {
-        // Tiers 1-3 / daemon-adopted: on any daemon-path failure, degrade — open
-        // the last-good file cold, else build ephemeral `:memory:`.
-        Source::Direct(_) | Source::DaemonAdopted => {
-            if let Some(reply) = try_daemon_view_path(&cwd, args.fresh) {
-                let path = reply_path(&reply);
-                if let Some(path) = path {
-                    let frame = query_published(
-                        Path::new(&path),
-                        &resolved.workspace,
-                        args,
-                        reply_changes_seq(&reply),
-                        reply_last_error(&reply),
-                    )?;
-                    return Ok((frame, ServedBy::Daemon));
-                }
-            }
-            let frame = degrade_cold_or_ephemeral(&resolved.drawer, &resolved.workspace, args)?;
-            Ok((frame, ServedBy::Degrade))
-        }
-        // Tier-4 bare: ephemeral `:memory:` ONLY — never the daemon, never a
-        // drawer, never a claim on a prior registered workspace (§tier-4).
-        Source::Ephemeral => Ok((ephemeral_query(&resolved.workspace, args)?, ServedBy::Tier4)),
-    }
-}
-
-/// The tiers-1-3 daemon-absent degrade: open the last-published `view.duckdb`
-/// cold if present, else build ephemeral `:memory:`.
-fn degrade_cold_or_ephemeral(
-    drawer: &CacheDrawer,
-    workspace: &Path,
-    args: &SqlArgs,
-) -> Result<Frame, Fail> {
-    if let Some(dir) = drawer.dir() {
-        let dest = dir.join("view.duckdb");
-        if dest.is_file() {
-            return query_published(&dest, workspace, args, None, None);
-        }
-    }
-    ephemeral_query(workspace, args)
+    ephemeral_query(&resolved.workspace, args)
 }
 
 // ---------------------------------------------------------------------------
-// the daemon `view_path` dial
-// ---------------------------------------------------------------------------
-
-/// Dial the resident daemon (auto-spawning it, the watchman model) and call
-/// `view_path` for `cwd`. `None` on ANY failure — the caller degrades. `fresh`
-/// asks the daemon for the bounded `--fresh` rebuild (§Q3).
-pub(crate) fn try_daemon_view_path(cwd: &Path, fresh: bool) -> Option<Value> {
-    let client = Client::from_default().ok()?;
-    crate::engine::ensure_daemon(&client).ok()?;
-    dial_view_path(client.socket_path(), cwd, fresh)
-        .ok()
-        .flatten()
-}
-
-/// One NDJSON round trip: send `{op:"view_path", cwd, fresh?}`, return the
-/// success `body` object. `Ok(None)` on an op error (degrade); `Err` on
-/// transport failure.
-fn dial_view_path(socket: &Path, cwd: &Path, fresh: bool) -> std::io::Result<Option<Value>> {
-    use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::net::UnixStream;
-
-    let stream = UnixStream::connect(socket)?;
-    let mut writer = stream.try_clone()?;
-    let mut reader = BufReader::new(stream);
-
-    let mut req = json!({ "op": "view_path", "cwd": cwd.to_string_lossy() });
-    if fresh {
-        req["fresh"] = json!(true);
-    }
-    let mut line = serde_json::to_string(&req).map_err(std::io::Error::other)?;
-    line.push('\n');
-    writer.write_all(line.as_bytes())?;
-    writer.flush()?;
-
-    let mut response = String::new();
-    if reader.read_line(&mut response)? == 0 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::UnexpectedEof,
-            "daemon closed the connection without a response",
-        ));
-    }
-    let value: Value = serde_json::from_str(&response).map_err(std::io::Error::other)?;
-    if value.get("ok").and_then(Value::as_bool) == Some(true) {
-        Ok(value.get("body").cloned())
-    } else {
-        Ok(None)
-    }
-}
-
-/// The daemon's `view_path` reply `path` (authoritative — the inode the consumer
-/// opens).
-fn reply_path(body: &Value) -> Option<String> {
-    body.get("path").and_then(Value::as_str).map(str::to_owned)
-}
-
-/// The daemon's per-epoch `changes_seq` (OD9: present on the daemon path,
-/// omitted daemonless).
-fn reply_changes_seq(body: &Value) -> Option<u64> {
-    body.get("changes_seq").and_then(Value::as_u64)
-}
-
-/// The daemon's OD7 `last_error` telemetry, if any (for the enriched STALE
-/// banner).
-fn reply_last_error(body: &Value) -> Option<Value> {
-    match body.get("last_error") {
-        Some(Value::Null) | None => None,
-        Some(other) => Some(other.clone()),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// the published-view path (daemon-served OR cold degrade)
-// ---------------------------------------------------------------------------
-
-/// Why a managed reader refused to open a published file (§B1 reader-side).
-enum OpenRefusal {
-    /// A `view.duckdb.wal` sidecar is present — opening would replay a dead
-    /// generation.
-    WalPresent,
-    /// The file is not read-only (`0444`) — a writer could be mutating it in
-    /// place, so it may be half-written.
-    NotReadOnly,
-    /// The file is gone.
-    Missing,
-}
-
-/// B1 reader-side pre-open check: refuse a `.wal`-shadowed OR non-read-only
-/// published file. A raw external `duckdb` attach bypasses this and is outside
-/// enforcement.
-fn check_openable(path: &Path) -> Result<(), OpenRefusal> {
-    if !path.is_file() {
-        return Err(OpenRefusal::Missing);
-    }
-    // A present WAL sidecar would be replayed by every open, including read-only.
-    if wal_present(path) {
-        return Err(OpenRefusal::WalPresent);
-    }
-    // The publish `chmod`s the candidate `0444` before rename, so read-only mode
-    // proves no in-place writer can be mutating it.
-    if !is_read_only(path) {
-        return Err(OpenRefusal::NotReadOnly);
-    }
-    Ok(())
-}
-
-/// Whether the `<path>.wal` sidecar `DuckDB` would replay is present beside
-/// `path` (B1 reader-side).
-pub(crate) fn wal_present(path: &Path) -> bool {
-    wal_path(path).exists()
-}
-
-/// Whether `path` carries read-only mode — no writable bit for any principal.
-/// A missing file is treated as not-read-only (refuse).
-pub(crate) fn is_read_only(path: &Path) -> bool {
-    let Ok(meta) = std::fs::metadata(path) else {
-        return false;
-    };
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        meta.permissions().mode() & 0o222 == 0
-    }
-    #[cfg(not(unix))]
-    {
-        meta.permissions().readonly()
-    }
-}
-
-/// The `<path>.wal` sidecar `DuckDB` would replay beside `path`.
-fn wal_path(path: &Path) -> PathBuf {
-    let mut s = path.as_os_str().to_os_string();
-    s.push(".wal");
-    PathBuf::from(s)
-}
-
-/// Query a published `view.duckdb` under the §Q3 buffered order. On a B1 refusal
-/// the file is not opened — degrade to an ephemeral build.
-#[allow(clippy::similar_names)] // `stale` and `state` are both design vocabulary
-fn query_published(
-    path: &Path,
-    workspace: &Path,
-    args: &SqlArgs,
-    changes_seq: Option<u64>,
-    last_error: Option<Value>,
-) -> Result<Frame, Fail> {
-    if let Err(_refusal) = check_openable(path) {
-        // WAL-shadowed / writable / gone — fall back to a cold ephemeral build.
-        return ephemeral_query(workspace, args);
-    }
-
-    // B5 order: attach the view READ_ONLY while external access is still on, then
-    // switch to it so the user's unqualified table names resolve.
-    let conn = Connection::open_in_memory()
-        .map_err(|e| Fail::tool(format!("cannot open an in-memory database: {e}")))?;
-    conn.execute_batch(&attach_sql(path))
-        .map_err(|e| Fail::tool(format!("cannot attach the view {}: {e}", path.display())))?;
-
-    let as_of = read_as_of(&conn)?;
-    apply_profile(&conn, args.profile)?;
-    let query = run_user_query(&conn, &args.query);
-
-    let (columns, rows, error) = match query {
-        Ok((c, r)) => (c, r, None),
-        Err(msg) => (Vec::new(), Vec::new(), Some(msg)),
-    };
-
-    // No fold unless opted in; a SQL error yields no rows to certify either way.
-    let fold = args.folds() && error.is_none();
-    let (live_source, stale, state, live) = if fold {
-        let live = fold_live(workspace)?;
-        freshness(&as_of, &live, args.fresh)
-    } else {
-        (LiveSource::None, None, QueryState::Unverified, None)
-    };
-
-    Ok(Frame {
-        as_of: Some(as_of),
-        live,
-        profile: args.profile,
-        live_source,
-        stale,
-        state,
-        changes_seq,
-        columns,
-        rows,
-        error,
-        last_error,
-    })
-}
-
-/// Map a post-result (`as_of`, `live`) comparison to the three-valued frame.
-/// `--fresh` maps a mismatch to `RACED` (a bounded rebuild that could not
-/// converge); `--verify` maps it to `STALE`.
-fn freshness(
-    as_of: &str,
-    live: &str,
-    fresh: bool,
-) -> (LiveSource, Option<bool>, QueryState, Option<String>) {
-    let equal = as_of == live;
-    let state = if equal {
-        QueryState::FreshAtSample
-    } else if fresh {
-        QueryState::Raced
-    } else {
-        QueryState::Stale
-    };
-    (LiveSource::Fold, Some(!equal), state, Some(live.to_owned()))
-}
-
-/// `ATTACH '<path>' AS meridian (READ_ONLY); USE meridian;` with the path's
-/// single quotes doubled (SQL-string escape).
-fn attach_sql(path: &Path) -> String {
-    let escaped = path.to_string_lossy().replace('\'', "''");
-    format!("ATTACH '{escaped}' AS meridian (READ_ONLY); USE meridian;")
-}
-
-// ---------------------------------------------------------------------------
-// the ephemeral `:memory:` build path (daemon-absent degrade)
+// the ephemeral `:memory:` build path
 // ---------------------------------------------------------------------------
 
 /// Build an ephemeral `:memory:` view over the workspace corpus and query it
-/// under the same post-result fold. Writes nothing to disk. An ephemeral build
+/// under the post-result fold. Writes nothing to disk. An ephemeral build
 /// MUST fold post-result to be correct — it is never unconditionally fresh.
 fn ephemeral_query(workspace: &Path, args: &SqlArgs) -> Result<Frame, Fail> {
     let built = match build_and_run_ephemeral(workspace, args) {
@@ -593,11 +300,9 @@ fn ephemeral_query(workspace: &Path, args: &SqlArgs) -> Result<Frame, Fail> {
             live_source: LiveSource::None,
             stale: None,
             state: QueryState::Unverified,
-            changes_seq: None,
             columns,
             rows,
             error: Some(error),
-            last_error: None,
         });
     }
 
@@ -651,8 +356,7 @@ fn ephemeral_query(workspace: &Path, args: &SqlArgs) -> Result<Frame, Fail> {
     ))
 }
 
-/// Assemble an ephemeral-build frame (always `live_source=fold`; daemonless, so
-/// `changes_seq` is omitted).
+/// Assemble an ephemeral-build frame (always `live_source=fold`).
 #[allow(clippy::similar_names)] // `stale` and `state` are both design vocabulary
 fn ephemeral_frame(
     as_of: String,
@@ -670,11 +374,9 @@ fn ephemeral_frame(
         live_source: LiveSource::Fold,
         stale,
         state,
-        changes_seq: None,
         columns,
         rows,
         error: None,
-        last_error: None,
     }
 }
 
@@ -739,8 +441,8 @@ fn build_and_run_ephemeral(
 // shared: read the stamp, apply the sandbox, run the query, fold live
 // ---------------------------------------------------------------------------
 
-/// Read the authoritative `as_of` from the opened view's `_meridian_view` stamp
-/// (§Q3 — never the `view_path` reply's hint).
+/// Read the authoritative `as_of` from the built view's `_meridian_view` stamp
+/// (§Q3).
 fn read_as_of(conn: &Connection) -> Result<String, Fail> {
     conn.query_row("SELECT as_of_fingerprint FROM _meridian_view", [], |r| {
         r.get::<_, String>(0)
@@ -749,10 +451,9 @@ fn read_as_of(conn: &Connection) -> Result<String, Fail> {
 }
 
 /// Apply the `--execution-profile` resource limits (B5). Order is load-bearing
-/// for `agent`: attach the view `READ_ONLY` while external access is still on,
-/// set the caps, disable external access, then lock the configuration so
-/// untrusted SQL cannot re-raise any of it. There is no `statement_timeout`
-/// pragma — a wall-clock cap is the parent's process kill.
+/// for `agent`: set the caps, disable external access, then lock the
+/// configuration so untrusted SQL cannot re-raise any of it. There is no
+/// `statement_timeout` pragma — a wall-clock cap is the parent's process kill.
 fn apply_profile(conn: &Connection, profile: ExecProfile) -> Result<(), Fail> {
     let sql = match profile {
         ExecProfile::Local => format!("SET memory_limit='{LOCAL_MEMORY_LIMIT}';"),
@@ -895,18 +596,7 @@ fn hex(bytes: &[u8]) -> String {
 /// table with the freshness banner. In human mode a SQL error is a loud tool
 /// failure (exit 2); under `--json` it rides the buffered document (the parent
 /// reads `error`).
-fn emit(args: &SqlArgs, frame: &Frame, path: ServedBy) -> Result<(), Fail> {
-    let result = emit_result(args, frame);
-    // The voice fires after stdout is written, so the answer reaches the reader
-    // first. Stderr only: stdout and the exit code match the warm run.
-    if path == ServedBy::Degrade {
-        crate::engine::voice_degrade(&crate::engine::EngineSource::Ephemeral);
-    }
-    result
-}
-
-/// The OD9 document, the human table, or the buffered error.
-fn emit_result(args: &SqlArgs, frame: &Frame) -> Result<(), Fail> {
+fn emit(args: &SqlArgs, frame: &Frame) -> Result<(), Fail> {
     if args.json {
         println!("{}", frame_json(frame));
         return Ok(());
@@ -929,7 +619,7 @@ fn frame_json(frame: &Frame) -> String {
         .iter()
         .map(|c| json!({ "name": c.name, "type": c.ty }))
         .collect();
-    let mut doc = json!({
+    let doc = json!({
         "schema_version": JSON_SCHEMA_VERSION,
         "as_of_fingerprint": frame.as_of,
         "execution_profile": frame.profile.label(),
@@ -941,10 +631,6 @@ fn frame_json(frame: &Frame) -> String {
         "row_count": frame.rows.len(),
         "error": frame.error,
     });
-    // `changes_seq` omitted when daemonless (no epoch) — OD9.
-    if let Some(seq) = frame.changes_seq {
-        doc["changes_seq"] = json!(seq);
-    }
     serde_json::to_string_pretty(&doc).unwrap_or_else(|_| doc.to_string())
 }
 
@@ -968,8 +654,7 @@ fn print_human(frame: &Frame) {
     println!("({} row{})", frame.rows.len(), plural(frame.rows.len()));
 }
 
-/// The one-line freshness banner (§Q3 honest tense). STALE carries the OD7
-/// enrichment when the daemon's last rebuild failed.
+/// The one-line freshness banner (§Q3 honest tense).
 fn banner(frame: &Frame) -> String {
     let as_of = frame.as_of.as_deref().unwrap_or("(none)");
     match frame.state {
@@ -978,11 +663,7 @@ fn banner(frame: &Frame) -> String {
         }
         QueryState::Stale => {
             let live = frame.live.as_deref().unwrap_or("(none)");
-            if let Some(enriched) = stale_refresh_suffix(frame) {
-                format!("-- STALE ({enriched}; serving last-good as_of={as_of})")
-            } else {
-                format!("-- STALE (as_of != live; as_of={as_of}, live={live})")
-            }
+            format!("-- STALE (as_of != live; as_of={as_of}, live={live})")
         }
         QueryState::Raced => {
             let live = frame.live.as_deref().unwrap_or("(none)");
@@ -991,30 +672,10 @@ fn banner(frame: &Frame) -> String {
             )
         }
         QueryState::Unverified => format!(
-            "-- UNVERIFIED (no liveness fold — OD8 default degrade; pass --verify/--fresh; as_of={as_of})"
+            "-- UNVERIFIED (the query failed, so no liveness fold certified rows; as_of={as_of})"
         ),
-        QueryState::NoView => "-- NO_VIEW (no view.duckdb and no buildable corpus)".to_owned(),
+        QueryState::NoView => "-- NO_VIEW (no buildable corpus)".to_owned(),
     }
-}
-
-/// The OD7 STALE-banner enrichment: `last refresh failed: <code>, <age> ago`
-/// when the daemon reported a `last_error`.
-fn stale_refresh_suffix(frame: &Frame) -> Option<String> {
-    let err = frame.last_error.as_ref()?;
-    let code = err.get("code").and_then(Value::as_str).unwrap_or("unknown");
-    let age = err.get("unix").and_then(Value::as_u64).map_or_else(
-        || "unknown age".to_owned(),
-        |unix| format!("{}s ago", age_secs(unix)),
-    );
-    Some(format!("last refresh failed: {code}, {age}"))
-}
-
-/// Whole seconds between `unix` and now (saturating; `0` if in the future).
-fn age_secs(unix: u64) -> u64 {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    now.saturating_sub(unix)
 }
 
 /// Render one JSON cell as human table text (`null` → empty, strings unquoted).
@@ -1038,8 +699,15 @@ mod tests {
     fn parse_defaults_to_local_profile() {
         let args = SqlArgs::parse(&["SELECT 1".to_owned()]).expect("parse");
         assert_eq!(args.profile.label(), "local");
-        assert!(!args.fresh && !args.verify && !args.json);
+        assert!(!args.fresh && !args.json);
         assert_eq!(args.query, "SELECT 1");
+    }
+
+    #[test]
+    fn parse_verify_is_refused_as_unknown() {
+        // `--verify` belonged to the dropped published-view path; the ephemeral
+        // build always folds, so the flag must fail loud, not silently no-op.
+        assert!(SqlArgs::parse(&["--verify".to_owned(), "SELECT 1".to_owned()]).is_err());
     }
 
     #[test]
@@ -1069,78 +737,6 @@ mod tests {
     #[test]
     fn parse_missing_query_is_error() {
         assert!(SqlArgs::parse(&["--json".to_owned()]).is_err());
-    }
-
-    #[test]
-    fn folds_only_under_verify_or_fresh() {
-        let base = SqlArgs::parse(&["SELECT 1".to_owned()]).unwrap();
-        assert!(!base.folds(), "OD8 default runs no fold");
-        let verify = SqlArgs::parse(&["--verify".to_owned(), "SELECT 1".to_owned()]).unwrap();
-        assert!(verify.folds());
-        let fresh = SqlArgs::parse(&["--fresh".to_owned(), "SELECT 1".to_owned()]).unwrap();
-        assert!(fresh.folds());
-    }
-
-    #[test]
-    #[allow(clippy::similar_names)] // `stale` and `state` are both design vocabulary
-    fn freshness_maps_states() {
-        let (src, stale, state, live) = freshness("b3:x", "b3:x", false);
-        assert!(matches!(src, LiveSource::Fold));
-        assert_eq!(stale, Some(false));
-        assert!(matches!(state, QueryState::FreshAtSample));
-        assert_eq!(live.as_deref(), Some("b3:x"));
-
-        let (_, stale, state, _) = freshness("b3:x", "b3:y", false);
-        assert_eq!(stale, Some(true));
-        assert!(matches!(state, QueryState::Stale));
-
-        let (_, _, state, _) = freshness("b3:x", "b3:y", true);
-        assert!(
-            matches!(state, QueryState::Raced),
-            "--fresh mismatch is RACED"
-        );
-    }
-
-    #[test]
-    fn attach_sql_escapes_single_quotes() {
-        let sql = attach_sql(Path::new("/tmp/it's/view.duckdb"));
-        assert!(
-            sql.contains("'/tmp/it''s/view.duckdb'"),
-            "quotes doubled: {sql}"
-        );
-        assert!(sql.contains("READ_ONLY"));
-    }
-
-    #[test]
-    fn check_openable_enforces_no_wal_and_read_only() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("view.duckdb");
-        std::fs::write(&path, b"placeholder").unwrap();
-
-        // Writable: refused.
-        assert!(matches!(
-            check_openable(&path),
-            Err(OpenRefusal::NotReadOnly)
-        ));
-
-        // `chmod 0444` (the publish mode): accepted.
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
-        assert!(check_openable(&path).is_ok());
-
-        // A present `.wal` sidecar: refused.
-        let wal = dir.path().join("view.duckdb.wal");
-        std::fs::write(&wal, b"STALE-WAL-GEN").unwrap();
-        assert!(matches!(
-            check_openable(&path),
-            Err(OpenRefusal::WalPresent)
-        ));
-        std::fs::remove_file(&wal).unwrap();
-
-        assert!(matches!(
-            check_openable(&dir.path().join("absent.duckdb")),
-            Err(OpenRefusal::Missing)
-        ));
     }
 
     #[test]

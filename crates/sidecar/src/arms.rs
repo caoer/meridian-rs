@@ -97,9 +97,6 @@ pub(crate) fn dispatch(
         }
         // Registered at serve layer — unreachable here; `internal` not panic.
         Op::Sub { .. } => Err(Box::new(ErrorBody::new(ErrorCode::Internal))),
-        // §Q2 view_path is daemon-only (OD6 persistent builder; C2 forbids
-        // sidecar→view). Refuse `daemon_only`; never advertise in caps.
-        Op::ViewPath { .. } => Err(Box::new(ErrorBody::new(ErrorCode::DaemonOnly))),
         // v2 §4.4 sole write op (v3 adds `create`): shared `splice → commit`
         // (`wire_serve::write::splice`). Advances per-epoch ring; body is the
         // choke-point's (byte-identical across hosts). Sidecar admits packs;
