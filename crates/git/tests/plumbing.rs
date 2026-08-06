@@ -1,10 +1,10 @@
-//! Fixture-repo gates for the git plumbing organ (plan unit S5).
+//! Fixture-repo gates for the git plumbing organ.
 //!
 //! Every gate here runs a REAL `git` against a real repository built in a
 //! tmpdir — the plumbing's whole job is to report what git says, so a mocked
 //! git would prove nothing. The composed three-state gate drives this crate's
 //! facts into `receipt::anchor::ObjectAnchor`, the classifier that consumes
-//! them, so both halves of S5 are proven together.
+//! them.
 
 use std::fs;
 use std::path::Path;
@@ -329,19 +329,12 @@ fn a_ref_name_is_refused_as_a_bad_oid() {
     assert!(repo.object_exists(&oid).expect("presence"));
 }
 
-/// **Gate — ONE oid, THREE object stores, THREE anchoring states (U13).**
+/// **Gate — ONE oid, THREE object stores, THREE anchoring states.**
 ///
-/// The ratified cross-root addressing §4: *"the blob-anchoring check runs against
-/// THAT root's git repo — six roots, six object stores, one law."* This is that
-/// sentence as an assertion, and it is deliberately built on the SAME object id:
-/// identical bytes content-address identically, so the oid cannot be what
-/// distinguishes the answers — **only which store was asked can.** A check that
-/// silently ran against one ambient repository could not produce three different
-/// states here, whatever it did with the root prefix.
-///
-/// Both arms of the per-root claim ride together (S3-R8(c)): the blob is found
-/// anchored where it IS anchored, and it degrades to `never-anchored` in the
-/// store that does not hold it — never borrowing another store's answer.
+/// Deliberately built on the SAME object id: identical bytes content-address
+/// identically, so only which store was asked can distinguish the answers. A
+/// check that silently ran against one ambient repository could not produce
+/// three different states here.
 #[test]
 fn one_oid_three_stores_three_anchor_states() {
     // Identical bytes in three separate repositories.
