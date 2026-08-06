@@ -17,21 +17,6 @@
 //!   is not that receipt's after-rev, refuse [`ExecError::ForeignEdit`].
 //!   Overwrite only via explicit `takeover`.
 //! - **§9:** `invocation_id` and `now` are caller-supplied; no clock here.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
@@ -174,12 +159,9 @@ impl std::fmt::Display for AdapterError {
 impl std::error::Error for AdapterError {}
 
 /// One generation of validated [`policy::Intent`]s, adapted to the exact
-/// [`ApplyRequest`] production executes (R13 ruling §1–§2).
-///
-/// This is the ONE seam between the WHEN plane's canonical intent and the HOW
-/// plane's descriptor batch. `policy` is the WHEN plane and stays I/O-free; `run`
-/// owns HOW and already depends on `policy`, so the edge runs this way and only this
-/// way — the reverse would break policy's charter.
+/// [`ApplyRequest`] production executes (R13 ruling §1–§2) — the one seam
+/// between the WHEN plane's canonical intent and the HOW plane's descriptor
+/// batch (`policy` stays I/O-free; `run` owns HOW).
 ///
 /// The mapping is mechanical and 1:1:
 ///
@@ -190,14 +172,10 @@ impl std::error::Error for AdapterError {}
 /// | `payload` | what lands there — planner `value` / `content` |
 /// | receipt address | this request's [`ReceiptAddr`] — one call site, no second plumbing |
 ///
-/// The adapter **re-validates nothing**. Canonical action, receipt and argument
-/// surface were already checked by `policy::intent_from_effect`; what happens here
-/// is shape-completeness only.
-///
-/// [`Provenance`] and the cascade depth are carried THROUGH from the emitting event:
-/// a [`policy::Intent`] is a reaction-plane descriptor and deliberately records no
-/// plane facts, so the caller — which holds the event — supplies them rather than
-/// this adapter inventing them.
+/// The adapter **re-validates nothing** — canonical action, receipt and
+/// argument surface were already checked by `policy::intent_from_effect`;
+/// only shape-completeness happens here. [`Provenance`] and cascade depth are
+/// carried through from the emitting event by the caller.
 #[derive(Debug, Clone, PartialEq)]
 pub struct IntentApply {
     effects: Vec<Effect>,
@@ -364,12 +342,12 @@ pub enum ExecError {
     /// `policy::ArmedFault`'s own words.
     ArmedRefusal { detail: String },
     /// The apply would put an `@fp` decoration token in a claim-link position
-    /// (advisor R32 (3)): a fingerprint claim nobody minted. Tokens the batch's
+    /// (R32 (3)): a fingerprint claim nobody minted. Tokens the batch's
     /// own payloads carry are STRIPPED, silently and by law — this variant is
     /// what is left when the strip cannot place a claim, which is never a write
     /// the engine may guess at. `cause` names which case.
     FpClaim { page: String, cause: String },
-    /// The apply would change the page's `meridian-lock` bytes (advisor R25):
+    /// The apply would change the page's `meridian-lock` bytes (R25):
     /// the run plane mints no pin, so any change to the attestation artifact is
     /// a claim nobody computed. The wire choke-point carries the same guard —
     /// this door bypasses `splice`, so the guard is mounted here too.
@@ -450,28 +428,11 @@ pub struct WorkspaceLock {
     file: File,
 }
 
-/// Release the lock EXPLICITLY, before the fd closes — the S7/R19 fix, applied
-/// here because the run plane is the workspace's heaviest forker.
-///
-/// # Why the fd close is not enough (measured on the sibling lock, not theorised)
-/// A `flock` lock belongs to the open file DESCRIPTION, and a `fork` duplicates
-/// every descriptor. Any thread in this process spawning any subprocess
-/// transiently holds a copy of this fd between its fork and its exec, even with
-/// `FD_CLOEXEC` set (CLOEXEC acts at exec, not at fork). If this guard dropped
-/// in that window, closing our fd would NOT release the lock: the child's copy
-/// keeps the description alive until it execs, and every other run meanwhile
-/// refuses `workspace_busy` for a critical section that already finished.
-///
-/// The exact overlap here is across CONCURRENT runs in one process, not within
-/// a single one: `dispatch_bash::run` forks its task child BETWEEN its two
-/// locked windows, so a second run holding this lock — in its phase-1 window or
-/// in the phase-2 [`apply`] commit — is the one whose release leaks. One process
-/// dispatching two tasks is the ordinary case, and the run plane forks a child
-/// per dispatched task, which is what makes this the workspace's heaviest forker.
-///
-/// `LOCK_UN` acts on the description itself, so one unlock releases the lock no
-/// matter how many copies of the fd exist. Measured on `fs::WriteLock`, which
-/// carried the identical defect: 12/60 unrelated writes refused spuriously.
+/// Release the lock EXPLICITLY, before the fd closes: a `flock` lock belongs
+/// to the open file DESCRIPTION, and a concurrent fork in this process holds a
+/// copy of the fd between fork and exec (CLOEXEC acts at exec, not fork), so
+/// closing our fd would NOT release the lock. `LOCK_UN` acts on the
+/// description itself — one unlock releases it however many fd copies exist.
 impl Drop for WorkspaceLock {
     fn drop(&mut self) {
         // SAFETY: flock on a valid open fd we own; the fd outlives the call.
@@ -577,13 +538,10 @@ impl EditTarget {
         }
     }
 
-    /// This target with its identifier strings rendered for a receipt line
-    /// (fix9 F1). A field name comes from the task block's author and a heading
-    /// chain is read off the page — `serde_json` escapes neither `[` nor `@`,
-    /// so an undecorated pass-through lands a claim link in a claim-link
-    /// POSITION in the receipt file. The heading case is not hypothetical: a
-    /// pre-existing token is left exactly as found on the page (R32 (1)), and
-    /// copying it into the receipt would be this write INTRODUCING it there.
+    /// This target with its identifier strings rendered for a receipt line.
+    /// A field name or heading chain arrives as arbitrary bytes, and
+    /// `serde_json` escapes neither `[` nor `@` — an undecorated pass-through
+    /// would land a claim link in a claim-link position in the receipt file.
     fn rendered(&self) -> Self {
         match self {
             EditTarget::FmKey(k) => EditTarget::FmKey(receipt::render_field(k).into_owned()),
@@ -685,17 +643,14 @@ pub fn apply_under(
         .map(|p| after_rev(after_doc.document(), &p.edit.target))
         .collect::<Result<_, _>>()?;
 
-    // 6b. THE LOCK ARTIFACT GUARD (advisor R25), over the same candidate the gate
+    // 6b. THE LOCK ARTIFACT GUARD (R25), over the same candidate the gate
     // below reads and ordered before it: a forged claim is not a policy question.
     guard_lock_artifact(&doc, after_doc.document(), req.page)?;
 
-    // 6c. THE ARMED-PLANE GATE (U4.2) — byte-landing parity. The run plane lands
-    // bytes through `fs::apply_batch` below (not the wire choke-point), so it
-    // mounts the SAME `policy::gate` over the change it produces: resolve the
-    // workspace's OWN attested armed-rules artifact + once-armed marker AT THIS
-    // WRITE'S PATH, and REFUSE before the commit if the armed law blocks. A
-    // never-armed workspace is a bit-for-bit no-op (nothing was applied in that
-    // case either — the gate adds no write).
+    // 6c. THE ARMED-PLANE GATE (U4.2) — byte-landing parity: the run plane
+    // lands bytes through `fs::apply_batch`, not the wire choke-point, so it
+    // mounts the SAME `policy::gate` at this write's path before the commit.
+    // A never-armed workspace is a bit-for-bit no-op.
     if let Some(detail) = crate::gate::refuse_reason(
         root,
         &doc,
@@ -768,7 +723,7 @@ pub fn apply_under(
 ///
 /// The `if_root` pin runs against the REQUIRED live root (gate #19). The
 /// candidate is then dry-applied in memory (the SAME bytes `fs` will write) and
-/// the `@fp` strip (advisor R32 (3)) rewrites the REQUEST batch: this door
+/// the `@fp` strip (R32 (3)) rewrites the REQUEST batch: this door
 /// bypasses the wire choke-point, so it carries the choke-point's law itself, and
 /// every judgment after it — the post-apply revs the receipt commits, the lock
 /// artifact guard, the armed gate — reads the bytes that actually land.
@@ -815,7 +770,7 @@ fn seal_stripped_candidate(
     Ok((batch, after_doc))
 }
 
-/// **The lock ARTIFACT guard** (advisor R25) — guard the artifact, not the verb.
+/// **The lock ARTIFACT guard** (R25) — guard the artifact, not the verb.
 ///
 /// The read-mint gate guards `splice.pin`; this door bypasses `splice` entirely
 /// and mints no pin, so ANY change to the page's `meridian-lock` bytes is an
@@ -977,11 +932,8 @@ fn check_foreign_edits(
 ) -> Result<(), ExecError> {
     let anchors = last_governed_revs(root, addr, page)?;
     for p in planned {
-        // Keyed on the RENDERED identity (fix9 F1), because that is what the
-        // receipt stores and this reads back. Keying the two sides differently
-        // would make every lookup miss for a target whose name needed
-        // rendering — the #26 guard lapsing silently for exactly the names that
-        // motivated the guard. Identical for every identifier target.
+        // Keyed on the RENDERED identity — what the receipt stores — else the
+        // lookup would miss exactly the names that motivated the guard.
         let key = p.identity.rendered().describe();
         if let Some(last) = anchors.get(&key)
             && *last != p.before.node_rev.0
@@ -1011,9 +963,8 @@ fn last_governed_revs(
     let dir: PathBuf = abs
         .parent()
         .map_or_else(|| root.0.clone(), Path::to_path_buf);
-    // The receipt stores the RENDERED page (fix9 F1), so the scan matches on
-    // the rendered spelling — same reason the target key is rendered above, and
-    // identical for every path that is already an identifier.
+    // The receipt stores the RENDERED page, so the scan matches the rendered
+    // spelling (identical for every path that is already an identifier).
     let page = receipt::render_field(page);
     let mut out = BTreeMap::new();
     let entries = match std::fs::read_dir(&dir) {
@@ -1065,12 +1016,10 @@ fn render_receipt(
     let io_err = |e: io::Error| ExecError::Io {
         reason: format!("receipt: {e}"),
     };
-    // fix9 F1: the free-text fields go through the receipt crate's field law.
-    // `task` (and the `run:<task>` actor derived from it) is already an
-    // identifier by the time it reaches here — `address::bindings` refuses any
-    // other shape at the name boundary — and `invocation`/`now` are minted by
-    // `run_cmd::mint_identity`, `root_pin`/`task_rev`/the revs are engine hex.
-    // `page` and the edit targets are the two that arrive as arbitrary bytes.
+    // Free-text fields go through the receipt crate's field law. `task` is
+    // already an identifier (`address::bindings` refuses any other shape) and
+    // `invocation`/`now`/roots/revs are minted or engine hex — `page` and the
+    // edit targets are the two that arrive as arbitrary bytes.
     let facts = ReceiptFacts {
         page: receipt::render_field(req.page).into_owned(),
         task: req.task.to_owned(),
@@ -1164,22 +1113,13 @@ pub fn synthesize_event(
         file: page.to_owned(),
         sections_changed: sections,
         fields_changed: fields,
-        // The cascade path cannot fill these, and saying so is better than
-        // half-filling them. `changes` needs the OLD and NEW value of each key and
-        // `facts` needs the document's frontmatter; both come from a
-        // `policy::Change`'s two DocFacts, which this path does not have — it
-        // synthesizes from `model::delta` node entries, which carry identities and
-        // revs, never values.
-        //
-        // Empty is fail-closed: a reaction reading `event.changes` sees nothing and
-        // does not fire, rather than firing on a value it guessed. It cannot bite
-        // slice 1, whose cap allowlist is `proto.send` only — no `md.*` effect can
-        // be emitted, so no cascade generation exists to carry a reaction.
-        //
-        // Worth knowing before extending this: `fd.nodes` is EMPTY whenever one
-        // splice touches frontmatter AND a body section, because the changed range
-        // then has no addressable container (measured, card C0). So the two fields
-        // above are already silent for exactly the edit shape a gated close makes.
+        // `changes`/`facts` need values and frontmatter that only a
+        // `policy::Change`'s DocFacts carry; this path synthesizes from
+        // `model::delta` node entries (identities + revs, never values).
+        // Empty is fail-closed: a reaction reading `event.changes` sees
+        // nothing and does not fire. Note `fd.nodes` is empty whenever one
+        // splice touches frontmatter AND a body section (the changed range has
+        // no addressable container), so these fields are already silent there.
         changes: Vec::new(),
         facts: EventFacts::default(),
         fingerprint_before: fd.file_rev_before.map(|r| r.0).unwrap_or_default(),

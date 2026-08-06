@@ -5,32 +5,6 @@
 //!
 //! This module adapts run-plane intents into [`policy::Change`] and calls
 //! [`policy::gate`]. It does not own armed-set load or rule evaluation.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -40,11 +14,9 @@ use model::{Document, Edit, NodeKind};
 /// Whether this workspace has EVER been armed — the once-armed pivot, read from
 /// the MARKER's presence and nothing else.
 ///
-/// Pivoting on the artifact instead would make deleting the artifact read as
-/// "never armed", which is the silent-disarm attack the marker exists to defeat;
-/// an absent artifact on an armed workspace is a FAULT, not a disarm. An ambiguous
-/// stat fails CLOSED (assume armed), so a doubtful workspace is never silently
-/// ungated.
+/// Pivoting on the artifact would make deleting it read as "never armed" — the
+/// silent-disarm attack the marker defeats. An ambiguous stat fails closed
+/// (assume armed).
 #[must_use]
 pub fn once_armed(root: &fs::WorkspaceRoot) -> bool {
     root.0
@@ -55,11 +27,8 @@ pub fn once_armed(root: &fs::WorkspaceRoot) -> bool {
 
 /// Read the attested armed-rules artifact, or `None` when it is absent.
 ///
-/// An artifact that exists and cannot be read is NOT `None`: it reads as an empty
-/// page, which the resolver refuses as corrupt. Both paths fail closed, so the
-/// distinction is not the gate's — it is the OPERATOR's, who is told the artifact
-/// is unreadable rather than that it was never created, and told it in the same
-/// words the write door would use.
+/// An artifact that exists and cannot be read is NOT `None`: it reads as an
+/// empty page, which the resolver refuses as corrupt — fail closed either way.
 #[must_use]
 pub fn read_artifact(root: &fs::WorkspaceRoot) -> Option<String> {
     match std::fs::read_to_string(root.0.join(fs::domain::ARMED_RULES_PATH)) {
@@ -154,14 +123,9 @@ pub(crate) fn refuse_reason(
 }
 
 /// A one-line refusal detail for [`crate::executor::ExecError::ArmedRefusal`],
-/// naming the rule and citing the legal path.
-///
-/// The run plane reports on ONE channel — a single `detail` string — so it picks
-/// the channel and never the words: an armed-law fault renders through
-/// [`policy::ArmedFault`]'s own `Display`, the one renderer, so an operator reads
-/// the same teaching here as at the write door. Every refusing fault renders, not
-/// the first: they are ONE condition (the law at this path is not enforceable) and
-/// reporting one would send the operator round the loop once per fault.
+/// naming the rule and citing the legal path. Armed-law faults render through
+/// [`policy::ArmedFault`]'s own `Display` — the one renderer, shared with the
+/// write door — and every refusing fault renders, not just the first.
 fn describe(refusal: policy::GateRefusal) -> String {
     match refusal {
         policy::GateRefusal::Blocked { violations } => {
@@ -182,10 +146,8 @@ fn describe(refusal: policy::GateRefusal) -> String {
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join("; "),
-        // U4.3 binding law / integrity floor — the run plane lands bytes through
-        // the same gate, so a run-plane write that edits the armed-rules artifact
-        // or an armed rule page, or removes the artifact / the marker, is refused
-        // here too.
+        // U4.3 binding law / integrity floor — run-plane writes touching the
+        // armed artifact, an armed rule page, or the marker refuse here too.
         policy::GateRefusal::BindingBreak { side, teaching, .. } => {
             format!("binding-break[side={}]: {teaching}", side.as_str())
         }
@@ -345,9 +307,8 @@ mod scenario {
 
         let before = std::fs::read_to_string(tmp.path().join("tasks/board.md")).unwrap();
         let err = apply_as_closer(&root).expect_err("armed run-plane apply must refuse");
-        // The rule's OWN teaching is asserted beside its id: an armed-law FAULT
-        // (a drifted or unloadable row) also renders the id, so the id alone
-        // cannot tell "the rule fired" from "the fixture broke".
+        // An armed-law fault also renders the id, so assert the rule's own
+        // teaching beside it.
         assert!(
             matches!(err, ExecError::ArmedRefusal { ref detail }
                 if detail.contains(RULE_ID) && detail.contains("reviewer must not be the owner")),
@@ -365,12 +326,8 @@ mod scenario {
     }
 
     /// Control: a never-armed workspace runs the same apply to completion — the
-    /// run-plane gate is a no-op without the marker.
-    ///
-    /// This is the ONE fixture that deliberately writes the artifact WITHOUT the
-    /// marker: the artifact-without-marker state is the control's whole subject.
-    /// A workspace can only be armed by an attested arm, which sets the marker, so
-    /// a stray artifact beside no marker is a stray file — never a law.
+    /// run-plane gate is a no-op without the marker. Deliberately writes the
+    /// artifact WITHOUT the marker: that state is the control's whole subject.
     #[test]
     fn s7_never_armed_run_plane_apply_lands() {
         let (tmp, root) = workspace();

@@ -1,30 +1,7 @@
-//! `@fp` strip on the RUN plane, at DOCUMENT grain (advisor R32 (3)).
+//! `@fp` strip on the RUN plane, at DOCUMENT grain (R32 (3)).
 //! Strips free-text doors that must not enter the procedure hash / receipt
 //! identity. Same discipline as other planes; this module is the run-plane
 //! owner of that strip.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use std::ops::Range;
 
@@ -129,21 +106,16 @@ fn classify(
     Ok(out)
 }
 
-/// Which planned edit produced the sealed region — by the TARGET SPAN the model
-/// itself resolved, never by text similarity. `validate_batch` refuses a batch
-/// whose target spans are not pairwise disjoint (containment counts), so a
-/// non-empty region has at most one container; a region contested past the
-/// boundary rule below is `None` (refuse, never guess).
+/// Which planned edit produced the sealed region — by the target span the model
+/// itself resolved, never by text similarity. `validate_batch` refuses batches
+/// with non-disjoint target spans, so a non-empty region has at most one
+/// container; a contested region is `None` (refuse, never guess).
 ///
-/// # The boundary rule, which containment alone cannot decide
-/// Sections are contiguous: a section's span ENDS on the byte where its next
-/// sibling's span BEGINS. An `md.append_section` plans `put{at:"end"}`, whose
-/// replaced region is EMPTY and sits exactly on that shared byte (§4.4), so both
-/// siblings contain it. The one the model planned it from is the one that ENDS
-/// there — the other merely begins there. Empty regions are the only ones that
-/// can land on a shared byte, and `put{at:"end"}` is the only shape that produces
-/// one (a `match` needle is non-empty by validation), so this decides every case
-/// it applies to and touches no other.
+/// Boundary rule: sections are contiguous, so the EMPTY region of a
+/// `put{at:"end"}` sits exactly on the byte where one section ends and its
+/// sibling begins — both contain it, and the owner is the one that ENDS there.
+/// Only `put{at:"end"}` produces an empty region (a `match` needle is non-empty
+/// by validation), so this decides every case it applies to.
 fn attribute_region(region: &Range<usize>, before_facts: &[Target]) -> Option<usize> {
     let containers: Vec<usize> = before_facts
         .iter()
@@ -229,11 +201,9 @@ pub(crate) fn strip_candidate(
             continue;
         }
         let payload = match &mut batch.edits[i].edit {
-            // `md.set_field`'s composed `{key}: {value}` frontmatter line: its
-            // payload offsets are not the sealed line's, and frontmatter carries
-            // no claim-link position in the one grammar — so a token attributed
-            // here means the grammar moved under this code. Refuse rather than
-            // splice blind.
+            // `md.set_field` composes the frontmatter line, so payload offsets
+            // are not the sealed line's — and frontmatter is no claim-link
+            // position. A token attributed here means the grammar moved; refuse.
             EditKind::Put {
                 at: PutAt::Upsert, ..
             } => {
@@ -307,16 +277,11 @@ mod tests {
         }])
     }
 
-    /// **The composed branch, driven directly — and why it is driven directly.**
-    /// The classifier refuses a claim the batch creates out of bytes it does not
-    /// supply. The run plane's own two verbs cannot reach it: `md.set_field`
-    /// writes frontmatter (no claim-link position) and `md.append_section` plans
-    /// `put{at:"end"}`, which always lands its content on its own line — the
-    /// planner pushes a leading newline when the target does not end on one, and
-    /// always a trailing one — and a wikilink never spans a line break. So the
-    /// branch is a BACKSTOP for the day a third insertion shape appears, and it
-    /// is proved here at the law's own grain with the `match` edit the run plane
-    /// does not plan, rather than through a fixture that pretends to be a run.
+    /// The composed branch, driven directly: the run plane's own two verbs
+    /// cannot reach it (`md.set_field` writes frontmatter, `md.append_section`
+    /// always lands content on its own line, and a wikilink never spans a line
+    /// break). A backstop for a future insertion shape, proved with the `match`
+    /// edit the run plane does not plan.
     #[test]
     fn a_token_composed_out_of_retained_bytes_refuses() {
         let doc = doc_of("# Plan\n\nsee [[guide#^goal@green.b3af12cd\n");

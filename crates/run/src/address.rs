@@ -66,18 +66,16 @@ pub enum AddressError {
         value: String,
         reason: String,
     },
-    /// The task NAME is outside the one identifier charset (fix9). The name is
-    /// not decoration: it is stamped verbatim into every run receipt (`task`,
-    /// and `actor` as `run:<name>`), so a name carrying markdown is a name that
-    /// forges the record of its own run.
+    /// The task name is outside the one identifier charset. Names are stamped
+    /// verbatim into run receipts (`task`, `actor` as `run:<name>`), so they
+    /// must not carry markdown-renderable bytes.
     InvalidTaskName { name: String },
     /// A binding value references another file (`other.md#^id`) — cross-file
     /// task refs are an S1 NON-GOAL (plan decision #11), refused, not deferred
     /// silently.
     CrossFileRef { name: String, value: String },
-    /// The binding's fm key exists but its anchor resolves to nothing — DISTINCT
-    /// from [`AddressError::NoTask`]: the declaration is present, the block is
-    /// gone (a dangling binding is an authoring fault the author must see).
+    /// The binding's fm key exists but its anchor resolves to nothing — distinct
+    /// from [`AddressError::NoTask`]: the declaration is present, the block is gone.
     DanglingBinding { name: String, anchor: String },
     /// The anchor id appears more than once in the page — the mint plane never
     /// silently picks (`ambiguous_ref`).
@@ -258,19 +256,9 @@ pub fn bindings(doc: &Document) -> Result<Vec<TaskBinding>, AddressError> {
         if rest.is_empty() {
             continue;
         }
-        // THE NAME BOUNDARY (fix9). `rest` is whatever an author typed after
-        // `task.` — arbitrary frontmatter-key bytes — and it is stamped verbatim
-        // into every run receipt line (`"task": …`, `"actor": "run:…"`). A name
-        // like `[[guide#^goal@green.b3af12cd|G]]` therefore lands an `@fp` claim
-        // token in a claim-link position on a plane no candidate strip sees: the
-        // receipt rides beside `.edits`, in a different FILE. The token is only
-        // the narrowest instance — the general fault is that a task name can
-        // render as markdown at all.
-        //
-        // So the name takes the SAME charset guard as the binding's value below
-        // (`is_block_id`, ruling 011's one charset). Both halves of a binding —
-        // the name and the anchor it references — are identifiers, and the
-        // refusal makes the hostile bytes unrepresentable rather than removable.
+        // The name is stamped verbatim into run receipts (`"task"`, `"actor":
+        // "run:…"`), where markdown-renderable bytes could forge claim links —
+        // so it takes the same charset guard as the anchor value (ruling 011).
         if !syntax::is_block_id(rest) {
             return Err(AddressError::InvalidTaskName {
                 name: rest.to_owned(),

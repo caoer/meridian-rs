@@ -3,32 +3,6 @@
 //! [`StdoutRecord`] (S8 ordering hook). Address is the invocation id; content
 //! pinned by full sha256. Env is recorded as KEYS ONLY (S7) — values never
 //! enter the receipt type.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};

@@ -36,10 +36,8 @@ fn exit_code_and_stdout_and_stderr_are_captured() {
     assert!(r.shim.bytes.is_empty());
 }
 
-/// U16 (requirements row E1): the block runs WHERE `mrd` RUNS. This assertion
-/// is the inversion of the one it replaces — the supervisor used to chdir the
-/// child into scratch, and the ruling ("DO NOT CHANGE THE RUNNING PATH")
-/// overturned it. The ruling drove the inversion, not test convenience.
+/// U16: the block runs WHERE `mrd` RUNS ("DO NOT CHANGE THE RUNNING PATH") —
+/// never chdir'd into scratch.
 #[test]
 fn the_block_runs_in_the_invocation_cwd() {
     let tmp = tempfile::tempdir().unwrap();
@@ -139,15 +137,8 @@ fn a_background_child_is_reaped_at_step_end() {
     // S3: the child spawns a background writer holding stdout AND the shim
     // fd, then exits. Without the group SIGKILL the readers would wait 15s
     // for the inherited pipe fds; with it the step ends now and the writer
-    // never lands its post-step write.
-    //
-    // Correctness is the EVENT, not a duration: after step end the leak file
-    // must not exist. Wall-clock budget lives in `exec_walltime.rs` under
-    // feature `perf-walltime` (ci.yml forbids wall-time gates here). The 5s
-    // number is unchanged — relocation, not relaxation.
-    //
-    //
-    //
+    // never lands its post-step write. Correctness is the EVENT (no leak file
+    // after step end); the wall-clock budget lives in `exec_walltime.rs`.
     let tmp = tempfile::tempdir().unwrap();
     let env = BTreeMap::new();
     // The leak path is ABSOLUTE: since U16 the step runs in the invocation

@@ -1,27 +1,6 @@
-//! **fix9 F1 — the run receipt's free-text doors.**
+//! The run receipt's free-text doors.
 //! Pins which receipt fields admit free text and which are closed/typed, so a
 //! later widen cannot sneak narrative into attested identity fields.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use std::collections::BTreeMap;
 
@@ -29,7 +8,7 @@ use effects::{ArgValue, Effect, EffectKind, Provenance};
 use run::caps::{Authority, CapSet};
 use run::executor::{self, ApplyRequest, ReceiptAddr};
 
-/// fix8's F1 probe shape, at each remaining door.
+/// The hostile probe shape, driven at each door.
 const HOSTILE: &str = "[[guide#^goal@green.b3af12cd|G]]";
 const RECEIPT_PATH: &str = "receipts/r.md";
 
@@ -84,7 +63,7 @@ fn receipt_after_apply(page_name: &str, seed: &str, effects: &[Effect]) -> Strin
     std::fs::read_to_string(root.0.join(RECEIPT_PATH)).expect("the receipt file was written")
 }
 
-/// The claim, in the milestone's own spelling, on the bytes that landed.
+/// The claim, on the bytes that landed.
 ///
 /// The structural half is `[[`, not `[`: this line's body is JSON, whose array
 /// syntax puts a legitimate single `[` before every `sec` chain. A wikilink

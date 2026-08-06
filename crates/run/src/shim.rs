@@ -11,33 +11,6 @@
 //! Descriptors carry no capability of their own — the executor validates
 //! against the block's [`Authority`] at the choke point. Bash is always
 //! [`Authority::Unsandboxed`]; caps do not apply (`docs/laws.md` amendment).
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use std::collections::BTreeMap;
 

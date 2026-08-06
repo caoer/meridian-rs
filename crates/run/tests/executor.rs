@@ -655,7 +655,7 @@ fn receipt_commits_the_threaded_exec_facts() {
     assert!(!receipts.contains("secret-value"), "{receipts}");
 }
 
-/// **Advisor R25 — the fifth door to the lock ARTIFACT.** The run plane lands
+/// **R25 — the fifth door to the lock ARTIFACT.** The run plane lands
 /// bytes through `fs::apply_batch`, bypassing the wire choke-point entirely, and
 /// it mints no pin: `md.append_section` composing a `meridian-lock` block is a
 /// pin nobody computed. The assertion is on the WRITE (`is_err`), never on the

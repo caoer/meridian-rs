@@ -9,18 +9,6 @@
 //! (`exec.rs::a_background_child_is_reaped_at_step_end`): step succeeds and
 //! the post-step leak file is absent. This file gates only the duration (5s
 //! budget — relocation from correctness, not relaxation).
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};

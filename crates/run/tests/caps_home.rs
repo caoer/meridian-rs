@@ -1,9 +1,6 @@
-//! The rehomed convention plane (marker-retirement ruling, 2026-07-26): the
-//! caps table is declared by the ROOT ITSELF in `<root>/MERIDIAN.md`, never by
-//! a marker file. Contract: `decisions/2026-07-26-run-caps-contract.md`.
-//!
-//! Every test here fails against the retired contract; the failures were
-//! recorded before the implementation changed, not asserted afterwards.
+//! The rehomed convention plane (marker-retirement ruling): the caps table is
+//! declared by the ROOT ITSELF in `<root>/MERIDIAN.md`, never by a marker
+//! file. Contract: `decisions/2026-07-26-run-caps-contract.md`.
 
 use run::caps::{self, Cap, CapSet, CapSource, CapsError, ConventionSource, Conventions};
 

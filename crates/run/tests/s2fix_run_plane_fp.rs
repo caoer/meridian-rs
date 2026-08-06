@@ -1,19 +1,6 @@
-//! **Advisor R32 (3) — the run plane's `@fp` door.**
+//! The run plane's `@fp` door (R32 (3)).
 //! Free-text doors on the run plane strip before procedure-hash / receipt
 //! identity. Companion to the document-grain strip in [`run::fp`].
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use std::collections::BTreeMap;
 
@@ -201,13 +188,11 @@ fn two_bodies_in_one_batch_are_attributed_by_target_not_by_index() {
     );
 }
 
-/// **The ratified deviation (R32 (1)), tested by name.** A token already on disk
-/// is NOT this write's to remove: deleting bytes the batch never addressed would
-/// move the fingerprint of a node this write does not own, reddening pins that
-/// have nothing to do with it. The assertion is the deviation's own reasoning —
-/// the untouched section's rev is byte-identical across the write, while the
-/// edited one's moves. A whole-document `is_empty` rule would fail this write
-/// outright, which is the false-red generator the ruling rejected.
+/// A token already on disk is NOT this write's to remove (R32 (1)): deleting
+/// bytes the batch never addressed would move the fingerprint of a node this
+/// write does not own, reddening unrelated pins. Asserted by revs: the
+/// untouched section's rev is byte-identical across the write; the edited
+/// one's moves.
 #[test]
 fn a_pre_existing_token_is_left_exactly_as_found() {
     let seed = format!(
@@ -287,7 +272,7 @@ fn a_set_field_value_is_not_a_claim_link_position() {
     );
 }
 
-/// **The md write surface, exhaustive by construction (R32's count finding).**
+/// **The md write surface, exhaustive by construction.**
 /// `EffectKind::ALL` is the source of truth for the closed descriptor surface and
 /// `executor::apply` is the run plane's ONE markdown door (`fs::apply_batch` is
 /// called nowhere else in the crate). So the verbs this file must cover are
@@ -344,8 +329,8 @@ fn source_is_frontmatter(root: &fs::WorkspaceRoot) -> bool {
     model::resolve(&doc, &model::Ref::FmKey("source".to_owned())).is_ok()
 }
 
-/// **The COMPOSED arm (R44 item 3 / fix8), the one origin with no payload to
-/// strip.** The token is not introduced — no payload carries it — and it is not
+/// **The COMPOSED arm — the one origin with no payload to strip.**
+/// The token is not introduced — no payload carries it — and it is not
 /// retained — the pre-image has no claim at all, because frontmatter is not a
 /// claim-link position. This batch MAKES it a claim by un-masking bytes it does
 /// not supply, so there is nothing to remove and nobody to attribute it to: the
@@ -389,7 +374,7 @@ fn a_composed_claim_token_is_refused_with_nothing_applied() {
     );
 }
 
-/// **The anti-vacuity CONTROL (fix4's device, R26 applied to the harness).**
+/// **The anti-vacuity control.**
 /// The refusal above is only evidence if the write it refuses is one this batch
 /// could really have made. Same page, same edit, same closing value — only the
 /// masked value is token-free — and the write COMMITS, proving the window is
