@@ -1,40 +1,26 @@
-//! Presets + session birth (U5.3) — a preset is a def file whose `inputs` pin the
-//! convention floor; `unfold` materializes the declared scaffold through the U2.6 guarded
-//! create; `new` births one record from the def's `^template` after validating it against
-//! the def's `^properties`.
+//! Presets + session birth (U5.3) — a preset is a def file whose `inputs` pin
+//! the convention floor; [`unfold`] materializes the declared scaffold;
+//! [`new_record`] births one record from the def's `^template` after validating
+//! it against the def's `^properties`.
 //!
-//! # Charter
-//! **Owns:** the preset-def grammar (`type: def` + a multi-line `inputs` block sequence
-//! pinning the floor + `# Properties`/`^properties`, `# Template`/`^template`, `# Unfold`
-//! body sections), its validation, and the two births — [`unfold`] (the whole scaffold
-//! set) and [`new_record`] (one `^template` record). Every birth rides the ONE write path
-//! ([`wire_serve::write::create`], d2 §2.5 C3 / U2.6): CAS `if_absent`, journaled birth,
-//! gate seam — so every scaffold file carries a birth receipt (an `op=create` journal
-//! row) and no write dodges the guard.
+//! Owns the preset-def grammar (`type: def`, `inputs` block sequence,
+//! `^properties` / `^template` / `# Unfold` sections), its validation, and the
+//! two births. Every birth rides the one write path
+//! ([`wire_serve::write::create`], U2.6): CAS `if_absent`, journaled birth,
+//! gate seam. Never invents a second write path, mints identity or a clock
+//! (`actor`/`now` are caller-supplied, §9), or holds session policy.
 //!
-//! **Never does:** invent a second write path (birth is guarded create, never a raw
-//! `fs::write`), mint identity or a clock (`actor`/`now` are caller-supplied, §9), or
-//! hold session policy / liveness (that is the customer's — docs/laws.md charter). mrd
-//! dials these; it re-implements none of it.
-//!
-//! # The U2.11 safe grain (d2 §5.5, law)
-//! A preset's `inputs` is a multi-line frontmatter block sequence. It is READ through the
-//! U2.11 whole-value `fm_key` grain ([`model::resolve`] on [`model::Ref::FmKey`]) — never
-//! a line-oriented scan that would stop at the key line — and the preset pin a birth
-//! writes into its root record is RENDERED as a whole block-sequence value and written
-//! atomically as the file's birth bytes, never a single-line properties upsert (which the
-//! U2.11 corruption guard refuses). [`render_block_sequence`] + the grain read are the
-//! two halves of that round trip.
-//!
-//!
+//! `inputs` is read through the U2.11 whole-value `fm_key` grain (d2 §5.5) —
+//! never a line-oriented scan — and the preset pin a birth writes is rendered
+//! as a whole block-sequence value ([`render_block_sequence`]) written
+//! atomically as birth bytes, never a single-line properties upsert.
 
 use model::{Document, NodeKind, Ref, YamlMap};
 use serde::Serialize;
 use wire::{ErrorBody, ErrorCode};
 
 /// The default root record a session preset instantiates and pins the preset
-/// into (design d3 §6: `mrd unfold` "instantiates the `^template` root record
-/// `SESSION.md`"). Overridable by the def frontmatter key `root`.
+/// into (d3 §6). Overridable by the def frontmatter key `root`.
 const DEFAULT_ROOT_RECORD: &str = "SESSION.md";
 
 /// The workspace prefix the convention floor lives under (the U4.4 floor suite:
@@ -84,7 +70,7 @@ pub struct PresetDef {
     /// The def page path (workspace-relative) — the pin target a birth records.
     pub path: String,
     /// The def's whole-file rev — pinned into a born session so the declared
-    /// shape is re-derivable forever (d3 §6, "the only cross-time memory").
+    /// shape is re-derivable forever (d3 §6).
     pub rev: String,
     /// The `defines:` kind (`session`, `task`, …). The `mrd new` `<kind>`.
     pub defines: String,
@@ -106,8 +92,8 @@ pub struct PresetDef {
     /// [`unfold`] materializes, in declared order.
     pub scaffold: Vec<String>,
     /// The `# Ephemeral` declared-disposable allowlist — path globs (`*.lock`)
-    /// or exact paths [`reconcile`] MAY prune (the subtractive allowlist, ZT
-    /// ruling #3). Empty ⇒ nothing is disposable, so reconcile prunes no file.
+    /// or exact paths [`reconcile`] MAY prune (ruling #3). Empty ⇒ nothing is
+    /// disposable, so reconcile prunes no file.
     pub ephemeral: Vec<String>,
 }
 
@@ -365,8 +351,7 @@ fn section_body(raw: &str, pick: impl Fn(&str) -> bool) -> Option<String> {
             continue;
         }
         if !in_fence && trimmed.starts_with('#') {
-            // A section heading: it closes the current section, or opens the
-            // picked one. The heading line itself is never part of the body.
+            // A heading closes the current section or opens the picked one.
             if in_section {
                 return Some(out);
             }
@@ -400,7 +385,6 @@ fn strip_frontmatter(raw: &str) -> &str {
 /// fenced block.
 fn fenced_block(body: &str) -> Option<String> {
     let mut lines = body.lines();
-    // Advance to the opening fence.
     for line in lines.by_ref() {
         if line.trim_start().starts_with("```") {
             let mut out = String::new();
@@ -460,16 +444,16 @@ pub struct NewRefusal {
     pub reason: RefusalReason,
 }
 
-/// Birth one record from a def's `^template` (`mrd new <kind> <id>`, design d3
+/// Birth one record from a def's `^template` (`mrd new <kind> <id>`, d3
 /// §1.3/§6): resolve the def, fill the `^template`, validate the filled record
 /// against the def's `^properties`, and birth the first rev through the U2.6
-/// guarded create — emitting the inline birth receipt.
+/// guarded create.
 ///
-/// A def that declares no `^properties`/`^template`, carries a malformed rule, or
-/// whose `^template` cannot satisfy its own `^properties` is an INVALID def: the
-/// birth refuses `def_invalid{rule}` (row 17), naming the def rule, and writes
-/// nothing. A target that already exists refuses `cas_mismatch` (the `if_absent`
-/// CAS). Neither refusal is a [`PresetError`].
+/// A def that declares no `^properties`/`^template`, carries a malformed rule,
+/// or whose `^template` cannot satisfy its own `^properties` refuses
+/// `def_invalid{rule}` (row 17), naming the def rule, and writes nothing. A
+/// target that already exists refuses `cas_mismatch`. Neither refusal is a
+/// [`PresetError`].
 ///
 /// # Errors
 /// [`PresetError`] on a tool failure — the def is unreadable / not a def, or a
@@ -483,8 +467,7 @@ pub fn new_record(
     let def = load_def(root, def_path)?;
     let target = birth_target(&def, id);
 
-    // Structural def checks: the def must declare a ^properties block and a
-    // ^template, and every rule must parse. Any failure is an invalid def.
+    // Structural def checks — any failure is an invalid def.
     let Some(properties) = &def.properties else {
         return Ok(refuse_new(
             target,
@@ -504,12 +487,10 @@ pub fn new_record(
         ));
     }
 
-    // Fill the template and parse the record it would birth.
     let body = fill_template(template, id, &def.defines, opts);
     let record = model::build(body.clone(), syntax::parse(&body));
 
-    // Validate the filled record against every ^properties rule. The FIRST
-    // violation names the failing def rule (def_invalid, row 17).
+    // The FIRST violation names the failing def rule (def_invalid, row 17).
     if let Some(rule) = first_violated_rule(properties, &record) {
         return Ok(refuse_new(
             target,
@@ -517,7 +498,6 @@ pub fn new_record(
         ));
     }
 
-    // Birth the first rev through the guarded create (CAS if_absent).
     match birth(root, &target, &body, opts)? {
         BirthResult::Born => Ok(NewOutcome::Born(NewReport {
             target,
@@ -623,8 +603,8 @@ pub enum FileOutcome {
         /// The scaffold file path.
         path: String,
     },
-    /// The path already exists — the `if_absent` CAS refused the birth (the
-    /// guarded-create semantics hold under unfold; nothing was clobbered).
+    /// The path already exists — the `if_absent` CAS refused the birth;
+    /// nothing was clobbered.
     Occupied {
         /// The scaffold file path.
         path: String,
@@ -633,11 +613,11 @@ pub enum FileOutcome {
     },
 }
 
-/// Materialize a preset's declared scaffold (`mrd unfold <preset>`, design d3 §6:
-/// reconcile toward the declared scaffold). Every `# Unfold` file is born through
-/// the U2.6 guarded create; a path that already exists refuses via the
-/// `if_absent` CAS and is left byte-untouched. The root record is born pinning the preset (an
-/// `inputs` block sequence rendered through the U2.11 safe grain).
+/// Materialize a preset's declared scaffold (`mrd unfold <preset>`, d3 §6).
+/// Every `# Unfold` file is born through the U2.6 guarded create; a path that
+/// already exists refuses via the `if_absent` CAS and is left byte-untouched.
+/// The root record is born pinning the preset (an `inputs` block sequence
+/// rendered through the U2.11 safe grain).
 ///
 /// # Errors
 /// [`PresetError`] on a tool failure — the preset is unreadable / not a def, or a
@@ -672,45 +652,33 @@ pub fn unfold(
 }
 
 // ---------------------------------------------------------------------------
-// reconcile-toward-scaffold (ZT ruling #3 — the asymmetric reconcile law)
+// reconcile-toward-scaffold (ruling #3 — the asymmetric reconcile law)
 // ---------------------------------------------------------------------------
 
-/// The asymmetric reconcile plan — the ZT ruling #3 fold computed as a PURE
-/// function of the declared scaffold, the declared-ephemeral allowlist, and the
-/// live tree. The law, verbatim (design-3 §6; plan §4 Block 3 U3.5b):
+/// The asymmetric reconcile plan (ruling #3), a pure function of the declared
+/// scaffold, the declared-ephemeral allowlist, and the live tree:
 ///
-/// - **Materialize (additive): ALL missing declared paths** (set-difference of
-///   declared scaffold − live tree).
-/// - **Remove (subtractive): ONLY declared-ephemeral files + empty-undeclared
-///   directories** — an ALLOWLIST, never set-difference. (The empty-dir half is
-///   computed by the apply, which has the tree; this plan carries the file half.)
-/// - **Everything else — undeclared content files — renders as [`findings`], never
-///   prune actions.** "Unused = no dependents" is a report, never an auto-delete.
-///
-/// [`findings`](ReconcilePlan::findings): reconcile is asymmetric — additive by
-/// set-difference, subtractive by allowlist.
+/// - Materialize (additive): ALL missing declared paths — set-difference.
+/// - Remove (subtractive): ONLY declared-ephemeral files + empty-undeclared
+///   directories — an allowlist, never set-difference. (The empty-dir half is
+///   computed by the apply; this plan carries the file half.)
+/// - Undeclared content files render as [`findings`](ReconcilePlan::findings),
+///   never prune actions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 pub struct ReconcilePlan {
-    /// Missing declared scaffold paths → materialize (guarded create). The
-    /// additive half: set-difference of declared − live.
+    /// Missing declared scaffold paths → materialize (guarded create).
     pub materialize: Vec<String>,
     /// Declared-ephemeral files present in the tree → prune (guarded remove).
-    /// The subtractive allowlist half — ONLY paths the def marks disposable.
+    /// Only paths the def marks disposable.
     pub prune: Vec<String>,
-    /// Undeclared content files present in the tree → check-plane FINDINGS,
-    /// NEVER prune actions. The load-bearing asymmetry (E&R map: "undeclared
-    /// non-empty path → never pruned → finding, not deletion").
+    /// Undeclared content files present in the tree → check-plane findings,
+    /// never prune actions.
     pub findings: Vec<String>,
 }
 
-/// Compute the asymmetric reconcile plan (PURE — the fold, no I/O). `declared` is
-/// the def scaffold, `ephemeral` the declared-disposable allowlist (globs or exact
-/// paths), `live_files` every live file path in the reconcile scope.
-///
-/// A live file is: converged if declared; pruned if it matches the ephemeral
-/// allowlist; a FINDING otherwise (undeclared content is never pruned — the
-/// allowlist, never set-difference, governs subtraction). A declared path absent
-/// from the tree is materialized.
+/// Compute the asymmetric reconcile plan (pure, no I/O). A live file is:
+/// converged if declared; pruned if it matches the ephemeral allowlist; a
+/// finding otherwise. A declared path absent from the tree is materialized.
 #[must_use]
 pub fn reconcile_plan(
     declared: &[String],
@@ -772,7 +740,7 @@ pub struct ReconcileReport {
     /// Empty-undeclared directories the reconcile removed (rmdir; the dir half of
     /// the allowlist). Empty unless `--prune`.
     pub pruned_dirs: Vec<String>,
-    /// Undeclared content files rendered as findings — reported, NEVER pruned.
+    /// Undeclared content files rendered as findings — reported, never pruned.
     pub findings: Vec<String>,
 }
 
@@ -810,14 +778,13 @@ pub enum PruneOutcome {
 }
 
 /// Reconcile the live tree toward a preset's declared scaffold (`mrd reconcile
-/// <preset> [--prune]`; ZT ruling #3). Materializes ALL missing declared paths
-/// through the U2.6 guarded create (each carries a birth receipt); with `prune`,
-/// removes ONLY declared-ephemeral files (guarded remove) and empty-undeclared
-/// directories (rmdir) — the subtractive allowlist. Undeclared content files are
-/// rendered as findings, NEVER pruned. Every write rides the ONE guarded path.
+/// <preset> [--prune]`; ruling #3). Materializes all missing declared paths
+/// through the U2.6 guarded create; with `prune`, removes only
+/// declared-ephemeral files (guarded remove) and empty-undeclared directories
+/// (rmdir). Undeclared content files are rendered as findings, never pruned.
 ///
-/// The reconcile scope is the set of directories the declared scaffold occupies —
-/// reconcile never scans or prunes outside the shape's own territory.
+/// The reconcile scope is the set of directories the declared scaffold
+/// occupies — reconcile never scans or prunes outside it.
 ///
 /// # Errors
 /// [`PresetError`] on a tool failure — the preset is unreadable / not a def, or a
@@ -832,8 +799,8 @@ pub fn reconcile(
     let live_files = scan_scope(root, &def.scaffold);
     let plan = reconcile_plan(&def.scaffold, &def.ephemeral, &live_files);
 
-    // Additive: materialize every missing declared path (guarded create, byte
-    // -untouched on an occupied path — same door as unfold).
+    // Additive: materialize every missing declared path (guarded create, same
+    // door as unfold).
     let mut materialized = Vec::with_capacity(plan.materialize.len());
     for path in &plan.materialize {
         let body = if *path == def.root_record {
@@ -851,7 +818,7 @@ pub fn reconcile(
         materialized.push(outcome);
     }
 
-    // Subtractive (allowlist, ONLY under `--prune`): declared-ephemeral files
+    // Subtractive (allowlist, only under `--prune`): declared-ephemeral files
     // through the guarded remove, then empty-undeclared directories (rmdir).
     let mut pruned = Vec::new();
     let mut pruned_dirs = Vec::new();
@@ -906,19 +873,17 @@ fn prune_file(
     }
 }
 
-/// Remove empty-undeclared directories in the scaffold scope (the dir half of the
-/// prune allowlist, design element §5.3). A directory is prunable iff it lives
-/// STRICTLY BENEATH a directory the scaffold itself creates, is not a prefix of a
-/// declared path, holds no finding, and is EMPTY. Deepest-first, so a nest of
+/// Remove empty-undeclared directories in the scaffold scope (the dir half of
+/// the prune allowlist, §5.3). A directory is prunable iff it lives strictly
+/// beneath a directory the scaffold itself creates, is not a prefix of a
+/// declared path, holds no finding, and is empty. Deepest-first, so a nest of
 /// empty dirs collapses in one pass. Raw `rmdir` — a directory carries no
-/// governed rev and no bytes, the one guarded-door exception the element states
-/// (§3.3); dry runs report without removing.
+/// governed rev and no bytes, the one guarded-door exception (§3.3); dry runs
+/// report without removing.
 ///
-/// The candidate set is walked LIVE. Deriving it from the declared paths is what
-/// the first implementation did, and it could not work: the candidates and the
-/// declared-prefix skip set were the same expression, so every candidate was
-/// skipped and no directory was ever removed. A declared path can only ever name
-/// its own ancestors, which are exactly the directories that must be KEPT.
+/// The candidate set must be walked live, not derived from the declared paths:
+/// a declared path only ever names its own ancestors, which are exactly the
+/// directories that must be KEPT.
 fn prune_empty_dirs(
     root: &fs::WorkspaceRoot,
     declared: &[String],
@@ -953,10 +918,8 @@ fn prune_empty_dirs(
 }
 
 /// Every live directory strictly beneath a scaffold directory, excluding the
-/// scaffold directories themselves — the undeclared half of the shape's own
-/// territory (§5.3). A scaffold that declares only top-level files creates no
-/// directory, so it offers no candidate and prunes no directory: the workspace
-/// root is never walked.
+/// scaffold directories themselves (§5.3). A scaffold that declares only
+/// top-level files offers no candidate: the workspace root is never walked.
 fn live_subdirs(
     root: &fs::WorkspaceRoot,
     scaffold_dirs: &std::collections::BTreeSet<String>,

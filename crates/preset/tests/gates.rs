@@ -1,16 +1,5 @@
-//! U5.3 merge gate — the named preset + session-birth fixtures (plan Block 5 U5.3 Test:
-//! line), each driving the REAL U2.6 guarded create over an on-disk workspace (no
-//! in-memory double — fidelity is the point):
-//!
-//! - Gate 1: `unfold_births_every_scaffold_file` (the sweep asserts the FULL declared
-//!   scaffold set, not a sample).
-//! - Gate 2: `def_invalid_new_refuses_naming_the_def_rule` (the refusal code conforms to
-//!   the closed §8 taxonomy — row 17 `def_invalid`).
-//! - Gate 3: `unfold_on_an_existing_path_refuses_via_cas_if_absent` (guarded-create
-//!   semantics hold under unfold — no unguarded clobber).
-//!
-//! Plus: the preset pins the convention floor + the U2.11 block-sequence grain
-//! round-trips the born root record's `inputs` pin.
+//! U5.3 merge gate — preset + session-birth fixtures, each driving the real
+//! U2.6 guarded create over an on-disk workspace (no in-memory double).
 
 use model::{Ref, resolve};
 use preset::{
@@ -118,13 +107,7 @@ fn opts() -> BirthOptions {
 }
 
 // ---------------------------------------------------------------------------
-// Gate 1: unfold births every scaffold file — the FULL declared set, swept,
-//         not a sample.
-//
-// The sweep asserted a birth RECEIPT per file (an `op=create before=absent`
-// journal row) until the journal was removed (ZT 2026-08-02). The receipt is
-// gone; what the guarded create still owes — one born file per declared scaffold
-// entry, materialized on disk — is asserted below and is what the gate now means.
+// Gate 1: unfold births every scaffold file — the full declared set, swept.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -133,14 +116,12 @@ fn unfold_births_every_scaffold_file() {
 
     let report = unfold(&root, "presets/session.md", &opts()).unwrap();
 
-    // Every declared scaffold file was born — clean unfold, four births.
     assert!(
         report.is_clean(),
         "a fresh unfold births every file: {report:?}"
     );
     assert_eq!(report.files.len(), SCAFFOLD.len());
 
-    // The report enumerates the FULL scaffold set — every declared entry born.
     let born: std::collections::BTreeSet<&str> = report.births().into_iter().collect();
     for path in SCAFFOLD {
         assert!(
@@ -154,14 +135,12 @@ fn unfold_births_every_scaffold_file() {
         "exactly one birth per scaffold file"
     );
 
-    // The files exist on disk with the born bytes.
     for path in SCAFFOLD {
         assert!(root.0.join(path).exists(), "{path} was not materialized");
     }
 
-    // Deliverable 1: the preset pins the convention floor, and the born root
-    // record pins the PRESET as a multi-line block sequence read back through the
-    // U2.11 whole-value grain (byte-stable, no orphan).
+    // The preset pins the convention floor, and the born root record pins the
+    // preset as a block sequence read back through the U2.11 grain.
     assert_eq!(
         report.floor,
         vec![
@@ -184,8 +163,7 @@ fn unfold_births_every_scaffold_file() {
 }
 
 // ---------------------------------------------------------------------------
-// Gate 2: a def-invalid `new` refuses, naming the def rule, and writes nothing
-//         (the refusal code conforms to the closed taxonomy — row 17).
+// Gate 2: a def-invalid `new` refuses, naming the def rule, and writes nothing.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -197,10 +175,9 @@ fn def_invalid_new_refuses_naming_the_def_rule() {
     let NewOutcome::Refused(refusal) = &outcome else {
         panic!("an invalid def must refuse, got {outcome:?}");
     };
-    // The refusal code conforms to the closed §8 taxonomy (row 17, recovery fix).
+    // Closed §8 taxonomy: row 17, recovery fix; the refusal names the rule.
     assert_eq!(refusal.reason.code, "def_invalid");
     assert_eq!(refusal.reason.recovery, "fix");
-    // The refusal NAMES the violated def rule (the `owner` requirement).
     let rule = refusal.reason.rule.as_deref().expect("names the def rule");
     assert!(
         rule.contains("owner"),
@@ -212,7 +189,7 @@ fn def_invalid_new_refuses_naming_the_def_rule() {
         refusal.reason.message
     );
 
-    // A refused birth writes NOTHING: no target file.
+    // A refused birth writes nothing.
     assert!(
         !root.0.join(&refusal.target).exists(),
         "a refused birth left a file at {}",
@@ -221,8 +198,7 @@ fn def_invalid_new_refuses_naming_the_def_rule() {
 }
 
 // ---------------------------------------------------------------------------
-// Gate 3: unfold on an existing path refuses via the if_absent CAS — the
-//         guarded-create semantics hold under unfold (no unguarded clobber).
+// Gate 3: unfold on an existing path refuses via the if_absent CAS.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -235,10 +211,8 @@ fn unfold_on_an_existing_path_refuses_via_cas_if_absent() {
 
     let report = unfold(&root, "presets/session.md", &opts()).unwrap();
 
-    // The unfold is NOT clean — one declared path already existed.
     assert!(!report.is_clean(), "an occupied path is a finding");
 
-    // The occupied path refused via the if_absent CAS (guarded-create semantics).
     let occupied = report
         .files
         .iter()
@@ -250,21 +224,19 @@ fn unfold_on_an_existing_path_refuses_via_cas_if_absent() {
     assert_eq!(occupied.code, "cas_mismatch");
     assert_eq!(occupied.recovery, "refresh");
 
-    // The pre-existing bytes are UNTOUCHED — the guard prevented a clobber.
     assert_eq!(
         std::fs::read_to_string(root.0.join("tasks/index.md")).unwrap(),
         SENTINEL,
         "the guarded create must not clobber an existing file"
     );
-    // The other declared paths WERE born (reconcile materializes the missing delta).
+    // The other declared paths WERE born.
     for path in ["SESSION.md", "agents/index.md", "results/notes.md"] {
         assert!(root.0.join(path).exists(), "{path} should still be born");
     }
 }
 
 // ---------------------------------------------------------------------------
-// A valid `new` births the first rev through the guarded create (the happy
-// path the def-invalid gate is the mirror of).
+// A valid `new` births the first rev through the guarded create.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -277,7 +249,6 @@ fn valid_new_births_the_first_rev() {
     };
     assert_eq!(report.target, "session/s1.md");
 
-    // The record exists with the filled template.
     let body = std::fs::read_to_string(root.0.join("session/s1.md")).unwrap();
     assert!(
         body.contains("id: s1"),
@@ -293,7 +264,7 @@ fn valid_new_births_the_first_rev() {
 }
 
 // ---------------------------------------------------------------------------
-// The preset pins the convention floor (deliverable 1, read-only check).
+// The preset pins the convention floor (read-only check).
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -309,10 +280,9 @@ fn session_preset_pins_the_convention_floor() {
 }
 
 // ---------------------------------------------------------------------------
-// U3.5b reconcile-toward-scaffold (ZT ruling #3, the asymmetric reconcile law).
-// The three fixture assertions (plan §4 Block 3 U3.5b Test: line):
+// U3.5b reconcile-toward-scaffold (ruling #3, the asymmetric reconcile law):
 //   1. a missing declared path is materialized;
-//   2. an undeclared NON-empty path is untouched and rendered as a finding;
+//   2. an undeclared non-empty path is untouched and rendered as a finding;
 //   3. a declared-ephemeral file is pruned.
 // ---------------------------------------------------------------------------
 
@@ -339,7 +309,6 @@ inputs:
 
 #[test]
 fn reconcile_plan_is_asymmetric_materialize_by_diff_prune_by_allowlist() {
-    // A PURE-fold gate: declared scaffold vs a live tree.
     let declared = vec![
         "SESSION.md".to_owned(),
         "tasks/index.md".to_owned(),
@@ -355,20 +324,17 @@ fn reconcile_plan_is_asymmetric_materialize_by_diff_prune_by_allowlist() {
 
     let plan = reconcile_plan(&declared, &ephemeral, &live);
 
-    // 1. the missing declared path is the additive set-difference.
+    // 1. missing declared path → additive set-difference.
     assert_eq!(plan.materialize, vec!["results/plan.md".to_owned()]);
-    // 3. the declared-ephemeral file is the ONLY prune (allowlist, not diff).
+    // 3. declared-ephemeral file → the only prune (allowlist, not diff).
     assert_eq!(plan.prune, vec!["tasks/build.lock".to_owned()]);
-    // 2. the undeclared content file is a finding, NEVER a prune action.
+    // 2. undeclared content file → finding, never a prune action.
     assert_eq!(plan.findings, vec!["results/notes.md".to_owned()]);
 }
 
 #[test]
 fn reconcile_materializes_missing_untouches_undeclared_prunes_ephemeral() {
-    // A live tree that exercises all three fold branches at once. `results/plan.md`
-    // is declared but ABSENT; `results/notes.md` is undeclared NON-empty content;
-    // `tasks/build.lock` is declared-ephemeral. SESSION.md + tasks/index.md already
-    // exist (converged, left byte-untouched).
+    // A live tree exercising all three fold branches at once.
     const NOTES_BODY: &str = "---\ntype: note\n---\n\n# undeclared work product\n";
     let (_tmp, root) = workspace(&[
         ("presets/session.md", RECONCILE_PRESET),
@@ -380,7 +346,7 @@ fn reconcile_materializes_missing_untouches_undeclared_prunes_ephemeral() {
 
     let report = reconcile(&root, "presets/session.md", true, &opts()).unwrap();
 
-    // 1. the missing declared path was MATERIALIZED through the guarded create.
+    // 1. the missing declared path was materialized through the guarded create.
     let materialized: std::collections::BTreeMap<&str, bool> = report
         .materialized
         .iter()
@@ -398,15 +364,14 @@ fn reconcile_materializes_missing_untouches_undeclared_prunes_ephemeral() {
         root.0.join("results/plan.md").exists(),
         "results/plan.md was not materialized on disk"
     );
-    // The already-present declared paths were NOT re-materialized (occupied is not
-    // in the plan; only the genuinely missing path is).
+    // The already-present declared paths were not re-materialized.
     assert_eq!(
         report.materialized.len(),
         1,
         "exactly one missing declared path"
     );
 
-    // 2. the undeclared NON-empty path is UNTOUCHED and rendered as a FINDING.
+    // 2. the undeclared non-empty path is untouched and rendered as a finding.
     assert_eq!(
         report.findings,
         vec!["results/notes.md".to_owned()],
@@ -418,7 +383,7 @@ fn reconcile_materializes_missing_untouches_undeclared_prunes_ephemeral() {
         "the undeclared file's bytes were left untouched"
     );
 
-    // 3. the declared-ephemeral file was PRUNED (guarded remove) and is gone.
+    // 3. the declared-ephemeral file was pruned (guarded remove) and is gone.
     let pruned: Vec<&str> = report
         .pruned
         .iter()
@@ -460,11 +425,9 @@ fn reconcile_without_prune_leaves_ephemeral_in_place() {
 }
 
 // ---------------------------------------------------------------------------
-// The directory half of the prune allowlist (design element §5.3). Before the
-// U19 conformance audit this could not fire at all: the candidate set and the
-// declared-prefix skip set were derived from the same expression, so every
-// candidate was skipped and `pruned_dirs` came back empty on every input. The
-// three assertions below are the ones that were vacuous.
+// The directory half of the prune allowlist (§5.3). Regression: deriving the
+// candidate set from the declared paths made `pruned_dirs` empty on every
+// input — these assertions were once vacuous.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -475,8 +438,8 @@ fn an_empty_undeclared_dir_under_the_scaffold_is_pruned() {
         ("tasks/index.md", "---\ntype: index\n---\n\n# I\n"),
         ("results/plan.md", "---\ntype: plan\n---\n\n# P\n"),
     ]);
-    // A nest of empty dirs beneath a scaffold directory: both collapse in ONE
-    // pass, deepest-first, which is the claim the sort exists to make.
+    // A nest of empty dirs beneath a scaffold directory collapses in one pass,
+    // deepest-first.
     std::fs::create_dir_all(root.0.join("tasks/scratch/inner")).unwrap();
 
     let report = reconcile(&root, "presets/session.md", true, &opts()).unwrap();
@@ -503,8 +466,7 @@ fn a_dir_holding_content_or_a_declared_path_is_never_pruned() {
         ("SESSION.md", "---\ntype: session\n---\n\n# S\n"),
         ("tasks/index.md", "---\ntype: index\n---\n\n# I\n"),
         ("results/plan.md", "---\ntype: plan\n---\n\n# P\n"),
-        // Undeclared CONTENT under an undeclared dir — the dir is not empty, so
-        // it stands, and its file is a finding rather than a deletion.
+        // Undeclared content under an undeclared dir — the dir stands.
         ("tasks/keep/work.md", "---\ntype: note\n---\n\n# mine\n"),
     ]);
 
@@ -526,9 +488,9 @@ fn a_dir_holding_content_or_a_declared_path_is_never_pruned() {
 
 #[test]
 fn the_workspace_root_is_never_walked_for_directory_candidates() {
-    // A scaffold of top-level files alone creates NO directory, so it offers no
-    // candidate. Without this bound, every empty directory anywhere in a user's
-    // workspace would be a prune target under `--prune`.
+    // A scaffold of top-level files creates no directory, so it offers no
+    // candidate — otherwise every empty dir in the workspace would be a prune
+    // target under `--prune`.
     const TOP_LEVEL_PRESET: &str = r#"---
 type: def
 defines: session
