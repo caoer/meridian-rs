@@ -1,23 +1,18 @@
-//! The armed-plane gate mount (U4.2) — the trusted write path's I/O half.
+//! The armed-plane gate mount — the trusted write path's I/O half.
 //!
 //! [`policy::gate`] is the pure decision; this module is the disk seam that feeds
-//! it. It reads the workspace's OWN once-armed marker and attested armed-rules
+//! it. It reads the workspace's own once-armed marker and attested armed-rules
 //! artifact through [`crate::armed_disk`] — never a caller-supplied set — resolves
-//! the armed law AT THE WRITE'S PATH, evaluates the change, and maps the outcome
+//! the armed law at the write's path, evaluates the change, and maps the outcome
 //! onto this crate's needs: advisory verdicts to merge into the response, or a
-//! wire refusal that the choke-point returns BEFORE bytes land.
+//! wire refusal that the choke-point returns before bytes land.
 //!
-//! It is mounted at the ONE production verdict site in [`crate::write`]
-//! (splice/create/remove), so both writer paths (the per-workspace sidecar and the
-//! resident registry daemon) gate through it — and, via the same
-//! [`policy::gate`] pair, the run plane (`crates/run`) gates the bytes it lands
-//! too. On a never-armed workspace this is a bit-for-bit no-op: the law reports
-//! never-armed and the gate adds no verdict and never refuses.
+//! Mounted at the one production verdict site in [`crate::write`]
+//! (splice/create/remove), so both writer paths gate through it. On a
+//! never-armed workspace it is a bit-for-bit no-op: no verdict, no refusal.
 //!
-//! # The law is resolved per WRITE PATH
-//! An arm is rooted, so "what governs this write" is a question about the write's
-//! own path. The door asks it once, at the target path, and hands the answer to
-//! the pure decision — it never resolves a workspace-wide set and filters after.
+//! An arm is rooted, so the law is resolved once at the write's target path and
+//! handed to the pure decision — never a workspace-wide set filtered after.
 
 use wire::{ErrorBody, ErrorCode, NodeRev, Path, Severity, Span, Verdict};
 
@@ -25,11 +20,8 @@ use crate::armed_disk;
 
 /// A passing gate's output: the advisory verdicts to merge into the response.
 ///
-/// A `--force`-escaped skip used to leave this struct by a second door — a
-/// `forced_skips` list the mount journaled as permanent `op=force` rows. The
-/// journal is gone (ZT 2026-08-02), and P15 puts the whole record on the rendered
-/// surface instead: [`findings_to_verdicts`] marks a bypassed rule `forced:`, so
-/// the verdicts below carry it and there is nothing left for a second channel.
+/// There is no second channel for `--force`-escaped skips — [`findings_to_verdicts`]
+/// marks a bypassed rule `forced:`, so these verdicts carry the whole record.
 #[derive(Debug, Default)]
 pub struct GatePass {
     /// The §11.1 advisory verdicts (warn findings, surviving armed-law faults, and
@@ -37,13 +29,13 @@ pub struct GatePass {
     pub verdicts: Vec<Verdict>,
 }
 
-/// Build the `rulepack-api@2` change surface for one write and gate it — the ONE
+/// Build the `rulepack-api@2` change surface for one write and gate it — the one
 /// call the write choke-point makes at each of its three verdict sites (splice,
 /// create, remove). `before`/`after` are the pre/post states; `edits` the model
 /// edits (empty for a whole-file birth/death); `op` the change op; `force` the
-/// U4.3 `--force` bypass; `subject_doc` the state whose path + root rev the
-/// advisory verdicts carry (the `after` for a splice/create, the `before` for a
-/// remove). U4.2 gates the change + states, so declared-evidence edges are empty
+/// `--force` bypass; `subject_doc` the state whose path + root rev the advisory
+/// verdicts carry (the `after` for a splice/create, the `before` for a remove).
+/// The gate judges the change + states, so declared-evidence edges are empty
 /// (`no_edges`).
 ///
 /// # Errors
@@ -106,17 +98,11 @@ pub fn enforce_gate(
 }
 
 /// Project the armed findings onto wire verdicts (§11.1 advisory shape).
-/// Coordinates come from the subject document (path + root rev); a rule finding is
-/// document-grained, so it carries the whole-file rev and a zero span.
+/// Coordinates come from the subject document (path + root rev); a rule finding
+/// is document-grained, so it carries the whole-file rev and a zero span.
 ///
-/// **P15 — a forced bypass NAMES the plane it bypassed, here.** A `--force`-escaped
-/// skip used to be recorded twice: once as an ordinary advisory verdict and once as
-/// a permanent `op=force` journal row carrying `forced_rule=`. The journal is gone
-/// (ZT 2026-08-02, remove-no-replacement), so this rendered surface is the ONLY
-/// place the bypass can be stated — and an unmarked verdict would render a bypassed
-/// rule identically to one that merely warned. The `forced:` prefix is that mark:
-/// `force` stays one word at the door (ZT's "fingerprint-or-force"), and what it
-/// escaped is legible in the response it escaped through.
+/// A forced bypass carries a `forced:` prefix — this rendered surface is the
+/// only place the bypass is stated, and unmarked it would read as a plain warn.
 fn findings_to_verdicts(findings: Vec<policy::GateFinding>, doc: &model::Document) -> Vec<Verdict> {
     if findings.is_empty() {
         return Vec::new();
@@ -145,15 +131,12 @@ fn findings_to_verdicts(findings: Vec<policy::GateFinding>, doc: &model::Documen
 }
 
 /// Map a [`policy::GateRefusal`] to its wire `{code, recovery}` envelope, drawn
-/// from the closed §8 taxonomy (refusal-amendment).
+/// from the closed §8 taxonomy.
 ///
-/// # The envelope is chosen from the fault; the WORDS are never re-written
-/// [`policy::ArmedFault`] is the one artifact-fault surface and its `Display` is
-/// the one renderer. This seam picks which wire code carries it — a DRIFTED row
-/// mints `armed_drift` (recovery: refresh) and fills the `expected`/`actual` rev
-/// slots, because that is the fault an operator resolves by re-arming; every
-/// other armed-law fault mints `convention_fault` (recovery: env). Choosing a
-/// channel is this host's job. Choosing words would be a second vocabulary.
+/// This seam picks the channel, never the words: [`policy::ArmedFault`]'s
+/// `Display` is the one renderer. A drifted row mints `armed_drift` (recovery:
+/// refresh) with `expected`/`actual`; every other armed-law fault mints
+/// `convention_fault` (recovery: env).
 #[must_use]
 pub fn gate_refusal_to_wire(refusal: policy::GateRefusal) -> Box<ErrorBody> {
     match refusal {
@@ -164,9 +147,6 @@ pub fn gate_refusal_to_wire(refusal: policy::GateRefusal) -> Box<ErrorBody> {
             Box::new(e)
         }
         policy::GateRefusal::ArmedLawFault { faults } => armed_law_fault_to_wire(&faults),
-        // U4.3 taxonomy row 9 — a one-sided artifact↔page change stopped at the
-        // door. `path` echoes the engine-managed file; `message` names the side
-        // and the legal path (the `side` is prefixed so it reads on the wire).
         policy::GateRefusal::BindingBreak {
             side,
             path,
@@ -181,8 +161,6 @@ pub fn gate_refusal_to_wire(refusal: policy::GateRefusal) -> Box<ErrorBody> {
             ));
             Box::new(e)
         }
-        // U4.3 taxonomy row 10 — the integrity floor. `path` is the protected file
-        // (the artifact or the marker) the write tried to remove.
         policy::GateRefusal::IndexIntegrity { target, teaching } => {
             let mut e = ErrorBody::new(ErrorCode::IndexIntegrity);
             e.path = Some(Path(target));
@@ -192,9 +170,9 @@ pub fn gate_refusal_to_wire(refusal: policy::GateRefusal) -> Box<ErrorBody> {
     }
 }
 
-/// Envelope every refusing armed-law fault. The message renders them ALL — they
-/// are one condition (the law at this path is not enforceable), and reporting one
-/// would send the operator round the loop once per fault.
+/// Envelope every refusing armed-law fault. The message renders them all — they
+/// are one condition (the law at this path is not enforceable), and reporting
+/// one would send the operator round the loop once per fault.
 fn armed_law_fault_to_wire(faults: &[policy::ArmedFault]) -> Box<ErrorBody> {
     let message = faults
         .iter()
@@ -202,9 +180,8 @@ fn armed_law_fault_to_wire(faults: &[policy::ArmedFault]) -> Box<ErrorBody> {
         .collect::<Vec<_>>()
         .join("; ");
 
-    // A drifted row is the one fault with a rev PAIR to report, and `refresh` is
-    // the recovery that fits it. Any other fault riding along keeps its words in
-    // the message; the code follows the fault an operator can act on first.
+    // A drifted row is the one fault with a rev pair to report; the code
+    // follows the fault an operator acts on first.
     if let Some((armed_rev, report_rev)) = faults.iter().find_map(drift_revs) {
         let mut e = ErrorBody::new(ErrorCode::ArmedDrift);
         e.expected = Some(NodeRev(armed_rev));
@@ -257,8 +234,8 @@ fn doc_path(doc: &model::Document) -> String {
     }
 }
 
-/// Build a path-stamped empty document — the absent BEFORE state of a `create`
-/// or absent AFTER state of a `remove`, so the change surface still carries the
+/// Build a path-stamped empty document — the absent before state of a `create`
+/// or absent after state of a `remove`, so the change surface still carries the
 /// file's path for scoping.
 #[must_use]
 pub fn absent_doc(path: &Path) -> model::Document {
@@ -269,10 +246,9 @@ pub fn absent_doc(path: &Path) -> model::Document {
     doc
 }
 
-/// A no-op resolver for declared-evidence edges: U4.2 gates the change + states,
-/// not the one-hop pinned evidence (that resolver is a later refinement). The
-/// door reads no evidence hop, so an armed rule that reads `change.edges` sees
-/// them fail-closed (drifted, no facts) — never a silent pass on evidence.
+/// A no-op resolver for declared-evidence edges: the gate judges the change +
+/// states, not the one-hop pinned evidence. An armed rule reading
+/// `change.edges` sees them fail-closed — never a silent pass on evidence.
 #[must_use]
 pub fn no_edges(_reference: &str) -> Option<(String, model::Document)> {
     None
@@ -280,10 +256,8 @@ pub fn no_edges(_reference: &str) -> Option<(String, model::Document)> {
 
 #[cfg(test)]
 mod scenarios {
-    //! The U4.2/U4.3 merge-gate scenarios, exercised through the REAL write path
-    //! (`crate::write::{create, splice, remove}`) on an on-disk workspace. Each
-    //! scenario arms a rule PAGE in the workspace's own artifact and proves the
-    //! gate's decision lands at the wire seam, not just in `policy`.
+    //! Merge-gate scenarios, exercised through the real write path
+    //! (`crate::write::{create, splice, remove}`) on an on-disk workspace.
 
     use std::path::Path as FsPath;
 
@@ -292,9 +266,8 @@ mod scenarios {
 
     use crate::write::{CreateArgs, RemoveArgs, SpliceArgs, create, remove, splice};
 
-    /// The rule page every scenario arms: refuses when `actor == owner`, scoped to
-    /// `tasks/**`. It registers by TAG and carries NO `kind:` key — the tag is the
-    /// one name (ruling § 1).
+    /// The rule page every scenario arms: refuses when `actor == owner`, scoped
+    /// to `tasks/**`. It registers by tag and carries no `kind:` key (ruling § 1).
     const RULE_PAGE: &str = "---\ntags: [type/rule, rules/check]\nid: reviewer.not-owner\n\
         paths:\n  - tasks/**\n---\n\n# reviewer.not-owner\n\n\
         ```starlark\ndef check_change(change):\n    owner = change.doc.frontmatter.get(\"owner\")\n    \
@@ -302,12 +275,11 @@ mod scenarios {
         refuse(message = \"reviewer must not be the owner: \" + actor + \" cannot close their own task\", \
         passing = \"reviewer-not-owner.md#reviewer-close\")\n```\n";
 
-    /// Where the scenarios keep that page. Nothing depends on the location — that
-    /// is the point of tag registration — so an ordinary content directory is used
-    /// rather than a reserved-looking one.
+    /// Where the scenarios keep that page. Nothing depends on the location —
+    /// registration is by tag.
     const RULE_PATH: &str = "rules/reviewer-not-owner.md";
 
-    /// A page that REGISTERS (so it can be armed) but declares no evaluable law —
+    /// A page that registers (so it can be armed) but declares no evaluable law —
     /// the "arms but will not load" shape.
     const BARE: &str = "---\ntags: [type/rule, rules/check]\nid: bare.check\n---\n\n# bare\n";
 
@@ -357,12 +329,10 @@ mod scenarios {
         write_page(root, fs::domain::ARMED_RULES_PATH, body);
     }
 
-    /// Stamp the once-armed marker: the workspace HAS been armed.
+    /// Stamp the once-armed marker: the workspace has been armed.
     ///
-    /// Every fixture that arms writes BOTH files. The artifact alone leaves a
-    /// workspace the marker says was never armed (so the gate is off); the marker
-    /// alone is `ArmedFault::Missing`. Arming is one act over two files, and a
-    /// fixture that writes one of them is not testing an armed workspace.
+    /// Every fixture that arms writes both files: the artifact alone reads as
+    /// never-armed (gate off); the marker alone is `ArmedFault::Missing`.
     fn set_marker(root: &fs::WorkspaceRoot) {
         write_page(root, fs::domain::ATTESTED_MARKER_PATH, "");
     }
@@ -401,8 +371,7 @@ mod scenarios {
     #[test]
     fn s1_empty_caller_set_still_refuses_from_the_workspace_artifact() {
         let (dir, root) = armed_block_ws();
-        // The caller hands the EMPTY set (`&[]`) — it cannot weaken the decision;
-        // the gate reads the workspace's OWN attested artifact.
+        // The empty caller set (`&[]`) cannot weaken the decision.
         let err = create(&root, None, &owner_self_create("agent:alice"), &[])
             .expect_err("owner self-close on an armed block workspace must refuse");
         assert_eq!(err.code, ErrorCode::ConventionFault);
@@ -413,7 +382,7 @@ mod scenarios {
         );
     }
 
-    // ── Scenario 5 — the refusal NAMES the rule ID + cites the passing case ─────
+    // ── Scenario 5 — the refusal names the rule ID + cites the passing case ─────
     #[test]
     fn s5_refusal_names_the_rule_id_and_cites_the_passing_case() {
         let (_dir, root) = armed_block_ws();
@@ -434,7 +403,7 @@ mod scenarios {
         );
     }
 
-    /// The reviewer (actor ≠ owner) close LANDS — the legal path.
+    /// The reviewer (actor ≠ owner) close lands — the legal path.
     #[test]
     fn reviewer_close_lands_on_armed_block() {
         let (dir, root) = armed_block_ws();
@@ -455,10 +424,8 @@ mod scenarios {
         create(&ctrl, None, &owner_self_create("agent:alice"), &[]).expect("control create lands");
         let control_bytes = std::fs::read(ctrl_dir.path().join("tasks/newtask.md")).unwrap();
 
-        // Subject: an armed BLOCK rule page AND its artifact on disk, but NO marker
-        // → never-armed → the gate is off. The would-fire owner self-close lands,
-        // byte-for-byte identical to the ungated control. A stray artifact cannot
-        // arm a workspace; only an attested arm, which sets the marker, can.
+        // Subject: rule page + artifact on disk but no marker → never-armed.
+        // A stray artifact cannot arm a workspace; only an attested arm can.
         let (dir, root) = tmp_ws();
         write_page(&root, RULE_PATH, RULE_PAGE);
         write_artifact(
@@ -476,7 +443,7 @@ mod scenarios {
         );
     }
 
-    // ── the SPLICE mount fires too (site parity) ───────────────────────────────
+    // ── the splice mount fires too (site parity) ───────────────────────────────
     #[test]
     fn splice_mount_refuses_owner_self_close() {
         let (dir, root) = armed_block_ws();
@@ -502,7 +469,7 @@ mod scenarios {
         );
     }
 
-    /// A DRY run of a refused write still refuses — a rehearsal of a forbidden
+    /// A dry run of a refused write still refuses — a rehearsal of a forbidden
     /// write is forbidden (the gate runs before the dry short-circuit).
     #[test]
     fn dry_refused_write_still_refuses() {
@@ -525,18 +492,10 @@ mod scenarios {
     }
 
     // ═══ THE THREE FAULT SHAPES, THROUGH THE ONE SURFACE ═════════════════════
-    //
-    // These arrived as three separate defect reports and would have minted three
-    // vocabularies if fixed separately. They are ONE condition — a workspace that
-    // HAS been armed cannot honour its law — reported by ONE surface
-    // (`policy::ArmedFault`), and each test below reaches that surface through the
-    // real write door rather than through the resolver directly.
 
-    /// **Shape 1 — the row-deletion disarm.** The deletion LOOKS legitimate: a
-    /// well-formed artifact page with the byte-exact header and ZERO data rows,
-    /// which is exactly what deleting every row leaves behind. Before the
-    /// once-armed pivot this parsed clean and armed nothing — a silent TOTAL
-    /// disarm performed with an ordinary edit.
+    /// Shape 1 — the row-deletion disarm: a well-formed artifact page with the
+    /// byte-exact header and zero data rows is what deleting every row leaves
+    /// behind, and it must not read as a silent total disarm.
     #[test]
     fn fault_shape_row_deletion_disarm_refuses_instead_of_disarming() {
         let (dir, root) = armed_block_ws();
@@ -545,7 +504,7 @@ mod scenarios {
             .expect("the deletion is well-formed, not corrupt — that is what makes it dangerous");
         write_artifact(&root, &emptied);
 
-        // A write that the armed rule would have PASSED still refuses: the law is
+        // A write the armed rule would have passed still refuses: the law is
         // not "nothing", it is unreadable, and unreadable fails closed.
         let mut args = owner_self_create("agent:bob");
         args.body = "---\nowner: agent:alice\n---\n# Task\n\nbody\n".into();
@@ -563,9 +522,9 @@ mod scenarios {
         assert!(!dir.path().join("tasks/newtask.md").exists());
     }
 
-    /// **Shape 2 — a corrupt artifact on an armed workspace.** A corrupt page
-    /// never reads as "nothing armed"; that would be a gate-disabling edit dressed
-    /// up as a parse failure.
+    /// Shape 2 — a corrupt artifact on an armed workspace: a corrupt page never
+    /// reads as "nothing armed"; that would be a gate-disabling edit dressed up
+    /// as a parse failure.
     #[test]
     fn fault_shape_corrupt_artifact_fails_closed_naming_it() {
         let (dir, root) = armed_block_ws();
@@ -582,9 +541,7 @@ mod scenarios {
         assert!(!dir.path().join("tasks/newtask.md").exists());
     }
 
-    /// **Shape 3 — one faulting row must not silence the rules beside it.** The
-    /// defect propagated the first fault out of the per-row loop, so ONE armed page
-    /// missing its declaration disarmed every other rule at the same path. Here the
+    /// Shape 3 — one faulting row must not silence the rules beside it: the
     /// blocking rule still governs while the broken row reports itself.
     #[test]
     fn fault_shape_one_bad_row_does_not_silence_the_rules_beside_it() {
@@ -610,10 +567,9 @@ mod scenarios {
         assert!(!dir.path().join("tasks/newtask.md").exists());
     }
 
-    /// The other half of shape 1's law, and why `Disarmed` is not merely "no armed
-    /// rows": an attested-`off` row IS an attestation. A workspace that deliberately
-    /// enforces nothing gates nothing and faults not at all — otherwise the
-    /// fail-closed pivot would make deliberate disarming impossible.
+    /// The other half of shape 1's law: an attested-`off` row is an attestation.
+    /// A workspace that deliberately enforces nothing gates nothing and faults
+    /// not at all.
     #[test]
     fn rows_attested_off_are_a_legitimate_disarm_and_never_a_fault() {
         let (dir, root) = armed_ws(Mode::Off);
@@ -624,9 +580,8 @@ mod scenarios {
 
     // ═══ U4.3 named merge-gate scenarios (real write path) ═══════════════════
 
-    /// A splice that hand-injects a forged armed row into the ARTIFACT — the
-    /// artifact-side binding break (the checkbox flip's successor). `force` toggles
-    /// the sanctioned bypass.
+    /// A splice that hand-injects a forged armed row into the artifact — the
+    /// artifact-side binding break. `force` toggles the sanctioned bypass.
     fn forged_row(force: bool) -> SpliceArgs {
         SpliceArgs {
             id: None,
@@ -719,11 +674,9 @@ mod scenarios {
         );
     }
 
-    /// **The page side, re-keyed.** The folder generation knew an armed law by its
-    /// path shape (`conventions/<slug>/CHECK.md`). A rule page has no reserved
-    /// shape — it is an ordinary page wherever its author put it — so the binding
-    /// asks MEMBERSHIP in what the workspace attested. Editing an armed page in
-    /// place still drifts the pinned rev under the artifact that arms it.
+    /// The page side is membership, not a path shape: a rule page has no
+    /// reserved location, so the binding asks membership in what the workspace
+    /// attested.
     #[test]
     fn u43_page_side_break_is_membership_not_a_path_shape() {
         let (dir, root) = armed_block_ws();
@@ -762,9 +715,7 @@ mod scenarios {
         );
     }
 
-    /// An UNARMED rule page is freely editable — only ARMED pages are bound. This
-    /// is the control that keeps the page-side break from degenerating into "no
-    /// rule page may ever be edited", which would make authoring impossible.
+    /// An unarmed rule page is freely editable — only armed pages are bound.
     #[test]
     fn u43_an_unarmed_rule_page_is_freely_editable() {
         let (dir, root) = armed_block_ws();
@@ -794,11 +745,9 @@ mod scenarios {
         );
     }
 
-    // ── Scenario 2 — forced write → the skip is RENDERED (P15) ─────────────────
-    /// A `--force`-escaped skip used to be recorded twice: a permanent `op=force`
-    /// journal row AND a verdict. The journal is gone (ZT 2026-08-02), so the
-    /// rendered verdict is the ONLY record — and P15 requires it to NAME the plane
-    /// the force bypassed, which an unmarked warn verdict does not.
+    // ── Scenario 2 — forced write → the skip is rendered ───────────────────────
+    /// The rendered verdict is the only record of a `--force`-escaped skip, and
+    /// it must name the plane the force bypassed.
     #[test]
     fn u43_s2_forced_write_renders_the_skip() {
         let (dir, root) = armed_block_ws();
@@ -807,8 +756,7 @@ mod scenarios {
             "tasks/fix.md",
             "---\nowner: agent:alice\nstatus: open\n---\n# Fix\n\nbody\n",
         );
-        // The owner self-closes (actor == owner) — the armed rule refuses it.
-        // `--force` escapes: the write lands and the skip is rendered.
+        // The owner self-closes (actor == owner); `--force` escapes the refusal.
         let out = splice(
             &root,
             None,
@@ -818,7 +766,6 @@ mod scenarios {
         )
         .expect("--force escapes the armed refusal");
 
-        // RENDERED: a forced verdict rides the response naming the skip.
         let wire::ResponseBody::Splice { verdicts, .. } = out.body else {
             panic!("splice returns a Splice body");
         };
@@ -827,7 +774,6 @@ mod scenarios {
             "the forced skip renders as a visible verdict row: {verdicts:?}"
         );
 
-        // The write LANDED (the bypass is real, not a silent refusal).
         assert!(
             std::fs::read_to_string(dir.path().join("tasks/fix.md"))
                 .unwrap()
@@ -835,9 +781,7 @@ mod scenarios {
             "a forced write lands its bytes"
         );
 
-        // P15: the verdict NAMES the bypassed rule — the record the force-row
-        // used to carry. Without the `forced:` mark a bypassed rule would render
-        // identically to one that merely warned, and nothing else records it now.
+        // The verdict names the bypassed rule.
         let forced: Vec<&wire::Verdict> = verdicts
             .iter()
             .filter(|v| v.message.starts_with("forced: bypassed "))
@@ -856,7 +800,7 @@ mod scenarios {
 
     // ── Scenario 4 — artifact-remove + marker-remove → the integrity floor ──────
     /// The current whole-file rev of `path` — the remove-what-you-read CAS the
-    /// remove op checks BEFORE the gate, so the test must pass the live rev.
+    /// remove op checks before the gate, so the test must pass the live rev.
     fn live_rev(root: &fs::WorkspaceRoot, path: &str) -> NodeRev {
         let doc = fs::load(root, FsPath::new(path)).expect("loads");
         NodeRev(doc.root.node_rev.0.clone())
@@ -919,10 +863,9 @@ mod scenarios {
         );
     }
 
-    /// The integrity floor is STRUCTURAL — `--force` does NOT escape a marker
-    /// removal (security F2: a forced silent-disarm would defeat the fail-closed
-    /// design). The `remove` op carries no force, so this asserts the pure decision
-    /// directly: even a forced change refuses.
+    /// The integrity floor is structural — `--force` does not escape a marker
+    /// removal. The `remove` op carries no force, so this asserts the pure
+    /// decision directly.
     #[test]
     fn u43_index_integrity_is_not_force_escapable() {
         use policy::{ChangeOp, DoorLaw, classify_door_law};

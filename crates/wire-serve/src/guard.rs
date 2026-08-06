@@ -1,89 +1,68 @@
-//! U10 — **fingerprint-or-force** at every wire door's splice intake, per-edit.
+//! Fingerprint-or-force at every wire door's splice intake, per-edit.
 //!
-//! # The ruling this implements (ZT, 2026-08-03), verbatim
-//! > Content-mutating writes on every wire door require fingerprint match or
-//! > force; guard fields stay schema-optional; force is any client's
-//! > refuse→rewrite path; MCP is the main agent client that implements that
-//! > path, not a separate trust plane.
+//! Content-mutating writes on every wire door require fingerprint match or
+//! `force`; guard fields stay schema-optional; `force` is any client's
+//! refuse→rewrite path, not a separate trust plane.
 //!
-//! # Frame legality vs semantic refusal — the distinction the whole unit rests on
-//! Decision 007 says a guardless splice is a legal wire frame forever. That
-//! survives **in full at the schema half**: guard fields stay OPTIONAL, a
-//! guardless frame DECODES, and nothing here rejects a frame. What this unit
-//! adds is a SEMANTIC refusal after decode — the frame is well-formed and the
-//! WRITE is refused. A path that rejected the frame instead would violate the
-//! ruling, not merely this module's intent; `u10_guard.rs` asserts the split.
+//! # Frame legality vs semantic refusal
+//! A guardless splice is a legal wire frame forever (decision 007): guard
+//! fields stay optional and nothing here rejects a frame. This unit adds a
+//! semantic refusal after decode. `u10_guard.rs` asserts the split.
 //!
-//! # Why here and not at plan lowering
-//! Plan lowering is reachable only through the plan face: native `edits` reach
-//! [`crate::write::splice`] without ever being lowered, so a guard mounted at
-//! lowering is bypassed by a field rename. This guard mounts at the intake
-//! **post-lowering**, the one point both faces have already reached.
+//! # The mount point
+//! Native `edits` reach [`crate::write::splice`] without ever being lowered, so
+//! a guard mounted at lowering is bypassed by a field rename. This guard mounts
+//! at the intake post-lowering, the one point both faces have already reached.
 //!
-//! # The two faces are judged on their own rows, at the one mount
-//! The lowered batch is what the NATIVE face is judged on. The PLAN face is
-//! judged on its plan rows, because that is where its guard tokens live: the
-//! file-grain doc-root token (`set_property.rev`, P3) has no slot in the lowered
-//! `Edit`, and a section create's absence guard is a fact about a section the
-//! lowered form has already turned into a parent-append. Both passes run at this
-//! one mount, so neither face can reach disk around the other.
+//! Each face is judged on its own rows: the native face on the lowered batch,
+//! the plan face on its plan rows, where its guard tokens live (the file-grain
+//! doc-root token `set_property.rev` has no slot in the lowered `Edit`, and a
+//! section create's absence guard is a fact lowering has turned into a
+//! parent-append). Both passes run here, so neither face reaches disk around
+//! the other.
 //!
-//! # Scope (deliberate, each rule is a ruling)
-//! - Every edit mutating **existing content** demands its fingerprint, or `force`.
-//!   The law is content-change-scoped, **not replace-shaped** (security finding
-//!   S3): append is a content change and is guarded like any other.
-//! - **Births are guarded by absence**, never by fingerprint — a thing that does
-//!   not exist has no fingerprint to match. A plan `create` demands that its
-//!   section be absent; the whole-file birth op (`create`) keeps its own
+//! # Scope
+//! - Every edit mutating existing content demands its fingerprint, or `force`.
+//!   The law is content-change-scoped, not replace-shaped: append is guarded
+//!   like any other content change.
+//! - Births are guarded by absence, never by fingerprint. A plan `create`
+//!   demands that its section be absent; the whole-file birth op keeps its own
 //!   `if_absent` CAS at the disk edge and is not touched here.
-//! - **`set_properties` demands a FILE-grain token.** Frontmatter semantics are
+//! - `set_properties` demands a file-grain token: frontmatter semantics are
 //!   file-scoped, so the doc-root token — not a key-line rev — is the honest
-//!   grain (P3).
-//! - **`force` is the ONE bypass** — any client's refuse→rewrite path — and it
-//!   bypasses the FINGERPRINT PLANE whole: a missing token and a stale token both
-//!   land, and every plane the write bypassed is named back to the caller (P15).
-//!   Before this unit `force` and CAS were disconnected; [`guard_batch`] joins them.
+//!   grain.
+//! - `force` is the one bypass, and it bypasses the fingerprint plane whole: a
+//!   missing token and a stale token both land, and every bypassed plane is
+//!   named back to the caller.
 //!
-//! # EVERY wire door enforces; there are no trust planes here
-//! Both the resident daemon and the per-workspace sidecar are wire doors and both
-//! enforce. MCP is the main agent client that implements the refuse→rewrite path,
-//! **not a separate trust plane** — so no door is guarded or exempted for WHO is
-//! behind it. [`Origin`] is door bookkeeping, nothing more.
-//!
-//! The in-process path ([`Origin::InProcess`] — `mrd`, the run plane, tests) is
-//! not a wire door, so the ruling does not reach it and its behaviour is
-//! unchanged. That is scope, not trust: a reader who finds `mrd put` writing
-//! without a fingerprint is looking at a path the ruling does not govern.
-//!
-//! The **run-plane effects shim is a DIFFERENT DOOR** and carries no fingerprint
-//! unless ZT re-rules — requirements **decision 18**, which supersedes the
-//! earlier Q3 reference as the governing authority. A NON-GOAL of this unit: do
-//! not guard it here.
+//! # Every wire door enforces; there are no trust planes
+//! Both the resident daemon and the per-workspace sidecar enforce; no door is
+//! exempted for who is behind it. [`Origin`] is door bookkeeping. The
+//! in-process path ([`Origin::InProcess`] — `mrd`, the run plane, tests) is not
+//! a wire door, so the rule does not reach it: scope, not trust.
 
 use wire::{
     Edit, EditShape, ErrorBody, ErrorCode, NodeRev, Path, PlanEdit, PutAt, SecRef, Severity, Span,
     Verdict,
 };
 
-/// WHICH DOOR a splice arrived through — bookkeeping, stated by the caller and
-/// never sniffed. It carries no trust class: every wire door enforces
-/// identically, whoever is behind it.
+/// Which door a splice arrived through — bookkeeping, stated by the caller and
+/// never sniffed. It carries no trust class.
 ///
-/// There is deliberately NO `Default`: a door added later must STATE which side
-/// of the wire it is on, because a default would silently enrol it in whichever
-/// side the default named.
+/// Deliberately no `Default`: a door added later must state which side of the
+/// wire it is on, or a default would silently enrol it in one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Origin {
     /// A decoded wire frame — the resident daemon's socket and the sidecar's
-    /// stdio host alike. EVERY wire door enforces.
+    /// stdio host alike. Every wire door enforces.
     Wire,
     /// An in-process call: `mrd`, the run plane, the test harness. Not a wire
-    /// door, so the ruling does not reach it; behaviour is unchanged here.
+    /// door, so the rule does not reach it.
     InProcess,
 }
 
 /// One plane a forced write bypassed — rendered back to the caller so a `force`
-/// is never silent (P15).
+/// is never silent.
 #[derive(Debug, Clone)]
 pub struct Bypass {
     /// The plane's name, as the caller reads it.
@@ -101,11 +80,10 @@ enum Grain {
     File,
 }
 
-/// WHICH slot the missing token belongs in. The two faces spell the same guard
-/// differently, so a refusal that names one slot for both teaches the wrong fix
-/// to half its readers — this is what keeps the fix clause honest.
+/// Which slot the missing token belongs in. The two faces spell the same guard
+/// differently, so a refusal must name the slot the caller actually has.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-// Every slot IS a rev slot — the shared postfix is the point, and each prefix
+// Every slot is a rev slot — the shared postfix is the point, and each prefix
 // names the face whose field the refusal must spell.
 #[allow(clippy::enum_variant_names)]
 enum Slot {
@@ -136,16 +114,15 @@ struct Demand {
     unmet: Unmet,
 }
 
-/// **The guard.** Run at the wire-origin splice intake, post-lowering, over both
+/// The guard. Run at the wire-origin splice intake, post-lowering, over both
 /// faces. On a wire-origin write it demands a fingerprint for every edit that
 /// changes existing content, absence for every birth, and a doc-root token for
 /// `set_properties` — or an explicit `force`.
 ///
-/// When `force` is set the demands are still COMPUTED, so the response can name
-/// every plane the write bypassed; `edits` then has its node-grain tokens
-/// stripped, which is what joins `force` to CAS (they were two disconnected
-/// mechanisms before this unit): a forced write with a stale rev lands and says
-/// so, instead of refusing at a CAS rung `force` never reached.
+/// Under `force` the demands are still computed, so the response can name every
+/// bypassed plane, and `edits` has its node-grain tokens stripped: a forced
+/// write with a stale rev lands and says so, instead of refusing at a CAS rung
+/// `force` never reached.
 ///
 /// Returns the bypassed planes — empty for an ordinary write, and empty for
 /// [`Origin::InProcess`], which is exempt.
@@ -180,9 +157,8 @@ pub fn guard_batch(
         return Ok(Vec::new());
     }
 
-    // Forced: the fingerprint plane is bypassed whole. Dropping the node-grain
-    // tokens here is what makes `force` reach CAS — the sealed batch below no
-    // longer compares a rev the caller asked us to write past.
+    // Forced: dropping the node-grain tokens is what makes `force` reach CAS —
+    // the sealed batch no longer compares a rev the caller wrote past.
     for edit in edits.iter_mut() {
         edit.if_node_rev = None;
     }
@@ -204,24 +180,16 @@ pub fn guard_batch(
         .collect())
 }
 
-/// The NATIVE face: every edit is judged on the lowered/native `Edit` itself.
+/// The native face: every edit is judged on the lowered/native `Edit` itself.
 ///
-/// # This rung speaks ONLY about well-formed mutations of existing content
-/// The law is scoped to edits that mutate EXISTING content. An edit that is not
-/// one — a dangling or ambiguous target, a malformed `upsert`, the birth of an
-/// absent frontmatter key — is skipped here so the rung that actually describes
-/// the caller's situation gets to answer.
+/// Only well-formed mutations of existing content are this rung's to answer. An
+/// edit that is not one — a dangling or ambiguous target, a malformed `upsert`,
+/// the birth of an absent frontmatter key — is skipped so the rung that
+/// describes the caller's situation answers instead (`ref_not_found` /
+/// `ambiguous_ref` / `bad_request`).
 ///
-/// This is a CORRECTNESS requirement, not politeness, and it was a real defect
-/// before it was a rule. A guard that speaks first answers "you need a
-/// fingerprint" for a node that does not exist, or for a request that is simply
-/// malformed — sending the caller to fetch a rev that cannot help them, and
-/// burying `ref_not_found` / `ambiguous_ref` / `bad_request` behind a refusal
-/// about the wrong problem. Ordering is the whole content of this rule: the
-/// guard is a rung, and it is not the FIRST rung.
-///
-/// Pinned by `a_target_that_does_not_resolve_is_not_this_rungs_to_answer` and by
-/// the `selector_ambiguity` / `splice_e2e` suites end-to-end.
+/// Pinned by `a_target_that_does_not_resolve_is_not_this_rungs_to_answer` and
+/// the `selector_ambiguity` / `splice_e2e` suites.
 fn native_demands(doc: &model::Document, edits: &[Edit], out: &mut Vec<Demand>) {
     for edit in edits {
         if edit.if_node_rev.is_some() {
@@ -240,9 +208,9 @@ fn native_demands(doc: &model::Document, edits: &[Edit], out: &mut Vec<Demand>) 
     }
 }
 
-/// Is this edit a WELL-FORMED mutation of EXISTING content — the only thing this
-/// rung governs? Everything else belongs to a rung that says something more
-/// useful, so it is skipped rather than pre-empted.
+/// True when this edit is a well-formed mutation of existing content — the only
+/// thing this rung governs. Everything else belongs to a rung that says
+/// something more useful, so it is skipped rather than pre-empted.
 fn is_guardable_mutation(doc: &model::Document, edit: &Edit) -> bool {
     // A ref the grammar cannot even translate (a block id outside the §2.4
     // charset) is the decode-adjacent rung's to refuse.
@@ -250,10 +218,10 @@ fn is_guardable_mutation(doc: &model::Document, edit: &Edit) -> bool {
         return false;
     };
 
-    // `put at:upsert` is the ONE create-or-replace shape and it has its own
-    // domain rules — an `fm_key` target, a single-line value. A violation is
-    // `bad_request` from the edit builder; an upsert of an ABSENT key is a birth,
-    // guarded by absence. Neither is a fingerprint question.
+    // `put at:upsert` is the one create-or-replace shape and has its own domain
+    // rules (an `fm_key` target, a single-line value): violations are
+    // `bad_request` from the edit builder; an upsert of an absent key is a
+    // birth, guarded by absence. Neither is a fingerprint question.
     if let EditShape::Put {
         at: PutAt::Upsert,
         text,
@@ -280,9 +248,8 @@ fn plan_demands(doc: &model::Document, plan_edits: &[PlanEdit], out: &mut Vec<De
     let file_rev = doc.root.node_rev.0.as_str();
     for row in plan_edits {
         match row {
-            // Frontmatter is file-scoped, so the guard is the doc-root token
-            // (P3) — a key-line rev would guard a grain the semantics do not
-            // live at.
+            // Frontmatter is file-scoped, so the guard is the doc-root token —
+            // a key-line rev would guard a grain the semantics do not live at.
             PlanEdit::SetProperty { key, rev, .. } => match rev.as_deref() {
                 None => out.push(Demand {
                     subject: format!("frontmatter key \"{key}\""),
@@ -301,7 +268,7 @@ fn plan_demands(doc: &model::Document, plan_edits: &[PlanEdit], out: &mut Vec<De
                 Some(_) => {}
             },
             // A birth: guarded by absence. Lowering has already turned it into
-            // a parent-append, which is why the absence is checked HERE.
+            // a parent-append, which is why the absence is checked here.
             PlanEdit::Create {
                 parent_hpath,
                 title,
@@ -315,8 +282,8 @@ fn plan_demands(doc: &model::Document, plan_edits: &[PlanEdit], out: &mut Vec<De
                     });
                 }
             }
-            // Content changes, all three of them. `append` is a content change
-            // like any other (S3): it does not escape by not being replace-shaped.
+            // Content changes, all three: `append` does not escape by not being
+            // replace-shaped.
             PlanEdit::Match { hpath, rev, .. }
             | PlanEdit::ReplaceSection { hpath, rev, .. }
             | PlanEdit::Append { hpath, rev, .. } => {
@@ -335,12 +302,10 @@ fn plan_demands(doc: &model::Document, plan_edits: &[PlanEdit], out: &mut Vec<De
 }
 
 /// Does `parent_hpath` + `title` already address a section? The birth's absence
-/// guard — an ambiguous resolve counts as EXISTING (something is there).
+/// guard — an ambiguous resolve counts as existing.
 ///
-/// R5: the parent arrives as SEGMENTS, so the child chain is a concat. This
-/// used to `split('/')` a joined string, which re-derived the boundaries the
-/// caller had already stated — a parent heading containing `/` split into two
-/// phantom segments and the guard asked about a section nobody named.
+/// The parent arrives as segments and the child chain is a concat — never a
+/// split on `/`, which would mis-parse a parent heading containing `/`.
 fn section_exists(doc: &model::Document, parent_hpath: &[wire::HpathSeg], title: &str) -> bool {
     if parent_hpath.is_empty() {
         return false;
@@ -378,19 +343,13 @@ fn subject_of(target: &SecRef) -> String {
     }
 }
 
-/// Mint the refusal for the FIRST unmet demand. The batch is refused whole, so
-/// one demand is the whole answer — and the message TEACHES: it names the
-/// subject, the cause, the grain, the fact that nothing landed, and a runnable
-/// command that mints the token the caller is missing. A caller that reads it
-/// can proceed without a second guess and without a wasted read.
+/// Mint the refusal for the first unmet demand — the batch is refused whole, so
+/// one demand is the whole answer. The message carries subject, cause, grain,
+/// the fact that nothing landed, and a runnable command that mints the missing
+/// token.
 ///
-/// # This refusal is rung ZERO of the ladder, not a separate mechanism
-/// The ruled `force` path is one continuous act — write → refuse (+ladder) →
-/// rewrite — so the R1.2 mismatch-recovery ladder ATTACHES to this refusal
-/// rather than living beside it. Nothing here forecloses that: the refusal is a
-/// plain [`ErrorBody`] whose `expected`/`actual`/`message` slots are exactly
-/// what a ladder rung enriches. A later unit adds rungs; it does not replace
-/// this.
+/// Rung zero of the mismatch-recovery ladder: a plain [`ErrorBody`] whose
+/// `expected`/`actual`/`message` slots are what a ladder rung enriches.
 fn refusal(path: &Path, demand: &Demand) -> Box<ErrorBody> {
     let file = path.0.as_str();
     let subject = &demand.subject;
@@ -406,8 +365,6 @@ fn refusal(path: &Path, demand: &Demand) -> Box<ErrorBody> {
                      token at FILE grain, or an explicit `force`"
                 }
             };
-            // The two faces spell the same guard differently — the fix names the
-            // slot the CALLER actually has, never the other face's.
             let fix = match slot {
                 Slot::NativeNodeRev => format!(
                     "Fix: run `mrd read {file} --json` and send that node's `sec_rev` as \
@@ -459,9 +416,8 @@ fn refusal(path: &Path, demand: &Demand) -> Box<ErrorBody> {
     }
 }
 
-/// Render the bypassed planes as §11.1 verdicts — the P15 obligation that a
-/// forced write NAMES what it wrote past. The rendered surface carries this; the
-/// journal is dead by ruling and is not where a reader looks for it.
+/// Render the bypassed planes as §11.1 verdicts — a forced write names what it
+/// wrote past, on the rendered surface (not the journal).
 #[must_use]
 pub fn bypass_verdicts(bypasses: &[Bypass], doc: &model::Document, path: &Path) -> Vec<Verdict> {
     bypasses

@@ -1,9 +1,7 @@
-//! The read-op arms over BORROWED parsed state — one implementation for both
+//! The read-op arms over borrowed parsed state — one implementation for both
 //! hosts. Each arm takes already-built `model` state (a `&Document`, or the
-//! `&CorpusIndex` + document map) plus the ambient root as data; the caller
-//! obtains that state (the sidecar builds it per request from `fs`; the daemon
-//! reuses its warm engine). Parsing is the caller's, projection is `wire-map`'s,
-//! edges are `query`'s — these arms only wire model facts into wire bodies.
+//! `&CorpusIndex` + document map) plus the ambient root as data. Parsing is the
+//! caller's, projection is `wire-map`'s, edges are `query`'s.
 
 use std::collections::BTreeMap;
 
@@ -11,28 +9,19 @@ use wire::{ErrorBody, ErrorCode, NodeRev, Path, ResponseBody, Root, SecRef, Span
 
 use crate::bad_request;
 
-/// **U12 — the stored form, read back into the agent plane.**
+/// The stored form ([`crate::write`]), read back into the agent plane. Lands on
+/// the rendered face only.
 ///
-/// `put` translates an agent-plane `root:` address into the `obsidian://` stored
-/// form ([`crate::write`]); this is the other direction, and it lands on the
-/// **RENDERED face only** — exactly where the S10 `@fp` decoration lands, and
-/// for the same reason.
+/// `sections[].content` and `cat.content` stay raw and untranslated: they are
+/// the verbatim bytes `sec_rev` was minted over, so each row is self-verifying.
 ///
-/// **`sections[].content` and `cat.content` stay RAW and are deliberately NOT
-/// translated.** They are *"the verbatim bytes `sec_rev` was minted over, so
-/// each row is self-verifying"* (the op-owner ruling this arm already carries).
-/// A translated content row would no longer hash to the rev shipped beside it,
-/// which is the A-K1 class the raw face exists to prevent. The agent plane is a
-/// VIEW of stored bytes; the raw face IS the stored bytes.
-///
-/// A URI naming a vault this machine does not bind is left verbatim — an
-/// ordinary link a human wrote, not the engine's to claim. A URI naming a BOUND
-/// vault IS the engine's, so a hand-edited one **fails loudly here** rather than
-/// resolving to something plausible.
+/// A URI naming a vault this machine does not bind is left verbatim; a URI
+/// naming a bound vault is the engine's, so a hand-edited one fails loudly
+/// rather than resolving to something plausible.
 ///
 /// # Errors
 /// `bad_request` naming the URI, the non-canonical part and the canonical
-/// spelling, so the fix is one edit.
+/// spelling.
 fn agent_plane_face(rendered: String) -> Result<String, Box<ErrorBody>> {
     if !crate::positions::may_carry_stored(&rendered) {
         return Ok(rendered);
@@ -45,14 +34,13 @@ fn agent_plane_face(rendered: String) -> Result<String, Box<ErrorBody>> {
     })
 }
 
-/// The stage-2 S10 claim-link decoration input, re-exported at the read seam so
-/// a host wires it without taking a `render` dependency of its own.
+/// The claim-link decoration input, re-exported at the read seam so a host
+/// wires it without taking a `render` dependency of its own.
 pub use render::{ClaimLink, Decorations, NO_DECORATIONS};
 
 /// wire §4.1 the map: header `file_rev` (the document root's rev over whole-file
 /// bytes) + the ambient `root`, rows from the `wire-map` projection. `ambient`
-/// is the corpus content-hash cursor the caller already holds (the sidecar folds
-/// it from disk; the daemon reads its warm engine's fingerprint).
+/// is the corpus content-hash cursor the caller already holds.
 #[must_use]
 pub fn toc(doc: &model::Document, path: &Path, ambient: &Root) -> ResponseBody {
     ResponseBody::Toc {
@@ -93,17 +81,10 @@ pub fn cat(doc: &model::Document, sec: Option<SecRef>) -> Result<ResponseBody, B
 /// wire §4.3: the full node inventory via the `wire-map` projection, `kinds`
 /// filtered (values already validated against the closed enum at decode).
 ///
-/// `enrich` (M1 U2, v3 sessions ONLY): attach the host-face addressing facts
-/// — dewey `n` and subtree `words` — to heading nodes, so `extract` serves
-/// every addressing fact ccc-statusd re-derived host-side. A v2 session never
-/// enriches: the keys are v3-additive and the frozen v2 bytes stay
-/// byte-identical (`contract_v2.rs`).
-///
-/// **U14 dropped `hpath_text` from this enrichment.** It was the sanitized
-/// joined ADDRESS, and the node it decorated already carries `hpath` as
-/// segments — the address that round-trips — so the string added no fact,
-/// only a second spelling of one, lossy and un-invertible. Nothing is lost
-/// here: a v3 `extract` still serves the whole address, structurally.
+/// `enrich` (v3 sessions only): attach the host-face addressing facts — dewey
+/// `n` and subtree `words` — to heading nodes. A v2 session never enriches:
+/// the keys are v3-additive and the frozen v2 bytes stay byte-identical
+/// (`contract_v2.rs`).
 #[must_use]
 pub fn extract(
     doc: &model::Document,
@@ -141,64 +122,56 @@ pub fn extract(
     }
 }
 
-/// The composed-read parameters (M1 U4a2), decoded from the v3-only `read`
-/// op — the host face's read-tool vocabulary, engine-side.
+/// The composed-read parameters, decoded from the v3-only `read` op — the host
+/// face's read-tool vocabulary, engine-side.
 #[derive(Debug, Clone, Default)]
 pub struct ReadParams {
-    /// The whole-call subtree scope, as SEGMENTS (U14).
+    /// The whole-call subtree scope, as segments.
     pub frag: Option<Vec<wire::HpathSeg>>,
-    /// Document-absolute selectors in the tagged read grammar (U14) — and the
-    /// mode itself (A5): non-empty selects sections, absent/empty answers the
-    /// toc. The `mode` word is retired at both ends; nothing else picks the arm.
+    /// Document-absolute selectors in the tagged read grammar — and the mode
+    /// itself: non-empty selects sections, absent/empty answers the toc.
+    /// Nothing else picks the arm.
     pub sections: Option<Vec<wire::ReadSel>>,
     pub display_path: Option<String>,
-    /// §9 read provenance (D-Actor/B, review C4): the daemon-derived actor,
-    /// carried to THIS seam — the stage-2 read-mint site (the one place
-    /// holding the document, each `sec_rev`, and the actor together). M1 left
-    /// it UNREAD; stage-2 S6 reads it here, additively, with no op re-shape.
-    /// It stays DAEMON-derived and never MCP-caller-settable (D13): the wire
-    /// `Op::Read.actor` field is not widened, and nothing below invents one.
+    /// §9 read provenance: the daemon-derived actor, carried to the read-mint
+    /// site. Never MCP-caller-settable; nothing below invents one.
     pub actor: Option<String>,
 }
 
-/// The `actor == None` no-mint door (D16), in ONE place.
+/// The `actor == None` no-mint door, in one place.
 ///
-/// A read mints a receipt only for a real daemon-derived identity. The bare
-/// CLI sends no actor (`read_cmd.rs`: "§9 read provenance is the DAEMON's to
-/// stamp") and is local-operator-trusted — exactly as `mrd put` skips the
-/// host's authz — so it mints nothing and the pin gate is bypassed for it. A
-/// blank actor is treated as absent too: an empty string is not an identity,
-/// and admitting one would open a bucket every actor-less caller shares.
+/// A read mints a receipt only for a real daemon-derived identity. The bare CLI
+/// sends no actor and is local-operator-trusted — as `mrd put` skips the host's
+/// authz — so it mints nothing and the pin gate is bypassed for it. A blank
+/// actor is absent too: an empty string is not an identity, and admitting one
+/// would open a bucket every actor-less caller shares.
 pub(crate) fn mint_actor(actor: Option<&str>) -> Option<&str> {
     actor.map(str::trim).filter(|a| !a.is_empty())
 }
 
-/// The COMPOSED read op (M1 U4a2, decision D6): addressing + content +
-/// render served from ONE borrowed document snapshot — `file_rev`, the
-/// ambient `root`, the toc/sections facts, and the `readText` projection in
-/// one exchange. Refusal messages are the Go host face's VERBATIM strings,
-/// so the thin proxy (U8a) forwards `error.message` without re-minting.
+/// The composed read op: addressing + content + render served from one
+/// borrowed document snapshot — `file_rev`, the ambient `root`, the
+/// toc/sections facts, and the rendered projection in one exchange. Refusal
+/// messages are the Go host face's verbatim strings, so the thin proxy
+/// forwards `error.message` without re-minting.
 ///
-/// `mint` is the stage-2 S6 read-is-the-mint ledger (D9): present only for a
-/// host that HOLDS a daemon-session layer (the registry daemon). A host with
-/// no session — the per-request sidecar, the bare CLI — passes `None` and
-/// mints nothing, which is honest: there is no session for a receipt to live
-/// in. Minting is SECTIONS-mode only; see [`composed_read`]'s mint block.
+/// `mint` is the read-is-the-mint ledger: present only for a host that holds
+/// a daemon-session layer (the registry daemon). A host with no session — the
+/// per-request sidecar, the bare CLI — passes `None` and mints nothing.
+/// Minting is sections-mode only.
 ///
-/// `decorations` is the stage-2 S10 claim-link input (D10), built by the caller
-/// ([`page_decorations`]) and passed through to the renderer as data. It rides
-/// the render HEADER, so it is an input to the read as a whole rather than to a
-/// mode, and [`NO_DECORATIONS`] is the ONE spelling of "nothing to decorate" —
-/// a host with no corpus cannot color a cross-page pin and says so by passing
-/// it. Decoration lands in `rendered_text` ALONE: `sections[].content` stays
-/// the raw face a put is built from, because a read-decorated view feeding a
-/// write is the A-K1 data-loss class.
+/// `decorations` is the claim-link input, built by the caller
+/// ([`page_decorations`]) and passed through to the renderer as data;
+/// [`NO_DECORATIONS`] is the one spelling of "nothing to decorate". Decoration
+/// lands in `rendered_text` alone: `sections[].content` stays the raw face a
+/// put is built from, because a read-decorated view feeding a write is a
+/// data-loss class.
 ///
 /// # Errors
 /// `bad_request` (fix): `frag` and `sections` both present; a section read
 /// with no selectors. `ref_not_found` (fix): a toc `frag` naming no section;
-/// ALL section selectors missing. `internal` carrying the typed
-/// `render_failed` spelling (G1) when the walker refuses.
+/// all section selectors missing. `internal` carrying the typed
+/// `render_failed` spelling when the walker refuses.
 pub fn composed_read(
     doc: &model::Document,
     path: &Path,
@@ -212,10 +185,9 @@ pub fn composed_read(
     let words_total: u64 = facts.iter().map(|f| f.words).sum();
     let display = params.display_path.as_deref().unwrap_or(path.0.as_str());
     let frag: &[wire::HpathSeg] = params.frag.as_deref().unwrap_or(&[]);
-    // A5: `sections`'s PRESENCE is the mode. Absent → the toc read; present →
-    // a section read, empty included, so `sections: []` still meets the
-    // "a section read needs a selector" refusal instead of silently answering
-    // a toc the caller did not ask for.
+    // `sections`'s presence is the mode. Absent → the toc read; present → a
+    // section read, empty included, so `sections: []` still meets the
+    // "a section read needs a selector" refusal instead of answering a toc.
     let has_sections = params.sections.is_some();
     if !frag.is_empty() && has_sections {
         return Err(bad_request(format!(
@@ -229,19 +201,16 @@ pub fn composed_read(
     let header = render::Header {
         display_path: display,
         file_rev: &file_rev,
-        // Read face v2 (dogfood G8): the `--if-fingerprint` guard's own value,
-        // printed on the face a person reads. It is the SAME `ambient` this
+        // The `--if-fingerprint` guard's own value: the same `ambient` this
         // body carries as `root`/`fingerprint`, so the rendered token and the
-        // structured one cannot disagree about the world this read saw.
+        // structured one cannot disagree.
         fingerprint: &ambient.0,
         words_total,
         decorations,
     };
-    // The `^id` ANCHOR plane (stage-2 s1c) — computed once, emitted by BOTH
-    // modes, scoped by the same `frag` that scopes the whole call. It rides
-    // its own array because a consumer iterating `toc` must not be able to
-    // meet a second row class: S1 mixed the two and ccc-statusd's `readText`
-    // panicked on an anchor row's `depth 0` ("negative Repeat count").
+    // The `^id` anchor plane — computed once, emitted by both modes, scoped by
+    // the same `frag` that scopes the whole call. Its own array: a mixed-in
+    // anchor row's `depth 0` once crashed a client renderer.
     let anchors: Vec<wire::ReadAnchor> = wire_map::facts::anchor_rows(&facts, frag)
         .iter()
         .filter_map(|f| read_anchor(f))
@@ -250,28 +219,17 @@ pub fn composed_read(
     if has_sections {
         let sels: Vec<wire::ReadSel> = params.sections.clone().unwrap_or_default();
         let (body, rendered_sections) = composed_sections(doc, &facts, &sels, header)?;
-        // S6 read-IS-the-mint (D9): one receipt per section this call
-        // actually served — actor, canonical selector, `sec_rev`.
-        //
-        // SECTION READS only, and off the RAW rows: `rendered_sections`
-        // are the `sections[].content` rows whose bytes the caller
-        // received verbatim, so each receipt is a true "this was in your
-        // context" fact. Two things follow deliberately. A toc read
-        // mints NOTHING — it serves the section map, not content, so it
-        // must never gate an attestation over bytes nobody saw. And the
-        // rev bound is the raw face's `sec_rev`, never anything derived
-        // from the elided `rendered_text` — a read-elided view must never
-        // be what a write is authorized against (the A-K1 data-loss
-        // class).
-        //
-        // Unresolved selectors are absent from these rows (they carry the
-        // PARTIAL-read notice instead), so a miss mints nothing.
+        // Read-is-the-mint: one receipt per section this call actually served
+        // — actor, canonical selector, `sec_rev` — off the raw rows whose
+        // bytes the caller received verbatim. A toc read mints nothing, and the
+        // rev bound is the raw face's `sec_rev`, never anything derived from
+        // the elided `rendered_text`. Unresolved selectors are absent from
+        // these rows, so a miss mints nothing.
         if let (Some(store), Some(actor)) = (mint, mint_actor(params.actor.as_deref())) {
-            // U14: the receipt is keyed on the row's own TAGGED selector,
-            // the same structure the pin gate looks up — so the two sides
-            // of this coupling cannot drift into two spellings of one
-            // address, and a heading named `1.2` can no longer open the
-            // gate for the dewey row of that name.
+            // Keyed on the row's own tagged selector, the same structure the
+            // pin gate looks up — so the two sides cannot drift into two
+            // spellings of one address, and a heading named `1.2` cannot open
+            // the gate for the dewey row of that name.
             for row in &rendered_sections {
                 store.mint(actor, path.0.as_str(), &row.sel, &row.sec_rev.0);
             }
@@ -303,11 +261,9 @@ pub fn composed_read(
         ));
         return Err(Box::new(e));
     }
-    // ONE row set for the heading plane: `rendered_text` renders these
-    // rows and `toc` carries these rows, so the captured Go toc bytes
-    // stay frozen and the structured face never diverges from the
-    // rendered one. The authz facts (`span`, `content_span`) ride the
-    // same rows; the anchor plane is `anchors`.
+    // One row set for the heading plane: `rendered_text` renders these rows
+    // and `toc` carries these rows, so the structured face never diverges
+    // from the rendered one.
     let rendered_text = agent_plane_face(render::toc_toon(&header, &rows))?;
     Ok(ResponseBody::Read {
         path: path.clone(),
@@ -323,11 +279,9 @@ pub fn composed_read(
     })
 }
 
-/// One heading fact → one wire composed-read row: the M1 addressing facts
-/// plus the stage-2 S1 authz facts (`span`, `content_span`), carried verbatim
-/// off the fact — the engine has ONE hpath owner
-/// (`model::gotext::sanitize_heading`, through `wire_map::facts`), and this
-/// seam never re-derives an address.
+/// One heading fact → one wire composed-read row: the addressing facts plus
+/// the authz facts (`span`, `content_span`), carried verbatim off the fact —
+/// this seam never re-derives an address.
 fn read_row(f: &wire_map::facts::ReadFact) -> wire::ReadRow {
     wire::ReadRow {
         n: f.n.clone(),
@@ -341,11 +295,11 @@ fn read_row(f: &wire_map::facts::ReadFact) -> wire::ReadRow {
     }
 }
 
-/// One anchor fact → one wire `anchors[]` entry (stage-2 s1c): the block id
-/// and the block-leaf span, which is everything the host's containment join
-/// consumes. `None` is unreachable (`read_facts` mints an anchor fact only
-/// from an anchor-bearing `list_item`) and is DROPPED rather than serialized
-/// as an empty id — an entry no caller can address is worse than no entry.
+/// One anchor fact → one wire `anchors[]` entry: the block id and the
+/// block-leaf span, which is everything the host's containment join consumes.
+/// `None` is unreachable (`read_facts` mints an anchor fact only from an
+/// anchor-bearing `list_item`) and is dropped rather than serialized as an
+/// empty id.
 fn read_anchor(f: &wire_map::facts::ReadFact) -> Option<wire::ReadAnchor> {
     f.anchor.as_ref().map(|id| wire::ReadAnchor {
         anchor: id.clone(),
@@ -353,37 +307,29 @@ fn read_anchor(f: &wire_map::facts::ReadFact) -> Option<wire::ReadAnchor> {
     })
 }
 
-/// The claim-link decorations for ONE page (stage-2 S10): every `meridian-lock`
-/// pin the page declares, matched to the links in the page's own body that
-/// address it, carrying the shaped `@fp` token that pin's drift color mints.
+/// The claim-link decorations for one page: every `meridian-lock` pin the page
+/// declares, matched to the links in the page's own body that address it,
+/// carrying the shaped `@fp` token that pin's drift color mints.
 ///
-/// This is the CALLER side of the render seam — deliberately outside `render`,
-/// which never reads a lock and never computes a fingerprint (D10). It needs
-/// the corpus, so only a host that holds one calls it (the registry daemon);
-/// the per-request sidecar and the bare CLI pass [`render::NO_DECORATIONS`].
+/// The caller side of the render seam — outside `render`, which never reads a
+/// lock and never computes a fingerprint. It needs the corpus, so only a host
+/// that holds one calls it (the registry daemon); the per-request sidecar and
+/// the bare CLI pass [`render::NO_DECORATIONS`].
 ///
 /// Four rules, each closing a way a decoration could lie:
 ///
-/// - **The color is S9's, per pin.** [`model::selector::classify_pin`] is the
-///   single compare `view::walk::lock_pin_colors` uses, so a decorated link can
-///   never disagree with the same pin's row in `mrd walk` / `mrd status`.
-/// - **The handle is the promoted `^slug`, never the pin's identity.** A pin's
-///   fingerprint covers the span its `ref` RESOLVES to (the section); an anchor
-///   node's span is only its host line, so treating the slug as the identity
-///   would read green on every body edit. Here the slug is only a lookup key.
-/// - **The link must actually address the pinned page.** The body's spelling
-///   (`guide`) and the lock's (`guide.md`) are two spellings of one address, so
-///   both go through the ONE linkpath resolver before they are called a match.
-/// - **A pin it cannot honestly color is left undecorated** — an unresolvable
+/// - The color is the pin classifier's: [`model::selector::classify_pin`] is
+///   the single compare `view::walk::lock_pin_colors` uses, so a decorated
+///   link can never disagree with the same pin's row in `mrd walk`.
+/// - The handle is the promoted `^slug`, never the pin's identity: a pin's
+///   fingerprint covers the span its `ref` resolves to (the section), while an
+///   anchor node's span is only its host line — treating the slug as the
+///   identity would read green on every body edit.
+/// - The link must actually address the pinned page: the body's spelling
+///   (`guide`) and the lock's (`guide.md`) both go through the one linkpath
+///   resolver before they are called a match.
+/// - A pin it cannot honestly color is left undecorated — an unresolvable
 ///   target page, a refused lock, a `Malformed` token with no digest to show.
-///   An undecorated link claims nothing; a decorated one claims the ledger
-///   measured it.
-///
-/// **D12 (U10):** the pinned page is resolved through the corpus index, never
-/// by string surgery. The `root:` prefix no longer *rides inside a spelling
-/// this function re-splits* — `lock` parsed the ref into an [`addr::Addr`] at
-/// its own door, and this function READS the parts. It was FINDING 02's site
-/// A3: the same `lock::find` bytes, re-split and re-parsed here.
 #[must_use]
 pub fn page_decorations(
     index: &model::CorpusIndex,
@@ -395,23 +341,17 @@ pub fn page_decorations(
         return out;
     };
     // A refused lock decorates nothing: it is already visible as the grey
-    // `lock-refused` row, and a token minted from bytes nobody could parse
-    // would be a claim nobody measured.
+    // `lock-refused` row.
     let Ok(Some(found)) = lock::find(doc) else {
         return out;
     };
     let mut links: Vec<(&String, &String)> = Vec::new();
     collect_links(&doc.root, &mut links);
     for pin in &found.lock.pins {
-        // R4 arms, and what each can honestly decorate. `path` segments map
-        // STRAIGHT across to `Selector::Heading` — array to array, nothing
-        // joined and nothing re-parsed, which is the whole point of the machine
-        // surface carrying structure.
         let lock::Selector::Path(segments) = &pin.selector else {
-            // The `properties` arm claims frontmatter keys. `Selector` has no
+            // The `properties` arm claims frontmatter keys: `Selector` has no
             // member for that, and frontmatter carries no `[[page#^block]]`
-            // link to decorate either — so there is nothing here to colour, not
-            // a mapping left undone.
+            // link to decorate — nothing to colour.
             continue;
         };
         if segments.is_empty() {
@@ -420,21 +360,20 @@ pub fn page_decorations(
         let Some(target_path) = resolve_page(index, docs, &pin.object, path) else {
             continue;
         };
-        // R4's anchor form: a path array whose SOLE element is a `^id`. Decoded
-        // here exactly as `write::pin_row` encodes it, and the sole-element rule
-        // is what keeps the two planes apart — a mixed array is refused at the
-        // write door, so a `^`-leading element inside a longer chain never
-        // reaches this face to be read as either grain.
+        // The anchor form: a path array whose sole element is a `^id`, decoded
+        // exactly as `write::pin_row` encodes it. A mixed array is refused at
+        // the write door, so a `^`-leading element inside a longer chain never
+        // reaches this face.
         let selector = match segments.as_slice() {
             [only] if only.starts_with('^') => {
                 model::selector::Selector::Block(only[1..].to_string())
             }
             _ => model::selector::Selector::Heading(segments.clone()),
         };
-        // The handle a pin's target carries: for a section pin, the D15 slug
-        // S7's promotion mints from the heading title — computed by the SAME
-        // owner, so a decoration keys on the id promotion actually wrote. An
-        // anchor pin IS its own handle and needs no promotion.
+        // The handle a pin's target carries: for a section pin, the slug the
+        // id promotion mints from the heading title — computed by the same
+        // owner, so a decoration keys on what id promotion actually wrote. An
+        // anchor pin is its own handle.
         let handle = match &selector {
             model::selector::Selector::Block(id) => Some(id.clone()),
             _ => segments.last().and_then(|h| crate::write::slug_id(h).ok()),
@@ -467,24 +406,18 @@ pub fn page_decorations(
     out
 }
 
-/// Resolve a link/ref target spelling to a corpus path through the ONE address
+/// Resolve a link/ref target spelling to a corpus path through the one address
 /// owner ([`model::CorpusIndex::resolve_ref`]) — the same three rules, in the
 /// same order, that `view::read_face::resolve_to_path` gives the walk plane. An
 /// empty spelling is the page itself (a self-link `[[#^blk]]`).
 ///
-/// It holds no precedence of its own on purpose. When it did, it lacked the
-/// key + `.md` rule the walk plane had, so a ref `a/b` in a corpus carrying both
-/// `a/b.md` and `b.md` decorated a link with a tone minted over `b.md` while the
-/// walk colored `a/b.md` — one pin, two documents, two answers.
+/// It holds no precedence of its own: a private one drifted from the walk
+/// plane's and coloured one pin two ways.
 ///
-/// **U11 — this face carries no mount table yet.** It resolves against the
-/// AMBIENT root alone, so a `root:`-bearing address answers `None` (unresolved)
-/// rather than the ambient root's same-basename file. That is FINDING 03's fix
-/// reaching this plane: an unresolved decoration is first-class here, and a
-/// wrong one is not. Per-item VERDICTS are not this surface's to give (plan
-/// §9.1: its only colour channel is daemon-only, carries tone but no reason, and
-/// is skipped exactly in the unresolvable-target case) — `mrd walk` is where the
-/// unmounted grey is rendered with its reason.
+/// This face carries no mount table yet: it resolves against the ambient root
+/// alone, so a `root:`-bearing address answers `None` (unresolved) rather than
+/// the ambient root's same-basename file. `mrd walk` is where the unmounted
+/// grey is rendered with its reason.
 fn resolve_page(
     index: &model::CorpusIndex,
     docs: &BTreeMap<String, model::Document>,
@@ -532,8 +465,8 @@ struct SectionsRender {
     notice: Option<String>,
 }
 
-/// The sections-mode leg of [`composed_read`]: selector resolution (FIRST
-/// match; PARTIAL-read notice), the walker-emitted content, and the rendered
+/// The sections-mode leg of [`composed_read`]: selector resolution (first
+/// match; partial-read notice), the walker-emitted content, and the rendered
 /// text — refusal messages in the Go host face's verbatim spelling.
 fn composed_sections(
     doc: &model::Document,
@@ -543,12 +476,8 @@ fn composed_sections(
 ) -> Result<(SectionsRender, Vec<wire::ReadSectionOut>), Box<ErrorBody>> {
     let display = header.display_path;
     if sels.is_empty() {
-        // Says what to PASS, not what the caller "is in": the reader who lands
-        // here selected no mode — `--section` implied one — so naming the mode
-        // back at them describes an internal state they never chose (issue-05).
-        // A `#Fragment` is the WHOLE-call scope, not a member of `sections[]`;
-        // the old wording called it a sections-mode selector, which is exactly
-        // what it is not (gaps § 3.3).
+        // Says what to pass, not what the caller "is in": a `#Fragment` is the
+        // whole-call scope, not a member of `sections[]`.
         return Err(bad_request(format!(
             "read: a section read needs a selector, and none was given. Nothing was read \
              and no rev was minted. Fix: pass one or more section selectors (a heading \
@@ -586,8 +515,8 @@ fn composed_sections(
         rows: &rows,
         notice: notice.as_deref(),
     };
-    // U4b: the render face's production configuration — engine (`meridian-*`)
-    // blocks are elided from RENDERED output (`rendered_text`) only.
+    // The render face's production configuration — engine (`meridian-*`)
+    // blocks are elided from rendered output (`rendered_text`) only.
     let rendered =
         render::Renderer::render(&render::ToonRenderer::with_meridian_elision(), doc, &job)
             .map_err(|e| {
@@ -595,14 +524,10 @@ fn composed_sections(
                 err.message = Some(e.to_string());
                 Box::new(err)
             })?;
-    // Op-owner ruling (2026-07-24, D concurring, pin #4): `sections[].content`
-    // is the RAW face — the verbatim bytes `sec_rev` was minted over — so each
-    // row is self-verifying and a put built from its content round-trips
-    // without silently dropping an elided block (the A-K1 data-loss class).
-    // Elision lives in `rendered_text` alone; the composed op carries content
-    // and render as DISTINCT legs (D6). `words` pairs with the raw content it
-    // describes (Go `renderSectionsSidecar` semantics, golden structured
-    // parity).
+    // `sections[].content` is the raw face — the verbatim bytes `sec_rev` was
+    // minted over — so a put built from its content round-trips without
+    // silently dropping an elided block. Elision lives in `rendered_text`
+    // alone. `words` pairs with the raw content it describes.
     let sections: Vec<wire::ReadSectionOut> = rows
         .iter()
         .map(|row| {
@@ -628,10 +553,9 @@ fn composed_sections(
 }
 
 /// wire §10.2 the opt-in strictness guard for `links`: refuse when the caller
-/// pinned a `require_root` the world no longer meets — retryable, never silent.
-/// Checked BEFORE the corpus is built (the sidecar's timing: refuse a stale view
-/// without paying the parse), so both hosts call this against the `as_of_root`
-/// they already hold, before handing the built corpus to [`links`].
+/// pinned a `require_root` the world no longer meets. Checked before the corpus
+/// is built, so both hosts call this against the `as_of_root` they already
+/// hold, before handing the built corpus to [`links`].
 ///
 /// # Errors
 /// `stale_view` when `require_root` is present and differs from `as_of_root`.
@@ -654,13 +578,11 @@ pub fn require_root_check(
 }
 
 /// wire §4.6 the corpus edge map under the §10.1 staleness triple, served from
-/// `query` over the borrowed corpus. `as_of_root` folds the EXACT bytes the
-/// answer parses; `live_root` is sampled AFTER the computation — under a
+/// `query` over the borrowed corpus. `as_of_root` folds the exact bytes the
+/// answer parses; `live_root` is sampled after the computation — under a
 /// concurrent write the two may differ, which is a legal frame, never an error
 /// (§10.1: no lag bounds are promised). `live_root` is a closure so it is
-/// sampled only on the success path (a `file_not_found` never pays a second
-/// fold). Call [`require_root_check`] before this — the §10.2 refusal is
-/// checked before the corpus is built, so it is not this arm's.
+/// sampled only on the success path. Call [`require_root_check`] before this.
 ///
 /// # Errors
 /// `path` names a file the corpus does not carry (`file_not_found`), or the
@@ -680,14 +602,11 @@ pub fn links(
         e.path = Some(p.clone());
         return Err(Box::new(e));
     }
-    // **`query::links`, never `links_rooted` with a default table.** An empty
-    // `MountSet` is a machine that binds NOTHING, and the address plane will
-    // rightly answer `grey(unmounted)` against it. This caller has not consulted
-    // a mount table at all, so handing one in would turn "I did not look" into
-    // "this machine binds nothing" — a claim it has no standing to make, and on
-    // any multi-root machine a false one. Rooted spellings therefore come back
-    // `unresolved` here, exactly as before U21, and the CLI degrades rather
-    // than serve that answer (see `mrd::engine::answer_links`).
+    // `query::links`, never `links_rooted` with a default table: an empty
+    // `MountSet` would turn "I did not consult a mount table" into "this
+    // machine binds nothing". Rooted spellings come back `unresolved` here,
+    // and the CLI degrades rather than serve that answer
+    // (see `mrd::engine::answer_links`).
     let map = query::links(index, docs, path.map(|p| p.0.as_str()));
     let live = live_root()?;
     Ok(ResponseBody::Links {
@@ -698,19 +617,13 @@ pub fn links(
     })
 }
 
-/// [`links`] against a ROOT-KEYED corpus and a mount table — the cross-root
-/// form (U21).
+/// [`links`] against a root-keyed corpus and a mount table — the cross-root
+/// form.
 ///
-/// **The daemon does not call this, and that asymmetry is stated rather than
-/// smoothed.** The resident engine's warm state is ONE workspace corpus keyed
-/// by one canonical path (`registry::warm_or_build`); it holds no mounted
-/// corpora, so for this one op it is knowingly LESS CAPABLE than the
-/// in-process path. The CLI therefore refuses to let it answer a page that may
-/// carry a cross-root position and degrades instead — see
-/// `mrd::engine::answer_links`. Making the daemon root-aware end to end means N
-/// mounted corpora per workspace with per-root fingerprint invalidation,
-/// residency and reap: a designed subsystem, recorded as the named successor,
-/// not a wiring change.
+/// The daemon does not call this: its warm state is one workspace corpus keyed
+/// by one canonical path (`registry::warm_or_build`) and holds no mounted
+/// corpora. The CLI refuses to let it answer a page that may carry a cross-root
+/// position and degrades instead — see `mrd::engine::answer_links`.
 ///
 /// # Errors
 /// As [`links`].
@@ -743,8 +656,7 @@ pub fn links_rooted(
 }
 
 /// One file's edges, as the wire carries them. Shared by both arms so the
-/// answer's SHAPE never depends on which of them served it — only its content
-/// does, and only where the two genuinely know different things.
+/// answer's shape never depends on which of them served it.
 fn into_wire(edges: query::FileLinks) -> wire::FileLinks {
     wire::FileLinks {
         resolved: edges.resolved,
@@ -768,19 +680,16 @@ fn into_wire(edges: query::FileLinks) -> wire::FileLinks {
 /// Render one refused edge into its wire shape — the colour plane's verdict,
 /// spelled in the colour plane's own words.
 ///
-/// Nothing here re-classifies. The tone, the reason word and the detail come
-/// from `model::selector`, which is the one owner of that vocabulary, and the
-/// teaching refusal comes from the renderer that owns each class. A `match` of
-/// my own over `RefResolution` producing words would be a second answer waiting
-/// to disagree with the walk plane about one address.
+/// Nothing here re-classifies: the tone, the reason word and the detail come
+/// from `model::selector`, the one owner of that vocabulary, and the teaching
+/// refusal comes from the renderer that owns each class.
 fn render_refused_edge(link: &str, edge: &query::RefusedEdge) -> wire::RefusedEdge {
     use model::selector::{Color, GreyReason, RedReason};
 
-    // A spelling outside the address grammar has no COLOUR — nothing was
-    // measured and nothing was declined; it is not an address. It reuses
-    // `lock::LockError::BadRef`'s existing name for that fact rather than
-    // minting a synonym, and `AddrError`'s own `Display` is already a
-    // four-property teaching refusal, so it is carried verbatim.
+    // A spelling outside the address grammar has no colour — it is not an
+    // address. It reuses `lock::LockError::BadRef`'s existing name for that
+    // fact, and `AddrError`'s own `Display` is already a teaching refusal, so
+    // it is carried verbatim.
     let color = match &edge.resolution {
         model::RefResolution::Malformed(err) => {
             return wire::RefusedEdge {
@@ -810,8 +719,7 @@ fn render_refused_edge(link: &str, edge: &query::RefusedEdge) -> wire::RefusedEd
             path: path.clone(),
             selector: selector.clone(),
         }),
-        // An ambient miss and a resolution are not refusals and never reach
-        // this map — `query::links_rooted` routes them to `unresolved` and
+        // Not refusals: `query::links_rooted` routes them to `unresolved` and
         // `resolved` respectively.
         model::RefResolution::Ambient(_)
         | model::RefResolution::Rooted { .. }
@@ -826,11 +734,10 @@ fn render_refused_edge(link: &str, edge: &query::RefusedEdge) -> wire::RefusedEd
             .unwrap_or_default()
             .to_owned(),
         detail: model::selector::color_detail(&color),
-        // The address as the PAGE declared it — the refusal echoes what the
-        // author wrote, not what resolution made of it, so a reader can find
-        // the string on the page. The file-not-found renderer ignores it and
-        // joins its own parts, which is the one way that class cannot name a
-        // root disagreeing with the root that missed.
+        // The address as the page declared it, so a reader can find the string
+        // on the page. The file-not-found renderer ignores it and joins its own
+        // parts, so that class cannot name a root disagreeing with the root
+        // that missed.
         message: model::selector::color_teaching(&color, link).unwrap_or_default(),
         count: edge.count,
     }
@@ -838,7 +745,7 @@ fn render_refused_edge(link: &str, edge: &query::RefusedEdge) -> wire::RefusedEd
 
 /// wire §4.5 the walk plane: best-effort app-compatible two-stage walk over the
 /// corpus. Location facts only; `want_content` additionally returns the fragment
-/// bytes, still no rev. The corpus here is the walk-plane SUPERSET (the caller
+/// bytes, still no rev. The corpus here is the walk-plane superset (the caller
 /// builds it skip-broken — the app indexes nothing it cannot read), which is a
 /// different corpus from the §12 hash-domain fact plane [`links`] reads.
 ///
@@ -871,21 +778,15 @@ pub fn resolve(
 }
 
 /// The wire→model ref bridge (the crates never share a type — no-serde law).
-/// The anchor form re-passes the mint-guard; the strict decode already refused
-/// out-of-charset ids, so this is the belt to that suspender. `pub` because the
-/// sidecar's write path (splice) resolves the same §2.1 targets through it — one
-/// bridge, not two.
+/// `pub` because the sidecar's write path (splice) resolves the same §2.1
+/// targets through it — one bridge, not two.
 ///
-/// **Stage-2 S10 — the `@fp` strip is ORDERED HERE, and that ordering is the
-/// guarantee.** `model::Ref::anchor` is this workspace's ONE anchor-id mint
-/// guard, and this bridge is the ONE place any wire `SecRef::Anchor` reaches
-/// it — every read arm and every write arm (native edits and the lowered plan
-/// batch alike) funnels through this function. So the strip cannot be skipped
-/// by adding a put path: a path that skips it has no `model::Ref` to write
-/// with. A well-formed agent-plane address (`^leaders-guideline@green.b3af12cd`)
-/// therefore addresses exactly what its stored spelling addresses, while an
-/// `@` the shaped grammar does NOT recognize survives into validation below and
-/// refuses `bad_request` — the block-id charset has no `@`.
+/// The `@fp` strip is ordered here, and that ordering is the guarantee:
+/// `model::Ref::anchor` is the one anchor-id mint guard, and this bridge is the
+/// one place any wire `SecRef::Anchor` reaches it, so the strip cannot be
+/// skipped by adding a put path. An `@` the shaped grammar does not recognize
+/// survives into validation below and refuses `bad_request` — the block-id
+/// charset has no `@`.
 ///
 /// # Errors
 /// An anchor id outside the block-id charset `[A-Za-z0-9-]` (`bad_request`).
@@ -913,17 +814,13 @@ pub fn to_model_ref(sec: &SecRef) -> Result<model::Ref, Box<ErrorBody>> {
     })
 }
 
-/// `ambiguous_ref` (§2.1: the strict plane never silently picks) — the U2.2
-/// refuse-ambiguous-only refusal, naming EACH duplicate by both addressable
-/// disambiguators the teaching refusal offers: its node index (`n=`, the §2.1
-/// occurrence index) and its block id (`^block`) when it carries one. `candidates`
-/// holds the machine-addressable `n=` forms (hpath duplicates are nameable
-/// exactly by occurrence index on the final segment; duplicate block ids share
-/// one id that cannot disambiguate them, so their `candidates` stays type-level
-/// EMPTY — `[]`, never prose inside the grammar field). `message` carries the d1
-/// teaching refusal verbatim (both spellings interpolated, "Unambiguous writes to
-/// this file remain served"). `pub` because the sidecar's write path raises the
-/// same refusal against a splice target — one spelling of it, shared.
+/// `ambiguous_ref` (§2.1: the strict plane never silently picks) — names each
+/// duplicate by both addressable disambiguators: its node index (`n=`, the
+/// §2.1 occurrence index) and its block id (`^block`) when it carries one.
+/// `candidates` holds the machine-addressable `n=` forms; duplicate block ids
+/// share one id that cannot disambiguate them, so their `candidates` stays
+/// `[]` — never prose inside the grammar field. `pub` because the sidecar's
+/// write path raises the same refusal against a splice target.
 #[must_use]
 pub fn ambiguous(sec: &SecRef, doc: &model::Document, candidates: &[model::Target]) -> ErrorBody {
     let mut e = ErrorBody::new(ErrorCode::AmbiguousRef);
@@ -959,9 +856,9 @@ pub fn ambiguous(sec: &SecRef, doc: &model::Document, candidates: &[model::Targe
                 .join("/")
         }
         SecRef::Anchor { anchor } => {
-            // Duplicate block ids share one id — it cannot disambiguate them, so
-            // `candidates` stays EMPTY (no exact §2.1 spelling per target); the
-            // message names them by node index (d1: "by ... node index").
+            // Duplicate block ids share one id — it cannot disambiguate them,
+            // so `candidates` stays empty; the message names them by node
+            // index.
             e.candidates = Some(Vec::new());
             format!("^{anchor}")
         }
@@ -974,18 +871,15 @@ pub fn ambiguous(sec: &SecRef, doc: &model::Document, candidates: &[model::Targe
     e
 }
 
-/// `ref_not_found` with a SENTENCE — the sibling of [`ambiguous`] for the miss
-/// case. Both refusals answer "your target did not resolve"; only one of them
-/// used to say anything, so a `put` against a stale address printed the bare
-/// code `ref_not_found` and named no file, no target, and no way forward
-/// (issue-08, the worst message the 08-01 dogfood recorded).
+/// `ref_not_found` with a sentence — the sibling of [`ambiguous`] for the miss
+/// case.
 ///
-/// The hpath arm carries the one fact the read face cannot publish. Heading
-/// addresses are SANITIZED on the way out (`sanitize_heading`: `/` and U+0020
-/// both become `-`) and `put` takes the RAW heading text, so the map is
-/// many-to-one and no caller can recover the pre-image from a `read`. When the
-/// requested segments match some heading's sanitized spelling, this names that
-/// heading's RAW spelling — the address the write actually needs.
+/// The hpath arm carries the one fact the read face cannot publish: heading
+/// addresses are sanitized on the way out (`sanitize_heading`: `/` and U+0020
+/// both become `-`) and `put` takes the raw heading text, so the map is
+/// many-to-one. When the requested segments match some heading's sanitized
+/// spelling, this names that heading's raw spelling — the address the write
+/// actually needs.
 #[must_use]
 pub fn ref_not_found(sec: &SecRef, doc: &model::Document, display_path: &str) -> ErrorBody {
     let mut e = ErrorBody::new(ErrorCode::RefNotFound);
@@ -1011,14 +905,9 @@ pub fn ref_not_found(sec: &SecRef, doc: &model::Document, display_path: &str) ->
         }
         SecRef::FmKey { fm_key } => (
             fm_key.clone(),
-            // Names ONLY the door that was probed open. An earlier draft sent the
-            // reader to `mrd read --json` for the key list — but the composed
-            // read body carries no frontmatter plane at all
-            // (`anchors`/`file_rev`/`fingerprint`/`path`/`rendered_text`/`toc`/
-            // `words_total`), so that clause was this card's own `takeover`: a
-            // refusal pointing at a door that does not open. `at: upsert` is
-            // verified to create an absent key; the page's own frontmatter block
-            // is where the existing keys are.
+            // Names only the door that was probed open: the composed read body
+            // carries no frontmatter plane, so pointing at `mrd read --json`
+            // for the key list would point at a door that does not open.
             "Fix: write the key with `at: upsert`, which creates it when absent; the \
              page's own frontmatter block lists the keys it already has."
                 .to_owned(),
@@ -1040,10 +929,9 @@ fn join_h(hpath: &[wire::HpathSeg]) -> String {
         .join("/")
 }
 
-/// The heading whose SANITIZED spelling is what the caller asked for, returned
-/// in its RAW spelling — `None` when nothing matches, or when the caller was
-/// already raw-correct (then the address is not the sanitize trap and naming it
-/// back would only restate the request).
+/// The heading whose sanitized spelling is what the caller asked for, returned
+/// in its raw spelling — `None` when nothing matches, or when the caller was
+/// already raw-correct.
 fn raw_spelling_for(doc: &model::Document, hpath: &[wire::HpathSeg]) -> Option<String> {
     let asked: Vec<String> = hpath
         .iter()
