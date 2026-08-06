@@ -83,8 +83,8 @@ fn effects_are_stamped_with_event_depth() {
 
 #[test]
 fn max_depth_zero_suppresses_md_even_at_depth_zero() {
-    // A degenerate cap of 0 means depth 0 already >= cap → md suppressed from the
-    // first generation. (Deterministic edge, documents the boundary.)
+    // A cap of 0 means depth 0 already >= cap → md suppressed from the first
+    // generation.
     let rules = [rule("status_log"), rule("task_conventions")];
     let effects = eval_with_limits(&rules, &status_event(0), limits(0)).unwrap();
     assert!(effects.iter().all(|e| e.kind.domain() != Domain::Md));

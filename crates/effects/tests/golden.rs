@@ -44,7 +44,7 @@ fn golden_join_arming_on_create() {
     insta::assert_json_snapshot!("join_arming_create", effects);
 }
 
-// join_arming does NOT fire on an update to an existing agent file.
+// join_arming does not fire on an update to an existing agent file.
 #[test]
 fn golden_join_arming_skips_update() {
     let effects = eval(
@@ -58,7 +58,7 @@ fn golden_join_arming_skips_update() {
     );
 }
 
-// status_log writes a durable log line INTO the tree (the cursor-replay escape).
+// status_log writes a durable log line into the tree (the cursor-replay escape).
 #[test]
 fn golden_status_log_appends() {
     let effects = eval(

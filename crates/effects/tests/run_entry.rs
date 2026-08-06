@@ -68,7 +68,7 @@ fn ctx_exposes_page_task_args_env() {
 
 #[test]
 fn ctx_does_not_expose_invocation_identity() {
-    // The provenance facts are stamped, never injected — a task's OUTPUT must
+    // The provenance facts are stamped, never injected — a task's output must
     // not depend on its invocation identity. Reaching for them faults.
     for field in ["invocation_id", "root_at_eval"] {
         let src = format!("def run(ctx):\n    notice(message = ctx.{field})\n");
@@ -145,9 +145,9 @@ fn run_plane_source_guards_apply() {
 
 #[test]
 fn sandbox_exposes_no_process_or_io_names() {
-    // Ruling 8: starlark-invokes-bash is a PERMANENT no. The run plane uses
-    // the same closed globals as on_change — assert the exec-shaped names are
-    // absent behaviorally: reaching one faults, never runs.
+    // Ruling 8: starlark-invokes-bash is a permanent no. The run plane uses
+    // the same closed globals as on_change — reaching an exec-shaped name
+    // faults, never runs.
     for name in [
         "exec",
         "subprocess",

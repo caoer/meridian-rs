@@ -35,7 +35,7 @@ fn missing_on_change_hook_is_typed_missing_entry() {
 #[test]
 fn run_plane_source_fed_a_change_event_is_wrong_plane() {
     // A `def run(ctx)` task addressed as a change-plane rule: the typed error
-    // names BOTH what was required and what the source defines.
+    // names both what was required and what the source defines.
     assert!(matches!(
         run("def run(ctx):\n    pass\n"),
         Err(EvalError::MissingEntry {

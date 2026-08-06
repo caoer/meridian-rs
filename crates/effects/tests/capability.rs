@@ -1,4 +1,4 @@
-//! Capability routing (0003 §2): the engine emits ALL effects deterministically;
+//! Capability routing (0003 §2): the engine emits all effects deterministically;
 //! a `CapabilitySet` is the downstream filter. Routing partitions by declared
 //! kind and never changes which effects were produced.
 
