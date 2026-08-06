@@ -1,25 +1,15 @@
-//! The agent-plane address, as a fallible TYPE.
+//! The agent-plane address, as a fallible type.
 //!
 //! `[root:]path[#selector][@fp]` — parsed once, here, so no plane downstream re-splits a
-//! string. A `std`-only leaf with zero dependencies, placed UPSTREAM of `syntax`
-//! (`docs/address-grammar.md` § 7.1): `model` depends on `syntax`, so an address type
-//! living beside the markdown parsing would be architecturally unreachable from the
-//! wikilink ingress where a cross-root address actually arrives.
+//! string. A `std`-only leaf with zero dependencies, upstream of `syntax`
+//! (`docs/address-grammar.md` § 7.1).
 //!
-//! **Construction is the only way in.** [`Addr::parse`] is the sole constructor; there is
-//! no `from_parts` a caller can use to smuggle an unparsed root prefix into the
-//! [`Addr::path`] field. That invariant — *`Addr.path` carries no root prefix* — is what
-//! makes every downstream guard checkable, and it is why the type is fallible rather than
-//! a boolean helper a caller may ignore (R5).
+//! [`Addr::parse`] is the sole constructor: `Addr.path` never carries a root prefix,
+//! which is what makes every downstream guard checkable.
 //!
-//! **Parse is not resolve.** [`Addr::parse`] answers *"is this a well-formed address?"*;
-//! it never touches the mount table. Whether the named root is BOUND is the resolver's
-//! question and its answer is grey, not a parse error (`docs/address-grammar.md` § 2.2, §
-//! 6). Conflating the two would make a well-formed address to an unmounted root
-//! indistinguishable from a malformed one.
-//!
-//!
-//!
+//! Parse is not resolve: [`Addr::parse`] never touches the mount table. Whether the
+//! named root is bound is the resolver's question, answered grey, not a parse error
+//! (§ 2.2, § 6).
 
 use core::fmt;
 
@@ -28,12 +18,9 @@ pub mod stored;
 /// A canonical root NAME — the mount-table key a cross-root address carries
 /// (`sessions`, `assets`).
 ///
-/// Deliberately named `MountName`, never `Root`: three senses of "root" already
-/// meet in this engine and a fourth shares the spelling
-/// (`docs/address-grammar.md` § 1). This is neither a Merkle cursor
-/// (`wire::Root`) nor a directory (`fs::WorkspaceRoot`) nor the `root:`
-/// frontmatter key of the preset grammar — and the word **Name** says so at
-/// every call site.
+/// Named `MountName`, never `Root`: this is neither a Merkle cursor
+/// (`wire::Root`), a directory (`fs::WorkspaceRoot`), nor the `root:`
+/// frontmatter key (`docs/address-grammar.md` § 1).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MountName(String);
 
@@ -41,11 +28,8 @@ impl MountName {
     /// The one charset: `[a-z0-9-]`, non-empty (`docs/address-grammar.md`
     /// § 4.3).
     ///
-    /// **An uppercase byte REFUSES rather than being silently normalized.** A
-    /// silent normalization would make two spellings one name, and the ratified
-    /// law is one name per root used everywhere. The corpus index already
-    /// lowercases its own keys, so a normalizing `MountName` would be a second,
-    /// invisible case rule on the same address.
+    /// An uppercase byte refuses rather than normalizing — one name per root,
+    /// used everywhere.
     ///
     /// # Errors
     ///
@@ -83,15 +67,11 @@ impl fmt::Display for MountName {
 /// § 4.5.
 ///
 /// Every variant carries the offending text, so a refusal can name what it
-/// refused rather than reporting that something, somewhere, was malformed.
+/// refused.
 ///
-/// One variant here is NOT reachable from [`Addr::parse`]:
-/// [`AddrError::SelectorOnOpaqueRoot`] is a RESOLUTION-time refusal, because a
-/// root's *kind* is a mount-table fact and `parse` does not read the mount table
-/// (§ 2.2). Its constructor lives with the resolver — `model`'s
-/// [`resolve_ref`](../model/struct.CorpusIndex.html) — and U11 ships the two
-/// together. A variant with no constructor would be S3-R23(4)'s forbidden
-/// weakened middle: a claim nothing checks.
+/// [`AddrError::SelectorOnOpaqueRoot`] is not reachable from [`Addr::parse`]:
+/// a root's kind is a mount-table fact and `parse` does not read the mount
+/// table (§ 2.2). Its constructor lives with the resolver.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AddrError {
     /// The head carried a root separator but the name before it is outside the
@@ -106,20 +86,18 @@ pub enum AddrError {
     /// Nothing follows the root separator (`sessions:`), or the address is
     /// empty. An address always names a path.
     EmptyPath,
-    /// Two or more colons in the head (`a:b:c.md`). **Exactly one colon may act
-    /// as a separator**, and a second is refused rather than resolved by a
-    /// precedence rule no reader could recover from the spelling.
+    /// Two or more colons in the head (`a:b:c.md`) — exactly one colon may act
+    /// as a separator.
     AmbiguousColon {
         /// The offending head, verbatim.
         found: String,
     },
     /// A `#selector` on an address naming an OPAQUE root — one whose kind has no
-    /// parse and no sections (`git-folder`). `assets:media/logo.png` is legal;
-    /// `assets:media/logo.png#Design` is refused (§ 10.1, G-1).
+    /// parse and no sections (`git-folder`) (§ 10.1, G-1).
     ///
-    /// **Resolution-time, never parse-time**: the root's kind is a mount-table
-    /// fact, so only the resolver can raise this. Pin grain for such a root is
-    /// the file, and the fingerprint is a raw CID of the bytes.
+    /// Resolution-time, never parse-time: the root's kind is a mount-table
+    /// fact. Pin grain for such a root is the file, and the fingerprint is a
+    /// raw CID of the bytes.
     SelectorOnOpaqueRoot {
         /// The opaque root the address named.
         root: MountName,
@@ -172,8 +150,7 @@ impl std::error::Error for AddrError {}
 /// The agent-plane address `[root:]path[#selector][@fp]`, parsed.
 ///
 /// Construct with [`Addr::parse`] — the sole constructor. Round-trips
-/// byte-identically through [`Display`](fmt::Display), which is what lets an
-/// address be a type at a seam that must still write the spelling it read.
+/// byte-identically through [`Display`](fmt::Display).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Addr {
     root: Option<MountName>,
@@ -183,32 +160,23 @@ pub struct Addr {
 }
 
 impl Addr {
-    /// Parse an agent-plane address. **The sole constructor.**
+    /// Parse an agent-plane address. The sole constructor.
     ///
-    /// The colon law (`docs/address-grammar.md` § 4.1), over the **head** — the
+    /// The colon law (`docs/address-grammar.md` § 4.1), over the head — the
     /// text before the first `/` and before the first `#`:
     ///
-    /// - **zero `:`** → no root; the address resolves in the ambient root. The
-    ///   overwhelming majority of refs, unchanged;
-    /// - **exactly one `:`** → that colon IS the root separator. The text
-    ///   before it must be a well-formed [`MountName`], the text after it
-    ///   non-empty. If either fails the address is REFUSED — **never**
-    ///   reinterpreted as a literal path;
-    /// - **two or more `:`** → refused.
+    /// - zero `:` — no root; the address resolves in the ambient root;
+    /// - exactly one `:` — the root separator: a well-formed [`MountName`]
+    ///   before it, a non-empty path after it, else REFUSED — never
+    ///   reinterpreted as a literal path (a typo'd root must refuse, not
+    ///   degrade into a literal-path lookup);
+    /// - two or more `:` — refused.
     ///
     /// After the first `/`, a `:` is an ordinary path byte.
     ///
-    /// **Why no fallback to the literal reading.** A fallback would mean a
-    /// typo'd root (`session:` for `sessions:`) silently degrades into a lookup
-    /// for a file literally named `session:notes.md` — a wrong SUCCESS of
-    /// exactly FINDING 03's shape. Refusing is the only outcome that cannot be
-    /// mistaken for working.
-    ///
-    /// The `@fp` suffix is recognized **inside the fragment only** (after the
-    /// first `#`), which is the position the render face mints it in and the
-    /// only position where it could otherwise be absorbed into the selector
-    /// (§ 4.4). An `@` in a bare path stays a path byte, so a filename carrying
-    /// one is addressable.
+    /// The `@fp` suffix is recognized inside the fragment only (§ 4.4); an `@`
+    /// in a bare path stays a path byte, so a filename carrying one is
+    /// addressable.
     ///
     /// # Errors
     ///
@@ -219,8 +187,7 @@ impl Addr {
             None => (spelling, None),
         };
 
-        // The head is the first path segment of the pre-fragment text: a `:`
-        // after the first `/` is an ordinary path byte and carries no meaning.
+        // A `:` after the first `/` is an ordinary path byte (§ 4.1).
         let head = before_frag.split('/').next().unwrap_or(before_frag);
         let (root, path) = match head.match_indices(':').count() {
             0 => (None, before_frag.to_string()),
@@ -297,13 +264,9 @@ impl Addr {
         self.fp.as_deref()
     }
 
-    /// The address minus its selector and fp: `[root:]path`.
-    ///
-    /// This is the identity a corpus lookup addresses, and it is byte-identical
-    /// to what a pre-type `split_once('#')` produced at every seam — the root
-    /// stays ON the spelling here rather than being peeled into a field nothing
-    /// downstream reads yet. Peeling it before the resolver is root-aware is
-    /// Story A's discard defect (FINDING 02); U11 owns the root-keyed lookup.
+    /// The address minus its selector and fp: `[root:]path` — the identity a
+    /// corpus lookup addresses. The root stays on the spelling; the root-keyed
+    /// lookup belongs to the resolver.
     #[must_use]
     pub fn target(&self) -> String {
         match &self.root {
@@ -312,13 +275,10 @@ impl Addr {
         }
     }
 
-    /// This address with its path replaced — the resolution seam, and it is
-    /// **fallible on purpose**.
-    ///
-    /// A resolved corpus path must itself carry no root separator in its head,
-    /// or the invariant [`Addr::parse`] establishes would be smuggled around by
-    /// a caller holding an already-valid `Addr`. Root, selector and fp ride
-    /// through unchanged.
+    /// This address with its path replaced — the resolution seam, fallible on
+    /// purpose: a resolved corpus path must itself carry no root separator, or
+    /// the [`Addr::parse`] invariant could be smuggled around. Root, selector
+    /// and fp ride through unchanged.
     ///
     /// # Errors
     ///
@@ -341,12 +301,9 @@ impl Addr {
 }
 
 impl fmt::Display for Addr {
-    /// The canonical spelling — **byte-identical to what was parsed.**
-    ///
-    /// Lossless rendering is not a convenience: `lock` proves byte round-trip
-    /// of its fenced block and the view projection writes `declared_ref`
-    /// verbatim, so a type that could not reproduce its input would not be
-    /// admissible at either seam.
+    /// The canonical spelling — byte-identical to what was parsed. The `lock`
+    /// byte-round-trip seam and the verbatim `declared_ref` column both
+    /// require lossless rendering.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(root) = &self.root {
             write!(f, "{root}:")?;
@@ -362,47 +319,24 @@ impl fmt::Display for Addr {
     }
 }
 
-/// **THE reason word for a root that is DECLARED but cannot be read here — the
-/// ONE source, in the BARE form (S3-R49).**
+/// The reason word for a root that is DECLARED but cannot be read here — the
+/// one source, in the bare form.
 ///
-/// It lives in this leaf because TWO planes print it and a second literal is how
-/// one state grows two spellings:
-///
-/// - the **mount** plane (`config::mount::MountState::PathUnseeable`) wraps it as
-///   `grey(path-unseeable)` — the form `mrd config` prints;
-/// - the **address** plane (`model::selector` / `view::walk`) takes it BARE, the
-///   form `color_reason` returns, and lets its own renderer wrap.
-///
-/// **Reused, never minted.** U11 round 2 was ruled a NEW word
-/// (`root-unreachable`) and the enumeration this unit was obliged to run found
-/// that U7 already shipped this one for the same observed state, citing the same
-/// M6 row, with a teaching that already names the path. Minting a synonym would
-/// have been exactly the cross-crate re-spelling S3-R6 forbids.
-///
-/// **The wrapping is derived, not duplicated:** each plane's wrapped spelling is
-/// checked against this const at COMPILE TIME, so the two agree by construction
-/// rather than by two literals that happen to match today.
+/// Two planes print it: the mount plane wraps it as `grey(path-unseeable)`,
+/// the address plane takes it bare and lets its own renderer wrap. Each
+/// plane's wrapped spelling is checked against this const at compile time.
 pub const PATH_UNSEEABLE_REASON_WORD: &str = "path-unseeable";
 
-/// **Does this spelling's HEAD carry a root separator?** — the ONE lexical
-/// question *"could the address plane have something to say about this?"*
+/// Does this spelling's HEAD carry a root separator? — the one lexical
+/// question "could the address plane have something to say about this?"
 ///
-/// The head is the text before the first `/` and before the first `#`, which is
-/// exactly the span the colon law (§ 4.1) reads. Lexical on purpose, and
-/// deliberately WEAKER than "parses as a rooted [`Addr`]": a malformed rooted
-/// spelling (`Sessions:notes.md`, `a:b:c.md`, `sessions:`) does not parse, and
-/// the address plane's answer for it is a REFUSAL — which is still an answer.
+/// The head is the text before the first `/` and before the first `#` (§ 4.1).
+/// Deliberately weaker than "parses as a rooted [`Addr`]": a malformed rooted
+/// spelling does not parse, and its address-plane answer is a REFUSAL — still
+/// an answer. A parse-success predicate would drop every refusal silently.
 ///
-/// **A predicate that asked [`Addr::parse`] instead would be a superset of the
-/// WELL-FORMED spellings only**, and every refusal would fall through it
-/// silently. That is measured, not hypothetical: `wire-serve`'s translation gate
-/// asks parse-success — correctly, because an unparseable address has no stored
-/// form — and five refusing spellings slip it. Two different questions were
-/// sharing one predicate; this is the other question.
-///
-/// It lives in this leaf because the resolver ([`model`]'s C-3 guard) and the
-/// link plane's degrade both ask it, and **they must not merely agree — they
-/// must be the same test**, or they drift the moment one is edited.
+/// Lives in this leaf because the resolver's C-3 guard and the link plane's
+/// degrade must be the same test, not two that agree today.
 #[must_use]
 pub fn head_carries_root_separator(spelling: &str) -> bool {
     let trimmed = spelling.trim();
@@ -414,25 +348,15 @@ pub fn head_carries_root_separator(spelling: &str) -> bool {
         .contains(':')
 }
 
-/// **The ONE lexical confinement predicate for a corpus-relative path.**
+/// The one lexical confinement predicate for a corpus-relative path.
 ///
 /// A path is confined when it is non-empty, does not start with `/`, has no
-/// empty / `.` / `..` segment, and **carries no root separator in its head**.
+/// empty / `.` / `..` segment, and carries no root separator in its head — a
+/// `root:`-bearing spelling is an ADDRESS, never a corpus path (§ 4.2, D11).
 ///
-/// Confinement used to be an ambient property: every path was joined onto the
-/// ONE `fs::WorkspaceRoot`, so a lexical check was the whole story. **Multi-root
-/// removes that ambient guarantee** — a `root:` prefix selects WHICH tree a path
-/// is joined onto — so the head-colon arm is part of the predicate rather than a
-/// separate address check: a `root:`-bearing spelling is an ADDRESS, and an
-/// address is never a corpus path (§ 4.2, D11).
-///
-/// It lives here, in the `std`-only leaf, because two planes ask it — the write
-/// doors in `wire-serve` and the resolver in `model` — and a second
-/// implementation of a confinement fact is how one question grows two answers.
-///
-/// **Lexical only, by design.** It does not touch the filesystem, so it cannot
-/// see a symlink that escapes; canonicalize-at-bind (§ 8 B-1) is what covers
-/// that, and the two are complementary rather than alternatives.
+/// Lives in this leaf because the write doors in `wire-serve` and the resolver
+/// in `model` must share one implementation. Lexical only: it cannot see a
+/// symlink escape; canonicalize-at-bind (§ 8 B-1) covers that.
 #[must_use]
 pub fn confined(path: &str) -> bool {
     if path.is_empty() || path.starts_with('/') {
@@ -444,46 +368,26 @@ pub fn confined(path: &str) -> bool {
     {
         return false;
     }
-    // The head is the first segment: a `:` after the first `/` is an ordinary
-    // path byte (§ 4.1) and must not make an otherwise-fine path unwritable.
+    // A `:` after the first `/` is an ordinary path byte (§ 4.1).
     !path.split('/').next().unwrap_or(path).contains(':')
 }
 
 /// The resolution-facing projection of the mount table: which canonical names
 /// this machine binds.
 ///
-/// Constructed by `config` (which owns the `MERIDIAN.md` parse and the
-/// name ↔ vault-name ↔ path table) and consumed by `model` — it lives here, in
-/// the upstream leaf, so `model::CorpusIndex::resolve_ref` can name it without
-/// depending on `config`, which is downstream of `model`
-/// (`docs/address-grammar.md` § 7.2).
+/// Constructed by `config`, consumed by `model` — it lives in this upstream
+/// leaf so the resolver can name it without depending on `config`
+/// (`docs/address-grammar.md` § 7.2). A concrete type, not a trait: a second
+/// implementation of an address fact is one question with two answers.
 ///
-/// **A concrete type, not a trait.** A trait invites a second implementation,
-/// and a second implementation of an address fact is the exact defect D12 keeps
-/// producing: one question, two answers.
+/// Answers three questions: is this name bound; which names are bound (so a
+/// refusal can teach); and is this name DECLARED but unreadable here — a
+/// distinct fact, or its refusal would prescribe a fix that is already done.
 ///
-/// The surface answers the three questions a resolver asks — *is this name
-/// bound*, *which names are bound* (so a refusal can teach), and — S3-R43 —
-/// *is this name DECLARED but unreadable here*, which is a different fact from
-/// both and needs its own answer.
-///
-/// **Why the third question exists (S3-R43).** Round 1 carried only "bound or
-/// not", so a root the file DECLARES but this machine cannot read was
-/// indistinguishable from one nobody ever declared. The refusal for the second
-/// says *"declare it in `~/MERIDIAN.md`"* — on the first that sentence is FALSE
-/// and the prescribed fix is ALREADY DONE. A teaching refusal that prescribes a
-/// completed action is worse than a bare class: it spends the user's trust and
-/// their time and leaves no signal pointing at the real cause.
-///
-/// **The vault axis (U12).** The three-way map is *name ↔ vault name ↔ path*,
-/// and the STORED plane is spelled in vault names
-/// (`2026-07-24-cross-root-addressing.md` §2). So the same projection answers
-/// the translation's two questions — *which vault name does this root have* and
-/// *which root does this vault name belong to* — rather than a second
-/// projection type growing beside this one for one axis of one map. The axis is
-/// **partial by construction**: a `git-folder` root has no Obsidian vault, so
-/// [`MountSet::vault_of`] is `None` there and the stored form refuses rather
-/// than inventing a vault name.
+/// The vault axis maps name ↔ vault name ↔ path; the stored plane is spelled
+/// in vault names. Partial by construction: a `git-folder` root has no
+/// Obsidian vault, so [`MountSet::vault_of`] is `None` there and the stored
+/// form refuses rather than inventing one.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MountSet {
     bound: Vec<MountName>,
@@ -492,10 +396,8 @@ pub struct MountSet {
 }
 
 /// A root the mount table DECLARES but this machine cannot read — the path is
-/// absent, unreadable, or holds no corpus.
-///
-/// Carries the PATH, because that is what its refusal must name: the mount entry
-/// is already correct, so naming the entry teaches nothing.
+/// absent, unreadable, or holds no corpus. Carries the path: that is what its
+/// refusal must name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnreachableRoot {
     /// The canonical name the file declares.
@@ -523,13 +425,10 @@ impl MountSet {
         }
     }
 
-    /// Record the Obsidian vault name a bound root carries — the vault axis of
-    /// the three-way map. Chainable.
+    /// Record the Obsidian vault name a bound root carries. Chainable.
     ///
-    /// A later record for the same name REPLACES the earlier one rather than
-    /// shadowing it: the mount table enforces INV-3 (a vault name is a key), so
-    /// two answers for one root cannot both be right and keeping both would let
-    /// a lookup order decide which stored form a link gets.
+    /// A later record for the same name REPLACES the earlier one (INV-3: a
+    /// vault name is a key).
     #[must_use]
     pub fn with_vault(mut self, name: MountName, vault: impl Into<String>) -> Self {
         let vault = vault.into();
@@ -564,9 +463,8 @@ impl MountSet {
     /// Record a DECLARED root this machine cannot read, with the path to check
     /// and the underlying reason. Chainable.
     ///
-    /// Such a name is **not** bound — [`MountSet::is_bound`] stays false — but it
-    /// is not undeclared either, and [`MountSet::unreachable`] is how a resolver
-    /// tells the two apart.
+    /// Such a name is not bound, but not undeclared either;
+    /// [`MountSet::unreachable`] is how a resolver tells the two apart.
     #[must_use]
     pub fn with_unreachable(
         mut self,
@@ -612,19 +510,13 @@ impl MountSet {
 
     /// Does the mount table DECLARE `name` at all — bound or not?
     ///
-    /// The union of [`MountSet::is_bound`] and [`MountSet::unreachable`], and the
-    /// question a caller asks when it needs *"is this name MINE to judge?"*
-    /// rather than *"can I read it from here?"*.
+    /// The union of [`MountSet::is_bound`] and [`MountSet::unreachable`]: the
+    /// question "is this name MINE to judge?" rather than "can I read it?".
     ///
-    /// **The two questions are not interchangeable and the difference is
-    /// reachable in production.** `Addr::parse` has no scheme fallback by
-    /// design, so `https://example.com` parses as root `https` and
-    /// `mailto:a@b.example` as root `mailto`. A caller that must leave external
-    /// URIs alone therefore cannot ask `is_bound` — that predicate is FALSE for
-    /// an external scheme and for a root this file declares but this machine
-    /// cannot read, **collapsing "not mine" into "mine but unreadable"**. The
-    /// first must be left verbatim; the second has no stored form and must
-    /// refuse. Asking this question instead keeps the two apart.
+    /// Not interchangeable with `is_bound`: external URIs parse as roots
+    /// (`https://…` → root `https`), and `is_bound` is false for both an
+    /// external scheme (leave verbatim) and a declared-but-unreadable root
+    /// (must refuse). This question keeps the two apart.
     #[must_use]
     pub fn is_declared(&self, name: &MountName) -> bool {
         self.is_bound(name) || self.unreachable(name).is_some()
@@ -635,11 +527,7 @@ impl MountSet {
 mod tests {
     use super::*;
 
-    /// The acceptance half, asserted in the same breath as the refusals
-    /// (S3-R8(c)): a grammar proven only by what it refuses is
-    /// indistinguishable from one that refuses everything. Rows D1-D4 of
-    /// `docs/address-grammar.md` § 4.5 — and D2/D3 are the ones that keep this
-    /// law from swallowing the ordinary corpus.
+    /// Acceptance rows D1-D4 of `docs/address-grammar.md` § 4.5.
     #[test]
     fn the_colon_law_accepts_rows_d1_through_d4() {
         // D1 — a rooted address.
@@ -705,13 +593,11 @@ mod tests {
         );
     }
 
-    /// There is NO fallback to the literal reading — the property § 4.1 exists
-    /// to establish. A typo'd root must refuse rather than degrade into a
-    /// lookup for a file literally named `session:notes.md`.
+    /// No fallback to the literal reading (§ 4.1): a typo'd root refuses
+    /// rather than degrading into a literal-path lookup.
     #[test]
     fn a_typod_root_refuses_and_never_falls_back_to_a_literal_path() {
-        // Well-formed name, so it parses AS a root — the mount lookup (U11)
-        // decides the rest. It must NOT become a literal path.
+        // A well-formed name parses AS a root; the mount lookup decides the rest.
         let typo = Addr::parse("session:notes.md").expect("a well-formed name parses");
         assert_eq!(typo.root().map(MountName::as_str), Some("session"));
         assert_eq!(
@@ -726,8 +612,7 @@ mod tests {
         );
     }
 
-    /// The invariant every downstream guard rests on: `Addr.path` carries no
-    /// root prefix, and there is no constructor that can smuggle one in.
+    /// `Addr.path` carries no root prefix, and no constructor can smuggle one in.
     #[test]
     fn the_path_field_never_carries_a_root_prefix() {
         for spelling in [
@@ -757,8 +642,7 @@ mod tests {
         );
     }
 
-    /// Lossless round-trip — the property that makes the type admissible at the
-    /// `lock` byte-round-trip seam and the view projection's verbatim column.
+    /// Lossless round-trip: every parsed spelling renders back byte-identically.
     #[test]
     fn every_parsed_spelling_renders_back_byte_identically() {
         for spelling in [
@@ -803,19 +687,9 @@ mod tests {
         assert_eq!(at_in_path.fp(), None, "a bare path's `@` is a path byte");
     }
 
-    /// **S3-R38 — an `@` in a BARE path is a PATH BYTE, so `mail@host.md` stays
-    /// addressable.** Ratified, and pinned HERE rather than remembered: before
-    /// this test the ruling lived in prose on [`Addr::parse`], and a grammar
-    /// decision living only in a doc comment is one refactor from being reversed
-    /// by someone who never read it.
-    ///
-    /// **Why it holds rather than merely being reasonable.** The `@fp` token's
-    /// slot is defined by the BLOCK-REF POSITION, and a block ref requires a
-    /// `#`. **A bare path has no such slot, so an `@` there cannot be an fp BY
-    /// CONSTRUCTION** — not by convention, not by a rule someone must remember.
-    /// The constraint is SLOT plus SHAPE, and a bare path fails the slot test
-    /// structurally. The `#`-bearing sibling below is what makes that concrete:
-    /// the SAME `@host` text is an fp once a fragment opens the slot.
+    /// S3-R38 — an `@` in a BARE path is a path byte, so `mail@host.md` stays
+    /// addressable. The `@fp` slot is defined by the block-ref position, which
+    /// requires a `#`; a bare path has no slot by construction.
     #[test]
     fn an_at_in_a_bare_path_is_a_path_byte_and_round_trips() {
         let bare = Addr::parse("mail@host.md").expect("a bare path carrying `@` parses");
@@ -832,9 +706,7 @@ mod tests {
             "the corpus lookup addresses the whole filename, `@` included",
         );
 
-        // The SLOT, opened: the same `@host` text after a `#` IS an fp. Without
-        // this half the assertion above is equally satisfied by a parser that
-        // never recognizes an fp anywhere.
+        // The slot, opened: the same `@host` text after a `#` IS an fp.
         let slotted = Addr::parse("mail.md#^claim@host").expect("a block ref opens the fp slot");
         assert_eq!(slotted.selector(), "^claim");
         assert_eq!(
@@ -850,9 +722,7 @@ mod tests {
         assert_eq!(rooted.to_string(), "sessions:mail@host.md");
     }
 
-    /// `target()` is byte-identical to the pre-type `split_once('#')` result —
-    /// the property that keeps U10 behaviour-neutral at every projection seam
-    /// and leaves the root-aware lookup to U11.
+    /// `target()` is byte-identical to the pre-type `split_once('#')` result.
     #[test]
     fn target_matches_the_pre_type_split_at_every_seam() {
         for spelling in [
@@ -908,9 +778,7 @@ mod tests {
         assert!(MountSet::default().bound_names().is_empty());
     }
 
-    /// The vault axis, both directions, with its PARTIALITY asserted: a root
-    /// carrying no vault name answers `None` rather than a guess, which is what
-    /// makes the stored form refuse instead of inventing one.
+    /// The vault axis, both directions; a root with no vault answers `None`.
     #[test]
     fn the_vault_axis_answers_both_directions_and_stays_partial() {
         let sessions = MountName::parse("sessions").expect("a name");
@@ -930,25 +798,17 @@ mod tests {
             None,
             "a vault this machine does not bind is not the engine's to translate",
         );
-        // INV-3 read from this side: one root, one vault name — a second record
-        // REPLACES rather than shadowing.
+        // INV-3: one root, one vault name — a second record replaces.
         let set = set.with_vault(sessions.clone(), "renamed-vault");
         assert_eq!(set.vault_of(&sessions), Some("renamed-vault"));
         assert_eq!(set.name_of_vault("field-notes-sessions"), None);
-        // An unreachable root keeps no vault name: it is not bound, so it has
-        // no stored spelling either.
+        // An unreachable root keeps no vault name.
         let set = set.with_unreachable(sessions.clone(), "/gone", "unreadable");
         assert_eq!(set.vault_of(&sessions), None);
     }
 
-    /// [`head_carries_root_separator`] — the one lexical "could the address
-    /// plane answer this?" test, with BOTH halves asserted (S3-R8(c)).
-    ///
-    /// **The refusing rows are the point.** A predicate built on
-    /// [`Addr::parse`] would answer false for every one of them, because they do
-    /// not parse — and their address-plane answer is a REFUSAL, which is still
-    /// an answer. A gate that drops them lets a refusal be served silently by
-    /// whichever path did not ask.
+    /// [`head_carries_root_separator`] admits refusing spellings too — a
+    /// parse-gated predicate would drop them.
     #[test]
     fn the_head_separator_test_admits_refusals_and_leaves_the_ambient_corpus_out() {
         for rooted in [
@@ -967,8 +827,7 @@ mod tests {
                 "{rooted}: the address plane has an answer here, so the head test must admit it",
             );
         }
-        // ACCEPTANCE HALF — a test that admits everything gates nothing, and
-        // would fire the link plane's degrade on the whole ordinary corpus.
+        // Acceptance half — a test that admits everything gates nothing.
         for ambient in [
             "notes.md",
             "a/b/c.md",
@@ -984,17 +843,13 @@ mod tests {
         }
     }
 
-    /// The property that makes the two callers ONE test rather than two that
-    /// agree today: every spelling this predicate admits is exactly the set
-    /// `resolve_linkpath`'s C-3 guard refuses. Asserted on the parse side here —
-    /// a well-formed admitted spelling parses ROOTED, and a refused one is an
-    /// `AddrError`. Either way the address plane has an answer.
+    /// Every spelling the head test admits has an address-plane answer: a
+    /// well-formed one parses ROOTED, a refused one is an `AddrError`.
     #[test]
     fn everything_the_head_test_admits_has_an_address_plane_answer() {
         for spelling in ["sessions:notes.md", "Sessions:notes.md", "a:b:c.md"] {
             assert!(head_carries_root_separator(spelling));
-            // An Err arm needs no assertion: a refusal IS an address-plane
-            // answer, and it is exactly the case a parse-gated predicate drops.
+            // An Err arm needs no assertion: a refusal IS an address-plane answer.
             if let Ok(addr) = Addr::parse(spelling) {
                 assert!(
                     addr.root().is_some(),
@@ -1004,9 +859,7 @@ mod tests {
         }
     }
 
-    /// [`confined`] — the one lexical confinement law, with its ACCEPTANCE half
-    /// asserted in the same breath (S3-R8(c)): a predicate proven only by what
-    /// it rejects is indistinguishable from one that rejects everything.
+    /// [`confined`] rejects escapes and admits the ordinary corpus.
     #[test]
     fn confinement_rejects_escapes_and_admits_the_ordinary_corpus() {
         for ok in [
@@ -1032,10 +885,8 @@ mod tests {
         }
     }
 
-    /// The resolution-time refusal U11 constructs (§ 10.1, G-1): a `#selector`
-    /// on an address into an OPAQUE root, which has no parse and no sections.
-    /// The variant ships WITH its constructor — an unconstructed variant would
-    /// be S3-R23(4)'s forbidden weakened middle.
+    /// The resolution-time refusal (§ 10.1, G-1): a `#selector` on an address
+    /// into an OPAQUE root.
     #[test]
     fn the_opaque_root_refusal_names_the_root_its_kind_and_the_selector() {
         let err = AddrError::SelectorOnOpaqueRoot {
@@ -1052,8 +903,7 @@ mod tests {
         }
     }
 
-    /// Every refusal names what it refused — a refusal that cannot teach is the
-    /// defect D8 exists to prevent.
+    /// Every refusal names what it refused and points at the law.
     #[test]
     fn every_refusal_names_the_offending_text_and_teaches_the_fix() {
         for (spelling, needle) in [

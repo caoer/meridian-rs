@@ -2,47 +2,17 @@
 //!
 //! The agent plane is `[root:]path[#selector][@fp]` ([`crate::Addr`]); the stored plane
 //! is what disk carries for a CROSS-ROOT ref, because a root-prefixed wikilink is
-//! unresolvable garbage to Obsidian — stored but unclickable
-//! (`2026-07-24-cross-root-addressing.md` §2). `put` translates one into the other;
-//! `read` translates back.
+//! unresolvable garbage to Obsidian. `put` translates one into the other; `read`
+//! translates back.
 //!
-//! # The grammar is MEASURED, not invented
+//! The grammar reproduces the shipped `md encode` canon: `obsidian://open` (no
+//! fragment) or `advanced-uri` (heading/^block); strict decode — non-canonical
+//! encoding is flagged, never normalized.
 //!
-//! The C24 canon already ships in `md encode` — *"the ONE cross-wiki reference encoder …
-//! canonical `obsidian://open` (no fragment) or advanced-uri (heading/^block) navigation
-//! URI … strict decode: non-canonical encoding is flagged, never normalized"*. This
-//! module reproduces that grammar rather than minting a second spelling of one thing:
-//! `md`'s verbs migrate into `mrd` leg by leg, and two encoders for one stored form is
-//! the defect the mount table's own three-way map exists to prevent.
-//!
-//! Measured first-hand against `/Users/caoer115/.local/bin/md` (2026-07-26):
-//!
-//! ```text
-//! $ md encode '{"slug":"field-notes","path":"domains/media/logo.md"}'
-//! link: obsidian://open?vault=field-notes&file=domains/media/logo.md
-//! $ md encode '{"slug":"field-notes","path":"domains/media/logo.md","fragment":"Design"}'
-//! link: obsidian://advanced-uri?vault=field-notes&filepath=domains/media/logo.md&heading=Design
-//! $ md encode '{"slug":"field-notes","path":"domains/media/logo.md","fragment":"^leaders-guideline"}'
-//! link: obsidian://advanced-uri?vault=field-notes&filepath=domains/media/logo.md&block=leaders-guideline
-//! $ md encode '{"parse":"obsidian://adv-uri?vault=field-notes&filepath=a%2Fb.md&block=x-1"}'
-//! error: [INVALID_INPUT] unrecognized obsidian action "adv-uri" (canon emits open|advanced-uri)
-//! ```
-//!
-//! **The ratified decision's own example spells `adv-uri` and percent-encodes the path
-//! separator** (`obsidian://adv-uri?vault=field-notes&filepath=domains%2F…`). The shipped
-//! canon emits neither spelling and REFUSES the first. The example is illustrative prose;
-//! `md encode` is the encoder in production. This module follows the shipped canon and
-//! the divergence is stated rather than absorbed.
-//!
-//! # Where this module is stricter than `md`, and why
-//!
-//! On a non-canonically encoded parameter the Go canon WARNS and returns exit 0 (*"flag,
-//! never silently normalize"*). The engine REFUSES: a stored URI is read back into an
-//! address a pin is measured against, so *"resolving to something plausible"* is exactly
-//! the wrong-success shape the whole address grammar refuses. Loud, with the canonical
-//! spelling named, so the fix is one edit.
-//!
-//!
+//! Stricter than `md` on decode: where the Go canon warns and exits 0, the engine
+//! REFUSES — a stored URI is read back into an address a pin is measured against,
+//! so "resolving to something plausible" is the wrong-success shape. Loud, with
+//! the canonical spelling named.
 
 use core::fmt;
 
@@ -59,10 +29,8 @@ pub const ACTION_ADVANCED: &str = "advanced-uri";
 
 /// A cross-root address in its STORED spelling, parsed.
 ///
-/// Carries the **vault name**, never a device-local vault id: vault ids live in
-/// each machine's Obsidian registry and are not portable, so a stored id would
-/// make one document's link machine-dependent — the failure §1a of the ratified
-/// decision exists to prevent.
+/// Carries the vault name, never a device-local vault id: vault ids are not
+/// portable, so a stored id would make one document's link machine-dependent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredRef {
     /// The Obsidian vault name the URI names.
@@ -76,9 +44,8 @@ pub struct StoredRef {
 
 /// Why a stored form refused to encode or decode — the closed set.
 ///
-/// Every variant carries the offending text: a refusal that cannot name what it
-/// refused teaches nothing, and this one is read by a human who must hand-fix a
-/// URI.
+/// Every variant carries the offending text; the refusal is read by a human
+/// who must hand-fix a URI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoredError {
     /// The text does not open with [`OBSIDIAN_SCHEME`] — not a stored form at
@@ -186,14 +153,9 @@ pub fn is_stored_uri(text: &str) -> bool {
     text.starts_with(OBSIDIAN_SCHEME)
 }
 
-/// The canon's percent-encoding, measured (module docs): encode `%`, `&`, `=`,
-/// `?`, `#`, `+`, space, every control byte and every non-ASCII byte as
-/// uppercase `%XX`; leave every other ASCII byte literal — **`/` included**, so
-/// a stored path reads as a path.
-///
-/// The set is exactly the bytes that would otherwise re-open the query grammar
-/// (`&=?#`), the byte that means space in form encoding (`+`), the escape byte
-/// itself (`%`), and everything a URI cannot carry raw.
+/// The canon's percent-encoding: encode `%`, `&`, `=`, `?`, `#`, `+`, space,
+/// every control byte and every non-ASCII byte as uppercase `%XX`; leave every
+/// other ASCII byte literal — `/` included, so a stored path reads as a path.
 #[must_use]
 pub fn encode_component(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
@@ -239,10 +201,8 @@ pub fn decode_component(value: &str) -> Option<String> {
 /// Mint the stored form of a cross-root address.
 ///
 /// `selector` is the agent plane's own spelling — `^id` for a block ref, the
-/// heading text otherwise, `None` for page grain. The `@fp` decoration is NOT a
-/// parameter here **by construction**: it is minted on read and never stored
-/// (`docs/address-grammar.md` § 4.4), so there is no argument through which one
-/// could reach a stored URI.
+/// heading text otherwise, `None` for page grain. The `@fp` decoration is not
+/// a parameter: it is minted on read and never stored (§ 4.4).
 ///
 /// # Errors
 ///
@@ -286,18 +246,16 @@ pub fn encode(vault: &str, path: &str, selector: Option<&str>) -> Result<String,
     }
 }
 
-/// Read a stored form back into its parts — **strictly**.
+/// Read a stored form back into its parts — strictly.
 ///
-/// The parameter sequence must be the canon's and every value must be encoded
-/// the way [`encode`] would have written it. Anything else refuses, naming the
-/// canonical spelling: this URI is read back into the address a pin is measured
-/// against, so a plausible-looking guess is worse than a refusal.
+/// The parameter sequence must be the canon's and every value encoded the way
+/// [`encode`] writes it. Anything else refuses, naming the canonical spelling:
+/// this URI is read back into the address a pin is measured against.
 ///
 /// # Errors
 ///
 /// The closed set of [`StoredError`]. [`StoredError::NotStoredForm`] when the
-/// text is not a stored form at all — callers branch on that one rather than
-/// reporting it.
+/// text is not a stored form at all — callers branch on that one.
 pub fn decode(uri: &str) -> Result<StoredRef, StoredError> {
     let rest = uri
         .strip_prefix(OBSIDIAN_SCHEME)
@@ -349,10 +307,8 @@ pub fn decode(uri: &str) -> Result<StoredRef, StoredError> {
             found: raw.to_string(),
             canonical: encode_component(raw),
         })?;
-        // The canon check: a value the canon would have written differently is
-        // FLAGGED, never normalized. `%2F` and `/` decode to the same byte, so
-        // only this comparison can tell an engine-minted URI from a hand-edited
-        // one.
+        // Canon check: `%2F` and `/` decode to the same byte, so only this
+        // re-encode comparison can tell engine-minted from hand-edited.
         if encode_component(&decoded) != raw {
             return Err(StoredError::NonCanonicalEncoding {
                 param: key.to_string(),
@@ -390,10 +346,8 @@ pub fn decode(uri: &str) -> Result<StoredRef, StoredError> {
 mod tests {
     use super::*;
 
-    /// The canon's four shapes, byte-for-byte against the measurement in the
-    /// module docs. A pinned exemplar, not a paraphrase: this is the one place
-    /// the shipped `md encode` bytes are reproduced, so a drift in either
-    /// encoder is a visible failure here.
+    /// The canon's four shapes, byte-for-byte — a pinned exemplar of the
+    /// shipped `md encode` grammar.
     #[test]
     fn encode_reproduces_the_shipped_c24_canon_byte_for_byte() {
         assert_eq!(
@@ -414,8 +368,7 @@ mod tests {
             "obsidian://advanced-uri?vault=field-notes&filepath=domains/media/logo.md\
              &block=leaders-guideline",
         );
-        // The percent-encoding set, measured: space and non-ASCII encode, `/`
-        // stays literal.
+        // Space and non-ASCII encode, `/` stays literal.
         assert_eq!(
             encode("home wiki", "a b/ünï code.md", Some("A Heading")).expect("encoded"),
             "obsidian://advanced-uri?vault=home%20wiki&filepath=a%20b/%C3%BCn%C3%AF%20code.md\
@@ -423,10 +376,7 @@ mod tests {
         );
     }
 
-    /// Every byte the canon escapes, and every byte it leaves alone — measured
-    /// against `md encode` (module docs). The acceptance half is the literal
-    /// list: a set proven only by what it escapes is indistinguishable from one
-    /// that escapes everything.
+    /// Every byte the canon escapes, and every byte it leaves alone.
     #[test]
     fn the_percent_encoding_set_is_the_measured_one() {
         for (raw, encoded) in [
@@ -458,9 +408,7 @@ mod tests {
         }
     }
 
-    /// Round trip, both directions, byte-identically — the gate. Stated over
-    /// the parts because the agent-plane spelling is [`crate::Addr`]'s job; what
-    /// this module owns is that no part changes crossing the plane.
+    /// Round trip, both directions, byte-identically.
     #[test]
     fn every_stored_form_decodes_back_to_the_parts_that_minted_it() {
         for (vault, path, selector) in [
@@ -485,8 +433,8 @@ mod tests {
         }
     }
 
-    /// A hand-edited URI fails LOUDLY rather than resolving to something
-    /// plausible — every refusal class, each naming what it refused.
+    /// A hand-edited URI fails loudly — every refusal class names what it
+    /// refused.
     #[test]
     fn a_hand_edited_stored_uri_refuses_and_names_the_canonical_spelling() {
         assert_eq!(
@@ -494,8 +442,7 @@ mod tests {
             Err(StoredError::NotStoredForm)
         );
 
-        // The ratified decision's own illustrative spelling — refused by the
-        // shipped canon, and refused here (module docs).
+        // `adv-uri` is not a canonical action.
         assert_eq!(
             decode("obsidian://adv-uri?vault=v&filepath=a.md&block=x"),
             Err(StoredError::UnknownAction {
@@ -503,8 +450,8 @@ mod tests {
             }),
         );
 
-        // `%2F` decodes to `/`, which the canon writes literally: the two are
-        // the same address and DIFFERENT bytes, so only the canon check sees it.
+        // `%2F` and `/` are the same address, different bytes — only the canon
+        // check sees it.
         let err = decode("obsidian://open?vault=v&file=a%2Fb.md").expect_err("non-canonical");
         assert_eq!(
             err,
@@ -555,8 +502,8 @@ mod tests {
         );
     }
 
-    /// The mint refuses what has no stored spelling, and ACCEPTS the ordinary
-    /// corpus in the same breath (S3-R8(c)).
+    /// The mint refuses what has no stored spelling and accepts the ordinary
+    /// corpus.
     #[test]
     fn the_mint_refuses_only_what_has_no_stored_spelling() {
         assert!(encode("v", "notes.md", None).is_ok());
