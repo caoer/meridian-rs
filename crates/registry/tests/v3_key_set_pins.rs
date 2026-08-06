@@ -722,11 +722,13 @@ fn the_remaining_error_key_sets_are_pinned() {
 
     let toc = conn.call(&json!({"op": "toc", "path": "plan.md"}));
     let q3 = node_rev(&toc, "Q3");
+    // Region-grain overlap (§4.4): the second needle's bytes sit inside the
+    // first's matched region — same-target edits on DISJOINT bytes are legal.
     let overlap = conn.call(&json!({
         "id": 22, "op": "splice", "path": "plan.md",
         "edits": [
             {"target": {"hpath": [{"h": "Goals"}, {"h": "Q3"}]},
-             "edit": {"match": {"old": "ship", "new": "a"}}, "if_node_rev": q3},
+             "edit": {"match": {"old": "ship by August", "new": "a"}}, "if_node_rev": q3},
             {"target": {"hpath": [{"h": "Goals"}, {"h": "Q3"}]},
              "edit": {"match": {"old": "August", "new": "b"}}, "if_node_rev": q3},
         ],

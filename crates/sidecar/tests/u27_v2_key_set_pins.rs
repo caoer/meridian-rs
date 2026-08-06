@@ -649,10 +649,12 @@ fn remaining_frozen_error_key_sets_are_pinned() {
         "bad_request{id_raw} error",
     );
 
+    // Region-grain overlap (§4.4): the second needle's bytes sit inside the
+    // first's matched region — same-target edits on DISJOINT bytes are legal.
     let overlap = one(
         &root,
         &format!(
-            r#"{{"id":22,"op":"splice","path":"notes/plan.md","edits":[{{"target":{{"hpath":[{{"h":"Goals"}},{{"h":"Q3"}}]}},"edit":{{"match":{{"old":"ship","new":"a"}}}},"if_node_rev":"{Q3_REV}"}},{{"target":{{"hpath":[{{"h":"Goals"}},{{"h":"Q3"}}]}},"edit":{{"match":{{"old":"August","new":"b"}}}},"if_node_rev":"{Q3_REV}"}}]}}"#
+            r#"{{"id":22,"op":"splice","path":"notes/plan.md","edits":[{{"target":{{"hpath":[{{"h":"Goals"}},{{"h":"Q3"}}]}},"edit":{{"match":{{"old":"ship by August","new":"a"}}}},"if_node_rev":"{Q3_REV}"}},{{"target":{{"hpath":[{{"h":"Goals"}},{{"h":"Q3"}}]}},"edit":{{"match":{{"old":"August","new":"b"}}}},"if_node_rev":"{Q3_REV}"}}]}}"#
         ),
     );
     pin_keys(

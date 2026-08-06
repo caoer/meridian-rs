@@ -286,7 +286,8 @@ pub fn now_is_rfc3339(s: &str) -> bool {
 
 /// One batch edit (v2 §4.4): a §2.1 target + one of exactly two edit shapes +
 /// the optional node-grain CAS guard. All targets and guards resolve against
-/// the PRE-batch state; targets must be disjoint (`bad_request{overlap}`).
+/// the PRE-batch state; the edits' replaced regions must be pairwise disjoint
+/// (`bad_request{overlap}` — §4.4 region grain).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Edit {
     pub target: SecRef,
