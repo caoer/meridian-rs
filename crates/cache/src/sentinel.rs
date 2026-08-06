@@ -1,7 +1,7 @@
 //! The sentinel (`registered.json`): the registration signal, its atomic +
 //! create-exclusive write, and corrupt-is-a-miss probing.
 //!
-//! `mkdir` is NOT registration — a crash after `mkdir` but before the payload would leave
+//! `mkdir` is not registration — a crash after `mkdir` but before the payload would leave
 //! a bare directory that a dir-stat probe reads as a valid registration forever,
 //! inverting the shipped safety property "a corrupt shard is a miss, never a hit"
 //! (amendment C1). The sentinel is the signal: the probe stats the sentinel, never the
@@ -160,7 +160,7 @@ pub fn register(drawer_dir: &Path, workspace: &Path) -> io::Result<Sentinel> {
     let bytes = to_bytes(&mine)?;
     let tmp = write_tmp(drawer_dir, &bytes)?;
 
-    // hard_link is atomic AND fails with AlreadyExists if the sentinel exists —
+    // hard_link is atomic and fails with AlreadyExists if the sentinel exists —
     // exclusive-create and atomicity in one primitive.
     match fs::hard_link(&tmp, &sentinel_path) {
         Ok(()) => {
