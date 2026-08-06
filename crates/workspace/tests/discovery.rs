@@ -26,10 +26,6 @@ fn resolve_bare(cwd: &Path) -> Answer {
 }
 
 // ── The retired markers anchor NOTHING ──────────────────────────────────────
-//
-// The marker-retirement gates. Against the old contract both returned
-// `Tier::Marker` — measured before the change, not assumed: the pre-change run
-// reported `left: Marker` for each of these two fixtures.
 
 #[test]
 fn marker_file_below_a_git_root_resolves_to_the_git_root() {
@@ -38,7 +34,7 @@ fn marker_file_below_a_git_root_resolves_to_the_git_root() {
     let inner = repo.join("inner");
     fs::create_dir_all(&inner).unwrap();
     fs::create_dir(repo.join(".git")).unwrap();
-    // The retired marker, deliberately NEARER than `.git`. It used to win.
+    // The retired marker, deliberately nearer than `.git`.
     fs::write(inner.join(".meridian.toml"), b"").unwrap();
 
     let answer = resolve_bare(&inner);
