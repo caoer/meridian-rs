@@ -1,9 +1,8 @@
 //! Contract fixtures, executable against the frozen text
-//! (`docs/wire-contract.md`):
-//! hpath dual-serialization + deviation row, the unknown-kinds discrimination
-//! fixture, the §8 recovery-binding table, and the worked §4.1/§4.2/§4.5/§5.2 frames
-//! asserted value-for-value (byte-exact dispatch fixtures are D2-DISPATCH's;
-//! this file pins the SHAPES the types serialize to).
+//! (`docs/wire-contract.md`): hpath serialization + deviation row, the
+//! unknown-kinds discrimination fixture, the §8 recovery-binding table, and the
+//! worked §4.1/§4.2/§4.5/§5.2 frames asserted value-for-value. This file pins
+//! the shapes the types serialize to, not byte-exact dispatch.
 
 use serde_json::{Value, json};
 
@@ -18,11 +17,9 @@ fn seg(h: &str) -> wire::HpathSeg {
 // gate 2 — hpath dual-serialization + deviation row
 // ---------------------------------------------------------------------------
 
-/// v2 §2.1 AS AMENDED (requirements decision 20, ZT — personal freeze
-/// authority per §18): the object form is the only form in BOTH directions.
-/// W2-AMEND's dual-in bridge for the v1 bare string was transitional and is
-/// retired; the bare form is now refused loud, with its message asserted so a
-/// future restoration of the tolerance BREAKS this test rather than passing
+/// v2 §2.1 as amended (decision 20): the object form is the only form in both
+/// directions. The retired v1 bare string is refused loud, with its message
+/// asserted so a restored tolerance breaks this test rather than passing
 /// silently.
 #[test]
 fn hpath_object_form_only_both_directions_v1_bare_string_refused() {
@@ -39,7 +36,7 @@ fn hpath_object_form_only_both_directions_v1_bare_string_refused() {
         }]
     );
 
-    // IN: the v1 bare string is REFUSED — the tripwire, message text asserted.
+    // IN: the v1 bare string is refused — message text asserted.
     let e = serde_json::from_value::<Vec<wire::HpathSeg>>(json!(["Goals", "Q3"]))
         .expect_err("the retired v1 bare-string segment must be refused");
     assert!(
@@ -47,24 +44,22 @@ fn hpath_object_form_only_both_directions_v1_bare_string_refused() {
         "refusal must name the retired v1 form, got: {e}"
     );
 
-    // the incompleteness that decided it: the bare form cannot carry `n` at
-    // all, so the dual grammar was strictly less expressive, never a free
-    // convenience.
+    // The bare form cannot carry `n` at all, so the dual grammar was strictly
+    // less expressive.
     assert!(
         serde_json::from_value::<Vec<wire::HpathSeg>>(json!(["Beta"])).is_err(),
         "no bare spelling of {{h:Beta,n:2}} exists — that is why the dual grammar died"
     );
 
-    // OUT: serialization is the object form, and ONLY the object form.
+    // OUT: serialization is the object form only.
     assert_eq!(
         serde_json::to_value(&v2_form).unwrap(),
         json!([{"h":"Goals"}, {"h":"Q3"}])
     );
 }
 
-/// The deviation row, executable: the one v2 touch on the FROZEN node object.
-/// A v1-dialect consumer (`hpath: Vec<String>`) FAILS on v2 bytes — loud,
-/// never a silent reinterpretation.
+/// The deviation row: a v1-dialect consumer (`hpath: Vec<String>`) fails loud
+/// on v2 bytes, never a silent reinterpretation.
 #[test]
 fn hpath_deviation_row_v1_dialect_fails_loud() {
     let v2_bytes = json!([{"h":"Goals"}, {"h":"Q3"}]);
@@ -77,11 +72,10 @@ fn hpath_deviation_row_v1_dialect_fails_loud() {
 
 /// v2 §4.3 (D-C5): unknown `kinds` → `bad_request{unknown_kinds}`, loud —
 /// reversing v1's "unknown names match nothing". A v1-dialect client (flat
-/// `"error":"bad_request"` string envelope) FAILS to decode the v2 frame.
+/// `"error":"bad_request"` string envelope) fails to decode the v2 frame.
 #[test]
 fn dc5_unknown_kinds_refusal_discriminates_v1_dialect() {
-    // v1 dialect: `error` was the code STRING at top level. Its decode of the
-    // v2 frame must fail loud instead of silently matching nothing.
+    // v1 dialect: `error` was the code string at top level.
     #[derive(serde::Deserialize)]
     struct V1ErrorEnvelope {
         #[allow(dead_code)]
@@ -109,9 +103,8 @@ fn dc5_unknown_kinds_refusal_discriminates_v1_dialect() {
 // gate 4 — §8 recovery bindings, verbatim, on every frame from birth
 // ---------------------------------------------------------------------------
 
-/// The frozen §8 table for every code present at this rung, including the two
-/// DECLARED rebinds (`unsupported_proto` fix→respawn now; `root_mismatch`
-/// →resync joins with W3-AMEND) — §18 ledger row 4.
+/// The frozen §8 table for every code, including the two declared rebinds
+/// (`unsupported_proto` fix→respawn, `root_mismatch` refresh→resync).
 #[test]
 fn recovery_bindings_match_frozen_table() {
     use wire::{ErrorCode as C, Recovery as R};
@@ -135,8 +128,8 @@ fn recovery_bindings_match_frozen_table() {
         (C::BadFrame, R::Respawn),
         (C::UnsupportedProto, R::Respawn), // the declared rebind (was fix)
         (C::Internal, R::Respawn),
-        // refusal-amendment codes (U4.2 armed change plane), additive by the
-        // tolerant-code law — each statically bound to one existing class.
+        // Refusal-amendment codes, additive by the tolerant-code law — each
+        // statically bound to one existing class.
         (C::ConventionFault, R::Env), // row 6: fail-closed on the armed law
         (C::ArmedDrift, R::Refresh),  // row 7: report-rev ≠ armed-rev
     ];
@@ -151,10 +144,9 @@ fn recovery_bindings_match_frozen_table() {
 // the worked frames, value-for-value from the FROZEN text
 // ---------------------------------------------------------------------------
 
-/// v2 §4.1, the worked ANCHOR toc row (the late-law addition): the block
-/// echoes as its HOST kind (`list_item`, outside the closed extract enum)
-/// keyed by its `anchor` ref, carrying its own rev; the lone top-level
-/// heading's rev equals `file_rev`.
+/// v2 §4.1, the worked anchor toc row: the block echoes as its host kind
+/// (`list_item`, outside the closed extract enum) keyed by its `anchor` ref,
+/// carrying its own rev; the lone top-level heading's rev equals `file_rev`.
 #[test]
 fn worked_anchor_toc_frame_matches_contract() {
     let frame = wire::Response {
@@ -206,7 +198,6 @@ fn worked_anchor_toc_frame_matches_contract() {
                  "node_rev":"639a2dca46f6fcc8","text_prefix_16b":"- splice notes/p"}]}
     });
     assert_eq!(serde_json::to_value(&frame).unwrap(), expected);
-    // and the frame reads back into the same typed value
     assert_eq!(
         serde_json::from_value::<wire::Response>(expected).unwrap(),
         frame
@@ -249,7 +240,7 @@ fn worked_cat_frame_matches_contract() {
     );
 }
 
-/// v2 §4.5: the walk plane's response has NO rev field (D-C2); `dest` rides
+/// v2 §4.5: the walk plane's response has no rev field (D-C2); `dest` rides
 /// every stage-2 outcome, success or failure; stage 1 misses carry no dest.
 #[test]
 fn worked_resolve_frames_match_contract() {
@@ -392,8 +383,7 @@ fn worked_root_frames_match_contract() {
     );
 }
 
-/// v2 §4.7 worked: the diff REQUEST shape, frozen now (the Delta-bearing
-/// response body lands with the Delta noun, D3-DELTA).
+/// v2 §4.7 worked: the diff request shape.
 #[test]
 fn worked_diff_request_matches_contract() {
     let request: wire::Request = serde_json::from_value(json!({
@@ -415,11 +405,9 @@ fn worked_diff_request_matches_contract() {
     );
 }
 
-/// Ledger flag 2, the deviation row EXECUTABLE (§18 row 2, WAIVED): the
-/// repo's reserved shape carried `expected/actual/scope/changed`; the frozen
-/// contract ships `{expected,actual,changed}` — NO `scope` key, discriminated
-/// here so the drop can never regress silently. A v1-dialect reader expecting
-/// `scope` finds the key absent.
+/// The deviation row (§18 row 2): the frozen contract ships
+/// `{expected,actual,changed}` — no `scope` key — so a v1-dialect reader
+/// expecting `scope` finds it absent.
 #[test]
 fn root_mismatch_scope_drop_deviation_fixture() {
     let mut error = wire::ErrorBody::new(wire::ErrorCode::RootMismatch);
@@ -444,7 +432,7 @@ fn root_mismatch_scope_drop_deviation_fixture() {
             "actual":"b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68",
             "changed":["notes/plan.md"]}})
     );
-    // field-for-field: exactly the frozen keys, scope ABSENT
+    // exactly the frozen keys, scope absent
     let keys: Vec<&str> = v["error"]
         .as_object()
         .unwrap()
@@ -464,10 +452,9 @@ fn root_mismatch_scope_drop_deviation_fixture() {
 // W4-AMEND — §4.4 batch splice, receipts (§6), the not_found retirement
 // ---------------------------------------------------------------------------
 
-/// v2 §4.4 worked (id 42): the fully-guarded batch request and the
-/// armed-facts response — receipt-per-request (the §6.1 late qualifier:
-/// receipts are per-request, never a wire requirement), one root advance
-/// covering both files (D-C3).
+/// v2 §4.4 worked (id 42): the fully-guarded batch request and the armed-facts
+/// response — receipts are per-request and never a wire requirement (§6.1),
+/// one root advance covering both files (D-C3).
 #[test]
 fn worked_splice_frames_match_contract() {
     let request: wire::Request = serde_json::from_value(json!({
@@ -511,8 +498,8 @@ fn worked_splice_frames_match_contract() {
             body: wire::ResponseBody::Splice {
                 armed: wire::Armed {
                     path: wire::Path("notes/plan.md".into()),
-                    // the same batch's post-write file rev as E3's delta for
-                    // notes/plan.md — one non-drifting fact, two frames
+                    // the same post-write file rev as E3's delta for
+                    // notes/plan.md — one fact, two frames
                     file_rev_after: Some(wire::NodeRev("a9794a262e67ed02".into())),
                     edits: vec![wire::ArmedEdit {
                         target: wire::SecRef::Hpath {
@@ -539,8 +526,8 @@ fn worked_splice_frames_match_contract() {
                 seq: Some(1),
                 dry: None,
                 verdicts: vec![],
-                // S7: an absent pin serializes AWAY — the frozen v2
-                // response bytes below are the proof.
+                // an absent pin serializes away — the frozen v2 response
+                // bytes below are the proof
                 pin: None,
             },
         },
@@ -560,10 +547,9 @@ fn worked_splice_frames_match_contract() {
     );
 }
 
-/// v2 §4.4 worked (id 57), the at:end LATE LAW: the append verb is raw byte
-/// concatenation — the wire carries `text` exactly as given (`"- new item\n"`,
-/// its own separators, none synthesized), and the request is legally
-/// guardless.
+/// v2 §4.4 worked (id 57): `at:end` is raw byte concatenation — the wire
+/// carries `text` exactly as given, its own separators and none synthesized —
+/// and the request is legally guardless.
 #[test]
 fn worked_append_at_end_raw_concat_matches_contract() {
     let request: wire::Request = serde_json::from_value(json!({
@@ -586,7 +572,6 @@ fn worked_append_at_end_raw_concat_matches_contract() {
         }
     );
     assert!(edits[0].if_node_rev.is_none());
-    // and the round trip re-emits the text byte-for-byte
     assert_eq!(
         serde_json::to_value(&request).unwrap()["edits"][0]["edit"]["put"],
         json!({"at":"end","text":"- new item\n"})
@@ -604,8 +589,7 @@ fn worked_dry_splice_frame_matches_contract() {
             body: wire::ResponseBody::Splice {
                 armed: wire::Armed {
                     path: wire::Path("notes/plan.md".into()),
-                    // dry — no post-write file rev (skipped in the JSON, like
-                    // root_after's null it never rides an unwritten batch)
+                    // dry — no post-write file rev, so the key is skipped
                     file_rev_after: None,
                     edits: vec![wire::ArmedEdit {
                         target: wire::SecRef::FmKey {
@@ -625,8 +609,8 @@ fn worked_dry_splice_frame_matches_contract() {
                 seq: None,
                 dry: Some(true),
                 verdicts: vec![],
-                // S7: an absent pin serializes AWAY — the frozen v2
-                // response bytes below are the proof.
+                // an absent pin serializes away — the frozen v2 response
+                // bytes below are the proof
                 pin: None,
             },
         },
@@ -648,8 +632,8 @@ fn worked_dry_splice_frame_matches_contract() {
     );
 }
 
-/// v2 §5.2 worked (ids 89/91): the failure split's fix half — guard-passed
-/// `no_match` (provably your typo) and `not_unique{matches}`.
+/// v2 §5.2 worked (ids 89/91): the failure split's fix half — `no_match` and
+/// `not_unique{matches}`.
 #[test]
 fn worked_no_match_and_not_unique_frames_match_contract() {
     let mut e = wire::ErrorBody::new(wire::ErrorCode::NoMatch);
@@ -677,9 +661,8 @@ fn worked_no_match_and_not_unique_frames_match_contract() {
     );
 }
 
-/// The `not_found` retirement, EXECUTABLE (§18 row 6): the v1 code string no
-/// longer parses — a v1 dialect emitting or expecting it fails loud; the
-/// successors carry its two meanings apart.
+/// The `not_found` retirement (§18 row 6): the v1 code string no longer
+/// parses, and its two successors carry the meanings apart.
 #[test]
 fn not_found_retirement_deviation_fixture() {
     assert!(serde_json::from_value::<wire::ErrorCode>(json!("not_found")).is_err());
@@ -697,7 +680,7 @@ fn not_found_retirement_deviation_fixture() {
 // W4-ACTOR — §9 actor/now as wire inputs, never ambient
 // ---------------------------------------------------------------------------
 
-/// Gate 2: malformed `now` → `bad_request`. The §9 format law is the
+/// Malformed `now` → `bad_request`. The §9 format law is the
 /// [`wire::now_is_rfc3339`] predicate; a dispatcher answers every rejection
 /// with the fix-class envelope asserted here.
 #[test]
@@ -734,11 +717,10 @@ fn malformed_now_is_bad_request() {
     }
 }
 
-/// Gate 3 (wire side): absent inputs produce absent FACTS — a splice frame
-/// without `actor`/`now` serializes without those keys and reads back to
-/// `None`; the engine records nothing it wasn't told (§9). Receipt-side
-/// twin: `receipt` crate's `absent_inputs_render_absent_facts`; the full
-/// external-change proof lands in F5-WATCH.
+/// Absent inputs produce absent facts — a splice frame without `actor`/`now`
+/// serializes without those keys and reads back to `None`, so the engine
+/// records nothing it wasn't told (§9). Receipt-side twin: the `receipt`
+/// crate's `absent_inputs_render_absent_facts`.
 #[test]
 fn absent_actor_now_absent_on_the_wire() {
     let request = wire::Request {
@@ -761,10 +743,10 @@ fn absent_actor_now_absent_on_the_wire() {
                 },
                 if_node_rev: None,
             }],
-            // U8b: empty plan_edits serializes AWAY — the frozen v2 request
-            // bytes this test pins stay byte-identical.
+            // empty plan_edits serializes away, keeping the frozen v2 request
+            // bytes this test pins byte-identical
             plan_edits: Vec::new(),
-            // S7: same law for `pin` — absent, so it never reaches the wire.
+            // same law for `pin` — absent, so it never reaches the wire
             pin: None,
         },
     };
@@ -934,8 +916,8 @@ fn worked_e3_e4_delta_frames_match_contract() {
     }
 }
 
-/// C5's pre-edit byte golden: this is the exact E3 notification frame before
-/// the additive `effects` field exists. An empty effect set must keep these bytes.
+/// The E3 notification frame's bytes from before the additive `effects` field
+/// existed: an empty effect set must keep them.
 #[test]
 fn no_effects_e3_frame_preserves_pre_c5_bytes() {
     let bytes = serde_json::to_vec(&e3_delta()).unwrap();
@@ -998,9 +980,9 @@ fn populated_effects_are_pre_delivery_additive_and_future_extensible() {
     );
 }
 
-/// §4.7/§7.3 replay ≡ live: the diff response body carries the SAME frame
-/// objects as the live notifications — `diff(R0,R2)` is the two worked
-/// deltas, byte-identical, in one `batches` array. No second diff dialect.
+/// §4.7/§7.3 replay ≡ live: the diff response body carries the same frame
+/// objects as the live notifications — `diff(R0,R2)` is the two worked deltas,
+/// byte-identical, in one `batches` array. No second diff dialect.
 #[test]
 fn worked_diff_response_batches_are_the_live_frames() {
     let response = wire::Response {
@@ -1021,10 +1003,9 @@ fn worked_diff_response_batches_are_the_live_frames() {
     );
 }
 
-/// External changes produce deltas with `actor`/`now` ABSENT (§7.1 law) —
-/// no key on the wire, reading back to `None`; and the row-12 purge at the
-/// type level: a `DeltaNode` serializes NO `keys` key (decision 012 —
-/// node-grain frozen at birth, the amendment slot is prose only).
+/// External changes produce deltas with `actor`/`now` absent (§7.1) — no key
+/// on the wire, reading back to `None` — and a `DeltaNode` serializes no
+/// `keys` key (decision 012: node-grain frozen at birth).
 #[test]
 fn external_delta_absent_actor_now_and_no_keys_slot() {
     let frame = wire::DeltaFrame {
@@ -1061,9 +1042,8 @@ fn external_delta_absent_actor_now_and_no_keys_slot() {
 const R0: &str = "b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9";
 const R2: &str = "b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68";
 
-/// v2 §4.6, the worked exchange verbatim — id 80, the printed triple
-/// (`changes_seq:2` is the contract world's epoch counter) + the
-/// resolved/unresolved per-edge counts — round-tripped through the typed
+/// v2 §4.6, the worked exchange — id 80, the printed triple plus the
+/// resolved/unresolved per-edge counts, round-tripped through the typed
 /// vocabulary both directions.
 #[test]
 fn worked_links_frame_matches_contract() {
@@ -1088,9 +1068,9 @@ fn worked_links_frame_matches_contract() {
     assert_eq!(serde_json::to_value(&typed).unwrap(), printed);
 }
 
-/// v2 §10.2, the worked refusal verbatim — id 81: the client demanded R0, the
-/// world is at R2 — `stale_view`, retry class, `required` + the sampled world
-/// beside it, NO message (the extras carry the whole diagnosis).
+/// v2 §10.2, the worked refusal — id 81: the client demanded R0, the world is
+/// at R2 — `stale_view`, retry class, `required` plus the sampled world beside
+/// it, no message (the extras carry the whole diagnosis).
 #[test]
 fn worked_stale_view_refusal_matches_contract() {
     let printed = json!({
@@ -1109,12 +1089,9 @@ fn worked_stale_view_refusal_matches_contract() {
     assert_eq!(serde_json::to_value(&typed).unwrap(), printed);
 }
 
-/// §10.1 honest-tense law, type-level (pack §8 gate 2): a frame where
-/// `as_of_root ≠ live_root` — the corpus moved while the answer was computed
-/// — is a LEGAL success frame. It parses, round-trips, and nothing anywhere
-/// in the vocabulary asserts the roots equal or bounds their distance; no
-/// lag bounds are promised, ever. The values are the computed R0/R2 pair
-/// (two real corpus states), not invented bytes.
+/// §10.1 honest-tense law: a frame where `as_of_root ≠ live_root` — the corpus
+/// moved while the answer was computed — is a legal success frame. Nothing in
+/// the vocabulary asserts the roots equal or bounds their distance.
 #[test]
 fn honest_tense_divergent_triple_is_permitted_never_bounded() {
     let divergent = json!({
@@ -1138,21 +1115,14 @@ fn honest_tense_divergent_triple_is_permitted_never_bounded() {
         panic!("divergent triple decodes as the Links body")
     };
     assert_ne!(as_of_root, live_root, "the divergence under test");
-    // PERMITTED is the whole assertion: the frame round-trips unchanged and
-    // no bound exists to violate — the absent assertion IS the §10.1 law.
+    // the absent bound is the §10.1 law: the frame round-trips unchanged
     assert_eq!(serde_json::to_value(&typed).unwrap(), divergent);
 }
 
-/// **The frozen-v2 KEY SET on `FileLinks`, pinned as a SET rather than by
-/// value.**
-///
-/// U21 added two keys to this shape (`resolved_rooted`, `refused`) and both are
-/// `skip_serializing_if` empty, so a single-root corpus must serialize exactly
-/// the two keys the frozen contract names. **A field-blind worked-value sweep
-/// cannot see an added key** — it would pass whether or not the new keys leaked
-/// into a v2 frame — so the detector has to assert the key set itself
-/// (All-Hands #1). Without this, the "byte-identical for a single-root corpus"
-/// claim in the cross-root amendment is a sentence nothing checks.
+/// `FileLinks` pinned as a key set, not by value: the two cross-root keys
+/// (`resolved_rooted`, `refused`) skip when empty, so a worked-value sweep
+/// would pass whether or not they leaked into a v2 frame. A single-root corpus
+/// must serialize exactly the two keys the frozen contract names.
 #[test]
 fn an_ambient_file_links_serializes_exactly_the_frozen_v2_key_set() {
     let ambient = wire::FileLinks {
@@ -1176,9 +1146,8 @@ fn an_ambient_file_links_serializes_exactly_the_frozen_v2_key_set() {
          the U21 keys are absent, not empty objects: {value}"
     );
 
-    // THE NEGATIVE HALF. Without it the assertion above is satisfied by a
-    // shape that can never carry the new keys at all, and the pin would still
-    // pass if `resolved_rooted` were deleted outright.
+    // The negative half: without it the pin above would still pass if
+    // `resolved_rooted` were deleted outright.
     let rooted = wire::FileLinks {
         resolved_rooted: [(
             "sessions".to_owned(),

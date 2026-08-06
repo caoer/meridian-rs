@@ -1,11 +1,7 @@
-//! `ResponseBody` is an UNTAGGED enum: the field shape alone discriminates on
-//! the wire. Adding the birth body (`create`) therefore carries a real hazard —
-//! a new variant can silently capture another op's frame, or be captured by an
-//! earlier one, and the failure is a MIS-PARSE rather than an error.
-//!
-//! These tests pin the discrimination in both directions. They are the standing
-//! guard for the next field added to either body: widen `Create` or `Splice`
-//! carelessly and the round-trip below stops resolving to the variant it names.
+//! `ResponseBody` is an untagged enum: field shape alone discriminates on the
+//! wire, so a new or widened variant can silently capture another op's frame —
+//! and the failure is a mis-parse, not an error. These tests pin the
+//! discrimination in both directions.
 
 use serde_json::json;
 use wire::{NodeRev, Path, ResponseBody, Root};
@@ -22,7 +18,7 @@ fn create_body() -> ResponseBody {
     }
 }
 
-/// The birth body round-trips to ITSELF — no earlier variant captures it.
+/// The birth body round-trips to itself — no earlier variant captures it.
 #[test]
 fn the_create_body_round_trips_as_create() {
     let wire_bytes = serde_json::to_value(create_body()).expect("serializes");
@@ -38,9 +34,8 @@ fn the_create_body_round_trips_as_create() {
     );
 }
 
-/// A dry birth's `root_after: null` is CONTRACTUAL (the same absence-vs-null
-/// rule `splice` carries), so it must survive the round trip as null rather
-/// than vanishing — and must still resolve to `Create`.
+/// A dry birth's `root_after` is contractually null, not absent (the same
+/// absence-vs-null rule `splice` carries), and still resolves to `Create`.
 #[test]
 fn a_dry_birth_keeps_its_null_root_after() {
     let dry = ResponseBody::Create {
@@ -65,9 +60,8 @@ fn a_dry_birth_keeps_its_null_root_after() {
     assert!(matches!(back, ResponseBody::Create { .. }));
 }
 
-/// The other direction: `Create` must not capture a `splice` frame. `armed` is
-/// what makes a splice a splice, and `Create` has no such field — so a splice
-/// body must still resolve to `Splice` now that `Create` sits in the enum.
+/// `Create` must not capture a `splice` frame — `armed` is the discriminator,
+/// and `Create` has no such field.
 #[test]
 fn the_create_body_does_not_capture_a_splice_frame() {
     let splice = json!({
@@ -84,9 +78,8 @@ fn the_create_body_does_not_capture_a_splice_frame() {
     );
 }
 
-/// And `Create` must not capture the read-plane frames that also carry `path`.
-/// `Toc` is the close one — same `path`, a rev, and a root — separated only by
-/// `nodes` vs `file_rev_after`.
+/// `Toc` is the closest read-plane frame — same `path`, a rev and a root,
+/// separated only by `nodes` vs `file_rev_after`.
 #[test]
 fn neither_toc_nor_create_captures_the_other() {
     let toc = json!({"path": "a.md", "file_rev": "f3c6d9b647936581",
@@ -106,20 +99,13 @@ fn neither_toc_nor_create_captures_the_other() {
 }
 
 // ---------------------------------------------------------------------------
-// The 2.3 correction's gate: the journal removal is a v3 RESPONSE-shape change
+// The journal removal is a v3 response-shape change
 // ---------------------------------------------------------------------------
 
-/// **`wire::Delta` is UNCHANGED by the journal removal — asserted, not assumed.**
-///
-/// The obvious reading of "drop `journal_anchor`" is that it is a `Delta` field.
-/// It is not: `journal_anchor` lived on `ResponseBody::Create` (a v3 response
-/// body) and on the three `wire_serve::write` outcome structs. `Delta` never
-/// carried it, so removing it touches the v3 response shape and leaves the FROZEN
-/// v2 notification surface alone.
-///
-/// This test is what makes that a verified claim rather than a reading. It pins
-/// `Delta`'s serialized key set exactly: a key added to or removed from `Delta`
-/// fails here, which is the alarm that a journal-shaped edit reached frozen v2.
+/// `journal_anchor` lived on `ResponseBody::Create` and the `wire_serve::write`
+/// outcome structs, never on `Delta` — so removing it leaves the frozen v2
+/// notification surface alone. This pins `Delta`'s key set exactly, so a
+/// journal-shaped edit reaching frozen v2 fails here.
 #[test]
 fn the_delta_shape_is_untouched_by_the_journal_removal() {
     let delta = wire::Delta {
