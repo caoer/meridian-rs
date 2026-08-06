@@ -61,20 +61,30 @@ pub fn verdict(
 /// `split_fp` (one peel, the address owner's rule) is used rather than the
 /// document strip, so a laundered address refuses in BOTH entry points instead of
 /// resolving in one.
-fn strip_fp_address(at: &[wire::HpathSeg]) -> Vec<String> {
+fn strip_fp_address(at: &[wire::HpathSeg]) -> Vec<policy::defs::Seg> {
     // Only the BLOCK-REF forms carry a claim-link slot, and a block ref is a
-    // lone segment — a heading segment rides verbatim, `n` included in the text
-    // it is compared against nowhere (the rebuild plane resolves on raw text and
-    // refuses duplicates loudly rather than picking an occurrence).
+    // lone segment. A heading segment rides verbatim, `n` INCLUDED: the rebuild
+    // plane resolves occurrences by `resolve_hpath_node`'s law, so the address
+    // the read face publishes over duplicate headings pre-flights to the same
+    // section the committer picks (dropping `n` here made the pre-flight refuse
+    // E_AMBIGUOUS an address the splice below resolves — two answers again).
     if let [only] = at {
         for prefix in ["#^", "^"] {
             if let Some(id) = only.h.strip_prefix(prefix) {
                 let (base, _fp) = syntax::split_fp(id);
-                return vec![format!("{prefix}{base}")];
+                return vec![policy::defs::Seg {
+                    h: format!("{prefix}{base}"),
+                    n: None,
+                }];
             }
         }
     }
-    at.iter().map(|s| s.h.clone()).collect()
+    at.iter()
+        .map(|s| policy::defs::Seg {
+            h: s.h.clone(),
+            n: s.n,
+        })
+        .collect()
 }
 
 /// **The CANDIDATE this op judges** — the plan lowered over `prev`, carrying the

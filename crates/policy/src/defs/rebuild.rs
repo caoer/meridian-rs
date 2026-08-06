@@ -26,6 +26,17 @@
 use super::BodyError;
 use super::go_fmt::go_quote;
 
+/// One address segment — the policy-boundary twin of `wire::HpathSeg` (C-08:
+/// the address is the array). `n` is the optional 1-based occurrence among
+/// same-parent siblings sharing the same RAW heading text — the same basis
+/// `model::resolve_hpath_node` counts and the read face publishes, so the
+/// occurrence the read face minted resolves here to the same section.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Seg {
+    pub h: String,
+    pub n: Option<u32>,
+}
+
 /// Render segments for a HUMAN to read — refusal strings and context values
 /// only, NEVER an address anything resolves against. C-08 rules the address
 /// itself is the array; this join exists for the same reason the read face's
@@ -33,9 +44,17 @@ use super::go_fmt::go_quote;
 ///
 /// It is the ESCAPING encoding (`/` inside a segment writes `\/`, a literal
 /// `\` doubles), so it stays injective and a refusal names exactly one address.
-fn hpath_display(segs: &[String]) -> String {
+/// An occurrence rides as `#n` on the segment carrying one (the same render
+/// `wire-serve::display_hpath` uses).
+fn hpath_display(segs: &[Seg]) -> String {
     segs.iter()
-        .map(|s| s.replace('\\', r"\\").replace('/', r"\/"))
+        .map(|s| {
+            let text = s.h.replace('\\', r"\\").replace('/', r"\/");
+            match s.n {
+                Some(n) => format!("{text}#{n}"),
+                None => text,
+            }
+        })
         .collect::<Vec<_>>()
         .join("/")
 }
@@ -50,7 +69,7 @@ pub struct PlanEdit {
     /// or a single segment carrying a `^id` / `#^id` block, a new section name,
     /// or a frontmatter key. Never a joined string — see [`PlanEdit`]'s wire
     /// twin `wire::CheckWriteEdit::at` for why the join was the bug.
-    pub target: Vec<String>,
+    pub target: Vec<Seg>,
     pub find: String,
     pub body: String,
     pub rev: String,
@@ -128,6 +147,10 @@ struct SecX {
     /// (self last). Was a `sanitize_heading`-joined string; see
     /// [`DocView::resolve_section`].
     hpath: Vec<String>,
+    /// Per-chain-entry 1-based occurrence among same-parent siblings sharing
+    /// the same raw text — `resolve_hpath_node`'s counting basis, so a
+    /// selector `n` here names the section the committer would pick.
+    occ: Vec<u32>,
     title: String,
     /// content span [start,end): heading line excluded, subtree-inclusive
     start: usize,
@@ -168,10 +191,16 @@ struct DocView<'a> {
 impl<'a> DocView<'a> {
     fn new(doc: &'a model::Document) -> Self {
         let raw = &doc.raw;
-        let mut sections = Vec::new();
+        let mut sections: Vec<SecX> = Vec::new();
         let mut ord: Vec<usize> = Vec::new();
         let mut odepth: Vec<u8> = Vec::new();
         let mut hstack: Vec<(u8, String)> = Vec::new();
+        // Section index of each hstack ancestor, so occurrence counting keys on
+        // the PARENT'S IDENTITY, not its depth — two same-titled sections under
+        // different parents are not occurrences of each other.
+        let mut istack: Vec<usize> = Vec::new();
+        let mut occ_counts: std::collections::HashMap<(Option<usize>, String), u32> =
+            std::collections::HashMap::new();
         for sec in super::check::doc_sections(doc) {
             // dewey ordinal (pkg/body map.go algorithm)
             while odepth.last().is_some_and(|d| *d > sec.depth) {
@@ -187,8 +216,20 @@ impl<'a> DocView<'a> {
             // raw hpath chain (C-08: no sanitize, the address is the array)
             while hstack.last().is_some_and(|(d, _)| *d >= sec.depth) {
                 hstack.pop();
+                istack.pop();
             }
+            // 1-based occurrence among this parent's same-raw-text children —
+            // `resolve_hpath_node`'s basis (never document order, never
+            // position among ALL siblings).
+            let parent = istack.last().copied();
+            let occ = occ_counts
+                .entry((parent, sec.title.clone()))
+                .and_modify(|c| *c += 1)
+                .or_insert(1);
+            let mut occ_chain = parent.map_or_else(Vec::new, |p| sections[p].occ.clone());
+            occ_chain.push(*occ);
             hstack.push((sec.depth, sec.title.clone()));
+            istack.push(sections.len());
             sections.push(SecX {
                 n: ord
                     .iter()
@@ -196,6 +237,7 @@ impl<'a> DocView<'a> {
                     .collect::<Vec<_>>()
                     .join("."),
                 hpath: hstack.iter().map(|(_, s)| s.clone()).collect(),
+                occ: occ_chain,
                 title: sec.title.clone(),
                 start: sec.content_span.start,
                 end: sec.content_span.end,
@@ -225,15 +267,29 @@ impl<'a> DocView<'a> {
     /// a heading whose own text contains `/` stays addressable (`["A/B"]`) and
     /// distinct from the nested path `["A","B"]` — the u14/R5 collision class,
     /// closed here rather than merely bounded.
-    fn resolve_section(&self, hpath: &[String]) -> Result<&SecX, BodyError> {
+    ///
+    /// The occurrence law is `model::resolve_hpath_node`'s: a segment's
+    /// `n: None` abstains here and ambiguity refuses below (never silently
+    /// picks); `n: Some(k)` demands the k-th same-raw-text sibling under the
+    /// same parent, so the address the read face publishes over duplicate
+    /// headings resolves to the section the committer would pick. The
+    /// bare-title shorthand carries no occurrence: a lone segment with `n` set
+    /// matches only as a full depth-1 chain — anything else falls closed.
+    fn resolve_section(&self, hpath: &[Seg]) -> Result<&SecX, BodyError> {
         let bare = match hpath {
-            [only] => Some(only.as_str()),
+            [only] if only.n.is_none() => Some(only.h.as_str()),
             _ => None,
+        };
+        let chain_matches = |s: &SecX| {
+            s.hpath.len() == hpath.len()
+                && hpath.iter().enumerate().all(|(i, sel)| {
+                    sel.h == s.hpath[i] && sel.n.is_none_or(|k| k == s.occ[i])
+                })
         };
         let hits: Vec<&SecX> = self
             .sections
             .iter()
-            .filter(|s| s.hpath == hpath || bare.is_some_and(|b| s.title == b))
+            .filter(|s| chain_matches(s) || bare.is_some_and(|b| s.title == b))
             .collect();
         match hits.len() {
             0 => Err(BodyError {
@@ -261,7 +317,8 @@ impl<'a> DocView<'a> {
                         n
                     ),
                     remedy: format!(
-                        "qualify with the full heading path or an ordinal; candidates: {}",
+                        "qualify with the full heading path, or pass the occurrence — the \
+                         read face publishes it as `n` on the ambiguous segment; candidates: {}",
                         cands.join(", ")
                     ),
                     context: vec![
@@ -288,6 +345,7 @@ impl<'a> DocView<'a> {
                 Ok(SecX {
                     n: format!("^{id}"),
                     hpath: vec![format!("^{id}")],
+                    occ: vec![1],
                     title: id.to_string(),
                     start: b.start,
                     end: b.end,
@@ -382,12 +440,12 @@ fn collect_blocks(node: &model::Node, raw: &str, out: &mut Vec<BlockX>) {
 /// a multi-segment address is therefore never one — checking only the lone
 /// segment keeps a heading literally named `^x` nested under a parent from
 /// being read as a block.
-fn block_ref(target: &[String]) -> Option<&str> {
+fn block_ref(target: &[Seg]) -> Option<&str> {
     let [only] = target else { return None };
-    if let Some(id) = only.strip_prefix("#^") {
+    if let Some(id) = only.h.strip_prefix("#^") {
         return Some(id);
     }
-    only.strip_prefix('^')
+    only.h.strip_prefix('^')
 }
 
 /// The frontmatter key index: per top-level key, the VALUE span on its line

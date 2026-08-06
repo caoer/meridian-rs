@@ -7,7 +7,7 @@
 //!
 //!
 
-use policy::defs::{PlanEdit, rebuild, rev8};
+use policy::defs::{PlanEdit, Seg, rebuild, rev8};
 
 // The rebuild corpus doc IS the basic doc (same bytes, per the golden).
 const DOC: &str = "---\ntype: note\nstatus: seeded\n---\n\n# Todo\n\n- [ ] first item\n- [ ] second item ^task1\n\n# Notes\n\nseed note line one\nseed note line two\n\n## Slash/Title Here\n\ndeep content\n\n# Memo\n\nseed memo\n";
@@ -21,12 +21,30 @@ fn run(prev_raw: &str, edits: &[PlanEdit]) -> Result<model::Document, policy::de
     rebuild(&prev, edits, &|raw| doc(raw))
 }
 
+fn seg(h: &str) -> Seg {
+    Seg {
+        h: h.to_string(),
+        n: None,
+    }
+}
+
+fn segn(h: &str, n: u32) -> Seg {
+    Seg {
+        h: h.to_string(),
+        n: Some(n),
+    }
+}
+
+fn segs(hs: &[&str]) -> Vec<Seg> {
+    hs.iter().map(|h| seg(h)).collect()
+}
+
 fn edit(op: &str, target: &str) -> PlanEdit {
     PlanEdit {
         op: op.to_string(),
         // C-08: the address is an ARRAY. The helper keeps taking the human
         // spelling so the cases read as before, and splits it at the one door.
-        target: target.split('/').map(str::to_string).collect(),
+        target: target.split('/').map(seg).collect(),
         ..PlanEdit::default()
     }
 }
@@ -444,7 +462,7 @@ fn rebuild_candidate_bytes_match_go_plan_semantics() {
                 ..edit("append", "Notes")
             }],
         ),
-        "E_AMBIGUOUS: \"Notes\" is ambiguous: 2 sections share this heading — qualify with the full heading path or an ordinal; candidates: 1 (line 6), 2 (line 10)",
+        "E_AMBIGUOUS: \"Notes\" is ambiguous: 2 sections share this heading — qualify with the full heading path, or pass the occurrence — the read face publishes it as `n` on the ambiguous segment; candidates: 1 (line 6), 2 (line 10)",
         "ambiguous-heading",
     );
 }
@@ -476,7 +494,7 @@ fn published_multisegment_address_is_writable() {
             G2D,
             &[PlanEdit {
                 op: "append".to_string(),
-                target: vec![parent.to_string(), leaf.to_string()],
+                target: vec![seg(parent), seg(leaf)],
                 body: "appended".to_string(),
                 ..PlanEdit::default()
             }],
@@ -493,7 +511,7 @@ fn published_multisegment_address_is_writable() {
         G2D,
         &[PlanEdit {
             op: "append".to_string(),
-            target: vec![parent.to_string()],
+            target: vec![seg(parent)],
             body: "one-seg".to_string(),
             ..PlanEdit::default()
         }],
@@ -512,7 +530,7 @@ fn a_segment_may_contain_the_joiner_and_stays_distinct() {
         DOC,
         &[PlanEdit {
             op: "append".to_string(),
-            target: vec!["Notes".to_string(), "Slash/Title Here".to_string()],
+            target: segs(&["Notes", "Slash/Title Here"]),
             body: "landed".to_string(),
             ..PlanEdit::default()
         }],
@@ -525,11 +543,7 @@ fn a_segment_may_contain_the_joiner_and_stays_distinct() {
             DOC,
             &[PlanEdit {
                 op: "append".to_string(),
-                target: vec![
-                    "Notes".to_string(),
-                    "Slash".to_string(),
-                    "Title Here".to_string(),
-                ],
+                target: segs(&["Notes", "Slash", "Title Here"]),
                 body: "must not land".to_string(),
                 ..PlanEdit::default()
             }],
@@ -549,15 +563,118 @@ fn the_sanitized_spelling_is_not_an_address() {
             G2D,
             &[PlanEdit {
                 op: "append".to_string(),
-                target: vec![
-                    "Dogfood-—-the-socket-MCP-surface,-exercised-by-a-working-agent".to_string(),
-                    "Results".to_string(),
-                ],
+                target: segs(&[
+                    "Dogfood-—-the-socket-MCP-surface,-exercised-by-a-working-agent",
+                    "Results",
+                ]),
                 body: "must not land".to_string(),
                 ..PlanEdit::default()
             }],
         ),
         "E_NO_MATCH: no section addressed by \"Dogfood-—-the-socket-MCP-surface,-exercised-by-a-working-agent/Results\" — address the section by its `hpath` segments, exactly as `md toc` publishes them — one array entry per heading, raw text, no joining",
         "sanitized-spelling-refused",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// g2d — the occurrence `n` survives the policy boundary (card requirement 2)
+// ---------------------------------------------------------------------------
+
+/// Two same-raw-text siblings under one parent, plus a same-titled section
+/// under a DIFFERENT parent (which is NOT an occurrence of the first two —
+/// the counting basis is same-parent, `resolve_hpath_node`'s law).
+const DUP: &str = "---\ntype: note\n---\n\n# Log\n\n## Entry\n\nfirst entry\n\n## Entry\n\nsecond entry\n\n# Archive\n\n## Entry\n\narchived entry\n";
+
+/// The address the read face publishes over duplicate headings — occurrence on
+/// the ambiguous segment — must resolve HERE to the same section the committer
+/// picks. This is the boundary that dropped `n` (PlanEdit.target was
+/// Vec<String>), which made the pre-flight refuse E_AMBIGUOUS an address the
+/// splice below resolves — the g2d two-answers bug in its occurrence form.
+#[test]
+fn published_occurrence_address_resolves_through_the_policy_boundary() {
+    // n:2 lands in the SECOND same-parent occurrence, not the first, and not
+    // the same-titled section under the other parent.
+    let got = run(
+        DUP,
+        &[PlanEdit {
+            op: "append".to_string(),
+            target: vec![seg("Log"), segn("Entry", 2)],
+            body: "appended to second".to_string(),
+            ..PlanEdit::default()
+        }],
+    )
+    .expect("occurrence-qualified address resolves");
+    let landed = got.raw.find("appended to second").expect("append landed");
+    let second = got.raw.find("second entry").expect("fixture intact");
+    let archive = got.raw.find("# Archive").expect("fixture intact");
+    assert!(
+        landed > second && landed < archive,
+        "the append must land inside the SECOND Entry's span: {}",
+        got.raw
+    );
+
+    // n:1 addresses the first occurrence.
+    let got = run(
+        DUP,
+        &[PlanEdit {
+            op: "append".to_string(),
+            target: vec![seg("Log"), segn("Entry", 1)],
+            body: "appended to first".to_string(),
+            ..PlanEdit::default()
+        }],
+    )
+    .expect("n:1 resolves the first occurrence");
+    let landed = got.raw.find("appended to first").expect("append landed");
+    let second = got.raw.find("## Entry\n\nsecond").expect("fixture intact");
+    assert!(
+        landed < second,
+        "the append must land inside the FIRST Entry's span: {}",
+        got.raw
+    );
+
+    // n:1 against a UNIQUE heading matches too — a published `n: None` means
+    // occurrence 1, the same equivalence `seg_chain_matches` applies.
+    run(
+        DUP,
+        &[PlanEdit {
+            op: "append".to_string(),
+            target: vec![segn("Archive", 1), seg("Entry")],
+            body: "x".to_string(),
+            ..PlanEdit::default()
+        }],
+    )
+    .expect("n:1 on a unique heading still resolves");
+}
+
+/// Without `n` the duplicate refuses loud — never silently picks — and an
+/// out-of-range occurrence falls closed as a miss, never clamps.
+#[test]
+fn occurrence_abstention_refuses_and_out_of_range_falls_closed() {
+    assert_err(
+        run(
+            DUP,
+            &[PlanEdit {
+                op: "append".to_string(),
+                target: segs(&["Log", "Entry"]),
+                body: "must not land".to_string(),
+                ..PlanEdit::default()
+            }],
+        ),
+        "E_AMBIGUOUS: \"Log/Entry\" is ambiguous: 2 sections share this heading — qualify with the full heading path, or pass the occurrence — the read face publishes it as `n` on the ambiguous segment; candidates: 1.1 (line 8), 1.2 (line 12)",
+        "n-less-duplicate-refuses",
+    );
+
+    assert_err(
+        run(
+            DUP,
+            &[PlanEdit {
+                op: "append".to_string(),
+                target: vec![seg("Log"), segn("Entry", 3)],
+                body: "must not land".to_string(),
+                ..PlanEdit::default()
+            }],
+        ),
+        "E_NO_MATCH: no section addressed by \"Log/Entry#3\" — address the section by its `hpath` segments, exactly as `md toc` publishes them — one array entry per heading, raw text, no joining",
+        "out-of-range-occurrence-falls-closed",
     );
 }

@@ -404,7 +404,10 @@ fn plan_set_property_refuses_forged_keys_at_both_doors_and_writes_nothing() {
         &prev,
         &[policy::defs::PlanEdit {
             op: "set_property".into(),
-            target: vec![FORGED.to_string()],
+            target: vec![policy::defs::Seg {
+                h: FORGED.to_string(),
+                n: None,
+            }],
             body: "x".into(),
             ..policy::defs::PlanEdit::default()
         }],
