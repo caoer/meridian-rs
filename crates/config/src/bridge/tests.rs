@@ -1,19 +1,10 @@
 //! The env-var bridge's gates.
 //!
-//! Every gate asserts **both arms** (S3-R8(c)): agreement is asserted beside divergence,
-//! and silence is asserted beside the report. A bridge proven only by what it reports is
-//! indistinguishable from one that reports everything — and *that* one gets unset by the
-//! first operator it annoys, leaving the invariant with no guard at all.
-//!
-//! # The topology is REPRODUCED, not stubbed
-//!
-//! `the_measured_topology` builds the exact shape S3-R7 measured on this machine — a real
-//! wiki directory, a symlink to it from a sibling repos root, and the wiki path spelled
-//! with a trailing slash. The gates then assert against real `canonicalize` calls,
-//! because the defect being guarded is a *filesystem* identity collapse: a stub would
-//! test a second implementation of the thing and prove nothing about the one that runs.
-//!
-//!
+//! Every gate asserts both arms: agreement beside divergence, silence beside
+//! the report. `the_measured_topology` reproduces the real shape — a wiki
+//! directory, a symlink to it from a sibling repos root, the wiki path spelled
+//! with a trailing slash — so the gates assert against real `canonicalize`
+//! calls rather than a stub.
 
 use std::path::{Path, PathBuf};
 
@@ -75,18 +66,18 @@ fn refuse(raw: &str) -> MountError {
         .expect_err("this config must refuse to bind")
 }
 
-/// The measured S3-R7 topology, reproduced.
+/// The measured topology, reproduced.
 struct Topology {
     /// Kept alive for the fixture's lifetime — dropping it removes the tree —
     /// and read directly for paths outside the two roots.
     dir: tempfile::TempDir,
-    /// The wiki's REAL directory — `/Users/Shared/projects/field-notes`.
+    /// The wiki's real directory — `/Users/Shared/projects/field-notes`.
     real_wiki: PathBuf,
     /// The repos root — `/Users/Shared/repos`.
     repos_root: PathBuf,
     /// The symlink into the repos root — `/Users/Shared/repos/field-notes`.
     linked_wiki: PathBuf,
-    /// The wiki path AS THE ENV VAR SPELLS IT — real path, trailing slash.
+    /// The wiki path as the env var spells it — real path, trailing slash.
     slashed_wiki: String,
 }
 
@@ -102,8 +93,8 @@ fn the_measured_topology() -> Topology {
     declare(&real_wiki, "field-notes");
     declare(&repos_root, "repos");
 
-    // The fixture must reproduce the MEASURED topology, or every gate below is
-    // about a shape that does not exist. Asserted, never assumed.
+    // Asserted, never assumed: the fixture must reproduce the measured
+    // topology.
     let canonical_real = std::fs::canonicalize(&real_wiki).expect("canonicalize the real wiki");
     assert_eq!(
         std::fs::canonicalize(&linked_wiki).expect("canonicalize the symlink"),
@@ -116,7 +107,7 @@ fn the_measured_topology() -> Topology {
     );
 
     // The sandbox itself must pass the deny ceiling, or every acceptance is
-    // vacuous — the same precondition U7's gates assert.
+    // vacuous.
     assert_eq!(
         workspace::deny_reason(&canonical_real),
         None,
@@ -141,14 +132,9 @@ fn latch() -> ReportLatch {
 // Gate 1 — the measured case binds ONE tree once, through both spellings
 // ---------------------------------------------------------------------------
 
-/// **Gate 2 of the card, asserted directly.** The measured `field-notes` case must
-/// not produce two mounts.
-///
-/// The config binds the wiki at the **symlink** spelling (`<repos>/field-notes` —
-/// the repos-route address an operator actually writes) while
-/// `CCC_LLM_WIKI_PATH` states the **real** path **with a trailing slash**. Three
-/// textually different spellings, one tree, and the table must hold exactly one
-/// canonical mount for it.
+/// The measured `field-notes` case must not produce two mounts: three textually
+/// different spellings of one tree, and the table holds exactly one canonical
+/// mount for it.
 #[test]
 fn the_measured_case_yields_one_canonical_mount_not_two() {
     let t = the_measured_topology();
@@ -170,26 +156,10 @@ fn the_measured_case_yields_one_canonical_mount_not_two() {
         "exactly ONE mount may hold the wiki tree — two would be two canonical refs over identical bytes with identical sec_rev, and a receipt minted on one would gate a pin on the other"
     );
 
-    // ...and EVERY spelling of that one tree reaches that one mount.
-    //
-    // **What each spelling proves was MEASURED, and the first answer was wrong**
-    // (S3-R23(1) — know the ground truth before trusting the check). The
-    // expectation written here first was U7's: that only the symlink row needs
-    // canonicalization, because `Path` equality is component-wise so `/x/` and
-    // `/x` are already equal, and the real path is the bound canonical path
-    // verbatim.
-    //
-    // Disabling the `by_path` routing reddened this gate on the **trailing-slash
-    // row**, not the symlink row. The reason is the fixture itself: on macOS a
-    // `tempfile::tempdir()` lives under `/var/folders/...`, and **`/var` is a
-    // symlink to `/private/var`** — so every path in this topology, including
-    // the "real" one, is already behind a symlink. All three rows therefore
-    // require canonicalization *here*.
-    //
-    // Both facts are kept because they are different claims: U7's row-by-row
-    // attribution is true of `Path` equality in the abstract, and is **not**
-    // isolated by this fixture. A gate whose redden lands on a different row
-    // than predicted is the finding, not the bug.
+    // ...and every spelling of that one tree reaches that one mount. On macOS
+    // a tempdir lives under `/var`, itself a symlink to `/private/var`, so
+    // every path in this topology — including the "real" one — requires
+    // canonicalization here.
     for spelling in [
         t.slashed_wiki.clone(),
         t.real_wiki.display().to_string(),
@@ -214,13 +184,9 @@ fn the_measured_case_yields_one_canonical_mount_not_two() {
     }
 }
 
-/// The refusal that fires **if it would**: a *literal* inversion — each env var
-/// taken as its own mount block, beside the repos-route spelling — is exactly
-/// the read-mint bypass S3-R7 found before the code existed, and the mount law
-/// refuses it.
-///
-/// This is the arm that proves the bridge is not merely lucky: the same two
-/// spellings that agree through one mount **refuse** when declared as two.
+/// A literal inversion — each env var taken as its own mount block — is the
+/// read-mint bypass, and the mount law refuses it: the same two spellings
+/// that agree through one mount refuse when declared as two.
 #[test]
 fn the_literal_inversion_is_the_bypass_and_the_mount_law_refuses_it() {
     let t = the_measured_topology();
@@ -245,18 +211,14 @@ fn the_literal_inversion_is_the_bypass_and_the_mount_law_refuses_it() {
     );
 }
 
-/// The other direction of the same trap, and the half a reader would assume
-/// away: the repos root **appears** to contain the wiki (`<repos>/field-notes`),
-/// so a string-prefix reading would call the two mounts nested and refuse them.
-/// Canonicalized they are **siblings**, and the nesting dissolves.
-///
-/// Measured here rather than argued: both mounts bind, and neither is inside the
-/// other.
+/// The other direction of the same trap: the repos root appears to contain
+/// the wiki, so a string-prefix reading would call the two mounts nested.
+/// Canonicalized they are siblings, and the nesting dissolves.
 #[test]
 fn canonicalization_dissolves_the_apparent_nesting_of_the_repos_root() {
     let t = the_measured_topology();
 
-    // The DECLARED spellings really are nested — otherwise this gate is vacuous.
+    // The declared spellings really are nested — otherwise this gate is vacuous.
     assert!(
         t.linked_wiki.starts_with(&t.repos_root),
         "precondition: the declared wiki path must lie inside the declared repos root"
@@ -290,11 +252,8 @@ fn canonicalization_dissolves_the_apparent_nesting_of_the_repos_root() {
 // Gate 2 — BOTH arms: agreement is silent, divergence reports ONCE
 // ---------------------------------------------------------------------------
 
-/// **The acceptance half.** Agreement binds **silently** — no report, on either
+/// The acceptance half: agreement binds silently — no report, on either
 /// variable, through every measured spelling.
-///
-/// Asserted beside the state change (R40): the mount that now exists, and where
-/// it resolved from.
 #[test]
 fn agreement_binds_silently_and_names_where_it_resolved_from() {
     let t = the_measured_topology();
@@ -319,8 +278,8 @@ fn agreement_binds_silently_and_names_where_it_resolved_from() {
         );
     }
 
-    // R40 — the STATE CHANGE, named: which mount now exists for each variable,
-    // and the canonical path it resolved from.
+    // The state change, named: which mount now exists for each variable, and
+    // the canonical path it resolved from.
     assert_eq!(checked[0].var(), BridgeVar::WikiPath);
     assert_eq!(checked[0].mount(), Some("field-notes"));
     assert_eq!(
@@ -350,11 +309,9 @@ fn agreement_binds_silently_and_names_where_it_resolved_from() {
     );
 }
 
-/// **The refusal half, and the `once` the card requires asserted directly.**
-///
-/// The variable states a tree the file does not bind. The FILE WINS — the
-/// variable names no root — and the divergence is reported **once**, not once
-/// per call.
+/// The refusal half: the variable states a tree the file does not bind. The
+/// file wins — the variable names no root — and the divergence is reported
+/// once, not once per call.
 #[test]
 fn divergence_reports_once_per_process_and_the_file_wins() {
     let t = the_measured_topology();
@@ -385,8 +342,8 @@ fn divergence_reports_once_per_process_and_the_file_wins() {
         "the report names the variable and the path it states: {report}"
     );
 
-    // The `once`. A per-call warning is a DIFFERENT behaviour, and it is the one
-    // that annoys an operator into unsetting the variable.
+    // A per-call warning is a different behaviour — the one that gets the
+    // variable unset.
     for call in 2..=5 {
         let again = check_in(&env, &table, &latch);
         assert_eq!(again[0].state().word(), "diverges", "call {call}");
@@ -398,10 +355,8 @@ fn divergence_reports_once_per_process_and_the_file_wins() {
     }
 }
 
-/// The latch is **per variable**, not once for the pair: two variables carrying
-/// two different divergences each get their own report, because a shared latch
-/// would silence the second one entirely and "never silently" is the half of the
-/// ruling that would be lost.
+/// The latch is per variable, not once for the pair: two variables carrying
+/// two different divergences each get their own report.
 #[test]
 fn each_variable_carries_its_own_once() {
     let t = the_measured_topology();
@@ -430,12 +385,9 @@ fn each_variable_carries_its_own_once() {
     );
 }
 
-/// The process-global latch is genuinely process-wide.
-///
-/// Order-independent by construction: whatever ran before, a **second** call
-/// through the public entry point must not report. The *first*-call arm is
-/// asserted deterministically above on an owned latch, so this gate proves the
-/// global is a latch without depending on test order.
+/// The process-global latch is genuinely process-wide. Order-independent:
+/// whatever ran before, a second call through the public entry point must not
+/// report; the first-call arm is asserted above on an owned latch.
 #[test]
 fn the_public_entry_point_latches_process_wide() {
     let t = the_measured_topology();
@@ -459,14 +411,9 @@ fn the_public_entry_point_latches_process_wide() {
 // Gate 3 — the arms that must stay SILENT, or the instrument is deleted
 // ---------------------------------------------------------------------------
 
-/// **The arm that keeps this instrument alive.** Every machine today is state A
-/// — no `MERIDIAN.md`, an empty table — with both variables exported. If that
-/// were a divergence the check would fire on 100% of machines on its first run
-/// and be patched out within a day.
-///
-/// State A (absent) and state D (a clean parse declaring zero mounts) reach the
-/// SAME arm — the config plane's own nil-vs-empty identity, reused rather than
-/// re-decided.
+/// A machine in state A has an empty table with both variables exported; if
+/// that were a divergence the check would fire everywhere. State A (absent)
+/// and state D (zero mounts) reach the same arm.
 #[test]
 fn an_empty_table_is_unchecked_in_both_of_its_shapes() {
     let env = BridgeEnv {
@@ -500,8 +447,7 @@ fn an_empty_table_is_unchecked_in_both_of_its_shapes() {
 }
 
 /// Unset, empty and whitespace-only all state no path — the same nil-vs-empty
-/// rule `MERIDIAN_CONFIG` follows, so the two env axes cannot diverge on what
-/// "empty" means.
+/// rule `MERIDIAN_CONFIG` follows.
 #[test]
 fn unset_empty_and_whitespace_state_no_path() {
     let t = the_measured_topology();
@@ -523,8 +469,7 @@ fn unset_empty_and_whitespace_state_no_path() {
 }
 
 /// A variable naming a path that does not exist diverges too — and the detail
-/// says WHICH failure it is, because "not a bound root" and "not a path" have
-/// different fixes even though the outcome is one.
+/// says which failure it is, because the two have different fixes.
 #[test]
 fn an_unresolvable_path_diverges_with_its_own_detail() {
     let t = the_measured_topology();
@@ -543,8 +488,7 @@ fn an_unresolvable_path_diverges_with_its_own_detail() {
         "the detail distinguishes an unresolvable path from an unbound one: {detail}"
     );
 
-    // Beside it: a path that DOES resolve but is unbound carries the other
-    // detail. Both arms, one gate.
+    // Beside it: a path that resolves but is unbound carries the other detail.
     let resolvable = t.dir.path().join("resolvable");
     std::fs::create_dir_all(&resolvable).expect("create");
     let env = BridgeEnv {

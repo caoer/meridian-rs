@@ -1,113 +1,40 @@
-//! The mount table — where a declared mount entry becomes a **bound** root.
+//! The mount table — where a declared mount entry becomes a bound root.
 //!
-//! # Charter
-//! **Owns:** canonicalization at bind, the `workspace::deny_reason` ceiling, the
-//! equal-or-nested refusal, the three-way map's uniqueness invariants, the read of each
-//! root's own self-declaration and the declared-vs-bound check, and mount-as-claim — the
-//! pin a mount carries over the root it declares.
+//! Owns: canonicalization at bind, the `workspace::deny_reason` ceiling, the
+//! equal-or-nested refusal, the three-way map's uniqueness invariants, the read
+//! of each root's own self-declaration and the declared-vs-bound check, and
+//! mount-as-claim — the pin a mount carries over the root it declares.
 //!
-//! **Never does:** resolve an address. Which corpus a `root:` prefix selects, and what an
-//! unmounted root renders, are U11's (`docs/address-grammar.md` §5, §6). This module
-//! answers only *which roots does this machine bind, and what can it say about each*.
+//! Never does: resolve an address (`docs/address-grammar.md` §5, §6). This
+//! module answers only *which roots does this machine bind, and what can it say
+//! about each*.
 //!
-//! # The three-way map, and the arithmetic that closes it (R32)
+//! The table is the single authority for the three-way translation — canonical
+//! root name ↔ Obsidian vault name ↔ local path. Each representation is a key
+//! (INV-1 name, INV-2/INV-4 path, INV-3 vault); name ↔ path is total, the
+//! vault axis is partial because a `git-folder` root carries no vault name.
 //!
-//! The mount table is the single authority for the three-way translation — **canonical
-//! root name ↔ Obsidian vault name ↔ local path** (`2026-07-24-cross-root-addressing.md`
-//! §2). Three representations give a **3 × 3 = 9-cell** matrix, and every cell is
-//! accounted for exactly once: the **diagonal** is "this representation is a key" (the
-//! three uniqueness invariants), the **off-diagonal** is the six directed translations.
-//! Nothing is counted twice, because the nine cells are the whole product set.
+//! Every mount path is canonicalized and then passed through
+//! [`workspace::deny_reason`] — the same predicate the workspace ladder uses,
+//! reused, never re-implemented (`docs/address-grammar.md` §8 B-2). A refused
+//! mount fails the whole parse: [`MountTable`]'s field is private and [`bind`]
+//! is its only constructor, so a partially-bound table cannot exist.
 //!
-//! | from ↓ / to → | **name** | **vault** | **path** | |---|---|---|---| | **name** |
-//! INV-1 — no two entries share a name. Enforced at PARSE
-//! ([`crate::Reason::DuplicateMountName`], schema §5.1) | name → vault: [`Mount::vault`].
-//! **Partial** — `None` on a `git-folder` entry | name → path: [`MountTable::by_name`]
-//! then [`Mount::canonical_path`] | | **vault** | vault → name: [`MountTable::by_vault`]
-//! then [`Mount::name`]. **Partial domain** — `vault`-kind entries only | INV-3 — no two
-//! entries share a vault name. [`MountReason::DuplicateVaultName`] | vault → path:
-//! [`MountTable::by_vault`] then [`Mount::canonical_path`]. **Partial domain** | |
-//! **path** | path → name: [`MountTable::by_path`] then [`Mount::name`] | path → vault:
-//! [`MountTable::by_path`] then [`Mount::vault`]. **Partial** | INV-2 — no two entries
-//! share a canonicalized path, and INV-4 — none contains another.
-//! [`MountReason::DuplicateMountPath`], [`MountReason::NestedMount`] |
+//! Canonicalize first: a symlinked spelling and a trailing-slash spelling are
+//! one tree, and one tree bound twice under two names yields two canonical refs
+//! the read-mint recheck cannot tell apart. Equal-or-nested is refused; the
+//! prefix test is path-segment-boundary, so `/a/wiki` + `/a/wiki-two` stay
+//! legal siblings.
 //!
-//! **The count, stated:** 9 cells = 3 diagonal (INV-1, INV-3, INV-2+INV-4) + 6
-//! off-diagonal translations. Of the six, **two are total** (name ↔ path) and **four are
-//! partial** (every cell on the vault row or column), because a `git-folder` root has no
-//! Obsidian vault. That partiality is the one fact a reader would otherwise assume away:
-//! **the map is a bijection on the name↔path axis and only an injection on the vault
-//! axis**, since INV-3 holds vacuously over the `git-folder` entries that carry no vault
-//! name at all.
+//! The root declares its own name in [`DECLARATION_FILENAME`]; `MERIDIAN.md`
+//! binds. Agreement binds; disagreement fails the whole parse naming both
+//! spellings; an absent declaration renders grey. The declaration shares the
+//! config's reserved filename and is discriminated by its `type:` key.
 //!
-//! `is_bound_by_this_machine` is deliberately absent from the matrix: it is a predicate
-//! over one entry, not a translation between two representations.
-//!
-//! # The ceiling — why a mount is not just a path
-//!
-//! `MERIDIAN.md` is ordinary editable content. Without a ceiling at bind, a mount binding
-//! `$HOME` or `/` would hand the whole filesystem to every plane that resolves through
-//! the table — **the workspace deny ceiling bypassed by a file that is itself ordinary
-//! editable content**. So every mount path is canonicalized and then passed through
-//! [`workspace::deny_reason`], the SAME predicate the workspace ladder uses; it is reused
-//! here, never re-implemented (`docs/address-grammar.md` §8 B-2).
-//!
-//! A refused mount **fails the whole parse**. Like [`crate::Config`], [`MountTable`]'s
-//! field is private and [`bind`] is its only constructor, so a partially-bound table
-//! cannot exist to be observed.
-//!
-//! # Canonicalize first, and refuse equal-or-nested (S3-R7)
-//!
-//! Measured on this machine, before the code existed: `/Users/Shared/repos/field-notes` is
-//! a **symlink** to `/Users/Shared/projects/field-notes`, while `CCC_LLM_WIKI_PATH` carries
-//! the real path **with a trailing slash**. A literal env-var inversion therefore binds
-//! **one tree twice under two names** — two canonical refs over identical bytes, with
-//! identical `sec_rev`, which **the read-mint recheck cannot tell apart: a receipt minted
-//! on ref A would gate a pin on ref B.** That is a read-mint bypass, and only
-//! canonicalization collapses both spellings.
-//!
-//! Nesting is refused on the same argument one level down: `/a/wiki` and `/a/wiki/sub`
-//! bound under two names give one document two canonical addresses. The prefix test is
-//! **path-segment-boundary** (`Path::starts_with` is component-wise), so the sibling case
-//! `/a/wiki` + `/a/wiki-two` stays legal — a naive string prefix would refuse it, and a
-//! mount law that refuses legitimate siblings is a guard that blocks everything.
-//!
-//! # The root declares; `MERIDIAN.md` binds (D7)
-//!
-//! *"MERIDIAN.md binds, it doesn't baptize"* (`2026-07-24-cross-root-addressing.md` §1a).
-//! A root's canonical name belongs to the root, because root names travel inside stored,
-//! shared content — a name defined only in one user's config would make links valid on
-//! exactly one machine. So a root declares its own name in [`DECLARATION_FILENAME`] at
-//! its top level, and this module **checks** the binding against it:
-//!
-//! - the two agree → the mount **binds** (the acceptance half, S3-R8(c));
-//! - the two disagree → the **whole parse fails loud**, naming both spellings;
-//! - the declaration is **absent** → the mount renders **grey**, naming the file it
-//!   looked for. Not a mismatch, not a refusal of the table.
-//!
-//! The declaration is spelled in the **same reserved filename** as the config
-//! ([`DECLARATION_FILENAME`] is [`crate::CONFIG_FILENAME`], one constant) and
-//! discriminated by its `type:` key. That is not a collision, it is the discriminator
-//! doing its job: `MERIDIAN_CONFIG` aimed at a root's declaration refuses with
-//! [`crate::Reason::WrongTypeValue`] rather than half-loading an unrelated page — which
-//! is precisely why schema §4 required the key. The two can never be one file, because
-//! `$HOME` is a denied mount path ([`workspace::DenyReason::HomeDir`]) and a root is
-//! never `$HOME`.
-//!
-//! # Mount-as-claim, and the residual it does NOT close
-//!
-//! A mount may **pin the root it declares** (schema §5.3). The pin's target is the
-//! declaration file, and the two jobs reinforce each other: the pin protects exactly the
-//! artifact the declared-vs-bound check reads, so tampering with a root's declaration
-//! reddens the mount that trusts it. Verification reuses
-//! [`model::fingerprint::verify_content`] whole — no new codec, no new hash law, and an
-//! unimplemented triple member renders grey rather than green (R26: outside sight never
-//! renders as verified).
-//!
-//! **What it does not close, stated rather than implied (S3-R10(b)):** a mount pin
-//! protects the root a mount declares; it does **not** protect the table's own
-//! *membership*, because deleting a mount block deletes its pin along with it. What
-//! prevents silent passage there is S3-R6 — grey refuses on exit 1 — not this mechanism.
+//! A mount may pin the root it declares (schema §5.3): the pin's target is the
+//! declaration file, verified through [`model::fingerprint::verify_content`].
+//! The pin does not protect the table's own membership — deleting a mount
+//! block deletes its pin along with it.
 
 use std::path::{Path, PathBuf};
 
@@ -117,10 +44,8 @@ use crate::{
 };
 
 /// The reserved filename of a root's own self-declaration, at the root's top
-/// level. Deliberately the **same** reserved name the config plane uses — one
-/// constant, not two spellings — because the `type:` key is what tells them
-/// apart, and a mis-aimed `MERIDIAN_CONFIG` must refuse loudly rather than
-/// half-load (schema §4, §2.4).
+/// level — the same reserved name the config plane uses, discriminated by the
+/// `type:` key (schema §4, §2.4).
 pub const DECLARATION_FILENAME: &str = CONFIG_FILENAME;
 
 /// The `type:` discriminator a root's self-declaration carries.
@@ -133,11 +58,9 @@ pub const DECLARATION_KEYS: [&str; 3] = ["type", "version", "name"];
 /// Why a mount refused to bind. The closed set of the mount-path law
 /// (`docs/address-grammar.md` §3 rows T2-T5 and §8 rows M1-M4).
 ///
-/// A **separate** closed set from [`crate::Reason`], deliberately: that one is
-/// schema §8.2's in-file parse vocabulary and is pinned word-for-word against
-/// its own table. These are bind-time semantics with a different spec and a
-/// different owner. One shared spelling would put two specs in one array and
-/// let a change to either silently rewrite the other.
+/// A separate closed set from [`crate::Reason`]: that one is schema §8.2's
+/// in-file parse vocabulary; these are bind-time semantics with a different
+/// spec and owner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum MountReason {
     /// The canonicalized mount path is one [`workspace::deny_reason`] refuses.
@@ -176,11 +99,8 @@ impl MountReason {
     }
 }
 
-/// A bind refusal. The same five facts and the same rendered shape as
-/// [`crate::ConfigError`] — reason word, config path, 1-based FILE line, what
-/// was found, what is legal — because an operator reading the refusal is
-/// looking at the same file either way, and [`NO_PARTIAL_LOAD_CLAUSE`] is the
-/// one sentence both must carry.
+/// A bind refusal — the same five facts and rendered shape as
+/// [`crate::ConfigError`], including [`NO_PARTIAL_LOAD_CLAUSE`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MountError {
     /// The closed-set reason word's variant.
@@ -230,32 +150,31 @@ impl MountError {
 
 /// What this machine can say about one bound root.
 ///
-/// Closed, and every arm but [`MountState::Bound`] **refuses** — grey and red
-/// alike ride exit 1 with their own reason word (S3-R6). There is no arm for
-/// "unmounted": a root absent from the table is not a state of the table, it is
-/// U11's answer to an address.
+/// Closed, and every arm but [`MountState::Bound`] refuses — grey and red
+/// alike ride exit 1 with their own reason word. There is no arm for
+/// "unmounted": a root absent from the table is not a state of the table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MountState {
     /// The path canonicalized, passed the ceiling, is unique and unnested; the
     /// root's own declaration names the bound name; and the claim, if any,
     /// verified. The acceptance half.
     Bound,
-    /// The mount path does not exist here, or cannot be read. **Not a parse
-    /// failure** — one root being absent from one machine is the topology
+    /// The mount path does not exist here, or cannot be read. Not a parse
+    /// failure — one root being absent from one machine is the topology
     /// working as designed (row M6).
     PathUnseeable {
         /// The underlying filesystem reason, verbatim.
         detail: String,
     },
-    /// The root holds no [`DECLARATION_FILENAME`]. D7's absent case: grey, with
-    /// the file that is missing named — never red, and never `file_not_found`.
+    /// The root holds no [`DECLARATION_FILENAME`]. Grey, with the missing file
+    /// named — never red.
     Undeclared {
         /// The declaration file this bind looked for and did not find.
         declaration: PathBuf,
     },
-    /// A declaration file is there but does not read as one. The honest third
-    /// arm: present is not absent, and a foreign root's broken content must not
-    /// fail this machine's whole parse.
+    /// A declaration file is there but does not read as one. Present is not
+    /// absent, and a foreign root's broken content must not fail this
+    /// machine's whole parse.
     DeclarationUnreadable {
         /// The declaration file that would not read.
         declaration: PathBuf,
@@ -264,7 +183,7 @@ pub enum MountState {
     },
     /// A pin is carried but this build cannot decide it — an unimplemented
     /// triple member, or a declaration whose canonicalization is empty. Grey,
-    /// never green (R26).
+    /// never green.
     ClaimUnverifiable {
         /// Which member, or which condition, blocks the verdict.
         detail: String,
@@ -279,14 +198,9 @@ pub enum MountState {
     },
 }
 
-/// This plane's WRAPPED spelling of the shared reason word (S3-R49).
-///
-/// **One source, checked at COMPILE TIME.** The bare word lives in
-/// [`addr::PATH_UNSEEABLE_REASON_WORD`]; the address plane takes it bare and this
-/// plane wraps it. The `const` assertion below fails the BUILD if the two ever
-/// drift, so the planes agree by construction rather than by two literals that
-/// happen to match today — which is what the ruling asked for and what a
-/// string-equality test would only have detected after the fact.
+/// This plane's wrapped spelling of the shared reason word. The bare word
+/// lives in [`addr::PATH_UNSEEABLE_REASON_WORD`]; the `const` assertion below
+/// fails the build if the two ever drift.
 const PATH_UNSEEABLE_WRAPPED: &str = "grey(path-unseeable)";
 
 /// Is `wrapped` exactly `grey(<bare>)`? A `const fn` so the check runs at
@@ -320,8 +234,8 @@ const _: () = assert!(
 );
 
 impl MountState {
-    /// The reason word, in S3-R6's vocabulary: `bound`, a `grey(...)`, or a
-    /// `red(...)`. One spelling, used in the human line and in `--json` alike.
+    /// The reason word: `bound`, a `grey(...)`, or a `red(...)`. One spelling,
+    /// used in the human line and in `--json` alike.
     #[must_use]
     pub fn word(&self) -> &'static str {
         match self {
@@ -335,17 +249,15 @@ impl MountState {
     }
 
     /// True when this state refuses — every state but [`MountState::Bound`].
-    /// Grey refuses exactly as red does, on **exit 1**, each with its own
-    /// reason word; there is no fourth exit code and no state that passes
-    /// quietly (S3-R6).
+    /// Grey refuses exactly as red does, on exit 1, each with its own reason
+    /// word.
     #[must_use]
     pub fn refuses(&self) -> bool {
         !matches!(self, MountState::Bound)
     }
 
     /// The teaching sentence beside the reason word — what was looked for,
-    /// where, and what to do. Empty for [`MountState::Bound`], which teaches
-    /// nothing because nothing is wrong.
+    /// where, and what to do. Empty for [`MountState::Bound`].
     #[must_use]
     pub fn detail(&self) -> String {
         match self {
@@ -376,7 +288,7 @@ impl MountState {
     }
 }
 
-/// One **bound** root: a declared [`MountEntry`] plus everything binding it
+/// One bound root: a declared [`MountEntry`] plus everything binding it
 /// decided.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Mount {
@@ -454,9 +366,8 @@ impl Mount {
 
 /// The bound mount table.
 ///
-/// The field is private and [`bind`] is the only constructor, so **no partial
-/// mount table can exist to be observed** — the same property [`crate::Config`]
-/// makes of a clean parse, carried one stage further.
+/// The field is private and [`bind`] is the only constructor, so no partial
+/// mount table can exist to be observed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MountTable {
     mounts: Vec<Mount>,
@@ -469,18 +380,16 @@ impl MountTable {
         &self.mounts
     }
 
-    /// **name → (vault, path).** The mount bound to a canonical root name.
+    /// name → (vault, path). The mount bound to a canonical root name.
     #[must_use]
     pub fn by_name(&self, name: &str) -> Option<&Mount> {
         self.mounts.iter().find(|m| m.name == name)
     }
 
-    /// **path → (name, vault).** The mount bound to a local path.
+    /// path → (name, vault). The mount bound to a local path.
     ///
-    /// The argument is canonicalized by the same rule [`bind`] used, because
-    /// that is the whole measured point: a symlinked spelling and a
-    /// trailing-slash spelling are the same tree, and a lookup that compared
-    /// them literally would answer `None` for a path this table binds.
+    /// The argument is canonicalized by the same rule [`bind`] used, so a
+    /// symlinked or trailing-slash spelling finds the mount it names.
     #[must_use]
     pub fn by_path(&self, path: &Path) -> Option<&Mount> {
         let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
@@ -489,7 +398,7 @@ impl MountTable {
             .find(|m| m.canonical.as_deref() == Some(target.as_path()))
     }
 
-    /// **vault → (name, path).** The mount naming an Obsidian vault. Partial by
+    /// vault → (name, path). The mount naming an Obsidian vault. Partial by
     /// construction: a `git-folder` root has no vault name and is never found
     /// here.
     #[must_use]
@@ -500,31 +409,23 @@ impl MountTable {
     }
 
     /// True when every mount is [`MountState::Bound`] — nothing grey, nothing
-    /// red. This is the predicate a verb's exit code answers (S3-R6).
+    /// red. The predicate a verb's exit code answers.
     #[must_use]
     pub fn is_clear(&self) -> bool {
         self.mounts.iter().all(|m| !m.state.refuses())
     }
 
-    /// **The table, projected for the planes that resolve and translate** — the
-    /// half `docs/laws.md` reserved for this crate (*"Still NOT here: projecting
-    /// the bound names into `addr::MountSet`"*).
+    /// The table, projected for the planes that resolve and translate.
     ///
-    /// Carries three facts and no paths beyond the ones a refusal must name:
-    /// which names this machine BINDS, the **vault name** each bound vault root
-    /// carries (the stored plane is spelled in vault names — U12), and which
-    /// declared names are **unreachable here**, with the path to check.
+    /// Carries which names this machine binds, the vault name each bound vault
+    /// root carries, and which declared names are unreachable here with the
+    /// path to check. A refusing mount is recorded as unreachable rather than
+    /// dropped, so "declared but unreadable" is not collapsed into "nobody
+    /// declared it".
     ///
-    /// A refusing mount is recorded as unreachable rather than dropped —
-    /// S3-R50: dropping it collapses *"declared but unreadable"* into *"nobody
-    /// declared it"* one frame upstream of the refusal, and the refusal then
-    /// prescribes a declaration that already exists.
-    ///
-    /// **This is not `mrd walk`'s projection and the difference is a FACT, not
-    /// a second spelling.** `walk_cmd::load_mounts` also marks a root
-    /// unreachable when its CORPUS will not build — a fact only a caller
-    /// holding corpora can know. This projection answers what the TABLE knows.
-    /// The two agree wherever they overlap because both read `Mount::state`.
+    /// Not `mrd walk`'s projection: `walk_cmd::load_mounts` also marks a root
+    /// unreachable when its corpus will not build. The two agree wherever they
+    /// overlap because both read `Mount::state`.
     #[must_use]
     pub fn projection(&self) -> addr::MountSet {
         let mut bound: Vec<addr::MountName> = Vec::new();
@@ -563,12 +464,11 @@ impl Resolution {
     /// Bind the resolved config's declared mounts.
     ///
     /// State A (absent) and state D (zero mounts) both produce the empty table
-    /// through this one call — the nil-vs-empty identity the config plane draws,
-    /// carried into binding rather than re-decided here.
+    /// through this one call.
     ///
     /// # Errors
     /// [`MountError`] when a mount may not be bound at all. The refusal fails
-    /// the WHOLE table: there is no partially-bound value to return.
+    /// the whole table: there is no partially-bound value to return.
     pub fn bind(&self) -> Result<MountTable, MountError> {
         match self {
             Resolution::Absent { .. } => Ok(MountTable { mounts: Vec::new() }),
@@ -579,18 +479,11 @@ impl Resolution {
 
 /// Bind a parsed config's declared mounts into the mount table.
 ///
-/// Each entry is taken in document order and carried through its own checks
-/// before the next entry is looked at, so the first refusal in FILE order is
-/// the one reported — schema §8.4's rule, applied to binding. **One consequence
-/// is stated rather than discovered:** an entry's declared-vs-bound mismatch
-/// masks a later entry's path collision. Both are fatal and neither is more
-/// urgent, so file order stays the single rule; ranking the classes against
-/// each other would be a second rule to get wrong.
-///
-/// The order within one entry is not arbitrary: **canonicalize, then the
-/// ceiling, then uniqueness and nesting, then the declaration, then the claim.**
-/// The ceiling runs before anything reads *inside* the root, so a mount that
-/// may not be bound never causes a read at the path it names.
+/// Entries are taken in document order, each carried through its own checks
+/// before the next, so the first refusal in FILE order is the one reported
+/// (schema §8.4). Within one entry: canonicalize, then the ceiling, then
+/// uniqueness and nesting, then the declaration, then the claim — the ceiling
+/// runs before anything reads inside the root.
 ///
 /// # Errors
 /// [`MountError`] — one of the closed set, naming the offending mount block's
@@ -610,14 +503,13 @@ pub fn bind(config: &Config) -> Result<MountTable, MountError> {
 fn bind_one(entry: &MountEntry, source: &Path, bound: &[Mount]) -> Result<Mount, MountError> {
     let line = entry.fence_line;
 
-    // Canonicalize FIRST. `deny_reason` compares resolved paths, so checking an
+    // Canonicalize first: `deny_reason` compares resolved paths, so checking an
     // uncanonicalized spelling would check a path that is not the one bound.
     let canonical = match std::fs::canonicalize(&entry.path) {
         Ok(canonical) => canonical,
         Err(e) => {
-            // Row M6: unseeable is grey for this root, never a parse failure —
-            // failing here would brick the CLI on every machine that does not
-            // hold all of the declared roots.
+            // Unseeable is grey for this root, never a parse failure (row M6) —
+            // failing would brick every machine not holding all declared roots.
             return Ok(mount_in_state(
                 entry,
                 None,
@@ -646,8 +538,8 @@ fn bind_one(entry: &MountEntry, source: &Path, bound: &[Mount]) -> Result<Mount,
 
     check_uniqueness(entry, source, bound, &canonical)?;
 
-    // The root's own declaration. Absent is grey, unreadable is grey, and only
-    // a READ declaration that disagrees fails the parse (D7, INV-5).
+    // The root's own declaration: absent is grey, unreadable is grey; only a
+    // read declaration that disagrees fails the parse (INV-5).
     let declaration_path = canonical.join(DECLARATION_FILENAME);
     let declaration = match read_declaration(&declaration_path) {
         Ok(declaration) => declaration,
@@ -709,9 +601,9 @@ fn bind_one(entry: &MountEntry, source: &Path, bound: &[Mount]) -> Result<Mount,
     ))
 }
 
-/// INV-2, INV-4 and INV-3, over CANONICALIZED paths, against the entries already
-/// bound — so a refusal lands on the **second** occurrence and names the first,
-/// which is §8.1a's rule for a duplicate.
+/// INV-2, INV-4 and INV-3, over canonicalized paths, against the entries
+/// already bound — a refusal lands on the second occurrence and names the
+/// first (§8.1a).
 fn check_uniqueness(
     entry: &MountEntry,
     source: &Path,
@@ -721,8 +613,7 @@ fn check_uniqueness(
     let line = entry.fence_line;
     for prior in bound {
         // An unseeable prior has no canonical path, so it collides with
-        // nothing. That is honest rather than lenient: a tree this machine
-        // cannot resolve cannot be shown to be the same tree as another.
+        // nothing.
         let Some(prior_path) = prior.canonical.as_deref() else {
             continue;
         };
@@ -793,9 +684,9 @@ fn verdict_state(document: &model::Document, pin: &str) -> MountState {
         model::fingerprint::ContentVerdict::EmptySpan => MountState::ClaimUnverifiable {
             detail: "the declaration canonicalizes to nothing, so there is no live fingerprint to compare".to_string(),
         },
-        // Unreachable through `parse`, which already refuses a malformed token
-        // with `bad-value`. Rendered rather than panicked: a caller holding a
-        // hand-built `Config` must get a verdict, not an abort.
+        // Unreachable through `parse`, which already refuses a malformed
+        // token; rendered rather than panicked so a hand-built `Config` still
+        // gets a verdict.
         model::fingerprint::ContentVerdict::Malformed => MountState::ClaimUnverifiable {
             detail: "the pinned value is not a fingerprint token".to_string(),
         },
@@ -821,9 +712,9 @@ fn mount_in_state(
     }
 }
 
-/// `Some((outer, inner))` when one path contains the other at a **path-segment
-/// boundary**. `Path::starts_with` is component-wise, so `/a/wiki-two` is not
-/// inside `/a/wiki` — the sibling case row M5 requires to stay legal.
+/// `Some((outer, inner))` when one path contains the other at a path-segment
+/// boundary. `Path::starts_with` is component-wise, so `/a/wiki-two` is not
+/// inside `/a/wiki` — the sibling case stays legal (row M5).
 fn containment<'a>(first: &'a Path, second: &'a Path) -> Option<(&'a Path, &'a Path)> {
     if second.starts_with(first) {
         Some((first, second))
@@ -837,11 +728,7 @@ fn containment<'a>(first: &'a Path, second: &'a Path) -> Option<(&'a Path, &'a P
 /// A root's self-declaration, read.
 ///
 /// Public because the run plane reads the same artifact for its own
-/// convention table: what a VALID root declaration is has one owner, and a
-/// second consumer must ask that owner rather than re-spell the
-/// `type:`/`version:` discriminator. This crate stays ignorant of what any
-/// consumer reads out of `document` — the keys are theirs, the validity is
-/// ours.
+/// convention table: what a valid root declaration is has one owner.
 pub struct Declaration {
     /// The canonical root name the root claims for itself.
     pub name: String,
@@ -851,8 +738,7 @@ pub struct Declaration {
 }
 
 /// Why a declaration did not produce a name. Absent and unreadable are kept
-/// apart because they teach different fixes — and because collapsing them would
-/// report a broken declaration as no declaration.
+/// apart because they teach different fixes.
 pub enum DeclarationFault {
     /// No [`DECLARATION_FILENAME`] at the root's top level.
     Absent,
@@ -862,10 +748,6 @@ pub enum DeclarationFault {
 
 /// Read the self-declaration of the root at `root` — [`DECLARATION_FILENAME`]
 /// at its top level.
-///
-/// The path-taking [`read_declaration`] is what this crate's own bind path
-/// uses; this is the root-taking spelling a consumer wants, so no caller
-/// re-joins the reserved filename itself.
 ///
 /// # Errors
 /// [`DeclarationFault::Absent`] when the root holds no declaration, or
@@ -936,9 +818,8 @@ pub fn read_declaration(path: &Path) -> Result<Declaration, DeclarationFault> {
         )));
     };
 
-    // The charset has ONE owner. Reused rather than re-spelled, and its refusal
-    // becomes the grey's teaching detail instead of a parse failure — a root's
-    // broken content must not fail this machine's whole parse.
+    // The charset has one owner; its refusal becomes the grey's teaching
+    // detail rather than a parse failure.
     check_name(
         name,
         path,

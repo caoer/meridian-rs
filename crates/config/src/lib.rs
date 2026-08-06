@@ -1,42 +1,19 @@
 //! The `MERIDIAN.md` config plane — the one entry point, parsed as content.
 //!
-//! # Charter
-//! **Owns:** the bootstrap chain (`MERIDIAN_CONFIG` → `$HOME/MERIDIAN.md`), the four
+//! Owns: the bootstrap chain (`MERIDIAN_CONFIG` → `$HOME/MERIDIAN.md`), the four
 //! resolution states, the in-file schema's strict parse (frontmatter + the
-//! `meridian-mount` / `meridian-tool` block grammars), the closed refusal set with its
-//! 1-based FILE lines, and the config's own rev and fingerprint — minted by the shipped
-//! laws, never a new one (`docs/meridian-md-schema.md` §7.1).
+//! `meridian-mount` / `meridian-tool` block grammars), the closed refusal set with
+//! 1-based FILE lines, and the config's own rev and fingerprint
+//! (`docs/meridian-md-schema.md` §7.1).
 //!
-//! **Never does:** bind a mount *in this module*. Canonicalization at bind, the
-//! `workspace::deny_reason` ceiling, the equal-or-nested refusal, the declared-vs-bound
-//! check and the grey classes live in [`mount`] — `docs/address-grammar.md` §8. This
-//! module produces the parsed config; that one gives it meaning. It also does not do
-//! project-local walk-up discovery: the ratifying decision defers it, so the chain in
-//! [`resolve`] has exactly two rungs and no third. The bridge period's env-var check is
-//! [`bridge`]'s.
+//! Never does: bind a mount. Canonicalization at bind, the
+//! `workspace::deny_reason` ceiling, the equal-or-nested refusal, and the
+//! declared-vs-bound check live in [`mount`] (`docs/address-grammar.md` §8). No
+//! project-local walk-up discovery: the chain in [`resolve`] has exactly two
+//! rungs. The bridge period's env-var check is [`bridge`]'s.
 //!
-//! # Two env axes, one nil-vs-empty rule
-//! [`Env`] carries the BOOTSTRAP variables (`MERIDIAN_CONFIG`, `HOME`) — where the config
-//! file is. [`bridge::BridgeEnv`] carries the two llm-wiki variables the entry-point
-//! ruling inverts into mount entries — what the file should already say. Both treat an
-//! empty or whitespace-only value as unset, so the two axes cannot come to disagree about
-//! what "stated" means.
-//!
-//! # The precedent this EXTENDS
-//! `meridian/armed-rules.md` is markdown-as-config shipping today
-//! (`crates/policy/src/index.rs`): strictness scoped to a machine surface, malformed
-//! fails closed, and the pinned rev is `blake3(bytes)[:16]`. Schema §1 walks the parallel
-//! row by row and names the five places this schema deliberately differs.
-//!
-//! # No partial mount table, by construction
-//! [`parse`] returns `Result<Config, ConfigError>` and [`Config`]'s fields are private
-//! with no public constructor — the only way to hold one is to have parsed a whole file
-//! cleanly. A malformed config therefore leaves no partially-populated state observable
-//! to any caller, because there is no value to observe. That is the ratified
-//! no-partial-load made a property of the type rather than of today's call sites.
-//!
-//!
-//!
+//! [`Env`] carries the bootstrap variables; [`bridge::BridgeEnv`] carries the two
+//! llm-wiki variables. Both treat an empty or whitespace-only value as unset.
 
 use std::path::{Path, PathBuf};
 
@@ -54,9 +31,8 @@ pub const CONFIG_ENV_VAR: &str = "MERIDIAN_CONFIG";
 /// The required `type:` discriminator value (schema §4).
 pub const CONFIG_TYPE: &str = "meridian-config";
 
-/// The one schema version this build implements (schema §4). A future format
-/// bumps it; this reader refuses a version it does not implement and never
-/// guesses — `lock::LockError::UnsupportedVersion`'s own law.
+/// The one schema version this build implements (schema §4). A version this
+/// build does not implement is refused, never guessed.
 pub const VERSION: u64 = 1;
 
 /// The `meridian-mount` block language (schema §3.1).
@@ -65,8 +41,7 @@ pub const MOUNT_LANG: &str = "meridian-mount";
 /// The `meridian-tool` block language (schema §3.1).
 pub const TOOL_LANG: &str = "meridian-tool";
 
-/// The mount block's fields, in canonical order (schema §5.1). The refusal
-/// teaches this order verbatim, so it has one spelling.
+/// The mount block's fields, in canonical order (schema §5.1).
 pub const MOUNT_FIELDS: [&str; 5] = ["name", "path", "kind", "vault", "pin"];
 
 /// The tool block's fields, in canonical order (schema §6).
@@ -79,29 +54,17 @@ pub const NAME_CHARSET: &str = "[a-z0-9-]";
 pub const NAME_MAX_BYTES: usize = 64;
 
 /// The no-partial-load clause every refusal carries (schema §8.3, clause 2).
-/// Ratified fail-loud is only visible if the refusal SAYS nothing loaded — a
-/// reader who is not told assumes a partial config took effect.
 pub const NO_PARTIAL_LOAD_CLAUSE: &str =
     "No mount table was loaded; the config is not partially applied.";
 
-/// The teaching refusal for an unknown mount field, pinned VERBATIM as the
-/// exemplar of the shape schema §8.3 fixes — the house pinned-`const` pattern
-/// (`model::selector::D1_TEACHING_REFUSAL_EXEMPLAR`). Its three mandatory
-/// clauses each close a specific failure: the LINE (the ratified "and where"),
-/// [`NO_PARTIAL_LOAD_CLAUSE`], and a `Fix:` naming the legal form.
-///
-/// `refusal_exemplar_is_produced_not_asserted` reproduces this string from a
-/// real parse, so a drift in the wording is a visible test failure rather than
-/// a comment that went stale.
+/// The teaching refusal for an unknown mount field, pinned verbatim as the
+/// exemplar of the shape schema §8.3 fixes.
+/// `refusal_exemplar_is_produced_not_asserted` reproduces it from a real
+/// parse, so drift in the wording fails a test.
 pub const UNKNOWN_FIELD_REFUSAL_EXEMPLAR: &str = "refused: ~/MERIDIAN.md line 14: unknown field `paths` in a meridian-mount block — legal fields are name, path, kind, vault, pin (in that order). No mount table was loaded; the config is not partially applied. Fix: remove the line or spell the field you meant.";
 
-/// Why a config refused. The closed reason set of schema §8.2 — a reason word
-/// is a `&'static str` from [`Reason::word`], never free text, which is what
-/// keeps a refusal's spelling from drifting and makes it testable.
-///
-/// The set is an ENUM rather than a string convention so the compiler
-/// enumerates it: a new reason cannot be minted at a call site, and
-/// [`Reason::ALL`] cannot fall behind the variants without failing to compile.
+/// Why a config refused — the closed reason set of schema §8.2. A reason word
+/// comes from [`Reason::word`], never free text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Reason {
     /// State C: `MERIDIAN_CONFIG` names something that is not a readable
@@ -144,9 +107,7 @@ pub enum Reason {
 }
 
 impl Reason {
-    /// Every reason word, in schema §8.2's table order. The pack's refusal
-    /// cases are one per class; this array is what lets a test assert the
-    /// closed set has not silently grown or shrunk.
+    /// Every reason word, in schema §8.2's table order.
     pub const ALL: [Reason; 17] = [
         Reason::ConfigPathUnusable,
         Reason::HomeUnresolvable,
@@ -195,20 +156,17 @@ impl Reason {
 /// A config refusal: the reason word, the config path, the 1-based FILE line,
 /// what was found, and what is legal (schema §8.1, §8.3).
 ///
-/// `line` is 1-based **in the file**, not within a block — a human editing
-/// `MERIDIAN.md` is looking at file lines. `None` only where there are no bytes
-/// to point at: state C and `home-unresolvable` (schema §8.1a).
+/// `line` is 1-based in the file, not within a block; `None` only where there
+/// are no bytes to point at: state C and `home-unresolvable` (schema §8.1a).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigError {
     /// The closed-set reason word's variant.
     pub reason: Reason,
-    /// The config path the refusal is about — `MERIDIAN_CONFIG` means the file
-    /// may be anywhere, so the path is never implicit.
+    /// The config path the refusal is about.
     pub path: PathBuf,
     /// The 1-based FILE line, per schema §8.1a's three exhaustive cases.
     pub line: Option<usize>,
-    /// What was found and what is legal — the teaching middle of §8.3.
-    /// Ends with `.`; it is prose about a closed-set reason, never the reason.
+    /// What was found and what is legal (§8.3). Ends with `.`.
     pub detail: String,
     /// The `Fix:` clause — §8.3's third mandatory clause. Ends with `.`.
     pub fix: String,
@@ -248,10 +206,8 @@ impl std::fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
-/// A root's kind (schema §5.1 field 3). Two values, and a third needs a
-/// ruling rather than a config line: kind selects the pin grain (a parsed span
-/// versus the whole file) and whether `vault:` is required, so an unknown kind
-/// has no defined behaviour to fall back to.
+/// A root's kind (schema §5.1 field 3). Closed: kind selects the pin grain
+/// and whether `vault:` is required, so an unknown kind has no fallback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MountKind {
     /// An Obsidian vault: parsed, section-grain pins, carries a vault name.
@@ -273,9 +229,8 @@ impl MountKind {
 
 /// One declared mount entry — the bytes of one `meridian-mount` block, parsed.
 ///
-/// `path` is carried **verbatim**: canonicalization happens at BIND, which is
-/// the mount table's (U7). Storing a canonicalized path here would mean two
-/// crates canonicalize and a symlink could be spelled two ways.
+/// `path` is carried verbatim: canonicalization happens once, at bind, in the
+/// mount table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MountEntry {
     /// The canonical root name — the mount-table key.
@@ -287,25 +242,17 @@ pub struct MountEntry {
     /// The Obsidian vault name; `Some` iff `kind` is [`MountKind::Vault`].
     pub vault: Option<String>,
     /// The mount-as-claim pin (schema §5.3) — a well-formed fingerprint
-    /// CID-token, carried VERBATIM. Normalizing, truncating, or re-minting it
-    /// would break the claim it exists to carry.
+    /// CID-token, carried verbatim.
     pub pin: Option<String>,
-    /// The 1-based FILE line of this block's opening fence.
-    ///
-    /// Carried because a **bind** refusal is about one mount and must point at
-    /// it, and by then the raw bytes are gone: [`Config`] holds the parse, not
-    /// the file. §8.1a's absent-case rule already names the opening fence as
-    /// the line an author can always see, so this is that same line kept rather
-    /// than recomputed.
+    /// The 1-based FILE line of this block's opening fence — kept so a bind
+    /// refusal can point at the mount after the raw bytes are gone (§8.1a).
     pub fence_line: usize,
 }
 
 /// One declared tool — the engine-read half of a `meridian-tool` block.
 ///
-/// The `config:` payload is **engine-opaque** (schema §6.1): the engine
-/// validates that it is present and indented and never interprets a byte of
-/// it. A tool this machine has not installed is not a broken config; it is a
-/// statement addressed to someone else.
+/// The `config:` payload is engine-opaque (schema §6.1): validated present
+/// and indented, never interpreted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolDecl {
     /// The tool's name — the same charset as a root name.
@@ -320,10 +267,8 @@ pub struct ToolDecl {
 
 /// A parsed `MERIDIAN.md`.
 ///
-/// Fields are private and there is no public constructor: the only way to hold
-/// a `Config` is to have parsed a whole file cleanly ([`parse`]). That is what
-/// makes "no partial mount table" a property of the type — a caller cannot be
-/// handed a half-populated one, because a half-populated one cannot exist.
+/// Fields are private and there is no public constructor: holding a `Config`
+/// means a whole file parsed cleanly ([`parse`]) — no partial mount table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     path: PathBuf,
@@ -341,21 +286,15 @@ impl Config {
     }
 
     /// The config's own rev: `blake3(raw file bytes)[:16]`, the document root
-    /// node's `node_rev` (schema §7.1). Spelled `file_rev` because that is
-    /// what the wire already calls a whole-page rev — one name per thing, no
-    /// new rev noun for the config.
-    ///
-    /// It is a **reported number, never a verdict** (schema §7.3): editing the
-    /// file moves it, and there is no attestation baseline for `~/MERIDIAN.md`
-    /// to compare it against (§9). Drift that IS a verdict is a mount's `pin`.
+    /// node's `node_rev` (schema §7.1). A reported number, never a verdict
+    /// (schema §7.3).
     #[must_use]
     pub fn file_rev(&self) -> &str {
         &self.file_rev
     }
 
     /// The config's content fingerprint — a `fp1.…` CID-token, like any page.
-    /// `None` only under R31's one condition: a span whose norm-v2
-    /// canonicalization is empty, which cannot be minted.
+    /// `None` only when the norm-v2 canonicalization is empty.
     #[must_use]
     pub fn fingerprint(&self) -> Option<&str> {
         self.fingerprint.as_deref()
@@ -376,16 +315,12 @@ impl Config {
 
 /// What the bootstrap chain resolved to.
 ///
-/// State D (a clean parse declaring zero mounts) is **not** a variant: it is
-/// `Loaded` with an empty mount table, and [`Resolution::mounts`] returns the
-/// same empty slice state A returns. That identity is deliberate — "empty" and
-/// "absent" reaching different code paths is how a nil-vs-empty bug is born,
-/// so they reach the same one. The config's own rev is the single permitted
-/// difference, and it is an observation, never a branch.
+/// State D (a clean parse declaring zero mounts) is not a variant: it is
+/// `Loaded` with an empty mount table, so "empty" and "absent" reach one code
+/// path. The config's own rev is the single permitted difference.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Resolution {
-    /// State A: the chain resolved a path and no file is there. Current
-    /// single-root behaviour, unchanged. Not an error and not a warning —
+    /// State A: the chain resolved a path and no file is there. Not an error —
     /// every machine starts here.
     Absent {
         /// The path the chain resolved to and found nothing at.
@@ -405,8 +340,7 @@ impl Resolution {
         }
     }
 
-    /// The mount table. The empty one in state A and state D alike — ONE code
-    /// path, which is the whole point of naming state D.
+    /// The mount table. The empty one in state A and state D alike.
     #[must_use]
     pub fn mounts(&self) -> &[MountEntry] {
         match self {
@@ -424,9 +358,8 @@ impl Resolution {
         }
     }
 
-    /// The config's own rev — `Some` iff a file was parsed. This is the ONLY
-    /// permitted observable difference between state A and state D (schema
-    /// §2.2).
+    /// The config's own rev — `Some` iff a file was parsed; the only
+    /// observable difference between state A and state D (schema §2.2).
     #[must_use]
     pub fn file_rev(&self) -> Option<&str> {
         match self {
@@ -446,14 +379,8 @@ impl Resolution {
 }
 
 /// The two environment values the bootstrap chain reads, taken as data rather
-/// than from the process.
-///
-/// Injected rather than read globally because the four resolution states are
-/// distinguished BY these values: a test that had to mutate the process
-/// environment could not assert them in parallel, and an engine that reads the
-/// process environment deep inside a parse cannot be driven by a caller that
-/// holds different ones (a daemon serving two workspaces, say).
-/// [`Env::from_process`] is the one place the process is read.
+/// than from the process. [`Env::from_process`] is the one place the process
+/// is read.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Env {
     /// `MERIDIAN_CONFIG` — rung 1. `None` = unset.
@@ -473,17 +400,9 @@ impl Env {
     }
 }
 
-/// Which rung of the chain supplied the path — the resolution's **origin**, as
-/// opposed to its result.
-///
-/// Public because the result alone cannot answer the question. Measured (U33):
-/// `MERIDIAN_CONFIG=$HOME/MERIDIAN.md` and an unset `MERIDIAN_CONFIG` resolve to
-/// the same path, so two environments differing in exactly the variable this
-/// chain is made of were **byte-identical** at every surface that publishes it.
-/// An operator debugging a stale exported override had nothing to read.
-///
-/// The type is `Rung` because schema §2.1 numbers the chain's steps; the word it
-/// prints is `origin` because that is the question a reader is asking.
+/// Which rung of the chain supplied the path — the resolution's origin.
+/// Public because the result alone cannot answer it: an override naming the
+/// default path resolves identically.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rung {
     /// Rung 1 — `MERIDIAN_CONFIG` stated it. An unusable path here is state C.
@@ -493,8 +412,7 @@ pub enum Rung {
 }
 
 impl Rung {
-    /// The operator-facing word — the SAME two spellings `mrd --help` uses for
-    /// the chain, so the help and the output cannot drift into two vocabularies.
+    /// The operator-facing word — the same two spellings `mrd --help` uses.
     #[must_use]
     pub fn word(self) -> &'static str {
         match self {
@@ -516,17 +434,14 @@ pub fn rung(env: &Env) -> Result<Rung, ConfigError> {
 
 /// Resolve the bootstrap chain to a path, without touching the filesystem.
 ///
-/// Exactly two rungs (schema §2.1) and there is no third: project-local
-/// walk-up discovery is deferred by the ratifying decision. An empty or
-/// whitespace-only `MERIDIAN_CONFIG` states no path and is treated as unset,
-/// so the chain falls to rung 2 — the same nil-vs-empty distinction state D
-/// draws for the mount table, applied on the env axis so the two cannot
-/// diverge.
+/// Exactly two rungs (schema §2.1); project-local walk-up discovery is
+/// deferred. An empty or whitespace-only `MERIDIAN_CONFIG` states no path and
+/// is treated as unset, so the chain falls to rung 2.
 ///
 /// # Errors
 /// [`Reason::HomeUnresolvable`] when rung 1 states nothing and `$HOME` is unset
-/// or empty. That is not the absent case: the absent case means the default
-/// path was resolved and nothing is there.
+/// or empty. Not the absent case: absent means the default path was resolved
+/// and nothing is there.
 pub fn resolve_path(env: &Env) -> Result<PathBuf, ConfigError> {
     resolve_rung(env).map(|(path, _)| path)
 }
@@ -557,15 +472,13 @@ fn resolve_rung(env: &Env) -> Result<(PathBuf, Rung), ConfigError> {
 /// # Errors
 /// [`ConfigError`]. State B (present but malformed) carries the parse's own
 /// reason word and file line; state C ([`Reason::ConfigPathUnusable`]) fires
-/// when `MERIDIAN_CONFIG` names something that is not a readable regular file
-/// — never a silent fallback to `~/MERIDIAN.md`, which would mask an operator
-/// intent that cannot be honoured.
+/// when `MERIDIAN_CONFIG` names something that is not a readable regular file,
+/// never a silent fallback to `~/MERIDIAN.md`.
 pub fn resolve(env: &Env) -> Result<Resolution, ConfigError> {
     let (path, rung) = resolve_rung(env)?;
     match std::fs::metadata(&path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && rung == Rung::Default => {
-            // State A. Every machine starts here; failing would brick the CLI
-            // on first run.
+            // State A: every machine starts here; failing would brick first run.
             Ok(Resolution::Absent { path })
         }
         Err(e) => Err(unusable(&path, rung, &e.to_string())),
@@ -612,13 +525,10 @@ fn unusable(path: &Path, rung: Rung, why: &str) -> ConfigError {
 ///
 /// The machine surface is the frontmatter plus every fenced block whose
 /// info-string names an engine block-language; everything else is prose the
-/// engine never parses and never refuses because of (schema §3). That scoping
-/// is the law that makes markdown-as-config safe — without it, adding a
-/// sentence of documentation to your own config could break your system.
+/// engine never parses and never refuses because of (schema §3).
 ///
-/// A malformed config produces **exactly one** refusal — the first, in file
-/// order (schema §8.4): the file does not half-load, so no second fault is
-/// meaningful, and a cascade would bury the one the operator must fix.
+/// A malformed config produces exactly one refusal — the first, in file order
+/// (schema §8.4).
 ///
 /// # Errors
 /// [`ConfigError`] — one of the closed reason set, naming what is broken and
@@ -676,28 +586,9 @@ pub fn parse(raw: &str, path: &Path) -> Result<Config, ConfigError> {
                 tool_name_lines.push((decl.name.clone(), name_line));
                 tools.push(decl);
             }
-            // A THIRD reserved language — neither mount nor tool, and not one the
-            // engine writes. **RULED (U36): skipped, never refused.**
-            //
-            // The reservation exists precisely so a later reader can claim a
-            // language this crate has no grammar for; refusing would let a block
-            // belonging to someone else fail the whole config to load, which is
-            // the opposite of what reserving it bought. It follows the shipped
-            // precedent for exactly this case — "an engine block is form-3's (or
-            // a later engine reader's), never a form-2 chain block"
-            // (`crates/view/src/read_face.rs:622-648`).
-            //
-            // What made this skip DANGEROUS was the other half, now fixed: the
-            // block was skipped here AND elided by the render face, so it
-            // vanished twice over and no surface reported it. Under U36 elision
-            // is derived from `lock::is_engine_emitted`, an unclaimed language
-            // has no writer, and the render face SHOWS it. The skip drops it from
-            // the mount table while the reader still sees the bytes — so the
-            // silence this comment used to describe no longer exists.
-            //
-            // Fixtured in `crates/testsuite/tests/u36_per_language_elision.rs`
-            // (`an_unclaimed_reserved_language_renders_and_config_skips_it`) —
-            // the rule and its fixture in one motion (S3-R14 item 3(a)).
+            // A third reserved language is skipped, never refused: a block
+            // belonging to a later engine reader must not fail the whole
+            // config. The render face still shows its bytes.
             _ => {}
         }
     }
@@ -743,10 +634,8 @@ fn find_frontmatter(node: &model::Node) -> Option<&model::Node> {
     node.children.iter().find_map(find_frontmatter)
 }
 
-/// The frontmatter node's span is fence-to-fence, terminator-inclusive
-/// (`crates/model/src/lib.rs`, `frontmatter_node_is_fence_to_fence_terminator_inclusive`).
-/// The YAML the engine reads is the block between the two `---` lines; this
-/// returns it with the FILE line its first line sits on.
+/// The YAML between the two `---` lines (the node's span is fence-to-fence,
+/// terminator-inclusive), with the FILE line its first line sits on.
 fn frontmatter_inner(raw: &str, fm: &model::Node) -> (String, usize) {
     let slice = raw.get(fm.span.clone()).unwrap_or_default();
     let open_line = line_at(raw, fm.span.start);
@@ -765,12 +654,9 @@ fn check_frontmatter(raw: &str, fm: &model::Node, path: &Path) -> Result<(), Con
 
     let inner_line_count = inner.lines().count().max(1);
     let value: serde_yaml::Value = serde_yaml::from_str(&inner).map_err(|e| {
-        // serde_yaml locations are 1-based over the slice it was handed, and an
-        // unclosed construct is reported where the parser gave up — one line
-        // PAST the block, since the block is all it was handed. Clamping into
-        // the block is what keeps §8.1a's "its own line" a line the author can
-        // actually see; the parser's own message, carried verbatim below, is
-        // what names the construct.
+        // serde_yaml locations are 1-based over the handed slice, and an
+        // unclosed construct is reported one line past it; clamp into the
+        // block so the refusal points at a line the author can see.
         let line = e.location().map_or(1, |loc| {
             inner_first_line + loc.line().clamp(1, inner_line_count) - 1
         });
@@ -783,11 +669,9 @@ fn check_frontmatter(raw: &str, fm: &model::Node, path: &Path) -> Result<(), Con
         )
     })?;
 
-    // Unknown keys are permitted and ignored — the shipped posture for
-    // markdown-as-config frontmatter (`crates/policy/src/convention.rs`), and
-    // what lets a user carry Obsidian properties on their own entry page. Safe
-    // in v1 only because v1 defines NO optional frontmatter key the engine
-    // reads: both are required, so a typo of either fails loud.
+    // Unknown keys are permitted and ignored. Safe in v1 only because v1
+    // defines no optional frontmatter key the engine reads: both are
+    // required, so a typo of either fails loud.
     let map = value.as_mapping();
 
     let type_value = map.and_then(|m| m.get(serde_yaml::Value::from("type")));
@@ -851,9 +735,7 @@ fn missing_key(path: &Path, key: &str) -> ConfigError {
     )
 }
 
-/// The FILE line a top-level frontmatter key sits on. Top-level keys sit at
-/// column 0 — the same rule `syntax::frontmatter_keys` and
-/// `model::parse_frontmatter` already apply, reused rather than re-spelled.
+/// The FILE line a top-level (column-0) frontmatter key sits on.
 fn key_line(inner: &str, inner_first_line: usize, key: &str) -> usize {
     inner
         .lines()
@@ -893,13 +775,10 @@ struct Block {
 
 /// Every `meridian-*` fenced block in the document, in document order.
 ///
-/// The namespace predicate is [`lock::is_meridian_lang`] — the sole owner of
-/// the reserved prefix (decision #8 §1), so this crate grows no second
-/// spelling of it. Blocks are located through the MODEL TREE, not by scanning
-/// lines: that is what makes a ` ```yaml ` block with mount-shaped keys, a
-/// ` ```meridian-mount ` nested inside a four-backtick fence, an indented
-/// snippet, and inline code all inert without a single special case
-/// (`corpus/prose-decoys.md`).
+/// The namespace predicate is [`lock::is_meridian_lang`], the sole owner of
+/// the reserved prefix. Blocks are located through the model tree, not by
+/// scanning lines, which keeps decoys (a yaml block with mount-shaped keys, a
+/// nested fence, an indented snippet, inline code) inert.
 fn engine_blocks(raw: &str, root: &model::Node) -> Vec<Block> {
     let mut spans: Vec<(model::ByteSpan, String, bool)> = Vec::new();
     collect_engine_blocks(root, &mut spans);
@@ -917,8 +796,8 @@ fn engine_blocks(raw: &str, root: &model::Node) -> Vec<Block> {
                 lines.pop(); // the closing fence
             }
             Block {
-                // The FIRST whitespace token decides the language, matching
-                // every existing reader; a trailing string is ignored.
+                // The first whitespace token decides the language; a trailing
+                // string is ignored.
                 lang: lang.split_whitespace().next().unwrap_or("").to_string(),
                 fence_line,
                 unterminated,
@@ -1043,7 +922,7 @@ impl<'a> Fields<'a> {
     }
 
     /// A required field that is absent. Per schema §8.1a the line is the
-    /// construct's OPENING — a line the author can see, and always present.
+    /// construct's opening fence.
     fn require(
         &self,
         path: &Path,
@@ -1067,9 +946,8 @@ impl<'a> Fields<'a> {
 }
 
 /// Split one block body line into `key`, `:`, one space, value — the grammar
-/// schema §5.1 fixes, modelled on `lock::parse`. Anything else, including a
-/// blank line and a bare key, is [`Reason::MalformedLine`]: prose about a
-/// mount belongs BESIDE the block, which is what §3's scoping law buys.
+/// schema §5.1 fixes. Anything else, including a blank line and a bare key,
+/// is [`Reason::MalformedLine`].
 fn split_field<'a>(
     line: &'a str,
     path: &Path,
@@ -1138,10 +1016,8 @@ fn parse_mount(block: &Block, path: &Path) -> Result<(MountEntry, usize), Config
         }
     };
 
-    // The kind-conditional half: the mount table is a THREE-way map, so a
-    // vault root without its vault name leaves the map with two legs; a
-    // git-folder root has no Obsidian vault, so `vault:` states something that
-    // cannot be true.
+    // Kind-conditional: a vault root requires `vault:`; a git-folder root
+    // forbids it.
     let vault = match (kind, fields.get("vault")) {
         (MountKind::Vault, Some((vault_line, vault_name))) => {
             if vault_name.trim().is_empty() {
@@ -1178,10 +1054,9 @@ fn parse_mount(block: &Block, path: &Path) -> Result<(MountEntry, usize), Config
         (MountKind::GitFolder, None) => None,
     };
 
-    // The pin is a well-formed fingerprint CID-token and NOTHING more: parse is
-    // codec-agnostic on purpose, because a git-folder root's pin grain is the
-    // file and a vault root's is a parsed span — different codecs. What the
-    // pin's target is, and how the claim is checked, is U7's.
+    // Parse checks only that the pin is a well-formed fingerprint token —
+    // codec-agnostic, since the two kinds pin different grains. Checking the
+    // claim is bind's.
     let pin = match fields.get("pin") {
         Some((pin_line, token)) => {
             if model::fingerprint::parse_fingerprint(token).is_none() {
@@ -1227,8 +1102,8 @@ fn parse_tool(block: &Block, path: &Path) -> Result<(ToolDecl, usize), ConfigErr
 
     let mut lines = block.body.iter();
     for (n, line) in lines.by_ref() {
-        // `config:` is a BARE MARKER line, not a `key: value` line: everything
-        // after it is the opaque payload.
+        // `config:` is a bare marker line: everything after it is the opaque
+        // payload.
         if line.trim_end() == "config:" {
             fields.record(path, *n, "config", "")?;
             payload = Some(Vec::new());
@@ -1239,10 +1114,8 @@ fn parse_tool(block: &Block, path: &Path) -> Result<(ToolDecl, usize), ConfigErr
     }
     if let Some(collected) = payload.as_mut() {
         for (n, line) in lines {
-            // Indentation is the only structural fact the engine needs from the
-            // payload: it is what makes the payload's extent unambiguous. A
-            // column-0 line is exactly the shape of a field the engine WOULD
-            // read, so the ambiguity is real.
+            // A column-0 line is exactly the shape of a field the engine would
+            // read, so every payload line must be indented.
             if !line.starts_with([' ', '\t']) {
                 return Err(ConfigError::new(
                     Reason::MalformedLine,
@@ -1261,9 +1134,6 @@ fn parse_tool(block: &Block, path: &Path) -> Result<(ToolDecl, usize), ConfigErr
     check_name(name, path, name_line, "a tool name")?;
     check_name(kind, path, kind_line, "a tool kind")?;
 
-    // The payload's MEANING is opaque; the block's SHAPE is not. A tool this
-    // machine has not installed is a statement addressed to someone else, so
-    // the `kind` is an open set — but a malformed DECLARATION still fails loud.
     let config = payload.map(|lines| {
         let mut text = lines.join("\n");
         text.push('\n');
@@ -1284,15 +1154,9 @@ fn parse_tool(block: &Block, path: &Path) -> Result<(ToolDecl, usize), ConfigErr
 // The canonical name charset (schema §5.2)
 // ---------------------------------------------------------------------------
 
-/// The charset is DERIVED, not chosen: it is the complement of the address
-/// grammar's operator set (`:` `#` `@` `/` `.` `%` and whitespace), so no legal
-/// name can ever collide with an address operator. Case is folded out because
-/// names travel through URIs and case-insensitive filesystems, and `_` is
-/// excluded to match the CHARSET-GUARD ruling.
-///
-/// This is a FLOOR for `addr::MountName`, not a ceiling: U3 may narrow what a
-/// `root:` prefix accepts, never widen it, because a name outside this charset
-/// cannot be bound and so could never resolve.
+/// The charset is the complement of the address grammar's operator set, so no
+/// legal name can collide with an address operator; case is folded and `_`
+/// excluded. A floor for `addr::MountName`: it may narrow, never widen.
 fn check_name(name: &str, path: &Path, line: usize, what: &str) -> Result<(), ConfigError> {
     let bad = |detail: String, fix: String| {
         Err(ConfigError::new(
@@ -1344,11 +1208,8 @@ fn check_name(name: &str, path: &Path, line: usize, what: &str) -> Result<(), Co
 
 // ---------------------------------------------------------------------------
 
-/// The 1-based FILE line a byte offset sits on.
-///
-/// Offsets come from model node spans, which are char-aligned by construction;
-/// a non-boundary offset would be a caller bug, so this walks back to the
-/// nearest boundary rather than panicking on a slice.
+/// The 1-based FILE line a byte offset sits on. A non-boundary offset walks
+/// back to the nearest boundary rather than panicking.
 fn line_at(raw: &str, byte: usize) -> usize {
     let mut end = byte.min(raw.len());
     while end > 0 && !raw.is_char_boundary(end) {

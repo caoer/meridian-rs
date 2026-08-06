@@ -31,10 +31,8 @@ fn refuse(raw: &str) -> ConfigError {
     at(raw).expect_err("this input must refuse")
 }
 
-/// The house pinned-`const` exemplar pattern, in its strongest form: the
-/// exemplar is **produced by a real parse**, not merely contained in one. A
-/// drift in any of §8.3's three mandatory clauses — the line, the
-/// no-partial-load sentence, the `Fix:` — is a byte-level failure here.
+/// The exemplar is produced by a real parse, not merely contained in one: a
+/// drift in any of §8.3's three mandatory clauses is a byte-level failure.
 #[test]
 fn refusal_exemplar_is_produced_not_asserted() {
     let raw = "\
@@ -71,8 +69,6 @@ vault: field-notes
 }
 
 /// Every refusal carries §8.3's three mandatory clauses, whatever the reason.
-/// A guard that only the exemplar's own reason satisfies is a guard on one
-/// path.
 #[test]
 fn every_refusal_teaches_line_no_partial_load_and_a_fix() {
     for (reason, err) in one_of_each_reason() {
@@ -102,9 +98,8 @@ fn every_refusal_teaches_line_no_partial_load_and_a_fix() {
     }
 }
 
-/// The closed reason set is exactly schema §8.2's, and **every word is
-/// reachable**. A reason word no code path can emit is a spelling, not a
-/// guard; this is the anti-vacuity half of the closed set.
+/// The closed reason set is exactly schema §8.2's, and every word is
+/// reachable.
 #[test]
 fn the_closed_reason_set_is_complete_and_reachable() {
     let words: Vec<&str> = Reason::ALL.iter().map(|r| r.word()).collect();
@@ -232,14 +227,9 @@ fn one_of_each_reason() -> Vec<(Reason, ConfigError)> {
     ]
 }
 
-/// State D is a behavioural IDENTITY with state A, not a similarity: the two
-/// reach the same mount table through the same accessor. The config's own rev
-/// is the single permitted difference, and it is an observation, never a
-/// branch.
-///
-/// This is the gate against the nil-vs-empty bug: an implementation that gave
-/// state D its own variant, or its own empty-table constant, passes every
-/// other case in the pack and fails here.
+/// State D is a behavioural identity with state A: the two reach the same
+/// mount table through the same accessor, and the config's own rev is the
+/// single permitted difference. Gates the nil-vs-empty bug.
 #[test]
 fn state_d_and_state_a_reach_one_mount_table() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -271,7 +261,7 @@ fn state_d_and_state_a_reach_one_mount_table() {
 }
 
 /// The chain is exactly two rungs and the empty/whitespace override states no
-/// path — the same nil-vs-empty distinction state D draws, on the env axis.
+/// path.
 #[test]
 fn the_chain_has_two_rungs_and_an_empty_override_states_nothing() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -312,7 +302,7 @@ fn the_chain_has_two_rungs_and_an_empty_override_states_nothing() {
     );
 }
 
-/// `config_rev` is the SHIPPED `file_rev` law, checked against an independent
+/// `config_rev` is the shipped `file_rev` law, checked against an independent
 /// oracle rather than against the code that computes it.
 #[test]
 fn the_config_rev_is_the_shipped_file_rev_law() {
@@ -333,20 +323,10 @@ fn the_config_rev_is_the_shipped_file_rev_law() {
     );
 }
 
-/// Criterion 1's last clause, and the limit S3-R7 says it cannot cross —
-/// asserted in ONE test so the claim and its bound cannot drift apart.
-///
-/// **What holds:** an out-of-band edit moves the config's rev AND its
-/// fingerprint. Both are asserted as STATE CHANGES (R40), never as an exit
-/// status.
-///
-/// **What does not:** `~/MERIDIAN.md` lives in `$HOME`, which is a DENIED
-/// workspace path — it has no git repo, no receipt journal and no merkle hash
-/// domain, and it can never be promoted into one to acquire them. So the rev
-/// is a reported number that moves; it is **not** a drift verdict, because
-/// there is no attestation baseline for it to be a verdict against. Claiming
-/// drift detection on this surface is the false claim S3-R7 struck from the
-/// plan.
+/// An out-of-band edit moves the config's rev and fingerprint — asserted as
+/// state changes, never an exit status. `~/MERIDIAN.md` lives in `$HOME`, a
+/// denied workspace path with no attestation baseline, so the rev is a
+/// reported number, not a drift verdict.
 #[test]
 fn an_out_of_band_edit_moves_the_rev_and_the_home_limit_still_holds() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -402,8 +382,7 @@ fn an_out_of_band_edit_moves_the_rev_and_the_home_limit_still_holds() {
 }
 
 /// The charset is the complement of the address grammar's operator set, so no
-/// legal name can collide with an address operator — and the acceptance half
-/// is asserted in the same breath (S3-R8(c)).
+/// legal name can collide with an address operator.
 #[test]
 fn the_root_name_charset_is_the_address_operators_complement() {
     for legal in ["a", "field-notes", "sessions", "wiki2", "0", "a-b-c-9"] {
@@ -437,7 +416,7 @@ fn the_root_name_charset_is_the_address_operators_complement() {
     assert!(check_name(&"a".repeat(65), Path::new("x"), 1, "n").is_err());
 }
 
-/// Prose is prose, and the machine surface is located through the MODEL TREE.
+/// Prose is prose, and the machine surface is located through the model tree.
 /// A reader that scans lines for `name:`/`path:` loads the decoys.
 #[test]
 fn decoys_are_inert_and_the_real_block_is_not() {
@@ -483,10 +462,9 @@ vault: field-notes
     assert_eq!(config.mounts()[0].name, "field-notes");
 }
 
-/// A refused config leaves NO partially-populated state observable to any
-/// caller — asserted as the ABSENCE, not just as the error. The inputs each
-/// carry a perfectly valid mount block, so a build that half-loads looks
-/// healthy and would pass a test that only checked `is_err()` on an empty file.
+/// A refused config leaves no partially-populated state observable — asserted
+/// as the absence, not just as the error. Each input carries a valid mount
+/// block, so a build that half-loads looks healthy.
 #[test]
 fn a_refused_config_publishes_nothing() {
     let valid_block = "```meridian-mount\nname: field-notes\npath: /Users/Shared/projects/field-notes\nkind: vault\nvault: field-notes\n```\n";
@@ -508,24 +486,18 @@ fn a_refused_config_publishes_nothing() {
     ] {
         let result = at(&raw);
         assert!(result.is_err(), "{label} must refuse");
-        // There is no Config value at all — `Config`'s fields are private and
-        // `parse` is its only constructor, so "a partially-populated table" is
-        // not a state this API can be in. The type carries the guarantee; this
-        // asserts the type's reachability, and the fixture pack's `expect_not`
-        // cases assert it per malformed class.
+        // `Config`'s fields are private and `parse` is its only constructor,
+        // so a partially-populated table is not a state this API can be in.
         assert!(result.ok().is_none(), "{label} publishes no mount table");
     }
 }
 
-/// The pin survives parse VERBATIM. A reader that normalizes, truncates to the
-/// `@fp` display form, or re-mints the token breaks the claim it exists to
-/// carry — and mount-as-claim is the SOLE mechanism by which the mount table's
-/// own integrity is checkable (S3-R7).
+/// The pin survives parse verbatim: normalizing, truncating, or re-minting
+/// the token breaks the claim it carries.
 #[test]
 fn a_pin_is_carried_verbatim_and_codec_agnostically() {
     let span = "fp1.span2.b3.40b167ed9b42a2beadb7c441b214efdc93069ef443a1cc2b5ae2ccda4cf03152";
-    // A git-folder root's pin grain is the FILE, so its codec differs. A reader
-    // that checks for the literal `fp1.span2.b3.` prefix refuses this.
+    // A git-folder root's pin grain is the file, so its codec differs.
     let file_codec = format!("fp1.raw.b3.{}", "ab".repeat(32));
     let raw = format!(
         "---\ntype: meridian-config\nversion: 1\n---\n\n```meridian-mount\nname: a\npath: /x\nkind: vault\nvault: a\npin: {span}\n```\n\n```meridian-mount\nname: b\npath: /y\nkind: git-folder\npin: {file_codec}\n```\n"
@@ -534,9 +506,8 @@ fn a_pin_is_carried_verbatim_and_codec_agnostically() {
     assert_eq!(config.mounts()[0].pin.as_deref(), Some(span));
     assert_eq!(config.mounts()[1].pin.as_deref(), Some(file_codec.as_str()));
 
-    // A token whose hash-fn this build does not know still PARSES: whether it
-    // can be verified is `verify_content`'s question, never parse's. Refusing
-    // it here would forbid a future codec at the config door.
+    // A token whose hash-fn this build does not know still parses; whether it
+    // verifies is `verify_content`'s question, never parse's.
     let future = "fp2.tree.sha256.00ff";
     let raw = format!(
         "---\ntype: meridian-config\nversion: 1\n---\n\n```meridian-mount\nname: a\npath: /x\nkind: git-folder\npin: {future}\n```\n"

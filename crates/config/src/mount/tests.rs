@@ -1,24 +1,15 @@
 //! The mount table's gates.
 //!
-//! Every refusal here is asserted **beside its acceptance** (S3-R8(c)): a guard proven
-//! only by what it blocks is indistinguishable from one that blocks everything, and the
-//! mount law has four places where refusing everything would look like success — the
-//! ceiling, the nesting test, the declared-vs-bound check, and the claim.
-//!
-//! # Environment preconditions fail LOUDLY, never silently
-//! The deny ceiling reads the process environment (`HOME`, the `XDG_*` bases, the cache
-//! root) and `workspace::deny_reason` is reused, not re-implemented, so these gates read
-//! it too. Where a directory is required, it is `expect`ed with the reason — **not
-//! skipped.** A skipped ceiling gate is a false negative that agrees with the failure it
-//! exists to detect.
-//!
+//! Every refusal is asserted beside its acceptance. Environment preconditions
+//! fail loudly: where a directory is required it is `expect`ed with the
+//! reason, never skipped — a skipped ceiling gate is a false negative that
+//! agrees with the failure it exists to detect.
 
 use std::path::{Path, PathBuf};
 
 use super::*;
 
-/// Wrap mount blocks in a well-formed config. The frontmatter is schema §4's;
-/// nothing here tests the parse, which is U6's gate.
+/// Wrap mount blocks in a well-formed config.
 fn config_of(blocks: &[String]) -> String {
     format!(
         "---\ntype: meridian-config\nversion: 1\n---\n\n# My system\n\n{}",
@@ -122,12 +113,9 @@ fn home() -> PathBuf {
 // Gate 1 — THE CEILING, proven negatively, and the whole parse fails
 // ---------------------------------------------------------------------------
 
-/// Every ceiling class refuses, and each refusal **fails the whole bind**.
-///
-/// The classes are `workspace::DenyReason`'s own, reached through real paths on
-/// this machine rather than through a stub: `deny_reason` is reused whole, so a
-/// stub would test a second implementation of the ceiling and prove nothing
-/// about the one that runs.
+/// Every ceiling class refuses, and each refusal fails the whole bind. The
+/// classes are `workspace::DenyReason`'s own, reached through real paths
+/// rather than a stub.
 #[test]
 fn every_ceiling_class_refuses_the_whole_bind() {
     let cache_root = workspace::cache_root().expect("precondition: a resolvable cache root");
@@ -167,11 +155,9 @@ fn every_ceiling_class_refuses_the_whole_bind() {
     }
 }
 
-/// **No partial table survives a refused mount.** A legal root is declared
-/// FIRST and the poisoned one second, so a build that bound as it went would
-/// have a one-entry table to hand back. It cannot: `bind` returns `Err`, and
-/// `MountTable`'s field is private with `bind` as its only constructor, so the
-/// partial value has no way to exist.
+/// No partial table survives a refused mount: a legal root is declared first
+/// and the poisoned one second, so a build that bound as it went would have a
+/// one-entry table to hand back. It cannot: `bind` returns `Err`.
 #[test]
 fn a_refused_mount_leaves_no_partial_table() {
     let (_keep, good) = root("wiki");
@@ -196,8 +182,8 @@ fn a_refused_mount_leaves_no_partial_table() {
         "there is no value to observe: bind is MountTable's only constructor"
     );
 
-    // The acceptance half in the same breath: the legal root alone binds, so
-    // the refusal above is the ceiling biting and not the fixture being broken.
+    // The acceptance half: the legal root alone binds, so the refusal above is
+    // the ceiling biting, not a broken fixture.
     let clean = table(&config_of(&[vault_block("wiki", &good)])).expect("the legal root binds");
     assert_eq!(clean.mounts().len(), 1);
     assert_eq!(clean.mounts()[0].state(), &MountState::Bound);
@@ -207,13 +193,9 @@ fn a_refused_mount_leaves_no_partial_table() {
 // Gate 2 — canonicalize at bind: the symlink, the trailing slash, the nesting
 // ---------------------------------------------------------------------------
 
-/// The MEASURED case (S3-R7): a symlinked spelling and the real path are one
-/// tree. Bound under two names they would yield two canonical refs over
-/// identical bytes with identical `sec_rev`, and the read-mint recheck could not
-/// tell them apart — a receipt minted on one would gate a pin on the other.
-///
-/// Asserted on CANONICALIZED paths, since that is what `deny_reason` and the
-/// uniqueness test both compare.
+/// A symlinked spelling and the real path are one tree. Bound under two names
+/// they would yield two canonical refs over identical bytes, which the
+/// read-mint recheck cannot tell apart.
 #[test]
 fn a_symlink_cannot_smuggle_one_tree_in_twice() {
     let (_keep, real) = root("field-notes");
@@ -240,17 +222,9 @@ fn a_symlink_cannot_smuggle_one_tree_in_twice() {
     );
 }
 
-/// The trailing-slash half of the same measured case: `CCC_LLM_WIKI_PATH`
-/// carries the real path WITH a trailing separator.
-///
-/// **Measured, and stated because the obvious reading is wrong:** this case
-/// passes *without* canonicalization too. `Path`'s equality is component-wise,
-/// so `/x/` and `/x` are already equal, and disabling the canonicalize at bind
-/// leaves this test green while
-/// [`a_symlink_cannot_smuggle_one_tree_in_twice`] goes red. The trailing slash
-/// is therefore **not** what canonicalization buys — the symlink is. Both are
-/// asserted because the ratified motive names both spellings, but only one of
-/// them is evidence for B-1.
+/// The trailing-slash half of the measured case. `Path` equality is
+/// component-wise, so this passes even without canonicalization — the symlink
+/// case is what canonicalization buys.
 #[test]
 fn a_trailing_slash_is_the_same_tree() {
     let (_keep, real) = root("field-notes");
@@ -264,10 +238,9 @@ fn a_trailing_slash_is_the_same_tree() {
     assert_eq!(err.reason, MountReason::DuplicateMountPath);
 }
 
-/// Equal-or-NESTED, and its acceptance half. `/a/wiki` + `/a/wiki/sub` refuses;
-/// `/a/wiki` + `/a/wiki-two` **binds** — the prefix test is a path-segment
-/// boundary, and a naive `starts_with` on strings would refuse the sibling,
-/// which is a guard that blocks everything.
+/// Equal-or-nested, and its acceptance half: `/a/wiki` + `/a/wiki/sub`
+/// refuses; `/a/wiki` + `/a/wiki-two` binds — the prefix test is a
+/// path-segment boundary.
 #[test]
 fn nesting_is_refused_and_the_sibling_is_not() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -308,9 +281,8 @@ fn nesting_is_refused_and_the_sibling_is_not() {
 // Gate 3 — declared vs bound: BOTH arms
 // ---------------------------------------------------------------------------
 
-/// D7's refusal arm: the root declares `wiki`, the table binds `field-notes`.
-/// Fails loud, naming **both** spellings — a silent pick would make a stored
-/// link mean different things on different machines.
+/// The refusal arm: the root declares `wiki`, the table binds `field-notes`.
+/// Fails loud, naming both spellings.
 #[test]
 fn a_declared_bound_mismatch_fails_loud_naming_both_spellings() {
     let (_keep, dir) = root("field-notes");
@@ -329,9 +301,9 @@ fn a_declared_bound_mismatch_fails_loud_naming_both_spellings() {
     );
 }
 
-/// D7's acceptance arm, in the same breath (S3-R8(c)). A matching pair binds,
-/// and the mount reports the name the ROOT declared — so the check is reading
-/// the declaration, not merely failing to find a disagreement.
+/// The acceptance arm: a matching pair binds, and the mount reports the name
+/// the root declared — the check is reading the declaration, not merely
+/// failing to find a disagreement.
 #[test]
 fn a_matching_declaration_binds() {
     let (_keep, dir) = root("field-notes");
@@ -349,9 +321,8 @@ fn a_matching_declaration_binds() {
 // Gate 4 — an absent declaration renders GREY, named
 // ---------------------------------------------------------------------------
 
-/// D7's absent case. Grey, with the missing declaration NAMED — not red, and
-/// not a `file_not_found`. The reason word is its own (`grey(undeclared)`), it
-/// **refuses**, and the table stays loaded.
+/// The absent case: grey, with the missing declaration named — not red, not a
+/// `file_not_found`. It refuses, and the table stays loaded.
 #[test]
 fn an_absent_declaration_renders_grey_naming_the_missing_file() {
     let (_keep, dir) = root("field-notes");
@@ -378,10 +349,9 @@ fn an_absent_declaration_renders_grey_naming_the_missing_file() {
     );
 }
 
-/// The third arm, kept apart from the other two on purpose: a declaration that
-/// is PRESENT but does not read is neither absent nor a mismatch. It greys with
-/// its own word, and it does **not** fail this machine's whole parse — a foreign
-/// root's broken content must not brick the CLI.
+/// A declaration that is present but does not read is neither absent nor a
+/// mismatch: it greys with its own word and does not fail this machine's
+/// whole parse.
 #[test]
 fn an_unreadable_declaration_greys_rather_than_failing_the_table() {
     let (_keep, dir) = root("field-notes");
@@ -394,8 +364,7 @@ fn an_unreadable_declaration_greys_rather_than_failing_the_table() {
         "grey(declaration-unreadable)"
     );
 
-    // And a declaration whose `type:` names something else is the same class —
-    // this is the discriminator doing its job in the other direction.
+    // A declaration whose `type:` names something else is the same class.
     declare_raw(&dir, "---\ntype: meridian-config\nversion: 1\n---\n");
     let bound = table(&config_of(&[vault_block("field-notes", &dir)])).expect("still not a failure");
     assert_eq!(
@@ -416,13 +385,10 @@ fn an_unreadable_declaration_greys_rather_than_failing_the_table() {
 // Gate 5 — mount-as-claim, end to end, asserting a STATE CHANGE (R40)
 // ---------------------------------------------------------------------------
 
-/// The claim works both ways, in one run: a mount pins the root it declares and
-/// **binds**, then the root's declaration is edited and the same config **reddens**.
-///
-/// The assert is the **state change** (R40): the two verdicts are compared to
-/// each other, not merely each to a constant, so a build that always returned
-/// one of them fails here. The `live` token the red carries is the re-pin
-/// candidate and is asserted to be the declaration's real new fingerprint.
+/// The claim works both ways in one run: a mount pins the root it declares
+/// and binds, then the root's declaration is edited and the same config
+/// reddens. The two verdicts are compared to each other, and the `live` token
+/// the red carries is asserted to be the declaration's real new fingerprint.
 #[test]
 fn a_mount_pins_the_root_it_declares_and_drift_reddens_it() {
     let (_keep, dir) = root("field-notes");
@@ -440,7 +406,7 @@ fn a_mount_pins_the_root_it_declares_and_drift_reddens_it() {
     let before = table(&raw).expect("bind").mounts()[0].state().clone();
     assert_eq!(before, MountState::Bound, "the claim verifies as minted");
 
-    // Drift the DECLARATION, keeping the declared name identical — so what
+    // Drift the declaration, keeping the declared name identical — so what
     // reddens is the claim and not the name check.
     let declaration = dir.join(DECLARATION_FILENAME);
     let edited = format!(
@@ -471,10 +437,9 @@ fn a_mount_pins_the_root_it_declares_and_drift_reddens_it() {
     );
 }
 
-/// A pin this build cannot decide renders **grey, never green** (R26): outside
-/// sight never renders as verified. The token is well-formed — U6's parse
-/// already refuses a malformed one — so the only way here is an unimplemented
-/// member of the self-describing triple.
+/// A pin this build cannot decide renders grey, never green. The token is
+/// well-formed — parse already refuses a malformed one — so the only way here
+/// is an unimplemented member of the self-describing triple.
 #[test]
 fn an_undecidable_claim_is_grey_and_never_green() {
     let (_keep, dir) = root("archive");
@@ -511,10 +476,9 @@ fn declaration_fingerprint(dir: &Path) -> String {
 // Gate 6 — the map is a map: collisions fail loud
 // ---------------------------------------------------------------------------
 
-/// Two roots declaring the same canonical name (INV-1, row T1). This one is
-/// decidable from the bytes alone, so it fires at PARSE — asserted here anyway,
-/// because the invariant belongs to the map and a reader walking the three
-/// invariants must find all three.
+/// Two roots declaring the same canonical name (INV-1, row T1). Decidable
+/// from the bytes alone, so it fires at parse — asserted here anyway so a
+/// reader walking the three invariants finds all three.
 #[test]
 fn two_mounts_with_one_canonical_name_fail_loud() {
     let (_keep, a) = root("a");
@@ -597,10 +561,9 @@ fn an_unseeable_mount_path_greys_only_that_root() {
 // The three-way map — the matrix's off-diagonal, exercised in all six directions
 // ---------------------------------------------------------------------------
 
-/// The six directed translations of the module's 3 × 3 matrix, walked. Two are
-/// total (name ↔ path) and four are partial over the vault axis; this asserts
-/// both the answers and the partiality, because a build that returned a vault
-/// name for a `git-folder` root would satisfy the six lookups and break the map.
+/// The six directed translations of the 3 × 3 matrix, walked. Two are total
+/// (name ↔ path) and four are partial over the vault axis; both the answers
+/// and the partiality are asserted.
 #[test]
 fn the_three_way_map_answers_in_all_six_directions() {
     let (_keep, wiki) = root("field-notes");
@@ -644,8 +607,7 @@ fn the_three_way_map_answers_in_all_six_directions() {
     assert_eq!(git_folder.vault(), None);
     assert_eq!(bound.by_vault("archive"), None);
 
-    // An unbound name answers None rather than guessing — resolution's grey is
-    // U11's to render, but the table must not invent a binding for it.
+    // An unbound name answers None rather than guessing.
     assert_eq!(bound.by_name("assets"), None);
 }
 
@@ -653,8 +615,7 @@ fn the_three_way_map_answers_in_all_six_directions() {
 // The closed sets — complete and reachable
 // ---------------------------------------------------------------------------
 
-/// Every bind reason word is spelled once and is **reachable**. A reason no code
-/// path can emit is a spelling, not a guard.
+/// Every bind reason word is spelled once and is reachable.
 #[test]
 fn the_bind_reason_set_is_closed_and_every_word_is_reachable() {
     let words: Vec<&str> = MountReason::ALL.iter().map(|r| r.word()).collect();
@@ -670,11 +631,9 @@ fn the_bind_reason_set_is_closed_and_every_word_is_reachable() {
         "the bind reason set is the mount-path law's, in its order"
     );
 
-    // `a` declares its own name, so the first entry of every pair below BINDS
-    // and the refusal under test is genuinely the second entry's. That is not
-    // fixture hygiene, it is §8.4's rule biting: the first fault in FILE order
-    // is the only one reported, so an undeclared or mis-declared first entry
-    // would mask the structural fault the case exists to reach.
+    // `a` declares its own name, so the first entry of every pair below binds
+    // and the refusal under test is genuinely the second entry's (§8.4: the
+    // first fault in file order is the only one reported).
     let (_keep, a) = root("a");
     let (_keep_b, b) = root("b");
     let (_keep_c, c) = root("c");
@@ -718,10 +677,9 @@ fn the_bind_reason_set_is_closed_and_every_word_is_reachable() {
     );
 }
 
-/// The state vocabulary is S3-R6's and it is closed: one `bound`, four
-/// `grey(...)`, one `red(...)`, **no fourth exit-code class**, and every word
-/// distinct. Distinctness is the load-bearing half — two states sharing a word
-/// would be indistinguishable in the human line and in `--json` alike.
+/// The state vocabulary is closed: one `bound`, four `grey(...)`, one
+/// `red(...)`, every word distinct — two states sharing a word would be
+/// indistinguishable in the human line and in `--json` alike.
 #[test]
 fn the_state_vocabulary_is_closed_and_distinct() {
     let states = [
@@ -775,8 +733,7 @@ fn the_state_vocabulary_is_closed_and_distinct() {
         );
     }
 
-    // None of the grey words collides with the sibling words S3-R6 names for
-    // the other planes. Two subsystems, one shared meaning, never one spelling.
+    // None of the grey words collides with another plane's reason words.
     for word in &words {
         assert!(
             *word != "grey(cannot-assess)" && *word != "grey(unmounted)",
@@ -785,9 +742,9 @@ fn the_state_vocabulary_is_closed_and_distinct() {
     }
 }
 
-/// A bind refusal renders in the SAME shape as a parse refusal: the config
+/// A bind refusal renders in the same shape as a parse refusal: the config
 /// path, the file line, the teaching middle, the no-partial-load clause, and a
-/// `Fix:`. One file, one refusal shape, whichever half of the plane produced it.
+/// `Fix:`.
 #[test]
 fn a_bind_refusal_renders_in_the_parse_refusal_shape() {
     let bind_refusal = refuse(&config_of(&[vault_block("poison", &home())])).to_string();
@@ -810,11 +767,9 @@ fn a_bind_refusal_renders_in_the_parse_refusal_shape() {
 // The reserved-name identity, and the state A / state D carry-through
 // ---------------------------------------------------------------------------
 
-/// The declaration filename IS the config filename — one constant, not two
-/// spellings — and the `type:` key is what tells the two uses apart. Aiming
-/// `MERIDIAN_CONFIG` at a root's declaration therefore refuses loudly instead of
-/// half-loading an unrelated page, which is exactly the hazard schema §4
-/// required the key for.
+/// The declaration filename is the config filename — one constant — and the
+/// `type:` key tells the two uses apart: `MERIDIAN_CONFIG` aimed at a root's
+/// declaration refuses loudly instead of half-loading.
 #[test]
 fn the_reserved_name_is_shared_and_the_type_key_separates_the_two_uses() {
     assert_eq!(DECLARATION_FILENAME, CONFIG_FILENAME);
@@ -831,9 +786,8 @@ fn the_reserved_name_is_shared_and_the_type_key_separates_the_two_uses() {
     assert!(err.detail.contains(DECLARATION_TYPE), "{}", err.detail);
 }
 
-/// State A and state D reach the empty table through ONE call, exactly as they
-/// reach the empty mount list through one accessor. Binding does not reopen the
-/// nil-vs-empty distinction the config plane already closed.
+/// State A and state D reach the empty table through one call. Binding does
+/// not reopen the nil-vs-empty distinction the config plane closed.
 #[test]
 fn absent_and_zero_mount_configs_bind_to_the_same_empty_table() {
     let absent = Resolution::Absent {
