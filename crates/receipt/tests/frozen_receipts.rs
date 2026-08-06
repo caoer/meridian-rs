@@ -1,7 +1,6 @@
-//! RC4-RECEIPT gates against the FROZEN text (§6.3 worked receipts): E3/E4
+//! RC4-RECEIPT gates against the frozen text (§6.3 worked receipts): E3/E4
 //! byte-exact, block-span widths independently confirmed, and the anchor
-//! grammar fixture (in-charset per decision 011 — the CHARSET-GUARD receipt
-//! position, homed here).
+//! grammar fixture (in-charset per decision 011).
 
 use receipt::{ArmedFacts, EditFact};
 
@@ -128,7 +127,7 @@ fn absent_inputs_render_absent_facts() {
 }
 
 /// Anchor grammar fixture (gate 3): `r-NNNNNN` zero-padded, widening past
-/// six digits, ALWAYS inside the one block-id charset `[A-Za-z0-9-]+`
+/// six digits, always inside the block-id charset `[A-Za-z0-9-]+`
 /// (§2.4, decision 011).
 #[test]
 fn anchor_grammar_in_charset() {
