@@ -1,14 +1,7 @@
-//! U3.5a merge gate — the realise engine's three named scenarios (plan Block 3 U3.5a
-//! Test: line), each driving the REAL run plane and the REAL U2.6 guarded create over an
-//! on-disk workspace (no in-memory double — fidelity is the point):
-//!
-//! - `failing_check_no_apply_mints_pending_agent_and_board_card`
-//! - `retry_exhausted_renders_non_convergent`
-//! - `no_apply_lands_unrecorded`
-//!
-//! Plus engine unit gates: caps union, `--dry-run` (zero caps + blast radius), and the
-//! converged no-op.
-//!
+//! U3.5a merge gate — the realise engine's scenarios, each driving the real
+//! run plane and the real U2.6 guarded create over an on-disk workspace (no
+//! in-memory double). Plus engine unit gates: caps union, `--dry-run`, and
+//! the converged no-op.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -173,13 +166,11 @@ fn failing_check_no_apply_mints_pending_agent_and_board_card() {
         "card carries the drift detail: {card_body}"
     );
 
-    // The card references its rule BY ID — key plus one wikilink, and nothing
-    // else about the rule (decision 8 / verdict 18.1).
+    // The card references its rule by id — key plus one wikilink (18.1).
     assert!(card_body.contains("\nrule: status-move\n"), "{card_body}");
     assert!(card_body.contains("[[status-move]]"), "{card_body}");
 
-    // `created:` is the caller's RFC3339 clock, verbatim (verdict 15.7) —
-    // never unix seconds, never a clock this engine read.
+    // `created:` is the caller's RFC3339 clock, verbatim (verdict 15.7).
     assert!(
         card_body.contains("\ncreated: 2026-07-23T10:00:00Z\n"),
         "{card_body}"
@@ -190,8 +181,7 @@ fn failing_check_no_apply_mints_pending_agent_and_board_card() {
         .expect("the card stamps a created:");
     assert!(wire::now_is_rfc3339(created), "created={created:?}");
 
-    // Idempotent by claim selector: a second realise mints no second card and
-    // does not error — the guarded create's if_absent CAS is the idempotency.
+    // Idempotent by claim selector: a second realise mints no second card.
     let claim2 = Claim {
         selector: "status-must-be-done".to_owned(),
         rule: Some("status-move".to_owned()),
@@ -405,8 +395,7 @@ fn mint_card(rule: Option<&str>, now: Option<&str>) -> String {
     std::fs::read_to_string(root.0.join("board/status-must-be-done.md")).unwrap()
 }
 
-/// The law itself: whatever a card says about its rule, it is a REFERENCE. A
-/// starlark fence, a `def check_change`, or a `refuse(` on a board card would
+/// A card's rule is a reference: any rule-body fragment on a board card would
 /// mean the rule was copied out of its page and can now drift from it.
 #[test]
 fn a_card_never_embeds_a_rule_body() {
