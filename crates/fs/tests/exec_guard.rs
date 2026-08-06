@@ -1,6 +1,6 @@
-//! On-disk gates for the exec-window detection bracket (`fs::guard`, U6b):
-//! residual-compare (#19), the config bracket (#20), symlink refusal (#25),
-//! and the NAMED accepted gaps. Steps are simulated — the guard is
+//! On-disk gates for the exec-window detection bracket (`fs::guard`):
+//! residual-compare, the config bracket, symlink refusal,
+//! and the named accepted gaps. Steps are simulated — the guard is
 //! exec-independent, so no bash runs here; "the window" is the span between
 //! `open` and `close` and the test plays both the executor and the attacker.
 
@@ -67,8 +67,8 @@ fn clean_step_close_returns_verified_root() {
     assert_eq!(StepGuard::GUARANTEE_CLASS, "detected");
 }
 
-/// The zero-descriptor cheat (#14/#19): a domain file changes with NO
-/// governed edit declared — named as altered.
+/// The zero-descriptor cheat: a domain file changes with no governed edit
+/// declared — named as altered.
 #[test]
 fn zero_descriptor_cheat_is_named() {
     let (_tmp, root) = workspace();
@@ -86,9 +86,8 @@ fn zero_descriptor_cheat_is_named() {
     }
 }
 
-/// THE #19 cheat a naive root-compare passes: one HONEST governed edit AND a
-/// rogue write elsewhere. "Root changed? we changed it" would wave this
-/// through; residual-compare names exactly the rogue path.
+/// The cheat a root-compare passes: one honest governed edit plus a rogue write
+/// elsewhere. Residual-compare names exactly the rogue path.
 #[test]
 fn honest_edit_plus_rogue_write_is_caught() {
     let (_tmp, root) = workspace();
@@ -157,7 +156,7 @@ fn out_of_band_deletion_is_missing() {
     }
 }
 
-/// #20, the config-widening attack: the window rewrites `mdfs_config.yaml`
+/// The config-widening attack: the window rewrites `mdfs_config.yaml`
 /// to ignore its rogue path. The config bracket refuses BEFORE the residual
 /// diff, so the widened domain never gets to filter the rogue write out.
 /// (Also covers absent→present: the fixture starts with no config.)
@@ -172,17 +171,9 @@ fn config_widening_attack_refused() {
     assert!(matches!(guard.close(&[]), Err(GuardError::ConfigChanged)));
 }
 
-/// #20 through the MARKDOWN surface — the hostile fixture for the config
-/// bracket after `meridian/domain.md` became a declaration surface.
-///
-/// The attack is the same one `config_widening_attack_refused` covers, aimed at
-/// the other file: the window rewrites the markdown config to ignore the
-/// directory it is about to write into. If the bracket watched only
-/// `mdfs_config.yaml`, this close would return the residual diff computed under
-/// the WIDENED domain — i.e. clean — and the rogue write would be laundered.
-///
-/// This test fails against a bracket that captures one surface. It is the
-/// demonstration that moving the config surface did not move the hole.
+/// The same attack through the markdown surface: a bracket watching only
+/// `mdfs_config.yaml` would compute the residual diff under the widened domain
+/// — clean — and launder the rogue write.
 #[test]
 fn config_widening_attack_through_markdown_surface_refused() {
     let (_tmp, root) = workspace();
@@ -208,10 +199,9 @@ fn config_widening_attack_through_markdown_surface_refused() {
     );
 }
 
-/// The guard must resolve the SAME domain the read path resolves. If it parsed
-/// only the legacy surface it would detect against the DEFAULT domain while
-/// `check`/`status` used the declared ignore list — two different answers to
-/// "what is attested here", and the guard's would be the wrong one.
+/// The guard must resolve the same domain the read path resolves: parsing only
+/// the legacy surface would detect against the default domain while
+/// `check`/`status` used the declared ignore list.
 #[test]
 fn guard_honours_the_markdown_domain_config() {
     let (_tmp, root) = workspace();
@@ -236,7 +226,7 @@ fn guard_honours_the_markdown_domain_config() {
     );
 }
 
-/// #20, present→absent: deleting the config mid-window is a domain change
+/// Present→absent: deleting the config mid-window is a domain change
 /// like any other — refused.
 #[test]
 fn config_deletion_refused() {
@@ -253,7 +243,7 @@ fn config_deletion_refused() {
     assert!(matches!(guard.close(&[]), Err(GuardError::ConfigChanged)));
 }
 
-/// #20 is "mid-RUN", not just mid-step: a config change landing BETWEEN two
+/// The config bracket is mid-RUN, not just mid-step: a config change landing BETWEEN two
 /// clean step brackets is caught by pinning every later guard to the
 /// run-initial config state.
 #[test]
@@ -274,8 +264,8 @@ fn cross_step_config_continuity() {
     ));
 }
 
-/// S4 naming discipline: the delta names the exec WINDOW and the paths —
-/// the exact required wording — never an author.
+/// Naming discipline: the delta names the exec window and the paths, in the
+/// exact required wording, never an author.
 #[test]
 fn delta_wording_names_the_window_not_the_block() {
     let (_tmp, root) = workspace();
@@ -294,19 +284,17 @@ fn delta_wording_names_the_window_not_the_block() {
     );
 }
 
-/// S3 residual-escape window, pinned as a test: a write landing AFTER close
-/// has NO retroactive verdict — the bracket boundary is the close snapshot.
-/// At the primitive level the escape is absorbed into the NEXT guard's
-/// baseline (open succeeds; the write shows only as a root delta between
-/// brackets). Naming that boundary is the run layer's job: its next open
-/// cross-checks against the prior verified root (see run's snapshot gates).
+/// The residual-escape window: a write landing after close has no retroactive
+/// verdict — the bracket boundary is the close snapshot. The escape is absorbed
+/// into the next guard's baseline and shows only as a root delta between
+/// brackets; naming it is the run layer's job.
 #[test]
 fn post_close_write_is_the_named_escape_window() {
     let (_tmp, root) = workspace();
     let g1 = StepGuard::open(&root).unwrap();
     let verified = g1.close(&[]).unwrap(); // clean window, verdict rendered
 
-    // the S3 escape: a straggler lands after the close snapshot
+    // the escape: a straggler lands after the close snapshot
     write(&root.0, "notes/late.md", "after the bracket\n");
 
     // no retroactive verdict exists; the next guard absorbs it as baseline …
@@ -316,11 +304,10 @@ fn post_close_write_is_the_named_escape_window() {
     g2.close(&[]).unwrap();
 }
 
-/// `pre_root` equivalence — the #19 cross-check's ground: on a symlink-free
-/// tree the guard's observed baseline folds to EXACTLY the root
-/// [`fs::domain_snapshot`] computes (the flock-computed `root_after_phase1`
-/// comes from that path). A divergence here would make the run layer's
-/// computed-vs-observed comparison meaningless.
+/// `pre_root` equivalence: on a symlink-free tree the guard's observed baseline
+/// folds to exactly the root [`fs::domain_snapshot`] computes, which is where
+/// the flock-computed `root_after_phase1` comes from. A divergence would make
+/// the run layer's computed-vs-observed comparison meaningless.
 #[test]
 fn pre_root_matches_domain_snapshot() {
     let (_tmp, root) = workspace();
@@ -332,11 +319,10 @@ fn pre_root_matches_domain_snapshot() {
     assert_eq!(guard.close(&[]).unwrap(), snap_root);
 }
 
-/// #20 accepted gap, stated as a test: non-md, `.meridian/`, and dot-path
-/// writes during the window are UNDETECTED — the §12 hash domain is md-only
-/// and dot-excluded. Explicit and named, distinct from the out-of-tree
-/// honor system. If this test ever fails, the gap has narrowed: update the
-/// docs, not the assertion direction.
+/// The accepted gap, stated as a test: non-md, `.meridian/`, and dot-path
+/// writes during the window are undetected — the §12 hash domain is md-only
+/// and dot-excluded. If this ever fails the gap has narrowed: update the docs,
+/// not the assertion direction.
 #[test]
 fn non_md_and_dot_path_writes_are_the_named_undetected_gap() {
     let (_tmp, root) = workspace();
@@ -377,7 +363,7 @@ fn governed_edit_outside_domain_is_inert() {
     assert_eq!(post, independent, "ignored path never enters the root");
 }
 
-/// #25 symlink laundering, the motivating attack: the window symlinks an
+/// Symlink laundering, the motivating attack: the window symlinks an
 /// out-of-tree secret to an in-domain md path. Refused, naming the link.
 #[cfg(unix)]
 #[test]
@@ -398,11 +384,9 @@ fn symlink_laundering_refused_at_close() {
 /// The ignore set reaches the guarded walk: a link inside an IGNORED directory
 /// does not refuse, while an identical link on a non-ignored path still does.
 ///
-/// Both halves matter and the pairing is the point. Without the first, one link
-/// anywhere in a vendored subtree refuses the whole walk and no bracket can ever
-/// open — field-notes carries 2,670 non-dot symlinks, 2,669 under one ignored
-/// asset store, which is precisely why `mrd run` could not execute there.
-/// Without the second, the ignore set would be a way to switch #25 off.
+/// Both halves matter: without the first, one link anywhere in a vendored
+/// subtree refuses the whole walk and no bracket can open; without the second,
+/// the ignore set would switch the symlink refusal off.
 #[cfg(unix)]
 #[test]
 fn links_under_an_ignored_dir_do_not_refuse_but_others_still_do() {
@@ -426,7 +410,8 @@ fn links_under_an_ignored_dir_do_not_refuse_but_others_still_do() {
     );
 
     // The same link on a path the workspace DID NOT ignore still refuses —
-    // the ignore set narrows the detection domain, it does not disarm #25.
+    // the ignore set narrows the detection domain, it does not disarm the
+    // symlink refusal.
     std::os::unix::fs::symlink(&secret, root.0.join("notes/x.md")).unwrap();
     match StepGuard::open(&root) {
         Err(GuardError::Symlink { path }) => assert_eq!(path, "notes/x.md"),
@@ -434,14 +419,9 @@ fn links_under_an_ignored_dir_do_not_refuse_but_others_still_do() {
     }
 }
 
-/// Not walking a path is not the same as not detecting through it. A write
-/// aimed THROUGH a link in an ignored directory, whose real target is an
-/// attested in-tree file, is caught at the TARGET.
-///
-/// This is what makes the ignored-directory gap safe rather than a bypass:
-/// detection compares domain STATE, not the path a writer travelled. The link
-/// is unwalked and unrefused, and the write still cannot land unseen, because
-/// the file it actually changed is in the baseline.
+/// A write aimed through a link in an ignored directory, whose real target is
+/// an attested in-tree file, is caught at the target: detection compares domain
+/// state, not the path a writer travelled.
 #[cfg(unix)]
 #[test]
 fn a_write_through_an_ignored_link_is_caught_at_its_attested_target() {
@@ -478,7 +458,7 @@ fn a_write_through_an_ignored_link_is_caught_at_its_attested_target() {
     }
 }
 
-/// #25 at open: a pre-existing symlink (file or directory) means no
+/// At open: a pre-existing symlink (file or directory) means no
 /// trustworthy baseline — open itself refuses.
 #[cfg(unix)]
 #[test]
@@ -516,8 +496,8 @@ fn non_md_symlink_also_refused() {
     assert!(matches!(guard.close(&[]), Err(GuardError::Symlink { .. })));
 }
 
-/// Dot-path symlinks sit in the NAMED dot-path gap (#20/#25): outside
-/// detection, neither walked nor refused. Explicit, like the non-md gap.
+/// Dot-path symlinks sit in the named dot-path gap: outside detection, neither
+/// walked nor refused.
 #[cfg(unix)]
 #[test]
 fn dot_path_symlink_is_outside_detection() {
@@ -534,7 +514,7 @@ fn dot_path_symlink_is_outside_detection() {
     guard.close(&[]).unwrap();
 }
 
-/// #25 covers the domain's own definition file: a symlinked
+/// The refusal covers the domain's own definition file: a symlinked
 /// `mdfs_config.yaml` is refused at open (the config read is no-follow).
 #[cfg(unix)]
 #[test]

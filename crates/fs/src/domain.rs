@@ -1,8 +1,5 @@
 //! The §12 hash domain — which markdown files' bytes enter the merkle root.
-//!
-//! .1): *"`mdfs_config.yaml` define the custom ignore list. mdfs only work for md file.
-//! it does not hash any other file."* The domain is a three-layer filter, applied in
-//! order:
+//! A three-layer filter, applied in order:
 //!
 //! 1. **md-only floor** — only `*.md` files hash. `mdfs_config.yaml` is not md, so it is
 //!    structurally outside its own domain.
@@ -12,12 +9,11 @@
 //!    self-invalidate a guard. This floor is structural: custom `!` re-includes cannot
 //!    lift it.
 //! 3. **custom ignore** — `mdfs_config.yaml` carries a gitignore-style list (patterns,
-//!    `!` re-includes) layered over the default (§12.3's `drafts/**` is such a rule). Last
-//!    matching rule wins.
+//!    `!` re-includes) layered over the default. Last matching rule wins.
 //!
 //! The filter gates HASHING, not `load`: an ignored md file stays fully addressable —
 //! `toc`/`cat`/`splice` reach it by explicit path — its bytes never enter the root (hash
-//! ⊂ addressable, E-E8). See [`Domain`] for the predicate and [`crate::hash_domain`] for
+//! ⊂ addressable). See [`Domain`] for the predicate and [`crate::hash_domain`] for
 //! the walk that consumes it.
 
 use std::io;
@@ -33,45 +29,36 @@ pub const CONFIG_FILE_NAME: &str = "mdfs_config.yaml";
 /// The custom-ignore config, as markdown — the declaration surface a workspace
 /// should use.
 ///
-/// Markdown because the workspace convention is that configuration a human
-/// maintains is a page they can read: the ignore list rides the FRONTMATTER
-/// (frontmatter filters, body reads) and the body carries the rationale for
-/// each entry, which a bare YAML file has nowhere to put. It joins the reserved
-/// path family already here — [`ARMED_RULES_PATH`], [`ATTESTED_MARKER_PATH`].
+/// Markdown so the ignore list rides the frontmatter while the body carries
+/// each entry's rationale.
 ///
-/// # This file is inside its own hash domain, deliberately
 /// Unlike [`CONFIG_FILE_NAME`] (non-md, structurally outside), a `.md` config
-/// is hashed like any other page. That is the correct behaviour, not a wrinkle
-/// to paper over: the file that DEFINES the attested surface should itself be
-/// attested, so a change to the ignore list moves the root and is visible as a
-/// fact rather than as a silent reshaping of what gets checked. It pairs with
-/// the `version` field, which exists so an ignore-list change is a deliberate,
-/// root-advancing act. Bootstrap is not circular — read the config, compute the
-/// domain, then hash the domain including the config.
+/// is inside its own hash domain, deliberately: the file that defines the
+/// attested surface is itself attested, so an ignore-list change moves the root
+/// instead of silently reshaping what gets checked. Bootstrap is not circular —
+/// read the config, compute the domain, then hash the domain including it.
 pub const DOMAIN_CONFIG_PATH: &str = "meridian/domain.md";
 
-/// The attested armed-set artifact (registration ruling § 4) — the ONE page the
-/// door reads to learn a workspace's armed set, one row per armed id. It is
-/// ordinary in-tree markdown and STAYS in the hash domain: the attestation IS the
-/// page, so its rev matters.
+/// The attested armed-set artifact (registration ruling § 4) — the one page the
+/// door reads to learn a workspace's armed set, one row per armed id. Ordinary
+/// in-tree markdown, inside the hash domain: the attestation IS the page, so
+/// its rev matters.
 ///
 /// Mirrors `policy::armed::ARMED_RULES_PATH` — `policy` is I/O-free and `fs`
 /// knows nothing of rules, so neither crate can name the other's constant.
 /// `crates/testsuite/tests/reserved_paths.rs` holds the two spellings together.
 pub const ARMED_RULES_PATH: &str = "meridian/armed-rules.md";
 
-/// The once-armed sentinel (U4.2 read contract). Its PRESENCE — not its bytes —
-/// records that a workspace has EVER been armed. The gate needs this to tell a
-/// never-armed workspace (no artifact, no marker ⇒ a bit-for-bit no-op) from a
-/// once-armed one whose artifact went missing (⇒ fail CLOSED): the artifact alone
-/// cannot make that distinction, because deleting it is exactly the attack the
-/// marker defeats.
+/// The once-armed sentinel: its presence, not its bytes, records that a
+/// workspace has ever been armed. The gate needs it to tell a never-armed
+/// workspace (no artifact, no marker ⇒ a no-op) from a once-armed one whose
+/// artifact went missing (⇒ fail closed) — deleting the artifact is exactly the
+/// attack the marker defeats.
 ///
-/// A NON-markdown path on purpose: the md-only hash-domain floor keeps it out
-/// of the merkle root by construction, so writing the marker never perturbs the
-/// very root a write guards. Arming (U4.4) creates it on the first arm and never
-/// removes it;
-/// U4.3's integrity floor refuses its deletion/rename at the door.
+/// Non-markdown on purpose: the md-only hash-domain floor keeps it out of the
+/// merkle root, so writing the marker never perturbs the root a write guards.
+/// Arming creates it on the first arm and never removes it; the integrity floor
+/// refuses its deletion/rename at the door.
 pub const ATTESTED_MARKER_PATH: &str = "meridian/attested";
 
 /// The §12 hash-domain filter: the md-only floor + dot-segment default ignore
@@ -80,7 +67,7 @@ pub const ATTESTED_MARKER_PATH: &str = "meridian/attested";
 ///
 /// `version` rides the domain config so an ignore-list change can advance the
 /// merkle prefix (`b3:` → `b3a:`, §12.3); the prefix *token* is minted by
-/// `model::merkle_root` (M3-MERKLE), which reads [`Domain::version`].
+/// `model::merkle_root`, which reads [`Domain::version`].
 #[derive(Debug, Clone, Default)]
 pub struct Domain {
     version: u32,
@@ -98,8 +85,8 @@ impl Domain {
     /// Parse the domain from `mdfs_config.yaml` text.
     ///
     /// Accepted schema (deliberately minimal — no YAML dependency enters `fs`;
-    /// the workspace's single YAML decision is reserved for `policy`,
-    /// P6-COMPILE): an optional top-level `version:` integer and an `ignore:`
+    /// the workspace's single YAML decision is reserved for `policy`): an
+    /// optional top-level `version:` integer and an `ignore:`
     /// block sequence of gitignore-style pattern scalars, e.g.
     ///
     /// ```yaml
@@ -144,10 +131,9 @@ impl Domain {
     /// I/O failure reading an existing config file. An absent config is not an
     /// error — it yields [`Domain::new`].
     ///
-    /// **Both present is an error, not a precedence rule.** Two live ignore
-    /// lists are two answers to "what is attested here", and silently picking
-    /// one means the file a reader is looking at may not be the file in force —
-    /// the ambiguity is reported rather than resolved.
+    /// Both present is an error, not a precedence rule: two live ignore lists
+    /// are two answers to "what is attested here", so the ambiguity is reported
+    /// rather than resolved.
     pub fn load(root: &WorkspaceRoot) -> io::Result<Domain> {
         let md = read_optional(&root.0.join(DOMAIN_CONFIG_PATH))?;
         let yaml = read_optional(&root.0.join(CONFIG_FILE_NAME))?;
@@ -209,20 +195,15 @@ impl Domain {
     /// May a traversal skip `rel_dir` and everything beneath it WITHOUT
     /// changing the hash domain?
     ///
-    /// This is the difference between filtering and pruning, and it is the
-    /// whole cost story: [`contains`](Self::contains) answers per FILE, so a
-    /// walk that filters afterwards has already paid the `stat` for every
-    /// entry it then discards. Pruning declines to descend at all.
-    ///
-    /// Sound, not merely fast — it answers `true` only when BOTH hold:
+    /// [`contains`](Self::contains) answers per file, so a walk that filters
+    /// afterwards has already paid the `stat`; pruning declines to descend at
+    /// all. It answers `true` only when both hold:
     ///
     /// 1. the directory itself is ignored by last-match-wins, so every path
     ///    beneath it inherits the ignore; and
-    /// 2. no `!` rule could re-include anything beneath it. gitignore
-    ///    semantics let `!archive/index.md` survive `archive/**`, and a
-    ///    pruned directory would silently drop that file out of the domain —
-    ///    a WRONG ROOT, not a slow one. When re-inclusion cannot be ruled
-    ///    out the answer is `false` and the walk pays for the descent.
+    /// 2. no `!` rule could re-include anything beneath it — gitignore
+    ///    semantics let `!archive/index.md` survive `archive/**`, and pruning
+    ///    would drop it out of the domain, a wrong root rather than a slow one.
     ///
     /// Reserved paths are never pruned: they must stay reachable regardless of
     /// what the ignore list says about the directory holding them.
@@ -262,14 +243,10 @@ impl Domain {
     }
 }
 
-/// The reserved-path family: every page that is engine SUBSTRATE rather than
-/// content, and whose parent directories must therefore stay walkable whatever the
-/// ignore list says.
-///
-/// Public so a cross-crate test can assert the family's MEMBERSHIP, not just each
-/// member's spelling. A path that outlives its subject is the "renamed remnant"
-/// failure — it would keep the door refusing writes to what is now an ordinary
-/// file, and keep the walk carving a hole in the hash domain for nothing.
+/// The reserved-path family: every page that is engine substrate rather than
+/// content, and whose parent directories must therefore stay walkable whatever
+/// the ignore list says. Public so a cross-crate test can assert the family's
+/// membership, not just each member's spelling.
 pub const RESERVED_PATHS: &[&str] = &[ARMED_RULES_PATH, ATTESTED_MARKER_PATH];
 
 /// Is `dir` a directory on the path to `reserved`?
@@ -399,14 +376,12 @@ impl Rule {
 
     /// Could this `!` rule re-include some path strictly BENEATH `dir`?
     ///
-    /// Deliberately conservative — it answers the question that makes pruning
-    /// safe, so every uncertain case answers `true` (walk it) rather than
-    /// risk dropping a re-included file out of the hash domain. Two cases
-    /// admit no cheap proof and are therefore assumed reachable:
-    /// an unanchored rule (basename semantics — it matches at any depth), and
-    /// any rule containing `**` (which absorbs arbitrary segments).
-    /// Otherwise the rule names a fixed-depth path, and it can only reach
-    /// under `dir` when `dir` is a proper prefix of that path.
+    /// Conservative: every uncertain case answers `true` (walk it) rather than
+    /// risk dropping a re-included file out of the hash domain. Two cases admit
+    /// no cheap proof and are assumed reachable — an unanchored rule (basename
+    /// semantics, matching at any depth) and any rule containing `**`.
+    /// Otherwise the rule names a fixed-depth path, and it can only reach under
+    /// `dir` when `dir` is a proper prefix of that path.
     fn could_reinclude_under(&self, dir: &[&str]) -> bool {
         if !self.anchored || self.segs.iter().any(|s| s == "**") {
             return true;
@@ -550,9 +525,8 @@ mod tests {
     const RECEIPTS_V0: &str = "# Receipts \u{2014} 2026-07-18\n"; // em dash = 3-byte UTF-8
     const GH_README: &str = "# CI notes\n";
 
-    // §12.2 merkle encoding, ported from `root_of` — a TEST ORACLE only. The
-    // production merkle_root lands in M3-MERKLE (`model`); this exists solely to
-    // give the §12.1 counterfactual pair real, contract-matching hex roots.
+    // §12.2 merkle encoding — a test oracle only; the production merkle_root
+    // lives in `model`.
     enum Node {
         File(Vec<u8>),
         Dir(BTreeMap<String, Node>),
@@ -717,9 +691,8 @@ mod tests {
         assert!(d.contains(Path::new("notes/plan.md")));
     }
 
-    /// The journal's root-exclusion carve-out is RETIRED (journal removed, no
-    /// replacement — ZT 2026-08-02): `meridian/journal.md` is now an ordinary
-    /// in-domain page, carved out by nothing.
+    /// The journal's root-exclusion carve-out is retired: `meridian/journal.md`
+    /// is an ordinary in-domain page, carved out by nothing.
     #[test]
     fn retired_journal_page_is_an_ordinary_domain_member() {
         let d = Domain::new();
