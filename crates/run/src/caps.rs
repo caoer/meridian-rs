@@ -14,7 +14,7 @@
 //! [`resolve_authority`] is the only language-aware entry (bash short-circuit).
 //! [`resolve_caps`] takes no language.
 //!
-//! # Convention plane (marker-retirement ruling, 2026-07-26)
+//! # Convention plane (marker-retirement ruling)
 //! Table lives in `<root>/MERIDIAN.md` with `type: meridian-root`. Retired
 //! marker files are not read and have no fallback. Grammar is flat dotted
 //! keys (model's FM scanner skips indented lines):
@@ -28,29 +28,6 @@
 //! invalid declaration REFUSES ([`CapsError::Declaration`]) — silent empty
 //! table would delete a ceiling on typo. Target-scoped caps are narrower
 //! than untargeted forms.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -285,25 +262,19 @@ pub enum CapSource {
     DenyDefault,
 }
 
-/// Which root situation produced a [`Conventions`] table. The ruling requires
-/// every resolution to say which root answered rather than going silent, and
-/// these three teach three different fixes.
-///
-/// Three states and not four: "the root declared a table" versus "the root
-/// declared none" is read off [`Conventions`] being empty, so it needs no
-/// variant of its own.
+/// Which root situation produced a [`Conventions`] table — every resolution
+/// reports which root answered rather than going silent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConventionSource {
     /// `<root>/MERIDIAN.md` read as a `meridian-root` declaration. The table may
     /// still be empty — the root declares itself but states no `run.caps.*`.
     Declared(PathBuf),
-    /// The root holds no `MERIDIAN.md`. Absent is not broken (the same stance
-    /// `config`'s own D7 takes), so the table is empty and deny-by-default stands.
+    /// The root holds no `MERIDIAN.md`. Absent is not broken: the table is
+    /// empty and deny-by-default stands.
     Undeclared(PathBuf),
     /// No root resolved at all — the ladder's `CwdDefault`, where `root()` is
-    /// `None`. There is no declaring root, so there is no ceiling to read and
-    /// NO convention ceiling is in force. Not an error: refusing here would
-    /// delete the convenience default the ruling deliberately kept.
+    /// `None`. No declaring root, so no convention ceiling is in force. Not an
+    /// error.
     NoRoot,
 }
 
@@ -342,20 +313,13 @@ pub struct CapResolution {
     pub narrowed: Vec<Cap>,
 }
 
-/// What the engine may claim about one block's effects — the ONE value
+/// What the engine may claim about one block's effects — the one value
 /// threaded from resolution to the executor's choke point.
 ///
-/// Two variants, because there are two honest answers and no third. A block
-/// either carries a capability contract the engine can KEEP, or it is an
-/// unsandboxed shell the engine cannot bound at all. There is no `CapSet`
-/// spelling of the second: cwd isolation and env scrubbing do not restrict
-/// network, credentials, SSH or `rm -rf`, and the exec-window detector is
-/// escaped by a `nohup` — so no value, including `none`, is true of bash.
-///
-/// The law is `docs/laws.md` § "Amendment — capabilities do not apply to
-/// bash"; the executable gate is `crates/mrd/tests/law_no_caps_on_bash.rs`.
-/// Structural, not cosmetic: the bash dispatcher never holds a
-/// [`CapResolution`], so it cannot print, narrow, or half-enforce one.
+/// A block either carries a capability contract the engine can keep, or it is
+/// an unsandboxed shell it cannot bound — no `CapSet` value, including `none`,
+/// is true of bash. Law: `docs/laws.md` § "Amendment — capabilities do not
+/// apply to bash"; gate: `crates/mrd/tests/law_no_caps_on_bash.rs`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Authority {
     /// Starlark: a real, enforceable grant. The hermetic evaluator cannot
@@ -381,11 +345,10 @@ impl Authority {
         })
     }
 
-    /// The capability resolution, when this authority IS one.
+    /// The capability resolution, when this authority is one.
     ///
-    /// `None` for an unsandboxed shell, and every surface renders that as an
-    /// ABSENT key rather than an empty one: `null` or `[]` would still be an
-    /// answer to a question the engine cannot answer.
+    /// `None` for an unsandboxed shell — every surface renders that as an
+    /// absent key, never an empty one.
     #[must_use]
     pub fn capabilities(&self) -> Option<&CapResolution> {
         match self {
@@ -396,10 +359,9 @@ impl Authority {
 
     /// Does this authority admit an effect of `kind` against `target`?
     ///
-    /// `Unsandboxed` admits every descriptor — not a grant of everything, but
-    /// the absence of a gate. Denying the shim here would only push the same
-    /// write to `sed -i`, off the attested path, where the bracket at most
-    /// detects it.
+    /// `Unsandboxed` admits every descriptor — the absence of a gate, not a
+    /// grant: denying the shim would only push the same write off the attested
+    /// path.
     #[must_use]
     pub fn admits(&self, kind: &str, target: Option<&str>) -> bool {
         match self {
@@ -418,8 +380,7 @@ pub enum CapsError {
     BadPattern { pattern: String },
     /// `<root>/MERIDIAN.md` exists but does not read as a `meridian-root`
     /// declaration — an unreadable policy file never silently becomes "no
-    /// policy". Silence here would delete a declared ceiling on one typo,
-    /// which is a widening.
+    /// policy".
     Declaration { path: PathBuf, reason: String },
     /// A `check-*` / `verify-*` block carries a bash fence — refused at load
     /// (ruling 3): a read-only-by-convention name gets no exec.
@@ -492,12 +453,11 @@ pub fn conventions_from_declaration(declaration: &Document) -> Result<Convention
 /// Load the run-plane conventions declared by `root` — `<root>/MERIDIAN.md`
 /// with `type: meridian-root`.
 ///
-/// `root` is `None` when the ladder answered `CwdDefault`: there is no
-/// declaring root, so the table is empty and [`ConventionSource::NoRoot`] says
-/// so out loud rather than letting an absent ceiling pass for a satisfied one.
+/// `root` is `None` when the ladder answered `CwdDefault`: no declaring root,
+/// so the table is empty and [`ConventionSource::NoRoot`] says so.
 ///
 /// An absent declaration is the empty table (deny-by-default stands). A
-/// PRESENT one that does not read as a root declaration is a loud refusal —
+/// present one that does not read as a root declaration is a loud refusal —
 /// reading it as empty would silently drop a declared ceiling.
 ///
 /// # Errors
@@ -525,11 +485,11 @@ pub fn load_conventions(root: Option<&Path>) -> Result<(Conventions, ConventionS
 /// Resolve what the engine may claim about one block — the ONE language-aware
 /// entry, and the only place the bash law lives.
 ///
-/// Order: (1) a `check-*` / `verify-*` bash fence refuses loudly — that is a
-/// NAME law, not a capability, and it survives the amendment below; (2) any
-/// other bash block is [`Authority::Unsandboxed`], resolved WITHOUT reading its
-/// `task.<name>.caps` declaration, because that declaration governs nothing;
-/// (3) starlark runs the full ladder ([`resolve_caps`]).
+/// Order: (1) a `check-*` / `verify-*` bash fence refuses loudly — a name
+/// law, not a capability; (2) any other bash block is
+/// [`Authority::Unsandboxed`], resolved without reading its
+/// `task.<name>.caps` declaration, which governs nothing; (3) starlark runs
+/// the full ladder ([`resolve_caps`]).
 ///
 /// # Errors
 /// [`CapsError::BashFenceRefused`] on a read-only-by-convention bash fence;

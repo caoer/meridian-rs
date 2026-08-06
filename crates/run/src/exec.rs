@@ -10,33 +10,6 @@
 //!   report [`ExecStatus::Timeout`] (distinct from signaled/nonzero).
 //! - **Pipes:** stdout/stderr collected; stderr is diagnostic only.
 //! - **No shell interpretation beyond bash -c:** source is the block body.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use std::collections::BTreeMap;
 use std::io::{self, Read};
@@ -262,11 +235,7 @@ pub const TIMEOUT_KEY: &str = "run.timeout_secs";
 
 /// Resolve the effective wall-clock timeout for a root: `run.timeout_secs` in
 /// the root's own `MERIDIAN.md` declaration, else [`DEFAULT_TIMEOUT`].
-///
-/// This rode along with the caps rehoming because it was this crate's SECOND
-/// reader of the retired marker. It is a RESOURCE ceiling, not a capability — it
-/// gates no effect, the compiled default is the safe value, and the same writer
-/// could already raise it under the retired plane. A move, not a grant.
+/// A resource ceiling, not a capability — it gates no effect.
 ///
 /// `root` is `None` on the ladder's `CwdDefault`: no declaring root, so the
 /// compiled default stands. An absent declaration or a declaration without the

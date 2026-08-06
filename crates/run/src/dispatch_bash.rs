@@ -35,21 +35,6 @@
 //! kill; phase 2 gates on [`Detection::is_clean`]. Verdict is an observation
 //! about the window, not a claim about the block. Rendered on every OUTCOME
 //! path; a [`BashError`] aborts with bracket unclosed and no verdict.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};
@@ -70,10 +55,8 @@ use crate::snapshot::{Detection, ExecBracket, OpenRefusal};
 /// with undeclared effects (`docs/laws.md` § Amendment — capabilities do not
 /// apply to bash; gate `crates/mrd/tests/law_no_caps_on_bash.rs`).
 ///
-/// It lives here, as one constant, rather than on [`BashDispatch`] as a field.
-/// That is the law made structural: the bash dispatcher holds no capability
-/// input, so no caller can hand it one and no future edit can narrow it
-/// without deleting this line and answering for it.
+/// One constant rather than a [`BashDispatch`] field — the law made
+/// structural: the dispatcher holds no capability input for a caller to hand it.
 const BASH_AUTHORITY: Authority = Authority::Unsandboxed;
 
 /// One bash block dispatch: the addressed block's facts plus the
@@ -246,27 +229,9 @@ pub fn run(
     // run before anything commits.
     let log = RunLog::create(&root.0, d.invocation_id).map_err(BashError::Record)?;
 
-    // 0b. PRE-FLIGHT (G3): ask the guard whether it would refuse, BEFORE
-    // anything commits.
-    //
-    // The bracket at step 2 opens against the root the phase-1 receipt made,
-    // so by the time it can refuse, that receipt is committed and ruling 2
-    // keeps it there — an attested receipt for a run whose exec never starts.
-    // Nothing downstream can tell that record from a completed run's, because a
-    // zero-effect run writes no
-    // completion receipt either (`descriptors.is_empty()` short-circuits
-    // phase 2). Asking first turns the whole case into a refusal that writes
-    // NOTHING to the attested domain.
-    //
-    // This NARROWS the window; it does not close it. A link appearing between
-    // this probe and the open at step 2 still lands a receipt, and
-    // never-rollback still holds. That residue is real, it is why the orphan
-    // lint exists, and it must not be described as elimination.
-    //
-    // The refusal is recorded where a refusal belongs: the run log, under the
-    // dot-path `.meridian/`, outside the hash domain. A refusal is the
-    // assertion that nothing happened — recording it must not perturb the
-    // thing being attested.
+    // 0b. PRE-FLIGHT (G3): ask the guard whether it would refuse BEFORE
+    // anything commits — see `preflight` for why the probe runs first and
+    // where a refusal is recorded.
     let mut log = preflight(root, d, log)?;
 
     // 1. THE LOCKED WINDOW (u4-gate addendum on #19): the phase-1 commit and
@@ -359,18 +324,12 @@ pub fn run(
             ExecStatus::Signaled { .. } => Phase2::RefusedSignaled,
             ExecStatus::Exited { code } => match shim::parse(&result.shim) {
                 Err(e) => Phase2::RefusedShim(e),
-                // A run that emitted no descriptors still HAPPENED, and the
-                // completion receipt is the only record that says so. Skipping
-                // it here made "authorised and never started" and "ran and
-                // changed nothing" the same bytes — one phase-1 receipt each,
-                // with no outcome field to tell them apart. That is not a rare
-                // shape: the toolchain doctor every agent skill-load runs is
-                // exactly a zero-effect task.
-                //
-                // A completion IS an event, so it belongs in the attested
-                // record (unlike a refusal, which asserts a non-event and is
-                // logged outside it). The batch is empty; the receipt is not.
-                // U13: the sealed exec facts ride the completion receipt.
+                // A zero-descriptor run still HAPPENED: without a completion
+                // receipt, "authorised and never started" and "ran and changed
+                // nothing" would be the same bytes. A completion IS an event,
+                // so it enters the attested record (a refusal, asserting a
+                // non-event, is logged outside it). U13: the sealed exec facts
+                // ride the completion receipt.
                 Ok(descriptors) => {
                     let exec = exec_record(&result.status, &stdout, &d.env);
                     if *code == 0 {
@@ -382,15 +341,11 @@ pub fn run(
                         );
                         apply_phase2(root, d, &root_after_phase1, effects, exec.as_ref())
                     } else {
-                        // G3b: COMPLETION IS NOT SUCCESS. The descriptors are
-                        // discarded — a failed block's effects never apply,
-                        // which was always the correct half of this refusal —
-                        // and the run is still recorded, because it ran to an
-                        // exit and the engine holds the proof (the code, the
-                        // sealed stdout log). Without this the wiki's own
-                        // idiom, a check page that exits nonzero on a finding,
-                        // left the same bytes as a crash: one lone pre-exec
-                        // receipt the orphan lint can only call unauditable.
+                        // G3b: completion is not success. The descriptors are
+                        // discarded (a failed block's effects never apply) but
+                        // the run is still recorded with its exit code — a
+                        // check exiting nonzero on a finding must not leave
+                        // the same bytes as a crash.
                         completion_receipt(root, d, &root_after_phase1, exec.as_ref())
                     }
                 }
@@ -411,28 +366,16 @@ pub fn run(
     })
 }
 
-/// G3 pre-flight: ask the guard whether it would refuse, BEFORE anything
-/// commits.
+/// G3 pre-flight: ask the guard whether it would refuse BEFORE anything
+/// commits — by the time the step-2 bracket can refuse, the phase-1 receipt
+/// is already committed, an attested receipt no reader can tell from a
+/// zero-effect completed run's. This NARROWS the window, it does not close it
+/// (a change landing between probe and bracket-open still lands a receipt —
+/// the orphan lint's subject).
 ///
-/// The bracket at step 2 opens against the root the phase-1 receipt made, so by
-/// the time it can refuse, that receipt is committed and ruling 2 keeps it there
-/// — an attested receipt for a run whose exec never starts. Nothing downstream
-/// can tell that record from a
-/// completed run's: a zero-effect run writes no completion receipt either
-/// (`descriptors.is_empty()` short-circuits phase 2). Asking first turns the
-/// whole case into a refusal that writes NOTHING to the attested domain.
-///
-/// This NARROWS the window; it does not close it. A link appearing between this
-/// probe and the open at step 2 still lands a receipt, and never-rollback still
-/// holds. That residue is real, it is what the orphan lint is for, and it must
-/// not be described as elimination.
-///
-/// A refusal is the assertion that nothing happened, so recording it must not
-/// perturb the thing being attested: the reason, the refused path and the
-/// would-be invocation go to the run log under `.meridian/`, outside the hash
-/// domain, beside the stdout this run would have captured.
-/// Takes the log by value and hands it back unrefused: sealing it consumes it,
-/// and a refusal seals it here rather than leaving a half-written record.
+/// A refusal asserts that nothing happened, so it is recorded in the run log
+/// under `.meridian/`, outside the hash domain. Takes the log by value and
+/// hands it back unrefused: sealing consumes it, and a refusal seals it here.
 fn preflight(
     root: &fs::WorkspaceRoot,
     d: &BashDispatch<'_>,
@@ -452,19 +395,12 @@ fn preflight(
     Err(BashError::Detection(OpenRefusal::Guard(e)))
 }
 
-/// G3b — the completion receipt for a failed run: the run exited NONZERO under a clean window, so the
-/// batch is empty by policy and the receipt records the completion with its
-/// exit code.
-///
-/// The empty batch is the point. `apply` is the ONE choke point, so routing the
-/// record through it with `effects: &[]` reuses the whole commit discipline
-/// (lock, pin validation, receipt address) without inventing a second write
-/// path — the same shape the zero-effect completion receipt already takes. What
-/// distinguishes the two records is the `exec.exit_code` riding the receipt,
-/// which is a fact the engine SEALED rather than one a reader infers.
-///
-/// A commit failure here leaves the pre-exec receipt alone and the orphan lint
-/// finds it — the honest outcome, since the record could not be written.
+/// G3b — the completion receipt for a failed run: nonzero exit under a clean
+/// window, so the batch is empty by policy and the receipt records the
+/// completion with its exit code (a fact the engine SEALED, not inferred).
+/// Routing through `apply` with `effects: &[]` reuses the one choke point's
+/// commit discipline rather than inventing a second write path. A commit
+/// failure leaves the pre-exec receipt alone — the orphan lint finds it.
 fn completion_receipt(
     root: &fs::WorkspaceRoot,
     d: &BashDispatch<'_>,

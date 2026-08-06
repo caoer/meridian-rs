@@ -1,17 +1,5 @@
 //! Capability resolution gates — deny-by-default, convention narrowing,
 //! check-*/verify-* bash refusal, and source reporting.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 mod support;
 
@@ -108,11 +96,9 @@ fn check_and_verify_names_refuse_a_bash_fence_loudly() {
     }
 }
 
-/// **Rewritten from `fix_names_do_not_refuse_bash`**, which asserted the OLD
-/// contract: a `fix-*` bash task resolving `CapSource::DenyDefault`. Under
-/// `docs/laws.md` § Amendment there is no source to resolve — a bash task that
-/// clears the `check-*` name law is `Unsandboxed`, and its declaration is not
-/// read at all.
+/// Under `docs/laws.md` § Amendment there is no source to resolve — a bash
+/// task that clears the `check-*` name law is `Unsandboxed`, and its
+/// declaration is not read at all.
 #[test]
 fn a_bash_task_resolves_no_capability_at_all() {
     let d = doc(support::PAGE);
@@ -192,9 +178,8 @@ fn empty_explicit_declaration_is_explicit_read_only() {
     assert_eq!(r.effective, CapSet::none());
 }
 
-// The convention PLANE — where the table is declared, and what each root
-// situation yields — lives in `caps_home.rs` with the rest of the rehoming
-// contract. What stays here is the resolution law those tables feed.
+// The convention plane (where the table is declared) is tested in
+// `caps_home.rs`; here is the resolution law those tables feed.
 
 #[test]
 fn conventions_parse_out_of_a_declaration_document() {

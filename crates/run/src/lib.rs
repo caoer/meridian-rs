@@ -40,24 +40,6 @@
 //! Caps are namespaced (`md.set_field`), forward-compatible to target-scoped
 //! (`md.set_field:status`). Declaring root and timeout are injected by the
 //! caller. Full law: [`caps`].
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 pub mod address;
 pub mod caps;

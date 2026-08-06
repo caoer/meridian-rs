@@ -205,13 +205,9 @@ fn the_depth_cap_suppresses_md_and_names_the_stop() {
     assert_eq!(gen2.unexecuted.len(), 1);
 }
 
-/// **Rewritten from `a_bash_block_runs_end_to_end_and_labels_detected_off_the_verdict`**,
-/// which asserted the OLD contract: `GuaranteeClass::Detected` as a bash
-/// block's class, evidence-derived off the bracket verdict. Under
-/// `docs/laws.md` § Amendment a bash task has no guarantee to derive — the
-/// window closes and anything outliving it writes unobserved — so the label is
-/// `unsandboxed` and the bracket verdict is asserted below as what it is: an
-/// observation about the window, still rendered, no longer a class.
+/// Under `docs/laws.md` § Amendment a bash task has no guarantee to derive —
+/// the label is `unsandboxed`, and the bracket verdict is asserted as what it
+/// is: an observation about the window, still rendered, never a class.
 #[test]
 fn a_bash_block_runs_end_to_end_and_labels_unsandboxed() {
     let (_tmp, root) = workspace(BASH_PAGE);

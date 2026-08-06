@@ -1,28 +1,14 @@
 //! Task-name charset guard — refuses decorated claim-link spellings and other
 //! non-identifier names at address time. Names that the session tree and
 //! grammar admit stay green.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 mod support;
 
 use run::address::{self, AddressError};
 use support::doc;
 
-/// fix8's F1 probe, verbatim: the task name IS a decorated claim link. On the
-/// merge base this resolves and its receipt line carries the token twice (once
-/// as `task`, once as the `run:<task>` actor). Now the NAME refuses, so no run
-/// starts and no receipt line exists to carry anything.
+/// The task name IS a decorated claim link — the name refuses, so no run
+/// starts and no receipt line exists to carry the token.
 #[test]
 fn a_task_named_with_a_decorated_claim_link_refuses() {
     let page = "---\ntask.[[guide#^goal@green.b3af12cd|G]]: \"[[#^t-1]]\"\n---\n\n```bash\necho hi\n```\n^t-1\n";
@@ -33,9 +19,8 @@ fn a_task_named_with_a_decorated_claim_link_refuses() {
     assert_eq!(name, "[[guide#^goal@green.b3af12cd|G]]");
 }
 
-/// R24's standard: the refusal names WHAT is wrong, WHY this name is not
-/// decoration, and WHAT TO DO instead. A bare error class here would be the
-/// exact defect R24 closed.
+/// The refusal names what is wrong, why the name is not decoration, and what
+/// to do instead.
 #[test]
 fn the_refusal_teaches_the_charset_and_the_reason() {
     let page = "---\ntask.[[guide#^goal@green.b3af12cd|G]]: \"[[#^t-1]]\"\n---\n";
@@ -70,11 +55,9 @@ fn a_hostile_name_refuses_even_when_another_task_is_the_one_addressed() {
     );
 }
 
-/// The wider hole, which is why the guard is a CHARSET and not an `@fp` strip:
-/// a task name that can forge markdown is wider than the token. Each of these
-/// would render as structure inside the receipt line — a second `key=value`
-/// token, a second row, a second block anchor, a wikilink — and none of them is
-/// an `@fp` token, so a token-shaped strip would pass every one of them.
+/// Why the guard is a CHARSET and not an `@fp` strip: each of these renders as
+/// structure inside the receipt line — a second `key=value` token, a row, a
+/// block anchor, a wikilink — and none is an `@fp` token a strip would catch.
 #[test]
 fn every_markdown_forging_name_shape_refuses_not_just_the_fp_token() {
     for hostile in [
@@ -97,12 +80,9 @@ fn every_markdown_forging_name_shape_refuses_not_just_the_fp_token() {
     }
 }
 
-/// **Measured, not assumed — where the boundary is NOT the guard.** A LITERAL
-/// line ending cannot survive into a frontmatter key: YAML's own grammar breaks
-/// the mapping before `task.` is ever read, so the binding does not form and
-/// there is nothing to refuse. Recorded because the reachability question is
-/// the one that decides whether a guard is load-bearing (R32's door
-/// accounting), and "it refuses" would be the wrong claim here.
+/// Where the boundary is NOT the guard: a literal line ending cannot survive
+/// into a frontmatter key — YAML's own grammar breaks the mapping before
+/// `task.` is read, so no binding forms and there is nothing to refuse.
 #[test]
 fn a_literal_line_ending_never_becomes_a_task_key_at_all() {
     let page = "---\n\"task.fix\nrow\": \"[[#^t-1]]\"\n---\n";
@@ -113,10 +93,8 @@ fn a_literal_line_ending_never_becomes_a_task_key_at_all() {
     );
 }
 
-/// The blast-radius control, swept before it was written: EVERY task name in
-/// the corpora is `[a-z0-9-]+` (22 distinct names across both repos; the vault
-/// and session tree declare none). These are those names — the guard admits all
-/// of them, so nothing existing breaks.
+/// Every task name in the corpora is `[a-z0-9-]+` — the guard admits all of
+/// them, so nothing existing breaks.
 #[test]
 fn every_task_name_in_the_corpora_still_resolves() {
     for name in [

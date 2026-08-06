@@ -6,31 +6,6 @@
 //! `declaring_root` and `timeout` are injected by the caller (the only holder
 //! of the convention ladder and wall-clock ceiling). `declaring_root` is
 //! `None` when no convention ceiling is in force.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -79,11 +54,9 @@ pub struct RunSpec<'a> {
     /// when the ladder answered nothing (`CwdDefault`) — then no ceiling is in
     /// force and deny-by-default is the whole chain.
     ///
-    /// Injected rather than derived from the [`fs::WorkspaceRoot`] above: those
-    /// two are the same path whenever a root resolved, but they answer
-    /// different questions — one is where files are read, the other is whether
-    /// anything is entitled to declare policy. Only the caller holds the
-    /// ladder's answer, which is why `timeout` above arrives the same way.
+    /// Injected, not derived from the [`fs::WorkspaceRoot`] above: one is where
+    /// files are read, the other is whether anything is entitled to declare
+    /// policy — only the caller holds the ladder's answer.
     pub declaring_root: Option<&'a Path>,
     /// Kernel eval limits — `max_depth` is ALSO the cascade depth cap.
     pub limits: EvalLimits,
@@ -255,13 +228,9 @@ pub fn run(
     // 2. Dispatch by fence language (decision #13).
     let outcome = dispatch(root, spec, &task, &name, &authority, live)?;
 
-    // 3. The guarantee label. `hermetic` is the sealed kernel's proof by
-    // construction. Bash has NO guarantee to derive — the exec-window bracket
-    // detects, never prevents, and a `nohup` or launchd plist writes after the
-    // window closes with no observer, so `unsandboxed` is the whole honest
-    // label (`docs/laws.md` § Amendment). The bracket verdict still rides the
-    // report's out-of-band-delta line, where it is an observation rather than
-    // a class.
+    // 3. The guarantee label: `hermetic` is the sealed kernel's proof by
+    // construction; bash is `unsandboxed` (`docs/laws.md` § Amendment) — the
+    // bracket verdict rides the report's out-of-band-delta line instead.
     let guarantee = match &outcome {
         TaskOutcome::Starlark(_) => GuaranteeClass::Hermetic,
         TaskOutcome::Bash(_) => GuaranteeClass::Unsandboxed,

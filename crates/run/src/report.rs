@@ -4,35 +4,6 @@
 //! Renders caps, effects, exec status, detection verdict, and refusals in a
 //! stable order so CLI and tests share one surface. Out-of-band delta lines
 //! come from [`Detection`], not from the block's own effects.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use serde::Serialize;
 

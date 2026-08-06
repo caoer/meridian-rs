@@ -3,30 +3,6 @@
 //! closes after group kill. Residual compare, config bracket, and symlink
 //! refusal produce a [`Detection`] verdict. Observation only — never rolls
 //! back; phase 2 gates on [`Detection::is_clean`].
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use fs::guard::{ConfigState, GuardError, ResidualDelta, StepGuard};
 use model::MerkleRoot;

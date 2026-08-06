@@ -2,32 +2,6 @@
 //! child still holds a duplicate fd. Proves the S7/R19 explicit-release path:
 //! `WorkspaceLock` unlocks before close so waiters are not blocked by orphaned
 //! fds. Companion to the executor's `LOCK_NB` busy refusal.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use std::io;
 use std::os::unix::io::AsRawFd;

@@ -63,12 +63,6 @@ fn dispatch_of<'a>(source: &'a str, scratch: &'a tempfile::TempDir) -> BashDispa
 /// G3 gate 1: a run the guard would refuse writes NOTHING to the attested
 /// domain — no pre-exec receipt, no journal row, every domain file
 /// byte-identical.
-///
-/// Before the pre-flight, the bracket could only refuse AFTER the phase-1
-/// commit, so a refused run left an attested receipt for an exec that never
-/// started plus a journal row dating the tree to it — and nothing downstream
-/// could tell that record from a completed zero-effect run's, because those
-/// write no completion receipt either.
 #[cfg(unix)]
 #[test]
 fn a_preflight_refusal_writes_nothing_to_the_attested_domain() {
@@ -192,10 +186,9 @@ fn a_clean_run_applies_the_shim_batch_two_phase() {
 }
 
 /// G3b, the pair's first half — COMPLETION IS NOT SUCCESS. A block that ran to
-/// a nonzero exit gets its effects refused AND its completion recorded, because
-/// the wiki's own idiom is a check page that exits nonzero on a finding. Before
-/// this, such a run left one lone pre-exec receipt: the same bytes as a crash,
-/// and the orphan lint could only call it unauditable.
+/// a nonzero exit gets its effects refused AND its completion recorded: a
+/// check page exiting nonzero on a finding must not leave the same bytes as a
+/// crash.
 #[test]
 fn a_nonzero_exit_refuses_phase2_and_phase1_stands() {
     let (_tmp, root) = workspace();
@@ -315,14 +308,9 @@ fn a_timeout_is_distinct_and_refuses_phase2() {
 }
 
 /// Zero descriptors on a clean exit is not a fault — and it is not silence
-/// either. The run happened, so it gets a completion receipt.
-///
-/// The `applied: None` this used to assert was the defect, not the contract:
-/// with no completion receipt, "authorised and never started" and "ran and
-/// changed nothing" were the same bytes, and the toolchain doctor every agent
-/// skill-load runs is exactly a zero-effect task. The original intent — an
-/// empty batch is not an error, and the page is untouched — is asserted below
-/// unchanged.
+/// either: the run happened, so it gets a completion receipt. Without one,
+/// "authorised and never started" and "ran and changed nothing" would be the
+/// same bytes. The page stays untouched.
 #[test]
 fn zero_descriptors_on_a_clean_exit_is_not_a_fault() {
     let (_tmp, root) = workspace();
@@ -379,17 +367,10 @@ fn a_completed_zero_effect_run_leaves_both_receipts() {
     );
 }
 
-/// **Rewritten from `the_choke_point_refuses_an_uncapped_descriptor`**, which
-/// asserted the OLD contract: an undeclared bash descriptor refusing at the
-/// choke point with `CapDenied`. Capabilities do not apply to bash
-/// (`docs/laws.md` § Amendment), so the dispatcher passes
-/// `Authority::Unsandboxed` and the descriptor APPLIES.
-///
-/// This is a real behaviour change, not a renamed print: the refusal it
-/// replaces was a live gate. Denying the shim never bounded the block — it
-/// only pushed the same write to `sed -i`, off the attested path, where the
-/// U6b bracket at most detects it. The choke point stays real where authority
-/// is real; `law_no_caps_on_bash.rs` holds both halves at the binary boundary.
+/// Capabilities do not apply to bash (`docs/laws.md` § Amendment): the
+/// dispatcher passes `Authority::Unsandboxed` and the descriptor APPLIES.
+/// Denying the shim would only push the same write to `sed -i`, off the
+/// attested path; `law_no_caps_on_bash.rs` holds both halves.
 #[test]
 fn an_undeclared_bash_descriptor_applies_ungoverned() {
     let (_tmp, root) = workspace();
@@ -436,9 +417,8 @@ fn an_unsafe_invocation_id_refuses_before_anything_commits() {
 }
 
 /// U6b #14, the zero-descriptor cheat end-to-end: bash writes an md file
-/// into the TREE, emits nothing on the shim fd, exits 0. Without the bracket
-/// this was `Applied { applied: None }`; now phase 2 refuses, the delta
-/// names the file with the S4 wording, and the write is NEVER rolled back
+/// into the TREE, emits nothing on the shim fd, exits 0. Phase 2 refuses, the
+/// delta names the file (S4 wording), and the write is NEVER rolled back
 /// (ruling 2).
 #[test]
 fn an_ungoverned_tree_write_refuses_phase2_with_the_delta_named() {
