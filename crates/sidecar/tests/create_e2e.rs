@@ -71,8 +71,8 @@ fn v3_hello_advertises_create_and_a_v2_session_refuses_the_op() {
         "the v3 hello advertises the birth op: {caps:?}"
     );
 
-    // The other side of the same law: a v2 session never advertises it AND
-    // never serves it. Both halves asserted on a PROVEN-LIVE session.
+    // The other side of the same law: a v2 session never advertises it and
+    // never serves it.
     let v2 = serve(
         &root,
         &format!("{HELLO_V2}\n{}\n", create_frame(2, "a.md", "# A\n")),
@@ -116,9 +116,8 @@ fn create_births_the_callers_exact_bytes() {
     // root transition, and the journal anchor that dates it.
     let b = &reply["body"];
     assert_eq!(b["path"], json!("notes/newborn.md"));
-    // The reported rev must describe the bytes that LANDED, recomputed here from
-    // disk rather than echoed from the reply. A birth that reported the rev of a
-    // draft — or of a templated body — fails this even though a file exists.
+    // The reported rev must describe the bytes that landed, recomputed from
+    // disk rather than echoed from the reply.
     assert_eq!(
         b["file_rev_after"]
             .as_str()

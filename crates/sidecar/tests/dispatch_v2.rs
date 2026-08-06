@@ -270,8 +270,8 @@ fn gate3_s2l22_node_rev_must_when_splice_in_caps() {
 fn gate3_unarmed_and_unknown_ops_answer_unknown_op() {
     let (_d, root) = s0();
     for req in [
-        // every §3.2 op is armed as of T5-SUB — only genuinely unknown
-        // names answer unknown_op now.
+        // Every §3.2 op is armed — only genuinely unknown names answer
+        // unknown_op.
         r#"{"id":1,"op":"zap"}"#,
         r#"{"id":1,"op":"guard"}"#, // v1 guard, DELETED (D-C8) — never a name again
     ] {
@@ -471,8 +471,6 @@ fn errors_dot_ignored_md_stays_addressable() {
 
 /// Worked ids 70/71 (case-insensitive walk on computed spans), 73 (stage-2
 /// miss carries `dest`), 74 (stage-1 miss carries none) — §4.5, S2 plan.
-/// Worked id 72 needs the S2 receipts bytes, which are not committed fixture
-/// data; it lands with the post-flip fixture regen (PF-FIXTURES).
 #[test]
 fn resolve_worked_s2_frames() {
     let plan = wsfix("s2/notes/plan.md");
@@ -658,10 +656,8 @@ fn q5_gate1_worked_stale_view_refusal_computed() {
 
 /// The §4.6 worked exchange through the live loop: the edge map value-for-
 /// value (resolved basename edge + dangling ref, per-edge counts) with the
-/// triple's roots COMPUTED onto the frozen R2. `changes_seq` is this serve
-/// epoch's truthful counter — 0, no batch emitted yet (emission lands at
-/// D4-DELTAS-LIVE; the printed frame's `changes_seq:2` is its epoch's
-/// counter, pinned at the wire level in `contract_v2.rs`).
+/// triple's roots computed onto the frozen R2. `changes_seq` is this serve
+/// epoch's truthful counter — 0, no batch emitted yet.
 #[test]
 fn q5_worked_links_exchange_computed() {
     let (_d, root) = s2();
@@ -701,11 +697,9 @@ fn q5_gate3_whole_corpus_edge_map() {
 }
 
 /// Gate 2 (pack §8), dispatch side of the honest-tense law: the corpus
-/// mutates between reads and the UN-strict read never refuses — it serves
-/// the new world's triple. Staleness becomes an error ONLY through the
-/// `require_root` opt-in. No assertion anywhere relates the two roots'
-/// distance or freshness: PERMITTED, never bounded (the wire-level divergent
-/// -triple pin is `contract_v2.rs`).
+/// mutates between reads and the un-strict read never refuses — it serves
+/// the new world's triple. Staleness becomes an error only through the
+/// `require_root` opt-in; no assertion bounds the two roots' distance.
 #[test]
 fn q5_gate2_honest_tense_unstrict_read_never_refuses() {
     let (dir, root) = s2();
@@ -772,8 +766,7 @@ fn q5_gate4_links_strict_decode_rejections() {
 /// A `path` outside the corpus the fact op serves — a missing file, or an
 /// on-disk file outside the §12 hash domain — is `file_not_found`, path
 /// echoed (env class). The fact plane answers for the domain its root
-/// stamps; the wider addressable set is the walk plane's (`resolve`,
-/// §4.5/§10.3 — derived reading, recorded in the unit's PROVENANCE).
+/// stamps; the wider addressable set is the walk plane's (§4.5/§10.3).
 #[test]
 fn q5_links_path_outside_domain_is_file_not_found() {
     let (_d, root) = s2();

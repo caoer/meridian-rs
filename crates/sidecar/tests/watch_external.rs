@@ -223,11 +223,9 @@ fn external_edit_reaches_live_sub_and_replays_identically() {
     );
 }
 
-/// GATE 4 — the RULED rename form, pinned AS DATA: a pure out-of-band
+/// GATE 4 — the ruled rename form, pinned as data: a pure out-of-band
 /// rename (one removed + one added, byte-equal) classifies `renamed` with
-/// `from_path`, same `file_rev` both tenses, NO node entries. The ledgered
-/// copy-edge (delete A + independent byte-equal create B ⇒ renamed) is
-/// recorded in `src/watch.rs`; STOP tripwire standing.
+/// `from_path`, same `file_rev` both tenses, no node entries.
 #[test]
 fn pure_external_rename_classifies_renamed_with_from_path() {
     let (_d, root) = s0();
@@ -253,8 +251,7 @@ fn pure_external_rename_classifies_renamed_with_from_path() {
         vec![line(r#"{"id":22,"op":"root"}"#)], // fresh epoch just to fold
     );
     assert_eq!(frames2[0].1["body"]["root"], seq1_root);
-    // the delta itself: pull it from the FIRST session via a second look —
-    // instead, assert within one session:
+    // assert the delta within one session:
     let (_d2, root2) = s0();
     let from2 = root2.0.join("notes/plan.md");
     let to2 = root2.0.join("notes/plan-v2.md");
