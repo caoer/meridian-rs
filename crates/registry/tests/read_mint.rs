@@ -1,12 +1,6 @@
-//! Stage-2 S6 gates: read IS the mint (D6/D9/D13/D16), driven single-session
-//! **in-process** against the real resident daemon — ONE daemon holding the
-//! receipt ledger across a read and the write that follows it.
-//!
-//! Every gate here goes over the daemon's own socket, so what is under test is
-//! the PRODUCTION wiring (`dispatch_read` → `composed_read_warm` → the arm's
-//! mint), never a hand-rolled re-call of the arm. Two CLI processes could not
-//! share this ledger by design (it is daemon-session memory), so a
-//! two-process shape would test the wrong thing.
+//! Read is the mint (D6/D9/D13/D16). Every gate goes over one live daemon's
+//! socket: the ledger is daemon-session memory, so a two-process shape would
+//! test the wrong thing.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -33,8 +27,7 @@ fn test_config(tmp: &TempDir) -> Config {
     config.reap_interval = forever;
     config.prewarm_interval = forever;
     config.prewarm_quiet_max = forever;
-    // No idle exit: this server's lifetime is the test's, and a daemon that
-    // reaped itself mid-assertion would fail as a flake, not a finding.
+    // No idle exit: a daemon that reaped itself mid-assertion would flake.
     config.idle_exit = None;
     config
 }
@@ -54,7 +47,7 @@ fn write_ws(tmp: &TempDir, files: &[(&str, &str)]) -> PathBuf {
 }
 
 /// A persistent NDJSON connection: `hello` binds the workspace, then every op
-/// rides the SAME connection (the per-connection binding the handshake sets up).
+/// rides the same connection.
 struct Conn {
     writer: UnixStream,
     reader: BufReader<UnixStream>,
@@ -88,16 +81,12 @@ impl Conn {
         }))
     }
 
-    /// The AGENT path: a composed sections read carrying the daemon-derived
-    /// actor. (`actor` is a wire field the DAEMON stamps — D13; no MCP caller
-    /// can set it, and nothing here widens that.)
+    /// A composed sections read carrying the daemon-derived actor (D13).
     fn read_sections(&mut self, path: &str, selectors: &[&str], actor: Option<&str>) -> Value {
         let mut frame = json!({
             "op": "read",
             "path": path,
-            // U14: the wire takes TAGGED selectors. The helper keeps its
-            // ergonomic &[&str] and converts at its own door — which is
-            // exactly the ingress discipline the wire now enforces.
+            // The wire takes tagged selectors; convert from the helper's &[&str].
             "sections": selectors
                 .iter()
                 .map(|s| wire::ReadSel::parse(s))
@@ -121,8 +110,6 @@ fn served_sec_rev(read: &Value, sel: &str) -> String {
         .as_array()
         .expect("sections array")
         .iter()
-        // U14: `sel` is echoed in the caller's own TAGGED grammar, so the
-        // match is structure-to-structure rather than string-to-string.
         .find(|s| s["sel"] == json!(wire::ReadSel::parse(sel)))
         .unwrap_or_else(|| panic!("section {sel} served: {read}"))["sec_rev"]
         .as_str()
@@ -154,9 +141,8 @@ fn file_tree(dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     out
 }
 
-/// Gate 1 — **the mint happens.** An agent-path read (a daemon-derived actor on
-/// the wire) mints exactly one receipt per section it SERVED, carrying the three
-/// D9 facts: actor, canonical selector, and the `sec_rev` of the bytes served.
+/// Gate 1 — an agent-path read mints one receipt per section served, carrying
+/// the three D9 facts: actor, canonical selector, and served `sec_rev`.
 #[test]
 fn an_agent_read_mints_a_receipt_carrying_actor_selector_and_rev() {
     let tmp = TempDir::new().unwrap();
@@ -189,13 +175,8 @@ fn an_agent_read_mints_a_receipt_carrying_actor_selector_and_rev() {
     server.shutdown();
 }
 
-/// Gate 2 — **the receipt survives the write** (H1, the failure mode this unit
-/// exists to prevent). A commit through the daemon's own write path moves the
-/// corpus content hash, so the next warm REBUILDS the engine — and a receipt
-/// hung off that engine would evaporate exactly when a pin needs it. The write
-/// here touches a DIFFERENT file (as a pin's lock write does), so the receipt
-/// must not only survive but stay CURRENT: its rev still matches what the
-/// target section serves after the rebuild.
+/// Gate 2 — the receipt survives the rebuild a write forces, and stays current:
+/// its rev still matches what the target section serves afterwards.
 #[test]
 fn the_receipt_survives_the_write_that_rebuilds_the_warm_engine() {
     let tmp = TempDir::new().unwrap();
@@ -207,10 +188,7 @@ fn the_receipt_survives_the_write_that_rebuilds_the_warm_engine() {
     let read = conn.read_sections("plan.md", &["Alpha"], Some("agent-7"));
     let read_rev = served_sec_rev(&read, "Alpha");
 
-    // The write: a real commit through the shared `splice → commit`
-    // choke-point, landing in a sibling file — the shape of a pin's own lock
-    // write. U10: this arrives through the WIRE door, so it carries the
-    // section's fingerprint — read first, then write what you read.
+    // A commit into a sibling file — the shape of a pin's own lock write.
     let notes = conn.read_sections("notes.md", &["Notes"], Some("agent-7"));
     let notes_rev = served_sec_rev(&notes, "Notes");
     let splice = conn.call(&json!({
@@ -229,8 +207,7 @@ fn the_receipt_survives_the_write_that_rebuilds_the_warm_engine() {
         "the corpus content hash MOVED — the next warm must rebuild: {splice}"
     );
 
-    // The rebuild is not assumed: `Built` is the parse-count proof that the warm
-    // engine was thrown away and rebuilt at the new fingerprint.
+    // `Built` is the parse-count proof that the warm engine was rebuilt.
     let canonical = workspace::canonicalize(&ws).unwrap();
     assert_eq!(
         server.registry().warm_or_build(&canonical).unwrap(),
@@ -238,15 +215,12 @@ fn the_receipt_survives_the_write_that_rebuilds_the_warm_engine() {
         "the write rebuilt the warm engine"
     );
 
-    // The ledger is NOT the engine's: the receipt is still there…
     let mints = server.registry().read_mints(&canonical);
     let receipt = mints
         .lookup("agent-7", "plan.md", &wire::ReadSel::parse("Alpha"))
         .expect("the pin's own write must not evaporate the receipt that authorizes it");
     assert_eq!(receipt.sec_rev, read_rev, "…carrying its minted rev");
 
-    // …and still CURRENT: the untouched section serves the same rev, so a gate
-    // re-checking the receipt against disk finds it valid.
     let after = conn.read_sections("plan.md", &["Alpha"], None);
     assert_eq!(
         served_sec_rev(&after, "Alpha"),
@@ -257,9 +231,8 @@ fn the_receipt_survives_the_write_that_rebuilds_the_warm_engine() {
     server.shutdown();
 }
 
-/// Gate 3 — **selector grain (D6).** Reading section A does not satisfy a
-/// lookup for section B. Doc-level receipts would let an agent attest bytes it
-/// never saw.
+/// Gate 3 — selector grain (D6): reading section A does not satisfy a lookup
+/// for section B.
 #[test]
 fn a_read_of_section_a_does_not_satisfy_a_lookup_for_section_b() {
     let tmp = TempDir::new().unwrap();
@@ -288,10 +261,8 @@ fn a_read_of_section_a_does_not_satisfy_a_lookup_for_section_b() {
     server.shutdown();
 }
 
-/// Gate 4 — **actor isolation (D13).** A foreign actor's read mints for that
-/// actor alone; my lookup does not see it. The ledger key starts with the
-/// daemon-derived actor precisely so one agent's context never authorizes
-/// another's attestation.
+/// Gate 4 — actor isolation (D13): a foreign actor's read mints for that actor
+/// alone; my lookup does not see it.
 #[test]
 fn a_foreign_actors_read_does_not_mint_for_me() {
     let tmp = TempDir::new().unwrap();
@@ -320,10 +291,8 @@ fn a_foreign_actors_read_does_not_mint_for_me() {
     server.shutdown();
 }
 
-/// Gate 5 — **the CLI bypass (D16).** A read with no actor mints nothing: the
-/// bare CLI is local-operator-trusted and bypasses the gate entirely, exactly
-/// as `mrd put` skips the host's authz. A blank actor is treated as absent too
-/// — an empty string is not an identity.
+/// Gate 5 — the CLI bypass (D16): a read with no actor mints nothing. A blank
+/// actor counts as absent — an empty string is not an identity.
 #[test]
 fn a_read_with_no_actor_mints_nothing() {
     let tmp = TempDir::new().unwrap();
@@ -349,8 +318,8 @@ fn a_read_with_no_actor_mints_nothing() {
     server.shutdown();
 }
 
-/// Gate 6 — a **toc-mode** read mints nothing. Toc serves the section MAP, not
-/// content; minting there would gate an attestation over bytes nobody saw.
+/// Gate 6 — a toc-mode read mints nothing: it serves the section map, not
+/// content.
 #[test]
 fn a_toc_mode_read_mints_nothing_it_served_no_content() {
     let tmp = TempDir::new().unwrap();
@@ -377,18 +346,16 @@ fn a_toc_mode_read_mints_nothing_it_served_no_content() {
     server.shutdown();
 }
 
-/// Gate 7 — **no persistence (D6).** The mint path writes NOTHING to disk: the
-/// whole sandbox (workspace, cache drawer, daemon state file) is byte-for-byte
-/// identical across an agent read that provably minted.
+/// Gate 7 — no persistence (D6): the whole sandbox is byte-for-byte identical
+/// across an agent read that provably minted.
 #[test]
 fn the_mint_path_writes_nothing_to_disk() {
     let tmp = TempDir::new().unwrap();
     let ws = write_ws(&tmp, &[("plan.md", PLAN)]);
     let server = RunningServer::start(test_config(&tmp)).unwrap();
     let mut conn = Conn::open(server.socket_path());
-    // Bind first: `hello` legitimately registers the workspace and writes the
-    // drawer sentinel + state file, so the snapshot is taken AFTER it — what is
-    // under test is the READ.
+    // Bind first: `hello` legitimately writes the drawer sentinel + state file,
+    // so the snapshot is taken after it.
     conn.hello(&ws);
 
     let before = file_tree(tmp.path());

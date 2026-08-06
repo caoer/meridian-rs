@@ -1,29 +1,19 @@
-//! V2 §Q2/§Q5 gates for the resident daemon's `view_path` op — the view-organ
-//! **path forwarder**. A real client sends `view_path` over the socket; the
-//! daemon (the sole persistent builder, OD6) publishes `view.duckdb` under its
-//! per-workspace publish mutex and returns a stamped PATH plus a pre-open
-//! freshness hint. **Never rows.**
+//! §Q2/§Q5 gates for the resident daemon's `view_path` op — the view-organ path
+//! forwarder. The daemon (the sole persistent builder, OD6) publishes
+//! `view.duckdb` under its per-workspace publish mutex and returns a stamped
+//! path plus a pre-open freshness hint. Never rows.
 //!
-//! The §Q5 gate, demonstrated end to end:
+//! §Q5, end to end:
 //! - the first `view_path` builds → `FRESH_AT_SAMPLE` (`as_of == live`);
 //! - after a corpus mutation, a default `view_path` serves the last-good file
-//!   with `as_of != live` — a **visible, legal STALE frame**, rows never
-//!   involved, never an error;
-//! - `fresh:true` makes `as_of == live` (`FRESH_AT_SAMPLE`) in quiescence, or
-//!   reports `RACED` under churn — never a loop, never a fresh lie.
+//!   with `as_of != live` — a visible, legal `STALE` frame, never an error;
+//! - `fresh:true` reaches `FRESH_AT_SAMPLE` in quiescence, or reports `RACED`
+//!   under churn — never a loop, never a fresh lie.
 //!
-//! The reply's `stale` is asserted **always null** (a pre-open hint is never a
-//! verdict, B5+C3), and no tabular/row field ever appears.
-//!
-//! # The v3 vocabulary half
-//!
-//! The §Q5 gates above run on an un-negotiated (frozen v2) session, so they read
-//! `as_of_root`/`live_root`. The last test in this file drives the SAME op on a
-//! session that negotiated `contract:v3` and asserts the projected spelling —
-//! `as_of_fingerprint`/`live_fingerprint` present, and the v2 `root` names
-//! **absent**. The absent half is the load-bearing one: a rename that COPIED
-//! instead of moving would leave both spellings on the wire and a present-only
-//! assertion would pass over it.
+//! `stale` is always null (a pre-open hint is never a verdict, B5+C3) and no
+//! tabular/row field ever appears. The §Q5 gates run on an un-negotiated
+//! (frozen v2) session and read `as_of_root`/`live_root`; the last test drives
+//! the same op on a `contract:v3` session and asserts the projected spelling.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -51,8 +41,7 @@ fn test_config(tmp: &TempDir) -> Config {
     config.reap_interval = forever;
     config.prewarm_interval = forever;
     config.prewarm_quiet_max = forever;
-    // No idle exit: this server's lifetime is the test's, and a daemon that
-    // reaped itself mid-assertion would fail as a flake, not a finding.
+    // Lifetime is the test's; idle-exit would flake mid-assertion.
     config.idle_exit = None;
     config
 }
@@ -120,10 +109,10 @@ impl Conn {
     }
 }
 
-/// Assert the invariants EVERY `view_path` reply must hold (path forwarder, not
-/// a SQL proxy): `ok`, a stamped `view.duckdb` PATH, both `root`-vocabulary
-/// fingerprints present, `stale` ALWAYS null, `live_source` a pre-open hint
-/// (`watch`/`none`, never `fold`), and NO tabular/row field anywhere.
+/// Assert the invariants every `view_path` reply must hold (path forwarder, not
+/// a SQL proxy): `ok`, a stamped `view.duckdb` path, both `root`-vocabulary
+/// fingerprints present, `stale` always null, `live_source` a pre-open hint
+/// (`watch`/`none`, never `fold`), and no tabular/row field anywhere.
 fn assert_reply_invariants(reply: &Value) {
     assert_eq!(reply["ok"], json!(true), "view_path ok: {reply}");
     let body = &reply["body"];
@@ -148,8 +137,8 @@ fn assert_reply_invariants(reply: &Value) {
             .is_some_and(|s| s.starts_with("b3:")),
         "live_root is a b3 fingerprint hint: {reply}"
     );
-    // The one field the design nails down hardest: a PRE-OPEN hint is never a
-    // verdict, so `stale` is present AND null on every reply.
+    // A pre-open hint is never a verdict, so `stale` is present and null on
+    // every reply.
     assert!(
         body.as_object().unwrap().contains_key("stale"),
         "stale is always present: {reply}"
@@ -165,7 +154,7 @@ fn assert_reply_invariants(reply: &Value) {
         json!(false),
         "round-1 rebuilds are synchronous — no refresh in flight at reply time: {reply}"
     );
-    // Path forwarder, NOT a SQL proxy: no row/column/result surface ever rides.
+    // Path forwarder, not a SQL proxy: no row/column/result surface ever rides.
     for tabular in ["rows", "columns", "row_count", "result"] {
         assert!(
             body.get(tabular).is_none(),
@@ -201,9 +190,8 @@ fn q5_gate_build_then_mutation_is_a_visible_stale_frame_then_fresh_reconverges()
     // (2) Mutate the corpus — disk moves off the built fingerprint.
     fs::write(ws.join("a.md"), "# A changed\n\nsee [[b]] and more\n").unwrap();
 
-    // A DEFAULT (non-fresh) view_path serves the last-good file WITHOUT a
-    // rebuild — as_of (the published stamp) != live (the fresh disk fold): a
-    // visible, legal STALE frame. Rows never involved.
+    // A default (non-fresh) view_path serves the last-good file without a
+    // rebuild — as_of (published stamp) != live (fresh disk fold): a legal STALE.
     let stale = conn.view_path(&ws, None);
     assert_reply_invariants(&stale);
     assert_eq!(
@@ -222,7 +210,7 @@ fn q5_gate_build_then_mutation_is_a_visible_stale_frame_then_fresh_reconverges()
     );
 
     // (3) fresh:true asks for a bounded rebuild. Quiescent now → the rebuild
-    // reaches as_of == live: FRESH_AT_SAMPLE, at the NEW fingerprint.
+    // reaches as_of == live: FRESH_AT_SAMPLE, at the new fingerprint.
     let fresh = conn.view_path(&ws, Some(true));
     assert_reply_invariants(&fresh);
     assert_eq!(
@@ -243,11 +231,10 @@ fn q5_gate_build_then_mutation_is_a_visible_stale_frame_then_fresh_reconverges()
     server.shutdown();
 }
 
-/// `fresh:true` under continuous churn is BOUNDED (§Q3): it reaches
-/// `FRESH_AT_SAMPLE` or reports RACED, never STALE, never an error, never a loop.
-/// A background thread rewrites the corpus with distinct content in a tight
-/// loop, so the post-build sample keeps missing — RACED is observed within the
-/// bounded retry. (Design gate 11: quiescent → FRESH, churn → RACED.)
+/// `fresh:true` under continuous churn is bounded (§Q3): it reaches
+/// `FRESH_AT_SAMPLE` or reports RACED, never STALE, never an error, never a
+/// loop. A background thread keeps the corpus fingerprint moving, so the
+/// post-build sample keeps missing (design gate 11).
 #[test]
 fn fresh_under_churn_is_bounded_and_reports_raced() {
     let tmp = TempDir::new().unwrap();
@@ -277,9 +264,7 @@ fn fresh_under_churn_is_bounded_and_reports_raced() {
         }
     });
 
-    // Under continuous churn, a bounded --fresh call reaches RACED within its
-    // one retry. Loop a bounded number of attempts to observe it deterministically
-    // (each attempt is itself bounded — never a loop inside the daemon).
+    // A bounded number of attempts, each itself bounded inside the daemon.
     let mut observed_raced = false;
     for _ in 0..64 {
         let reply = conn.view_path(&ws, Some(true));
@@ -311,7 +296,7 @@ fn fresh_under_churn_is_bounded_and_reports_raced() {
 }
 
 /// §3.2 discovery honesty + the self-resolving contract: the daemon advertises
-/// `view_path` in its caps, and a `view_path` succeeds with NO prior `hello`
+/// `view_path` in its caps, and a `view_path` succeeds with no prior `hello`
 /// (the op carries its own `cwd`).
 #[test]
 fn view_path_is_advertised_and_needs_no_hello() {
@@ -333,7 +318,7 @@ fn view_path_is_advertised_and_needs_no_hello() {
         "the daemon advertises view_path (§3.2 discovery honesty): {ack}"
     );
 
-    // A fresh connection sends view_path with NO hello — it self-resolves `cwd`.
+    // A fresh connection sends view_path with no hello — it self-resolves `cwd`.
     let mut bare = Conn::open(server.socket_path());
     let reply = bare.view_path(&ws, None);
     assert_reply_invariants(&reply);
@@ -346,10 +331,9 @@ fn view_path_is_advertised_and_needs_no_hello() {
     server.shutdown();
 }
 
-/// Recursively collect every object KEY in `v`. Values are never collected — a
-/// corpus path that spells `root` is a legitimate VALUE and must not be re-keyed.
-/// (Same mechanism as `wire_vocab_rev.rs`, kept local so this file stays a
-/// standalone suite.)
+/// Recursively collect every object key in `v`. Values are never collected — a
+/// corpus path that spells `root` is a legitimate value and must not be
+/// re-keyed.
 fn keys(v: &Value, out: &mut Vec<String>) {
     match v {
         Value::Object(map) => {
@@ -364,23 +348,13 @@ fn keys(v: &Value, out: &mut Vec<String>) {
 }
 
 /// The v3 vocabulary gate for the view organ's path forwarder, end to end over
-/// the socket: a session that negotiated `contract:v3` asks for a `view_path` and
-/// the reply carries the fingerprint spelling **and only** the fingerprint
+/// the socket: a session that negotiated `contract:v3` asks for a `view_path`
+/// and the reply carries the fingerprint spelling and only the fingerprint
 /// spelling.
 ///
-/// # Why the absent-clause is the point
-///
-/// The Rust wire type spells `as_of_root`/`live_root` deliberately — the v3
-/// projection re-keys the frozen v2 slots through the ONE rename table
-/// (`wire-serve::rev`), never a second dialect. That table's contract is that it
-/// **moves** a key. A rename that COPIED would leave a frame carrying BOTH
-/// spellings, which a present-only assertion accepts happily. Pinning the v2
-/// names as absent is what proves the move, and it is why this test exists at all
-/// — every other `view_path` gate in this file runs on a v2 session.
-///
-/// Same shape of reasoning as G5's refusal arm asserting that zero ops reached
-/// the daemon rather than merely that the caller saw an error: assert the
-/// mechanism, not the symptom.
+/// The rename table (`wire-serve::rev`) MOVES a key. Pinning the v2 names as
+/// absent is what proves the move: a copying rename passes a present-only
+/// assertion.
 #[test]
 fn a_v3_session_view_path_carries_fingerprint_slots_and_never_the_root_spelling() {
     let tmp = TempDir::new().unwrap();
@@ -422,9 +396,8 @@ fn a_v3_session_view_path_carries_fingerprint_slots_and_never_the_root_spelling(
         );
     }
 
-    // (2) ABSENT: the v2 `root` spellings, ANYWHERE in the frame. This is the
-    // load-bearing half — a copy-instead-of-move rename passes (1) and fails
-    // here, and a whole-frame key sweep catches the slot wherever it lands.
+    // (2) ABSENT: the v2 `root` spellings, anywhere in the frame — the
+    // load-bearing half, swept whole-frame so the slot is caught wherever it lands.
     let mut frame_keys = Vec::new();
     keys(&reply, &mut frame_keys);
     for v2_key in ["as_of_root", "live_root", "root"] {

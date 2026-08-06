@@ -1,4 +1,4 @@
-//! G11 design gates that do NOT assert on `fs::fold_count`.
+//! G11 design gates that do not assert on `fs::fold_count`.
 //!
 //! Split from `prewarm_quiet.rs`: `fold_count` is process-global, so
 //! fold-difference assertions need a dedicated binary.
@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use registry::{Config, RunningServer, WarmOutcome};
 
 // `Duration::from_days`/`from_mins` are not const-stable at MSRV 1.96, so the
-// seconds form is the only option (the crate-wide precedent); silence the lint.
+// seconds form is the only option.
 #[allow(clippy::duration_suboptimal_units)]
 const NEVER: Duration = Duration::from_secs(365 * 24 * 60 * 60);
 
@@ -40,8 +40,7 @@ fn workspace(tmp: &Path, files: &[(&str, &str)]) -> PathBuf {
     fs::canonicalize(&ws).unwrap()
 }
 
-/// The skip is a skip, not a stop: the sweep still catches a real edit, so the
-/// latency property pre-warm exists for survives the cheap gate.
+/// A prewarm skip is a skip, not a stop: a real edit still rebuilds on the sweep.
 #[test]
 fn a_changed_corpus_is_still_rebuilt_on_the_sweep() {
     let tmp = tempfile::tempdir().unwrap();
@@ -68,8 +67,7 @@ fn a_changed_corpus_is_still_rebuilt_on_the_sweep() {
 }
 
 /// The leak half of G11: a detached daemon is reparented to init and nothing
-/// ever ends it, so each isolated run left one behind permanently (measured:
-/// exactly 8 per gate run, 281 alive on one host). It must now age out.
+/// else ever ends it, so it must age out.
 #[test]
 fn an_idle_daemon_asks_to_exit() {
     let tmp = tempfile::tempdir().unwrap();
@@ -86,8 +84,8 @@ fn an_idle_daemon_asks_to_exit() {
     );
 }
 
-/// And it must not fire on a daemon that is merely young — an exit horizon that
-/// tripped immediately would turn every client call into a cold start.
+/// The horizon must not fire on a young daemon — one that tripped immediately
+/// would turn every client call into a cold start.
 #[test]
 fn a_daemon_inside_its_horizon_stays() {
     let tmp = tempfile::tempdir().unwrap();

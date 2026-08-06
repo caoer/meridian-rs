@@ -1,4 +1,4 @@
-//! U20b gates — serve-side `Op::Sub`: push channel, per-workspace ring, S2/S6
+//! Serve-side `Op::Sub` gates: push channel, per-workspace ring, S2/S6
 //! boundaries, chain contiguity. Every gate drives the real daemon over its
 //! socket (the push path is a connection property; in-process re-call would
 //! test a shape production wiring does not have).
@@ -6,7 +6,6 @@
 //! Positional frame selects are sound because a subscribed connection cannot
 //! desync: `serve_conn` returns into `push_loop` on an accepted `Sub`, so one
 //! connection is request-or-push, never both (`crates/registry/src/server.rs`).
-//! Not `crates/sidecar/tests/sub_push.rs` — different file.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -450,7 +449,7 @@ fn a_live_subscription_survives_the_reaper() {
 
 /// S1: a subscriber that stops draining must not park a server thread forever.
 /// The daemon is thread-per-connection, so a wedged consumer costs an OS thread
-/// AND (since an armed sub holds the quiet clock open) the daemon's mortality.
+/// and (since an armed sub holds the quiet clock open) the daemon's mortality.
 /// Past the write deadline the connection is dropped and `SubGuard` freed.
 ///
 /// *Mutation:* drop `set_write_timeout` from `push_loop` — the subscription
@@ -537,10 +536,9 @@ fn an_armed_sub_defers_idle_exit_and_releasing_it_restores_mortality() {
          sends no requests, so the request clock alone would kill it"
     );
 
-    // The counterweight: the daemon stays MORTAL. The subscriber goes away
-    // exactly as a dead owner process does — the kernel closes the socket — and
-    // the push plane observes that EOF even though the workspace is quiet and
-    // no frame is ever written.
+    // The counterweight: the subscriber goes away as a dead owner process does
+    // (the kernel closes the socket), and the push plane observes that EOF even
+    // on a quiet workspace where no frame is ever written.
     drop(sub);
 
     let canonical = workspace::canonicalize(&ws).unwrap();
@@ -627,7 +625,7 @@ fn an_armed_sub_with_zero_frames_written_is_dropped_after_the_idle_horizon() {
     server.shutdown();
 }
 
-/// R2b counterweight: any frame written RESETS the horizon, so a subscriber on a
+/// R2b counterweight: any frame written resets the horizon, so a subscriber on a
 /// workspace that keeps producing survives well past it. Without the reset the
 /// backstop would be an absolute lifetime — a tax on every healthy subscriber
 /// rather than a bound on mode (c)'s exact signature.

@@ -6,11 +6,9 @@
 //! renamed over the target, then the directory fsynced. A crash leaves at most
 //! an orphan temp, never a half-written state file.
 //!
-//! **Corrupt is cold, and cold is never wrong.** An absent, unreadable,
-//! unparseable, or future-schema state file loads as the empty set: the daemon
-//! starts with no warm registrations rather than refusing to start or adopting
-//! garbage (decision 0001 round 5). The mistake of forgetting a warm workspace
-//! is recoverable (re-register); the mistake of serving a corrupt one is not.
+//! Corrupt is cold: an absent, unreadable, unparseable, or future-schema state
+//! file loads as the empty set — the daemon starts with no warm registrations
+//! rather than refusing to start or adopting garbage.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -48,8 +46,7 @@ impl StateStore {
     }
 
     /// Load the registered set. Any failure — absent, unreadable, corrupt, or
-    /// a future schema — returns the empty set and logs to stderr; loading is
-    /// never a hard failure (cold is never wrong).
+    /// a future schema — returns the empty set and logs to stderr.
     pub(crate) fn load(&self) -> Vec<WorkspaceEntry> {
         let bytes = match fs::read(&self.path) {
             Ok(bytes) => bytes,
@@ -139,9 +136,8 @@ fn write_tmp(dir: &Path, data: &[u8]) -> io::Result<PathBuf> {
     }
 }
 
-/// fsync a directory so a completed rename survives power loss. Best-effort:
-/// the entry is already visible, so a failed dir sync must never turn a
-/// committed write into a reported failure.
+/// fsync a directory so a completed rename survives power loss. Best-effort: a
+/// failed dir sync must never turn a committed write into a reported failure.
 fn fsync_dir(dir: &Path) {
     if let Ok(f) = File::open(dir) {
         let _ = f.sync_all();

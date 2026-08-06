@@ -1,10 +1,8 @@
-//! E2E gates for the resident-engine handshake (`[[0002-resident-daemon]]` §4,
-//! U3). One `hello` round trip asserts the contract rev (single v3), resolves
-//! the workspace (the ancestor walk, folded in from `Registry::resolve`), pins
-//! its storage (the canonicalize → deny-ceiling → sentinel path, reused — R2),
-//! warms its resident engine, binds the connection, and lists the served caps.
-//! An unknown declared rev is a loud refusal. `hello` subsumes the deleted
-//! `attach` op — no parallel binding path (§5).
+//! E2E gates for the resident-engine handshake (`[[0002-resident-daemon]]` §4).
+//! One `hello` round trip negotiates the contract rev, resolves the workspace,
+//! pins its storage, warms the engine, binds the connection, and lists the
+//! served caps. An unknown declared rev is a loud refusal; `hello` subsumes the
+//! deleted `attach` op — no parallel binding path (§5).
 
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -40,8 +38,7 @@ fn test_config_with_build(tmp: &TempDir, build_sha: Option<&str>) -> Config {
     config.reap_interval = forever;
     config.prewarm_interval = forever;
     config.prewarm_quiet_max = forever;
-    // No idle exit: this server's lifetime is the test's, and a daemon that
-    // reaped itself mid-assertion would fail as a flake, not a finding.
+    // Lifetime is the test's; idle-exit would flake mid-assertion.
     config.idle_exit = None;
     config
 }
@@ -117,10 +114,8 @@ fn hello_resolves_pins_negotiates_and_lists_caps_in_one_round_trip() {
     assert_eq!(body["proto"], json!(1), "hello negotiates proto 1: {hi}");
     assert!(body["server"].is_string(), "hello names the server: {hi}");
 
-    // Caps listed — and honest: the served read ops AND the served write op
-    // (splice, W1) are present; the unserved push op (sub, P2) and `hello` itself
-    // are absent (§3.2 discovery honesty). This is a v3 session, so the root
-    // capability is spelled `fingerprint` (never `root` — the amendment's rule).
+    // §3.2 discovery honesty: served ops present, `hello` absent. v3 spells the
+    // root capability `fingerprint`.
     let caps: Vec<String> = body["caps"]
         .as_array()
         .expect("caps array")
@@ -136,15 +131,9 @@ fn hello_resolves_pins_negotiates_and_lists_caps_in_one_round_trip() {
         "fingerprint",
         "diff",
         "splice",
-        // S3 U1 (R23): the served write op's v3-era sibling FIELDS are listed
-        // too, as dotted `op.field` caps — discovery honesty at field grain,
-        // not just op grain.
+        // Discovery honesty at field grain: dotted `op.field` caps.
         "splice.plan_edits",
         "splice.pin",
-        // U20b: `sub` moved from the absent list to this one — the daemon now
-        // SERVES the push channel, so §3.2 requires it to advertise it. The law
-        // this fixture pins is unchanged ("in `caps` or answers `unknown_op`,
-        // never both"); only which side of it `sub` sits on has changed.
         "sub",
     ] {
         assert!(
@@ -166,8 +155,7 @@ fn hello_resolves_pins_negotiates_and_lists_caps_in_one_round_trip() {
         Path::new(storage).starts_with(&cache_root),
         "the pinned drawer is under the cache root {cache_root:?}: {storage}"
     );
-    // ...and the pin registered the workspace — admin `list` now reports it (R2:
-    // the same canonicalize → deny → sentinel path the admin `register` drives).
+    // ...and the pin registered the workspace — admin `list` now reports it.
     let listed = conn.call(&json!({"op": "list"}));
     assert_eq!(
         listed["entries"].as_array().map(Vec::len),
@@ -175,8 +163,7 @@ fn hello_resolves_pins_negotiates_and_lists_caps_in_one_round_trip() {
         "hello's storage pin registered the workspace: {listed}"
     );
 
-    // The bind is live: a read op on the SAME connection serves from the warm
-    // engine without any separate attach.
+    // The bind is live: a read on the same connection needs no separate attach.
     let toc = conn.call(&json!({"op": "toc", "path": "a.md"}));
     assert_eq!(
         toc["ok"],
@@ -188,8 +175,8 @@ fn hello_resolves_pins_negotiates_and_lists_caps_in_one_round_trip() {
     server.shutdown();
 }
 
-/// An unknown DECLARED contract rev is refused LOUD at the handshake — never a
-/// silent downgrade (the v3-amendment negotiation law).
+/// An unknown declared contract rev is refused loudly at the handshake — never
+/// a silent downgrade.
 #[test]
 fn hello_with_an_unknown_rev_is_a_loud_refusal() {
     let tmp = TempDir::new().unwrap();
@@ -226,18 +213,10 @@ fn hello_with_an_unknown_rev_is_a_loud_refusal() {
     );
 }
 
-/// **The exact-or-refuse gate** (marker-retirement ruling, 2026-07-26).
-///
-/// `hello.workspace` is a DECLARATION, so it binds exactly the declared path
-/// even when an ancestor is already registered. This test replaced one that
-/// asserted the opposite — that a subdir hello resolved UP to the registered
-/// ancestor — which is the defect the ruling names: a declared root silently
-/// widening to an enclosing tree. The read/put jail root must be the one
-/// explicit path the caller declared, so this is the regression test for that
-/// bug and must not be weakened back into an ancestor walk.
-///
-/// Note the ancestor walk itself is not gone: it lives on in
-/// `Registry::pin_for_cwd`, where the input really is a cwd hint.
+/// The exact-or-refuse gate: `hello.workspace` is a declaration, so it binds
+/// exactly the declared path even when an ancestor is already registered — a
+/// declared root must never silently widen to an enclosing tree. The ancestor
+/// walk lives on only in `Registry::pin_for_cwd`, whose input is a cwd hint.
 #[test]
 fn hello_declaration_binds_exactly_never_a_registered_ancestor() {
     let tmp = TempDir::new().unwrap();
@@ -252,8 +231,7 @@ fn hello_declaration_binds_exactly_never_a_registered_ancestor() {
     let server = RunningServer::start(test_config(&tmp)).unwrap();
     let mut conn = Conn::open(server.socket_path());
 
-    // Register the ANCESTOR first — the precondition that used to swallow the
-    // declaration below.
+    // Register the ancestor first.
     let root_pin = conn.hello(&ws);
     let root_storage = root_pin["body"]["storage"]
         .as_str()
@@ -264,7 +242,7 @@ fn hello_declaration_binds_exactly_never_a_registered_ancestor() {
         .expect("hello names the bound root")
         .to_string();
 
-    // Now DECLARE the nested path. It must bind itself, not the ancestor.
+    // Now declare the nested path. It must bind itself, not the ancestor.
     let sub_pin = conn.hello(&nested);
     let sub_bound = sub_pin["body"]["workspace"]
         .as_str()
@@ -292,7 +270,7 @@ fn hello_declaration_binds_exactly_never_a_registered_ancestor() {
         "the declared path registered itself alongside the ancestor: {listed}"
     );
 
-    // And the bound corpus is the DECLARED tree's, not the ancestor's: `c.md`
+    // And the bound corpus is the declared tree's, not the ancestor's: `c.md`
     // is addressable at its root, while the ancestor's `a.md` is not in scope.
     let toc = conn.call(&json!({"op": "toc", "path": "c.md"}));
     assert_eq!(
@@ -304,13 +282,9 @@ fn hello_declaration_binds_exactly_never_a_registered_ancestor() {
     server.shutdown();
 }
 
-/// **Landing evidence for the 26-13 jail premise.** A declared path that is a
-/// SYMLINK binds the canonicalized real path, and the hello response NAMES it.
-///
-/// This is why clause 1 survives exact-or-refuse: "exact" means no ancestor
-/// widening, NOT identical bytes. Canonicalization still rewrites the caller's
-/// spelling, so a caller that assumed its own string was the jail root would be
-/// wrong — it learns the real root from the answer instead.
+/// A declared path that is a symlink binds the canonicalized real path, and the
+/// hello response names it: "exact" means no ancestor widening, not identical
+/// bytes — canonicalization still rewrites the caller's spelling.
 #[test]
 fn a_declared_symlink_binds_the_canonical_root_and_the_answer_names_it() {
     let tmp = TempDir::new().unwrap();
@@ -322,14 +296,8 @@ fn a_declared_symlink_binds_the_canonical_root_and_the_answer_names_it() {
     let server = RunningServer::start(test_config(&tmp)).unwrap();
     let mut conn = Conn::open(server.socket_path());
 
-    // FIXTURE PRECONDITION, asserted before anything about `hello`. If the
-    // symlink silently failed, or a platform handed us an already-canonical
-    // temp root, the declared and canonical spellings would coincide and every
-    // assertion below would hold VACUOUSLY. Fail as mis-constructed instead.
-    // (Provenance: `./tmp` does not realpath through `/private` while the macOS
-    // default TMPDIR does — two workers once measured one commit red and green,
-    // neither wrong. Nothing here hardcodes `/private`; the expected value is
-    // derived at runtime, and the temp root is reported on failure.)
+    // Fixture precondition: if the spellings coincided (symlink failed, or an
+    // already-canonical temp root) every assertion below would hold vacuously.
     let canonical = fs::canonicalize(&real).unwrap();
     assert_ne!(
         declared.as_path(),
@@ -346,14 +314,13 @@ fn a_declared_symlink_binds_the_canonical_root_and_the_answer_names_it() {
         .as_str()
         .expect("hello names the bound root");
 
-    // The answer names the CANONICAL root...
+    // The answer names the canonical root...
     assert_eq!(
         Path::new(bound),
         canonical,
         "the answer names the canonicalized bound root: {hi}"
     );
-    // ...which is NOT the string the caller declared. Without this field the
-    // caller could not learn that.
+    // ...which is not the string the caller declared.
     assert_ne!(
         Path::new(bound),
         declared.as_path(),
@@ -361,7 +328,7 @@ fn a_declared_symlink_binds_the_canonical_root_and_the_answer_names_it() {
          load-bearing, not decorative: {hi}"
     );
 
-    // Declaring the real path is the SAME workspace: one identity, one entry.
+    // Declaring the real path is the same workspace: one identity, one entry.
     let again = conn.hello(&real);
     assert_eq!(
         again["body"]["workspace"].as_str(),
@@ -378,29 +345,21 @@ fn a_declared_symlink_binds_the_canonical_root_and_the_answer_names_it() {
     server.shutdown();
 }
 
-/// **The ceiling-escape gate.** A declared path that LOOKS ordinary — an entry
-/// directly under the temp root, a sibling of paths that bind fine — but which
-/// RESOLVES into a denied root must refuse.
-///
-/// The ceiling is symlink-safe twice over, and this pins both layers at once:
-/// `Registry::register` canonicalizes before applying the ceiling, and
-/// `workspace::deny_reason` independently canonicalizes its argument
-/// (`resolve_ref`). Either alone would stop the escape; a refactor would have
-/// to break both to let a symlink walk through, and this test notices if it
-/// does. It also pins that the ceiling is about the RESOLVED tree, not the
-/// spelling — the same law the mount table reuses whole.
+/// The ceiling-escape gate: a declared path that looks ordinary but resolves
+/// into a denied root must refuse. Pins both symlink-safe layers at once
+/// (`Registry::register` and `workspace::deny_reason` each canonicalize): the
+/// ceiling is about the resolved tree, not the spelling.
 #[test]
 fn a_declaration_whose_canonical_target_is_denied_refuses() {
     let tmp = TempDir::new().unwrap();
-    // `/tmp` is a denied root (DenyReason::TempDir), denied by its CANONICAL
+    // `/tmp` is a denied root (DenyReason::TempDir), denied by its canonical
     // form, so this holds wherever /tmp resolves to.
     let escape = tmp.path().join("escape");
     symlink("/tmp", &escape).unwrap();
     let ordinary = write_ws(&tmp, "ordinary", &[("a.md", "# A\n")]);
 
-    // PRECONDITION — the discrimination. A sibling real directory in the SAME
-    // temp root binds fine, so the refusal below cannot be "everything under
-    // the temp root is denied". The only difference is where the link points.
+    // Precondition: a sibling real directory in the same temp root binds fine,
+    // so the refusal below cannot be "everything under the temp root is denied".
     assert_eq!(
         workspace::deny_reason(&ordinary),
         None,
@@ -414,8 +373,7 @@ fn a_declaration_whose_canonical_target_is_denied_refuses() {
          under {}",
         tmp.path().display()
     );
-    // And the escape is denied for its TARGET, not its own spelling: the link
-    // sits under the temp root, whose real entries are allowed above.
+    // Denied for its target, not its own spelling.
     assert_ne!(
         fs::canonicalize(&escape).unwrap(),
         escape.as_path(),
@@ -507,8 +465,8 @@ fn workspace_less_hello_is_a_pure_version_handshake() {
         hi["body"]["storage"].is_null(),
         "a workspace-less hello pins nothing: {hi}"
     );
-    // The `None` arm of the bound-root field: ABSENT, never an empty string —
-    // "nothing bound" and "bound the empty path" must not look alike.
+    // The `None` arm: absent, never an empty string — "nothing bound" and
+    // "bound the empty path" must not look alike.
     assert!(
         hi["body"]["workspace"].is_null(),
         "a workspace-less hello names no bound root: {hi}"
@@ -549,7 +507,7 @@ fn workspace_less_hello_is_a_pure_version_handshake() {
 // ---------------------------------------------------------------------------
 
 /// The configured sha reaches the wire as `identity.build`, and the field is
-/// advertised as `hello.identity`. The value is carried VERBATIM: a client's
+/// advertised as `hello.identity`. The value is carried verbatim: a client's
 /// check is strict equality against the sha it deployed, so any normalization
 /// here would silently defeat it.
 #[test]
@@ -587,10 +545,9 @@ fn a_v3_hello_carries_the_configured_build_sha_and_advertises_the_field() {
     server.shutdown();
 }
 
-/// The build script's `unknown` fallback survives to the wire unchanged. It is
-/// NOT mapped to null and NOT dropped: a consumer must be able to tell "this
-/// host cannot name its build" from "this host publishes no build identity",
-/// because the two get different remediation.
+/// The build script's `unknown` fallback survives to the wire unchanged —
+/// never mapped to null, never dropped: "this host cannot name its build" and
+/// "this host publishes no build identity" must stay distinguishable.
 #[test]
 fn the_unknown_build_fallback_reaches_the_wire_verbatim() {
     let tmp = TempDir::new().unwrap();
@@ -612,7 +569,7 @@ fn the_unknown_build_fallback_reaches_the_wire_verbatim() {
     server.shutdown();
 }
 
-/// Optionality is REAL, not nominal: a daemon given no sha omits the field
+/// Optionality is real, not nominal: a daemon given no sha omits the field
 /// entirely, and a v3 client's session is otherwise unaffected — it binds,
 /// lists caps, and serves reads exactly as it does with an identity.
 #[test]

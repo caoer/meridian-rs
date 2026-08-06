@@ -25,8 +25,7 @@ fn test_config(tmp: &TempDir) -> Config {
     config.reap_interval = forever;
     config.prewarm_interval = forever;
     config.prewarm_quiet_max = forever;
-    // No idle exit: this server's lifetime is the test's, and a daemon that
-    // reaped itself mid-assertion would fail as a flake, not a finding.
+    // No idle exit: a daemon that reaped itself mid-assertion would flake.
     config.idle_exit = None;
     config
 }
@@ -57,7 +56,7 @@ fn ping_answers() {
 }
 
 /// Two concurrent register+resolve flows for one bare tree, from different
-/// cwds inside it, converge on ONE identity: one entry, one drawer sentinel.
+/// cwds inside it, converge on one identity: one entry, one drawer sentinel.
 #[test]
 fn concurrent_register_converges_on_one_identity() {
     let tmp = TempDir::new().unwrap();
@@ -103,7 +102,6 @@ fn concurrent_register_converges_on_one_identity() {
     assert_eq!(entries.len(), 1, "exactly one registry entry");
     assert_eq!(entries[0].workspace, want);
 
-    // Exactly one drawer sentinel, written by the daemon.
     let drawer = cache::drawer_dir(&cache_root, &want);
     assert!(
         matches!(cache::probe(&drawer), cache::Probe::Hit(_)),
@@ -113,7 +111,7 @@ fn concurrent_register_converges_on_one_identity() {
     server.shutdown();
 }
 
-/// The deny ceiling is enforced IN THE DAEMON: `$HOME` and `/tmp` are refused
+/// The deny ceiling is enforced in the daemon: `$HOME` and `/tmp` are refused
 /// with a typed reason, and neither is registered.
 #[test]
 fn daemon_denies_home_and_tmp() {
@@ -159,7 +157,6 @@ fn corrupt_state_starts_empty_and_serves() {
         "corrupt state loads as the empty set"
     );
 
-    // Still serves: a register works normally.
     let ws = tmp.path().join("live");
     mkdirs(&ws);
     assert!(matches!(

@@ -1,18 +1,6 @@
-//! The `contract_v3.rs` cases that had NO daemon-socket twin, rehomed.
-//!
-//! `crates/sidecar/tests/contract_v3.rs` drove the rev projection through
-//! `sidecar::serve` — an in-process byte pump. Unit R3b deletes that crate, so
-//! every case it owned alone would leave with it. `wire_vocab_rev.rs` already
-//! carries the socket-plane twin for the bulk of the file; this suite carries the
-//! remainder, driven over the daemon's unix socket instead of a byte buffer.
-//!
-//! A port is not a copy: the assertions below re-derive their inputs from the
-//! live socket session (cursors read off the wire, guards read off a `toc`),
-//! because the sidecar's single-shot `serve` call and the daemon's persistent
-//! per-connection binding are different mechanisms for the same law.
-//!
-//! Each test names the `contract_v3.rs` case it replaces, so R3b's deletion is
-//! auditable line by line.
+//! The `contract_v3.rs` cases that had no daemon-socket twin, rehomed onto the
+//! daemon's unix socket. Assertions re-derive their inputs from the live socket
+//! session: cursors read off the wire, guards read off a `toc`.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -25,12 +13,8 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 
 /// A daemon config rooted under `tmp`, reap horizons large enough that the
-/// background reaper never evicts a warm engine mid-test.
-///
-/// Built by MUTATING the production layout rather than by a struct literal: the
-/// literal form (copied across the older registry suites) fails to compile the
-/// day `Config` grows a field, which is a compile break in an unrelated unit's
-/// test file. This form only names what the test actually cares about.
+/// background reaper never evicts a warm engine mid-test. Built by mutating the
+/// production default so a new `Config` field cannot break this suite's compile.
 #[allow(clippy::duration_suboptimal_units)]
 fn test_config(tmp: &TempDir) -> Config {
     let forever = Duration::from_secs(365 * 24 * 60 * 60);
@@ -39,8 +23,7 @@ fn test_config(tmp: &TempDir) -> Config {
     config.reap_interval = forever;
     config.prewarm_interval = forever;
     config.prewarm_quiet_max = forever;
-    // No idle exit: this server's lifetime is the test's, and a daemon that
-    // reaped itself mid-assertion would fail as a flake, not a finding.
+    // No idle exit: a daemon that reaped itself mid-assertion would flake.
     config.idle_exit = None;
     config
 }
@@ -104,8 +87,8 @@ const PLAN: &str = "# Goals\n\nsee [[b]]\n\nship by August\n\n## Q3\n\nx y z\n";
 const STALE: &str = "b3:0000000000000000000000000000000000000000000000000000000000000000";
 const OTHER: &str = "b3:1111111111111111111111111111111111111111111111111111111111111111";
 
-/// Recursively collect every object KEY in `v` (values are never collected — a
-/// corpus path that spells "root" is a legitimate VALUE).
+/// Recursively collect every object key in `v` (values are never collected — a
+/// corpus path that spells "root" is a legitimate value).
 fn keys(v: &Value, out: &mut Vec<String>) {
     match v {
         Value::Object(map) => {
@@ -147,18 +130,9 @@ fn node_rev(toc: &Value, heading: &str) -> String {
 // Replaces `contract_v3.rs::v3_error_codes_respell_root_family`
 // ---------------------------------------------------------------------------
 
-/// The v3 error vocabulary on the daemon socket: the `root`-family refusal codes
-/// are re-spelled to the `fingerprint` family, the recovery CLASS is unchanged
-/// (the client ladder keys off recovery, not off the code's spelling), and the
-/// vocabulary-neutral extras (`expected`/`actual`) keep their names.
-///
-/// Replaces `crates/sidecar/tests/contract_v3.rs::v3_error_codes_respell_root_family`.
-/// The socket plane had no twin for `fingerprint_mismatch` at all — the only
-/// other coverage is `wire-serve/src/rev.rs`'s unit test over the rename TABLE,
-/// which never watches a real refusal leave a real server.
-/// (`fingerprint_unknown`'s socket twin does exist:
-/// `engine_rpc.rs::a_diff_over_an_unknown_range_degrades_to_resync` — it is
-/// re-asserted here only to keep the pair readable in one place.)
+/// The v3 error vocabulary on the daemon socket: `root`-family refusal codes are
+/// re-spelled to the `fingerprint` family, the recovery class is unchanged, and
+/// the vocabulary-neutral extras (`expected`/`actual`) keep their names.
 #[test]
 fn v3_error_codes_respell_the_root_family_on_the_socket() {
     let tmp = TempDir::new().unwrap();
@@ -210,8 +184,7 @@ fn v3_error_codes_respell_the_root_family_on_the_socket() {
     );
     assert_eq!(unknown["error"]["recovery"], json!("resync"), "{unknown}");
 
-    // The hard rule, mechanized: not one `root`-family KEY or code SPELLING
-    // survives into a v3 refusal.
+    // No `root`-family key or code spelling survives into a v3 refusal.
     for frame in [&mismatch, &unknown] {
         let raw = serde_json::to_string(frame).unwrap();
         assert!(
@@ -231,16 +204,9 @@ fn v3_error_codes_respell_the_root_family_on_the_socket() {
 // Replaces `contract_v3.rs::v3_links_triple_and_require_knob`
 // ---------------------------------------------------------------------------
 
-/// The §10.1 staleness triple's REQUEST side under v3: `require_fingerprint` is
-/// the re-spelled `require_root` knob, and it is a real guard — met, it serves a
-/// view; stale, it refuses `stale_view` with all three roots of the triple named
-/// in the fingerprint vocabulary.
-///
-/// Replaces `crates/sidecar/tests/contract_v3.rs::v3_links_triple_and_require_knob`
-/// and rehomes `u27_v2_key_set_pins.rs::stale_view_error_key_set_is_frozen` onto
-/// the v3 vocabulary. `wire_vocab_rev.rs` asserts only that
-/// `links.require_fingerprint` is ADVERTISED in caps; before this test nothing on
-/// any plane ever SENT the field to the daemon, so the cap was an unbacked claim.
+/// The §10.1 staleness triple's request side under v3: `require_fingerprint` is
+/// a real guard — met, it serves a view; stale, it refuses `stale_view` with all
+/// three roots of the triple named in the fingerprint vocabulary.
 #[test]
 fn v3_links_require_fingerprint_is_a_real_guard() {
     let tmp = TempDir::new().unwrap();
@@ -253,8 +219,7 @@ fn v3_links_require_fingerprint_is_a_real_guard() {
         .expect("hello fingerprint")
         .to_string();
 
-    // Met: the demanded cursor IS the world, so the guard passes and the answer
-    // is a view, not a refusal.
+    // Met: the demanded cursor is the world.
     let met = conn.call(&json!({
         "op": "links", "path": "plan.md", "require_fingerprint": live,
     }));
@@ -272,8 +237,7 @@ fn v3_links_require_fingerprint_is_a_real_guard() {
         );
     }
 
-    // Stale: a cursor from another world refuses, and the refusal names what was
-    // demanded, what the answer would have been computed at, and what is live.
+    // Stale: a cursor from another world.
     let stale = conn.call(&json!({
         "op": "links", "path": "plan.md", "require_fingerprint": STALE,
     }));
@@ -300,15 +264,9 @@ fn v3_links_require_fingerprint_is_a_real_guard() {
 // `contract_v3.rs::v3_extract_enriches_heading_nodes`
 // ---------------------------------------------------------------------------
 
-/// U2 enrichment is HEADING-scoped: a v3 `extract` adds `n`/`words` to heading
-/// nodes and to nothing else. `wire_vocab_rev.rs::v3_extract_enriches_headings_v2_never`
-/// carries the positive half (headings DO gain the facts) and the v2 half (a v2
-/// session gains none); this is the negative half within a v3 session — the one
-/// that catches an enrichment pass that walked every node instead of the
-/// headings.
-///
-/// Replaces the non-heading assertions of
-/// `crates/sidecar/tests/contract_v3.rs::v3_extract_enriches_heading_nodes`.
+/// Enrichment is heading-scoped: a v3 `extract` adds `n`/`words` to heading
+/// nodes and to nothing else. The positive and v2 halves live in
+/// `wire_vocab_rev.rs::v3_extract_enriches_headings_v2_never`.
 #[test]
 fn v3_extract_leaves_non_heading_nodes_unenriched() {
     let tmp = TempDir::new().unwrap();
@@ -346,14 +304,8 @@ fn v3_extract_leaves_non_heading_nodes_unenriched() {
 // Replaces `contract_v3.rs::explicit_v2_contract_is_the_frozen_vocabulary`
 // ---------------------------------------------------------------------------
 
-/// `contract:"v2"` ≡ `contract` absent. The frozen vocabulary has exactly one
-/// meaning, whether a client names it or says nothing — so a v2 client that
-/// starts declaring its rev sees no change at all.
-///
-/// Replaces `crates/sidecar/tests/contract_v3.rs::explicit_v2_contract_is_the_frozen_vocabulary`.
-/// `wire_vocab_rev.rs` drives only the DECLARED v2 session; `view_path_e2e.rs`
-/// drives only the un-negotiated one. Nothing asserted the two are the same
-/// session, which is the whole claim.
+/// `contract:"v2"` ≡ `contract` absent: a v2 client that starts declaring its
+/// rev sees no change at all.
 #[test]
 fn an_unnegotiated_session_is_exactly_the_declared_v2_session() {
     let tmp = TempDir::new().unwrap();
@@ -371,8 +323,6 @@ fn an_unnegotiated_session_is_exactly_the_declared_v2_session() {
          {hi_silent}"
     );
 
-    // Same engine, same epoch: every read class answers the same frame under both
-    // handshakes.
     for request in [
         json!({"op": "root"}),
         json!({"op": "toc", "path": "plan.md"}),

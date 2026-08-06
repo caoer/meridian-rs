@@ -1,14 +1,14 @@
-//! U20b — resident daemon delta plane: **one ring per workspace**, and the
-//! detector that feeds it.
+//! Resident daemon delta plane: one ring per workspace, and the detector that
+//! feeds it.
 //!
 //! Ring + change classifier live in `wire-serve` (one law, two hosts). Here:
-//! shared-state wrapping (N connection threads) and a DETECTOR — a subscriber
+//! shared-state wrapping (N connection threads) and a detector — a subscriber
 //! sends no lines, so nothing else would drive reconcile on its behalf.
 //!
 //! # Sole producer (until write-path `SeqSink` attribution)
 //! Until the write choke-point allocates `seq` under the flock, the registry's
-//! own splices look EXTERNAL to this detector: frames carry `actor`/`now`
-//! ABSENT (§7.1 — engine never invents identity). Missing attribution, not
+//! own splices look external to this detector: frames carry `actor`/`now`
+//! absent (§7.1 — engine never invents identity). Missing attribution, not
 //! wrong data; chain stays contiguous because there is exactly one producer.
 //!
 //! # Flock is the serialization point
@@ -26,9 +26,8 @@ use wire_serve::watch::WatchState;
 
 /// How often a subscribed workspace folds looking for external change.
 ///
-/// 250ms is the push-latency floor for an edit outside the engine. Pre-warm's
-/// 1s is perceptible for this path. Cost is ~4 folds/s per subscribed
-/// workspace only while someone is subscribed; coalesced across subscribers
+/// Sets the push-latency floor for an edit made outside the engine. Folds run
+/// only while someone is subscribed, and are coalesced across subscribers
 /// ([`WorkspaceRing::detect`]) so N watchers fold once per cadence, not N times.
 pub const DETECT_CADENCE: Duration = Duration::from_millis(250);
 
@@ -94,7 +93,7 @@ impl WorkspaceRing {
         self.state().ring.can_anchor(from_seq)
     }
 
-    /// Register a subscription. Guard lifetime IS the subscription's.
+    /// Register a subscription. Guard lifetime is the subscription's.
     pub fn subscribe(&self) -> SubGuard<'_> {
         self.subscribers.fetch_add(1, Ordering::SeqCst);
         SubGuard { ring: self }
@@ -112,9 +111,9 @@ impl WorkspaceRing {
         self.state().ring.frames_after(delivered)
     }
 
-    /// Record a frame the WRITE path emitted (detector records its own).
+    /// Record a frame the write path emitted (detector records its own).
     ///
-    /// Lands AFTER `splice` drops the flock — why [`RootRing::allocate_seq`]
+    /// Lands after `splice` drops the flock — why [`RootRing::allocate_seq`]
     /// exists: a detection cycle may allocate and advance between allocation
     /// inside the flock and this call; its number cannot be ours.
     pub fn advance(&self, frame: DeltaFrame) {
@@ -146,8 +145,8 @@ impl WorkspaceRing {
         self.cycle(ws_root)
     }
 
-    /// Establish baseline and return the settled root — **at subscribe time,
-    /// before the ack is written.**
+    /// Establish baseline and return the settled root — at subscribe time,
+    /// before the ack is written.
     ///
     /// First reconcile of an unprimed `WatchState` emits nothing (adopts world
     /// as baseline). Ack-then-prime would swallow edits between; the §4.7 ack
@@ -189,10 +188,10 @@ impl WorkspaceRing {
     }
 }
 
-/// Write-path allocator: registry `seq` from the SAME ring the detector numbers
-/// from — two producers, one chain.
+/// Write-path allocator: registry `seq` from the same ring the detector
+/// numbers from — two producers, one chain.
 ///
-/// State lock only for the bump. Lock ORDER is flock → ring state on BOTH
+/// State lock only for the bump. Lock order is flock → ring state on both
 /// producers; no path takes them the other way.
 impl wire_serve::seq::SeqSink for WorkspaceRing {
     fn allocate(&self, _before: &Root, _after: &Root, _files: &[wire::DeltaFile]) -> u64 {

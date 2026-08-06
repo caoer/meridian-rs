@@ -1,18 +1,17 @@
 //! The wire protocol: NDJSON request/response types and the registry entry.
 //!
 //! One JSON object per line (`\n`-terminated), `serde_json` over the raw
-//! socket — no framing crate, no new dependency. [`Request`] is tagged by an
-//! `op` field, [`Response`] by a `status` field, so both are self-describing
-//! and forward-compatible (an unknown tag is a decode error the peer reports
-//! as [`Response::Error`], never a silent misparse).
+//! socket. [`Request`] is tagged by an `op` field, [`Response`] by a `status`
+//! field; an unknown tag is a decode error the peer reports as
+//! [`Response::Error`], never a silent misparse.
 
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
 /// A registered workspace: the canonical path plus its registry-side
-/// timestamps. This is the registry's record, distinct from the `cache`
-/// drawer sentinel — see the crate docs' "two lifecycles" note.
+/// timestamps. Distinct from the `cache` drawer sentinel — see the crate docs'
+/// "two lifecycles" note.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceEntry {
     /// The canonical workspace path (symlinks and on-disk case resolved by
@@ -27,11 +26,6 @@ pub struct WorkspaceEntry {
 }
 
 /// An RPC request, tagged by its `op` field.
-///
-/// Verbs (decision 0001 round 5): [`Self::Resolve`] (ancestor lookup — is the
-/// cwd inside a registered workspace, adopt if so), [`Self::Register`]
-/// (canonicalize → deny-ceiling → insert → drawer sentinel), [`Self::Unregister`],
-/// [`Self::List`], [`Self::Ping`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
@@ -41,11 +35,9 @@ pub enum Request {
     /// against the registry. The nearest registered ancestor is adopted; no
     /// match is a [`Response::Miss`]. Never registers.
     ///
-    /// The wire tag is `resolve_ws`, NOT `resolve`: the unified daemon socket
+    /// The wire tag is `resolve_ws`, not `resolve`: the unified daemon socket
     /// also answers the frozen wire `resolve` op (the §4.5 walk plane), a
-    /// different verb entirely. This admin verb (workspace ancestor lookup) is
-    /// daemon-internal, so its tag is disambiguated here rather than touching the
-    /// frozen `wire` vocabulary (U3 folds this into `hello`).
+    /// different verb entirely (U3 folds this into `hello`).
     #[serde(rename = "resolve_ws")]
     Resolve {
         /// The working directory to resolve.
@@ -120,9 +112,8 @@ pub enum Response {
 }
 
 /// The serde-serializable mirror of [`workspace::DenyReason`]. The `workspace`
-/// crate is `std`-only (no serde by Law 1's spirit — a leaf crate carries no
-/// wire concern), so the daemon maps its reason into this typed, on-the-wire
-/// enum rather than shipping a bare string.
+/// crate is `std`-only, so the daemon maps its reason into this typed wire enum
+/// rather than shipping a bare string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DenyKind {
