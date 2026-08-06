@@ -1,24 +1,9 @@
 //! `mrd rules` end-to-end gates — the effective-rules print verb (registration ruling § 7),
-//! driven through the REAL binary over its process boundary. Every gate here is a claim about
-//! the SURFACE an operator reads, so none of it is asserted through a library call: the fixture
-//! is a workspace on disk plus a user scope anchored by a `MERIDIAN.md`, and the measurement is
-//! the CLIs own stdout and exit code. Two fixture disciplines, both deliberate 1. **The armed
-//! artifact is MINTED, never hand-typed.** `policy::armed::arm` resolves through the landed
+//! driven through the real binary over its process boundary. Every gate is a claim about the
+//! surface an operator reads: the fixture is a workspace on disk plus a user scope anchored
+//! by a `MERIDIAN.md`, and the measurement is the CLIs own stdout and exit code. The armed
+//! artifact is minted, never hand-typed: `policy::armed::arm` resolves through the landed
 //! resolver and pins each winners real page rev.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -183,12 +168,10 @@ fn populated() -> Sandbox {
 /// registration tag with no `id:`.
 const REFUSED_PAGE: &str = "---\ntags: [rules/hook]\n---\n\n# no id\n";
 
-/// [`populated`] plus a refused rule page at `policy/broken.md`. It is a separate fixture
-/// because a refusal is a finding on its OWN CHAIN: this page mounts at `policy`, so it reddens
-/// `policy` and everything beneath it (§ 3 "Refusal scoping", Keeping it out of [`populated`]
-/// is what lets the other gates measure their own subject instead of this one.
-///
-///
+/// [`populated`] plus a refused rule page at `policy/broken.md`. A separate fixture because a
+/// refusal is a finding on its own chain: this page mounts at `policy`, so it reddens
+/// `policy` and everything beneath it. Keeping it out of [`populated`] lets the other gates
+/// measure their own subject instead of this one.
 fn populated_with_a_refusal() -> Sandbox {
     let s = populated();
     s.write("policy/broken.md", REFUSED_PAGE);
@@ -268,10 +251,8 @@ fn an_override_prints_the_winner_first_then_the_pages_it_shadows() {
         block[2], "      shadowed  notify.md  rev=REV  scope=workspace:0  kinds=hook",
         "the workspace-root page it shadows is VISIBLE, not collapsed"
     );
-    // The user rung. Its depth digit is deliberately not asserted: this pages mount scope moves
-    // when the mount-law lift lands on the discovery surface (`rules/` → parent), and this gate is
-    // about the LAYER being present in the chain, in last position, not about its depth.
-    //
+    // The user rung. Its depth digit is deliberately not asserted: this gate is about the
+    // layer being present in the chain, in last position, not about its depth.
     assert!(
         block[3].starts_with("      shadowed  rules/user-notify.md  rev=")
             && block[3].contains("scope=user:"),
@@ -363,20 +344,8 @@ fn a_refused_rule_page_is_reported_with_its_reason() {
     );
 }
 
-/// **P13, scoped (§ 3 "Refusal scoping", — a refused rule page reddens its OWN chain and no
-/// other. Four paths, one fixture: | queried path | on `policy/broken.md`s chain? | exit |
-/// |---|---|---| | `policy` (its mount) | yes | 1 | | `policy/deeper` (beneath it) | yes | 1 |
-/// | `sessions/s2` (a sibling scope) | no |
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// P13, scoped (§ 3 "Refusal scoping") — a refused rule page reddens its own chain and no
+/// other: its mount and everything beneath it exit 1; a sibling scope and the root are clean.
 #[test]
 fn a_refused_rule_page_reddens_its_own_chain_and_no_other() {
     let s = populated_with_a_refusal();
@@ -413,14 +382,9 @@ fn a_refused_rule_page_reddens_its_own_chain_and_no_other() {
     }
 }
 
-/// **The all-refusals-always invariant, held against the scoping.** A refusal a sibling scoped
-/// query cannot see is STILL in the corpus-wide walks report — the same feed the ARM act and
-/// the cutover sweep read.
-///
-///
-///
-///
-///
+/// The all-refusals-always invariant, held against the scoping: a refusal a sibling scoped
+/// query cannot see is still in the corpus-wide walks report — the same feed the ARM act and
+/// any sweep read.
 #[test]
 fn the_corpus_wide_walk_reports_a_refusal_the_sibling_query_does_not() {
     let s = populated();
@@ -466,11 +430,9 @@ fn walk_refusals(s: &Sandbox) -> Vec<String> {
     pages
 }
 
-/// **The mount law reaches refusals too.** A refused page in a `<scope>/rules/` layout folder
-/// is lifted to `<scope>` exactly as a registered one is, so it reddens the scope its author
-/// filed it to govern — not merely the folder it is kept in. Measured at the CLI, where the
-/// lift has to have survived `policy`s `RegisterError` and the verbs narrowing.
-///
+/// The mount law reaches refusals too: a refused page in a `<scope>/rules/` layout folder is
+/// lifted to `<scope>` exactly as a registered one is, so it reddens the scope its author
+/// filed it to govern — not merely the folder it is kept in.
 #[test]
 fn a_refusal_in_a_layout_folder_reddens_its_lifted_scope() {
     let s = sandbox();
@@ -502,26 +464,9 @@ fn a_refusal_in_a_layout_folder_reddens_its_lifted_scope() {
     }
 }
 
-/// **The meridian-rs self-test — the measurement that started this card.** Before the § 3
-/// "Refusal scoping" amendment, `mrd rules` on meridian-rs itself exited 1 from *every* path,
-/// naming `crates/testsuite/data/meridian-md/refusals/frontmatter-unparseable.md` — a
-/// deliberately malformed `MERIDIAN.md` schema fixture. Two independent things were wrong and
-/// both are fixed here, so both halves are measured: 1. **The repo is clean, measured on the
-/// REAL repo.
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// The meridian-rs self-test: the repo itself is clean under `mrd rules` — measured on the
+/// real repo — while a deliberately mounted refusal in a sandbox still reddens its own
+/// subtree.
 #[test]
 fn meridian_rs_itself_is_clean_while_a_refusal_still_reddens_its_own_subtree() {
     // ── half 1: the real repo ────────────────────────────────────────────────
@@ -655,17 +600,9 @@ fn the_user_flag_prints_one_layer() {
     );
 }
 
-/// **P15** — the mount law, proven at the CLI surface rather than in the resolver. A page whose
-/// immediate container is named `rules` mounts at that folders PARENT, so a workspaces rules
+/// P15 — the mount law, proven at the CLI surface rather than in the resolver. A page whose
+/// immediate container is named `rules` mounts at that folders parent, so a workspaces rules
 /// kept in `<root>/rules/` govern the whole workspace instead of only that folder.
-///
-///
-///
-///
-///
-///
-///
-///
 #[test]
 fn a_layout_folder_page_renders_its_lifted_mount_scope() {
     let s = sandbox();
@@ -791,8 +728,6 @@ fn without_an_artifact_every_row_is_registered_and_unarmed() {
 /// one is the one rendered. The two arms carry DIFFERENT modes on purpose. Equal modes would
 /// render the same cell whichever row won, so the assertion would pass without the selection
 /// law working — a control has to be able to fail.
-///
-///
 #[test]
 fn the_armed_cell_joins_on_id_and_arm_root_and_the_deepest_arm_wins() {
     let s = populated();
@@ -822,9 +757,8 @@ fn the_armed_cell_joins_on_id_and_arm_root_and_the_deepest_arm_wins() {
     assert!(at_s1.contains("  root.only  armed=-"), "{at_s1}");
 }
 
-/// **P11** — an armed row whose pinned page has drifted renders red rather than clean, and the
+/// P11 — an armed row whose pinned page has drifted renders red rather than clean, and the
 /// drift gates the exit. The freeze is the point: discovery moves, the arm does not.
-///
 #[test]
 fn a_drifted_pin_reddens_the_armed_cell_and_gates_the_exit() {
     let s = populated();
@@ -865,11 +799,10 @@ fn a_corrupt_artifact_is_unreadable_never_silently_unarmed() {
 
 // ── read-only, and one resolver ───────────────────────────────────────────────
 
-/// **P12 — the read-only proof, asserted directly.** Every view of the verb runs over a
-/// populated workspace with a minted armed artifact, and afterwards the hash-domain merkle root
-/// AND the full file tree (paths and bytes, wider than the domain) are unchanged. Nothing is
-/// armed, no receipt is minted, no marker appears.
-///
+/// P12 — the read-only proof, asserted directly. Every view of the verb runs over a populated
+/// workspace with a minted armed artifact, and afterwards the hash-domain merkle root and the
+/// full file tree (paths and bytes, wider than the domain) are unchanged. Nothing is armed,
+/// no receipt is minted, no marker appears.
 #[test]
 fn every_view_leaves_the_workspace_bit_for_bit_unchanged() {
     let s = populated();
@@ -912,14 +845,8 @@ fn every_view_leaves_the_workspace_bit_for_bit_unchanged() {
     );
 }
 
-/// **P14 — one resolver, structurally.** The verbs own source carries no override law: no scope
+/// P14 — one resolver, structurally. The verbs own source carries no override law: no scope
 /// or depth comparison, no id grouping, no ordering of candidates.
-///
-///
-///
-///
-///
-///
 #[test]
 fn the_cli_layer_holds_no_second_resolver() {
     let source = include_str!("../src/rules_cmd.rs");
@@ -930,12 +857,9 @@ fn the_cli_layer_holds_no_second_resolver() {
         .filter(|line| !line.trim_start().starts_with("//"))
         .collect::<Vec<_>>()
         .join("\n");
-    // `.verify_at(` replaced a hand-composed `.select_at(` + `.verify(` here (C3 gate finding
-    // F-4): selection-then-verification has two wrong orders, so the composition is `policy`s
-    // single one and the CLI calls it. `.select_at(` survives in the list because the armed CELL
-    // still needs the selected rows themselves to render mode and pinned page — reading rows is
-    // not composing the law.
-    //
+    // Selection-then-verification has two wrong orders, so the composition is `policy`s
+    // single `.verify_at(` and the CLI calls it. `.select_at(` survives in the list because
+    // the armed cell still needs the selected rows to render mode and pinned page.
     for called in [
         "RuleIndex::discover",
         ".narrowed_to(",
@@ -1044,7 +968,6 @@ fn the_verb_is_documented_in_the_cli_surface() {
 
 /// One ids block: its own line plus the indented chain beneath it, with every 16-hex rev
 /// replaced by `REV` so a fixture edit does not have to restate a hash the engine computed.
-///
 fn block_for(stdout: &str, id: &str) -> Vec<String> {
     let mut block = Vec::new();
     let mut inside = false;

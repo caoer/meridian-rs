@@ -1,35 +1,9 @@
-//! **F6 — the pin plane under the fence must be able to SEE the roots it judges.** `mrd check`
-//! and `mrd status` coloured their pins through `view::walk::lock_pin_colors(docs)`, which
-//! resolves against `addr::MountSet::default()` — an EMPTY mount table — and an ambient-only
-//! corpus. On a BOUND root a form-3 cross-root pin therefore answered `grey unmounted` when its
-//! target MATCHED, when it had DRIFTED, and when it was RESTORED, while `mrd config` called the
-//! root `bound` and `mrd walk` — the one caller that passed the real table — answered green /
-//! red / green over the same corpus, in the same instant. The finding is INSENSITIVITY, and
-//! that is what this file measures A comparison gate would have passed: there is exactly one
-//! pin computer and every plane agreed with it. **They agreed on a blind answer.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
+//! F6 — the pin plane under the fence must be able to see the roots it judges. `mrd check`
+//! and `mrd status` coloured their pins through an empty mount table and an ambient-only
+//! corpus, so on a bound root a form-3 cross-root pin answered `grey unmounted` whether its
+//! target matched, drifted, or was restored — while `mrd walk`, the one caller passing the
+//! real table, answered green / red / green over the same corpus. The finding is
+//! insensitivity, and that is what this file measures.
 
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
@@ -192,8 +166,6 @@ impl Sandbox {
     /// because R4 makes a pins `hash` mandatory — the pin door refuses outright when git cannot
     /// give it a blob oid — so a mint outside a work tree writes nothing to read a fingerprint out
     /// of.
-    ///
-    ///
     fn mint_fingerprint(&self) -> String {
         let mint = self.tmp.path().join("mint");
         std::fs::create_dir_all(&mint).expect("mkdir");
@@ -224,8 +196,6 @@ impl Sandbox {
     /// so the journal plane can date the tree. Without that governed write every state below greys
     /// on the JOURNAL plane and the pin axis is masked by an unrelated refusal — the measurement
     /// would be of the wrong thing while looking identical.
-    ///
-    ///
     fn cross_root_corpus(&self) -> String {
         let fp = self.mint_fingerprint();
         let blob = git_out(&self.other, &["hash-object", "--", "doc.md"]);
@@ -255,9 +225,9 @@ impl Sandbox {
         );
         assert_eq!(put.status.code(), Some(0), "mrd put: {}", said(&put));
 
-        // THE FIXTURES OWN PRECONDITION: the root is BOUND. A cross-root reading over an unbound root
-        // would answer `grey unmounted` correctly, and every assert below would be measuring the wrong
-        // state.
+        // The fixture's own precondition: the root is bound. A cross-root reading over an
+        // unbound root would answer `grey unmounted` correctly, and every assert below would
+        // be measuring the wrong state.
         let config = self.run(&self.ws, &["config"]);
         assert_eq!(
             config.status.code(),
@@ -305,27 +275,9 @@ impl Sandbox {
     }
 }
 
-/// **The same sensitivity gate, driven through `mrd status`.** This files header names `status`
-/// beside `check` as a surface the F6 blindness sat under, and every other gate here drives
-/// `check` and `walk`. So the axis `status` actually renders was argued for and never measured
-/// — the three states were never once asked of it. Why the gap became load-bearing `status` no
-/// longer builds every declared roots corpus. It builds the roots its own lock addresses NAME
-/// (`status_cmd::lock_addressed_roots`), because building the rest cost 80.6% of a bare
-/// `status` run and could change no answer.
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// The same sensitivity gate, driven through `mrd status`. `status` builds only the roots its
+/// own lock addresses name (`status_cmd::lock_addressed_roots`), so the axis it renders has
+/// to be measured across the three states, not argued for.
 #[test]
 fn the_status_lock_axis_varies_across_matched_drifted_and_restored_on_a_bound_root() {
     let sb = sandbox();
@@ -365,12 +317,10 @@ fn the_status_lock_axis_varies_across_matched_drifted_and_restored_on_a_bound_ro
     );
 }
 
-/// **THE SENSITIVITY GATE (F6): the pin axis must MOVE on a bound root.** MATCHED / DRIFTED /
-/// RESTORED are driven in one run over one corpus, and the assert is that the three answers are
-/// not one answer. The `walk` line beside each is the independent adjudicator: it always
-/// carried the real mount table, so it shows what a SIGHTED instrument says about the same
-/// three states.
-///
+/// The sensitivity gate (F6): the pin axis must move on a bound root. Matched / drifted /
+/// restored are driven in one run over one corpus, and the assert is that the three answers
+/// are not one answer. The `walk` line beside each is the independent adjudicator: it always
+/// carried the real mount table.
 #[test]
 fn the_pin_axis_varies_across_matched_drifted_and_restored_on_a_bound_root() {
     let sb = sandbox();
@@ -416,9 +366,8 @@ fn the_pin_axis_varies_across_matched_drifted_and_restored_on_a_bound_root() {
          prescribes a fix already done.\n  matched: {matched}\n  drifted: {drifted}"
     );
 
-    // The three planes agree BY CONSTRUCTION — and now on a SIGHTED answer. `walk` is the
-    // adjudicator that did not move: it read the same mount table before this fix and after it.
-    //
+    // The three planes agree by construction — and on a sighted answer. `walk` is the
+    // adjudicator that did not move: it read the same mount table throughout.
     assert!(
         matched_walk.contains("green") && restored_walk.contains("green"),
         "walk, the plane that always saw the table: {matched_walk} / {restored_walk}"
@@ -429,13 +378,9 @@ fn the_pin_axis_varies_across_matched_drifted_and_restored_on_a_bound_root() {
     );
 }
 
-/// **THE ACCEPTANCE (F6, gate 8): a repo holding a form-3 cross-root pin can COMMIT.** Measured
-/// on the deployed engine: `commit exit=1`, `commits 0 -> 0`, forever — everything governed,
-/// the root bound, and criterion 5s acceptance arm permanently unsatisfiable, because the
-/// fences verb rolled the unseeable pin up as a refusing grey. A guard that cannot be satisfied
-/// is not a guard.
-///
-///
+/// The acceptance (F6, gate 8): a repo holding a form-3 cross-root pin can commit. A fence
+/// verb that rolls the unseeable pin up as a refusing grey makes the acceptance arm
+/// permanently unsatisfiable — a guard that cannot be satisfied is not a guard.
 #[test]
 fn a_repo_holding_a_cross_root_pin_can_land_a_governed_commit() {
     let sb = sandbox();
@@ -459,12 +404,9 @@ fn a_repo_holding_a_cross_root_pin_can_land_a_governed_commit() {
     );
 }
 
-/// **And the fence still REFUSES when the cross-root target genuinely drifts** — the other arm
-/// of the pair over the same corpus. Without this, the acceptance above is satisfied by a plane
-/// that answers green to everything, which is the same defect as answering grey to everything
-/// with the sign flipped.
-///
-///
+/// And the fence still refuses when the cross-root target genuinely drifts — the other arm
+/// over the same corpus. Without it, the acceptance above is satisfied by a plane that
+/// answers green to everything.
 #[test]
 fn the_fence_refuses_a_commit_whose_cross_root_target_has_drifted() {
     let sb = sandbox();
@@ -491,18 +433,8 @@ fn the_fence_refuses_a_commit_whose_cross_root_target_has_drifted() {
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 /// One R4 (`version: 2`) pin, hand-written in the exact bytes `lock::render` emits, so this
-/// gate depends on the CLIs own READER and not on the writer that produced the row. The
-/// `page[A/B]` convenience spelling is split into the `object` wiki link and the `path` ARRAY
-/// here — R4 admits no joined string on a row — and the root qualifier rides the object
-/// verbatim (`[[other:doc]]`), which is what
-///
-///
-///
-///
-///
-///
-///
-///
+/// gate depends on the CLIs own reader and not on the writer that produced the row. The root
+/// qualifier rides the object verbatim (`[[other:doc]]`).
 fn lock_block(declared_ref: &str, blob: &str, fingerprint: &str) -> String {
     let (target, fragment) = match declared_ref.split_once('#') {
         Some((t, f)) => (t, f),

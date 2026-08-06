@@ -1,46 +1,18 @@
-//! End-to-end gates for `mrd check` (U2.10), driving the REAL binary
+//! End-to-end gates for `mrd check` (U2.10), driving the real binary
 //! (`CARGO_BIN_EXE_mrd`) over its process boundary.
 //!
-//! # WHAT THESE LEGS BECAME, and why (ZT, 2026-08-03)
-//! Verbatim: *"Engine does not have memory. It should not have. History is pin to
-//! git when we lock. Anything between locks is not history."*
-//!
-//! This file used to be three legs about a **journal**: a green earned by a current
-//! baseline, a red earned by a spliced row, and a grey earned by a baseline that
-//! could not date the tree. There is no journal, no baseline and no chain, so none
-//! of those three antecedents exists. The legs were not repaired — they were
-//! re-derived against the proposition `check` actually makes now (U5's derivation
-//! note § 2):
-//!
-//! > Every claim this corpus declares converges against the bytes on disk, every pin
-//! > holds against the content it names, and every pinned blob is durably held.
-//!
-//! Three legs again, on the surviving planes:
+//! Three legs:
 //!
 //! - **green** — a governed corpus reads green and exits 0, asserted render-for-render
-//!   and key-for-key so the MANDATORY `write_history: not-assessed` disclosure cannot
+//!   and key-for-key so the mandatory `write_history: not-assessed` disclosure cannot
 //!   be dropped without this file failing.
-//! - **red** — an out-of-band rewrite of PINNED content reddens, exit 1, cited per-pin.
-//!   The pin plane is the surviving detector and it still fires.
-//! - **blind** — a forged journal-shaped page moves NO verdict, and that is asserted
-//!   rather than left unsaid ([`check_is_blind_to_a_forged_journal_page`]).
+//! - **red** — an out-of-band rewrite of pinned content reddens, exit 1, cited per-pin.
+//! - **blind** — a forged journal-shaped page moves no verdict, asserted rather than
+//!   left unsaid ([`check_is_blind_to_a_forged_journal_page`]).
 //!
-//! # WHAT THIS FILE NO LONGER PROVES — recorded, not hidden
-//! 1. **The chain-break red.** `check`'s only write-history red is gone. The two arms
-//!    that proved it (`check_reddens_and_cites_a_spliced_journal_row`,
-//!    `check_json_carries_the_break_and_reddens`) had no antecedent left and were not
-//!    weakened into passing — they were replaced by the blind arm, which asserts the
-//!    absence of the detector as a positive fact so nobody re-adds it by accident.
-//! 2. **The vacuous-baseline grey.** Both `cannot_assess` arms proved that an
-//!    undateable write history refuses. `check` no longer asks, so an empty workspace
-//!    is GREEN — U5 corpus row 01, tagged **[LAW]**. The assertion INVERTED, with the
-//!    reason stated at [`check_is_green_on_an_empty_workspace`]; the disclosure line is
-//!    what keeps the narrower green from reading as the old wider one.
-//! 3. **The `cannot_assess` JSON block** and the `core.chain` / `core.foreign_edit`
-//!    keys. Removed, never nulled, per U5 § 6 — and their ABSENCE is now asserted.
-//!
-//! The grey asserts that remain are still shaped by R26: they assert the **absence of
-//! green** and a non-clean exit, never merely the presence of a new string.
+//! `check` reads no write history: the engine keeps no memory — history is pinned to
+//! git at lock. Grey asserts follow R26: absence of green and a non-clean exit, never
+//! merely the presence of a new string.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -101,7 +73,6 @@ impl Sandbox {
     /// A git-backed workspace, declared a root by `mrd init`. Git is real because `mrd pin` asks
     /// git real questions about the pinned blob — and it is what anchors the ladder here
     /// (`git-root`), which the declaration does not do.
-    ///
     fn git_workspace(&self, name: &str) -> PathBuf {
         let ws = self.tmp.path().join(name);
         std::fs::create_dir_all(&ws).expect("mkdir");
@@ -135,8 +106,7 @@ fn stderr(out: &Output) -> String {
 }
 
 /// stdout+stderr together — the render rides stdout, the exit message rides stderr, and an "is
-/// there a green anywhere" assert cares about what the operator SEES.
-///
+/// there a green anywhere" assert cares about what the operator sees.
 fn said(out: &Output) -> String {
     format!("{}{}", stdout(out), stderr(out))
 }
@@ -149,29 +119,15 @@ fn write(ws: &Path, rel: &str, body: &str) {
 /// cannot drift from the legs asserting its presence.
 const GREY: &str = "grey(cannot-assess)";
 
-/// **The RETIRED reserved path, spelled as a LITERAL on purpose.** This was
-/// `fs::domain::RESERVED_JOURNAL_PATH`, and the constant is deleted: `RESERVED_PATHS` is now
-/// exactly `ARMED_RULES_PATH` + `ATTESTED_MARKER_PATH`, and this path reserves nothing.
-/// Re-importing a constant would imply a reservation that no longer exists, so the literal IS
-/// the point. **And it must be THIS path, not a merely-unused one.
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// The retired reserved path, spelled as a literal on purpose: the constant is deleted and
+/// this path reserves nothing, so re-importing one would imply a reservation that no longer
+/// exists. It must be this path, not a merely-unused one.
 const FORMER_JOURNAL_PATH: &str = "meridian/journal.md";
 
-/// **Row 21s fence block for a workspace that is no git repository**, spelled once for the two
+/// Row 21s fence block for a workspace that is no git repository, spelled once for the two
 /// key-for-key legs below. The door-plane keys (`doors`, `fenced_doors`, `total_doors`) are
-/// **absent, not null**: this faces law is that an absent field reads as *not checked*, and a
-/// root with no hook directory has no door plane that could have been read.
-///
-///
+/// absent, not null: an absent field reads as *not checked*, and a root with no hook
+/// directory has no door plane that could have been read.
 fn no_repo_fence(root: &Path) -> serde_json::Value {
     serde_json::json!({
         "state": "not-a-git-repo",
@@ -200,12 +156,9 @@ fn write_history_line() -> String {
     )
 }
 
-/// Birth `path` through the PRODUCTION guarded-create write path — the real governed-write
+/// Birth `path` through the production guarded-create write path — the real governed-write
 /// edge, so a "governed corpus" fixture is one the engine wrote rather than one the test
-/// hand-built. It journals nothing now, and nothing here asks it to: what makes this a governed
-/// write is that it went through the door, not that a row records it.
-///
-///
+/// hand-built.
 fn produce(root: &WorkspaceRoot, path: &str, body: &str) {
     let args = CreateArgs {
         id: None,
@@ -222,20 +175,9 @@ fn produce(root: &WorkspaceRoot, path: &str, body: &str) {
 
 // ── the GREEN path: pinned render-for-render ─────────────────────────────────
 
-/// **The green, earned against the planes that answer.** A workspace whose writes all went
-/// through the door has nothing drifted and nothing unanchored, so `check` reads GREEN and
-/// exits 0. The whole stdout is asserted, not a substring — that is what makes the disclosure
-/// line load-bearing rather than decorative.
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// The green: a workspace whose writes all went through the door has nothing drifted and
+/// nothing unanchored, so `check` reads green and exits 0. The whole stdout is asserted, not
+/// a substring — that is what makes the disclosure line load-bearing rather than decorative.
 #[test]
 fn check_is_green_on_a_governed_corpus_and_the_render_is_pinned() {
     let sb = sandbox();
@@ -278,18 +220,14 @@ fn check_is_green_on_a_governed_corpus_and_the_render_is_pinned() {
         serde_json::json!({
             "workspace": root.0.display().to_string(),
             "red": false,
-            // U5 § 6: `write_history` REPLACES `core.chain` and `core.foreign_edit`. It is not a colour
-            // and not a detector — it is the statement that this verb does not look, so a consumer cannot
-            // mistake the narrowed green for the wider one it used to mean. The key-for-key compare is
-            // what holds the two deleted keys deleted.
-            //
+            // `write_history` replaces `core.chain` / `core.foreign_edit`; the key-for-key
+            // compare holds the deleted keys deleted.
             "write_history": check::WRITE_HISTORY_NOT_ASSESSED,
             "core": {
                 "drifted_claims": [],
             },
-            // U14: the pin plane, asserted key for key. `asked: 0` is the POPULATION (S3-R23(5)) — this
-            // workspace pins nothing, so the empty list is a reading of nothing rather than a clean bill
-            // over something.
+            // The pin plane, key for key. `asked: 0` is the population (S3-R23(5)) — this
+            // workspace pins nothing, so the empty list is a reading of nothing.
             "pins": {
                 "red": [],
                 "grey": [],
@@ -301,22 +239,15 @@ fn check_is_green_on_a_governed_corpus_and_the_render_is_pinned() {
                     "orphaned": [],
                 },
                 "anchoring_cannot_assess": null,
-                // The SIGHT LINE (ruling ALWAYS PRESENT, even at count 0 — a key that appears only sometimes
-                // is precisely the defect all-hands 1 catalogued: `skip_serializing_if` makes a key set vary
-                // with the ENVIRONMENT, so a reader cannot tell "no cross-root pins" from "an engine that does
-                // not report them". These two key-set pins caught this addition, which is what they are for;
-                // the set genuinely changed and is updated deliberately.
-                //
-                //
+                // Always present, even at count 0: an environment-varying key set would blur
+                // "no cross-root pins" with "an engine that does not report them".
                 "anchoring_out_of_jurisdiction": {
                     "count": 0,
                     "refs": [],
                     "owner": "u13_per_root_anchoring",
                 },
             },
-            // F1 / S3-R29 — the interval, on the machine face. Untouched by the ruling: the interval says
-            // which BYTES an answer covers, which is a question about git and not about engine memory.
-            //
+            // F1 / S3-R29 — the interval names which bytes an answer covers.
             "interval": {
                 "state": "not-asked",
                 "spans_the_commit": false,
@@ -333,17 +264,8 @@ fn check_is_green_on_a_governed_corpus_and_the_render_is_pinned() {
     );
 }
 
-/// **The green survives a fully governed corpus with a real pin in it** — the green-path
-/// control (S3-R8(c)). A fence built on this verb accepts a commit whose writes were all
-/// governed.
-///
-///
-///
-///
-///
-///
-///
-///
+/// The green survives a fully governed corpus with a real pin in it — the green-path
+/// control (S3-R8(c)).
 #[test]
 fn check_accepts_a_fully_governed_corpus() {
     let sb = sandbox();
@@ -398,26 +320,11 @@ fn check_accepts_a_fully_governed_corpus() {
 
 // ── the RED path: the surviving detector, and both surfaces now AGREE ────────
 
-/// **The pin plane reddens on an out-of-band rewrite of pinned content, and `mrd walk`
-/// reddens on the same corpus in the same run.** # This leg INVERTED from grey to red, and
-/// that is a sharpening It used to assert `grey(cannot-assess)`: the out-of-band write left
-/// the journal baseline STALE, and the stale baseline could see the *evidence* of the edit
-/// without being allowed to name a cause. The finding it was built from (finding-01) was a
-/// cross-surface DISAGREEMENT — `check` green, `walk` red. The journal is gone, so the grey
-/// has no antecedent. But the edit rewrites PINNED content, so the surviving pin plane
-/// names it outright: `red content-drifted`, citing the pin, exit 1 — **the same reason
-/// word `walk` uses, because both read `view::walk::lock_pin_colors`**. The disagreement
-/// finding-01 measured is now an AGREEMENT by construction, and the assert is stronger than
-/// the grey it replaced, not weaker. **What it no longer covers:** an out-of-band edit to
-/// content NOTHING pins. That case is invisible here and is asserted as invisible at
-/// [`check_is_blind_to_a_forged_journal_page`] — it is the laundered edit, and under the
-/// ruling it is outside the engines domain rather than a hole in this file.
-///
-///
-///
-///
-///
-///
+/// The pin plane reddens on an out-of-band rewrite of pinned content, and `mrd walk`
+/// reddens on the same corpus in the same run: `red content-drifted`, citing the pin,
+/// exit 1 — the same reason word on both surfaces, because both read
+/// `view::walk::lock_pin_colors`. An out-of-band edit to content nothing pins is invisible
+/// here; that case is asserted at [`check_is_blind_to_a_forged_journal_page`].
 #[test]
 fn check_reddens_on_the_pin_only_corpus_that_walk_also_reddens() {
     let sb = sandbox();
@@ -436,9 +343,8 @@ fn check_reddens_on_the_pin_only_corpus_that_walk_also_reddens() {
     git(&ws, &["add", "-A"]);
     git(&ws, &["commit", "-qm", "pin"]);
 
-    // The green-path control, in the same run: at THIS instant the workspace is clean, so the
-    // refusal below is caused by the out-of-band write and not by the corpus (S3-R8(c)).
-    //
+    // Green-path control: at this instant the workspace is clean, so the refusal below is
+    // caused by the out-of-band write and not by the corpus (S3-R8(c)).
     let clean = sb.run(&ws, &["check"]);
     assert_eq!(
         clean.status.code(),
@@ -511,22 +417,8 @@ fn check_reddens_on_the_pin_only_corpus_that_walk_also_reddens() {
 
 // ── the [LAW] moves: green where a grey used to stand ────────────────────────
 
-/// **U5 corpus row 01, tagged [LAW] — an empty workspace was grey and is now GREEN.** This
-/// assertion INVERTED. The reason is on the record and it is not a weakening: The old grey said
-/// *"I could not date your write history"*. The new green says *"the planes I read are clean"*.
-/// **A narrower claim, not a stronger one about the same question** — and the narrowing is
-/// exactly what the ruling ordered.
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// U5 corpus row 01, tagged [LAW] — an empty workspace is green: the planes this verb reads
+/// are clean, and dating write history is no longer asked.
 #[test]
 fn check_is_green_on_an_empty_workspace() {
     let sb = sandbox();
@@ -555,15 +447,8 @@ fn check_is_green_on_an_empty_workspace() {
     );
 }
 
-/// **The former reserved path is an ordinary page and moves no verdict.** Writing
-/// `meridian/receipts.md` used to be writing the ledger the verb read; the path is reserved by
-/// nothing now, and a page sitting there is a page.
-///
-///
-///
-///
-///
-///
+/// The former reserved path is an ordinary page and moves no verdict: the path is reserved
+/// by nothing, and a page sitting there is a page.
 #[test]
 fn the_former_journal_path_is_an_ordinary_page_and_moves_no_verdict() {
     let sb = sandbox();
@@ -595,17 +480,9 @@ fn the_former_journal_path_is_an_ordinary_page_and_moves_no_verdict() {
     );
 }
 
-/// The `--json` face of the green, asserted for what is ABSENT as much as for what is present
-/// (U5 § 6, ruled decision 3). `core.chain`, `core.foreign_edit` and the whole `cannot_assess`
-/// block are **removed as keys, not set to null**.
-///
-///
-///
-///
-///
-///
-///
-///
+/// The `--json` face of the green, asserted for what is absent as much as for what is present
+/// (U5 § 6): `core.chain`, `core.foreign_edit` and the whole `cannot_assess` block are
+/// removed as keys, not set to null.
 #[test]
 fn check_json_discloses_write_history_and_carries_no_chain_keys() {
     let sb = sandbox();
@@ -658,13 +535,8 @@ fn check_json_discloses_write_history_and_carries_no_chain_keys() {
                     "orphaned": [],
                 },
                 "anchoring_cannot_assess": null,
-                // The SIGHT LINE (ruling ALWAYS PRESENT, even at count 0 — a key that appears only sometimes
-                // is precisely the defect all-hands 1 catalogued: `skip_serializing_if` makes a key set vary
-                // with the ENVIRONMENT, so a reader cannot tell "no cross-root pins" from "an engine that does
-                // not report them". These two key-set pins caught this addition, which is what they are for;
-                // the set genuinely changed and is updated deliberately.
-                //
-                //
+                // Always present, even at count 0: an environment-varying key set would blur
+                // "no cross-root pins" with "an engine that does not report them".
                 "anchoring_out_of_jurisdiction": {
                     "count": 0,
                     "refs": [],
@@ -686,25 +558,10 @@ fn check_json_discloses_write_history_and_carries_no_chain_keys() {
 
 // ── the BLIND arm: the deleted detector, asserted as deleted ─────────────────
 
-/// **THE LOST DETECTOR, PINNED AS AN EXECUTABLE FACT.** A forged, chain-broken, journal-shaped
-/// page is written into the workspace — the exact three-row fixture (`r-000001` → a spliced
-/// `r-000099` → `r-000002`) that `check_reddens_and_cites_a_spliced_journal_row` used to redden
-/// on — and `mrd check` answers GREEN, exit 0, on both faces. This test asserts a REDUCTION,
-/// and it is here so nobody has to rediscover it `chain: RED` was `check`s **only**
-/// write-history red (U5 § 3; corpus row 04). It is gone.
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// The lost detector, pinned as an executable fact: a forged, chain-broken, journal-shaped
+/// page is written into the workspace and `mrd check` answers green, exit 0, on both faces.
+/// This asserts a reduction — `chain: RED` was `check`s only write-history red, and it is
+/// gone.
 #[test]
 fn check_is_blind_to_a_forged_journal_page() {
     let sb = sandbox();

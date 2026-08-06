@@ -1,20 +1,9 @@
-//! `mrd --version` — the build identity, over the process boundary (G10,
-//! dogfood 2026-08-04 run 01).
+//! `mrd --version` — the build identity, over the process boundary.
 //!
-//! # What this file holds the CLI to
-//! Before this surface existed, `mrd --version` fell through to `unknown
-//! subcommand: --version` plus 239 lines of help at exit 2, so the only way to
-//! tell two `mrd` binaries apart was to hash them. Three propositions are
-//! gated here:
-//!
-//! 1. **All three spellings answer, on stdout, at exit 0** — `--version`, the
-//!    conventional `-V`, and the bare word.
-//! 2. **The answer is ONE line, and it carries a commit.** An identity that
-//!    scrolls, or that prints only `0.0.0` (which every crate in this
-//!    publish-nothing workspace carries forever), identifies nothing.
-//! 3. **The commit is READ, never invented.** In this repository the line must
-//!    carry the real HEAD; `unknown` is the only other legal word, and it is
-//!    legal only where a build could reach no repository.
+//! Gated here: all three spellings (`--version`, `-V`, bare `version`) answer on
+//! stdout at exit 0; the answer is one line carrying a commit; the commit is
+//! read, never invented — the real HEAD, or the literal `unknown` where a build
+//! could reach no repository.
 
 use std::process::{Command, Output};
 
@@ -62,12 +51,8 @@ fn every_spelling_prints_the_same_identity() {
     }
 }
 
-/// The commit is the repositorys own HEAD — read, never invented. The test asks git the same
-/// question the build script did. When git cannot answer HERE (a source tree with no
-/// repository), the only legal identity is the literal `unknown`: this gate accepts that word
-/// and no other, so a build that could not know its commit can never print one that looks real.
-///
-///
+/// The commit is the repositorys own HEAD — read, never invented. When git cannot answer here
+/// (a source tree with no repository), the only legal identity is the literal `unknown`.
 #[test]
 fn the_commit_is_the_one_git_names() {
     let line = stdout(&mrd(&["--version"]));

@@ -170,13 +170,8 @@ impl Seeded {
     }
 }
 
-/// Build the seeded git workspace: four AUTHORED commits over one task page, plus
-/// the fixture rule page.
-///
-/// **The actor is the commit author now.** It used to be an `actor=` token this
-/// fixture wrote into a journal row itself — the engine recording its own memory,
-/// which ZT ruled out of existence (2026-08-03). Nothing else about the corpus
-/// changed: the same four writes, the same rule, the same fidelity classes.
+/// Build the seeded git workspace: four authored commits over one task page, plus
+/// the fixture rule page. The actor is the commit author — history is git.
 fn seeded_workspace() -> Seeded {
     let dir = tempfile::tempdir().expect("tmpdir");
     let ws = dir.path();
@@ -206,15 +201,8 @@ fn seeded_workspace() -> Seeded {
     write(ws, "tasks/fix-parser.md", FIX_CLOSED_NOTE);
     commit_as(ws, "agent:bob", "C2 bob edits fix-parser");
 
-    // C3 — a write whose bytes are NOT UTF-8: fidelity C grey.
-    //
-    // Grey's antecedent narrowed with the enumerator, and this is the honest new
-    // one. It used to be "a journal row whose path is in no commit" — a row the
-    // engine had written about a write git never saw. Enumerating FROM git makes
-    // that state unreachable by construction: every row now comes from a commit
-    // that recorded it. What remains is bytes the tier cannot read as a document,
-    // which is the same fact the class always named — neither side recovered, so
-    // counted and rendered, never run.
+    // C3 — a write whose bytes are NOT UTF-8: fidelity C grey. Neither side recovers as a
+    // document, so the row is counted and rendered, never run.
     std::fs::write(ws.join("tasks/ghost.md"), [0xff_u8, 0xfe, 0x00, 0x01]).expect("write ghost");
     commit_as(ws, "agent:alice", "C3 a write whose bytes are not UTF-8");
     let c3 = format!("{}:tasks/ghost.md", head(ws));
@@ -442,22 +430,9 @@ fn golden_exception_without_a_reason_is_refused() {
     );
 }
 
-/// Decision 8: `mrd rules replay` is retired the SAME release — no alias, no shim. The verb no
-/// longer parses; the CLI refuses it loudly (exit 2). The instrument changed with the
-/// namespace; the proposition did not The `rules` namespace has since been REASSIGNED by the
-/// registration ruling § 7 to the effective-rules print verb (`mrd rules [PATH]`), which ZT's
-/// originating requirement named as reuse of exactly this precedent.
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// Decision 8: `mrd rules replay` is retired — no alias, no shim. The verb no longer parses;
+/// the CLI refuses it loudly (exit 2). The `rules` namespace has since been reassigned to the
+/// effective-rules print verb (`mrd rules [PATH]`).
 #[test]
 fn mrd_rules_replay_no_longer_parses() {
     for retired in [
@@ -479,14 +454,10 @@ fn mrd_rules_replay_no_longer_parses() {
     }
 }
 
-/// D2a's load-bearing check: the spec DECLARES which rule it excepts, and the
-/// runner verifies that declaration instead of trusting the caller to pair them.
-///
-/// This is what the filename shape could not do. A `<page>.golden.md` sibling was
-/// bound to its rule by POSITION, so the binding could never be wrong — and could
-/// never be checked either. Naming the spec makes a mispairing possible, so the
-/// mispairing must be refused: a golden list that excuses findings for a law it
-/// never named is exactly the silent-excuse shape this tier exists to prevent.
+/// D2a's load-bearing check: the spec declares which rule it excepts, and the runner verifies
+/// that declaration instead of trusting the caller to pair them. A sibling bound by position
+/// could never be wrong — and could never be checked either; naming the spec makes a
+/// mispairing possible, so the mispairing must be refused.
 #[test]
 fn a_spec_naming_another_rule_is_refused() {
     let seeded = seeded_workspace();

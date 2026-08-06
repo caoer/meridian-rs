@@ -1,27 +1,9 @@
-//! **Perf-lane daemon teardown control** — the gate that the status/walk/check CPU targets
-//! cannot be, because those verbs are pure-local and never spawn. The leak this closes W6
-//! measured 16 resident `mrd daemon` processes under one worktree's debug binary after its perf
-//! runs. Shape: each execution sandboxes `XDG_CACHE_HOME` into a fresh tempdir; a detached
-//! daemon outlives that tempdir and is never re-found by the next run. On a long-lived
-//! `[self-hosted, bench]` runner the residents accumulate forever (G11's idle-exit bounds the
-//! class at the product root; this file is the harness half).
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
+//! Perf-lane daemon teardown control — the gate that the status/walk/check CPU targets cannot
+//! be, because those verbs are pure-local and never spawn. Each execution sandboxes
+//! `XDG_CACHE_HOME` into a fresh tempdir; a detached daemon outlives that tempdir and is
+//! never re-found by the next run, so on a long-lived bench runner residents accumulate
+//! forever (G11's idle-exit bounds the class at the product root; this file is the harness
+//! half).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -191,8 +173,7 @@ fn one_cycle(label: &str) -> i32 {
 }
 
 /// Field-exact count of daemons whose argv[0] is exactly this binary.
-/// Shape match only — never `pgrep -f` (matches agent prompts; misses live
-/// daemons — measured both directions, 2026-08-04/05).
+/// Shape match only — never `pgrep -f` (matches agent prompts; misses live daemons).
 fn census_this_binary() -> usize {
     let bin = mrd_bin();
     let out = Command::new("ps")

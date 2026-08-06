@@ -1,11 +1,6 @@
 //! `mrd pin` refuses WITH its cause — the R24 gate. The `--vibe`-without-git refusal is the one
 //! pin leg whose entire content lives in the wire bodys `cause` (v2 §8: `io_error` carries the
 //! underlying cause).
-//!
-//!
-//!
-//!
-//!
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -20,9 +15,6 @@ struct Sandbox {
 /// ladder never falls to the ancestor git search — `git hash-object -w` stays the only thing
 /// that can fail. `MERIDIAN_WORKSPACE` is the ladders only way to anchor a NON-git tree, and it
 /// is set per-subprocess in [`run`] (never on this process), so the suite stays parallel-safe.
-///
-///
-///
 fn sandbox() -> (Sandbox, PathBuf) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let sb = Sandbox {

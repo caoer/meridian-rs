@@ -1,23 +1,7 @@
-//! **The shared fixture behind the multi-root CPU gates** (`status`, `walk`, `check`). Why this
-//! is one module and not one copy per target The gate these targets run is only as honest as
-//! the table they measure through, and the W2 investigations finding was precisely a fixture
-//! that had stopped populating the input it claimed to bound: `status_walltime.rs` set `HOME`
-//! to a bare temp dir, so the mount table was EMPTY, so the eager loader had no roots to walk —
-//! a green light with no lamp behind it, for months.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
+//! The shared fixture behind the multi-root CPU gates (`status`, `walk`, `check`). One module,
+//! not one copy per target: the gate these targets run is only as honest as the table they
+//! measure through, and a fixture that quietly stops populating its input is a green light
+//! with no lamp behind it.
 #![allow(dead_code, unreachable_pub)]
 
 use std::fmt::Write as _;
@@ -37,9 +21,7 @@ pub const PAGES_PER_ROOT: usize = 2_000;
 
 /// The binary every drive goes through — the real CLI, never a library call. `MRD_BIN` points
 /// it at another engine, which is how the BEFORE arm of an A/B is measured: the negative
-/// control for these gates is a BINARY SWAP, not an edit to the source under test, so the
-/// reddening needs no code change to reproduce and cannot be left half-applied.
-///
+/// control for these gates is a binary swap, not an edit to the source under test.
 pub fn mrd_bin() -> PathBuf {
     std::env::var_os("MRD_BIN")
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_mrd")), PathBuf::from)
@@ -168,13 +150,8 @@ pub fn init_workspace(sb: &Sandbox) -> PathBuf {
 }
 
 /// The childs user+sys CPU, cumulative over every child this process has reaped. A delta of it
-/// around one `.output()` call attributes to that child **only while this process spawns
-/// nothing else concurrently**, which is why each target using this holds exactly ONE `[test]`.
-///
-///
-///
-///
-///
+/// around one `.output()` call attributes to that child only while this process spawns
+/// nothing else concurrently, which is why each target using this holds exactly one `[test]`.
 pub fn children_cpu() -> Duration {
     // SAFETY: `getrusage` writes a fully-initialised `rusage` into the out
     // pointer and reads nothing else; `RUSAGE_CHILDREN` is a valid `who`.
@@ -190,19 +167,9 @@ pub fn children_cpu() -> Duration {
     secs(usage.ru_utime) + secs(usage.ru_stime)
 }
 
-// Daemon teardown — the perf lanes hygiene for resident auto-spawns A sandboxed
-// `XDG_CACHE_HOME` dies with the tempdir; a detached `mrd daemon` does not. On a long-lived
-// self-hosted runner every leak accumulates (W6 measured 16 under one worktrees debug binary).
-//
-//
-//
-//
-//
-//
-//
-//
-//
-//
+// Daemon teardown — the perf lanes hygiene for resident auto-spawns. A sandboxed
+// `XDG_CACHE_HOME` dies with the tempdir; a detached `mrd daemon` does not, and on a
+// long-lived self-hosted runner every leak accumulates.
 
 /// The resident daemon's pidfile under this sandbox's cache root.
 pub fn daemon_pidfile(sb: &Sandbox) -> PathBuf {
@@ -279,9 +246,8 @@ pub fn teardown_daemon(sb: &Sandbox) {
 
 impl Drop for Sandbox {
     fn drop(&mut self) {
-        // Best-effort only: a panicking test must not leave a resident behind, and Drop itself must
-        // not panic. The control targets asserted path is [`teardown_daemon`], not this.
-        //
+        // Best-effort only: a panicking test must not leave a resident behind, and Drop itself
+        // must not panic. The control targets asserted path is [`teardown_daemon`], not this.
         let _ = try_teardown_daemon(self);
     }
 }

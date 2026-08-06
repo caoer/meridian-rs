@@ -1,15 +1,5 @@
-//! U12 full-lifecycle e2e for `mrd run` — ACTIVE (U7 landed @ 04b6f48; the six gates flipped
-//! live at activation, none ignored). Assertions bind to ratified surface behavior (plan §3
-//! decisions + verdict rulings): each test drives the REAL binary over its process boundary.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
+//! Full-lifecycle e2e for `mrd run`: each test drives the real binary over its process
+//! boundary against ratified surface behavior.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -18,7 +8,6 @@ use std::process::{Command, Output};
 /// descriptor over the effect-shim fd, a bash task with NO caps that still tries to emit, a
 /// bash task that writes an md file directly (zero descriptors), and a bash task that rewrites
 /// `mdfs_config.yaml` mid-run (the widening attack).
-///
 const PAGE: &str = "\
 ---
 task.fix-note: \"[[#^note-1]]\"
@@ -141,7 +130,6 @@ fn starlark_task_applies_one_batch_with_receipt() {
 /// Bash lifecycle: the shim descriptor applies through the SAME choke point and splice batch;
 /// the receipt carries the exec record (invocation id, exit code, stdout sha256 + size, log
 /// address — ruling 7/S8); the stdout log exists under `.meridian/runs/`.
-///
 #[test]
 fn bash_task_applies_via_shim_with_run_record() {
     let ws = Ws::new();
@@ -166,21 +154,8 @@ fn bash_task_applies_via_shim_with_run_record() {
     );
 }
 
-/// **Rewritten from `deny_by_default_refuses_undeclared_descriptor`**, which asserted the OLD
-/// contract head-on: an undeclared BASH blocks descriptor refusing at the choke point with
-/// `capability denied`, exit 1, nothing applied. Capabilities do not apply to bash
-/// (`docs/laws.md` § Amendment), so `fix-uncapped` now applies.
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// Capabilities do not apply to bash (`docs/laws.md` § Amendment), so `fix-uncapped` applies
+/// ungoverned.
 #[test]
 fn an_undeclared_bash_descriptor_applies_ungoverned() {
     let ws = Ws::new();
@@ -196,7 +171,6 @@ fn an_undeclared_bash_descriptor_applies_ungoverned() {
 /// The zero-descriptor cheat: bash writes an md file directly. The snapshot bracket DETECTS it
 /// (exit 1, delta named as an exec-window change) and the write PERSISTS — never rolled back
 /// (14: rollback would be a second write path with invented authority).
-///
 #[test]
 fn ungoverned_md_write_is_detected_named_never_rolled_back() {
     let ws = Ws::new();
@@ -214,7 +188,6 @@ fn ungoverned_md_write_is_detected_named_never_rolled_back() {
 /// U12 MUST (20): the config-widening attack — bash rewrites `mdfs_config.yaml` mid-run to
 /// shrink the hash domain, then writes inside the new blind spot. The config hash bracket
 /// refuses (exit 1) and the smuggled write is still reported; nothing is silently admitted.
-///
 #[test]
 fn config_widening_attack_is_refused() {
     let ws = Ws::new();
@@ -231,15 +204,8 @@ fn config_widening_attack_is_refused() {
     );
 }
 
-/// **Rewritten from `dry_caps_are_byte_identical_to_choke_caps`**, which
-/// compared `caps.effective` across `--dry` and the real run for a BASH task.
-/// Neither surface carries a `caps` key now (`docs/laws.md` § Amendment), so
-/// the old assertion compares `null` to `null` and passes while proving
-/// nothing — a vacuous gate is worse than a deleted one.
-///
-/// S14's intent is kept, restated in the vocabulary that has a subject: what
-/// `--dry` says about a bash task's authority is exactly what the run says.
-/// Both name no capability, and both name the same effects fact.
+/// What `--dry` says about a bash task's authority is exactly what the run says (S14): both
+/// name no capability, and both name the same effects fact.
 #[test]
 fn dry_and_run_agree_that_bash_has_no_capability() {
     let ws = Ws::new();

@@ -1,23 +1,7 @@
-//! **The executable gate for `docs/laws.md` § "Amendment — capabilities do not apply to
-//! bash".** The law is prose; this file is what makes it hold. That section names this file and
-//! this file names that section, so a reader who proposes "just a small cap check on bash"
-//! meets both. The law was ruled, re-litigated in code, and ruled again. Point 4 of the ruling
-//! is the only one that prevents a third round: a test that fails if a bash task ever resolves
-//! a capability. That is this file.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
+//! The executable gate for `docs/laws.md` § "Amendment — capabilities do not apply to bash".
+//! The law is prose; this file is what makes it hold: a test that fails if a bash task ever
+//! resolves a capability. That section names this file and this file names that section, so a
+//! reader who proposes "just a small cap check on bash" meets both.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -28,7 +12,6 @@ use serde_json::Value;
 /// DIFFERENT target than the one it writes, a starlark block that declares nothing, and a bash
 /// block under the `check-*` name convention (whose refusal is a NAME law, not a capability,
 /// and must survive).
-///
 const PAGE: &str = "\
 ---
 task.undeclared-bash: \"[[#^ub-1]]\"
@@ -219,10 +202,9 @@ fn dry_bash_claims_no_capability() {
 
 // ── Half 2: no resolution runs underneath the silence ───────────────────────
 
-/// **The gate that cannot be faked by deleting print statements.** A bash block that declares
-/// NOTHING emits a descriptor, and it APPLIES. Under a surviving deny-by-default resolution
+/// The gate that cannot be faked by deleting print statements: a bash block that declares
+/// nothing emits a descriptor, and it applies. Under a surviving deny-by-default resolution
 /// this refuses at the choke point with `capability denied`.
-///
 #[test]
 fn undeclared_bash_descriptor_applies_ungoverned() {
     let ws = Ws::new();

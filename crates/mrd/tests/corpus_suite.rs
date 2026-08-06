@@ -1,19 +1,7 @@
-//! End-to-end gates for `mrd test --corpus` — the U1.5 tier-2 corpus runner. Drives the REAL
-//! `mrd` binary over committed corpus-test specs and the 18-02 governed tree
-//! (`tests/corpus/tree/` — real 18-02 session task pages, verbatim) and asserts the three
-//! signals the pre-arming gate rests on: - **fire-where-expected** — the fixture rule PAGE
-//! fires exactly where the expected-fire manifest declares (owner-self-close fires,
-//! reviewer-close / external-edit / out-of-scope pass); a WRONG
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
+//! End-to-end gates for `mrd test --corpus` — the U1.5 tier-2 corpus runner. Drives the real
+//! `mrd` binary over committed corpus-test specs and the governed tree (`tests/corpus/tree/`)
+//! and asserts the signals the pre-arming gate rests on: fire-where-expected, dead-rule
+//! reporting, and quiescence.
 
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -216,9 +204,8 @@ fn dead_citation_on_a_two_citation_page_is_reported() {
 
 #[test]
 fn fire_mismatch_is_caught_and_exits_one() {
-    // The load-bearing negative: a case declaring `expect: pass` over a change that actually FIRES
-    // is reported as a mismatch — fire-where-expected is enforced, not vacuous.
-    //
+    // The load-bearing negative: a case declaring `expect: pass` over a change that actually
+    // fires is reported as a mismatch — fire-where-expected is enforced, not vacuous.
     let (code, report) = run_json("fire-mismatch");
     assert_eq!(code, 1, "a fire mismatch is a findings exit (1): {report}");
     assert_eq!(report["summary"]["mismatches"], 1);
@@ -397,14 +384,8 @@ fn converging_acyclic_branches_are_not_a_cycle() {
 
 #[test]
 fn a_terminating_convergent_cascade_is_not_a_fuel_exhaustion() {
-    // N1. Two peers per level emit the IDENTICAL generation, so the graph's branches reconverge at
-    // every level: `2^(d+1) − 2` causal PATHS over `d` states.
-    //
-    //
-    //
-    //
-    //
-    //
+    // N1. Two peers per level emit the identical generation, so the graph's branches reconverge
+    // at every level: `2^(d+1) − 2` causal paths over `d` states.
     for (spec, steps) in [
         ("convergent-cascade-depth-8", 16),
         ("convergent-cascade-depth-12", 24),
@@ -435,15 +416,9 @@ fn a_terminating_convergent_cascade_is_not_a_fuel_exhaustion() {
 
 #[test]
 fn a_divergent_cascade_still_exhausts_fuel() {
-    // The direction-of-failure rail on the N1 repair (advisor requirement). The defect it repairs
-    // false-FAILS good conventions, which is the SAFE direction for a pre-arming gate; the repair
-    // must never buy that back by flipping the gate toward false-ACCEPT.
-    //
-    //
-    //
-    //
-    //
-    //
+    // The direction-of-failure rail on the N1 repair: the defect it repairs false-fails good
+    // conventions (the safe direction for a pre-arming gate); the repair must never buy that
+    // back by flipping the gate toward false-accept.
     let (code, report) = run_hook_json("divergent-cascade");
     assert_eq!(code, 1, "a never-settling cascade must fail: {report}");
     assert_eq!(report["quiescence"]["verdict"], "fuel_exhausted");
@@ -461,11 +436,9 @@ fn a_divergent_cascade_still_exhausts_fuel() {
 
 #[test]
 fn a_live_hook_cannot_vouch_for_a_same_named_check_citation() {
-    // The MIRROR of `a_check_citation_cannot_vouch_for_a_same_named_hook`, over the same two pages
-    // and the same collided name, running the other way: here the HOOK fires and the CHECK
-    // citation of that name never does. One merged `declared_rules` list with a hook-wins rule
-    // closes only the named direction; two typed namespaces close both.
-    //
+    // The mirror of `a_check_citation_cannot_vouch_for_a_same_named_hook`, running the other
+    // way: here the HOOK fires and the CHECK citation of that name never does. Two typed
+    // namespaces close both directions.
     let (code, report) = run_hook_json("hook-liveness-mirror");
     assert_eq!(
         code, 1,
@@ -541,11 +514,9 @@ fn a_check_citation_cannot_vouch_for_a_same_named_hook() {
 
 #[test]
 fn one_generation_is_one_batch_that_names_no_identity() {
-    // Production applies a mixed frontmatter+section emission as ONE atomic batch, and such a
-    // batch has no addressable Delta container — the one synthesized event names neither the field
-    // nor the section. A proof that split the generation into independent single-edit writes would
-    // derive two rich events and fabricate the downstream fire this watcher is waiting for.
-    //
+    // Production applies a mixed frontmatter+section emission as one atomic batch with no
+    // addressable Delta container; a proof that split it into single-edit writes would derive
+    // two rich events and fabricate the downstream fire this watcher is waiting for.
     let (code, report) = run_hook_json("mixed-generation");
     assert_eq!(code, 1, "the watcher must go dead: {report}");
     assert_eq!(
@@ -701,14 +672,8 @@ fn duplicate_identical_cases_are_acyclic_but_the_real_cycle_still_bites() {
 
 #[test]
 fn a_case_can_drive_a_content_reading_check() {
-    // The tier's CONTENT reach, and the reason this gate exists: a CHECK reading
-    // `change.sections_changed` / `change.doc.nodes[].text` is a rule a markdown engine must be
-    // able to test, and until a case could write the BODY it was unreachable by construction —
-    // reported dead over every case
-    //
-    //
-    //
-    //
+    // The tier's content reach: a CHECK reading `change.sections_changed` /
+    // `change.doc.nodes[].text` is only testable once a case can write the body.
     let (code, report) = run_json("body-content");
     assert_eq!(
         code, 0,
