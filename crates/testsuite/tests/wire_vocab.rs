@@ -1,6 +1,5 @@
 //! The wire-contract vocabulary gate, executable: error codes and node kinds
 //! serialize to the contract's exact strings, in the frozen ordinal order.
-//! Contract v2 (FROZEN 2026-07-18, decision 014) as of W2-AMEND.
 
 use wire::{ErrorCode, NodeKind};
 

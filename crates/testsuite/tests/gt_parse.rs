@@ -4,8 +4,7 @@
 //! Syntax owns exactly `(kind, span)` — the dialect facts. The pack's `hpath`
 //! (section-tree assembly) is `model`'s and `text_prefix_16b` is `wire-map`'s, so this
 //! gate compares the syntax-owned projection: every GT node's kind and byte span, in the
-//! §1 total order both sides emit. The pack is demoted to a bench fixture only later
-//! (PF-GT-RETARGET); until then this diff is reviewable.
+//! §1 total order both sides emit.
 
 use serde_json::Value;
 use std::fmt::Write as _;

@@ -1,31 +1,7 @@
-//! U4a2 wire gate, POST-RETIREMENT (U14, docket row P9): what survives of the composed
-//! `read` op's golden replay after the 11 Go-parity captures retired.
-//!
-//! # What retired, and why it could not be updated
-//! This file replayed `data/parity/goldens/` through the live sidecar serve loop:
-//! `body.rendered_text` byte-equal to meridian-go's captured `text`, the raw `sections[]`
-//! body byte-equal to its captured `structured.sections`, and refusal messages verbatim.
-//! Every replayed step fed a CAPTURED REQUEST — `args["ref"]`, `args["sections"]`, joined
-//! strings — into the `read` op. U14 made that op take structured selectors (meridian-rs
-//! end-state ruling, 2026-07-22 + § Amendment 2026-07-26).
-//!
-//! The `render-elided/` pins retired with them — they were derivations OF the captured
-//! text, so they could outlive neither their source nor the requests that produced them.
-//!
-//! # What replaced it
-//! `u14_read_face_contract` — the read face's own laws over the SAME corpus (the corpus
-//! is hand-built input, not a capture, and stays). This file keeps the one gate that
-//! never touched a golden: v3-only discovery honesty. U15 mints the TOON goldens that
-//! re-pin the rendered face.
-//!
-//! Precedent followed exactly: `refusal_is_redesigned` (ruling `d9419c03`) and the
-//! U0/U5/U5b refusal-pin retirements before it — per-case contracts added, no shared
-//! assertion loosened.
-//!
-//!
-//!
-//!
-//!
+//! What survives of the composed `read` op's golden replay after the
+//! Go-parity captures retired: the one gate that never touched a golden —
+//! v3-only discovery honesty. `u14_read_face_contract` owns the read face's
+//! laws over the same corpus; the TOON goldens re-pin the rendered face.
 
 use serde_json::{Value, json};
 

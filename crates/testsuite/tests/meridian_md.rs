@@ -1,25 +1,14 @@
-//! The `MERIDIAN.md` in-file schema pack, replayed (stage 3, U6 over U2's pack).
+//! The `MERIDIAN.md` in-file schema pack, replayed.
 //!
-//! `crates/testsuite/data/meridian-md/cases.json` pairs **every** case with its required
-//! outcome, and this module drives all 37 through `config::resolve` — the same entry
-//! point the CLI calls, not a parse-only shortcut, so the four resolution states of
+//! `crates/testsuite/data/meridian-md/cases.json` pairs every case with its
+//! required outcome, and this module drives all 37 through `config::resolve` —
+//! the same entry point the CLI calls — so the four resolution states of
 //! schema §2.2 are exercised as states rather than as functions.
 //!
-//! # Why this is a MODULE and not `tests/meridian_md.rs`
-//! `crates/testsuite/Cargo.toml` sets `autotests = false`. A stray `tests/meridian_md.rs`
-//! is never compiled and never runs — a green board that measured nothing. The
-//! registration in `tests/main.rs`, the `testsuite::meridian_md_dir()` accessor, and
-//! [`case_count_is_pinned`]'s cardinality assert are the three things that make this
-//! replay non-vacuous; the pack's README names all three.
-//!
-//! # The sandbox
-//! Every case runs in its own `tempfile::tempdir()`. `$SANDBOX` in the pack resolves to
-//! it and `$HOME` to `$SANDBOX/home`; nothing outside is read or written, and no case
-//! touches the real `HOME` or the real `MERIDIAN_CONFIG` (the chain is driven through
-//! `config::Env`, which is data — see that type's own note on why it is injected rather
-//! than read globally).
-//!
-//!
+//! A module, not `tests/meridian_md.rs`: `autotests = false`, so a stray file
+//! under `tests/` is never compiled and never runs. Every case runs in its own
+//! `tempfile::tempdir()`; `$SANDBOX` resolves to it and `$HOME` to
+//! `$SANDBOX/home`, and nothing outside is read or written.
 
 use std::path::{Path, PathBuf};
 
@@ -446,11 +435,9 @@ fn no_refusal_can_publish_a_partial_mount_table() {
             );
             with_expect_not += 1;
         }
-        // EVERY refusal fixture, not only the `expect_not` ones. The three
-        // `expect_not` cases all fault before any block is read, so a build that
-        // half-loads at BLOCK level satisfies them and is caught only here —
-        // measured: mutating `parse_mount`'s `?` into a `continue` left the
-        // expect_not-only form of this test green.
+        // Every refusal fixture, not only the `expect_not` ones: the three
+        // expect_not cases all fault before any block is read, so a build
+        // that half-loads at block level is caught only here.
         if text(&case["expect"]["outcome"]) != "refuse" {
             continue;
         }
@@ -481,35 +468,12 @@ fn no_refusal_can_publish_a_partial_mount_table() {
     );
 }
 
-/// **U36 INVERTED this test, and the inversion is the proof.**
-///
-/// As U6 wrote it, this test asserted the DEFECT: the render face elided every
-/// `meridian-*` block (predicate `lock::is_meridian_lang`), so a config's
-/// human-authored mount blocks vanished and the rendered section was
-/// **byte-identical** to rendering the file with those blocks physically
-/// deleted. That byte-identity WAS the missing marker (S3-R14(a)) — a config
-/// file rendering as a config file that declares nothing, with no signal.
-///
-/// U36 made elision **per-language**, derived from *"does the ENGINE EMIT this
-/// block's bytes?"* (`lock::is_engine_emitted`). `meridian-mount` has no
-/// canonical writer — the user authors it and `config` only parses it — so it is
-/// no longer elided, and the defect this test pinned is gone. What the test now
-/// asserts is the inversion, point for point:
-///
-/// 1. the rendered section carries **all three** declared roots;
-/// 2. it is **NOT** byte-identical to rendering the file with those blocks
-///    deleted — the two differ, which is what "the reader can tell" means. No
-///    marker bytes were invented to achieve it (M1's *"no invented placeholder
-///    bytes"* stands): the authored bytes themselves are the difference;
-/// 3. S10's `NOTICE:` mechanism still does not fire — nothing needed it;
-/// 4. the raw face still carries the blocks VERBATIM and the config plane still
-///    parses all three — the acceptance half, unchanged, without which (1) is
-///    satisfied by a build that renders the file uninterpreted.
-///
-/// The original defect was reproduced first-hand on the installed binary before
-/// it was written down: `mrd read MERIDIAN.md --section '…/Roots'` printed the
-/// prose, dropped all three blocks, and exited 0. The pre-U36 assertions are
-/// preserved verbatim in the U36 card's redden evidence.
+/// The render face shows human-authored config blocks: `meridian-mount` has
+/// no canonical writer, so it is not elided. The rendered section carries all
+/// three declared roots and is not byte-identical to rendering the file with
+/// those blocks deleted — no marker bytes invented, the authored bytes are
+/// the difference. The raw face still carries the blocks verbatim and the
+/// config plane still parses all three.
 #[test]
 fn the_render_face_shows_config_blocks_and_differs_from_blocks_deleted() {
     use render::{Header, RenderJob, Renderer, SectionRow, ToonRenderer};

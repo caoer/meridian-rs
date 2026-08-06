@@ -1,27 +1,14 @@
-//! **The two copies of the armed-plane disk edge must answer identically.**
+//! The two copies of the armed-plane disk edge must answer identically.
 //!
-//! # Why this test exists
-//! `wire_serve::armed_disk` and `run::gate` each read the once-armed marker, the attested
-//! artifact, and the pinned pages. They are two copies on purpose: `run`'s charter
-//! forbids it from naming `wire-serve` (that would drag the wire, the daemon, and the
-//! render plane into the run plane), and hoisting a shared home was ruled out of the
-//! cutover diff and re-owed with the ARM writer.
+//! `wire_serve::armed_disk` and `run::gate` each read the once-armed marker,
+//! the attested artifact, and the pinned pages — two copies on purpose, since
+//! `run`'s charter forbids naming `wire-serve`. Two readers of one marker can
+//! diverge (one workspace armed for one surface, never-armed for the other),
+//! so the copies are pinned against each other here, in the crate that may
+//! name both: the matrix is marker × artifact, and each cell asserts the two
+//! readers reach the same disposition.
 //!
-//! But **two readers of one marker is the exact defect class the cutover ruling is
-//! about.** While the write door read `conventions/INDEX.md` and the reaction feeder read
-//! the artifact, one workspace could be armed for one surface and never-armed for the
-//! other; the measured symptom was every write refused, plus two hung tests waiting for a
-//! notification a refused write never produced. A comment promising the copies agree is
-//! what that state looked like beforehand.
-//!
-//! So the copies are pinned against each other here, in the crate that may name both. The
-//! matrix is the pivot's whole input space — marker × artifact — and each cell asserts
-//! the two readers reach the SAME disposition, not merely that each is individually
-//! plausible.
-//!
-//! This test is the drift window's replacement, and it is load-bearing until
-//! `[[arm-disk-edge]]` decides the one reader home. If it is ever deleted, the
-//! duplication silently becomes unguarded again.
+//! Load-bearing until `[[arm-disk-edge]]` decides the one reader home.
 
 use std::path::Path;
 

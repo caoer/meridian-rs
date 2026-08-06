@@ -119,12 +119,10 @@ fn underscore_exemption_fixtures_are_present_unmigrated() {
     );
 }
 
-/// W4-AMEND gate 4 (re-homed CHARSET-GUARD splice-target position, the
-/// STAGED-OPEN follow-up): a `_`-bearing SPLICE-TARGET anchor is refused
-/// `bad_request`. The wire type admits the bytes (newtypes name, never
-/// validate — the frame must DECODE so the refusal can be loud, not a parse
-/// mystery); the mint-guard refuses them; the answer is the fix-class §8
-/// envelope. Rides the pack's per-position refusal inputs.
+/// A `_`-bearing splice-target anchor is refused `bad_request`. The wire type
+/// admits the bytes (newtypes name, never validate — the frame must decode so
+/// the refusal can be loud); the mint-guard refuses them; the answer is the
+/// fix-class §8 envelope. Rides the pack's per-position refusal inputs.
 #[test]
 fn underscore_splice_target_anchor_is_bad_request() {
     let pack = pack();

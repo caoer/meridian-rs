@@ -1,27 +1,15 @@
-//! **U36 — elision is PER-LANGUAGE, derived from a property, never from a list.**
+//! U36 — elision is per-language, derived from a property, never from a list.
 //!
-//! A namespace answers *"is this ours?"*. Elision answers *"should a reader see it?"*.
-//! `lock::is_meridian_lang` served both, so `mrd read MERIDIAN.md` printed the prose and
-//! dropped every mount block the user had authored — byte-identically to a config that
-//! declares nothing (U6, pinned in `meridian_md.rs`).
+//! A namespace answers "is this ours?"; elision answers "should a reader see
+//! it?". The property that separates them is "does the engine emit this
+//! block's bytes?" — `lock::is_engine_emitted`, derived from the registered
+//! canonical writers (`lock::EngineEmitted`).
 //!
-//! The property that separates them is **"does the ENGINE EMIT this block's bytes?"** —
-//! `lock::is_engine_emitted`, derived from the registered canonical writers
-//! (`lock::EngineEmitted`).
-//!
-//! # The gate is BOTH directions, and one alone is insufficient (S3-R17)
-//!
-//! 1. a NEW engine-emitted block, added **without touching the elision predicate**, IS
-//!    elided;
-//! 2. a language the engine only **PARSES** is **NOT** elided — no matter which crate
-//!    names it.
-//!
-//! (2) is what makes this a law rather than a namespace test in disguise, and it is the
-//! half that reddens: on the pre-U36 tree `meridian-mount` is elided, and under a
-//! *mention*-keyed derivation it is elided again, because `crates/config` names
-//! `meridian-mount` in a `pub const`. Both reddens are recorded in the U36 card.
-//!
-//!
+//! The gate is both directions, and one alone is insufficient: (1) a new
+//! engine-emitted block, added without touching the elision predicate, IS
+//! elided; (2) a language the engine only parses is NOT elided — no matter
+//! which crate names it. (2) is what makes this a law rather than a namespace
+//! test in disguise.
 
 use render::{Header, RenderJob, Renderer, SectionRow, ToonRenderer};
 use wire_map::facts::{ReadFact, read_facts};
@@ -105,16 +93,10 @@ fn rendered_content(raw: &str) -> String {
 /// engine-emitted block, the two languages the engine only parses, an unclaimed
 /// reserved language, and an ordinary fence.
 fn mixed_page() -> String {
-    // FIXTURE REPAIR ONLY (U14): U8 deleted the `objects:` plane — R4 carries
-    // the blob hash per pin row — so `Lock::set_object` no longer exists and
-    // this test binary did not compile at `u8-rekey`. Rebuilt as an R4 pin row;
-    // this test is about fence LANGUAGES, so the lock's contents are only
-    // required to render as an engine-emitted block.
+    // The shipped block is a one-pin lock — this test is about fence
+    // languages, so the lock's contents only need to render as an
+    // engine-emitted block.
     let mut l = lock::Lock::new();
-    // Pre-R4 this fixture carried an `objects:` table and no pins. R4 retired
-    // that plane and moved the blob hash onto the pin row, so the shipped block
-    // is now a one-pin lock — same role in this test (an engine-emitted block
-    // the elision must keep), expressed in the only schema that parses.
     l.upsert_pin(lock::PinEntry::new(
         "corpus/x",
         "9ae3f1deadbeef",
@@ -135,12 +117,9 @@ fn mixed_page() -> String {
     )
 }
 
-/// **Direction 1.** A new engine-emitted block is elided, and the predicate was
-/// never touched to make it so.
-///
-/// What this kills: a derivation that only knows the languages that existed when
-/// it was written — the enumerated list's actual failure mode (it silently omits
-/// new members, #8 §1).
+/// Direction 1: a new engine-emitted block is elided, and the predicate was
+/// never touched to make it so — killing a derivation that only knows the
+/// languages that existed when it was written.
 #[test]
 fn a_new_engine_emitted_block_is_elided_without_touching_the_predicate() {
     let raw = mixed_page();
@@ -166,14 +145,10 @@ fn a_new_engine_emitted_block_is_elided_without_touching_the_predicate() {
     );
 }
 
-/// **Direction 2 — the half that makes this a law.** A language the engine only
-/// PARSES is NOT elided, no matter which crate names it.
-///
-/// What this kills: (a) the pre-U36 namespace predicate, which elides these; and
-/// (b) a derivation keyed on *mention* — `crates/config` names both languages in
-/// `pub const`s (`config::MOUNT_LANG`, `config::TOOL_LANG`) and merely PARSES
-/// them, so a mention-keyed predicate elides them and reproduces the defect
-/// wearing derivation clothes.
+/// Direction 2 — the half that makes this a law: a language the engine only
+/// parses is not elided, no matter which crate names it. A mention-keyed
+/// derivation would elide `config::MOUNT_LANG`/`TOOL_LANG`, which `config`
+/// merely parses.
 #[test]
 fn a_parsed_only_language_is_not_elided_however_it_is_named() {
     let raw = mixed_page();
@@ -204,19 +179,11 @@ fn a_parsed_only_language_is_not_elided_however_it_is_named() {
     );
 }
 
-/// **Gate 3 — the third-language case gets its RULE and its FIXTURE in the same
-/// motion** (S3-R14 item 3(a)).
-///
-/// A `meridian-*` block that is neither mount, nor tool, nor an engine block.
-///
-/// **The rule: readership follows AUTHORSHIP.** The engine did not write those
-/// bytes — no canonical writer claims the language — so a human did, and a human's
-/// bytes are shown. An unclaimed reserved language renders.
-///
-/// That is what makes `config`'s SKIP of the same block safe: `config` cannot
-/// parse a language it has no grammar for, and before U36 the block was skipped
-/// AND elided, so it vanished twice over. Now the skip drops it from the mount
-/// table while the reader still sees it — nothing disappears silently.
+/// The third-language case: a `meridian-*` block that is neither mount, nor
+/// tool, nor an engine block. Readership follows authorship — no canonical
+/// writer claims the language, so a human wrote the bytes and they are shown.
+/// That is what makes `config`'s skip of the same block safe: the skip drops
+/// it from the mount table while the reader still sees it.
 #[test]
 fn an_unclaimed_reserved_language_renders_and_config_skips_it() {
     let raw = mixed_page();
@@ -283,13 +250,10 @@ fn the_raw_face_still_carries_every_reserved_block_verbatim() {
     );
 }
 
-/// The namespace reservation did NOT move (U36 bound): `is_meridian_lang` still
-/// answers the prefix question for every language, including the ones that now
-/// render.
-///
-/// This is the discrimination the unit exists to establish, asserted directly:
-/// **every** engine-emitted language is reserved, and **not** every reserved
-/// language is engine-emitted. The second half is the new law.
+/// The namespace reservation did not move: `is_meridian_lang` still answers
+/// the prefix question for every language, including the ones that now
+/// render. Every engine-emitted language is reserved, and not every reserved
+/// language is engine-emitted.
 #[test]
 fn reservation_is_uniform_and_readership_is_not() {
     let reserved_and_emitted = [lock::LANG, <TestJournal as lock::EngineEmitted>::LANG];

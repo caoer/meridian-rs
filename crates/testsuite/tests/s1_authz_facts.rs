@@ -1,36 +1,20 @@
-//! S1 gate (stage-2), as amended by s1c: the composed read carries the AUTHZ FACTS —
-//! canonical hpaths, byte spans, and the `^id` ANCHORS — so ccc-statusd's put authz
-//! derives governing sections from the engine's facts instead of its own markdown mirror
-//! (`sanitizeHeadingHost`, M1 residual #4).
+//! S1 gate: the composed read carries the authz facts — canonical hpaths,
+//! byte spans, and the `^id` anchors — so ccc-statusd's put authz derives
+//! governing sections from the engine's facts instead of its own markdown
+//! mirror.
 //!
-//! Shaped after the Go-side drift guard the mirror-removal retires
-//! (`ccc-statusd/internal/mcpserver/sanitize_drift_guard_test.go`): over the SAME parity
-//! corpus, one live serve session per corpus root, comparing the HOST mirror's own input
-//! — the v2 `toc` op's RAW hpath segments, sanitized through the engine's single owner
-//! `model::gotext::sanitize_heading` (S0) — against the v3 composed-read row's canonical
-//! `hpath`.
+//! Over the same parity corpus, one live serve session per corpus root,
+//! comparing the host mirror's own input — the v2 `toc` op's raw hpath
+//! segments, sanitized through `model::gotext::sanitize_heading` — against
+//! the v3 composed-read row's canonical `hpath`. It then gates: every heading
+//! row and anchor carries a `span` byte-equal to the v2 toc node's; the `^id`
+//! anchors are surfaced with the Go switch's drops intact; the containment
+//! join over the v3 facts equals the same walk over the v2 nodes; and
+//! `rendered_text` never grows an anchor row.
 //!
-//! It then gates what the guard could not, because the row did not carry it:
-//!
-//! - every heading row and every anchor carries a `span`, byte-equal to the v2 toc node's
-//!   span for the same node — so the substitution the host makes is fact-for-fact, not
-//!   merely address-for-address;
-//! - the `^id` anchors are SURFACED (toc mode served headings only), with the Go switch's
-//!   drops intact (task/paragraph-hosted anchors stay unaddressable);
-//! - `containingSectionTitles` (`puttoc.go:86`) computed from the v3 facts ALONE equals
-//!   the same walk over the v2 nodes the host reads today;
-//! - `rendered_text` never grows an anchor row — the captured Go toc bytes are frozen.
-//!
-//! **s1c amends S1's ONE assertion that was wrong.** S1 put the anchor rows in the `toc`
-//! array beside the headings, discriminated by `depth == 0`; ccc-statusd's `readText`
-//! indents by `strings.Repeat(" ", depth-1)` and panicked "negative Repeat count" on the
-//! first file with a block anchor. The anchors now ride their own always-emitted
-//! `anchors[]`, so this file gates the SHAPE, not a discriminator: `toc` is heading-only
-//! over the whole corpus, `anchors[]` is present on every read, and the containment join
-//! still agrees with the v2 nodes across the two planes.
-//!
-//!
-//!
+//! The anchors ride their own always-emitted `anchors[]`, never the `toc`
+//! array: ccc-statusd's `readText` indents by `depth-1` and panics on a
+//! depth-0 row.
 
 use model::gotext::sanitize_heading;
 use serde_json::{Value, json};
@@ -188,10 +172,8 @@ fn composed_read_rows_carry_authz_facts_over_the_drift_guard_corpus() {
                     r.get("anchor").is_none(),
                     "{ctx}: an anchor fact reached a `toc` row: {r}"
                 );
-                // U14: the address is a SEGMENT array, so a `^id` cannot be
-                // spelled into it at all — the check is that no segment's raw
-                // text opens with `^`, which is the same guard the write door
-                // holds (`pin_row`'s mixed-array refusal).
+                // U14: the address is a segment array; the check is that no
+                // segment's raw text opens with `^`.
                 assert!(
                     r["hpath"]
                         .as_array()
@@ -210,11 +192,8 @@ fn composed_read_rows_carry_authz_facts_over_the_drift_guard_corpus() {
                 v3_headings.len()
             );
             for (n, r) in v2_headings.iter().zip(&v3_headings) {
-                // U14: the engine row publishes RAW SEGMENTS, so the
-                // comparison against the host's sanitized mirror is made by
-                // sanitizing the row's segments here — at the test's own door,
-                // which is the only place a joined spelling belongs now. The
-                // property is unchanged: host mirror == engine address.
+                // The engine row publishes raw segments; sanitize them here so
+                // the property stays: host mirror == engine address.
                 let row_sanitized = r["hpath"]
                     .as_array()
                     .expect("row hpath is the segment array")
@@ -348,29 +327,10 @@ fn composed_read_rows_carry_authz_facts_over_the_drift_guard_corpus() {
     );
 }
 
-/// **RETIRED with the Go-parity goldens (U14, docket row P9).**
-///
-/// `extended_rows_match_the_captured_go_toc_rows` pinned the extended wire row
-/// set against meridian-go's captured `structured.toc` — row-for-row `n` /
-/// `depth` / `title` / `hpath` / `words` / `sec_rev`, plus "every row carries a
-/// span". Two of its inputs died together: the captured requests spoke the
-/// joined-string selector grammar U14 removed, and the captured `hpath` was the
-/// sanitized joined ADDRESS this row no longer publishes. The captures cannot
-/// be re-taken (`CLAUDE.md` end-state ruling + § Amendment 2026-07-26: the
-/// remaining bridge legs owe meridian-go no byte parity).
-///
-/// What it protected is now held per-case, without a capture:
-///
-/// - the M1 fact set surviving the added authz facts, and every heading row
-///   carrying a span → [`extended_rows_carry_the_authz_facts_on_every_row`]
-///   below, over the same corpus;
-/// - the addresses themselves →
-///   `u14_read_face_contract::every_published_address_resolves_back_to_its_own_row`,
-///   which asserts the round-trip property the old byte pin could not (both
-///   engines computed `hpath` through the same lossy join, so they agreed
-///   precisely where the address was wrong).
-///
-/// The corpus stays — it is hand-built input, never a capture.
+/// The extended row set carries the M1 fact set plus the authz span on every
+/// row, and the address is the segment array, never a joined string. The
+/// round-trip property lives in
+/// `u14_read_face_contract::every_published_address_resolves_back_to_its_own_row`.
 #[test]
 fn extended_rows_carry_the_authz_facts_on_every_row() {
     let mut rows = 0_u32;
@@ -468,15 +428,10 @@ fn frag_scoped_read_carries_only_the_subtree_anchors() {
     );
 }
 
-/// s1c: `anchors[]` rides a SECTION read too — the field is a property of the
-/// response, never of the face, so no caller has to know which one serves it.
-///
-/// A5 narrowed the second half of this gate out of existence: `frag` and
-/// `sections[]` cannot ride one call, and `sections[]`'s presence is now the
-/// only thing that selects a section read — so a frag-scoped section read is
-/// unreachable and "a frag scopes a section read's anchor plane" is no longer
-/// a fact this surface can state. The frag-scoping rule itself stays gated on
-/// the toc face, one test above.
+/// `anchors[]` rides a section read too — the field is a property of the
+/// response, never of the face. `frag` and `sections[]` cannot ride one call,
+/// so a frag-scoped section read is unreachable; the frag-scoping rule is
+/// gated on the toc face above.
 #[test]
 fn section_read_carries_the_anchor_plane_too() {
     let root_dir = testsuite::parity_dir().join("corpus").join("trailing-ws");

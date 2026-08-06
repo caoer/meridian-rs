@@ -10,7 +10,6 @@
 //! **Never does:** ship code (dependents: none, ever), own fixtures that aren't frozen
 //! (scratch fixtures belong to the test module that uses them), edit the GT pack (frozen
 //! means frozen — disagreements are findings for lane 0).
-//!
 
 /// Path to the frozen GT pack, for test modules.
 #[must_use]

@@ -1,30 +1,17 @@
-//! U15 (DECISION 27) — the TOON goldens that re-pin the rendered CLI face.
+//! The TOON goldens that re-pin the rendered CLI face.
 //!
-//! # What these are, and what the retired goldens were
-//! The 11 Go-parity goldens retired in U14: they were CAPTURES of meridian-go's
-//! `readText` bytes, replayed through requests whose joined-string selectors the engine
-//! no longer accepts, and they could not be re-taken because meridian-go never served the
-//! redesigned read contract. These are the opposite kind of artifact — not captures of
-//! another implementation but REVIEWED FIXTURES of our own face, hand-checked once and
-//! frozen. Nothing outside this repo is owed byte parity (`CLAUDE.md` end-state ruling).
+//! These are not captures of another implementation but reviewed fixtures of
+//! our own face, hand-checked once and frozen. Nothing outside this repo is
+//! owed byte parity.
 //!
-//! # The discipline (#38)
-//! **No regeneration path exists here, deliberately.** There is no `--bless`, no
-//! `UPDATE_GOLDENS` env escape, no write-back on mismatch. A golden the code under test
-//! can rewrite is not a pin — it is the code asserting its own arithmetic, and it goes
-//! green through exactly the change it exists to catch. Every file under
-//! `data/toon-goldens/` was read by a human before it was committed, and changing the
-//! face means editing those bytes by hand and defending the diff in review.
+//! No regeneration path exists here, deliberately: no `--bless`, no
+//! `UPDATE_GOLDENS` escape, no write-back on mismatch. A golden the code under
+//! test can rewrite is not a pin. Changing the face means editing the
+//! committed bytes by hand and defending the diff in review.
 //!
-//! # The production path
-//! Each case drives the SIDECAR SERVE LOOP — the real v3 wire door, over a real on-disk
-//! workspace — and pins `body.rendered_text`. So what is frozen is what a caller actually
-//! receives, past the composed read op, the render plane's production configuration, and
-//! the agent-plane URI translation. A gate that called `render::toc_toon` directly would
-//! pin a function while the face it is supposed to protect drifted underneath it.
-//!
-//!
-//!
+//! Each case drives the sidecar serve loop — the real v3 wire door over a real
+//! on-disk workspace — and pins `body.rendered_text`, so what is frozen is
+//! what a caller actually receives.
 
 use serde_json::{Value, json};
 
@@ -33,11 +20,9 @@ fn goldens_dir() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data/toon-goldens")
 }
 
-/// **The one comparison primitive** every case in this file shares (#44).
-///
-/// It is exact byte equality against a committed file, and it fails loudly
-/// when the file is absent rather than creating it — an auto-created golden is
-/// the regeneration path this file exists without.
+/// The one comparison primitive every case in this file shares: exact byte
+/// equality against a committed file, failing loudly when the file is absent
+/// rather than creating it.
 fn assert_golden(case: &str, actual: &str) {
     let path = goldens_dir().join(format!("{case}.toon"));
     let expected = std::fs::read_to_string(&path).unwrap_or_else(|e| {
@@ -119,10 +104,7 @@ fn toc_face_over_a_document_with_no_headings() {
 
 /// The sections face: a TOON head declaring each body's `n`, raw `title`,
 /// `rev`, `words` and `bytes`, then the bodies verbatim behind their markers.
-///
-/// Read face v2 (dogfood G2): the marker is the row's `n`, not its full
-/// heading path. A deep section used to print its 199-char address twice —
-/// once in the head row, once as the banner — around an 800-byte body.
+/// The marker is the row's `n`, not its full heading path.
 #[test]
 fn sections_face_over_one_section() {
     let text = render_face(
@@ -151,8 +133,8 @@ fn sections_face_carries_the_partial_read_notice_as_a_field() {
     assert_golden("sections-partial", &text);
 }
 
-/// **The positive control for the boundary claim** (advisor ruling, U15): a
-/// section whose PROSE contains a line spelled exactly like a body marker.
+/// The positive control for the boundary claim: a section whose prose
+/// contains a line spelled exactly like a body marker.
 ///
 /// The marker is not the boundary — the head's `bytes` is — so the lookalike
 /// is served verbatim and the face stays unambiguous. The golden is the proof:
