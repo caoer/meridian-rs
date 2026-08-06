@@ -4,68 +4,31 @@
 //! mrd skill hook
 //! ```
 //!
-//! # THE VERB IS AN EMITTER, AND THAT IS THE WHOLE CONTRACT
-//! It prints one markdown document and does nothing else: no file is written, no
-//! git directory is read, no workspace is resolved, no daemon is dialed. The
-//! reader of the document does the placing.
-//!
-//! The predecessor (`mrd hook install | uninstall | status`) wrote into
-//! `$GIT_DIR/hooks` and therefore had to carry an uninstaller that refused a
-//! foreign file, a `flock` held across a read-decide-write section, a downgrade
-//! guard with its own escape, and a three-valued currency report — four planes of
-//! imperative machinery encoding rules that are, at the end, prose an agent can
-//! read. **The markdown IS the contract now**, and every one of those rules is
-//! legible content of [`HOOK`] rather than a code path that has to be trusted.
-//!
-//! # WHY `skill` AND NOT A FLAG
-//! `mrd skill <NAME>` is the repo's existing two-level verb shape (`mrd cache ls`,
-//! `mrd view status`, `mrd journal genesis`), and NAME is the axis that will grow:
-//! a second document is a second file under `skills/`, not a second flag on an
-//! unrelated verb. A `--hook` flag would have had to hang off something, and
-//! nothing it could hang off shares this verb's contract — every other verb
-//! resolves a workspace, and this one deliberately does not.
-//!
-//! # STDOUT IS THE PRODUCT, SO IT CARRIES NOTHING ELSE
-//! No header, no path, no byte count, no trailing summary — a caller pipes this
-//! into a file or into an agent's context, and anything else on the stream is
-//! corruption of the artifact. There is no `--json` face: the document is
-//! markdown, and a JSON envelope around a markdown string is a second contract
-//! for the same bytes.
+//! The verb is an emitter: it prints one markdown document and does nothing else —
+//! no file written, no git directory read, no workspace resolved, no daemon dialed.
+//! Stdout carries the document and nothing else (no header, no summary), and there
+//! is no `--json` face.
 //!
 //! Exits:
 //! - **0** — the document was written to stdout.
 //! - **2** — bad invocation (no name, an unknown name, an unknown flag, a second
-//!   positional). **There is no exit-1 leg**: an emitter has no findings, and a
-//!   document that printed is the whole of what this verb can succeed at.
+//!   positional). There is no exit-1 leg.
 
 use crate::Fail;
 
-/// The commit-fence contract, the document `mrd skill hook` emits. **Compiled in from
-/// `skills/hook.md`**, so the artifact an agent reads and the artifact a human reviews in the
-/// repository are the same bytes — a document built by string-concatenation in Rust is one
-/// nobody reads
-///
-///
-///
-///
-///
-///
-///
-///
+/// The commit-fence contract, the document `mrd skill hook` emits. Compiled in from
+/// `skills/hook.md`, so the artifact an agent reads and the one a human reviews in the
+/// repository are the same bytes.
 const HOOK: &str = include_str!("skills/hook.md");
 
-/// Every document this verb can emit, by the name the CLI takes. **A list, so an unknown name
-/// is refused against something.** `mrd skill nonsense` names what it could have asked for
-/// rather than exiting on a bare "unknown" — the refusal is where the surface is discoverable
-/// from.
-///
+/// Every document this verb can emit, by the name the CLI takes. An unknown name is
+/// refused against this list, naming what it could have asked for.
 const SKILLS: [(&str, &str); 1] = [("hook", HOOK)];
 
-/// Run `mrd skill <NAME>`. Errors [`Fail`] exit 2 on a missing name, an unknown name, an
-/// unknown flag, or a second positional.
+/// Run `mrd skill <NAME>`.
 ///
-///
-///
+/// # Errors
+/// [`Fail`] exit 2 on a missing name, an unknown name, an unknown flag, or a second positional.
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let name = parse(args)?;
     let Some((_, body)) = SKILLS.iter().find(|(n, _)| *n == name) else {
@@ -74,9 +37,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
             names()
         )));
     };
-    // `print!`, never `println!`: the document ends in its own newline, and a second one is a byte
-    // the caller did not ask for in an artifact whose whole contract is that stdout carries the
-    // document and nothing else.
+    // `print!`, never `println!`: the document ends in its own newline.
     print!("{body}");
     Ok(())
 }
@@ -90,9 +51,8 @@ fn names() -> String {
         .join(", ")
 }
 
-/// The one positional. **Flags are refused rather than ignored** — including `--json`, which
-/// this verb has no face for and must not silently accept as if it did.
-///
+/// The one positional. Flags are refused rather than ignored — including `--json`, which
+/// this verb has no face for.
 fn parse(args: &[String]) -> Result<&str, Fail> {
     let mut name: Option<&str> = None;
     for arg in args {
@@ -137,9 +97,6 @@ mod tests {
 
     #[test]
     fn json_is_refused_by_name_rather_than_swallowed_as_an_unknown_flag() {
-        // Every other verb in this CLI takes `--json`, so a caller WILL try it here. "unknown flag:
-        // --json" would read as an oversight; the refusal has to say the verb has no such face and
-        // why.
         let err =
             parse(&["--json".to_owned(), "hook".to_owned()]).expect_err("there is no JSON face");
         assert_eq!(err.code, 2);
@@ -159,9 +116,6 @@ mod tests {
 
     #[test]
     fn every_declared_skill_carries_a_document() {
-        // The lookup is by name over a list, so a name with an empty body would exit 0 having printed
-        // nothing — a success indistinguishable from the document being empty.
-        //
         for (name, body) in SKILLS {
             assert!(
                 !body.trim().is_empty(),

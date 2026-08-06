@@ -1,19 +1,6 @@
 //! `mrd reconcile <preset> [--prune] [--dry] [--actor A] [--now T]` (U3.5b): the fs-frontier
 //! reconcile-toward-scaffold . A local CLIENT of `preset::reconcile` (docs/laws.md charter):
 //! mrd resolves the workspace and dials the op; the fold + the guarded writes live in `preset`.
-//! The law, verbatim (plan §4 Block 3 U3.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use preset::{BirthOptions, FileOutcome, PruneOutcome, ReconcileReport};
 use serde_json::json;
@@ -26,12 +13,12 @@ fn findings(message: String) -> Fail {
     Fail::findings(message)
 }
 
-/// Run `mrd reconcile <preset> [--prune] [--dry] [--actor A] [--now T] [--json]`. Errors A tool
-/// failure (exit 2) — bad usage, an unreadable workspace, a preset that is not a def, or a
-/// faulting write — or a findings exit (1) when an undeclared content file remains or a
+/// Run `mrd reconcile <preset> [--prune] [--dry] [--actor A] [--now T] [--json]`.
+///
+/// # Errors
+/// A tool failure (exit 2) — bad usage, an unreadable workspace, a preset that is not a def, or
+/// a faulting write — or a findings exit (1) when an undeclared content file remains or a
 /// declared path was occupied.
-///
-///
 pub(crate) fn run(args: &[String]) -> Result<(), Fail> {
     let parsed = Parsed::parse(args)?;
     let root = crate::preset_cmd::resolve_root()?;

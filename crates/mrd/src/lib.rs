@@ -1,23 +1,6 @@
-//! The `mrd` CLI: wire the workspace / cache / registry foundation into the settled verb
-//! surface. Charter **Owns:** hand-rolled subcommand parsing (no clap — dependency discipline),
-//! the per-invocation resolution flow ([`resolve`]), the client side of the resident-daemon
-//! inversion ([`engine`]: auto-spawn the daemon on first use, degrade to an in-process
-//! ephemeral engine — decision 0002 §3), and the verbs `init`, `unregister`, `resolve`,
-//! `links`, `cache ls`, `cache clean`, and `daemon`.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
+//! The `mrd` CLI. Owns hand-rolled subcommand parsing (no clap), the per-invocation resolution
+//! flow ([`resolve`]), and the client side of the resident daemon ([`engine`]: auto-spawn on
+//! first use, degrade to an in-process ephemeral engine — decision 0002 §3).
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -30,12 +13,8 @@ mod daemon;
 mod engine;
 mod gc;
 mod history_cmd;
-// The commit-fence READ plane — what is standing in this checkout's hook doors,
-// which `mrd check`'s fence line reports. It is PUBLIC because the design tests
-// for `mrd skill hook` hold the emitted document to this module's constants (the
-// generation, the door set, the marker), and that is a claim about two artifacts
-// agreeing, so a test has to be able to name both. The fence itself is placed by
-// the reader of `skill_cmd`'s document; nothing here writes.
+// The commit-fence READ plane. Public because the design tests for `mrd skill hook` hold the
+// emitted document to this module's constants. Nothing here writes.
 pub mod hook;
 mod init;
 mod new_cmd;
@@ -47,19 +26,12 @@ mod realise_cmd;
 mod reconcile_cmd;
 mod repair_cmd;
 mod resolve;
-// The type-2 retirement DSL. It is PUBLIC for one reason, the `hook` precedent above: the U23
-// coverage census asserts that the set of reason words its fixtures exercise IS the set
-// `Reason::ALL` declares.
-//
-//
-//
-//
-//
+// The type-2 retirement DSL. Public because the coverage census asserts that the set of reason
+// words its fixtures exercise is the set `Reason::ALL` declares.
 pub mod retire_cmd;
 mod rules_cmd;
-/// The rules walk (registration rework): the disk edge that enumerates the scope ladders roots
-/// and offers every page in their hash domain to tag-indexed registration. `policy` stays
-/// I/O-free; this is the caller that feeds it.
+/// The rules walk: the disk edge that enumerates the scope ladder's roots and offers every page
+/// in their hash domain to tag-indexed registration. `policy` stays I/O-free; this feeds it.
 pub mod rules_walk;
 mod run_cmd;
 mod skill_cmd;
@@ -80,26 +52,16 @@ const EXIT_FINDINGS: u8 = 1;
 /// or a structural fault (a malformed scenario, a pairing hard error).
 const EXIT_FAIL: u8 = 2;
 
-/// The title line and the gutter legend — everything above the listing. It is held apart from
-/// [`LISTING`] so the legend, which is prose and not a verb block, can never be lexed as one.
-///
+/// The title line and the gutter legend. Held apart from [`LISTING`] so the legend, which is
+/// prose and not a verb block, can never be lexed as one.
 const HEADER: &str = "\
 mrd — the meridian workspace CLI
   `!` in the gutter marks a verb that CHANGES something — files or the drawer.
   Every unmarked verb is a read.
 ";
 
-/// The verb listing and the options block: the one human-authored source for `mrd --help` AND
-/// every `<verb> --help`, which is lexed back out of this text rather than restated in a table
-/// that would drift from it the first time either side is edited.
-///
-///
-///
-///
-///
-///
-///
-///
+/// The verb listing and the options block: the single source for `mrd --help` and every
+/// `<verb> --help`, which is lexed back out of this text.
 const LISTING: &str = "\
 usage:
 ! mrd init [PATH] [--name NAME]
@@ -402,9 +364,7 @@ options:
 pub(crate) struct Fail {
     pub(crate) code: u8,
     pub(crate) message: String,
-    /// Print the whole verb surface beneath the diagnostic. Set only by [`Fail::usage`] — a refusal
-    /// that named no verb the CLI knows, where the listing is the answer rather than noise.
-    ///
+    /// Print the whole verb surface beneath the diagnostic. Set only by [`Fail::usage`].
     pub(crate) usage: bool,
 }
 
@@ -428,9 +388,7 @@ impl Fail {
     }
 
     /// A tool failure (exit 2) whose answer is the verb surface itself: no verb was named, or the
-    /// name given is not one. [`run`] prints the diagnostic FIRST and the listing under it, so the
-    /// reason a caller is looking for is never the line that scrolled off the top.
-    ///
+    /// name given is not one.
     pub(crate) fn usage(message: String) -> Self {
         Fail {
             code: EXIT_FAIL,
@@ -440,8 +398,7 @@ impl Fail {
     }
 
     /// A failure carrying an explicit exit code: a verb whose own ladder names the leg
-    /// (`EXIT_FINDING`, `EXIT_RUN`), and the signal legs of `mrd run`, whose code is `128 + signal`
-    /// and belongs to no ladder at all.
+    /// (`EXIT_FINDING`, `EXIT_RUN`), and the `128 + signal` legs of `mrd run`.
     pub(crate) fn with_code(code: u8, message: String) -> Self {
         Fail {
             code,
@@ -464,20 +421,14 @@ pub(crate) fn current_dir() -> Result<PathBuf, Fail> {
         .map_err(|e| Fail::tool(format!("cannot read the current directory: {e}")))
 }
 
-/// The whole help text: the header and its legend, a blank line, then the
-/// listing — the shape `mrd --help` has always printed.
+/// The whole help text: the header and its legend, a blank line, then the listing.
 fn usage() -> String {
     format!("{HEADER}\n{LISTING}")
 }
 
 /// The build identity, one line: the package version and the commit `build.rs` read at compile
-/// time. The version alone cannot answer "which binary is this" — the workspace publishes
-/// nothing, so every crate carries `0.0.0` forever.
-///
-///
-///
-///
-///
+/// time. The version alone cannot identify a binary — the workspace publishes nothing, so every
+/// crate carries `0.0.0`.
 fn version() -> String {
     format!(
         "mrd {} (git {})",
@@ -492,9 +443,7 @@ pub fn run(args: &[String]) -> ExitCode {
     match dispatch(args) {
         Ok(()) => ExitCode::from(EXIT_OK),
         Err(fail) => {
-            // The diagnostic leads. Deciding the order HERE, once, is what stops a refusal from landing
-            // under 239 lines of help it shares stderr with — no call site can put the two back the wrong
-            // way round.
+            // The diagnostic leads, so a refusal is never buried under the help listing.
             eprintln!("mrd: {}", fail.message);
             if fail.usage {
                 eprint!("{}", usage());
@@ -517,10 +466,6 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
             print!("{}", usage());
             Ok(())
         }
-        // Answered next to `help` and by the same three spellings a caller reaches for, because the
-        // cost of guessing wrong used to be exit 2 plus the whole listing — the loudest possible
-        // answer to the smallest possible question.
-        //
         "version" | "-V" | "--version" => {
             println!("{}", version());
             Ok(())
@@ -606,8 +551,8 @@ fn reject_extra(args: &[String]) -> Result<(), Fail> {
     }
 }
 
-// Named booleans for the shared parser, so a verb states exactly what it
-// accepts and an unknown/duplicate argument is a loud exit-2, never ignored.
+// Named booleans for the shared parser: a verb states exactly what it accepts, and anything
+// else is a loud exit-2 rather than ignored.
 const ALLOW_PATH: bool = true;
 const NO_PATH: bool = false;
 const ALLOW_ALL: bool = true;
@@ -652,19 +597,13 @@ impl Parsed {
     }
 }
 
-/// `<verb> --help`: the per-verb face of [`LISTING`], LEXED back out of the same
-/// text `mrd --help` prints.
-///
-/// Nothing here is a second copy of the help. A block is found by its addressing
-/// words and reprinted verbatim, so a description is editable in exactly one
-/// place, and the write mark a caller sees is the byte that actually stands in
-/// the listing's gutter. A table beside the prose would answer the same
-/// questions until the day someone edited one side of it.
+/// `<verb> --help`: the per-verb face of [`LISTING`], lexed back out of the same text
+/// `mrd --help` prints. A block is found by its addressing words and reprinted verbatim — this
+/// module holds no second copy of the help.
 mod help {
     use super::{HEADER, LISTING};
 
-    /// Where a description begins — on a block's own line, and on every
-    /// continuation line beneath it.
+    /// Where a description begins, on a block's own line and on every continuation line.
     const DESC_COL: usize = 27;
 
     /// One verb block: the words that address it, and its lines as they stand.
@@ -674,32 +613,26 @@ mod help {
     }
 
     /// One options entry: the flags it defines, the verb named by the `(...)` tag its description
-    /// opens with, and its lines. An untagged entry names no owner, and reaches a page only through
-    /// a synopsis that offers its flag.
+    /// opens with, and its lines. An untagged entry names no owner and reaches a page only
+    /// through a synopsis that offers its flag.
     struct Opt {
         flags: Vec<String>,
         owner: Option<String>,
         lines: Vec<String>,
     }
 
-    /// Does this line carry a gutter — the two bytes that open a block or continue one? `! ` marks
-    /// a verb that writes and ` ` one that does not; both are gutters, and the mark rides along
-    /// with the line rather than living in a table that could disagree with it. A line with no
-    /// gutter (a section label, a blank) closes whatever block was open.
-    ///
+    /// Does this line carry a gutter — the two bytes that open or continue a block? `! ` marks a
+    /// verb that writes, `  ` one that does not. A line with no gutter closes the open block.
     fn has_gutter(line: &str) -> bool {
         matches!(line.get(..2), Some("! " | "  "))
     }
 
-    /// The part of a line before its description begins.
-    ///
-    /// The description column is only there when it is really there: a synopsis
-    /// long enough to overflow it (`mrd pin <PAGE> <TARGET>#<SELECTOR> …`)
-    /// carries no description on its own line, and keeps its whole tail.
+    /// The part of a line before its description begins. A synopsis long enough to overflow the
+    /// description column carries no description on its own line, and keeps its whole tail.
     fn head_of(line: &str) -> &str {
         if line.as_bytes().get(DESC_COL - 1) == Some(&b' ') {
-            // Byte 26 is a space, so byte 27 is a char boundary — the fallback
-            // is for a caller that changes DESC_COL, not for this listing.
+            // Byte 26 is a space, so byte 27 is a char boundary; the fallback is for a caller
+            // that changes DESC_COL, not for this listing.
             line.get(..DESC_COL).unwrap_or(line)
         } else {
             line
@@ -712,8 +645,7 @@ mod help {
     }
 
     /// The addressing words of a synopsis: `! mrd cache clean [--all]` gives `["cache", "clean"]`.
-    /// They stop at the first token that is not a bare lowercase name, which is where the operands
-    /// and flags begin.
+    /// They stop at the first token that is not a bare lowercase name.
     fn words_of(line: &str) -> Vec<String> {
         head_of(line)
             .get(2..)
@@ -735,9 +667,8 @@ mod help {
             .collect()
     }
 
-    /// A blocks synopsis: its operands and flags, with the description left out. A synopsis can
-    /// wrap (`mrd put`), and the line it wraps onto is exactly the one that does NOT begin at the
-    /// description column.
+    /// A block's synopsis: its operands and flags, description left out. A synopsis can wrap, and
+    /// the line it wraps onto is the one that does not begin at the description column.
     fn synopsis_of(block: &Block) -> String {
         let mut synopsis = String::new();
         for (n, line) in block.lines.iter().enumerate() {
@@ -758,9 +689,8 @@ mod help {
             .any(|token| token == flag)
     }
 
-    /// The verb an option belongs to: the first word inside the `(...)` its description opens with,
-    /// so `--rule PAGE (test --history) ...` belongs to `test`.
-    ///
+    /// The verb an option belongs to: the first word inside the `(...)` its description opens
+    /// with, so `--rule PAGE (test --history) ...` belongs to `test`.
     fn owner_of(line: &str) -> Option<String> {
         let owner: String = line
             .get(DESC_COL..)?
@@ -815,18 +745,16 @@ mod help {
         opts
     }
 
-    /// Is this invocation asking for help? Only up to a `--` separator: in `mrd
-    /// run PAGE TASK -- --help` the flag is the TASK's argument, and answering
-    /// it here would print this CLI's help instead of running the task.
+    /// Is this invocation asking for help? Only up to a `--` separator: in
+    /// `mrd run PAGE TASK -- --help` the flag is the task's argument, not this CLI's.
     fn asks(args: &[String]) -> bool {
         args.iter()
             .take_while(|arg| arg.as_str() != "--")
             .any(|arg| arg.as_str() == "-h" || arg.as_str() == "--help")
     }
 
-    /// The verb words an invocation names: its leading bare-lowercase arguments. The first operand
-    /// or flag ends them, so `mrd read notes.md --help` asks about `read`.
-    ///
+    /// The verb words an invocation names: its leading bare-lowercase arguments. The first
+    /// operand or flag ends them, so `mrd read notes.md --help` asks about `read`.
     fn query_of(args: &[String]) -> Vec<String> {
         args.iter()
             .take_while(|arg| !arg.is_empty() && arg.chars().all(|c| c.is_ascii_lowercase()))
@@ -842,17 +770,8 @@ mod help {
     }
 
     /// The page: the header and its legend, the matched block(s) under `usage:`, then the options
-    /// those verbs take. An option reaches a page two ways: the `(...)` tag names the verb, OR the
-    /// verbs own synopsis offers the flag.
-    ///
-    ///
-    ///
-    ///
-    ///
-    ///
-    ///
-    ///
-    ///
+    /// those verbs take. An option reaches a page two ways: the `(...)` tag names the verb, or the
+    /// verb's own synopsis offers the flag.
     fn render(matched: &[Block]) -> String {
         let owners: Vec<&str> = matched
             .iter()
@@ -888,10 +807,9 @@ mod help {
         page
     }
 
-    /// The help page for the verb an invocation addresses — or `None` when it asks for no help, or
-    /// names nothing this CLI knows. That refusal is dispatchs to make, not this modules: falling
-    /// through is what keeps `mrd nope --help` an `unknown subcommand`.
-    ///
+    /// The help page for the verb an invocation addresses — or `None` when it asks for no help,
+    /// or names nothing this CLI knows. Falling through leaves the refusal to dispatch, which is
+    /// what keeps `mrd nope --help` an `unknown subcommand`.
     pub(super) fn for_invocation(args: &[String]) -> Option<String> {
         if !asks(args) {
             return None;
@@ -911,9 +829,7 @@ mod help {
     mod tests {
         use super::*;
 
-        /// The lexers premise: every block it finds is addressable. A block whose words came out empty
-        /// could never be reached by `--help`, and would fail silently — the page would simply not
-        /// exist.
+        /// Every block the lexer finds is addressable; empty words would silently have no page.
         #[test]
         fn every_block_is_addressable() {
             for block in blocks() {
@@ -925,8 +841,7 @@ mod help {
             }
         }
 
-        /// The two-word verbs resolve to both of their words — the case that
-        /// tells a real lexer apart from `split_whitespace().next()`.
+        /// The two-word verbs resolve to both of their words.
         #[test]
         fn multi_word_verbs_keep_both_words() {
             let found: Vec<Vec<String>> = blocks()
@@ -946,9 +861,8 @@ mod help {
             );
         }
 
-        /// The operands stop the words. `mrd test --corpus <SPEC>` and `mrd test --history WORKSPACE`
-        /// are two blocks that share one verb name, which is why `mrd test --help` must print both.
-        ///
+        /// Operands stop the words: the two `mrd test` blocks share one verb name, so
+        /// `mrd test --help` prints both.
         #[test]
         fn operands_and_flags_end_the_words() {
             let test_blocks: Vec<Vec<String>> = blocks()
@@ -959,9 +873,8 @@ mod help {
             assert_eq!(test_blocks, vec![vec!["test"], vec!["test"]]);
         }
 
-        /// A synopsis that overflows the description column is not truncated into nonsense — the guard
-        /// is that byte 26 is a space, not that the line is long enough to slice.
-        ///
+        /// A synopsis that overflows the description column still lexes: the guard is that byte 26
+        /// is a space, not that the line is long enough to slice.
         #[test]
         fn an_overflowing_synopsis_still_lexes() {
             let overflowing = "  mrd pin <PAGE> <TARGET>#<SELECTOR> [--vibe] [--dry]";
@@ -973,22 +886,7 @@ mod help {
             assert_eq!(words_of(overflowing), vec!["pin"]);
         }
 
-        /// The write mark is the gutter, so the classification is countable straight off the text. 12
-        /// verbs write; the rest read. It was 12, then 11 when `mrd journal genesis` was retired — the
-        /// engine keeps no memory, so nothing writes a ledger any more. Two units then added a writer
-        /// each, independently: U9bs `mrd lock migrate` and U23s `mrd retire mark`, the type-2 marker
-        /// sweep — which took it to 13.
-        ///
-        ///
-        ///
-        ///
-        ///
-        ///
-        ///
-        ///
-        ///
-        ///
-        ///
+        /// The write mark is the gutter: 13 verbs write, the rest read.
         #[test]
         fn thirteen_verbs_are_marked_as_writers() {
             let marked: Vec<&str> = LISTING
@@ -1004,8 +902,7 @@ mod help {
             assert_eq!(blocks().len(), 27, "verb blocks in the listing");
         }
 
-        /// Every option that names an owner names a verb that exists, so a
-        /// per-verb page can never silently drop one.
+        /// Every option that names an owner names a verb that exists.
         #[test]
         fn every_tagged_option_names_a_real_verb() {
             let verbs: Vec<String> = blocks()
@@ -1038,9 +935,7 @@ mod help {
             assert!(query_of(&["--help"].map(String::from)).is_empty());
         }
 
-        /// A `--` separator ends the CLIs own arguments: `mrd run PAGE TASK -- --help` is the TASKs
-        /// flag, and answering it here would print help instead of running what the caller asked for.
-        ///
+        /// A `--` separator ends this CLI's own arguments.
         #[test]
         fn a_separator_hides_the_flag_from_this_cli() {
             assert!(asks(&["run", "page.md", "--help"].map(String::from)));

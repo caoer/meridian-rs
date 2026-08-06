@@ -2,15 +2,6 @@
 //! detached on first use (decision 0002 §3, the watchman model). Two entry points share this
 //! module: - [`run`] is the daemon body: bind the socket, write a pidfile, and block on a
 //! signal loop until SIGINT/SIGTERM.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use std::io;
 use std::os::unix::process::CommandExt;
@@ -35,7 +26,6 @@ const PID_NAME: &str = "daemon.pid";
 /// Environment override for the binary [`spawn_detached`] launches as the daemon (default: the
 /// running executable). A packager points it at a dedicated daemon binary; a test points it at
 /// a nonexistent path to force the spawn-impossible degrade.
-///
 const DAEMON_BIN_ENV: &str = "MERIDIAN_DAEMON_BIN";
 
 extern "C" fn on_signal(_sig: libc::c_int) {
@@ -59,13 +49,10 @@ fn install_signal_handlers() {
 pub(crate) fn run() -> Result<(), Fail> {
     let mut config = Config::resolve()
         .map_err(|e| Fail::tool(format!("cannot resolve the daemon layout: {e}")))?;
-    // R1: this crate is the only one that can read the baked sha
-    // (`build.rs` bakes it into THIS crate's compilation environment), so the
-    // daemon host hands it to the registry rather than the registry reading it.
-    // The `unknown` fallback the build script bakes rides through verbatim — a
-    // build that cannot name a commit still publishes an identity, which is
-    // what lets a client tell it apart from a host that publishes none
-    // (`docs/wire-contract.md`).
+    // Only this crate can read the baked sha (`build.rs` bakes it into this crate's
+    // compilation environment), so the host hands it to the registry. The `unknown`
+    // fallback rides through verbatim: publishing an identity, even an unnamed one,
+    // is distinguishable from publishing none (`docs/wire-contract.md`).
     config.build_sha = Some(env!("MRD_BUILD_SHA").to_owned());
     install_signal_handlers();
     let server = RunningServer::start(config)
@@ -85,10 +72,8 @@ pub(crate) fn run() -> Result<(), Fail> {
     );
     eprintln!("press Ctrl-C to stop");
 
-    // G11: two ways out — a signal, or the idle-exit horizon the reaper watches. A detached daemon
-    // is reparented to init and nothing else will ever end it, so without the second condition
-    // every isolated run leaves one behind forever. Teardown is identical either way; only the
-    // reason differs.
+    // Two ways out — a signal, or the idle-exit horizon the reaper watches. A detached daemon is
+    // reparented to init, so without the second condition every isolated run leaks one forever.
     while !SIGNALLED.load(Ordering::SeqCst) && !server.idle_exit_requested() {
         thread::sleep(Duration::from_millis(200));
     }
@@ -108,16 +93,6 @@ fn pid_path(socket_path: &Path) -> PathBuf {
 /// session with null stdio, so it survives this clients exit. Returns as soon as the child is
 /// launched — the caller polls the socket for readiness (a launched daemon that never binds is
 /// a caller-side timeout, then a degrade).
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
 pub(crate) fn spawn_detached() -> io::Result<()> {
     let bin = match std::env::var_os(DAEMON_BIN_ENV) {
         Some(path) => PathBuf::from(path),

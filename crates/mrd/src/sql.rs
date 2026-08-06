@@ -1,37 +1,27 @@
 //! `mrd sql <query>` — client-side `DuckDB` over the daemon-published, read-only,
-//! fingerprint-stamped view file, under the full honest-tense freshness frame
-//! (design `tournament-duckdb/team-a` §Q2/§Q3/§Q5, OD8/OD9, B1/B5, C3).
+//! fingerprint-stamped view file, under the honest-tense freshness frame.
 //!
-//! # The order-of-operations law (§Q3, buffered)
-//! 1. `view_path` → a candidate path (the reply's fingerprints are a PRE-OPEN
+//! # Order of operations (§Q3, buffered)
+//! 1. `view_path` → a candidate path (the reply's fingerprints are a pre-open
 //!    hint only, discarded here);
 //! 2. B1 reader-side pre-open check — a present `view.duckdb.wal` OR a
-//!    non-read-only file ⇒ **never open** (would replay a dead generation or read
-//!    a half-written file);
+//!    non-read-only file ⇒ never open;
 //! 3. open the file, read `as_of = SELECT as_of_fingerprint FROM _meridian_view`
-//!    — the **authoritative** `as_of`, never the reply's hint;
+//!    — the authoritative `as_of`, never the reply's hint;
 //! 4. apply the `--execution-profile` sandbox (B5 order), execute the query to
-//!    completion, materialise all rows (a pure function of `as_of`);
-//! 5. sample `live` = a full-corpus disk fold ([`fs::domain_snapshot`]) — the
-//!    LAST step, so it post-dates the result — **only** when the fold is opted
-//!    into (`--verify`/`--fresh`); OD8's default degrade runs **no** fold;
+//!    completion, materialise all rows;
+//! 5. sample `live` = a full-corpus disk fold ([`fs::domain_snapshot`]) last, so
+//!    it post-dates the result — only under `--verify`/`--fresh`;
 //! 6. `FRESH_AT_SAMPLE` iff `as_of == live`, else `STALE` (or `RACED` under a
-//!    bounded `--fresh` that could not converge); attach the three-valued frame.
+//!    bounded `--fresh` that could not converge).
 //!
 //! # Three-valued freshness (C3)
 //! `live_source ∈ {fold, watch, none}`, `stale ∈ {true, false, null}`. Only a
 //! real post-result fold sets `stale = true|false`; a skipped fold is
-//! `live_source=none, stale=null` (`state=UNVERIFIED`) — **never** a watcher
-//! value (OD8 guardrail).
-//!
-//! # OD8 default-degrade
-//! Until a measured perfsuite PASS arms fold-by-default, the default query path
-//! over a **published** view runs NO fold and returns
-//! `live_source=none, stale=null` (`UNVERIFIED`). Fold is opt-in via
-//! `--verify`/`--fresh`. Round-1's `claims.toml` rows stay `Measured`/`Untested`,
-//! so the default is UNVERIFIED — correct, not a bug. An **ephemeral `:memory:`
-//! build** (the daemon-absent degrade) is exempt: it MUST fold post-result to be
-//! correct (§tier-4 — never an unconditionally-fresh ephemeral build).
+//! `live_source=none, stale=null` (`state=UNVERIFIED`), never a watcher value.
+//! The default path over a published view runs no fold; fold is opt-in via
+//! `--verify`/`--fresh`. An ephemeral `:memory:` build is exempt — it MUST fold
+//! post-result to be correct (§tier-4).
 
 use std::path::{Path, PathBuf};
 
@@ -205,10 +195,9 @@ impl QueryState {
     }
 }
 
-/// The provenance of the `live` value (§Q3 C3). Round-1 `mrd sql` only ever
-/// produces `fold` (a real post-result fold ran) or `none` (no fold) — never
-/// `watch` (a watcher value is a daemon-side pre-open hint, never a delivered
-/// result's verdict).
+/// The provenance of the `live` value (§Q3 C3): `fold` (a real post-result fold
+/// ran) or `none`. Never `watch` — a watcher value is a daemon-side pre-open
+/// hint, never a delivered result's verdict.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LiveSource {
     Fold,
@@ -287,25 +276,17 @@ pub(crate) fn run(tail: &[String]) -> Result<(), Fail> {
     emit(&args, &frame, path)
 }
 
-/// **G13 — which path served this run, for the degrade voice only.**
-///
-/// The dogfood measured `mrd sql` degrading at 248× the warm cost (0.24s →
-/// 59.63s) with stdout, stderr and exit byte-identical, so a person could pay
-/// a minute for an answer and never learn why. This is the one bit the voice
-/// needs, and it is deliberately NOT the freshness frame: `state` answers "is
-/// this answer current?", which is a different question from "did the warm
-/// engine serve it?" — a cold last-published file is `UNVERIFIED` exactly as a
-/// warm one is.
+/// Which path served this run, for the degrade voice only — not the freshness
+/// frame (a cold last-published file is `UNVERIFIED` exactly as a warm one is).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ServedBy {
     /// The resident daemon answered `view_path` and its file was queried.
     Daemon,
     /// A tiers-1-3 workspace whose daemon did not answer — the cold-file or
-    /// in-process degrade ran instead. The costly, formerly mute path.
+    /// in-process degrade ran instead.
     Degrade,
-    /// Tier-4 bare: `:memory:` is this tier's DESIGNED path, never a fallback,
-    /// so it is silent. Voicing here would cry degrade on every correct run in
-    /// an unregistered directory and teach the reader to ignore the line.
+    /// Tier-4 bare: `:memory:` is this tier's designed path, never a fallback,
+    /// so it is silent.
     Tier4,
 }
 
@@ -323,9 +304,8 @@ fn execute(args: &SqlArgs) -> Result<(Frame, ServedBy), Fail> {
     })?;
 
     match resolved.source {
-        // Tiers 1-3 / daemon-adopted: the daemon (sole builder) publishes; on any
-        // daemon-path failure, degrade — open the last-good file cold, else build
-        // ephemeral `:memory:` (§Behavior when daemon absent).
+        // Tiers 1-3 / daemon-adopted: on any daemon-path failure, degrade — open
+        // the last-good file cold, else build ephemeral `:memory:`.
         Source::Direct(_) | Source::DaemonAdopted => {
             if let Some(reply) = try_daemon_view_path(&cwd, args.fresh) {
                 let path = reply_path(&reply);
@@ -350,8 +330,7 @@ fn execute(args: &SqlArgs) -> Result<(Frame, ServedBy), Fail> {
 }
 
 /// The tiers-1-3 daemon-absent degrade: open the last-published `view.duckdb`
-/// cold if present, else build ephemeral `:memory:` (§Behavior when daemon
-/// absent).
+/// cold if present, else build ephemeral `:memory:`.
 fn degrade_cold_or_ephemeral(
     drawer: &CacheDrawer,
     workspace: &Path,
@@ -444,7 +423,7 @@ fn reply_last_error(body: &Value) -> Option<Value> {
 /// Why a managed reader refused to open a published file (§B1 reader-side).
 enum OpenRefusal {
     /// A `view.duckdb.wal` sidecar is present — opening would replay a dead
-    /// generation (proven on v1.5.2, gate 14).
+    /// generation.
     WalPresent,
     /// The file is not read-only (`0444`) — a writer could be mutating it in
     /// place, so it may be half-written.
@@ -453,10 +432,9 @@ enum OpenRefusal {
     Missing,
 }
 
-/// B1 reader-side pre-open check: refuse to open a `.wal`-shadowed OR non-
-/// read-only published file. `stat view.duckdb.wal` AND verify the file carries
-/// read-only mode (no writable bit). A **raw external** `duckdb` attach bypasses
-/// this and is explicitly outside enforcement (design §Enforcement boundary).
+/// B1 reader-side pre-open check: refuse a `.wal`-shadowed OR non-read-only
+/// published file. A raw external `duckdb` attach bypasses this and is outside
+/// enforcement.
 fn check_openable(path: &Path) -> Result<(), OpenRefusal> {
     if !path.is_file() {
         return Err(OpenRefusal::Missing);
@@ -465,8 +443,8 @@ fn check_openable(path: &Path) -> Result<(), OpenRefusal> {
     if wal_present(path) {
         return Err(OpenRefusal::WalPresent);
     }
-    // Read-only mode (no writable bit) proves no in-place writer can be mutating
-    // it (the publish `chmod`s the candidate `0444` before rename).
+    // The publish `chmod`s the candidate `0444` before rename, so read-only mode
+    // proves no in-place writer can be mutating it.
     if !is_read_only(path) {
         return Err(OpenRefusal::NotReadOnly);
     }
@@ -479,10 +457,8 @@ pub(crate) fn wal_present(path: &Path) -> bool {
     wal_path(path).exists()
 }
 
-/// Whether `path` carries read-only mode — no writable bit for any principal
-/// (the publish `chmod`s the candidate `0444`). A writable file may be
-/// half-written by an in-place writer, so a managed reader refuses it (B1). A
-/// missing file is treated as not-read-only (refuse).
+/// Whether `path` carries read-only mode — no writable bit for any principal.
+/// A missing file is treated as not-read-only (refuse).
 pub(crate) fn is_read_only(path: &Path) -> bool {
     let Ok(meta) = std::fs::metadata(path) else {
         return false;
@@ -506,8 +482,7 @@ fn wal_path(path: &Path) -> PathBuf {
 }
 
 /// Query a published `view.duckdb` under the §Q3 buffered order. On a B1 refusal
-/// the file is NOT opened — degrade to an ephemeral build (a managed reader never
-/// replays a dead generation or reads a half-written file).
+/// the file is not opened — degrade to an ephemeral build.
 #[allow(clippy::similar_names)] // `stale` and `state` are both design vocabulary
 fn query_published(
     path: &Path,
@@ -517,14 +492,12 @@ fn query_published(
     last_error: Option<Value>,
 ) -> Result<Frame, Fail> {
     if let Err(_refusal) = check_openable(path) {
-        // The published file is unusable (WAL-shadowed / writable / gone). A
-        // managed reader never opens it — fall back to a cold ephemeral build.
+        // WAL-shadowed / writable / gone — fall back to a cold ephemeral build.
         return ephemeral_query(workspace, args);
     }
 
-    // Open `:memory:` main, then ATTACH the view READ_ONLY (B5: attach FIRST,
-    // while external access is on) and switch to it, so the user's unqualified
-    // table names resolve.
+    // B5 order: attach the view READ_ONLY while external access is still on, then
+    // switch to it so the user's unqualified table names resolve.
     let conn = Connection::open_in_memory()
         .map_err(|e| Fail::tool(format!("cannot open an in-memory database: {e}")))?;
     conn.execute_batch(&attach_sql(path))
@@ -539,8 +512,7 @@ fn query_published(
         Err(msg) => (Vec::new(), Vec::new(), Some(msg)),
     };
 
-    // OD8 default-degrade: no fold unless opted in. A SQL error already yields no
-    // rows to certify, so no fold runs (state UNVERIFIED, error carried).
+    // No fold unless opted in; a SQL error yields no rows to certify either way.
     let fold = args.folds() && error.is_none();
     let (live_source, stale, state, live) = if fold {
         let live = fold_live(workspace)?;
@@ -595,10 +567,8 @@ fn attach_sql(path: &Path) -> String {
 // ---------------------------------------------------------------------------
 
 /// Build an ephemeral `:memory:` view over the workspace corpus and query it
-/// under the same post-result fold (§tiers-1-3 / §tier-4). Writes NOTHING to
-/// disk (`view::build_memory` is `:memory:`-only). An ephemeral build MUST fold
-/// post-result to be correct — it is never unconditionally fresh (§rejected: an
-/// unconditionally-fresh ephemeral tier-4 build).
+/// under the same post-result fold. Writes nothing to disk. An ephemeral build
+/// MUST fold post-result to be correct — it is never unconditionally fresh.
 fn ephemeral_query(workspace: &Path, args: &SqlArgs) -> Result<Frame, Fail> {
     let built = match build_and_run_ephemeral(workspace, args) {
         Ok(b) => b,
@@ -631,7 +601,6 @@ fn ephemeral_query(workspace: &Path, args: &SqlArgs) -> Result<Frame, Fail> {
         });
     }
 
-    // Post-result fold: `FRESH_AT_SAMPLE` iff `as_of == F_now`.
     let f_now = fold_live(workspace)?;
     if as_of == f_now {
         return Ok(ephemeral_frame(
@@ -644,8 +613,8 @@ fn ephemeral_query(workspace: &Path, args: &SqlArgs) -> Result<Frame, Fail> {
         ));
     }
 
-    // A mid-build change. `--fresh` gets ONE bounded retry → FRESH_AT_SAMPLE or
-    // RACED; `--verify`/default report STALE at the F0 build.
+    // A mid-build change: `--fresh` gets one bounded retry, `--verify`/default
+    // report STALE at the F0 build.
     if args.fresh {
         let retry = build_and_run_ephemeral(workspace, args);
         if let Ok(EphemeralRun {
@@ -736,28 +705,16 @@ fn build_and_run_ephemeral(
         ))
     })?;
     let root = fs::WorkspaceRoot(canonical);
-    // F0 — the authoritative fold over exactly the bytes this build projects,
-    // under the workspace's own domain (filter + `version` prefix). It IS the
-    // stamp: the post-result comparison below is F0 vs F_now, and `fold_live`
-    // folds the same way, so the two sides can only differ when the corpus
-    // actually moved. Refolding it inside the view crate is what G14 was — a
-    // domain-blind `b3:` stamp against a `b3b:` live fold, STALE over identical
-    // content.
+    // F0 is the stamp: `fold_live` folds the same way, so F0 vs F_now can only
+    // differ when the corpus moved.
     let (files, f0) = fs::domain_snapshot(&root)
         .map_err(|e| EphemeralError::NoCorpus(format!("cannot read the corpus: {e}")))?;
     let (_index, docs) = fs::build_corpus(files)
         .map_err(|e| EphemeralError::Fail(Fail::tool(format!("cannot build the corpus: {e}"))))?;
-    // U21 — the ephemeral view is built with MOUNT AUTHORITY, from the same
-    // loader the pin plane and the link plane use (S3-R59, one owner —
-    // `walk_cmd::load_mounts_for`). Without it a cross-vault link projects as
-    // dangling and every SQL consumer reads a working link as broken.
-    //
-    // Corpora narrow to the roots ambient wikilink/embed targets NAME
-    // ([`crate::walk_cmd::link_addressed_roots`]); the MountSet stays whole.
-    // This is NOT a lock-item scan and NOT a genuine full-table need: the view
-    // projects ambient docs only, and mounted pages exist so `resolve_ref` can
-    // land a rooted spelling. Measured on the multi-root table with zero rooted
-    // spellings: ~27 s CPU before, same shape as the W5 residual.
+    // The ephemeral view is built with mount authority, from the same loader the
+    // pin and link planes use; without it a cross-vault link projects as dangling.
+    // Corpora narrow to the roots ambient wikilink/embed targets name; the
+    // MountSet stays whole.
     let mounts =
         crate::walk_cmd::load_mounts_for(&crate::walk_cmd::link_addressed_roots(&docs, None));
     let corpus = mounts.rooted(&docs);
@@ -792,10 +749,10 @@ fn read_as_of(conn: &Connection) -> Result<String, Fail> {
 }
 
 /// Apply the `--execution-profile` resource limits (B5). Order is load-bearing
-/// for `agent`: the view is already attached `READ_ONLY` (external access still on), then set
-/// the caps, then disable external access, then LOCK the configuration so
-/// untrusted SQL cannot re-raise any of it. There is **no** `statement_timeout`
-/// pragma — a wall-clock cap is the parent's process kill (OD9).
+/// for `agent`: attach the view `READ_ONLY` while external access is still on,
+/// set the caps, disable external access, then lock the configuration so
+/// untrusted SQL cannot re-raise any of it. There is no `statement_timeout`
+/// pragma — a wall-clock cap is the parent's process kill.
 fn apply_profile(conn: &Connection, profile: ExecProfile) -> Result<(), Fail> {
     let sql = match profile {
         ExecProfile::Local => format!("SET memory_limit='{LOCAL_MEMORY_LIMIT}';"),
@@ -890,8 +847,7 @@ fn arrow_type_name(dt: &duckdb::arrow::datatypes::DataType) -> String {
 }
 
 /// Render one result cell into JSON. Scalars are exact; complex cells
-/// (list/struct/decimal/timestamp) fall back to a debug string in round-1
-/// (nested/non-scalar projection is a documented non-goal).
+/// (list/struct/decimal/timestamp) fall back to a debug string.
 fn value_ref_to_json(v: ValueRef<'_>) -> Value {
     match v {
         ValueRef::Null => Value::Null,
@@ -941,20 +897,15 @@ fn hex(bytes: &[u8]) -> String {
 /// reads `error`).
 fn emit(args: &SqlArgs, frame: &Frame, path: ServedBy) -> Result<(), Fail> {
     let result = emit_result(args, frame);
-    // **G13 — the voice fires on EVERY exit path, after stdout is written.**
-    // The dogfood's most expensive silent degrade was the ERROR path (0.70s →
-    // 99s, byte-identical), so voicing only the success arm would leave the
-    // worst case mute. It runs last so the answer (or the refusal) reaches the
-    // reader first, and it touches stderr only — stdout and the exit code are
-    // byte-identical to the warm run, which is the constraint that lets this
-    // voice exist at all.
+    // The voice fires after stdout is written, so the answer reaches the reader
+    // first. Stderr only: stdout and the exit code match the warm run.
     if path == ServedBy::Degrade {
         crate::engine::voice_degrade(&crate::engine::EngineSource::Ephemeral);
     }
     result
 }
 
-/// The face itself: the OD9 document, the human table, or the buffered error.
+/// The OD9 document, the human table, or the buffered error.
 fn emit_result(args: &SqlArgs, frame: &Frame) -> Result<(), Fail> {
     if args.json {
         println!("{}", frame_json(frame));
@@ -971,8 +922,7 @@ fn emit_result(args: &SqlArgs, frame: &Frame) -> Result<(), Fail> {
     Ok(())
 }
 
-/// The OD9 buffered top-level JSON document (not NDJSON — the fold completes
-/// before serialization, so the frame rides the header, no trailer).
+/// The OD9 buffered top-level JSON document.
 fn frame_json(frame: &Frame) -> String {
     let columns: Vec<Value> = frame
         .columns
@@ -1161,8 +1111,6 @@ mod tests {
         assert!(sql.contains("READ_ONLY"));
     }
 
-    /// Gate 14 (reader side): the B1 pre-open check refuses a `.wal`-shadowed OR
-    /// non-read-only file, accepts a clean `0444` file, and reports a missing one.
     #[test]
     fn check_openable_enforces_no_wal_and_read_only() {
         use std::os::unix::fs::PermissionsExt;
@@ -1170,17 +1118,17 @@ mod tests {
         let path = dir.path().join("view.duckdb");
         std::fs::write(&path, b"placeholder").unwrap();
 
-        // A writable file (a writer could be mutating it in place) is refused.
+        // Writable: refused.
         assert!(matches!(
             check_openable(&path),
             Err(OpenRefusal::NotReadOnly)
         ));
 
-        // `chmod 0444` (the publish mode) is accepted.
+        // `chmod 0444` (the publish mode): accepted.
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
         assert!(check_openable(&path).is_ok());
 
-        // A present `.wal` sidecar ⇒ refuse open (would replay a dead generation).
+        // A present `.wal` sidecar: refused.
         let wal = dir.path().join("view.duckdb.wal");
         std::fs::write(&wal, b"STALE-WAL-GEN").unwrap();
         assert!(matches!(
@@ -1189,17 +1137,12 @@ mod tests {
         ));
         std::fs::remove_file(&wal).unwrap();
 
-        // A gone file is Missing.
         assert!(matches!(
             check_openable(&dir.path().join("absent.duckdb")),
             Err(OpenRefusal::Missing)
         ));
     }
 
-    /// Gate 15 (B5): the `agent` sandbox blocks file reads
-    /// (`enable_external_access=false`), freezes settings
-    /// (`lock_configuration=true`), and there is NO `statement_timeout` pragma on
-    /// this `DuckDB` — a wall-clock cap is the parent's process kill (OD9).
     #[test]
     fn agent_sandbox_blocks_external_access_locks_config_no_statement_timeout() {
         let conn = Connection::open_in_memory().unwrap();
@@ -1224,8 +1167,6 @@ mod tests {
         assert_eq!(timeout_settings, 0, "no statement_timeout setting exists");
     }
 
-    /// The `local` sandbox sets a memory cap only — it does NOT lock the
-    /// configuration (the trusted user already has a shell).
     #[test]
     fn local_sandbox_does_not_lock_configuration() {
         let conn = Connection::open_in_memory().unwrap();

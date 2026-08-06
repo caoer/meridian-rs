@@ -1,24 +1,19 @@
-//! `mrd read` — the composed read verb (M1 U1, ratified read/put naming).
+//! `mrd read` — the composed read verb.
 //!
 //! ```text
 //! mrd read <PATH>[#FRAG] [--section SEL] [--json]
 //! ```
 //!
-//! One exchange over the U4a2 composed read op (decision D6): addressing +
-//! content + render at ONE engine snapshot. With no `--section` the read
-//! answers the SECTION MAP and nothing else — dewey ordinal, depth, raw title,
-//! words, `sec_rev`, over the read's fingerprint — and no document prose: a
-//! map is what a toc read is for, and `--section` (repeatable — a heading
-//! path, a dewey ordinal, or a `^anchor`) IS the section read that serves
-//! bodies (A5 retired the `--mode` word: the selector says which face you
-//! want).
+//! One exchange over the composed read op: addressing + content + render at one
+//! engine snapshot. With no `--section` the read answers the section map and
+//! nothing else — dewey ordinal, depth, raw title, words, `sec_rev`, over the
+//! read's fingerprint. `--section` (repeatable — a heading path, a dewey
+//! ordinal, or a `^anchor`) is the section read that serves bodies.
 //!
-//! Answered by the resident daemon (auto-spawned, the [`crate::engine`]
-//! watchman model) or the in-process degrade — BOTH run the same
-//! [`wire_serve::read::composed_read`] leaves and the same v3 rev projection,
-//! so warm and degrade answers never drift. Human output is `rendered_text`
-//! VERBATIM (the projection IS the human face); `--json` wraps the projected
-//! body in the house frame.
+//! Answered by the resident daemon (auto-spawned) or the in-process degrade —
+//! both run the same [`wire_serve::read::composed_read`] leaves and the same v3
+//! rev projection, so warm and degrade answers never drift. Human output is
+//! `rendered_text` verbatim; `--json` wraps the projected body in the house frame.
 //!
 //! Exit triad: 0 served / 1 the engine refused (the message is the engine's
 //! verbatim, golden-pinned string) / 2 bad invocation or `bad_request`.
@@ -37,8 +32,6 @@ use crate::{Fail, Format, current_dir};
 /// Run `mrd read <PATH>[FRAG] [--section SEL] [--json]`. Errors [`Fail`] — exit 2 on a bad
 /// invocation or a `bad_request` refusal; exit 1 on any other engine refusal (`ref_not_found`
 /// …), message verbatim.
-///
-///
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let parsed = Read::parse(args)?;
     let cwd = current_dir()?;
@@ -61,43 +54,27 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
             println!("{}", serde_json::to_string_pretty(&value).expect("json"));
         }
         Format::Human => {
-            // The rendered projection IS the human face — verbatim, no header.
+            // The rendered projection is the human face — verbatim, no header.
             let text = body
                 .get("rendered_text")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
             print!("{text}");
-            // The degrade gets a voice AFTER the answer and on STDERR, so the face a person reads stops
-            // being the one face that hid it, and stdout stays byte-identical to the warm answer.
-            //
+            // The degrade voice comes after the answer and on stderr, so stdout stays
+            // byte-identical to the warm answer.
             engine::voice_degrade(&source);
         }
     }
     Ok(())
 }
 
-/// **Read face v2 (dogfood G3/G4): a toc read's `--json` drops
-/// `rendered_text`.**
+/// A toc read's `--json` drops `rendered_text`: on a toc read both planes carry the same facts
+/// (`toc[]` structured, `rendered_text` the TOON encoding of those same rows — measured at 5473
+/// chars of duplication on one page). `rendered_text` survives in `--json` only where a body was
+/// requested, where it is prose the raw `sections[].content` rows do not spell the same way.
 ///
-/// On a toc read the two planes carry the SAME facts twice — `toc[]`
-/// structured, and `rendered_text` the TOON encoding of those same rows. The
-/// dogfood measured 5473 chars of pure duplication on one page, per call: an
-/// agent reading `--json` wants the structured rows and pays for the render it
-/// will not read. So the CLI's machine face serves `toc[]` alone, and
-/// `rendered_text` survives in `--json` only where a BODY was requested — a
-/// section read, where it is the prose the raw `sections[].content` rows do
-/// not spell the same way (elision, `@fp` decoration).
-///
-/// Two things this deliberately is NOT. It is not a wire change: the composed
-/// read op still answers both planes, and ccc-statusd over the socket still
-/// receives what it always did. And it is not the human face: `mrd read` with
-/// no `--json` prints `rendered_text` verbatim, which is the whole point of
-/// the projection.
-///
-/// It also settles G3 in the honest direction — the help and the module doc
-/// promised "the section map plus the rendered text projection", and what
-/// arrived was the map twice over, never the document's prose. The docs now
-/// say what the face does.
+/// Not a wire change (the composed read op still answers both planes) and not the human face
+/// (`mrd read` without `--json` prints `rendered_text` verbatim).
 fn drop_duplicated_map(body: &mut Value) {
     let is_toc_read = body.get("toc").is_some_and(|t| !t.is_null());
     if let (true, Some(obj)) = (is_toc_read, body.as_object_mut()) {
@@ -111,7 +88,7 @@ struct Read {
     path: String,
     /// The `#FRAG` tail, when given.
     frag: Option<String>,
-    /// `--section` selectors, in order — non-empty IS the section read (A5).
+    /// `--section` selectors, in order — non-empty is the section read.
     sections: Vec<String>,
     format: Format,
 }
@@ -154,7 +131,7 @@ impl Read {
     }
 }
 
-/// Answer the composed read: dial the resident daemon (auto-spawning it), and on ANY
+/// Answer the composed read: dial the resident daemon (auto-spawning it), and on any
 /// daemon-path failure degrade to the in-process engine — the same leaves, the same projection,
 /// only the reported source differs.
 fn answer_read(workspace: &Path, r: &Read) -> Result<(EngineSource, Value), Fail> {
@@ -165,9 +142,8 @@ fn answer_read(workspace: &Path, r: &Read) -> Result<(EngineSource, Value), Fail
 }
 
 /// The whole daemon path: socket, ensure-up, `hello` (v3, workspace-bound), then the `read` op.
-/// `None` on ANY failure — including an op error, where the in-process recompute is
-/// authoritative and mints the SAME typed refusal for the exit triad.
-///
+/// `None` on any failure — including an op error, where the in-process recompute is
+/// authoritative and mints the same typed refusal for the exit triad.
 fn try_daemon_read(workspace: &Path, r: &Read) -> Option<Value> {
     let client = Client::from_default().ok()?;
     engine::ensure_daemon(&client).ok()?;
@@ -198,10 +174,9 @@ fn try_daemon_read(workspace: &Path, r: &Read) -> Option<Value> {
     }
 }
 
-/// A `Fragment` the user typed → the segment array the wire takes. It scopes a HEADING subtree,
-/// so it is parsed as a heading path and nothing else: a `^id` or a dewey ordinal in this
-/// position would be a subtree with no descendants, which is a section read, not a scope.
-///
+/// A fragment the user typed → the segment array the wire takes. It scopes a heading subtree, so
+/// it is parsed as a heading path and nothing else: a `^id` or a dewey ordinal in this position
+/// would be a subtree with no descendants, which is a section read, not a scope.
 fn frag_segments(frag: &str) -> Vec<wire::HpathSeg> {
     frag.split('/')
         .map(|h| wire::HpathSeg {
@@ -212,19 +187,16 @@ fn frag_segments(frag: &str) -> Vec<wire::HpathSeg> {
 }
 
 impl Read {
-    /// The wire `read` request this invocation maps onto. `display_path` is the PATH exactly as the
-    /// user typed it (Cs U4a2 contract: the engine renders the callers spelling, it never invents
-    /// one).
+    /// The wire `read` request this invocation maps onto. `display_path` is the path exactly as
+    /// the user typed it — the engine renders the caller's spelling, never invents one.
     fn request(&self) -> Value {
         let mut req = json!({
             "op": "read",
             "path": self.path,
             "display_path": self.path,
         });
-        // **The human/wire ingress door (U14, U7s ruled direction).** Both selector fields are
-        // STRUCTURED on the wire, and this is where a typed string becomes structure — once, at the
-        // edge, so nothing inward of the CLI carries a joined address.
-        //
+        // Both selector fields are structured on the wire; this is where a typed string becomes
+        // structure — once, at the edge, so nothing inward of the CLI carries a joined address.
         if let Some(frag) = &self.frag {
             req["frag"] = json!(frag_segments(frag));
         }
@@ -240,8 +212,8 @@ impl Read {
     }
 }
 
-/// The degrade: load the ONE document from disk, answer through the SAME composed-read leaf the
-/// daemon serves, then run the SAME v3 vocabulary projection — warm and degrade bodies are
+/// The degrade: load the one document from disk, answer through the same composed-read leaf the
+/// daemon serves, then run the same v3 vocabulary projection — warm and degrade bodies are
 /// byte-identical for the same state.
 fn in_process_read(workspace: &Path, r: &Read) -> Result<Value, Fail> {
     let canonical = workspace::canonicalize(workspace).map_err(|e| {
@@ -255,22 +227,20 @@ fn in_process_read(workspace: &Path, r: &Read) -> Result<Value, Fail> {
     let doc = wire_serve::load_doc(&root, &wpath).map_err(|e| engine::refusal_fail(&e))?;
     let ambient = wire_serve::ambient_root(&root).map_err(|e| engine::refusal_fail(&e))?;
     let params = wire_serve::read::ReadParams {
-        // The SAME conversion the wire request does — one door, two transports,
+        // The same conversion the wire request does — one door, two transports,
         // so warm and degrade cannot diverge on what a selector means.
         frag: r.frag.as_deref().map(frag_segments),
         sections: (!r.sections.is_empty())
             .then(|| r.sections.iter().map(|s| wire::ReadSel::parse(s)).collect()),
         display_path: Some(r.path.clone()),
-        // §9 read provenance is the DAEMON's to stamp; the local CLI sends
-        // none on both warm and degrade paths (symmetry with the wire call).
+        // Read provenance is the daemon's to stamp; the local CLI sends none on
+        // both warm and degrade paths (symmetry with the wire call).
         actor: None,
     };
-    // S6: no actor (above) and no session store — the local CLI mints no read
-    // receipt on either path, and the CLI pin is local-operator-trusted (D16).
-    // S10: this degrade path loads ONE document, not the corpus, so it cannot
-    // color a pin whose target is another page — it decorates nothing. The
-    // decorated face is the daemon's (the host that holds a corpus); `mrd read`
-    // serves the stored spelling, which is also the spelling `mrd put` takes.
+    // No actor and no session store, so the local CLI mints no read receipt on either path. This
+    // degrade path loads one document, not the corpus, so it cannot color a pin whose target is
+    // another page — the decorated face is the daemon's, and `mrd read` serves the stored
+    // spelling, which is also the spelling `mrd put` takes.
     let body = wire_serve::read::composed_read(
         &doc,
         &wpath,

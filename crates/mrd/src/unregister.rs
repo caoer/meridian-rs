@@ -3,8 +3,6 @@
 //! entry is removed only when a daemon is reachable, while the drawer is always removed. An
 //! ephemeral tree (cwd-default, no daemon, never registered) has neither — unregister is then a
 //! clean no-op.
-//!
-//!
 
 use std::path::{Path, PathBuf};
 
