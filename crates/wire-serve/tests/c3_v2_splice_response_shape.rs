@@ -51,8 +51,7 @@ fn splice_response(effects: Vec<EffectEnvelope>) -> Response {
     }
 }
 
-/// Host v2 path: `demote_v2` then serialize (`sidecar::write_response` /
-/// `registry::wire_line`).
+/// Host v2 path: `demote_v2` then serialize (`registry::wire_line`).
 fn v2_wire(response: &Response) -> serde_json::Value {
     let demoted = wire_serve::rev::demote_v2(response);
     serde_json::to_value(demoted.as_ref().unwrap_or(response)).expect("serializes")

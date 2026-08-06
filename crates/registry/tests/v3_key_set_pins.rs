@@ -844,7 +844,7 @@ fn a_non_integer_id_is_accepted_as_served_on_the_daemon() {
 
 /// Contract §3.1: the same request is a `bad_request` echoing `id_raw`.
 #[test]
-#[ignore = "R3a finding — §3.1 id_raw is never served by the daemon; needs a disposition card before R3b deletes the sidecar plane that does serve it"]
+#[ignore = "R3a finding — §3.1 id_raw is never served by the daemon, and the sidecar host that did serve it is DROPPED (§3.3, 2026-08-06), so no host serves it; still needs a disposition card"]
 fn contract_3_1_a_non_integer_id_is_refused_with_id_raw() {
     let (fx, mut conn) = Fixture::start();
     let raw_id = conn.call(&json!({"id": "7", "op": "fingerprint"}));

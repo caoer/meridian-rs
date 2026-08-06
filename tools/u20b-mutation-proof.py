@@ -40,7 +40,7 @@ MUTATIONS = [
             "        }\n"
             "        writer.write_all(out.as_bytes())?;",
         )],
-        "the sidecar's interleaved framing: notifications on a request connection",
+        "the deleted sidecar host's interleaved framing (§3.3 DROP): notifications on a request connection",
     ),
     (
         "s6-keying",
@@ -121,9 +121,13 @@ MUTATIONS = [
     ),
     (
         # PIN (b): `seq + 1` is gone from the constructor. Restoring it makes
-        # every frame double-count against its allocator.
+        # every frame double-count against its allocator. The original pin
+        # (the sidecar's replay_live) died with that host (§3.3 DROP,
+        # 2026-08-06); the registry chain-contiguity pin reddens under the same
+        # mutation (verified 2026-08-06), so it now carries this row too — same
+        # pin as `seq-contiguity`, two defects, one detector.
         "seq-plus-one-in-the-constructor",
-        ("sidecar", "replay_live", "replay_equals_live_e3_e4_through_the_commit_path"),
+        ("registry", "sub_push", "the_delta_chain_is_contiguous"),
         [(
             "crates/wire-serve/src/write.rs",
             "    DeltaFrame {\n        delta: Delta {\n            seq,",
@@ -135,10 +139,10 @@ MUTATIONS = [
     ),
     (
         # PIN (c), THE CENTREPIECE: the reservation is what makes the race safe.
-        # Ignoring it is exactly the pre-U20b `seq() + 1`, and the point of this
-        # row is the SPLIT it proves — the race pin reddens while the sidecar's
-        # existing ring tests stay green, because the sidecar has one producer
-        # and never needed the reservation. That is the both-hosts control.
+        # Ignoring it is exactly the pre-U20b `seq() + 1`. (Historical split
+        # control: the single-producer sidecar host's ring tests stayed green
+        # under this mutation because one producer never needed the
+        # reservation; that host is DROPPED — §3.3, 2026-08-06.)
         "reservation-ignored",
         ("wire-serve", "--lib", "allocation_survives_a_detector_advance_before_the_writers"),
         [(

@@ -9,7 +9,6 @@ const FORBIDDEN_DEPENDERS: &[&str] = &[
     "query",
     "fs",
     "syntax",
-    "sidecar",
     "wire",
     "wire-serve",
 ];

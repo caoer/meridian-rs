@@ -1,4 +1,5 @@
-//! Seam bench: transport codec today, sidecar end-to-end when rungs land.
+//! Seam bench: transport codec today, wire-host end-to-end when rungs land
+//! (the registry daemon's serve path — the one wire door, wire-contract §3.3).
 //!
 //! # Metric contract (claims.toml)
 //! - `transport.codec.ndjson_roundtrip_p99` — **LIVE day 1**: µs per single-frame
@@ -6,7 +7,7 @@
 //!   Recorded to staging on every run — this target is the end-to-end proof of the claims
 //!   pipeline.
 //! - `roundtrip.op.p99` — dormant until rung 1+: NDJSON request in → response out through
-//!   parse+assemble+project+codec, the latency Go actually feels.
+//!   parse+assemble+project+codec, the latency a caller actually feels.
 //!
 //! Hand-written `main` (not `criterion_main!`): criterion runs first, then the hdr claim
 //! run records its measurement — both happen in smoke mode too, so every CI run refreshes

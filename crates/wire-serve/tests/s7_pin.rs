@@ -588,7 +588,8 @@ fn another_actors_read_and_a_sibling_sections_read_both_fail_the_gate() {
     assert_eq!(read_page(&root, "guide.md"), TARGET, "nothing was written");
 }
 
-/// Sidecar (no session ledger) refuses actor pins and names that reason.
+/// A ledgerless host (no session — an in-process caller) refuses actor pins
+/// and names that reason.
 #[test]
 fn a_host_with_no_session_refuses_an_actor_pin_and_says_why() {
     let (_dir, root) = workspace();
@@ -604,7 +605,8 @@ fn a_host_with_no_session_refuses_an_actor_pin_and_says_why() {
     assert!(
         err.message
             .as_deref()
-            .is_some_and(|m| m.contains("no read-receipt ledger") && m.contains("sidecar")),
+            .is_some_and(|m| m.contains("no read-receipt ledger")
+                && m.contains("resident daemon")),
         "{:?}",
         err.message
     );

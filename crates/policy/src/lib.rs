@@ -165,8 +165,8 @@ pub struct EvalBudget {
 
 /// Caller-provided resolver for manifest-relative pack files (fixtures, rules).
 ///
-/// Policy stays I/O-free (as `model` is): the caller — `fs`/`sidecar` at the
-/// §6.1 "reads path from disk" edge — injects file access, and tests inject an
+/// Policy stays I/O-free (as `model` is): the caller — `fs`/the serving host
+/// at the §6.1 "reads path from disk" edge — injects file access, and tests inject an
 /// in-memory map. Paths are exactly the manifest's relative strings.
 pub trait PackFiles {
     /// Read a pack file's UTF-8 contents, or fail (missing/unreadable/non-UTF-8).
@@ -185,9 +185,10 @@ pub struct Budget {
     pub p99_us: u32,
 }
 
-/// Budget classes place the evaluator: node/file run sidecar-mode from rung 1
-/// machinery; corpus requires the resident index — daemon-only, enforced at
-/// compile time with a loud error.
+/// Budget classes place the evaluator: node/file run on an index-less engine
+/// from rung 1 machinery; corpus requires the resident index (§11.3 — since
+/// the sidecar host's DROP, §3.3, every wire door is daemon-backed, so the
+/// class gates nothing at the wire; the law stands).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BudgetClass {
     Node,
@@ -240,8 +241,9 @@ impl CompiledRuleset {
     }
 
     /// Ruleset-level budget class = max class over used assertions. A `Corpus`
-    /// result means the pack needs the resident corpus index; loading it
-    /// sidecar-mode is later refused `daemon_only` (defined elsewhere).
+    /// result means the pack needs the resident corpus index (the `daemon_only`
+    /// refusal that once enforced this at an index-less host is RETIRED — §8;
+    /// every wire door is daemon-backed).
     #[must_use]
     pub fn budget_class(&self) -> BudgetClass {
         self.budget_class
@@ -448,7 +450,7 @@ fn sha256_hex(s: &str) -> String {
 }
 
 /// Evaluate a ruleset over documents (gate and diagnostic modes share this
-/// path; mode/limit shaping is `sidecar`'s wire concern) and return the §11.1
+/// path; mode/limit shaping is the serving host's wire concern) and return the §11.1
 /// findings. Facts are derived from each real `Document` AST (`model::build` →
 /// `FactDoc`); the WHEN vocabulary was closed at compile (§11.2), so every
 /// predicate here reads world-model facts only.
@@ -458,9 +460,9 @@ fn sha256_hex(s: &str) -> String {
 /// error or panic (frozen §8). The verdict order is document order, then
 /// per-document rule order.
 ///
-/// `corpus` is the capability parameter: `None` in sidecar mode. File/node-class
-/// rules need no index; corpus-class refusal (`daemon_only`) is a load-time
-/// concern owned by P6-VERDICTS, not evaluated here.
+/// `corpus` is the capability parameter: `None` for an engine holding no
+/// resident index. File/node-class rules need no index; corpus-class
+/// admission is a load-time concern owned by P6-VERDICTS, not evaluated here.
 #[must_use]
 pub fn evaluate(
     ruleset: &CompiledRuleset,

@@ -94,7 +94,7 @@ pub fn ensure(recipe: &Recipe) -> io::Result<PathBuf> {
 }
 
 /// Unconditional generation into `dir` (wiped first). Writes each file, its
-/// `.inventory.json` sidecar, the corpus-level `inventory.json`, and
+/// companion `.inventory.json`, the corpus-level `inventory.json`, and
 /// `manifest.json` last — a manifest present means the corpus is complete.
 pub fn generate_into(dir: &Path, recipe: &Recipe) -> io::Result<CorpusManifest> {
     if dir.exists() {

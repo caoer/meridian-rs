@@ -15,7 +15,7 @@
 //! (`wire-map::facts`), parsing (`syntax`), disk (`fs`).
 //!
 //! G1 (panic-free law): the walker returns a typed [`RenderFailed`] — it
-//! never panics; the sidecar serve loop is panic-free by law.
+//! never panics; the host's serve loop is panic-free by law.
 
 use std::collections::BTreeMap;
 

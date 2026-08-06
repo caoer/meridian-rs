@@ -19,21 +19,15 @@
 use model::gotext::sanitize_heading;
 use serde_json::{Value, json};
 
-/// Drive one v3 serve session over a corpus root; one frame per request.
+/// Drive one v3 serve session over a corpus root (the registry host's line
+/// loop, `crate::daemon_door`); one frame per request.
 fn serve(root_dir: &std::path::Path, requests: &[Value]) -> Vec<Value> {
-    let root = fs::WorkspaceRoot(root_dir.to_path_buf());
-    let mut input = String::from("{\"id\":0,\"op\":\"hello\",\"proto\":1,\"contract\":\"v3\"}\n");
+    let mut input = crate::daemon_door::hello_line(Some("v3"), root_dir);
     for r in requests {
         input.push_str(&serde_json::to_string(r).expect("request serializes"));
         input.push('\n');
     }
-    let mut out = Vec::new();
-    sidecar::serve(&root, input.as_bytes(), &mut out, &[]).expect("serve");
-    String::from_utf8(out)
-        .expect("frames are UTF-8")
-        .lines()
-        .map(|l| serde_json::from_str(l).expect("frame parses"))
-        .collect()
+    crate::daemon_door::serve_frames(&input)
 }
 
 /// The corpus roots (one workspace each), sorted.

@@ -527,10 +527,10 @@ fn run_user_query(
 /// post-result fold — each fire moves the corpus, so the fold can never match
 /// the build's `as_of`. Unset (production), this is a no-op env read.
 fn test_fold_race_hook() {
+    use std::io::Write as _;
     let Ok(path) = std::env::var("MRD_SQL_TEST_MUTATE") else {
         return;
     };
-    use std::io::Write as _;
     if let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)

@@ -1,13 +1,13 @@
-//! Shared typed edge: strict decode + read-op arms for both hosts.
+//! Shared typed edge: strict decode + read-op arms for the serving host.
 //!
 //! Owns [`decode`] (§3.2: unknown fields/enums refuse loud — serde `deny_unknown_fields`
 //! does not compose with `flatten`), [`read`] over borrowed model state, and
 //! [`write::splice`] (the write choke-point). Read arms never own corpus/disk. Write is
-//! stateful but one shared impl. `root`/`diff` stay per-host (cursor/history plumbing).
+//! stateful but one shared impl. `root`/`diff` stay host plumbing (cursor/history).
 //!
 //! [`ring`] and [`watch`] are the delta plane: one retention law, one external-change
-//! classifier. Per-host driver only (sidecar at serve-loop line boundary; registry at
-//! subscription detection cycle) — never the classification.
+//! classifier. Host driver only (the registry daemon, at its subscription detection
+//! cycle — the one wire door since the sidecar's DROP, §3.3) — never the classification.
 
 pub mod armed_disk;
 pub mod check_write;

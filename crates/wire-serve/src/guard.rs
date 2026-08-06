@@ -36,7 +36,7 @@
 //!   named back to the caller.
 //!
 //! # Every wire door enforces; there are no trust planes
-//! Both the resident daemon and the per-workspace sidecar enforce; no door is
+//! The resident daemon — the one wire door (§3.3) — enforces; no door is
 //! exempted for who is behind it. [`Origin`] is door bookkeeping. The
 //! in-process path ([`Origin::InProcess`] — `mrd`, the run plane, tests) is not
 //! a wire door, so the rule does not reach it: scope, not trust.
@@ -53,8 +53,8 @@ use wire::{
 /// wire it is on, or a default would silently enrol it in one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Origin {
-    /// A decoded wire frame — the resident daemon's socket and the sidecar's
-    /// stdio host alike. Every wire door enforces.
+    /// A decoded wire frame — the resident daemon's socket (the one wire
+    /// door, §3.3). Every wire door enforces.
     Wire,
     /// An in-process call: `mrd`, the run plane, the test harness. Not a wire
     /// door, so the rule does not reach it.

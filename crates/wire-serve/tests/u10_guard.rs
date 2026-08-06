@@ -602,7 +602,8 @@ fn the_refusal_is_semantic_never_frame_illegality() {
 /// Ordering: a target that does not resolve is not this rung's to answer —
 /// the resolution rung refuses (`ref_not_found` / `ambiguous_ref`) so the
 /// caller's real mistake is named, not buried behind a fingerprint demand.
-/// `sidecar::selector_ambiguity` covers the law end-to-end; this pins the unit.
+/// This pins the unit (the end-to-end driver died with the sidecar host —
+/// §3.3 DROP, 2026-08-06).
 #[test]
 fn a_target_that_does_not_resolve_is_not_this_rungs_to_answer() {
     let (_d, root) = ws();

@@ -3,17 +3,18 @@
 A Rust engine for a governed Markdown workspace. `meridian-rs` reads an
 Obsidian-flavored Markdown vault into an in-memory world model, serves
 byte-exact section reads and CAS-guarded batch edits, and emits change deltas
-— all over a frozen NDJSON wire contract. It ships two binaries: `sidecar`, the
-stdin/stdout process a host daemon speaks to, and `mrd`, the workspace CLI that
-resolves a directory's identity, manages the on-disk cache, and runs the
-registry daemon.
+— all over a frozen NDJSON wire contract. It ships one binary: `mrd`, the
+workspace CLI that resolves a directory's identity, manages the on-disk cache,
+and runs the registry daemon — whose unix socket is the one wire door (hosts
+ruling, `docs/wire-contract.md` §3.3, 2026-08-06).
 
 ## What it is
 
-- **A sidecar, not an app.** `sidecar` reads one JSON request per line on stdin
-  and writes one response per line on stdout; logs go to stderr. A host process
-  (e.g. a Go daemon) owns policy, identity, and orchestration and drives the
-  sidecar for parsing, reads, edits, and change notifications.
+- **An engine behind one socket, not an app.** The registry daemon reads one
+  JSON request per line on its unix socket and writes one response per line;
+  logs go to stderr. A client process (e.g. a Go daemon) owns policy,
+  identity, and orchestration and drives the socket for parsing, reads,
+  edits, and change notifications.
 - **Span-exact and clobber-safe.** Reads and writes address sections by
   structure (heading path, block anchor, frontmatter key), never by client-
   supplied byte offset. Edits are content-addressed: a node-grain or world-grain
@@ -36,7 +37,7 @@ registry daemon.
 | `transport` | Untyped NDJSON message envelope + codec seam (knows framing, never meaning) |
 | `policy` | Ruleset compilation and assertion evaluation under declared budgets; produces edit-time verdicts and the blocking armed-plane gate |
 | `query` | Corpus reads: backlinks, board queries, span-exact rename planning — borrows the model's index |
-| `wire-serve` | The shared typed edge: strict decode, read arms incl. the composed `read`, the `splice → commit` write choke-point, the v3 projection — one implementation, two hosts |
+| `wire-serve` | The shared typed edge: strict decode, read arms incl. the composed `read`, the `splice → commit` write choke-point, the v3 projection — one implementation, one host |
 | `render` | The compiled-in render plane: `Renderer` trait + node-grain walker producing the `readText` text projection, with the block-elision and claim-link decoration hooks — decorations arrive as data, never as a dependency edge |
 | `lock` | The `meridian-lock` fenced-block format: canonical writer/reader, engine sole-writer; owns the reserved `meridian-*` namespace predicate |
 | `effects` | The effect kernel: pure Starlark evaluation — rules in, effect descriptors out; zero I/O, advisory-only |
@@ -45,7 +46,6 @@ registry daemon.
 | `check` | The check engine: the pure READ verb of the reconciliation loop |
 | `view` | The DuckDB view organ: a write-only leaf projecting the warm corpus into a disposable, fingerprint-stamped file; also the lock-aware read face that renders each `meridian-lock` pin's drift color through `model`'s one computer |
 | `preset` | Presets + session birth: def-pinned convention floor; `unfold`/`new` materialize through the guarded create |
-| `sidecar` (bin) | The per-workspace NDJSON stdin/stdout host — wiring only; dispatches through `wire-serve` |
 | `workspace` | Workspace identity: the discovery ladder (env → `.meridian.toml` → git root → bare), canonicalization, and the deny-ceiling predicate — pure filesystem functions, writes nothing |
 | `cache` | The central hashed cache drawer: addressing, atomic sentinel registration, corrupt-is-a-miss probing, last-use stamping, and the Cargo-grade GC sweep |
 | `registry` | The daemon-held workspace registry (watchman model): a unix-socket NDJSON RPC server + client, first-writer-wins registration, atomic state file, idle-reap |
@@ -71,11 +71,6 @@ graph TD
     FS --> WSRV
     QRY --> WSRV
     RND --> WSRV
-    TR[transport] --> SC((sidecar bin))
-    WSRV --> SC
-    WIRE --> SC
-    FS --> SC
-    POL --> SC
     WSRV --> REG[registry<br/>daemon + wire host]
     CACHE[cache] --> WS[workspace]
     WS --> REG
@@ -88,9 +83,9 @@ graph TD
     GIT --> MRD
 ```
 
-Both hosts — the per-workspace `sidecar` and the resident `registry` daemon —
-dispatch through the ONE `wire-serve` typed edge ("one served implementation,
-two hosts"); `mrd` is a local client of the same edge. The
+The one wire host — the resident `registry` daemon — dispatches through the
+ONE `wire-serve` typed edge ("one served implementation, one host" — the stdio
+sidecar host was ruled DROP, §3.3); `mrd` is a local client of the same edge. The
 `workspace` / `cache` / `registry` / `mrd` cluster remains the CLI foundation:
 identity, storage, and the daemon-held registry. The dependency edges enforce
 the three laws — see `docs/laws.md`.
@@ -100,13 +95,14 @@ the three laws — see `docs/laws.md`.
 ```sh
 cargo build            # default members (perfsuite excluded)
 cargo test --workspace # the full suite
-cargo run -p sidecar -- <workspace-root>   # serve one vault on stdin/stdout
 cargo run -p mrd -- init                   # mark the cwd as a workspace
 cargo run -p mrd -- cache ls               # list the on-disk cache drawers
+cargo run -p mrd -- daemon                 # run the registry daemon in the foreground
 ```
 
-The sidecar speaks NDJSON: one request object per line in, one response per
-line out. A minimal exchange:
+The daemon socket speaks NDJSON: one request object per line in, one response
+per line out (`echo … | nc -U "$SOCKET"` works — pipe debuggability is a
+contract property, §3.1). A minimal exchange:
 
 ```
 {"id":1,"op":"hello","proto":1}

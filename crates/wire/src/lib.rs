@@ -1002,9 +1002,8 @@ pub enum ResponseBody {
     /// optional first ambient `root`.
     ///
     /// `storage` is the pinned storage drawer for the hello'd workspace.
-    /// Absent on a workspace-less handshake (nothing to pin) and on the
-    /// sidecar (which opens its drawer client-side). An optional additive
-    /// field on the frozen shape.
+    /// Absent on a workspace-less handshake (nothing to pin). An optional
+    /// additive field on the frozen shape.
     ///
     /// `workspace` is the canonical root that actually bound — it may differ
     /// from the string the caller declared, because canonicalization rewrites
@@ -1246,8 +1245,8 @@ pub struct Verdict {
 /// Verdict severity (v2 §11.1): descriptive policy data — how bad, per the
 /// pack's convention — never what to do about it. Serialized flat lowercase
 /// (`"error"`/`"warn"`/`"info"`). Independent of `policy::Severity` by
-/// construction: the sidecar projects one to the other, so no wire→policy
-/// edge exists.
+/// construction: the serving host projects one to the other, so no
+/// wire→policy edge exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
@@ -1472,8 +1471,10 @@ pub enum ErrorCode {
     IoError,
     InvalidUtf8,
     /// v2 §8/§11.3: a corpus-class capability (one that needs the resident
-    /// corpus index) requested of a sidecar-mode engine that has none —
-    /// refused loud at admission. A single-file op never raises it.
+    /// corpus index) requested of an engine that has none — refused loud at
+    /// admission. **RETIRED, unmintable** (hosts ruling, §3.3, 2026-08-06):
+    /// with the stdio sidecar host deleted, every wire door is daemon-backed
+    /// and the resident index is always reachable, so nothing mints this code.
     DaemonOnly,
     Internal,
     CasMismatch,
@@ -1605,7 +1606,7 @@ pub struct ErrorBody {
     /// `bad_path` / `file_not_found`: the offending/requested path, echoed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<Path>,
-    /// `unsupported_proto`: protos this sidecar speaks.
+    /// `unsupported_proto`: protos this server speaks.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub supported: Option<Vec<u32>>,
     /// The pinned vs current comparison token — `cas_mismatch`: node revs;

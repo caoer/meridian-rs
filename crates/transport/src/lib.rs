@@ -8,7 +8,7 @@
 //! versa. Alternate framings implement the same [`Codec`] seam.
 //!
 //! **Never does:** know what ops mean, validate op fields (typed edge is
-//! `wire` at the `sidecar` boundary), touch the filesystem or the model.
+//! `wire` at the serving host's boundary), touch the filesystem or the model.
 
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, Write};
@@ -50,7 +50,7 @@ pub struct Response {
 }
 
 /// An event frame (rung 4+): no `id` key, payload untyped (`sub` etc. live
-/// inside). The v1 sidecar emits none.
+/// inside). The v1 server emits none.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Notification {
     #[serde(flatten)]
@@ -67,8 +67,8 @@ pub trait Codec {
     fn encode(&self, msg: &Message, out: &mut dyn Write) -> io::Result<()>;
     /// Decode the next frame; `Ok(None)` at EOF. Blank/whitespace-only lines
     /// are skipped. A syntactically unparseable line is an `Err` here — turning
-    /// that into the `bad_frame` error *response* is the caller's (sidecar's)
-    /// move, because responding is meaning, not framing.
+    /// that into the `bad_frame` error *response* is the caller's (the serving
+    /// host's) move, because responding is meaning, not framing.
     ///
     /// # Errors
     /// I/O failure reading `input`, or a syntactically unparseable frame.
@@ -76,8 +76,9 @@ pub trait Codec {
 }
 
 /// Newline-delimited JSON framing: one JSON object per line, `\n`-terminated,
-/// UTF-8. `echo '{"op":"toc",…}' | ./sidecar` debuggability is a contract
-/// property this codec preserves.
+/// UTF-8. `echo '{"op":"toc",…}' | nc -U "$SOCKET"` debuggability is a
+/// contract property this codec preserves (§3.1 — the pipe test outlived the
+/// sidecar's DROP because the daemon socket speaks the same line dialogue).
 #[derive(Debug, Default)]
 pub struct NdjsonCodec;
 
@@ -119,8 +120,8 @@ pub enum IdScan {
     /// `id` key present but the lexeme is non-conforming: a string (`"7"`), a
     /// float form (`3.5`, `3e0`), negative (`-1`), null, or out of range
     /// (`>= 2^53`, including `2^64`). Carries the offending lexeme VERBATIM (raw
-    /// source characters) — the sidecar answers `bad_request` with `id:null`
-    /// plus this string in `id_raw`, and never echoes it as a valid id.
+    /// source characters) — §3.1 has the server answer `bad_request` with
+    /// `id:null` plus this string in `id_raw`, never echoing it as a valid id.
     BadId(String),
 }
 
@@ -132,7 +133,7 @@ const ID_MAX_EXCLUSIVE: u64 = 1 << 53; // 9_007_199_254_740_992
 /// Scan the raw `id` lexeme of one NDJSON line and return its frame verdict,
 /// BEFORE typed decode (contract §3.1). Sits beside [`NdjsonCodec`]: framing
 /// only, never meaning — emitting the `bad_request` frame for an [`IdScan::BadId`]
-/// (`id:null` + verbatim `id_raw`) is the sidecar's move, not this crate's.
+/// (`id:null` + verbatim `id_raw`) is the serving host's move, not this crate's.
 ///
 /// The raw lexeme is authoritative: `3e0` is JSON-equal to `3` yet is not an
 /// integer lexeme, so it is an [`IdScan::BadId`], not a valid `3`. Key *presence*

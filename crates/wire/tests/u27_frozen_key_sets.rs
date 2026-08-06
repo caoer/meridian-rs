@@ -1,11 +1,13 @@
 //! The frozen-v2 key-set pin suite, type plane: what each frozen-v2 response
 //! TYPE admits, with every optional field populated.
 //!
-//! Its sibling `crates/sidecar/tests/u27_v2_key_set_pins.rs` pins what a live
-//! v2 session actually serves, and neither half subsumes the other: a field
-//! added to a frozen struct reddens this file even before any path populates
-//! it, while a flipped population rule on an existing `Option` reddens the live
-//! half with `git diff -- crates/wire/` empty.
+//! The live plane rides the daemon socket — the one wire door since the
+//! sidecar host's DROP (hosts ruling, wire-contract §3.3, 2026-08-06); its
+//! served shapes are pinned by `crates/registry/tests/v3_key_set_pins.rs`.
+//! Neither plane subsumes the other: a field added to a frozen struct reddens
+//! this file even before any path populates it, while a flipped population
+//! rule on an existing `Option` reddens only a live-serve pin, with
+//! `git diff -- crates/wire/` empty.
 //!
 //! Every assertion is `assert_eq!` on the full sorted key list — a subset check
 //! is byte-identical in the passing and the failing world.
@@ -403,8 +405,10 @@ fn armed_edit_and_receipt_fact_key_sets_are_frozen() {
 /// here changes bytes the frozen contract prints.
 ///
 /// Type plane only: the value is hand-built, so it says nothing about the wire.
-/// `crates/sidecar/tests/u27_v2_key_set_pins.rs::
-/// verdict_key_set_is_frozen_on_the_wire` is the wire half.
+/// The wire half died with the sidecar host (§3.3 DROP): the daemon serves no
+/// rule packs, so no live Verdict is servable (see the Deliberate gaps note in
+/// `crates/registry/tests/v3_key_set_pins.rs`) and this type pin is the
+/// standing guard.
 #[test]
 fn verdict_key_set_is_frozen() {
     let verdict = Verdict {

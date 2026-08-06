@@ -9,9 +9,10 @@
 //! test can rewrite is not a pin. Changing the face means editing the
 //! committed bytes by hand and defending the diff in review.
 //!
-//! Each case drives the sidecar serve loop — the real v3 wire door over a real
-//! on-disk workspace — and pins `body.rendered_text`, so what is frozen is
-//! what a caller actually receives.
+//! Each case drives the registry host's serve loop (`crate::daemon_door`) —
+//! the real v3 wire door over a real on-disk workspace (hosts ruling, §3.3) —
+//! and pins `body.rendered_text`, so what is frozen is what a caller actually
+//! receives.
 
 use serde_json::{Value, json};
 
@@ -52,18 +53,11 @@ fn render_face(doc_name: &str, body: &str, request: &Value) -> String {
     std::fs::create_dir_all(&docs).expect("corpus dir");
     std::fs::write(docs.join(doc_name), body).expect("write fixture");
 
-    let root = fs::WorkspaceRoot(dir.path().to_path_buf());
-    let mut input = String::from("{\"id\":0,\"op\":\"hello\",\"proto\":1,\"contract\":\"v3\"}\n");
+    let mut input = crate::daemon_door::hello_line(Some("v3"), dir.path());
     input.push_str(&serde_json::to_string(request).expect("request serializes"));
     input.push('\n');
 
-    let mut out = Vec::new();
-    sidecar::serve(&root, input.as_bytes(), &mut out, &[]).expect("serve");
-    let frames: Vec<Value> = String::from_utf8(out)
-        .expect("frames are UTF-8")
-        .lines()
-        .map(|l| serde_json::from_str(l).expect("frame parses"))
-        .collect();
+    let frames = crate::daemon_door::serve_frames(&input);
     let read = &frames[1];
     assert_eq!(read["ok"], json!(true), "the read was served: {read}");
     read["body"]["rendered_text"]

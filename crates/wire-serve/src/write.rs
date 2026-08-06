@@ -1,5 +1,5 @@
-//! The shared write choke-point — `splice → commit` — used by both the resident
-//! registry daemon and the per-workspace sidecar.
+//! The shared write choke-point — `splice → commit` — used by the resident
+//! registry daemon (the one wire door, §3.3) and the in-process callers.
 //!
 //! # The single choke-point
 //! [`splice`] is the one function the write path flows through: flock → load →
@@ -12,15 +12,14 @@
 //!
 //! # Verdicts
 //! [`evaluate_verdicts`] runs whatever admitted `policy::CompiledRuleset`s the
-//! caller hands in over the post-batch doc — the sidecar admits packs
-//! (`sidecar::admit`), the resident daemon hands `&[]`. Empty rulesets ⇒
-//! `verdicts: []`.
+//! caller hands in over the post-batch doc — the resident daemon hands `&[]`.
+//! Empty rulesets ⇒ `verdicts: []`.
 //!
 //! # The delta ring lives with the caller
 //! [`commit_batch`] assembles one `DeltaFrame` at the single §7.3 constructor
-//! ([`assemble_delta`]) and returns it; it does not hold or advance a ring. The
-//! sidecar advances its per-epoch ring with the returned frame; the resident
-//! daemon has no ring and discards it.
+//! ([`assemble_delta`]) and returns it; it does not hold or advance a ring.
+//! The resident daemon advances its per-workspace ring with the returned
+//! frame; a ringless in-process caller discards it.
 
 use std::io::ErrorKind;
 use std::path::Path as FsPath;
@@ -1526,8 +1525,9 @@ fn read_mint_gate(
             target,
             format!(
                 "pin of {}#{asked} refused: this host holds no read-receipt ledger, so it \
-                 cannot know that actor {actor} read the content (the per-request sidecar has \
-                 no session — pin through the resident daemon, or from the local CLI)",
+                 cannot know that actor {actor} read the content (a ledgerless in-process \
+                 caller has no session — pin through the resident daemon, or from the \
+                 local CLI)",
                 target.0
             ),
         ));

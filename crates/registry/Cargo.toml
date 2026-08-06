@@ -23,7 +23,7 @@ cache = { workspace = true }
 # The resident query engine (decision 0002 spine root U1): the daemon holds a
 # warm CorpusIndex + document map per workspace, rebuilt only when the corpus
 # content hash changes. `fs` reads + folds the snapshot and parses it into the
-# engine (the shared build primitives — one implementation with the sidecar);
+# engine (the shared build primitives — one implementation, this one host);
 # `model` carries the resident types (CorpusIndex, Document, MerkleRoot fingerprint).
 fs = { workspace = true }
 model = { workspace = true }
@@ -36,7 +36,8 @@ syntax = { workspace = true }
 # The wire contract (U2): the daemon socket now answers the frozen wire read ops
 # (toc/cat/extract/links/root/diff/resolve). `wire` is the request/response
 # vocabulary; `wire-serve` is the shared strict-decode + read-op arms, served
-# from the resident engine's borrowed state (one implementation with the sidecar).
+# from the resident engine's borrowed state (one implementation, this one host —
+# hosts ruling, wire-contract §3.3).
 wire = { workspace = true }
 wire-serve = { workspace = true }
 # Stage-2 S6: the read-is-the-mint ledger type (`receipt::read_mint`). The daemon

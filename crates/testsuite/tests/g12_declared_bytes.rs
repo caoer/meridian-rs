@@ -158,26 +158,20 @@ fn bodies_by_declared_length(case: &str, text: &str) -> Vec<String> {
 }
 
 /// One fixture workspace on disk, plus one v3 serve session over it — the same
-/// production path the U15 goldens drive, so the property is asserted on what a
-/// caller actually receives.
+/// production path the U15 goldens drive (the registry host's line loop,
+/// `crate::daemon_door`), so the property is asserted on what a caller
+/// actually receives.
 fn render_face(doc_name: &str, body: &str, request: &Value) -> String {
     let dir = tempfile::tempdir().expect("tempdir");
     let docs = dir.path().join("corpus");
     std::fs::create_dir_all(&docs).expect("corpus dir");
     std::fs::write(docs.join(doc_name), body).expect("write fixture");
 
-    let root = fs::WorkspaceRoot(dir.path().to_path_buf());
-    let mut input = String::from("{\"id\":0,\"op\":\"hello\",\"proto\":1,\"contract\":\"v3\"}\n");
+    let mut input = crate::daemon_door::hello_line(Some("v3"), dir.path());
     input.push_str(&serde_json::to_string(request).expect("request serializes"));
     input.push('\n');
 
-    let mut out = Vec::new();
-    sidecar::serve(&root, input.as_bytes(), &mut out, &[]).expect("serve");
-    let frames: Vec<Value> = String::from_utf8(out)
-        .expect("frames are UTF-8")
-        .lines()
-        .map(|l| serde_json::from_str(l).expect("frame parses"))
-        .collect();
+    let frames = crate::daemon_door::serve_frames(&input);
     let read = &frames[1];
     assert_eq!(read["ok"], json!(true), "the read was served: {read}");
     read["body"]["rendered_text"]
