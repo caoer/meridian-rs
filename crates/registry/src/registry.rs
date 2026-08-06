@@ -197,25 +197,6 @@ impl Registry {
         PinOutcome::Pinned { workspace, drawer }
     }
 
-    /// Resolve + pin for a **cwd** (hint, not declaration). Ancestor walk is
-    /// correct here; hit reuses the registered root, miss registers `cwd`.
-    /// Split from [`pin_declared`](Self::pin_declared) so declarations never
-    /// silently widen.
-    pub fn pin_for_cwd(&self, cwd: &Path) -> PinOutcome {
-        let workspace = match self.resolve(cwd) {
-            ResolveOutcome::Adopted(entry) => entry.workspace,
-            ResolveOutcome::Miss => match self.register(cwd) {
-                RegisterOutcome::Registered(entry) | RegisterOutcome::Adopted(entry) => {
-                    entry.workspace
-                }
-                RegisterOutcome::Denied(reason) => return PinOutcome::Denied(reason),
-                RegisterOutcome::Error(message) => return PinOutcome::Error(message),
-            },
-        };
-        let drawer = cache::drawer_dir(&self.cache_root, &workspace);
-        PinOutcome::Pinned { workspace, drawer }
-    }
-
     /// Warm the resident engine for `workspace`; rebuild only when the corpus
     /// content hash changed (U1). Reuse key is the content hash (R5), not
     /// workspace-identity Merkle. `Reused` ⇒ zero parses (`build_corpus` is

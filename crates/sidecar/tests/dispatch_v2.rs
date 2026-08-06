@@ -274,6 +274,7 @@ fn gate3_unarmed_and_unknown_ops_answer_unknown_op() {
         // unknown_op.
         r#"{"id":1,"op":"zap"}"#,
         r#"{"id":1,"op":"guard"}"#, // v1 guard, DELETED (D-C8) — never a name again
+        r#"{"id":1,"op":"view_path"}"#, // published-view organ, DROPPED (§10.4) — never a name again
     ] {
         let frame = one(&root, req);
         assert_eq!(frame["error"]["code"], "unknown_op", "{frame}");

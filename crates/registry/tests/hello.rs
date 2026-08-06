@@ -216,7 +216,7 @@ fn hello_with_an_unknown_rev_is_a_loud_refusal() {
 /// The exact-or-refuse gate: `hello.workspace` is a declaration, so it binds
 /// exactly the declared path even when an ancestor is already registered — a
 /// declared root must never silently widen to an enclosing tree. The ancestor
-/// walk lives on only in `Registry::pin_for_cwd`, whose input is a cwd hint.
+/// walk lives on only in `Registry::resolve`, whose input is a cwd hint.
 #[test]
 fn hello_declaration_binds_exactly_never_a_registered_ancestor() {
     let tmp = TempDir::new().unwrap();
