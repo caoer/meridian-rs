@@ -40,7 +40,6 @@ mod status_cmd;
 mod test_cmd;
 mod unfold_cmd;
 mod unregister;
-mod view_status;
 mod walk_cmd;
 
 /// Exit code: a clean success.
@@ -266,9 +265,8 @@ usage:
   mrd cache ls             list registered drawers
 ! mrd cache clean [--all]  reap stale / orphaned / retired drawers (--all: every
                            drawer)
-  mrd sql <query>          run SQL client-side over the daemon-published DuckDB
-                           view, with the honest-tense freshness frame
-  mrd view status          per-workspace view freshness + refresh telemetry (OD7)
+  mrd sql <query>          run SQL over an ephemeral in-memory projection of
+                           the corpus, with the honest-tense freshness frame
   mrd status [--cwd PATH]  the bare, pure-local drift + freshness summary: the
                            armed INDEX line (armed / drifted / forced-since
                            -realise), the composed three-axis line (pin color ·
@@ -499,7 +497,6 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
         "cache" => dispatch_cache(&args[1..]),
         "sql" => sql::run(&args[1..]),
         "status" => status_cmd::run(&args[1..]),
-        "view" => dispatch_view(&args[1..]),
         "test" => test_cmd::dispatch(&args[1..]),
         "run" => run_cmd::dispatch(&args[1..]),
         "new" => new_cmd::run(&args[1..]),
@@ -530,16 +527,6 @@ fn dispatch_cache(args: &[String]) -> Result<(), Fail> {
             cache_cmd::clean(p.all, p.format())
         }
         other => Err(Fail::usage(format!("unknown cache subcommand: {other}"))),
-    }
-}
-
-fn dispatch_view(args: &[String]) -> Result<(), Fail> {
-    let Some(sub) = args.first() else {
-        return Err(Fail::usage("view needs a subcommand (status)".to_owned()));
-    };
-    match sub.as_str() {
-        "status" => view_status::run(&args[1..]),
-        other => Err(Fail::usage(format!("unknown view subcommand: {other}"))),
     }
 }
 
@@ -763,7 +750,7 @@ mod help {
     }
 
     /// One word list is a prefix of the other. So `mrd cache --help` answers with both cache
-    /// subcommands, `mrd view status --help` with just that one, and `mrd read notes.md --help`
+    /// subcommands, `mrd cache clean --help` with just that one, and `mrd read notes.md --help`
     /// with `read`.
     fn addresses(query: &[String], words: &[String]) -> bool {
         !query.is_empty() && !words.is_empty() && query.iter().zip(words).all(|(q, w)| q == w)
@@ -855,7 +842,6 @@ mod help {
                     vec!["skill", "hook"],
                     vec!["cache", "ls"],
                     vec!["cache", "clean"],
-                    vec!["view", "status"],
                 ],
                 "the two-word verbs of the listing"
             );
@@ -899,7 +885,7 @@ mod help {
                 "marked as writers:\n{}",
                 marked.join("\n")
             );
-            assert_eq!(blocks().len(), 27, "verb blocks in the listing");
+            assert_eq!(blocks().len(), 26, "verb blocks in the listing");
         }
 
         /// Every option that names an owner names a verb that exists.
@@ -929,8 +915,8 @@ mod help {
             );
             assert_eq!(query_of(&["cache", "--help"].map(String::from)), ["cache"]);
             assert_eq!(
-                query_of(&["view", "status", "--help"].map(String::from)),
-                ["view", "status"]
+                query_of(&["cache", "clean", "--help"].map(String::from)),
+                ["cache", "clean"]
             );
             assert!(query_of(&["--help"].map(String::from)).is_empty());
         }

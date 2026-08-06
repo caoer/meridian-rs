@@ -2,10 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use cache::CacheDrawer;
 use duckdb::Connection;
 use model::Document;
-use view::{PublishStamp, create_schema};
+use view::create_schema;
 
 fn doc(raw: &str) -> Document {
     model::build(raw.to_string(), syntax::parse(raw))
@@ -295,50 +294,6 @@ fn gate8_domain_prefix_guard() {
         !eq,
         "a domain bump makes fingerprint tokens never compare equal even when hex repeats"
     );
-}
-
-// ---------------------------------------------------------------------------
-// Gate 14 — no-WAL invariant (build side)
-// ---------------------------------------------------------------------------
-
-#[test]
-fn gate14_publish_leaves_no_wal_and_removes_stale_dest_wal() {
-    let tmp = tempfile::tempdir().unwrap();
-    let drawer = CacheDrawer::Disk {
-        dir: tmp.path().to_path_buf(),
-        workspace: std::path::PathBuf::from("/ws"),
-    };
-    let docs = fixture();
-    let stamp = PublishStamp {
-        workspace: "/ws".to_string(),
-        as_of_fingerprint: "b3:abc".to_string(),
-        epoch: "e1".to_string(),
-        seq: 1,
-    };
-    let dest = view::publish(&docs, &drawer, &stamp).expect("publish");
-    assert!(dest.exists(), "view.duckdb published");
-    let dest_wal = tmp.path().join("view.duckdb.wal");
-    assert!(
-        !dest_wal.exists(),
-        "a clean CHECKPOINT leaves no .wal sidecar"
-    );
-
-    // a pre-existing (poison) destination WAL is removed by the next publish
-    std::fs::write(&dest_wal, b"poison").unwrap();
-    let stamp2 = PublishStamp { seq: 2, ..stamp };
-    view::publish(&docs, &drawer, &stamp2).expect("re-publish");
-    assert!(
-        !dest_wal.exists(),
-        "publish removes any pre-existing view.duckdb.wal before rename"
-    );
-
-    // the published file is read-only (0444) — the managed-reader mode check
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&dest).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o444, "published view.duckdb is chmod 0444");
-    }
 }
 
 // ---------------------------------------------------------------------------

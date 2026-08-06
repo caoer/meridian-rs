@@ -2790,7 +2790,6 @@ dependencies = [
  "serde_json",
  "syntax",
  "tempfile",
- "view",
  "wire",
  "wire-serve",
  "workspace",
@@ -3978,7 +3977,6 @@ name = "view"
 version = "0.0.0"
 dependencies = [
  "addr",
- "cache",
  "duckdb",
  "lock",
  "model",

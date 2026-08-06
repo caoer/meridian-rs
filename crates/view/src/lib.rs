@@ -1,21 +1,17 @@
-//! `DuckDB` **view-organ** — write-only leaf projecting the warm parsed corpus
-//! into a disposable, fingerprint-stamped `DuckDB` file.
+//! `DuckDB` ephemeral projection + lock-aware read face (`wire-contract.md`
+//! §10.3–§10.4; not agent core).
 //!
 //! # Charter
-//! **Owns:** rung-5 SQL projection of the fact corpus: walk
-//! `BTreeMap<path, Document>` into 8 tables + 4 views ([`schema`]). Disk and
-//! fingerprints are correctness; the DB is advisory.
+//! **Owns:** the `:memory:` SQL projection of the fact corpus — walk
+//! `BTreeMap<path, Document>` into 8 tables + 4 views ([`schema`]) — and the
+//! lock-aware read face for walk/status colour ([`walk`], [`read_face`]).
+//! The projection is advisory; disk and fingerprints are correctness.
 //!
 //! **Never does:** re-parse, read its own output into a fact path
-//! (view-never-store; C2 topology gate), or write on the daemonless path
-//! ([`build_memory`] is `:memory:`-only).
-//!
-//! # Entry points (OD6 writer authority)
-//! - [`build_memory`] — daemonless: in-process `:memory:`, epoch/seq NULL,
-//!   **writes nothing to disk**.
-//! - [`publish`] — daemon sole persistent writer: temp → `CHECKPOINT` → no
-//!   `.wal` → `chmod 0444` → `fsync` → atomic rename. Publish mutex is the
-//!   **caller's** (zero flock code here).
+//! (view-never-store; C2 topology gate), or **write anything to disk** —
+//! [`build_memory`] is `:memory:`-only. The persistent published-file organ
+//! (`publish`, `view.duckdb`, the `view_path` wire op) was DROPPED by ruling
+//! (§10.4, 2026-08-06).
 
 pub mod facts;
 pub mod read_face;
@@ -23,10 +19,8 @@ pub mod schema;
 pub mod walk;
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cache::CacheDrawer;
 use duckdb::Connection;
 use duckdb::types::Value;
 use model::{CorpusIndex, Document, Node, NodeKind};
@@ -36,48 +30,17 @@ pub use read_face::{
 };
 pub use schema::{SCHEMA_SQL, SCHEMA_VERSION, create_schema};
 
-/// Daemon `publish` stamp for the singleton `_meridian_view` row: authoritative
-/// `as_of_fingerprint`, workspace, and epoch/seq (both set — never daemonless).
-#[derive(Debug, Clone)]
-pub struct PublishStamp {
-    /// Canonical workspace path (advisory; identity is the drawer).
-    pub workspace: String,
-    /// Workspace content fingerprint at build (`MerkleRoot.0`) — freshness authority.
-    pub as_of_fingerprint: String,
-    /// Daemon epoch (pairs with `seq`).
-    pub epoch: String,
-    /// Wire `changes_seq` at build time (pairs with `epoch`).
-    pub seq: u64,
-}
-
-/// View-organ failure. `publish` is the only fallible-on-I/O entry.
+/// View-projection failure.
 #[derive(Debug)]
 pub enum ViewError {
-    /// `DuckDB` error from schema, projection, or `CHECKPOINT`.
+    /// `DuckDB` error from schema or projection.
     Duckdb(duckdb::Error),
-    /// Filesystem error (temp, `chmod`, `fsync`, rename, WAL removal).
-    Io(std::io::Error),
-    /// `.wal` survived clean `CHECKPOINT` or pre-rename cleanup — publish
-    /// **aborted, last-good retained**.
-    WalPresent(PathBuf),
-    /// `publish` needs a disk drawer; use [`build_memory`] for ephemeral.
-    EphemeralDrawer,
 }
 
 impl std::fmt::Display for ViewError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ViewError::Duckdb(e) => write!(f, "duckdb: {e}"),
-            ViewError::Io(e) => write!(f, "io: {e}"),
-            ViewError::WalPresent(p) => {
-                write!(f, "wal sidecar present, publish aborted: {}", p.display())
-            }
-            ViewError::EphemeralDrawer => {
-                write!(
-                    f,
-                    "publish requires a disk drawer; use build_memory for an ephemeral build"
-                )
-            }
         }
     }
 }
@@ -87,12 +50,6 @@ impl std::error::Error for ViewError {}
 impl From<duckdb::Error> for ViewError {
     fn from(e: duckdb::Error) -> Self {
         ViewError::Duckdb(e)
-    }
-}
-
-impl From<std::io::Error> for ViewError {
-    fn from(e: std::io::Error) -> Self {
-        ViewError::Io(e)
     }
 }
 
@@ -154,74 +111,6 @@ pub fn build_memory_rooted(
         docs.len(),
     )?;
     Ok(conn)
-}
-
-/// Publish a persistent view (daemon sole writer, OD6).
-///
-/// Atomic sequence: build `view.<epoch>.<seq>.building` → `CHECKPOINT`+close →
-/// assert no temp `.wal` → `chmod 0444` → `fsync` → remove dest `.wal` + assert
-/// absent → `rename` → `fsync(drawer)`. On WAL/I/O abort, last-good retained.
-///
-/// Publish mutex is the **caller's** (zero flock here). Returns published path.
-///
-/// # Errors
-/// [`ViewError::EphemeralDrawer`] / [`ViewError::Duckdb`] /
-/// [`ViewError::WalPresent`] / [`ViewError::Io`].
-pub fn publish(
-    docs: &BTreeMap<String, Document>,
-    drawer: &CacheDrawer,
-    stamp: &PublishStamp,
-) -> Result<PathBuf, ViewError> {
-    let dir = drawer.dir().ok_or(ViewError::EphemeralDrawer)?;
-    let temp = dir.join(format!("view.{}.{}.building", stamp.epoch, stamp.seq));
-    let dest = dir.join("view.duckdb");
-    let temp_wal = wal_path(&temp);
-    let dest_wal = wal_path(&dest);
-
-    // Stale temp from a crashed prior publish must never be reused.
-    remove_if_present(&temp)?;
-    remove_if_present(&temp_wal)?;
-
-    // 1. Build candidate, CHECKPOINT + close (WAL folds in).
-    {
-        let conn = Connection::open(&temp)?;
-        create_schema(&conn)?;
-        project(&conn, docs, &model::RootedCorpus::ambient(docs), None)?;
-        write_stamp(
-            &conn,
-            &stamp.as_of_fingerprint,
-            &stamp.workspace,
-            Some(&stamp.epoch),
-            Some(stamp.seq),
-            "view::publish",
-            docs.len(),
-        )?;
-        conn.execute_batch("CHECKPOINT")?;
-        conn.close().map_err(|(_, e)| ViewError::Duckdb(e))?;
-    }
-
-    // 2. B1: surviving temp `.wal` aborts (keep last-good).
-    if temp_wal.exists() {
-        let _ = std::fs::remove_file(&temp);
-        return Err(ViewError::WalPresent(temp_wal));
-    }
-
-    // 3. chmod 0444 + fsync candidate (managed readers check mode).
-    chmod_readonly(&temp)?;
-    fsync_path(&temp)?;
-
-    // 4. Remove dest `.wal` (bare rename would strand it for replay), fsync
-    //    drawer, assert absent — abort on failure.
-    remove_if_present(&dest_wal)?;
-    fsync_dir(dir)?;
-    if dest_wal.exists() {
-        return Err(ViewError::WalPresent(dest_wal));
-    }
-
-    // 5. Atomic same-dir rename + fsync drawer.
-    std::fs::rename(&temp, &dest)?;
-    fsync_dir(dir)?;
-    Ok(dest)
 }
 
 /// Project documents into fact tables in FK order. Ordinals are document-order
@@ -736,46 +625,6 @@ fn write_stamp(
         ),
     )?;
     Ok(())
-}
-
-/// `<path>.wal` sidecar path `DuckDB` would write beside `path`.
-fn wal_path(path: &Path) -> PathBuf {
-    let mut s = path.as_os_str().to_os_string();
-    s.push(".wal");
-    PathBuf::from(s)
-}
-
-/// Remove `path` if present; missing is ok.
-fn remove_if_present(path: &Path) -> std::io::Result<()> {
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e),
-    }
-}
-
-/// `chmod 0444` — managed readers verify this mode.
-fn chmod_readonly(path: &Path) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o444))
-    }
-    #[cfg(not(unix))]
-    {
-        let mut perms = std::fs::metadata(path)?.permissions();
-        perms.set_readonly(true);
-        std::fs::set_permissions(path, perms)
-    }
-}
-
-fn fsync_path(path: &Path) -> std::io::Result<()> {
-    std::fs::File::open(path)?.sync_all()
-}
-
-/// `fsync` a directory so create/rename/unlink within it is durable.
-fn fsync_dir(dir: &Path) -> std::io::Result<()> {
-    std::fs::File::open(dir)?.sync_all()
 }
 
 /// Current unix seconds (`0` before epoch; never panics).

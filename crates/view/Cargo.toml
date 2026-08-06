@@ -1,6 +1,6 @@
 [package]
 name = "view"
-description = "The DuckDB view-organ: a write-only leaf that projects the warm parsed corpus into a disposable, fingerprint-stamped DuckDB file (view-never-store; C2 crate-topology leaf; design tournament-duckdb/team-a)"
+description = "DuckDB ephemeral projection + lock-aware read face: projects the parsed corpus into an in-process :memory: DuckDB, writes nothing to disk (view-never-store; C2 crate-topology leaf; published-file organ dropped by ruling, wire-contract §10.4 2026-08-06)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -40,8 +40,6 @@ model = { workspace = true }
 # the `meridian-lock` block format — ONE owner for the lock grammar (`lock::find`
 # parses it; this crate only projects its `pins:` into the read face)
 lock = { workspace = true }
-# drawer path resolution (CacheDrawer::dir) for the persistent publish path
-cache = { workspace = true }
 # the DuckDB sink. `bundled` compiles the vendored amalgamation, so the gate SQL
 # (generated columns, UNION ALL BY NAME, no statement_timeout, READ_ONLY INSERT
 # refusal) is pinned to one DuckDB version, never the host's libduckdb.

@@ -22,7 +22,6 @@
 mod client;
 mod engine;
 mod protocol;
-mod refresh;
 mod registry;
 pub mod ring;
 mod server;
