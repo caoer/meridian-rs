@@ -25,26 +25,22 @@ const PUSH_WAIT: Duration = Duration::from_secs(10);
 /// Reaper and pre-warm parked far ahead — default for gates not about the reaper.
 #[allow(clippy::duration_suboptimal_units)]
 fn test_config(tmp: &TempDir) -> Config {
+    let forever = Duration::from_secs(365 * 24 * 60 * 60);
     let dir = tmp.path().join("registry");
-    Config {
-        socket_path: dir.join("daemon.sock"),
-        state_path: dir.join("state.json"),
-        cache_root: tmp.path().join("cache"),
-        idle_threshold: Duration::from_secs(365 * 24 * 60 * 60),
-        reap_interval: Duration::from_secs(365 * 24 * 60 * 60),
-        prewarm_interval: Duration::from_secs(365 * 24 * 60 * 60),
-        prewarm_quiet_max: Duration::from_secs(365 * 24 * 60 * 60),
-        // Lifetime is the test's; idle-exit would flake mid-assertion.
-        idle_exit: None,
-        push_write_timeout: PUSH_WRITE_TIMEOUT,
-        // Parked far ahead for every gate that is not about the idle-write
-        // horizon; the two that are set it themselves.
-        sub_idle_write_timeout: Duration::from_secs(365 * 24 * 60 * 60),
-        // No build identity configured: this fixture is not testing the hello
-        // identity field, and an absent sha is the honest state for a server
-        // started from a test harness rather than a deployed binary.
-        build_sha: None,
-    }
+    let mut config = Config::for_cache_root(tmp.path().join("cache"));
+    config.socket_path = dir.join("daemon.sock");
+    config.state_path = dir.join("state.json");
+    config.idle_threshold = forever;
+    config.reap_interval = forever;
+    config.prewarm_interval = forever;
+    config.prewarm_quiet_max = forever;
+    // Lifetime is the test's; idle-exit would flake mid-assertion.
+    config.idle_exit = None;
+    config.push_write_timeout = PUSH_WRITE_TIMEOUT;
+    // Parked far ahead for every gate that is not about the idle-write
+    // horizon; the two that are set it themselves.
+    config.sub_idle_write_timeout = forever;
+    config
 }
 
 /// Short enough that a wedged-subscriber gate finishes in seconds; the
