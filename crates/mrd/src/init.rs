@@ -1,25 +1,17 @@
 //! `mrd init` — declare the root (`MERIDIAN.md`, `type: meridian-root`),
-//! register the drawer sentinel, and run M2 reconciliation (decision 0001
-//! round 4, amendment M2; marker-retirement ruling 2026-07-26).
+//! register the drawer sentinel, and run descendant-drawer reconciliation.
 //!
-//! # What init writes, and why it is this file
-//! The retired marker file was existence-defined and untyped, so anything
-//! carrying its name was believed. The artifact that now MEANS "this
-//! directory is a meridian root" is the root's own self-declaration, read by
-//! [`config::mount::read_root_declaration`]: the mount table binds a root by
-//! the `name:` it declares and pins it, and `crates/run` reads `run.caps.*`
-//! and `run.timeout_secs` out of it. So init writes THAT, and validity has one
-//! owner — init writes the bytes, then reads them back through `config` and
-//! reports the name `config` read.
+//! # What init writes
+//! The root's own self-declaration, read by [`config::mount::read_root_declaration`]: the mount
+//! table binds a root by the `name:` it declares and pins it, and `crates/run` reads
+//! `run.caps.*` and `run.timeout_secs` out of it. Validity has one owner — init writes the
+//! bytes, then reads them back through `config` and reports the name `config` read.
 //!
-//! # What init does NOT do
-//! It does not anchor the resolution ladder. The declaration plane is
-//! `config`'s; the ladder answers `MERIDIAN_WORKSPACE` → nearest `.git` → the
-//! cwd default and never reads a declaration (existence-only detection is
-//! exactly what the marker got wrong). A tree declared BELOW a git root
-//! therefore still resolves to the git root — so init reports the ladder's
-//! answer for the target, tier and root, and names the fix when the two
-//! differ. The ruling's "never silently" applies to this surface too.
+//! # What init does not do
+//! It does not anchor the resolution ladder. The ladder answers `MERIDIAN_WORKSPACE` → nearest
+//! `.git` → the cwd default and never reads a declaration, so a tree declared below a git root
+//! still resolves to the git root. Init therefore reports the ladder's answer for the target,
+//! tier and root, and names the fix when the two differ.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -33,7 +25,6 @@ use crate::{Fail, Format, current_dir};
 /// The declaration body init writes. No timestamp — a committed file must not churn. `type:` /
 /// `version:` / `name:` are the owner's required keys ([`config::mount::DECLARATION_KEYS`]),
 /// spelled through the owner's own constants so this writer cannot drift from the reader.
-///
 fn declaration_body(name: &str) -> String {
     format!(
         "---\ntype: {DECLARATION_TYPE}\nversion: {version}\nname: {name}\n---\n\n# {name}\n\nThis directory is a meridian root. `mrd init` wrote this declaration; the\nmount table binds this root by the `name:` above, and `[run.caps]`-style\nconventions are declared here as `run.caps.<pattern>:` frontmatter keys.\n",
@@ -100,7 +91,7 @@ pub(crate) fn dispatch(tail: &[String]) -> Result<(), Fail> {
     run(path.as_deref(), name.as_deref(), format)
 }
 
-/// Run `mrd init`: deny-check, declaration, drawer sentinel, M2 reconcile.
+/// Run `mrd init`: deny-check, declaration, drawer sentinel, reconcile.
 pub(crate) fn run(
     target_arg: Option<&str>,
     name_arg: Option<&str>,
@@ -109,9 +100,8 @@ pub(crate) fn run(
     let cwd = current_dir()?;
     let target = resolve_target(&cwd, target_arg)?;
 
-    // Deny ceiling BEFORE any write — refuse $HOME, /, mount points, the cache
-    // root, etc. with a typed reason (exit 2). This is also what makes the
-    // machine config unclobberable: `~/MERIDIAN.md` (`type: meridian-config`)
+    // Deny ceiling before any write — refuse $HOME, /, mount points, the cache root, etc. with a
+    // typed reason (exit 2). This also keeps the machine config unclobberable: `~/MERIDIAN.md`
     // shares the reserved filename, and init can never reach $HOME to write it.
     if let Some(reason) = workspace::deny_reason(&target) {
         return Err(Fail::tool(format!(
@@ -133,15 +123,14 @@ pub(crate) fn run(
     })?;
     let persisted = !drawer.is_ephemeral();
 
-    // M2 reconciliation + opportunistic auto-GC, only with a real cache root.
+    // Reconciliation + opportunistic auto-GC, only with a real cache root.
     let mut retired: Vec<String> = Vec::new();
     if let Ok(cache_root) = cache::cache_root() {
         retired = reconcile_descendants(&cache_root, &target)?;
         gc::maybe_auto_gc(&cache_root);
     }
 
-    // What the LADDER says about this directory — the declaration does not
-    // anchor it, so this is the sentence that keeps init honest.
+    // What the ladder says about this directory — the declaration does not anchor it.
     let answer = workspace::resolve(&target)
         .map_err(|e| Fail::tool(format!("cannot resolve {}: {e}", target.display())))?;
 
@@ -162,10 +151,9 @@ pub(crate) fn run(
 
 /// Bring the root's self-declaration into being, or refuse.
 ///
-/// Absent → write it, then read it back through the OWNER and report the name
+/// Absent → write it, then read it back through the owner and report the name
 /// `config` read. Already valid → leave it byte-for-byte. Present but not
-/// readable as a declaration → refuse; init never overwrites another writer's
-/// file (the same law `mrd skill hook`'s document states for a foreign hook).
+/// readable as a declaration → refuse; init never overwrites another writer's file.
 fn declare(
     target: &Path,
     declaration_path: &Path,
@@ -192,9 +180,8 @@ fn declare(
                     declaration_path.display()
                 ))
             })?;
-            // Validity has ONE owner: ask it. A refusal here means the derived name is not a canonical
+            // Validity has one owner: ask it. A refusal means the derived name is not a canonical
             // root name, so the file init just created is removed rather than left behind broken.
-            //
             match config::mount::read_root_declaration(target) {
                 Ok(written) => Ok(Declared::Written(written.name)),
                 Err(fault) => {
@@ -213,21 +200,11 @@ fn declare(
     }
 }
 
-/// Retire every drawer whose workspace is a strict DESCENDANT of `target` and which the ladder
+/// Retire every drawer whose workspace is a strict descendant of `target` and which the ladder
 /// no longer anchors on its own: with `target` registered, a daemon adopts such a tree from its
 /// registered ancestor, so its own drawer is a leftover. Each retired sentinel records
-/// `superseded_by = target` (amendment M2) so `cache clean` can reap it and a probe reads it as
-/// retired. `target`'s own drawer is skipped.
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// `superseded_by = target` so `cache clean` can reap it and a probe reads it as retired.
+/// `target`'s own drawer is skipped.
 fn reconcile_descendants(cache_root: &Path, target: &Path) -> Result<Vec<String>, Fail> {
     let drawers = cache::list_drawers(cache_root).map_err(|e| {
         Fail::tool(format!(
@@ -290,8 +267,8 @@ struct Report<'a> {
 
 fn report(format: Format, r: &Report<'_>) {
     let drawer_dir = r.drawer.dir().map(|d| d.display().to_string());
-    // The ladder's own provenance sentence (tier AND root) — `Answer`'s
-    // `Display`, never reassembled here.
+    // The ladder's own provenance sentence (tier and root) — `Answer`'s `Display`, never
+    // reassembled here.
     let resolves = r.answer.to_string();
     // The declared root is the resolved one only when the ladder names it.
     let elsewhere = r.answer.root() != Some(r.target);

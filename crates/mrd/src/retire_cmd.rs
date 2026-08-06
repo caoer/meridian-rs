@@ -1,4 +1,4 @@
-//! `mrd retire` — the type-2 retirement DSL (U23, docket row I1).
+//! `mrd retire` — the type-2 retirement DSL.
 //!
 //! ```text
 //! mrd retire report [--id ID] [--json]
@@ -6,50 +6,31 @@
 //! ```
 //!
 //! # What this verb is
-//! Correct-design §13.4 splits retirement in two. Type 1 is a mechanical swap
-//! and needs no tool. **Type 2 is this one:** grep-and-change WITH a marker, so
-//! the engine can later run over the markers, gather information, and report
-//! the declared migration routes. The marker is ZT's own prescription — markdown
-//! `~~` plus a replacer, pointing at a section that holds the replaced content —
-//! and it is sed-style, visible, non-destructive, one idempotent logic unit.
+//! Type-2 retirement is grep-and-change with a marker, so the engine can later run
+//! over the markers, gather information, and report the declared migration routes.
+//! The marker is markdown `~~` plus a replacer, pointing at a section that holds
+//! the replaced content — visible, non-destructive, one idempotent logic unit.
 //!
-//! # The one indirection, and why it is the ruled shape (gate 3a, Q1)
-//! ZT ruled the retirement DSL's **link syntax is array hpath**. That link — the
-//! pointer to the holding section — lives ONCE, in the `meridian-retire` block,
-//! as a [`wire::HpathSeg`] array in object form. The call site carries a **KEY**,
-//! not an address, and keys have never been addresses (the same law
-//! [`wire::ReadSel`]'s dewey and anchor arms rest on). An inline array at every
-//! call site would put a machine address form into prose, breaking §13.4's "text
-//! still reads correctly" and R1.6's arrays-for-machines/TOON-for-humans split in
-//! one stroke. Both rulings are satisfied at once; this is not an indirection
-//! dodge.
+//! # The one indirection
+//! The link syntax is array hpath. The pointer to the holding section lives once,
+//! in the `meridian-retire` block, as a [`wire::HpathSeg`] array; the call site
+//! carries a key, not an address.
 //!
 //! # The declaration block is human-authored, so it stays visible
-//! `meridian-retire` registers NO [`lock::EngineEmitted`] writer, so
-//! [`lock::is_engine_emitted`] is false for it and the render face shows it —
-//! the law at `crates/render/src/lib.rs` (`meridian-lock` is machine-written and
-//! elided; `meridian-mount` is content the user authored, so it renders).
-//! **Nothing is ever written back into the block.** That is not politeness: a
-//! tool that stored its counts there would have to register a writer, which
-//! would make the block disappear from the render face — and it would grow the
-//! engine a memory, which R1.8 forbids ("Engine does not have memory. It should
-//! not have.").
+//! `meridian-retire` registers no [`lock::EngineEmitted`] writer, so the render
+//! face shows it. Nothing is ever written back into the block.
 //!
 //! # Idempotence is structural, never remembered
-//! The mark operation's IMAGE lies inside a marker span the recognizer EXCLUDES,
-//! so `f(f(x)) = f(x)` holds by construction rather than by bookkeeping. Every
-//! count is re-derived from the documents on every run. A second run makes zero
-//! splice calls, leaves the workspace merkle root byte-identical, and still
-//! prints its count.
+//! The mark operation's image lies inside a marker span the recognizer excludes,
+//! so `f(f(x)) = f(x)` holds by construction. Every count is re-derived from the
+//! documents on every run; a second run makes zero splice calls and leaves the
+//! workspace merkle root byte-identical.
 //!
 //! # What this verb refuses to do
-//! It carries exactly ONE detector — the positive control — and refuses to close
-//! a retirement without DECLARED evidence for the rest. **It never inspects a
-//! test.** Vacuity and a neighbouring-refusal fixture are semantic properties of
-//! an assertion; a text scanner is strictly weaker than the assertion that
-//! already failed to distinguish them, so a tool reporting on them would be
-//! lying at scale, and a lie at scale is believed. Every number this verb prints
-//! is labelled `measured` or `declared`, and the two are never mixed.
+//! It carries exactly one detector — the positive control — and refuses to close
+//! a retirement without declared evidence for the rest. It never inspects a test.
+//! Every number this verb prints is labelled `measured` or `declared`, never
+//! mixed.
 //!
 //! Exits: **0** every declaration clean / **1** a finding (a refusal below, or a
 //! retirement still `open`) / **2** bad invocation.
@@ -64,22 +45,18 @@ use wire_serve::write::{SpliceArgs, splice};
 use crate::{Fail, Format};
 
 /// The declaration block's fence language. Reserved in the `meridian-*` namespace
-/// ([`lock::is_meridian_lang`]) and deliberately NOT registered as engine-emitted — see the
-/// module doc.
+/// ([`lock::is_meridian_lang`]) and deliberately not registered as engine-emitted.
 pub(crate) const RETIRE_LANG: &str = "meridian-retire";
 
 /// The no-partial clause every sweep refusal carries — the write-side twin of
-/// `config::NO_PARTIAL_LOAD_CLAUSE` and `wire_serve::NO_PARTIAL_WRITE_CLAUSE`. Ratified
-/// fail-loud is only visible if the refusal SAYS nothing landed.
+/// `config::NO_PARTIAL_LOAD_CLAUSE` and `wire_serve::NO_PARTIAL_WRITE_CLAUSE`.
 pub(crate) const NO_MARK_CLAUSE: &str = "No file was marked; the sweep is refused whole.";
 
 /// The marker's machine half, opening literal. The id follows, then `)`.
 const KEY_OPEN: &str = "(retired: ";
 
 /// Why a retirement refused. The closed reason set — a reason word is a `&'static str` from
-/// [`Reason::word`], never free text, which is what keeps a refusal's spelling from drifting
-/// and makes it testable (the `config::Reason` pattern).
-///
+/// [`Reason::word`], never free text, so a refusal's spelling cannot drift.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reason {
     /// A `meridian-retire` block the parser cannot read.
@@ -97,28 +74,15 @@ pub enum Reason {
     MarkerOrphaned,
     /// A `(retired: id)` token with no `~~…~~` before it on its line.
     MarkerMalformed,
-    /// R6 — the term matched nothing and no marker carries its id. The name is exactly what the
-    /// condition detects: `never matched`, NOT `misspelled`. Three worlds produce this pair — a
-    /// wrong pattern, a term already removed by hand, and a retirement declared before its term
-    /// exists — and this condition tells none of them apart. Naming it for one of the three would
-    /// be an artifact that cannot distinguish the case it names from a neighbouring case (all-hands
-    /// 2), one layer up in the vocabulary.
-    ///
+    /// R6 — the term matched nothing and no marker carries its id. A wrong pattern, a
+    /// term already removed by hand, and a retirement declared early are indistinguishable
+    /// here, so the name states only what is detected.
     TermNeverMatched,
 }
 
 impl Reason {
-    /// Every reason word this surface can emit, in declaration order. **This is what the coverage
-    /// census reads.** A census that compared a fixture table against a hand-written literal would
-    /// be comparing two copies of one list to each other — it would agree today and fail nothing
-    /// when a ninth variant arrived, because the
-    ///
-    ///
-    ///
-    ///
-    ///
-    ///
-    ///
+    /// Every reason word this surface can emit, in declaration order — what the
+    /// coverage census reads.
     pub const ALL: [Reason; 8] = [
         Reason::BlockMalformed,
         Reason::ControlSilent,
@@ -146,25 +110,11 @@ impl Reason {
     }
 }
 
-/// The tripwire that keeps [`Reason::ALL`] from falling behind the variants.
-///
-/// # What it actually guarantees, stated exactly
-/// A new variant fails to compile HERE (this match is exhaustive) and in
-/// [`Reason::word`] (so does that one). Neither failure can be discharged by
-/// editing a test fixture — the compiler demands both, at the definition site,
-/// before anything runs.
-///
-/// It does NOT prove `ALL` and the variant set are equal by construction; Rust
-/// has no way to say that without a derive macro this crate does not carry. It
-/// proves the weaker, sufficient thing: **you cannot add a variant without being
-/// sent to this function**, and this function's whole purpose is to say "add it
-/// to `ALL`". The accompanying test closes the loop by checking the mapping is a
-/// bijection onto `ALL`'s indices, so an entry that is missing, duplicated, or
-/// out of order is a red test rather than a silent gap.
+/// The tripwire that keeps [`Reason::ALL`] from falling behind the variants: a new
+/// variant fails to compile here and in [`Reason::word`], and the accompanying test
+/// checks the mapping is a bijection onto `ALL`'s indices.
 #[cfg(test)]
 const fn index_in_all(r: Reason) -> usize {
-    // Adding a variant breaks this match. The fix is to add it to `Reason::ALL`
-    // and give it its index here — in that order.
     match r {
         Reason::BlockMalformed => 0,
         Reason::ControlSilent => 1,
@@ -177,15 +127,8 @@ const fn index_in_all(r: Reason) -> usize {
     }
 }
 
-/// One refusal, assembled to the house four-property contract: subject · cause · partial state
-/// · a runnable fix. The partial-state clause is a FIELD rather than a constant spliced by
-/// every site, because the two faces genuinely differ: a refused
-///
-///
-///
-///
-///
-///
+/// One refusal, assembled to the house four-property contract: subject · cause ·
+/// partial state · a runnable fix.
 #[derive(Debug, Clone)]
 pub(crate) struct Refusal {
     pub(crate) reason: Reason,
@@ -226,8 +169,7 @@ pub(crate) struct Decl {
     pub(crate) line: usize,
 }
 
-/// The canonical field order, enforced so one fact has one spelling and a
-/// reader of two declarations compares like with like.
+/// The canonical field order, enforced so one fact has one spelling.
 const FIELDS: [&str; 8] = [
     "version", "id", "term", "replacer", "control", "holding", "route", "proof",
 ];
@@ -238,12 +180,8 @@ fn malformed(path: &str, line: usize, cause: String, mut fix: String) -> Refusal
         subject: format!("the {RETIRE_LANG} block at {path} line {line}"),
         cause,
         partial: format!("No declaration was loaded. {NO_MARK_CLAUSE}"),
-        // Every parse refusal ends at a RUNNABLE COMMAND, appended here rather
-        // than repeated at fifteen call sites. A block is fixed by editing it,
-        // so the edit is the instruction — but an instruction with no way to
-        // check it leaves the operator guessing whether the edit worked, and
-        // "run this to confirm" is what makes the fix clause discharge the
-        // house contract instead of merely describing the problem's inverse.
+        // Every parse refusal ends at a runnable command, appended here rather
+        // than repeated at every call site.
         fix: {
             fix.push_str(" Then run `mrd retire report --json` to confirm the block parses.");
             fix
@@ -263,11 +201,9 @@ struct Harvest {
 
 /// Read one block body (line number, text) into a [`Harvest`].
 ///
-/// Hand-rolled over an ordered field cursor, the `config::mount` precedent — the
-/// block is a fixed-shape declaration, not free YAML, and a general parser would
-/// accept spellings this grammar has no meaning for. Split from
-/// [`parse_decl`] so the LINE grammar and the COMPLETENESS law are two
-/// readable halves rather than one function nobody re-reads.
+/// Hand-rolled over an ordered field cursor: the block is a fixed-shape declaration,
+/// not free YAML, and a general parser would accept spellings this grammar has no
+/// meaning for. The line grammar lives here; the completeness law in [`parse_decl`].
 #[allow(clippy::too_many_lines)]
 fn harvest(path: &str, body: &[(usize, String)]) -> Result<Harvest, Refusal> {
     let mut seen: BTreeMap<&'static str, String> = BTreeMap::new();
@@ -426,7 +362,6 @@ fn harvest(path: &str, body: &[(usize, String)]) -> Result<Harvest, Refusal> {
 
 /// Turn a [`Harvest`] into a [`Decl`], enforcing the completeness law: every field a retirement
 /// cannot act without is present, and the holding link is a non-empty array.
-///
 fn parse_decl(path: &str, fence_line: usize, body: &[(usize, String)]) -> Result<Decl, Refusal> {
     let Harvest {
         seen,
@@ -513,9 +448,8 @@ fn split_kv(line: &str) -> Option<(String, String)> {
 // Locating blocks and spans in a document
 // ---------------------------------------------------------------------------
 
-/// One fenced block located through the MODEL TREE, never by scanning lines —
-/// which is what makes a ` ```yaml ` block with retire-shaped keys, a nested
-/// four-backtick fence, and an indented snippet inert without a special case.
+/// One fenced block located through the model tree, never by scanning lines, so a
+/// nested fence or an indented snippet needs no special case.
 struct Fence {
     lang: String,
     span: model::ByteSpan,
@@ -549,7 +483,7 @@ fn fences(raw: &str, root: &model::Node) -> Vec<Fence> {
                 lines.pop();
             }
             Fence {
-                // The FIRST whitespace token decides the language, matching
+                // The first whitespace token decides the language, matching
                 // every other reader in the repo.
                 lang: lang.split_whitespace().next().unwrap_or("").to_owned(),
                 span,
@@ -588,13 +522,8 @@ struct BadMarker {
 }
 
 /// Find every marker in `raw`. Hand-scanned rather than regex-matched: `mrd` carries no regex
-/// dependency, the grammar is fixed, and a hand scan is what lets the malformed case be
-/// REPORTED rather than silently unmatched.
-///
-///
-///
-///
-///
+/// dependency, and a hand scan lets the malformed case be reported rather than silently
+/// unmatched.
 fn markers(raw: &str) -> (Vec<Marker>, Vec<BadMarker>) {
     let bytes = raw.as_bytes();
     let mut found = Vec::new();
@@ -612,7 +541,7 @@ fn markers(raw: &str) -> (Vec<Marker>, Vec<BadMarker>) {
         if id.is_empty() || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
             continue;
         }
-        // Walk back to the start of this line, then find the LAST `~~` pair
+        // Walk back to the start of this line, then find the last `~~` pair
         // that closes before the key.
         let line_start = raw[..open].rfind('\n').map_or(0, |n| n + 1);
         let head = &raw[line_start..open];
@@ -712,12 +641,8 @@ struct Hit {
 }
 
 /// Is `at` inside an inline code span on its own line? Returns the enclosing backtick-delimited
-/// range when so. This exists because `~~` inside a code span is LITERAL TEXT: a marker written
-/// as `` `~~term~~` `` renders the four tilde characters and strikes nothing, while the raw
-/// bytes look perfectly correct. The instrument for that defect is the RENDERED text, never the
-/// bytes.
-///
-///
+/// range when so. `~~` inside a code span is literal text: a marker written as `` `~~term~~` ``
+/// renders the four tilde characters and strikes nothing.
 fn code_span(raw: &str, at: &model::ByteSpan) -> Option<model::ByteSpan> {
     let line_start = raw[..at.start].rfind('\n').map_or(0, |n| n + 1);
     let line_end = raw[at.end..].find('\n').map_or(raw.len(), |n| at.end + n);
@@ -771,20 +696,8 @@ fn scan_doc(
         }
     }
 
-    // Every `meridian-retire` block's own bytes are outside BOTH scans. This is not tidiness — it
-    // is the difference between a control and a decoration, and it was found by a fixture, not by
-    // reasoning. A block states `control: hpath` and `term: hpath_text` as literal text, so a scan
-    // that reads the whole file finds each pattern INSIDE THE DECLARATION THAT NAMES IT.
-    //
-    //
-    //
-    //
-    //
-    //
-    //
-    //
-    //
-    //
+    // Every `meridian-retire` block's own bytes are outside both scans: a block states
+    // `control:` and `term:` as literal text, which a whole-file scan would match.
     let declared: Vec<model::ByteSpan> = blocks
         .iter()
         .filter(|f| f.lang == RETIRE_LANG)
@@ -792,9 +705,8 @@ fn scan_doc(
         .collect();
     let outside = |span: &model::ByteSpan| !declared.iter().any(|d| overlaps(d, span));
 
-    // The positive control, measured in the SAME pass, at the same commit, over the same file set
-    // as the term. Counting it anywhere else would let the two numbers describe different worlds.
-    //
+    // The positive control, measured in the same pass over the same file set as the
+    // term — anywhere else the two numbers describe different worlds.
     let mut ctl = 0usize;
     let mut ctl_at = 0usize;
     while let Some(rel) = raw[ctl_at..].find(&decl.control) {
@@ -808,8 +720,7 @@ fn scan_doc(
     counts.control += ctl;
 
     // The retirement's own holding section is excluded from its own sweep: it must name the
-    // retired term to explain it, and marking it there would strike out the explanation. Stated in
-    // the report, never silent.
+    // retired term to explain it, and marking it there would strike out the explanation.
     let holding_span = if path == decl.holding {
         section_span(&doc.root, &decl.hpath)
     } else {
@@ -872,9 +783,8 @@ fn scan_doc(
         return Ok((counts, None, refusals));
     }
 
-    // ONE edit per file, targeting the innermost section that contains EVERY hit. One target
-    // cannot overlap itself, so the §4.4 disjointness law is satisfied by construction rather than
-    // by sorting nested sections.
+    // One edit per file, targeting the innermost section that contains every hit: one target
+    // cannot overlap itself, so the disjointness law holds by construction.
     let region = hits[0].span.start..hits[hits.len() - 1].span.end;
     let Some(hpath) = innermost_section(&doc.root, &region) else {
         counts.unaddressable += hits.len();
@@ -887,7 +797,7 @@ fn scan_doc(
     for hit in &hits {
         new.push_str(&raw[cursor..hit.span.start]);
         let original = &raw[hit.span.clone()];
-        // The `~~` wraps the term's FULL inline span, backticks included — see
+        // The `~~` wraps the term's full inline span, backticks included — see
         // `code_span`.
         if hit.coded {
             let _ = write!(
@@ -929,9 +839,6 @@ fn overlaps(a: &model::ByteSpan, b: &model::ByteSpan) -> bool {
 
 /// Dispatch `mrd retire <report|mark> …`. Errors [`Fail`] exit 2 on a bad invocation; exit 1 on
 /// any refusal above or on a retirement that is still `open`.
-///
-///
-///
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     match args.first().map(String::as_str) {
         Some("report") => run(&args[1..], false),
@@ -988,10 +895,8 @@ impl Parsed {
 #[allow(clippy::too_many_lines)]
 fn run(args: &[String], writing: bool) -> Result<(), Fail> {
     let parsed = Parsed::parse(args, writing)?;
-    // Q4 (b), RULED and REQUIRED: the sweep carries a file-set-grain CAS. It is law 4.6's
-    // caller-chosen grain APPLIED — `splice`'s existing §5.1 world guard — not a new concept, and
-    // it does not touch the wire-door ruling: the verb stays `Origin::InProcess` and a CLI flag is
-    // not contract surface.
+    // The sweep carries a file-set-grain CAS — `splice`'s existing world guard;
+    // the verb stays `Origin::InProcess`.
     if writing && !parsed.dry_run && parsed.expect_root.is_none() {
         return Err(Fail::tool(format!(
             "`mrd retire mark` writes without a world guard unless one is stated — a vault moves under a sweep whenever the fleet is not quiesced, and a half-swept vault is what the pre-sweep commit exists to undo. {NO_MARK_CLAUSE} Fix: run `mrd retire report --json` for the current `fingerprint`, quiesce the fleet, commit the vault, then re-run with `--expect-root <fingerprint>`; or use `--dry-run`."
@@ -1012,11 +917,8 @@ fn run(args: &[String], writing: bool) -> Result<(), Fail> {
         ))
     })?;
     let root = fs::WorkspaceRoot(canonical);
-    // `wire_serve::domain_snapshot`, not `fs::`, for one reason: it folds the root into the WIRE's
-    // `Root` — the same token `splice`'s §5.1 world guard compares `--expect-root` against. Taking
-    // the model's `MerkleRoot` here and converting would put a second spelling of one token
-    // between the number an operator reads and the number the guard checks.
-    //
+    // `wire_serve::domain_snapshot`, not `fs::`: it folds the root into the wire's
+    // `Root` — the same token `splice`'s world guard compares `--expect-root` against.
     let (files, fingerprint) = wire_serve::domain_snapshot(&root).map_err(|e| {
         Fail::tool(format!(
             "cannot read the corpus: {}",
@@ -1116,20 +1018,8 @@ fn run(args: &[String], writing: bool) -> Result<(), Fail> {
             });
         }
 
-        // R6 — the arm the control cannot see (all-hands 3). The control proves the scanner REACHED
-        // THE FILES; it proves nothing about the term, because a wrong `term` and an absent one
-        // produce a byte-identical row (term 0, control 156).
-        //
-        //
-        //
-        //
-        //
-        //
-        //
-        //
-        //
-        //
-        //
+        // R6 — the arm the control cannot see: a wrong `term` and an absent one
+        // produce a byte-identical row.
         let would_mark: usize = plans.iter().map(|p| p.hits).sum();
         if would_mark == 0 && counts.already == 0 {
             refusals.push(Refusal {
@@ -1181,10 +1071,10 @@ fn run(args: &[String], writing: bool) -> Result<(), Fail> {
                     actor: None,
                     now: None,
                     receipt: None,
-                    // The guard CHAINS across the sweep: each splice guards on the root the previous one produced,
-                    // so anything else writing mid-sweep refuses `root_mismatch` at the next file instead of
-                    // landing a half-swept vault.
-                    //
+                    // The guard chains across the sweep: each splice guards on the
+                    // root the previous one produced, so anything else writing
+                    // mid-sweep refuses `root_mismatch` rather than landing a
+                    // half-swept vault.
                     if_root: expected.clone(),
                     dry: parsed.dry_run,
                     force: false,
@@ -1192,12 +1082,8 @@ fn run(args: &[String], writing: bool) -> Result<(), Fail> {
                     plan_edits: Vec::new(),
                     pin: None,
                 };
-                // U20b retyped `seq` from a bare `u64` to `Option<&dyn SeqSink>` and migrated every caller it
-                // could see to `None` — `mrd` is a CLI client and mints no notification sequence. U23 added
-                // this call site on a branch U20b never saw, so `0` was correct for its tree and is
-                // unspellable in this one. Same reading as `pin_cmd`, `put_cmd` and `corpus_tier`.
-                //
-                //
+                // `mrd` is a CLI client and mints no notification sequence, so no
+                // `SeqSink` is passed.
                 let outcome = splice(&root, None, &args, &[], None)
                     .map_err(|e| crate::engine::refusal_fail(&e))?;
                 if let wire::ResponseBody::Splice { root_after, .. } = &outcome.body {
@@ -1256,8 +1142,7 @@ fn run(args: &[String], writing: bool) -> Result<(), Fail> {
 }
 
 fn display_hpath(hpath: &[HpathSeg]) -> String {
-    // Display only, for a refusal to name back — nothing parses this string,
-    // exactly as `ReadSel::display` is the display-only door.
+    // Display only, for a refusal to name back — nothing parses this string.
     hpath
         .iter()
         .map(|s| match s.n {
@@ -1282,9 +1167,7 @@ fn to_json(
             "id": d.id,
             "route": d.route,
             "holding": { "path": d.holding, "hpath": d.hpath },
-            // The two evidence classes are separate KEYS, never one merged table: a reader must never have
-            // to guess which numbers this tool measured and which it was told.
-            //
+            // The two evidence classes are separate keys, never one merged table.
             "measured": {
                 "marked": c.marked, "already": c.already, "foreign": c.foreign,
                 "remaining": c.remaining, "control": c.control,
@@ -1294,14 +1177,8 @@ fn to_json(
             "declared": { "proofs": d.proofs, "verified_by_this_tool": false },
             "state": if d.proofs.is_empty() { "open" } else { "closed" },
         })).collect::<Vec<_>>(),
-        // The four properties ride as their OWN KEYS, not only spliced into `message`. A contract
-        // asserted by substring-matching one sentence cannot tell a refusal that STATES its cause from
-        // one whose subject merely happens to contain the words — the assertion
-        //
-        //
-        //
-        //
-        //
+        // The four properties ride as their own keys, so a consumer never
+        // substring-matches `message`.
         "refusals": refusals.iter().map(|r| json!({
             "reason": r.reason.word(),
             "subject": r.subject,
@@ -1391,7 +1268,7 @@ mod tests {
 
     #[test]
     fn a_key_with_no_visible_half_is_malformed_not_a_marker() {
-        // The span must NOT be treated as a marker: excluding a span that does
+        // The span must not be treated as a marker: excluding a span that does
         // not exist is how an occurrence gets marked twice.
         let raw = "# H\n\nthe old (retired: x) field\n";
         let (marks, bad) = markers(raw);
@@ -1434,13 +1311,7 @@ mod tests {
     }
 
     /// `Reason::ALL` is a bijection onto the variants: every entry sits at the index
-    /// [`index_in_all`] assigns it, and there are exactly as many entries as indices. An entry
-    /// missing, duplicated, or out of order is red here.
-    ///
-    ///
-    ///
-    ///
-    ///
+    /// [`index_in_all`] assigns it, and there are exactly as many entries as indices.
     #[test]
     fn all_is_a_bijection_onto_the_reason_variants() {
         for (i, reason) in Reason::ALL.iter().enumerate() {

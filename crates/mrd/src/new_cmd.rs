@@ -2,13 +2,7 @@
 //! cascade, fill the defs `^template`, validate the filled record against the defs
 //! `^properties`, and birth the first rev through the U2.6 guarded create (inline birth
 //! receipt). A local CLIENT of `preset::new_record` — mrd holds no markdown semantics
-//! (docs/laws.
-//!
-//!
-//!
-//!
-//!
-//!
+//! (docs/laws.md).
 
 use preset::{BirthOptions, NewOutcome};
 use serde_json::json;
@@ -20,12 +14,11 @@ fn refused(message: String) -> Fail {
     Fail::findings(message)
 }
 
-/// Run `mrd new <kind> <id> [--dry] [--actor A] [--now T] [--json]`. Errors A tool failure
-/// (exit 2) — bad usage, an unreadable workspace, a def that is not a def, or a faulting write
-/// — or a birth refusal (exit 1) rendered from the closed-taxonomy reason.
+/// Run `mrd new <kind> <id> [--dry] [--actor A] [--now T] [--json]`.
 ///
-///
-///
+/// # Errors
+/// A tool failure (exit 2) — bad usage, an unreadable workspace, a def that is not a def, or a
+/// faulting write — or a birth refusal (exit 1) rendered from the closed-taxonomy reason.
 pub(crate) fn run(args: &[String]) -> Result<(), Fail> {
     let parsed = Parsed::parse(args)?;
     let root = crate::preset_cmd::resolve_root()?;

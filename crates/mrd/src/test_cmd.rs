@@ -1,24 +1,8 @@
 //! `mrd test` — the verb's dispatcher, plus the literate-fixture readers its two
 //! surviving tiers share.
 //!
-//! # The scenario tier retired (ruling D3)
-//! `mrd test <DIR>` used to run a third tier: literate scenario pages that mounted
-//! a sibling `base/` into a tmpdir, routed a `^put` through the production write
-//! path, and asserted a `^expect` starlark block over `t.result` / `t.doc(path)` /
-//! `t.journal`. Its fixture space was folder-shaped BY CONSTRUCTION — a scenario
-//! was addressed as `conventions/<slug>/scenarios/<name>.md`, and the convention
-//! it exercised was the sibling `CHECK.md`/`HOOK.md`. The registration cutover
-//! made a rule a PAGE with no folder around it, so there is no sibling to hydrate
-//! and no slug to address; the tier had nothing left to stand on and RETIRES
-//! rather than re-keys. Its coverage went to the corpus tier
-//! ([`crate::corpus_tier`]) and to the write-path suites that already own the
-//! confinement, CAS and journaling laws.
-//!
-//! What remains here is the dispatcher and three readers the two surviving tiers
-//! genuinely share: [`confine`] (the mount law), [`parse_frontmatter`] and
-//! [`scan_blocks`] (the literate-fixture grammar). They live here rather than in
-//! `corpus_tier` because `--history` reads them too, and one grammar with two
-//! readers is how two tiers come to disagree about what a fixture says.
+//! [`confine`], [`parse_frontmatter`] and [`scan_blocks`] live here, not in
+//! `corpus_tier`, because `--history` reads them too — one grammar, one reader.
 //!
 //! # The two tiers
 //! - `--corpus SPEC` — [`crate::corpus_tier`], the pre-arming runner over
@@ -37,8 +21,6 @@ use crate::{Fail, Format};
 /// [`Fail`] — exit 2 (bad usage, unreadable input, a malformed spec) or exit 1
 /// (the tier reported findings).
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
-    // The history tier is a distinct mode: `--history` reconstructs journal rows
-    // against git and runs a rule's `check_change` over each.
     if args.iter().any(|a| a == "--history") {
         return crate::history_cmd::dispatch(args);
     }
@@ -59,14 +41,11 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     }
     let format = if json { Format::Json } else { Format::Human };
 
-    // Tier 2 — the corpus runner: the positional is a corpus-test SPEC file.
     if corpus {
         let spec = path.ok_or_else(|| Fail::tool("test --corpus needs a SPEC file".to_owned()))?;
         return crate::corpus_tier::run(&spec, format);
     }
 
-    // A bare positional named a scenario file or directory. That tier is gone, and
-    // saying so beats a "no *.md scenarios here" that reads like a missing fixture.
     Err(Fail::tool(
         "mrd test needs a tier: `--corpus SPEC` or `--history WORKSPACE --rule PAGE`. \
          The bare scenario tier (`mrd test <DIR>`) retired with the convention-folder \

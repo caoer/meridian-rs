@@ -1,19 +1,6 @@
-//! The engine-client path (decision 0002 §3, P1): answer an engine read op by dialing the
-//! resident daemon — auto-spawning it on first use (the watchman model) — and degrading to an
-//! in-process ephemeral engine when the daemon is unavailable. The degrade is the universal
-//! catch A run NEVER fails for want of a daemon.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
+//! The engine-client path: answer an engine read op by dialing the resident daemon —
+//! auto-spawning it on first use — and degrading to an in-process ephemeral engine when the
+//! daemon is unavailable. A run never fails for want of a daemon.
 
 use std::fmt::Write as _;
 use std::io::{self, BufRead, BufReader, Write};
@@ -57,25 +44,9 @@ const SUN_PATH_CAPACITY: usize = 104;
 
 /// Voice the degrade on a face a person reads — nothing on the warm path.
 ///
-/// **The gap this closes.** `mrd read --json` has always carried `"source"`, so
-/// a machine reader could see the degrade. The human face printed the rendered
-/// projection and nothing else, so a person got a correct answer from a slower
-/// path with no signal that the path had changed. That silence invalidated
-/// roughly twenty measurements taken on this engine before anyone noticed the
-/// daemon was never in them.
-///
-/// **Why STDERR.** The answer content is stdout's, and it must stay
-/// byte-identical between the warm and degraded paths — this output is piped
-/// and diffed. A note on stdout would corrupt the very artifact the degrade
-/// must not change. So the fact rides the channel a person reads and a pipe
-/// drops, and the ONLY delta on stdout is none at all.
-///
-/// **G13 — one voice, two callers.** `mrd sql` degrades the same way and was
-/// measured at 248× the warm cost while saying nothing (0.24s → 59.63s), so it
-/// calls THIS function rather than growing a second voice that could drift from
-/// it. Its degrade arm may read a cold published `view.duckdb` instead of
-/// building in-process, so line 1 names the daemonless PATH rather than one
-/// arm's mechanism — the fact a reader acts on is the same either way.
+/// Goes to stderr: stdout must stay byte-identical between the warm and degraded paths, since
+/// that output is piped and diffed. `mrd sql` degrades the same way and calls this same
+/// function, so line 1 names the daemonless PATH rather than one arm's mechanism.
 pub(crate) fn voice_degrade(source: &EngineSource) {
     if !matches!(source, EngineSource::Ephemeral) {
         return;
@@ -97,14 +68,6 @@ pub(crate) fn voice_degrade(source: &EngineSource) {
 /// fit in `sun_path`. It is silent, it is not fixed by starting a daemon, and it is reached by
 /// an ordinary long `XDG_CACHE_HOME`. Every other cause (not running, spawn failed, refused
 /// handshake) is already covered by the first line, so this says nothing rather than guessing.
-///
-///
-///
-///
-///
-///
-///
-///
 pub(crate) fn degrade_reason() -> Option<String> {
     let Ok(client) = Client::from_default() else {
         return Some("No cache root resolves, so there is no socket path to dial.".to_owned());
@@ -134,9 +97,6 @@ pub(crate) struct Answer {
 /// (whole-corpus, or one workspace-relative `PATH`) from the resident daemon or the in-process
 /// degrade, and print it in the house grammar. Errors The cwd or workspace cannot be resolved,
 /// or the degrade path hits a genuine corpus error (see [`answer_links`]).
-///
-///
-///
 pub(crate) fn run_command(path_arg: Option<&str>, format: Format) -> Result<(), Fail> {
     let cwd = current_dir()?;
     let resolved = crate::resolve::resolve_runtime(&cwd).map_err(|e| {
@@ -162,13 +122,9 @@ pub(crate) fn run_command(path_arg: Option<&str>, format: Format) -> Result<(), 
             render_links_human(&answer.body);
         }
     }
-    // **Q3(a) — the asymmetry, stated rather than smoothed.** An ambient dangling link stays
-    // first-class and non-refusing at exit 0: it is an ordinary authoring state in a working
-    // vault. A REFUSED edge is a different fact — the author believed a mount relationship that
-    // does not hold, or wrote something outside the address grammar — and the exit code says so.
-    // The refusals are already rendered above; this only carries the finding into the exit triad,
-    // the same way a red walk row does.
-    //
+    // A dangling ambient link stays non-refusing at exit 0 — ordinary authoring state. A REFUSED
+    // edge is a different fact (a mount relationship that does not hold, or an address outside the
+    // grammar), so it carries into the exit triad.
     let refusals = refusal_messages(&answer.body);
     if refusals.is_empty() {
         return Ok(());
@@ -181,8 +137,7 @@ fn count_of(refusal: &Value) -> u64 {
     refusal.get("count").and_then(Value::as_u64).unwrap_or(1)
 }
 
-/// Every refusal the edge map carries, as the teaching text a reader acts on —
-/// empty when the answer refused nothing.
+/// Every refusal message the edge map carries — empty when the answer refused nothing.
 fn refusal_messages(body: &Value) -> Vec<String> {
     body.get("files")
         .and_then(Value::as_object)
@@ -217,9 +172,8 @@ fn render_links_human(body: &Value) {
         for (dest, count) in resolved.into_iter().flatten() {
             println!("    -> {dest} ({count})");
         }
-        // A cross-root destination is printed ROOT-QUALIFIED, and that is not cosmetic: the ambient
-        // corpus may hold its own file at the same path, so an unqualified name would read as the
-        // wrong document.
+        // Cross-root destinations print root-qualified: the ambient corpus may hold its own file
+        // at the same path, so an unqualified name would read as the wrong document.
         for (root, paths) in rooted.into_iter().flatten() {
             for (dest, count) in paths.as_object().into_iter().flatten() {
                 println!("    -> {root}:{dest} ({count})");
@@ -256,12 +210,6 @@ const PING_POLL: Duration = Duration::from_millis(25);
 /// Answer `links` for `workspace` (optional workspace-relative `path`): dial the resident
 /// daemon — auto-spawning it — and on any daemon-path failure degrade to the in-process
 /// ephemeral engine.
-///
-///
-///
-///
-///
-///
 pub(crate) fn answer_links(workspace: &Path, path: Option<&str>) -> Result<Answer, Fail> {
     if let Some(body) = try_daemon_links(workspace, path)
         && !daemon_answer_needs_the_address_plane(&body)
@@ -278,34 +226,10 @@ pub(crate) fn answer_links(workspace: &Path, path: Option<&str>) -> Result<Answe
     })
 }
 
-/// **The U21 degrade gate: does this answer depend on a question the daemon cannot ask?** The
-/// daemon's warm state is ONE workspace corpus and NO mount authority (`query::links_with`), so
-/// it reports every rooted spelling `unresolved` — which for a bound, readable, present target
-/// is a wrong answer, and for an unbound one is a silent non-refusal. The in-process path holds
-/// the mount table and the mounted corpora, so it can answer both correctly. This decides which
-/// of the two the user gets. **It gates on the ANSWER, not on a pre-flight scan of the corpus,
-/// and the coverage is exact rather than heuristic.
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// Does this answer depend on a question the daemon cannot ask? The daemon's warm state is one
+/// workspace corpus with no mount authority, so it reports every rooted spelling `unresolved` —
+/// wrong for a bound target, a silent non-refusal for an unbound one. The in-process path holds
+/// the mount table, so it answers both correctly. Gates on the answer, not a pre-flight scan.
 fn daemon_answer_needs_the_address_plane(body: &Value) -> bool {
     body.get("files")
         .and_then(Value::as_object)
@@ -331,9 +255,6 @@ fn try_daemon_links(workspace: &Path, path: Option<&str>) -> Option<Value> {
 /// auto-spawn it detached and poll until it binds or the timeout elapses. Errors The daemon
 /// could not be spawned (spawn-impossible), or it was spawned but never became ready within
 /// [`SPAWN_READY_TIMEOUT`].
-///
-///
-///
 pub(crate) fn ensure_daemon(client: &Client) -> io::Result<()> {
     if client.ping().unwrap_or(false) {
         return Ok(());
@@ -361,9 +282,8 @@ fn dial_links(socket: &Path, workspace: &Path, path: Option<&str>) -> io::Result
     let mut writer = stream.try_clone()?;
     let mut reader = BufReader::new(stream);
 
-    // `hello` with a `workspace` resolves + pins + warms the resident engine and binds this
-    // connection to it (decision 0002 §4). A failed handshake (deny ceiling, unknown rev) degrades
-    // — the in-process answer is authoritative.
+    // `hello` with a `workspace` resolves, pins and warms the resident engine, binding this
+    // connection to it. A failed handshake degrades — the in-process answer is authoritative.
     let hello = json!({
         "op": "hello",
         "proto": 1,
@@ -392,12 +312,6 @@ fn dial_links(socket: &Path, workspace: &Path, path: Option<&str>) -> io::Result
 
 /// Map an engine refusal to the CLI exit triad (shared by `read`/`put`): `bad_request` is a bad
 /// invocation (exit 2); every other refusal is a finding (exit 1).
-///
-///
-///
-///
-///
-///
 pub(crate) fn refusal_fail(error: &ErrorBody) -> Fail {
     let mut text = match &error.message {
         Some(message) => message.clone(),
@@ -411,14 +325,7 @@ pub(crate) fn refusal_fail(error: &ErrorBody) -> Fail {
     }
 }
 
-/// A message-less refusal, written the way the good refusals in this tree are written: name the
-/// failure, say what did NOT happen, give the fix.
-///
-///
-///
-///
-///
-///
+/// A message-less refusal, spelled out: name the failure, say what did not happen, give the fix.
 fn spelled(error: &ErrorBody) -> String {
     let code = serde_json::to_value(error.code)
         .ok()
@@ -444,24 +351,10 @@ fn spelled(error: &ErrorBody) -> String {
     }
 }
 
-/// The refusal's own extras, rendered for a TERMINAL rather than a wire client. A
-/// `cas_mismatch` refusal tells the caller to apply the `diff` extra and resend with
-/// `new_fingerprint`; on the human face those are wire response fields nobody can see, so the
-/// instruction was unfollowable exactly where it was offered. Printing them under the message
-/// is what makes the ladder's no-re-read shortcut reachable from a shell.
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// The refusal's extras, rendered for a terminal rather than a wire client: a `cas_mismatch`
+/// tells the caller to apply the `diff` extra and resend with `new_fingerprint`, which are wire
+/// fields invisible on the human face. Printing them keeps the no-re-read shortcut reachable
+/// from a shell.
 fn extras(error: &ErrorBody) -> String {
     let mut out = String::new();
     if error.code == wire::ErrorCode::RootMismatch
@@ -492,9 +385,6 @@ fn extras(error: &ErrorBody) -> String {
 /// One NDJSON round trip on an open connection: write the request line, read one response line,
 /// parse it. Errors The write fails, the daemon closes without a response, or the response line
 /// is not valid JSON.
-///
-///
-///
 pub(crate) fn call(
     writer: &mut UnixStream,
     reader: &mut BufReader<UnixStream>,
@@ -515,16 +405,9 @@ pub(crate) fn call(
     serde_json::from_str(&response).map_err(io::Error::other)
 }
 
-/// The degrade: build the corpus in-process with U1's builder and answer through the shared
-/// `links` read arm — the SAME read projection the daemon serves — then re-key it to the v3
-/// vocabulary the CLI negotiated ([`dial_links`] sends `contract:v3`), so the answer is
-///
-///
-///
-///
-///
-///
-///
+/// The degrade: build the corpus in-process and answer through the same shared `links` read arm
+/// the daemon serves, then re-key it to the v3 vocabulary the CLI negotiated ([`dial_links`]
+/// sends `contract:v3`) so warm and degrade answers do not drift.
 fn in_process_links(workspace: &Path, path: Option<&str>) -> Result<Value, Fail> {
     let canonical = workspace::canonicalize(workspace).map_err(|e| {
         Fail::tool(format!(
@@ -543,13 +426,10 @@ fn in_process_links(workspace: &Path, path: Option<&str>) -> Result<Value, Fail>
     // `live_root` samples after the read; for a single in-process snapshot the
     // world does not move, so it equals `as_of` (a legal §10.1 frame).
     let live = as_of.clone();
-    // **The whole reason this path exists after U21.** The mount table comes from the SAME
-    // loader the pin plane uses (S3-R59, one owner — `walk_cmd::load_mounts_for`), so a
-    // cross-root address resolves through the same `resolve_ref` on both planes and cannot
-    // answer two ways. Corpora narrow to the roots this answer's ambient wikilink/embed
-    // targets NAME ([`crate::walk_cmd::link_addressed_roots`]) — the table itself is never
-    // narrowed. Measured: the full-table eager load burned ~27 s CPU on a workspace that
-    // named zero roots, against ~0.17 s for the already-narrowed walk/status siblings.
+    // The mount table comes from the same loader the pin plane uses (`walk_cmd::load_mounts_for`),
+    // so a cross-root address resolves through the same `resolve_ref` on both planes. Corpora
+    // narrow to the roots this answer's link targets name; the table itself is never narrowed.
+    // A full-table eager load cost ~27 s CPU on a workspace naming zero roots.
     let mounts =
         crate::walk_cmd::load_mounts_for(&crate::walk_cmd::link_addressed_roots(&docs, path));
     let corpus = mounts.rooted(&docs);
@@ -566,10 +446,8 @@ fn in_process_links(workspace: &Path, path: Option<&str>) -> Result<Value, Fail>
     .map_err(|e| Fail::tool(render_wire_error(&e)))?;
     let body = serde_json::to_value(&body)
         .map_err(|e| Fail::tool(format!("cannot render the answer: {e}")))?;
-    // The CLI negotiated `contract:v3` on the warm path, so the degrade answer must speak the same
-    // vocabulary — run the SAME lifted projection the daemon runs (`root` → `fingerprint`) so warm
-    // and degrade never drift. The projection re-keys under `body`, so wrap, project, and unwrap.
-    //
+    // Run the same lifted projection the daemon runs (`root` → `fingerprint`). It re-keys under
+    // `body`, so wrap, project, and unwrap.
     let mut frame = json!({ "body": body });
     wire_serve::rev::project_response(&mut frame);
     Ok(frame

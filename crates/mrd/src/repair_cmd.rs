@@ -1,58 +1,47 @@
-//! `mrd repair` — U22/H1: **lost-pin repair by git-history walk.**
+//! `mrd repair` — lost-pin repair by git-history walk.
 //!
 //! ```text
 //! mrd repair [PAGE] [--dry] [--json]
 //! ```
 //!
-//! # What "lost" means, and why it is a PAIR
-//! A `meridian-lock` pin carries two planes, and they fail independently:
+//! # What "lost" means
+//! A `meridian-lock` pin carries two planes that fail independently:
 //!
-//! - the **CLAIM** plane — the `fp1.…` fingerprint, verified against the LIVE
-//!   target by [`model::selector::classify_pin`];
-//! - the **RETRIEVAL** plane — the `hash`, a git blob sha, asked of the object
-//!   store.
+//! - the **claim** plane — the `fp1.…` fingerprint, verified against the live target by
+//!   [`model::selector::classify_pin`];
+//! - the **retrieval** plane — the `hash`, a git blob sha, asked of the object store.
 //!
-//! **A pin is LOST when BOTH are dark:** the live target no longer verifies the
-//! fingerprint AND git does not hold the recorded blob. Nothing in the workspace
-//! can then answer *"what did this pin cover?"* — that is the loss this verb
-//! repairs. A red pin whose blob is still in the store is ordinary drift with its
-//! evidence intact; it is NOT lost and this verb does not touch it.
+//! A pin is lost when both are dark: the live target no longer verifies the fingerprint and git
+//! does not hold the recorded blob. A red pin whose blob is still in the store is ordinary drift
+//! with its evidence intact; it is not lost and this verb does not touch it.
 //!
 //! # The repair
-//! ONE `git log` (`git::Repo::path_history`) over every lost target, then ONE
-//! `git cat-file --batch` (`git::Repo::blobs_with_oids_at`) for every version
-//! those commits recorded — never a spawn per pin or per commit. Each historical
-//! version is rebuilt into a `Document` and put to **the same
-//! [`model::selector::classify_pin`]** the walk, `status` and `check` colour
-//! with; a GREEN answer means that commit's bytes ARE the pinned content.
+//! One `git log` (`git::Repo::path_history`) over every lost target, then one
+//! `git cat-file --batch` (`git::Repo::blobs_with_oids_at`) for every version those commits
+//! recorded — never a spawn per pin or per commit. Each historical version is rebuilt into a
+//! `Document` and put to the same [`model::selector::classify_pin`] the walk, `status` and
+//! `check` colour with; a green answer means that commit's bytes are the pinned content.
 //!
 //! # The forgery invariant
-//! **Repair rewrites the pin's `hash` and NOTHING else.** `object`, `selector`
-//! and `fingerprint` are never touched — rewriting the claim to fit whatever
-//! history happened to hold would be forgery wearing a repair. The verb restores
-//! the retrieval plane and leaves the claim exactly as the ledger recorded it, so
-//! a target that genuinely drifted is STILL RED after a successful repair. That
-//! is the correct outcome, not a partial one.
+//! Repair rewrites the pin's `hash` and nothing else — `object`, `selector` and `fingerprint`
+//! are never touched. The verb restores the retrieval plane and leaves the claim exactly as the
+//! ledger recorded it, so a target that genuinely drifted is still red after a successful repair.
 //!
-//! No version anywhere in that path's history carries the pinned content ⇒ **TRUE
-//! LOSS**: reported, never auto-fixed, exit 1. The engine invents no evidence.
+//! No version anywhere in that path's history carries the pinned content ⇒ a TRUE LOSS:
+//! reported, never auto-fixed, exit 1.
 //!
-//! # `--dry` — the skip-the-final-write meaning (P11/D3)
-//! The fleet spells two `--dry` senses: the put face SHOWS a diff, every other
-//! command runs everything except the disk write. **This verb follows the second
-//! one** — the whole walk runs, every recovery is computed and reported, and the
-//! lock write alone is skipped (it rides `LockWriteArgs::dry`, so even the door's
-//! guards still run). It is not a diff face.
+//! # `--dry`
+//! Everything except the disk write: the whole walk runs, every recovery is computed and
+//! reported, and the lock write alone is skipped (it rides `LockWriteArgs::dry`, so the door's
+//! guards still run). Not a diff face.
 //!
-//! # Scope: the AMBIENT root only
-//! A pin naming another root names another object store and another history, and
-//! this verb holds ONE repository handle. Cross-root pins are skipped and their
-//! population is STATED, exactly as `check`'s pin plane states
-//! `out_of_jurisdiction` — a skipped pin nobody counted is the quiet way coverage
-//! disappears.
+//! # Scope: the ambient root only
+//! A pin naming another root names another object store and another history, and this verb holds
+//! one repository handle. Cross-root pins are skipped and their population is stated, as
+//! `check`'s pin plane states `out_of_jurisdiction`.
 //!
-//! Exit triad: 0 nothing lost, or every lost pin repaired (or rehearsed under
-//! `--dry`) / 1 at least one TRUE LOSS / 2 bad invocation or a tool failure.
+//! Exit triad: 0 nothing lost, or every lost pin repaired (or rehearsed under `--dry`) / 1 at
+//! least one TRUE LOSS / 2 bad invocation or a tool failure.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -67,9 +56,6 @@ use crate::{EXIT_FINDINGS, Fail, Format, current_dir};
 /// Run `mrd repair [PAGE] [--dry] [--json]`. Errors [`Fail`] — exit 2 on a bad invocation or a
 /// tool failure (the workspace cannot be resolved, the corpus cannot be read, git cannot be
 /// asked, the lock door refused); exit 1 when any pin is a TRUE LOSS.
-///
-///
-///
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let parsed = Repair::parse(args)?;
     let cwd = current_dir()?;
@@ -132,24 +118,21 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
 }
 
 // the survey — which pins are even askable
-//
-//
 
-/// One pin as this verb reads it: where it is declared, what it claims, and the
-/// file its blob is the blob OF.
+/// One pin as this verb reads it: where it is declared, what it claims, and the file its blob is
+/// the blob of.
 #[derive(Debug, Clone)]
 struct PinSite {
     /// The page whose `meridian-lock` block declares the row.
     src_path: String,
-    /// The row, verbatim — the ONLY thing repair ever rewrites is its `hash`.
+    /// The row, verbatim — the only thing repair ever rewrites is its `hash`.
     entry: lock::PinEntry,
-    /// The targets workspace-relative path WITH `.md` back on (R4s `object` is the link spelling,
-    /// which drops it — the same re-attachment `check::layer0::ask_store` makes before asking git).
-    ///
+    /// The target's workspace-relative path with `.md` back on: `object` is the link spelling,
+    /// which drops it, and `check::layer0::ask_store` makes the same re-attachment.
     target: String,
 }
 
-/// What the corpus offered, including the populations that were NOT measured.
+/// What the corpus offered, including the populations that were not measured.
 struct Survey {
     candidates: Vec<PinSite>,
     /// Pins whose object names another root — stated, never silently dropped.
@@ -160,8 +143,8 @@ struct Survey {
     pages: usize,
 }
 
-/// Read every `meridian-lock` pin in the corpus (or in ONE page), splitting the
-/// askable from the two populations that are not.
+/// Read every `meridian-lock` pin in the corpus (or in one page), splitting the askable from the
+/// two populations that are not.
 fn survey(docs: &BTreeMap<String, Document>, page: Option<&str>) -> Result<Survey, Fail> {
     let mut out = Survey {
         candidates: Vec::new(),
@@ -183,18 +166,15 @@ fn survey(docs: &BTreeMap<String, Document>, page: Option<&str>) -> Result<Surve
             continue;
         }
         let Ok(Some(found)) = lock::find(doc) else {
-            // A refused lock is `check`s finding to report, not this verbs to adopt: repair reads locks it
-            // can parse and stays silent about the ones that already have an owner saying so.
-            //
+            // A refused lock is `check`'s finding to report, not this verb's: repair reads the
+            // locks it can parse and stays silent about the rest.
             continue;
         };
         out.pages += 1;
         for entry in found.lock.pins {
             out.scanned += 1;
-            // Jurisdiction on STRUCTURE, decided FIRST — the same ordering `check::layer0::objects_in`
-            // holds, and for the same reason: a behavioural skip would let a broken ambient store hide
-            // inside the exemption.
-            //
+            // Jurisdiction is decided on structure first (the ordering `check::layer0::objects_in`
+            // holds): a behavioural skip would let a broken ambient store hide inside the exemption.
             match addr::Addr::parse(&entry.object) {
                 Ok(addr) => {
                     if let Some(name) = addr.root() {
@@ -231,12 +211,10 @@ fn survey(docs: &BTreeMap<String, Document>, page: Option<&str>) -> Result<Surve
     Ok(out)
 }
 
-/// The pins that are LOST — **both planes dark**, which is the whole definition. One batched
-/// `cat-file --batch-check` answers the retrieval plane for every candidate at once
-/// (`git::Repo::object_info`), and the claim plane is [`model::selector::classify_pin`] against
-/// the LIVE target. A pin that fails only one of the two is not this verbs business.
-///
-///
+/// The pins that are lost — both planes dark. One batched `cat-file --batch-check` answers the
+/// retrieval plane for every candidate at once (`git::Repo::object_info`), and the claim plane is
+/// [`model::selector::classify_pin`] against the live target. A pin that fails only one of the
+/// two is not this verb's business.
 fn lost_pins(
     repo: &git::Repo,
     docs: &BTreeMap<String, Document>,
@@ -255,13 +233,11 @@ fn lost_pins(
     let mut lost = Vec::new();
     for (site, present) in candidates.into_iter().zip(held) {
         if present.is_some() {
-            // The evidence is still retrievable. Whatever the claim plane says,
-            // this is drift with its blob intact — not a loss.
+            // Drift with its blob intact, whatever the claim plane says — not a loss.
             continue;
         }
         if matches!(live_color(docs, &site), Color::Green) {
-            // The live target still verifies the claim: the pin is readable from
-            // the worktree even though the recorded blob is gone.
+            // The live target still verifies the claim, even though the recorded blob is gone.
             continue;
         }
         lost.push(site);
@@ -269,23 +245,19 @@ fn lost_pins(
     Ok(lost)
 }
 
-/// The pins colour against the LIVE target — [`model::selector::classify_pin`] itself,
-/// imported, never re-implemented (43). The lock-row-to-selector projection is likewise the ONE
-/// definition `view::walk` colours through.
+/// The pin's colour against the live target, through [`model::selector::classify_pin`] itself.
+/// The lock-row-to-selector projection is likewise the one `view::walk` colours through.
 fn live_color(docs: &BTreeMap<String, Document>, site: &PinSite) -> Color {
     let selector = view::walk::model_selector(&site.entry.object, &site.entry.selector);
     model::selector::classify_pin(&selector, &site.entry.fingerprint, docs.get(&site.target))
 }
 
 // the walk — one `git log`, one `cat-file --batch`
-//
-//
 
 /// What the history walk concluded about one lost pin.
 struct Outcome {
     site: PinSite,
-    /// The commit and blob oid whose bytes ARE the pinned content — `None` is a
-    /// TRUE LOSS.
+    /// The commit and blob oid whose bytes are the pinned content — `None` is a TRUE LOSS.
     recovered: Option<Recovered>,
     /// How many historical versions of the target were read for this pin.
     versions: usize,
@@ -297,13 +269,10 @@ struct Recovered {
     oid: String,
 }
 
-/// The workspaces path prefix inside its repository (`""` when the workspace IS the top level).
-/// `git log --name-status` prints paths from the REPOSITORY root while the corpus speaks
-/// workspace-relative ones. A vault that is a subdirectory of its repo would otherwise match
-/// nothing and every pin in it would read as a TRUE LOSS — a fabricated finding, which is the
-/// one answer this verb must never give.
-///
-///
+/// The workspace's path prefix inside its repository (`""` when the workspace is the top level).
+/// `git log --name-status` prints paths from the repository root while the corpus speaks
+/// workspace-relative ones; without the prefix, a vault in a subdirectory would match nothing and
+/// every pin in it would read as a fabricated TRUE LOSS.
 fn repo_prefix(repo: &git::Repo, root: &fs::WorkspaceRoot) -> Result<String, Fail> {
     let top = repo.top_level().map_err(|e| {
         Fail::tool(format!(
@@ -322,12 +291,10 @@ fn repo_prefix(repo: &git::Repo, root: &fs::WorkspaceRoot) -> Result<String, Fai
     }
 }
 
-/// Walk the recorded history of every lost pins target and decide each one. **One `git log` and
-/// one `cat-file --batch` for the WHOLE run** — the law this unit is built to hold. The latest
-/// matching version wins: history is read oldest-first, so the last green answer is the most
-/// recent commit that carried the pinned content, which is the durable object a reader should
-/// be sent to.
-///
+/// Walk the recorded history of every lost pin's target and decide each one: one `git log` and
+/// one `cat-file --batch` for the whole run. The latest matching version wins — history is read
+/// oldest-first, so the last green answer is the most recent commit that carried the pinned
+/// content.
 fn recover(repo: &git::Repo, lost: &[PinSite], prefix: &str) -> Result<Vec<Outcome>, Fail> {
     if lost.is_empty() {
         return Ok(Vec::new());
@@ -362,8 +329,7 @@ fn recover(repo: &git::Repo, lost: &[PinSite], prefix: &str) -> Result<Vec<Outco
         ))
     })?;
 
-    // Index the read versions by the repository path they belong to, in walk
-    // order (oldest first).
+    // Index the read versions by repository path, in walk order (oldest first).
     let mut by_path: BTreeMap<&str, Vec<(&str, &git::BlobAt)>> = BTreeMap::new();
     let mut at = 0usize;
     for change in &changes {
@@ -387,15 +353,12 @@ fn recover(repo: &git::Repo, lost: &[PinSite], prefix: &str) -> Result<Vec<Outco
         let mut recovered = None;
         for (commit, blob) in versions {
             let Ok(text) = std::str::from_utf8(&blob.bytes) else {
-                // A non-UTF-8 version is not a markdown document; it cannot carry
-                // the claim and is not evidence of its absence either.
+                // A non-UTF-8 version is not a markdown document; it cannot carry the claim and
+                // is not evidence of its absence either.
                 continue;
             };
-            // **A plain `Document`, never a `CandidateDocument`** — these bytes are being READ, not
-            // landed. Minting a candidate here would put a history reader into the U12 byte-landing door
-            // census, which is a census of sites that write; the instrument caught exactly that and was
-            // right to. The build is the one the history tier uses.
-            //
+            // A plain `Document`, never a `CandidateDocument`: these bytes are being read, not
+            // landed, and a candidate here would enter the byte-landing door census.
             let doc = model::build(text.to_owned(), syntax::parse(text));
             if matches!(
                 model::selector::classify_pin(&selector, &site.entry.fingerprint, Some(&doc)),
@@ -427,20 +390,11 @@ fn recover(repo: &git::Repo, lost: &[PinSite], prefix: &str) -> Result<Vec<Outco
     Ok(out)
 }
 
-// the write — through the EXISTING lock door
-//
-//
+// the write — through the existing lock door
 
-/// Land every recovery, one guarded lock write per DECLARING page. The write goes through
-/// `wire_serve::write::lock_write` — the existing byte- landing door, with its D9 flock, world
-/// guard, write-what-you-read CAS and artifact guard inherited whole.
-///
-///
-///
-///
-///
-///
-///
+/// Land every recovery, one guarded lock write per declaring page, through
+/// `wire_serve::write::lock_write` — inheriting its flock, world guard, write-what-you-read CAS
+/// and artifact guard whole.
 fn apply(
     root: &fs::WorkspaceRoot,
     docs: &BTreeMap<String, Document>,
@@ -473,8 +427,8 @@ fn apply(
         let mut updated = found.lock;
         for outcome in &repairs {
             let recovered = outcome.recovered.as_ref().expect("filtered above");
-            // THE one mutation this verb performs: the retrieval plane's hash.
-            // `object`, `selector` and `fingerprint` ride through untouched.
+            // The one mutation this verb performs: the retrieval plane's hash. `object`,
+            // `selector` and `fingerprint` ride through untouched.
             let mut entry = outcome.site.entry.clone();
             entry.hash.clone_from(&recovered.oid);
             updated.upsert_pin(entry);
@@ -512,13 +466,8 @@ fn apply(
 }
 
 // the faces
-//
-//
 
-/// The progress plane: counted lines on **stderr**, so `--json` on stdout stays machine-clean.
-/// A history walk over a corpus is the heaviest read this CLI performs, and a heavy op that
-/// reports nothing until it finishes is indistinguishable from one that has hung.
-///
+/// The progress plane: counted lines on stderr, so `--json` on stdout stays machine-clean.
 fn progress(line: &str) {
     eprintln!("repair: {line}");
 }
@@ -610,12 +559,10 @@ fn emit(
 }
 
 // invocation
-//
-//
 
 #[derive(Debug)]
 struct Repair {
-    /// Scan ONE declaring page instead of the whole corpus.
+    /// Scan one declaring page instead of the whole corpus.
     page: Option<String>,
     dry: bool,
     format: Format,

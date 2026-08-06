@@ -1,12 +1,11 @@
-//! `mrd rules` — the effective-rules print verb (registration ruling § 7).
+//! `mrd rules` — the effective-rules print verb.
 //!
 //! ```text
 //! mrd rules [PATH] [--workspace | --user] [--json]
 //! ```
 //!
 //! Registration by tag plus id-based override makes the effective rule set a
-//! COMPUTED quantity, and a computed quantity the engine cannot show is one
-//! nobody can trust. This verb shows it: per rule id, the page that governs at
+//! computed quantity. This verb shows it: per rule id, the page that governs at
 //! PATH, its scope, and the pages it shadows — winner first, shadowed entries
 //! visible, never silently collapsed (`git config --show-origin`).
 //!
@@ -14,34 +13,27 @@
 //! Every judgement rendered here comes from `policy`: [`policy::RuleIndex`]
 //! discovers, [`policy::RuleIndex::narrowed_to`] applies the § 3 narrowing,
 //! [`policy::RuleIndex::resolve`] decides, and
-//! [`policy::armed::ArmedArtifact::verify_at`] answers what is armed AND whether
-//! it still stands, in one composed call. **This module contains no override
-//! law**: it compares no scopes, groups no ids, and does no depth arithmetic.
-//! That is not politeness toward another crate — a second resolver in the CLI
-//! would let the tool report a law the door does not enforce, which is exactly
-//! the failure the verb exists to prevent. The mount law (2026-08-01) therefore
-//! lands here with no edit: the scope column renders whatever `policy` computed.
+//! [`policy::armed::ArmedArtifact::verify_at`] answers what is armed and whether
+//! it still stands, in one composed call. This module contains no override law:
+//! it compares no scopes, groups no ids, and does no depth arithmetic. The scope
+//! column renders whatever `policy` computed.
 //!
-//! # Refusal scoping arrives the same way (§ 3, 2026-08-01)
-//! A scoped query reddens for the refusals ON ITS CHAIN — the exact subtree each
-//! refused page would have governed — and not for a stranger's. That narrowing is
-//! `policy`'s: `RegisterError` carries its own path-derived mount scope and
-//! `narrowed_to` filters refusals through the same predicate it filters rules
-//! through, so this file gained no split of its own. Every corpus-wide walk still
-//! reports ALL refusals, always, because a walk reads the UN-narrowed index.
+//! # Refusal scoping (§ 3)
+//! A scoped query reddens for the refusals on its chain — the exact subtree each
+//! refused page would have governed — and not for a stranger's. The narrowing is
+//! `policy`'s. A corpus-wide walk reports all refusals, because a walk reads the
+//! un-narrowed index.
 //!
-//! # Read-only, and structurally so
-//! The verb walks the workspace hash domain and the user rung, and calls pure
-//! functions over the bytes. There is no write path in this module to reach: no
-//! arm, no receipt, no cap spend, nothing that opens a file for writing.
+//! # Read-only
+//! The verb walks the workspace hash domain and the user rung and calls pure
+//! functions over the bytes: no arm, no receipt, no cap spend, no write path.
 //!
 //! # Registered here vs armed here
-//! The tag/ARM split is the core of the design, so the tool keeps it legible:
-//! the chain columns are what DISCOVERY found, the `armed=` cell is what the ARM
+//! The chain columns are what discovery found; the `armed=` cell is what the ARM
 //! artifact attested. An id may be registered and unarmed (`armed=-`), armed on
-//! the page that governs (`armed=armed`), or armed on a DIFFERENT page than the
-//! one discovery now resolves (`armed=armed@<page>`) — the freeze in visible
-//! form, since arming pins resolution and later discovery never changes it.
+//! the page that governs (`armed=armed`), or armed on a different page than the
+//! one discovery now resolves (`armed=armed@<page>`) — arming pins resolution,
+//! and later discovery never changes it.
 //!
 //! Exit triad: **0** clean · **1** findings (a collision, a refused rule page,
 //! an armed row whose pinned page drifted or vanished, an unreadable armed
@@ -92,8 +84,6 @@ impl View {
 /// Run `mrd rules [PATH] [--workspace|--user] [--json]`. Errors [`Fail`] exit 2 on a bad
 /// invocation, a PATH outside the workspace, or an unreadable workspace; exit 1 when the
 /// printed law carries a finding.
-///
-///
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let parsed = Rules::parse(args)?;
     let cwd = current_dir()?;
@@ -110,9 +100,8 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         ))
     })?;
 
-    // Where to look. The default view narrows to the PATH argument; a single-layer view narrows to
-    // the layer's own root, which is what "the layer alone" means in narrowing terms.
-    //
+    // The default view narrows to the PATH argument; a single-layer view narrows
+    // to the layer's own root.
     let at = match parsed.view {
         View::Effective => workspace_relative(&workspace, parsed.path.as_deref(), &cwd)?,
         View::Workspace | View::User => String::new(),
@@ -193,20 +182,9 @@ impl Rules {
     }
 }
 
-/// The workspace-relative spelling of the PATH argument (default: the cwd). Two refusals, and
-/// why neither is an empty answer **Outside the workspace** — narrowing would fall back to the
-/// workspace root and print a law that does not govern the directory the operator named.
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// The workspace-relative spelling of the PATH argument (default: the cwd). A
+/// path outside the workspace, or one that is not on disk, is refused rather
+/// than answered empty — an empty rule set is a claim about a real place.
 fn workspace_relative(workspace: &Path, path: Option<&str>, cwd: &Path) -> Result<String, Fail> {
     let raw = path.map_or_else(|| cwd.to_path_buf(), PathBuf::from);
     let absolute = if raw.is_absolute() {
@@ -267,7 +245,7 @@ impl ChainEntry {
 #[derive(Debug, PartialEq, Eq)]
 struct ArmedCell {
     mode: String,
-    /// The page the arm PINNED, when it is not the page discovery resolves.
+    /// The page the arm pinned, when it is not the page discovery resolves.
     elsewhere: Option<String>,
     /// Why the pinned page no longer stands, when it does not.
     redness: Option<String>,
@@ -295,7 +273,7 @@ impl ArmedCell {
 #[derive(Debug, PartialEq, Eq)]
 struct RuleRow {
     id: String,
-    /// `resolved`, or `collision` — a collided id resolves to NOTHING and says so.
+    /// `resolved`, or `collision` — a collided id resolves to nothing.
     state: &'static str,
     /// The collision's scope, rendered, when this row is one.
     collision_scope: Option<String>,
@@ -319,8 +297,8 @@ enum ArmedSource {
     Present { path: String, rows: usize },
     /// The artifact is not on disk — nothing was ever armed through it.
     Absent { path: String },
-    /// The artifact is there and does not parse. **Never read as "nothing
-    /// armed"**: a corrupt attestation is a finding, not an absence.
+    /// The artifact is there and does not parse. Never read as "nothing armed":
+    /// a corrupt attestation is a finding, not an absence.
     Unreadable { path: String, detail: String },
 }
 
@@ -333,12 +311,8 @@ struct RulesReport {
     user_scope: UserScope,
     armed: ArmedSource,
     rows: Vec<RuleRow>,
-    /// Pages that offered themselves to registration and were refused, NARROWED to this query's
-    /// path by `policy` exactly as the rules are (§ 3 "Refusal scoping", ): a scoped query carries
-    /// the refusals whose mount scope is on its chain — the subtree each broken page would have
-    /// governed — and no others. The verb applies no mount arithmetic of its own to reach that; it
-    /// reads what `narrowed_to` handed it.
-    ///
+    /// Pages that offered themselves to registration and were refused, narrowed
+    /// to this query's path by `policy` exactly as the rules are.
     refused: Vec<String>,
     /// Files whose bytes are not UTF-8, so their tags cannot be read.
     unreadable: Vec<String>,
@@ -387,9 +361,9 @@ fn workspace_pages(workspace: &Path) -> Result<fs::DomainFiles, Fail> {
     Ok(files)
 }
 
-/// The user rung, plus the scope it came from. The enumeration law itself lives in
-/// [`fs::user_rule_pages`] — SHARED with the discovery feed, never forked here — and the anchor
-/// is the config plane's answer, never a guess.
+/// The user rung, plus the scope it came from. The enumeration law lives in
+/// [`fs::user_rule_pages`], shared with the discovery feed; the anchor is the
+/// config plane's answer, never a guess.
 fn user_pages(pages: &mut Vec<(ScopeLayer, String, Vec<u8>)>) -> UserScope {
     let anchor = match config::resolve_path(&config::Env::from_process()) {
         Ok(anchor) => anchor,
@@ -470,8 +444,8 @@ fn build(workspace: &Path, at: &str, view: View) -> Result<RulesReport, Fail> {
             bytes,
         },
     ));
-    // Narrowing is the CONSUMER's step (§ 3 amendment): narrow, then resolve
-    // through the shared resolver.
+    // Narrowing is the consumer's step: narrow, then resolve through the shared
+    // resolver.
     let narrowed = index.narrowed_to(at);
     let effective = narrowed.resolve();
 
@@ -519,18 +493,11 @@ fn rows(
     at: &str,
     pages: &dyn PageSource,
 ) -> Vec<RuleRow> {
-    // The selection law, from the artifact: per id, the deepest armed row whose arm root contains
-    // this path. Keyed by (id, arm root) — never by id alone.
+    // The selection law, from the artifact: per id, the deepest armed row whose
+    // arm root contains this path. Keyed by (id, arm root), never by id alone.
     let selected: Vec<&ArmedRow> = artifact.map(|a| a.select_at(at)).unwrap_or_default();
-    // The redness of each armed row, keyed by the row key (id, arm root) — the artifact's own
-    // fail-closed rev check, never a second hash law here. `verify_at` is the COMPOSED call, not
-    // `select_at` + `verify` assembled here: selection-then-verification is a law with two wrong
-    // orders (see `ArmedArtifact::verify_at`), so exactly
-    //
-    //
-    //
-    //
-    //
+    // The redness of each armed row, keyed by (id, arm root) — the artifact's own
+    // fail-closed rev check, never a second hash law here.
     let mut reddened: BTreeMap<(String, String), &'static str> = BTreeMap::new();
     if let Some(artifact) = artifact {
         let verdict = artifact.verify_at(at, pages);
@@ -538,10 +505,10 @@ fn rows(
             let why = match red.why() {
                 Redness::Drifted { .. } => "drifted",
                 Redness::Missing { .. } => "missing",
-                // A row whose mode is outside its page's kind vocabulary — the
-                // hand-edited-row shape. It reads as a MISMATCH rather than as
-                // drift: the page is untouched and its rev still matches, so
-                // "drifted" would send a reader to diff a page that never moved.
+                // A row whose mode is outside its page's kind vocabulary reads as
+                // a mismatch, not drift: the page is untouched and its rev still
+                // matches, so "drifted" would send a reader to diff a page that
+                // never moved.
                 Redness::ModeOutsideKind { .. } => "kind-mismatch",
             };
             reddened.insert(
@@ -584,10 +551,8 @@ fn rows(
             id: collision.id().as_str().to_owned(),
             state: "collision",
             collision_scope: Some(collision.scope().to_string()),
-            // A collided id resolves to nothing, so there is no winner for an armed row to be about.
-            // Whatever was armed under that id was armed against a resolution that no longer stands — the
-            // tied pages below are what the reader must fix.
-            //
+            // A collided id resolves to nothing, so there is no winner for an
+            // armed row to be about.
             armed: None,
             chain: collision
                 .tied()
@@ -793,8 +758,6 @@ mod tests {
         }
     }
 
-    /// The override chain renders winner-first with the shadowed page BENEATH
-    /// it — the `git config --show-origin` shape, byte-expected.
     #[test]
     fn render_human_shows_the_shadowed_page_beneath_its_winner() {
         let rows = vec![RuleRow {
@@ -819,15 +782,12 @@ rules at sessions/s1
         assert_eq!(render_human(&report(rows)), expected);
     }
 
-    /// An empty effective set is a legitimate answer, and says so in words.
     #[test]
     fn render_human_names_an_empty_set() {
         let rendered = render_human(&report(Vec::new()));
         assert!(rendered.contains("(no rules in effect)"), "{rendered}");
     }
 
-    /// A collision renders as a REFUSAL naming both tied pages, and keeps the
-    /// chain it shadows visible — never an arbitrary winner, never an omission.
     #[test]
     fn render_human_renders_a_collision_as_a_refusal_with_both_pages() {
         let rows = vec![RuleRow {
@@ -855,8 +815,6 @@ rules at sessions/s1
         );
     }
 
-    /// The armed cell keeps registration and arming distinct: the mode word, its
-    /// redness, and the pinned page when the arm and discovery disagree.
     #[test]
     fn the_armed_cell_renders_mode_redness_and_a_divergent_pin() {
         assert_eq!(
@@ -888,8 +846,6 @@ rules at sessions/s1
         );
     }
 
-    /// Findings gate the exit: a collision, a refusal, a red armed row and an
-    /// unreadable armed set each name themselves.
     #[test]
     fn findings_name_every_cause() {
         let mut r = report(vec![RuleRow {
@@ -933,7 +889,6 @@ rules at sessions/s1
         assert!(report(Vec::new()).findings().is_empty());
     }
 
-    /// `--json` carries the chain roles, the armed cell, and the header facts.
     #[test]
     fn json_carries_the_chain_and_the_armed_cell() {
         let rows = vec![RuleRow {
@@ -987,7 +942,6 @@ rules at sessions/s1
         assert_eq!(parse(&["--user"]).unwrap().view, View::User);
     }
 
-    /// Two layer flags is a refusal, not a silent pick: each names ONE layer.
     #[test]
     fn parse_refuses_two_layer_flags() {
         let err = parse(&["--workspace", "--user"]).expect_err("one layer");
@@ -1005,7 +959,6 @@ rules at sessions/s1
         assert_eq!(parse(&["a", "b"]).unwrap_err().code, 2);
     }
 
-    /// A single-layer view admits its own layer and no other.
     #[test]
     fn a_single_layer_view_admits_one_layer() {
         assert!(View::Workspace.admits(ScopeLayer::Workspace));
@@ -1016,9 +969,6 @@ rules at sessions/s1
         assert!(View::Effective.admits(ScopeLayer::Workspace));
     }
 
-    /// PATH resolves against the workspace, and a path outside it is exit 2 —
-    /// never a silent fall back to the root, which would print a law that does
-    /// not govern the named folder.
     #[test]
     fn a_path_outside_the_workspace_is_refused() {
         let ws = tempfile::tempdir().expect("tempdir");
@@ -1038,10 +988,6 @@ rules at sessions/s1
         assert_eq!(err.code, 2);
     }
 
-    /// A PATH that is not on disk is refused, never answered with an empty rule
-    /// set: `(no rules in effect)` about a mistyped folder reads as unregulated
-    /// rather than misspelled, and that is the one wrong answer this verb must
-    /// not give. It is also what keeps the retired `mrd rules replay` form loud.
     #[test]
     fn a_path_that_is_not_on_disk_is_refused_rather_than_answered_empty() {
         let ws = tempfile::tempdir().expect("tempdir");
@@ -1054,7 +1000,6 @@ rules at sessions/s1
             "{}",
             err.message
         );
-        // The retired verb's bare form is exactly this shape.
         assert_eq!(
             workspace_relative(&root, Some("replay"), &root)
                 .expect_err("no such folder")

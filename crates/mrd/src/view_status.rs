@@ -1,18 +1,6 @@
 //! `mrd view status` — the OD7 refresh-observability surface (synchronous half). Prints, per
 //! workspace: `as_of`, `state`, and the last-refresh-failure basics (`code` + `age` +
 //! `fingerprint_attempted`) plus `refresh_in_progress`.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use std::path::{Path, PathBuf};
 
@@ -22,10 +10,10 @@ use serde_json::{Value, json};
 use crate::resolve::resolve_runtime;
 use crate::{Fail, Format, current_dir};
 
-/// Run `mrd view status [--json] [--cwd PATH]`. Errors The cwd/workspace cannot be resolved.
+/// Run `mrd view status [--json] [--cwd PATH]`.
 ///
-///
-///
+/// # Errors
+/// The cwd/workspace cannot be resolved.
 pub(crate) fn run(tail: &[String]) -> Result<(), Fail> {
     let (format, cwd_arg) = parse(tail)?;
     let cwd = match cwd_arg {
@@ -53,22 +41,7 @@ pub(crate) fn run(tail: &[String]) -> Result<(), Fail> {
 }
 
 /// Say, on STDERR, that no daemon answered — so the reader knows this report is a disk reading
-/// rather than the daemon-memory telemetry the command exists to show. Silent on the daemon
-/// path. **The misdiagnosis this closes (G15, ** With an unbindable socket the daemon cannot be
-/// dialled, so the fallback reads the cold drawer and prints `absent` / `NO_VIEW` at exit 0
-/// with an empty stderr.
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// rather than the daemon-memory telemetry the command exists to show. Silent on the daemon path.
 fn voice_daemonless(source: &'static str) {
     match source {
         "cold" => eprintln!(
@@ -85,7 +58,7 @@ fn voice_daemonless(source: &'static str) {
                  NOT mean the workspace has none, and building one may not be the fix."
             );
         }
-        // The daemon answered: this report IS the telemetry, and it says nothing.
+        // The daemon answered: this report is the telemetry.
         _ => return,
     }
     if let Some(reason) = crate::engine::degrade_reason() {
@@ -190,7 +163,6 @@ impl Status {
 
     fn json(&self) -> String {
         let last_error = self.last_error.clone().map_or(Value::Null, |mut e| {
-            // Enrich with a human `age_secs` beside the wire `unix` (OD7 basics).
             if let Some(unix) = e.get("unix").and_then(Value::as_u64) {
                 e["age_secs"] = json!(age_secs(unix));
             }

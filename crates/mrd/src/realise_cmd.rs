@@ -1,50 +1,28 @@
-//! `mrd realise <page> [--dry] [--json]` (U3.5b): the
-//! reconciliation-loop verb — **observe → check → apply (only on drift) →
-//! re-check** over one page's declared claim, wiring the U3.5a engine
-//! ([`realise::realise`]). The md→mrd cutover of the legacy `md realise`; the
-//! apply rides the ordinary run plane ([`run::runner::run`]) — "run grammars
-//! reconcile into `mrd run`", no second execution path.
+//! `mrd realise <page> [--dry] [--json]`: the reconciliation-loop verb — observe → check →
+//! apply (only on drift) → re-check over one page's declared claim, wiring [`realise::realise`].
+//! The apply rides the ordinary run plane ([`run::runner::run`]); there is no second execution
+//! path.
 //!
-//! # The mrd-native claim grammar
-//! A realising page declares its claim in frontmatter (each tool reads its NATIVE
-//! serialization — the field-equivalence parity gate, `decisions/2026-07-23-u3-1-
-//! parity-gate-ruling.md`):
+//! # The claim grammar
+//! A realising page declares its claim in frontmatter:
 //!
-//! - `realise.field` + `realise.expected` — the check (d2 §5.4 "check = rev
-//!   compare", at field grain): converged iff the frontmatter field equals the
-//!   expected value. Pure read, no cap.
-//! - `realise.apply` — the apply task name addressed on the page (`task.<name>`);
-//!   absent ⇒ the claim is NOT apply-capable, a drift classifies `pending-agent`.
-//! - `realise.rule` — the id of the rule this claim realises. A pending-agent
-//!   card references it BY ID and never embeds the rule body (decision 8): the
-//!   rule keeps one home, its own registered page. Optional; validated against
-//!   the `policy::RuleId` grammar at parse time.
+//! - `realise.field` + `realise.expected` — the check: converged iff the frontmatter field
+//!   equals the expected value. Pure read, no cap.
+//! - `realise.apply` — the apply task name addressed on the page (`task.<name>`); absent means
+//!   the claim is not apply-capable and a drift classifies `pending-agent`.
+//! - `realise.rule` — the id of the rule this claim realises. A pending-agent card references it
+//!   by id and never embeds the rule body. Optional; validated against the `policy::RuleId`
+//!   grammar at parse time.
 //!
-//! The retry budget is ONE apply then one re-check — parity with the legacy
-//! engine's single-apply budget.
+//! The retry budget is one apply then one re-check.
 //!
-//! # Terminal states (parity vocabulary)
+//! # Terminal states
 //! `converged` (check clean, no apply) · `drifted-fixed` (apply fixed the drift) ·
-//! `non-convergent` (apply ran, drift persists) · `pending-agent` (drift, no
-//! apply-capable claim) · `preview` (`--dry`). The mrd render grammar and CLI
-//! grammar differ from `md realise`'s (OUT of the parity gate's scope); the
-//! terminal STATE is field-equivalent.
+//! `non-convergent` (apply ran, drift persists) · `pending-agent` (drift, no apply-capable
+//! claim) · `preview` (`--dry`).
 //!
-//! # `--truth index|file` is GONE (registration cutover)
-//! This verb used to carry a second job: realise-as-deploy, resolving a
-//! file↔INDEX convention divergence in an explicit direction through
-//! `policy::converge`. Its whole subject was `conventions/INDEX.md`, which stopped
-//! being engine substrate — there is no INDEX to re-pin and no folder to restore,
-//! and `policy::binding::converge` was deleted rather than re-keyed. The
-//! convergence law is re-owed at the ARM disk edge, where the artifact is written.
-//!
-//! The flag is REMOVED, not kept as a refusal: a flag whose only behaviour is to
-//! explain itself is a compat door in sentiment, and it would keep the deploy
-//! shape alive in every reader's head long after the thing it deployed was gone.
-//!
-//! Exit triad (§4 preamble): 0 = converged / drifted-fixed / preview, 1 =
-//! non-convergent / pending-agent, 2 = a tool failure (bad usage, unreadable
-//! workspace, missing page, faulting run).
+//! Exit triad: 0 = converged / drifted-fixed / preview, 1 = non-convergent / pending-agent,
+//! 2 = a tool failure (bad usage, unreadable workspace, missing page, faulting run).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -66,10 +44,8 @@ const DEFAULT_BOARD_DIR: &str = "board";
 /// The actor this verb records on every write it drives through the run plane.
 const REALISE_ACTOR: &str = "mrd:realise";
 
-/// Run `mrd realise <tail>`. Errors [`Fail`] on the triads 1/2 legs — see the module docs for
+/// Run `mrd realise <tail>`. Errors [`Fail`] on the triad's 1/2 legs — see the module docs for
 /// the mapping.
-///
-///
 pub(crate) fn run(args: &[String]) -> Result<(), Fail> {
     let parsed = Parsed::parse(args)?;
     let root = crate::preset_cmd::resolve_root()?;
@@ -105,10 +81,8 @@ fn realise_page(root: &fs::WorkspaceRoot, page: &str, parsed: &Parsed) -> Result
         env: BTreeMap::new(),
     });
 
-    // `realise.rule` names the rule this claim realises, BY ID. A pending-agent card references it
-    // and never copies its body (decision 8) — so the id is validated against the registration
-    // grammar here, at the page edge, rather than minting a card that points at nothing parseable.
-    //
+    // A pending-agent card references the rule by id and never copies its body, so the id is
+    // validated here, at the page edge, rather than minting a card pointing at nothing parseable.
     let rule = match fm_scalar(&doc, "realise.rule") {
         None => None,
         Some(id) => {
@@ -130,18 +104,15 @@ fn realise_page(root: &fs::WorkspaceRoot, page: &str, parsed: &Parsed) -> Result
             expected: expected.clone(),
         }),
         apply,
-        // Parity with the legacy engine: exactly one apply, then one re-check.
+        // Exactly one apply, then one re-check.
         retry_budget: 1,
     };
 
     let (invocation_id, now) = mint_identity()?;
     let scratch = root.0.join(".meridian/scratch").join(&invocation_id);
     std::fs::create_dir_all(&scratch).map_err(|e| Fail::tool(format!("scratch dir: {e}")))?;
-    // `resolve_root` has already committed to a workspace (ladder, daemon adoption, or ephemeral),
-    // so unlike `mrd run` there is no unanswered case to represent here — this root is the one
-    // that declares. Substituting the declaration for the retired marker keeps todays behavior:
-    // the same directory is consulted, only the filename and the parse law change.
-    //
+    // `resolve_root` has already committed to a workspace, so unlike `mrd run` there is no
+    // unanswered case here — this root is the one that declares.
     let declaring_root = Some(root.0.clone());
     let timeout = run::exec::configured_timeout(declaring_root.as_deref())
         .map_err(|e| Fail::tool(e.to_string()))?;
@@ -168,12 +139,11 @@ fn realise_page(root: &fs::WorkspaceRoot, page: &str, parsed: &Parsed) -> Result
     exit_for(state)
 }
 
-/// The parity-vocabulary terminal state, derived from the engines A4 classifier plus the apply
-/// count (the engine collapses `converged`/`drifted-fixed`, which the legacy vocabulary splits
-/// by whether an apply fired).
+/// The terminal state, derived from the engine's classifier plus the apply count — the engine
+/// collapses `converged`/`drifted-fixed`, which this vocabulary splits by whether an apply fired.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
-    /// `--dry`: the phases that WOULD run; nothing executed, zero caps.
+    /// `--dry`: the phases that would run; nothing executed, zero caps.
     Preview,
     /// The check held with no apply — the green terminal.
     Converged,
@@ -197,7 +167,7 @@ impl State {
     }
 }
 
-/// Map the engine's [`ClaimState`] + apply count onto the legacy parity vocabulary.
+/// Map the engine's [`ClaimState`] + apply count onto the terminal vocabulary.
 fn classify(dry: bool, state: &ClaimState, applies: u32) -> State {
     if dry {
         return State::Preview;
@@ -259,9 +229,8 @@ fn render(format: Format, page: &str, state: State, applies: u32, receipts: &[St
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-/// Read a scalar frontmatter value off a parsed document (the public [`model::YamlMap`]
-/// surface) — dotted keys (`realise.field`) are ordinary map entries, exactly as `mrd run`
-/// reads `task.<name>`.
+/// Read a scalar frontmatter value off a parsed document. Dotted keys (`realise.field`) are
+/// ordinary map entries, exactly as `mrd run` reads `task.<name>`.
 fn fm_scalar(doc: &model::Document, key: &str) -> Option<String> {
     fn find(node: &model::Node) -> Option<&model::YamlMap> {
         if let model::NodeKind::Frontmatter { map } = &node.kind {
@@ -274,14 +243,9 @@ fn fm_scalar(doc: &model::Document, key: &str) -> Option<String> {
         .map(|(_, v)| v.clone())
 }
 
-/// Mint the realise identity at the §9 boundary: a unique, path-safe invocation id and an
-/// RFC3339 time fact. The clock is read HERE, once, and passed in — the engine reads none
-/// (`wire::now_is_rfc3339` validates, never generates), so every surface downstream
-///
-///
-///
-///
-///
+/// Mint the realise identity: a unique, path-safe invocation id and an RFC3339 time fact. The
+/// clock is read here, once, and passed in — the engine reads none (`wire::now_is_rfc3339`
+/// validates, never generates).
 fn mint_identity() -> Result<(String, String), Fail> {
     let elapsed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -296,10 +260,9 @@ fn mint_identity() -> Result<(String, String), Fail> {
 }
 
 /// Format unix seconds as an RFC3339 UTC date-time (`YYYY-MM-DDTHH:MM:SSZ`) — the `now` format
-/// law transcribed in `wire::now_is_rfc3339`, from the other side. Pure and dependency-free
-/// (the workspace carries no date crate); the civil-date split is Hinnants `civil_from_days`
-/// algorithm, exact for every day in the proleptic Gregorian calendar.
-///
+/// law `wire::now_is_rfc3339` validates. Pure and dependency-free (the workspace carries no date
+/// crate); the civil-date split is Hinnant's `civil_from_days`, exact for every day in the
+/// proleptic Gregorian calendar.
 fn rfc3339_utc(secs: u64) -> String {
     let (days, rem) = (secs / 86_400, secs % 86_400);
     let (hour, min, sec) = (rem / 3600, (rem % 3600) / 60, rem % 60);
@@ -353,8 +316,7 @@ impl Parsed {
 mod tests {
     use super::*;
 
-    /// The minted clock satisfies the engine's OWN format predicate — the two
-    /// sides of the §9 law (host formats, engine validates) meet here.
+    /// The minted clock satisfies the engine's own format predicate.
     #[test]
     fn minted_now_is_rfc3339() {
         let (_id, now) = mint_identity().expect("system clock");
@@ -379,8 +341,8 @@ mod tests {
         }
     }
 
-    /// Every formatted instant validates — the format law holds across the
-    /// whole span the calendar split covers, not only the sampled instants.
+    /// Every formatted instant validates across the whole span the calendar split covers, not
+    /// only the sampled instants.
     #[test]
     fn rfc3339_utc_output_always_validates() {
         let mut secs: u64 = 0;

@@ -1,13 +1,5 @@
 //! Opportunistic last-use auto-GC (Cargo model, spec §5). A path-keyed drawer store without a
-//! reaper is the Bazel/VSCode disk-leak class (decision 0001 round 4).
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
+//! reaper leaks disk without bound.
 
 use std::fs;
 use std::path::Path;

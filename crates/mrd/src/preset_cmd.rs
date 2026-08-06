@@ -3,16 +3,14 @@
 //! path. [`resolve_root`] is the wider of the two — every verb that needs the ambient workspace
 //! dials it, `mrd realise` and `mrd journal` included, so the resolution `pin`/`attest` run is
 //! the resolution they all run.
-//!
-//!
 
 use crate::Fail;
 
 /// Resolve the ambient workspace to a canonical [`fs::WorkspaceRoot`] (the same resolution
-/// `pin`/`attest` run). Errors A tool failure (exit 2) when the workspace cannot be resolved or
-/// canonicalized.
+/// `pin`/`attest` run).
 ///
-///
+/// # Errors
+/// A tool failure (exit 2) when the workspace cannot be resolved or canonicalized.
 pub(crate) fn resolve_root() -> Result<fs::WorkspaceRoot, Fail> {
     let cwd = crate::current_dir()?;
     let resolved = crate::resolve::resolve_runtime(&cwd).map_err(|e| {

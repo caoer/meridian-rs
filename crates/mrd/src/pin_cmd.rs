@@ -1,29 +1,26 @@
-//! `mrd pin` — the attestation verb (stage-2 S7): record, in a page's
-//! `meridian-lock` block, that it draws from a named section of another page AT
-//! a content-addressed fingerprint.
+//! `mrd pin` — the attestation verb: record, in a page's `meridian-lock` block,
+//! that it draws from a named section of another page at a content-addressed
+//! fingerprint.
 //!
 //! ```text
 //! mrd pin <PAGE> <TARGET>#<SELECTOR> [--vibe] [--dry] [--json]
 //! ```
 //!
-//! `PAGE` is the PINNING page — the drawing end, whose lock records the claim
-//! ("A pins B": you pin what you draw from). `TARGET#SELECTOR` is the pinned
-//! content, in the same `<PATH>[#FRAG]` grammar `mrd read` takes; the selector
-//! is a sanitized heading path (`Notes/Q3`) or a block anchor (`^id`).
+//! `PAGE` is the pinning page — the drawing end, whose lock records the claim
+//! (you pin what you draw from). `TARGET#SELECTOR` is the pinned content, in
+//! the same `<PATH>[#FRAG]` grammar `mrd read` takes; the selector is a
+//! sanitized heading path (`Notes/Q3`) or a block anchor (`^id`).
 //!
-//! The write routes through THE production splice choke-point
+//! The write routes through the production splice choke-point
 //! ([`wire_serve::write::splice`]) in-process with the pin riding as a
-//! Splice-sibling field, so the page's content and its lock block land in ONE
-//! `commit_batch` — one flock, one rename — and the CAS guards, the armed gate,
-//! and the D9 write flock are all inherited. There is no second flocked write.
+//! Splice-sibling field, so the page's content and its lock block land in one
+//! `commit_batch` — one flock, one rename — inheriting the CAS guards, the
+//! armed gate, and the write flock.
 //!
-//! # Why this verb takes no `--actor`
-//! The read-mint gate (D16) keys on a DAEMON-derived session identity, and a
-//! CLI invocation has no session: the bare `mrd pin` is local-operator-trusted
-//! and the gate is bypassed, exactly as `mrd put` bypasses the host's authz. An
-//! `--actor` flag here would either be a meaningless label the gate then
-//! refused on, or a way to spell a session identity the process does not have —
-//! both worse than absence (D13).
+//! # No `--actor`
+//! The read-mint gate keys on a daemon-derived session identity, and a CLI
+//! invocation has no session: the bare `mrd pin` is local-operator-trusted and
+//! the gate is bypassed, exactly as `mrd put` bypasses the host's authz.
 //!
 //! Exit triad: 0 pinned (or `--dry` rehearsed) / 1 refused (`read_mint_required`,
 //! `pin_target_missing`, `write_conflict`, `workspace_busy`, an armed gate
@@ -38,9 +35,6 @@ use crate::{Fail, Format, current_dir, engine};
 /// Run `mrd pin <PAGE> <TARGET><SELECTOR> [flags]`. Errors [`Fail`] — exit 2 on a bad
 /// invocation (missing or malformed positionals, unknown flags, a `bad_request` refusal); exit
 /// 1 on any other engine refusal, message verbatim.
-///
-///
-///
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let parsed = Pin::parse(args)?;
     let cwd = current_dir()?;
@@ -62,8 +56,8 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         id: None,
         origin: wire_serve::guard::Origin::InProcess,
         path: WirePath(parsed.page.clone()),
-        // §9: the CLI stamps no provenance — and an absent actor IS the
-        // local-operator trust door the gate reads (D16).
+        // The CLI stamps no provenance, and an absent actor is the local-operator trust door
+        // the read-mint gate reads.
         actor: None,
         now: None,
         receipt: None,
@@ -76,15 +70,8 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         plan_edits: Vec::new(),
         pin: Some(PinSpec {
             target: WirePath(parsed.target.clone()),
-            // **The CLI coats ingress door (U14).** The wire carries a tagged selector; this is where the
-            // human string a person typed becomes one, and it is the only place that conversion happens.
-            //
-            //
-            //
-            //
-            //
-            //
-            //
+            // The wire carries a tagged selector; this is the only place the human string a
+            // person typed becomes one.
             selector: wire::ReadSel::parse(&parsed.selector),
             vibe: parsed.vibe.then_some(true),
         }),
@@ -117,14 +104,8 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     Ok(())
 }
 
-/// The engines refusal with its `cause` carried, in the same `class (cause)` shape
+/// The engine's refusal with its `cause` carried, in the same `class (cause)` shape
 /// [`crate::status_cmd`] degrades in (`unknown (not a git repository: …)`).
-///
-///
-///
-///
-///
-///
 fn refusal_with_cause(error: &wire::ErrorBody) -> Fail {
     let mut fail = engine::refusal_fail(error);
     if let Some(cause) = &error.cause {
@@ -143,9 +124,8 @@ fn print_human(parsed: &Pin, body: &Value) {
             .unwrap_or("?")
     };
     let verb = if parsed.dry { "would pin" } else { "pinned" };
-    // U14: `declared_ref` — the joined `pageselector` echo — is gone from the wire fact. The human
-    // line is composed from the two fields that carry the same address structurally, which is also
-    // what the caller typed.
+    // The wire fact carries no joined `declared_ref` echo, so the line is composed from the two
+    // fields that carry the same address structurally — which is also what the caller typed.
     println!(
         "{verb} {}#{} into {}",
         field("target"),
@@ -165,8 +145,7 @@ fn print_human(parsed: &Pin, body: &Value) {
     }
     match pin.and_then(|p| p.get("blob")).and_then(Value::as_str) {
         Some(blob) => println!("  blob:        {blob}"),
-        // Honest degradation (D5): git could not answer, so the retrieval plane
-        // carries no entry — never a fabricated sha.
+        // Git could not answer, so the retrieval plane carries no entry — never a fabricated sha.
         None => println!(
             "  blob:        (none — git could not address {})",
             parsed.target
@@ -245,7 +224,7 @@ impl Pin {
 
 #[cfg(test)]
 mod tests {
-    //! Invocation parsing only — the pin BEHAVIOR is gated engine-side
+    //! Invocation parsing only — the pin behavior is gated engine-side
     //! (`crates/wire-serve/tests/s7_pin.rs`), where a real workspace and a real read-mint ledger
     //! exist.
 
@@ -279,8 +258,7 @@ mod tests {
         assert!(bad.message.contains("--nope"), "{}", bad.message);
     }
 
-    /// A page-level pin cannot localize drift, so the grammar refuses one and
-    /// says why (ratified 07-22 §3) — rather than pinning the whole file.
+    /// A page-level pin cannot localize drift, so the grammar refuses one and says why.
     #[test]
     fn a_bare_page_ref_refuses_and_teaches_the_section_grammar() {
         let err = Pin::parse(&argv(&["a.md", "b.md"])).expect_err("refused");

@@ -1,13 +1,6 @@
 //! The per-invocation resolution flow (decision 0001 rounds 4-5, spec §1). The ladder's
 //! answered rungs are pure filesystem functions ([`workspace::resolve`]); a root opens the
 //! hashed drawer directly.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use std::path::{Path, PathBuf};
 
@@ -32,10 +25,8 @@ pub(crate) enum Source {
 }
 
 impl Source {
-    /// A stable lowercase label for JSON / human output. The ladder's own words are reused
-    /// ([`Tier::word`]) rather than restated here, so the CLI cannot drift from the tier vocabulary
-    /// it reports.
-    ///
+    /// A stable lowercase label for JSON / human output. Reuses [`Tier::word`] so the CLI
+    /// cannot drift from the tier vocabulary it reports.
     pub(crate) fn label(&self) -> &'static str {
         match self {
             Source::Direct(tier) => tier.word(),
@@ -69,15 +60,14 @@ impl Resolved {
 pub(crate) fn resolve_runtime(cwd: &Path) -> Result<Resolved, ResolveError> {
     let answer = workspace::resolve(cwd)?;
     match answer.root() {
-        // A rung answered: that root IS the workspace, drawer opened directly.
+        // A rung answered: that root is the workspace, drawer opened directly.
         Some(root) => Ok(Resolved {
             drawer: CacheDrawer::open(root),
             source: Source::Direct(answer.tier()),
             workspace: root.to_path_buf(),
         }),
-        // Nothing anchored this tree. Taking the cwd anyway is the deliberate
-        // demotion `root_or_cwd` marks — and it buys no registration: the
-        // daemon may adopt it, otherwise the store is ephemeral.
+        // Unanchored: taking the cwd buys no registration — the daemon may adopt
+        // it, otherwise the store is ephemeral.
         None => Ok(resolve_unanchored(cwd, answer.root_or_cwd().to_path_buf())),
     }
 }
