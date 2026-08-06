@@ -1,25 +1,21 @@
-//! Rung-5 corpus reads: backlinks, the §4.6 edge map, span-exact rename planning —
+//! Corpus reads: backlinks, the §4.6 edge map, span-exact rename planning —
 //! borrows the model's index, applies nothing.
 //!
 //! # Charter
 //! **Owns:** corpus-level reads. The outgoing edge map (contract §4.6 `links` — the app's
 //! `resolvedLinks`/`unresolvedLinks` shape, per-edge counts), backlinks (find-references
-//! over wikilinks/embeds), board queries , and rename *planning* — the corpus-wide,
-//! span-exact wikilink-rewrite plan (depth/anchor/alias-preserving, meridian's `mv`
-//! relocated) that nothing in the stack has today.
+//! over wikilinks/embeds), board queries, and rename *planning* — the corpus-wide,
+//! span-exact wikilink-rewrite plan (depth/anchor/alias-preserving).
 //!
 //! **Never does:** apply edits (a rename plan is a list of splices; application goes
 //! through `model` validation + `fs` execution like every other write), own the corpus
 //! index (borrowed from `model` — sibling of `policy`, no edge between them), serialize
 //! (no-serde law: `wire` twins these shapes; the sidecar converts).
 //!
-//! # Rungs
-//! Rung 5 entirely. Edge-map resolution is the walk plane's **stage 1 only**
+//! Edge-map resolution is the walk plane's stage 1 only
 //! (`CorpusIndex::resolve_linkpath` — `getFirstLinkpathDest` parity, contract §4.5): the
-//! app's `resolvedLinks` counts a link toward its destination FILE; heading/block
+//! app's `resolvedLinks` counts a link toward its destination file; heading/block
 //! fragments never split an edge.
-//!
-//!
 
 use std::collections::BTreeMap;
 
@@ -37,42 +33,36 @@ pub struct Backlink {
 }
 
 /// One file's outgoing edges (contract §4.6): per-edge counts, dangling refs
-/// first-class. `resolved` keys are destination corpus paths in the AMBIENT
+/// first-class. `resolved` keys are destination corpus paths in the ambient
 /// root; `unresolved` keys are the raw linkpaths as written (no vault file
 /// exists to name). The model-side twin of `wire::FileLinks` (no-serde law).
 ///
-/// **The two cross-root channels are separate maps, and that is Q5's ruling
-/// applied here.** A rooted destination is a root AND a path, and folding it
-/// into one `root:path` key in `resolved` would put a joined string address in
-/// a machine surface — decision 14 / R1.6, the disease this unit is landing the
-/// residue of. It would also collide: a corpus may hold a real ambient file
-/// whose path contains a colon.
+/// The two cross-root channels are separate maps: a rooted destination is a
+/// root and a path, and a joined `root:path` key in `resolved` would put a
+/// string address in a machine surface — and collide, since a corpus may hold
+/// a real ambient file whose path contains a colon.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct FileLinks {
     pub resolved: BTreeMap<String, u64>,
     pub unresolved: BTreeMap<String, u64>,
-    /// Edges that resolved INSIDE a mounted root — keyed by root, then by the
-    /// path inside THAT root. A consumer fetching bytes must read the root to
+    /// Edges that resolved inside a mounted root — keyed by root, then by the
+    /// path inside that root. A consumer fetching bytes must read the root to
     /// know which corpus to fetch from; resolving the path against the ambient
-    /// corpus is exactly FINDING 03's wrong-bytes success.
+    /// corpus fetches the wrong bytes.
     pub resolved_rooted: BTreeMap<addr::MountName, BTreeMap<String, u64>>,
-    /// Edges the address owner REFUSED, keyed by the linkpath as written.
-    ///
-    /// **Distinct from `unresolved`, because they are different facts and Q3
-    /// ruled that the exit code must say so.** An ambient dangling link is an
-    /// ordinary authoring state in a working vault. A refused cross-root edge
-    /// means the author believed a mount relationship that does not hold —
-    /// or wrote something that is not an address at all.
+    /// Edges the address owner refused, keyed by the linkpath as written.
+    /// Distinct from `unresolved`: an ambient dangling link is ordinary
+    /// authoring state; a refused cross-root edge means the author believed a
+    /// mount relationship that does not hold — or wrote something that is not
+    /// an address at all.
     pub refused: BTreeMap<String, RefusedEdge>,
 }
 
 /// One refused edge: the address owner's own answer, carried structurally, plus
-/// how many times the page wrote it.
-///
-/// The resolution is kept as [`model::RefResolution`] rather than flattened to a
-/// word here. Rendering it — tone, reason word, teaching refusal — is the colour
-/// plane's job (`view::walk`), and a second classification in this crate is how
-/// one address comes to have two answers.
+/// how many times the page wrote it. Kept as [`model::RefResolution`] rather
+/// than flattened to a word — rendering is the colour plane's job
+/// (`view::walk`), and a second classification here is how one address comes to
+/// have two answers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefusedEdge {
     pub resolution: RefResolution,
@@ -96,19 +86,11 @@ pub fn links(
     links_with(index, docs, &RootedCorpus::ambient(docs), None, path)
 }
 
-/// [`links`] against a ROOT-KEYED corpus and a mount table — **the form that
-/// asks the address owner** ([`CorpusIndex::resolve_ref`]), and the one U21
-/// exists to add.
+/// [`links`] against a root-keyed corpus and a mount table — the form that
+/// asks the address owner ([`CorpusIndex::resolve_ref`]).
 ///
-/// Before this, both link-plane resolvers called `resolve_linkpath`, which is
-/// stage-1 and ambient-only and refuses every rooted spelling by construction.
-/// Its `None` was consumed as *"unresolved"* rather than as *"you called the
-/// wrong resolver"*, so a `[[sessions:notes.md]]` whose root was bound,
-/// readable and holding the file was reported UNRESOLVED at exit 0 — a wrong
-/// answer, measured, not inferred.
-///
-/// The ambient shorthand above is the same function with NO mount authority,
-/// so there is ONE precedence here rather than two that agree until one is
+/// The ambient shorthand above is the same function with no mount authority,
+/// so there is one precedence here rather than two that agree until one is
 /// edited.
 #[must_use]
 pub fn links_rooted(
@@ -122,20 +104,13 @@ pub fn links_rooted(
 }
 
 /// The one implementation behind [`links`] and [`links_rooted`], distinguished
-/// by whether the caller holds MOUNT AUTHORITY.
+/// by whether the caller holds mount authority.
 ///
-/// **`None` is not an empty table, and conflating the two would mint a lie.**
-/// An EMPTY table is a machine that binds nothing — a fact about the world, and
-/// the address plane rightly refuses a rooted address against it with grey
-/// `unmounted`. `None` is a caller that never consulted a table at all: the
-/// resident daemon, whose warm state is one ambient corpus. Handing it an empty
-/// table would turn "I did not look" into "this machine binds nothing", which
-/// is a claim it has no standing to make — and on most machines a false one.
-///
-/// So a caller with no authority reports a rooted spelling exactly as it did
-/// before U21: `unresolved`, first-class, no refusal. That is the daemon's
-/// stated, deliberate incapacity, and the CLI degrades rather than let it
-/// answer (see `mrd::engine::answer_links`).
+/// `None` is not an empty table: an empty table means this machine binds
+/// nothing, so a rooted address refuses grey `unmounted`; `None` means the
+/// caller (the resident daemon) never consulted a table at all, so a rooted
+/// spelling is reported `unresolved`, first-class, no refusal (see
+/// `mrd::engine::answer_links`).
 fn links_with(
     index: &CorpusIndex,
     docs: &BTreeMap<String, Document>,
@@ -158,8 +133,8 @@ fn links_with(
                             .entry(path)
                             .or_insert(0) += 1;
                     }
-                    // An AMBIENT miss stays first-class and non-refusing — the
-                    // ordinary authoring state, byte-for-byte what it was.
+                    // An ambient miss stays first-class and non-refusing — the
+                    // ordinary authoring state.
                     RefResolution::NotFound { root: None, .. } => {
                         *entry.unresolved.entry(target.to_string()).or_insert(0) += 1;
                     }
@@ -194,13 +169,12 @@ pub fn backlinks(
     backlinks_with(index, docs, &RootedCorpus::ambient(docs), None, target)
 }
 
-/// [`backlinks`] against a ROOT-KEYED corpus and a mount table.
+/// [`backlinks`] against a root-keyed corpus and a mount table.
 ///
-/// `target` is an AMBIENT corpus path, and that is a v1 non-goal stated rather
-/// than left to be discovered: this enumerates ONE corpus, so a cross-vault link
-/// is visible from the source side only. Threading the mount table here is what
-/// keeps a rooted edge from being counted as an ambient backlink to the same
-/// basename — the reverse direction of FINDING 03.
+/// `target` is an ambient corpus path: this enumerates one corpus, so a
+/// cross-vault link is visible from the source side only. Threading the mount
+/// table here keeps a rooted edge from being counted as an ambient backlink to
+/// the same basename.
 #[must_use]
 pub fn backlinks_rooted(
     index: &CorpusIndex,
@@ -241,28 +215,22 @@ fn backlinks_with(
         .collect()
 }
 
-/// Edge resolution, split on ONE lexical question:
-/// [`addr::head_carries_root_separator`] — *could the address plane have
-/// something to say about this spelling?*
+/// Edge resolution, split on one lexical question —
+/// [`addr::head_carries_root_separator`]: could the address plane have
+/// something to say about this spelling?
 ///
-/// - **No** ⇒ the ambient plane, `resolve_linkpath`, unchanged. This map
-///   promises §4.6 `getFirstLinkpathDest` parity — the app's `resolvedLinks`
-///   semantics, stage 1 only, where a heading fragment never splits an edge.
-///   That is deliberately NOT the pin plane's three rules, so routing ambient
-///   spellings through [`CorpusIndex::resolve_ref`] would silently widen the
-///   contract this crate's header pins. Byte-for-byte the pre-U21 path.
-/// - **Yes** ⇒ the address owner, [`CorpusIndex::resolve_ref`], which peels the
+/// - No ⇒ the ambient plane, `resolve_linkpath` (§4.6 `getFirstLinkpathDest`
+///   parity, stage 1 only). Deliberately not the pin plane's three rules:
+///   routing ambient spellings through [`CorpusIndex::resolve_ref`] would
+///   silently widen the contract this crate's header pins.
+/// - Yes ⇒ the address owner, [`CorpusIndex::resolve_ref`], which peels the
 ///   root, looks it up in the mount table, and runs the three rules against
-///   THAT root's own corpus.
+///   that root's own corpus.
 ///
-/// **The same predicate gates all three sites, and that is load-bearing.**
-/// `resolve_linkpath`'s C-3 guard calls it, this split calls it, and the CLI's
-/// in-process degrade calls it. The guard is what stops a basename fallback
-/// answering the ambient root's file for a rooted address; before U21 its
-/// `None` reached the caller as *"unresolved"* rather than as *"you called the
-/// wrong resolver"*, which is the measured wrong answer. Two predicates that
-/// merely AGREE drift the moment either is edited, and the one that drifts is
-/// the silent one.
+/// The same predicate gates all three sites (`resolve_linkpath`'s guard, this
+/// split, the CLI's in-process degrade); two predicates that merely agree
+/// drift the moment either is edited. The guard is what stops a basename
+/// fallback answering the ambient root's file for a rooted address.
 ///
 /// An empty linkpath is the source itself (stage-1 parity, a self-reference).
 fn resolve_edge(
@@ -275,9 +243,9 @@ fn resolve_edge(
     if linkpath.is_empty() {
         return RefResolution::Ambient(source.to_string());
     }
-    // No mount authority ⇒ no standing to classify a rooted spelling at all.
-    // It falls through to the ambient plane, whose head-colon guard refuses it,
-    // and it is reported `unresolved` — byte-for-byte the pre-U21 answer.
+    // No mount authority ⇒ no standing to classify a rooted spelling: it falls
+    // through to the ambient plane, whose head-colon guard refuses it, and is
+    // reported `unresolved`.
     let Some(mounts) = mounts else {
         return match index.resolve_linkpath(linkpath, source) {
             Some(dest) => RefResolution::Ambient(dest),
@@ -292,7 +260,7 @@ fn resolve_edge(
         return match index.resolve_linkpath(linkpath, source) {
             Some(dest) => RefResolution::Ambient(dest),
             // The §4.6 edge map keys a dangling edge by the linkpath as
-            // WRITTEN, and a wikilink's fragment is carried beside its target
+            // written, and a wikilink's fragment is carried beside its target
             // rather than inside it — so there is no selector to report here.
             None => RefResolution::NotFound {
                 root: None,
@@ -331,33 +299,32 @@ pub struct RenamePlan {
     pub edits: Vec<(String, SpliceRequest)>,
 }
 
-/// Plan an in-file heading rename with corpus backlink fixup (rung 5, meridian's
-/// `mv` for a heading). `from_path` is the file holding the heading, `from` its
+/// Plan an in-file heading rename with corpus backlink fixup (meridian's `mv`
+/// for a heading). `from_path` is the file holding the heading, `from` its
 /// section ref (an `hpath`, or an `anchor` whose host section is renamed), `to`
-/// the new heading TEXT. Nothing is applied — the returned `edits` are
+/// the new heading text. Nothing is applied — the returned `edits` are
 /// `(path, batch)` splices the caller runs through `model::validate_batch` +
 /// `fs::apply_batch`, like every other write.
 ///
-/// Two properties this preserves, both asserted by U5.4's gate:
-/// - **Block ids survive.** The heading edit is a `match` over the heading LINE
-///   only (`## Old` → `## New`); every `^block-id` in the section BODY (and any
+/// Two preserved properties:
+/// - **Block ids survive.** The heading edit is a `match` over the heading line
+///   only (`## Old` → `## New`); every `^block-id` in the section body (and any
 ///   `^id` trailing the heading line) is byte-untouched.
 /// - **hpath pins redden, block pins keep their rev.** A dependent pinning
-///   `from_path#Old` (an hpath selector) resolves to nothing after the rename →
+///   `from_path#Old` resolves to nothing after the rename →
 ///   `red(selector-unresolved)`; one pinning a body `^block-id` still resolves,
 ///   at an unchanged rev (`model::selector::resolve_selector`). Backlink fixup
-///   rewrites `[[…]]` WIKILINKS, never lock pins — so pins redden as the law
-///   says.
+///   rewrites `[[…]]` wikilinks, never lock pins.
 ///
-/// Edit order is load-bearing: every backlink rewrite FIRST, the heading rename
-/// LAST — a self-referential link inside the renamed section is addressed by the
-/// section's OLD hpath, which the heading rename would invalidate if it ran
+/// Edit order is load-bearing: every backlink rewrite first, the heading rename
+/// last — a self-referential link inside the renamed section is addressed by
+/// the section's old hpath, which the heading rename would invalidate if it ran
 /// first.
 ///
-/// Stated limits (fail LOUD at apply, never silent corruption): renaming a
-/// heading that has SUB-sections refuses `would_corrupt` (the children's hpaths
+/// Stated limits (fail loud at apply, never silent corruption): renaming a
+/// heading that has sub-sections refuses `would_corrupt` (the children's hpaths
 /// would move); two byte-identical affected links in one section refuse
-/// `not_unique`. Both are the fuller span-grain rename's to close, not this unit.
+/// `not_unique`.
 #[must_use]
 pub fn plan_rename(
     index: &CorpusIndex,
@@ -390,16 +357,16 @@ pub fn plan_rename(
     }
     let section_ref = hpath_ref(section_hpath);
 
-    // Backlink fixup FIRST (see order note): every corpus wikilink/embed whose
-    // fragment is the renamed heading AND resolves to `from_path`.
+    // Backlink fixup first (see order note): every corpus wikilink/embed whose
+    // fragment is the renamed heading and resolves to `from_path`.
     for (src_path, src_doc) in docs {
         collect_backlink_edits(
             index, src_path, src_doc, from_path, &old_text, to, &mut edits,
         );
     }
 
-    // Heading rename LAST: a `match` over the heading LINE (marker + text) so the
-    // section BODY and any trailing `^id` on the line survive byte-for-byte.
+    // Heading rename last: a `match` over the heading line (marker + text) so the
+    // section body and any trailing `^id` on the line survive byte-for-byte.
     if let Some(edit) = heading_match_edit(doc, section, &old_text, to, section_ref) {
         edits.push((from_path.to_string(), single(edit)));
     }
