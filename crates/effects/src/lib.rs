@@ -867,25 +867,21 @@ mod tests {
 
     #[test]
     fn telemetry_marks_a_never_firing_rule_as_ok_empty() {
-        // A rule that runs on every event but emits nothing is DEAD (never fired)
-        // — the corpus-replay dead-rule signal is `Ok(vec![])`.
         let rule = Rule::new(
             "dead",
             "def on_change(event):\n    if \"nope\" in event.fields_changed:\n        notice(message = \"x\")\n",
         );
         let event = ChangeEvent::new("f.md", "a", "b");
         let tel = eval_telemetry(&[rule], &event, EvalLimits::default());
-        // The dead-rule signal is `Ok(vec![])` — the rule ran without faulting
-        // and emitted nothing. (Fuel is not the signal: Starlark's tick
-        // accounting is coarse, so a cheap false branch can legitimately read 0.)
+        // The dead-rule signal is `Ok(vec![])`, not fuel: Starlark tick
+        // accounting is coarse, so a cheap false branch can read 0.
         assert!(tel[0].outcome.as_ref().expect("ok").is_empty());
     }
 
     #[test]
     fn telemetry_isolates_a_faulting_rule_from_the_rest() {
-        // The batch path aborts on the first bad rule; telemetry must NOT — a
-        // faulting rule reports its own error while the others still report their
-        // effects (replay needs every rule's outcome).
+        // The batch path aborts on the first bad rule; telemetry must not —
+        // replay needs every rule's outcome.
         let good = Rule::new(
             "good",
             "def on_change(event):\n    notice(message = \"w\")\n",

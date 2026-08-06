@@ -981,7 +981,7 @@ mod tests {
     #[test]
     fn nesting_guard_threshold_is_exclusive() {
         // The cap is `>`: exactly MAX_NESTING_DEPTH is admitted, one deeper is
-        // rejected — for BOTH the bracket counter and the unary-run counter.
+        // rejected — for both the bracket and unary-run counters.
         let at_brackets = format!(
             "{}{}",
             "[".repeat(MAX_NESTING_DEPTH),
@@ -1024,9 +1024,8 @@ mod tests {
 
     #[test]
     fn skip_string_consumes_only_the_string_not_the_rest() {
-        // A string literal must be skipped EXACTLY — real nesting AFTER it still
-        // counts. If skip_string ran to end-of-input, the deep brackets below would
-        // be swallowed and wrongly admitted.
+        // A string literal must be skipped exactly — real nesting after it
+        // still counts.
         let src = format!(
             "a = \"x\"\nb = {}{}\n",
             "(".repeat(MAX_NESTING_DEPTH + 1),
@@ -1040,7 +1039,7 @@ mod tests {
 
     #[test]
     fn nesting_guard_admits_shallow_but_wide() {
-        // Many brackets, all depth 1 — must NOT trip (bounds depth, not count).
+        // Many brackets, all depth 1 — must not trip (bounds depth, not count).
         use std::fmt::Write as _;
         let mut src = String::new();
         for i in 0..2000 {
@@ -1093,9 +1092,8 @@ mod tests {
 
     #[test]
     fn long_n_run_is_one_identifier_not_a_not_chain() {
-        // A single 2000-char identifier of all `n`s. The `not` word-boundary guard
-        // must keep this ONE operand (unary run 0), not 2000 phantom `not`s — a
-        // regression guard on the guard's boundary check.
+        // A single 2000-char identifier of all `n`s must count as one operand,
+        // not 2000 phantom `not`s.
         let src = format!("x = {}\n", "n".repeat(2000));
         assert!(check_nesting_depth(&rule(&src)).is_ok());
     }

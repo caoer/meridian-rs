@@ -30,8 +30,8 @@ fn runaway_while_loop_terminates_as_budget() {
 
 #[test]
 fn unbounded_recursion_terminates_as_budget() {
-    // Starlark forbids top-level recursion detection is runtime; the tick guard
-    // stops it at a call boundary before the native stack overflows.
+    // The tick guard stops runtime recursion at a call boundary before the
+    // native stack overflows.
     let src = "def rec(n):\n    return rec(n + 1)\ndef on_change(event):\n    rec(0)\n";
     assert!(matches!(run(src, tight()), Err(EvalError::Budget { .. })));
 }
@@ -77,10 +77,9 @@ fn one_tick_budget_exhausts_a_real_rule() {
 
 #[test]
 fn deeply_nested_unary_is_rejected_not_crashed() {
-    // starlark-rust parser stack-overflow bug (research §1, issue #66): a long
-    // unary-op chain would recurse the parser and abort the process — uncatchable
-    // by catch_unwind. The pre-parse nesting-depth guard rejects it as a typed
-    // Parse error BEFORE the parser ever runs. `-` is a single-byte unary op.
+    // starlark-rust parser stack-overflow bug (issue #66): a long unary chain
+    // would recurse the parser and abort the process, uncatchable by
+    // catch_unwind. The pre-parse nesting guard rejects it before the parser.
     let mut src = String::from("def on_change(event):\n    x = ");
     src.push_str(&"-".repeat(50_000));
     src.push_str("1\n");
@@ -111,8 +110,8 @@ fn nested_brackets_are_rejected_not_crashed() {
 
 #[test]
 fn shallow_but_bracket_heavy_source_is_admitted() {
-    // A rule with MANY brackets but shallow nesting must NOT be rejected — the
-    // guard bounds depth, not count. 400 sequential (depth-1) tuples.
+    // Many brackets but shallow nesting must not be rejected — the guard
+    // bounds depth, not count.
     use std::fmt::Write as _;
     let mut body = String::from("def on_change(event):\n");
     for i in 0..400 {
@@ -148,7 +147,7 @@ fn source_exactly_at_cap_is_admitted() {
         run(src, limits).is_ok(),
         "a rule exactly at the cap must be admitted"
     );
-    // One byte over the same cap IS refused.
+    // One byte over the same cap is refused.
     let over = format!("{src} ");
     assert!(matches!(
         run(&over, limits),

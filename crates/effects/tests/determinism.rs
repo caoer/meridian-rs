@@ -57,7 +57,7 @@ proptest! {
         prop_assert_eq!(a, b);
     }
 
-    /// Within one event, each (rule_id, fingerprint_after, seq) key is UNIQUE —
+    /// Within one event, each (rule_id, fingerprint_after, seq) key is unique —
     /// no two effects collide on the dedup key.
     #[test]
     fn idempotency_keys_are_unique_within_an_event(event in any_event()) {
@@ -113,7 +113,7 @@ proptest! {
         prop_assert_eq!(json(&a), json(&b));
     }
 
-    /// Run-plane effects NEVER carry an idempotency key (a re-run is new
+    /// Run-plane effects never carry an idempotency key (a re-run is new
     /// intent, never a replay), and every one carries Run provenance.
     #[test]
     fn run_plane_effects_have_no_key_and_run_provenance(ctx in any_ctx()) {

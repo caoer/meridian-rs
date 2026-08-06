@@ -12,7 +12,7 @@ fn run(src: &str) -> Result<Vec<effects::Effect>, EvalError> {
     eval(&[Rule::new("purity", src)], &ev())
 }
 
-/// Every name a rule might reach for I/O is UNDEFINED — the rule faults rather
+/// Every name a rule might reach for I/O is undefined — the rule faults rather
 /// than performing the operation.
 #[test]
 fn io_shaped_names_are_undefined() {
@@ -50,8 +50,8 @@ fn io_shaped_names_are_undefined() {
     }
 }
 
-/// `load(...)` — module loading — is disabled at the dialect: a rule cannot pull
-/// in external symbols. It is a PARSE error, refused before any evaluation.
+/// `load(...)` is disabled at the dialect: a rule cannot pull in external
+/// symbols. A parse error, refused before any evaluation.
 #[test]
 fn load_statement_is_rejected() {
     let src = "def on_change(event):\n    pass\nload(\"other.star\", \"sym\")\n";
@@ -61,8 +61,8 @@ fn load_statement_is_rejected() {
     );
 }
 
-/// All seven descriptor constructors ARE defined — the closed capability surface
-/// is present in full. Each fires exactly one effect of its kind.
+/// All seven descriptor constructors are defined — the closed capability
+/// surface is present in full. Each fires exactly one effect of its kind.
 #[test]
 fn all_constructors_are_defined_and_emit_their_kind() {
     let cases: &[(&str, EffectKind)] = &[
