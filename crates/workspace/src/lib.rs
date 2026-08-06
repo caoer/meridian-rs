@@ -11,10 +11,10 @@
 //! **Never does:** disk writes of any kind. No registration, no sentinel, no cache
 //! directory creation — this crate only *names* a situation. Every rung resolves with no
 //! daemon and no side effects; the bottom rung returns an [`Answer::CwdDefault`] carrying
-//! the canonical cwd, and NEVER auto-registers. Warming an unanchored tree is an explicit
-//! `init` or the daemon's job (decision 0001, round 5), not this crate's.
+//! the canonical cwd, and never auto-registers. Warming an unanchored tree is an explicit
+//! `init` or the daemon's job, not this crate's.
 //!
-//! # The ladder answers ONE question, and the explicit planes sit above it
+//! # The ladder answers one question
 //! This ladder answers *"which root does this path belong to"*. Two other planes answer
 //! *"which root did someone name"*, and neither is a rung here:
 //!
@@ -22,36 +22,25 @@
 //!   machine binds. It cannot be a rung: `config` depends on this crate for
 //!   [`deny_reason`], so a declaration rung here would be a dependency cycle. A root's
 //!   `MERIDIAN.md` self-declaration (`type: meridian-root`) is therefore read by
-//!   `config`, never here — existence-only detection is exactly what the retired marker
-//!   did wrong, since it cannot tell a root declaration from a config.
+//!   `config`, never here.
 //! - the **declared root** on the serve path — the `hello` frame's `workspace` field,
-//!   pinned exactly by `registry::Registry::pin_declared`. A daemon has no meaningful
-//!   cwd, so it never enters this ladder at all.
+//!   pinned by `registry::Registry::pin_declared`. A daemon has no meaningful cwd, so it
+//!   never enters this ladder.
 //!
 //! The three planes meet at exactly one point: [`deny_reason`], reused whole by both,
 //! never re-implemented.
 //!
-//! **Dependencies:** `std` plus a single edge to `cache` for the one owner of cache-root
+//! **Dependencies:** `std` plus a single edge to `cache`, the one owner of cache-root
 //! resolution (the deny ceiling must name the same root the drawer addressing uses). No
-//! `wire`, `model`, or `sidecar` edge — Law 3 corollary holds; `cache` is a leaf utility,
-//! not a Go-facing crate.
+//! `wire`, `model`, or `sidecar` edge; `cache` is a leaf utility, not a Go-facing crate.
 //!
 //! # Identity is [`canonicalize`]
-//! Every path comparison and (later) fingerprint hash runs over the canonical form. On
-//! this target (macOS/APFS, case-insensitive default) [`std::fs::canonicalize`] resolves
-//! symlinks AND returns the on-disk directory-entry casing — a case-variant spelling
-//! (`mixedcase`) resolves to the real casing (`MixedCase`), so two spellings collapse to
-//! one identity for free. This is proven, not assumed: see the case-variant and symlink
-//! tests in `tests/discovery.rs`. Because `canonicalize` already yields on-disk case
-//! here, no per-component directory-entry resolver is needed. On a case-sensitive
-//! filesystem a case-variant spelling is a genuinely different path and correctly
-//! resolves to a different identity.
-//!
-//!
-//!
-//!
-//!
-//!
+//! Every path comparison runs over the canonical form. On this target (macOS/APFS,
+//! case-insensitive default) [`std::fs::canonicalize`] resolves symlinks and returns the
+//! on-disk directory-entry casing, so a case-variant spelling (`mixedcase`) resolves to
+//! the real casing (`MixedCase`) and two spellings collapse to one identity. On a
+//! case-sensitive filesystem a case-variant spelling is a genuinely different path and
+//! correctly resolves to a different identity.
 
 use std::env;
 use std::ffi::OsStr;
@@ -65,16 +54,16 @@ use std::path::{Path, PathBuf};
 pub const ENV_WORKSPACE: &str = "MERIDIAN_WORKSPACE";
 
 /// The git identity anchor. Present as a directory in a normal checkout,
-/// or as a FILE in a linked worktree (`gitdir:` pointer). Either spelling
+/// or as a file in a linked worktree (`gitdir:` pointer). Either spelling
 /// anchors the workspace at the directory that contains it; the pointer is
-/// never read or followed (per-worktree identity, decision 0001 round 4).
+/// never read or followed (per-worktree identity).
 const GIT_ENTRY: &str = ".git";
 
 /// Ceiling on the ancestor walk. Bounds the stat calls per resolution so a
 /// pathological deep tree (or a hung network mount) cannot make discovery
 /// unbounded. Real workspace paths sit far below 64 path components; a
 /// `.git` above this depth is not found, which degrades to the next rung
-/// rather than hanging (M3, adversarial review).
+/// rather than hanging.
 const MAX_WALK_DEPTH: usize = 64;
 
 /// Which rung of the discovery ladder answered.
@@ -104,19 +93,12 @@ impl Tier {
 
 /// What the ladder answered, and which rung answered it.
 ///
-/// # Why this is an enum with no public path field
-/// The previous shape was a struct carrying a public `workspace: PathBuf`
-/// beside its tier. That let every caller take the path and never read the
-/// tier — so an unanchored cwd became "the workspace" silently, which is the
-/// named failure mode of the marker-retirement ruling ("every resolution
-/// states which tier and which root answered — never silently").
-///
-/// The field is therefore deleted. [`Answer::root`] returns `None` for
-/// [`Answer::CwdDefault`], so a caller cannot reach a defaulted path by
-/// accident; reaching it takes [`Answer::root_or_cwd`], which is an explicit,
-/// greppable acknowledgment at the call site. [`Display`](fmt::Display)
-/// writes the provenance sentence — tier AND root — so no caller has to
-/// assemble it.
+/// An enum with no public path field, so a defaulted cwd can never silently
+/// become "the workspace": [`Answer::root`] returns `None` for
+/// [`Answer::CwdDefault`], and reaching a defaulted path takes
+/// [`Answer::root_or_cwd`] — an explicit, greppable acknowledgment at the
+/// call site. [`Display`](fmt::Display) writes the provenance sentence — tier
+/// and root — so no caller has to assemble it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Answer {
     /// [`ENV_WORKSPACE`] named this root.
@@ -288,13 +270,12 @@ pub fn resolve_with_override(
         return Ok(Answer::EnvOverride { root });
     }
 
-    // Canonicalize the cwd ONCE (M3): ancestors are then derived by
+    // Canonicalize the cwd once: ancestors are then derived by
     // path-component trimming — no per-ancestor canonicalize syscall.
     let canonical = canonicalize(cwd)?;
 
-    // Rung 2 — the nearest `.git`. With the marker retired there is nothing
-    // that beats git from higher up, so the first hit wins outright and the
-    // walk stops; no second candidate has to be remembered.
+    // Rung 2 — the nearest `.git`: the first hit wins outright and the walk
+    // stops.
     for dir in canonical.ancestors().take(MAX_WALK_DEPTH) {
         if has_git(dir) {
             return Ok(Answer::GitRoot {
@@ -349,13 +330,12 @@ impl fmt::Display for DenyReason {
 /// The deny-ceiling predicate: return the reason `path` must not become a
 /// workspace, or `None` when it is acceptable.
 ///
-/// Used later by the daemon and by `init`; here it is a pure, read-only
-/// predicate (it stats paths, never writes). It refuses `$HOME`, the
-/// filesystem root, mount points, `/tmp`, the XDG base directories, and any
-/// path descending from the meridian cache root (M1/m1, adversarial
-/// review). Both `path` and the reference directories are canonicalized
-/// before comparison, so an alternate spelling cannot smuggle past the
-/// ceiling.
+/// Used by the daemon and by `init`; a pure, read-only predicate (it stats
+/// paths, never writes). It refuses `$HOME`, the filesystem root, mount
+/// points, `/tmp`, the XDG base directories, and any path descending from
+/// the meridian cache root. Both `path` and the reference directories are
+/// canonicalized before comparison, so an alternate spelling cannot smuggle
+/// past the ceiling.
 #[must_use]
 pub fn deny_reason(path: &Path) -> Option<DenyReason> {
     let target = resolve_ref(path);
@@ -390,11 +370,10 @@ pub fn deny_reason(path: &Path) -> Option<DenyReason> {
 
 /// The meridian cache root: `${XDG_CACHE_HOME:-$HOME/.cache}/meridian`.
 /// Returns `None` when neither `XDG_CACHE_HOME` nor `HOME` is set. This
-/// only NAMES the root (for the deny ceiling); it creates nothing.
+/// only names the root (for the deny ceiling); it creates nothing.
 ///
-/// The resolution logic has ONE owner — [`cache::cache_root`] — so the deny
-/// ceiling refuses exactly the directory the drawer addressing uses; this is a
-/// thin delegation, never a second copy (leader reconciliation memo).
+/// The resolution logic has one owner — [`cache::cache_root`] — so the deny
+/// ceiling refuses exactly the directory the drawer addressing uses.
 #[must_use]
 pub fn cache_root() -> Option<PathBuf> {
     cache::cache_root().ok()
@@ -432,7 +411,7 @@ fn xdg_base_dirs() -> Vec<PathBuf> {
 }
 
 /// True when `path` is a mount point: its device id differs from its
-/// parent's (`st_dev` change, per the adversarial review's ceiling rule).
+/// parent's (`st_dev` change).
 fn is_mount_point(path: &Path) -> bool {
     let Ok(meta) = fs::metadata(path) else {
         return false;
