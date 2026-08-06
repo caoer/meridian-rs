@@ -554,23 +554,15 @@ fn start_daemon(sb: &Sandbox) -> registry::RunningServer {
     let reg_dir = sb.cache_root.join("registry");
     std::fs::create_dir_all(&reg_dir).expect("registry dir");
     let never = Duration::from_secs(365 * 24 * 60 * 60);
-    let config = registry::Config {
-        socket_path: reg_dir.join("daemon.sock"),
-        state_path: reg_dir.join("state.json"),
-        cache_root: sb.cache_root.clone(),
-        idle_threshold: never,
-        reap_interval: never,
-        prewarm_interval: never,
-        prewarm_quiet_max: never,
-        // No idle exit: this server's lifetime is the test's, and a daemon that
-        // reaped itself mid-assertion would fail as a flake, not a finding.
-        idle_exit: None,
-        push_write_timeout: registry::DEFAULT_PUSH_WRITE_TIMEOUT,
-        sub_idle_write_timeout: registry::DEFAULT_SUB_IDLE_WRITE_TIMEOUT,
-        // No build identity configured: this fixture is not testing the hello
-        // identity field, and an absent sha is the honest state for a server
-        // started from a test harness rather than a deployed binary.
-        build_sha: None,
-    };
+    let mut config = registry::Config::for_cache_root(sb.cache_root.clone());
+    config.socket_path = reg_dir.join("daemon.sock");
+    config.state_path = reg_dir.join("state.json");
+    config.idle_threshold = never;
+    config.reap_interval = never;
+    config.prewarm_interval = never;
+    config.prewarm_quiet_max = never;
+    // No idle exit: this server's lifetime is the test's, and a daemon that
+    // reaped itself mid-assertion would fail as a flake, not a finding.
+    config.idle_exit = None;
     registry::RunningServer::start(config).expect("daemon start")
 }
