@@ -1,0 +1,364 @@
+//! U2 — the `put()` builtin: pure arming of wire `splice.plan_edits[]` items,
+//! the single-CONTENT-path law, and the armed-edit ceiling.
+//!
+//! Authority: `docs/run-plane.md` § The script entry ("One CONTENT path per
+//! commit (v1 law)", "Recorded-read purity") and
+//! `decisions/2026-08-07-script-put-builtin-edit-grammar.md` § RULING (B′) —
+//! `put()` speaks the wire's second dialect, `splice.plan_edits[]`, so no third
+//! edit grammar is minted. The bare-`append=` target detail is settled at
+//! `decisions/2026-08-07-script-bare-append-target.md`.
+
+use std::collections::BTreeMap;
+
+use effects::{
+    EvalError, ReadFault, ScriptCtx, ScriptHost, ScriptLimits, SecFacts, TocEntry, TocFacts,
+    eval_script,
+};
+use wire::{HpathSeg, PlanEdit};
+
+/// A host that serves two pages and counts its calls — enough to prove `put()`
+/// consulted nothing.
+struct ArmHost {
+    calls: usize,
+}
+
+impl ArmHost {
+    fn new() -> Self {
+        Self { calls: 0 }
+    }
+}
+
+impl ScriptHost for ArmHost {
+    fn toc(&mut self, path: &str) -> Result<TocFacts, ReadFault> {
+        self.calls += 1;
+        let mut fm = BTreeMap::new();
+        fm.insert("owner".to_owned(), String::new());
+        fm.insert("status".to_owned(), "todo".to_owned());
+        Ok(TocFacts {
+            rev: format!("rev-{path}"),
+            fm,
+            toc: vec![TocEntry {
+                section: "Notes".to_owned(),
+                anchor: None,
+                rev: "sec-notes".to_owned(),
+            }],
+        })
+    }
+
+    fn cat(&mut self, path: &str, section: &str) -> Result<SecFacts, ReadFault> {
+        self.calls += 1;
+        Ok(SecFacts {
+            text: format!("{path}#{section}\n"),
+            rev: "sec-notes".to_owned(),
+        })
+    }
+
+    fn actor(&self) -> &'static str {
+        "8ab41c02"
+    }
+}
+
+/// A host that panics on every seam: `put()` reaching it is a test failure that
+/// cannot be missed (acceptance 4).
+struct PanicHost;
+
+impl ScriptHost for PanicHost {
+    fn toc(&mut self, _path: &str) -> Result<TocFacts, ReadFault> {
+        panic!("put() must perform zero I/O — the host was consulted");
+    }
+
+    fn cat(&mut self, _path: &str, _section: &str) -> Result<SecFacts, ReadFault> {
+        panic!("put() must perform zero I/O — the host was consulted");
+    }
+
+    fn actor(&self) -> &'static str {
+        "8ab41c02"
+    }
+}
+
+fn run(script: &str) -> effects::ScriptEval {
+    let ctx = ScriptCtx {
+        id: "s1".to_owned(),
+        args: Vec::new(),
+        files: vec!["tasks/0011.md".to_owned(), "tasks/0012.md".to_owned()],
+    };
+    eval_script(script, &ctx, ScriptLimits::default(), &mut ArmHost::new())
+}
+
+fn seg(h: &str) -> HpathSeg {
+    HpathSeg {
+        h: h.to_owned(),
+        n: None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Purity — acceptance 4
+// ---------------------------------------------------------------------------
+
+#[test]
+fn put_performs_no_host_call() {
+    let ctx = ScriptCtx {
+        id: "s1".to_owned(),
+        args: Vec::new(),
+        files: vec!["tasks/0011.md".to_owned()],
+    };
+    let eval = eval_script(
+        r#"
+put("tasks/0011.md", props={"owner": "8ab41c02"})
+put("tasks/0011.md", section="Notes", append="- a line\n")
+"#,
+        &ctx,
+        ScriptLimits::default(),
+        &mut PanicHost,
+    );
+    assert!(eval.outcome.is_ok(), "{:?}", eval.outcome);
+    assert_eq!(eval.armed.len(), 2);
+    assert_eq!(eval.telemetry.reads_used, 0);
+}
+
+// ---------------------------------------------------------------------------
+// The armed shapes are wire plan edits, carried verbatim — RULING (B′)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn props_arm_one_set_property_per_key_sorted() {
+    let eval = run(r#"put("tasks/0011.md", props={"status": "doing", "owner": "8ab41c02"})"#);
+    assert!(eval.outcome.is_ok(), "{:?}", eval.outcome);
+    let edits: Vec<&PlanEdit> = eval.armed.iter().map(|a| &a.edit).collect();
+    assert_eq!(
+        edits,
+        vec![
+            &PlanEdit::SetProperty {
+                key: "owner".to_owned(),
+                value: "8ab41c02".to_owned(),
+                rev: None,
+            },
+            &PlanEdit::SetProperty {
+                key: "status".to_owned(),
+                value: "doing".to_owned(),
+                rev: None,
+            },
+        ],
+        "one item per key, keys sorted — the MCP put face's own order \
+         (putregistry.go lowerPropPlans)"
+    );
+}
+
+#[test]
+fn append_arms_a_section_addressed_plan_append() {
+    let eval = run(r#"put("tasks/0011.md", section="Notes", append="- a line\n")"#);
+    assert!(eval.outcome.is_ok(), "{:?}", eval.outcome);
+    assert_eq!(
+        eval.armed[0].edit,
+        PlanEdit::Append {
+            hpath: vec![seg("Notes")],
+            body: "- a line\n".to_owned(),
+            rev: None,
+        }
+    );
+}
+
+#[test]
+fn a_nested_section_address_is_segments_not_a_joined_string() {
+    let eval = run(r#"put("tasks/0011.md", section="Notes/Fresh", append="x\n")"#);
+    assert!(eval.outcome.is_ok(), "{:?}", eval.outcome);
+    assert_eq!(
+        eval.armed[0].edit,
+        PlanEdit::Append {
+            hpath: vec![seg("Notes"), seg("Fresh")],
+            body: "x\n".to_owned(),
+            rev: None,
+        },
+        "§2.1 addresses are segments — a joined sanitized string is host debt"
+    );
+}
+
+#[test]
+fn a_bare_append_refuses_naming_the_missing_section() {
+    // decisions/2026-08-07-script-bare-append-target.md: an empty hpath refuses
+    // NotFound in both dialects, so a document-grain append has no wire target.
+    let eval = run(r#"put("tasks/0011.md", append="- a line\n")"#);
+    let Err(EvalError::Runtime { reason, .. }) = &eval.outcome else {
+        panic!("expected a runtime refusal, got {:?}", eval.outcome);
+    };
+    assert!(
+        reason.contains("section"),
+        "the refusal must name the missing address: {reason}"
+    );
+    assert!(eval.armed.is_empty(), "a refusal arms nothing");
+}
+
+#[test]
+fn a_put_with_no_edit_kwarg_refuses() {
+    let eval = run(r#"put("tasks/0011.md")"#);
+    assert!(
+        matches!(eval.outcome, Err(EvalError::Runtime { .. })),
+        "a put that arms nothing is a caller error, not a silent no-op: {:?}",
+        eval.outcome
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The single-CONTENT-path law — acceptance 1 and 2
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_second_content_path_refuses_multi_file_write_set() {
+    let eval = run(r#"
+put("tasks/0011.md", props={"owner": ""})
+put("tasks/0012.md", props={"owner": ""})
+"#);
+    let Err(EvalError::MultiFileWriteSet {
+        line,
+        first,
+        second,
+        ..
+    }) = &eval.outcome
+    else {
+        panic!("expected multi_file_write_set, got {:?}", eval.outcome);
+    };
+    assert_eq!(*line, 3, "the refusal names the source line of the 2nd arm");
+    assert_eq!(first, "tasks/0011.md");
+    assert_eq!(second, "tasks/0012.md");
+    let rendered = eval.outcome.as_ref().unwrap_err().to_string();
+    assert!(
+        rendered.contains("multi_file_write_set") && rendered.contains("tasks/0012.md"),
+        "golden scenario 2a's face line names the second path: {rendered}"
+    );
+}
+
+#[test]
+fn the_first_arm_survives_the_refusal_for_the_face() {
+    // Golden scenario 2a renders `armed … [not committed]` for the arms that
+    // landed before the refusal — the armed list is evidence, not truncated.
+    let eval = run(r#"
+put("tasks/0011.md", props={"owner": ""})
+put("tasks/0012.md", props={"owner": ""})
+"#);
+    assert!(eval.outcome.is_err());
+    assert_eq!(eval.armed.len(), 1);
+    assert_eq!(eval.armed[0].path, "tasks/0011.md");
+}
+
+#[test]
+fn many_edits_to_one_path_do_not_refuse() {
+    let eval = run(r#"
+put("tasks/0011.md", props={"owner": "8ab41c02", "status": "doing"})
+put("tasks/0011.md", section="Notes", append="- claimed\n")
+"#);
+    assert!(eval.outcome.is_ok(), "{:?}", eval.outcome);
+    assert_eq!(eval.armed.len(), 3, "2 props + 1 append = 3 plan items");
+    assert_eq!(eval.content_paths(), vec!["tasks/0011.md"]);
+}
+
+#[test]
+fn the_receipt_companion_is_not_an_armed_content_path() {
+    // §6.4: a receipt rides the splice request's own `receipt:{path,anchor}`
+    // field, appended in the SAME batch commit (§6.1 — one fingerprint advance
+    // covering both files). It is never a `put()` target, so the law over armed
+    // paths cannot forbid the two-file receipt commit.
+    let eval = run(r#"put("tasks/0011.md", props={"owner": "8ab41c02"})"#);
+    assert!(eval.outcome.is_ok(), "{:?}", eval.outcome);
+    assert_eq!(eval.content_paths(), vec!["tasks/0011.md"]);
+    assert!(
+        eval.armed.iter().all(|a| !a.path.starts_with("receipts/")),
+        "the script mints no receipt — the engine does, outside the armed list"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The armed ceiling — acceptance 3
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_sixty_fifth_armed_edit_refuses_without_truncating() {
+    let eval = run(r#"
+for i in range(65):
+    put("tasks/0011.md", section="Notes", append="- line " + str(i) + "\n")
+"#);
+    let Err(EvalError::ArmedBudget { limit, .. }) = &eval.outcome else {
+        panic!(
+            "expected an armed-edit budget refusal, got {:?}",
+            eval.outcome
+        );
+    };
+    assert_eq!(*limit, 64);
+    assert_eq!(
+        eval.armed.len(),
+        64,
+        "the ceiling refuses the 65th — it never truncates the 64 that landed"
+    );
+}
+
+#[test]
+fn exactly_the_ceiling_is_legal() {
+    let eval = run(r#"
+for i in range(64):
+    put("tasks/0011.md", section="Notes", append="- line " + str(i) + "\n")
+"#);
+    assert!(eval.outcome.is_ok(), "{:?}", eval.outcome);
+    assert_eq!(eval.armed.len(), 64);
+}
+
+// ---------------------------------------------------------------------------
+// Arm order, line, depth — acceptance 5
+// ---------------------------------------------------------------------------
+
+#[test]
+fn arm_order_is_source_execution_order() {
+    let eval = run(r#"
+for n in ["b", "a", "c"]:
+    put("tasks/0011.md", section="Notes", append=n)
+"#);
+    assert!(eval.outcome.is_ok(), "{:?}", eval.outcome);
+    let bodies: Vec<String> = eval
+        .armed
+        .iter()
+        .map(|a| match &a.edit {
+            PlanEdit::Append { body, .. } => body.clone(),
+            other => panic!("unexpected {other:?}"),
+        })
+        .collect();
+    assert_eq!(bodies, vec!["b", "a", "c"], "execution order, never sorted");
+}
+
+#[test]
+fn every_armed_edit_records_its_source_line_and_nesting_depth() {
+    let eval = run(r#"
+def claim(path):
+    put(path, props={"owner": "8ab41c02"})
+
+put("tasks/0011.md", section="Notes", append="- top level\n")
+claim("tasks/0011.md")
+"#);
+    assert!(eval.outcome.is_ok(), "{:?}", eval.outcome);
+    assert_eq!(eval.armed[0].line, 5);
+    assert_eq!(eval.armed[0].depth, 0, "a top-level arm is depth 0");
+    assert_eq!(eval.armed[1].line, 3);
+    assert_eq!(
+        eval.armed[1].depth, 1,
+        "an arm inside a def is depth 1 — recorded, never suppressed"
+    );
+}
+
+#[test]
+fn a_read_and_an_arm_interleave_in_one_script() {
+    let eval = run(r#"
+card = read("tasks/0011.md")
+if card.fm["owner"] == "":
+    put("tasks/0011.md", props={"owner": me(), "status": "doing"})
+"#);
+    assert!(eval.outcome.is_ok(), "{:?}", eval.outcome);
+    assert_eq!(eval.telemetry.reads_used, 1);
+    assert_eq!(eval.armed.len(), 2, "golden scenario 1: 2 edits, one file");
+    assert_eq!(
+        eval.armed[0].edit,
+        PlanEdit::SetProperty {
+            key: "owner".to_owned(),
+            value: "8ab41c02".to_owned(),
+            rev: None,
+        },
+        "me() threads the host's actor into the armed value"
+    );
+}

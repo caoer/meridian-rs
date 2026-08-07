@@ -77,6 +77,25 @@ perform no I/O at call time. The law: **script eval is a pure function of
 read response, so re-evaluating against the recorded responses is
 deterministic and byte-identical. Decision #17 (no exec) stands unchanged.
 
+**The arming surface — `put()` speaks the wire's second edit dialect.**
+`put(path, props={…})` arms one `set_property` plan item per key, keys sorted;
+`put(path, section="…", append="…")` arms one section-addressed `append`. These
+are `splice.plan_edits[]` items (§A.3) carried **verbatim** — the armed list IS
+`plan_edits[]`, lowered by the engine's existing intake
+(`wire-serve::plan::lower`), so no third edit grammar is minted and the wire
+schema is untouched. One `put()` call may arm several items; arm order is
+execution order, and each armed item records its source line and nesting depth.
+Depth is a trace fact only: **an applied effect renders at any depth** — the
+echo/quiet rule governs reads, not arms.
+
+An `append` **addresses a section**. `PlanEdit::Append` carries an hpath and an
+empty one refuses `NotFound`, so a document-grain append has no wire target; a
+bare `append=` with no `section=` refuses at arm time rather than minting a
+default section, and the MCP `put` face refuses the same shape in the same
+words. A `props=` write needs no section — frontmatter is file-grain.
+Addresses are segments: `section="Notes/Fresh"` is two segments, never a joined
+string.
+
 **The statement-position rule — echo and quiet.** Every read is recorded; the
 face renders only the ones the reader wrote as a decision. A read **echoes**
 exactly when its call is the whole right-hand side of a top-level assignment,
