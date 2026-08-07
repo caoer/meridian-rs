@@ -561,8 +561,17 @@ pub enum EvalError {
         /// The configured limit.
         limit: usize,
     },
-    /// No entry for the addressed plane, or the other plane's entry is present.
-    /// One entry per plane; planes never cross.
+    /// The script plane's read ceiling was reached — refused, never truncated.
+    ReadBudget {
+        /// The script that asked for one read too many.
+        rule_id: String,
+        /// The ceiling it hit (`ScriptLimits::max_reads`).
+        limit: usize,
+    },
+    /// No hook for the addressed plane, or the other plane's hook is present.
+    /// One hook per hooked plane, and they never cross — the script entry has
+    /// no hook at all (its module top level IS the program), so it never
+    /// raises this.
     MissingEntry {
         /// The offending rule/task.
         rule_id: String,
@@ -593,6 +602,11 @@ impl std::fmt::Display for EvalError {
             } => write!(
                 f,
                 "rule '{rule_id}' source is {bytes} bytes, over the {limit}-byte parse limit"
+            ),
+            EvalError::ReadBudget { rule_id, limit } => write!(
+                f,
+                "script '{rule_id}' exceeded the read budget of {limit} reads per attempt — \
+                 refused, never truncated"
             ),
             EvalError::MissingEntry {
                 rule_id,
@@ -683,6 +697,311 @@ pub fn eval_run(task: &Rule, ctx: &RunCtx, limits: EvalLimits) -> Result<Vec<Eff
         let globals = kernel::effect_globals();
         kernel::run_task(&globals, task, ctx, limits)
     })
+}
+
+// ---------------------------------------------------------------------------
+// The script entry (kernel entry #3) — `docs/run-plane.md` § The script entry.
+// ---------------------------------------------------------------------------
+
+/// Inert script-plane inputs (the [`RunCtx`] precedent): all caller-supplied,
+/// none minted here. `files` carries **paths only, pre-enumerated and sorted by
+/// the host** — content enters only through `read()`, so it is recorded and
+/// replay stays byte-identical. There is no `glob()` builtin.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ScriptCtx {
+    /// Script identity, used for error provenance only.
+    pub id: String,
+    /// The caller's arguments, injected as the inert `args` binding.
+    pub args: Vec<String>,
+    /// Host-enumerated paths, injected as the inert `files` binding.
+    pub files: Vec<String>,
+}
+
+/// Script-plane budgets: [`EvalLimits`] verbatim plus the read ceiling — the
+/// I/O-amplification axis the other two entries do not have (they read nothing).
+/// Every ceiling is a typed refusal, never silent truncation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScriptLimits {
+    /// Fuel / mem / call depth / source bytes, shared with the other entries.
+    pub eval: EvalLimits,
+    /// Max host reads per attempt. Exceeding it → [`EvalError::ReadBudget`].
+    pub max_reads: usize,
+}
+
+impl Default for ScriptLimits {
+    fn default() -> Self {
+        Self {
+            eval: EvalLimits::default(),
+            max_reads: 64,
+        }
+    }
+}
+
+/// The one effectful seam of the script entry. Its only production implementor
+/// is the wire client (reads lower to `toc`/`cat` through the one door); tests
+/// and replay implement it too, which is what makes the replay law testable.
+///
+/// The kernel calls `actor` once per attempt, before eval — identity is
+/// threaded (§9), never minted.
+///
+/// `Send` because eval runs on the kernel's own large-stack thread (the
+/// parse-recursion guard); the host is moved onto it and back, never shared.
+pub trait ScriptHost: Send {
+    /// The §4.1 toc face for `path`.
+    ///
+    /// # Errors
+    /// A [`ReadFault`] when the host cannot serve the page; the script aborts.
+    fn toc(&mut self, path: &str) -> Result<TocFacts, ReadFault>;
+
+    /// The §4.2 cat face for one `section` of `path`. There is no whole-file
+    /// body: read one section, not the disk.
+    ///
+    /// # Errors
+    /// A [`ReadFault`] when the host cannot serve the section; the script aborts.
+    fn cat(&mut self, path: &str, section: &str) -> Result<SecFacts, ReadFault>;
+
+    /// The caller's own identity, returned by the `me()` builtin.
+    fn actor(&self) -> &str;
+}
+
+/// Why a host could not serve a read. Rendered by the consumer plane; the
+/// script aborts whole (nothing partial ever lands).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReadFault {
+    /// The path that was asked for.
+    pub path: String,
+    /// The section, when the cat face was asked for.
+    pub section: Option<String>,
+    /// The host's reason, carried verbatim.
+    pub reason: String,
+}
+
+impl std::fmt::Display for ReadFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.section {
+            Some(section) => write!(
+                f,
+                "read({:?}, section={section:?}): {}",
+                self.path, self.reason
+            ),
+            None => write!(f, "read({:?}): {}", self.path, self.reason),
+        }
+    }
+}
+
+/// The toc face (§4.1): the page rev, its frontmatter, and its section map.
+/// A frontmatter key the page does not carry is **absent from `fm`** — never a
+/// synthesized empty value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TocFacts {
+    /// The page rev at read time.
+    pub rev: String,
+    /// Frontmatter as read; absence is absence.
+    pub fm: BTreeMap<String, String>,
+    /// The section map, in document order.
+    pub toc: Vec<TocEntry>,
+}
+
+/// One toc row: the section, its optional `^anchor`, and its node rev.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TocEntry {
+    /// The section heading.
+    pub section: String,
+    /// The block anchor, when the row carries one. Absence stays absence.
+    pub anchor: Option<String>,
+    /// The node rev of this section.
+    pub rev: String,
+}
+
+/// The cat face (§4.2): one section's text and its rev.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SecFacts {
+    /// The section text.
+    pub text: String,
+    /// The node rev of that section.
+    pub rev: String,
+}
+
+/// Which face a recorded read carries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum ReadFace {
+    /// `read(path)` — the toc face.
+    Toc(TocFacts),
+    /// `read(path, section=…)` — the cat face.
+    Section(SecFacts),
+}
+
+/// Where a read call sat in the source. The face renders `Echo` reads and stays
+/// quiet about `Quiet` ones; both are recorded either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum ReadPosition {
+    /// A top-level statement read — `card = read(…)` binds and echoes.
+    Echo,
+    /// A nested read — loop bodies, comprehensions, conditions, functions.
+    Quiet,
+}
+
+/// One recorded host response, in call order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReadRecord {
+    /// The path read.
+    pub path: String,
+    /// The section, when the cat face was asked for.
+    pub section: Option<String>,
+    /// 1-based source line of the call.
+    pub line: u32,
+    /// Whether the call sat at module top level or nested.
+    pub position: ReadPosition,
+    /// The response, recorded verbatim — this is what replay serves.
+    pub face: ReadFace,
+}
+
+/// Everything the host answered during one attempt. Replay is a pure function
+/// of `(script, args, files, recording)`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ScriptRecording {
+    /// The actor the host reported, recorded so `me()` replays too.
+    pub actor: String,
+    /// Every read response, in call order.
+    pub reads: Vec<ReadRecord>,
+}
+
+/// Measurement of one attempt. Unconditional — reported even on failure
+/// (the [`RuleTelemetry`] precedent).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ScriptTelemetry {
+    /// Exact Starlark ticks spent.
+    pub fuel_used: u64,
+    /// Peak eval-heap bytes.
+    pub mem_used: u64,
+    /// Host reads performed.
+    pub reads_used: usize,
+    /// Elapsed monotonic milliseconds (a duration, not a clock reading).
+    pub wall_ms: u64,
+}
+
+/// What one script evaluation produced: the module's top-level bindings, in
+/// name order, rendered as Starlark reprs. The inert inputs (`args`, `files`)
+/// are inputs, not results, and are excluded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ScriptFacts {
+    /// Top-level bindings the script left behind.
+    pub bindings: BTreeMap<String, String>,
+}
+
+/// One script attempt: its typed outcome, everything the host answered, and
+/// unconditional telemetry.
+#[derive(Debug, Clone)]
+pub struct ScriptEval {
+    /// The eval facts, or why the attempt refused.
+    pub outcome: Result<ScriptFacts, EvalError>,
+    /// The recorded reads — present whether the attempt succeeded or not.
+    pub recording: ScriptRecording,
+    /// Always present.
+    pub telemetry: ScriptTelemetry,
+}
+
+/// Evaluate inline `script` at kernel entry #3: **the module top level IS the
+/// program** — no hook lookup, so a script with no `def` is legal and a script
+/// defining `def run` simply leaves it unused.
+///
+/// `read()` is the one effectful builtin and reaches `host`; every response is
+/// recorded. The law: eval is a pure function of `(script, args, files,
+/// read-response sequence)`, so [`replay_script`] against the recording is
+/// byte-identical. The change and run planes are untouched — the script
+/// builtins do not join their globals.
+#[must_use]
+pub fn eval_script(
+    script: &str,
+    ctx: &ScriptCtx,
+    limits: ScriptLimits,
+    host: &mut dyn ScriptHost,
+) -> ScriptEval {
+    kernel::run_script(script, ctx, limits, host)
+}
+
+/// Re-evaluate `script` against a `recording` instead of a live host — the
+/// replay law made callable. Consults nothing: the recording IS the world.
+///
+/// A script that asks for something the recording does not hold (a different
+/// path, a different face, one read too many) refuses rather than serving a
+/// substitute — a replay that forged a response would forge determinism.
+#[must_use]
+pub fn replay_script(
+    script: &str,
+    ctx: &ScriptCtx,
+    limits: ScriptLimits,
+    recording: &ScriptRecording,
+) -> ScriptEval {
+    let mut host = RecordedHost::new(recording);
+    kernel::run_script(script, ctx, limits, &mut host)
+}
+
+/// A [`ScriptHost`] that serves a [`ScriptRecording`] in call order. Backs
+/// [`replay_script`]; also usable directly to re-run one attempt's world.
+pub struct RecordedHost<'r> {
+    recording: &'r ScriptRecording,
+    next: usize,
+}
+
+impl<'r> RecordedHost<'r> {
+    /// Serve `recording` from its first read.
+    #[must_use]
+    pub fn new(recording: &'r ScriptRecording) -> Self {
+        Self { recording, next: 0 }
+    }
+
+    /// Take the next recorded response, refusing on divergence.
+    fn next_face(&mut self, path: &str, section: Option<&str>) -> Result<&'r ReadFace, ReadFault> {
+        let fault = |reason: String| ReadFault {
+            path: path.to_owned(),
+            section: section.map(ToOwned::to_owned),
+            reason,
+        };
+        let record = self
+            .recording
+            .reads
+            .get(self.next)
+            .ok_or_else(|| fault("the recording holds no further read".to_owned()))?;
+        if record.path != path || record.section.as_deref() != section {
+            return Err(fault(format!(
+                "diverges from the recording, which holds read #{} of {:?} section={:?}",
+                self.next + 1,
+                record.path,
+                record.section
+            )));
+        }
+        self.next += 1;
+        Ok(&record.face)
+    }
+}
+
+impl ScriptHost for RecordedHost<'_> {
+    fn toc(&mut self, path: &str) -> Result<TocFacts, ReadFault> {
+        match self.next_face(path, None)? {
+            ReadFace::Toc(facts) => Ok(facts.clone()),
+            ReadFace::Section(_) => Err(ReadFault {
+                path: path.to_owned(),
+                section: None,
+                reason: "the recording holds a section face here, not a toc face".to_owned(),
+            }),
+        }
+    }
+
+    fn cat(&mut self, path: &str, section: &str) -> Result<SecFacts, ReadFault> {
+        match self.next_face(path, Some(section))? {
+            ReadFace::Section(facts) => Ok(facts.clone()),
+            ReadFace::Toc(_) => Err(ReadFault {
+                path: path.to_owned(),
+                section: Some(section.to_owned()),
+                reason: "the recording holds a toc face here, not a section face".to_owned(),
+            }),
+        }
+    }
+
+    fn actor(&self) -> &str {
+        &self.recording.actor
+    }
 }
 
 #[cfg(test)]

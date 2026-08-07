@@ -18,6 +18,10 @@ workspace = true
 starlark = { workspace = true }
 # `#[starlark_module]` builtins return `anyhow::Result`; the effect constructors use it.
 anyhow = { workspace = true }
+# The parsed-AST types behind `AstModule`: the script entry walks the module's
+# top-level statements once, at parse time, to learn which `read(…)` calls sit in
+# echo position. Same exact pin as `starlark` — one AST, never two.
+starlark_syntax = { workspace = true }
 # Effect descriptors serialize for golden snapshots and the (reserved) wire
 # `effects[]` field. serde derive only — pure, no I/O.
 serde = { workspace = true }

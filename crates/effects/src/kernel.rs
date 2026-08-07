@@ -13,7 +13,7 @@
 //! names (`open`, `print`, …) fault as [`EvalError::Runtime`].
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use starlark::environment::{Globals, GlobalsBuilder, Module};
 use starlark::eval::Evaluator;
@@ -25,10 +25,12 @@ use starlark::values::dict::AllocDict;
 use starlark::values::list::UnpackList;
 use starlark::values::none::NoneType;
 use starlark::values::structs::AllocStruct;
+use starlark_syntax::syntax::ast::{AstExpr, AstStmt, Expr, Stmt};
 
 use crate::{
     ArgValue, ChangeEvent, ChangeFact, Effect, EffectKind, EvalError, EvalLimits, EventFacts,
-    Provenance, Rule, RunCtx,
+    Provenance, ReadFace, ReadFault, ReadPosition, ReadRecord, Rule, RunCtx, ScriptCtx, ScriptEval,
+    ScriptFacts, ScriptHost, ScriptLimits, ScriptRecording, ScriptTelemetry, SecFacts, TocFacts,
 };
 
 /// Optional string as Starlark: value or `None`. Absence must stay absence —
@@ -81,6 +83,17 @@ fn rule_dialect() -> Dialect {
     Dialect {
         enable_load: false,
         ..Dialect::Standard
+    }
+}
+
+/// Script dialect: the rule dialect plus top-level statements. The script
+/// entry's module top level IS the program, so `if` / `for` at the top level
+/// are the ordinary case there — while a rule or task, which must define a
+/// hook, keeps the stricter grammar. `load` stays disabled on both.
+fn script_dialect() -> Dialect {
+    Dialect {
+        enable_top_level_stmt: true,
+        ..rule_dialect()
     }
 }
 
@@ -236,10 +249,20 @@ fn is_word_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
+/// What `Evaluator::extra` carries — one type, one downcast, per-plane content.
+/// The hooked planes carry the [`EmitStore`]; the script plane carries its
+/// injected host seam. A builtin asking for the wrong one is a loud fault.
+#[derive(starlark::any::ProvidesStaticType)]
+enum PlaneStore<'h> {
+    /// Change / run planes: effect descriptors, provenance-stamped.
+    Emit(EmitStore),
+    /// Script plane: the one effectful seam plus its recorded reads.
+    Script(&'h ScriptEntry<'h>),
+}
+
 /// Emit store via `Evaluator::extra`: rule id, plane-typed [`Provenance`],
 /// depth, per-rule `seq`. Change path stamps fingerprints; run path stamps
 /// [`Provenance::Run`].
-#[derive(starlark::any::ProvidesStaticType)]
 struct EmitStore {
     rule_id: String,
     provenance: Provenance,
@@ -275,12 +298,34 @@ impl EmitStore {
     }
 }
 
-/// Downcast the emit store out of `Evaluator::extra`. Absent only if a constructor
+/// Downcast the plane store out of `Evaluator::extra`. Absent only if a builtin
 /// is somehow reached outside a metered run — a loud fault, never a silent drop.
-fn store<'a>(eval: &'a Evaluator<'_, '_, '_>) -> anyhow::Result<&'a EmitStore> {
+fn plane<'a, 'e>(eval: &'a Evaluator<'_, '_, 'e>) -> anyhow::Result<&'a PlaneStore<'e>> {
     eval.extra
-        .and_then(|e| e.downcast_ref::<EmitStore>())
-        .ok_or_else(|| anyhow::anyhow!("effect-api: constructor invoked without an emit store"))
+        .and_then(|e| e.downcast_ref::<PlaneStore<'e>>())
+        .ok_or_else(|| anyhow::anyhow!("kernel: builtin invoked without a plane store"))
+}
+
+/// The emit store, or a loud fault if a descriptor constructor ran on the
+/// script plane (where it is not registered — the surfaces are separate).
+fn store<'a>(eval: &'a Evaluator<'_, '_, '_>) -> anyhow::Result<&'a EmitStore> {
+    match plane(eval)? {
+        PlaneStore::Emit(store) => Ok(store),
+        PlaneStore::Script(_) => Err(anyhow::anyhow!(
+            "effect-api: constructor invoked on the script plane, which registers none"
+        )),
+    }
+}
+
+/// The script entry, or a loud fault if a script builtin ran on a hooked plane
+/// (which would mean `script_api` leaked into `effect_globals`).
+fn script<'e>(eval: &Evaluator<'_, '_, 'e>) -> anyhow::Result<&'e ScriptEntry<'e>> {
+    match plane(eval)? {
+        PlaneStore::Script(entry) => Ok(entry),
+        PlaneStore::Emit(_) => Err(anyhow::anyhow!(
+            "script-api: `read`/`me` invoked on a hooked plane, which grants no live reads"
+        )),
+    }
 }
 
 /// Insert an optional scalar argument when present.
@@ -442,6 +487,245 @@ fn effect_api(builder: &mut GlobalsBuilder) {
     }
 }
 
+/// Script-plane globals: Starlark stdlib + `read` / `me`. A SEPARATE surface —
+/// `effect_api` is deliberately absent, and these builtins never join
+/// [`effect_globals`]: sharing one surface would give `on_change` rules live
+/// reads and end the change plane's hermeticity-by-construction.
+pub(crate) fn script_globals() -> Globals {
+    GlobalsBuilder::standard().with(script_api).build()
+}
+
+/// The script entry's per-attempt state: the one effectful seam (`host`), the
+/// inert caller inputs, the echo positions read off the AST, and the recorded
+/// responses. Lives behind `Evaluator::extra` as [`PlaneStore::Script`].
+pub(crate) struct ScriptEntry<'h> {
+    host: RefCell<&'h mut dyn ScriptHost>,
+    actor: String,
+    args: Vec<String>,
+    files: Vec<String>,
+    max_reads: usize,
+    /// Resolved 0-based `(line, column)` of every `read(…)` call sitting in
+    /// echo position — a top-level statement, not nested.
+    echo_at: RefCell<BTreeSet<(usize, usize)>>,
+    reads: RefCell<Vec<ReadRecord>>,
+    /// The host's own refusal, kept typed for the consumer plane.
+    fault: RefCell<Option<ReadFault>>,
+    /// Set when the read ceiling refused, so the abort is classified as a
+    /// budget refusal rather than a script fault.
+    over_read_budget: Cell<bool>,
+    bindings: RefCell<BTreeMap<String, String>>,
+}
+
+/// The inert input names the script plane binds before eval. They are inputs,
+/// never results, so [`ScriptFacts::bindings`] excludes them.
+const SCRIPT_INPUTS: [&str; 2] = ["args", "files"];
+
+impl<'h> ScriptEntry<'h> {
+    fn new(ctx: &ScriptCtx, limits: ScriptLimits, host: &'h mut dyn ScriptHost) -> Self {
+        let actor = host.actor().to_owned();
+        Self {
+            host: RefCell::new(host),
+            actor,
+            args: ctx.args.clone(),
+            files: ctx.files.clone(),
+            max_reads: limits.max_reads,
+            echo_at: RefCell::new(BTreeSet::new()),
+            reads: RefCell::new(Vec::new()),
+            fault: RefCell::new(None),
+            over_read_budget: Cell::new(false),
+            bindings: RefCell::new(BTreeMap::new()),
+        }
+    }
+
+    /// Read the echo positions off the parsed module: a `read(…)` call is an
+    /// echo exactly when it is the whole right-hand side of a top-level
+    /// assignment, or a top-level expression statement. Everything else —
+    /// comprehensions, conditions, loop bodies, function bodies — is quiet.
+    fn note_echo_positions(&self, ast: &AstModule) {
+        fn top_level<'s>(stmt: &'s AstStmt, out: &mut Vec<&'s AstExpr>) {
+            match &**stmt {
+                Stmt::Statements(stmts) => {
+                    for s in stmts {
+                        top_level(s, out);
+                    }
+                }
+                Stmt::Assign(assign) => out.push(&assign.rhs),
+                Stmt::AssignModify(_, _, rhs) => out.push(rhs),
+                Stmt::Expression(expr) => out.push(expr),
+                _ => {}
+            }
+        }
+
+        let mut candidates = Vec::new();
+        top_level(ast.statement(), &mut candidates);
+        let mut echo = self.echo_at.borrow_mut();
+        for expr in candidates {
+            let Expr::Call(callee, _) = &**expr else {
+                continue;
+            };
+            let Expr::Identifier(ident) = &**callee.as_ref() else {
+                continue;
+            };
+            if ident.node.ident != "read" {
+                continue;
+            }
+            // The evaluator reports a call site as one of these two spans
+            // depending on how the frame was pushed; both name the same call,
+            // so matching either is exact, never approximate.
+            for span in [expr.span, callee.span] {
+                let begin = ast.file_span(span).resolve_span().begin;
+                echo.insert((begin.line, begin.column));
+            }
+        }
+    }
+
+    /// Serve one `read(…)`: enforce the ceiling, ask the host, record the
+    /// response in call order with its line and echo/quiet position.
+    fn read(
+        &self,
+        path: &str,
+        section: Option<&str>,
+        site: Option<(usize, usize)>,
+    ) -> anyhow::Result<ReadFace> {
+        if self.reads.borrow().len() >= self.max_reads {
+            self.over_read_budget.set(true);
+            return Err(anyhow::anyhow!(
+                "read budget of {} reads per attempt reached",
+                self.max_reads
+            ));
+        }
+        let answered = {
+            let mut host = self.host.borrow_mut();
+            match section {
+                Some(section) => host.cat(path, section).map(ReadFace::Section),
+                None => host.toc(path).map(ReadFace::Toc),
+            }
+        };
+        let face = match answered {
+            Ok(face) => face,
+            Err(fault) => {
+                let message = fault.to_string();
+                *self.fault.borrow_mut() = Some(fault);
+                return Err(anyhow::anyhow!(message));
+            }
+        };
+        let position = match site {
+            Some(site) if self.echo_at.borrow().contains(&site) => ReadPosition::Echo,
+            _ => ReadPosition::Quiet,
+        };
+        self.reads.borrow_mut().push(ReadRecord {
+            path: path.to_owned(),
+            section: section.map(ToOwned::to_owned),
+            // Source lines are 1-based for a reader; the resolver is 0-based.
+            line: site.map_or(0, |(line, _)| u32::try_from(line + 1).unwrap_or(u32::MAX)),
+            position,
+            face: face.clone(),
+        });
+        Ok(face)
+    }
+
+    /// Snapshot the module's top-level bindings as Starlark reprs, minus the
+    /// inert inputs.
+    fn capture_bindings(&self, module: &Module<'_>) {
+        let mut bindings = self.bindings.borrow_mut();
+        for name in module.names() {
+            let name = name.as_str();
+            if SCRIPT_INPUTS.contains(&name) {
+                continue;
+            }
+            if let Some(value) = module.get(name) {
+                bindings.insert(name.to_owned(), value.to_repr());
+            }
+        }
+    }
+
+    /// Everything the host answered this attempt.
+    fn recording(&self) -> ScriptRecording {
+        ScriptRecording {
+            actor: self.actor.clone(),
+            reads: self.reads.borrow().clone(),
+        }
+    }
+}
+
+/// Where the current builtin was called from, as a resolved 0-based
+/// `(line, column)`. `None` when the call did not come from source.
+fn call_site(eval: &Evaluator<'_, '_, '_>) -> Option<(usize, usize)> {
+    let span = eval.call_stack_top_location()?;
+    let begin = span.resolve_span().begin;
+    Some((begin.line, begin.column))
+}
+
+/// The script plane's entire builtin surface: one effectful reader and the
+/// caller's identity. No descriptor constructors (they arrive at U2), no exec,
+/// no enumeration — decision #17 stands permanently.
+#[starlark_module]
+fn script_api(builder: &mut GlobalsBuilder) {
+    /// `read(path)` → the toc face `{rev, fm, toc}` (§4.1);
+    /// `read(path, section=…)` → the cat face `{text, rev}` (§4.2). The only
+    /// effectful builtin; every response is recorded, which is what makes
+    /// replay byte-identical. There is no whole-file body.
+    fn read<'v>(
+        #[starlark(require = pos)] path: String,
+        #[starlark(require = named)] section: Option<String>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let site = call_site(eval);
+        let heap = eval.heap();
+        let face = script(eval)?.read(&path, section.as_deref(), site)?;
+        Ok(alloc_read_face(heap, &face))
+    }
+
+    /// `me()` → the caller's own identity, threaded in by the host (§9). The
+    /// engine mints no identity.
+    fn me(eval: &mut Evaluator<'_, '_, '_>) -> anyhow::Result<String> {
+        Ok(script(eval)?.actor.clone())
+    }
+}
+
+/// Allocate a recorded read response as its Starlark face.
+fn alloc_read_face<'v>(heap: Heap<'v>, face: &ReadFace) -> Value<'v> {
+    match face {
+        ReadFace::Toc(facts) => alloc_toc(heap, facts),
+        ReadFace::Section(facts) => alloc_section(heap, facts),
+    }
+}
+
+/// The toc face: `{rev, fm, toc}`. A frontmatter key the page does not carry is
+/// absent from `fm` — absence stays absence, never a synthesized `""`.
+fn alloc_toc<'v>(heap: Heap<'v>, facts: &TocFacts) -> Value<'v> {
+    let fm = heap.alloc(AllocDict(
+        facts
+            .fm
+            .iter()
+            .map(|(k, v)| (heap.alloc(k.as_str()), heap.alloc(v.as_str()))),
+    ));
+    let toc: Vec<Value<'v>> = facts
+        .toc
+        .iter()
+        .map(|entry| {
+            heap.alloc(AllocStruct([
+                ("section", heap.alloc(entry.section.as_str())),
+                ("anchor", opt_str(heap, entry.anchor.as_deref())),
+                ("rev", heap.alloc(entry.rev.as_str())),
+            ]))
+        })
+        .collect();
+    heap.alloc(AllocStruct([
+        ("rev", heap.alloc(facts.rev.as_str())),
+        ("fm", fm),
+        ("toc", heap.alloc(toc)),
+    ]))
+}
+
+/// The cat face: `{text, rev}` for one section.
+fn alloc_section<'v>(heap: Heap<'v>, facts: &SecFacts) -> Value<'v> {
+    heap.alloc(AllocStruct([
+        ("text", heap.alloc(facts.text.as_str())),
+        ("rev", heap.alloc(facts.rev.as_str())),
+    ]))
+}
+
 /// Peak eval-heap bytes as `u64` (saturating). Peak matches `set_max_heap_size`;
 /// post-eval GC cannot deflate it.
 fn heap_bytes(heap: Heap<'_>) -> u64 {
@@ -490,60 +774,143 @@ pub(crate) fn run_task(
     metered_eval(globals, task, &EvalEntry::Run(ctx), limits).outcome
 }
 
-/// Eval plane: hook name, injected value, stamped provenance. One entry per
-/// plane; wrong-plane source → [`EvalError::MissingEntry`].
+/// Eval plane: entry point, injected value, stamped provenance. The two hooked
+/// planes take one hook each and never cross (wrong-plane source →
+/// [`EvalError::MissingEntry`]); the script plane takes no hook at all — its
+/// module top level IS the program.
 pub(crate) enum EvalEntry<'a> {
     /// `on_change(event)` — change-plane provenance from the event's diff.
     Change(&'a ChangeEvent),
     /// `run(ctx)` — Run-plane provenance from the caller-supplied facts.
     Run(&'a RunCtx),
+    /// Inline source, kernel entry #3 — no hook, live `read()` through the
+    /// injected host, every response recorded.
+    Script(&'a ScriptEntry<'a>),
 }
 
-impl EvalEntry<'_> {
-    /// The hook name this plane calls.
-    fn name(&self) -> &'static str {
+impl<'a> EvalEntry<'a> {
+    /// The hook this plane calls, or `None` when the module top level is
+    /// already the whole program.
+    fn hook(&self) -> Option<&'static str> {
         match self {
-            EvalEntry::Change(_) => "on_change",
-            EvalEntry::Run(_) => "run",
+            EvalEntry::Change(_) => Some("on_change"),
+            EvalEntry::Run(_) => Some("run"),
+            EvalEntry::Script(_) => None,
         }
     }
 
-    /// The OTHER plane's hook name (for the wrong-plane diagnosis).
-    fn other(&self) -> &'static str {
+    /// The OTHER hooked plane's entry name (for the wrong-plane diagnosis).
+    fn other(&self) -> Option<&'static str> {
         match self {
-            EvalEntry::Change(_) => "run",
-            EvalEntry::Run(_) => "on_change",
+            EvalEntry::Change(_) => Some("run"),
+            EvalEntry::Run(_) => Some("on_change"),
+            EvalEntry::Script(_) => None,
         }
     }
 
-    /// The emit store this plane stamps: provenance + depth.
-    fn store(&self, rule: &Rule) -> EmitStore {
+    /// What this plane puts behind `Evaluator::extra`.
+    fn store(&self, rule: &Rule) -> PlaneStore<'a> {
         match self {
-            EvalEntry::Change(event) => EmitStore::new(
+            EvalEntry::Change(event) => PlaneStore::Emit(EmitStore::new(
                 &rule.id,
                 Provenance::Change {
                     fingerprint_before: event.fingerprint_before.clone(),
                     fingerprint_after: event.fingerprint_after.clone(),
                 },
                 event.depth,
-            ),
-            EvalEntry::Run(ctx) => EmitStore::new(
+            )),
+            EvalEntry::Run(ctx) => PlaneStore::Emit(EmitStore::new(
                 &ctx.task,
                 Provenance::Run {
                     invocation_id: ctx.invocation_id.clone(),
                     root_at_eval: ctx.root_at_eval.clone(),
                 },
                 0,
-            ),
+            )),
+            EvalEntry::Script(entry) => PlaneStore::Script(entry),
         }
     }
 
-    /// Allocate the injected argument value on the eval heap.
+    /// Allocate the injected argument value on the eval heap. The script plane
+    /// calls no hook, so it passes nothing.
     fn alloc<'v>(&self, heap: Heap<'v>) -> Value<'v> {
         match self {
             EvalEntry::Change(event) => alloc_event(heap, event),
             EvalEntry::Run(ctx) => alloc_ctx(heap, ctx),
+            EvalEntry::Script(_) => Value::new_none(),
         }
+    }
+
+    /// The grammar this plane parses under.
+    fn dialect(&self) -> Dialect {
+        match self {
+            EvalEntry::Change(_) | EvalEntry::Run(_) => rule_dialect(),
+            EvalEntry::Script(_) => script_dialect(),
+        }
+    }
+
+    /// Bind this plane's module-level inputs before eval. The hooked planes
+    /// pass their facts as the hook argument and bind nothing; the script
+    /// plane has no argument, so its inert inputs arrive as bindings.
+    fn bind(&self, module: &Module<'_>) {
+        if let EvalEntry::Script(entry) = self {
+            let heap = module.heap();
+            let args: Vec<Value<'_>> = entry.args.iter().map(|s| heap.alloc(s.as_str())).collect();
+            let files: Vec<Value<'_>> =
+                entry.files.iter().map(|s| heap.alloc(s.as_str())).collect();
+            module.set("args", heap.alloc(args));
+            module.set("files", heap.alloc(files));
+        }
+    }
+}
+
+/// Run one inline script at kernel entry #3 — the same metered machinery as the
+/// other two planes, minus the hook lookup. Telemetry is unconditional and the
+/// recording is returned whatever the outcome, so a refused attempt still says
+/// what it read.
+pub(crate) fn run_script(
+    source: &str,
+    ctx: &ScriptCtx,
+    limits: ScriptLimits,
+    host: &mut dyn ScriptHost,
+) -> ScriptEval {
+    let rule = Rule::new(&ctx.id, source.to_owned());
+    let started = std::time::Instant::now();
+    // The entry lives entirely on the eval stack (its cells are single-threaded
+    // by construction); only its harvested facts cross back.
+    let (run, recording, bindings, over_read_budget) = on_eval_stack(|| {
+        let entry = ScriptEntry::new(ctx, limits, host);
+        let globals = script_globals();
+        let run = metered_eval(&globals, &rule, &EvalEntry::Script(&entry), limits.eval);
+        let bindings = entry.bindings.borrow().clone();
+        (
+            run,
+            entry.recording(),
+            bindings,
+            entry.over_read_budget.get(),
+        )
+    });
+    let wall_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+    let outcome = match run.outcome {
+        Ok(_) => Ok(ScriptFacts { bindings }),
+        // The ceiling refuses typed, naming itself — never a generic fault and
+        // never a truncated read set.
+        Err(_) if over_read_budget => Err(EvalError::ReadBudget {
+            rule_id: rule.id.clone(),
+            limit: limits.max_reads,
+        }),
+        Err(e) => Err(e),
+    };
+    ScriptEval {
+        telemetry: ScriptTelemetry {
+            fuel_used: run.fuel_used,
+            mem_used: run.mem_used,
+            reads_used: recording.reads.len(),
+            wall_ms,
+        },
+        recording,
+        outcome,
     }
 }
 
@@ -601,8 +968,9 @@ fn metered_eval(
                 return RuleRun::failed(runtime(rule, e));
             }
             eval.extra = Some(&store);
+            entry.bind(&module);
 
-            let ast = match AstModule::parse(&rule.id, rule.source.clone(), &rule_dialect()) {
+            let ast = match AstModule::parse(&rule.id, rule.source.clone(), &entry.dialect()) {
                 Ok(ast) => ast,
                 Err(e) => {
                     return RuleRun::failed(EvalError::Parse {
@@ -612,39 +980,34 @@ fn metered_eval(
                 }
             };
 
-            let mut aborted = false;
-            let mut depth_overflow = false;
-            let mut fault: Option<String> = None;
-            let mut missing: Option<Option<&'static str>> = None;
-            match eval.eval_module(ast, globals) {
-                Ok(_) => match module.get(entry.name()) {
-                    Some(hook) => {
-                        if let Err(e) = eval.eval_function(hook, &[arg_value], &[]) {
-                            aborted = true;
-                            depth_overflow = is_depth_overflow(&e);
-                            fault = Some(e.to_string());
-                        }
-                    }
-                    // Missing entry; note wrong-plane if the other hook exists.
-                    None => missing = Some(module.get(entry.other()).map(|_| entry.other())),
-                },
-                Err(e) => {
-                    aborted = true;
-                    depth_overflow = is_depth_overflow(&e);
-                    fault = Some(e.to_string());
-                }
+            // The script plane's echo positions are read off this AST — the one
+            // parse, no second pass over the source.
+            if let EvalEntry::Script(script) = entry {
+                script.note_echo_positions(&ast);
             }
+
+            let EntryRun {
+                aborted,
+                depth_overflow,
+                fault,
+                missing,
+                wrong_plane,
+            } = dispatch_entry(&mut eval, &module, entry, ast, globals, arg_value);
 
             let used_steps = eval.get_total_tick_count();
             let used_mem = heap_bytes(module.heap());
             drop(eval);
-            let effects = store.effects.take();
+            let effects = match &store {
+                PlaneStore::Emit(store) => store.effects.take(),
+                // The script plane arms no `md.*` descriptors (plan decision 7).
+                PlaneStore::Script(_) => Vec::new(),
+            };
 
             let over_budget = used_steps > limits.fuel || used_mem > limits.mem;
-            let outcome = if let Some(wrong_plane) = missing {
+            let outcome = if missing {
                 Err(EvalError::MissingEntry {
                     rule_id: rule.id.clone(),
-                    expected: entry.name(),
+                    expected: entry.hook().unwrap_or_default(),
                     wrong_plane,
                 })
             } else if aborted {
@@ -679,6 +1042,69 @@ fn metered_eval(
             mem_used: limits.mem,
             outcome: Err(budget(limits)),
         },
+    }
+}
+
+/// How one plane's entry point finished: aborted with a fault, or (hooked
+/// planes only) found no hook — with the other plane's hook named when THAT is
+/// what the source defines.
+struct EntryRun {
+    aborted: bool,
+    depth_overflow: bool,
+    fault: Option<String>,
+    /// The hooked plane found no hook of its own.
+    missing: bool,
+    /// …and the other plane's hook is what the source defines instead.
+    wrong_plane: Option<&'static str>,
+}
+
+/// Evaluate the module, then enter the plane: the hooked planes look their hook
+/// up and call it with the injected facts; the script plane has no hook — its
+/// module top level was already the whole program, so entering it is exactly
+/// the subtraction of that lookup.
+fn dispatch_entry<'v>(
+    eval: &mut Evaluator<'v, '_, '_>,
+    module: &Module<'v>,
+    entry: &EvalEntry<'_>,
+    ast: AstModule,
+    globals: &Globals,
+    arg_value: Value<'v>,
+) -> EntryRun {
+    let aborted = |e: &starlark::Error| EntryRun {
+        aborted: true,
+        depth_overflow: is_depth_overflow(e),
+        fault: Some(e.to_string()),
+        missing: false,
+        wrong_plane: None,
+    };
+    let finished = EntryRun {
+        aborted: false,
+        depth_overflow: false,
+        fault: None,
+        missing: false,
+        wrong_plane: None,
+    };
+
+    if let Err(e) = eval.eval_module(ast, globals) {
+        return aborted(&e);
+    }
+    let Some(hook) = entry.hook() else {
+        if let EvalEntry::Script(script) = entry {
+            script.capture_bindings(module);
+        }
+        return finished;
+    };
+    let Some(hook) = module.get(hook) else {
+        // Missing entry; note wrong-plane if the other hook is what exists.
+        return EntryRun {
+            missing: true,
+            wrong_plane: entry.other().filter(|name| module.get(name).is_some()),
+            ..finished
+        };
+    };
+    match eval.eval_function(hook, &[arg_value], &[]) {
+        Ok(_) => finished,
+        Err(e) => aborted(&e),
     }
 }
 
@@ -787,6 +1213,73 @@ fn alloc_ctx<'v>(heap: Heap<'v>, ctx: &RunCtx) -> Value<'v> {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    /// Non-standard names of a globals set — what the plane adds to the stdlib.
+    fn plane_surface(globals: &Globals) -> HashSet<String> {
+        let standard: HashSet<String> = GlobalsBuilder::standard()
+            .build()
+            .names()
+            .map(|n| n.as_str().to_owned())
+            .collect();
+        globals
+            .names()
+            .map(|n| n.as_str().to_owned())
+            .filter(|n| !standard.contains(n))
+            .collect()
+    }
+
+    /// The three entries hold their surfaces separately, and the script
+    /// builtins never join the hooked planes' — otherwise `on_change` rules
+    /// would gain live reads and the change plane would stop being hermetic by
+    /// construction.
+    #[test]
+    fn the_three_entries_have_separate_global_surfaces() {
+        let hooked = plane_surface(&effect_globals());
+        let script = plane_surface(&script_globals());
+        println!("POPULATION hooked-plane surface = {hooked:?}");
+        println!("POPULATION script-plane surface = {script:?}");
+
+        // `on_change` and `run` share one surface — the shipped design, and it
+        // is byte-unchanged by the arrival of the script entry.
+        let expected_hooked: HashSet<String> = EffectKind::ALL
+            .iter()
+            .map(|k| k.constructor().to_owned())
+            .chain(crate::REACTION_VOCAB.iter().map(|s| (*s).to_owned()))
+            .collect();
+        assert_eq!(hooked, expected_hooked, "the hooked planes are unchanged");
+
+        let expected_script: HashSet<String> =
+            ["read", "me"].into_iter().map(ToOwned::to_owned).collect();
+        assert_eq!(
+            script, expected_script,
+            "the script plane adds read/me only"
+        );
+
+        assert!(
+            hooked.is_disjoint(&script),
+            "the two surfaces must not intersect: {:?}",
+            hooked.intersection(&script).collect::<Vec<_>>()
+        );
+        assert!(
+            !hooked.contains("read"),
+            "a live read must never reach the change or run plane"
+        );
+        for forbidden in [
+            "exec",
+            "subprocess",
+            "os",
+            "open",
+            "load",
+            "eval",
+            "print",
+            "glob",
+        ] {
+            assert!(
+                !script.contains(forbidden),
+                "the script sandbox must not expose `{forbidden}` (decision #17)"
+            );
+        }
+    }
 
     /// Pin `EffectKind::constructor` ↔ registered globals both ways.
     #[test]
