@@ -8,6 +8,7 @@
 
 use std::io;
 
+use effects::ReadFace;
 use mrd::script::cmd::attempt;
 use mrd::script::{Door, ScriptOutcome, TraceEntry};
 use serde_json::{Value, json};
@@ -20,6 +21,9 @@ const MOVED: &str = "b3:88aa1f4700112233445566778899aabbccddeeff0011223344556677
 /// The one page the fake daemon serves: an unowned card, exactly golden
 /// scenario 1's premise.
 const CARD: &str = "tasks/0011-token-audit.md";
+
+/// The card's whole-file word count, as the wire toc face reports it.
+const WORDS: usize = 41;
 
 /// The golden scenario 1 script, verbatim in shape: read the card, claim it if
 /// nobody holds it.
@@ -88,6 +92,17 @@ impl Door for Fake {
                 ],
             }})
             .to_string(),
+            // The composed read, toc mode: the op that carries `words_total`.
+            "read" => json!({"ok": true, "body": {
+                "path": CARD,
+                "file_rev": "7c40e1a8b2f9d356",
+                "root": ENTRY,
+                "words_total": WORDS,
+                "toc": [],
+                "anchors": [],
+                "rendered_text": "",
+            }})
+            .to_string(),
             "cat" => {
                 let content = match request["sec"]["fm_key"].as_str() {
                     Some("owner") => "owner:\n",
@@ -126,9 +141,9 @@ fn claim(door: &mut Fake, flags: &[&str]) -> mrd::script::ScriptTrace {
 /// harmless it looks — asserted as a closed set, so an addition fails rather
 /// than passing unnoticed.
 ///
-/// `hello` (§3.2) is issued by the door itself when it dials; the four this
-/// attempt speaks are `fingerprint` (§4.7), `toc` (§4.1), `cat` (§4.2) and
-/// `splice` (§4.4).
+/// `hello` (§3.2) is issued by the door itself when it dials; the five this
+/// attempt speaks are `fingerprint` (§4.7), `toc` (§4.1), `read` (§4.1, the
+/// composed read that carries `words_total`), `cat` (§4.2) and `splice` (§4.4).
 #[test]
 fn the_ops_on_the_socket_are_only_the_ones_the_contract_already_declares() {
     const DECLARED: [&str; 6] = ["hello", "fingerprint", "toc", "cat", "read", "splice"];
@@ -146,6 +161,32 @@ fn the_ops_on_the_socket_are_only_the_ones_the_contract_already_declares() {
     // commit through the one write op.
     assert!(door.asked("fingerprint") && door.asked("toc") && door.asked("splice"));
     assert_eq!(trace.outcome, ScriptOutcome::Committed);
+}
+
+/// `read(path)` IS the wire toc face 1:1, so the wire's own `words_total` rides
+/// the recorded face — a delivered fact the host carries, never one it computes
+/// (ruling 2026-08-07). The count comes from the composed `read` op: the `toc`
+/// op's body is `{path, file_rev, root, nodes}` and carries none. Answering 0
+/// instead renders `words:0` on a live face while the goldens render the true
+/// count, and nothing in a passing suite says so.
+#[test]
+fn the_recorded_toc_face_carries_the_wire_word_count() {
+    let mut door = Fake::new();
+    let trace = claim(&mut door, &["--actor", "8ab41c02"]);
+
+    let TraceEntry::Echo(read) = &trace.trace[0] else {
+        panic!(
+            "the first traced entry is the echoed read: {:?}",
+            trace.trace
+        );
+    };
+    let ReadFace::Toc(facts) = &read.face else {
+        panic!("read(path) records the toc face");
+    };
+    assert_eq!(
+        facts.words, WORDS,
+        "the composed read's words_total rides the face"
+    );
 }
 
 /// The commit is ONE splice, and it speaks the wire's second edit dialect: the

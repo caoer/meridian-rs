@@ -196,6 +196,21 @@ impl ScriptHost for WireHost<'_> {
             .and_then(Value::as_str)
             .ok_or_else(|| fault("toc answered no file_rev".to_owned()))?
             .to_owned();
+        // The word count is a DELIVERED fact, never one this host computes: the
+        // composed `read` op (§4.1, toc mode) carries `words_total`, while the
+        // `toc` op's own body is `{path, file_rev, root, nodes}` and carries
+        // none. Asking `read` costs one already-declared op and no wire schema
+        // delta, and a toc-mode read mints no receipt (`wire-serve::read`), so
+        // the extra ask is side-effect-free. Answering 0 instead is what renders
+        // `words:0` on a live face while the goldens render the truth.
+        let read_body = self.ask(&json!({"op": "read", "path": path}), &fault)?;
+        let words = usize::try_from(
+            read_body
+                .get("words_total")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| fault("read answered no words_total".to_owned()))?,
+        )
+        .map_err(|_| fault("read answered a words_total this host cannot hold".to_owned()))?;
         let nodes = body
             .get("nodes")
             .and_then(Value::as_array)
@@ -227,6 +242,7 @@ impl ScriptHost for WireHost<'_> {
             rev,
             fm,
             toc: nodes.iter().filter_map(toc_entry).collect(),
+            words,
         })
     }
 

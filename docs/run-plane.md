@@ -83,6 +83,17 @@ perform no I/O at call time. The law: **script eval is a pure function of
 read response, so re-evaluating against the recorded responses is
 deterministic and byte-identical. Decision #17 (no exec) stands unchanged.
 
+**`read(path)` IS the wire toc face, 1:1.** The recorded toc face is
+`{rev, fm, toc, words}`, and `words` is the wire's own `words_total` — a
+delivered fact the host carries, never a count the consumer plane computes. A
+script sees `t.words` for the same reason it sees `t.rev`: the wire answered
+it. **Which op answers it:** the composed `read` (§4.1, toc mode) carries
+`words_total`; the `toc` op's body is `{path, file_rev, root, nodes}` and
+carries none, so a whole-file `read(path)` asks both — `toc` for the rev and
+the section map, `read` for the count. Zero wire delta: both ops are already
+declared, and a toc-mode read mints no receipt, so the second ask is
+side-effect-free (ruling 2026-08-07, `words:` on the read face).
+
 **The arming surface — `put()` speaks the wire's second edit dialect.**
 `put(path, props={…})` arms one `set_property` plan item per key, keys sorted;
 `put(path, section="…", append="…")` arms one section-addressed `append`. These

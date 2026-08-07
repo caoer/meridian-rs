@@ -49,6 +49,7 @@ impl FixtureHost {
                             rev: "sec-notes".to_owned(),
                         },
                     ],
+                    words: 41,
                 },
             );
         }
