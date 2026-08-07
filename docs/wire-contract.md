@@ -209,7 +209,7 @@ Consequences are threaded at §3.1 (pipe debuggability restated at the socket), 
 
 ## §4 The op surface
 
-Ten ops. The five-verb interface maps onto them 1:1 (§4.8). Read ops are classified by the wire-op criterion: feeds-an-action → wire fact op; feeds-orientation → dashboard-only, NOT on this wire.
+Eleven ops in this table (the § A.3 standing additions `read` and `create` land on top, not re-tabled here). The five-verb interface maps onto the original ten 1:1 (§4.8). Read ops are classified by the wire-op criterion: feeds-an-action → wire fact op; feeds-orientation → dashboard-only, NOT on this wire.
 
 | Op | Rung (panel ladder) | Class |
 |---|---|---|
@@ -218,9 +218,10 @@ Ten ops. The five-verb interface maps onto them 1:1 (§4.8). Read ops are classi
 | `resolve` | 2 | walk plane — never mints |
 | `links` | 5 (view-shaped) | corpus fact — staleness triple (§10) |
 | `splice` | 4 | the ONLY write op, batch-only |
+| `check_write` | 4 | write pre-flight — the splice verdict standalone, read-only (§ A.3) |
 | `fingerprint` | 3 | integrity fact |
 | `diff` | 3 (reserved shape, standing) | replay (§7) |
-| `sub` | 5 (reserved shape, standing) | delta transport (§7) |
+| `sub` | 5 | delta transport (§7) — SERVED at the daemon door (§4.7) |
 
 The v1 §6.4 `Guard{root,path}` reserved op is **dropped**: the integrity surface is `root` + `splice.if_fingerprint` + `diff` — the mined commit-guard idiom gets its wire story without a second guard grammar: one construct, one grammar.
 
@@ -420,7 +421,7 @@ Shape mirrors the app's `resolvedLinks`/`unresolvedLinks` — per-edge counts; d
                                           to the live notification frames */ ]}}
 ```
 
-Replay ≡ live (§7.3). A fingerprint range outside the retained history → `fingerprint_unknown` → full resync (honest bound: §13.5). `sub` (rung 5) is a reserved shape — `{"op":"sub","from_seq":N}` → ok, then Notification frames each carrying one Delta batch; only the transport is deferred, the noun it carries is frozen here — rung 4/5 defers only transport.
+Replay ≡ live (§7.3). A fingerprint range outside the retained history → `fingerprint_unknown` → full resync (honest bound: §13.5). `sub` (rung 5) is **served** at the daemon door (`crates/registry/src/server.rs:1193-1213`): `{"op":"sub","from_seq":N}` → ack `{"root":…,"seq":N}` — the baseline root, so the first push frame's `root_before` matches — then the connection converts to push and carries Notification frames, each one Delta batch. A `from_seq` outside the retained ring refuses `root_unknown` with the diff-by-root catch-up remedy; a refused `sub` leaves an ordinary request channel. The delta stream is not actor-scoped: identities, revs, and spans only.
 
 ### §4.8 The five-verb interface, mapped
 
@@ -867,11 +868,12 @@ When a workspace is **armed** (attested INDEX present), after CAS and before byt
 | `armed_drift{armed_rev,report_rev}` | refresh | armed law drifted |
 | `cas_mismatch{expected,actual}` | refresh | node or create/remove CAS failed |
 
-### A.3 Composed `read`, `plan_edits`, `pin`, `create`, `hello.identity`
+### A.3 Composed `read`, `check_write`, `plan_edits`, `pin`, `create`, `hello.identity`
 
 | Surface | Role |
 |---|---|
 | `read` | Addressing + content + render at one snapshot; section selectors use §2.1 segments (or anchor / dewey). Not a joined string address. |
+| `check_write` | Standalone write pre-flight: the splice verdict computed without writing. Read-only. |
 | `splice.plan_edits` | Plan-level batch shapes; addresses are **segment arrays**. |
 | `splice.pin` | Pin rides the write choke-point; selector is segments/anchor. |
 | `create` | File birth through the guarded door; full body bytes. |
@@ -887,6 +889,12 @@ When a workspace is **armed** (attested INDEX present), after CAS and before byt
 
 - An `n`-less address that matches more than one node refuses `ambiguous_ref`-class at **every** door — read and write alike (`splice.plan_edits`, and any host lowering onto it). No door may pick an occurrence the caller did not name: the write-door refusal names each candidate's machine address (its `n`-carrying segment array) and teaches `n`, the same evidence the read door gives. Two doors, one answer — a selector one door refuses as ambiguous, no other door resolves.
 - The published loop is untouched: addresses the read face publishes carry `n` exactly where the document is ambiguous, so read → verbatim address → write always lands.
+
+**`check_write` — the standalone pre-flight (recorded 2026-08-07: the deployed host consumes this op on every guarded put):**
+
+- Request: `{"op":"check_write","path":…,"target":…,"actor":…,"now":…,"edits":[…]}`, strict-decoded, v3-only at dispatch (`crates/wire-serve/src/decode.rs:194-227`); advertised in v3 `caps` (`crates/wire-serve/src/rev.rs:103`). Each edit is `{op, at, find?, body?, rev?, all?}`; `at` is the §2.1 segment array (`{h, n?}`), the same shape the committer takes — the single-segment forms carry a block `^id` or a frontmatter key (`crates/wire/src/lib.rs:842-861`). `path` addresses the file under the workspace root; `target` is the raw host path that labels refusal strings.
+- Reply body: `{"refuse":…?, "repairs":[…], "forced":[…]}` (`crates/wire/src/lib.rs:990-999`). `refuse` absent = the write may proceed. `refuse` is `{class, code, message, remedy?}`; `class` picks the host's render template — `rebuild` (the candidate could not be built) vs `verdict` (the severity ladder refused). `repairs` are `{key, value}` autofill property sets the host folds into the same atomic write; `forced` echoes overridden warn rule-ids. `repairs`/`forced` always serialize, so the body is never shapeless.
+- Read-only over the warm engine (`crates/registry/src/server.rs:1173-1188`); a path outside the corpus is `file_not_found`. Mandatoriness stays host policy (§5.3): the engine computes the verdict, the host decides to refuse on it. `splice` re-runs the same verdict inside its own flock (`crates/wire-serve/src/write.rs:307-310`), closing the check→apply TOCTOU gap — the standalone op is the host's pre-flight and error-rendering surface; the splice-internal run is the law.
 
 CLI inventory (descriptive): `status.md`. Cross-root agent address grammar: `address-grammar.md`. Config parse: `meridian-md-schema.md`.
 

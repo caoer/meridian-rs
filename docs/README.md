@@ -22,6 +22,7 @@
 | Mint | `toc` / `cat` / `read` mint; `resolve` is walk plane (**no rev**) |
 | Content hash | Wire noun is **`fingerprint`** (`b3:…`) |
 | Spans | No client spans in requests |
+| Op reality | `check_write` is a consumed wire op (standalone splice verdict, read-only — wire-contract § A.3); `sub` is SERVED at the daemon door (wire-contract §4.7), not a reserved/future shape |
 
 ## Files in this directory
 
