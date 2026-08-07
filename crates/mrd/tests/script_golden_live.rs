@@ -1,4 +1,4 @@
-//! The six golden scenarios (`inbox/run-golden.html` v8) run through `mrd
+//! The six golden scenarios (`inbox/run-golden.html` v9) run through `mrd
 //! script` against a LIVE daemon, held to ONE law:
 //!
 //! > **write-follows-read** — a `put()` row's target must have been READ this
@@ -108,6 +108,18 @@ const S3A_ROUND_CLOSE: &str = r#"
 open_cards = [p for p in files
               if read(p).fm["owner"] == me()
               and read(p).fm["status"] != "done"]
+close = read("status/round-7.md", section="Close")
+put("status/round-7.md", section="Close",
+    append="- 8ab41c02: " + str(len(open_cards)) + " open at close\n")
+"#;
+
+/// 3A as golden v8 wrote it — the same append with its line-4 `read` removed.
+/// Not a golden scenario: it is the counter-example the law is stated against,
+/// and it exists so the ENGINE's refusal of an unread target stays pinned.
+const S3A_WITHOUT_ITS_READ: &str = r#"
+open_cards = [p for p in files
+              if read(p).fm["owner"] == me()
+              and read(p).fm["status"] != "done"]
 put("status/round-7.md", section="Close",
     append="- 8ab41c02: " + str(len(open_cards)) + " open at close\n")
 "#;
@@ -179,9 +191,11 @@ struct Scenario {
     writes: &'static [&'static str],
 }
 
-/// Every golden scenario EXCEPT 3A, which writes a target it never reads and is
-/// therefore held by its own test below —
-/// [`scenario_3a_appends_to_a_round_file_it_never_read`].
+/// Every golden scenario, 3A included: golden v9 gives it the one
+/// `read("status/round-7.md", section="Close")` its append's node rev comes from,
+/// so it conforms to the law like the rest. The refusal that reading buys off is
+/// pinned separately, against the ENGINE, by
+/// [`an_append_to_a_target_the_script_never_read_is_refused_whole`].
 const TABLE: &[Scenario] = &[
     Scenario {
         id: "1 · claim-if-unowned",
@@ -209,6 +223,15 @@ const TABLE: &[Scenario] = &[
         pin_entry: false,
         ends: Ends::Committed,
         writes: &[FILES[0]],
+    },
+    Scenario {
+        id: "3A · round close — count + append status",
+        source: S3A_ROUND_CLOSE,
+        files: true,
+        dry: false,
+        pin_entry: false,
+        ends: Ends::Committed,
+        writes: &[ROUND],
     },
     Scenario {
         id: "3B · claim-shaped conditional broadcast",
@@ -381,43 +404,42 @@ fn scenario_3b_reads_the_board_before_it_claims_the_round() {
     assert_eq!(trace.outcome, ScriptOutcome::Committed);
 }
 
-/// **Rider 1, the divergence — 3A writes a target it never reads.**
+/// **The law's other direction — the ENGINE must never let an unread target
+/// commit.**
 ///
-/// The golden page (v8) shows scenario 3A committing a one-line append to
-/// `status/round-7.md`, and its script never reads that file: the comprehension
-/// reads `files[]`, and the `put()` addresses a section of a page the run has no
-/// picture of. So the append row carries no node rev and the live daemon refuses
-/// it `guard_required` — the write-follows-read law working exactly as designed,
-/// against a page that depicts it not applying.
+/// The divergence this test was born for is closed: golden v8's 3A appended to
+/// `status/round-7.md` having read only `files[]`, so the append row went out
+/// `rev: null` and the live daemon refused the batch. The Advisor (`d1f489b5`,
+/// 2026-08-07) ruled that the engine was right and the page was one `read()`
+/// short — a GOLDEN TOUCH — and v9 gives 3A that read, which is why 3A now sits
+/// in [`TABLE`] as a conforming row.
 ///
-/// **This is a golden touch, not a code defect.** The engine is right; the page
-/// is one `read("status/round-7.md")` line short. Routed to the Advisor
-/// (`d1f489b5`) rather than fixed here — this test pins the refusal so the
-/// divergence cannot go quiet while the ruling is open, and it fails the moment
-/// 3A starts committing, which is the ruling landing.
+/// What stays is the guard pointing the other way. The v8 shape runs on here as
+/// a deliberate counter-example: a `put()` whose target this attempt never read
+/// carries no token, and the wire door must refuse the WHOLE batch with its own
+/// teaching wording. This test fails the moment the engine starts accepting one.
 #[test]
-fn scenario_3a_appends_to_a_round_file_it_never_read() {
-    const SCENARIO_3A: Scenario = Scenario {
-        id: "3A · round close — count + append status",
-        source: S3A_ROUND_CLOSE,
+fn an_append_to_a_target_the_script_never_read_is_refused_whole() {
+    const UNREAD_APPEND: Scenario = Scenario {
+        id: "3A without its read — the counter-example",
+        source: S3A_WITHOUT_ITS_READ,
         files: true,
         dry: false,
         pin_entry: false,
-        // Held to what it IS on a live daemon, not to what the page depicts.
         ends: Ends::ArmRefused,
         writes: &[ROUND],
     };
     let fixture = Fixture::start();
-    let (trace, door) = fixture.run(&SCENARIO_3A);
+    let (trace, door) = fixture.run(&UNREAD_APPEND);
 
     assert!(
         !read_paths(&trace).contains(&ROUND),
-        "3A now reads {ROUND} — the golden touch landed, so promote it into TABLE"
+        "the counter-example must not read {ROUND} — that is the whole premise"
     );
     let append = plan_rows(&door)
         .into_iter()
         .find(|row| row.get("append").is_some())
-        .expect("3A arms the append");
+        .expect("the counter-example arms the append");
     assert!(
         append["append"]["rev"].is_null(),
         "a target the script never read has no token to carry: {append}"
