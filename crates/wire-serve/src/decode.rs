@@ -125,6 +125,12 @@ pub fn decode(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody>> 
                 from_seq: req_u64(obj, op, "from_seq")?,
             })
         }
+        "mounts" => {
+            // § A.5: no parameters — the table is machine-scoped, and the
+            // strict wall makes that a fact a caller can trust.
+            check_fields(obj, op, &[])?;
+            Ok(Op::Mounts)
+        }
         "read" => decode_read(obj),
         "check_write" => decode_check_write(obj),
         "splice" => decode_splice(obj, rev),

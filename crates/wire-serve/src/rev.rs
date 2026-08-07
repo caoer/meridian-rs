@@ -108,6 +108,9 @@ pub fn project_response(frame: &mut Value) {
                 caps.push(Value::String("splice.create_rev".to_string()));
                 // Birth op at op grain (no dotted create.<field>).
                 caps.push(Value::String("create".to_string()));
+                // Mount-table discovery at op grain (§ A.5, the create
+                // precedent); the frozen v2 caps stay byte-identical.
+                caps.push(Value::String("mounts".to_string()));
                 caps.push(Value::String("hello.identity".to_string()));
             }
             body.insert("contract".to_string(), Value::String("v3".to_string()));
@@ -355,6 +358,7 @@ mod tests {
                 "splice.pin",
                 "splice.create_rev",
                 "create",
+                "mounts",
                 "hello.identity"
             ])
         );

@@ -47,6 +47,14 @@ wire-serve = { workspace = true }
 # graph via `wire-serve`, so no new external crate enters and `cargo deny` is
 # unchanged.
 receipt = { workspace = true }
+# The `mounts` op (wire-contract § A.5): the daemon serves the machine's
+# mount table — `config` owns resolve/parse/bind and every refusal word; the
+# daemon only projects. `blake3` mints the § A.5 freshness token
+# (`blake3(config bytes)[:16]`, the §1 file_rev law) for the per-call hash
+# gate — the same dev-edge precedent as `policy`/`effects` (blake3 stays
+# outside `model`'s public surface). Both already in the graph and lockfile.
+config = { workspace = true }
+blake3 = "1"
 
 [dev-dependencies]
 tempfile = "3"

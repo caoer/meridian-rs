@@ -21,6 +21,7 @@
 
 mod client;
 mod engine;
+mod mounts;
 mod protocol;
 mod registry;
 pub mod ring;
