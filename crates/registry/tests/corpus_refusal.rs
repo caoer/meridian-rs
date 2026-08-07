@@ -176,3 +176,44 @@ fn healthy_corpus_serves_unchanged() {
 
     server.shutdown();
 }
+
+/// The same law read from the other side: a code names a CONDITION, so a
+/// condition that is not "these bytes are not UTF-8" must not wear
+/// `invalid_utf8`. Two domain configs both decode perfectly — the workspace is
+/// ambiguous, not corrupt — so the refusal rides `io_error{cause}`, still env
+/// class, still carrying the remedy.
+#[test]
+fn two_domain_configs_refuse_as_io_error_not_invalid_utf8() {
+    let tmp = TempDir::new().unwrap();
+    let ws = write_ws(
+        &tmp,
+        &[
+            ("healthy.md", "# Healthy\n"),
+            ("meridian/domain.md", "---\nignore:\n  - \"a/**\"\n---\n"),
+            ("mdfs_config.yaml", "ignore:\n  - \"b/**\"\n"),
+        ],
+    );
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(server.socket_path());
+
+    let refusal = conn.hello(&ws);
+    assert_eq!(refusal["ok"], json!(false), "an ambiguous domain refuses: {refusal}");
+    let error = &refusal["error"];
+    assert_eq!(
+        error["code"],
+        json!("io_error"),
+        "the ambiguity is not a UTF-8 condition: {refusal}"
+    );
+    assert_eq!(error["recovery"], json!("env"), "io_error is env class: {refusal}");
+    let cause = error["cause"].as_str().unwrap_or_else(|| {
+        panic!("io_error carries its cause: {refusal}")
+    });
+    assert!(
+        cause.contains("meridian/domain.md")
+            && cause.contains("mdfs_config.yaml")
+            && cause.contains("Remedy:"),
+        "the remedy survives the remap: {refusal}"
+    );
+
+    server.shutdown();
+}

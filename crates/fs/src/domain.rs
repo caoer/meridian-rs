@@ -134,12 +134,17 @@ impl Domain {
     /// Both present is an error, not a precedence rule: two live ignore lists
     /// are two answers to "what is attested here", so the ambiguity is reported
     /// rather than resolved.
+    ///
+    /// The ambiguity is NOT `InvalidData`: the dispatch boundary reads that
+    /// kind as "a corpus file is not UTF-8" and mints `invalid_utf8`, which
+    /// would tell a caller their bytes are corrupt when both configs decode
+    /// perfectly. It rides the residual kind, so the wire face is
+    /// `io_error{cause}` — env class either way, and the remedy still travels.
     pub fn load(root: &WorkspaceRoot) -> io::Result<Domain> {
         let md = read_optional(&root.0.join(DOMAIN_CONFIG_PATH))?;
         let yaml = read_optional(&root.0.join(CONFIG_FILE_NAME))?;
         match (md, yaml) {
-            (Some(_), Some(_)) => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
+            (Some(_), Some(_)) => Err(io::Error::other(
                 format!(
                     "two domain configs are present: {DOMAIN_CONFIG_PATH} and {CONFIG_FILE_NAME}. \
                      They may declare different ignore lists, so which files are attested would \
