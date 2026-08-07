@@ -114,7 +114,7 @@ pub(crate) fn run(door: &mut dyn Door, parsed: &Script, source: &str) -> Result<
     if let Some(pinned) = &parsed.if_fingerprint
         && *pinned != entry
     {
-        return Ok(ScriptTrace::guard_refused(entry));
+        return Ok(ScriptTrace::guard_refused(entry, pinned));
     }
 
     // 3. Evaluate. Reads lower to `toc`/`cat` through the same door.

@@ -280,9 +280,37 @@ fn a_stale_caller_guard_performs_zero_reads_and_zero_splices() {
     assert_eq!(trace.outcome, ScriptOutcome::Conflict);
     assert!(trace.trace.is_empty(), "nothing was read and nothing armed");
     assert!(trace.commit.is_none(), "no splice, so no commit leg");
-    // `actual` needs no second shape: it IS the entry fingerprint.
-    assert_eq!(trace.entry_fingerprint, ENTRY);
     assert_eq!(trace.telemetry.reads_used, 0);
+
+    // The face's extras line needs BOTH tokens, and it renders from this trace
+    // and nothing else: `actual` IS the entry fingerprint, and `expected` is the
+    // caller's pinned value carried in band — the same pair the commit-time
+    // mismatch embeds, so one family renders one way.
+    assert_eq!(trace.entry_fingerprint, ENTRY, "actual");
+    assert_eq!(trace.guard_expected.as_deref(), Some(MOVED), "expected");
+    let json: Value = serde_json::to_value(&trace).expect("the contract serializes");
+    assert_eq!(json["guard_expected"], json!(MOVED));
+}
+
+/// `guard_expected` is present EXACTLY on a pre-eval guard refusal — it is the
+/// discriminator U7/U8 render "guard refused" from, so a run that reached the
+/// commit must not carry it or the two conflict terminals stop grepping apart.
+#[test]
+fn only_a_pre_eval_guard_refusal_carries_the_pinned_expected_token() {
+    let mut door = Fake::new();
+    let committed = claim(
+        &mut door,
+        &["--actor", "8ab41c02", "--if-fingerprint", ENTRY],
+    );
+    assert_eq!(committed.outcome, ScriptOutcome::Committed);
+    assert!(
+        committed.guard_expected.is_none(),
+        "the guard passed, so there is no refused premise to name"
+    );
+    assert!(
+        serde_json::to_value(&committed).expect("json")["guard_expected"].is_null(),
+        "absence stays absence on the wire-facing contract too"
+    );
 }
 
 /// The same guard, matching, is a courtesy check and nothing more: the run

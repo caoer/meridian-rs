@@ -176,14 +176,47 @@ is the honest answer to writing what you did not read. The two guards compose �
 `if_fingerprint` says the world stood still, each row's `rev` says the thing it
 edits is still what the script saw.
 
+**Amendment to § The script entry (the write-follows-read law).** The paragraph
+above records a mechanism — where each row's token comes from. It is amended to
+also state the **behavioural law** that mechanism creates, because a face built
+on the mechanism without the law would promise writes the engine refuses:
+
+> **A `put()` row's target must have been READ this attempt, or the row carries
+> no token and the wire door refuses the whole batch.**
+
+Three things follow, and only these three. First, the law binds **per attempt**,
+not per session: the recording is the run's own, so a retry that re-reads is
+guarded on what it re-read, and a run that reads nothing writes nothing. Second,
+it binds **at the row's grain** — a `props={…}` write needs the file read
+(`read(path)`), an `append` needs its section read (`read(path)` for the section
+map, or `read(path, section=…)`), so reading a file's toc licenses both and
+reading one section licenses only that section. Third, the refusal is the
+**engine's**, not the client's: the consumer plane mints nothing to satisfy the
+guard, it declines to, and `guard_required` comes back with the engine's own
+teaching text. `force` is not a script-plane door.
+
+Evidence, and where it is held: `crates/mrd/tests/script_golden_live.rs` runs
+every golden scenario (`inbox/run-golden.html` v8) through the real entry against
+a **live daemon** and asserts that every `plan_edits[]` row on the socket carries
+a token its own reads published. Eight of the nine conform. The ninth — golden
+**3A**, which appends to `status/round-7.md` without reading it — refuses
+`guard_required` on a live daemon and is pinned by its own test as an **open
+divergence in the page, not in the engine** (routed to the Advisor `d1f489b5`,
+2026-08-07). A page short one `read()` line is what this law looks like from
+outside.
+
 **`--dry` is a rehearsal, not a commit.** The splice carries `dry: true`, so the
 daemon builds the whole effect set and applies none of it; the response — with
 its own `dry: true` and `fingerprint_after: null` — rides the trace as the commit
 leg, and the outcome is `no_effect`, because nothing landed: no receipt, no
 fingerprint advance, workspace unchanged. Every armed entry stays
 `[not committed]`. A caller-guard refusal is `conflict` with **no** commit leg
-and zero telemetry: `expected` is the caller's own pinned value and `actual` IS
-the trace's `entry_fingerprint`, so no §5.1 body is minted to restate them.
+and zero telemetry: no splice was issued, so no §5.1 body exists to embed. Both
+extras tokens still ride the trace in band — `actual` IS the trace's
+`entry_fingerprint`, and `expected` is the caller's pinned value carried as
+`guard_expected`, present on exactly this terminal. The face renders from the
+trace and nothing else, and `conflict` + no commit leg + `guard_expected` is
+what tells a guard refusal apart from a commit-time mismatch.
 
 **The trace — one commit-fact shape, and no `attempts`.** The entry returns a
 `ScriptTrace`: the entry fingerprint, the outcome
