@@ -81,6 +81,10 @@ pub struct Registry {
     /// backoff and idle-exit both read this.
     requests: AtomicU64,
     last_request: AtomicU64,
+    /// § A.5 mount-table cache. Machine-scoped (not per-workspace): the
+    /// binding file lives outside every workspace's hash domain, so no
+    /// engine or ring can carry it.
+    mounts: crate::mounts::MountsCache,
     state: StateStore,
     cache_root: PathBuf,
 }
@@ -108,9 +112,17 @@ impl Registry {
             requests: AtomicU64::new(0),
             // Clock starts at birth so idle-exit can age an unused daemon.
             last_request: AtomicU64::new(now_secs()),
+            // Cold: the first `mounts` call derives the table.
+            mounts: crate::mounts::MountsCache::default(),
             state,
             cache_root,
         }
+    }
+
+    /// The machine-scoped mount-table cache the `mounts` op serves through
+    /// (§ A.5 config-hash freshness).
+    pub(crate) fn mounts_cache(&self) -> &crate::mounts::MountsCache {
+        &self.mounts
     }
 
     /// Register `path` as a warm workspace.

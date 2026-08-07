@@ -1022,6 +1022,17 @@ fn dispatch_read(
     op: Op,
     v3: bool,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
+    // § A.5 mount-table discovery: machine-scoped, so it dispatches BEFORE
+    // the binding guard — a workspace-less connection (a bare `hello`) may
+    // call it; the caller discovery exists for is exactly the agent that
+    // does not know a root yet. v3-only, like every post-freeze op.
+    if matches!(op, Op::Mounts) {
+        return if v3 {
+            crate::mounts::serve(registry.mounts_cache())
+        } else {
+            Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp)))
+        };
+    }
     let Some(ws) = attached else {
         return Err(wire_serve::bad_request(
             "no workspace bound — send `hello` with a `workspace` first",
@@ -1211,9 +1222,13 @@ fn dispatch_read(
                 seq: ring.seq(),
             })
         }
-        Op::Hello { .. } | Op::Read { .. } | Op::CheckWrite { .. } | Op::Create { .. } => {
-            Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp)))
-        }
+        // `Op::Mounts` is unreachable here (routed before the binding guard);
+        // it rides this arm for exhaustiveness only.
+        Op::Hello { .. }
+        | Op::Read { .. }
+        | Op::CheckWrite { .. }
+        | Op::Create { .. }
+        | Op::Mounts => Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp))),
     }
 }
 

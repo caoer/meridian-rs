@@ -686,6 +686,12 @@ pub enum Op {
         now: String,
         edits: Vec<CheckWriteEdit>,
     },
+    /// Mount-table discovery (§ A.5, v3-only at dispatch): the live root
+    /// registry. No parameters, and machine-scoped — the table is what
+    /// `~/MERIDIAN.md` binds for the whole machine, not a property of any
+    /// workspace, so no workspace binding is required: the caller discovery
+    /// exists for is exactly the agent that does not know a root yet.
+    Mounts,
 }
 
 // ---------------------------------------------------------------------------
@@ -885,6 +891,30 @@ pub struct CheckWriteRepair {
     pub value: String,
 }
 
+/// One `mounts` row (§ A.5): what this machine can say about one declared
+/// root. All three word fields are open strings on the wire — the tolerant-
+/// client law covers each; the engine's own closed types (`MountKind`,
+/// `MountState`) live in `config` and are projected here verbatim.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MountRow {
+    /// The canonical `MountName` — the bindable layer's spelling, lowercase
+    /// `[a-z0-9-]` (`address-grammar.md` § 4.3).
+    pub name: String,
+    /// `vault` | `git-folder` — the `MountKind` words verbatim.
+    pub kind: String,
+    /// The `MountState` reason word verbatim, ONE spelling across the human
+    /// line, `--json`, and this wire (`bound`, `grey(…)`, `red(…)`). Every
+    /// word but `bound` refuses: a client gates on `state == "bound"` and
+    /// treats an unrecognized word as not-bound — the tolerant-client law
+    /// applied to an open-for-amendment word set.
+    pub state: String,
+    /// The canonical bound path, post-canonicalization — the same handle
+    /// `hello` returns as `workspace`. Present exactly when the binding
+    /// canonicalized; absent at least on `grey(path-unseeable)`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+}
+
 /// The answering binary's build identity, carried by a v3 `hello` body.
 ///
 /// An object rather than a bare string so a later fact joins it without
@@ -1001,6 +1031,22 @@ pub enum ResponseBody {
         refuse: Option<CheckWriteRefuse>,
         repairs: Vec<CheckWriteRepair>,
         forced: Vec<String>,
+    },
+    /// The `mounts` reply (§ A.5, v3-only): the live mount table at one
+    /// derivation, under the config-hash freshness token.
+    ///
+    /// Shape-unique in this untagged enum: no other body carries a `mounts`
+    /// key, so neither direction can capture the other's frame.
+    Mounts {
+        /// The freshness token: `blake3(config file bytes)[:16]` — the
+        /// `file_rev` family (§1 rev sub-laws), opaque and equality-only; the
+        /// face caches against it and never parses it. Absent exactly when no
+        /// config file exists (state A) — the config plane's own
+        /// absent-vs-empty law (schema §2.2) carried to the wire.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        config_rev: Option<NodeRev>,
+        /// The live table, rows in document order.
+        mounts: Vec<MountRow>,
     },
     /// v2 §3.2: `proto` in effect, server name, the complete op-name set
     /// (`caps` includes dotted `op.field` strings for field-only amendments),
@@ -1551,6 +1597,13 @@ pub enum ErrorCode {
     /// send the token, or `force`. The CLI in-process door is exempt
     /// (local-operator trust) and never raises it.
     GuardRequired,
+    /// The machine's mount table failed to re-derive after the binding file
+    /// (`~/MERIDIAN.md`) changed — duplicate names/paths/vault names, nested
+    /// mounts, or the closed-schema refusals (§ A.5). The `mounts` op refuses
+    /// rather than serving the previous table as current. Extras: `path` (the
+    /// binding file) + `message` (names the offending entry, Law A-3c). Env
+    /// class — the binding file is an environment fact the caller must change.
+    MountTableInvalid,
 }
 
 impl ErrorCode {
@@ -1579,7 +1632,8 @@ impl ErrorCode {
             | ErrorCode::IoError
             | ErrorCode::InvalidUtf8
             | ErrorCode::DaemonOnly
-            | ErrorCode::ConventionFault => Recovery::Env,
+            | ErrorCode::ConventionFault
+            | ErrorCode::MountTableInvalid => Recovery::Env,
             ErrorCode::CasMismatch
             | ErrorCode::RefNotFound
             | ErrorCode::ArmedDrift
