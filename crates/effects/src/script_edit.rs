@@ -8,7 +8,7 @@
 //! the wire's second edit dialect, so no third grammar is minted and the wire
 //! schema is untouched.
 
-use wire::{HpathSeg, PlanEdit};
+use wire::{HpathSeg, PlanEdit, ReadSel};
 
 /// One armed edit: the wire plan-edit shape, the file it targets, and where in
 /// the source it was armed.
@@ -44,17 +44,35 @@ pub(crate) enum ArmRefusal {
     ArmedBudget { line: u32, limit: usize },
 }
 
-/// Split a `section=` address into §2.1 segments. Addresses are segments, never
-/// a joined sanitized string (`docs/laws.md` Law 3).
-pub(crate) fn section_segments(section: &str) -> Vec<HpathSeg> {
-    section
-        .split('/')
-        .filter(|s| !s.is_empty())
-        .map(|s| HpathSeg {
-            h: s.to_owned(),
-            n: None,
-        })
-        .collect()
+/// Parse a `section=` address into §2.1 segments, through the ONE
+/// human-string→selector door ([`ReadSel::parse`]) — the same door
+/// `read(path, section=…)` goes through on the read face.
+///
+/// Addresses are segments, never a joined sanitized string (`docs/laws.md`
+/// Law 3), and one grammar means one parser: a raw `split('/')` here would
+/// silently coerce `^r-000118` — an address the toc face itself PUBLISHES and
+/// the read face accepts — into a heading literally named `^r-000118`, arming a
+/// write at an address no document has.
+///
+/// # Errors
+/// The two spellings that are real addresses but not heading paths: an `^id`
+/// block address and a dewey ordinal. `PlanEdit::Append` carries an hpath, so
+/// neither has a wire target, and each refuses in its own words rather than
+/// being flattened into a heading.
+pub(crate) fn section_segments(section: &str) -> Result<Vec<HpathSeg>, String> {
+    match ReadSel::parse(section) {
+        ReadSel::Hpath { hpath } => Ok(hpath.into_iter().filter(|s| !s.h.is_empty()).collect()),
+        ReadSel::Anchor { anchor } => Err(format!(
+            "put(section=\"^{anchor}\") addresses a BLOCK, and an append addresses a heading \
+             path — the wire's append carries an hpath, so a block anchor has no target on it. \
+             ^{anchor} is a real address on the read face: read(path, section=\"^{anchor}\") \
+             works. To append, name the heading path the block sits under"
+        )),
+        ReadSel::Dewey { n } => Err(format!(
+            "put(section=\"{n}\") addresses a row of a table you are holding, not a document — a \
+             dewey ordinal is positional and does not survive an edit. Name the heading path"
+        )),
+    }
 }
 
 /// Build the plan items one `put()` call arms, in the order they reach the wire:
@@ -63,7 +81,8 @@ pub(crate) fn section_segments(section: &str) -> Vec<HpathSeg> {
 ///
 /// # Errors
 /// The caller's own message when the kwargs do not address a wire shape: a
-/// `props`-less, body-less call, or an `append` with no `section`. A bare
+/// `props`-less, body-less call, an `append` with no `section`, or a `section=`
+/// whose address is a block anchor or a dewey ordinal ([`section_segments`]). A bare
 /// `append` has no wire target — `PlanEdit::Append` carries an hpath and an
 /// empty one refuses `NotFound` in both dialects
 /// (`decisions/2026-08-07-script-bare-append-target.md`).
@@ -95,7 +114,7 @@ pub(crate) fn plan_items(
             );
         };
         items.push(PlanEdit::Append {
-            hpath: section_segments(section),
+            hpath: section_segments(section)?,
             body: body.to_owned(),
             rev: None,
         });
