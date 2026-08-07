@@ -197,6 +197,15 @@ lock = { workspace = true }
 # JSON output (the house grammar). All already in the graph.
 serde = { workspace = true }
 serde_json = { workspace = true }
+# U15 — the armed-set digest `mrd script --expect-armed` compares
+# (`crates/mrd/src/script/digest.rs`). sha256 rather than the blake3 the rev/hash
+# law uses, deliberately: this is not a rev, it is an agreement token whose other
+# reader is the Go MCP host, where sha256 is stdlib and blake3 is a new module —
+# and the cheaper an independent verification is to write, the less likely a host
+# invents a second canonicalization. `sha2` is already a workspace dependency and
+# already in the graph via `cache`, so no new external crate enters and
+# `cargo deny` is unchanged.
+sha2 = { workspace = true }
 # The `mrd test` scenario runner mounts each scenario's `base/` into a REAL
 # tmpdir (fidelity — the production write path lands actual bytes). `tempfile` is
 # already a graph dependency (dev-deps + other crates); no new external crate.

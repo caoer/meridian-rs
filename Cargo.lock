@@ -2139,6 +2139,7 @@ dependencies = [
  "run",
  "serde",
  "serde_json",
+ "sha2",
  "starlark",
  "syntax",
  "tempfile",

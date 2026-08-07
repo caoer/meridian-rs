@@ -3,7 +3,8 @@
 //!
 //! ```text
 //! mrd script [--actor A] [--now T] [--receipt PATH#ANCHOR] [--if-fingerprint FP]
-//!            [--files PATH]… [--args JSON] [--dry] [--json]  < script.star
+//!            [--expect-armed DIGEST] [--files PATH]… [--args JSON] [--dry]
+//!            [--json]  < script.star
 //! ```
 //!
 //! The source rides stdin, matching `mrd put`'s stdin seam. Everything else is
@@ -22,6 +23,15 @@
 //! entry fingerprint before evaluation — a fast-fail courtesy, refusing with
 //! zero reads and nothing armed — and the SAME value still rides the commit, so
 //! a world that moves during eval is still caught. Two checks, one value.
+//!
+//! A caller may also pin `--expect-armed <digest>`: the digest of the armed set
+//! it authorized. It is checked after rev threading and BEFORE the splice is
+//! issued, so a run that armed anything else sends nothing at all. This is the
+//! commit half of the arm/commit split — the host gates the arm's rows, then
+//! hands this digest to the commit child so "the two children arm identically"
+//! becomes a measurement instead of an argument. The digest has exactly one
+//! definition ([`super::digest::armed_digest`]) and the trace publishes it, so
+//! the host copies a string rather than re-deriving a second canonicalization.
 //!
 //! **Zero wire delta.** The ops are `hello`, `fingerprint`, `toc`, `cat`,
 //! `splice` — every one already on the wire. This verb invents no op, no field
@@ -146,6 +156,28 @@ pub(crate) fn run(door: &mut dyn Door, parsed: &Script, source: &str) -> Result<
     //    splice. The trace is assembled from the guarded list, so what it shows
     //    is what went on the wire.
     eval.armed = guarded(&eval.armed, &eval.recording);
+    // 5a. The caller's armed-set expectation, checked HERE — after rev threading,
+    // because the threaded token is part of what was armed, and before anything
+    // is issued. A mismatch means this child armed a set the host never gated, so
+    // the refusal has to happen while the splice is still unsent: detection after
+    // landing is not refusal (`docs/run-plane.md` § Sub-amendment (the armed-set
+    // expectation, `--expect-armed`)).
+    if let Some(expected) = &parsed.expect_armed {
+        let actual =
+            super::digest::armed_digest(&eval.armed.iter().map(|a| &a.edit).collect::<Vec<_>>());
+        if *expected != actual {
+            return Ok(ScriptTrace::assemble(
+                entry,
+                &eval,
+                CommitLeg::Refused(format!(
+                    "expect_armed_mismatch: this run armed {actual}, the caller pinned \
+                     {expected}. The armed set is not the one that was authorized, so NO \
+                     splice was issued — nothing was sent, nothing landed, no fingerprint \
+                     advanced. re-arm: run the arm leg again and gate the set it publishes"
+                )),
+            ));
+        }
+    }
     // The commit is a wire call like any other, so the clock binds on it like
     // any other (§ Where the budgets bind, layer 3). A run whose clock elapsed
     // during evaluation refuses PRE-COMMIT: nothing is issued, so nothing lands
@@ -468,6 +500,10 @@ pub(crate) struct Script {
     pub(crate) receipt: Option<(String, String)>,
     /// `--if-fingerprint`: the caller's own guard, checked twice on one value.
     pub(crate) if_fingerprint: Option<String>,
+    /// `--expect-armed`: the armed-set expectation. The digest the caller was
+    /// shown by the arm leg; this run refuses PRE-SPLICE unless its own armed
+    /// set hashes to the same value.
+    pub(crate) expect_armed: Option<String>,
     /// `--files` (repeatable): host-enumerated paths, sorted. Paths only —
     /// content enters through `read()` alone, which is what keeps replay
     /// byte-identical.
@@ -485,6 +521,7 @@ impl Script {
         let mut now = None;
         let mut receipt = None;
         let mut if_fingerprint = None;
+        let mut expect_armed = None;
         let mut files: Vec<String> = Vec::new();
         let mut script_args: BTreeMap<String, String> = BTreeMap::new();
         let mut dry = false;
@@ -512,6 +549,7 @@ impl Script {
                     now = Some(value);
                 }
                 "--if-fingerprint" => if_fingerprint = Some(value_of("--if-fingerprint")?),
+                "--expect-armed" => expect_armed = Some(value_of("--expect-armed")?),
                 "--files" => files.push(value_of("--files")?),
                 "--args" => {
                     let value = value_of("--args")?;
@@ -553,6 +591,7 @@ impl Script {
             now,
             receipt,
             if_fingerprint,
+            expect_armed,
             files,
             args: script_args,
             dry,
