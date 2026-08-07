@@ -365,18 +365,30 @@ fn refusal(path: &Path, demand: &Demand) -> Box<ErrorBody> {
                      token at FILE grain, or an explicit `force`"
                 }
             };
+            // The fix names the LAW first and a runnable command second, because
+            // the callers of this door do not share one surface. A raw wire
+            // client sends the token itself and `mrd read` is how it mints one;
+            // a SCRIPT never sees a rev at all — its tokens are threaded from
+            // its own recorded reads (`run-plane.md` § the write-follows-read
+            // law), so "send `if_node_rev`" is an unreachable remedy on that
+            // face and reading the target in the same script IS the reachable
+            // one. One message, both spellings: a face re-phrasing this text for
+            // its own callers would fork the refusal across two repos.
             let fix = match slot {
                 Slot::NativeNodeRev => format!(
-                    "Fix: run `mrd read {file} --json` and send that node's `sec_rev` as \
-                     `if_node_rev` on the edit — the read you already did carries it."
+                    "Fix: the token is the read you already did — send that node's `sec_rev` as \
+                     `if_node_rev` on the edit (`mrd read {file} --json` mints one; in a script, \
+                     read the section before the put() that writes it)."
                 ),
                 Slot::PlanRowRev => format!(
-                    "Fix: run `mrd read {file} --json` and send that section's `sec_rev` as `rev` \
-                     on the plan edit."
+                    "Fix: the token is the read you already did — send that section's `sec_rev` \
+                     as `rev` on the plan edit (`mrd read {file} --json` mints one; in a script, \
+                     read(\"{file}\", section=…) before the put() and the token threads itself)."
                 ),
                 Slot::PlanFileRev => format!(
-                    "Fix: run `mrd read {file} --json` and send its `file_rev` as `rev` on each \
-                     `set_property`."
+                    "Fix: the token is the read you already did — send its `file_rev` as `rev` on \
+                     each `set_property` (`mrd read {file} --json` mints one; in a script, \
+                     read(\"{file}\") before the put() and the token threads itself)."
                 ),
             };
             let mut e = ErrorBody::new(ErrorCode::GuardRequired);
