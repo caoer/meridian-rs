@@ -108,6 +108,20 @@ therefore load-bearing — the count is asked LAST, never second. A single
 `read(path, section=…)` is one `cat` and needs no bracket: one op is one
 revision by construction.
 
+**What the bracket does NOT catch, stated beside the guarantee it bounds.** A
+`file_rev` is content-derived, so an A→B→A sequence — a write and a
+byte-identical restoration, both landing inside one composed read — closes the
+bracket with two agreeing observations of A while the `cat` values in between
+were taken at B. The face is then internally consistent with A and the values
+came from a state that A also describes byte-for-byte, so nothing false is
+published; what is lost is the ability to SAY that the file did not move. The
+bracket is a revision-identity check, never a mutation counter, and the wire
+offers no mutation counter to check instead. The commit is unaffected either
+way: it carries the entry fingerprint and §5.1 checks it first, so a world that
+moved and came back still refuses there if the fingerprint moved. Naming this
+limit is the point — a guarantee stated without its known limit reads as a
+stronger claim than the mechanism makes.
+
 **The arming surface — `put()` speaks the wire's second edit dialect.**
 `put(path, props={…})` arms one `set_property` plan item per key, keys sorted;
 `put(path, section="…", append="…")` arms one section-addressed `append`. These

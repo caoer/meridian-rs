@@ -581,8 +581,8 @@ impl Door for StallingFake {
 /// to be the one leg no clock touched: a run whose whole budget went into a slow
 /// read still issued its splice, however late.
 ///
-/// Measured against a control that differs in ONE thing — how long the first
-/// `toc` takes. The proof is not the outcome word alone but the SOCKET CENSUS:
+/// Measured against a control that differs in ONE thing — how long the CLOSING
+/// `read` of that composition takes. The proof is not the outcome word alone but the SOCKET CENSUS:
 /// the refused run never asked `splice`, so nothing was issued and nothing could
 /// have landed.
 ///
