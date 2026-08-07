@@ -163,8 +163,12 @@ pub(crate) fn run(door: &mut dyn Door, parsed: &Script, source: &str) -> Result<
     // landing is not refusal (`docs/run-plane.md` § Sub-amendment (the armed-set
     // expectation, `--expect-armed`)).
     if let Some(expected) = &parsed.expect_armed {
-        let actual =
-            super::digest::armed_digest(&eval.armed.iter().map(|a| &a.edit).collect::<Vec<_>>());
+        // Both sides of this comparison are the SAME function over the SAME
+        // type: the arm published `armed_digest` of its rows, the host copied
+        // the string verbatim, and this recomputes it here. Nothing strips or
+        // re-adds the domain tag on either side — it rides inside the one
+        // definition — so a tagged pin cannot false-refuse a tagged engine.
+        let actual = super::digest::armed_digest(&super::digest::ArmedRow::of_all(&eval.armed));
         if *expected != actual {
             return Ok(ScriptTrace::assemble(
                 entry,
@@ -613,4 +617,165 @@ fn read_stdin_source() -> Result<String, Fail> {
         ));
     }
     Ok(raw)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use effects::{ReadPosition, ReadRecord, ScriptRecording, SecFacts, TocEntry, TocFacts};
+    use wire::HpathSeg;
+
+    use super::{ArmedEdit, PlanEdit, ReadFace, guarded};
+
+    const HERE: &str = "cards/one.md";
+    const THERE: &str = "cards/two.md";
+
+    /// A toc read of `path`, publishing `file_rev` for the file and `note_rev`
+    /// for its `Notes` section.
+    fn toc_read(path: &str, file_rev: &str, note_rev: &str) -> ReadRecord {
+        ReadRecord {
+            path: path.to_owned(),
+            section: None,
+            line: 1,
+            position: ReadPosition::Echo,
+            face: ReadFace::Toc(TocFacts {
+                rev: file_rev.to_owned(),
+                fm: BTreeMap::new(),
+                toc: vec![TocEntry {
+                    section: "Notes".to_owned(),
+                    anchor: None,
+                    rev: note_rev.to_owned(),
+                }],
+                words: 7,
+            }),
+        }
+    }
+
+    /// A section read of `path`'s `Notes`, publishing `rev`.
+    fn section_read(path: &str, rev: &str) -> ReadRecord {
+        ReadRecord {
+            path: path.to_owned(),
+            section: Some("Notes".to_owned()),
+            line: 2,
+            position: ReadPosition::Echo,
+            face: ReadFace::Section(SecFacts {
+                text: "body".to_owned(),
+                rev: rev.to_owned(),
+            }),
+        }
+    }
+
+    fn recording(reads: Vec<ReadRecord>) -> ScriptRecording {
+        ScriptRecording {
+            actor: "8ab41c02".to_owned(),
+            reads,
+        }
+    }
+
+    fn arm(path: &str, edit: PlanEdit) -> ArmedEdit {
+        ArmedEdit {
+            path: path.to_owned(),
+            edit,
+            line: 3,
+            depth: 0,
+        }
+    }
+
+    fn set_owner() -> PlanEdit {
+        PlanEdit::SetProperty {
+            key: "owner".to_owned(),
+            value: "8ab41c02".to_owned(),
+            rev: None,
+        }
+    }
+
+    fn append_notes() -> PlanEdit {
+        PlanEdit::Append {
+            hpath: vec![HpathSeg {
+                h: "Notes".to_owned(),
+                n: None,
+            }],
+            body: "hi".to_owned(),
+            rev: None,
+        }
+    }
+
+    fn threaded(row: &ArmedEdit) -> Option<&str> {
+        match &row.edit {
+            PlanEdit::SetProperty { rev, .. } | PlanEdit::Append { rev, .. } => rev.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// **The accident, made law.** [`guarded`] looks a row's CAS token up BY
+    /// `arm.path`, so a script that read two files threads each row from the
+    /// file that row targets. Nothing stated this and no test pinned it — and it
+    /// is what narrows R4 today: a commit child that resolved to a different
+    /// file cannot inherit the gated file's rev, because the lookup is keyed on
+    /// the address, not on read order.
+    ///
+    /// An unstated accident either becomes law or becomes a regression. This
+    /// makes it law.
+    ///
+    /// The fixture is built so read ORDER points the other way: the reads for
+    /// `HERE` come LAST, so a lookup that took the freshest read regardless of
+    /// path — the obvious refactor — would thread `HERE`'s revs onto rows armed
+    /// at `THERE`, and every assertion below would fail.
+    #[test]
+    fn a_rows_rev_is_looked_up_by_its_own_path_not_by_read_order() {
+        let recording = recording(vec![
+            toc_read(THERE, "there-file", "there-note"),
+            section_read(THERE, "there-section"),
+            toc_read(HERE, "here-file", "here-note"),
+            section_read(HERE, "here-section"),
+        ]);
+        let rows = guarded(
+            &[
+                arm(THERE, set_owner()),
+                arm(THERE, append_notes()),
+                arm(HERE, set_owner()),
+                arm(HERE, append_notes()),
+            ],
+            &recording,
+        );
+
+        assert_eq!(
+            threaded(&rows[0]),
+            Some("there-file"),
+            "set_property threads the FILE rev of its own target, not the last file read"
+        );
+        assert_eq!(
+            threaded(&rows[1]),
+            Some("there-section"),
+            "append threads the NODE rev of its own target's section, not the last one read"
+        );
+        assert_eq!(
+            threaded(&rows[2]),
+            Some("here-file"),
+            "and the other target threads its own — the lookup is keyed, not disabled"
+        );
+        assert_eq!(threaded(&rows[3]), Some("here-section"));
+    }
+
+    /// The same law from the other side: a row whose target the script never
+    /// read threads NOTHING, even when some other file was read and its rev sits
+    /// right there in the recording. `rev: None` meets the engine's own teaching
+    /// refusal, which is the honest answer to writing what you did not read — a
+    /// path-blind lookup would instead hand it a stranger's token and satisfy
+    /// the wire's CAS check with a guard nobody's read backs.
+    #[test]
+    fn a_row_targeting_an_unread_path_threads_no_rev() {
+        let recording = recording(vec![
+            toc_read(HERE, "here-file", "here-note"),
+            section_read(HERE, "here-section"),
+        ]);
+        let rows = guarded(
+            &[arm(THERE, set_owner()), arm(THERE, append_notes())],
+            &recording,
+        );
+
+        assert_eq!(threaded(&rows[0]), None, "set_property on an unread file");
+        assert_eq!(threaded(&rows[1]), None, "append into an unread file");
+    }
 }

@@ -212,6 +212,12 @@ pub struct ScriptTrace {
     /// It describes the armed block and nothing else: the receipt rides
     /// `request.receipt`, never `plan_edits[]`, so it is outside this value by
     /// construction and gated on its own pre-spawn path.
+    ///
+    /// It carries the digest's domain tag (`super::digest::DOMAIN_TAG`), so a
+    /// host reading this field can tell an engine that hashes `(path, edit)`
+    /// pairs from one that hashed payloads alone — by literal prefix, with no
+    /// parsing. That is a capability assertion, not a canonicalization, so the
+    /// courier property above survives it intact.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub armed_digest: Option<String>,
     /// Always present, whatever the outcome.
@@ -309,7 +315,7 @@ impl ScriptTrace {
             // sends as `plan_edits[]`. Hashing the pre-threading rows would
             // publish a digest for a set that never goes on any wire.
             armed_digest: (!eval.armed.is_empty())
-                .then(|| super::digest::armed_digest(&edits_of(&eval.armed))),
+                .then(|| super::digest::armed_digest(&super::digest::ArmedRow::of_all(&eval.armed))),
             telemetry: eval.telemetry,
         }
     }
@@ -350,13 +356,6 @@ impl ScriptTrace {
             TraceEntry::Read(_) | TraceEntry::Echo(_) => None,
         })
     }
-}
-
-/// The `plan_edits[]` view of an armed list: exactly what `cmd::commit` puts in
-/// the request's `plan_edits` field, borrowed rather than cloned so the value
-/// hashed here is the value that goes on the wire.
-fn edits_of(armed: &[ArmedEdit]) -> Vec<&PlanEdit> {
-    armed.iter().map(|arm| &arm.edit).collect()
 }
 
 /// Classify a kernel error into the closed fault taxonomy. `reason` is the

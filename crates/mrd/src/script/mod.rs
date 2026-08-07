@@ -16,7 +16,7 @@ pub mod digest;
 pub mod trace;
 pub mod wire_host;
 
-pub use digest::armed_digest;
+pub use digest::{ArmedRow, DOMAIN_TAG, armed_digest};
 pub use trace::{
     ArmedEntry, CommitLeg, FaultClass, ScriptFault, ScriptOutcome, ScriptTrace, TraceEntry,
 };

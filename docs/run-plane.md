@@ -374,11 +374,17 @@ bearing and unverified. This sub-amendment makes the chain not matter:
 Five things follow, and only these five.
 
 **First — the digest is defined ONCE, engine-side, and this is its whole
-definition.** Let `plan_edits` be the array the commit splice would carry: the
-armed rows *after* rev threading, in arm order — byte-for-byte the value of the
-request's `plan_edits` field. The digest is
+definition.** Let `rows` be the armed set the commit splice would carry: the
+armed rows *after* rev threading, in arm order, each one an object
 
-> `sha256:` ‖ lowercase-hex( SHA-256( CANON(`plan_edits`) ) )
+```
+{"edit": <the plan_edits[] item>, "path": <the file it writes>}
+```
+
+whose `edit` halves are byte-for-byte the value of the request's `plan_edits`
+field and whose `path` halves are the request's `path`. The digest is
+
+> `armed-set-path-edit:` ‖ `sha256:` ‖ lowercase-hex( SHA-256( CANON(`rows`) ) )
 
 where `CANON` is compact JSON with **object keys sorted lexicographically by
 UTF-8 byte order**, no whitespace between tokens, and RFC 8259-minimal string
@@ -386,6 +392,32 @@ escaping — only `"`, `\`, and the control characters below `U+0020` are escape
 every other code point is emitted as raw UTF-8. There is no second spelling of
 this anywhere in the tree: `script::digest::armed_digest` is the only function
 that computes it, and both the arm and the commit reach it through that one call.
+
+**Why the path is in the domain, and not only the payload.** A `PlanEdit`
+carries no path — the target rides `splice.path` — so a digest over
+`plan_edits[]` alone is a total function of the armed **payloads**, not of the
+armed **set**: two sets writing identical edits to *different files* hash
+identically. That is exactly the dimension the arm/commit gap turns on. A host
+gates the rows of one file; a commit child that resolved somewhere else (a
+symlink re-pointed between the legs, or a pin covering the hash domain while the
+write plane resolves through the larger addressable set) produces a **matching**
+digest and splices into a file nobody authorized. Pairing each row with its
+target closes that dimension by construction rather than by argument.
+
+**The `armed-set-path-edit:` prefix is the digest's DOMAIN TAG, and it is a
+deployment organ.** A host cannot tell a narrow digest from a wide one by looking
+at it — an engine hashing payloads only publishes a perfectly well-formed value,
+both children agree, the guard passes, and the class claim above degrades to one
+that holds only on a pinned tree. Host/engine skew is measured rather than
+theoretical: a resident daemon ran a stale engine for hours on 2026-08-06. So the
+digest names what it covers, and a host asserts that **literal prefix with a
+string comparison and no parsing whatsoever**, refusing an engine below the
+minimum BY NAME. That is a capability assertion, not a canonicalization — the
+courier property in *Second* survives it intact, because the host still copies
+one opaque string and computes nothing. The tag names the DOMAIN rather than a
+version number, so a refusal can say what is missing; widening the domain again
+means a new tag, and every host still asserting the old one refuses loudly
+instead of gating the wrong thing quietly.
 
 **Second — the host is a COURIER, not a second implementation.** The arm's trace
 publishes the digest as a top-level `armed_digest` field. The host copies that
@@ -409,18 +441,31 @@ is otherwise exactly RFC 8785 (JCS) over a value whose only number is that `n`.
 The **test vector** an independent implementation checks itself against, before
 trusting itself, is pinned in `digest.rs::the_published_test_vector_holds` so
 these bytes and this document cannot drift apart. For the two-row armed set
-`set_property{key:"owner", value:"8ab41c02", rev:"7c40e1a8b2f9d356"}` followed by
-`append{hpath:[{h:"Goals"}], body:"a <b> & c\n", rev:"a6665baff294bd04"}`, `CANON`
-is exactly
+
+- `set_property{key:"owner", value:"8ab41c02", rev:"7c40e1a8b2f9d356"}` at
+  `cards/one.md`, then
+- `append{hpath:[{h:"Goals", n:2}], body:"a <b> & c\n", rev:"a6665baff294bd04"}`
+  at `cards/two.md`
+
+`CANON` is exactly
 
 ```json
-[{"set_property":{"key":"owner","rev":"7c40e1a8b2f9d356","value":"8ab41c02"}},{"append":{"body":"a <b> & c\n","hpath":[{"h":"Goals"}],"rev":"a6665baff294bd04"}}]
+[{"edit":{"set_property":{"key":"owner","rev":"7c40e1a8b2f9d356","value":"8ab41c02"}},"path":"cards/one.md"},{"edit":{"append":{"body":"a <b> & c\n","hpath":[{"h":"Goals","n":2}],"rev":"a6665baff294bd04"}},"path":"cards/two.md"}]
 ```
 
 and the digest is
-`sha256:fdbad8387ab2097175de9cf02217b202177e0aa8dcf80730f1e97434e3d5ac1d`. Note
-the key order in both rows — lexicographic, not the declaration order the Rust
-type uses — and the raw `<`, `>` and `&`. An implementation that reproduces this
+`armed-set-path-edit:sha256:37c4d09eb84d1e902b887a0b13cc90f67d5888e0bd5ebf9148ac0031ccdcde4a`.
+
+Four things in that line are deliberate. The key order at **both** levels is
+lexicographic, not the declaration order the Rust types use — `edit` before
+`path`, and inside the edit `body` before `hpath` before `rev`. The `<`, `>` and
+`&` ride raw. `HpathSeg.n` is **present**, because it is the one field named as a
+trap above and no earlier vector reached it, so an implementation that dropped or
+floated it passed every published check. And the two rows target **different
+paths**, which the armed law does not permit in a single commit: that is on
+purpose, because a vector whose rows shared a path would be reproducible by an
+implementation that hashes the target once for the whole set and then diverges on
+something no published bytes could catch. An implementation that reproduces this
 line reproduces every digest; one that does not would have refused real markdown
 while passing an ASCII fixture.
 
@@ -445,6 +490,33 @@ the real entry through a recording door and asserts both directions — a matchi
 digest commits, and a planted mismatch produces a socket census containing
 `hello`/`fingerprint`/`toc`/`cat` and **no `splice` frame at all**, which is what
 makes the refusal pre-splice rather than a detection after landing.
+
+The target dimension and the tag are held there too, and each has both arms,
+because a gate proven only to refuse cannot be told apart from one that refuses
+everything:
+
+| Claim | Arm | Test |
+|---|---|---|
+| The digest reads the target | refuse | `identical_edits_to_two_targets_publish_different_digests` |
+| | admit | `the_same_target_publishes_one_digest_across_runs` |
+| The tag does not break the tool | admit | `an_ordinary_commit_still_commits_on_the_tagged_engine` — arm, forward verbatim, commit, and the census asserts the splice WAS issued |
+| The tag is assertable | refuse | `digest.rs::an_untagged_digest_is_distinguishable_from_this_engines` |
+
+The first pair is also the **wire-observable capability probe**: a caller holding
+nothing but the entry and a door establishes that this engine's digest covers the
+target by running the same edits at two paths and comparing the published values.
+The capability is observed, never inferred from a version constant.
+
+The tag cannot false-refuse an ordinary commit, and that is structural rather
+than tested-for: it is prepended inside `armed_digest` itself, so the value the
+arm publishes and the value the commit recomputes are the same call over the same
+type. There is no side on which it could be stripped or re-added.
+
+`cmd.rs`'s own tests pin the rev-threading law the target dimension leans on:
+`guarded()` looks a row's CAS token up **by that row's own `arm.path`**, so a
+child that resolved elsewhere cannot inherit the gated file's rev. That was an
+unstated accident until it was pinned, and an unstated accident either becomes
+law or becomes a regression.
 
 **The trace — one commit-fact shape, and no `attempts`.** The entry returns a
 `ScriptTrace`: the entry fingerprint, the outcome

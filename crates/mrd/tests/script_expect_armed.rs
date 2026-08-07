@@ -18,14 +18,21 @@
 use std::io;
 
 use mrd::script::cmd::attempt;
-use mrd::script::{Door, ScriptOutcome};
+use mrd::script::{ArmedRow, Door, ScriptOutcome};
 use serde_json::{Value, json};
+use wire::PlanEdit;
 
 /// The entry fingerprint the fake daemon reports (§4.7).
 const ENTRY: &str = "b3:a90f13c7ba0e1d4f5c6b7a8990112233445566778899aabbccddeeff00112233";
 
 /// The one page the fake daemon serves.
 const CARD: &str = "tasks/0011-token-audit.md";
+
+/// A SECOND page, byte-identical in everything the fake answers — same revs,
+/// same frontmatter, same section map. Only the address differs, which is what
+/// makes it the control for the target dimension: a digest that comes out
+/// different for these two runs can only have read the path.
+const OTHER_CARD: &str = "tasks/0012-token-audit.md";
 
 /// Read the card, claim it if nobody holds it — golden scenario 1's shape.
 const CLAIM: &str = r#"
@@ -34,17 +41,21 @@ if card.fm["owner"] == "":
     put("tasks/0011-token-audit.md", props={"owner": me(), "status": "doing"})
 "#;
 
-/// A well-formed digest that is not the one this script produces. Well-formed on
-/// purpose: a mismatch must be refused for being the WRONG SET, never for being
-/// an unparseable string, and a garbage value could pass this suite for the
-/// wrong reason.
-const FOREIGN: &str = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+/// A well-formed digest that is not the one this script produces. Well-formed
+/// on purpose, **domain tag included**: a mismatch must be refused for being the
+/// WRONG SET, never for being an unparseable string or an untagged one, and
+/// either would let this suite pass for the wrong reason.
+const FOREIGN: &str =
+    "armed-set-path-edit:sha256:0000000000000000000000000000000000000000000000000000000000000000";
 
 /// A fake daemon behind the one door, recording every op it is asked for — the
 /// census these tests are built on.
 struct Fake {
     ops: Vec<String>,
     requests: Vec<Value>,
+    /// The page this daemon answers for. Every other fact it serves is fixed, so
+    /// two `Fake`s differing only here differ only in the target.
+    card: String,
 }
 
 impl Fake {
@@ -52,7 +63,14 @@ impl Fake {
         Self {
             ops: Vec::new(),
             requests: Vec::new(),
+            card: CARD.to_owned(),
         }
+    }
+
+    /// The same daemon answering for a different page.
+    fn serving(mut self, card: &str) -> Self {
+        self.card = card.to_owned();
+        self
     }
 
     fn asked(&self, op: &str) -> bool {
@@ -75,7 +93,7 @@ impl Door for Fake {
         Ok(match op {
             "fingerprint" => format!(r#"{{"ok":true,"body":{{"fingerprint":"{ENTRY}","seq":2}}}}"#),
             "toc" => json!({"ok": true, "body": {
-                "path": CARD,
+                "path": &self.card,
                 "file_rev": "7c40e1a8b2f9d356",
                 "fingerprint": ENTRY,
                 "nodes": [
@@ -88,7 +106,7 @@ impl Door for Fake {
             }})
             .to_string(),
             "read" => json!({"ok": true, "body": {
-                "path": CARD,
+                "path": &self.card,
                 "file_rev": "7c40e1a8b2f9d356",
                 "root": ENTRY,
                 "words_total": 41,
@@ -158,27 +176,142 @@ fn the_arm_and_the_commit_publish_the_same_digest() {
     );
 }
 
-/// The digest describes the rows the commit actually sends. Asserted against the
-/// REQUEST rather than against the trace, because the trace is what this feature
-/// publishes and the request is what the daemon acts on — a digest that
-/// described the trace while the request carried something else would be exactly
-/// the vacuous pass this flag exists to prevent.
+/// The digest describes the rows the commit actually sends — **and the file it
+/// sends them to.** Asserted against the REQUEST rather than against the trace,
+/// because the trace is what this feature publishes and the request is what the
+/// daemon acts on; a digest that described the trace while the request carried
+/// something else would be exactly the vacuous pass this flag exists to prevent.
+///
+/// The reconstruction goes through the wire's own `path` and `plan_edits[]`,
+/// which is the whole point of P3-1's fix: `plan_edits[]` alone cannot say where
+/// the bytes land, so a digest reproducible from it alone was blind to the
+/// target.
 #[test]
-fn the_published_digest_is_over_the_plan_edits_the_commit_sends() {
+fn the_published_digest_is_over_the_path_and_plan_edits_the_commit_sends() {
     let mut door = Fake::new();
     let trace = claim(&mut door, &["--actor", "8ab41c02"]);
 
-    let sent = door.request("splice")["plan_edits"].clone();
-    let rows: Vec<Value> = serde_json::from_value(sent).expect("plan_edits is an array");
-    assert!(!rows.is_empty(), "the run really did arm something");
+    let splice = door.request("splice");
+    let path = splice["path"].as_str().expect("the splice names its target");
+    let sent: Vec<PlanEdit> =
+        serde_json::from_value(splice["plan_edits"].clone()).expect("plan_edits is an array");
+    assert!(!sent.is_empty(), "the run really did arm something");
+
+    let rows: Vec<ArmedRow<'_>> = sent.iter().map(|edit| ArmedRow { edit, path }).collect();
     assert_eq!(
         trace.armed_digest,
         Some(mrd::script::armed_digest(&rows)),
-        "hashing the wire's own plan_edits[] reproduces the published digest"
+        "hashing the wire's own path + plan_edits[] reproduces the published digest"
     );
 }
 
+// ── the capability layer: the domain tag ─────────────────────────────────────
+
+/// **The tag rides the live trace**, which is what makes it assertable by a host
+/// that parses nothing. The value a host copies into `--expect-armed` is this
+/// string, tag included.
+#[test]
+fn the_published_digest_carries_the_domain_tag() {
+    let published = arm_digest();
+    assert!(
+        published.starts_with(mrd::script::DOMAIN_TAG),
+        "a host asserts this literal prefix and nothing else: {published}"
+    );
+    assert!(
+        !published.starts_with("sha256:"),
+        "and the pre-tag spelling must not be reachable, or the assertion admits an \
+         engine whose digest is blind to the target: {published}"
+    );
+}
+
+/// **The wire-observable capability probe.** A caller with nothing but the entry
+/// and a door can establish that THIS engine's digest covers the target: run the
+/// same edits at two different paths and compare the published digests. This is
+/// the observation itself, not a version constant standing in for it.
+///
+/// It is also P3-1's acceptance at entry level rather than unit level — the
+/// defect lived in the trace assembly, so the proof belongs where a host reads.
+#[test]
+fn identical_edits_to_two_targets_publish_different_digests() {
+    let here = {
+        let mut door = Fake::new();
+        claim(&mut door, &["--actor", "8ab41c02", "--dry"])
+            .armed_digest
+            .expect("rows were armed")
+    };
+    let there = {
+        let mut door = Fake::new().serving(OTHER_CARD);
+        attempt(
+            &["--actor".to_owned(), "8ab41c02".to_owned(), "--dry".to_owned()],
+            &CLAIM.replace(CARD, OTHER_CARD),
+            &mut door,
+        )
+        .expect("the attempt runs")
+        .armed_digest
+        .expect("rows were armed")
+    };
+    assert_ne!(
+        here, there,
+        "the same edits at two different targets must publish two digests — equal here \
+         means the host can gate one file and the commit child land in another"
+    );
+}
+
+/// The ADMIT half of the same probe: the target is the ONLY thing that moved
+/// above. Two runs of the same script against the same target publish one
+/// digest, so an ordinary arm/commit pair still agrees.
+#[test]
+fn the_same_target_publishes_one_digest_across_runs() {
+    assert_eq!(arm_digest(), arm_digest(), "the courier property, live");
+}
+
 // ── acceptance 1: a matching digest commits ──────────────────────────────────
+
+/// **THE ADMIT ARM FOR THE WHOLE CARD, end to end on the tagged engine.** Arm,
+/// forward the published string verbatim the way a host does, commit — and the
+/// bytes go out.
+///
+/// It exists because both refusal arms of this change are green in the failure
+/// it guards against. Widening the domain, or adding the tag where the digest is
+/// PUBLISHED but not where it is RECOMPUTED for comparison, makes every ordinary
+/// commit false-refuse while an old engine is still rejected and two targets
+/// still hash apart. A gate with only refusal arms cannot tell "correctly
+/// strict" from "entirely dead", so the census here asserts the splice was
+/// ISSUED — the mirror of the negative proof's assertion that it was not.
+#[test]
+fn an_ordinary_commit_still_commits_on_the_tagged_engine() {
+    let expected = arm_digest();
+    assert!(
+        expected.starts_with(mrd::script::DOMAIN_TAG),
+        "the value forwarded is the tagged one — otherwise this proves nothing about \
+         the tag: {expected}"
+    );
+
+    let mut door = Fake::new();
+    let trace = claim(
+        &mut door,
+        &["--actor", "8ab41c02", "--expect-armed", &expected],
+    );
+
+    assert_eq!(
+        trace.outcome,
+        ScriptOutcome::Committed,
+        "a tagged pin from this engine's own arm must COMMIT, not refuse: {:?}",
+        trace.fault
+    );
+    assert!(
+        door.asked("splice"),
+        "census: the splice was issued — census: {:?}",
+        door.ops
+    );
+    assert!(
+        !door.request("splice")["plan_edits"]
+            .as_array()
+            .expect("an array")
+            .is_empty(),
+        "and it carried the armed rows"
+    );
+}
 
 /// A commit child handed the digest its own arm produced proceeds exactly as it
 /// would without the flag.
