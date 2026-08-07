@@ -215,6 +215,10 @@ pub fn composed_read(
         .iter()
         .filter_map(|f| read_anchor(f))
         .collect();
+    // The frontmatter-properties plane — document-grain, so unlike `anchors`
+    // it is never `frag`-scoped: frontmatter belongs to the document, not to
+    // any subtree (wire-contract § A.3).
+    let props = read_props(doc);
 
     if has_sections {
         let sels: Vec<wire::ReadSel> = params.sections.clone().unwrap_or_default();
@@ -241,6 +245,7 @@ pub fn composed_read(
             words_total,
             toc: None,
             anchors,
+            props,
             sections: Some(rendered_sections),
             truncated: body.notice.is_some().then_some(true),
             notice: body.notice,
@@ -272,6 +277,7 @@ pub fn composed_read(
         words_total,
         toc: Some(rows.iter().map(|f| read_row(f)).collect()),
         anchors,
+        props,
         sections: None,
         truncated: None,
         notice: None,
@@ -305,6 +311,42 @@ fn read_anchor(f: &wire_map::facts::ReadFact) -> Option<wire::ReadAnchor> {
         anchor: id.clone(),
         span: f.span,
     })
+}
+
+/// The frontmatter-properties plane (wire-contract § A.3): one row per
+/// top-level key, document order, first occurrence wins. Keys and values come
+/// off the model's flat parse (the keys authority); span and CAS token come
+/// off the same `fm_key` grain resolution the write plane compares against,
+/// so the served `prop_rev` and a later `if_node_rev` cannot be two
+/// derivations of one fact.
+fn read_props(doc: &model::Document) -> Vec<wire::ReadProp> {
+    let Some(map) = frontmatter_map(&doc.root) else {
+        return Vec::new();
+    };
+    map.0
+        .iter()
+        .map(|(key, value)| {
+            // A map key resolves by construction — both sides scan the same
+            // block with the same key normalization, first occurrence wins.
+            // A miss here is an engine bug; wrong data must not serve quietly.
+            let target = model::resolve(doc, &model::Ref::FmKey(key.clone()))
+                .expect("frontmatter map key resolves against its own document");
+            wire::ReadProp {
+                key: key.clone(),
+                value: value.clone(),
+                span: Span(target.span.start as u64, target.span.end as u64),
+                prop_rev: NodeRev(target.node_rev.0),
+            }
+        })
+        .collect()
+}
+
+/// The document's frontmatter node's parsed map, if any.
+fn frontmatter_map(node: &model::Node) -> Option<&model::YamlMap> {
+    if let model::NodeKind::Frontmatter { map } = &node.kind {
+        return Some(map);
+    }
+    node.children.iter().find_map(frontmatter_map)
 }
 
 /// The claim-link decorations for one page: every `meridian-lock` pin the page
@@ -1081,11 +1123,8 @@ fn miss_parts(
         }
         SecRef::FmKey { fm_key } => (
             fm_key.clone(),
-            // Names only the door that was probed open: the composed read body
-            // carries no frontmatter plane, so pointing at `mrd read --json`
-            // for the key list would point at a door that does not open.
             "Fix: write the key with `at: upsert`, which creates it when absent; the \
-             page's own frontmatter block lists the keys it already has."
+             composed read's `props` plane lists the keys this page already has."
                 .to_owned(),
         ),
     }
