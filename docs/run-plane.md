@@ -94,6 +94,20 @@ the section map, `read` for the count. Zero wire delta: both ops are already
 declared, and a toc-mode read mints no receipt, so the second ask is
 side-effect-free (ruling 2026-08-07, `words:` on the read face).
 
+**A composed read is BRACKETED by `file_rev`, or it refuses.** A whole-file
+`read(path)` is 2+N round trips — `toc`, one `cat` per frontmatter key, then the
+closing `read` — and reads are LIVE, so the world may move between any two of
+them. Composing one face from two revisions would hand the script a state that
+never existed, and the stand-still guarantee is about exactly that. So the
+`file_rev` the opening `toc` answered is compared against the `file_rev` the
+closing `read` answers, and a difference **refuses the read** naming both revs.
+The closing op is the count op deliberately: it already had to be asked, so the
+bracket costs **no additional round trip**, and every intermediate `cat` sits
+inside two agreeing observations of the same revision. Sequence order is
+therefore load-bearing — the count is asked LAST, never second. A single
+`read(path, section=…)` is one `cat` and needs no bracket: one op is one
+revision by construction.
+
 **The arming surface — `put()` speaks the wire's second edit dialect.**
 `put(path, props={…})` arms one `set_property` plan item per key, keys sorted;
 `put(path, section="…", append="…")` arms one section-addressed `append`. These
@@ -112,6 +126,17 @@ default section, and the MCP `put` face refuses the same shape in the same
 words. A `props=` write needs no section — frontmatter is file-grain.
 Addresses are segments: `section="Notes/Fresh"` is two segments, never a joined
 string.
+
+**One address grammar, one parser.** `section=` on `put()` is parsed by
+`ReadSel::parse` — the same door `read(path, section=…)` goes through, and the
+one human-string→selector door in the tree. The three spellings it decides are
+therefore the same on both faces: `^id` is a block address, digits-and-dots is a
+dewey ordinal, anything else splits on `/` into raw heading segments. An
+`append` carries an **hpath**, so the two non-heading spellings **refuse at arm
+time** naming what they are — the `^anchor` a toc row publishes is a real
+address on the read face and a real refusal on the write face, never a heading
+silently named `^r-…`. A face that parsed its own addresses would mint a second
+grammar for the one thing both faces call `section=`.
 
 **The statement-position rule — echo and quiet.** Every read is recorded; the
 face renders only the ones the reader wrote as a decision. A read **echoes**
@@ -133,17 +158,44 @@ hooked planes keep the stricter grammar. `load` stays disabled at every entry.
 attempt) is the script plane's own — the I/O-amplification axis the hermetic
 entries do not have — and the kernel enforces it: the read past the ceiling
 refuses typed, naming the ceiling, and the attempt has no result at all. Never
-truncation. Wall clock, retry budget, and the armed-edit ceiling bind in the
-host, above the kernel.
+truncation. The armed-edit ceiling (64 per attempt) is the kernel's too, and it
+binds at **arm time**: `put()` refuses the call that would cross it, typed and
+naming the ceiling, with no host involvement at all. The retry budget binds in
+the host, above the kernel, because the loop is the host's.
+
+**The wall clock binds at four layers, and every one of them is load-bearing.**
+The entry does its I/O against a daemon, so time is the one budget evaluation
+cannot bound itself: fuel bounds computation, and a blocked read spends none.
+
+1. **Per round trip, above the socket.** The clock is checked before **every**
+   wire call the host makes — not once per script-level read. A whole-file
+   `read(path)` is 2+N round trips, so a per-read check would bound the number
+   of checks and not the time.
+2. **On the socket itself.** The connection carries read and write timeouts of
+   one wall clock, so a daemon that accepts a frame and never answers fails the
+   round trip instead of parking the process forever. Without it the check in
+   (1) never runs again.
+3. **Before the commit.** The commit leg is a wire call like any other and is
+   checked like one: a run whose clock elapsed during evaluation refuses
+   **pre-commit**, so nothing is issued and nothing lands.
+4. **Above the process, in the MCP host.** The child is spawned under a bound of
+   its own and killed by process group if it passes it. That layer exists for
+   the failures the first three cannot see — a child that never reaches its own
+   clock, or one that ignores it.
+
+Layers 1–3 refuse in the entry's own vocabulary and answer a trace; layer 4 is
+the backstop and answers a host refusal, never a face. A hung child that reached
+none of them would hang the tool with nothing bounding it.
 
 The host-side defaults are **§5.3 host policy** — their existence is contract,
 their values are tunable:
 
 | Budget | Default | Binds | Over it |
 |---|---|---|---|
-| wall clock | 7s | host | typed refusal |
+| wall clock | 7s | entry (per round trip, per socket, pre-commit) | typed refusal |
+| child bound | 30s | MCP host (process group kill) | host refusal, no face |
 | retries | 2 attempts | host | exhaustion → resync face |
-| armed edits | 64 | host | typed refusal |
+| armed edits | 64 | kernel (arm time) | typed refusal |
 | reads / attempt | 64 | kernel | typed refusal, no result |
 | selector width | 256 paths | host | typed refusal, **never truncation** |
 

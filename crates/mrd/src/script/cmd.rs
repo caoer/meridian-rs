@@ -45,15 +45,21 @@ use effects::{
 use registry::Client;
 use serde_json::value::RawValue;
 use serde_json::{Value, json};
-use wire::PlanEdit;
+use wire::{PlanEdit, ReadSel};
 
 use super::trace::{CommitLeg, ScriptOutcome, ScriptTrace};
 use super::wire_host::{Door, Frame, SocketDoor, WireHost};
 use crate::{Fail, Format, current_dir, engine};
 
-/// The script entry's wall clock — the budget that binds in the HOST, above the
-/// kernel (pure evaluation is fuel-bounded; only host I/O is unbounded in time).
-const WALL_CLOCK: Duration = Duration::from_secs(7);
+/// The script entry's wall clock — the budget that binds around the kernel
+/// (pure evaluation is fuel-bounded; only wire I/O is unbounded in time).
+///
+/// It binds at three layers inside this process, and every one is load-bearing
+/// (`docs/run-plane.md` § Where the budgets bind): before every round trip
+/// ([`WireHost::ask`]), on the socket itself ([`SocketDoor::connect`]), and
+/// before the commit is issued ([`run`]). The MCP host's own bound on the child
+/// process is the fourth layer and lives in the other repo.
+pub(crate) const WALL_CLOCK: Duration = Duration::from_secs(7);
 
 /// Run `mrd script [flags] < script.star`. Errors [`Fail`] — exit 2 on a bad
 /// invocation; exit 1 when the run conflicted, faulted or was refused.
@@ -140,7 +146,21 @@ pub(crate) fn run(door: &mut dyn Door, parsed: &Script, source: &str) -> Result<
     //    splice. The trace is assembled from the guarded list, so what it shows
     //    is what went on the wire.
     eval.armed = guarded(&eval.armed, &eval.recording);
-    let leg = commit(door, parsed, &eval, &entry)?;
+    // The commit is a wire call like any other, so the clock binds on it like
+    // any other (§ Where the budgets bind, layer 3). A run whose clock elapsed
+    // during evaluation refuses PRE-COMMIT: nothing is issued, so nothing lands
+    // and the refusal is the whole answer. Without this the last leg of the
+    // entry was the one leg no clock touched.
+    let leg = if Instant::now() > deadline {
+        CommitLeg::Refused(
+            "the script entry's wall clock elapsed before the commit was issued — the armed \
+             edits were never sent, nothing landed, and no fingerprint advanced. re-run: the \
+             reads that ran cost the budget"
+                .to_owned(),
+        )
+    } else {
+        commit(door, parsed, &eval, &entry)?
+    };
     Ok(ScriptTrace::assemble(entry, &eval, leg))
 }
 
@@ -206,27 +226,64 @@ fn section_rev_of(
     path: &str,
     hpath: &[wire::HpathSeg],
 ) -> Option<String> {
-    let address = hpath
-        .iter()
-        .map(|seg| seg.h.as_str())
-        .collect::<Vec<_>>()
-        .join("/");
     recording.reads.iter().rev().find_map(|read| {
         if read.path != path {
             return None;
         }
         match &read.face {
-            ReadFace::Section(facts) if read.section.as_deref() == Some(address.as_str()) => {
+            ReadFace::Section(facts)
+                if read.section.as_deref().is_some_and(|s| addresses(s, hpath)) =>
+            {
                 Some(facts.rev.clone())
             }
             ReadFace::Toc(facts) => facts
                 .toc
                 .iter()
-                .find(|entry| entry.section == address)
+                .find(|entry| addresses(&entry.section, hpath))
                 .map(|entry| entry.rev.clone()),
             ReadFace::Section(_) => None,
         }
     })
+}
+
+/// Does the recorded section spelling `recorded` address the same node as the
+/// armed row's `hpath`?
+///
+/// **Both sides go through [`ReadSel::parse`]** — the one human-string→selector
+/// door, which is also what `put(section=…)` arms through
+/// (`effects::script_edit::section_segments`) and what `read(path, section=…)`
+/// resolves through. Comparing a normalized JOIN against the raw recorded string
+/// instead made the two spellings of one address disagree: `read(section="/A/B")`
+/// records `/A/B`, the armed row joins to `A/B`, no rev threads, and the write
+/// meets `guard_required` for a read that HAPPENED. A rev is a CAS token, so a
+/// missed match is not a missed optimization — it is a refusal blaming the
+/// caller for the parser's disagreement with itself.
+///
+/// The non-heading spellings answer `false` rather than a segment comparison: an
+/// `^anchor` row and a dewey ordinal are real addresses that an `append` (which
+/// carries an hpath) cannot be pointed at, so they match no armed row.
+fn addresses(recorded: &str, hpath: &[wire::HpathSeg]) -> bool {
+    let ReadSel::Hpath { hpath: parsed } = ReadSel::parse(recorded) else {
+        return false;
+    };
+    // Empty segments carry no address — `ReadSel::parse("/A")` yields `["", "A"]`
+    // and the arm filters them, so the comparison filters them on both sides or
+    // one leading slash decides a CAS token.
+    let mut recorded = parsed
+        .iter()
+        .map(|seg| seg.h.as_str())
+        .filter(|h| !h.is_empty());
+    let mut armed = hpath
+        .iter()
+        .map(|seg| seg.h.as_str())
+        .filter(|h| !h.is_empty());
+    loop {
+        match (recorded.next(), armed.next()) {
+            (None, None) => return true,
+            (a, b) if a != b => return false,
+            _ => {}
+        }
+    }
 }
 
 /// The §4.7 integrity rung: mint the entry fingerprint.

@@ -657,3 +657,93 @@ impl Door for LiveDoor {
         Ok(response)
     }
 }
+
+// ── the composed read's bracket, against the LIVE wire ────────────────────────
+
+/// A door that lets a real writer in between the `toc` and the closing `read` of
+/// one composed read — the exact interleaving the fake `Door` sequences of
+/// `script_cmd.rs` cannot represent, and therefore the one a fixture alone
+/// could never show REACHABLE.
+///
+/// It writes the file itself, once, immediately after the `toc` response comes
+/// back. Nothing here simulates a moved world: the bytes change on disk and the
+/// daemon answers whatever it then computes.
+struct MidReadWriter {
+    inner: LiveDoor,
+    page: PathBuf,
+    wrote: bool,
+}
+
+impl Door for MidReadWriter {
+    fn call(&mut self, request: &Value) -> io::Result<String> {
+        let is_toc = request["op"] == json!("toc");
+        let answer = self.inner.call(request)?;
+        if is_toc && !self.wrote {
+            self.wrote = true;
+            let mut body = std::fs::read_to_string(&self.page).expect("read the page");
+            body.push_str("\na foreign line\n");
+            std::fs::write(&self.page, body).expect("a foreign write lands");
+        }
+        Ok(answer)
+    }
+}
+
+/// **The production wire really does answer two revisions across one composed
+/// read — measured, not reasoned.** `read(path)` is `toc` + one `cat` per
+/// frontmatter key + the closing `read`, and `wire-serve` computes `file_rev`
+/// when it answers each one. So a writer landing between them makes the two
+/// observations disagree, and the composition would otherwise hand the script a
+/// map from one revision and a count from another: a state that never existed.
+///
+/// This is the reachability half of the gate that
+/// `wire_host::tests::a_composition_spanning_two_revisions_refuses_instead_of_being_assembled`
+/// states. That one proves the refusal; this one proves the frame it refuses is
+/// one the live engine produces. The production call site is `WireHost::toc`,
+/// reached by every whole-file `read(path)` in every script.
+///
+/// The control is scenario 1 in the table above: the identical script, the same
+/// daemon, no interleaved writer — it commits.
+#[test]
+fn a_live_writer_between_the_toc_and_the_closing_read_is_caught_by_the_bracket() {
+    let fixture = Fixture::start();
+    let claim = "\ncard = read(\"tasks/0011-token-audit.md\")\nif card.fm[\"owner\"] == \"\":\n    put(\"tasks/0011-token-audit.md\", props={\"owner\": me(), \"status\": \"doing\"})\n";
+
+    let mut door = MidReadWriter {
+        inner: LiveDoor::open(fixture.server.socket_path(), &fixture.ws),
+        page: fixture.ws.join(CARD),
+        wrote: false,
+    };
+    let argv = ["--actor".to_owned(), ME.to_owned()];
+    let trace = attempt(&argv, claim, &mut door).expect("the attempt answers a trace");
+
+    assert!(
+        door.wrote,
+        "the foreign write has to have happened, or this proves nothing"
+    );
+    assert_eq!(
+        trace.outcome,
+        ScriptOutcome::Fault,
+        "a composition spanning two revisions refuses: {:?}",
+        trace.outcome
+    );
+    let reason = &trace
+        .fault
+        .as_ref()
+        .expect("a fault carries its reason")
+        .reason;
+    assert!(
+        reason.contains("moved while this read was being composed"),
+        "the live refusal is the bracket's own: {reason}"
+    );
+    assert!(
+        !door.inner.ops().iter().any(|op| op == "splice"),
+        "nothing was issued: {:?}",
+        door.inner.ops()
+    );
+    // And the world is untouched by the SCRIPT — only the foreign line is there.
+    let on_disk = std::fs::read_to_string(fixture.ws.join(CARD)).expect("read the card");
+    assert!(
+        on_disk.contains("owner:\n") && on_disk.contains("a foreign line"),
+        "the script armed nothing and committed nothing:\n{on_disk}"
+    );
+}
