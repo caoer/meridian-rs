@@ -27,8 +27,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Serialize;
 
 mod kernel;
+mod script_edit;
 
 pub use kernel::validate;
+pub use script_edit::ArmedEdit;
 
 /// One rule's metered outcome: typed result plus exact fuel (Starlark ticks)
 /// and peak-heap bytes. Never-reached eval → `0`/`0` + authoring fault; bomb
@@ -568,6 +570,31 @@ pub enum EvalError {
         /// The ceiling it hit (`ScriptLimits::max_reads`).
         limit: usize,
     },
+    /// The script armed a second CONTENT path — the v1 single-write-file law
+    /// (`run-plane.md` § One CONTENT path per commit). §4.4 splice carries one
+    /// `path`, so a one-splice commit exists only for a single-file write set.
+    /// The receipt companion is not a content path: it rides the splice's own
+    /// `receipt:{path,anchor}` field in the same batch (§6.1), never the armed
+    /// list, so this law does not forbid the two-file receipt commit.
+    MultiFileWriteSet {
+        /// The script that armed the second path.
+        rule_id: String,
+        /// 1-based source line of the offending `put()`.
+        line: u32,
+        /// The content path already armed.
+        first: String,
+        /// The path that would have been the second.
+        second: String,
+    },
+    /// The armed-edit ceiling was reached — refused, never truncated.
+    ArmedBudget {
+        /// The script that armed one edit too many.
+        rule_id: String,
+        /// 1-based source line of the refused `put()`.
+        line: u32,
+        /// The ceiling it hit (`ScriptLimits::max_armed_edits`).
+        limit: usize,
+    },
     /// No hook for the addressed plane, or the other plane's hook is present.
     /// One hook per hooked plane, and they never cross — the script entry has
     /// no hook at all (its module top level IS the program), so it never
@@ -607,6 +634,23 @@ impl std::fmt::Display for EvalError {
                 f,
                 "script '{rule_id}' exceeded the read budget of {limit} reads per attempt — \
                  refused, never truncated"
+            ),
+            // The wording the consumer face renders (golden scenario 2a):
+            // refused at line N · multi_file_write_set — … would be the second.
+            EvalError::MultiFileWriteSet {
+                line,
+                first,
+                second,
+                ..
+            } => write!(
+                f,
+                "refused at line {line} · multi_file_write_set — one script commits to ONE \
+                 file (armed {first}; {second} would be the second)"
+            ),
+            EvalError::ArmedBudget { line, limit, .. } => write!(
+                f,
+                "refused at line {line} · budget — the armed-edit ceiling of {limit} edits \
+                 per attempt was reached; refused, never truncated"
             ),
             EvalError::MissingEntry {
                 rule_id,
@@ -726,6 +770,12 @@ pub struct ScriptLimits {
     pub eval: EvalLimits,
     /// Max host reads per attempt. Exceeding it → [`EvalError::ReadBudget`].
     pub max_reads: usize,
+    /// Max armed edits per attempt. Exceeding it → [`EvalError::ArmedBudget`].
+    /// The value is the host's (`run-plane.md` § The script entry lists it among
+    /// the budget overrides); the kernel enforces it at arm time, because a
+    /// ceiling counted after eval could only truncate, and truncation is what
+    /// this plane refuses.
+    pub max_armed_edits: usize,
 }
 
 impl Default for ScriptLimits {
@@ -733,6 +783,7 @@ impl Default for ScriptLimits {
         Self {
             eval: EvalLimits::default(),
             max_reads: 64,
+            max_armed_edits: 64,
         }
     }
 }
@@ -895,10 +946,30 @@ pub struct ScriptFacts {
 pub struct ScriptEval {
     /// The eval facts, or why the attempt refused.
     pub outcome: Result<ScriptFacts, EvalError>,
+    /// The edits `put()` armed, in execution order — present whether the attempt
+    /// succeeded or not, because a refused attempt still renders the arms that
+    /// landed before it as `[not committed]` (golden scenario 2a). They are
+    /// inert: only a successful outcome may be committed.
+    pub armed: Vec<ArmedEdit>,
     /// The recorded reads — present whether the attempt succeeded or not.
     pub recording: ScriptRecording,
     /// Always present.
     pub telemetry: ScriptTelemetry,
+}
+
+impl ScriptEval {
+    /// The distinct content paths the armed edits write, in arm order. The v1
+    /// law holds this to at most one; the receipt companion is not here (§6.4).
+    #[must_use]
+    pub fn content_paths(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for armed in &self.armed {
+            if !out.contains(&armed.path) {
+                out.push(armed.path.clone());
+            }
+        }
+        out
+    }
 }
 
 /// Evaluate inline `script` at kernel entry #3: **the module top level IS the

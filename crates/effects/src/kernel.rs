@@ -26,11 +26,14 @@ use starlark::values::list::UnpackList;
 use starlark::values::none::NoneType;
 use starlark::values::structs::AllocStruct;
 use starlark_syntax::syntax::ast::{AstExpr, AstStmt, Expr, Stmt};
+use wire::PlanEdit;
 
+use crate::script_edit::{ArmRefusal, plan_items};
 use crate::{
-    ArgValue, ChangeEvent, ChangeFact, Effect, EffectKind, EvalError, EvalLimits, EventFacts,
-    Provenance, ReadFace, ReadFault, ReadPosition, ReadRecord, Rule, RunCtx, ScriptCtx, ScriptEval,
-    ScriptFacts, ScriptHost, ScriptLimits, ScriptRecording, ScriptTelemetry, SecFacts, TocFacts,
+    ArgValue, ArmedEdit, ChangeEvent, ChangeFact, Effect, EffectKind, EvalError, EvalLimits,
+    EventFacts, Provenance, ReadFace, ReadFault, ReadPosition, ReadRecord, Rule, RunCtx, ScriptCtx,
+    ScriptEval, ScriptFacts, ScriptHost, ScriptLimits, ScriptRecording, ScriptTelemetry, SecFacts,
+    TocFacts,
 };
 
 /// Optional string as Starlark: value or `None`. Absence must stay absence —
@@ -514,6 +517,14 @@ pub(crate) struct ScriptEntry<'h> {
     /// budget refusal rather than a script fault.
     over_read_budget: Cell<bool>,
     bindings: RefCell<BTreeMap<String, String>>,
+    /// Wire plan-edit items armed by `put()`, in execution order. Inert: no I/O
+    /// happens at arm time and nothing here is applied until the consumer plane
+    /// commits the whole list in ONE guarded splice.
+    armed: RefCell<Vec<ArmedEdit>>,
+    max_armed_edits: usize,
+    /// The arm-time law's refusal, kept typed so the abort is classified as a
+    /// consumer-plane refusal rather than a script fault.
+    arm_refusal: RefCell<Option<ArmRefusal>>,
 }
 
 /// The inert input names the script plane binds before eval. They are inputs,
@@ -534,7 +545,53 @@ impl<'h> ScriptEntry<'h> {
             fault: RefCell::new(None),
             over_read_budget: Cell::new(false),
             bindings: RefCell::new(BTreeMap::new()),
+            armed: RefCell::new(Vec::new()),
+            max_armed_edits: limits.max_armed_edits,
+            arm_refusal: RefCell::new(None),
         }
+    }
+
+    /// Arm one `put()` call's plan items — PURE: no host call, no I/O. The
+    /// arm-time law runs first and, when it refuses, arms NOTHING from this call
+    /// and aborts the script.
+    fn arm(&self, path: &str, items: Vec<PlanEdit>, line: u32, depth: u32) -> anyhow::Result<()> {
+        // One CONTENT path per commit (v1 law). The receipt companion is not a
+        // content path — it rides the splice request's own `receipt` field in
+        // the same batch (§6.1), never this list.
+        let mut armed = self.armed.borrow_mut();
+        if let Some(first) = armed.first().map(|a| a.path.clone())
+            && first != path
+        {
+            let refusal = ArmRefusal::MultiFileWriteSet {
+                line,
+                first: first.clone(),
+                second: path.to_owned(),
+            };
+            *self.arm_refusal.borrow_mut() = Some(refusal);
+            return Err(anyhow::anyhow!(
+                "multi_file_write_set: one script commits to ONE file \
+                 (armed {first}; {path} would be the second)"
+            ));
+        }
+        // The ceiling refuses the edit that would cross it; the list already
+        // armed stays whole — never truncated.
+        if armed.len() + items.len() > self.max_armed_edits {
+            *self.arm_refusal.borrow_mut() = Some(ArmRefusal::ArmedBudget {
+                line,
+                limit: self.max_armed_edits,
+            });
+            return Err(anyhow::anyhow!(
+                "armed-edit budget of {} edits per attempt reached",
+                self.max_armed_edits
+            ));
+        }
+        armed.extend(items.into_iter().map(|edit| ArmedEdit {
+            path: path.to_owned(),
+            edit,
+            line,
+            depth,
+        }));
+        Ok(())
     }
 
     /// Read the echo positions off the parsed module: a `read(…)` call is an
@@ -674,6 +731,37 @@ fn script_api(builder: &mut GlobalsBuilder) {
         let heap = eval.heap();
         let face = script(eval)?.read(&path, section.as_deref(), site)?;
         Ok(alloc_read_face(heap, &face))
+    }
+
+    /// `put(path, props={…})` / `put(path, section=…, append=…)` → arms wire
+    /// `splice.plan_edits[]` items and returns nothing.
+    ///
+    /// PURE: it performs no I/O and consults no host at call time. The armed
+    /// items are inert until the consumer plane commits the whole list in ONE
+    /// guarded splice. `props` arms one `set_property` per key, keys sorted;
+    /// `append` arms one section-addressed `append`. Ruling (B′): these are the
+    /// wire's second edit dialect, spoken verbatim — no third grammar.
+    fn put(
+        #[starlark(require = pos)] path: String,
+        #[starlark(require = named)] props: Option<BTreeMap<String, String>>,
+        #[starlark(require = named)] section: Option<String>,
+        #[starlark(require = named)] append: Option<String>,
+        eval: &mut Evaluator<'_, '_, '_>,
+    ) -> anyhow::Result<NoneType> {
+        // Keys sorted: the same group order `wire-serve::plan::lower` and the
+        // MCP `put` face build, so the armed list aligns 1:1 with the commit.
+        let props: Vec<(String, String)> = props.unwrap_or_default().into_iter().collect();
+        let items = plan_items(&props, section.as_deref(), append.as_deref())
+            .map_err(|reason| anyhow::anyhow!("{reason}"))?;
+        let line =
+            call_site(eval).map_or(0, |(line, _)| u32::try_from(line + 1).unwrap_or(u32::MAX));
+        // Two frames are always on the stack at a top-level arm — the module's
+        // own and this builtin's — so a top-level arm reports depth 0 and each
+        // enclosing `def` adds one. Recorded for the trace only: an applied
+        // effect renders at ANY depth (there is no suppression in v1).
+        let depth = u32::try_from(eval.call_stack_count().saturating_sub(2)).unwrap_or(u32::MAX);
+        script(eval)?.arm(&path, items, line, depth)?;
+        Ok(NoneType)
     }
 
     /// `me()` → the caller's own identity, threaded in by the host (§9). The
@@ -878,16 +966,20 @@ pub(crate) fn run_script(
     let started = std::time::Instant::now();
     // The entry lives entirely on the eval stack (its cells are single-threaded
     // by construction); only its harvested facts cross back.
-    let (run, recording, bindings, over_read_budget) = on_eval_stack(|| {
+    let (run, recording, bindings, over_read_budget, armed, arm_refusal) = on_eval_stack(|| {
         let entry = ScriptEntry::new(ctx, limits, host);
         let globals = script_globals();
         let run = metered_eval(&globals, &rule, &EvalEntry::Script(&entry), limits.eval);
         let bindings = entry.bindings.borrow().clone();
+        let armed = entry.armed.borrow().clone();
+        let arm_refusal = entry.arm_refusal.borrow().clone();
         (
             run,
             entry.recording(),
             bindings,
             entry.over_read_budget.get(),
+            armed,
+            arm_refusal,
         )
     });
     let wall_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -900,7 +992,27 @@ pub(crate) fn run_script(
             rule_id: rule.id.clone(),
             limit: limits.max_reads,
         }),
-        Err(e) => Err(e),
+        // The arm-time law refuses consumer-plane typed — never a §8 code, and
+        // never a partial apply: the armed list below is evidence for the face,
+        // and a refused attempt commits nothing.
+        Err(e) => match arm_refusal {
+            Some(ArmRefusal::MultiFileWriteSet {
+                line,
+                first,
+                second,
+            }) => Err(EvalError::MultiFileWriteSet {
+                rule_id: rule.id.clone(),
+                line,
+                first,
+                second,
+            }),
+            Some(ArmRefusal::ArmedBudget { line, limit }) => Err(EvalError::ArmedBudget {
+                rule_id: rule.id.clone(),
+                line,
+                limit,
+            }),
+            None => Err(e),
+        },
     };
     ScriptEval {
         telemetry: ScriptTelemetry {
@@ -909,6 +1021,7 @@ pub(crate) fn run_script(
             reads_used: recording.reads.len(),
             wall_ms,
         },
+        armed,
         recording,
         outcome,
     }
@@ -1248,11 +1361,17 @@ mod tests {
             .collect();
         assert_eq!(hooked, expected_hooked, "the hooked planes are unchanged");
 
-        let expected_script: HashSet<String> =
-            ["read", "me"].into_iter().map(ToOwned::to_owned).collect();
+        let expected_script: HashSet<String> = ["read", "me", "put"]
+            .into_iter()
+            .map(ToOwned::to_owned)
+            .collect();
         assert_eq!(
             script, expected_script,
-            "the script plane adds read/me only"
+            "the script plane adds read/me/put only"
+        );
+        assert!(
+            !hooked.contains("put"),
+            "the script arming surface must never reach the change or run plane"
         );
 
         assert!(

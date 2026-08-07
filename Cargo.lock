@@ -1067,6 +1067,7 @@ dependencies = [
  "serde_json",
  "starlark",
  "starlark_syntax",
+ "wire",
 ]
 
 [[package]]
