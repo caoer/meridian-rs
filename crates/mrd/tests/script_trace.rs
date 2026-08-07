@@ -320,6 +320,23 @@ fn echo_and_quiet_reads_carry_distinct_kinds_and_armed_follows_in_arm_order() {
     );
 }
 
+/// The serialized toc face carries `words` under exactly that key: the face
+/// renderer lives in another repo and decodes this JSON, so the key IS the
+/// cross-repo seam. A renamed or dropped key renders `words:0` on a live face
+/// while the goldens render the true count, and both sides still compile.
+#[test]
+fn the_serialized_toc_face_publishes_the_word_count_under_words() {
+    let eval = ok_eval(Vec::new(), vec![toc_read(1, ReadPosition::Echo)]);
+    let trace = ScriptTrace::assemble("b3:a90f13c7", &eval, CommitLeg::NotIssued);
+
+    let json = serde_json::to_value(&trace).expect("the trace serializes");
+    assert_eq!(
+        json["trace"][0]["face"]["Toc"]["words"], 41,
+        "the toc face publishes `words`: {}",
+        json["trace"][0]
+    );
+}
+
 /// A conflict embeds the §5.1 mismatch verbatim too — one commit-fact shape, so
 /// `fingerprint_mismatch{expected, actual, changed}` needs no re-typing either.
 #[test]
