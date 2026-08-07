@@ -1305,9 +1305,21 @@ fn file_not_found(path: &wire::Path) -> Box<ErrorBody> {
 /// Map a `warm_or_build` I/O failure onto its wire frame: a non-UTF-8 corpus
 /// file is `invalid_utf8` (refused, never lossy-decoded); anything else (the
 /// workspace is gone, an I/O error) carries its cause on `io_error`.
+///
+/// A warm failure is CORPUS-scoped — the caller asked for one file and the
+/// whole rebuild refused — so the frame names its scope and its offending
+/// member: `path` carries the poison member (the watch plane's `invalid_utf8`
+/// precedent), `message` states the corpus scope and the condition. A bare
+/// `invalid_utf8` here reads as "the file you asked for is corrupt", which is
+/// false of that file and strands the caller (Law A-3c).
 fn warm_err_to_wire(e: &io::Error) -> Box<ErrorBody> {
     if e.kind() == io::ErrorKind::InvalidData {
-        return Box::new(ErrorBody::new(ErrorCode::InvalidUtf8));
+        let mut err = ErrorBody::new(ErrorCode::InvalidUtf8);
+        if let Some(member) = fs::corpus_member_error(e) {
+            err.path = Some(wire::Path(member.member.clone()));
+        }
+        err.message = Some(e.to_string());
+        return Box::new(err);
     }
     let mut err = ErrorBody::new(ErrorCode::IoError);
     err.cause = Some(e.to_string());
