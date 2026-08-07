@@ -872,7 +872,7 @@ When a workspace is **armed** (attested INDEX present), after CAS and before byt
 
 | Surface | Role |
 |---|---|
-| `read` | Addressing + content + render at one snapshot; section selectors use §2.1 segments (or anchor / dewey). Not a joined string address. |
+| `read` | Addressing + content + render + frontmatter props at one snapshot; section selectors use §2.1 segments (or anchor / dewey). Not a joined string address. |
 | `check_write` | Standalone write pre-flight: the splice verdict computed without writing. Read-only. |
 | `mounts` | Mount-table discovery: the live root registry, machine-scoped. Read-only (§ A.5). |
 | `splice.plan_edits` | Plan-level batch shapes; addresses are **segment arrays**. |
@@ -931,6 +931,48 @@ team-e multi-root contract, L3 end state):**
   honored (CAS) wherever it is present; whether it is *demanded* beyond the
   occurrence class is the §5.3 ratchet — a named future-amendment candidate,
   not this law. Do not widen the demand here.
+
+**Frontmatter-properties plane on the composed `read` (docs-first,
+2026-08-07, the mcp-face §3.3 wire demand — engine leg of the props
+deferral):**
+
+- The composed-read reply gains a `props` plane: the document's top-level
+  frontmatter key facts, served at the SAME engine snapshot as every other
+  fact in the body — one row per key, document order, first occurrence wins
+  (the model's flat parse is the keys authority; the v2 toc `keys` echo and
+  this plane serve the same order). The demand this answers is the host
+  face's `props:` line: a face that builds it from a second read breaks
+  one-snapshot coherence, and a face that parses bytes itself breaks
+  daemon-zero-markdown-semantics — so the facts land engine-side, mirroring
+  how `words` landed.
+- Row shape `{key, value, span, prop_rev}`:
+  - `key` — the top-level key, the same string the §2.1 `fm_key` form
+    addresses; the read→set loop closes off this row.
+  - `value` — the key line's value as stored: the colon remainder,
+    whitespace-trimmed, quotes kept. A block value (indented continuation
+    lines) serves the key line's own remainder — empty when that line
+    carries none. The engine re-serializes nothing (no YAML library —
+    honest limit, stated not worked around).
+  - `prop_rev` — the key's CAS token: blake3 over the full key grain span
+    bytes (the key line plus its indented continuation lines), 16 hex —
+    the SAME token `cat` on the `fm_key` node serves and `if_node_rev`
+    compares (§5.1: one rev per node, re-derived at execution, no second
+    derivation).
+  - `span` — that grain span; intra-file byte offsets, root-independent.
+- Emission law (the `anchors` precedent): always emitted — empty means
+  "this document has no top-level frontmatter keys", never "ask again with
+  a flag". Decoding stays tolerant of older recorded frames; serialization
+  is unconditional.
+- Document-grain, both modes, never `frag`-scoped: frontmatter belongs to
+  the document, not to any subtree — a `frag` cannot contain it and does
+  not filter it.
+- v3-only by construction: the composed read is v3-only at dispatch, so the
+  plane never appears on a v2 session and the frozen v2 caps and bytes stay
+  byte-identical. No new cap: a response-side additive field under the
+  tolerant-client law (§3.2) — the `words`/`anchors` precedent.
+- Delta grain unchanged: this plane is the map tense of the frontmatter
+  plane (§7.2 — one projection, three tenses); §7.4's ruled node-grain and
+  its named future-only `keys` amendment path are untouched.
 
 CLI inventory (descriptive): `status.md`. Cross-root agent address grammar: `address-grammar.md`. Config parse: `meridian-md-schema.md`.
 
