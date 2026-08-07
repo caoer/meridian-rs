@@ -539,3 +539,168 @@ fn a_malformed_args_json_refuses_before_evaluation() {
         assert!(door.ops.is_empty(), "nothing was said on the wire");
     }
 }
+
+// ── 7. the wall clock, at the leg nothing checked ─────────────────────────────
+
+/// A door that spends `stall` on the CLOSING `read` of the first composition and
+/// answers everything else exactly as [`Fake`] does
+/// — so the ONLY difference between the two runs below is time.
+///
+/// The stall sits on the LAST wire call of the last read deliberately: after it
+/// there is no further read to check the clock, so layers 1 and 2 have both had
+/// their turn and only the pre-commit check can catch this run. Stall an EARLIER
+/// call and layer 1 refuses the next read instead — a fault, not this leg.
+struct StallingFake {
+    inner: Fake,
+    stall: std::time::Duration,
+    stalled: bool,
+}
+
+impl StallingFake {
+    fn new(stall: std::time::Duration) -> Self {
+        Self {
+            inner: Fake::new(),
+            stall,
+            stalled: false,
+        }
+    }
+}
+
+impl Door for StallingFake {
+    fn call(&mut self, request: &Value) -> io::Result<String> {
+        if request["op"] == json!("read") && !self.stalled {
+            self.stalled = true;
+            std::thread::sleep(self.stall);
+        }
+        self.inner.call(request)
+    }
+}
+
+/// **The commit leg is checked like every other wire call.** Evaluation is
+/// fuel-bounded and reads are clock-bounded per round trip, but the commit used
+/// to be the one leg no clock touched: a run whose whole budget went into a slow
+/// read still issued its splice, however late.
+///
+/// Measured against a control that differs in ONE thing — how long the first
+/// `toc` takes. The proof is not the outcome word alone but the SOCKET CENSUS:
+/// the refused run never asked `splice`, so nothing was issued and nothing could
+/// have landed.
+///
+/// No wall-clock budget is asserted; the run sleeps past the entry's own clock
+/// on purpose, and only what the entry then DID is checked.
+#[test]
+fn a_run_whose_clock_elapses_during_evaluation_refuses_before_the_commit() {
+    // Control: the same script, the same door shape, no stall. It commits.
+    let mut prompt = StallingFake::new(std::time::Duration::ZERO);
+    let argv = ["--actor".to_owned(), "8ab41c02".to_owned()];
+    let committed = attempt(&argv, CLAIM, &mut prompt).expect("the control attempt runs");
+    assert_eq!(committed.outcome, ScriptOutcome::Committed);
+    assert!(
+        prompt.inner.asked("splice"),
+        "the control run really did commit: {:?}",
+        prompt.inner.ops
+    );
+
+    // Measured: the last wire call of the read spends the entry's whole wall clock.
+    let mut slow = StallingFake::new(std::time::Duration::from_millis(7_100));
+    let trace =
+        attempt(&argv, CLAIM, &mut slow).expect("the stalled attempt still answers a trace");
+
+    assert_eq!(
+        trace.outcome,
+        ScriptOutcome::Refused,
+        "an elapsed clock is a refusal, never a commit: {:?}",
+        trace.outcome
+    );
+    assert!(
+        !slow.inner.asked("splice"),
+        "NOTHING was issued — the refusal is pre-commit. census: {:?}",
+        slow.inner.ops
+    );
+    let reason = &trace
+        .fault
+        .as_ref()
+        .expect("a refusal carries its reason")
+        .reason;
+    assert!(
+        reason.contains("wall clock elapsed") && reason.contains("nothing landed"),
+        "the refusal names the clock and what did not happen: {reason}"
+    );
+}
+
+// ── 8. one address grammar, one parser, on the whole script path ──────────────
+
+/// **A section read threads its rev whichever legal spelling of the address the
+/// caller wrote.** `read(section=…)` records the caller's own string; the armed
+/// row carries §2.1 segments. Comparing a normalized JOIN against the raw
+/// recorded string made the two disagree on a leading slash, so a script that
+/// READ the section it appends to still met `guard_required` — the engine's own
+/// teaching refusal, delivered for a read that happened. Both sides now go
+/// through `ReadSel::parse` (finding #18, folded into U12).
+///
+/// The control is the same script in the plain spelling, which threaded its rev
+/// before this fix and still does.
+#[test]
+fn a_section_read_threads_its_rev_in_every_legal_spelling_of_one_address() {
+    for spelling in ["Goals", "/Goals"] {
+        let source = format!(
+            "sec = read(\"{CARD}\", section=\"{spelling}\")\nput(\"{CARD}\", section=\"{spelling}\", append=\"- a line\\n\")\n"
+        );
+        let mut door = Fake::new();
+        let argv = ["--actor".to_owned(), "8ab41c02".to_owned()];
+        attempt(&argv, &source, &mut door).expect("the attempt runs");
+
+        let rows = door.request("splice")["plan_edits"]
+            .as_array()
+            .expect("plan_edits[]")
+            .clone();
+        let rev = rows[0]["append"]["rev"].as_str();
+        assert_eq!(
+            rev,
+            Some("33d5b0e1b27cb48b"),
+            "section={spelling:?}: the append row carries the rev THIS script's own read \
+             recorded; without it the wire refuses guard_required for a read that happened"
+        );
+    }
+}
+
+/// **`ReadSel::parse` is the SINGLE entry for a section spelling on the script
+/// path.** Two parsers for one token is how `^r-000118` became a heading named
+/// `^r-000118` on the write face while the read face addressed a block, and how
+/// a leading slash decided a CAS token. The rule is only worth stating if it is
+/// mechanically held, so this reads the sources: any `split('/')` on the script
+/// path is a second parser being born.
+///
+/// It names its files rather than scanning a tree, so a new file on this path
+/// joins the list deliberately — the same discipline `scriptexecgate_test.go`
+/// applies to exec sites in the host.
+#[test]
+fn read_sel_parse_is_the_only_section_parser_on_the_script_path() {
+    // Relative to crates/mrd/, which is CARGO_MANIFEST_DIR for this target.
+    const SECTION_PARSING_SOURCES: [&str; 3] = [
+        "src/script/cmd.rs",             // section_rev_of — the recorded read side
+        "src/script/wire_host.rs",       // sec_ref — the read face's own lowering
+        "../effects/src/script_edit.rs", // section_segments — the arm side
+    ];
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    for rel in SECTION_PARSING_SOURCES {
+        let src = std::fs::read_to_string(root.join(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"));
+        assert!(
+            src.contains("ReadSel::parse"),
+            "{rel} handles a section spelling and must do it through the one door"
+        );
+        for (n, line) in src.lines().enumerate() {
+            // Prose may NAME the thing it forbids; only code can commit it.
+            let code = line.trim_start();
+            if code.starts_with("//") || code.starts_with('*') {
+                continue;
+            }
+            assert!(
+                !line.contains(r"split('/')"),
+                "{rel}:{}: a raw `split('/')` is a SECOND section parser — \
+                 route it through ReadSel::parse\n{line}",
+                n + 1
+            );
+        }
+    }
+}

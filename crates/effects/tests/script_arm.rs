@@ -175,6 +175,46 @@ fn a_nested_section_address_is_segments_not_a_joined_string() {
     );
 }
 
+/// **One address grammar, one parser.** `section=` is parsed by
+/// `ReadSel::parse` on both faces, so the `^anchor` a toc row PUBLISHES — and
+/// `read(path, section="^id")` accepts — is a real address here too, and it is
+/// refused as one. A raw `split('/')` coerced it into a heading literally named
+/// `^r-000118`: an address no document has, armed silently, refused by the wire
+/// as `NotFound` with the caller told nothing about why.
+#[test]
+fn a_block_anchor_section_refuses_as_an_address_never_as_a_heading_named_caret() {
+    let eval = run(r#"put("tasks/0011.md", section="^r-000118", append="x\n")"#);
+    let Err(EvalError::Runtime { reason, .. }) = &eval.outcome else {
+        panic!("expected a runtime refusal, got {:?}", eval.outcome);
+    };
+    assert!(
+        reason.contains("^r-000118") && reason.contains("BLOCK"),
+        "the refusal names the address and what KIND it is: {reason}"
+    );
+    assert!(
+        reason.contains("read("),
+        "and it names the face the address DOES work on: {reason}"
+    );
+    assert!(eval.armed.is_empty(), "a refusal arms nothing");
+}
+
+/// The other spelling `ReadSel::parse` decides and an `append` has no target
+/// for: a dewey ordinal addresses a row of a table the caller is holding, and
+/// does not survive an edit. It refuses in its own words rather than arming a
+/// heading literally named `1.2`.
+#[test]
+fn a_dewey_section_refuses_as_a_positional_address() {
+    let eval = run(r#"put("tasks/0011.md", section="1.2", append="x\n")"#);
+    let Err(EvalError::Runtime { reason, .. }) = &eval.outcome else {
+        panic!("expected a runtime refusal, got {:?}", eval.outcome);
+    };
+    assert!(
+        reason.contains("1.2") && reason.contains("positional"),
+        "the refusal names the address and why it cannot be written to: {reason}"
+    );
+    assert!(eval.armed.is_empty(), "a refusal arms nothing");
+}
+
 #[test]
 fn a_bare_append_refuses_naming_the_missing_section() {
     // decisions/2026-08-07-script-bare-append-target.md: an empty hpath refuses
