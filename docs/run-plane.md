@@ -277,10 +277,14 @@ pure function of (script, args, files, read-response sequence), and an unmoved
 fingerprint means an unmoved read-response sequence, so the two evaluations arm
 identically. The arm is therefore OUTPUT, never a second decision. Fourth, the
 gate is **parity with `put`, not a second policy grammar** — the same organs
-(`checkPutAuthz`, `checkContentWrite`, the birth gate), the same per-target flock
-held across the commit child, and the same journal pipeline. A script commit that
-took no flock and wrote no audit line was the broadest-reach write face in the
-host having neither.
+(`checkPutAuthz`, `checkContentWrite`), the same per-target flock held across the
+commit child, and the same journal pipeline. A script commit that took no flock
+and wrote no audit line was the broadest-reach write face in the host having
+neither. The **birth gate is not among them, and that is measured**: a `put()` to
+a path carrying no file is refused by the engine at ARM time (`file_not_found` on
+the rehearsal splice), so the trace is a terminal before any row is classified and
+no host birth decision exists to make. The day this entry gains a birth door, the
+third organ gets its call site.
 
 The CLI entry keeps its single-call shape: an operator running `mrd script`
 directly evaluates and commits in one process, because there is no host identity
