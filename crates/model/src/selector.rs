@@ -210,11 +210,33 @@ pub fn color_reason(color: &Color) -> Option<&'static str> {
 /// Extra detail beyond the reason word (`None` when the word is enough) —
 /// unknown fingerprint-triple members, lock refusal why, etc. The stable reason
 /// token stays in [`color_reason`].
+///
+/// The two address-failure reds surface their nearest-candidate hints here
+/// (d1 F6b — a hint, never auto-repair): before this, [`resolve_selector`]
+/// computed the ranked candidates and no render surface ever showed them.
+/// Capped at [`NEAREST_SHOWN`]; an empty candidate list (no live doc to draw
+/// from) stays `None` so the bare label keeps meaning "nothing to offer".
 #[must_use]
 pub fn color_detail(color: &Color) -> Option<String> {
     match color {
         Color::Grey(GreyReason::UnverifiableFingerprint { unknown }) => {
             Some(format!("unknown {}", unknown.join(", ")))
+        }
+        Color::Red(RedReason::DanglingAnchor { candidates }) if !candidates.is_empty() => {
+            let shown: Vec<String> = candidates
+                .iter()
+                .take(NEAREST_SHOWN)
+                .map(|c| format!("^{c}"))
+                .collect();
+            Some(format!("nearest live anchors: {}", shown.join(", ")))
+        }
+        Color::Red(RedReason::SelectorUnresolved { candidates }) if !candidates.is_empty() => {
+            let shown: Vec<&str> = candidates
+                .iter()
+                .take(NEAREST_SHOWN)
+                .map(String::as_str)
+                .collect();
+            Some(format!("nearest live headings: {}", shown.join(", ")))
         }
         Color::Grey(GreyReason::LockRefused { reason }) => Some(reason.clone()),
         Color::Grey(GreyReason::Unmounted { root }) => Some(format!("root '{root}'")),
@@ -426,6 +448,10 @@ fn collect_heading_paths(node: &Node, out: &mut Vec<String>) {
         collect_heading_paths(c, out);
     }
 }
+
+/// How many nearest candidates a rendered hint names — enough to catch a
+/// rename, few enough that a hostile page cannot flood a refusal.
+pub const NEAREST_SHOWN: usize = 3;
 
 /// Rank `candidates` by nearest to `want` (a hint, never auto-repair — d1 F6b):
 /// a shared-bigram score, ties broken by document order.
@@ -698,6 +724,40 @@ mod tests {
             "candidates list the live heading paths: {candidates:?}"
         );
         assert_ne!(c, Color::Red(RedReason::Drifted));
+    }
+
+    /// The address-failure reds render their nearest-candidate hints through
+    /// `color_detail` (d1 F6b) — before this, the candidates were computed on
+    /// every miss and no surface ever showed them. Capped at [`NEAREST_SHOWN`];
+    /// an empty candidate list stays `None` (bare label = nothing to offer).
+    #[test]
+    fn color_detail_renders_the_nearest_candidate_hints() {
+        let dangling = Color::Red(RedReason::DanglingAnchor {
+            candidates: vec!["kept".into(), "goal".into(), "gate".into(), "extra".into()],
+        });
+        assert_eq!(
+            color_detail(&dangling).as_deref(),
+            Some("nearest live anchors: ^kept, ^goal, ^gate"),
+            "anchor ids render with their marker, capped at {NEAREST_SHOWN}"
+        );
+        let unresolved = Color::Red(RedReason::SelectorUnresolved {
+            candidates: vec!["Task/Objective".into()],
+        });
+        assert_eq!(
+            color_detail(&unresolved).as_deref(),
+            Some("nearest live headings: Task/Objective"),
+        );
+        // No live doc to draw from → no hint, never an empty parenthesis.
+        for empty in [
+            Color::Red(RedReason::DanglingAnchor {
+                candidates: Vec::new(),
+            }),
+            Color::Red(RedReason::SelectorUnresolved {
+                candidates: Vec::new(),
+            }),
+        ] {
+            assert_eq!(color_detail(&empty), None, "{empty:?}");
+        }
     }
 
     /// The nearest-candidate rank surfaces a renamed heading first (d1 F6b).

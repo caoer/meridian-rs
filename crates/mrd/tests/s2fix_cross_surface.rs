@@ -436,7 +436,14 @@ fn build_every_state_corpus(sb: &Sandbox, ws: &Path) -> Vec<(&'static str, &'sta
         ("green.md", "green"),
         ("control.md", "green"),
         ("drifted.md", "red content-drifted"),
-        ("dangling.md", "red dangling-anchor"),
+        // The dangling pin's target page still carries `^section`, so the d1
+        // F6b nearest-candidate hint rides the detail slot; the unresolved
+        // pin's page VANISHED, so there is nothing to offer and the label
+        // stays bare — the two reds stay distinct in cause and in hint.
+        (
+            "dangling.md",
+            "red dangling-anchor (nearest live anchors: ^section)",
+        ),
         ("unresolved.md", "red selector-unresolved"),
         (
             "unverifiable.md",
@@ -1105,6 +1112,7 @@ fn path_c_create_title() {
                 parent_hpath: vec![wire::HpathSeg { h: "Plan".into(), n: None }],
                 title: "Draws from [[guide#^task1@green.19c66a18|Task One]]".into(),
                 body: "body [[guide#^task1@green.19c66a18|B]]".into(),
+                rev: None,
             }],
             pin: None,
         },
