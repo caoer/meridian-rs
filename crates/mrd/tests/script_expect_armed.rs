@@ -68,9 +68,11 @@ impl Fake {
     }
 
     /// The same daemon answering for a different page.
-    fn serving(mut self, card: &str) -> Self {
-        self.card = card.to_owned();
-        self
+    fn serving(card: &str) -> Self {
+        Self {
+            card: card.to_owned(),
+            ..Self::new()
+        }
     }
 
     fn asked(&self, op: &str) -> bool {
@@ -240,7 +242,7 @@ fn identical_edits_to_two_targets_publish_different_digests() {
             .expect("rows were armed")
     };
     let there = {
-        let mut door = Fake::new().serving(OTHER_CARD);
+        let mut door = Fake::serving(OTHER_CARD);
         attempt(
             &["--actor".to_owned(), "8ab41c02".to_owned(), "--dry".to_owned()],
             &CLAIM.replace(CARD, OTHER_CARD),
