@@ -311,6 +311,7 @@ usage:
                            and exit 2. Exits: 0 clean / 1 run refused or failed
                            / 2 bad invocation
 ! mrd script [--files PATH]... [--args JSON] [--dry] [--actor A] [--now T]
+          [--if-fingerprint FP] [--receipt PATH#ANCHOR]
                            evaluate inline Starlark from STDIN as the caller and
                            commit what it arms. The module top level IS the
                            program: read(PATH[, section=]) reads through the
