@@ -126,7 +126,7 @@ impl ScriptHost for NoReadHost {
 fn ctx() -> ScriptCtx {
     ScriptCtx {
         id: "script".to_owned(),
-        args: vec!["--dry".to_owned()],
+        args: BTreeMap::from([("mode".to_owned(), "dry".to_owned())]),
         files: vec![
             "tasks/0011.md".to_owned(),
             "tasks/0012.md".to_owned(),
@@ -161,6 +161,24 @@ fn a_top_level_only_script_evaluates_and_its_bindings_are_observable() {
     assert!(
         !facts.bindings.contains_key("args"),
         "inputs are not results"
+    );
+}
+
+/// `args` is an inert **dict** — the caller names its inputs, so a script
+/// subscripts by key and can enumerate the keys. Inert means data only: the
+/// dict carries no callable and no host reach, so nothing reachable through it
+/// can read or write.
+#[test]
+fn args_is_an_inert_dict_keyed_by_name() {
+    let (eval, _) = run("mode = args[\"mode\"]\nnames = sorted(args.keys())\n");
+    let facts = eval.outcome.expect("the script evaluates");
+    assert_eq!(
+        facts.bindings.get("mode").map(String::as_str),
+        Some("\"dry\"")
+    );
+    assert_eq!(
+        facts.bindings.get("names").map(String::as_str),
+        Some("[\"mode\"]")
     );
 }
 

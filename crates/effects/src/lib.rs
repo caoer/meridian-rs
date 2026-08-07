@@ -755,8 +755,11 @@ pub fn eval_run(task: &Rule, ctx: &RunCtx, limits: EvalLimits) -> Result<Vec<Eff
 pub struct ScriptCtx {
     /// Script identity, used for error provenance only.
     pub id: String,
-    /// The caller's arguments, injected as the inert `args` binding.
-    pub args: Vec<String>,
+    /// The caller's arguments, injected as the inert `args` binding — a **dict**
+    /// (`RunCtx::env`'s shape), because a caller names its inputs rather than
+    /// counting them. Inert: string keys, string values, no callables, no host
+    /// reach.
+    pub args: BTreeMap<String, String>,
     /// Host-enumerated paths, injected as the inert `files` binding.
     pub files: Vec<String>,
 }

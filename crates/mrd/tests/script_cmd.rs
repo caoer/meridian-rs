@@ -451,11 +451,12 @@ fn a_dry_run_returns_the_full_effect_set_with_no_fingerprint_after() {
 
 // ── 6. the inert inputs ───────────────────────────────────────────────────────
 
-/// `files[]` is paths only, sorted by the host, and `args` is a JSON array of
-/// strings. Both are inert bindings — a script reaches content only through
-/// `read()`, which is what keeps a run replayable.
+/// `files[]` is paths only, sorted by the host, and `args` is a JSON **object**
+/// bound as a dict — callers name their inputs, they do not count them. Both are
+/// inert bindings: a script reaches content only through `read()`, which is what
+/// keeps a run replayable.
 #[test]
-fn files_are_sorted_paths_and_args_is_a_json_array() {
+fn files_are_sorted_paths_and_args_is_a_json_object() {
     let mut door = Fake::new();
     let argv: Vec<String> = [
         "--files",
@@ -463,29 +464,37 @@ fn files_are_sorted_paths_and_args_is_a_json_array() {
         "--files",
         "tasks/a.md",
         "--args",
-        r#"["one","two"]"#,
+        r#"{"who":"one","what":"two"}"#,
     ]
     .iter()
     .map(|a| (*a).to_owned())
     .collect();
-    let trace = attempt(&argv, "seen = [files[0], files[1], args[0]]\n", &mut door)
-        .expect("the attempt runs");
+    let trace = attempt(
+        &argv,
+        "seen = [files[0], files[1], args[\"who\"], sorted(args.keys())]\n",
+        &mut door,
+    )
+    .expect("the attempt runs");
 
     assert_eq!(trace.outcome, ScriptOutcome::NoEffect);
     assert!(!door.asked("toc"), "no read() call, so no read op");
 }
 
-/// `--args` that is not a JSON array of strings refuses BEFORE anything is
+/// `--args` that is not a JSON object of strings refuses BEFORE anything is
 /// evaluated — a bad invocation, not a fault, and the socket is never dialled.
+/// A JSON **array** is the shape this entry used to take, so it must refuse by
+/// name rather than decode into something adjacent.
 #[test]
 fn a_malformed_args_json_refuses_before_evaluation() {
-    let mut door = Fake::new();
-    let argv = ["--args".to_owned(), "{\"not\":\"an array\"}".to_owned()];
-    let refusal = attempt(&argv, CLAIM, &mut door).expect_err("a bad invocation");
+    for bad in [r#"["one","two"]"#, r#"{"n":3}"#, "not json"] {
+        let mut door = Fake::new();
+        let argv = ["--args".to_owned(), bad.to_owned()];
+        let refusal = attempt(&argv, CLAIM, &mut door).expect_err("a bad invocation");
 
-    assert!(
-        refusal.contains("JSON array of strings"),
-        "the refusal names the shape it wanted: {refusal}"
-    );
-    assert!(door.ops.is_empty(), "nothing was said on the wire");
+        assert!(
+            refusal.contains("JSON object of strings"),
+            "the refusal names the shape it wanted, for {bad}: {refusal}"
+        );
+        assert!(door.ops.is_empty(), "nothing was said on the wire");
+    }
 }

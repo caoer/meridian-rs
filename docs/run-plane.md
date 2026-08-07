@@ -56,11 +56,17 @@ one caller's inline intent.
 | Input | Meaning |
 |---|---|
 | `script` | the source; the module top level IS the body, no hook lookup |
-| `args` | the caller's arguments, inert data |
+| `args` | the caller's arguments as an **inert dict** — string keys, string values |
 | `files[]` | **paths only**, sorted, pre-enumerated by the host |
 | `actor` | the caller's own identity, threaded per §9 — the engine mints none |
 | `now` | caller-supplied time — the kernel never reads a clock |
 | budget overrides | fuel / mem / call depth / source bytes / wall clock / max reads / max armed edits |
+
+`args` is a **dict, not a list** — callers name their inputs (`args["page"]`),
+they do not count them. It is inert in the `RunCtx.env` sense: string keys,
+string values, no callables and no host reach, so nothing in it can read or
+write. The kernel binds the dict; a host never flattens or reshapes one on the
+way in, which is what keeps a single args grammar in a single place.
 
 `files[]` carries paths and never content: all content enters through
 `read()` and is recorded, and inline content would bypass the recorded-read
