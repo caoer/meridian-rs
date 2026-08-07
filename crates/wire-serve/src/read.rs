@@ -67,7 +67,7 @@ pub fn cat(doc: &model::Document, sec: Option<SecRef>) -> Result<ResponseBody, B
     };
     let target = model::resolve(doc, &to_model_ref(&sec)?).map_err(|e| {
         Box::new(match e {
-            model::ResolveError::NotFound => ErrorBody::new(ErrorCode::RefNotFound),
+            model::ResolveError::NotFound => cat_miss(&sec, doc),
             model::ResolveError::Ambiguous(candidates) => ambiguous(&sec, doc, &candidates),
         })
     })?;
@@ -466,10 +466,14 @@ struct SectionsRender {
 }
 
 /// One failed section selector with its honest reason (wire-contract A.3): a
-/// miss, or an ambiguity carrying each candidate's machine address.
+/// miss (an anchor miss carries its Law A-3 teaching clause), or an ambiguity
+/// carrying each candidate's machine address.
 enum SelFail {
     Miss {
         display: String,
+        /// The `^id` teaching clause ([`anchor_sel_teach`]); `None` on heading
+        /// and dewey misses, whose teaching is the aggregate recovery clause.
+        teach: Option<String>,
     },
     Ambiguous {
         display: String,
@@ -480,17 +484,25 @@ enum SelFail {
 impl SelFail {
     fn display(&self) -> &str {
         match self {
-            SelFail::Miss { display } | SelFail::Ambiguous { display, .. } => display,
+            SelFail::Miss { display, .. } | SelFail::Ambiguous { display, .. } => display,
         }
     }
 
     /// The all-fail refusal's per-selector clause. The miss arm keeps the
-    /// standing single-miss spelling byte-for-byte; the ambiguous arm never
-    /// says "no section addressed" — two sections matched, and the honest
-    /// answer names both and how to pin one (dogfood F4).
+    /// standing single-miss spelling byte-by-byte as its prefix — an anchor
+    /// miss appends its teaching rather than reshaping the sentence; the
+    /// ambiguous arm never says "no section addressed" — two sections matched,
+    /// and the honest answer names both and how to pin one (dogfood F4).
     fn phrase(&self) -> String {
         match self {
-            SelFail::Miss { display } => format!("no section addressed by \"{display}\""),
+            SelFail::Miss {
+                display,
+                teach: None,
+            } => format!("no section addressed by \"{display}\""),
+            SelFail::Miss {
+                display,
+                teach: Some(teach),
+            } => format!("no section addressed by \"{display}\" ({teach})"),
             SelFail::Ambiguous {
                 display,
                 candidates,
@@ -507,7 +519,14 @@ impl SelFail {
     /// [`SelFail::phrase`], in the notice's established bare-selector shape.
     fn notice_entry(&self) -> String {
         match self {
-            SelFail::Miss { display } => display.clone(),
+            SelFail::Miss {
+                display,
+                teach: None,
+            } => display.clone(),
+            SelFail::Miss {
+                display,
+                teach: Some(teach),
+            } => format!("{display} ({teach})"),
             SelFail::Ambiguous {
                 display,
                 candidates,
@@ -518,6 +537,50 @@ impl SelFail {
             ),
         }
     }
+}
+
+/// Face-scoped `^id` miss teaching (Law A-3: a miss teaches before it
+/// refuses). The composed read resolves anchors against the face's anchor
+/// plane, which carries list-item hosts only (Go parity, golden-pinned), so a
+/// miss has two honest shapes and each gets its own clause:
+///
+/// - the id exists in the parse tree but its host block kind is outside the
+///   face's coverage — name the limit, never imply absence (the md-only-limit
+///   pattern);
+/// - the id is absent — name the nearest face-addressable ids, or say plainly
+///   that the page carries none.
+///
+/// `None` for non-anchor selectors. The host-kind probe re-projects the toc
+/// only on this error path, never on a served read.
+fn anchor_sel_teach(
+    doc: &model::Document,
+    facts: &[wire_map::facts::ReadFact],
+    sel: &wire::ReadSel,
+) -> Option<String> {
+    let wire::ReadSel::Anchor { anchor } = sel else {
+        return None;
+    };
+    if let Some(row) = wire_map::project_toc(doc)
+        .into_iter()
+        .find(|r| r.anchor.as_deref() == Some(anchor.as_str()))
+    {
+        return Some(format!(
+            "the anchor exists on this page, but its host block is a {} — outside the \
+             kinds this read face addresses (plain list items only); read its enclosing \
+             section by heading path instead",
+            row.kind
+        ));
+    }
+    let ids: Vec<String> = facts.iter().filter_map(|f| f.anchor.clone()).collect();
+    if ids.is_empty() {
+        return Some("this page carries no addressable block anchors".to_owned());
+    }
+    let shown: Vec<String> = model::selector::nearest(anchor, &ids)
+        .iter()
+        .take(model::selector::NEAREST_SHOWN)
+        .map(|c| format!("^{c}"))
+        .collect();
+    Some(format!("nearest live block anchors: {}", shown.join(", ")))
 }
 
 /// A candidate's machine address — the verbatim `[{"h":…,"n":…}]` segment
@@ -556,6 +619,7 @@ fn composed_sections(
             &[fact] => rows.push(render::SectionRow { sel, fact }),
             [] => failures.push(SelFail::Miss {
                 display: sel.display(),
+                teach: anchor_sel_teach(doc, facts, sel),
             }),
             many => failures.push(SelFail::Ambiguous {
                 display: sel.display(),
@@ -960,11 +1024,42 @@ pub fn ambiguous(sec: &SecRef, doc: &model::Document, candidates: &[model::Targe
 #[must_use]
 pub fn ref_not_found(sec: &SecRef, doc: &model::Document, display_path: &str) -> ErrorBody {
     let mut e = ErrorBody::new(ErrorCode::RefNotFound);
-    let (display, recovery) = match sec {
+    let (display, recovery) = miss_parts(sec, doc, Some(display_path));
+    e.message = Some(format!(
+        "no node addressed by \"{display}\" in {display_path}. {} {recovery}",
+        crate::NO_PARTIAL_WRITE_CLAUSE
+    ));
+    e
+}
+
+/// The strict READ miss — [`ref_not_found`]'s teaching with the read plane's
+/// partial-state clause: `cat` applies no edit, so "the batch is refused
+/// whole" would be the wrong voice. Before this arm existed, `cat` refused
+/// with a bare code and no sentence — the one selector surface that failed
+/// bare (Law A-3: a miss teaches before it refuses).
+fn cat_miss(sec: &SecRef, doc: &model::Document) -> ErrorBody {
+    let mut e = ErrorBody::new(ErrorCode::RefNotFound);
+    let (display, recovery) = miss_parts(sec, doc, None);
+    e.message = Some(format!(
+        "no node addressed by \"{display}\". Nothing was read and no rev was minted. {recovery}"
+    ));
+    e
+}
+
+/// The display spelling and teaching clause for one missed [`SecRef`] —
+/// shared by [`ref_not_found`] (write voice) and [`cat_miss`] (read voice),
+/// which differ only in their partial-state clause. `display_path` is `None`
+/// where the caller holds no path (`cat` serves one borrowed document).
+fn miss_parts(
+    sec: &SecRef,
+    doc: &model::Document,
+    display_path: Option<&str>,
+) -> (String, String) {
+    match sec {
         SecRef::Hpath { hpath } => {
             let asked = join_h(hpath);
             let recovery = raw_spelling_for(doc, hpath).map_or_else(
-                || crate::section_recovery(&asked, Some(display_path)),
+                || crate::section_recovery(&asked, display_path),
                 |raw| {
                     format!(
                         "That IS this file's published address for a section, but `put` \
@@ -977,7 +1072,11 @@ pub fn ref_not_found(sec: &SecRef, doc: &model::Document, display_path: &str) ->
         }
         SecRef::Anchor { anchor } => {
             let asked = format!("^{anchor}");
-            let recovery = crate::section_recovery(&asked, Some(display_path));
+            let recovery = format!(
+                "{} {}",
+                anchor_miss_teaching(doc, anchor),
+                crate::section_recovery(&asked, display_path)
+            );
             (asked, recovery)
         }
         SecRef::FmKey { fm_key } => (
@@ -989,12 +1088,25 @@ pub fn ref_not_found(sec: &SecRef, doc: &model::Document, display_path: &str) ->
              page's own frontmatter block lists the keys it already has."
                 .to_owned(),
         ),
-    };
-    e.message = Some(format!(
-        "no node addressed by \"{display}\" in {display_path}. {} {recovery}",
-        crate::NO_PARTIAL_WRITE_CLAUSE
-    ));
-    e
+    }
+}
+
+/// The strict plane resolves any parse-tree anchor regardless of host block
+/// kind, so a miss here means the id is truly absent from the page. Teach the
+/// nearest live ids — the same bigram rank the pin plane's dangling-anchor
+/// hint uses — or say plainly that the page carries none, so nobody hunts a
+/// page that has nothing to find (Law A-3: never fail bare).
+fn anchor_miss_teaching(doc: &model::Document, id: &str) -> String {
+    let live = model::selector::live_anchors(doc);
+    if live.is_empty() {
+        return "This page carries no block anchors.".to_owned();
+    }
+    let shown: Vec<String> = model::selector::nearest(id, &live)
+        .iter()
+        .take(model::selector::NEAREST_SHOWN)
+        .map(|c| format!("^{c}"))
+        .collect();
+    format!("Nearest live block anchors: {}.", shown.join(", "))
 }
 
 /// The segments a caller asked for, in their own spelling.
