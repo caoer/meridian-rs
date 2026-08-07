@@ -125,6 +125,23 @@ refuses typed, naming the ceiling, and the attempt has no result at all. Never
 truncation. Wall clock, retry budget, and the armed-edit ceiling bind in the
 host, above the kernel.
 
+The host-side defaults are **§5.3 host policy** — their existence is contract,
+their values are tunable:
+
+| Budget | Default | Binds | Over it |
+|---|---|---|---|
+| wall clock | 7s | host | typed refusal |
+| retries | 2 attempts | host | exhaustion → resync face |
+| armed edits | 64 | host | typed refusal |
+| reads / attempt | 64 | kernel | typed refusal, no result |
+| selector width | 256 paths | host | typed refusal, **never truncation** |
+
+The selector cap sits **above** the read ceiling on purpose: it bounds
+ENUMERATION — host result size and fan-out width — while the read ceiling bounds
+actual I/O, and a program is free to read only a few of the paths it was handed.
+256 covers S2-class fan-out over a large board without letting a runaway glob
+return the corpus.
+
 **The transaction — stand-still optimistic.** The word **snapshot is
 banned** here: the daemon has no MVCC and v1 must not grow one.
 
