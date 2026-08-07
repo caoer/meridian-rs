@@ -183,6 +183,20 @@ pub struct ScriptTrace {
     /// `conflict` — a conflict is the world moving, not a fault.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fault: Option<ScriptFault>,
+    /// The caller's own `--if-fingerprint`, present EXACTLY when the pre-eval
+    /// guard refused the run — the `expected` half of the face's extras line,
+    /// whose `actual` is [`ScriptTrace::entry_fingerprint`].
+    ///
+    /// It is here because the face renders from this trace and nothing else.
+    /// Every other terminal in the conflict family carries both tokens in band
+    /// (the commit-time mismatch embeds the daemon's own `{expected, actual,
+    /// changed}`), and a renderer that had to reach past the contract for one
+    /// line of one terminal would be a second source of the same fact.
+    ///
+    /// It is also the discriminator: `conflict` + no commit leg + this field is
+    /// a guard refusal, which is sharper than an absent leg alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guard_expected: Option<String>,
     /// Always present, whatever the outcome.
     pub telemetry: ScriptTelemetry,
 }
@@ -272,6 +286,7 @@ impl ScriptTrace {
             trace,
             commit,
             fault,
+            guard_expected: None,
             telemetry: eval.telemetry,
         }
     }
@@ -279,19 +294,20 @@ impl ScriptTrace {
     /// The trace of a caller guard that did not match: the run refused at the
     /// door, with **zero evaluation** — no reads, nothing armed, no splice.
     ///
-    /// It carries no commit leg and mints no §5.1 body, because it holds nothing
-    /// a §5.1 body would add: `expected` is the caller's own pinned
-    /// `if_fingerprint`, and `actual` IS [`ScriptTrace::entry_fingerprint`].
-    /// `changed` is absent because nothing asked the wire what moved — absence
-    /// stays absence. Telemetry is zero and unconditional: nothing ran.
+    /// It mints no §5.1 body and carries no commit leg, because no splice was
+    /// issued: `expected` is `pinned`, `actual` IS
+    /// [`ScriptTrace::entry_fingerprint`], and `changed` is absent because
+    /// nothing asked the wire what moved — absence stays absence. Telemetry is
+    /// zero and unconditional: nothing ran.
     #[must_use]
-    pub fn guard_refused(entry_fingerprint: impl Into<String>) -> Self {
+    pub fn guard_refused(entry_fingerprint: impl Into<String>, pinned: impl Into<String>) -> Self {
         Self {
             entry_fingerprint: entry_fingerprint.into(),
             outcome: ScriptOutcome::Conflict,
             trace: Vec::new(),
             commit: None,
             fault: None,
+            guard_expected: Some(pinned.into()),
             telemetry: ScriptTelemetry {
                 fuel_used: 0,
                 mem_used: 0,
