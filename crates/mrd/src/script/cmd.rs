@@ -35,6 +35,7 @@
 //! Exit triad: 0 committed or `no_effect` / 1 conflict, fault or refusal / 2 bad
 //! invocation.
 
+use std::collections::BTreeMap;
 use std::io::Read as _;
 use std::time::{Duration, Instant};
 
@@ -414,8 +415,8 @@ pub(crate) struct Script {
     /// content enters through `read()` alone, which is what keeps replay
     /// byte-identical.
     pub(crate) files: Vec<String>,
-    /// `--args JSON`: a JSON array of strings, injected inert.
-    pub(crate) args: Vec<String>,
+    /// `--args JSON`: a JSON object of strings, injected inert as a dict.
+    pub(crate) args: BTreeMap<String, String>,
     /// `--dry`: rehearse the commit — everything except disk.
     pub(crate) dry: bool,
     format: Format,
@@ -428,7 +429,7 @@ impl Script {
         let mut receipt = None;
         let mut if_fingerprint = None;
         let mut files: Vec<String> = Vec::new();
-        let mut script_args: Vec<String> = Vec::new();
+        let mut script_args: BTreeMap<String, String> = BTreeMap::new();
         let mut dry = false;
         let mut json = false;
         let mut it = args.iter();
@@ -459,7 +460,7 @@ impl Script {
                     let value = value_of("--args")?;
                     script_args = serde_json::from_str(&value).map_err(|e| {
                         Fail::tool(format!(
-                            "--args takes a JSON array of strings: {e}. Nothing was evaluated."
+                            "--args takes a JSON object of strings: {e}. Nothing was evaluated."
                         ))
                     })?;
                 }

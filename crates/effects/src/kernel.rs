@@ -504,7 +504,7 @@ pub(crate) fn script_globals() -> Globals {
 pub(crate) struct ScriptEntry<'h> {
     host: RefCell<&'h mut dyn ScriptHost>,
     actor: String,
-    args: Vec<String>,
+    args: BTreeMap<String, String>,
     files: Vec<String>,
     max_reads: usize,
     /// Resolved 0-based `(line, column)` of every `read(…)` call sitting in
@@ -943,10 +943,17 @@ impl<'a> EvalEntry<'a> {
     fn bind(&self, module: &Module<'_>) {
         if let EvalEntry::Script(entry) = self {
             let heap = module.heap();
-            let args: Vec<Value<'_>> = entry.args.iter().map(|s| heap.alloc(s.as_str())).collect();
+            // `args` is a dict (the `RunCtx::env` shape) — inert data, keys
+            // sorted by the BTreeMap it came from.
+            let args = heap.alloc(AllocDict(
+                entry
+                    .args
+                    .iter()
+                    .map(|(k, v)| (heap.alloc(k.as_str()), heap.alloc(v.as_str()))),
+            ));
             let files: Vec<Value<'_>> =
                 entry.files.iter().map(|s| heap.alloc(s.as_str())).collect();
-            module.set("args", heap.alloc(args));
+            module.set("args", args);
             module.set("files", heap.alloc(files));
         }
     }

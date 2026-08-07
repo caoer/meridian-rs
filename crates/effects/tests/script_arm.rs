@@ -79,7 +79,7 @@ impl ScriptHost for PanicHost {
 fn run(script: &str) -> effects::ScriptEval {
     let ctx = ScriptCtx {
         id: "s1".to_owned(),
-        args: Vec::new(),
+        args: BTreeMap::new(),
         files: vec!["tasks/0011.md".to_owned(), "tasks/0012.md".to_owned()],
     };
     eval_script(script, &ctx, ScriptLimits::default(), &mut ArmHost::new())
@@ -100,7 +100,7 @@ fn seg(h: &str) -> HpathSeg {
 fn put_performs_no_host_call() {
     let ctx = ScriptCtx {
         id: "s1".to_owned(),
-        args: Vec::new(),
+        args: BTreeMap::new(),
         files: vec!["tasks/0011.md".to_owned()],
     };
     let eval = eval_script(

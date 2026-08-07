@@ -367,8 +367,8 @@ options:
                            `files` (repeatable). Paths only — content enters
                            through read() alone, which is what makes a run
                            replayable
-  --args JSON              (script) a JSON array of strings, bound inert as
-                           `args`
+  --args JSON              (script) a JSON object of strings, bound inert as
+                           the `args` dict — callers name inputs, not count them
   --if-fingerprint FP      (script, put, pin) the world-grain guard: refuse
                            unless the workspace still stands at FP
   --history                (test) the history tier over WORKSPACE (a git repo)
