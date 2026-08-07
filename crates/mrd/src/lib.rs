@@ -34,6 +34,10 @@ mod rules_cmd;
 /// in their hash domain to tag-indexed registration. `policy` stays I/O-free; this feeds it.
 pub mod rules_walk;
 mod run_cmd;
+/// The script entry's consumer plane (kernel entry #3). Public because the
+/// `ScriptTrace` it assembles IS the boundary contract `mrd script --json`
+/// emits — the design tests hold the shape, and U4's wire client fills it.
+pub mod script;
 mod skill_cmd;
 mod sql;
 mod status_cmd;

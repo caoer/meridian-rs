@@ -161,6 +161,31 @@ is untouched — splice remains the only write op and the script executor is
 just another client — and the daemon still carries no run-plane type and no
 run-plane state. The whole wire cost of this entry is **zero schema delta**.
 
+**The trace — one commit-fact shape, and no `attempts`.** The entry returns a
+`ScriptTrace`: the entry fingerprint, the outcome
+(`committed | no_effect | conflict | fault | refused`), the decision trace, an
+optional commit leg, an optional fault, and telemetry. Three laws hold it
+together:
+
+- **The commit leg IS the §4.4 splice response, embedded verbatim** — carried as
+  raw bytes, never re-typed. The rev transitions, the receipt fact,
+  `fingerprint_before/after`, and `verdicts` (rules-as-data) all ride it, so no
+  second commit-fact shape exists and none can drift when §4.4 grows a field. A
+  `fingerprint_mismatch` embeds through the same leg: it is the splice's own
+  response. Absent when no splice was issued — the read-class path.
+- **There is no `attempts` field.** The entry is single-attempt; the retry loop
+  is the host's, so `attempts:N` is a host fact stamped on the composed face.
+- **Telemetry is unconditional** — fuel, memory, reads, wall time, reported on
+  faults and refusals too (the `RuleTelemetry` precedent).
+
+The decision trace is one entry per recorded read, in call order, then the armed
+block in arm order. A read's entry kind IS the statement-position rule — `echo`
+for a top-level-statement read, `read` for every quiet position — and each armed
+entry carries the wire plan-edit verbatim plus whether the commit landed it, so
+the face's wrote-lines zip descriptor × result exactly as put faces do today.
+The fault taxonomy is CLOSED at `parse | runtime | budget | refused`: a refusal
+is not a fault, and the two must grep apart.
+
 **The `mrd script` human-mode face is non-normative.** The MCP host owns the
 normative text face, rendered from the trace; `mrd script --json` emitting the
 trace is the contract between them. The CLI's human mode is an operator

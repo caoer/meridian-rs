@@ -24,7 +24,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 mod kernel;
 mod script_edit;
@@ -843,7 +843,7 @@ impl std::fmt::Display for ReadFault {
 /// The toc face (§4.1): the page rev, its frontmatter, and its section map.
 /// A frontmatter key the page does not carry is **absent from `fm`** — never a
 /// synthesized empty value.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TocFacts {
     /// The page rev at read time.
     pub rev: String,
@@ -854,7 +854,7 @@ pub struct TocFacts {
 }
 
 /// One toc row: the section, its optional `^anchor`, and its node rev.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TocEntry {
     /// The section heading.
     pub section: String,
@@ -865,7 +865,7 @@ pub struct TocEntry {
 }
 
 /// The cat face (§4.2): one section's text and its rev.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SecFacts {
     /// The section text.
     pub text: String,
@@ -874,7 +874,7 @@ pub struct SecFacts {
 }
 
 /// Which face a recorded read carries.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReadFace {
     /// `read(path)` — the toc face.
     Toc(TocFacts),
@@ -884,7 +884,7 @@ pub enum ReadFace {
 
 /// Where a read call sat in the source. The face renders `Echo` reads and stays
 /// quiet about `Quiet` ones; both are recorded either way.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReadPosition {
     /// A top-level statement read — `card = read(…)` binds and echoes.
     Echo,
@@ -919,7 +919,7 @@ pub struct ScriptRecording {
 
 /// Measurement of one attempt. Unconditional — reported even on failure
 /// (the [`RuleTelemetry`] precedent).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScriptTelemetry {
     /// Exact Starlark ticks spent.
     pub fuel_used: u64,

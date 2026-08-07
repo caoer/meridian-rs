@@ -78,7 +78,12 @@ git = { path = "crates/git", version = "0.0.0" }
 config = { path = "crates/config", version = "0.0.0" }
 
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `raw_value` is what lets a consumer carry a response through VERBATIM: the
+# §4.4 splice response is embedded in `ScriptTrace.commit` unmodified, and a
+# `Value` would sort its keys and normalize its whitespace — a second
+# commit-fact shape by re-serialization. A feature on a crate already in the
+# graph; no new external crate enters and `cargo deny` is unchanged.
+serde_json = { version = "1", features = ["raw_value"] }
 # Fenced-Starlark evaluation, shared by `policy` (rung-6 predicates) and `effects`
 # (the effect kernel). Pinned EXACT (=0.14.2): starlark-rust disclaims API
 # stability and 0.14 introduced the per-eval resource meters (tick/heap) both
