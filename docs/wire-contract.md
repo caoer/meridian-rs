@@ -590,7 +590,7 @@ Every error frame carries `code` + `recovery` from the CLOSED six-class enum; ea
 | class | meaning | codes |
 |---|---|---|
 | `fix` | your request is wrong; change it | `bad_request`, `unknown_op`, `bad_path`, `no_match`, `not_unique`, `would_corrupt{lost}`, `ambiguous_ref{candidates}` |
-| `env` | the world outside the workspace is wrong | `file_not_found`, `io_error{cause}`, `invalid_utf8`, `daemon_only`, `mount_table_invalid{path,message}` |
+| `env` | the world outside the workspace is wrong | `file_not_found`, `io_error{cause}`, `invalid_utf8{path,message}`, `daemon_only`, `mount_table_invalid{path,message}` |
 | `refresh` | your picture of a node is stale; re-read one thing | `cas_mismatch{expected,actual}`, `ref_not_found{stage,dest?}` |
 | `retry` | transient; same request may succeed | `lock_timeout`, `stale_view{required,as_of_fingerprint,live_fingerprint}` |
 | `resync` | your picture of the world is stale; re-plan | `fingerprint_mismatch{expected,actual,changed}`, `fingerprint_unknown` |
