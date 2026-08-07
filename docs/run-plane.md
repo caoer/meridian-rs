@@ -249,6 +249,43 @@ extras tokens still ride the trace in band — `actual` IS the trace's
 trace and nothing else, and `conflict` + no commit leg + `guard_expected` is
 what tells a guard refusal apart from a commit-time mismatch.
 
+**Amendment to § The script entry (the execution-model seam: arm, then commit).**
+The seam table's Authority row above already names this entry's authority as *"the
+caller's own identity — `actor` threaded per §9; **ownership guard + armed law**;
+no cap grammar."* The ownership guard is the HOST's organ — the engine's splice is
+caller-agnostic by §5.3 and enforces no ownership — and a host cannot gate a write
+set it has not seen. `put(path)` takes an arbitrary path, computed inside the
+Starlark source, so the write set does not exist until evaluation has run. The
+paragraphs above describe a single call that evaluates and commits in one child,
+which leaves no point at which the host can read the armed set. This amendment
+states the execution model that gives it one:
+
+> **The MCP host runs the entry TWICE per attempt: once as an ARM (`--dry`),
+> then, if and only if its own write-authorization plane admits every armed row,
+> once as a COMMIT pinned with `--if-fingerprint <the arm's entry fingerprint>`.**
+
+Four things follow, and only these four. First, **this is a consumer-plane
+sequencing law, not a wire or CLI change** — `mrd script` is untouched, its
+argument surface unchanged, and the wire contract carries zero delta; the split
+is two ordinary invocations of the entry exactly as documented. Second, the split
+is **safe by construction, never by being fast**: the commit's `if_fingerprint`
+is the arm's `entry_fingerprint`, so any movement of the world between the two
+refuses at §5.1 as an ordinary `fingerprint_mismatch`, which the host's retry
+budget already handles. Correctness never depends on the gap being small. Third,
+**recorded-read purity is what makes the arm's set the commit's set**: eval is a
+pure function of (script, args, files, read-response sequence), and an unmoved
+fingerprint means an unmoved read-response sequence, so the two evaluations arm
+identically. The arm is therefore OUTPUT, never a second decision. Fourth, the
+gate is **parity with `put`, not a second policy grammar** — the same organs
+(`checkPutAuthz`, `checkContentWrite`, the birth gate), the same per-target flock
+held across the commit child, and the same journal pipeline. A script commit that
+took no flock and wrote no audit line was the broadest-reach write face in the
+host having neither.
+
+The CLI entry keeps its single-call shape: an operator running `mrd script`
+directly evaluates and commits in one process, because there is no host identity
+plane in that path to gate against. The law binds the MCP `script` tool.
+
 **The trace — one commit-fact shape, and no `attempts`.** The entry returns a
 `ScriptTrace`: the entry fingerprint, the outcome
 (`committed | no_effect | conflict | fault | refused`), the decision trace, an
