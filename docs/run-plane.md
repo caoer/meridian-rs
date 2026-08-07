@@ -77,6 +77,29 @@ perform no I/O at call time. The law: **script eval is a pure function of
 read response, so re-evaluating against the recorded responses is
 deterministic and byte-identical. Decision #17 (no exec) stands unchanged.
 
+**The statement-position rule — echo and quiet.** Every read is recorded; the
+face renders only the ones the reader wrote as a decision. A read **echoes**
+exactly when its call is the whole right-hand side of a top-level assignment,
+or a top-level expression statement — `card = read(…)` binds and echoes. Every
+other position is **quiet**: comprehensions, `if` conditions, loop bodies,
+function bodies. The kernel reads the positions off the parsed module, so the
+rule is syntactic and stable, never a call-depth heuristic. Suppression syntax
+does not exist in v1 (`_ = read(…)` is rejected permanently; `quiet()` waits on
+elision-count evidence).
+
+**The grammar.** The script entry parses under the rule dialect plus top-level
+statements — its module top level IS the program, so `if` and `for` at the top
+level are the ordinary case there. A rule or a task must define a hook, so the
+hooked planes keep the stricter grammar. `load` stays disabled at every entry.
+
+**Where the budgets bind.** Fuel, memory, call depth, and source bytes are
+`EvalLimits`, shared with the other two entries. The read ceiling (64 per
+attempt) is the script plane's own — the I/O-amplification axis the hermetic
+entries do not have — and the kernel enforces it: the read past the ceiling
+refuses typed, naming the ceiling, and the attempt has no result at all. Never
+truncation. Wall clock, retry budget, and the armed-edit ceiling bind in the
+host, above the kernel.
+
 **The transaction — stand-still optimistic.** The word **snapshot is
 banned** here: the daemon has no MVCC and v1 must not grow one.
 

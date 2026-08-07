@@ -86,6 +86,11 @@ serde_json = "1"
 # pin keeps a single copy in the graph (row-13 wire-invariance holds: no wire
 # crate names it).
 starlark = "=0.14.2"
+# The AST behind `starlark::syntax::AstModule` — the script entry reads its echo
+# positions (top-level statement reads) off the parsed module. Pinned to the same
+# exact version so the two crates speak one AST; already in the lock via
+# starlark's own tree, so this makes an existing edge direct, not new.
+starlark_syntax = "=0.14.2"
 # starlark `#[starlark_module]` builtins return `anyhow::Result`; both starlark
 # consumers surface it. Already in the lock via starlark's own tree.
 anyhow = "1"
