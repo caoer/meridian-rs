@@ -116,6 +116,10 @@ mrd test --history <WS> --rule <PAGE> [--spec <PAGE>]
  --spec names the spec page whose ```golden fence
  declares the exceptions (its `rule:` must name <PAGE>)
 mrd run <PAGE> [TASK] run a task block declared in the page's frontmatter
+mrd script [--json] the script entry of the run plane: caller-supplied
+ inline source on stdin, run as the caller through the
+ one write path (`--json` emits the trace; the human
+ face is non-normative — see `run-plane.md`)
 mrd new <KIND> <ID> file birth: fill the def's template, validate, birth
  the first rev through the guarded create
 mrd unfold <PRESET> materialize a preset's declared scaffold
