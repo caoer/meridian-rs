@@ -86,7 +86,7 @@ fn address_of(synopsis: &str) -> Vec<&str> {
 fn every_verb_in_the_listing_answers_its_own_help() {
     let listing = listing();
     let verbs = verb_lines(&listing);
-    assert_eq!(verbs.len(), 26, "verbs in the listing:\n{listing}");
+    assert_eq!(verbs.len(), 27, "verbs in the listing:\n{listing}");
 
     for (_, synopsis) in &verbs {
         let address = address_of(synopsis);
@@ -323,16 +323,16 @@ fn the_write_mark_travels_into_the_verb_page() {
     );
 }
 
-/// The classification itself, pinned: thirteen verbs change files or the
-/// drawer, the other fourteen are reads. `retire mark` writes because it sweeps
+/// The classification itself, pinned: fourteen verbs change files or the
+/// drawer, the other thirteen are reads. `retire mark` writes because it sweeps
 /// `~~` markers across the vault's markdown, and `--dry` exempts it no more
-/// than it exempts `pin`, `realise`, `reconcile`, `new` or `unfold`; `mrd test`
-/// is unmarked because it writes only into temporary directories.
+/// than it exempts `pin`, `realise`, `reconcile`, `new`, `unfold` or `script`;
+/// `mrd test` is unmarked because it writes only into temporary directories.
 ///
 /// The count is in the test NAME on purpose — a classification whose total can
 /// drift silently is one nobody reviews.
 #[test]
-fn the_write_classification_is_thirteen_of_twenty_six() {
+fn the_write_classification_is_fourteen_of_twenty_seven() {
     let listing = listing();
     let (writers, readers): (Vec<_>, Vec<_>) = verb_lines(&listing)
         .into_iter()
@@ -357,6 +357,7 @@ fn the_write_classification_is_thirteen_of_twenty_six() {
             "cache clean",
             "daemon",
             "run",
+            "script",
             "new",
             "unfold",
             "reconcile",
@@ -370,6 +371,7 @@ fn the_write_classification_is_thirteen_of_twenty_six() {
         "the rest are reads: {:?}",
         named(&readers)
     );
+    assert_eq!(writers.len() + readers.len(), 27, "the whole surface");
 }
 
 /// `mrd test` writes only into temporary directories, and `mrd sql` queries an

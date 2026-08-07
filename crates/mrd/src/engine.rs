@@ -389,6 +389,20 @@ pub(crate) fn call(
     reader: &mut BufReader<UnixStream>,
     request: &Value,
 ) -> io::Result<Value> {
+    let response = call_line(writer, reader, request)?;
+    serde_json::from_str(&response).map_err(io::Error::other)
+}
+
+/// The same round trip, answering the response **line** instead of a parsed
+/// value. The script entry embeds the splice response in its trace verbatim, and
+/// a parse-then-reserialize would sort the object's keys and normalize its
+/// whitespace — a second commit-fact shape. Callers that only read fields use
+/// [`call`]. Errors The write fails, or the daemon closes without a response.
+pub(crate) fn call_line(
+    writer: &mut UnixStream,
+    reader: &mut BufReader<UnixStream>,
+    request: &Value,
+) -> io::Result<String> {
     let mut line = serde_json::to_string(request).map_err(io::Error::other)?;
     line.push('\n');
     writer.write_all(line.as_bytes())?;
@@ -401,7 +415,7 @@ pub(crate) fn call(
             "daemon closed the connection without a response",
         ));
     }
-    serde_json::from_str(&response).map_err(io::Error::other)
+    Ok(response)
 }
 
 /// The degrade: build the corpus in-process and answer through the same shared `links` read arm
