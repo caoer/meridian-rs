@@ -1,6 +1,6 @@
 [package]
 name = "addr"
-description = "The agent-plane address `[root:]path[#selector][@fp]` as a fallible TYPE — a std-only leaf UPSTREAM of `syntax`, so nothing downstream re-splits a string (docs/address-grammar.md)"
+description = "The agent-plane address `[root:]path[#selector]` as a fallible TYPE — a std-only leaf UPSTREAM of `syntax`, so nothing downstream re-splits a string (docs/address-grammar.md)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -1,6 +1,6 @@
 //! The STORED plane of a cross-root address — the `obsidian://` URI.
 //!
-//! The agent plane is `[root:]path[#selector][@fp]` ([`crate::Addr`]); the stored plane
+//! The agent plane is `[root:]path[#selector]` ([`crate::Addr`]); the stored plane
 //! is what disk carries for a CROSS-ROOT ref, because a root-prefixed wikilink is
 //! unresolvable garbage to Obsidian. `put` translates one into the other; `read`
 //! translates back.
@@ -201,8 +201,9 @@ pub fn decode_component(value: &str) -> Option<String> {
 /// Mint the stored form of a cross-root address.
 ///
 /// `selector` is the agent plane's own spelling — `^id` for a block ref, the
-/// heading text otherwise, `None` for page grain. The `@fp` decoration is not
-/// a parameter: it is minted on read and never stored (§ 4.4).
+/// heading text otherwise, `None` for page grain. There is no fingerprint
+/// parameter: fingerprint pinning is its own field on the surface that carries
+/// one, never part of the name lane (§ 4.4, Law A-2).
 ///
 /// # Errors
 ///

@@ -1,6 +1,6 @@
 //! The agent-plane address, as a fallible type.
 //!
-//! `[root:]path[#selector][@fp]` — parsed once, here, so no plane downstream re-splits a
+//! `[root:]path[#selector]` — parsed once, here, so no plane downstream re-splits a
 //! string. A `std`-only leaf with zero dependencies, upstream of `syntax`
 //! (`docs/address-grammar.md` § 7.1).
 //!
@@ -147,7 +147,7 @@ impl fmt::Display for AddrError {
 
 impl std::error::Error for AddrError {}
 
-/// The agent-plane address `[root:]path[#selector][@fp]`, parsed.
+/// The agent-plane address `[root:]path[#selector]`, parsed.
 ///
 /// Construct with [`Addr::parse`] — the sole constructor. Round-trips
 /// byte-identically through [`Display`](fmt::Display).
@@ -156,7 +156,6 @@ pub struct Addr {
     root: Option<MountName>,
     path: String,
     selector: Option<String>,
-    fp: Option<String>,
 }
 
 impl Addr {
@@ -174,9 +173,10 @@ impl Addr {
     ///
     /// After the first `/`, a `:` is an ordinary path byte.
     ///
-    /// The `@fp` suffix is recognized inside the fragment only (§ 4.4); an `@`
-    /// in a bare path stays a path byte, so a filename carrying one is
-    /// addressable.
+    /// A fragment runs from the first `#` to the end of the spelling, and every
+    /// byte of it is selector bytes — `@` included (§ 4.4, Law A-2).
+    /// Fingerprint pinning is its own field on whatever surface carries one,
+    /// never an in-band suffix parsed out of the name lane.
     ///
     /// # Errors
     ///
@@ -210,19 +210,10 @@ impl Addr {
             return Err(AddrError::EmptyPath);
         }
 
-        let (selector, fp) = match frag {
-            None => (None, None),
-            Some(frag) => match frag.split_once('@') {
-                Some((sel, fp)) => (Some(sel.to_string()), Some(fp.to_string())),
-                None => (Some(frag.to_string()), None),
-            },
-        };
-
         Ok(Addr {
             root,
             path,
-            selector,
-            fp,
+            selector: frag.map(str::to_string),
         })
     }
 
@@ -239,8 +230,9 @@ impl Addr {
         &self.path
     }
 
-    /// The selector, verbatim after the first `#` with the caret kept. `""`
-    /// means the page/doc root, matching the shipped `node.selector` column.
+    /// The selector — every byte after the first `#`, to the END of the
+    /// spelling, `@` included (Law A-2). `""` means the page/doc root,
+    /// matching the shipped `node.selector` column.
     #[must_use]
     pub fn selector(&self) -> &str {
         self.selector.as_deref().unwrap_or("")
@@ -254,18 +246,8 @@ impl Addr {
         self.selector.is_some()
     }
 
-    /// The `@fp` render-face decoration, if the spelling carried one.
-    ///
-    /// **Never part of the identity a corpus lookup uses** — resolution reads
-    /// the fp-free projection ([`Addr::target`]). The fp is minted on read and
-    /// never stored (§ 4.4).
-    #[must_use]
-    pub fn fp(&self) -> Option<&str> {
-        self.fp.as_deref()
-    }
-
-    /// The address minus its selector and fp: `[root:]path` — the identity a
-    /// corpus lookup addresses. The root stays on the spelling; the root-keyed
+    /// The address minus its selector: `[root:]path` — the identity a corpus
+    /// lookup addresses. The root stays on the spelling; the root-keyed
     /// lookup belongs to the resolver.
     #[must_use]
     pub fn target(&self) -> String {
@@ -277,8 +259,8 @@ impl Addr {
 
     /// This address with its path replaced — the resolution seam, fallible on
     /// purpose: a resolved corpus path must itself carry no root separator, or
-    /// the [`Addr::parse`] invariant could be smuggled around. Root, selector
-    /// and fp ride through unchanged.
+    /// the [`Addr::parse`] invariant could be smuggled around. Root and
+    /// selector ride through unchanged.
     ///
     /// # Errors
     ///
@@ -295,7 +277,6 @@ impl Addr {
             root: self.root.clone(),
             path: reparsed.path,
             selector: self.selector.clone(),
-            fp: self.fp.clone(),
         })
     }
 }
@@ -311,9 +292,6 @@ impl fmt::Display for Addr {
         f.write_str(&self.path)?;
         if let Some(sel) = &self.selector {
             write!(f, "#{sel}")?;
-        }
-        if let Some(fp) = &self.fp {
-            write!(f, "@{fp}")?;
         }
         Ok(())
     }
@@ -668,33 +646,36 @@ mod tests {
         }
     }
 
-    /// `@fp` is recognized in the fragment and kept off the identity, and an
-    /// `@` in a bare path stays a path byte (§ 4.4).
+    /// Law A-2 (§ 4.4): the fragment is selector bytes to its end — `@`
+    /// included. No `@fp` is split out of the name lane; a decorated spelling
+    /// pasted back in keeps its whole fragment and misses byte-exact.
     #[test]
-    fn the_fp_decoration_is_recorded_and_never_part_of_the_identity() {
+    fn the_fragment_is_selector_bytes_to_its_end() {
         let decorated =
             Addr::parse("guide.md#^claim@fp1.span2.b3.beef").expect("a decorated address parses");
-        assert_eq!(decorated.selector(), "^claim", "the fp never bleeds in");
-        assert_eq!(decorated.fp(), Some("fp1.span2.b3.beef"));
+        assert_eq!(
+            decorated.selector(),
+            "^claim@fp1.span2.b3.beef",
+            "every fragment byte is selector bytes — nothing is peeled",
+        );
         assert_eq!(
             decorated.target(),
             "guide.md",
-            "resolution reads the fp-free projection",
+            "the identity a corpus lookup addresses is `[root:]path`",
         );
 
-        let at_in_path = Addr::parse("mail@host.md").expect("an `@` in a bare path parses");
-        assert_eq!(at_in_path.path(), "mail@host.md");
-        assert_eq!(at_in_path.fp(), None, "a bare path's `@` is a path byte");
+        // The corpus motive: an `@`-bearing heading is addressable by its own
+        // spelling, and never resolves as its `@`-truncated prefix.
+        let real = Addr::parse("page.md#Deploy @ prod").expect("parses");
+        assert_eq!(real.selector(), "Deploy @ prod");
     }
 
-    /// S3-R38 — an `@` in a BARE path is a path byte, so `mail@host.md` stays
-    /// addressable. The `@fp` slot is defined by the block-ref position, which
-    /// requires a `#`; a bare path has no slot by construction.
+    /// S3-R38 — an `@` is an ordinary byte everywhere: in a bare path, in a
+    /// rooted path, and (Law A-2) in a fragment.
     #[test]
-    fn an_at_in_a_bare_path_is_a_path_byte_and_round_trips() {
+    fn an_at_is_an_ordinary_byte_in_path_and_fragment_alike() {
         let bare = Addr::parse("mail@host.md").expect("a bare path carrying `@` parses");
         assert_eq!(bare.path(), "mail@host.md", "the `@` is an ordinary byte");
-        assert_eq!(bare.fp(), None, "no `#`, no slot, therefore no fp");
         assert_eq!(
             bare.to_string(),
             "mail@host.md",
@@ -706,19 +687,17 @@ mod tests {
             "the corpus lookup addresses the whole filename, `@` included",
         );
 
-        // The slot, opened: the same `@host` text after a `#` IS an fp.
-        let slotted = Addr::parse("mail.md#^claim@host").expect("a block ref opens the fp slot");
-        assert_eq!(slotted.selector(), "^claim");
+        // In a fragment the same text is selector bytes — there is no fp slot.
+        let slotted = Addr::parse("mail.md#^claim@host").expect("parses");
         assert_eq!(
-            slotted.fp(),
-            Some("host"),
-            "the block-ref position is what defines the fp slot",
+            slotted.selector(),
+            "^claim@host",
+            "the fragment runs to the end of the spelling",
         );
 
         // And a ROOTED bare path keeps the same reading.
         let rooted = Addr::parse("sessions:mail@host.md").expect("rooted, still a path byte");
         assert_eq!(rooted.path(), "mail@host.md");
-        assert_eq!(rooted.fp(), None);
         assert_eq!(rooted.to_string(), "sessions:mail@host.md");
     }
 
