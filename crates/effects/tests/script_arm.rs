@@ -42,6 +42,7 @@ impl ScriptHost for ArmHost {
                 anchor: None,
                 rev: "sec-notes".to_owned(),
             }],
+            words: 41,
         })
     }
 

@@ -843,9 +843,9 @@ impl std::fmt::Display for ReadFault {
     }
 }
 
-/// The toc face (§4.1): the page rev, its frontmatter, and its section map.
-/// A frontmatter key the page does not carry is **absent from `fm`** — never a
-/// synthesized empty value.
+/// The toc face (§4.1): the page rev, its frontmatter, its section map, and the
+/// page's word count. A frontmatter key the page does not carry is **absent
+/// from `fm`** — never a synthesized empty value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TocFacts {
     /// The page rev at read time.
@@ -854,6 +854,10 @@ pub struct TocFacts {
     pub fm: BTreeMap<String, String>,
     /// The section map, in document order.
     pub toc: Vec<TocEntry>,
+    /// The whole-file word count — the toc response's own `words_total`.
+    /// `read(path)` IS the wire toc face 1:1, so this is a delivered fact the
+    /// host carries; nothing here counts words (ruling 2026-08-07).
+    pub words: usize,
 }
 
 /// One toc row: the section, its optional `^anchor`, and its node rev.

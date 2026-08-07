@@ -48,6 +48,7 @@ fn toc_read(line: u32, position: ReadPosition) -> ReadRecord {
                 anchor: None,
                 rev: "3b62f9c8".to_owned(),
             }],
+            words: 41,
         }),
     }
 }

@@ -779,8 +779,10 @@ fn alloc_read_face<'v>(heap: Heap<'v>, face: &ReadFace) -> Value<'v> {
     }
 }
 
-/// The toc face: `{rev, fm, toc}`. A frontmatter key the page does not carry is
-/// absent from `fm` — absence stays absence, never a synthesized `""`.
+/// The toc face: `{rev, fm, toc, words}`. A frontmatter key the page does not
+/// carry is absent from `fm` — absence stays absence, never a synthesized `""`.
+/// `words` is the wire toc face's own `words_total`: a script may see it
+/// because the wire answered it (ruling 2026-08-07).
 fn alloc_toc<'v>(heap: Heap<'v>, facts: &TocFacts) -> Value<'v> {
     let fm = heap.alloc(AllocDict(
         facts
@@ -803,6 +805,10 @@ fn alloc_toc<'v>(heap: Heap<'v>, facts: &TocFacts) -> Value<'v> {
         ("rev", heap.alloc(facts.rev.as_str())),
         ("fm", fm),
         ("toc", heap.alloc(toc)),
+        (
+            "words",
+            heap.alloc(i32::try_from(facts.words).unwrap_or(i32::MAX)),
+        ),
     ]))
 }
 
