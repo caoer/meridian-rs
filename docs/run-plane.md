@@ -196,14 +196,11 @@ guard, it declines to, and `guard_required` comes back with the engine's own
 teaching text. `force` is not a script-plane door.
 
 Evidence, and where it is held: `crates/mrd/tests/script_golden_live.rs` runs
-every golden scenario (`inbox/run-golden.html` v8) through the real entry against
+every golden scenario (`inbox/run-golden.html` v9) through the real entry against
 a **live daemon** and asserts that every `plan_edits[]` row on the socket carries
-a token its own reads published. Eight of the nine conform. The ninth — golden
-**3A**, which appends to `status/round-7.md` without reading it — refuses
-`guard_required` on a live daemon and is pinned by its own test as an **open
-divergence in the page, not in the engine** (routed to the Advisor `d1f489b5`,
-2026-08-07). A page short one `read()` line is what this law looks like from
-outside.
+a token its own reads published. All of them conform. The same suite pins the
+law's other direction with a counter-example — an append to a target the attempt
+never read must be refused whole by the engine, not silently accepted.
 
 **`--dry` is a rehearsal, not a commit.** The splice carries `dry: true`, so the
 daemon builds the whole effect set and applies none of it; the response — with
