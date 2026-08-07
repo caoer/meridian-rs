@@ -5,7 +5,7 @@
 **Status: normative SPEC** (ships no engine code). Where this document rules, the implementer has no design decision left; open points are named in § 10 with an owner surface inside this tree.
 
 **Scope (read before §2).** This document owns the **cross-root / mount** grammar:
-`[root:]path[#selector][@fp]`, the `addr::Addr` type, mount-table invariants, and
+`[root:]path[#selector]`, the `addr::Addr` type, mount-table invariants, and
 stored-form translation positions. It does **not** redefine mint-plane section
 addressing. On the wire, a section is addressed as **segment objects**
 (`{"hpath":[{"h":"Goals"},{"h":"Q3"}]}`) or `{"anchor":"…"}` / `{"fm_key":"…"}`
@@ -70,12 +70,11 @@ string convention that 16 sites re-parse is exactly R5's *"boolean helper a call
 /// A canonical root name: the mount-table key. Lowercase `[a-z0-9-]`, non-empty.
 pub struct MountName(String);
 
-/// The agent-plane address `[root:]path[#selector][@fp]`, parsed.
+/// The agent-plane address `[root:]path[#selector]`, parsed.
 pub struct Addr {
  root: Option<MountName>, // None = the ambient root
  path: String, // never carries a root prefix, by construction
- selector: Option<String>, // verbatim after the first `#`, caret kept
- fp: Option<String>, // a render-face decoration; never part of identity (§ 4.4)
+ selector: Option<String>, // verbatim after the first `#`, to the END — `@` is a selector byte (§ 4.4)
 }
 
 pub enum AddrError { /* the closed set of § 4 */ }
@@ -177,17 +176,47 @@ name per root, used everywhere. The corpus index already lowercases its keys (`b
 `crates/model/src/lib.rs`), so a normalizing `MountName` would be a second, invisible case rule on
 the same address.
 
-### 4.4 `@fp` — parsed, never identity
+### 4.4 Law A-2 — the fragment is selector bytes to its end; `@fp` is off the name lane
 
-The `@fp` suffix is a render-face decoration the engine mints on read and **never stores** — the
-shipped refusal says so verbatim: *"`@green.…` after a block ref is a render-face decoration the
-engine mints on read, never storable content (S10)"* (`crates/wire-serve/src/write.rs:2259`).
+**Amended 2026-08-07 (August team-e multi-root contract, Law A-2; supersedes
+the previous § 4.4, which had `Addr::parse` split selector from fingerprint at
+the first `@` in the fragment).**
 
-> `Addr::parse` **accepts and records** an `@fp` suffix, so a decorated address arriving from the
-> render face is recognized rather than mis-parsed into the selector. **The fp is never part of the
-> identity a corpus lookup uses** — resolution reads the fp-free projection. This is the same law
-> `read::to_model_ref` already follows when it strips a `SecRef::Anchor` before the mint guard:
-> *"an address is compared, never stored"* (`crates/wire-serve/src/write.rs:2481-2486`).
+The agent-plane grammar is **`[root:]path[#selector]`**. A fragment runs from
+the first `#` to the end of the spelling, and **every byte of it is selector
+bytes — `@` included.** Fingerprint pinning is its own field on whatever
+surface carries one (a lock row's pin, a render-face decoration); it is never
+an in-band suffix parsed out of the name lane. This is the packing law applied
+one field to the right: heading text is an open charset, and an in-band
+delimiter drawn from the charset it delimits is subject to the very collision
+it exists to solve.
+
+**The corpus motive, pinned.** 3,815 real headings across both roots contain
+`@` (60 wiki-root; fence-aware at `field-notes@14bfc98bc` +
+`field-notes-sessions@126d68cd5` — team-e census, register V11). Under the
+superseded split, every one of them is unaddressable by its own spelling; and
+for a constructible pair (`Deploy`, `Deploy @ prod`) a trimming resolver
+resolves the wrong *real* section — the silent-wrong class, not a miss.
+
+**What this narrows, stated rather than discovered.** A decorated render-face
+spelling pasted back in — `page.md#Sec@green.b3…` — no longer has its
+`@green.…` tail recognized and stripped. The whole fragment is selector
+bytes, misses byte-exact, and lands in the Law A-3 teaching refusal, which
+republishes the machine address (and the near candidate where the ranker
+finds one). One taught round trip on that ingress, never a silent resolution.
+No stored surface carries an in-band `@fp` for this to break: the engine
+refuses an fp reaching stored bytes (S10 — *"a render-face decoration the
+engine mints on read, never storable content"*,
+`crates/wire-serve/src/write.rs:2211`), and the lock's pin is already its own
+field. The old recognition served ingress only, and ingress now teaches.
+
+**What this widens.** `#Deploy @ prod` resolves byte-exact to the real heading
+`Deploy @ prod`. The 3,815 `@`-bearing headings become addressable by their
+own spelling on the name lane.
+
+**The type follows the law.** `addr::Addr` drops its `fp` field; `Addr::parse`
+records the fragment verbatim as the selector; `Display` round-trips without
+an `@` re-join (a selector containing `@` prints as its own bytes).
 
 ### 4.5 The negative cases, as negative cases
 
@@ -382,7 +411,7 @@ implementation and implementation write these; the sentences are supplied here s
 
 | Crate | Charter |
 |---|---|
-| `addr` | The agent-plane address: `[root:]path[#selector][@fp]` parsed into a fallible type carrying an optional canonical root name, plus the resolution-facing bound-name projection every plane resolves through. A `std`-only leaf upstream of `syntax` — it is where an address becomes a value, so nothing downstream re-splits a string |
+| `addr` | The agent-plane address: `[root:]path[#selector]` parsed into a fallible type carrying an optional canonical root name, plus the resolution-facing bound-name projection every plane resolves through. A `std`-only leaf upstream of `syntax` — it is where an address becomes a value, so nothing downstream re-splits a string |
 | `config` | The `MERIDIAN.md` plane: the one entry point parsed as content (a rev and a fingerprint like any page), and the mount table binding canonical root name ↔ Obsidian vault name ↔ local path (+ kind) — canonicalized at bind, passed through the `workspace` deny ceiling, refusing equal-or-nested mounts, failing loud with no partial table. Downstream of `model`; it projects the bound names into `addr::MountSet` so resolution stays `model`'s |
 
 ---
@@ -579,7 +608,7 @@ Row 7 forced a grammar rule the plan names nowhere:
 | whether construction is fallible, and the only way in | § 2.2 — `Addr::parse` is the sole constructor; no `from_parts` |
 | how the prefix is separated from the path | § 4.1 — the colon law, three arms, no fallback |
 | the root-name charset and its case rule | § 4.3 — `[a-z0-9-]`, non-empty; uppercase refuses, never normalizes |
-| what happens to `@fp` | § 4.4 — parsed and recorded, never part of resolution identity |
+| what happens to `@` in a fragment | § 4.4 — selector bytes to the end; fingerprint pinning is its own field, never in-band (Law A-2) |
 | the closed error set | § 4.5 + § 10.1 — `BadMountName`, `EmptyMountName`, `EmptyPath`, `AmbiguousColon`, `SelectorOnOpaqueRoot` |
 | the parse/resolve split | § 2.2 — parse never reads the mount table; unmounted is grey, not a parse error |
 | what `resolve_ref` receives | § 7.2 — `&addr::MountSet`, defined upstream so D4 and D4a both hold |

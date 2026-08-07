@@ -590,7 +590,7 @@ Every error frame carries `code` + `recovery` from the CLOSED six-class enum; ea
 | class | meaning | codes |
 |---|---|---|
 | `fix` | your request is wrong; change it | `bad_request`, `unknown_op`, `bad_path`, `no_match`, `not_unique`, `would_corrupt{lost}`, `ambiguous_ref{candidates}` |
-| `env` | the world outside the workspace is wrong | `file_not_found`, `io_error{cause}`, `invalid_utf8`, `daemon_only` |
+| `env` | the world outside the workspace is wrong | `file_not_found`, `io_error{cause}`, `invalid_utf8`, `daemon_only`, `mount_table_invalid{path,message}` |
 | `refresh` | your picture of a node is stale; re-read one thing | `cas_mismatch{expected,actual}`, `ref_not_found{stage,dest?}` |
 | `retry` | transient; same request may succeed | `lock_timeout`, `stale_view{required,as_of_fingerprint,live_fingerprint}` |
 | `resync` | your picture of the world is stale; re-plan | `fingerprint_mismatch{expected,actual,changed}`, `fingerprint_unknown` |
@@ -868,12 +868,13 @@ When a workspace is **armed** (attested INDEX present), after CAS and before byt
 | `armed_drift{armed_rev,report_rev}` | refresh | armed law drifted |
 | `cas_mismatch{expected,actual}` | refresh | node or create/remove CAS failed |
 
-### A.3 Composed `read`, `check_write`, `plan_edits`, `pin`, `create`, `hello.identity`
+### A.3 Composed `read`, `check_write`, `mounts`, `plan_edits`, `pin`, `create`, `hello.identity`
 
 | Surface | Role |
 |---|---|
 | `read` | Addressing + content + render at one snapshot; section selectors use §2.1 segments (or anchor / dewey). Not a joined string address. |
 | `check_write` | Standalone write pre-flight: the splice verdict computed without writing. Read-only. |
+| `mounts` | Mount-table discovery: the live root registry, machine-scoped. Read-only (§ A.5). |
 | `splice.plan_edits` | Plan-level batch shapes; addresses are **segment arrays**. |
 | `splice.pin` | Pin rides the write choke-point; selector is segments/anchor. |
 | `create` | File birth through the guarded door; full body bytes. |
@@ -896,6 +897,41 @@ When a workspace is **armed** (attested INDEX present), after CAS and before byt
 - Reply body: `{"refuse":…?, "repairs":[…], "forced":[…]}` (`crates/wire/src/lib.rs:990-999`). `refuse` absent = the write may proceed. `refuse` is `{class, code, message, remedy?}`; `class` picks the host's render template — `rebuild` (the candidate could not be built) vs `verdict` (the severity ladder refused). `repairs` are `{key, value}` autofill property sets the host folds into the same atomic write; `forced` echoes overridden warn rule-ids. `repairs`/`forced` always serialize, so the body is never shapeless.
 - Read-only over the warm engine (`crates/registry/src/server.rs:1173-1188`); a path outside the corpus is `file_not_found`. Mandatoriness stays host policy (§5.3): the engine computes the verdict, the host decides to refuse on it. `splice` re-runs the same verdict inside its own flock (`crates/wire-serve/src/write.rs:307-310`), closing the check→apply TOCTOU gap — the standalone op is the host's pre-flight and error-rendering surface; the splice-internal run is the law.
 
+**Law A-1 at the create door — `create.rev` (docs-first, 2026-08-07, August
+team-e multi-root contract, L3 end state):**
+
+- The `create` plan-edit shape becomes
+  `{"create":{"parent_hpath":[…],"title":…,"body":…,"rev":…?}}`. `rev` is the
+  **parent section's** node-grain token — the `node_rev` the caller read for
+  the section its birth appends under. A section create lowers to a
+  parent-append (the parent's bytes change; the parent's rev is the honest
+  grain), and `rev` threads to the lowered edit's `if_node_rev`, compared per
+  §5.1 — re-derived at execution from the pre-batch state, one rev derivation,
+  no second comparison rule. The child-absence guard stays beside it,
+  unchanged (an already-born subject refuses `cas_mismatch`).
+- **Schema-optional, like every guard field (§ A.1):** a rev-less `create`
+  frame still decodes, forever. The demand below is a semantic refusal after
+  decode, never a frame rejection.
+- **The demand (the engine-side create-door law):** on a wire-origin splice, a
+  `create` whose `parent_hpath` carries any `n`-bearing segment demands `rev`
+  or `force`; absent both it refuses `guard_required` (fix class), teaching
+  the slot (`create.rev`) and the toc read that mints the token. Why the
+  occurrence class is not negotiable: `{h, n}` binds by *position among
+  identical texts* — between the caller's read and its create, a same-titled
+  sibling insert re-binds `n`, and the child-absence CAS cannot see it,
+  because it checks a fact about the tree as the engine resolves it *now*. A
+  guard that mints its own token proves nothing (Law A-1); the caller's parent
+  rev is the only fact that ties the create to the tree the caller actually
+  read.
+- `force` bypasses this demand exactly as it bypasses every fingerprint-plane
+  demand (§ A.1): loud, with the bypassed plane named against the parent
+  subject. No new force semantics.
+- Advertised as dotted cap `splice.create_rev` (v3 projection; the frozen v2
+  caps stay byte-identical). Occurrence-free parents: an offered `rev` is
+  honored (CAS) wherever it is present; whether it is *demanded* beyond the
+  occurrence class is the §5.3 ratchet — a named future-amendment candidate,
+  not this law. Do not widen the demand here.
+
 CLI inventory (descriptive): `status.md`. Cross-root agent address grammar: `address-grammar.md`. Config parse: `meridian-md-schema.md`.
 
 ### A.4 What this document does not teach as core
@@ -904,6 +940,83 @@ CLI inventory (descriptive): `status.md`. Cross-root agent address grammar: `add
 - `mdfs_config.yaml` as the domain config (use `meridian/domain.md`)  
 - SQL / `view_path` / DuckDB as agent path  
 - Dual wire constitutions ("v2 vs v3" for agents)
+
+### A.5 `mounts` — mount-table discovery (the live root registry)
+
+*Docs-first (2026-08-07, August team-e multi-root contract, W20): this section
+lands before its code. Strict decode, dispatch, caps push, and tests are the
+implementation card's.*
+
+The one new engine surface multi-root addressing adds. Read-only; machine-
+scoped; v3-only at dispatch, advertised at op grain as cap `mounts` (the
+`create` precedent — no dotted `mounts.<field>` at birth). A v2 session
+answers `unknown_op`; the frozen v2 caps stay byte-identical.
+
+Request — no parameters, and **no workspace binding required**: the mount
+table is what `~/MERIDIAN.md` binds for the whole machine, not a property of
+any workspace, and the caller discovery exists for is exactly the agent that
+does not know a root yet. A workspace-less connection (a bare `hello`) may
+call it.
+
+```json
+{"id":7,"op":"mounts"}
+{"id":7,"ok":true,"body":{
+ "config_rev":"9f27a2814b517681",
+ "mounts":[
+  {"name":"field-notes","kind":"vault","state":"bound",
+   "workspace":"/Users/Shared/repos/field-notes"},
+  {"name":"sessions","kind":"vault","state":"bound",
+   "workspace":"/Users/Shared/projects/field-notes-sessions"},
+  {"name":"assets","kind":"git-folder","state":"grey(path-unseeable)"}]}}
+```
+
+Row shape `{name, kind, state, workspace?}`:
+
+| Field | Law |
+|---|---|
+| `name` | the canonical `MountName` — the bindable layer's spelling, lowercase `[a-z0-9-]` (`address-grammar.md` § 4.3) |
+| `kind` | `vault` \| `git-folder` — the `MountKind` words verbatim |
+| `state` | the `MountState` reason word verbatim, ONE spelling across the human line, `--json`, and this wire: `bound` · `grey(path-unseeable)` · `grey(undeclared)` · `grey(declaration-unreadable)` · `grey(claim-unverifiable)` · `red(content-drifted)`. Every word but `bound` refuses: a client gates on `state == "bound"` and treats an unrecognized word as not-bound — the tolerant-client law applied to an open-for-amendment word set |
+| `workspace` | the canonical bound path, post-canonicalization — the same handle `hello` returns as `workspace`. Present exactly when the binding canonicalized; absent at least on `grey(path-unseeable)` |
+
+**Freshness — the config-hash rebind law.** Every `mounts` call fingerprints
+`~/MERIDIAN.md` (blake3 over the file bytes) before answering: unchanged hash
+serves the derived table; changed hash re-derives first. No mtime, no TTL, no
+hello-time snapshot — a mount added mid-session is named on the next call, and
+a vanished root degrades to its grey row. `config_rev` is that token on the
+response: 16 lowercase hex, the `file_rev` family (`blake3(whole file
+bytes)[:16]`, §1 rev sub-laws), opaque and equality-only — the face caches
+against it and never parses it.
+
+**Changed-invalid refuses.** When `~/MERIDIAN.md` HAS changed and the
+re-derive fails loud — duplicate names/paths/vault names, nested mounts, the
+closed-schema refusals (`address-grammar.md` § 3) — the op refuses; it never
+serves the previous table as if current:
+
+```json
+{"id":8,"ok":false,"error":{"code":"mount_table_invalid","recovery":"env",
+ "path":"~/MERIDIAN.md",
+ "message":"two mounts bind the canonical path /Users/Shared/repos/field-notes (duplicate-mount-path)"}}
+```
+
+`env` class: the binding file is an environment fact the caller must change.
+The refusal names the offending entry (Law A-3c: scope + offending member).
+Per-root grey states are NOT this refusal — an absent, undeclared, or drifted
+root is a served row carrying its state word; only a table-level parse/bind
+failure refuses the op. And a table that FAILS to re-derive while unchanged
+does not exist by construction: the hash gate re-derives only on change.
+
+**The staleness triple does not apply.** `as_of`/`live`/`changes_seq` exist
+for view-shaped answers computed at a fingerprint that may trail the live one
+(§10.1). `mounts` re-derives per call by construction, so the answer is always
+current-tense — and the binding file lives outside every workspace's hash
+domain (`~/` is no workspace), so no workspace fingerprint could describe it.
+Do not bolt the triple on.
+
+**Why it is not a bare `read`:** an optional `read.ref` would turn a missing
+required argument — today a loud error — into a success returning content the
+caller never asked for. `read`'s arguments stay required; discovery is its own
+op.
 
 ---
 
