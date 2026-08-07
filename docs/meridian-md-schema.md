@@ -310,7 +310,7 @@ A name is one or more characters from `[a-z0-9-]`, must not start or end with `-
 empty. Maximum length 64 bytes.
 
 **The charset is derived, not chosen.** A root name appears inside stored, shared content: the
-agent-plane address `[root:]path[#selector][@fp]`, lock `ref:` and `objects:` keys, and the
+agent-plane address `[root:]path[#selector]`, lock `ref:` and `objects:` keys, and the
 `obsidian://` URI's vault parameter. The legal charset is therefore **the complement of the address
 grammar's operator set** — `:` `#` `@` `/` `.` `%` and whitespace are excluded because each already
 carries meaning in an address, so **no legal name can ever collide with an address operator.** Case is

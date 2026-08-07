@@ -104,10 +104,6 @@ pub(crate) enum TranslateError {
     /// A cross-root embed. No URI transcludes; translating would change the
     /// document's meaning rather than its spelling.
     Embed { address: String },
-    /// An `@fp` decoration reached a position about to be stored. The
-    /// fingerprint never appears in stored bytes or a display field — the lock
-    /// is its sole store.
-    Fingerprint { address: String, fp: String },
 }
 
 impl std::fmt::Display for TranslateError {
@@ -150,13 +146,6 @@ impl std::fmt::Display for TranslateError {
                  transcludes — storing it as a link would change what this page says, not how it \
                  is spelled. Fix: write it as a link `[[{address}]]`, or copy the content; \
                  see [[address-grammar]]."
-            ),
-            TranslateError::Fingerprint { address, fp } => write!(
-                f,
-                "refused: '{address}' carries the render-face decoration '@{fp}' into a position \
-                 that is about to be STORED — a fingerprint never appears in stored bytes or in a \
-                 display field; the lock is its sole store. \
-                 Fix: write the plain address; the tone and digest are computed, never authored."
             ),
         }
     }
@@ -348,15 +337,9 @@ pub(crate) fn stored_text(
     if occupant.form == Form::Embed {
         return Err(TranslateError::Embed { address });
     }
-    // The `@fp` decoration never reaches stored bytes or a display field. The
-    // splice door already stripped every token this write introduces; this is
-    // the backstop for any door that reaches a stored position another way.
-    if let Some(fp) = occupant.addr.fp() {
-        return Err(TranslateError::Fingerprint {
-            address,
-            fp: fp.to_string(),
-        });
-    }
+    // Law A-2: the fragment is selector bytes to its end — `@` included — so
+    // there is no fp lane to guard here. The shaped-token strip at the splice
+    // door (S10) still keeps engine-minted decorations off stored bytes.
     let root = occupant
         .addr
         .root()
@@ -765,10 +748,28 @@ mod tests {
             }),
             "no URI transcludes",
         );
-        assert!(matches!(
-            to_stored("[[sessions:a.md#^claim@fp1.span2.b3.beef]]", &mounts),
-            Err(TranslateError::Fingerprint { .. }),
-        ));
+        // Law A-2: an `@` in the fragment is selector bytes, so a spelling that
+        // once refused as a fingerprint now translates with its whole fragment
+        // verbatim — and round-trips.
+        let at_bearing = to_stored("[[sessions:a.md#^claim@fp1.span2.b3.beef]]", &mounts)
+            .expect("an `@`-bearing fragment is selector bytes and translates");
+        assert!(
+            !at_bearing.contains("[[sessions:"),
+            "the owned position translated: {at_bearing}",
+        );
+        assert_eq!(
+            to_agent_plane(&at_bearing, &mounts).expect("reads back"),
+            "[[sessions:a.md#^claim@fp1.span2.b3.beef]]",
+            "the whole fragment survives the round trip byte-identically",
+        );
+        // The corpus motive: an `@`-bearing HEADING is addressable cross-root
+        // by its own spelling.
+        let heading = to_stored("[[sessions:a.md#Deploy @ prod]]", &mounts)
+            .expect("the design pair's heading translates");
+        assert_eq!(
+            to_agent_plane(&heading, &mounts).expect("reads back"),
+            "[[sessions:a.md#Deploy @ prod]]",
+        );
         // Acceptance: the ordinary corpus passes through byte-identically.
         // `https://example.com` parses as root `https` and `mailto:a@b.example`
         // as root `mailto` — this transform once refused both.
