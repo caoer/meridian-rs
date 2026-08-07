@@ -11,6 +11,7 @@ mod gt_pack_smoke;
 mod gt_parse;
 mod meridian_md;
 mod pf_frozen_sweep;
+mod props_plane;
 mod s1_authz_facts;
 mod u14_read_face_contract;
 mod u15_toon_goldens;

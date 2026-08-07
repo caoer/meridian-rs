@@ -828,6 +828,30 @@ pub struct ReadAnchor {
     pub span: Span,
 }
 
+/// One composed-read frontmatter key fact — the map tense of the frontmatter
+/// plane (wire-contract § A.3): the key, its value as stored, and the full
+/// key grain's span + CAS token, all at the same snapshot as the rest of the
+/// body. One row per top-level key, document order, first occurrence wins
+/// (the model's flat parse is the keys authority).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadProp {
+    /// The top-level frontmatter key — the same string the §2.1 `fm_key`
+    /// form addresses, so the read→set loop closes off this row.
+    pub key: String,
+    /// The key line's value as stored: the colon remainder,
+    /// whitespace-trimmed, quotes kept. A block value (indented continuation
+    /// lines) serves the key line's own remainder — empty when that line
+    /// carries none; nothing is re-serialized (no YAML library).
+    pub value: String,
+    /// The full key grain span (the key line plus its indented continuation
+    /// lines), intra-file byte offsets, root-independent.
+    pub span: Span,
+    /// The key's CAS token: blake3 over the grain span bytes, 16 hex — the
+    /// SAME token `cat` on the `fm_key` node serves and `if_node_rev`
+    /// compares (one rev per node, §5.1 — no second derivation).
+    pub prop_rev: NodeRev,
+}
+
 /// One composed-read resolved section (v3-only): the selector that hit, its
 /// address + CAS token, the raw content — the verbatim bytes `sec_rev` was
 /// minted over, so the row is self-verifying and a `put` built from it
@@ -998,7 +1022,8 @@ pub enum ResponseBody {
     /// `file_rev` + ambient `root` (the atomicity witness), the host-face
     /// addressing table (`toc`, mode toc) or the selected sections
     /// (`sections`, mode sections; `truncated`+`notice` = the partial-read
-    /// rule), the `anchors` plane, and `rendered_text`.
+    /// rule), the `anchors` plane, the `props` frontmatter plane, and
+    /// `rendered_text`.
     Read {
         path: Path,
         file_rev: NodeRev,
@@ -1014,6 +1039,14 @@ pub enum ResponseBody {
         /// serialization is unconditional.
         #[serde(default)]
         anchors: Vec<ReadAnchor>,
+        /// The frontmatter-properties plane (wire-contract § A.3): one row per
+        /// top-level key, document order. Document-grain — served by both
+        /// modes and never `frag`-scoped (frontmatter belongs to the document,
+        /// not to any subtree). Always emitted — empty means "this document
+        /// has no top-level frontmatter keys"; `serde(default)` keeps decoding
+        /// tolerant of older recorded frames.
+        #[serde(default)]
+        props: Vec<ReadProp>,
         #[serde(skip_serializing_if = "Option::is_none")]
         sections: Option<Vec<ReadSectionOut>>,
         #[serde(skip_serializing_if = "Option::is_none")]
