@@ -91,6 +91,9 @@ enum Slot {
     NativeNodeRev,
     /// A plan `match` / `replace_section` / `append` row: `rev`.
     PlanRowRev,
+    /// A plan `create` row at an occurrence-addressed parent: `rev`, the
+    /// PARENT section's token.
+    PlanCreateRev,
     /// A plan `set_property` row: `rev`, the doc-root token.
     PlanFileRev,
 }
@@ -267,13 +270,34 @@ fn plan_demands(doc: &model::Document, plan_edits: &[PlanEdit], out: &mut Vec<De
                 }),
                 Some(_) => {}
             },
-            // A birth: guarded by absence. Lowering has already turned it into
-            // a parent-append, which is why the absence is checked here.
+            // A birth: guarded by absence — and, at an occurrence-addressed
+            // parent, by the caller's parent rev. `{h, n}` binds by position
+            // among identical texts, and the absence check below resolves the
+            // engine's OWN current answer, so it cannot see a sibling insert
+            // re-binding `n` between the caller's read and this create. The
+            // caller's parent rev is the only fact tying the birth to the
+            // tree the caller read (Law A-1 at the create door). Occurrence
+            // floor only: rev-free creates at unique parents stay legal.
             PlanEdit::Create {
                 parent_hpath,
                 title,
+                rev,
                 ..
             } => {
+                if parent_hpath.iter().any(|s| s.n.is_some())
+                    && rev.as_deref().is_none_or(str::is_empty)
+                {
+                    out.push(Demand {
+                        subject: format!(
+                            "section \"{}\"",
+                            crate::display_hpath(parent_hpath)
+                        ),
+                        unmet: Unmet::NoGuard {
+                            grain: Grain::Node,
+                            slot: Slot::PlanCreateRev,
+                        },
+                    });
+                }
                 let full = format!("{}/{title}", crate::display_hpath(parent_hpath));
                 if section_exists(doc, parent_hpath, title) {
                     out.push(Demand {
@@ -355,15 +379,24 @@ fn refusal(path: &Path, demand: &Demand) -> Box<ErrorBody> {
     let subject = &demand.subject;
     match &demand.unmet {
         Unmet::NoGuard { grain, slot } => {
-            let cause = match grain {
-                Grain::Node => {
-                    "a wire write that changes existing content carries its fingerprint at NODE \
-                     grain, or an explicit `force`"
+            let cause = match slot {
+                // The create demand has its own why: the occurrence class.
+                Slot::PlanCreateRev => {
+                    "a create under an OCCURRENCE-addressed parent (an `n`-bearing segment) \
+                     carries the parent's fingerprint, or an explicit `force` — `n` binds by \
+                     position among identical texts, and the child-absence check cannot see a \
+                     sibling re-binding it (Law A-1)"
                 }
-                Grain::File => {
-                    "frontmatter semantics are file-scoped, so a wire write carries the doc-root \
-                     token at FILE grain, or an explicit `force`"
-                }
+                _ => match grain {
+                    Grain::Node => {
+                        "a wire write that changes existing content carries its fingerprint at \
+                         NODE grain, or an explicit `force`"
+                    }
+                    Grain::File => {
+                        "frontmatter semantics are file-scoped, so a wire write carries the \
+                         doc-root token at FILE grain, or an explicit `force`"
+                    }
+                },
             };
             let fix = match slot {
                 Slot::NativeNodeRev => format!(
@@ -373,6 +406,11 @@ fn refusal(path: &Path, demand: &Demand) -> Box<ErrorBody> {
                 Slot::PlanRowRev => format!(
                     "Fix: run `mrd read {file} --json` and send that section's `sec_rev` as `rev` \
                      on the plan edit."
+                ),
+                Slot::PlanCreateRev => format!(
+                    "Fix: run `mrd read {file} --json` and send the PARENT section's `sec_rev` as \
+                     `rev` on the `create` — the toc read that named the `n`-bearing parent \
+                     carries it."
                 ),
                 Slot::PlanFileRev => format!(
                     "Fix: run `mrd read {file} --json` and send its `file_rev` as `rev` on each \

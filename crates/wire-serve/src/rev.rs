@@ -103,6 +103,9 @@ pub fn project_response(frame: &mut Value) {
                 caps.push(Value::String("check_write".to_string()));
                 caps.push(Value::String("splice.plan_edits".to_string()));
                 caps.push(Value::String("splice.pin".to_string()));
+                // Law A-1 at the create door: the plan `create` row honors a
+                // parent-section `rev` (§ A.3).
+                caps.push(Value::String("splice.create_rev".to_string()));
                 // Birth op at op grain (no dotted create.<field>).
                 caps.push(Value::String("create".to_string()));
                 caps.push(Value::String("hello.identity".to_string()));
@@ -350,6 +353,7 @@ mod tests {
                 "check_write",
                 "splice.plan_edits",
                 "splice.pin",
+                "splice.create_rev",
                 "create",
                 "hello.identity"
             ])
