@@ -161,6 +161,30 @@ is untouched — splice remains the only write op and the script executor is
 just another client — and the daemon still carries no run-plane type and no
 run-plane state. The whole wire cost of this entry is **zero schema delta**.
 
+**The commit is guarded per row, by the read the script itself made.** A wire
+door demands a fingerprint for every edit that changes existing content, or an
+explicit `force` (`wire-serve::guard`), and the two grains differ: a
+`set_property` row takes the **file** rev, because frontmatter semantics are
+file-scoped, and an `append` row takes the **node** rev of the section it lands
+in. A script already holds both — `read(path)` recorded the file rev and the
+section map, `read(path, section=…)` recorded that section's rev — so the
+consumer plane threads each row's token out of the recording, using the LAST
+read of that target, since reads are live. This is the read-then-write CAS the
+wire exists for, not a token minted to satisfy a check: **a row whose target the
+script never read carries no token and meets the engine's own refusal**, which
+is the honest answer to writing what you did not read. The two guards compose —
+`if_fingerprint` says the world stood still, each row's `rev` says the thing it
+edits is still what the script saw.
+
+**`--dry` is a rehearsal, not a commit.** The splice carries `dry: true`, so the
+daemon builds the whole effect set and applies none of it; the response — with
+its own `dry: true` and `fingerprint_after: null` — rides the trace as the commit
+leg, and the outcome is `no_effect`, because nothing landed: no receipt, no
+fingerprint advance, workspace unchanged. Every armed entry stays
+`[not committed]`. A caller-guard refusal is `conflict` with **no** commit leg
+and zero telemetry: `expected` is the caller's own pinned value and `actual` IS
+the trace's `entry_fingerprint`, so no §5.1 body is minted to restate them.
+
 **The trace — one commit-fact shape, and no `attempts`.** The entry returns a
 `ScriptTrace`: the entry fingerprint, the outcome
 (`committed | no_effect | conflict | fault | refused`), the decision trace, an

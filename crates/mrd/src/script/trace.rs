@@ -30,7 +30,10 @@ use wire::PlanEdit;
 pub enum ScriptOutcome {
     /// The one guarded splice landed.
     Committed,
-    /// Nothing was armed — no splice, no receipt, no fingerprint advance.
+    /// Nothing landed — no receipt, no fingerprint advance, the workspace
+    /// unchanged. Reached two ways: nothing was armed (no splice at all), or the
+    /// splice was a rehearsal ([`CommitLeg::Rehearsal`], which carries the
+    /// daemon's own `dry: true`).
     NoEffect,
     /// The commit met a moved world: `fingerprint_mismatch`, recovery `resync`.
     Conflict,
@@ -139,6 +142,22 @@ pub enum CommitLeg {
     /// the splice's own response, so it embeds through the same one leg — the
     /// mismatch extras need no second shape either.
     Conflict(Box<RawValue>),
+    /// The §4.4 response to a REHEARSAL (`dry: true`), verbatim: the batch ran
+    /// everything except disk, so the effect set is real and nothing was
+    /// applied.
+    ///
+    /// The outcome is therefore `no_effect` — the workspace is unchanged, no
+    /// receipt was written and the fingerprint did not advance — and every armed
+    /// entry stays `[not committed]`, which is what plan v1.2 states for the dry
+    /// face. The rehearsal is still distinguishable from a zero-armed run
+    /// without a second outcome word: this leg carries the response, whose own
+    /// `dry: true` and `fingerprint_after: null` are the daemon's, not ours.
+    Rehearsal(Box<RawValue>),
+    /// A commit-time refusal that is not the world moving: `foreign_edit`,
+    /// `bad_request{overlap}`, `would_corrupt`. The engine's own message rides
+    /// verbatim into [`ScriptFault::reason`] and the outcome is `refused`, so a
+    /// refusal and a fault still grep apart.
+    Refused(String),
 }
 
 /// The entry's whole result: what the script did, what the commit answered, and
@@ -184,7 +203,7 @@ impl ScriptTrace {
         eval: &ScriptEval,
         commit: CommitLeg,
     ) -> Self {
-        let fault = eval.outcome.as_ref().err().map(fault_of);
+        let mut fault = eval.outcome.as_ref().err().map(fault_of);
         let (outcome, commit) = match (&fault, commit) {
             (Some(fault), _) => (
                 match fault.class {
@@ -202,6 +221,15 @@ impl ScriptTrace {
             }
             (None, CommitLeg::Response(body)) => (ScriptOutcome::Committed, Some(body)),
             (None, CommitLeg::Conflict(body)) => (ScriptOutcome::Conflict, Some(body)),
+            (None, CommitLeg::Rehearsal(body)) => (ScriptOutcome::NoEffect, Some(body)),
+            (None, CommitLeg::Refused(reason)) => {
+                fault = Some(ScriptFault {
+                    line: None,
+                    class: FaultClass::Refused,
+                    reason,
+                });
+                (ScriptOutcome::Refused, None)
+            }
         };
         let committed = outcome == ScriptOutcome::Committed;
 
@@ -245,6 +273,31 @@ impl ScriptTrace {
             commit,
             fault,
             telemetry: eval.telemetry,
+        }
+    }
+
+    /// The trace of a caller guard that did not match: the run refused at the
+    /// door, with **zero evaluation** — no reads, nothing armed, no splice.
+    ///
+    /// It carries no commit leg and mints no §5.1 body, because it holds nothing
+    /// a §5.1 body would add: `expected` is the caller's own pinned
+    /// `if_fingerprint`, and `actual` IS [`ScriptTrace::entry_fingerprint`].
+    /// `changed` is absent because nothing asked the wire what moved — absence
+    /// stays absence. Telemetry is zero and unconditional: nothing ran.
+    #[must_use]
+    pub fn guard_refused(entry_fingerprint: impl Into<String>) -> Self {
+        Self {
+            entry_fingerprint: entry_fingerprint.into(),
+            outcome: ScriptOutcome::Conflict,
+            trace: Vec::new(),
+            commit: None,
+            fault: None,
+            telemetry: ScriptTelemetry {
+                fuel_used: 0,
+                mem_used: 0,
+                reads_used: 0,
+                wall_ms: 0,
+            },
         }
     }
 

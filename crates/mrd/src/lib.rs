@@ -310,6 +310,20 @@ usage:
                            TASK omitted: one declared task runs, several list
                            and exit 2. Exits: 0 clean / 1 run refused or failed
                            / 2 bad invocation
+! mrd script [--files PATH]... [--args JSON] [--dry] [--actor A] [--now T]
+                           evaluate inline Starlark from STDIN as the caller and
+                           commit what it arms. The module top level IS the
+                           program: read(PATH[, section=]) reads through the
+                           daemon, put(PATH, props={..} | section=.., append=..)
+                           arms wire plan edits, and ONE guarded splice applies
+                           them. The transaction stands still — the entry pins
+                           one fingerprint and the commit guards on it, so a
+                           world that moved refuses and NOTHING lands. Single
+                           attempt: the retry loop is the caller's. --dry
+                           rehearses (everything except disk); --json emits the
+                           trace, which is the contract a host renders from.
+                           Exits: 0 committed or nothing armed / 1 conflict,
+                           fault or refusal / 2 bad invocation
 ! mrd new <KIND> <ID> [--dry] [--actor A] [--now T]
                            file birth: resolve the def (presets/<KIND>.md or a
                            page path), fill its ^template, validate the filled
@@ -349,6 +363,14 @@ options:
                            full effect set, apply nothing; bash: show the block
                            + resolved caps, refuse to exec
   --list                   (run) list the page's tasks with contracts and caps
+  --files PATH             (script) one host-enumerated path, bound inert as
+                           `files` (repeatable). Paths only — content enters
+                           through read() alone, which is what makes a run
+                           replayable
+  --args JSON              (script) a JSON array of strings, bound inert as
+                           `args`
+  --if-fingerprint FP      (script, put, pin) the world-grain guard: refuse
+                           unless the workspace still stands at FP
   --history                (test) the history tier over WORKSPACE (a git repo)
   --rule PAGE              (test --history) the workspace-relative rule PAGE to run
   --spec PAGE              (test --history) the workspace-relative SPEC page whose
@@ -503,6 +525,7 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
         "status" => status_cmd::run(&args[1..]),
         "test" => test_cmd::dispatch(&args[1..]),
         "run" => run_cmd::dispatch(&args[1..]),
+        "script" => script::cmd::dispatch(&args[1..]),
         "new" => new_cmd::run(&args[1..]),
         "unfold" => unfold_cmd::run(&args[1..]),
         "reconcile" => reconcile_cmd::run(&args[1..]),
@@ -876,20 +899,20 @@ mod help {
             assert_eq!(words_of(overflowing), vec!["pin"]);
         }
 
-        /// The write mark is the gutter: 13 verbs write, the rest read.
+        /// The write mark is the gutter: 14 verbs write, the rest read.
         #[test]
-        fn thirteen_verbs_are_marked_as_writers() {
+        fn fourteen_verbs_are_marked_as_writers() {
             let marked: Vec<&str> = LISTING
                 .lines()
                 .filter(|line| line.starts_with("! "))
                 .collect();
             assert_eq!(
                 marked.len(),
-                13,
+                14,
                 "marked as writers:\n{}",
                 marked.join("\n")
             );
-            assert_eq!(blocks().len(), 26, "verb blocks in the listing");
+            assert_eq!(blocks().len(), 27, "verb blocks in the listing");
         }
 
         /// Every option that names an owner names a verb that exists.

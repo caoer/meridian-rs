@@ -60,6 +60,9 @@ const PINNED: &[(&str, &str, Class)] = &[
     ("crates/mrd/src/pin_cmd.rs", "fn parse", Class::CliArgv),
     ("crates/mrd/src/put_cmd.rs", "fn parse", Class::CliArgv),
     ("crates/mrd/src/read_cmd.rs", "fn parse", Class::CliArgv),
+    // `mrd script --receipt PATH#ANCHOR` — the same receipt-address door
+    // `put_cmd` opens, on the verb that commits a script's arms.
+    ("crates/mrd/src/script/cmd.rs", "fn parse", Class::CliArgv),
     // CLI argv despite living in `view`: the walk root reaches `page_of` as the
     // bare positional `walk_cmd.rs` collected.
     ("crates/view/src/walk.rs", "fn page_of", Class::CliArgv),
