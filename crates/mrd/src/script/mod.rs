@@ -12,9 +12,11 @@
 //! without a daemon.
 
 pub mod cmd;
+pub mod digest;
 pub mod trace;
 pub mod wire_host;
 
+pub use digest::armed_digest;
 pub use trace::{
     ArmedEntry, CommitLeg, FaultClass, ScriptFault, ScriptOutcome, ScriptTrace, TraceEntry,
 };

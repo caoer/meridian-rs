@@ -197,6 +197,23 @@ pub struct ScriptTrace {
     /// a guard refusal, which is sharper than an absent leg alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guard_expected: Option<String>,
+    /// The digest of the armed set — `super::digest::armed_digest` over the rows
+    /// the armed block publishes. Present exactly when something was armed.
+    ///
+    /// **This field is what makes the host a courier instead of a second
+    /// implementation.** The arm/commit split needs the commit child to prove it
+    /// armed the set the host gated; the host takes this string from the arm's
+    /// trace and hands it back as `--expect-armed`, never canonicalizing
+    /// anything itself. A host that re-derived the digest from the armed rows
+    /// below would be a second spelling of the serialization, and two spellings
+    /// agree only by luck — the vacuous-pass shape the sub-amendment exists to
+    /// prevent (`docs/run-plane.md` § Sub-amendment (the armed-set expectation)).
+    ///
+    /// It describes the armed block and nothing else: the receipt rides
+    /// `request.receipt`, never `plan_edits[]`, so it is outside this value by
+    /// construction and gated on its own pre-spawn path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub armed_digest: Option<String>,
     /// Always present, whatever the outcome.
     pub telemetry: ScriptTelemetry,
 }
@@ -287,6 +304,12 @@ impl ScriptTrace {
             commit,
             fault,
             guard_expected: None,
+            // Over the armed rows as they stand here — after the consumer plane
+            // threaded each row's CAS token, which is the same list the commit
+            // sends as `plan_edits[]`. Hashing the pre-threading rows would
+            // publish a digest for a set that never goes on any wire.
+            armed_digest: (!eval.armed.is_empty())
+                .then(|| super::digest::armed_digest(&edits_of(&eval.armed))),
             telemetry: eval.telemetry,
         }
     }
@@ -308,6 +331,9 @@ impl ScriptTrace {
             commit: None,
             fault: None,
             guard_expected: Some(pinned.into()),
+            // Nothing was armed — the guard refused before evaluation — so there
+            // is no armed set to describe. Absence, never a digest of `[]`.
+            armed_digest: None,
             telemetry: ScriptTelemetry {
                 fuel_used: 0,
                 mem_used: 0,
@@ -324,6 +350,13 @@ impl ScriptTrace {
             TraceEntry::Read(_) | TraceEntry::Echo(_) => None,
         })
     }
+}
+
+/// The `plan_edits[]` view of an armed list: exactly what `cmd::commit` puts in
+/// the request's `plan_edits` field, borrowed rather than cloned so the value
+/// hashed here is the value that goes on the wire.
+fn edits_of(armed: &[ArmedEdit]) -> Vec<&PlanEdit> {
+    armed.iter().map(|arm| &arm.edit).collect()
 }
 
 /// Classify a kernel error into the closed fault taxonomy. `reason` is the

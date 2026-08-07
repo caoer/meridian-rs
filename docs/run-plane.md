@@ -331,9 +331,11 @@ states the execution model that gives it one:
 > once as a COMMIT pinned with `--if-fingerprint <the arm's entry fingerprint>`.**
 
 Four things follow, and only these four. First, **this is a consumer-plane
-sequencing law, not a wire or CLI change** — `mrd script` is untouched, its
-argument surface unchanged, and the wire contract carries zero delta; the split
-is two ordinary invocations of the entry exactly as documented. Second, the split
+sequencing law, and the wire contract carries zero delta** — the split is two
+ordinary invocations of the entry, and the ops on the socket are the same five.
+The CLI surface is NOT untouched, and saying so was the gap the sub-amendment
+below closes: the commit child gains `--expect-armed`, which is consumer-plane
+too and changes no request shape. Second, the split
 is **safe by construction, never by being fast**: the commit's `if_fingerprint`
 is the arm's `entry_fingerprint`, so any movement of the world between the two
 refuses at §5.1 as an ordinary `fingerprint_mismatch`, which the host's retry
@@ -355,6 +357,94 @@ third organ gets its call site.
 The CLI entry keeps its single-call shape: an operator running `mrd script`
 directly evaluates and commits in one process, because there is no host identity
 plane in that path to gate against. The law binds the MCP `script` tool.
+
+**Sub-amendment (the armed-set expectation, `--expect-armed`).** The amendment
+above gates the ARM's rows and then runs a SECOND child to commit. It states why
+the two evaluations arm identically — recorded-read purity plus an unmoved
+fingerprint — and then *relies* on that reasoning holding. Reasoning is not
+measurement. Nothing in the sequence above compares what the commit child armed
+against what the host actually gated, so every link in that chain (the realpath
+the authorization was decided on, the addressable-vs-hash-domain gap) is load
+bearing and unverified. This sub-amendment makes the chain not matter:
+
+> **The commit child accepts `--expect-armed <digest>` and REFUSES BEFORE THE
+> SPLICE IS ISSUED when its own armed set does not hash to that digest.** The
+> refusal is pre-splice: nothing is sent, nothing lands, no fingerprint advances.
+
+Five things follow, and only these five.
+
+**First — the digest is defined ONCE, engine-side, and this is its whole
+definition.** Let `plan_edits` be the array the commit splice would carry: the
+armed rows *after* rev threading, in arm order — byte-for-byte the value of the
+request's `plan_edits` field. The digest is
+
+> `sha256:` ‖ lowercase-hex( SHA-256( CANON(`plan_edits`) ) )
+
+where `CANON` is compact JSON with **object keys sorted lexicographically by
+UTF-8 byte order**, no whitespace between tokens, and RFC 8259-minimal string
+escaping — only `"`, `\`, and the control characters below `U+0020` are escaped;
+every other code point is emitted as raw UTF-8. There is no second spelling of
+this anywhere in the tree: `script::digest::armed_digest` is the only function
+that computes it, and both the arm and the commit reach it through that one call.
+
+**Second — the host is a COURIER, not a second implementation.** The arm's trace
+publishes the digest as a top-level `armed_digest` field. The host copies that
+string into the commit child's `--expect-armed` and never canonicalizes anything
+itself. This is the load-bearing property: a host that re-serialized the trace's
+armed rows would be a second canonicalization, and two canonicalizations give
+either a refusal on every call or — far worse — a **vacuous pass**, a comparison
+that agrees because both sides computed something equally wrong. The digest is
+computed twice by the *same Rust function* over the *same type*, once per child.
+A courier cannot invent a disagreement.
+
+**Third — the serialization is published anyway**, precisely so that a host which
+someday wants to verify independently lands on the same bytes instead of guessing.
+Three traps are named because each one produces a silent false refusal on ordinary
+markdown rather than on a test fixture: a Go implementation MUST disable
+`SetEscapeHTML` (Go escapes `<`, `>`, `&` by default and the engine does not), MUST
+NOT escape `U+2028`/`U+2029` (Go's marshaller does so unconditionally), and MUST
+decode with `UseNumber` so `HpathSeg.n` never round-trips through a float. `CANON`
+is otherwise exactly RFC 8785 (JCS) over a value whose only number is that `n`.
+
+The **test vector** an independent implementation checks itself against, before
+trusting itself, is pinned in `digest.rs::the_published_test_vector_holds` so
+these bytes and this document cannot drift apart. For the two-row armed set
+`set_property{key:"owner", value:"8ab41c02", rev:"7c40e1a8b2f9d356"}` followed by
+`append{hpath:[{h:"Goals"}], body:"a <b> & c\n", rev:"a6665baff294bd04"}`, `CANON`
+is exactly
+
+```json
+[{"set_property":{"key":"owner","rev":"7c40e1a8b2f9d356","value":"8ab41c02"}},{"append":{"body":"a <b> & c\n","hpath":[{"h":"Goals"}],"rev":"a6665baff294bd04"}}]
+```
+
+and the digest is
+`sha256:fdbad8387ab2097175de9cf02217b202177e0aa8dcf80730f1e97434e3d5ac1d`. Note
+the key order in both rows — lexicographic, not the declaration order the Rust
+type uses — and the raw `<`, `>` and `&`. An implementation that reproduces this
+line reproduces every digest; one that does not would have refused real markdown
+while passing an ASCII fixture.
+
+**Fourth — the receipt is NOT an armed row, so the digest excludes it, and the
+exclusion is structural rather than a rule to remember.** The receipt rides
+`request.receipt`, never `eval.armed`; it is not a member of `plan_edits[]` and so
+it is outside `CANON`'s input by construction. The armed-set comparison therefore
+says nothing about the receipt, and must not be read as covering it — the receipt
+births a file under its own pre-spawn gate (the host's `receiptpolicy` leg), which
+is a different door with a different organ. A reader who assumed `--expect-armed`
+covered the receipt would believe a write was gated that this flag never sees.
+
+**Fifth — the flag is optional and the CLI entry is unaffected.** Absent
+`--expect-armed`, the entry behaves exactly as before, so an operator's direct
+`mrd script` is unchanged. Present, it is checked after rev threading and before
+the commit is issued, alongside the wall-clock's own pre-commit refusal — the same
+position, the same "nothing was sent" guarantee. A refusal is `refused` with fault
+class `refused`, not `conflict`: a mismatched armed set is not the world moving.
+
+Evidence, and where it is held: `crates/mrd/tests/script_expect_armed.rs` drives
+the real entry through a recording door and asserts both directions — a matching
+digest commits, and a planted mismatch produces a socket census containing
+`hello`/`fingerprint`/`toc`/`cat` and **no `splice` frame at all**, which is what
+makes the refusal pre-splice rather than a detection after landing.
 
 **The trace — one commit-fact shape, and no `attempts`.** The entry returns a
 `ScriptTrace`: the entry fingerprint, the outcome

@@ -311,7 +311,7 @@ usage:
                            and exit 2. Exits: 0 clean / 1 run refused or failed
                            / 2 bad invocation
 ! mrd script [--files PATH]... [--args JSON] [--dry] [--actor A] [--now T]
-          [--if-fingerprint FP] [--receipt PATH#ANCHOR]
+          [--if-fingerprint FP] [--expect-armed DIGEST] [--receipt PATH#ANCHOR]
                            evaluate inline Starlark from STDIN as the caller and
                            commit what it arms. The module top level IS the
                            program: read(PATH[, section=]) reads through the
@@ -372,6 +372,14 @@ options:
                            the `args` dict — callers name inputs, not count them
   --if-fingerprint FP      (script, put, pin) the world-grain guard: refuse
                            unless the workspace still stands at FP
+  --expect-armed DIGEST    (script) the armed-set guard: refuse BEFORE the
+                           splice is issued unless what this run armed hashes
+                           to DIGEST. A host that gates a script's write set
+                           runs the entry twice — once --dry to see the set,
+                           then to commit — and passes the arm trace's own
+                           `armed_digest` here, so the commit cannot quietly
+                           arm something the gate never saw. The receipt is
+                           NOT an armed row and is outside this value
   --history                (test) the history tier over WORKSPACE (a git repo)
   --rule PAGE              (test --history) the workspace-relative rule PAGE to run
   --spec PAGE              (test --history) the workspace-relative SPEC page whose
