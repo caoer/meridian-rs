@@ -85,6 +85,7 @@ fn a_token_in_create_title_is_stripped_with_the_body() {
                 }],
                 title: format!("Draws from [[guide#^task1{TOKEN}|Task One]]"),
                 body: format!("body [[guide#^task1{TOKEN}|B]]"),
+                rev: None,
             }],
         ),
         &[],

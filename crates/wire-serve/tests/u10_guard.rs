@@ -366,6 +366,7 @@ fn plan_create_is_guarded_by_absence() {
             parent_hpath: vec![HpathSeg { h: "Memo".into(), n: None }],
             title: "Tasks".into(),
             body: "x\n".into(),
+            rev: None,
         }],
         ..args(Origin::Wire)
     };
@@ -382,6 +383,7 @@ fn plan_create_is_guarded_by_absence() {
             parent_hpath: vec![HpathSeg { h: "Memo".into(), n: None }],
             title: "Notes".into(),
             body: "x\n".into(),
+            rev: None,
         }],
         ..args(Origin::Wire)
     };
@@ -641,3 +643,222 @@ fn a_target_that_does_not_resolve_is_not_this_rungs_to_answer() {
         "existing content is guarded"
     );
 }
+
+// ── Law A-1 at the create door (`create.rev`, § A.3) ────────────────────────
+//
+// `{h, n}` binds by position among identical texts: between a caller's read
+// and its create, a same-titled sibling insert re-binds `n`, and the
+// child-absence check cannot see it. A create under an `n`-bearing parent
+// therefore demands the CALLER's parent rev (or `force`). Occurrence floor
+// only: rev-free creates at unique parents stay legal (the existing
+// `plan_create_is_guarded_by_absence` pins that, unmodified).
+
+/// Two identical-texted siblings — the occurrence class made flesh.
+const DUP: &str = "# Memo\n\nbody\n\n## Tasks\n\n- alpha\n\n## Tasks\n\n- beta\n";
+
+fn dup_ws() -> (tempfile::TempDir, fs::WorkspaceRoot) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("dup.md"), DUP).expect("seed");
+    let root = fs::WorkspaceRoot(PathBuf::from(dir.path()));
+    (dir, root)
+}
+
+fn dup_args() -> SpliceArgs {
+    SpliceArgs {
+        path: WPath("dup.md".into()),
+        ..args(Origin::Wire)
+    }
+}
+
+/// The SECOND `Tasks` under `Memo` — an occurrence-addressed parent.
+fn occurrence_parent() -> Vec<HpathSeg> {
+    vec![
+        HpathSeg {
+            h: "Memo".into(),
+            n: None,
+        },
+        HpathSeg {
+            h: "Tasks".into(),
+            n: Some(2),
+        },
+    ]
+}
+
+/// The occurrence parent's live `sec_rev` on `dup.md`.
+fn dup_parent_rev(root: &fs::WorkspaceRoot) -> NodeRev {
+    let doc = fs::load(root, std::path::Path::new("dup.md")).expect("load");
+    let sec = SecRef::Hpath {
+        hpath: occurrence_parent(),
+    };
+    match wire_serve::read::cat(&doc, Some(sec)).expect("cat") {
+        ResponseBody::Cat { node_rev, .. } => node_rev,
+        other => panic!("cat returned {other:?}"),
+    }
+}
+
+fn occurrence_create(rev: Option<String>) -> PlanEdit {
+    PlanEdit::Create {
+        parent_hpath: occurrence_parent(),
+        title: "Kid".into(),
+        body: "x".into(),
+        rev,
+    }
+}
+
+/// The demand: rev absent, `n`-bearing parent → `guard_required`, teaching the
+/// slot (`create.rev`), the occurrence why, and the toc read that mints the
+/// token. Nothing lands.
+#[test]
+fn a_create_under_an_occurrence_parent_without_the_parent_rev_refuses() {
+    let (_d, root) = dup_ws();
+    let a = SpliceArgs {
+        plan_edits: vec![occurrence_create(None)],
+        ..dup_args()
+    };
+    let err = splice(&root, None, &a, &[], None).expect_err("an unguardable birth refuses");
+
+    assert_eq!(err.code, ErrorCode::GuardRequired);
+    assert_eq!(err.recovery, wire::Recovery::Fix);
+    let message = err.message.as_deref().expect("a teaching message");
+    assert!(
+        message.contains("section \"Memo/Tasks#2\""),
+        "names the occurrence parent exactly: {message}"
+    );
+    assert!(
+        message.contains("OCCURRENCE-addressed parent"),
+        "names the class that makes the demand non-negotiable: {message}"
+    );
+    assert!(
+        message.contains("`rev` on the `create`") && message.contains("PARENT section's `sec_rev`"),
+        "the fix names the slot THIS face has — the create row's `rev`, minted \
+         from the parent: {message}"
+    );
+    assert!(
+        message.contains("Fix:") && message.contains("mrd read dup.md --json"),
+        "the fix names a RUNNABLE COMMAND: {message}"
+    );
+    assert!(
+        message.contains("No edit was applied; the batch is refused whole."),
+        "discloses the partial state: {message}"
+    );
+    assert!(
+        message.contains("`force`"),
+        "names the ONE sanctioned bypass: {message}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.0.join("dup.md")).expect("read"),
+        DUP,
+        "nothing landed"
+    );
+}
+
+/// The honored token: the caller's parent rev threads to the lowered append's
+/// `if_node_rev`, and the birth lands inside the SECOND `Tasks`.
+#[test]
+fn a_create_under_an_occurrence_parent_with_the_parent_rev_lands() {
+    let (_d, root) = dup_ws();
+    let rev = dup_parent_rev(&root);
+    let a = SpliceArgs {
+        plan_edits: vec![occurrence_create(Some(rev.0))],
+        ..dup_args()
+    };
+    splice(&root, None, &a, &[], None).expect("a guarded occurrence birth lands");
+    let text = std::fs::read_to_string(root.0.join("dup.md")).expect("read");
+    assert!(
+        text.contains("### Kid"),
+        "the child is born at parent depth + 1: {text}"
+    );
+    assert!(
+        text.ends_with("- beta\n\n### Kid\n\nx\n"),
+        "the birth appends inside the SECOND `Tasks`, the one the rev vouches for: {text}"
+    );
+}
+
+/// A stale parent rev is a rebind observed: the threaded token reaches CAS and
+/// refuses `cas_mismatch` — the conflict answer, never a silent land.
+#[test]
+fn a_create_under_an_occurrence_parent_with_a_stale_rev_refuses_at_cas() {
+    let (_d, root) = dup_ws();
+    let a = SpliceArgs {
+        plan_edits: vec![occurrence_create(Some("not-the-parents-rev".into()))],
+        ..dup_args()
+    };
+    let err = splice(&root, None, &a, &[], None).expect_err("a stale parent token refuses");
+    assert_eq!(err.code, ErrorCode::CasMismatch);
+    assert_eq!(
+        std::fs::read_to_string(root.0.join("dup.md")).expect("read"),
+        DUP,
+        "nothing landed"
+    );
+}
+
+/// Occurrence-free parents: an OFFERED rev is honored (CAS) wherever present —
+/// fresh lands, stale refuses. The demand stays at the occurrence floor; this
+/// is the §5.3 ratchet's named future amendment, not this law.
+#[test]
+fn a_create_at_a_unique_parent_honors_an_offered_rev() {
+    let (_d, root) = ws();
+    let parent = SecRef::Hpath {
+        hpath: vec![seg("Memo"), seg("Tasks")],
+    };
+    let fresh = sec_rev(&root, parent);
+    let ok = SpliceArgs {
+        plan_edits: vec![PlanEdit::Create {
+            parent_hpath: vec![seg("Memo"), seg("Tasks")],
+            title: "Kid".into(),
+            body: "x".into(),
+            rev: Some(fresh.0),
+        }],
+        ..args(Origin::Wire)
+    };
+    splice(&root, None, &ok, &[], None).expect("a fresh offered rev lands");
+    assert!(
+        std::fs::read_to_string(root.0.join("memo.md"))
+            .expect("read")
+            .contains("### Kid")
+    );
+
+    let stale = SpliceArgs {
+        plan_edits: vec![PlanEdit::Create {
+            parent_hpath: vec![seg("Memo"), seg("Tasks")],
+            title: "Another".into(),
+            body: "x".into(),
+            rev: Some("not-the-parents-rev".into()),
+        }],
+        ..args(Origin::Wire)
+    };
+    let err = splice(&root, None, &stale, &[], None).expect_err("a stale offered rev refuses");
+    assert_eq!(err.code, ErrorCode::CasMismatch);
+}
+
+/// `force` bypasses the create demand exactly as it bypasses every
+/// fingerprint-plane demand: loud, with the bypassed plane named against the
+/// parent subject.
+#[test]
+fn force_bypasses_the_create_demand_and_names_the_parent() {
+    let (_d, root) = dup_ws();
+    let a = SpliceArgs {
+        plan_edits: vec![occurrence_create(None)],
+        force: true,
+        ..dup_args()
+    };
+    let out = splice(&root, None, &a, &[], None).expect("force is the sanctioned bypass");
+    let ResponseBody::Splice { verdicts, .. } = &out.body else {
+        panic!("not a splice body");
+    };
+    let named: Vec<&str> = verdicts.iter().map(|v| v.message.as_str()).collect();
+    assert!(
+        named
+            .iter()
+            .any(|m| m.contains("content fingerprint (node grain)")
+                && m.contains("section \"Memo/Tasks#2\"")),
+        "the forced birth NAMES the bypassed plane and the parent: {named:?}"
+    );
+    assert!(
+        std::fs::read_to_string(root.0.join("dup.md"))
+            .expect("read")
+            .contains("### Kid"),
+        "a forced write lands its bytes"
+    );
+}
+

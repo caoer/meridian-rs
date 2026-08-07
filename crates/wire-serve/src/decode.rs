@@ -399,11 +399,15 @@ fn decode_plan_edits(v: &Value) -> Result<Vec<PlanEdit>, Box<ErrorBody>> {
                 }
             }
             "create" => {
-                plan_fields(b, "create", &["parent_hpath", "title", "body"])?;
+                plan_fields(b, "create", &["parent_hpath", "title", "body", "rev"])?;
                 PlanEdit::Create {
                     parent_hpath: req_segs(b, "create", "parent_hpath")?,
                     title: req_str(b, "create", "title")?,
                     body: req_str(b, "create", "body")?,
+                    // Parent-section token, optional at the wall (schema-
+                    // optional like every guard field); the guard demands it
+                    // at occurrence-addressed parents.
+                    rev: opt_str(b, "create", "rev")?,
                 }
             }
             "set_property" => {

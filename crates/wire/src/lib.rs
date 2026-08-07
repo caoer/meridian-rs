@@ -438,11 +438,16 @@ pub enum PlanEdit {
         rev: Option<String>,
     },
     /// Create a new section — parent-append placement. An empty
-    /// `parent_hpath` (top-level create) refuses.
+    /// `parent_hpath` (top-level create) refuses. `rev` is the PARENT
+    /// section's node-grain token, threaded to the lowered append's
+    /// `if_node_rev`: the birth changes the parent's bytes, so the parent's
+    /// rev is the honest grain (Law A-1 at the create door).
     Create {
         parent_hpath: Vec<HpathSeg>,
         title: String,
         body: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rev: Option<String>,
     },
     /// Frontmatter set — value-span replace / insert-after-last-key /
     /// conditional quote (`yaml_safe_value`). Not native `at:upsert`: upsert

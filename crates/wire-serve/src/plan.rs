@@ -174,8 +174,9 @@ pub fn lower(
                 parent_hpath,
                 title,
                 body,
+                rev,
             } => {
-                edits.push(lower_create(&idx, parent_hpath, title, body)?);
+                edits.push(lower_create(&idx, parent_hpath, title, body, rev.as_deref())?);
             }
         }
     }
@@ -307,11 +308,14 @@ fn lower_replace_section(
 }
 
 /// Create: parent-append as `Put{end}` on parent; top-level / parent-miss refuse.
+/// `rev` is the PARENT's node-grain token, threaded to the lowered append's
+/// `if_node_rev` — one rev derivation, no second comparison rule (§ A.3).
 fn lower_create(
     idx: &PlanIndex,
     parent_hpath: &[HpathSeg],
     title: &str,
     body: &str,
+    rev: Option<&str>,
 ) -> Result<Edit, Box<ErrorBody>> {
     let full = if parent_hpath.is_empty() {
         title.to_string()
@@ -343,7 +347,9 @@ fn lower_create(
             at: PutAt::End,
             text: heading,
         },
-        if_node_rev: None,
+        if_node_rev: rev
+            .filter(|r| !r.is_empty())
+            .map(|r| NodeRev(r.to_string())),
     })
 }
 
@@ -569,6 +575,7 @@ mod tests {
                 parent_hpath: vec![],
                 title: "Brand".into(),
                 body: "b".into(),
+                rev: None,
             },
         )
         .expect_err("top-level create refuses");
@@ -587,6 +594,7 @@ mod tests {
                 parent_hpath: vec![HpathSeg { h: "A".into(), n: None }, HpathSeg { h: "B".into(), n: None }],
                 title: "New Kid".into(),
                 body: "hello".into(),
+                rev: None,
             },
         )
         .expect("lowers");
