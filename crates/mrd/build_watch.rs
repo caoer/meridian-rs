@@ -21,6 +21,12 @@ fn watch_paths(manifest: &Path) -> Vec<PathBuf> {
     if let Some(refname) = git(manifest, &["symbolic-ref", "-q", "HEAD"]) {
         watch(manifest, &refname, &mut paths);
     }
+    // The per-worktree reflog: git appends to it on EVERY move of HEAD, including
+    // the one shape the three watches above all miss — a commit recreating a loose
+    // ref that was packed away at script run time (loose path skipped as absent,
+    // `packed-refs` untouched by the commit, `HEAD` still the same symref bytes).
+    // It only changes when HEAD moves, so watching it costs no extra re-runs.
+    watch(manifest, "logs/HEAD", &mut paths);
     paths
 }
 
