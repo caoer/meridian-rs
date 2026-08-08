@@ -1087,6 +1087,8 @@ struct PendingPromotion {
 /// # Errors
 /// `bad_path` / `bad_request` (the target escapes the workspace, or its slug id
 /// is taken), `pin_target_missing` (no such page or selector),
+/// `ambiguous_ref` (the selector matches more than one node — no door may pin
+/// an occurrence the caller did not name; A.3 door symmetry),
 /// `read_mint_required` (D16 — a session actor pinning unread content),
 /// `write_conflict` (the receipt's rev is stale), a `convention_fault` /
 /// `armed_drift` / `index_integrity` gate refusal on the promotion, `io_error`.
@@ -1119,17 +1121,57 @@ fn mint_pin(
         &wire_map::project_toc(&target_doc),
         target_doc.raw.as_bytes(),
     );
-    let Some(fact) = wire_map::facts::resolve_selector(&facts, asked) else {
-        return Err(pin_target_missing(
-            &spec.target,
-            format!(
-                "no section addressed by \"{}\" in {}. Nothing was written — the pin's \
-                 page is byte-untouched. {}",
-                asked.display(),
-                spec.target.0,
-                crate::section_recovery(&asked.display(), Some(spec.target.0.as_str()))
-            ),
-        ));
+    let fact = match wire_map::facts::selector_matches(&facts, asked).as_slice() {
+        &[fact] => fact,
+        [] => {
+            return Err(pin_target_missing(
+                &spec.target,
+                format!(
+                    "no section addressed by \"{}\" in {}. Nothing was written — the pin's \
+                     page is byte-untouched. {}",
+                    asked.display(),
+                    spec.target.0,
+                    crate::section_recovery(&asked.display(), Some(spec.target.0.as_str()))
+                ),
+            ));
+        }
+        many => {
+            // No door may pin an occurrence the caller did not name (A.3, door
+            // symmetry): the refusal is the same `ambiguous_ref` the read and
+            // write doors mint, in the same voice.
+            let mut e = match asked {
+                wire::ReadSel::Anchor { anchor } => {
+                    let mut e = ErrorBody::new(ErrorCode::AmbiguousRef);
+                    e.candidates = Some(Vec::new());
+                    e.message = Some(model::selector::render_anchor_ambiguity(
+                        &format!("^{anchor}"),
+                        many.len(),
+                    ));
+                    e
+                }
+                wire::ReadSel::Hpath { hpath } => {
+                    // The same duplicates the facts plane matched, as resolver
+                    // targets — the shared renderer names each by node index
+                    // and `^block`, identical to the splice door's refusal.
+                    let sec = SecRef::Hpath {
+                        hpath: hpath.clone(),
+                    };
+                    let targets: Vec<model::Target> = many
+                        .iter()
+                        .map(|f| model::Target {
+                            span: span_range(f.span),
+                            node_rev: model::NodeRev(f.sec_rev.clone()),
+                        })
+                        .collect();
+                    ambiguous(&sec, &target_doc, &targets)
+                }
+                wire::ReadSel::Dewey { .. } => {
+                    unreachable!("a dewey selector matches at most one row")
+                }
+            };
+            e.path = Some(spec.target.clone());
+            return Err(Box::new(e));
+        }
     };
     // The canonical selector: what the caller asked resolved to, in the read
     // face's own tagged grammar — never the caller's spelling, and never a
