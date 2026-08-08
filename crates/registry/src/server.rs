@@ -1292,9 +1292,10 @@ fn warm_engine_read<R>(
             let _ = release.recv();
         }
     }
-    registry.with_engine(canonical, |engine| match engine {
-        Some(engine) => f(engine),
-        None => {
+    registry.with_engine(canonical, |engine| {
+        if let Some(engine) = engine {
+            f(engine)
+        } else {
             // Idle-reap won the warm→borrow race: the engine this request
             // just warmed was reclaimed, not broken. `respawn` would teach
             // the client to tear down a healthy channel; the truthful §8
