@@ -77,9 +77,9 @@ pub fn enrich(e: &mut ErrorBody, doc: &model::Document, edits: &[Edit], path: &P
         e.diff = Some(rendered);
         e.new_fingerprint = Some(r.new_fingerprint);
         e.message = Some(format!(
-            "{} in {file} changed under the fingerprint your write pinned. {} Fix: apply the \
-             `diff` extra to your copy, then resend the edit with `new_fingerprint` as its guard, \
-             or repeat it with `force` — no re-read is needed.",
+            "{} in {file} changed under the `if_node_rev` your write pinned. {} Fix: apply the \
+             `diff` extra to your copy, then resend the edit with `new_fingerprint` as its \
+             `if_node_rev` guard, or repeat it with `force` — no re-read is needed.",
             r.subject,
             crate::NO_PARTIAL_WRITE_CLAUSE
         ));
@@ -90,9 +90,10 @@ pub fn enrich(e: &mut ErrorBody, doc: &model::Document, edits: &[Edit], path: &P
     e.new_content = Some(r.current);
     e.new_fingerprint = Some(r.new_fingerprint);
     e.message = Some(format!(
-        "{} in {file} changed under the fingerprint your write pinned. {} Fix: take \
+        "{} in {file} changed under the `if_node_rev` your write pinned. {} Fix: take \
          `new_content` as that node's current bytes, re-decide your edit, and resend it with \
-         `new_fingerprint` as its guard, or repeat it with `force` — no re-read is needed.",
+         `new_fingerprint` as its `if_node_rev` guard, or repeat it with `force` — no re-read \
+         is needed.",
         r.subject,
         crate::NO_PARTIAL_WRITE_CLAUSE
     ));
@@ -104,10 +105,10 @@ pub fn enrich(e: &mut ErrorBody, doc: &model::Document, edits: &[Edit], path: &P
 pub fn floor(e: &mut ErrorBody, file: &str) {
     e.rung = Some(3);
     e.message = Some(format!(
-        "the fingerprint your write pinned is not this node's — it changed under your plan, and \
-         its current bytes are not computable here. {} Fix: re-read the ONE node you targeted in \
-         {file} for its current `sec_rev`, re-decide, and resend, or repeat the write with \
-         `force`.",
+        "the `if_node_rev` your write pinned is not this node's — it changed under your plan, \
+         and its current bytes are not computable here. {} Fix: re-read the ONE node you \
+         targeted in {file} for its current `sec_rev`, re-decide, and resend with that token as \
+         `if_node_rev`, or repeat the write with `force`.",
         crate::NO_PARTIAL_WRITE_CLAUSE
     ));
 }

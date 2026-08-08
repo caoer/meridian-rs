@@ -94,6 +94,12 @@ fn assert_ladder_contract(ctx: &str, message: &str) {
         !message.contains("mrd read memo.md") && !message.contains("whole file"),
         "{ctx}: NEVER instructs a whole-file read (R1.2): {message}"
     );
+    assert!(
+        !message.contains("the fingerprint your write pinned"),
+        "{ctx}: a NODE-grain refusal never calls the pinned token a `fingerprint` — \
+         that noun is the workspace guard's (`if_fingerprint`), and borrowing it \
+         steers the caller to the wrong guard slot: {message}"
+    );
 }
 
 // ── Rung 1 — the change diff ────────────────────────────────────────────────
@@ -133,10 +139,10 @@ fn rung_one_returns_a_unified_line_diff_for_a_section_body_mismatch() {
     assert_ladder_contract("rung 1", message);
     assert!(
         message.contains(
-            "section \"Memo/Public\" in memo.md changed under the fingerprint your \
+            "section \"Memo/Public\" in memo.md changed under the `if_node_rev` your \
                           write pinned."
         ),
-        "names the subject and the cause: {message}"
+        "names the subject and the cause, at the pin's own grain: {message}"
     );
     assert!(
         message.contains("apply the `diff` extra to your copy")
@@ -310,9 +316,10 @@ fn rung_two_carries_new_content_and_the_new_fingerprint() {
     assert_ladder_contract("rung 2", message);
     assert!(
         message.contains("take `new_content` as that node's current bytes")
-            && message.contains("resend it with `new_fingerprint` as its guard")
+            && message.contains("resend it with `new_fingerprint` as its `if_node_rev` guard")
             && message.contains("no re-read is needed"),
-        "the fix spends the rung it was given: {message}"
+        "the fix spends the rung it was given, and names the guard field the CAS \
+         actually checks: {message}"
     );
 }
 
@@ -355,6 +362,11 @@ fn rung_three_is_the_bare_mismatch_floor() {
     assert!(
         message.contains("re-read the ONE node you targeted"),
         "even the floor never sends the caller to the whole file: {message}"
+    );
+    assert!(
+        message.contains("resend with that token as `if_node_rev`"),
+        "the floor names the guard field the resend must carry — a re-read that \
+         stops one noun short of the recovery is not a fix clause: {message}"
     );
 }
 
@@ -402,6 +414,152 @@ fn the_builder_picks_the_richest_computable_rung_not_the_first_that_works() {
     );
     assert_eq!(poorer.rung, Some(2));
     assert!(poorer.new_content.is_some());
+}
+
+// ── Recovery by the book — the teaching IS the contract ────────────────────
+//
+// A literal client owns no knowledge beyond the refusal it was handed: it
+// takes the guard noun from the fix clause and resends with that field
+// carrying the served token, through the same strict door a wire frame walks.
+// The taught noun must therefore be a field the door decodes and the CAS
+// honors — a message that names any other noun teaches an impossible
+// recovery (G-P1-2).
+
+/// The guard noun a literal reading takes from the fix clause: the last
+/// backticked token before the word "guard" — "resend … with `X` as its
+/// guard" reads X; "resend … as its `Y` guard" reads Y.
+fn taught_guard_field(message: &str) -> String {
+    let before = &message[..message.find(" guard").expect("the fix clause names a guard")];
+    let close = before.rfind('`').expect("the guard noun is backticked");
+    let open = before[..close].rfind('`').expect("a backtick pair");
+    before[open + 1..close].to_owned()
+}
+
+/// The literal resend: the re-decided edit, guarded by the taught noun
+/// carrying the served token, decoded at the strict wire door and executed
+/// through the same choke-point the daemon uses.
+fn resend_by_the_book(root: &fs::WorkspaceRoot, err: &wire::ErrorBody, edit: serde_json::Value) {
+    let token = err
+        .new_fingerprint
+        .as_ref()
+        .expect("the token to resend")
+        .0
+        .clone();
+    let noun = taught_guard_field(err.message.as_deref().expect("a teaching message"));
+
+    let mut edit_obj = serde_json::Map::new();
+    edit_obj.insert(
+        "target".into(),
+        serde_json::json!({"hpath": [{"h": "Memo"}, {"h": "Public"}]}),
+    );
+    edit_obj.insert("edit".into(), edit);
+    edit_obj.insert(noun.clone(), serde_json::Value::String(token));
+    let frame = serde_json::json!({
+        "id": 7, "op": "splice", "path": "memo.md",
+        "actor": "agent:alice", "now": "2026-08-03T12:05:00Z",
+        "edits": [edit_obj],
+    });
+
+    let op = wire_serve::decode::decode(
+        frame.as_object().expect("an object frame"),
+        wire_serve::rev::Rev::V3,
+    )
+    .unwrap_or_else(|e| {
+        panic!(
+            "the taught guard noun `{noun}` must decode at the strict wire door — this \
+             refusal is the teaching sending its reader into a wall: {:?} {:?}",
+            e.code, e.message
+        )
+    });
+    let wire::Op::Splice {
+        path,
+        actor,
+        now,
+        receipt,
+        if_root,
+        dry,
+        force,
+        edits,
+        plan_edits,
+        pin,
+    } = op
+    else {
+        panic!("a splice frame decodes as a splice")
+    };
+    let resend = SpliceArgs {
+        id: Some(7),
+        origin: Origin::Wire,
+        path,
+        actor,
+        now,
+        receipt,
+        if_root,
+        dry: dry.unwrap_or(false),
+        force: force.unwrap_or(false),
+        edits,
+        plan_edits,
+        pin,
+    };
+    if let Err(e) = splice(root, None, &resend, &[], None) {
+        panic!(
+            "the taught recovery must SUCCEED — the resend carried the served token \
+             under the taught guard noun `{noun}` and was still refused: {:?} {:?}",
+            e.code, e.message
+        );
+    }
+}
+
+#[test]
+fn rung_one_recovery_by_the_book_succeeds_when_followed_literally() {
+    let (_d, root) = ws(DOC);
+    let pinned = "## Public\n\nalpha\nbravo\ndelta\n";
+    let a = args(vec![stale_match(public(), pinned)]);
+    let err = splice(&root, None, &a, &[], None).expect_err("refuses");
+    assert_eq!(err.code, ErrorCode::CasMismatch, "the named refusal fired");
+    assert_eq!(err.rung, Some(1), "the rung under test carries a diff");
+
+    // The book, step by step: apply the `diff` extra (the caller's copy now
+    // reads `charlie` where it believed `delta`), re-decide the edit against
+    // that copy, resend with the taught guard.
+    resend_by_the_book(
+        &root,
+        &err,
+        serde_json::json!({"match": {"old": "charlie", "new": "charlie, revised"}}),
+    );
+    let after = std::fs::read_to_string(root.0.join("memo.md")).expect("read");
+    assert!(
+        after.contains("charlie, revised"),
+        "the taught recovery landed the edit: {after}"
+    );
+}
+
+#[test]
+fn rung_two_recovery_by_the_book_succeeds_when_followed_literally() {
+    let (_d, root) = ws(DOC);
+    let a = args(vec![Edit {
+        target: public(),
+        edit: EditShape::Put {
+            at: PutAt::End,
+            text: "delta\n".into(),
+        },
+        if_node_rev: Some(NodeRev(STALE.into())),
+    }]);
+    let err = splice(&root, None, &a, &[], None).expect_err("refuses");
+    assert_eq!(err.code, ErrorCode::CasMismatch, "the named refusal fired");
+    assert_eq!(err.rung, Some(2), "the rung under test carries new content");
+
+    // The book, step by step: take `new_content` as the node's current bytes,
+    // re-decide (the append still stands), resend with the taught guard.
+    resend_by_the_book(
+        &root,
+        &err,
+        serde_json::json!({"put": {"at": "end", "text": "delta\n"}}),
+    );
+    let after = std::fs::read_to_string(root.0.join("memo.md")).expect("read");
+    assert!(
+        after.contains("\ndelta\n"),
+        "the taught recovery landed the append: {after}"
+    );
 }
 
 // ── Rung 0 — U10's door is unchanged ───────────────────────────────────────
