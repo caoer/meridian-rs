@@ -213,11 +213,17 @@ impl<'d> WireHost<'d> {
     }
 
     /// Refuse a wire call that starts past the host's wall clock.
+    ///
+    /// The wording claims nothing about armed state, because the host cannot
+    /// see it: arms are the KERNEL's list, and this refusal renders directly
+    /// below that list's rows on the face. What it does claim is what the host
+    /// knows — a failed attempt sends no armed edit and commits nothing
+    /// (`cmd::run` never issues a splice for a failed eval).
     fn within_deadline(&self, fault: &dyn Fn(String) -> ReadFault) -> Result<(), ReadFault> {
         if Instant::now() > self.deadline {
             return Err(fault(
-                "the script entry's wall clock elapsed before this read — nothing was armed by \
-                 the reads that did run, and nothing commits"
+                "the script entry's wall clock elapsed before this read — the attempt aborts \
+                 whole: any edits the script armed are never sent, and nothing commits"
                     .to_owned(),
             ));
         }
