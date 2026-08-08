@@ -948,16 +948,25 @@ deferral):**
 - Row shape `{key, value, span, prop_rev}`:
   - `key` — the top-level key, the same string the §2.1 `fm_key` form
     addresses; the read→set loop closes off this row.
-  - `value` — the key line's value as stored: the colon remainder,
-    whitespace-trimmed, quotes kept. A block value (indented continuation
-    lines) serves the key line's own remainder — empty when that line
-    carries none. The engine re-serializes nothing (no YAML library —
-    honest limit, stated not worked around).
+  - `value` — the key line's **logical YAML scalar**: the colon remainder,
+    whitespace-trimmed, then one balanced pair of surrounding YAML quotes
+    stripped (single-quoted: `''` → `'`; double-quoted: the usual `\`
+    escapes). The presentation plane serves the value a comparison wants,
+    not the quote decoration — so `owner: "[[id]]"` and `owner: [[id]]` (if
+    that unquoted form were a legal scalar) both present as `[[id]]`, and
+    `owner: ""` presents as the empty string (length 0). A block value
+    (indented continuation lines) still serves the key line's own remainder
+    — empty when that line carries none. The engine re-serializes nothing
+    (no YAML library — hand unquote only). The model's as-stored `YamlMap`
+    keeps quote decoration for the property-fingerprint three-state law
+    (`status: ""` ≠ bare null); only this plane and the script `fm` face
+    present the logical form.
   - `prop_rev` — the key's CAS token: blake3 over the full key grain span
     bytes (the key line plus its indented continuation lines), 16 hex —
     the SAME token `cat` on the `fm_key` node serves and `if_node_rev`
     compares (§5.1: one rev per node, re-derived at execution, no second
-    derivation).
+    derivation). The grain is as-stored bytes; unquoting never retargets
+    the CAS token.
   - `span` — that grain span; intra-file byte offsets, root-independent.
 - Emission law (the `anchors` precedent): always emitted — empty means
   "this document has no top-level frontmatter keys", never "ask again with
@@ -973,6 +982,26 @@ deferral):**
 - Delta grain unchanged: this plane is the map tense of the frontmatter
   plane (§7.2 — one projection, three tenses); §7.4's ruled node-grain and
   its named future-only `keys` amendment path are untouched.
+
+**Frontmatter scalar write law (docs-first, 2026-08-07, bakeoff-yaml —
+closes the read/write asymmetry on fleet-canonical values):**
+
+- `set_property` / plan-lowering emit values only through `yaml_safe_value`
+  (single owner — `check_write` candidate bytes and the written bytes cannot
+  drift). The predicate quotes when the unquoted form would not land as the
+  caller's string scalar: mid-value `": "` (mapping in value position), an
+  unterminated leading quote, a flow map (`{…}`), **or a value the substrate
+  frontmatter parser would classify as Nested** (list-in-list / nested flow —
+  including the fleet ref shape `[[id]]`, which is a string under `shape:ref`
+  and Nested when left unquoted). Quoted emit is single-quoted YAML with
+  `''` for an embedded `'`. Multi-line values still refuse (never sanitized).
+- One-level flow lists (`[a, b]`) stay unquoted so list-shaped properties
+  keep their on-disk grammar. Nested introduction via `set_property` is no
+  longer manufacturable by unquoted emit; hand-written nested frontmatter
+  still fails the substrate law at conformance.
+- Round-trip: a logical value the write path emits, re-read through the
+  props / script `fm` face, equals the value the caller passed. Callers do
+  not compensate with quote-tolerant compares.
 
 CLI inventory (descriptive): `status.md`. Cross-root agent address grammar: `address-grammar.md`. Config parse: `meridian-md-schema.md`.
 
