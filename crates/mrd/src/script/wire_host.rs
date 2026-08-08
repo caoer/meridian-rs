@@ -694,7 +694,9 @@ mod tests {
             let mut host = WireHost::new(
                 &mut door,
                 "zt".to_owned(),
-                Instant::now() - Duration::from_millis(1),
+                Instant::now()
+                    .checked_sub(Duration::from_millis(1))
+                    .unwrap(),
             );
             host.toc(PAGE)
                 .expect_err("an elapsed clock refuses the read")
@@ -722,7 +724,9 @@ mod tests {
         let mut host = WireHost::new(
             &mut door,
             "zt".to_owned(),
-            Instant::now() - Duration::from_millis(1),
+            Instant::now()
+                .checked_sub(Duration::from_millis(1))
+                .unwrap(),
         );
         let ctx = effects::ScriptCtx {
             id: "script".to_owned(),
