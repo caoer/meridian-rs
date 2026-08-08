@@ -376,24 +376,14 @@ impl DomainCache {
         self.dirs = fresh_dirs;
         self.listings += listings;
         rels.sort();
+        let identities = member_identities(&root.0, &rels, PARALLEL_STAT_FLOOR)?;
         let mut fresh: BTreeMap<String, (StatKey, [u8; 32])> = BTreeMap::new();
-        for rel in rels {
-            let rel_str = rel.to_string_lossy().replace('\\', "/");
-            let abs = root.0.join(&rel);
-            let key = StatKey::of_path(&abs)?.ok_or_else(|| {
-                // Walked a moment ago and gone now: a corpus-scoped refusal
-                // names its member, like every other one here.
-                corpus_member_refusal(
-                    io::ErrorKind::NotFound,
-                    &rel_str,
-                    "vanished between the domain walk and its stat".to_owned(),
-                )
-            })?;
+        for (rel_str, key) in identities {
             let digest = match self.leaves.get(&rel_str) {
                 Some((seen, digest)) if *seen == key => *digest,
                 _ => {
                     self.reads += 1;
-                    let bytes = fs::read(&abs).map_err(|e| {
+                    let bytes = fs::read(root.0.join(&rel_str)).map_err(|e| {
                         corpus_member_refusal(e.kind(), &rel_str, format!("cannot be read ({e})"))
                     })?;
                     model::leaf_digest(&bytes)
@@ -638,6 +628,66 @@ fn classify(
         }
     }
     (files, subdirs)
+}
+
+/// Members below this count take the serial stat loop — thread spawn only
+/// pays for itself on big domains (floor carried from arm-A `c0d0c8ba`,
+/// measured on this hardware class).
+const PARALLEL_STAT_FLOOR: usize = 4096;
+
+/// Every member's [`StatKey`] in `rels` order — the currency pass's stat
+/// sweep, parallel in ORDER-PRESERVING contiguous chunks at or above `floor`
+/// (ported from arm-A `c0d0c8ba`, re-derived on this memo's fold).
+///
+/// Each scoped worker owns one contiguous chunk of the sorted `rels`; the
+/// merge walks chunks in spawn order, so both the row order and the FIRST
+/// refusal are identical to the serial loop's: the member named is the first
+/// failing one in sorted order, never whichever worker lost a race. The fold
+/// itself cannot see the difference either way — the digests land in ordered
+/// maps — so parallelism here moves wall time and nothing else. A vanished
+/// member refuses corpus-scoped, naming itself, exactly as the serial loop
+/// did.
+fn member_identities(
+    root: &Path,
+    rels: &[PathBuf],
+    floor: usize,
+) -> io::Result<Vec<(String, StatKey)>> {
+    let identity_of = |rel: &PathBuf| -> io::Result<(String, StatKey)> {
+        let rel_str = rel.to_string_lossy().replace('\\', "/");
+        let key = StatKey::of_path(&root.join(rel))?.ok_or_else(|| {
+            // Walked a moment ago and gone now: a corpus-scoped refusal
+            // names its member, like every other one here.
+            corpus_member_refusal(
+                io::ErrorKind::NotFound,
+                &rel_str,
+                "vanished between the domain walk and its stat".to_owned(),
+            )
+        })?;
+        Ok((rel_str, key))
+    };
+    if rels.is_empty() || rels.len() < floor {
+        return rels.iter().map(identity_of).collect();
+    }
+    let workers = std::thread::available_parallelism().map_or(2, |n| n.get().clamp(2, 8));
+    let chunk = rels.len().div_ceil(workers);
+    let mut rows: Vec<io::Result<Vec<(String, StatKey)>>> = Vec::new();
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = rels
+            .chunks(chunk)
+            .map(|c| scope.spawn(move || c.iter().map(&identity_of).collect()))
+            .collect();
+        for handle in handles {
+            match handle.join() {
+                Ok(chunk_rows) => rows.push(chunk_rows),
+                Err(panic) => std::panic::resume_unwind(panic),
+            }
+        }
+    });
+    let mut out = Vec::with_capacity(rels.len());
+    for chunk_rows in rows {
+        out.extend(chunk_rows?);
+    }
+    Ok(out)
 }
 
 /// The domain files of a workspace as `(workspace-relative path, raw bytes)`
@@ -2777,5 +2827,61 @@ mod domain_cache_parallel_tests {
             domain_snapshot(&root).unwrap().1,
             "the pass recovers once the directory does"
         );
+    }
+
+    /// The chunked stat pass returns byte-identical rows to the serial loop —
+    /// same members, same order, same identities — over a fixture with
+    /// distinct per-member metadata, so a chunking or merge-order break
+    /// cannot cancel out.
+    #[test]
+    fn chunked_stat_pass_matches_the_serial_loop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root_path = tmp.path();
+        for i in 0..40 {
+            write(
+                root_path,
+                &format!("m{i:02}.md"),
+                &format!("# {}\n", "x".repeat(i + 1)),
+            );
+        }
+        let root = WorkspaceRoot(fs::canonicalize(root_path).unwrap());
+        let domain = super::domain::Domain::load(&root).unwrap();
+        let rels = super::hash_domain(&root, &domain).unwrap();
+
+        let serial = super::member_identities(&root.0, &rels, usize::MAX).unwrap();
+        let parallel = super::member_identities(&root.0, &rels, 0).unwrap();
+        assert_eq!(serial, parallel, "rows must be bit-identical, in order");
+    }
+
+    /// With TWO members vanished, the refusal names the sorted-FIRST one on
+    /// both the serial and the chunked path: the merge walks chunks in spawn
+    /// order, so the member named never depends on which worker finished
+    /// first.
+    #[test]
+    fn the_chunked_refusal_names_the_sorted_first_vanished_member() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root_path = tmp.path();
+        for i in 0..50 {
+            write(root_path, &format!("m{i:02}.md"), "# M\n");
+        }
+        let root = WorkspaceRoot(fs::canonicalize(root_path).unwrap());
+        let domain = super::domain::Domain::load(&root).unwrap();
+        let rels = super::hash_domain(&root, &domain).unwrap();
+
+        fs::remove_file(root.0.join("m10.md")).unwrap();
+        fs::remove_file(root.0.join("m40.md")).unwrap();
+
+        for floor in [usize::MAX, 0] {
+            let err = super::member_identities(&root.0, &rels, floor).unwrap_err();
+            let msg = err.to_string();
+            assert!(
+                msg.contains("m10.md"),
+                "the sorted-first vanished member is named (floor {floor}): {msg}"
+            );
+            assert!(
+                !msg.contains("m40.md"),
+                "the later vanished member is never named (floor {floor}): {msg}"
+            );
+        }
     }
 }
