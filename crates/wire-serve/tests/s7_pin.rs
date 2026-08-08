@@ -1143,3 +1143,26 @@ fn the_cli_string_coat_still_cannot_address_a_slash_bearing_heading() {
         "it MISSES — it must never silently pin a different section: {err:?}"
     );
 }
+
+/// A duplicated block id refuses the pin — no door may pin an occurrence the
+/// caller did not name (wire-contract A.3, door symmetry over duplicate block
+/// ids). The old door silently pinned the FIRST carrier: the one silent-pick
+/// surface left after the read and write doors both refused.
+#[test]
+fn a_duplicated_anchor_refuses_the_pin_rather_than_picking_the_first() {
+    let (dir, root) = workspace();
+    std::fs::write(
+        dir.path().join("guide.md"),
+        "# Guide\n\n- first ^same-id\n\n- second ^same-id\n",
+    )
+    .expect("duplicated target");
+    let err = splice(&root, None, &pin_args("^same-id"), &[], None)
+        .expect_err("a duplicated id must refuse the pin");
+    assert_eq!(err.code, ErrorCode::AmbiguousRef);
+    let msg = err.message.as_deref().expect("message");
+    assert!(msg.contains("2 blocks carry this id"), "{msg}");
+    assert!(
+        !msg.contains("rename one heading"),
+        "the remedy speaks the anchor grammar: {msg}"
+    );
+}
