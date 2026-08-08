@@ -224,6 +224,61 @@ actual I/O, and a program is free to read only a few of the paths it was handed.
 256 covers S2-class fan-out over a large board without letting a runaway glob
 return the corpus.
 
+**Amendment (2026-08-08) — the entry's cost model, and the freshness evidence
+under it.** Measured at production scale (the 559-session-dir corpus, ~23.8k
+in-domain files; R9 dogfood, re-measured 2026-08-08): every wire read op paid
+the daemon's warm-engine reuse check as a FULL corpus content fold — one open,
+read, and hash per in-domain file per round trip, 0.6–2.7 s per round trip at
+this scale against 0.06 s on a two-file root. A whole-file `read(path)` is 2+N
+round trips, so the 7 s wall clock admitted about two script reads and no
+more — a six-read no-write program dies on its sixth read with the wall-clock
+refusal. The budget was never the defect; the per-round-trip O(root) fold was.
+The reuse KEY stays the corpus content fingerprint (`laws.md` §C-1 —
+"invalidated by its own fingerprint" is unchanged). What this amendment changes
+is the per-request EVIDENCE that decides when the fingerprint is recomputed:
+
+1. **Per round trip, one stat signature sweep.** The reuse gate is a
+   metadata-only fold over the hash domain — one stat per in-domain file,
+   folding (path, size, mtime, ctime), reading zero file bytes. A warm engine
+   whose recorded signature still matches is current: the request reuses it,
+   and pays no fold and no parse.
+2. **A moved signature pays the fold once.** The content fingerprint is
+   recomputed from disk; the engine rebuilds iff the fingerprint moved — an
+   over-sensitive signature (a `chmod`, a `touch`) re-stamps the signature and
+   reuses. Either way, the recorded signature is the one the fold it gated ran
+   against.
+3. **The sweep is ordered before the snapshot it gates.** The recorded
+   signature never describes a world newer than the bytes the engine holds; a
+   write landing between the sweep and the snapshot re-folds on the next
+   request instead of serving stale. The reverse ordering is forbidden: it
+   would admit exactly the stale-read class this law exists to close.
+
+**The consistency story, stated exactly.** Reads stay LIVE (§ The transaction
+is untouched): a write that completes before a read's sweep has already moved
+the file's mtime and ctime — both are kernel-set at write, and ctime cannot be
+back-dated from user space — so the sweep sees it, the fold re-runs, and the
+read serves post-write content. That is the same happens-before the
+per-request fold gave, at metadata cost. The residual lie window is a write
+that changes a file's bytes while preserving its path AND size AND mtime AND
+ctime. No user-space tool does this: `cp -p`, `rsync -a`, `tar -p`, and
+`touch -t` preserve mtime at best and all move ctime, and a rename-over moves
+the file's ctime. What survives is kernel- or clock-level tampering — outside
+this environment's threat model — and an mmap writer's dirty pages before the
+kernel stamps times, which the sweep catches at flush. This confronts
+`node-rev-merkle-spec.md` §0's rejected *mtime+size leaf cache* directly: that
+rejection bought warm-REBUILD speed and named the mtime+size lie window; this
+gate adds ctime, closing the window against every user-space vector, and buys
+per-READ cost — the axis this entry's budget turns on.
+
+**A program's ceiling is computable.** An entry's wall-clock spend is one
+sweep per round trip — a whole-file `read(path)` fans out 2+N round trips —
+plus one fold-and-rebuild per corpus move observed mid-entry, plus the
+fingerprint op's own sweep. The per-round-trip cost becomes O(domain entries)
+of metadata instead of O(domain bytes) of content, so whether the budget
+admits a program stops depending on how much content the corpus holds. The
+budget table above is untouched: the wall clock stays 7 s, per-entry, at the
+same four layers.
+
 **The transaction — stand-still optimistic.** The word **snapshot is
 banned** here: the daemon has no MVCC and v1 must not grow one.
 
