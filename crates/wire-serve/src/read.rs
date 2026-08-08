@@ -709,10 +709,10 @@ fn anchor_sel_teach(doc: &model::Document, sel: &wire::ReadSel) -> Option<Anchor
     // wins on a duplicated id — the pool ranks spellings, not carriers.
     let mut pool: Vec<(String, String)> = Vec::new();
     for row in &toc {
-        if let Some(id) = &row.anchor {
-            if !pool.iter().any(|(a, _)| a == id) {
-                pool.push((id.clone(), row.kind.clone()));
-            }
+        if let Some(id) = &row.anchor
+            && !pool.iter().any(|(a, _)| a == id)
+        {
+            pool.push((id.clone(), row.kind.clone()));
         }
     }
     if pool.is_empty() {
@@ -792,6 +792,7 @@ fn machine_addr(hpath: &[wire::HpathSeg]) -> String {
 /// The sections-mode leg of [`composed_read`]: selector resolution (first
 /// match; partial-read notice), the walker-emitted content, and the rendered
 /// text — refusal messages in the Go host face's verbatim spelling.
+#[allow(clippy::too_many_lines)]
 fn composed_sections(
     doc: &model::Document,
     facts: &[wire_map::facts::ReadFact],

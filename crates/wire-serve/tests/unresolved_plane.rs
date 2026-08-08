@@ -103,7 +103,8 @@ fn ambiguous_heading_row_carries_machine_addresses() {
     for (i, cand) in row.candidates.iter().enumerate() {
         let seg = cand.last().expect("a candidate address is non-empty");
         assert_eq!(seg.h, "Twin");
-        assert_eq!(seg.n, Some(i as u32 + 1), "the n that pins the occurrence");
+        let n = u32::try_from(i).unwrap() + 1;
+        assert_eq!(seg.n, Some(n), "the n that pins the occurrence");
     }
     assert!(row.nearest.is_empty() && row.count.is_none() && row.host.is_none());
 }
