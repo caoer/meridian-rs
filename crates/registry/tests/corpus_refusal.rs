@@ -111,7 +111,11 @@ fn a_poison_member_degrades_itself_not_the_corpus() {
     // The poison lands behind the engine's back (the incident's shape:
     // a non-UTF-8 fixture copied into a live corpus).
     fs::create_dir_all(ws.join("notes")).unwrap();
-    fs::write(ws.join("notes/poison.md"), b"# Poison\n\n\xff\xfe raw bytes\n").unwrap();
+    fs::write(
+        ws.join("notes/poison.md"),
+        b"# Poison\n\n\xff\xfe raw bytes\n",
+    )
+    .unwrap();
 
     // §52 clause "healthy members serve": the corpus is NOT refused.
     let toc = conn.call(&json!({"op": "toc", "path": "healthy.md"}));
@@ -124,10 +128,18 @@ fn a_poison_member_degrades_itself_not_the_corpus() {
     // §52 clause "serves no spans/nodes": the poison member itself refuses,
     // per-file, wearing the closed-taxonomy code and naming itself.
     let refusal = conn.call(&json!({"op": "toc", "path": "notes/poison.md"}));
-    assert_eq!(refusal["ok"], json!(false), "the poison member serves nothing: {refusal}");
+    assert_eq!(
+        refusal["ok"],
+        json!(false),
+        "the poison member serves nothing: {refusal}"
+    );
     let error = &refusal["error"];
     assert_eq!(error["code"], json!("invalid_utf8"), "{refusal}");
-    assert_eq!(error["recovery"], json!("env"), "invalid_utf8 stays env-class: {refusal}");
+    assert_eq!(
+        error["recovery"],
+        json!("env"),
+        "invalid_utf8 stays env-class: {refusal}"
+    );
     assert_eq!(
         error["path"],
         json!("notes/poison.md"),
@@ -194,7 +206,11 @@ fn a_direct_poison_path_links_query_answers_typed_invalid_utf8() {
     // Control: a path that truly is absent keeps `file_not_found`.
     let missing = conn.call(&json!({"op": "links", "path": "missing.md"}));
     assert_eq!(missing["ok"], json!(false), "{missing}");
-    assert_eq!(missing["error"]["code"], json!("file_not_found"), "{missing}");
+    assert_eq!(
+        missing["error"]["code"],
+        json!("file_not_found"),
+        "{missing}"
+    );
 
     server.shutdown();
 }
@@ -217,7 +233,11 @@ fn hello_at_a_poisoned_workspace_binds_and_serves() {
         "a poisoned workspace still binds — degradation is per-file: {ack}"
     );
     let toc = conn.call(&json!({"op": "toc", "path": "healthy.md"}));
-    assert_eq!(toc["ok"], json!(true), "healthy member serves at once: {toc}");
+    assert_eq!(
+        toc["ok"],
+        json!(true),
+        "healthy member serves at once: {toc}"
+    );
 
     server.shutdown();
 }
@@ -297,17 +317,25 @@ fn two_domain_configs_refuse_as_io_error_not_invalid_utf8() {
     let mut conn = Conn::open(server.socket_path());
 
     let refusal = conn.hello(&ws);
-    assert_eq!(refusal["ok"], json!(false), "an ambiguous domain refuses: {refusal}");
+    assert_eq!(
+        refusal["ok"],
+        json!(false),
+        "an ambiguous domain refuses: {refusal}"
+    );
     let error = &refusal["error"];
     assert_eq!(
         error["code"],
         json!("io_error"),
         "the ambiguity is not a UTF-8 condition: {refusal}"
     );
-    assert_eq!(error["recovery"], json!("env"), "io_error is env class: {refusal}");
-    let cause = error["cause"].as_str().unwrap_or_else(|| {
-        panic!("io_error carries its cause: {refusal}")
-    });
+    assert_eq!(
+        error["recovery"],
+        json!("env"),
+        "io_error is env class: {refusal}"
+    );
+    let cause = error["cause"]
+        .as_str()
+        .unwrap_or_else(|| panic!("io_error carries its cause: {refusal}"));
     assert!(
         cause.contains("meridian/domain.md")
             && cause.contains("mdfs_config.yaml")

@@ -220,7 +220,11 @@ fn the_frame_envelope_carries_exactly_one_payload() {
         "meta is not a body field: {ok}"
     );
     assert!(
-        dispatched["error"].as_object().unwrap().get("meta").is_none(),
+        dispatched["error"]
+            .as_object()
+            .unwrap()
+            .get("meta")
+            .is_none(),
         "meta is not an error field: {dispatched}"
     );
     pin_keys(&ok["meta"], &["duration_us"], "meta block");
@@ -310,7 +314,11 @@ fn the_toc_anchor_row_key_set_is_pinned() {
     let (fx, mut conn) = Fixture::start();
     let write = guarded_write(&mut conn);
     let splice = conn.call(&write);
-    assert_eq!(splice["ok"], json!(true), "the guarded write lands: {splice}");
+    assert_eq!(
+        splice["ok"],
+        json!(true),
+        "the guarded write lands: {splice}"
+    );
 
     let toc = conn.call(&json!({"id": 4, "op": "toc", "path": "receipts/2026-07-18.md"}));
     let anchor_row = toc["body"]["nodes"]
@@ -522,7 +530,11 @@ fn the_splice_dry_body_key_set_is_pinned() {
             "if_node_rev": q3,
         }],
     }));
-    assert_eq!(got["ok"], json!(true), "the dry rehearsal answers ok: {got}");
+    assert_eq!(
+        got["ok"],
+        json!(true),
+        "the dry rehearsal answers ok: {got}"
+    );
     pin_keys(
         &got["body"],
         &[
@@ -583,7 +595,11 @@ fn the_cursor_sub_ack_and_diff_body_key_sets_are_pinned() {
 fn the_cas_mismatch_error_key_set_is_pinned() {
     let (fx, mut conn) = Fixture::start();
     let write = guarded_write(&mut conn);
-    assert_eq!(conn.call(&write)["ok"], json!(true), "the first write lands");
+    assert_eq!(
+        conn.call(&write)["ok"],
+        json!(true),
+        "the first write lands"
+    );
 
     // The same guard replayed: the section rev moved under it.
     let stale_retry = conn.call(&write);
@@ -610,7 +626,11 @@ fn the_cas_mismatch_error_key_set_is_pinned() {
     // The extras are the ladder: the refusal hands back the current rev and
     // the diff, so a client re-sends without re-reading. `recovery` is
     // `refresh`, not `resync` — a section-grain conflict is recoverable in place.
-    assert_eq!(stale_retry["error"]["recovery"], json!("refresh"), "{stale_retry}");
+    assert_eq!(
+        stale_retry["error"]["recovery"],
+        json!("refresh"),
+        "{stale_retry}"
+    );
     assert_eq!(
         stale_retry["error"]["new_fingerprint"], stale_retry["error"]["actual"],
         "the ladder hands back the rev the client must guard on next: {stale_retry}"
@@ -651,10 +671,7 @@ fn the_no_match_and_not_unique_error_key_sets_are_pinned() {
         }],
     }));
     assert_eq!(append["ok"], json!(true), "the append lands: {append}");
-    let q4_after = node_rev(
-        &conn.call(&json!({"op": "toc", "path": "plan.md"})),
-        "Q4",
-    );
+    let q4_after = node_rev(&conn.call(&json!({"op": "toc", "path": "plan.md"})), "Q4");
     let not_unique = conn.call(&json!({
         "id": 92, "op": "splice", "path": "plan.md",
         "edits": [{

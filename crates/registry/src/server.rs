@@ -1455,8 +1455,9 @@ mod accept_containment_tests {
 
         let deadline = Instant::now() + Duration::from_secs(5);
         for n in 1..=3 {
-            UnixStream::connect(&socket)
-                .unwrap_or_else(|e| panic!("connection {n} is accepted after {} failures: {e}", n - 1));
+            UnixStream::connect(&socket).unwrap_or_else(|e| {
+                panic!("connection {n} is accepted after {} failures: {e}", n - 1)
+            });
             while seen.load(Ordering::SeqCst) < n && Instant::now() < deadline {
                 thread::sleep(Duration::from_millis(10));
             }
@@ -1469,7 +1470,9 @@ mod accept_containment_tests {
         }
 
         shutdown.store(true, Ordering::SeqCst);
-        accept.join().expect("the accept loop survived every dispatch failure");
+        accept
+            .join()
+            .expect("the accept loop survived every dispatch failure");
     }
 }
 
@@ -1574,8 +1577,7 @@ mod recovery_class_truth_tests {
         // Arm the one-shot warm→borrow gate for the read pass (thread A).
         let (arrived_tx, arrived) = std::sync::mpsc::channel();
         let (release, release_rx) = std::sync::mpsc::channel();
-        *reg
-            .pause_before_borrow
+        *reg.pause_before_borrow
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = Some((arrived_tx, release_rx));
 
@@ -1594,7 +1596,9 @@ mod recovery_class_truth_tests {
         let reaped = reg.reap(u64::MAX, 0);
         assert!(reaped.contains(&canonical), "the reaper took the engine");
 
-        release.send(()).expect("thread A parked on the release gate");
+        release
+            .send(())
+            .expect("thread A parked on the release gate");
         let err = a
             .join()
             .expect("thread A panicked")

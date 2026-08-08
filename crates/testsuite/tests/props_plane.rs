@@ -68,7 +68,9 @@ fn props_serve_key_facts_that_agree_with_the_cat_fm_key_grain() {
 /// a document with no frontmatter serves `props: []`, never an absent key.
 #[test]
 fn props_are_always_emitted_empty_without_frontmatter() {
-    let dir = testsuite::parity_dir().join("corpus").join("no-frontmatter");
+    let dir = testsuite::parity_dir()
+        .join("corpus")
+        .join("no-frontmatter");
     let frames = serve(
         &dir,
         &[json!({"id":1,"op":"read","path":"corpus/no-frontmatter.md"})],

@@ -325,7 +325,10 @@ fn the_pre_flight_and_the_write_see_the_same_stripped_bytes() {
         "2026-07-25T00:00:00Z",
         &[wire::CheckWriteEdit {
             op: "replace".into(),
-            at: vec![wire::HpathSeg { h: "Plan".into(), n: None }],
+            at: vec![wire::HpathSeg {
+                h: "Plan".into(),
+                n: None,
+            }],
             find: decorated.into(),
             body: format!("{decorated} — reviewed."),
             rev: String::new(),

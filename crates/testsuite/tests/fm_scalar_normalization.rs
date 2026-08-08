@@ -208,7 +208,10 @@ fn both_write_doors_refuse_a_multi_line_value() {
 #[test]
 fn the_fleet_canonical_owner_value_is_writable() {
     for (door, write) in [
-        ("set_property", set_property as fn(&std::path::Path, &str, &str, &str) -> Value),
+        (
+            "set_property",
+            set_property as fn(&std::path::Path, &str, &str, &str) -> Value,
+        ),
         ("put at:upsert", put_upsert),
     ] {
         let dir = ws("cards/one.md", SEED);

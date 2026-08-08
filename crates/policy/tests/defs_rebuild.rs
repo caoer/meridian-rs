@@ -492,7 +492,12 @@ fn published_multisegment_address_is_writable() {
                 ..PlanEdit::default()
             }],
         )
-        .unwrap_or_else(|e| panic!("two-segment address must resolve for {leaf:?}: {}", e.render()));
+        .unwrap_or_else(|e| {
+            panic!(
+                "two-segment address must resolve for {leaf:?}: {}",
+                e.render()
+            )
+        });
         assert!(
             got.raw.contains("appended"),
             "the append must land for {leaf:?}"

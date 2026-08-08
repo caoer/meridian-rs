@@ -20,9 +20,7 @@ fn main() {
     let rels = fs::hash_domain(&root, &domain).expect("walk");
     let bytes: u64 = rels
         .iter()
-        .map(|rel| {
-            std::fs::symlink_metadata(root.0.join(rel)).map_or(0, |m| m.len())
-        })
+        .map(|rel| std::fs::symlink_metadata(root.0.join(rel)).map_or(0, |m| m.len()))
         .sum();
     println!("root={root_arg}\nmembers={} bytes={bytes}", rels.len());
 

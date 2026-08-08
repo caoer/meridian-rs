@@ -199,7 +199,9 @@ fn the_published_digest_is_over_the_path_and_plan_edits_the_commit_sends() {
     let trace = claim(&mut door, &["--actor", "8ab41c02"]);
 
     let splice = door.request("splice");
-    let path = splice["path"].as_str().expect("the splice names its target");
+    let path = splice["path"]
+        .as_str()
+        .expect("the splice names its target");
     let sent: Vec<PlanEdit> =
         serde_json::from_value(splice["plan_edits"].clone()).expect("plan_edits is an array");
     assert!(!sent.is_empty(), "the run really did arm something");
@@ -249,7 +251,11 @@ fn identical_edits_to_two_targets_publish_different_digests() {
     let there = {
         let mut door = Fake::serving(OTHER_CARD);
         attempt(
-            &["--actor".to_owned(), "8ab41c02".to_owned(), "--dry".to_owned()],
+            &[
+                "--actor".to_owned(),
+                "8ab41c02".to_owned(),
+                "--dry".to_owned(),
+            ],
             &CLAIM.replace(CARD, OTHER_CARD),
             &mut door,
         )

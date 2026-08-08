@@ -144,14 +144,12 @@ impl Domain {
         let md = read_optional(&root.0.join(DOMAIN_CONFIG_PATH))?;
         let yaml = read_optional(&root.0.join(CONFIG_FILE_NAME))?;
         match (md, yaml) {
-            (Some(_), Some(_)) => Err(io::Error::other(
-                format!(
-                    "two domain configs are present: {DOMAIN_CONFIG_PATH} and {CONFIG_FILE_NAME}. \
+            (Some(_), Some(_)) => Err(io::Error::other(format!(
+                "two domain configs are present: {DOMAIN_CONFIG_PATH} and {CONFIG_FILE_NAME}. \
                      They may declare different ignore lists, so which files are attested would \
                      depend on a precedence rule no reader of either file can see. \
                      Remedy: keep {DOMAIN_CONFIG_PATH} and delete {CONFIG_FILE_NAME}."
-                ),
-            )),
+            ))),
             (Some(text), None) => Ok(Domain::from_markdown(&text)),
             (None, Some(text)) => Ok(Domain::from_config(&text)),
             (None, None) => Ok(Domain::new()),

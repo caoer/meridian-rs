@@ -37,7 +37,8 @@ fn a_selector_into_a_git_folder_root_refuses_with_the_opaque_class() {
     );
     let mounts = MountSet::new([name("repo")]);
 
-    let got = CorpusIndex::new().resolve_ref("repo:src/main.rs#impl-notes", "claim.md", &corpus, &mounts);
+    let got =
+        CorpusIndex::new().resolve_ref("repo:src/main.rs#impl-notes", "claim.md", &corpus, &mounts);
     assert_eq!(
         got,
         RefResolution::Malformed(AddrError::SelectorOnOpaqueRoot {
@@ -55,7 +56,12 @@ fn a_selector_into_a_git_folder_root_refuses_with_the_opaque_class() {
         unreachable!()
     };
     let text = err.to_string();
-    for needle in ["'repo'", "git-folder", "'impl-notes'", "no parse and no sections"] {
+    for needle in [
+        "'repo'",
+        "git-folder",
+        "'impl-notes'",
+        "no parse and no sections",
+    ] {
         assert!(
             text.contains(needle),
             "the refusal must name {needle}: {text}",
@@ -70,11 +76,11 @@ fn a_selector_into_a_git_folder_root_refuses_with_the_opaque_class() {
 fn the_same_selector_into_a_vault_root_still_resolves() {
     let ambient = corpus_with(&["notes.md"]);
     let wiki = corpus_with(&["plan.md"]);
-    let corpus =
-        RootedCorpus::ambient(&ambient).with_root(name("wiki"), RootKind::Vault, &wiki);
+    let corpus = RootedCorpus::ambient(&ambient).with_root(name("wiki"), RootKind::Vault, &wiki);
     let mounts = MountSet::new([name("wiki")]);
 
-    let got = CorpusIndex::new().resolve_ref("wiki:plan.md#impl-notes", "claim.md", &corpus, &mounts);
+    let got =
+        CorpusIndex::new().resolve_ref("wiki:plan.md#impl-notes", "claim.md", &corpus, &mounts);
     assert_eq!(
         got,
         RefResolution::Rooted {
@@ -124,7 +130,8 @@ fn the_opaque_refusal_outranks_file_not_found() {
     );
     let mounts = MountSet::new([name("repo")]);
 
-    let got = CorpusIndex::new().resolve_ref("repo:no/such/file.rs#sec", "claim.md", &corpus, &mounts);
+    let got =
+        CorpusIndex::new().resolve_ref("repo:no/such/file.rs#sec", "claim.md", &corpus, &mounts);
     assert!(
         matches!(
             &got,

@@ -12,7 +12,10 @@ use wire_serve::read::{NO_DECORATIONS, ReadParams, composed_read};
 /// ambiguity arm.
 const DOC: &str = "# Tasks\n\n- ship the gate ^goal\n- prove the gate ^gate\n- [ ] boxed ^t1\n\n# Twin\n\none\n\n# Twin\n\ntwo\n";
 
-fn read_doc(raw: &str, sections: Option<Vec<ReadSel>>) -> Result<ResponseBody, Box<wire::ErrorBody>> {
+fn read_doc(
+    raw: &str,
+    sections: Option<Vec<ReadSel>>,
+) -> Result<ResponseBody, Box<wire::ErrorBody>> {
     let d = model::build(raw.to_string(), syntax::parse(raw));
     composed_read(
         &d,
@@ -42,13 +45,15 @@ fn unresolved_of(body: ResponseBody) -> (Vec<wire::ReadUnresolved>, Option<Strin
 /// and a toc read trivially so. Never "ask again with a flag".
 #[test]
 fn all_resolved_and_toc_mode_serve_an_empty_plane() {
-    let (rows, notice) = unresolved_of(
-        read_doc(DOC, Some(vec![ReadSel::parse("Tasks")])).expect("Tasks serves"),
-    );
+    let (rows, notice) =
+        unresolved_of(read_doc(DOC, Some(vec![ReadSel::parse("Tasks")])).expect("Tasks serves"));
     assert!(rows.is_empty(), "every selector resolved ⇒ empty plane");
     assert!(notice.is_none(), "no failures ⇒ no notice");
     let (rows, _) = unresolved_of(read_doc(DOC, None).expect("toc mode serves"));
-    assert!(rows.is_empty(), "toc mode carries the plane, trivially empty");
+    assert!(
+        rows.is_empty(),
+        "toc mode carries the plane, trivially empty"
+    );
 }
 
 /// A heading miss is one `no_match` row — selector echoed in its request
@@ -56,17 +61,26 @@ fn all_resolved_and_toc_mode_serve_an_empty_plane() {
 #[test]
 fn heading_miss_is_a_bare_no_match_row() {
     let (rows, notice) = unresolved_of(
-        read_doc(DOC, Some(vec![ReadSel::parse("Tasks"), ReadSel::parse("Ghost")]))
-            .expect("partial read serves"),
+        read_doc(
+            DOC,
+            Some(vec![ReadSel::parse("Tasks"), ReadSel::parse("Ghost")]),
+        )
+        .expect("partial read serves"),
     );
     assert_eq!(rows.len(), 1);
     let row = &rows[0];
-    assert_eq!(row.sel, ReadSel::parse("Ghost"), "the failed selector, echoed");
+    assert_eq!(
+        row.sel,
+        ReadSel::parse("Ghost"),
+        "the failed selector, echoed"
+    );
     assert_eq!(row.reason, UnresolvedReason::NoMatch);
     assert!(row.candidates.is_empty() && row.nearest.is_empty());
     assert_eq!((row.count, row.host.as_deref()), (None, None));
     assert!(
-        notice.expect("partial read keeps its prose notice").contains("Ghost"),
+        notice
+            .expect("partial read keeps its prose notice")
+            .contains("Ghost"),
         "the prose tense stays beside the structured one"
     );
 }
@@ -76,8 +90,11 @@ fn heading_miss_is_a_bare_no_match_row() {
 #[test]
 fn ambiguous_heading_row_carries_machine_addresses() {
     let (rows, _) = unresolved_of(
-        read_doc(DOC, Some(vec![ReadSel::parse("Tasks"), ReadSel::parse("Twin")]))
-            .expect("partial read serves"),
+        read_doc(
+            DOC,
+            Some(vec![ReadSel::parse("Tasks"), ReadSel::parse("Twin")]),
+        )
+        .expect("partial read serves"),
     );
     assert_eq!(rows.len(), 1);
     let row = &rows[0];
@@ -116,8 +133,11 @@ fn duplicate_anchor_row_counts_carriers_with_no_candidates() {
 #[test]
 fn unaddressable_host_row_names_the_true_kind() {
     let (rows, _) = unresolved_of(
-        read_doc(DOC, Some(vec![ReadSel::parse("Tasks"), ReadSel::parse("^t1")]))
-            .expect("partial read serves"),
+        read_doc(
+            DOC,
+            Some(vec![ReadSel::parse("Tasks"), ReadSel::parse("^t1")]),
+        )
+        .expect("partial read serves"),
     );
     assert_eq!(rows.len(), 1);
     let row = &rows[0];
@@ -143,7 +163,11 @@ fn nearest_pool_includes_non_addressable_ids() {
     assert_eq!(rows.len(), 1);
     let row = &rows[0];
     assert_eq!(row.reason, UnresolvedReason::NoMatch);
-    assert_eq!(row.nearest.len(), 1, "the paragraph-hosted id IS the candidate");
+    assert_eq!(
+        row.nearest.len(),
+        1,
+        "the paragraph-hosted id IS the candidate"
+    );
     assert_eq!(row.nearest[0].anchor, "dogfood-anchor");
     assert_eq!(row.nearest[0].kind, "paragraph");
     let notice = notice.expect("notice");
@@ -159,14 +183,19 @@ fn nearest_pool_includes_non_addressable_ids() {
 fn anchorless_page_serves_empty_nearest_and_says_so() {
     let raw = "# H\n\nprose only\n\n# K\n\nbody\n";
     let (rows, notice) = unresolved_of(
-        read_doc(raw, Some(vec![ReadSel::parse("K"), ReadSel::parse("^gone")]))
-            .expect("partial read serves"),
+        read_doc(
+            raw,
+            Some(vec![ReadSel::parse("K"), ReadSel::parse("^gone")]),
+        )
+        .expect("partial read serves"),
     );
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].reason, UnresolvedReason::NoMatch);
     assert!(rows[0].nearest.is_empty());
     assert!(
-        notice.expect("notice").contains("this page carries no block anchors"),
+        notice
+            .expect("notice")
+            .contains("this page carries no block anchors"),
         "the bare-page claim is now unconditionally true"
     );
 }
@@ -209,10 +238,16 @@ fn serialize_unconditionally_decode_tolerantly() {
         "empty is a served fact, not an omission: {json}"
     );
     let old_frame = json.replace(",\"unresolved\":[]", "");
-    assert!(!old_frame.contains("unresolved"), "the older frame lacks the key");
+    assert!(
+        !old_frame.contains("unresolved"),
+        "the older frame lacks the key"
+    );
     let decoded: ResponseBody = serde_json::from_str(&old_frame).expect("tolerant decode");
     let ResponseBody::Read { unresolved, .. } = decoded else {
         panic!("still a Read body");
     };
-    assert!(unresolved.is_empty(), "absent key decodes as the empty plane");
+    assert!(
+        unresolved.is_empty(),
+        "absent key decodes as the empty plane"
+    );
 }

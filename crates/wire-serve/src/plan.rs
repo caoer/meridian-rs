@@ -176,7 +176,13 @@ pub fn lower(
                 body,
                 rev,
             } => {
-                edits.push(lower_create(&idx, parent_hpath, title, body, rev.as_deref())?);
+                edits.push(lower_create(
+                    &idx,
+                    parent_hpath,
+                    title,
+                    body,
+                    rev.as_deref(),
+                )?);
             }
         }
     }
@@ -488,7 +494,10 @@ mod tests {
         let e = lower1(
             "# Memo\n\nline\n",
             PlanEdit::Append {
-                hpath: vec![HpathSeg { h: "Memo".into(), n: None }],
+                hpath: vec![HpathSeg {
+                    h: "Memo".into(),
+                    n: None,
+                }],
                 body: "added".into(),
                 rev: None,
             },
@@ -501,7 +510,10 @@ mod tests {
         let e = lower1(
             "# Memo\n\nline",
             PlanEdit::Append {
-                hpath: vec![HpathSeg { h: "Memo".into(), n: None }],
+                hpath: vec![HpathSeg {
+                    h: "Memo".into(),
+                    n: None,
+                }],
                 body: "added\n".into(),
                 rev: None,
             },
@@ -517,7 +529,10 @@ mod tests {
         let err = lower1(
             "# Tasks\n\n- [ ] one ^task1\n",
             PlanEdit::Match {
-                hpath: vec![HpathSeg { h: "^task1".into(), n: None }],
+                hpath: vec![HpathSeg {
+                    h: "^task1".into(),
+                    n: None,
+                }],
                 old: "one".into(),
                 new: "two".into(),
                 all: false,
@@ -544,7 +559,10 @@ mod tests {
         let err = lower1(
             "# Tasks\n\n- item ^t1\n",
             PlanEdit::Append {
-                hpath: vec![HpathSeg { h: "^t1".into(), n: None }],
+                hpath: vec![HpathSeg {
+                    h: "^t1".into(),
+                    n: None,
+                }],
                 body: "x".into(),
                 rev: None,
             },
@@ -564,7 +582,10 @@ mod tests {
         let err = lower1(
             "# A\n\nx\n",
             PlanEdit::Append {
-                hpath: vec![HpathSeg { h: "Ghost".into(), n: None }],
+                hpath: vec![HpathSeg {
+                    h: "Ghost".into(),
+                    n: None,
+                }],
                 body: "x".into(),
                 rev: None,
             },
@@ -605,7 +626,16 @@ mod tests {
         let e = lower1(
             "# A\n\nx\n\n## B\n\ny\n",
             PlanEdit::Create {
-                parent_hpath: vec![HpathSeg { h: "A".into(), n: None }, HpathSeg { h: "B".into(), n: None }],
+                parent_hpath: vec![
+                    HpathSeg {
+                        h: "A".into(),
+                        n: None,
+                    },
+                    HpathSeg {
+                        h: "B".into(),
+                        n: None,
+                    },
+                ],
                 title: "New Kid".into(),
                 body: "hello".into(),
                 rev: None,
@@ -632,7 +662,10 @@ mod tests {
         let e = lower1(
             raw,
             PlanEdit::Match {
-                hpath: vec![HpathSeg { h: "Todo".into(), n: None }],
+                hpath: vec![HpathSeg {
+                    h: "Todo".into(),
+                    n: None,
+                }],
                 old: "item".into(),
                 new: "task".into(),
                 all: true,
@@ -652,7 +685,10 @@ mod tests {
         let err = lower1(
             raw,
             PlanEdit::Match {
-                hpath: vec![HpathSeg { h: "Todo".into(), n: None }],
+                hpath: vec![HpathSeg {
+                    h: "Todo".into(),
+                    n: None,
+                }],
                 old: "ghost".into(),
                 new: "x".into(),
                 all: true,
@@ -673,7 +709,10 @@ mod tests {
         let err = lower1(
             raw,
             PlanEdit::ReplaceSection {
-                hpath: vec![HpathSeg { h: "Notes".into(), n: None }],
+                hpath: vec![HpathSeg {
+                    h: "Notes".into(),
+                    n: None,
+                }],
                 body: "new".into(),
                 rev: None,
             },
@@ -689,7 +728,10 @@ mod tests {
         let e = lower1(
             raw,
             PlanEdit::ReplaceSection {
-                hpath: vec![HpathSeg { h: "Notes".into(), n: None }],
+                hpath: vec![HpathSeg {
+                    h: "Notes".into(),
+                    n: None,
+                }],
                 body: "new".into(),
                 rev: Some("cafebabecafebabe".into()),
             },

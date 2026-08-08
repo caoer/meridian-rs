@@ -217,7 +217,10 @@ fn plan_edits_lowering_cannot_forge_a_lock() {
     let token = live_fingerprint(&root, "guide.md", "Guide/Leader's Guideline");
     let mut args = args_for("plan.md", Some("agent-mallory"), Vec::new(), None);
     args.plan_edits = vec![PlanEdit::Append {
-        hpath: vec![wire::HpathSeg { h: "Plan".into(), n: None }],
+        hpath: vec![wire::HpathSeg {
+            h: "Plan".into(),
+            n: None,
+        }],
         body: lock_block("guide", &["Guide", "Leader's Guideline"], &token),
         rev: None,
     }];

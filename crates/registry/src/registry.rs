@@ -799,8 +799,7 @@ mod engine_tests {
         // Arm the one-shot gate for the first rebuild pass (thread A).
         let (arrived_tx, arrived) = std::sync::mpsc::channel();
         let (release, release_rx) = std::sync::mpsc::channel();
-        *reg
-            .pause_before_insert
+        *reg.pause_before_insert
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = Some((arrived_tx, release_rx));
 
@@ -823,7 +822,9 @@ mod engine_tests {
         let v2 = reg.with_engine(&canonical, |e| e.unwrap().at_fingerprint.clone());
 
         // Release A: its build is from the older disk state.
-        release.send(()).expect("thread A parked on the release gate");
+        release
+            .send(())
+            .expect("thread A parked on the release gate");
         a.join().expect("thread A panicked").unwrap();
 
         let resident = reg.with_engine(&canonical, |e| e.unwrap().at_fingerprint.clone());

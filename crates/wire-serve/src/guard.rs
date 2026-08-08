@@ -288,10 +288,7 @@ fn plan_demands(doc: &model::Document, plan_edits: &[PlanEdit], out: &mut Vec<De
                     && rev.as_deref().is_none_or(str::is_empty)
                 {
                     out.push(Demand {
-                        subject: format!(
-                            "section \"{}\"",
-                            crate::display_hpath(parent_hpath)
-                        ),
+                        subject: format!("section \"{}\"", crate::display_hpath(parent_hpath)),
                         unmet: Unmet::NoGuard {
                             grain: Grain::Node,
                             slot: Slot::PlanCreateRev,
