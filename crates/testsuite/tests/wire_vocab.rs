@@ -24,6 +24,7 @@ fn error_codes_match_contract_v2() {
         (ErrorCode::AmbiguousRef, "ambiguous_ref"),
         (ErrorCode::RootMismatch, "root_mismatch"),
         (ErrorCode::RootUnknown, "root_unknown"),
+        (ErrorCode::CorpusRace, "corpus_race"),
     ];
     for (code, wire_str) in codes {
         assert_eq!(
