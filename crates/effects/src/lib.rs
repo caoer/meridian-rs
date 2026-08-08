@@ -850,7 +850,8 @@ impl std::fmt::Display for ReadFault {
 pub struct TocFacts {
     /// The page rev at read time.
     pub rev: String,
-    /// Frontmatter as read; absence is absence.
+    /// Frontmatter as read — canonical scalars: a stored quoted scalar serves
+    /// decoded (wire-contract § A.3); absence is absence.
     pub fm: BTreeMap<String, String>,
     /// The section map, in document order.
     pub toc: Vec<TocEntry>,

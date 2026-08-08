@@ -213,11 +213,8 @@ fn classify_block(cont: &[&str]) -> FmValue {
 
 /// yaml.v3 core-schema scalar outcomes for one unwrapped scalar token.
 fn classify_scalar(v: &str) -> FmValue {
-    if let Some(q) = v.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')) {
-        return FmValue::Str(q.replace("''", "'"));
-    }
-    if let Some(q) = v.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
-        return FmValue::Str(unescape_double(q));
+    if let Some(decoded) = unquote_scalar(v) {
+        return FmValue::Str(decoded);
     }
     match v {
         "" | "~" | "null" | "Null" | "NULL" => return FmValue::Null,
@@ -237,6 +234,46 @@ fn classify_scalar(v: &str) -> FmValue {
         return FmValue::Timestamp(v.to_string());
     }
     FmValue::Str(v.to_string())
+}
+
+/// The read seam's canonical scalar (wire-contract § A.3, 2026-08-07): a
+/// stored value that IS a quoted YAML scalar serves decoded — quote bytes are
+/// storage syntax, not value. Single quotes un-double (`''` → `'`); double
+/// quotes resolve the escape grammar ([`unescape_double`]). `None` when the
+/// stored form is not a quoted scalar — the caller serves those bytes
+/// verbatim (typed scalars and flow collections keep their spelling; nothing
+/// is type-coerced). The one grammar owns both directions: [`classify_scalar`]
+/// decodes through this, and the write seam's emission ([`quote_scalar`])
+/// produces exactly the shapes this accepts.
+#[must_use]
+pub fn unquote_scalar(stored: &str) -> Option<String> {
+    if let Some(q) = stored.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')) {
+        return Some(q.replace("''", "'"));
+    }
+    if let Some(q) = stored.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+        return Some(unescape_double(q));
+    }
+    None
+}
+
+/// The write seam's fleet-canonical emission: the double-quoted scalar with
+/// the three canonical escapes (`\\`, `\"`, `\n` — the `lock::push_quoted`
+/// table). One line in, one line out; a multi-line value never reaches here
+/// (`yaml_safe_value` refuses it first).
+#[must_use]
+pub fn quote_scalar(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            _ => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
 }
 
 fn unescape_double(s: &str) -> String {

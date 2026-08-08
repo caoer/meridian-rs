@@ -361,12 +361,18 @@ fn toc_entry(node: &Value) -> Option<TocEntry> {
 /// `k.trim().trim_matches(['"', '\''])`), so the split is on the first colon
 /// rather than on the key text. A block value spanning several lines comes back
 /// whole; only the line terminator is dropped.
+///
+/// The value serves as a CANONICAL scalar (wire-contract § A.3): a stored
+/// quoted scalar is decoded through the one grammar owner
+/// (`policy::defs::unquote_scalar`) — quote bytes are storage syntax, not
+/// value — and any other stored form passes verbatim.
 fn fm_value_of(line: &str) -> String {
     let rest = line
         .split_once(':')
         .map_or(line, |(_, value)| value)
         .trim_end_matches('\n');
-    rest.strip_prefix(' ').unwrap_or(rest).to_owned()
+    let rest = rest.strip_prefix(' ').unwrap_or(rest);
+    policy::defs::unquote_scalar(rest).unwrap_or_else(|| rest.to_owned())
 }
 
 #[cfg(test)]

@@ -319,6 +319,12 @@ fn read_anchor(f: &wire_map::facts::ReadFact) -> Option<wire::ReadAnchor> {
 /// off the same `fm_key` grain resolution the write plane compares against,
 /// so the served `prop_rev` and a later `if_node_rev` cannot be two
 /// derivations of one fact.
+///
+/// The value serves as a CANONICAL scalar: a stored quoted scalar is decoded
+/// through the one grammar owner ([`policy::defs::unquote_scalar`]) — quote
+/// bytes are storage syntax, not value — and any other stored form passes
+/// verbatim. The rev and span stay over the stored bytes; decoding never
+/// moves them.
 fn read_props(doc: &model::Document) -> Vec<wire::ReadProp> {
     let Some(map) = frontmatter_map(&doc.root) else {
         return Vec::new();
@@ -333,7 +339,7 @@ fn read_props(doc: &model::Document) -> Vec<wire::ReadProp> {
                 .expect("frontmatter map key resolves against its own document");
             wire::ReadProp {
                 key: key.clone(),
-                value: value.clone(),
+                value: policy::defs::unquote_scalar(value).unwrap_or_else(|| value.clone()),
                 span: Span(target.span.start as u64, target.span.end as u64),
                 prop_rev: NodeRev(target.node_rev.0),
             }
