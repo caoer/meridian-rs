@@ -313,7 +313,8 @@ fn is_yaml_timestamp(v: &str) -> bool {
 /// required-prop conformance check that the bare-null spelling refused, and
 /// `closed_at: ""` satisfied the terminal biconditional with no close time).
 ///
-/// This aligns the code with its own refusal text, which already reads
+/// RATIFIED by ZT, 2026-08-08 (relayed via 2c47b75e). It aligns the code with
+/// its own refusal text, which already reads
 /// *"missing or empty"*. The alternative — emitting a bare null instead — is
 /// closed: § A.6.3 forbids forging the type this string plane cannot express.
 ///
