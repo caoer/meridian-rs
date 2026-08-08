@@ -1242,7 +1242,7 @@ the line is the escape hatch the A.6.3b defect hid behind. The bytes are the
 contract; the round trip only proves the engine agrees with itself.
 
 **A.6.5 R4 binds the DEF plane too — the empty string is empty**
-*(ruling, 2026-08-08)*. A.6.3 makes every value-plane write door emit `key: ""`
+*(**RATIFIED** by ZT, 2026-08-08, relayed via `2c47b75e`)*. A.6.3 makes every value-plane write door emit `key: ""`
 for an empty value. The def plane reads the TYPED frontmatter value, where that
 lands as a string rather than the YAML null, so every emptiness predicate
 written against the null alone silently reads a released card as still set.
