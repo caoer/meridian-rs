@@ -645,7 +645,12 @@ fn plan_set_property(view: &DocView<'_>, e: &PlanEdit) -> Result<Vec<SpliceOp>, 
     for k in &view.fm {
         if k.key == *key {
             let mut repl = safe.clone().into_bytes();
-            if !val.is_empty()
+            // The guard tests the ENCODED value, never the caller's (§ A.6.3b).
+            // The two differ exactly where this law bites: the empty string
+            // encodes to `""`, so a guard on `val` would emit `note:""` over a
+            // stored bare `note:` line — bytes every external YAML parser
+            // reads as no property at all, voiding the whole block.
+            if !safe.is_empty()
                 && k.start == k.end
                 && k.start > 0
                 && view.raw.as_bytes()[k.start - 1] == b':'
@@ -659,11 +664,11 @@ fn plan_set_property(view: &DocView<'_>, e: &PlanEdit) -> Result<Vec<SpliceOp>, 
             }]);
         }
     }
-    let line = if val.is_empty() {
-        format!("{safe_key}:\n")
-    } else {
-        format!("{safe_key}: {safe}\n")
-    };
+    // One uniform line shape for a create (§ A.6.3b). The former empty-value
+    // case emitted a bare `{key}:\n` — the YAML null § A.6.3 says this plane
+    // cannot express, forged out of a caller's empty string. The encoder never
+    // returns empty bytes, so the uniform shape needs no special case.
+    let line = format!("{safe_key}: {safe}\n");
     Ok(vec![SpliceOp {
         start: view.fm_end,
         end: view.fm_end,
