@@ -111,6 +111,14 @@ pub fn load_doc(root: &fs::WorkspaceRoot, path: &Path) -> Result<model::Document
             std::io::ErrorKind::NotFound => {
                 let mut err = ErrorBody::new(ErrorCode::FileNotFound);
                 err.path = Some(path.clone());
+                err.message = Some(format!(
+                    "no file at {} under the workspace root — nothing was served and \
+                     nothing was written. Fix: check the workspace-relative spelling \
+                     (`results/f.md`, never absolute); a write to a missing path never \
+                     births it — birth is its own door (wire `create`; `mrd new` for \
+                     records).",
+                    path.0
+                ));
                 err
             }
             std::io::ErrorKind::InvalidData => {

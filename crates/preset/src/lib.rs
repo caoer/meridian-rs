@@ -187,8 +187,18 @@ impl RefusalReason {
 /// [`PresetError::Io`] when the page cannot be read; [`PresetError::NotADef`]
 /// when it carries no `type: def` frontmatter.
 pub fn load_def(root: &fs::WorkspaceRoot, def_path: &str) -> Result<PresetDef, PresetError> {
-    let doc = fs::load(root, std::path::Path::new(def_path))
-        .map_err(|e| PresetError::Io(e.to_string()))?;
+    let doc = fs::load(root, std::path::Path::new(def_path)).map_err(|e| {
+        PresetError::Io(if e.kind() == std::io::ErrorKind::NotFound {
+            format!(
+                "no def page at {def_path} — searched exactly one path: {}. A bare \
+                 kind resolves to `presets/<kind>.md` under the workspace root; a \
+                 token carrying `/` or a `.md` suffix names its def page verbatim.",
+                root.0.join(def_path).display()
+            )
+        } else {
+            format!("{def_path}: {e}")
+        })
+    })?;
     let ty = fm_scalar(&doc, "type");
     if ty.as_deref() != Some("def") {
         return Err(PresetError::NotADef {
