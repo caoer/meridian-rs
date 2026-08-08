@@ -21,6 +21,12 @@ pub struct WorkspaceEngine {
     pub index: model::CorpusIndex,
     /// The parsed documents, keyed by workspace-relative path.
     pub docs: BTreeMap<String, model::Document>,
+    /// Members in the hash domain that serve no spans/nodes (per-file UTF-8
+    /// degradation, node-rev-merkle-spec §3): workspace-relative path → the
+    /// condition. Their bytes are under `at_fingerprint` — integrity coverage
+    /// and span service are independent properties — and a read addressed to
+    /// one mints the per-file `invalid_utf8` naming it.
+    pub unserved: BTreeMap<String, String>,
     /// The corpus content hash the index + docs were built at — the reuse key.
     pub at_fingerprint: model::MerkleRoot,
 }

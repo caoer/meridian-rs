@@ -926,8 +926,7 @@ fn run(args: &[String], writing: bool) -> Result<(), Fail> {
         ))
     })?;
     let scanned = files.len();
-    let (_index, docs) =
-        fs::build_corpus(files).map_err(|e| Fail::tool(format!("cannot build the corpus: {e}")))?;
+    let (_index, docs, _unserved) = fs::build_corpus(files);
 
     // 1 · collect every declaration in the vault.
     let mut decls: Vec<Decl> = Vec::new();
