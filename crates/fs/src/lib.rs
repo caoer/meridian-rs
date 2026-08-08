@@ -329,18 +329,55 @@ pub fn domain_stat_signature(root: &WorkspaceRoot) -> io::Result<u64> {
         }
     };
     eat(&(rels.len() as u64).to_le_bytes());
-    for rel in &rels {
+    // The stat pass, parallel in ORDER-PRESERVING chunks: the fold's byte
+    // sequence is the signature's law, so each worker owns one contiguous
+    // chunk of the sorted `rels` and the merge keeps chunk order — the value
+    // is bit-identical to the serial fold. Measured at 2x scale (2026-08-08):
+    // once the walk fanned out, this loop was the sweep's remaining cost.
+    let stat_one = |rel: &PathBuf| -> io::Result<(std::ffi::OsString, u64, i64, i64, u64)> {
         let meta = fs::symlink_metadata(root.0.join(rel))?;
         let mtime = meta
             .modified()
             .ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
-        eat(rel.to_string_lossy().as_bytes());
-        eat(&mtime.to_le_bytes());
-        eat(&meta.ctime().to_le_bytes());
-        eat(&meta.ctime_nsec().to_le_bytes());
-        eat(&meta.len().to_le_bytes());
+        Ok((
+            rel.clone().into_os_string(),
+            mtime,
+            meta.ctime(),
+            meta.ctime_nsec(),
+            meta.len(),
+        ))
+    };
+    let workers = std::thread::available_parallelism().map_or(2, |n| n.get().clamp(2, 8));
+    type StatRow = (std::ffi::OsString, u64, i64, i64, u64);
+    let mut chunks: Vec<io::Result<Vec<StatRow>>> = Vec::new();
+    if rels.len() < 4096 {
+        // Small domains never see a thread.
+        chunks.push(rels.iter().map(stat_one).collect());
+    } else {
+        let chunk = rels.len().div_ceil(workers);
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = rels
+                .chunks(chunk)
+                .map(|c| scope.spawn(move || c.iter().map(&stat_one).collect::<io::Result<Vec<StatRow>>>()))
+                .collect();
+            for handle in handles {
+                match handle.join() {
+                    Ok(rows) => chunks.push(rows),
+                    Err(e) => std::panic::resume_unwind(e),
+                }
+            }
+        });
+    }
+    for chunk in chunks {
+        for (name, mtime, ctime, ctime_nsec, len) in chunk? {
+            eat(name.to_string_lossy().as_bytes());
+            eat(&mtime.to_le_bytes());
+            eat(&ctime.to_le_bytes());
+            eat(&ctime_nsec.to_le_bytes());
+            eat(&len.to_le_bytes());
+        }
     }
     Ok(fold)
 }
