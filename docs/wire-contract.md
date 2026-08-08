@@ -360,6 +360,15 @@ Frontmatter-plane write, dry (fm_key node = the full key line, computed: span `[
  "fingerprint_after":null,"dry":true,"verdicts":[]}}
 ```
 
+**YAML scalar normalization (2026-08-07, dogfood season 1, findings 1–2):**
+
+The frontmatter seam normalizes YAML scalars at both boundaries:
+
+- **Read:** the model's flat parse unquotes scalar values — matching outer double or single quotes are stripped (with escape processing), so `owner: "3f9a1c07"` reads as value `3f9a1c07`, never `"3f9a1c07"`. The wire props plane, the script plane's `card.fm[key]`, and every other surface that reads from the model see the semantic value.
+- **Write:** `PutAt::Upsert` (the `put(properties={…})` path) emits values in YAML-safe form — a value whose unquoted emit would be misinterpreted by a YAML parser (starts with `[`, `{`, contains `: `, is a YAML keyword, etc.) is double-quoted on disk. A value that is safe as a plain scalar emits unquoted. The quoting decision is the engine's, never the caller's: the caller passes the semantic value, the engine produces well-formed YAML.
+
+The `match` edit shape (§4.4) is unaffected — its `old`/`new` operate on raw span bytes, not parsed values.
+
 ### §4.5 resolve — the walk plane: where things are, never a handle
 
 `resolve` is **best-effort app-compatible walking**, two-stage: within the ruled grammar it walks the way the app walks — `parseLinktext` → stage 1 `getFirstLinkpathDest(linkpath, from)` (basename index, frontmatter aliases, case-insensitive, source-relative shortest-unambiguous, unresolved first-class) → stage 2 subpath walk (case-insensitive · first-match-wins on duplicates, silent · strictly-deeper-level · anywhere-after · generation-skipping). These empirical walk-law properties are carried verbatim as the **behavior spec**; their ruled **status** is a one-way compatibility floor (everything we mint and emit walks in the app), not a binding two-way parity law. The ruled grammar always wins: an input outside it (e.g. a `_`-bearing anchor, §2.4) refuses loudly (`bad_request`) — conforming behavior, never a deviation to ledger, because we never promised to reproduce the app's walk on inputs outside our own grammar. The `obsidian-compat@1.12.7` pack (§13.4) is the **regression fixture set** that pins the app's actual walk against version drift, alongside the six-probe walk law; hand-frozen resolution fixtures are dead.
@@ -948,11 +957,14 @@ deferral):**
 - Row shape `{key, value, span, prop_rev}`:
   - `key` — the top-level key, the same string the §2.1 `fm_key` form
     addresses; the read→set loop closes off this row.
-  - `value` — the key line's value as stored: the colon remainder,
-    whitespace-trimmed, quotes kept. A block value (indented continuation
-    lines) serves the key line's own remainder — empty when that line
-    carries none. The engine re-serializes nothing (no YAML library —
-    honest limit, stated not worked around).
+  - `value` — the key line's semantic value: the colon remainder,
+    whitespace-trimmed, YAML-scalar-unquoted. Matching outer double
+    quotes are stripped with escape processing (`\"` → `"`, `\\` → `\`,
+    `\n` → newline, `\t` → tab); matching outer single quotes are
+    stripped with `''` → `'`. An unquoted scalar is the value as-is.
+    A block value (indented continuation lines) serves the key line's
+    own remainder — empty when that line carries none. No YAML library
+    (no-serde crate law); unquoting is the closed set above.
   - `prop_rev` — the key's CAS token: blake3 over the full key grain span
     bytes (the key line plus its indented continuation lines), 16 hex —
     the SAME token `cat` on the `fm_key` node serves and `if_node_rev`
