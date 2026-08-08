@@ -788,9 +788,10 @@ mod tests {
         assert_eq!(text, "note: 'a: b'");
     }
 
-    /// Empty value keeps trailing space (`k: `, not model-upsert `k:`).
+    /// § A.6: the empty value encodes as the fleet-canonical quoted empty —
+    /// `k: ""`, never a bare `k: ` that reads as absent to the def checker.
     #[test]
-    fn property_empty_value_keeps_trailing_space() {
+    fn property_empty_value_lands_the_quoted_empty() {
         let edits = super::lower(
             &doc("---\nnote: x\n---\n# A\n\nx\n"),
             &[PlanEdit::SetProperty {
@@ -801,7 +802,7 @@ mod tests {
         )
         .expect("lowers");
         let (_, text) = put_text(&edits[0]);
-        assert_eq!(text, "note: ");
+        assert_eq!(text, "note: \"\"");
     }
 
     /// Duplicate headings refuse without an occurrence rather than silently

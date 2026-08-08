@@ -361,12 +361,17 @@ fn toc_entry(node: &Value) -> Option<TocEntry> {
 /// `k.trim().trim_matches(['"', '\''])`), so the split is on the first colon
 /// rather than on the key text. A block value spanning several lines comes back
 /// whole; only the line terminator is dropped.
+/// The `cat` `fm_key` content → the script-plane value: the colon remainder,
+/// whitespace-trimmed, then DECODED per § A.6 — quote bytes stripped,
+/// double-quoted escapes unescaped. The `cat` op itself stays raw (byte
+/// identity is the rev law); the decode happens at this value boundary.
 fn fm_value_of(line: &str) -> String {
     let rest = line
         .split_once(':')
         .map_or(line, |(_, value)| value)
         .trim_end_matches('\n');
-    rest.strip_prefix(' ').unwrap_or(rest).to_owned()
+    let trimmed = rest.strip_prefix(' ').unwrap_or(rest);
+    model::scalar::decode(trimmed)
 }
 
 #[cfg(test)]

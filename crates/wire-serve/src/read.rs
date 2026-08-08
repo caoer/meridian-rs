@@ -333,7 +333,10 @@ fn read_props(doc: &model::Document) -> Vec<wire::ReadProp> {
                 .expect("frontmatter map key resolves against its own document");
             wire::ReadProp {
                 key: key.clone(),
-                value: value.clone(),
+                // § A.6: the value contract is the DECODED scalar — quote
+                // bytes stripped, double-quoted escapes unescaped. The span
+                // and CAS token stay over the raw grain bytes.
+                value: model::scalar::decode(value),
                 span: Span(target.span.start as u64, target.span.end as u64),
                 prop_rev: NodeRev(target.node_rev.0),
             }

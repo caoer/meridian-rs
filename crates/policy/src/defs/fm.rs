@@ -144,6 +144,16 @@ fn classify_scalar_or_flow(v: &str) -> FmValue {
     classify_scalar(v)
 }
 
+/// § A.6 write-seam predicate: would the unquoted emit of this flow
+/// sequence parse as the nested class (list-in-list)? The I4 law's own
+/// judgment, exposed for the encode seam so the written bytes and the gate
+/// cannot drift — a value this says is nested MUST be quoted before it
+/// lands, or the gate refuses the write.
+#[must_use]
+pub fn flow_seq_is_nested(v: &str) -> bool {
+    matches!(classify_flow_seq(v), FmValue::Nested)
+}
+
 /// A flow sequence `[a, 'b', [c]]` — items split quote- and bracket-aware
 /// (one-level-deep law: an inner `[` or `{` is already the nested class).
 fn classify_flow_seq(v: &str) -> FmValue {

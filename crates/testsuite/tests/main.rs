@@ -22,3 +22,4 @@ mod walk_resolve;
 mod wire_vocab;
 mod wsfix_oracle;
 mod yaml_confinement;
+mod yaml_scalar_write;

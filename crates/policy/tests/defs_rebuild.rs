@@ -237,6 +237,96 @@ fn set_property_refuses_multiline_values_that_forge_frontmatter_keys() {
     );
 }
 
+/// § A.6 write seam: the encode rule. A value whose unquoted emit would not
+/// read back as the same plain string is quoted into the fleet-canonical
+/// spelling — the empty value and the flow-sequence-nested class
+/// double-quoted; one-level flow lists and plain scalars verbatim; an
+/// already-quoted spelling stored verbatim (the fleet-canonical form is
+/// always writable directly).
+#[test]
+fn yaml_safe_value_encodes_the_fleet_canonical_spelling() {
+    // The [[id]] case: unquoted it parses as a flow sequence containing a
+    // list — the nested class the I4 law refuses. The encode seam quotes it
+    // double-quoted, the fleet's own spelling.
+    assert_eq!(
+        policy::defs::yaml_safe_value("[[id]]"),
+        Ok("\"[[id]]\"".to_string())
+    );
+    assert_eq!(
+        policy::defs::yaml_safe_value("[[]]"),
+        Ok("\"[[]]\"".to_string())
+    );
+    assert_eq!(
+        policy::defs::yaml_safe_value("[a, [b]]"),
+        Ok("\"[a, [b]]\"".to_string())
+    );
+    // The empty value: the fleet-canonical quoted empty — a bare `key:` reads
+    // as absent to the def checker.
+    assert_eq!(policy::defs::yaml_safe_value(""), Ok("\"\"".to_string()));
+    // One-level flow lists stay verbatim — the fleet's own `tags: [a, b]`.
+    assert_eq!(policy::defs::yaml_safe_value("[a, b]"), Ok("[a, b]".to_string()));
+    assert_eq!(policy::defs::yaml_safe_value("[]"), Ok("[]".to_string()));
+    // Plain scalars pass verbatim.
+    assert_eq!(policy::defs::yaml_safe_value("doing"), Ok("doing".to_string()));
+    assert_eq!(
+        policy::defs::yaml_safe_value("3f9a1c07"),
+        Ok("3f9a1c07".to_string())
+    );
+    // An already-quoted spelling is stored verbatim — the fleet-canonical
+    // form is always writable directly.
+    assert_eq!(
+        policy::defs::yaml_safe_value("\"[[id]]\""),
+        Ok("\"[[id]]\"".to_string())
+    );
+    assert_eq!(
+        policy::defs::yaml_safe_value("'[[id]]'"),
+        Ok("'[[id]]'".to_string())
+    );
+    // The legacy Go-parity cases keep their single-quote spelling.
+    assert_eq!(
+        policy::defs::yaml_safe_value("review: pending"),
+        Ok("'review: pending'".to_string())
+    );
+    assert_eq!(
+        policy::defs::yaml_safe_value("{a: b}"),
+        Ok("'{a: b}'".to_string())
+    );
+}
+
+/// § A.6 write seam at the rebuild: a `set_property` of the `[[id]]`-shaped
+/// value lands the fleet-canonical double-quoted line, and the empty value
+/// lands the quoted empty — never a bare `key:`.
+#[test]
+fn set_property_lands_the_fleet_canonical_spelling() {
+    let cand = run(
+        DOC,
+        &[PlanEdit {
+            body: "[[id]]".into(),
+            ..edit("set_property", "reviewer")
+        }],
+    )
+    .expect("the [[id]]-shaped value rebuilds");
+    assert!(
+        cand.raw.contains("\nreviewer: \"[[id]]\"\n"),
+        "fleet-canonical double-quoted: {}",
+        cand.raw
+    );
+
+    let cand = run(
+        DOC,
+        &[PlanEdit {
+            body: String::new(),
+            ..edit("set_property", "owner")
+        }],
+    )
+    .expect("the empty value rebuilds");
+    assert!(
+        cand.raw.contains("\nowner: \"\"\n"),
+        "the quoted empty, never a bare key: {}",
+        cand.raw
+    );
+}
+
 /// Finding 5 / R5: the KEY half of the composed `{key}: {value}` line gets the
 /// same shape S4b gave the value — a fallible owner. `SafeKey`'s field is
 /// private, so the only way to obtain the spelling the composition accepts is

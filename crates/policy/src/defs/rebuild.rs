@@ -645,8 +645,10 @@ fn plan_set_property(view: &DocView<'_>, e: &PlanEdit) -> Result<Vec<SpliceOp>, 
     for k in &view.fm {
         if k.key == *key {
             let mut repl = safe.clone().into_bytes();
-            if !val.is_empty()
-                && k.start == k.end
+            // A bare key line (empty value span) needs the separator space
+            // even when the new value is the quoted empty — `owner: ""`,
+            // never `owner:""`.
+            if k.start == k.end
                 && k.start > 0
                 && view.raw.as_bytes()[k.start - 1] == b':'
             {
@@ -659,11 +661,7 @@ fn plan_set_property(view: &DocView<'_>, e: &PlanEdit) -> Result<Vec<SpliceOp>, 
             }]);
         }
     }
-    let line = if val.is_empty() {
-        format!("{safe_key}:\n")
-    } else {
-        format!("{safe_key}: {safe}\n")
-    };
+    let line = format!("{safe_key}: {safe}\n");
     Ok(vec![SpliceOp {
         start: view.fm_end,
         end: view.fm_end,
@@ -736,12 +734,20 @@ impl std::fmt::Display for MultiLineValue {
     }
 }
 
-/// Go `yamlSafeValue` (E2 finding 1): quote IFF the `k: <val>` probe ERRORS
-/// or decodes a MAP; everything that parses non-map passes VERBATIM — typed
-/// scalars, flow lists, and crucially list-of-list (`[[a, b]]`), which lands
-/// raw so the I4 nested-frontmatter law (not a shape check) judges it. The
-/// error class is approximated by its two live shapes: an unquoted mid-value
-/// `": "` (mapping in value position) and an unterminated leading quote.
+/// The write seam of the § A.6 frontmatter scalar law: encode the caller's
+/// value into the fleet-canonical spelling — a value whose unquoted emit
+/// would not read back as the same plain string is quoted.
+///
+/// The legacy Go `yamlSafeValue` (E2 finding 1) cases are retained
+/// byte-identically: quote IFF the `k: <val>` probe ERRORS or decodes a MAP —
+/// the error class approximated by its two live shapes, an unquoted mid-value
+/// `": "` (mapping in value position) and an unterminated leading quote —
+/// single-quoted. § A.6 adds the two fleet-canonical cases, double-quoted:
+/// the empty value (`""` — a bare `key:` reads as absent to the def checker)
+/// and a flow-sequence-shaped value whose flow-seq parse is the nested class
+/// (`[[id]]` — the unquoted emit would be refused by the I4 law). Everything
+/// else passes VERBATIM: typed scalars and one-level flow lists (`[a, b]`),
+/// which land raw so the I4 law (not a shape check) judges them.
 /// SHARED (U8b): the splice plan-lowering quotes `set_property` values through
 /// THIS predicate — single-owner discipline, so the `check_write` candidate and
 /// the written bytes cannot drift.
@@ -757,7 +763,7 @@ pub fn yaml_safe_value(val: &str) -> Result<String, MultiLineValue> {
         return Err(MultiLineValue);
     }
     if val.is_empty() {
-        return Ok(String::new());
+        return Ok("\"\"".to_string());
     }
     let map_shaped = val.starts_with('{');
     let unquoted = !val.starts_with(['\'', '"']);
@@ -767,7 +773,26 @@ pub fn yaml_safe_value(val: &str) -> Result<String, MultiLineValue> {
     if map_shaped || colon_space || unterminated_quote {
         return Ok(format!("'{}'", val.replace('\'', "''")));
     }
+    if unquoted && val.starts_with('[') && super::fm::flow_seq_is_nested(val) {
+        return Ok(double_quote(val));
+    }
     Ok(val.to_string())
+}
+
+/// The fleet-canonical double-quoted spelling (§ A.6): `"` and `\` escaped,
+/// everything else verbatim. The read seam's decode is the exact inverse.
+fn double_quote(v: &str) -> String {
+    let mut out = String::with_capacity(v.len() + 2);
+    out.push('"');
+    for c in v.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 fn plan_anchored(

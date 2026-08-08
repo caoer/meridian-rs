@@ -838,10 +838,11 @@ pub struct ReadProp {
     /// The top-level frontmatter key — the same string the §2.1 `fm_key`
     /// form addresses, so the read→set loop closes off this row.
     pub key: String,
-    /// The key line's value as stored: the colon remainder,
-    /// whitespace-trimmed, quotes kept. A block value (indented continuation
-    /// lines) serves the key line's own remainder — empty when that line
-    /// carries none; nothing is re-serialized (no YAML library).
+    /// The key line's value as stored, DECODED per § A.6: the colon
+    /// remainder, whitespace-trimmed, quote bytes stripped and double-quoted
+    /// escapes unescaped. A block value (indented continuation lines) serves
+    /// the key line's own remainder — empty when that line carries none;
+    /// nothing is re-serialized (no YAML library).
     pub value: String,
     /// The full key grain span (the key line plus its indented continuation
     /// lines), intra-file byte offsets, root-independent.
