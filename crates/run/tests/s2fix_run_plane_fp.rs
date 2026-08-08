@@ -253,18 +253,20 @@ fn a_body_landing_inside_a_fence_survives_r22() {
 #[test]
 fn a_set_field_value_is_not_a_claim_link_position() {
     let (_tmp, root) = workspace(PAGE);
+    // The caller passes the SEMANTIC value; the engine YAML-quotes it on disk
+    // (the value starts with `[`, which triggers quoting).
     apply(
         &root,
         &[set_field(
             "source",
-            &format!("\"[[guide#^goal{TOKEN}|G]]\""),
+            &format!("[[guide#^goal{TOKEN}|G]]"),
         )],
     )
     .expect("the field lands");
     let text = page_text(&root);
     assert!(
         text.contains(&format!("source: \"[[guide#^goal{TOKEN}|G]]\"")),
-        "the frontmatter value landed verbatim:\n{text}"
+        "the engine YAML-quoted the value (starts with '['):\n{text}"
     );
     assert!(
         syntax::fp_removals(&text).is_empty(),
@@ -329,64 +331,47 @@ fn source_is_frontmatter(root: &fs::WorkspaceRoot) -> bool {
     model::resolve(&doc, &model::Ref::FmKey("source".to_owned())).is_ok()
 }
 
-/// **The COMPOSED arm — the one origin with no payload to strip.**
-/// The token is not introduced — no payload carries it — and it is not
-/// retained — the pre-image has no claim at all, because frontmatter is not a
-/// claim-link position. This batch MAKES it a claim by un-masking bytes it does
-/// not supply, so there is nothing to remove and nobody to attribute it to: the
-/// only honest outcome is a loud refusal with nothing applied.
-///
-/// The three preconditions are asserted, not assumed, so this test cannot pass
-/// on a refusal that came from somewhere else: the pre-image carries no claim,
-/// the payload carries no token, and the bytes this batch would land DO carry
-/// one — the last measured by an independent splice, never by the strip's own
-/// candidate.
+/// **The COMPOSED arm — window closed by YAML quoting.**
+/// Before YAML scalar normalization (wire-contract §4.4), a `set_field` value
+/// containing `\n---\n` could close the frontmatter fence and expose a masked
+/// `@fp` token as a claim-link position. YAML quoting now escapes newlines
+/// in values, so the fence stays intact and the write commits — the attack
+/// surface is structurally closed.
 #[test]
-fn a_composed_claim_token_is_refused_with_nothing_applied() {
+fn a_composed_claim_token_is_prevented_by_yaml_quoting() {
     assert!(
         syntax::fp_removals(MASKED).is_empty(),
-        "precondition: the pre-image carries NO claim, so `retained` is not the honest origin"
+        "precondition: the pre-image carries NO claim"
     );
     assert!(
         !CLOSING_VALUE.contains('@'),
-        "precondition: the payload carries no token, so `introduced` is not the honest origin"
-    );
-    let landed = would_land(MASKED);
-    assert!(
-        !syntax::fp_removals(&landed).is_empty(),
-        "precondition: the bytes this batch would land DO carry a claim — that is the forgery:\n\
-         {landed}"
+        "precondition: the payload carries no token"
     );
 
     let (_tmp, root) = workspace(MASKED);
-    let refused = apply(&root, &[set_field("status", CLOSING_VALUE)]);
-    let Err(ExecError::FpClaim { cause, .. }) = &refused else {
-        panic!("a composed claim token must refuse: {refused:?}");
-    };
+    // With YAML quoting, the newline in CLOSING_VALUE is escaped — the fence
+    // stays intact, `source` stays a frontmatter key, the token stays masked.
+    apply(&root, &[set_field("status", CLOSING_VALUE)])
+        .expect("YAML quoting escapes the newline — the write commits");
+
     assert!(
-        cause.contains("COMPOSE"),
-        "the refusal must be the COMPOSED arm, not attribution or re-validation: {cause}"
+        source_is_frontmatter(&root),
+        "the fence did NOT close — source is still frontmatter"
     );
-    assert_eq!(
-        page_text(&root),
-        MASKED,
-        "a refusal applies nothing — the page is byte-identical"
+    let text = page_text(&root);
+    assert!(
+        syntax::fp_removals(&text).is_empty(),
+        "no claim tokens exposed:\n{text}"
     );
 }
 
-/// **The anti-vacuity control.**
-/// The refusal above is only evidence if the write it refuses is one this batch
-/// could really have made. Same page, same edit, same closing value — only the
-/// masked value is token-free — and the write COMMITS, proving the window is
-/// genuinely open: `source` stops being a frontmatter key and its link lands in
-/// a position where a token WOULD be a claim.
-///
-/// If `md.set_field` ever escapes newlines, or the fm-key span moves, or the
-/// dialect stops calling that position a claim link, the window closes — and
-/// then the test above would refuse for some other reason (or stop refusing)
-/// while still looking green. This fails LOUD instead.
+/// **The anti-vacuity control — window NOW CLOSED.**
+/// The fence-injection window that the test above guards is closed by YAML
+/// scalar quoting: `md.set_field` escapes newlines, so a value containing
+/// `\n---\n` produces a double-quoted scalar on disk. The `source` key
+/// stays inside the frontmatter fence. This test verifies the closure.
 #[test]
-fn the_frontmatter_close_window_is_genuinely_open() {
+fn the_frontmatter_close_window_is_closed_by_yaml_quoting() {
     let clean = MASKED.replace(TOKEN, "");
     assert!(
         !clean.contains('@'),
@@ -395,27 +380,16 @@ fn the_frontmatter_close_window_is_genuinely_open() {
     let (_tmp, root) = workspace(&clean);
     assert!(
         source_is_frontmatter(&root),
-        "before the write, the masked key IS frontmatter — that is what masks it"
+        "before the write, the masked key IS frontmatter"
     );
 
     apply(&root, &[set_field("status", CLOSING_VALUE)])
-        .expect("the same edit, token-free, commits — the window is open");
+        .expect("YAML quoting escapes the newline — the write commits");
 
-    let text = page_text(&root);
+    // The fence did NOT close — YAML quoting escaped the newline.
     assert!(
-        !source_is_frontmatter(&root),
-        "the fence closed above it: the key is body now, not frontmatter:\n{text}"
-    );
-    assert_eq!(
-        text,
-        would_land(&clean),
-        "the independent splice is what actually landed — the oracle is honest:\n{text}"
-    );
-    let decorated = text.replace("^goal|G", &format!("^goal{TOKEN}|G"));
-    assert!(
-        !syntax::fp_removals(&decorated).is_empty(),
-        "the un-masked line sits where a token IS a claim — the position the guard defends:\n\
-         {decorated}"
+        source_is_frontmatter(&root),
+        "YAML quoting keeps the fence intact — source is still frontmatter"
     );
 }
 

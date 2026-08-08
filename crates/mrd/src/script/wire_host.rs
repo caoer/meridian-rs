@@ -366,7 +366,46 @@ fn fm_value_of(line: &str) -> String {
         .split_once(':')
         .map_or(line, |(_, value)| value)
         .trim_end_matches('\n');
-    rest.strip_prefix(' ').unwrap_or(rest).to_owned()
+    let trimmed = rest.strip_prefix(' ').unwrap_or(rest);
+    yaml_unquote_scalar(trimmed)
+}
+
+/// Strip YAML scalar quoting — the same closed set as model's
+/// `yaml_unquote_scalar` (wire-contract §4.4 normalization note).
+/// Quoted-empty (`""`, `''`) is returned AS-IS (three-state contract).
+fn yaml_unquote_scalar(v: &str) -> String {
+    if let Some(inner) = v.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+        if inner.is_empty() {
+            return v.to_string();
+        }
+        let mut out = String::with_capacity(inner.len());
+        let mut chars = inner.chars();
+        while let Some(c) = chars.next() {
+            if c != '\\' {
+                out.push(c);
+                continue;
+            }
+            match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some('"') => out.push('"'),
+                Some('\\') => out.push('\\'),
+                Some(other) => {
+                    out.push('\\');
+                    out.push(other);
+                }
+                None => out.push('\\'),
+            }
+        }
+        return out;
+    }
+    if let Some(inner) = v.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')) {
+        if inner.is_empty() {
+            return v.to_string();
+        }
+        return inner.replace("''", "'");
+    }
+    v.to_string()
 }
 
 #[cfg(test)]

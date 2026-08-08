@@ -349,7 +349,9 @@ fn trim_terminator(bytes: &[u8], start: usize, mut end: usize) -> usize {
 /// Model's own flat-frontmatter parse (top-level `key: value`, column 0) — the
 /// keys authority, not `syntax`'s best-effort list. No serde/YAML crate
 /// (no-serde crate law). Key order is document order, first occurrence wins —
-/// the wire `keys` surface echoes it verbatim (B1 predicate 4).
+/// the wire `keys` surface echoes it verbatim (B1 predicate 4). Values are
+/// YAML-scalar-unquoted: matching outer quotes stripped, escape sequences
+/// resolved (wire-contract §4.4 normalization note).
 fn parse_frontmatter(raw: &str, span: &ByteSpan) -> YamlMap {
     let block = raw.get(span.clone()).unwrap_or_default();
     let mut pairs: Vec<(String, String)> = Vec::new();
@@ -368,11 +370,94 @@ fn parse_frontmatter(raw: &str, span: &ByteSpan) -> YamlMap {
                 continue;
             }
             if pairs.iter().all(|(k, _)| *k != key) {
-                pairs.push((key, line[colon + 1..].trim().to_string()));
+                let raw_value = line[colon + 1..].trim();
+                pairs.push((key, yaml_unquote_scalar(raw_value)));
             }
         }
     }
     YamlMap(pairs)
+}
+
+/// Strip YAML scalar quoting from a value: matching outer double quotes with
+/// escape processing, matching outer single quotes with `''` → `'`, or the
+/// value as-is when unquoted. No YAML library (no-serde crate law).
+///
+/// Quoted-empty (`""`, `''`) is returned AS-IS — it must stay distinct from
+/// bare-key null (empty string) for the three-state fingerprinting contract
+/// (absent · null · empty-string).
+fn yaml_unquote_scalar(v: &str) -> String {
+    if let Some(inner) = v.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+        if inner.is_empty() {
+            return v.to_string();
+        }
+        let mut out = String::with_capacity(inner.len());
+        let mut chars = inner.chars();
+        while let Some(c) = chars.next() {
+            if c != '\\' {
+                out.push(c);
+                continue;
+            }
+            match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some('"') => out.push('"'),
+                Some('\\') => out.push('\\'),
+                Some(other) => {
+                    out.push('\\');
+                    out.push(other);
+                }
+                None => out.push('\\'),
+            }
+        }
+        return out;
+    }
+    if let Some(inner) = v.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')) {
+        if inner.is_empty() {
+            return v.to_string();
+        }
+        return inner.replace("''", "'");
+    }
+    v.to_string()
+}
+
+/// Whether a YAML plain scalar would be misinterpreted — i.e. a value that
+/// needs double-quoting to survive a round-trip through any YAML 1.2 parser.
+/// The fleet uses `serde_yaml` (Rust) and `yaml.v3` (Go), both YAML 1.2 core
+/// schema: `yes`/`no`/`on`/`off` are plain strings, not booleans.
+fn needs_yaml_quoting(value: &str) -> bool {
+    value.is_empty()
+        || value.starts_with([
+            '[', '{', ']', '}', '"', '\'', '&', '*', '!', '|', '>', '%', '@', '`', ',', '#',
+        ])
+        || value.contains(": ")
+        || value.contains(" #")
+        || value.contains('\n')
+        || matches!(
+            value,
+            "~" | "null" | "Null" | "NULL" | "true" | "True" | "TRUE" | "false" | "False"
+                | "FALSE"
+        )
+}
+
+/// Emit a value in YAML-safe scalar form: double-quoted when the unquoted
+/// form would be misinterpreted, unquoted otherwise. No YAML library.
+fn yaml_quote_scalar(value: &str) -> String {
+    if !needs_yaml_quoting(value) {
+        return value.to_string();
+    }
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for c in value.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// Map a leaf dialect construct to its model node kind. `Heading`/`Frontmatter`
@@ -788,7 +873,8 @@ struct FmUpsertPlan {
 ///   insertion point's rev.
 /// - no frontmatter → synthesize `---\n{key}: {value}\n---\n` at byte 0.
 fn plan_fm_upsert(doc: &Document, key: &str, value: &str) -> FmUpsertPlan {
-    let line = format!("{key}: {value}");
+    let quoted = yaml_quote_scalar(value);
+    let line = format!("{key}: {quoted}");
     // key present → replace the whole key line (== `at:all` on the fm_key leaf).
     if let Ok(existing) = resolve_fm_key_resolved(doc, key) {
         return FmUpsertPlan {
@@ -2173,11 +2259,12 @@ mod tests {
         let out = apply_validated(&doc.raw, &vb);
         let new_doc = build(out.clone(), syntax::parse(&out));
 
-        // `inputs` is now the intended scalar — no orphaned block items.
+        // `inputs` is now the intended scalar — the `[` triggers YAML quoting,
+        // so the value is double-quoted on disk. No orphaned block items.
         let inputs = resolve(&new_doc, &Ref::FmKey("inputs".to_string())).expect("inputs after");
         assert_eq!(
             &new_doc.raw[inputs.span.clone()],
-            "inputs: [design-1, design-2]"
+            "inputs: \"[design-1, design-2]\""
         );
         for orphan in [
             "results/round2/design-1.md@d8536666b42dc8fd",
@@ -2201,7 +2288,7 @@ mod tests {
             let r = resolve(&new_doc, &Ref::FmKey(k.to_string())).expect(k);
             assert_eq!(&new_doc.raw[r.span.clone()], v, "sibling {k} corrupted");
         }
-        let honest = blake3::hash(b"inputs: [design-1, design-2]")
+        let honest = blake3::hash(b"inputs: \"[design-1, design-2]\"")
             .to_hex()
             .as_str()[..16]
             .to_string();
@@ -3134,5 +3221,91 @@ mod tests {
             write_uleb128(&mut out, *value);
             assert_eq!(&out, want, "uleb128({value})");
         }
+    }
+
+    // ---- YAML scalar normalization (bakeoff-yaml) negative proofs ----
+
+    /// **READ negative proof:** a double-quoted frontmatter value reads back
+    /// WITHOUT quote bytes. Before the fix (base `efc9f826`), the value was the
+    /// raw `"3f9a1c07"` (length 10); after the fix it is `3f9a1c07` (length 8).
+    #[test]
+    fn yaml_read_unquotes_double_quoted_scalar() {
+        let src = "---\nowner: \"3f9a1c07\"\nstatus: todo\n---\n# Body\n";
+        let doc = build(src.to_string(), syntax::parse(src));
+        let map = match &doc.root.children[0].kind {
+            NodeKind::Frontmatter { map } => map,
+            _ => panic!("expected frontmatter"),
+        };
+        let owner = map.0.iter().find(|(k, _)| k == "owner").unwrap();
+        assert_eq!(owner.1, "3f9a1c07", "quoted value must be unquoted");
+        assert_eq!(owner.1.len(), 8, "no quote bytes in the value");
+        let status = map.0.iter().find(|(k, _)| k == "status").unwrap();
+        assert_eq!(status.1, "todo", "unquoted value unchanged");
+    }
+
+    /// **WRITE negative proof:** a `PutAt::Upsert` of a value starting with `[`
+    /// emits a double-quoted scalar on disk (the YAML-safe form). Before the fix
+    /// (base `efc9f826`), the unquoted emit made `[[id]]` a YAML flow sequence,
+    /// and the conformance gate refused it as nested frontmatter.
+    #[test]
+    fn yaml_write_quotes_bracket_value() {
+        let src = "---\nstatus: todo\n---\n# Body\n";
+        let doc = build(src.to_string(), syntax::parse(src));
+        let b = batch(vec![put_edit(
+            Ref::FmKey("reviewer".to_string()),
+            PutAt::Upsert,
+            "[[agent-id]]",
+        )]);
+        let SpliceVerdict::Validated(vb) = validate_batch(&doc, None, &b, None) else {
+            panic!("upsert of a bracket value must validate, not refuse");
+        };
+        let out = apply_validated(&doc.raw, &vb);
+        assert!(
+            out.contains("reviewer: \"[[agent-id]]\""),
+            "bracket value must be double-quoted on disk: {out}"
+        );
+        let new_doc = build(out.clone(), syntax::parse(&out));
+        let map = match &new_doc.root.children[0].kind {
+            NodeKind::Frontmatter { map } => map,
+            _ => panic!("expected frontmatter"),
+        };
+        let reviewer = map.0.iter().find(|(k, _)| k == "reviewer").unwrap();
+        assert_eq!(
+            reviewer.1, "[[agent-id]]",
+            "round-trip: quoted value reads back unquoted"
+        );
+    }
+
+    /// YAML scalar normalization: single-quoted values are unquoted, and escape
+    /// sequences in double-quoted values are resolved.
+    #[test]
+    fn yaml_unquote_scalar_handles_escapes() {
+        assert_eq!(yaml_unquote_scalar("\"hello world\""), "hello world");
+        assert_eq!(yaml_unquote_scalar("'hello world'"), "hello world");
+        assert_eq!(yaml_unquote_scalar("\"it\\\"s\""), "it\"s");
+        assert_eq!(yaml_unquote_scalar("'it''s'"), "it's");
+        assert_eq!(yaml_unquote_scalar("\"tab\\there\""), "tab\there");
+        assert_eq!(yaml_unquote_scalar("plain"), "plain");
+        // Quoted-empty is preserved (three-state fingerprinting contract).
+        assert_eq!(yaml_unquote_scalar("\"\""), "\"\"");
+        assert_eq!(yaml_unquote_scalar("''"), "''");
+    }
+
+    /// YAML scalar quoting: values that would be misinterpreted are
+    /// double-quoted; safe values pass through.
+    #[test]
+    fn yaml_quote_scalar_covers_dangerous_values() {
+        assert_eq!(yaml_quote_scalar("plain"), "plain");
+        assert_eq!(yaml_quote_scalar("3f9a1c07"), "3f9a1c07");
+        assert_eq!(yaml_quote_scalar("[[id]]"), "\"[[id]]\"");
+        assert_eq!(yaml_quote_scalar("{a: b}"), "\"{a: b}\"");
+        assert_eq!(yaml_quote_scalar(""), "\"\"");
+        assert_eq!(yaml_quote_scalar("null"), "\"null\"");
+        assert_eq!(yaml_quote_scalar("true"), "\"true\"");
+        assert_eq!(yaml_quote_scalar("val: ue"), "\"val: ue\"");
+        assert_eq!(yaml_quote_scalar("val #comment"), "\"val #comment\"");
+        // yes/no are plain strings in YAML 1.2.
+        assert_eq!(yaml_quote_scalar("yes"), "yes");
+        assert_eq!(yaml_quote_scalar("done"), "done");
     }
 }
