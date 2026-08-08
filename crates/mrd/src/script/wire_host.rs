@@ -355,18 +355,23 @@ fn toc_entry(node: &Value) -> Option<TocEntry> {
 }
 
 /// The value on a frontmatter key line — the inverse of the server's own
-/// compose (`model::PutAt::Upsert`: "the server composes `{key}: {value}`").
+/// compose (`model::PutAt::Upsert`: "the server composes `{key}: {value}`"),
+/// decoded through the § A.3 scalar normalization (`model::fm_scalar::decode`)
+/// so `card.fm[k]` serves the value, never its quote bytes (run-plane.md,
+/// amended 2026-08-07).
 ///
 /// The key may be quoted on disk (the resolver matches
 /// `k.trim().trim_matches(['"', '\''])`), so the split is on the first colon
 /// rather than on the key text. A block value spanning several lines comes back
-/// whole; only the line terminator is dropped.
+/// whole and undecoded (a multi-line grain is not a scalar); only the line
+/// terminator is dropped.
 fn fm_value_of(line: &str) -> String {
     let rest = line
         .split_once(':')
         .map_or(line, |(_, value)| value)
         .trim_end_matches('\n');
-    rest.strip_prefix(' ').unwrap_or(rest).to_owned()
+    let rest = rest.strip_prefix(' ').unwrap_or(rest);
+    model::fm_scalar::decode(rest)
 }
 
 #[cfg(test)]
@@ -541,6 +546,76 @@ mod tests {
         assert_eq!(
             moving.calls, 4,
             "the bracket is the closing op itself — it costs no extra round trip"
+        );
+    }
+
+    /// **The `fm` plane serves DECODED scalars** — the § A.3 frontmatter
+    /// scalar normalization law on the script plane (run-plane.md, amended
+    /// 2026-08-07). The door serves the season-1 finding-1 table verbatim:
+    /// on the unfixed base `owner: ""` reached a script as two quote bytes
+    /// and every comparison against the unquoted form silently failed.
+    #[test]
+    fn fm_values_are_decoded_scalars_not_quote_bytes() {
+        /// A still door whose page carries the fleet's quoting convention.
+        struct Quoted;
+        impl Door for Quoted {
+            fn call(&mut self, request: &Value) -> io::Result<String> {
+                let op = request["op"].as_str().expect("every request names an op");
+                Ok(match op {
+                    "toc" => json!({"ok": true, "body": {
+                        "path": PAGE, "file_rev": REV, "root": "b3:00",
+                        "nodes": [
+                            {"kind": "frontmatter", "span": [0, 64], "node_rev": "26796ebe",
+                             "text_prefix_16b": "---\n",
+                             "keys": ["owner", "link", "status"]},
+                        ],
+                    }}),
+                    "cat" => {
+                        let key = request["sec"]["fm_key"].as_str().expect("cat by fm_key");
+                        let content = match key {
+                            "owner" => "owner: \"\"\n",
+                            "link" => "link: \"[[1ed98864]]\"\n",
+                            "status" => "status: doing\n",
+                            other => panic!("unexpected key {other}"),
+                        };
+                        json!({"ok": true, "body": {
+                            "span": [4, 12], "node_rev": "33d5b0e1", "content": content,
+                        }})
+                    }
+                    "read" => json!({"ok": true, "body": {
+                        "path": PAGE, "file_rev": REV,
+                        "root": "b3:00", "words_total": 41,
+                        "toc": [], "anchors": [], "rendered_text": "",
+                    }}),
+                    other => panic!("the composed read asked for an op it must not know: {other}"),
+                }
+                .to_string())
+            }
+        }
+
+        let mut door = Quoted;
+        let facts = {
+            let mut host = WireHost::new(
+                &mut door,
+                "zt".to_owned(),
+                Instant::now() + Duration::from_secs(30),
+            );
+            host.toc(PAGE).expect("the composition answers")
+        };
+        assert_eq!(
+            facts.fm.get("owner").map(String::as_str),
+            Some(""),
+            "`owner: \"\"` is the empty string, length 0 — not two quote bytes"
+        );
+        assert_eq!(
+            facts.fm.get("link").map(String::as_str),
+            Some("[[1ed98864]]"),
+            "the fleet-canonical quoted value reads back without quote bytes"
+        );
+        assert_eq!(
+            facts.fm.get("status").map(String::as_str),
+            Some("doing"),
+            "unquoted scalars are unchanged"
         );
     }
 

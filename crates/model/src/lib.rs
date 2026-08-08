@@ -21,6 +21,7 @@ use addr::{Addr, AddrError, MountName, MountSet};
 
 pub mod delta;
 pub mod fingerprint;
+pub mod fm_scalar;
 pub mod gotext;
 pub mod selector;
 pub mod walk;
@@ -787,6 +788,12 @@ struct FmUpsertPlan {
 ///   opening `---\n` fence (first-key position); before-rev is the empty
 ///   insertion point's rev.
 /// - no frontmatter → synthesize `---\n{key}: {value}\n---\n` at byte 0.
+///
+/// RAW-GRAIN kernel: `value` lands verbatim — the run plane's `md.set_field`
+/// writes whole-value grains through here and its spelling must land as sent.
+/// The § A.3 scalar encoder ([`fm_scalar::encode`]) guards the WIRE property
+/// doors above this kernel (`wire-serve`'s upsert lowering and the
+/// `set_property` plan lowering), never this compose.
 fn plan_fm_upsert(doc: &Document, key: &str, value: &str) -> FmUpsertPlan {
     let line = format!("{key}: {value}");
     // key present → replace the whole key line (== `at:all` on the fm_key leaf).

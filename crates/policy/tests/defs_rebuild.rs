@@ -198,8 +198,8 @@ fn set_property_refuses_multiline_values_that_forge_frontmatter_keys() {
         "prop-injection-forged-key",
     );
 
-    // The quoted spelling: a mid-value ": " DOES trigger the single quote, and
-    // the quote leaks across the newline — refused for the same reason.
+    // The quoted spelling: a mid-value ": " DOES trigger the quote wrapper,
+    // and the quote leaks across the newline — refused for the same reason.
     assert_err(
         run(
             DOC,
@@ -226,14 +226,72 @@ fn set_property_refuses_multiline_values_that_forge_frontmatter_keys() {
     );
 
     // The predicate itself is the owner: no caller can mint a quoted value for
-    // a multi-line input, and single-line values still quote unchanged.
+    // a multi-line input, and single-line values still quote — double-quoted,
+    // the fleet-canonical emit (§ A.3 scalar normalization, 2026-08-07).
     assert_eq!(
         policy::defs::yaml_safe_value("seeded\ninjected:pwned"),
         Err(policy::defs::MultiLineValue)
     );
     assert_eq!(
         policy::defs::yaml_safe_value("review: pending"),
-        Ok("'review: pending'".to_string())
+        Ok("\"review: pending\"".to_string())
+    );
+}
+
+/// Frontmatter scalar normalization (wire-contract § A.3, docs-first
+/// 2026-08-07; dogfood-season-1 finding 2, R43): the ONE write owner emits
+/// the fleet-canonical form. An `[[id]]`-shaped value double-quotes instead
+/// of landing raw for the nested-frontmatter law to refuse; the empty string
+/// emits the R4 explicit-empty `""`; plain and typed scalars keep today's
+/// bytes; the multi-line refusal is unchanged.
+#[test]
+fn scalar_normalization_write_owner_emits_fleet_canonical_quoting() {
+    let quote = |s: &str| Ok(s.to_string());
+    // The measured season-1 write symptom: the fleet's own owner value.
+    assert_eq!(
+        policy::defs::yaml_safe_value("[[b1892b5a]]"),
+        quote("\"[[b1892b5a]]\""),
+        "an [[id]]-shaped value quotes — the nested refusal is unreachable from a flat string"
+    );
+    assert_eq!(
+        policy::defs::yaml_safe_value(""),
+        quote("\"\""),
+        "explicit empty (R4 three-states), what `ccc-cli task claim` writes on release"
+    );
+    assert_eq!(
+        policy::defs::yaml_safe_value("review: pending"),
+        quote("\"review: pending\""),
+        "colon-space quotes double — fleet-canonical, superseding the single-quote emit"
+    );
+    assert_eq!(
+        policy::defs::yaml_safe_value("\"pre\""),
+        quote("\"\\\"pre\\\"\""),
+        "a quote-led value is preserved by escaping, not served back stripped"
+    );
+    assert_eq!(
+        policy::defs::yaml_safe_value("it's"),
+        quote("it's"),
+        "an interior apostrophe needs no quoting"
+    );
+    assert_eq!(
+        policy::defs::yaml_safe_value("[a, b]"),
+        quote("[a, b]"),
+        "a one-level flow list still lands as a real list"
+    );
+    assert_eq!(
+        policy::defs::yaml_safe_value("doing"),
+        quote("doing"),
+        "plain scalars keep today's bytes"
+    );
+    assert_eq!(
+        policy::defs::yaml_safe_value("2026-08-07"),
+        quote("2026-08-07"),
+        "typed scalars (dates, ints, bools) keep today's bytes"
+    );
+    assert_eq!(
+        policy::defs::yaml_safe_value("a\nb"),
+        Err(policy::defs::MultiLineValue),
+        "the newline refusal is unchanged"
     );
 }
 
@@ -377,7 +435,9 @@ fn rebuild_candidate_bytes_match_go_plan_semantics() {
         cand.raw
     );
 
-    // set_property: unsafe value gets single-quoted (yamlSafeValue).
+    // set_property: unsafe value gets double-quoted — the fleet-canonical
+    // emit (wire-contract § A.3 scalar normalization, 2026-08-07, superseding
+    // the Go single-quote spelling).
     let cand = run(
         DOC,
         &[PlanEdit {
@@ -387,8 +447,8 @@ fn rebuild_candidate_bytes_match_go_plan_semantics() {
     )
     .expect("quoted prop rebuilds");
     assert!(
-        cand.raw.contains("\nstatus: 'review: pending'\n"),
-        "yamlSafeValue quoting: {}",
+        cand.raw.contains("\nstatus: \"review: pending\"\n"),
+        "scalar-normalization quoting: {}",
         cand.raw
     );
 

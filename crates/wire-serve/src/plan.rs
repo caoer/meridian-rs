@@ -772,7 +772,9 @@ mod tests {
         );
     }
 
-    /// Values with `: ` quote through shared `yaml_safe_value` predicate.
+    /// Values with `: ` quote through the shared `yaml_safe_value` predicate —
+    /// double-quoted, the fleet-canonical emit (wire-contract § A.3 scalar
+    /// normalization, 2026-08-07).
     #[test]
     fn property_value_quotes_through_shared_predicate() {
         let edits = super::lower(
@@ -785,12 +787,14 @@ mod tests {
         )
         .expect("lowers");
         let (_, text) = put_text(&edits[0]);
-        assert_eq!(text, "note: 'a: b'");
+        assert_eq!(text, "note: \"a: b\"");
     }
 
-    /// Empty value keeps trailing space (`k: `, not model-upsert `k:`).
+    /// The empty value emits the R4 explicit-empty `""` — the form
+    /// `ccc-cli task claim` writes on release (§ A.3 scalar normalization),
+    /// never the bare null spelling and never a bare trailing space.
     #[test]
-    fn property_empty_value_keeps_trailing_space() {
+    fn property_empty_value_emits_explicit_empty() {
         let edits = super::lower(
             &doc("---\nnote: x\n---\n# A\n\nx\n"),
             &[PlanEdit::SetProperty {
@@ -801,7 +805,7 @@ mod tests {
         )
         .expect("lowers");
         let (_, text) = put_text(&edits[0]);
-        assert_eq!(text, "note: ");
+        assert_eq!(text, "note: \"\"");
     }
 
     /// Duplicate headings refuse without an occurrence rather than silently

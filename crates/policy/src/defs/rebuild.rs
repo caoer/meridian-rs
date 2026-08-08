@@ -645,7 +645,7 @@ fn plan_set_property(view: &DocView<'_>, e: &PlanEdit) -> Result<Vec<SpliceOp>, 
     for k in &view.fm {
         if k.key == *key {
             let mut repl = safe.clone().into_bytes();
-            if !val.is_empty()
+            if !safe.is_empty()
                 && k.start == k.end
                 && k.start > 0
                 && view.raw.as_bytes()[k.start - 1] == b':'
@@ -659,11 +659,9 @@ fn plan_set_property(view: &DocView<'_>, e: &PlanEdit) -> Result<Vec<SpliceOp>, 
             }]);
         }
     }
-    let line = if val.is_empty() {
-        format!("{safe_key}:\n")
-    } else {
-        format!("{safe_key}: {safe}\n")
-    };
+    // The encoder never returns empty bytes (the empty string emits `""`),
+    // so a create is always the one uniform line shape.
+    let line = format!("{safe_key}: {safe}\n");
     Ok(vec![SpliceOp {
         start: view.fm_end,
         end: view.fm_end,
@@ -736,38 +734,31 @@ impl std::fmt::Display for MultiLineValue {
     }
 }
 
-/// Go `yamlSafeValue` (E2 finding 1): quote IFF the `k: <val>` probe ERRORS
-/// or decodes a MAP; everything that parses non-map passes VERBATIM — typed
-/// scalars, flow lists, and crucially list-of-list (`[[a, b]]`), which lands
-/// raw so the I4 nested-frontmatter law (not a shape check) judges it. The
-/// error class is approximated by its two live shapes: an unquoted mid-value
-/// `": "` (mapping in value position) and an unterminated leading quote.
+/// The `set_property` value half of the composed `{key}: {value}` line — the
+/// single-line gate over the ONE scalar encoder (`model::fm_scalar::encode`,
+/// wire-contract § A.3 frontmatter scalar normalization, 2026-08-07). The
+/// encoder emits the fleet-canonical form: plain round-trippable scalars
+/// verbatim (typed scalars, flow lists), and double-quoted with `\"`/`\\`
+/// escaping for the classes whose plain emit would misread or refuse —
+/// crucially list-of-list (`[[a, b]]`), which previously landed raw for the
+/// I4 nested-frontmatter law to refuse, misattributing the nesting to the
+/// caller's flat string (dogfood-season-1 finding 2, R43).
 /// SHARED (U8b): the splice plan-lowering quotes `set_property` values through
 /// THIS predicate — single-owner discipline, so the `check_write` candidate and
-/// the written bytes cannot drift.
+/// the written bytes cannot drift. The native `put{at:"upsert"}` door reaches
+/// the same encoder through `plan_fm_upsert`, so the two write doors cannot
+/// drift either.
 ///
 /// # Errors
 /// `MultiLineValue` when the value carries a `\n`/`\r` (D11): the server writes
-/// `{key}: {value}`, and a single-quoted YAML scalar CANNOT escape a raw
-/// newline — an escaped-scalar approach leaks, so a multi-line value is refused,
-/// never sanitized. Fallibility is the guard: no caller can mint a quoted value
-/// without passing it.
+/// `{key}: {value}`, one line; a multi-line value is refused, never sanitized.
+/// Fallibility is the guard: no caller can mint a quoted value without passing
+/// it.
 pub fn yaml_safe_value(val: &str) -> Result<String, MultiLineValue> {
     if val.contains(['\n', '\r']) {
         return Err(MultiLineValue);
     }
-    if val.is_empty() {
-        return Ok(String::new());
-    }
-    let map_shaped = val.starts_with('{');
-    let unquoted = !val.starts_with(['\'', '"']);
-    let colon_space = unquoted && val.contains(": ");
-    let unterminated_quote = (val.starts_with('\'') && (val.len() < 2 || !val.ends_with('\'')))
-        || (val.starts_with('"') && (val.len() < 2 || !val.ends_with('"')));
-    if map_shaped || colon_space || unterminated_quote {
-        return Ok(format!("'{}'", val.replace('\'', "''")));
-    }
-    Ok(val.to_string())
+    Ok(model::fm_scalar::encode(val))
 }
 
 fn plan_anchored(

@@ -2782,6 +2782,8 @@ fn model_edits_and_before_facts(
                 ));
             }
             model::fm_upsert_before(doc, key)
+            // The value itself is encoded below, at the lowering — this arm
+            // only synthesizes the BEFORE fact.
         } else {
             model::resolve(doc, &target).map_err(|e| {
                 Box::new(match e {
@@ -2807,7 +2809,17 @@ fn model_edits_and_before_facts(
                         PutAt::End => model::PutAt::End,
                         PutAt::Upsert => model::PutAt::Upsert,
                     },
-                    text: text.clone(),
+                    // The wire upsert door is a VALUE-plane door: the caller's
+                    // string passes through the ONE scalar encoder
+                    // (wire-contract § A.3), so `[[x]]` lands `"[[x]]"` and the
+                    // nested-frontmatter refusal is unreachable from a flat
+                    // string. The model kernel below stays raw-grain — the run
+                    // plane's `md.set_field` rides it verbatim.
+                    text: if matches!(at, PutAt::Upsert) {
+                        model::fm_scalar::encode(text)
+                    } else {
+                        text.clone()
+                    },
                 },
             },
             if_node_rev: edit
