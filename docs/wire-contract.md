@@ -948,10 +948,20 @@ deferral):**
 - Row shape `{key, value, span, prop_rev}`:
   - `key` — the top-level key, the same string the §2.1 `fm_key` form
     addresses; the read→set loop closes off this row.
-  - `value` — the key line's value as stored: the colon remainder,
-    whitespace-trimmed, quotes kept. A block value (indented continuation
-    lines) serves the key line's own remainder — empty when that line
-    carries none. The engine re-serializes nothing (no YAML library —
+  - `value` — the key line's value as a **canonical scalar** *(amended
+    2026-08-07, dogfood season-1 finding 1 — supersedes the original
+    "quotes kept" wording)*: a stored value that IS a quoted YAML scalar
+    (single- or double-quoted) serves **decoded** — quotes and escapes
+    resolved by the one scalar-grammar owner (`policy::defs::fm`). Any
+    other stored form serves verbatim: typed scalars, flow collections,
+    and a block value's key-line remainder (empty when the key line
+    carries none) are unchanged. Quote bytes are storage syntax, not
+    value — the fleet quotes by convention (`owner: "[[id]]"`), and a
+    comparison against quote-wrapped bytes fails silently. A bare value
+    and a quoted-empty both serve the empty string. Revs, spans and
+    property fingerprints are minted over the STORED bytes and this
+    decoding never moves them (§5.1: one rev per node, no second
+    derivation). The engine re-serializes nothing else (no YAML library —
     honest limit, stated not worked around).
   - `prop_rev` — the key's CAS token: blake3 over the full key grain span
     bytes (the key line plus its indented continuation lines), 16 hex —
@@ -973,6 +983,35 @@ deferral):**
 - Delta grain unchanged: this plane is the map tense of the frontmatter
   plane (§7.2 — one projection, three tenses); §7.4's ruled node-grain and
   its named future-only `keys` amendment path are untouched.
+
+**Frontmatter value emission on `set_property` / the `properties` patch
+(docs-first, 2026-08-07, dogfood season-1 finding 2 — the write half of the
+value contract):**
+
+- A property value is the SCALAR the caller passed, and the engine's emit
+  must decode back as exactly that scalar under the engine's own grammar.
+  Emission quotes through the one value-grammar owner (`policy::defs::fm`),
+  the same module the read seam decodes with — what the write seam quotes,
+  the read seam decodes, so a value this engine wrote reads back identical
+  (`owner: "[[x]]"` stored serves `[[x]]`).
+- The quote classes: the Go-parity classes stay **single-quoted**
+  (map-shaped `{…}`, an unquoted mid-value `": "`, an unterminated leading
+  quote). A value whose plain emission would decode as a **nested
+  collection** (`[[id]]`, `[[a, b]]`, an unterminated flow) is emitted
+  **double-quoted** with the canonical escapes (`\\`, `\"`) — the
+  fleet-canonical form (`owner: "[[id]]"`) the fleet's own writers
+  produce.
+- The nested-collection class previously landed RAW so the I4 substrate law
+  judged it after the fact: the emitter manufactured a guaranteed refusal
+  out of a flat string, and the refusal blamed the caller's value
+  ("flatten … never forceable"). That asymmetry is closed here — the engine
+  never emits a value shape its own conformance gate must refuse. I4 itself
+  is unchanged: nested frontmatter a caller wrote into the file by hand is
+  still an error always, from any writer.
+- A one-level flow list (`[a, b]`) still lands verbatim: the caller spelled
+  a list, the file gets a list, and I4 admits one level. Everything else
+  about `set_property` (key charset, multi-line refusal, insert-after-last-
+  key placement) is untouched.
 
 CLI inventory (descriptive): `status.md`. Cross-root agent address grammar: `address-grammar.md`. Config parse: `meridian-md-schema.md`.
 
