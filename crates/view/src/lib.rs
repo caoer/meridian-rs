@@ -320,10 +320,14 @@ fn walk(
 
 /// Emit `frontmatter` rows (first-occurrence-wins via `YamlMap`) and B2
 /// `frontmatter_tag` for `tag`/`tags`. All share the Frontmatter C1 locator.
+/// The `value` column is a published value plane: the stored scalar decodes
+/// through § A.6.1 (`model::scalar`); the locator/rev columns stay
+/// raw-computed (§ A.6.2).
 fn emit_frontmatter(node: &Node, path: &str, map: &model::YamlMap, rows: &mut Rows) {
     let (span_start, span_end) = (u64c(node.span.start), u64c(node.span.end));
     let node_rev = node.node_rev.0.clone();
     for (ord, (key, value)) in map.0.iter().enumerate() {
+        let value = model::scalar::text(value);
         rows.frontmatter.push(vec![
             Value::Text(path.to_string()),
             Value::UBigInt(u64c(ord)),
@@ -334,7 +338,7 @@ fn emit_frontmatter(node: &Node, path: &str, map: &model::YamlMap, rows: &mut Ro
             Value::Text(node_rev.clone()),
         ]);
         if key == "tag" || key == "tags" {
-            for (seq, tag) in parse_fm_tags(value).into_iter().enumerate() {
+            for (seq, tag) in parse_fm_tags(&value).into_iter().enumerate() {
                 rows.frontmatter_tag.push(vec![
                     Value::Text(path.to_string()),
                     Value::UBigInt(u64c(seq)),
