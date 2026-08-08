@@ -180,6 +180,9 @@ pub fn project_toc(doc: &model::Document) -> Vec<wire::TocNode> {
 /// §5.2 kind ordinal for toc rows: `frontmatter` 0, `heading` 1; anchor rows
 /// (whatever host kind they echo) sort at the `anchor` ordinal (4).
 fn toc_ordinal(row: &wire::TocNode) -> u8 {
+    if row.anchor.is_some() {
+        return 4;
+    }
     match row.kind.as_str() {
         "frontmatter" => 0,
         "heading" => 1,
@@ -247,11 +250,17 @@ fn content_span(raw: &[u8], span: &std::ops::Range<usize>) -> wire::Span {
 /// The anchor row's HOST block kind (contract §4.1: the `^id` block echoes as
 /// a node keyed by its `anchor`, carrying the host block's kind as an open
 /// string). A dialect block sharing the anchor's exact span names the host
-/// directly; otherwise the raw bytes at span start classify the block —
-/// list-marker → `list_item`, else `paragraph`.
+/// directly; a frontmatter-contained line or a heading line names that host
+/// (dogfood P2-c — both previously fell through to `paragraph`, and every
+/// refusal built on the row repeated the lie); otherwise the raw bytes at
+/// span start classify the block — list-marker → `list_item`, else
+/// `paragraph`.
 fn host_kind(root: &model::Node, span: &std::ops::Range<usize>, raw: &[u8]) -> String {
     use model::NodeKind as M;
     if let Some(kind) = same_span_block(root, span) {
+        return kind;
+    }
+    if let Some(kind) = containing_host(root, span) {
         return kind;
     }
     let rest = &raw[span.start.min(raw.len())..span.end.min(raw.len())];
@@ -269,6 +278,26 @@ fn host_kind(root: &model::Node, span: &std::ops::Range<usize>, raw: &[u8]) -> S
     } else {
         return_kind(&M::Paragraph)
     }
+}
+
+/// The host the raw-byte probe cannot see: a frontmatter block CONTAINING the
+/// anchor line (a caret tail there is literal YAML — checked before the
+/// list-marker probe, so a YAML sequence line never claims `list_item`), or a
+/// section whose heading line IS the anchor's host line (a section's span
+/// starts at its heading line's first byte; the anchor's host span is that
+/// line, terminator excluded — `anchor_host_span`).
+fn containing_host(node: &model::Node, span: &std::ops::Range<usize>) -> Option<String> {
+    use model::NodeKind as M;
+    match &node.kind {
+        M::Frontmatter { .. } if node.span.start <= span.start && span.end <= node.span.end => {
+            return Some("frontmatter".into());
+        }
+        M::Section { .. } if node.span.start == span.start => {
+            return Some("heading".into());
+        }
+        _ => {}
+    }
+    node.children.iter().find_map(|c| containing_host(c, span))
 }
 
 /// Search the tree for a non-anchor dialect block with exactly `span`.
