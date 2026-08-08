@@ -171,6 +171,35 @@ fn degraded_read_of_a_poison_member_teaches_path_message_recovery() {
     assert_teaching_refusal(&out, "degrade");
 }
 
+/// The links face, same law (defect-ledger RES-B): a DIRECT poison-path
+/// `links` query surfaces the typed per-file `invalid_utf8` — code, path,
+/// condition, recovery — never a `file_not_found` miss for a member that
+/// exists on disk. Spawn-impossible so the answer is deterministically the
+/// in-process degrade (the leg the ledger names).
+#[test]
+fn degraded_links_of_a_poison_member_answers_typed_invalid_utf8() {
+    let sb = sandbox();
+    let ws = sb.poisoned_workspace();
+    let out = sb.run_degraded(&ws, &["links", "poison.md"]);
+    assert_ne!(code(&out), 0, "a poison-member links query refuses");
+    let err = stderr(&out);
+    assert!(
+        err.contains("invalid_utf8"),
+        "the refusal wears its typed code: {err:?}"
+    );
+    assert!(
+        !err.contains("file_not_found"),
+        "a member that exists on disk is never a miss: {err:?}"
+    );
+    for phrase in [PATH_PHRASE, CONDITION_PHRASE, RECOVERY_PHRASE] {
+        assert!(
+            err.contains(phrase),
+            "the links refusal teaches like the read doors — {phrase:?} \
+             (wire-contract §8 `invalid_utf8{{path,message}}`): {err:?}"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Gate 2 — warm plane: the daemon's typed refusal surfaces VERBATIM.
 // ---------------------------------------------------------------------------

@@ -943,6 +943,43 @@ pub fn require_root_check(
     Ok(())
 }
 
+/// The §52 per-file refusal for an UNSERVED corpus member (in the hash domain,
+/// not UTF-8 — node-rev-merkle-spec §3 per-file degradation): the typed
+/// `invalid_utf8` naming the member, its condition, and where its bytes stand.
+/// One mint for every read face on both hosts (`docs/laws.md` Law 3) — a face
+/// that answers `file_not_found` for a member that exists on disk serves an
+/// answers-miss, not the ruled degradation.
+#[must_use]
+pub fn unserved_refusal(path: &Path, condition: &str) -> Box<ErrorBody> {
+    let mut e = ErrorBody::new(ErrorCode::InvalidUtf8);
+    e.path = Some(path.clone());
+    e.message = Some(format!(
+        "{} {condition} — the file serves no spans/nodes; its bytes stay under the root",
+        path.0
+    ));
+    Box::new(e)
+}
+
+/// The links doors' shared miss split: an unserved member is its per-file
+/// `invalid_utf8` ([`unserved_refusal`]); anything else the docs map lacks is
+/// `file_not_found`.
+fn links_miss(
+    docs: &BTreeMap<String, model::Document>,
+    unserved: &BTreeMap<String, String>,
+    path: Option<&Path>,
+) -> Result<(), Box<ErrorBody>> {
+    let Some(p) = path else { return Ok(()) };
+    if docs.contains_key(&p.0) {
+        return Ok(());
+    }
+    if let Some(condition) = unserved.get(&p.0) {
+        return Err(unserved_refusal(p, condition));
+    }
+    let mut e = ErrorBody::new(ErrorCode::FileNotFound);
+    e.path = Some(p.clone());
+    Err(Box::new(e))
+}
+
 /// wire §4.6 the corpus edge map under the §10.1 staleness triple, served from
 /// `query` over the borrowed corpus. `as_of_root` folds the exact bytes the
 /// answer parses; `live_root` is sampled after the computation — under a
@@ -951,23 +988,19 @@ pub fn require_root_check(
 /// sampled only on the success path. Call [`require_root_check`] before this.
 ///
 /// # Errors
-/// `path` names a file the corpus does not carry (`file_not_found`), or the
-/// caller's `live_root` sample fails.
+/// `path` names an unserved member (per-file `invalid_utf8`, §52) or a file
+/// the corpus does not carry (`file_not_found`), or the caller's `live_root`
+/// sample fails.
 pub fn links(
     index: &model::CorpusIndex,
     docs: &BTreeMap<String, model::Document>,
+    unserved: &BTreeMap<String, String>,
     path: Option<&Path>,
     as_of_root: Root,
     changes_seq: u64,
     live_root: impl FnOnce() -> Result<Root, Box<ErrorBody>>,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
-    if let Some(p) = path
-        && !docs.contains_key(&p.0)
-    {
-        let mut e = ErrorBody::new(ErrorCode::FileNotFound);
-        e.path = Some(p.clone());
-        return Err(Box::new(e));
-    }
+    links_miss(docs, unserved, path)?;
     // `query::links`, never `links_rooted` with a default table: an empty
     // `MountSet` would turn "I did not consult a mount table" into "this
     // machine binds nothing". Rooted spellings come back `unresolved` here,
@@ -997,6 +1030,7 @@ pub fn links(
 pub fn links_rooted(
     index: &model::CorpusIndex,
     docs: &BTreeMap<String, model::Document>,
+    unserved: &BTreeMap<String, String>,
     corpus: &model::RootedCorpus<'_>,
     mounts: &addr::MountSet,
     path: Option<&Path>,
@@ -1004,13 +1038,7 @@ pub fn links_rooted(
     changes_seq: u64,
     live_root: impl FnOnce() -> Result<Root, Box<ErrorBody>>,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
-    if let Some(p) = path
-        && !docs.contains_key(&p.0)
-    {
-        let mut e = ErrorBody::new(ErrorCode::FileNotFound);
-        e.path = Some(p.clone());
-        return Err(Box::new(e));
-    }
+    links_miss(docs, unserved, path)?;
     let map = query::links_rooted(index, docs, corpus, mounts, path.map(|p| p.0.as_str()));
     let live = live_root()?;
     Ok(ResponseBody::Links {

@@ -144,6 +144,61 @@ fn a_poison_member_degrades_itself_not_the_corpus() {
     server.shutdown();
 }
 
+/// The links door, same grain (defect-ledger RES-B): a DIRECT poison-path
+/// `links` query answers the typed per-file `invalid_utf8` naming the member,
+/// its condition, and where its bytes stand — never `file_not_found`, which
+/// claims a miss for a member that exists on disk. And the whole-corpus map
+/// still serves beside it.
+///
+/// *Mutation:* revert the links doors' miss split (`links_miss`) to the bare
+/// `docs.contains_key` check — the direct query answers `file_not_found`.
+#[test]
+fn a_direct_poison_path_links_query_answers_typed_invalid_utf8() {
+    let tmp = TempDir::new().unwrap();
+    let ws = write_ws(&tmp, &[("healthy.md", "# Healthy\n\n[[poison]]\n")]);
+    fs::write(ws.join("poison.md"), b"# P\n\xff\xfe\n").unwrap();
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(server.socket_path());
+
+    assert_eq!(conn.hello(&ws)["ok"], json!(true));
+
+    // The whole-corpus map serves — degradation never widens past the file.
+    let map = conn.call(&json!({"op": "links"}));
+    assert_eq!(map["ok"], json!(true), "the corpus map still serves: {map}");
+    assert!(
+        map["body"]["files"]["healthy.md"].is_object(),
+        "the healthy member's edges are in the map: {map}"
+    );
+
+    // The direct ask gets the per-file refusal, typed and teaching.
+    let refusal = conn.call(&json!({"op": "links", "path": "poison.md"}));
+    assert_eq!(refusal["ok"], json!(false), "{refusal}");
+    let error = &refusal["error"];
+    assert_eq!(
+        error["code"],
+        json!("invalid_utf8"),
+        "an unserved member is not a miss: {refusal}"
+    );
+    assert_eq!(error["recovery"], json!("env"), "{refusal}");
+    assert_eq!(error["path"], json!("poison.md"), "{refusal}");
+    let message = error["message"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the refusal carries its teaching: {refusal}"));
+    assert!(
+        message.contains("poison.md")
+            && message.contains("UTF-8")
+            && message.contains("bytes stay under the root"),
+        "path + condition + recovery, the read doors' exact frame: {refusal}"
+    );
+
+    // Control: a path that truly is absent keeps `file_not_found`.
+    let missing = conn.call(&json!({"op": "links", "path": "missing.md"}));
+    assert_eq!(missing["ok"], json!(false), "{missing}");
+    assert_eq!(missing["error"]["code"], json!("file_not_found"), "{missing}");
+
+    server.shutdown();
+}
+
 /// The other wire door, same grain: a `hello` that declares a workspace with a
 /// poison member BINDS and serves — the fleet-killing shape (refuse the entire
 /// workspace at handshake) is exactly what §52 rules out.
