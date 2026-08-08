@@ -1617,6 +1617,13 @@ pub enum ErrorCode {
     /// (`.meridian/write.lock`) — the choke-point refuses fast (`LOCK_NB`,
     /// never a wait). Extras: `message`. Retry class.
     WorkspaceBusy,
+    /// A cooperating actor moved the workspace's serving state while the
+    /// request was in flight: the idle reaper reclaimed the warm engine
+    /// between warm and serve, or a domain member the walk listed was
+    /// deleted before its stat/read. Benign by construction — the same
+    /// request re-derives from the current world. Extras: `path` (the
+    /// vanished member, when one is named) + `message`. Retry class.
+    CorpusRace,
     /// A `splice.pin` from a real session actor whose selector no receipt
     /// covers — you cannot attest content that was never in your context.
     /// Extras: `path` + `message`. Fix class — read the exact selector in
@@ -1676,9 +1683,10 @@ impl ErrorCode {
             | ErrorCode::RefNotFound
             | ErrorCode::ArmedDrift
             | ErrorCode::WriteConflict => Recovery::Refresh,
-            ErrorCode::LockTimeout | ErrorCode::StaleView | ErrorCode::WorkspaceBusy => {
-                Recovery::Retry
-            }
+            ErrorCode::LockTimeout
+            | ErrorCode::StaleView
+            | ErrorCode::WorkspaceBusy
+            | ErrorCode::CorpusRace => Recovery::Retry,
             ErrorCode::RootMismatch | ErrorCode::RootUnknown => Recovery::Resync,
             ErrorCode::BadFrame | ErrorCode::UnsupportedProto | ErrorCode::Internal => {
                 Recovery::Respawn
