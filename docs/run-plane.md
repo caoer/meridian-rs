@@ -264,7 +264,13 @@ detection-not-prevention class as the write door's verify→rename residual
 a per-document serve is the resident corpus root: under concurrent
 out-of-band writes to OTHER files it may lag until the next corpus-grain
 derivation — the §10.1 honest-tense law (no lag bounds promised), extended to
-serve stamps by wire-contract § A.7. The commit's world guard is still checked
+serve stamps by wire-contract § A.7. The same lag governs a poison member
+(a non-UTF-8 file landing out-of-band): per-document serves of healthy files
+may answer until the FIRST corpus-grain leg discovers the poison and refuses
+naming the member (Law A-3c unchanged in wording) — and from that point every
+per-document serve refuses too, because the advanced derivation means the
+resident engine can no longer be vouched for. A script entry always fails
+closed: its entry fingerprint is a corpus-grain leg and runs first. The commit's world guard is still checked
 against the live root inside the write flock, so the transaction guarantee
 below — a committed script is consistent with exactly one workspace
 fingerprint — is unchanged: a lagging pin refuses `fingerprint_mismatch` and
