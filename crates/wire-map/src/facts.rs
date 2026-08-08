@@ -411,6 +411,27 @@ mod tests {
         assert_eq!((p1.n.as_str(), p1.depth, p1.words), ("^p1", 0, 0));
     }
 
+    /// Grammar guard (dogfood P2-c, the NO-change half): truthful host kinds
+    /// on anchor rows must never move an anchor into either read plane. A
+    /// heading-hosted or frontmatter-hosted anchor stays off the face — the
+    /// anchor plane is plain list items only (Go parity) — and the heading
+    /// plane carries exactly the real headings, never a re-kinded anchor row.
+    #[test]
+    fn heading_and_fm_hosted_anchors_stay_off_the_read_face() {
+        let raw = "---\ntitle: x ^fm-anchor\n---\n## Has anchor ^anch-head\n\n- item ^li\n";
+        let got = facts(raw);
+        let anchors: Vec<&str> = got.iter().filter_map(|f| f.anchor.as_deref()).collect();
+        assert_eq!(anchors, vec!["li"], "the anchor plane stays list-item only");
+        assert!(resolve_selector(&got, &sel("^anch-head")).is_none());
+        assert!(resolve_selector(&got, &sel("^fm-anchor")).is_none());
+        let headings: Vec<&str> = got
+            .iter()
+            .filter(|f| f.anchor.is_none())
+            .map(|f| f.n.as_str())
+            .collect();
+        assert_eq!(headings, vec!["1"], "one real heading, no re-kinded anchor row");
+    }
+
     /// A duplicated block id matches EVERY carrier, in document order — the
     /// caller refuses `ambiguous_ref`; first-match was the silent-pick defect
     /// (dogfood-p1-read-ambiguous-ref; wire-contract A.3, door symmetry over

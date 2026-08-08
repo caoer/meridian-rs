@@ -207,6 +207,83 @@ fn composed_read_task_hosted_anchor_names_the_coverage_limit() {
     );
 }
 
+/// A composed read over a raw fixture — the custom-doc sibling of [`read`],
+/// for probes whose host shapes the standing `DOC` does not carry.
+fn read_raw(raw: &str, sel: &str) -> Result<ResponseBody, Box<wire::ErrorBody>> {
+    let d = model::build(raw.to_string(), syntax::parse(raw));
+    composed_read(
+        &d,
+        &WPath("card.md".into()),
+        &wire::Root("r".into()),
+        &ReadParams {
+            sections: Some(vec![ReadSel::parse(sel)]),
+            display_path: Some("card.md".into()),
+            ..ReadParams::default()
+        },
+        None,
+        &NO_DECORATIONS,
+    )
+}
+
+/// The heading-host probe (dogfood P2-c): the coverage-limit refusal names
+/// the REAL host kind — a heading, never "a paragraph" — and its Fix teaches
+/// a servable path (find the enclosing section in the section map). It must
+/// never point at `anchors[]`: that array carries list-item hosts only, so
+/// the very id the refusal reports is absent there by construction.
+#[test]
+fn heading_hosted_anchor_refusal_names_heading_and_serves_a_path() {
+    let err = *read_raw("## Has anchor ^anch-head\n\nbody\n", "^anch-head")
+        .expect_err("outside face coverage");
+    assert_eq!(err.code, ErrorCode::RefNotFound, "refusal code unchanged");
+    let msg = err.message.as_deref().expect("message");
+    assert!(
+        msg.contains("the anchor exists on this page"),
+        "absence is the wrong claim — the anchor is real: {msg}"
+    );
+    assert!(
+        msg.contains("host block is a heading"),
+        "the limit names the TRUE host kind: {msg}"
+    );
+    assert!(!msg.contains("paragraph"), "the paragraph lie is retired: {msg}");
+    assert!(
+        !msg.contains("anchors[]"),
+        "the Fix must not point at an array that cannot list this id: {msg}"
+    );
+    assert!(
+        msg.contains("toc read"),
+        "the Fix teaches the servable path — the section map: {msg}"
+    );
+}
+
+/// The frontmatter caret-tail probe (dogfood P2-c): the host is the
+/// frontmatter — outside any section, so "read the enclosing section" would
+/// be a second unservable teaching. The truthful clause points at the `props`
+/// plane every composed read already carries.
+#[test]
+fn fm_hosted_anchor_refusal_names_frontmatter_and_serves_props() {
+    let err = *read_raw("---\ntitle: x ^fm-anchor\n---\n# H\n\nbody\n", "^fm-anchor")
+        .expect_err("outside face coverage");
+    assert_eq!(err.code, ErrorCode::RefNotFound, "refusal code unchanged");
+    let msg = err.message.as_deref().expect("message");
+    assert!(
+        msg.contains("the anchor exists on this page"),
+        "absence is the wrong claim — the caret tail is on the page: {msg}"
+    );
+    assert!(
+        msg.contains("frontmatter"),
+        "the limit names the TRUE host — the frontmatter: {msg}"
+    );
+    assert!(!msg.contains("paragraph"), "the paragraph lie is retired: {msg}");
+    assert!(
+        !msg.contains("anchors[]"),
+        "the Fix must not point at an array that cannot list this id: {msg}"
+    );
+    assert!(
+        msg.contains("props"),
+        "the Fix teaches the servable path — the frontmatter plane: {msg}"
+    );
+}
+
 /// The partial-read notice carries the same per-selector teaching as the
 /// all-fail refusal — one vocabulary on both paths.
 #[test]
