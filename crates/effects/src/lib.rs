@@ -553,6 +553,9 @@ pub enum EvalError {
         rule_id: String,
         /// The fault message.
         reason: String,
+        /// 1-based source line of the fault, when the evaluator attributed a
+        /// span. Absence is absence, never a synthesized line 0.
+        line: Option<u32>,
     },
     /// Source exceeded [`EvalLimits::max_source_bytes`] — refused before parse.
     SourceTooLarge {
@@ -619,7 +622,9 @@ impl std::fmt::Display for EvalError {
             EvalError::Parse { rule_id, reason } => {
                 write!(f, "rule '{rule_id}' starlark parse error: {reason}")
             }
-            EvalError::Runtime { rule_id, reason } => {
+            EvalError::Runtime {
+                rule_id, reason, ..
+            } => {
                 write!(f, "rule '{rule_id}' evaluation error: {reason}")
             }
             EvalError::SourceTooLarge {
@@ -735,6 +740,7 @@ pub fn eval_run(task: &Rule, ctx: &RunCtx, limits: EvalLimits) -> Result<Vec<Eff
                 "task id '{}' != ctx.task '{}' — one identity per invocation",
                 task.id, ctx.task
             ),
+            line: None,
         });
     }
     kernel::on_eval_stack(|| {
@@ -1224,6 +1230,7 @@ mod tests {
         let runtime = EvalError::Runtime {
             rule_id: "r".into(),
             reason: "boom".into(),
+            line: None,
         };
         assert!(runtime.to_string().contains('r') && runtime.to_string().contains("boom"));
 
