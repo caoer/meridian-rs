@@ -1040,24 +1040,15 @@ fn dispatch_read(
     };
     match op {
         Op::Toc { path } => warm_engine_read(registry, ws, |engine| {
-            let doc = engine
-                .docs
-                .get(&path.0)
-                .ok_or_else(|| file_not_found(&path))?;
+            let doc = doc_or_refusal(engine, &path)?;
             Ok(wire_serve::read::toc(doc, &path, &engine_root(engine)))
         }),
         Op::Cat { path, sec } => warm_engine_read(registry, ws, |engine| {
-            let doc = engine
-                .docs
-                .get(&path.0)
-                .ok_or_else(|| file_not_found(&path))?;
+            let doc = doc_or_refusal(engine, &path)?;
             wire_serve::read::cat(doc, sec)
         }),
         Op::Extract { path, kinds } => warm_engine_read(registry, ws, |engine| {
-            let doc = engine
-                .docs
-                .get(&path.0)
-                .ok_or_else(|| file_not_found(&path))?;
+            let doc = doc_or_refusal(engine, &path)?;
             Ok(wire_serve::read::extract(doc, &path, kinds, v3))
         }),
         // Composed read — v3-only (§3.2); one warm-engine snapshot (D6).
@@ -1189,10 +1180,7 @@ fn dispatch_read(
             now,
             edits,
         } if v3 => warm_engine_read(registry, ws, |engine| {
-            let doc = engine
-                .docs
-                .get(&path.0)
-                .ok_or_else(|| file_not_found(&path))?;
+            let doc = doc_or_refusal(engine, &path)?;
             Ok(wire_serve::check_write::check_write(
                 doc, &target, &actor, &now, &edits,
             ))
@@ -1249,10 +1237,7 @@ fn composed_read_warm(
 ) -> Result<ResponseBody, Box<ErrorBody>> {
     let mints = registry.read_mints(ws);
     warm_engine_read(registry, ws, |engine| {
-        let doc = engine
-            .docs
-            .get(&path.0)
-            .ok_or_else(|| file_not_found(path))?;
+        let doc = doc_or_refusal(engine, path)?;
         // S10: claim-link colors from the pinned corpus, same warm snapshot (D6).
         let decorations =
             wire_serve::read::page_decorations(&engine.index, &engine.docs, path.0.as_str());
@@ -1327,16 +1312,39 @@ fn file_not_found(path: &wire::Path) -> Box<ErrorBody> {
     Box::new(e)
 }
 
-/// Map a `warm_or_build` I/O failure onto its wire frame: a non-UTF-8 corpus
-/// file is `invalid_utf8` (refused, never lossy-decoded); anything else (the
+/// The warm engine's document for `path`, or the refusal the miss means:
+/// an UNSERVED member (in the hash domain, not UTF-8 — node-rev-merkle-spec
+/// §3 per-file degradation) is the per-file `invalid_utf8` naming itself;
+/// anything else is `file_not_found`.
+fn doc_or_refusal<'e>(
+    engine: &'e WorkspaceEngine,
+    path: &wire::Path,
+) -> Result<&'e model::Document, Box<ErrorBody>> {
+    if let Some(doc) = engine.docs.get(&path.0) {
+        return Ok(doc);
+    }
+    if let Some(condition) = engine.unserved.get(&path.0) {
+        let mut e = ErrorBody::new(ErrorCode::InvalidUtf8);
+        e.path = Some(path.clone());
+        e.message = Some(format!("{} {condition} — the file serves no spans/nodes; its bytes stay under the root", path.0));
+        return Err(Box::new(e));
+    }
+    Err(file_not_found(path))
+}
+
+/// Map a `warm_or_build` I/O failure onto its wire frame: `InvalidData` is
+/// `invalid_utf8` (refused, never lossy-decoded); anything else (the
 /// workspace is gone, an I/O error) carries its cause on `io_error`.
 ///
 /// A warm failure is CORPUS-scoped — the caller asked for one file and the
 /// whole rebuild refused — so the frame names its scope and its offending
-/// member: `path` carries the poison member (the watch plane's `invalid_utf8`
-/// precedent), `message` states the corpus scope and the condition. A bare
-/// `invalid_utf8` here reads as "the file you asked for is corrupt", which is
-/// false of that file and strands the caller (Law A-3c).
+/// member when the error carries one ([`fs::corpus_member_error`]): a bare
+/// refusal reads as "the file you asked for is corrupt", which is false of
+/// that file and strands the caller (Law A-3c). A non-UTF-8 corpus MEMBER no
+/// longer reaches here at all — it degrades per-file (`fs::build_corpus`
+/// skips and reports it; [`doc_or_refusal`] mints its per-file refusal) — so
+/// the `InvalidData` arm survives for the decode failures that really are
+/// corpus-scoped, e.g. a domain config file that is itself not UTF-8.
 fn warm_err_to_wire(e: &io::Error) -> Box<ErrorBody> {
     if e.kind() == io::ErrorKind::InvalidData {
         let mut err = ErrorBody::new(ErrorCode::InvalidUtf8);

@@ -222,8 +222,9 @@ impl Registry {
     /// write lock (insert only) so workspaces do not block each other.
     ///
     /// # Errors
-    /// Canonicalize failure, corpus unreadable, or non-UTF-8
-    /// ([`io::ErrorKind::InvalidData`]).
+    /// Canonicalize failure or corpus unreadable. A non-UTF-8 MEMBER is not an
+    /// error: it degrades per-file (`fs::build_corpus` skips and reports it) —
+    /// only a domain config that cannot be decoded still refuses the warm.
     pub fn warm_or_build(&self, workspace: &Path) -> io::Result<WarmOutcome> {
         let canonical = workspace::canonicalize(workspace)
             .map_err(|e| io::Error::new(io::ErrorKind::NotFound, e))?;
@@ -258,11 +259,12 @@ impl Registry {
         // the reuse key a served answer is stamped with never comes from a
         // digest the memo carried forward.
         let (files, fingerprint) = fs::domain_snapshot(&root)?;
-        let (index, docs) = fs::build_corpus(files)?;
+        let (index, docs, unserved) = fs::build_corpus(files);
         let parsed = docs.len();
         let engine = WorkspaceEngine {
             index,
             docs,
+            unserved,
             at_fingerprint: fingerprint,
         };
         self.engines

@@ -66,7 +66,7 @@ fn live_root(root: &WorkspaceRoot) -> String {
 /// Build the corpus and run the layer-0 core the way `mrd check` runs it.
 fn core_over(root: &WorkspaceRoot) -> check::CoreReport {
     let (files, _fold) = fs::domain_snapshot(root).expect("snapshot");
-    let (_index, docs) = fs::build_corpus(files).expect("corpus");
+    let (_index, docs, _unserved) = fs::build_corpus(files);
     check::core(root, &docs, &[], &[]).expect("core read")
 }
 

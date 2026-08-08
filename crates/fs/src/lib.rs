@@ -803,9 +803,9 @@ pub fn overlay_snapshot(
 /// locus makes every file look individually corrupt — the caller pins the
 /// refusal on whatever file they asked for and has nothing to fix. Scope,
 /// member, and condition ride together so every face can name the poison file.
-/// Carried inside an [`io::Error`] whose kind is the mint's choice
-/// (`InvalidData` for a decode refusal), so existing kind splits keep working;
-/// faces that want the locus structurally use [`corpus_member_error`].
+/// Carried inside an [`io::Error`] whose kind is the mint's choice (the raw
+/// OS kind for a read failure), so existing kind splits keep working; faces
+/// that want the locus structurally use [`corpus_member_error`].
 #[derive(Debug)]
 pub struct CorpusMemberError {
     /// The workspace-relative path of the offending member.
@@ -847,29 +847,41 @@ pub fn corpus_member_error(e: &io::Error) -> Option<&CorpusMemberError> {
 }
 
 /// Parse a [`domain_snapshot`] into the corpus name index + document map — the
-/// EXPENSIVE half of a resident rebuild, and the only parser. Non-UTF-8 content
-/// is refused, never lossy-decoded (§8 row 1 — the same refusal [`load`] makes):
-/// the error is `ErrorKind::InvalidData`, so a caller can split `invalid_utf8`
-/// from other I/O, and it carries the poison member as [`CorpusMemberError`] —
-/// a corpus-scoped refusal names its scope and its offending member. `files` is
+/// EXPENSIVE half of a resident rebuild, and the only parser. `files` is
 /// consumed (the bytes become the documents' `raw`).
 ///
-/// # Errors
-/// Non-UTF-8 content in any file (refused, naming the member).
+/// **Degradation is per-file** (node-rev-merkle-spec §3, "Files that are not
+/// valid UTF-8"): a non-UTF-8 member is never lossy-decoded (§8 row 1 — the
+/// same refusal [`load`] makes) and never parsed — it serves no spans/nodes —
+/// but it does not poison the corpus. Its bytes already participated in the
+/// root ([`domain_snapshot`] folds raw bytes), so integrity coverage and span
+/// service stay independent properties. The skipped members come back in the
+/// third slot as member → condition, so a face asked for one directly can
+/// mint the per-file `invalid_utf8` naming it.
+#[must_use]
 pub fn build_corpus(
     files: DomainFiles,
-) -> io::Result<(model::CorpusIndex, BTreeMap<String, model::Document>)> {
+) -> (
+    model::CorpusIndex,
+    BTreeMap<String, model::Document>,
+    BTreeMap<String, String>,
+) {
     let mut index = model::CorpusIndex::new();
     let mut docs = BTreeMap::new();
+    let mut unserved = BTreeMap::new();
     for (rel, bytes) in files {
-        let text = String::from_utf8(bytes).map_err(|e| {
-            corpus_member_refusal(io::ErrorKind::InvalidData, &rel, format!("is not UTF-8 ({e})"))
-        })?;
-        let doc = model::build(text.clone(), syntax::parse(&text));
-        index.insert(&rel, &doc);
-        docs.insert(rel, doc);
+        match String::from_utf8(bytes) {
+            Ok(text) => {
+                let doc = model::build(text.clone(), syntax::parse(&text));
+                index.insert(&rel, &doc);
+                docs.insert(rel, doc);
+            }
+            Err(e) => {
+                unserved.insert(rel, format!("is not UTF-8 ({})", e.utf8_error()));
+            }
+        }
     }
-    Ok((index, docs))
+    (index, docs, unserved)
 }
 
 /// A process-unique suffix source for staging paths (combined with the pid and
@@ -2422,14 +2434,15 @@ mod stat_signature_tests {
     }
 }
 
-/// Design tests for the corpus-scoped refusal: a refusal that spans the whole
-/// corpus names its scope and its offending member ([`CorpusMemberError`]) —
-/// a condition reported without its locus is true and still strands its reader.
+/// Design tests for the two degradation grains. A member the snapshot cannot
+/// READ refuses the whole corpus and names its scope and offending member
+/// ([`CorpusMemberError`]) — no bytes, no leaf hash, nothing to degrade to. A
+/// member that reads but is not UTF-8 degrades PER-FILE (node-rev-merkle-spec
+/// §3): the parse skips it and reports it, and the corpus serves.
 #[cfg(test)]
 mod corpus_refusal_tests {
     use super::{WorkspaceRoot, build_corpus, corpus_member_error, domain_snapshot};
     use std::fs;
-    use std::io;
     use std::os::unix::fs::PermissionsExt;
 
     fn workspace(files: &[(&str, &[u8])]) -> (tempfile::TempDir, WorkspaceRoot) {
@@ -2443,30 +2456,28 @@ mod corpus_refusal_tests {
         (tmp, root)
     }
 
-    /// One poison member refuses the whole parse — and the refusal names it:
-    /// the typed carrier holds the member and condition, the rendered message
-    /// states scope, member, and condition, and the kind split callers rely on
-    /// (`InvalidData` ⇒ `invalid_utf8`) is unchanged.
+    /// One poison member is skipped and REPORTED, never fatal: the healthy
+    /// member parses, the poison member serves no spans/nodes, and the
+    /// unserved slot names member and condition so a face asked for it
+    /// directly can mint the per-file `invalid_utf8`.
     #[test]
-    fn a_poison_member_is_named_by_the_corpus_refusal() {
+    fn a_poison_member_is_skipped_and_reported_not_fatal() {
         let (_tmp, root) = workspace(&[
             ("healthy.md", b"# Healthy\n".as_slice()),
             ("notes/poison.md", b"# P\n\xff\xfe\n".as_slice()),
         ]);
         let (files, _) = domain_snapshot(&root).unwrap();
-        let err = build_corpus(files).unwrap_err();
+        let (_index, docs, unserved) = build_corpus(files);
 
-        assert_eq!(err.kind(), io::ErrorKind::InvalidData, "the kind split holds");
-        let member = corpus_member_error(&err).expect("the typed locus rides the error");
-        assert_eq!(member.member, "notes/poison.md");
-        assert!(member.condition.contains("UTF-8"), "condition: {}", member.condition);
-        let message = err.to_string();
+        assert!(docs.contains_key("healthy.md"), "the healthy member parses");
         assert!(
-            message.contains("the corpus cannot be served")
-                && message.contains("notes/poison.md")
-                && message.contains("UTF-8"),
-            "scope, member, and condition in one message: {message}"
+            !docs.contains_key("notes/poison.md"),
+            "the poison member serves no spans/nodes"
         );
+        let condition = unserved
+            .get("notes/poison.md")
+            .expect("the skipped member is reported, keyed by its path");
+        assert!(condition.contains("UTF-8"), "condition: {condition}");
     }
 
     /// The other corpus-scoped class: a member the snapshot cannot READ refuses
@@ -2492,13 +2503,15 @@ mod corpus_refusal_tests {
         fs::set_permissions(&secret, fs::Permissions::from_mode(0o644)).unwrap();
     }
 
-    /// A healthy corpus is untouched by the refusal plumbing: it parses.
+    /// A healthy corpus is untouched by the refusal plumbing: it parses, and
+    /// nothing is reported unserved.
     #[test]
     fn a_healthy_corpus_still_parses() {
         let (_tmp, root) = workspace(&[("a.md", b"# A\n".as_slice())]);
         let (files, _) = domain_snapshot(&root).unwrap();
-        let (_index, docs) = build_corpus(files).unwrap();
+        let (_index, docs, unserved) = build_corpus(files);
         assert_eq!(docs.len(), 1);
+        assert!(unserved.is_empty());
     }
 }
 
