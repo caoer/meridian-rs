@@ -15,12 +15,13 @@
 //! validation can mint. An unvalidated write cannot reach disk by construction; the
 //! splice pipeline (validate in `model`, execute here) is enforced by types, not review.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
+use std::sync::PoisonError;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub mod domain;
@@ -171,18 +172,103 @@ fn walk_user_rules_dir(abs_dir: &Path, rel_dir: &Path, out: &mut Vec<PathBuf>) -
 /// # Errors
 /// I/O failure traversing the root.
 pub fn hash_domain(root: &WorkspaceRoot, domain: &domain::Domain) -> io::Result<Vec<PathBuf>> {
-    let mut out = Vec::new();
-    walk_domain_dir(&root.0, &PathBuf::new(), domain, &mut out)?;
+    // The walk, parallel across subtrees. Measured at production scale
+    // (2026-08-08, the wall-clock task): one-level scans dominate the sweep —
+    // a 25k-directory tree is ~25k serial `getdirentries` calls, ~10-20 µs
+    // each warm, and the per-file stats beside them are noise. One scan is one
+    // syscall either way, but the kernel answers eight at once, so every
+    // directory becomes a work item on a shared queue. Output is sorted
+    // below, so collect order — the only thing parallelism changes — is
+    // invisible to the fold.
+    let (files, subdirs) = walk_domain_dir(&root.0, Path::new(""), domain)?;
+    let mut out = files;
+    if subdirs.is_empty() {
+        // Small roots never see a thread — but the sort law still holds.
+        out.sort();
+        return Ok(out);
+    }
+
+    struct Shared {
+        /// Rel dirs awaiting a one-level scan.
+        todo: VecDeque<PathBuf>,
+        /// Scans in flight — with `todo`, the termination witness: the walk
+        /// is done when the queue is empty AND no worker holds one.
+        active: usize,
+        out: Vec<PathBuf>,
+        /// The first scan failure; the sweep fails with it (a corpus member
+        /// that cannot be walked refuses the whole snapshot, unchanged).
+        err: Option<io::Error>,
+    }
+    let shared = std::sync::Mutex::new(Shared {
+        todo: subdirs.into(),
+        active: 0,
+        out: Vec::new(),
+        err: None,
+    });
+    let idle = std::sync::Condvar::new();
+    let workers = std::thread::available_parallelism().map_or(2, |n| n.get().clamp(2, 8));
+
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                loop {
+                    let rel = {
+                        let mut s = shared.lock().unwrap_or_else(PoisonError::into_inner);
+                        loop {
+                            if s.err.is_some() {
+                                return;
+                            }
+                            if let Some(rel) = s.todo.pop_front() {
+                                s.active += 1;
+                                break rel;
+                            }
+                            if s.active == 0 {
+                                return; // queue drained and nobody holds a scan
+                            }
+                            s = idle.wait(s).unwrap_or_else(PoisonError::into_inner);
+                        }
+                    };
+                    let scanned = walk_domain_dir(&root.0.join(&rel), &rel, domain);
+                    let mut s = shared.lock().unwrap_or_else(PoisonError::into_inner);
+                    s.active -= 1;
+                    match scanned {
+                        Ok((files, subdirs)) => {
+                            s.out.extend(files);
+                            s.todo.extend(subdirs);
+                            // Every push can wake every sleeper: workers
+                            // outnumber the queue's contents at the fringe.
+                            idle.notify_all();
+                        }
+                        Err(e) => {
+                            s.err.get_or_insert(e);
+                            idle.notify_all();
+                            return;
+                        }
+                    }
+                }
+            });
+        }
+    });
+
+    let mut s = shared.into_inner().unwrap_or_else(PoisonError::into_inner);
+    if let Some(err) = s.err {
+        return Err(err);
+    }
+    out.append(&mut s.out);
     out.sort();
     Ok(out)
 }
 
+/// One-level domain scan of `abs_dir`: the in-domain files it directly holds,
+/// and the subdirectories worth descending (dot-segments and `!`-covered dirs
+/// pruned per the walk's law). The unit of the parallel walk above.
 fn walk_domain_dir(
     abs_dir: &Path,
     rel_dir: &Path,
     domain: &domain::Domain,
-    out: &mut Vec<PathBuf>,
-) -> io::Result<()> {
+) -> io::Result<(Vec<PathBuf>, Vec<PathBuf>)> {
+    let mut files = Vec::new();
+    let mut subdirs = Vec::new();
     for entry in fs::read_dir(abs_dir)? {
         let entry = entry?;
         let file_type = entry.file_type()?;
@@ -196,12 +282,12 @@ fn walk_domain_dir(
             if domain.prunes_dir(&rel) {
                 continue;
             }
-            walk_domain_dir(&entry.path(), &rel, domain, out)?;
+            subdirs.push(rel);
         } else if file_type.is_file() && domain.contains(&rel) {
-            out.push(rel);
+            files.push(rel);
         }
     }
-    Ok(())
+    Ok((files, subdirs))
 }
 
 /// A cheap, stat-only fingerprint of the hash domain: the same walk
