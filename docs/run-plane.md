@@ -276,8 +276,13 @@ plus one fold-and-rebuild per corpus move observed mid-entry, plus the
 fingerprint op's own sweep. The per-round-trip cost becomes O(domain entries)
 of metadata instead of O(domain bytes) of content, so whether the budget
 admits a program stops depending on how much content the corpus holds. The
-budget table above is untouched: the wall clock stays 7 s, per-entry, at the
-same four layers.
+residual corpus-linear term, measured (2026-08-08, serial, uncontended):
+one sweep costs ~0.10–0.17 s on a 23.8k-file domain and ~0.19–0.43 s on its
+47.5k-file doubling — against the full fold's 0.65–0.73 s and ~1.8 s at the
+same two scales — so a 21-round-trip ten-read entry measures 2.0–2.3 s at
+the first scale and 5.0–5.6 s at the second, where the fold-per-trip entry
+refused outright. The budget table above is untouched: the wall clock stays
+7 s, per-entry, at the same four layers.
 
 **The transaction — stand-still optimistic.** The word **snapshot is
 banned** here: the daemon has no MVCC and v1 must not grow one.
