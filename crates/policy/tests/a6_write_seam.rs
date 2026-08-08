@@ -179,3 +179,71 @@ fn the_season_one_corpus_survives_a_write_then_read() {
         );
     }
 }
+
+// ── § A.6.3c — spelling preservation on a semantic no-op ─────────────────────
+
+/// One `set_property` through the shared candidate composer, over a chosen doc.
+fn set_property_on(raw: &str, key: &str, value: &str) -> model::Document {
+    let edits = [PlanEdit {
+        op: "set_property".to_string(),
+        target: vec![Seg {
+            h: key.to_string(),
+            n: None,
+        }],
+        body: value.to_string(),
+        ..PlanEdit::default()
+    }];
+    rebuild(&doc(raw), &edits, &|raw| doc(raw))
+        .unwrap_or_else(|e| panic!("set_property {key}={value:?} was refused: {}", e.render()))
+}
+
+/// **The oscillation, pinned (review gate d5654f18, P2).** The fleet-canonical
+/// quoted spelling — the bytes `ccc-cli task claim` writes — written back with
+/// the exact value the read law serves must leave the DOCUMENT byte-identical.
+/// § A.6.2's planes (`prop_rev`, `span`, `props1`, pins) are computed over
+/// source bytes, so byte identity is the whole claim: nothing moves on a
+/// semantic no-op, and the two writers stop oscillating.
+#[test]
+fn a_write_back_of_the_served_value_is_byte_stable() {
+    for raw in [
+        "---\ntype: task\nowner: \"3f9a1c07\"\n---\n\n# Todo\n",
+        "---\ntype: task\nowner: 'doing'\n---\n\n# Todo\n", // legacy single-quoted spelling
+        "---\ntype: task\nowner: \"42\"\n---\n\n# Todo\n",  // quoted typed scalar stays a STRING
+        "---\ntype: task\nowner: plain\n---\n\n# Todo\n",   // plain spelling: encoder emits it anyway
+    ] {
+        let d = doc(raw);
+        let served = reads_back_as(&d, "owner");
+        let cand = set_property_on(raw, "owner", &served);
+        assert_eq!(
+            cand.raw, raw,
+            "write-back of served value {served:?} must keep the stored spelling"
+        );
+    }
+}
+
+/// The § A.6.3c exclusions: a NULL or NESTED stored spelling is never
+/// preserved — the text-equal write-back re-encodes to the quoted canonical
+/// form, because those are the two classes this string plane cannot express.
+#[test]
+fn null_and_nested_spellings_still_re_encode_on_a_text_equal_write_back() {
+    for (raw, value, want_line) in [
+        // bare key: the caller's "" lands the empty STRING, not a preserved null (R4)
+        ("---\nowner:\n---\n\n# T\n", "", r#"owner: """#),
+        ("---\nowner: ~\n---\n\n# T\n", "~", r#"owner: "~""#),
+        ("---\nowner: null\n---\n\n# T\n", "null", r#"owner: "null""#),
+        // stored nesting is repaired to the quoted form, never preserved
+        (
+            "---\nowner: [[b1892b5a]]\n---\n\n# T\n",
+            "[[b1892b5a]]",
+            r#"owner: "[[b1892b5a]]""#,
+        ),
+    ] {
+        let cand = set_property_on(raw, "owner", value);
+        assert_eq!(
+            line_for(&cand, "owner"),
+            want_line,
+            "text-equal write-back over {raw:?}"
+        );
+        assert_eq!(reads_back_as(&cand, "owner"), value);
+    }
+}
