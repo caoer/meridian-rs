@@ -807,6 +807,7 @@ pub fn yaml_safe_value(val: &str) -> Result<String, MultiLineValue> {
 /// ONE owner, shared by every § A.6.3a door: the value-span splice above keeps
 /// the span bytes; the line-composing doors keep the spelling through
 /// [`yaml_preserve_or_encode`].
+#[must_use]
 pub fn fm_spelling_preserves(stored: &str, val: &str) -> bool {
     !val.contains(['\n', '\r'])
         && model::scalar::text(stored) == val
