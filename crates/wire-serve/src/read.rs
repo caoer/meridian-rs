@@ -526,12 +526,20 @@ enum SelFail {
         display: String,
         candidates: Vec<String>,
     },
+    /// A duplicated block id: >1 carrier, but unlike [`SelFail::Ambiguous`] no
+    /// machine address exists per candidate — duplicate ids share one spelling
+    /// and the anchor grammar has no occurrence index — so the entry counts
+    /// the carriers and teaches the anchor remedy (wire-contract A.3, door
+    /// symmetry over duplicate block ids).
+    DupAnchor { display: String, count: usize },
 }
 
 impl SelFail {
     fn display(&self) -> &str {
         match self {
-            SelFail::Miss { display, .. } | SelFail::Ambiguous { display, .. } => display,
+            SelFail::Miss { display, .. }
+            | SelFail::Ambiguous { display, .. }
+            | SelFail::DupAnchor { display, .. } => display,
         }
     }
 
@@ -559,6 +567,10 @@ impl SelFail {
                 candidates.len(),
                 candidates.join(" or ")
             ),
+            SelFail::DupAnchor { display, count } => format!(
+                "\"{display}\" is ambiguous ({count} blocks carry this id — give each a \
+                 distinct id, or read the enclosing section by heading path)"
+            ),
         }
     }
 
@@ -582,6 +594,9 @@ impl SelFail {
                 candidates.len(),
                 candidates.join(" or ")
             ),
+            SelFail::DupAnchor { display, count } => {
+                format!("{display} (ambiguous, {count} blocks carry this id)")
+            }
         }
     }
 }
@@ -668,9 +683,19 @@ fn composed_sections(
                 display: sel.display(),
                 teach: anchor_sel_teach(doc, facts, sel),
             }),
-            many => failures.push(SelFail::Ambiguous {
-                display: sel.display(),
-                candidates: many.iter().map(|f| machine_addr(&f.hpath)).collect(),
+            many => failures.push(match sel {
+                // A duplicated block id has no per-candidate machine address
+                // (anchor rows carry no hpath; the id is the shared spelling),
+                // so its entry counts the carriers instead of listing
+                // addresses (A.3, door symmetry over duplicate block ids).
+                wire::ReadSel::Anchor { .. } => SelFail::DupAnchor {
+                    display: sel.display(),
+                    count: many.len(),
+                },
+                _ => SelFail::Ambiguous {
+                    display: sel.display(),
+                    candidates: many.iter().map(|f| machine_addr(&f.hpath)).collect(),
+                },
             }),
         }
     }
@@ -680,7 +705,7 @@ fn composed_sections(
         // is the fix-class `ambiguous_ref`; any miss keeps `ref_not_found`.
         let all_ambiguous = failures
             .iter()
-            .all(|f| matches!(f, SelFail::Ambiguous { .. }));
+            .all(|f| matches!(f, SelFail::Ambiguous { .. } | SelFail::DupAnchor { .. }));
         let mut e = ErrorBody::new(if all_ambiguous {
             ErrorCode::AmbiguousRef
         } else {
@@ -1005,13 +1030,28 @@ pub fn to_model_ref(sec: &SecRef) -> Result<model::Ref, Box<ErrorBody>> {
 /// `ambiguous_ref` (§2.1: the strict plane never silently picks) — names each
 /// duplicate by both addressable disambiguators: its node index (`n=`, the
 /// §2.1 occurrence index) and its block id (`^block`) when it carries one.
-/// `candidates` holds the machine-addressable `n=` forms; duplicate block ids
-/// share one id that cannot disambiguate them, so their `candidates` stays
-/// `[]` — never prose inside the grammar field. `pub` because the host's
-/// write path raises the same refusal against a splice target.
+/// `candidates` holds the machine-addressable `n=` forms. Duplicate block ids
+/// share one spelling that cannot disambiguate them, so their `candidates`
+/// stays `[]` — never prose inside the grammar field — and their message is
+/// the anchor-plane refusal (count + the anchor-grammar remedy, never "rename
+/// one heading"; A.3, door symmetry over duplicate block ids). `pub` because
+/// the host's write path raises the same refusal against a splice target.
 #[must_use]
 pub fn ambiguous(sec: &SecRef, doc: &model::Document, candidates: &[model::Target]) -> ErrorBody {
     let mut e = ErrorBody::new(ErrorCode::AmbiguousRef);
+    // The anchor plane: duplicate ids share one spelling and the anchor
+    // grammar carries no occurrence index, so nothing machine-addressable
+    // exists to name — `candidates` stays `[]` and the message counts the
+    // carriers and teaches the anchor remedy, never "rename one heading"
+    // (A.3, door symmetry over duplicate block ids).
+    if let SecRef::Anchor { anchor } = sec {
+        e.candidates = Some(Vec::new());
+        e.message = Some(model::selector::render_anchor_ambiguity(
+            &format!("^{anchor}"),
+            candidates.len(),
+        ));
+        return e;
+    }
     // One naming per duplicate: node index (1-based occurrence) + its ^block.
     let named: Vec<model::selector::AmbiguityCandidate> = candidates
         .iter()
@@ -1043,13 +1083,7 @@ pub fn ambiguous(sec: &SecRef, doc: &model::Document, candidates: &[model::Targe
                 .collect::<Vec<_>>()
                 .join("/")
         }
-        SecRef::Anchor { anchor } => {
-            // Duplicate block ids share one id — it cannot disambiguate them,
-            // so `candidates` stays empty; the message names them by node
-            // index.
-            e.candidates = Some(Vec::new());
-            format!("^{anchor}")
-        }
+        SecRef::Anchor { .. } => unreachable!("the anchor arm returned above"),
         SecRef::FmKey { fm_key } => {
             e.candidates = Some(Vec::new());
             fm_key.clone()

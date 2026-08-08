@@ -10,16 +10,20 @@ use wire_serve::read::{NO_DECORATIONS, ReadParams, composed_read};
 /// Two `Dup` siblings under one parent — the dogfood F4 shape.
 const DOC: &str = "# Top\n\n## Dup\n\nfirst copy\n\n## Dup\n\nsecond copy\n\n## Solo\n\nalone\n";
 
-fn doc() -> model::Document {
+/// Two list items carrying ONE block id — the dogfood-p1-read-ambiguous-ref
+/// shape (wire-contract A.3, door symmetry over duplicate block ids).
+const DUP_ANCHOR_DOC: &str = "# Tasks\n\n- first ^same-id\n\n- second ^same-id\n\n# Notes\n\nalone\n";
+
+fn doc_of(body: &str) -> model::Document {
     let dir = tempfile::tempdir().expect("tempdir");
-    std::fs::write(dir.path().join("dup.md"), DOC).expect("write");
+    std::fs::write(dir.path().join("dup.md"), body).expect("write");
     let root = fs::WorkspaceRoot(dir.path().to_path_buf());
     fs::load(&root, std::path::Path::new("dup.md")).expect("load")
 }
 
-fn read(sections: Vec<ReadSel>) -> Result<ResponseBody, Box<wire::ErrorBody>> {
+fn read_of(body: &str, sections: Vec<ReadSel>) -> Result<ResponseBody, Box<wire::ErrorBody>> {
     composed_read(
-        &doc(),
+        &doc_of(body),
         &WPath("dup.md".into()),
         &wire::Root("r".into()),
         &ReadParams {
@@ -30,6 +34,10 @@ fn read(sections: Vec<ReadSel>) -> Result<ResponseBody, Box<wire::ErrorBody>> {
         None,
         &NO_DECORATIONS,
     )
+}
+
+fn read(sections: Vec<ReadSel>) -> Result<ResponseBody, Box<wire::ErrorBody>> {
+    read_of(DOC, sections)
 }
 
 fn seg(h: &str, n: Option<u32>) -> HpathSeg {
@@ -110,6 +118,61 @@ fn single_miss_keeps_spelling_and_remedy_names_both_dialects() {
     );
     assert!(msg.contains("mode:\"toc\""), "MCP dialect named: {msg}");
     assert!(msg.contains("no --section"), "CLI dialect named: {msg}");
+}
+
+/// P1 (dogfood-p1-read-ambiguous-ref): a `^id` selector whose id two blocks
+/// carry refuses `ambiguous_ref` — never a silent first match. The old door
+/// served the first occurrence with exit 0 and handed out a `sec_rev` the
+/// write door then refused, so read-then-write on a duplicated anchor was
+/// unserviceable. No machine address exists per candidate (duplicate ids
+/// share one spelling; the anchor grammar has no `n`), so the refusal counts
+/// the carriers and teaches the anchor remedy.
+#[test]
+fn duplicate_anchor_selector_refuses_ambiguous_never_serves_first() {
+    let err = *read_of(DUP_ANCHOR_DOC, vec![ReadSel::parse("^same-id")])
+        .expect_err("a duplicated block id refuses");
+    assert_eq!(err.code, ErrorCode::AmbiguousRef);
+    let msg = err.message.as_deref().expect("message");
+    assert!(
+        !msg.contains("no section addressed"),
+        "two blocks matched; a miss-shaped message is the dishonest answer: {msg}"
+    );
+    assert!(
+        msg.contains("\"^same-id\" is ambiguous (2 blocks carry this id"),
+        "{msg}"
+    );
+    assert!(
+        msg.contains("give each a distinct id"),
+        "the remedy speaks the anchor grammar: {msg}"
+    );
+    assert!(
+        !msg.contains("rename one heading"),
+        "never the heading-duplicate remedy on an anchor refusal: {msg}"
+    );
+}
+
+/// Partial failure over a duplicated anchor: the resolved selector still
+/// serves, and the notice names the duplicate with the anchor-plane reason —
+/// no rev is minted for it.
+#[test]
+fn partial_failure_notice_names_the_duplicated_anchor() {
+    let out = read_of(
+        DUP_ANCHOR_DOC,
+        vec![ReadSel::parse("Notes"), ReadSel::parse("^same-id")],
+    )
+    .expect("the resolved selector still serves");
+    let ResponseBody::Read {
+        sections, notice, ..
+    } = out
+    else {
+        panic!("read body expected");
+    };
+    assert_eq!(sections.expect("sections mode").len(), 1);
+    let notice = notice.expect("partial read carries a notice");
+    assert!(
+        notice.contains("^same-id (ambiguous, 2 blocks carry this id)"),
+        "{notice}"
+    );
 }
 
 /// Partial failure still serves the resolved content; the notice names the

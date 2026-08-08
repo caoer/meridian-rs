@@ -523,6 +523,29 @@ pub fn render_ambiguity(selector: &str, candidates: &[AmbiguityCandidate]) -> St
     )
 }
 
+/// Anchor-plane ambiguity teaching refusal, verbatim exemplar
+/// ([`render_anchor_ambiguity`] interpolates the real selector/count; drift
+/// fails tests). Unlike [`D1_TEACHING_REFUSAL_EXEMPLAR`] it lists no
+/// candidates: duplicate block ids share one spelling and the anchor grammar
+/// carries no occurrence index (`n` disambiguates hpath segments;
+/// `{"anchor":id}` has no `n` slot), so nothing machine-addressable exists to
+/// name — and the remedy speaks the anchor grammar, never "rename one heading"
+/// (wire-contract A.3, door symmetry over duplicate block ids).
+pub const ANCHOR_AMBIGUITY_REFUSAL_EXEMPLAR: &str = "refused: selector '^same-id' is ambiguous — 2 blocks carry this id. Unambiguous reads and writes to this file remain served. Fix: give each duplicate block a distinct id (a block id addresses exactly one block in its file), or address the enclosing section by heading path; see [[selector-grammar]].";
+
+/// Render the anchor-plane ambiguity refusal for a duplicated block id.
+/// Wording is carried verbatim from [`ANCHOR_AMBIGUITY_REFUSAL_EXEMPLAR`].
+#[must_use]
+pub fn render_anchor_ambiguity(selector: &str, count: usize) -> String {
+    format!(
+        "refused: selector '{selector}' is ambiguous — {count} blocks carry this id. \
+         Unambiguous reads and writes to this file remain served. Fix: give each \
+         duplicate block a distinct id (a block id addresses exactly one block in \
+         its file), or address the enclosing section by heading path; see \
+         [[selector-grammar]]."
+    )
+}
+
 // Cross-vault measured-absence refusal (verbatim anchors)
 
 /// Resolve-plane partial-state clause (with config/wire-serve siblings).
@@ -808,6 +831,27 @@ mod tests {
         assert!(
             msg.ends_with(TEACH_TAIL),
             "every rendered refusal carries the verbatim teaching tail: {msg}"
+        );
+    }
+
+    /// The anchor-plane renderer reproduces its exemplar byte for byte on the
+    /// exemplar's inputs, and its remedy never speaks the heading grammar
+    /// (wire-contract A.3, door symmetry over duplicate block ids).
+    #[test]
+    fn render_anchor_ambiguity_carries_the_exemplar_verbatim() {
+        assert_eq!(
+            render_anchor_ambiguity("^same-id", 2),
+            ANCHOR_AMBIGUITY_REFUSAL_EXEMPLAR,
+            "the renderer must reproduce the pinned exemplar byte for byte"
+        );
+        let other = render_anchor_ambiguity("^r-000042", 3);
+        assert!(
+            other.starts_with("refused: selector '^r-000042' is ambiguous — 3 blocks carry"),
+            "different inputs are named, same shape: {other}"
+        );
+        assert!(
+            !other.contains("rename one heading"),
+            "the anchor remedy never speaks the heading grammar: {other}"
         );
     }
 
