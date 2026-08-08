@@ -234,16 +234,28 @@ entry against a corpus of `C` domain members:
 ```
 wall clock  ≥  trips × pass(C)
 
-trips = 3 + Σ per read: (2 + N) whole-file, N = its frontmatter key count
-                        (1)     sectioned
+trips = 3 + Σ per read: (2) whole-file
+                        (1) sectioned
 ```
 
 `3` is the fixed frame — `hello`, `fingerprint`, and the commit. A whole-file
-`read(path)` is `toc`, one `cat` per frontmatter key, and a closing composed
-`read` that brackets them, so an ordinary session artifact with five to eight
-keys costs seven to ten trips. **A program's ceiling is set by its frontmatter,
-not only by its read count** — which is the single most surprising thing about
-this entry's cost, and the reason it is written down here.
+`read(path)` is **two** trips: the `toc` op, and the composed `read` (§4.1, toc
+mode) that brackets it and carries `words_total` plus the frontmatter.
+
+**Two is the floor, not one** *(amended 2026-08-08)*. The composed read alone
+almost suffices — it already carries `file_rev`, the heading rows,
+`words_total`, and `props[]` with every value decoded per § A.6. What it does
+not carry is a rev for `^anchor` rows: `wire::ReadAnchor` is `{anchor, span}`
+and `wire::ReadRow` has no anchor field, while the `toc` op's nodes publish an
+anchor row with its own `node_rev`. Collapsing to one op would silently drop
+anchor rows from the face a script sees, so the `toc` trip stays.
+
+Until this amendment the frontmatter cost one `cat` **per key** on top, making a
+whole-file read `2+N` trips — seven to ten for an ordinary session artifact, so
+a program's ceiling was set by its pages' frontmatter rather than by its own
+read count. The per-key fan-out was justified in-code by the composed read
+having "no frontmatter plane"; that stopped being true when `props[]` was
+added, and the fan-out outlived its reason.
 
 **What a pass costs.** Every trip is answered from the warm engine, and the
 engine is proved current first over the WHOLE hash domain: a read is
