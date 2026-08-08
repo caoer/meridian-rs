@@ -30,7 +30,7 @@ pub use check::{
     Report, SecView, SectionVerdict, VERDICT_INVALID, VERDICT_LEGACY, VERDICT_VALID, check,
     doc_sections, scan_nested,
 };
-pub use fm::{FmMeta, FmValue, parse_meta, string_field};
+pub use fm::{FmMeta, FmValue, parse_meta, string_field, unquoted_decodes_nested};
 pub use go_fmt::go_quote;
 pub use i4::{ConformanceRequest, ConformanceResult, Repair, conformance};
 pub use load::{Def, DefError, PropSpec, SectionRule, parse_def};

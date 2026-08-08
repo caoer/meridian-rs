@@ -355,18 +355,20 @@ fn toc_entry(node: &Value) -> Option<TocEntry> {
 }
 
 /// The value on a frontmatter key line — the inverse of the server's own
-/// compose (`model::PutAt::Upsert`: "the server composes `{key}: {value}`").
+/// compose (`model::PutAt::Upsert`: "the server composes `{key}: {value}`"),
+/// presented as the logical YAML scalar (wire-contract § A.3 bakeoff-yaml).
 ///
 /// The key may be quoted on disk (the resolver matches
 /// `k.trim().trim_matches(['"', '\''])`), so the split is on the first colon
 /// rather than on the key text. A block value spanning several lines comes back
-/// whole; only the line terminator is dropped.
+/// whole; only the line terminator is dropped, then surrounding quotes strip.
 fn fm_value_of(line: &str) -> String {
     let rest = line
         .split_once(':')
         .map_or(line, |(_, value)| value)
         .trim_end_matches('\n');
-    rest.strip_prefix(' ').unwrap_or(rest).to_owned()
+    let as_stored = rest.strip_prefix(' ').unwrap_or(rest);
+    model::present_yaml_scalar(as_stored)
 }
 
 #[cfg(test)]
@@ -386,7 +388,18 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    use super::{Door, Instant, ScriptHost, SocketDoor, Value, WireHost, io, json};
+    use super::{Door, Instant, ScriptHost, SocketDoor, Value, WireHost, fm_value_of, io, json};
+
+    /// bakeoff-yaml read half on the script face: cat key-line bytes unquote
+    /// to the logical scalar (dogfood season-1 quote cases).
+    #[test]
+    fn fm_value_of_presents_logical_scalars() {
+        assert_eq!(fm_value_of("owner: \"\"\n"), "");
+        assert_eq!(fm_value_of("owner: \"3f9a1c07\"\n"), "3f9a1c07");
+        assert_eq!(fm_value_of("owner: \"[[1ed98864]]\"\n"), "[[1ed98864]]");
+        assert_eq!(fm_value_of("status: doing\n"), "doing");
+        assert_eq!(fm_value_of("reviewer: '[[id]]'\n"), "[[id]]");
+    }
 
     /// The one page the fake door serves. Two frontmatter keys, so a whole-file
     /// read is FOUR round trips — `toc`, `cat`, `cat`, `read` — which is what

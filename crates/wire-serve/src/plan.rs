@@ -788,6 +788,26 @@ mod tests {
         assert_eq!(text, "note: 'a: b'");
     }
 
+    /// bakeoff-yaml write half: fleet ref-shaped `[[id]]` quotes through the
+    /// same owner so the unquoted emit cannot manufacture Nested.
+    #[test]
+    fn property_value_quotes_fleet_ref_shaped_values() {
+        let edits = super::lower(
+            &doc("---\nowner: \n---\n# A\n\nx\n"),
+            &[PlanEdit::SetProperty {
+                key: "owner".into(),
+                value: "[[1ed98864]]".into(),
+                rev: None,
+            }],
+        )
+        .expect("lowers");
+        let (_, text) = put_text(&edits[0]);
+        assert_eq!(
+            text, "owner: '[[1ed98864]]'",
+            "fleet owner must land quoted: {text}"
+        );
+    }
+
     /// Empty value keeps trailing space (`k: `, not model-upsert `k:`).
     #[test]
     fn property_empty_value_keeps_trailing_space() {

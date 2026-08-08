@@ -2,10 +2,10 @@
 //! § A.3): key facts served at the same snapshot as the rest of the body.
 //!
 //! Four laws, each pinned here: one row per top-level key in document order
-//! with the value as stored; `prop_rev`/`span` agree with the `cat` `fm_key`
-//! grain (one rev per node — no second derivation); always emitted, empty
-//! without frontmatter; document-grain — neither `frag` nor sections mode
-//! scopes it away.
+//! with the **logical** scalar value (quotes stripped); `prop_rev`/`span`
+//! agree with the `cat` `fm_key` grain (one rev per node — no second
+//! derivation); always emitted, empty without frontmatter; document-grain —
+//! neither `frag` nor sections mode scopes it away.
 
 use serde_json::{Value, json};
 
@@ -46,7 +46,7 @@ fn props_serve_key_facts_that_agree_with_the_cat_fm_key_grain() {
     assert_eq!(
         kv,
         vec![("type", "note"), ("status", "seeded")],
-        "one row per top-level key, document order, value as stored"
+        "one row per top-level key, document order, logical scalar value"
     );
     for (row, cat) in props.iter().zip(&frames[2..=3]) {
         assert_eq!(cat["ok"], json!(true), "cat fm_key serves: {cat}");
@@ -145,5 +145,73 @@ fn a_block_value_serves_the_key_line_remainder_and_the_full_grain() {
     assert_eq!(
         props[0]["prop_rev"], frames[2]["body"]["node_rev"],
         "the CAS token is minted over the full grain bytes"
+    );
+}
+
+/// bakeoff-yaml read half: quoted fleet-canonical scalars present without
+/// quote bytes. Negative-proof partner of the write-half guard — these
+/// comparisons fail on the unfixed base (quotes kept).
+#[test]
+fn props_present_logical_scalars_without_quote_bytes() {
+    let home = tempfile::tempdir().expect("workspace");
+    let dir = home.path().join("corpus");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    // Dogfood season-1 quote cases, on disk as the fleet writes them.
+    let raw = "---\n\
+               empty: \"\"\n\
+               plain: \"3f9a1c07\"\n\
+               owner: \"[[1ed98864]]\"\n\
+               status: doing\n\
+               ---\n\n# Body\n";
+    std::fs::write(dir.join("quoted.md"), raw).expect("fixture");
+    let frames = serve(
+        home.path(),
+        &[json!({"id":1,"op":"read","path":"corpus/quoted.md"})],
+    );
+    let props = frames[1]["body"]["props"].as_array().expect("props plane");
+    let kv: std::collections::BTreeMap<&str, &str> = props
+        .iter()
+        .map(|p| {
+            (
+                p["key"].as_str().expect("key"),
+                p["value"].as_str().expect("value"),
+            )
+        })
+        .collect();
+    assert_eq!(kv.get("empty").copied(), Some(""), "owner: \"\" → empty string, len 0");
+    assert_eq!(
+        kv.get("plain").copied(),
+        Some("3f9a1c07"),
+        "quoted plain scalar strips quotes"
+    );
+    assert_eq!(
+        kv.get("owner").copied(),
+        Some("[[1ed98864]]"),
+        "fleet-canonical owner presents without quote bytes"
+    );
+    assert_eq!(
+        kv.get("status").copied(),
+        Some("doing"),
+        "unquoted scalars stay as-is"
+    );
+    // prop_rev still hashes as-stored grain (cat content keeps quotes).
+    let cat = serve(
+        home.path(),
+        &[json!({"id":2,"op":"cat","path":"corpus/quoted.md","sec":{"fm_key":"owner"}})],
+    );
+    let owner_row = props
+        .iter()
+        .find(|p| p["key"] == "owner")
+        .expect("owner row");
+    assert_eq!(
+        owner_row["prop_rev"], cat[1]["body"]["node_rev"],
+        "unquoting never retargets the CAS token"
+    );
+    assert!(
+        cat[1]["body"]["content"]
+            .as_str()
+            .expect("content")
+            .contains(r#""[[1ed98864]]""#),
+        "cat still serves the as-stored key line"
     );
 }

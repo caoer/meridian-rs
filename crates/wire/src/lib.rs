@@ -829,7 +829,7 @@ pub struct ReadAnchor {
 }
 
 /// One composed-read frontmatter key fact — the map tense of the frontmatter
-/// plane (wire-contract § A.3): the key, its value as stored, and the full
+/// plane (wire-contract § A.3): the key, its logical scalar value, and the full
 /// key grain's span + CAS token, all at the same snapshot as the rest of the
 /// body. One row per top-level key, document order, first occurrence wins
 /// (the model's flat parse is the keys authority).
@@ -838,10 +838,10 @@ pub struct ReadProp {
     /// The top-level frontmatter key — the same string the §2.1 `fm_key`
     /// form addresses, so the read→set loop closes off this row.
     pub key: String,
-    /// The key line's value as stored: the colon remainder,
-    /// whitespace-trimmed, quotes kept. A block value (indented continuation
-    /// lines) serves the key line's own remainder — empty when that line
-    /// carries none; nothing is re-serialized (no YAML library).
+    /// The key line's logical YAML scalar: colon remainder, whitespace-
+    /// trimmed, surrounding quotes stripped (wire-contract § A.3). A block
+    /// value serves the key line's own remainder — empty when that line
+    /// carries none. `prop_rev` still hashes the as-stored grain.
     pub value: String,
     /// The full key grain span (the key line plus its indented continuation
     /// lines), intra-file byte offsets, root-independent.

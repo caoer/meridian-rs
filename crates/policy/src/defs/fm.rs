@@ -144,6 +144,15 @@ fn classify_scalar_or_flow(v: &str) -> FmValue {
     classify_scalar(v)
 }
 
+/// Whether an unquoted inline value would land as [`FmValue::Nested`] under
+/// the substrate-law parser (list-in-list, flow maps, …). The write path
+/// quotes these so a caller-passed string — including fleet refs `[[id]]` —
+/// stays a string scalar instead of manufacturing nesting.
+#[must_use]
+pub fn unquoted_decodes_nested(v: &str) -> bool {
+    matches!(classify_scalar_or_flow(v), FmValue::Nested)
+}
+
 /// A flow sequence `[a, 'b', [c]]` — items split quote- and bracket-aware
 /// (one-level-deep law: an inner `[` or `{` is already the nested class).
 fn classify_flow_seq(v: &str) -> FmValue {

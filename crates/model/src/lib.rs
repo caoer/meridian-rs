@@ -58,6 +58,10 @@ pub struct MerkleRoot(pub String);
 /// Parsed frontmatter, document order preserved — wire `keys` must echo
 /// document order (B1 predicate 4). Flat `(key, value)` pairs, first occurrence
 /// wins; no YAML library (no-serde crate law).
+///
+/// Values are **as-stored** (quote decoration kept) so the property-fingerprint
+/// three-state law can tell bare null from `status: ""`. Presentation faces
+/// (composed-read `props`, script `fm`) call [`present_yaml_scalar`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct YamlMap(pub Vec<(String, String)>);
 
@@ -66,6 +70,45 @@ impl YamlMap {
     pub fn keys(&self) -> impl Iterator<Item = &str> {
         self.0.iter().map(|(k, _)| k.as_str())
     }
+}
+
+/// Present a frontmatter scalar for comparison: strip one balanced pair of
+/// surrounding YAML quotes and apply their escape rules. As-stored map values
+/// keep quote decoration ([`YamlMap`]); this is the presentation transform for
+/// the props plane and the script `fm` face (wire-contract § A.3).
+#[must_use]
+pub fn present_yaml_scalar(as_stored: &str) -> String {
+    let v = as_stored.trim();
+    if let Some(inner) = v.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')) {
+        return inner.replace("''", "'");
+    }
+    if let Some(inner) = v.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+        return unescape_double_quoted(inner);
+    }
+    v.to_string()
+}
+
+fn unescape_double_quoted(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('"') => out.push('"'),
+            Some('\\') => out.push('\\'),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
 }
 
 /// The governed tree node. Every node carries kind + span + `node_rev` + hpath
@@ -1914,6 +1957,20 @@ mod tests {
             return Some(node);
         }
         node.children.iter().find_map(|c| find(c, pred))
+    }
+
+    /// Presentation unquote: fleet-canonical quoted scalars compare as their
+    /// logical form (wire-contract § A.3 bakeoff-yaml). As-stored YamlMap is
+    /// unchanged — this is the face transform only.
+    #[test]
+    fn present_yaml_scalar_strips_fleet_quotes() {
+        assert_eq!(present_yaml_scalar(r#""""#), "");
+        assert_eq!(present_yaml_scalar(r#""3f9a1c07""#), "3f9a1c07");
+        assert_eq!(present_yaml_scalar(r#""[[1ed98864]]""#), "[[1ed98864]]");
+        assert_eq!(present_yaml_scalar("doing"), "doing");
+        assert_eq!(present_yaml_scalar("'review: pending'"), "review: pending");
+        assert_eq!(present_yaml_scalar(r#""a\"b""#), "a\"b");
+        assert_eq!(present_yaml_scalar("'it''s'"), "it's");
     }
 
     /// A subpath linkpath (`a/b`) resolves to the path ending in `a/b.md`, not to

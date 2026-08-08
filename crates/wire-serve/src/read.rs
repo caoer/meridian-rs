@@ -314,11 +314,12 @@ fn read_anchor(f: &wire_map::facts::ReadFact) -> Option<wire::ReadAnchor> {
 }
 
 /// The frontmatter-properties plane (wire-contract § A.3): one row per
-/// top-level key, document order, first occurrence wins. Keys and values come
-/// off the model's flat parse (the keys authority); span and CAS token come
-/// off the same `fm_key` grain resolution the write plane compares against,
-/// so the served `prop_rev` and a later `if_node_rev` cannot be two
-/// derivations of one fact.
+/// top-level key, document order, first occurrence wins. Keys come off the
+/// model's flat parse (the keys authority); values are the logical YAML
+/// scalar ([`model::present_yaml_scalar`]); span and CAS token come off the
+/// same `fm_key` grain resolution the write plane compares against, so the
+/// served `prop_rev` and a later `if_node_rev` cannot be two derivations of
+/// one fact.
 fn read_props(doc: &model::Document) -> Vec<wire::ReadProp> {
     let Some(map) = frontmatter_map(&doc.root) else {
         return Vec::new();
@@ -333,7 +334,9 @@ fn read_props(doc: &model::Document) -> Vec<wire::ReadProp> {
                 .expect("frontmatter map key resolves against its own document");
             wire::ReadProp {
                 key: key.clone(),
-                value: value.clone(),
+                // Logical scalar for comparison — as-stored map keeps quotes
+                // for the fingerprint three-state law (wire-contract § A.3).
+                value: model::present_yaml_scalar(value),
                 span: Span(target.span.start as u64, target.span.end as u64),
                 prop_rev: NodeRev(target.node_rev.0),
             }

@@ -237,6 +237,41 @@ fn set_property_refuses_multiline_values_that_forge_frontmatter_keys() {
     );
 }
 
+/// bakeoff-yaml write half: fleet ref-shaped values (`[[id]]`) would decode as
+/// Nested when left unquoted — the predicate quotes them so set_property can
+/// emit the fleet-canonical form. One-level flow lists stay unquoted.
+#[test]
+fn yaml_safe_value_quotes_nested_shaped_fleet_refs() {
+    assert_eq!(
+        policy::defs::yaml_safe_value("[[1ed98864]]"),
+        Ok("'[[1ed98864]]'".to_string()),
+        "fleet owner/ref shape must quote — unquoted is Nested"
+    );
+    assert_eq!(
+        policy::defs::yaml_safe_value("[[a, b]]"),
+        Ok("'[[a, b]]'".to_string()),
+        "list-of-list is Nested; set_property keeps it a string"
+    );
+    assert_eq!(
+        policy::defs::yaml_safe_value("[a, b]"),
+        Ok("[a, b]".to_string()),
+        "one-level flow list stays unquoted for list shapes"
+    );
+    assert_eq!(
+        policy::defs::yaml_safe_value("8ab41c02"),
+        Ok("8ab41c02".to_string()),
+        "plain scalars stay verbatim"
+    );
+    assert!(
+        policy::defs::unquoted_decodes_nested("[[1ed98864]]"),
+        "substrate parser classifies fleet ref as Nested when unquoted"
+    );
+    assert!(
+        !policy::defs::unquoted_decodes_nested("[a, b]"),
+        "one-level list is not Nested"
+    );
+}
+
 /// Finding 5 / R5: the KEY half of the composed `{key}: {value}` line gets the
 /// same shape S4b gave the value — a fallible owner. `SafeKey`'s field is
 /// private, so the only way to obtain the spelling the composition accepts is
@@ -389,6 +424,21 @@ fn rebuild_candidate_bytes_match_go_plan_semantics() {
     assert!(
         cand.raw.contains("\nstatus: 'review: pending'\n"),
         "yamlSafeValue quoting: {}",
+        cand.raw
+    );
+
+    // bakeoff-yaml write half: fleet ref-shaped value lands quoted, not Nested.
+    let cand = run(
+        DOC,
+        &[PlanEdit {
+            body: "[[1ed98864]]".into(),
+            ..edit("set_property", "status")
+        }],
+    )
+    .expect("fleet ref-shaped prop rebuilds");
+    assert!(
+        cand.raw.contains("\nstatus: '[[1ed98864]]'\n"),
+        "fleet [[id]] must quote on write: {}",
         cand.raw
     );
 

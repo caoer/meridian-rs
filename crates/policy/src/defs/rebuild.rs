@@ -736,15 +736,20 @@ impl std::fmt::Display for MultiLineValue {
     }
 }
 
-/// Go `yamlSafeValue` (E2 finding 1): quote IFF the `k: <val>` probe ERRORS
-/// or decodes a MAP; everything that parses non-map passes VERBATIM — typed
-/// scalars, flow lists, and crucially list-of-list (`[[a, b]]`), which lands
-/// raw so the I4 nested-frontmatter law (not a shape check) judges it. The
-/// error class is approximated by its two live shapes: an unquoted mid-value
-/// `": "` (mapping in value position) and an unterminated leading quote.
-/// SHARED (U8b): the splice plan-lowering quotes `set_property` values through
-/// THIS predicate — single-owner discipline, so the `check_write` candidate and
-/// the written bytes cannot drift.
+/// Quote a `set_property` value when the unquoted form would not land as the
+/// caller's string scalar (wire-contract § A.3 bakeoff-yaml write law).
+///
+/// Quotes when: mid-value `": "` (mapping in value position), an unterminated
+/// leading quote, a flow map (`{…}`), **or a Nested-shaped value under the
+/// substrate frontmatter parser** (list-in-list / nested flow — including the
+/// fleet ref shape `[[id]]`, which is a string under `shape:ref` and Nested
+/// when left unquoted). One-level flow lists (`[a, b]`) stay unquoted so
+/// list-shaped properties keep their on-disk grammar. Nested introduction via
+/// `set_property` is no longer manufactured by unquoted emit.
+///
+/// SHARED (U8b): the splice plan-lowering quotes through THIS predicate —
+/// single-owner discipline, so the `check_write` candidate and the written
+/// bytes cannot drift.
 ///
 /// # Errors
 /// `MultiLineValue` when the value carries a `\n`/`\r` (D11): the server writes
@@ -764,7 +769,10 @@ pub fn yaml_safe_value(val: &str) -> Result<String, MultiLineValue> {
     let colon_space = unquoted && val.contains(": ");
     let unterminated_quote = (val.starts_with('\'') && (val.len() < 2 || !val.ends_with('\'')))
         || (val.starts_with('"') && (val.len() < 2 || !val.ends_with('"')));
-    if map_shaped || colon_space || unterminated_quote {
+    // Nested-shaped unquoted values (fleet `[[id]]`, list-in-list) must quote
+    // so the string the caller passed stays a string on disk.
+    let nested = unquoted && super::fm::unquoted_decodes_nested(val);
+    if map_shaped || colon_space || unterminated_quote || nested {
         return Ok(format!("'{}'", val.replace('\'', "''")));
     }
     Ok(val.to_string())
