@@ -113,7 +113,21 @@ pub fn load_doc(root: &fs::WorkspaceRoot, path: &Path) -> Result<model::Document
                 err.path = Some(path.clone());
                 err
             }
-            std::io::ErrorKind::InvalidData => ErrorBody::new(ErrorCode::InvalidUtf8),
+            std::io::ErrorKind::InvalidData => {
+                // §8 binds `invalid_utf8{path,message}`: name the member and
+                // teach where its bytes stand — the bare code token strands
+                // the operator. Wording mirrors the daemon's per-file frame
+                // (registry `doc_or_refusal`) so warm and degrade do not
+                // drift.
+                let mut err = ErrorBody::new(ErrorCode::InvalidUtf8);
+                err.path = Some(path.clone());
+                err.message = Some(format!(
+                    "{} is not UTF-8 — the file serves no spans/nodes; its bytes stay under \
+                     the root",
+                    path.0
+                ));
+                err
+            }
             _ => {
                 let mut err = ErrorBody::new(ErrorCode::IoError);
                 err.cause = Some(e.to_string());
