@@ -178,9 +178,9 @@ fn rebuild_refusals_match_the_u0_goldens() {
 }
 
 /// S4b/D11: a `set_property` value carrying a newline forges frontmatter keys
-/// (`{key}: {value}` is composed literally, and a single-quoted YAML scalar
-/// cannot escape a raw newline) — so the shared predicate REFUSES it, and the
-/// rebuild yields NO candidate for any injection spelling.
+/// (`{key}: {value}` is composed literally, and a single-line YAML scalar —
+/// quoted or not — cannot carry a raw newline) — so the shared predicate
+/// REFUSES it, and the rebuild yields NO candidate for any injection spelling.
 #[test]
 fn set_property_refuses_multiline_values_that_forge_frontmatter_keys() {
     // The forged-key spelling: no ": " anywhere, so the conditional quote would
@@ -198,8 +198,9 @@ fn set_property_refuses_multiline_values_that_forge_frontmatter_keys() {
         "prop-injection-forged-key",
     );
 
-    // The quoted spelling: a mid-value ": " DOES trigger the single quote, and
-    // the quote leaks across the newline — refused for the same reason.
+    // The quoted spelling: a mid-value ": " DOES trigger the quote (the
+    // § A.6.3 double-quoted emit — the former single-quote emit is retired),
+    // and the quote leaks across the newline — refused for the same reason.
     assert_err(
         run(
             DOC,
