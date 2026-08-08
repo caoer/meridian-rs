@@ -186,23 +186,19 @@ pub(crate) fn frontmatter(doc: &Document) -> Option<&YamlMap> {
     find(&doc.root)
 }
 
-/// Strip one pair of matching surrounding quotes (frontmatter values keep
-/// their quote characters; the key side is unquoted by `model`).
-fn unquote(value: &str) -> &str {
-    let v = value.trim();
-    for q in ['"', '\''] {
-        if v.len() >= 2 && v.starts_with(q) && v.ends_with(q) {
-            return &v[1..v.len() - 1];
-        }
-    }
-    v
+/// The § A.6.1 scalar law, through its one owner. The stored form keeps its
+/// quote characters (`model`'s flat parse is the hash grain, § A.6.2); a
+/// binding VALUE is a string, so it is decoded exactly where it is read.
+fn unquote(value: &str) -> String {
+    model::scalar::text(value)
 }
 
 /// Parse a binding value as the same-file block linktext: `#^id`, with
 /// optional `[[…]]` brackets and `|alias` sugar (the §2.2 walk-plane spelling,
 /// sugar stripped before resolution). Anything else is a typed refusal.
 fn parse_binding_value(name: &str, raw_value: &str) -> Result<String, AddressError> {
-    let mut v = unquote(raw_value);
+    let decoded = unquote(raw_value);
+    let mut v = decoded.as_str();
     if let Some(inner) = v.strip_prefix("[[").and_then(|s| s.strip_suffix("]]")) {
         v = inner;
     }
