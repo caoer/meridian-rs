@@ -1305,10 +1305,22 @@ fn resolve_cold(
 }
 
 /// `file_not_found` for a wire read op whose `path` is not in the resident
-/// corpus (the daemon's single-file reads are hash-domain-scoped).
+/// corpus (the daemon's single-file reads are hash-domain-scoped) — and the
+/// message says so: a file that does not exist and a real `.md` outside the
+/// hash domain answer this SAME refusal, so the caller is told both readings
+/// exist and where the domain rules live (dogfood 2026-08-08, opus P3-2).
 fn file_not_found(path: &wire::Path) -> Box<ErrorBody> {
     let mut e = ErrorBody::new(ErrorCode::FileNotFound);
     e.path = Some(path.clone());
+    e.message = Some(format!(
+        "the corpus does not serve {}: either no such file exists under the \
+         workspace root, or the file is real but outside the hash domain \
+         (md-only floor, dot-segment and `meridian/domain.md` ignores — \
+         wire-contract §12). Nothing was read and no rev was minted. Fix: check \
+         the workspace-relative spelling; if the file is real on disk it is \
+         domain-excluded, and `meridian/domain.md` names the ignore rules.",
+        path.0
+    ));
     Box::new(e)
 }
 
