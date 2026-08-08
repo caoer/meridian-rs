@@ -1,11 +1,13 @@
 //! The frontmatter-properties plane on the composed `read` (wire-contract
 //! § A.3): key facts served at the same snapshot as the rest of the body.
 //!
-//! Four laws, each pinned here: one row per top-level key in document order
-//! with the value as stored; `prop_rev`/`span` agree with the `cat` `fm_key`
-//! grain (one rev per node — no second derivation); always emitted, empty
-//! without frontmatter; document-grain — neither `frag` nor sections mode
-//! scopes it away.
+//! Five laws, each pinned here: one row per top-level key in document order
+//! with the value as a canonical scalar (a stored quoted scalar serves
+//! decoded — quotes and escapes resolved; any other stored form verbatim);
+//! `prop_rev`/`span` agree with the `cat` `fm_key` grain (one rev per node —
+//! no second derivation); always emitted, empty without frontmatter;
+//! document-grain — neither `frag` nor sections mode scopes it away; and the
+//! block-value grain.
 
 use serde_json::{Value, json};
 
@@ -110,6 +112,73 @@ fn props_are_document_grain_in_both_modes() {
             "document-grain: no mode and no frag scopes the plane ({frame})"
         );
     }
+}
+
+/// The value law (wire-contract § A.3, amended 2026-08-07): a stored QUOTED
+/// scalar serves decoded — quote bytes are storage syntax, not value — and
+/// every other stored form serves verbatim. The fixture rows are the dogfood
+/// season-1 finding-1 table translated 1:1 (the fleet-canonical shapes), plus
+/// the escape grammar and the no-coercion guards. `prop_rev`/`span` still
+/// agree with the `cat` `fm_key` grain for a quoted row: the decoding never
+/// moves a rev.
+#[test]
+fn props_serve_canonical_scalars_quoted_values_decode() {
+    let home = tempfile::tempdir().expect("workspace");
+    let dir = home.path().join("corpus");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    // The season-1 table: `owner: ""` read back as length 2, `owner:
+    // "3f9a1c07"` as 10, `owner: "[[1ed98864]]"` as 14 — every quoted row
+    // wrong, every unquoted row right.
+    let raw = "---\n\
+               owner: \"\"\n\
+               claimer: \"3f9a1c07\"\n\
+               author: \"[[1ed98864]]\"\n\
+               single: 'zt'\n\
+               doubled: 'it''s'\n\
+               escaped: \"a \\\"b\\\" \\\\ c\"\n\
+               status: doing\n\
+               count: 007\n\
+               tags: [a, b]\n\
+               ---\n\n# Body\n";
+    std::fs::write(dir.join("quoted.md"), raw).expect("fixture");
+    let frames = serve(
+        home.path(),
+        &[
+            json!({"id":1,"op":"read","path":"corpus/quoted.md"}),
+            json!({"id":2,"op":"cat","path":"corpus/quoted.md","sec":{"fm_key":"author"}}),
+        ],
+    );
+    let props = frames[1]["body"]["props"].as_array().expect("props plane");
+    let kv: Vec<(&str, &str)> = props
+        .iter()
+        .map(|p| {
+            (
+                p["key"].as_str().expect("key"),
+                p["value"].as_str().expect("value"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        kv,
+        vec![
+            ("owner", ""),               // `""` — quoted-empty serves empty
+            ("claimer", "3f9a1c07"),     // double quotes dropped
+            ("author", "[[1ed98864]]"),  // the fleet-canonical wikilink value
+            ("single", "zt"),            // single quotes dropped
+            ("doubled", "it's"),         // `''` unescapes to `'`
+            ("escaped", "a \"b\" \\ c"), // `\"` and `\\` unescape
+            ("status", "doing"),         // unquoted scalar: verbatim
+            ("count", "007"),            // no type coercion at the read seam
+            ("tags", "[a, b]"),          // a flow collection: verbatim
+        ],
+        "quoted scalars serve decoded; everything else verbatim"
+    );
+    let author = &props[2];
+    assert_eq!(
+        author["prop_rev"], frames[2]["body"]["node_rev"],
+        "the rev is minted over the STORED grain bytes — decoding never moves it"
+    );
+    assert_eq!(author["span"], frames[2]["body"]["span"]);
 }
 
 /// A block value (indented continuation lines) serves the key line's own

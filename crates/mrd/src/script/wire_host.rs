@@ -388,6 +388,32 @@ mod tests {
 
     use super::{Door, Instant, ScriptHost, SocketDoor, Value, WireHost, io, json};
 
+    /// The script face's value law (wire-contract § A.3, 2026-08-07): a stored
+    /// quoted scalar serves DECODED — quote bytes are storage syntax, not
+    /// value — and any other stored form serves verbatim. Dogfood season-1
+    /// finding 1 measured `card.fm["owner"]` carrying quote bytes on every
+    /// quoted row; these are that table's rows at the seam that failed.
+    #[test]
+    fn fm_value_serves_the_canonical_scalar() {
+        // (stored key line, served value) — the season-1 rows first.
+        let cases: &[(&str, &str)] = &[
+            ("owner: \"\"\n", ""),                        // quoted-empty is empty
+            ("owner: \"3f9a1c07\"\n", "3f9a1c07"),        // len 8, not 10
+            ("owner: \"[[1ed98864]]\"\n", "[[1ed98864]]"), // the fleet-canonical shape
+            ("status: doing\n", "doing"),                 // unquoted: verbatim
+            ("owner: 'zt'\n", "zt"),                      // single quotes
+            ("owner: 'it''s'\n", "it's"),                 // '' unescapes
+            ("owner: \"a \\\"b\\\"\"\n", "a \"b\""),      // \" unescapes
+            ("count: 007\n", "007"),                      // no type coercion
+            ("tags: [a, b]\n", "[a, b]"),                 // flow collection: verbatim
+            ("owner:\n", ""),                             // bare value stays empty
+            ("owner: \"unterminated\n", "\"unterminated"), // not a quoted scalar: verbatim
+        ];
+        for (line, want) in cases {
+            assert_eq!(super::fm_value_of(line), *want, "stored line: {line:?}");
+        }
+    }
+
     /// The one page the fake door serves. Two frontmatter keys, so a whole-file
     /// read is FOUR round trips — `toc`, `cat`, `cat`, `read` — which is what
     /// makes "once per read" and "once per round trip" distinguishable at all.
