@@ -1132,6 +1132,7 @@ drift into two dialects. The enumerated set, audited 2026-08-08:
 | the run plane's frontmatter binding values | published value |
 | `preset`'s `^properties` rule check and its `type`/`defines`/`root`/`births` reads | compared value |
 | `realise`'s `FieldEquals` — BOTH halves: the page's declared `realise.expected` and the observed field | compared value |
+| the view projection's `frontmatter.value` column — and the `card` pivot and B2 tag parse riding it | published value |
 
 **Why the last two rows joined (2026-08-08).** They read a value and compare it
 against a caller-supplied string, which is exactly the shape § A.6's read-half
@@ -1141,9 +1142,24 @@ A silent false in a reconciliation loop is the same defect as a silent false in
 a script condition, so the same law governs it. Both halves of a comparison
 must decode, or the decode moves the mismatch instead of closing it.
 
+**Why the view row joined (2026-08-08, the d5654f18 non-scope follow-up).**
+This paragraph formerly named "the `view` index rows" in the stays-raw list
+below; superseded wording, verbatim: *"`lock` (guard tokens), the `view` index
+rows, and `policy::change`'s `diff_fields` all answer questions ABOUT THE
+STORED BYTES."* The reasoning was right for `lock` and `diff_fields` and wrong
+for this column: the view's `frontmatter.value` consumers — the `card` board
+pivot over `type`/`status`/`owner`/`session`, `mrd sql` operator and agent
+queries, the B2 tag parse — all ask VALUE questions, and a board predicate
+`owner = '3f9a1c07'` compared against raw `"3f9a1c07"` is the read-half
+silent false wearing a WHERE clause. The stored-bytes questions the view DOES
+answer live in its locator and rev columns (`span_start`/`span_end`,
+`node_rev`, `file_rev`), which § A.6.2 governs and which stay raw-computed.
+The `value` column was the only column serving bytes where its own schema
+comment says value.
+
 **What stays raw, and why it is not an omission** (§ A.6.2's reasoning, the
-same stance `cat` takes): `lock` (guard tokens), the `view` index rows, and
-`policy::change`'s `diff_fields` all answer questions ABOUT THE STORED BYTES.
+same stance `cat` takes): `lock` (guard tokens) and `policy::change`'s
+`diff_fields` answer questions ABOUT THE STORED BYTES.
 A quoting-only edit IS a change to the stored form, and a differ that decoded
 would report no change where the file's bytes moved.
 
