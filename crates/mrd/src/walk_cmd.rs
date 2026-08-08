@@ -290,8 +290,7 @@ fn build_docs_at(root: &Path) -> Result<BTreeMap<String, Document>, Fail> {
     let root = fs::WorkspaceRoot(root.to_path_buf());
     let (files, _fingerprint) = fs::domain_snapshot(&root)
         .map_err(|e| Fail::tool(format!("cannot read the mounted corpus: {e}")))?;
-    let (_index, docs) = fs::build_corpus(files)
-        .map_err(|e| Fail::tool(format!("cannot build the mounted corpus: {e}")))?;
+    let (_index, docs, _unserved) = fs::build_corpus(files);
     Ok(docs)
 }
 
@@ -363,8 +362,7 @@ pub(crate) fn build_docs(workspace: &Path) -> Result<BTreeMap<String, Document>,
     let root = fs::WorkspaceRoot(canonical);
     let (files, _fingerprint) = fs::domain_snapshot(&root)
         .map_err(|e| Fail::tool(format!("cannot read the corpus: {e}")))?;
-    let (_index, docs) =
-        fs::build_corpus(files).map_err(|e| Fail::tool(format!("cannot build the corpus: {e}")))?;
+    let (_index, docs, _unserved) = fs::build_corpus(files);
     Ok(docs)
 }
 

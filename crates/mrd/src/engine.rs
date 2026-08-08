@@ -431,8 +431,7 @@ fn in_process_links(workspace: &Path, path: Option<&str>) -> Result<Value, Fail>
     let root = fs::WorkspaceRoot(canonical);
     let (files, fingerprint) = fs::domain_snapshot(&root)
         .map_err(|e| Fail::tool(format!("cannot read the corpus: {e}")))?;
-    let (index, docs) =
-        fs::build_corpus(files).map_err(|e| Fail::tool(format!("cannot build the corpus: {e}")))?;
+    let (index, docs, _unserved) = fs::build_corpus(files);
 
     let as_of = Root(fingerprint.0);
     let wpath = path.map(|p| WirePath(p.to_owned()));

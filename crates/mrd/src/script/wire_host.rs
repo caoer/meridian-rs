@@ -81,10 +81,18 @@ impl SocketDoor {
             "workspace": workspace.to_string_lossy(),
         });
         let line = door.call(&hello)?;
-        if !Frame::parse(&line)?.ok {
-            return Err(io::Error::other(
-                "the daemon refused the v3 handshake for this workspace",
-            ));
+        let frame = Frame::parse(&line)?;
+        if !frame.ok {
+            // The daemon names WHAT refused (code, path, cause) in its error
+            // frame; collapsing it to a static string cost a dogfood session a
+            // fleet-wide outage nobody could attribute. Carry the frame's error
+            // verbatim — RawValue bytes, never re-serialized.
+            return Err(io::Error::other(format!(
+                "the daemon refused the v3 handshake for this workspace: {}",
+                frame
+                    .error
+                    .map_or_else(|| "(no error body)".to_owned(), |e| e.get().to_owned()),
+            )));
         }
         Ok(door)
     }
@@ -120,13 +128,22 @@ impl Frame {
     /// The success body as a parsed value, or a transport error naming what the
     /// daemon answered instead.
     fn body_value(self, op: &str) -> io::Result<Value> {
-        match (self.ok, self.body) {
-            (true, Some(body)) => serde_json::from_str(body.get()).map_err(io::Error::other),
-            (true, None) => Err(io::Error::other(format!("{op}: ok frame with no body"))),
-            (false, error) => Err(io::Error::other(format!(
+        if !self.ok {
+            // `self.error`, NOT `self.body`: the original match bound its
+            // refusal arm to the body slot — always absent on a refusal — so
+            // every daemon refusal rendered "(no error body)" and the error
+            // frame the daemon actually sent (code, path, cause) was dropped
+            // on the floor. Same incident class as the connect-time static
+            // string: the daemon names the poison, the operator never sees it.
+            return Err(io::Error::other(format!(
                 "{op} refused: {}",
-                error.map_or_else(|| "(no error body)".to_owned(), |e| e.get().to_owned())
-            ))),
+                self.error
+                    .map_or_else(|| "(no error body)".to_owned(), |e| e.get().to_owned())
+            )));
+        }
+        match self.body {
+            Some(body) => serde_json::from_str(body.get()).map_err(io::Error::other),
+            None => Err(io::Error::other(format!("{op}: ok frame with no body"))),
         }
     }
 }

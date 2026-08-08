@@ -35,7 +35,7 @@ fn run(ws: &str) -> Result<(), String> {
     let canonical = workspace::canonicalize(Path::new(ws)).map_err(|e| format!("resolve: {e}"))?;
     let root = fs::WorkspaceRoot(canonical);
     let (files, _fingerprint) = fs::domain_snapshot(&root).map_err(|e| format!("snapshot: {e}"))?;
-    let (_index, docs) = fs::build_corpus(files).map_err(|e| format!("build corpus: {e}"))?;
+    let (_index, docs, _unserved) = fs::build_corpus(files);
 
     // The board off U2.9's locked read face — the same default-face SQL the U5.1 gates assert
     // (empty journal: the trace is not exercised by the color leg).
