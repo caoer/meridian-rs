@@ -1188,3 +1188,91 @@ fn raw_spelling_for(doc: &model::Document, hpath: &[wire::HpathSeg]) -> Option<S
     }
     None
 }
+
+#[cfg(test)]
+mod props_scalar_tests {
+    //! § A.6 at the seam where the decode LIVES.
+    //!
+    //! The read half of the frontmatter scalar law was gated end-to-end at the
+    //! script plane (`mrd/tests/a6_read_seam.rs`) because that is where the
+    //! dogfood-season-1 incident was observed — a script comparing
+    //! `card.fm["owner"]` against an id saw the stored quote bytes and silently
+    //! matched nothing. It was never gated HERE, at [`read_props`], which is
+    //! where the decode actually happens: `model::scalar` had unit tests for the
+    //! codec, and nothing asserted the composed read applies it.
+    //!
+    //! So this is net-new coverage, not a relocation. A caller reading `props[]`
+    //! is holding a VALUE, and every stored form below must arrive as one.
+
+    use super::read_props;
+
+    fn props_of(frontmatter: &str) -> Vec<(String, String)> {
+        let raw = format!("---\n{frontmatter}---\n\n# Body\n");
+        let doc = model::build(raw.clone(), syntax::parse(&raw));
+        read_props(&doc)
+            .into_iter()
+            .map(|p| (p.key, p.value))
+            .collect()
+    }
+
+    fn value_of(frontmatter: &str, key: &str) -> String {
+        props_of(frontmatter)
+            .into_iter()
+            .find(|(k, _)| k == key)
+            .unwrap_or_else(|| panic!("no prop {key} in {frontmatter:?}"))
+            .1
+    }
+
+    /// The incident's own column: a double-quoted id reaches a reader as the
+    /// id, not as the quoted source bytes.
+    #[test]
+    fn a_double_quoted_value_arrives_decoded() {
+        assert_eq!(value_of("owner: \"3f9a1c07\"\n", "owner"), "3f9a1c07");
+    }
+
+    /// Single quotes decode too, including YAML's one escape (`''` → `'`).
+    #[test]
+    fn a_single_quoted_value_decodes_including_its_one_escape() {
+        assert_eq!(value_of("owner: '3f9a1c07'\n", "owner"), "3f9a1c07");
+        assert_eq!(value_of("note: 'it''s'\n", "note"), "it's");
+    }
+
+    /// A plain scalar is untouched — decoding is not parsing, and nothing here
+    /// infers a type.
+    #[test]
+    fn plain_scalars_are_carried_through_unchanged() {
+        assert_eq!(value_of("status: doing\n", "status"), "doing");
+        assert_eq!(value_of("tags: [a, b]\n", "tags"), "[a, b]");
+        assert_eq!(value_of("done: true\n", "done"), "true");
+    }
+
+    /// Malformed quoting is NOT repaired. A half-quoted value reaches the
+    /// reader as it sits on disk, so a caller sees the corpus's real state
+    /// rather than a guess about what was meant.
+    #[test]
+    fn malformed_quoting_reaches_the_reader_unchanged() {
+        assert_eq!(value_of("owner: \"3f9a1c07\n", "owner"), "\"3f9a1c07");
+    }
+
+    /// The wikilink case the script plane's amendment names: a quoted wikilink
+    /// arrives as the link text, so a comparison against the unquoted form
+    /// matches.
+    #[test]
+    fn a_quoted_wikilink_arrives_as_its_link_text() {
+        assert_eq!(value_of("owner: \"[[zt]]\"\n", "owner"), "[[zt]]");
+    }
+
+    /// Decoding is idempotent-unsafe by nature, which is why it happens exactly
+    /// once and here: a value that is STILL quote-shaped after one decode must
+    /// keep those quotes, or a second pass downstream would strip them.
+    #[test]
+    fn one_decode_and_only_one() {
+        let once = value_of("owner: '\"quoted\"'\n", "owner");
+        assert_eq!(once, "\"quoted\"", "the single quotes come off, once");
+        assert_eq!(
+            model::scalar::text(&once),
+            "quoted",
+            "a second decode WOULD strip again — proof the caller must not re-decode"
+        );
+    }
+}

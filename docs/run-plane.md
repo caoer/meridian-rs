@@ -224,6 +224,105 @@ actual I/O, and a program is free to read only a few of the paths it was handed.
 256 covers S2-class fan-out over a large board without letting a runaway glob
 return the corpus.
 
+**What an entry costs** *(added 2026-08-08)*. The table above bounds a program;
+this states what the program spends against it, so a caller can compute its own
+ceiling instead of discovering it as a refusal.
+
+**The ceiling is a function of round trips, and reads are not trips.** For an
+entry against a corpus of `C` domain members:
+
+```
+ceiling = f(reads, corpus)
+
+wall clock  ≥  trips(R) × pass(C)
+
+trips(R) = 3 + Σ per read: (2) whole-file
+                           (1) sectioned
+
+pass(C)  = O(C) in `stat`s, O(changed) in bytes      <- the linear term
+```
+
+**Both arguments matter, and the second one is linear.** `pass(C)` is not a
+constant: a currency pass `stat`s every domain member, so it grows with the
+corpus even though it no longer reads it. Measured on this engine, doubling the
+corpus (23,758 → 47,477 members) multiplies the pass by **1.84×**, and with
+trips minimised a program's per-read cost converges on the pass and moves with
+it — **1.91×** measured end to end.
+
+So a program that fits today does not automatically fit on a corpus twice the
+size. What the trip collapse removed is the *amplification*: cost no longer
+scales with reads × frontmatter × corpus, only with reads × corpus. Making
+`pass(C)` itself constant would need the root maintained incrementally rather
+than re-derived — an OS event watcher or a persistent index — which v1 does not
+have and this contract does not promise.
+
+`3` is the fixed frame — `hello`, `fingerprint`, and the commit. A whole-file
+`read(path)` is **two** trips: the `toc` op, and the composed `read` (§4.1, toc
+mode) that brackets it and carries `words_total` plus the frontmatter.
+
+**Two is the floor, not one** *(amended 2026-08-08)*. The composed read alone
+almost suffices — it already carries `file_rev`, the heading rows,
+`words_total`, and `props[]` with every value decoded per § A.6. What it does
+not carry is a rev for `^anchor` rows: `wire::ReadAnchor` is `{anchor, span}`
+and `wire::ReadRow` has no anchor field, while the `toc` op's nodes publish an
+anchor row with its own `node_rev`. Collapsing to one op would silently drop
+anchor rows from the face a script sees, so the `toc` trip stays.
+
+Until this amendment the frontmatter cost one `cat` **per key** on top, making a
+whole-file read `2+N` trips — seven to ten for an ordinary session artifact, so
+a program's ceiling was set by its pages' frontmatter rather than by its own
+read count. The per-key fan-out was justified in-code by the composed read
+having "no frontmatter plane"; that stopped being true when `props[]` was
+added, and the fan-out outlived its reason.
+
+**What a pass costs.** Every trip is answered from the warm engine, and the
+engine is proved current first over the WHOLE hash domain: a read is
+corpus-scoped, not file-scoped, because a poison member anywhere refuses a read
+of a healthy one (Law A-3c). That scope is unchanged and is not an optimization
+target. What changed is the price. The pass walks the domain reusing the listing
+of any directory whose own timestamps did not move, `stat`s every member,
+re-reads only the members whose stat identity moved, and folds the §12.2 tree
+from per-member digests — O(corpus) in `stat`s, O(changed) in bytes.
+
+It used to re-read and re-fold every domain byte on every trip. On a 24k-file,
+150 MB corpus that is ~0.9s per trip, so a single script read spent several
+seconds of the 7s budget and a two-read program did not fit at all. The budget
+was never the defect.
+
+**A write-bearing program pays a byte term the pass never does** *(amended
+2026-08-08 — the review battery's cross-arm cost-model finding)*. The formula
+above prices the read side; taken alone as the computable ceiling it is a
+lower bound, because the commit's §5.1 world guard and the seam roots fold
+**from bytes** under the write flock (`domain_snapshot` — the digest memo
+never supplies them; that is what keeps the commit guard byte-derived).
+Priced:
+
+```
+wall clock  ≥  trips(R) × pass(C)  +  commit(C)
+
+commit(C) = 0 for a read-only program
+            two byte-folds, O(C) in BYTES, for a write-bearing one
+```
+
+The folds are O(corpus **bytes**), not `pass(C)`: on the same 24k-file,
+150 MB corpus they cost ~1.8 s together — more than the whole fixed frame. A
+read-only program's `commit(C)` is zero and its ceiling is the first term
+alone; a write-bearing program budgets both. With every engine-side spend a
+named term, the `≥` that remains is measurement honesty — the OS may always
+be slower — never an unpriced structural cost.
+
+**The linear term has a measured slope, and the slope is the honest headline**
+*(amended 2026-08-08 — the memo design's own disclosure, the ratios above,
+independently confirmed by the review battery's three-point curve)*. Per-read
+cost multiplies by **~2.1× per root doubling** as independently measured (the
+design disclosed 1.84× pass / 1.91× end-to-end before anyone re-measured; the
+pre-memo engine's slope was 2.35×, so the memo bought about one root
+doubling — a constant, not a change of shape). The consequence
+stated rather than implied: a 10-read program clearing ~3.8 s at a 2× root
+returns to roughly ~7.8 s at 4× on the same slope — over the budget again.
+Capacity planning must read `ceiling = f(reads, corpus)` WITH that slope;
+a flattened impression is exactly what this section exists to prevent.
+
 **The transaction — stand-still optimistic.** The word **snapshot is
 banned** here: the daemon has no MVCC and v1 must not grow one.
 
@@ -232,6 +331,26 @@ banned** here: the daemon has no MVCC and v1 must not grow one.
 3. **Commit.** ONE splice batch carrying `if_fingerprint` = the entry
    fingerprint, and §5.1 checks that guard **first**.
 4. **Any interleaved write** ⇒ `fingerprint_mismatch` ⇒ nothing commits.
+
+**Reads stay live, and stay corpus-scoped** *(amended 2026-08-08)*. The cost
+model above changes what a currency pass COSTS and never what it CHECKS. Every
+read op still proves the whole hash domain current before it answers, so a
+poison member anywhere still refuses a read of a healthy member and still names
+the poison (Law A-3c). Nothing is served out of a picture taken earlier, no
+staleness window is introduced, and no version is retained — the banned
+snapshot stays banned, and point 2 above is untouched.
+
+The one thing the pass now takes on trust is that a file whose
+`(device, inode, size, mtime, ctime)` is unchanged has unchanged bytes, and
+that a directory whose own timestamps are unchanged has the same entries —
+which is what a directory's timestamps mean. `ctime` is what puts the first out
+of reach in practice: the kernel bumps it on every inode change and no API sets
+it, so even a deliberate `utimes` restore is caught. This is the standing
+`fs::domain_stat_signature` posture — evidence, not proof — and it is bounded
+underneath: the commit's §5.1 guard folds **from bytes** under the write flock,
+so a memo that ever disagreed with disk makes the commit refuse
+`fingerprint_mismatch` rather than land. It fails closed, in the vocabulary the
+transaction already speaks.
 
 A caller may also pin its own `if_fingerprint?` guard. It is checked against
 the minted entry fingerprint **pre-eval** — mismatch refuses immediately with
