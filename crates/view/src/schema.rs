@@ -35,7 +35,7 @@ CREATE TABLE frontmatter (
     path       TEXT     NOT NULL REFERENCES doc(path),
     ord        UBIGINT  NOT NULL,                 -- 0-based document-order index
     key        TEXT     NOT NULL,
-    value      TEXT     NOT NULL,                 -- flat scalar; '' when empty, never NULL
+    value      TEXT     NOT NULL,                 -- flat scalar, § A.6.1-decoded (published value plane); '' when empty, never NULL
     span_start UBIGINT  NOT NULL,                 -- C1: Frontmatter node span (all rows of a doc share it)
     span_end   UBIGINT  NOT NULL,
     node_rev   TEXT     NOT NULL,                 -- blake3(raw[span])[:16]
