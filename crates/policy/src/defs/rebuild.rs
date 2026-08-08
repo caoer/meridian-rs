@@ -644,6 +644,17 @@ fn plan_set_property(view: &DocView<'_>, e: &PlanEdit) -> Result<Vec<SpliceOp>, 
     }
     for k in &view.fm {
         if k.key == *key {
+            // § A.6.3c: a semantic no-op keeps the stored spelling. The exact
+            // span bytes are spliced back, so the document is byte-identical
+            // and nothing computed over SOURCE BYTES (§ A.6.2) moves.
+            let stored = &view.raw[k.start..k.end];
+            if fm_spelling_preserves(stored, val) {
+                return Ok(vec![SpliceOp {
+                    start: k.start,
+                    end: k.end,
+                    replacement: stored.as_bytes().to_vec(),
+                }]);
+            }
             let mut repl = safe.clone().into_bytes();
             // The guard tests the ENCODED value, never the caller's (§ A.6.3b).
             // The two differ exactly where this law bites: the empty string
@@ -780,6 +791,54 @@ pub fn yaml_safe_value(val: &str) -> Result<String, MultiLineValue> {
         return Ok(model::scalar::double_quote(val));
     }
     Ok(val.to_string())
+}
+
+/// The § A.6.3c preservation predicate — may an UPDATE keep the stored value
+/// spelling? True when the stored spelling already decodes (§ A.6.1) to
+/// exactly the caller's string AND classifies as neither `Nested` nor `Null` —
+/// the two classes this string plane cannot express, which a write must repair
+/// to the quoted canonical form rather than leave standing.
+///
+/// The newline clause keeps D11 uniform: a stored escape spelling (`"a\nb"`)
+/// decodes to a text the doors REFUSE to accept, and preservation must not
+/// smuggle it past that refusal as a "no-op".
+///
+/// ONE owner, shared by every § A.6.3a door: the value-span splice above keeps
+/// the span bytes; the line-composing doors keep the spelling through
+/// [`yaml_preserve_or_encode`].
+pub fn fm_spelling_preserves(stored: &str, val: &str) -> bool {
+    !val.contains(['\n', '\r'])
+        && model::scalar::text(stored) == val
+        && !matches!(
+            super::fm::classify_scalar_or_flow(stored.trim()),
+            super::fm::FmValue::Nested | super::fm::FmValue::Null
+        )
+}
+
+/// § A.6.3c at a LINE-COMPOSING door: given the stored `{key}: {value}` line
+/// (when the key exists), keep the stored value spelling on a semantic no-op;
+/// otherwise encode fresh through [`yaml_safe_value`]. The colon remainder is
+/// addressed exactly as `fm_index` addresses it — one leading space skipped —
+/// so the two readers of a key line cannot drift.
+///
+/// # Errors
+/// `MultiLineValue` when the caller's value carries a `\n`/`\r` (D11) — the
+/// refusal is uniform whether or not a stored spelling exists.
+pub fn yaml_preserve_or_encode(
+    stored_line: Option<&str>,
+    val: &str,
+) -> Result<String, MultiLineValue> {
+    let stored = stored_line.and_then(|line| {
+        let colon = line.find(':')?;
+        let rest = &line[colon + 1..];
+        Some(rest.strip_prefix(' ').unwrap_or(rest))
+    });
+    if let Some(stored) = stored
+        && fm_spelling_preserves(stored, val)
+    {
+        return Ok(stored.trim().to_string());
+    }
+    yaml_safe_value(val)
 }
 
 /// The § A.6.3 quote triggers, enumerated. Each row names a way the PLAIN emit
