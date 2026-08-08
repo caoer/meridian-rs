@@ -91,6 +91,15 @@ pub struct Registry {
     mounts: crate::mounts::MountsCache,
     state: StateStore,
     cache_root: PathBuf,
+    /// Test-only pause gate for the rebuild race window. When armed, the next
+    /// rebuild pass announces itself on the first channel, then parks on the
+    /// second — between its disk snapshot and its `engines` insert, the exact
+    /// window the insert guard must protect. One-shot: the pass that hits it
+    /// consumes it. `cfg(test)` excludes it from every release build by
+    /// construction (disclosed; RC1-precedent seam).
+    #[cfg(test)]
+    pause_before_insert:
+        Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
 }
 
 impl Registry {
@@ -122,6 +131,8 @@ impl Registry {
             mounts: crate::mounts::MountsCache::default(),
             state,
             cache_root,
+            #[cfg(test)]
+            pause_before_insert: Mutex::new(None),
         }
     }
 
@@ -267,6 +278,21 @@ impl Registry {
             unserved,
             at_fingerprint: fingerprint,
         };
+
+        // Test-only: park here when the gate is armed (see the field docs).
+        #[cfg(test)]
+        {
+            let gate = self
+                .pause_before_insert
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            if let Some((arrived, release)) = gate {
+                let _ = arrived.send(());
+                let _ = release.recv();
+            }
+        }
+
         self.engines
             .write()
             .unwrap_or_else(PoisonError::into_inner)
@@ -706,6 +732,63 @@ mod engine_tests {
         );
         let after = reg.with_engine(&canonical, |e| e.unwrap().at_fingerprint.clone());
         assert_ne!(before, after, "and the ambient root advanced");
+    }
+
+    /// The p1-warm-or-build-race negative proof. Interleaving A-snapshot ·
+    /// B-snapshot · B-insert · A-insert, forced deterministically: thread A
+    /// parks on the armed `pause_before_insert` gate with its stale engine
+    /// built but not yet inserted; the corpus moves and B warms to completion
+    /// while A is parked; then A is released. A's insert must not regress the
+    /// resident engine to the older corpus state — answers served from it in
+    /// the warm-to-serve gap would be wrong-results class.
+    #[test]
+    fn a_parked_stale_rebuild_cannot_regress_the_resident_engine() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = Arc::new(registry_in(home.path()));
+        let ws = write_ws(home.path(), &[("a.md", "# A v1\n")]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+
+        // Arm the one-shot gate for the first rebuild pass (thread A).
+        let (arrived_tx, arrived) = std::sync::mpsc::channel();
+        let (release, release_rx) = std::sync::mpsc::channel();
+        *reg
+            .pause_before_insert
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some((arrived_tx, release_rx));
+
+        // A: snapshots the corpus at v1, parks before its insert.
+        let a = {
+            let reg = Arc::clone(&reg);
+            let ws = ws.clone();
+            std::thread::spawn(move || reg.warm_or_build(&ws))
+        };
+        arrived.recv().expect("thread A reached the pause gate");
+
+        // The corpus moves to v2 and B warms to completion: the resident
+        // engine is now the v2 build (the gate is consumed; B passes through).
+        rewrite(&ws, "a.md", "# A v2\n");
+        assert_eq!(
+            reg.warm_or_build(&ws).unwrap(),
+            WarmOutcome::Built { docs: 1 },
+            "B rebuilds at v2 while A is parked"
+        );
+        let v2 = reg.with_engine(&canonical, |e| e.unwrap().at_fingerprint.clone());
+
+        // Release A: its build is from the older disk state.
+        release.send(()).expect("thread A parked on the release gate");
+        a.join().expect("thread A panicked").unwrap();
+
+        let resident = reg.with_engine(&canonical, |e| e.unwrap().at_fingerprint.clone());
+        assert_eq!(
+            resident, v2,
+            "a stale concurrent rebuild must never regress the resident engine"
+        );
+        assert_eq!(
+            reg.warm_or_build(&ws).unwrap(),
+            WarmOutcome::Reused,
+            "disk is unchanged since the v2 build, so the next warm reuses — \
+             a Built here is the self-heal of a regressed engine"
+        );
     }
 
     /// P2 crash recovery: cold start, first query rebuilds from disk (no new machinery).
