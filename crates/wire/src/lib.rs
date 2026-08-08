@@ -857,6 +857,62 @@ pub struct ReadProp {
     pub prop_rev: NodeRev,
 }
 
+/// Why an [`ReadUnresolved`] selector failed (wire-contract § A.3, unresolved
+/// plane) — a closed vocabulary, one reason per row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnresolvedReason {
+    /// Nothing carries the address.
+    NoMatch,
+    /// A heading or dewey selector matched more than one node.
+    Ambiguous,
+    /// More than one block carries the `^id`.
+    DuplicateAnchor,
+    /// The id exists on the page, but its host block kind is outside the
+    /// read face's anchor plane — distinct from [`Self::NoMatch`] because
+    /// the honest remedy differs (the P2-c truth-telling row).
+    UnaddressableHost,
+}
+
+/// One nearest-id row on an anchor miss (wire-contract § A.3): the candidate
+/// pool spans every `^id` on the page, non-addressable hosts included, and
+/// `kind` is what lets a render teach the host-kind gate on such a candidate
+/// instead of implying absence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadNearestAnchor {
+    /// The id without its `^` marker, as everywhere on this wire.
+    pub anchor: String,
+    /// The host block kind — the same open string the toc anchor row echoes.
+    pub kind: String,
+}
+
+/// One failed section selector on the composed read — a row of the
+/// `unresolved` plane (wire-contract § A.3): the machine tense of the
+/// partial-read `notice`, derived from the same resolution pass as the
+/// prose, so the two cannot disagree.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadUnresolved {
+    /// The failed selector, echoed in its own request grammar.
+    pub sel: ReadSel,
+    pub reason: UnresolvedReason,
+    /// [`UnresolvedReason::Ambiguous`] only: each candidate's machine address
+    /// (§2.1 `n`-carrying segment array), refusal order. Always serialized;
+    /// empty on every other reason — a duplicated block id has no
+    /// per-candidate machine address (the door-symmetry law).
+    #[serde(default)]
+    pub candidates: Vec<Vec<HpathSeg>>,
+    /// [`UnresolvedReason::DuplicateAnchor`] only: how many blocks carry the id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub count: Option<u64>,
+    /// [`UnresolvedReason::UnaddressableHost`] only: the true host kind.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    /// Anchor-[`UnresolvedReason::NoMatch`] only: the nearest live ids over
+    /// the whole-page pool. Empty when the page carries no `^id` at all.
+    #[serde(default)]
+    pub nearest: Vec<ReadNearestAnchor>,
+}
+
 /// One composed-read resolved section (v3-only): the selector that hit, its
 /// address + CAS token, the raw content — the verbatim bytes `sec_rev` was
 /// minted over, so the row is self-verifying and a `put` built from it
@@ -1058,6 +1114,13 @@ pub enum ResponseBody {
         truncated: Option<bool>,
         #[serde(skip_serializing_if = "Option::is_none")]
         notice: Option<String>,
+        /// The unresolved plane (wire-contract § A.3): one row per failed
+        /// section selector, request order — the machine tense of `notice`.
+        /// Always emitted — empty means "every selector resolved" (a toc
+        /// read trivially so); `serde(default)` keeps decoding tolerant of
+        /// older recorded frames.
+        #[serde(default)]
+        unresolved: Vec<ReadUnresolved>,
         rendered_text: String,
     },
     /// The `check_write` verdict (v3-only). `refuse` absent = the write may
