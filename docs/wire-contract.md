@@ -1149,8 +1149,8 @@ string.
 `{key}: {encoded}`, and the encoding is the inverse of A.6.1: **emit the plain form when the plain form decodes back to
 exactly the caller's string; otherwise emit a double-quoted scalar** (`\` and
 `"` escaped). The quoted form is the fleet-canonical one — the spelling
-`ccc-cli task claim` writes — so two writers on one tree no longer churn each
-other's bytes. Concretely, a value is quoted when it:
+`ccc-cli task claim` writes — so a value this engine writes and a value the
+fleet writes are the same bytes. Concretely, a value is quoted when it:
 
 - is empty, or is a null spelling (`~`, `null`, `Null`, `NULL`) — the plane has
   no null, so emitting one would forge a type the caller cannot express;
@@ -1189,10 +1189,18 @@ WHOLE-VALUE grains through it and their spelling must land as sent. The encode
 belongs at the door, where the input is known to be a flat string, and nowhere
 below it.
 
-**A.6.3b The splice consumer reads the ENCODED value.** When `set_property`
-updates an existing key, the separator guard — the one that inserts the space
-in `{key}: {value}` over a stored bare `key:` line — must test the ENCODED
-bytes, not the caller's string. The two differ exactly where this law bites:
+**A.6.3b The splice consumer reads the ENCODED value.** One `set_property`
+lowering splices the VALUE SPAN of an existing key rather than composing a
+whole line: the def-plane `rebuild` path, and the `check_write` candidate that
+shares its owner. There the separator guard — the one that inserts the space in
+`{key}: {value}` over a stored bare `key:` line — must test the ENCODED bytes,
+not the caller's string.
+
+*(Located precisely, 2026-08-08: the WIRE's own `set_property` lowering
+composes the full `{key}: {value}` line and never reaches this guard, so a
+wire-door test cannot cover it and a wire-door matrix that passes says nothing
+about it. Coverage belongs at the `rebuild` door — measured, and
+mutation-proven there.)* The two differ exactly where this law bites:
 the empty string encodes to `""`, so a guard on the caller's value sees "empty,
 no separator needed" and emits `note:""` — which no external YAML parser reads
 as a property. One malformed line voids the whole frontmatter block for
@@ -1212,6 +1220,19 @@ caller's string. A quote-tolerant comparison ANYWHERE — in a host, a caller, o
 a second engine seam — is a defect against this section, not a compatibility
 measure.
 
+**A write-back may RE-SPELL, and that is not a byte no-op** *(stated
+2026-08-08; the earlier "two writers no longer churn each other's bytes"
+promised more than this law delivers)*. Decode and encode are inverses on the
+VALUE, not on the bytes: a stored `owner: "3f9a1c07"` serves `3f9a1c07`, and
+writing that value straight back emits the plain `owner: 3f9a1c07`, because the
+plain form decodes to exactly the caller's string. The value is preserved; the
+spelling is not. Anything computed over SOURCE BYTES therefore moves on a
+semantic no-op — `prop_rev`, `span`, the `props1` fingerprint, and any pin held
+over the key (§ A.6.2's planes are exactly the ones affected). A caller that
+needs byte stability across a read-modify-write must compare values, never
+tokens. Making the round trip byte-stable is a separate change to the encoder's
+canonical form, carded on its own; this section does not claim it.
+
 **Round-trip alone is not the test.** A conformance test asserts the STORED
 LINE SHAPE, byte for byte, and only then the round trip. The engine's own
 decode is tolerant by design, so a value-only assertion passes over bytes that
@@ -1219,6 +1240,31 @@ no external parser accepts: `note:""` round-trips through this engine and voids
 the frontmatter block for everyone else. A test that asserts the value and not
 the line is the escape hatch the A.6.3b defect hid behind. The bytes are the
 contract; the round trip only proves the engine agrees with itself.
+
+**A.6.5 R4 binds the DEF plane too — the empty string is empty**
+*(ruling, 2026-08-08)*. A.6.3 makes every value-plane write door emit `key: ""`
+for an empty value. The def plane reads the TYPED frontmatter value, where that
+lands as a string rather than the YAML null, so every emptiness predicate
+written against the null alone silently reads a released card as still set.
+Measured before the repair: `set_property(owner, "")` on a card whose def marks
+`owner` required returned `ok`, landed `owner: ""`, and PASSED conformance — the
+bare-null spelling refused the identical write. `closed_at: ""` satisfied the
+terminal biconditional, so a card reached a terminal status carrying no close
+time and the close-stamp autofill minted no repair.
+
+**The ruling: the predicates learn the second spelling.** A key is empty when
+it is absent, when it is the null, or when it is the empty string. This aligns
+the code with its own refusal text, which already reads *"missing or empty"*,
+and it keeps R4's three states — absent ≠ empty ≠ set — readable at the def
+grain where they are judged.
+
+**Rejected: emitting a bare null instead.** It re-opens exactly what A.6.3
+closes — forging the one type this string plane cannot express — and reinstates
+the A.6.3b splice geometry. The value plane and the def plane must agree on
+what empty means; they may not disagree about which SPELLING of it is real.
+
+Deliberately not empty: whitespace, `0`, `false`, an empty list. Those are
+values a caller authored. This is a predicate about absence, never truthiness.
 
 ---
 
