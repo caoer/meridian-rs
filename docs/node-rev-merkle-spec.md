@@ -36,11 +36,11 @@ Every hash in this spec — node_rev, file leaf, interior, workspace fingerprint
 
 ## 2. node_rev — what bytes are hashed
 
-`node_rev = hex(blake3(node_span_bytes))[:16]` where `node_span_bytes = raw_file_bytes[span.start : span.end)` — the node's **span bytes exactly as issued** under the wire span laws (§2 laws 1–5: raw disk bytes, UTF-8-valid files only, block spans exclude the final line terminator).
+`node_rev = hex(blake3(node_span_bytes))[:16]` where `node_span_bytes = raw_file_bytes[span.start : span.end)` — the node's **span bytes exactly as issued** under the wire span laws (`wire-contract.md` §1 span sub-laws: raw disk bytes, UTF-8-valid files only, leaf block spans exclude the final line terminator).
 
-- For a **section** (heading ref via `resolve`): the span is heading-inclusive (wire §6.1 — heading line through end of subtree), so `node_rev` covers the heading too. Consequence, deliberate: a heading rename invalidates the section's CAS token — a writer composing against `#Alpha` must notice `#Alpha` became `#Alpha2`. The content-only span (`content_span`, migration-map A2) is a write-target convenience and mints no separate rev.
-- For **frontmatter**: the whole-block span (`---`…`---` inclusive, wire §5.2). Per-key value spans (migration-map A8) mint their own node_rev over the value bytes once that amendment lands.
-- For any other node kind (`toc`/`extract` nodes with A1): its §5.2 span, verbatim.
+- For a **section** (heading ref via `resolve`): the span is heading-inclusive (`wire-contract.md` §1 span sub-laws — heading line through end of subtree), so `node_rev` covers the heading too. Consequence, deliberate: a heading rename invalidates the section's CAS token — a writer composing against `#Alpha` must notice `#Alpha` became `#Alpha2`. The content-only span (`content_span`, `wire-contract.md` §1 rev sub-laws) is a write-target convenience and mints no separate rev.
+- For **frontmatter**: the whole-block span (`---`…`---` inclusive, `wire-contract.md` §18 row 3 — span-lawed with the section family). Per-key value spans (`wire-contract.md` §7.4 key-grain amendment path) mint their own node_rev over the value bytes once that amendment lands.
+- For any other node kind (`toc`/`extract` nodes — `wire-contract.md` §4.1/§4.3): its `wire-contract.md` §1 span, verbatim.
 - **No normalization of content.** No newline canonicalization, no trailing-space trim, no NFC. The span law already guarantees disk bytes = string bytes (UTF-8 refusal); hashing anything but the raw bytes would let two "equal" revisions denote different disk states — the exact corruption CAS exists to prevent.
 
 ## 3. File leaf hash — and why there is no per-file sub-merkle
@@ -191,7 +191,7 @@ Two grains, composable — **no separate `guard` op** (dropped; integrity = `fin
 ## 10. Open questions for architecture review
 
 1. **node_rev width** — 16 hex (64-bit) per §1, vs the contract examples' 6. Examples are non-normative, but the amendment that freezes `resolve` should state the width; any objection to 16?
-2. **Ring bound** — count (e.g. 64 roots) vs age (e.g. 10min) vs both. Determines how stale a subscriber can be and still catch up without a full resync. Cheap either way (structural sharing); needs a number.
+2. **Ring bound** — settled at **256 roots** in `wire-contract.md` §13: older ranges answer `fingerprint_unknown` → full resync — re-derive, never wrong data.
 3. **Hash domain** — settled for design in `wire-contract.md` §12 (md-only + `meridian/domain.md`). This spec’s leaf rule must stay aligned with that domain filter.
 4. **Symlink retarget invisibility** (§9) — acceptable for now, or hash the target path as a pseudo-leaf?
 5. **Multi-file atomic batch** — limit stated in `wire-contract.md` §6.5; vocabulary is `if_fingerprint` + batch `splice`.
