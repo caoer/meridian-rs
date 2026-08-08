@@ -229,8 +229,11 @@ fn render(format: Format, page: &str, state: State, applies: u32, receipts: &[St
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-/// Read a scalar frontmatter value off a parsed document. Dotted keys (`realise.field`) are
-/// ordinary map entries, exactly as `mrd run` reads `task.<name>`.
+/// Read a scalar frontmatter value off a parsed document, DECODED through the one scalar owner
+/// (wire-contract § A.6.1). Dotted keys (`realise.field`) are ordinary map entries, exactly as
+/// `mrd run` reads `task.<name>`. This is the DECLARED half of the `FieldEquals` comparison —
+/// `realise.expected` — and it decodes for the same reason the observed half does: a
+/// fleet-canonical `realise.expected: "done"` read raw never equals an observed `done`.
 fn fm_scalar(doc: &model::Document, key: &str) -> Option<String> {
     fn find(node: &model::Node) -> Option<&model::YamlMap> {
         if let model::NodeKind::Frontmatter { map } = &node.kind {
@@ -240,7 +243,7 @@ fn fm_scalar(doc: &model::Document, key: &str) -> Option<String> {
     }
     find(&doc.root)
         .and_then(|m| m.0.iter().find(|(k, _)| k == key))
-        .map(|(_, v)| v.clone())
+        .map(|(_, v)| model::scalar::text(v))
 }
 
 /// Mint the realise identity: a unique, path-safe invocation id and an RFC3339 time fact. The

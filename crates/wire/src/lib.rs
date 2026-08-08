@@ -333,6 +333,11 @@ pub enum PutAt {
     /// file has none) when absent. The insertion offset is server-derived from
     /// the document structure — no client byte offset (D-C1). A non-`fm_key`
     /// target or a multi-line value is `bad_request`.
+    ///
+    /// This is a VALUE-plane door (§ A.6.3a): `text` is a flat string, and the
+    /// server ENCODES it through the one scalar encoder `set_property` writes
+    /// through, so `[[x]]` lands `"[[x]]"` rather than a nested collection the
+    /// substrate law would refuse. The two write doors share one grammar.
     Upsert,
 }
 
