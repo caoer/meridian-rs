@@ -1162,9 +1162,13 @@ fn miss_parts(
         }
         SecRef::FmKey { fm_key } => (
             fm_key.clone(),
-            "Fix: write the key with `at: upsert`, which creates it when absent; the \
-             composed read's `props` plane lists the keys this page already has."
-                .to_owned(),
+            format!(
+                "Fix: write the key with `at: upsert`, which creates it when absent. \
+                 Upsert is a value-plane door (§ A.6.3a): its `text` is the VALUE alone \
+                 and the engine composes the `{fm_key}: <value>` line itself, so a `text` \
+                 that repeats the key writes it doubled. The composed read's `props` \
+                 plane lists the keys this page already has."
+            ),
         ),
     }
 }

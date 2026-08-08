@@ -129,7 +129,7 @@ pub fn splice(
     // outside the workspace, invisible to the ledger. Checked before the flock
     // and before `load_doc` — a refusal must not depend on having already
     // touched the path it refuses.
-    path_confined(&args.path)?;
+    path_confined(root, &args.path)?;
 
     // The cross-process write flock, held across the whole critical section —
     // read#1 below, validate, gate, the commit's read#2 → verify → renames —
@@ -614,7 +614,7 @@ pub fn create(
     rulesets: &[policy::CompiledRuleset],
 ) -> Result<CreateOutcome, Box<ErrorBody>> {
     let fs_path = FsPath::new(&args.path.0);
-    path_confined(&args.path)?;
+    path_confined(root, &args.path)?;
 
     // D9: births serialize on the same write flock as every meridian writer —
     // this also closes the `if_absent` check→rename window for cooperators.
@@ -754,7 +754,7 @@ pub fn remove(
     rulesets: &[policy::CompiledRuleset],
 ) -> Result<RemoveOutcome, Box<ErrorBody>> {
     let fs_path = FsPath::new(&args.path.0);
-    path_confined(&args.path)?;
+    path_confined(root, &args.path)?;
 
     // D9: deaths serialize on the same write flock (read-rev CAS → unlink is
     // a critical section like any other write).
@@ -911,7 +911,7 @@ pub fn lock_write(
     args: &LockWriteArgs,
 ) -> Result<LockWriteOutcome, Box<ErrorBody>> {
     let fs_path = FsPath::new(&args.path.0);
-    path_confined(&args.path)?;
+    path_confined(root, &args.path)?;
 
     // D9: the lock write serializes on the same write flock as every writer.
     let flock = acquire_write_lock(root)?;
@@ -1099,7 +1099,7 @@ fn mint_pin(
     force: bool,
     mints: Option<&receipt::read_mint::ReadMintStore>,
 ) -> Result<PinMint, Box<ErrorBody>> {
-    path_confined(&spec.target)?;
+    path_confined(root, &spec.target)?;
 
     let mut target_doc = load_doc(root, &spec.target).map_err(|e| {
         if e.code == ErrorCode::FileNotFound {
@@ -1972,13 +1972,44 @@ fn acquire_write_lock(root: &fs::WorkspaceRoot) -> Result<fs::WriteLock, Box<Err
 /// WHICH tree a path is joined onto: a `root:`-bearing spelling at a write door
 /// is an address, never a corpus path, and is refused rather than creating a
 /// document no address can name (§4.2, D11).
-fn path_confined(path: &Path) -> Result<(), Box<ErrorBody>> {
+fn path_confined(root: &fs::WorkspaceRoot, path: &Path) -> Result<(), Box<ErrorBody>> {
     if !addr::confined(&path.0) {
         let mut e = ErrorBody::new(ErrorCode::BadPath);
         e.path = Some(path.clone());
+        let mut m = format!(
+            "{} is not a workspace-relative path — the write doors admit only \
+             workspace-relative spellings (§1 path law: no absolute path, no \
+             `.`/`..`/empty segment, no `root:` prefix in the head). Nothing was written.",
+            path.0
+        );
+        if let Some(rel) = relative_respelling(root, &path.0) {
+            m.push_str(&format!(
+                " This path lies inside this workspace — respell it as `{rel}`."
+            ));
+        }
+        e.message = Some(m);
         return Err(Box::new(e));
     }
     Ok(())
+}
+
+/// The workspace-relative respelling of an ABSOLUTE spelling that lies inside
+/// `root`, or `None` when no respelling exists (relative violations, paths
+/// outside the root). Teaching only — admission stays lexical (`addr::confined`).
+/// Canonicalizes to survive symlinked prefixes (`/tmp` vs `/private/tmp`); a
+/// missing leaf canonicalizes through its parent so a write to a not-yet-born
+/// inside path still gets its respelling.
+fn relative_respelling(root: &fs::WorkspaceRoot, path: &str) -> Option<String> {
+    if !path.starts_with('/') {
+        return None;
+    }
+    let p = std::path::Path::new(path);
+    let canonical = std::fs::canonicalize(p).ok().or_else(|| {
+        let parent = std::fs::canonicalize(p.parent()?).ok()?;
+        Some(parent.join(p.file_name()?))
+    })?;
+    let rel = canonical.strip_prefix(&root.0).ok()?.to_str()?;
+    (!rel.is_empty()).then(|| rel.to_owned())
 }
 
 /// The §5.1 world guard, shared by `create`/`remove`: refuse `root_mismatch` if
