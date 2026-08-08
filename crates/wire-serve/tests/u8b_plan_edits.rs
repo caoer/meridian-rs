@@ -56,6 +56,7 @@ const DOC: &str = "---\nstatus: open\nowner: d\n---\n# Memo\n\nbody line\n\n## T
 
 /// Equivalence: mixed plan (property+append+create) lands same bytes as native.
 #[test]
+#[allow(clippy::too_many_lines)] // one A/B equivalence script by design
 fn plan_batch_equals_the_host_built_native_batch() {
     // A: plan form.
     let (da, ra) = ws(&[("card.md", DOC)]);

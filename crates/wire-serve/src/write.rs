@@ -21,6 +21,7 @@
 //! The resident daemon advances its per-workspace ring with the returned
 //! frame; a ringless in-process caller discards it.
 
+use std::fmt::Write as _;
 use std::io::ErrorKind;
 use std::path::Path as FsPath;
 
@@ -1090,6 +1091,7 @@ struct PendingPromotion {
 /// `read_mint_required` (D16 — a session actor pinning unread content),
 /// `write_conflict` (the receipt's rev is stale), a `convention_fault` /
 /// `armed_drift` / `index_integrity` gate refusal on the promotion, `io_error`.
+#[allow(clippy::too_many_lines)]
 fn mint_pin(
     root: &fs::WorkspaceRoot,
     spec: &wire::PinSpec,
@@ -1151,7 +1153,7 @@ fn mint_pin(
                     // The same duplicates the facts plane matched, as resolver
                     // targets — the shared renderer names each by node index
                     // and `^block`, identical to the splice door's refusal.
-                    let sec = SecRef::Hpath {
+                    let sec_ref = SecRef::Hpath {
                         hpath: hpath.clone(),
                     };
                     let targets: Vec<model::Target> = many
@@ -1161,7 +1163,7 @@ fn mint_pin(
                             node_rev: model::NodeRev(f.sec_rev.clone()),
                         })
                         .collect();
-                    ambiguous(&sec, &target_doc, &targets)
+                    ambiguous(&sec_ref, &target_doc, &targets)
                 }
                 wire::ReadSel::Dewey { .. } => {
                     unreachable!("a dewey selector matches at most one row")
@@ -1981,9 +1983,10 @@ fn path_confined(root: &fs::WorkspaceRoot, path: &Path) -> Result<(), Box<ErrorB
             path.0
         );
         if let Some(rel) = relative_respelling(root, &path.0) {
-            m.push_str(&format!(
+            let _ = write!(
+                m,
                 " This path lies inside this workspace — respell it as `{rel}`."
-            ));
+            );
         }
         e.message = Some(m);
         return Err(Box::new(e));

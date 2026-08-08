@@ -53,7 +53,10 @@ fn toc_mode_publishes_the_anchor_plane_in_its_own_array() {
         "list-item anchors, document order"
     );
     for a in &anchors {
-        let (start, end) = (a.span.0 as usize, a.span.1 as usize);
+        let (start, end) = (
+            usize::try_from(a.span.0).unwrap(),
+            usize::try_from(a.span.1).unwrap(),
+        );
         assert!(
             DOC[start..end].contains(&format!("^{}", a.anchor)),
             "the published span carries its own marker: {:?}",
