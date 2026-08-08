@@ -301,6 +301,34 @@ fn is_yaml_timestamp(v: &str) -> bool {
     hm_ok(time_part)
 }
 
+/// **The def plane's ONE emptiness predicate** — R4's three states at the
+/// typed grain: `absent ≠ empty ≠ set`, where EMPTY has two spellings.
+///
+/// A key is empty when it is absent, when it is the YAML null (`key:`, `~`,
+/// `null`), or when it is the **explicit empty string** (`key: ""`). The third
+/// spelling is the one § A.6.3 makes every value-plane write door emit for an
+/// empty value — `ccc-cli task claim`'s release write, and now the engine's own
+/// — so a predicate that tests `Null` alone reads a released card as still
+/// owned (review gate 2026-08-08, finding 2: `set_property(owner, "")` passed a
+/// required-prop conformance check that the bare-null spelling refused, and
+/// `closed_at: ""` satisfied the terminal biconditional with no close time).
+///
+/// This aligns the code with its own refusal text, which already reads
+/// *"missing or empty"*. The alternative — emitting a bare null instead — is
+/// closed: § A.6.3 forbids forging the type this string plane cannot express.
+///
+/// Deliberately NOT empty: a whitespace-only string, a `0`, a `false`, an empty
+/// list. Those are values the caller authored, and this predicate is about the
+/// absence of one, never about its truthiness.
+#[must_use]
+pub(super) fn is_empty(v: Option<&FmValue>) -> bool {
+    match v {
+        None | Some(FmValue::Null) => true,
+        Some(FmValue::Str(s)) => s.is_empty(),
+        Some(_) => false,
+    }
+}
+
 /// Go `Doc.StringField`: the value if it decoded as a string, else "".
 #[must_use]
 pub fn string_field(meta: &FmMeta, key: &str) -> String {
