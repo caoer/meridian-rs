@@ -518,9 +518,9 @@ struct SectionsRender {
 enum SelFail {
     Miss {
         display: String,
-        /// The `^id` teaching clause ([`anchor_sel_teach`]); `None` on heading
+        /// The `^id` teaching ([`anchor_sel_teach`]); `None` on heading
         /// and dewey misses, whose teaching is the aggregate recovery clause.
-        teach: Option<String>,
+        teach: Option<AnchorTeach>,
     },
     Ambiguous {
         display: String,
@@ -557,7 +557,7 @@ impl SelFail {
             SelFail::Miss {
                 display,
                 teach: Some(teach),
-            } => format!("no section addressed by \"{display}\" ({teach})"),
+            } => format!("no section addressed by \"{display}\" ({})", teach.clause),
             SelFail::Ambiguous {
                 display,
                 candidates,
@@ -585,7 +585,7 @@ impl SelFail {
             SelFail::Miss {
                 display,
                 teach: Some(teach),
-            } => format!("{display} ({teach})"),
+            } => format!("{display} ({})", teach.clause),
             SelFail::Ambiguous {
                 display,
                 candidates,
@@ -601,13 +601,27 @@ impl SelFail {
     }
 }
 
+/// One `^id` miss teaching: the parenthetical clause the refusal carries,
+/// plus the unaddressable HOST kind when the id exists on the page — the
+/// all-fail Fix branches on it, because `anchors[]` carries list-item hosts
+/// only and cannot list such an id (dogfood P2-c: a Fix must be servable).
+struct AnchorTeach {
+    clause: String,
+    /// `Some(kind)` = the id exists but its host is outside the face's anchor
+    /// plane; `None` = the id is absent from the page.
+    host: Option<String>,
+}
+
 /// Face-scoped `^id` miss teaching (Law A-3: a miss teaches before it
 /// refuses). The composed read resolves anchors against the face's anchor
 /// plane, which carries list-item hosts only (Go parity, golden-pinned), so a
 /// miss has two honest shapes and each gets its own clause:
 ///
 /// - the id exists in the parse tree but its host block kind is outside the
-///   face's coverage — name the limit, never imply absence (the md-only-limit
+///   face's coverage — name the limit truthfully (the real host kind, never a
+///   paragraph fallback) and the servable way in: the enclosing section for a
+///   block host, the `props` plane for a frontmatter caret-tail (there is no
+///   enclosing section to offer). Never imply absence (the md-only-limit
 ///   pattern);
 /// - the id is absent — name the nearest face-addressable ids, or say plainly
 ///   that the page carries none.
@@ -618,7 +632,7 @@ fn anchor_sel_teach(
     doc: &model::Document,
     facts: &[wire_map::facts::ReadFact],
     sel: &wire::ReadSel,
-) -> Option<String> {
+) -> Option<AnchorTeach> {
     let wire::ReadSel::Anchor { anchor } = sel else {
         return None;
     };
@@ -626,23 +640,62 @@ fn anchor_sel_teach(
         .into_iter()
         .find(|r| r.anchor.as_deref() == Some(anchor.as_str()))
     {
-        return Some(format!(
-            "the anchor exists on this page, but its host block is a {} — outside the \
-             kinds this read face addresses (plain list items only); read its enclosing \
-             section by heading path instead",
-            row.kind
-        ));
+        let clause = if row.kind == "frontmatter" {
+            "the anchor exists on this page, but its host is the frontmatter — outside \
+             the kinds this read face addresses (plain list items only); the caret tail \
+             is literal YAML there, and any composed read already serves the frontmatter \
+             keys on its `props` plane"
+                .to_owned()
+        } else {
+            format!(
+                "the anchor exists on this page, but its host block is a {} — outside the \
+                 kinds this read face addresses (plain list items only); read its enclosing \
+                 section by heading path instead",
+                row.kind
+            )
+        };
+        return Some(AnchorTeach {
+            clause,
+            host: Some(row.kind),
+        });
     }
     let ids: Vec<String> = facts.iter().filter_map(|f| f.anchor.clone()).collect();
     if ids.is_empty() {
-        return Some("this page carries no addressable block anchors".to_owned());
+        return Some(AnchorTeach {
+            clause: "this page carries no addressable block anchors".to_owned(),
+            host: None,
+        });
     }
     let shown: Vec<String> = model::selector::nearest(anchor, &ids)
         .iter()
         .take(model::selector::NEAREST_SHOWN)
         .map(|c| format!("^{c}"))
         .collect();
-    Some(format!("nearest live block anchors: {}", shown.join(", ")))
+    Some(AnchorTeach {
+        clause: format!("nearest live block anchors: {}", shown.join(", ")),
+        host: None,
+    })
+}
+
+/// The servable Fix for an anchor whose host is outside the face's anchor
+/// plane. The standing `^` recovery points at `anchors[]` — which carries
+/// list-item hosts only, so the very id this refusal reports is absent there
+/// by construction (dogfood P2-c). A frontmatter caret-tail gets the `props`
+/// plane (it has no enclosing section); every other host gets the section
+/// map, where its enclosing section's path lives.
+fn unaddressable_fix(host: &str, display: &str) -> String {
+    if host == "frontmatter" {
+        format!(
+            "Fix: frontmatter is document-grain — any composed read of {display} serves \
+             every key on its `props` plane (CLI: `mrd read {display}` with no --section)."
+        )
+    } else {
+        format!(
+            "Fix: find the enclosing section's heading path with a toc read of {display} \
+             (MCP read: mode:\"toc\"; CLI: `mrd read {display}` with no --section), then \
+             read that section."
+        )
+    }
 }
 
 /// A candidate's machine address — the verbatim `[{"h":…,"n":…}]` segment
@@ -712,10 +765,21 @@ fn composed_sections(
             ErrorCode::RefNotFound
         });
         let phrases: Vec<String> = failures.iter().map(SelFail::phrase).collect();
+        // The aggregate Fix follows the first failure, as before — but an
+        // unaddressable-host miss must not send the caller to `anchors[]`,
+        // which cannot list the id it just named (dogfood P2-c).
+        let fix = match &failures[0] {
+            SelFail::Miss {
+                teach: Some(AnchorTeach {
+                    host: Some(host), ..
+                }),
+                ..
+            } => unaddressable_fix(host, display),
+            other => crate::section_recovery(other.display(), Some(display)),
+        };
         e.message = Some(format!(
-            "read: {} in {display}. Nothing was read and no rev was minted. {}",
+            "read: {} in {display}. Nothing was read and no rev was minted. {fix}",
             phrases.join("; "),
-            crate::section_recovery(failures[0].display(), Some(display))
         ));
         return Err(Box::new(e));
     }
