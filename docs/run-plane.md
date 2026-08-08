@@ -224,6 +224,41 @@ actual I/O, and a program is free to read only a few of the paths it was handed.
 256 covers S2-class fan-out over a large board without letting a runaway glob
 return the corpus.
 
+**What an entry costs** *(added 2026-08-08)*. The table above bounds a program;
+this states what the program spends against it, so a caller can compute its own
+ceiling instead of discovering it as a refusal.
+
+**The ceiling is a function of round trips, and reads are not trips.** For an
+entry against a corpus of `C` domain members:
+
+```
+wall clock  ≥  trips × pass(C)
+
+trips = 3 + Σ per read: (2 + N) whole-file, N = its frontmatter key count
+                        (1)     sectioned
+```
+
+`3` is the fixed frame — `hello`, `fingerprint`, and the commit. A whole-file
+`read(path)` is `toc`, one `cat` per frontmatter key, and a closing composed
+`read` that brackets them, so an ordinary session artifact with five to eight
+keys costs seven to ten trips. **A program's ceiling is set by its frontmatter,
+not only by its read count** — which is the single most surprising thing about
+this entry's cost, and the reason it is written down here.
+
+**What a pass costs.** Every trip is answered from the warm engine, and the
+engine is proved current first over the WHOLE hash domain: a read is
+corpus-scoped, not file-scoped, because a poison member anywhere refuses a read
+of a healthy one (Law A-3c). That scope is unchanged and is not an optimization
+target. What changed is the price. The pass walks the domain reusing the listing
+of any directory whose own timestamps did not move, `stat`s every member,
+re-reads only the members whose stat identity moved, and folds the §12.2 tree
+from per-member digests — O(corpus) in `stat`s, O(changed) in bytes.
+
+It used to re-read and re-fold every domain byte on every trip. On a 24k-file,
+150 MB corpus that is ~0.9s per trip, so a single script read spent several
+seconds of the 7s budget and a two-read program did not fit at all. The budget
+was never the defect.
+
 **The transaction — stand-still optimistic.** The word **snapshot is
 banned** here: the daemon has no MVCC and v1 must not grow one.
 
@@ -232,6 +267,26 @@ banned** here: the daemon has no MVCC and v1 must not grow one.
 3. **Commit.** ONE splice batch carrying `if_fingerprint` = the entry
    fingerprint, and §5.1 checks that guard **first**.
 4. **Any interleaved write** ⇒ `fingerprint_mismatch` ⇒ nothing commits.
+
+**Reads stay live, and stay corpus-scoped** *(amended 2026-08-08)*. The cost
+model above changes what a currency pass COSTS and never what it CHECKS. Every
+read op still proves the whole hash domain current before it answers, so a
+poison member anywhere still refuses a read of a healthy member and still names
+the poison (Law A-3c). Nothing is served out of a picture taken earlier, no
+staleness window is introduced, and no version is retained — the banned
+snapshot stays banned, and point 2 above is untouched.
+
+The one thing the pass now takes on trust is that a file whose
+`(device, inode, size, mtime, ctime)` is unchanged has unchanged bytes, and
+that a directory whose own timestamps are unchanged has the same entries —
+which is what a directory's timestamps mean. `ctime` is what puts the first out
+of reach in practice: the kernel bumps it on every inode change and no API sets
+it, so even a deliberate `utimes` restore is caught. This is the standing
+`fs::domain_stat_signature` posture — evidence, not proof — and it is bounded
+underneath: the commit's §5.1 guard folds **from bytes** under the write flock,
+so a memo that ever disagreed with disk makes the commit refuse
+`fingerprint_mismatch` rather than land. It fails closed, in the vocabulary the
+transaction already speaks.
 
 A caller may also pin its own `if_fingerprint?` guard. It is checked against
 the minted entry fingerprint **pre-eval** — mismatch refuses immediately with
