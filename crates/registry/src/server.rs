@@ -1073,9 +1073,15 @@ fn dispatch_read(
             let as_of = engine_root(engine);
             wire_serve::read::require_root_check(require_root.as_ref(), &as_of)?;
             let live = as_of.clone();
-            wire_serve::read::links(&engine.index, &engine.docs, path.as_ref(), as_of, 0, || {
-                Ok(live)
-            })
+            wire_serve::read::links(
+                &engine.index,
+                &engine.docs,
+                &engine.unserved,
+                path.as_ref(),
+                as_of,
+                0,
+                || Ok(live),
+            )
         }),
         Op::Root => warm_engine_read(registry, ws, |engine| {
             Ok(ResponseBody::Root {
@@ -1362,10 +1368,9 @@ fn doc_or_refusal<'e>(
         return Ok(doc);
     }
     if let Some(condition) = engine.unserved.get(&path.0) {
-        let mut e = ErrorBody::new(ErrorCode::InvalidUtf8);
-        e.path = Some(path.clone());
-        e.message = Some(format!("{} {condition} — the file serves no spans/nodes; its bytes stay under the root", path.0));
-        return Err(Box::new(e));
+        // One mint for the §52 per-file refusal, shared with the links doors
+        // on both hosts (`wire_serve::read::unserved_refusal`).
+        return Err(wire_serve::read::unserved_refusal(path, condition));
     }
     Err(file_not_found(path))
 }
