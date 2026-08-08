@@ -449,6 +449,7 @@ fn in_process_links(workspace: &Path, path: Option<&str>) -> Result<Value, Fail>
     let body = wire_serve::read::links_rooted(
         &index,
         &docs,
+        &unserved,
         &corpus,
         mounts.set(),
         wpath.as_ref(),

@@ -11,6 +11,16 @@
 //! path with byte-equal content → `renamed` + `from_path`. Else delete+create,
 //! `from_path` unwired.
 //!
+//! **§52 per-file degradation** (node-rev-merkle-spec §3, line 52): a non-UTF-8
+//! member's bytes already moved the root (`domain_snapshot` folds raw bytes),
+//! so the delta names it — but it serves no spans/nodes, so its entry carries
+//! no revs and no node entries, and it feeds no reaction. Siblings in the same
+//! change set are served in full. One poison member never refuses the frame:
+//! a refused reconcile would starve the subscription on every detect cycle
+//! until the file is removed — the corpus-plane incident's watch-leg twin
+//! (`fs::build_corpus`'s unserved slot is the corpus twin of the degraded
+//! entry).
+//!
 //! **Stated degrade — line-boundary reconcile only** (the deleted sidecar's
 //! mode; no shipping driver runs it): an external write in the same window as
 //! an internal commit can break ring-chain contiguity → `root_unknown` resync
@@ -97,7 +107,7 @@ pub fn reconcile(
                 .watcher
                 .classify(&files)
                 .expect("primed: watch.root is Some");
-            let delta_files = classify_to_wire(&changes)?;
+            let delta_files = classify_to_wire(&changes);
             // The one production DeltaFrame constructor (§7.3), shared with the
             // commit path. `allocate_seq` rather than `seq() + 1`: the write
             // path can hold an allocation whose frame has not landed yet, and
@@ -110,7 +120,7 @@ pub fn reconcile(
                 None, // §7.1: now ABSENT — never invented
                 delta_files,
             );
-            frame.effects = external_effects(ws_root, &changes)?;
+            frame.effects = external_effects(ws_root, &changes);
             ring.advance(frame.clone());
             watch.watcher.rebase(&files);
             watch.root = Some(disk_root);
@@ -129,16 +139,20 @@ pub fn reconcile(
 /// `armed` feedback, the reaction exists only on the frame.
 ///
 /// Only modified files feed: a `Create`/`Remove` change has no document on its
-/// absent side to derive from.
+/// absent side to derive from. A member with a non-UTF-8 side feeds nothing —
+/// a hook matches parsed documents, and an unserved member has none (§52
+/// degradation, module header).
 fn external_effects(
     ws_root: &fs::WorkspaceRoot,
     changes: &fs::WatchChanges,
-) -> Result<Vec<wire::EffectEnvelope>, Box<ErrorBody>> {
+) -> Vec<wire::EffectEnvelope> {
     let mut effects = Vec::new();
     for (path, before, after) in &changes.modified {
         // `candidate_of_body`, not `doc_of`: a hook matches `paths:` globs
         // against the document's path, which only this mint carries.
-        let (b, a) = (doc_at(path, before)?, doc_at(path, after)?);
+        let (Some(b), Some(a)) = (doc_at(path, before), doc_at(path, after)) else {
+            continue;
+        };
         // A reaction never fails the world: the edit already landed and the
         // Delta must still be emitted. Faults ride the frame as `ArmedFault`
         // findings.
@@ -151,87 +165,185 @@ fn external_effects(
             None, // §7.1: no caller made this write — never invent one
         ));
     }
-    Ok(effects)
+    effects
 }
 
 /// Byte-level classification → wire Delta file entries, path-deterministic
-/// order, the ruled rename form applied (module header).
-fn classify_to_wire(changes: &fs::WatchChanges) -> Result<Vec<DeltaFile>, Box<ErrorBody>> {
+/// order, the ruled rename form applied (module header). Infallible: a
+/// non-UTF-8 member degrades to its rev-less entry (§52, module header)
+/// instead of refusing the frame.
+fn classify_to_wire(changes: &fs::WatchChanges) -> Vec<DeltaFile> {
     if changes.removed.len() == 1
         && changes.added.len() == 1
         && changes.removed[0].1 == changes.added[0].1
     {
         let (from_path, bytes) = &changes.removed[0];
         let (to_path, _) = &changes.added[0];
-        let rev = NodeRev(doc_of(to_path, bytes)?.root.node_rev.0);
+        // A poison rename stays a rename — byte equality needs no parse —
+        // but mints no rev (§52: no spans/nodes served).
+        let rev = doc_of(bytes).map(|doc| NodeRev(doc.root.node_rev.0));
         let mut files = vec![DeltaFile {
             path: Path(to_path.clone()),
             change: FileChange::Renamed,
             from_path: Some(Path(from_path.clone())),
             // Same bytes, same rev, both tenses; no node entries — content
             // unchanged (§7.1 never-duplicated posture).
-            file_rev_before: Some(rev.clone()),
-            file_rev_after: Some(rev),
+            file_rev_before: rev.clone(),
+            file_rev_after: rev,
             nodes: vec![],
         }];
-        files.extend(modified_entries(changes)?);
+        files.extend(modified_entries(changes));
         files.sort_by(|a, b| a.path.0.cmp(&b.path.0));
-        return Ok(files);
+        return files;
     }
     // Refuse-to-guess: deletes and creates emitted as themselves.
     let mut files = Vec::new();
     for (path, before) in &changes.removed {
-        let doc = doc_of(path, before)?;
-        let fd = model::delta::file_delta(Some(&doc), None).expect("state changed");
-        files.push(wire_map::project_file_delta(path, &fd));
+        files.push(match doc_of(before) {
+            Some(doc) => {
+                let fd = model::delta::file_delta(Some(&doc), None).expect("state changed");
+                wire_map::project_file_delta(path, &fd)
+            }
+            None => degraded_entry(path, FileChange::Deleted),
+        });
     }
     for (path, after) in &changes.added {
-        let doc = doc_of(path, after)?;
-        let fd = model::delta::file_delta(None, Some(&doc)).expect("state changed");
-        files.push(wire_map::project_file_delta(path, &fd));
+        files.push(match doc_of(after) {
+            Some(doc) => {
+                let fd = model::delta::file_delta(None, Some(&doc)).expect("state changed");
+                wire_map::project_file_delta(path, &fd)
+            }
+            None => degraded_entry(path, FileChange::Created),
+        });
     }
-    files.extend(modified_entries(changes)?);
+    files.extend(modified_entries(changes));
     files.sort_by(|a, b| a.path.0.cmp(&b.path.0));
-    Ok(files)
+    files
 }
 
 /// Modified files: full change facts through the existing model mint points.
-fn modified_entries(changes: &fs::WatchChanges) -> Result<Vec<DeltaFile>, Box<ErrorBody>> {
+/// A member with a non-UTF-8 side keeps its entry but degrades it: the rev
+/// survives on whichever side still parses, node grain is gone — node entries
+/// need both sides, and the served tense is re-readable via `toc` (§7.1
+/// never-duplicated posture).
+fn modified_entries(changes: &fs::WatchChanges) -> Vec<DeltaFile> {
     let mut out = Vec::new();
     for (path, before, after) in &changes.modified {
-        let (b, a) = (doc_of(path, before)?, doc_of(path, after)?);
-        if let Some(fd) = model::delta::file_delta(Some(&b), Some(&a)) {
-            out.push(wire_map::project_file_delta(path, &fd));
+        match (doc_of(before), doc_of(after)) {
+            (Some(b), Some(a)) => {
+                if let Some(fd) = model::delta::file_delta(Some(&b), Some(&a)) {
+                    out.push(wire_map::project_file_delta(path, &fd));
+                }
+            }
+            (b, a) => {
+                let mut entry = degraded_entry(path, FileChange::Modified);
+                entry.file_rev_before = b.map(|doc| NodeRev(doc.root.node_rev.0));
+                entry.file_rev_after = a.map(|doc| NodeRev(doc.root.node_rev.0));
+                out.push(entry);
+            }
         }
     }
-    Ok(out)
+    out
 }
 
-/// The §12 domain is md/UTF-8 by law — non-UTF-8 bytes refuse loud
-/// (`invalid_utf8`), matching `fs::load`'s posture everywhere else.
-fn utf8_of<'a>(path: &str, bytes: &'a [u8]) -> Result<&'a str, Box<ErrorBody>> {
-    std::str::from_utf8(bytes).map_err(|_| {
-        let mut e = ErrorBody::new(wire::ErrorCode::InvalidUtf8);
-        e.path = Some(Path(path.to_string()));
-        Box::new(e)
-    })
+/// The §52 degraded entry: the member changed on disk and its bytes already
+/// moved the root, so the delta names it — but it serves no spans/nodes, so
+/// the entry carries no revs and no node entries. A consumer asking for the
+/// member itself gets the per-file `invalid_utf8` from the read doors.
+fn degraded_entry(path: &str, change: FileChange) -> DeltaFile {
+    DeltaFile {
+        path: Path(path.to_string()),
+        change,
+        from_path: None,
+        file_rev_before: None,
+        file_rev_after: None,
+        nodes: vec![],
+    }
 }
 
-/// Parse one domain file's bytes AT its path, through the production mint.
+/// Parse one domain file's bytes AT its path, through the production mint, or
+/// `None` for a non-UTF-8 member (§52: never lossy-decoded, never parsed).
 ///
 /// The twin of [`doc_of`] for consumers that need the document's own path — a
 /// HOOK's `paths:` scope is matched against it, so a path-less document silently
 /// matches no rule at all.
-fn doc_at(path: &str, bytes: &[u8]) -> Result<model::CandidateDocument, Box<ErrorBody>> {
-    Ok(model::candidate_of_body(
-        path,
-        utf8_of(path, bytes)?.to_string(),
-    ))
+fn doc_at(path: &str, bytes: &[u8]) -> Option<model::CandidateDocument> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    Some(model::candidate_of_body(path, text.to_string()))
 }
 
-/// Parse one domain file's bytes.
-fn doc_of(path: &str, bytes: &[u8]) -> Result<model::Document, Box<ErrorBody>> {
-    let text = utf8_of(path, bytes)?;
+/// Parse one domain file's bytes, or `None` for a non-UTF-8 member (§52:
+/// never lossy-decoded, never parsed — the caller degrades per-file).
+fn doc_of(bytes: &[u8]) -> Option<model::Document> {
+    let text = std::str::from_utf8(bytes).ok()?;
     let tree = syntax::parse(text);
-    Ok(model::build(text.to_string(), tree))
+    Some(model::build(text.to_string(), tree))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// §52 inside ONE change set: the poison member degrades to its rev-less,
+    /// node-less entry while the healthy sibling in the SAME batch keeps full
+    /// node grain — degradation never leaks past the file.
+    ///
+    /// *Mutation:* restore `doc_of(...)?` — the whole batch refuses and the
+    /// sibling's facts are lost with it.
+    #[test]
+    fn a_mixed_batch_degrades_only_the_poison_member() {
+        let changes = fs::WatchChanges {
+            removed: vec![],
+            added: vec![("poison.md".into(), b"# P\n\xff\xfe\n".to_vec())],
+            modified: vec![(
+                "plan.md".into(),
+                b"# Goals\n\nship by August\n".to_vec(),
+                b"# Goals\n\nship by September\n".to_vec(),
+            )],
+        };
+        let files = classify_to_wire(&changes);
+        assert_eq!(files.len(), 2, "both members are named: {files:?}");
+        let poison = files.iter().find(|f| f.path.0 == "poison.md").unwrap();
+        assert_eq!(poison.change, FileChange::Created);
+        assert!(
+            poison.file_rev_before.is_none()
+                && poison.file_rev_after.is_none()
+                && poison.nodes.is_empty(),
+            "the unserved member carries no revs and no node grain: {poison:?}"
+        );
+        let plan = files.iter().find(|f| f.path.0 == "plan.md").unwrap();
+        assert_eq!(plan.change, FileChange::Modified);
+        assert!(
+            plan.file_rev_after.is_some() && !plan.nodes.is_empty(),
+            "the healthy sibling keeps full node grain: {plan:?}"
+        );
+    }
+
+    /// A poison side on a MODIFIED member keeps the entry, keeps the rev of
+    /// whichever side still parses, and drops node grain — node entries need
+    /// both sides.
+    #[test]
+    fn a_poisoned_modification_keeps_the_parseable_side_rev() {
+        let changes = fs::WatchChanges {
+            removed: vec![],
+            added: vec![],
+            modified: vec![(
+                "plan.md".into(),
+                b"# Goals\n\nship by August\n".to_vec(),
+                b"# Goals\n\xff\xfe\n".to_vec(),
+            )],
+        };
+        let files = classify_to_wire(&changes);
+        assert_eq!(files.len(), 1, "{files:?}");
+        let entry = &files[0];
+        assert_eq!(entry.change, FileChange::Modified);
+        assert!(
+            entry.file_rev_before.is_some(),
+            "the still-served tense keeps its rev: {entry:?}"
+        );
+        assert!(
+            entry.file_rev_after.is_none() && entry.nodes.is_empty(),
+            "the poison tense mints nothing: {entry:?}"
+        );
+    }
 }
