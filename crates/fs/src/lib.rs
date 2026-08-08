@@ -15,11 +15,12 @@
 //! validation can mint. An unvalidated write cannot reach disk by construction; the
 //! splice pipeline (validate in `model`, execute here) is enforced by types, not review.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
+use std::sync::PoisonError;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub mod domain;
@@ -371,10 +372,9 @@ impl DomainCache {
     /// member, or reading a member whose identity moved.
     pub fn root(&mut self, root: &WorkspaceRoot) -> io::Result<model::MerkleRoot> {
         let domain = domain::Domain::load(root)?;
-        let mut rels = Vec::new();
-        let mut fresh_dirs = BTreeMap::new();
-        self.walk(&root.0, Path::new(""), &domain, &mut rels, &mut fresh_dirs)?;
+        let (mut rels, fresh_dirs, listings) = Self::walk_tree(&self.dirs, &root.0, &domain)?;
         self.dirs = fresh_dirs;
+        self.listings += listings;
         rels.sort();
         let mut fresh: BTreeMap<String, (StatKey, [u8; 32])> = BTreeMap::new();
         for rel in rels {
@@ -411,7 +411,8 @@ impl DomainCache {
     }
 
     /// [`hash_domain`]'s traversal, with the listing of an unmoved directory
-    /// taken from memory instead of from a `read_dir`.
+    /// taken from memory instead of from a `read_dir`, parallel across
+    /// subtrees.
     ///
     /// A directory's own `mtime`/`ctime` move when an entry is created,
     /// removed, or renamed inside it — that is what a directory's timestamps
@@ -423,59 +424,129 @@ impl DomainCache {
     /// Same evidence-not-proof standing as [`StatKey`], and it fails the safe
     /// way: an unreadable directory stat re-enumerates rather than trusting
     /// what it remembers.
-    fn walk(
-        &mut self,
-        abs_dir: &Path,
-        rel_dir: &Path,
+    ///
+    /// The fan-out (ported from arm-A `f84c1912`, re-derived on this memo
+    /// walk): even fully memoized, the sweep pays one directory `stat` per
+    /// tree node, ~25k serial syscalls at production 2x scale, and the kernel
+    /// answers eight at once — so every directory is a work item on a shared
+    /// queue (2–8 scoped workers), termination witnessed by
+    /// queue-empty-and-none-active, first scan error refusing the sweep. The
+    /// caller sorts the member list and folds through ordered maps, so collect
+    /// order — the only thing parallelism changes — is invisible to the fold;
+    /// which error is named when SEVERAL directories fail at once is the one
+    /// nondeterminism, disclosed in the fuse ledger. Trees with no
+    /// subdirectories never see a thread. Liveness is untouched: one
+    /// synchronous, kernel-fresh metadata pass per call — the constant moved,
+    /// not the semantics.
+    ///
+    /// Returns `(member files, fresh dir memo, enumerations run)`.
+    fn walk_tree(
+        prior: &BTreeMap<PathBuf, (StatKey, Vec<DirEntryKind>)>,
+        root: &Path,
         domain: &domain::Domain,
-        out: &mut Vec<PathBuf>,
-        fresh_dirs: &mut BTreeMap<PathBuf, (StatKey, Vec<DirEntryKind>)>,
-    ) -> io::Result<()> {
-        let key = StatKey::of_path(abs_dir)?;
-        let remembered = key.and_then(|key| {
-            self.dirs
-                .get(rel_dir)
-                .filter(|(seen, _)| *seen == key)
-                .map(|(_, entries)| entries.clone())
+    ) -> io::Result<(
+        Vec<PathBuf>,
+        BTreeMap<PathBuf, (StatKey, Vec<DirEntryKind>)>,
+        u64,
+    )> {
+        let mut files = Vec::new();
+        let mut fresh_dirs = BTreeMap::new();
+        let mut listings = 0u64;
+
+        // The root's own scan runs serially — flat trees never see a thread.
+        let scan = scan_dir(prior, root, Path::new(""))?;
+        listings += u64::from(scan.enumerated);
+        let (mut root_files, subdirs) = classify(&scan.entries, Path::new(""), domain);
+        if let Some(key) = scan.key {
+            fresh_dirs.insert(PathBuf::new(), (key, scan.entries));
+        }
+        files.append(&mut root_files);
+        if subdirs.is_empty() {
+            return Ok((files, fresh_dirs, listings));
+        }
+
+        struct Shared {
+            /// Rel dirs awaiting a scan.
+            todo: VecDeque<PathBuf>,
+            /// Scans in flight — with `todo`, the termination witness: the
+            /// walk is done when the queue is empty AND no worker holds one.
+            active: usize,
+            files: Vec<PathBuf>,
+            dirs: Vec<(PathBuf, (StatKey, Vec<DirEntryKind>))>,
+            listings: u64,
+            /// The first scan failure; the sweep fails with it (a tree that
+            /// cannot be walked refuses the whole pass, unchanged).
+            err: Option<io::Error>,
+        }
+        let shared = std::sync::Mutex::new(Shared {
+            todo: subdirs.into(),
+            active: 0,
+            files: Vec::new(),
+            dirs: Vec::new(),
+            listings: 0,
+            err: None,
         });
-        let entries = match remembered {
-            Some(entries) => entries,
-            None => {
-                self.listings += 1;
-                let mut entries = Vec::new();
-                for entry in fs::read_dir(abs_dir)? {
-                    let entry = entry?;
-                    let file_type = entry.file_type()?;
-                    entries.push(DirEntryKind {
-                        is_dir: file_type.is_dir(),
-                        is_file: file_type.is_file(),
-                        name: entry.file_name(),
-                    });
-                }
-                entries
+        let idle = std::sync::Condvar::new();
+        let workers = std::thread::available_parallelism().map_or(2, |n| n.get().clamp(2, 8));
+
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                scope.spawn(|| {
+                    loop {
+                        let rel = {
+                            let mut s = shared.lock().unwrap_or_else(PoisonError::into_inner);
+                            loop {
+                                if s.err.is_some() {
+                                    return;
+                                }
+                                if let Some(rel) = s.todo.pop_front() {
+                                    s.active += 1;
+                                    break rel;
+                                }
+                                if s.active == 0 {
+                                    return; // queue drained and nobody holds a scan
+                                }
+                                s = idle.wait(s).unwrap_or_else(PoisonError::into_inner);
+                            }
+                        };
+                        let scanned = scan_dir(prior, root, &rel)
+                            .map(|scan| {
+                                let split = classify(&scan.entries, &rel, domain);
+                                (scan, split)
+                            });
+                        let mut s = shared.lock().unwrap_or_else(PoisonError::into_inner);
+                        s.active -= 1;
+                        match scanned {
+                            Ok((scan, (mut new_files, new_subdirs))) => {
+                                s.listings += u64::from(scan.enumerated);
+                                s.files.append(&mut new_files);
+                                s.todo.extend(new_subdirs);
+                                if let Some(key) = scan.key {
+                                    s.dirs.push((rel, (key, scan.entries)));
+                                }
+                                // Every push can wake every sleeper: workers
+                                // outnumber the queue's contents at the fringe.
+                                idle.notify_all();
+                            }
+                            Err(e) => {
+                                s.err.get_or_insert(e);
+                                idle.notify_all();
+                                return;
+                            }
+                        }
+                    }
+                });
             }
-        };
-        if let Some(key) = key {
-            fresh_dirs.insert(rel_dir.to_path_buf(), (key, entries.clone()));
+        });
+
+        let mut s = shared.into_inner().unwrap_or_else(PoisonError::into_inner);
+        if let Some(err) = s.err {
+            return Err(err);
         }
-        for entry in entries {
-            let rel = rel_dir.join(&entry.name);
-            if entry.is_dir {
-                // Dot-segment: structurally outside the hash domain at any
-                // depth. Pruning is sound only where re-inclusion is
-                // impossible — the same two rules `walk_domain_dir` applies.
-                if entry.name.to_string_lossy().starts_with('.') {
-                    continue;
-                }
-                if domain.prunes_dir(&rel) {
-                    continue;
-                }
-                self.walk(&abs_dir.join(&entry.name), &rel, domain, out, fresh_dirs)?;
-            } else if entry.is_file && domain.contains(&rel) {
-                out.push(rel);
-            }
-        }
-        Ok(())
+        files.append(&mut s.files);
+        fresh_dirs.extend(s.dirs);
+        listings += s.listings;
+        Ok((files, fresh_dirs, listings))
     }
 
     /// How many directories this memo has ENUMERATED (`read_dir`) over its
@@ -486,6 +557,87 @@ impl DomainCache {
         self.listings
     }
 
+}
+
+/// One directory's scan during [`DomainCache`]'s walk: its identity, its
+/// entries (remembered, or freshly enumerated when the identity moved), and
+/// whether an enumeration actually ran — the walk's unit of work.
+struct DirScan {
+    key: Option<StatKey>,
+    entries: Vec<DirEntryKind>,
+    enumerated: bool,
+}
+
+/// Scan one directory for [`DomainCache::walk_tree`]: `stat` it, take its
+/// listing from `prior` when the identity is unmoved, `read_dir` otherwise.
+/// An unreadable directory stat re-enumerates rather than trusting what the
+/// memo remembers — the serial walk's own failure posture.
+fn scan_dir(
+    prior: &BTreeMap<PathBuf, (StatKey, Vec<DirEntryKind>)>,
+    root: &Path,
+    rel_dir: &Path,
+) -> io::Result<DirScan> {
+    let abs_dir = if rel_dir.as_os_str().is_empty() {
+        root.to_path_buf()
+    } else {
+        root.join(rel_dir)
+    };
+    let key = StatKey::of_path(&abs_dir)?;
+    let remembered = key.and_then(|key| {
+        prior
+            .get(rel_dir)
+            .filter(|(seen, _)| *seen == key)
+            .map(|(_, entries)| entries.clone())
+    });
+    let (entries, enumerated) = match remembered {
+        Some(entries) => (entries, false),
+        None => {
+            let mut entries = Vec::new();
+            for entry in fs::read_dir(&abs_dir)? {
+                let entry = entry?;
+                let file_type = entry.file_type()?;
+                entries.push(DirEntryKind {
+                    is_dir: file_type.is_dir(),
+                    is_file: file_type.is_file(),
+                    name: entry.file_name(),
+                });
+            }
+            (entries, true)
+        }
+    };
+    Ok(DirScan {
+        key,
+        entries,
+        enumerated,
+    })
+}
+
+/// Split a scanned directory's entries into the files the domain admits and
+/// the subdirectories worth descending — the same two pruning rules
+/// [`walk_domain_dir`] applies (dot-segment structurally outside the domain,
+/// [`domain::Domain::prunes_dir`] where re-inclusion is impossible).
+fn classify(
+    entries: &[DirEntryKind],
+    rel_dir: &Path,
+    domain: &domain::Domain,
+) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let mut files = Vec::new();
+    let mut subdirs = Vec::new();
+    for entry in entries {
+        let rel = rel_dir.join(&entry.name);
+        if entry.is_dir {
+            if entry.name.to_string_lossy().starts_with('.') {
+                continue;
+            }
+            if domain.prunes_dir(&rel) {
+                continue;
+            }
+            subdirs.push(rel);
+        } else if entry.is_file && domain.contains(&rel) {
+            files.push(rel);
+        }
+    }
+    (files, subdirs)
 }
 
 /// The domain files of a workspace as `(workspace-relative path, raw bytes)`
@@ -2491,6 +2643,139 @@ mod domain_cache_tests {
             reborn,
             domain_snapshot(&root).unwrap().1,
             "and it agrees with the byte fold"
+        );
+    }
+}
+
+#[cfg(test)]
+mod domain_cache_parallel_tests {
+    //! Fuse-authored gates over the arm-A-derived parallel mechanism
+    //! (`wave1/wall-clock-e33b553a` commits `f84c1912` + `c0d0c8ba`,
+    //! re-derived onto this memo walk). arm-A shipped the mechanism with
+    //! measurements and zero tests, so nothing could be transplanted: these
+    //! gates assert the claims the port rests on — bit-identical folds, exact
+    //! counters at fan-out width, and refusals that survive the fan-out —
+    //! rather than inheriting them.
+
+    use super::{DomainCache, WorkspaceRoot, domain_snapshot};
+    use std::fs;
+
+    fn write(root: &std::path::Path, rel: &str, contents: &str) {
+        let p = root.join(rel);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(&p, contents).unwrap();
+    }
+
+    /// A tree wide enough to put work on every worker: 3 top-level dirs × 4
+    /// subdirs × 3 files, plus a dot-dir and a pruned dir that must never be
+    /// scanned. The serial walk's own guarantees, asserted at fan-out width:
+    /// the memo root equals the byte-derived root cold and warm, the listing
+    /// count is exact (no directory scanned twice, none skipped), and a grown
+    /// directory costs exactly one re-enumeration.
+    #[test]
+    fn parallel_walk_is_bit_identical_at_fan_out_width() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root_path = tmp.path();
+        write(root_path, "top.md", "# Top\n");
+        for a in 0..3 {
+            for b in 0..4 {
+                for f in 0..3 {
+                    write(
+                        root_path,
+                        &format!("d{a}/s{b}/f{f}.md"),
+                        &format!("# {a}-{b}-{f}\n"),
+                    );
+                }
+            }
+        }
+        write(root_path, ".hidden/x.md", "outside the domain\n");
+        write(root_path, "assets/skip.md", "pruned\n");
+        write(
+            root_path,
+            "mdfs_config.yaml",
+            "version: 1\nignore:\n  - \"assets/**\"\n",
+        );
+        let root = WorkspaceRoot(fs::canonicalize(root_path).unwrap());
+
+        let mut cache = DomainCache::new();
+        let cold = cache.root(&root).unwrap();
+        assert_eq!(
+            cold,
+            domain_snapshot(&root).unwrap().1,
+            "cold parallel walk agrees with the byte-derived root"
+        );
+        // Scanned: root + d0..d2 + 12 subdirs = 16. The dot-dir and the
+        // pruned dir are never entered, so they must not count.
+        assert_eq!(cache.listings(), 16, "every directory enumerated exactly once");
+
+        let warm = cache.root(&root).unwrap();
+        assert_eq!(warm, cold, "warm parallel walk returns the same root");
+        assert_eq!(cache.listings(), 16, "an unchanged tree re-enumerates nothing");
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        write(root_path, "d1/s2/new.md", "# New\n");
+        let grown = cache.root(&root).unwrap();
+        assert_eq!(
+            grown,
+            domain_snapshot(&root).unwrap().1,
+            "the grown tree still agrees with the byte-derived root"
+        );
+        assert_eq!(
+            cache.listings(),
+            17,
+            "exactly one directory re-enumerated — the one that grew"
+        );
+    }
+
+    /// A tree whose collection order can never equal its sorted order — a
+    /// subdirectory's file sorts BETWEEN its parent's own files, and the walk
+    /// always collects the parent's files before the subdirectory is scanned.
+    /// Any ordering leak from the parallel walk into the fold therefore
+    /// changes the root and reddens this equality; it cannot pass by luck.
+    #[test]
+    fn collection_order_is_invisible_to_the_fold() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root_path = tmp.path();
+        // Sorted: a/b/x.md < a/m.md — but a/m.md is collected first.
+        write(root_path, "a/m.md", "# M\n");
+        write(root_path, "a/b/x.md", "# X\n");
+        write(root_path, "z/a.md", "# ZA\n");
+        write(root_path, "z/y/q.md", "# Q\n");
+        let root = WorkspaceRoot(fs::canonicalize(root_path).unwrap());
+
+        let mut cache = DomainCache::new();
+        assert_eq!(
+            cache.root(&root).unwrap(),
+            domain_snapshot(&root).unwrap().1,
+            "collect order must be invisible to the fold"
+        );
+    }
+
+    /// A subdirectory that cannot be scanned refuses the whole sweep — the
+    /// first-error law survives the fan-out — and the refusal clears when the
+    /// directory does.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_directory_refuses_the_parallel_sweep() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root_path = tmp.path();
+        write(root_path, "ok/a.md", "# A\n");
+        write(root_path, "sealed/b.md", "# B\n");
+        let root = WorkspaceRoot(fs::canonicalize(root_path).unwrap());
+
+        let sealed = root.0.join("sealed");
+        fs::set_permissions(&sealed, fs::Permissions::from_mode(0o000)).unwrap();
+        let mut cache = DomainCache::new();
+        let refused = cache.root(&root);
+        fs::set_permissions(&sealed, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(refused.is_err(), "an unscannable directory refuses the pass");
+
+        assert_eq!(
+            cache.root(&root).unwrap(),
+            domain_snapshot(&root).unwrap().1,
+            "the pass recovers once the directory does"
         );
     }
 }
