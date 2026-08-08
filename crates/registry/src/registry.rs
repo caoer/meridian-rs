@@ -73,10 +73,6 @@ pub struct Registry {
     /// U20b delta plane, one ring per workspace — same create/reap as
     /// [`Self::read_mints`]. S6: key is canonical path (not a global ring).
     rings: Mutex<HashMap<PathBuf, Arc<crate::ring::WorkspaceRing>>>,
-    /// G11 pre-warm quiet map: last [`fs::domain_stat_signature`] per warm
-    /// workspace. Matching signature skips the corpus fold. Advisory only —
-    /// missing/stale costs one extra snapshot, never a wrong answer.
-    prewarm_signatures: Mutex<HashMap<PathBuf, u64>>,
     /// G11 activity clock: request count + last request unix secs. Pre-warm
     /// backoff and idle-exit both read this.
     requests: AtomicU64,
@@ -108,7 +104,6 @@ impl Registry {
             read_mints: Mutex::new(HashMap::new()),
             // Cold: no rings; pre-restart `from_seq` ⇒ `root_unknown` (§7.1).
             rings: Mutex::new(HashMap::new()),
-            prewarm_signatures: Mutex::new(HashMap::new()),
             requests: AtomicU64::new(0),
             // Clock starts at birth so idle-exit can age an unused daemon.
             last_request: AtomicU64::new(now_secs()),
@@ -215,6 +210,19 @@ impl Registry {
     /// rebuild-only). Fingerprint read and parse are outside the `engines`
     /// write lock (insert only) so workspaces do not block each other.
     ///
+    /// The reuse GATE is the stat signature (`docs/run-plane.md` § The entry's
+    /// cost model): one metadata-only sweep per call, no file bytes read. A
+    /// warm engine whose recorded signature still matches is current — reused
+    /// with no fold and no parse, which is the read path's whole per-request
+    /// corpus work. A moved signature pays one full snapshot: the fingerprint
+    /// decides reuse vs rebuild, and the new signature is recorded against the
+    /// fold it gated.
+    ///
+    /// Ordering is the liveness invariant: the sweep runs BEFORE the snapshot
+    /// it gates, so the recorded signature never describes a world newer than
+    /// the bytes the engine holds. A write landing between sweep and snapshot
+    /// re-folds on the next request instead of serving stale.
+    ///
     /// # Errors
     /// Canonicalize failure, corpus unreadable, or non-UTF-8
     /// ([`io::ErrorKind::InvalidData`]).
@@ -223,27 +231,42 @@ impl Registry {
             .map_err(|e| io::Error::new(io::ErrorKind::NotFound, e))?;
         let root = fs::WorkspaceRoot(canonical.clone());
 
-        // Cheap half (no parse): content hash from disk.
-        let (files, fingerprint) = fs::domain_snapshot(&root)?;
+        // The reuse gate: one stat sweep, zero byte reads.
+        let signature = fs::domain_stat_signature(&root)?;
 
-        // Warm + unchanged → reuse, zero parses.
+        // Warm + unmoved signature ⇒ current: no fold, no parse.
         {
             let engines = self.engines.read().unwrap_or_else(PoisonError::into_inner);
             if engines
                 .get(&canonical)
-                .is_some_and(|engine| engine.at_fingerprint == fingerprint)
+                .is_some_and(|engine| engine.at_signature == signature)
             {
                 return Ok(WarmOutcome::Reused);
             }
         }
 
-        // Cold or content changed → rebuild once (only parse site).
+        // Cold, or the signature moved: pay the content fold once. The
+        // fingerprint stays the reuse KEY — an over-sensitive signature
+        // (times moved, bytes didn't) re-stamps the signature and reuses.
+        let (files, fingerprint) = fs::domain_snapshot(&root)?;
+        {
+            let mut engines = self.engines.write().unwrap_or_else(PoisonError::into_inner);
+            if let Some(engine) = engines.get_mut(&canonical)
+                && engine.at_fingerprint == fingerprint
+            {
+                engine.at_signature = signature;
+                return Ok(WarmOutcome::Reused);
+            }
+        }
+
+        // Content moved or cold → rebuild once (only parse site).
         let (index, docs) = fs::build_corpus(files)?;
         let parsed = docs.len();
         let engine = WorkspaceEngine {
             index,
             docs,
             at_fingerprint: fingerprint,
+            at_signature: signature,
         };
         self.engines
             .write()
@@ -294,9 +317,11 @@ impl Registry {
     }
 
     /// Pre-warm every already-warm workspace (P2 watch driver). Rebuilds only
-    /// when content hash changed — latency only; correctness is fingerprint.
-    /// Cold daemon: no-op. Snapshot warm keys under read lock, then release
-    /// before any rebuild. Returns workspaces that rebuilt; best-effort on errors.
+    /// when content moved — the gate is the same stat signature the read path
+    /// uses (G11: a quiet sweep pays one stat walk per workspace and folds
+    /// nothing). Cold daemon: no-op. Snapshot warm keys under read lock, then
+    /// release before any rebuild. Returns workspaces that rebuilt; best-effort
+    /// on errors.
     pub fn prewarm(&self) -> Vec<PathBuf> {
         let warm: Vec<PathBuf> = {
             let engines = self.engines.read().unwrap_or_else(PoisonError::into_inner);
@@ -304,34 +329,12 @@ impl Registry {
         };
         let mut rebuilt = Vec::new();
         for workspace in warm {
-            if self.stat_signature_unchanged(&workspace) {
-                continue;
-            }
             // Only `Built` counts; `Reused`/`Err` are best-effort no-ops.
             if let Ok(WarmOutcome::Built { .. }) = self.warm_or_build(&workspace) {
                 rebuilt.push(workspace);
             }
         }
         rebuilt
-    }
-
-    /// G11: has `workspace` looked untouched since the last sweep? Records the
-    /// observed signature (`false` once per change). Unreadable ⇒ `false`
-    /// (never skip on error).
-    fn stat_signature_unchanged(&self, workspace: &Path) -> bool {
-        let Ok(signature) = fs::domain_stat_signature(&fs::WorkspaceRoot(workspace.to_path_buf()))
-        else {
-            return false;
-        };
-        let mut seen = self
-            .prewarm_signatures
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if seen.get(workspace) == Some(&signature) {
-            return true;
-        }
-        seen.insert(workspace.to_path_buf(), signature);
-        false
     }
 
     /// G11: record that a client request was served — the daemon's activity

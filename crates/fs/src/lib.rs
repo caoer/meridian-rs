@@ -18,6 +18,7 @@
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{self, Write};
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -204,24 +205,36 @@ fn walk_domain_dir(
 }
 
 /// A cheap, stat-only fingerprint of the hash domain: the same walk
-/// [`hash_domain`] runs, folded over each file's `(relative path, mtime, size)`
-/// instead of its bytes. Never a correctness signal — a change detector that
-/// pays one `stat` per domain file and reads no content.
+/// [`hash_domain`] runs, folded over each file's `(relative path, mtime,
+/// ctime, size)` instead of its bytes. One `stat` per domain file and no
+/// content reads.
 ///
-/// Equality means "no file's path, size, or mtime moved" — evidence of an
-/// unchanged corpus, not proof (a write restoring the previous size within the
-/// filesystem's mtime granularity is invisible). So it may only gate work that
-/// is pure latency, such as skipping a pre-warm sweep; it must never stand in
-/// for the content root, which stays the warm-engine reuse key and the only
-/// thing a served answer is stamped with.
+/// This is the warm-engine reuse GATE (`docs/run-plane.md` § The entry's cost
+/// model — the 2026-08-08 amendment): a warm engine whose recorded signature
+/// still matches is served current, and the full content fold runs only when
+/// the signature moves. The corpus content root stays the reuse KEY and the
+/// only stamp a served answer carries — the signature never replaces it; it
+/// decides when the root is recomputed.
+///
+/// Why `ctime` rides the fold: mtime and size can be restored from user space
+/// (`cp -p`, `rsync -a`, `touch -t`), which is the lie window
+/// `node-rev-merkle-spec.md` §0 rejected for the mtime+size leaf cache. ctime
+/// is kernel-set on every content or metadata write and cannot be back-dated
+/// from user space, so a write completed before the sweep is always seen.
+/// The residual window — kernel/clock-level tampering, or an mmap writer's
+/// pages before the kernel stamps times — is named in the amendment.
+///
+/// Equality therefore means "no file's path, size, mtime, or ctime moved" —
+/// evidence an unchanged corpus is served fresh, with the fold as the backstop
+/// the moment any of them moves. FNV-1a, not the production merkle fold: a
+/// non-cryptographic fold over stat metadata cannot be mistaken for a second,
+/// weaker root.
 ///
 /// # Errors
 /// I/O failure loading the domain config or traversing the root.
 pub fn domain_stat_signature(root: &WorkspaceRoot) -> io::Result<u64> {
     let domain = domain::Domain::load(root)?;
     let rels = hash_domain(root, &domain)?;
-    // FNV-1a, not the production merkle fold: a non-cryptographic fold over
-    // stat metadata cannot be mistaken for a second, weaker root.
     let mut fold = FNV_OFFSET;
     let mut eat = |bytes: &[u8]| {
         for byte in bytes {
@@ -239,6 +252,8 @@ pub fn domain_stat_signature(root: &WorkspaceRoot) -> io::Result<u64> {
             .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
         eat(rel.to_string_lossy().as_bytes());
         eat(&mtime.to_le_bytes());
+        eat(&meta.ctime().to_le_bytes());
+        eat(&meta.ctime_nsec().to_le_bytes());
         eat(&meta.len().to_le_bytes());
     }
     Ok(fold)
@@ -1957,11 +1972,13 @@ mod stat_signature_tests {
     }
 
     /// The signal reads no file content: a domain file with no read permission
-    /// is invisible to `domain_snapshot` (it fails) and fully visible here.
+    /// fails the content fold and still signs fine here. The chmod itself
+    /// MOVES the signature (ctime rides the fold) — over-sensitivity costs one
+    /// extra fold downstream, never a stale answer.
     #[test]
     fn the_signature_stats_the_corpus_without_reading_a_byte_of_it() {
         let (tmp, root) = workspace(&[("a.md", "# A\n")]);
-        let readable = domain_stat_signature(&root).unwrap();
+        let before = domain_stat_signature(&root).unwrap();
 
         let secret = tmp.path().join("a.md");
         fs::set_permissions(&secret, fs::Permissions::from_mode(0o000)).unwrap();
@@ -1970,10 +1987,15 @@ mod stat_signature_tests {
             domain_snapshot(&root).is_err(),
             "the content fold must need read permission — otherwise this test proves nothing"
         );
-        assert_eq!(
-            domain_stat_signature(&root).unwrap(),
-            readable,
-            "the stat signal must not depend on reading the bytes"
+        let signed = domain_stat_signature(&root);
+        assert!(
+            signed.is_ok(),
+            "the stat signal must not need to read the bytes"
+        );
+        assert_ne!(
+            signed.unwrap(),
+            before,
+            "a chmod moves ctime, and the signature with it — the safe direction"
         );
 
         fs::set_permissions(&secret, fs::Permissions::from_mode(0o644)).unwrap();

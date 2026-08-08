@@ -54,8 +54,8 @@ fn a_quiet_sweep_does_not_fold_the_corpus_at_all() {
         WarmOutcome::Built { .. }
     ));
 
-    // The first sweep after a warm still folds once: it has no recorded
-    // signature for this workspace yet, so it cannot know the corpus is quiet.
+    // The cold build itself records the stat signature, so the first sweep
+    // after a warm already knows the corpus is quiet and folds nothing.
     let _ = registry.prewarm();
 
     let before = fs::metadata(ws.join("a.md")).unwrap().len();

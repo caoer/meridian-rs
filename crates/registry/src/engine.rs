@@ -7,6 +7,8 @@
 //! Disposable projection of disk — no persistence. Eviction is idle-reap
 //! ([`Registry::reap`](crate::Registry::reap)), not a separate policy (R4).
 //! Reuse key is the corpus CONTENT hash (R5), not workspace-identity Merkle.
+//! The reuse GATE is the stat signature (`docs/run-plane.md` § The entry's
+//! cost model): the content hash is recomputed only when the signature moves.
 
 use std::collections::BTreeMap;
 
@@ -23,6 +25,10 @@ pub struct WorkspaceEngine {
     pub docs: BTreeMap<String, model::Document>,
     /// The corpus content hash the index + docs were built at — the reuse key.
     pub at_fingerprint: model::MerkleRoot,
+    /// The stat signature the fingerprint was last verified against — the
+    /// reuse gate. Ordered BEFORE the snapshot it gated (sweep-then-fold), so
+    /// it never describes a world newer than the bytes above.
+    pub at_signature: u64,
 }
 
 /// Whether `warm_or_build` reused or rebuilt. `Reused` proves zero parses

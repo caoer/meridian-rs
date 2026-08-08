@@ -277,7 +277,7 @@ running the same checks `parse` runs, then delete the join.**
 
 The daemon's warm state is one workspace's corpus, keyed by that workspace's own
 canonical path and invalidated by its own fingerprint
-(`crates/registry/src/registry.rs:317-321`, `warm_or_build`). **It holds no
+(`crates/registry/src/registry.rs:229`, `warm_or_build`). **It holds no
 mounted-root corpora**, so the link arm serves ambient state only
 (`crates/registry/src/server.rs:782-789`). U21 therefore resolves a cross-vault
 link by DEGRADING that one op to in-process, where the mounted corpora can be
