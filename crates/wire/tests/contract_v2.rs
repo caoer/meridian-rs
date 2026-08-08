@@ -132,6 +132,7 @@ fn recovery_bindings_match_frozen_table() {
         // statically bound to one existing class.
         (C::ConventionFault, R::Env), // row 6: fail-closed on the armed law
         (C::ArmedDrift, R::Refresh),  // row 7: report-rev ≠ armed-rev
+        (C::CorpusRace, R::Retry),    // benign mid-request race: reap/delete
     ];
     for (code, class) in table {
         assert_eq!(code.recovery(), class, "{code:?}");

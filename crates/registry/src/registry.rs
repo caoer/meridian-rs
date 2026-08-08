@@ -100,6 +100,16 @@ pub struct Registry {
     #[cfg(test)]
     pause_before_insert:
         Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+    /// Test-only pause gate for the warm→borrow window: when armed, the read
+    /// pass in `server::warm_engine_read` announces itself on the first
+    /// channel after its successful warm, then parks on the second — between
+    /// `warm_or_build` and `with_engine`, the exact window the idle reaper
+    /// can win. One-shot: the pass that hits it consumes it. `cfg(test)`
+    /// excludes it from every release build by construction (disclosed;
+    /// same seam class as `pause_before_insert`, the PR #9 precedent).
+    #[cfg(test)]
+    pub(crate) pause_before_borrow:
+        Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
 }
 
 impl Registry {
@@ -133,6 +143,8 @@ impl Registry {
             cache_root,
             #[cfg(test)]
             pause_before_insert: Mutex::new(None),
+            #[cfg(test)]
+            pause_before_borrow: Mutex::new(None),
         }
     }
 
