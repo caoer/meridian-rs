@@ -289,6 +289,38 @@ It used to re-read and re-fold every domain byte on every trip. On a 24k-file,
 seconds of the 7s budget and a two-read program did not fit at all. The budget
 was never the defect.
 
+**A write-bearing program pays a byte term the pass never does** *(amended
+2026-08-08 — the review battery's cross-arm cost-model finding)*. The formula
+above prices the read side; taken alone as the computable ceiling it is a
+lower bound, because the commit's §5.1 world guard and the seam roots fold
+**from bytes** under the write flock (`domain_snapshot` — the digest memo
+never supplies them; that is what keeps the commit guard byte-derived).
+Priced:
+
+```
+wall clock  ≥  trips(R) × pass(C)  +  commit(C)
+
+commit(C) = 0 for a read-only program
+            two byte-folds, O(C) in BYTES, for a write-bearing one
+```
+
+The folds are O(corpus **bytes**), not `pass(C)`: on the same 24k-file,
+150 MB corpus they cost ~1.8 s together — more than the whole fixed frame. A
+read-only program's `commit(C)` is zero and its ceiling is the first term
+alone; a write-bearing program budgets both. With every engine-side spend a
+named term, the `≥` that remains is measurement honesty — the OS may always
+be slower — never an unpriced structural cost.
+
+**The linear term has a measured slope, and the slope is the honest headline**
+*(amended 2026-08-08 — the review battery's three-point curve, filed P1
+against the pre-fuse base)*. Per-read cost multiplies by **~2.1× per root
+doubling** (the pre-memo engine's own slope was 2.35×, so the memo bought
+about one root doubling — a constant, not a change of shape). The consequence
+stated rather than implied: a 10-read program clearing ~3.8 s at a 2× root
+returns to roughly ~7.8 s at 4× on the same slope — over the budget again.
+Capacity planning must read `ceiling = f(reads, corpus)` WITH that slope;
+a flattened impression is exactly what this section exists to prevent.
+
 **The transaction — stand-still optimistic.** The word **snapshot is
 banned** here: the daemon has no MVCC and v1 must not grow one.
 
