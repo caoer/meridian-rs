@@ -91,6 +91,15 @@ pub struct Registry {
     mounts: crate::mounts::MountsCache,
     state: StateStore,
     cache_root: PathBuf,
+    /// Test-only pause gate for the rebuild race window. When armed, the next
+    /// rebuild pass announces itself on the first channel, then parks on the
+    /// second — between its disk snapshot and its `engines` insert, the exact
+    /// window the insert guard must protect. One-shot: the pass that hits it
+    /// consumes it. `cfg(test)` excludes it from every release build by
+    /// construction (disclosed; RC1-precedent seam).
+    #[cfg(test)]
+    pause_before_insert:
+        Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
 }
 
 impl Registry {
@@ -122,6 +131,8 @@ impl Registry {
             mounts: crate::mounts::MountsCache::default(),
             state,
             cache_root,
+            #[cfg(test)]
+            pause_before_insert: Mutex::new(None),
         }
     }
 
@@ -219,7 +230,18 @@ impl Registry {
     /// content hash changed (U1). Reuse key is the content hash (R5), not
     /// workspace-identity Merkle. `Reused` ⇒ zero parses (`build_corpus` is
     /// rebuild-only). Fingerprint read and parse are outside the `engines`
-    /// write lock (insert only) so workspaces do not block each other.
+    /// write lock (the locked section compares fingerprints and inserts —
+    /// no I/O, no parse) so workspaces do not block each other.
+    ///
+    /// Concurrent rebuilds of one workspace are WITNESS-GUARDED: a rebuild
+    /// records what was resident when it judged the rebuild necessary, and
+    /// its insert lands only while the resident engine is still exactly that
+    /// witness. A build that lost the race never replaces the winner blind —
+    /// the pass goes around: it re-derives freshness from disk bytes and
+    /// either adopts the resident (fingerprints equal) or rebuilds again.
+    /// The resident engine therefore never regresses to an older corpus
+    /// state. Both sides of every comparison are byte-derived fingerprints;
+    /// no clock ordering and no memo-carried digest decides freshness.
     ///
     /// # Errors
     /// Canonicalize failure or corpus unreadable. A non-UTF-8 MEMBER is not an
@@ -230,48 +252,88 @@ impl Registry {
             .map_err(|e| io::Error::new(io::ErrorKind::NotFound, e))?;
         let root = fs::WorkspaceRoot(canonical.clone());
 
-        // Cheap half (no parse, and no re-read of anything that did not move):
-        // content hash from disk through the leaf memo.
-        let fingerprint = {
-            let mut caches = self
-                .domain_caches
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            caches.entry(canonical.clone()).or_default().root(&root)?
-        };
+        // Documents parsed by this call's most recent rebuild pass. `None`
+        // until the first rebuild: only a call that parsed nothing may report
+        // `Reused` — the outcome's zero-parse proof stays per-call.
+        let mut parsed: Option<usize> = None;
 
-        // Warm + unchanged → reuse, zero parses. Nothing is copied out of the
-        // memo on this path: it is the hot one, and a 20k-entry clone per
-        // currency pass would put back a slice of what the memo just removed.
-        {
-            let engines = self.engines.read().unwrap_or_else(PoisonError::into_inner);
-            if engines
-                .get(&canonical)
-                .is_some_and(|engine| engine.at_fingerprint == fingerprint)
+        loop {
+            // Cheap half (no parse, and no re-read of anything that did not
+            // move): content hash from disk through the leaf memo.
+            let fingerprint = {
+                let mut caches = self
+                    .domain_caches
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                caches.entry(canonical.clone()).or_default().root(&root)?
+            };
+
+            // Warm + unchanged → done. Nothing is copied out of the memo on
+            // this path: it is the hot one, and a 20k-entry clone per currency
+            // pass would put back a slice of what the memo just removed. A
+            // miss records the resident fingerprint as the WITNESS the guarded
+            // insert below checks against.
+            let witness = {
+                let engines = self.engines.read().unwrap_or_else(PoisonError::into_inner);
+                match engines.get(&canonical) {
+                    Some(engine) if engine.at_fingerprint == fingerprint => {
+                        return Ok(match parsed {
+                            None => WarmOutcome::Reused,
+                            Some(docs) => WarmOutcome::Built { docs },
+                        });
+                    }
+                    Some(engine) => Some(engine.at_fingerprint.clone()),
+                    None => None,
+                }
+            };
+
+            // Cold or content changed → rebuild (only parse site). The rebuild
+            // re-reads from disk rather than from the memo: `docs` must be the
+            // bytes it parsed, and `domain_snapshot`'s fold is the byte-derived
+            // one, so the reuse key a served answer is stamped with never comes
+            // from a digest the memo carried forward.
+            let (files, fingerprint) = fs::domain_snapshot(&root)?;
+            let (index, docs, unserved) = fs::build_corpus(files);
+            let docs_parsed = docs.len();
+            parsed = Some(docs_parsed);
+            let engine = WorkspaceEngine {
+                index,
+                docs,
+                unserved,
+                at_fingerprint: fingerprint,
+            };
+
+            // Test-only: park here when the gate is armed (see the field docs).
+            #[cfg(test)]
             {
-                return Ok(WarmOutcome::Reused);
+                let gate = self
+                    .pause_before_insert
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take();
+                if let Some((arrived, release)) = gate {
+                    let _ = arrived.send(());
+                    let _ = release.recv();
+                }
             }
-        }
 
-        // Cold or content changed → rebuild once (only parse site). The rebuild
-        // re-reads from disk rather than from the memo: `docs` must be the bytes
-        // it parsed, and `domain_snapshot`'s fold is the byte-derived one, so
-        // the reuse key a served answer is stamped with never comes from a
-        // digest the memo carried forward.
-        let (files, fingerprint) = fs::domain_snapshot(&root)?;
-        let (index, docs, unserved) = fs::build_corpus(files);
-        let parsed = docs.len();
-        let engine = WorkspaceEngine {
-            index,
-            docs,
-            unserved,
-            at_fingerprint: fingerprint,
-        };
-        self.engines
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(canonical, engine);
-        Ok(WarmOutcome::Built { docs: parsed })
+            {
+                let mut engines = self.engines.write().unwrap_or_else(PoisonError::into_inner);
+                let resident = engines.get(&canonical).map(|e| e.at_fingerprint.clone());
+                if resident.as_ref() == Some(&engine.at_fingerprint) {
+                    // A concurrent rebuild already installed this exact corpus
+                    // state — keeping it IS this build, delivered.
+                    return Ok(WarmOutcome::Built { docs: docs_parsed });
+                }
+                if resident == witness {
+                    engines.insert(canonical.clone(), engine);
+                    return Ok(WarmOutcome::Built { docs: docs_parsed });
+                }
+            }
+            // The resident engine moved while this pass was off the lock: a
+            // concurrent rebuild landed, and this build may be the older disk
+            // state. Never regress on a guess — go around and re-derive.
+        }
     }
 
     /// Borrow the warm engine for `canonical` under the read lock. Callers
@@ -706,6 +768,63 @@ mod engine_tests {
         );
         let after = reg.with_engine(&canonical, |e| e.unwrap().at_fingerprint.clone());
         assert_ne!(before, after, "and the ambient root advanced");
+    }
+
+    /// The p1-warm-or-build-race negative proof. Interleaving A-snapshot ·
+    /// B-snapshot · B-insert · A-insert, forced deterministically: thread A
+    /// parks on the armed `pause_before_insert` gate with its stale engine
+    /// built but not yet inserted; the corpus moves and B warms to completion
+    /// while A is parked; then A is released. A's insert must not regress the
+    /// resident engine to the older corpus state — answers served from it in
+    /// the warm-to-serve gap would be wrong-results class.
+    #[test]
+    fn a_parked_stale_rebuild_cannot_regress_the_resident_engine() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = Arc::new(registry_in(home.path()));
+        let ws = write_ws(home.path(), &[("a.md", "# A v1\n")]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+
+        // Arm the one-shot gate for the first rebuild pass (thread A).
+        let (arrived_tx, arrived) = std::sync::mpsc::channel();
+        let (release, release_rx) = std::sync::mpsc::channel();
+        *reg
+            .pause_before_insert
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some((arrived_tx, release_rx));
+
+        // A: snapshots the corpus at v1, parks before its insert.
+        let a = {
+            let reg = Arc::clone(&reg);
+            let ws = ws.clone();
+            std::thread::spawn(move || reg.warm_or_build(&ws))
+        };
+        arrived.recv().expect("thread A reached the pause gate");
+
+        // The corpus moves to v2 and B warms to completion: the resident
+        // engine is now the v2 build (the gate is consumed; B passes through).
+        rewrite(&ws, "a.md", "# A v2\n");
+        assert_eq!(
+            reg.warm_or_build(&ws).unwrap(),
+            WarmOutcome::Built { docs: 1 },
+            "B rebuilds at v2 while A is parked"
+        );
+        let v2 = reg.with_engine(&canonical, |e| e.unwrap().at_fingerprint.clone());
+
+        // Release A: its build is from the older disk state.
+        release.send(()).expect("thread A parked on the release gate");
+        a.join().expect("thread A panicked").unwrap();
+
+        let resident = reg.with_engine(&canonical, |e| e.unwrap().at_fingerprint.clone());
+        assert_eq!(
+            resident, v2,
+            "a stale concurrent rebuild must never regress the resident engine"
+        );
+        assert_eq!(
+            reg.warm_or_build(&ws).unwrap(),
+            WarmOutcome::Reused,
+            "disk is unchanged since the v2 build, so the next warm reuses — \
+             a Built here is the self-heal of a regressed engine"
+        );
     }
 
     /// P2 crash recovery: cold start, first query rebuilds from disk (no new machinery).
