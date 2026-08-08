@@ -169,6 +169,76 @@ fn subscribe_then_write_delivers_a_notification() {
     server.shutdown();
 }
 
+/// §52 per-file degradation on the watch plane (node-rev-merkle-spec §3 line
+/// 52): a poison ADD mid-subscription degrades THAT FILE only. The delta
+/// still arrives — the poison member's entry carries no revs and no node
+/// entries — and the subscription stays live: the next sibling edit is served
+/// in full, chained onto the poison frame.
+///
+/// The base defect (defect-ledger RES-A): `classify_to_wire`'s `doc_of(...)?`
+/// escalated one poison member to a refused reconcile; the baseline never
+/// rebased, so the detector error-looped every cycle and the subscriber
+/// received NOTHING until the file was removed — the corpus-plane incident's
+/// watch-leg twin (`corpus_refusal.rs`).
+///
+/// *Mutation:* restore `doc_of(...)?` in `classify_to_wire` — no frame ever
+/// arrives and the first expect fails.
+#[test]
+fn a_poison_add_mid_subscription_degrades_that_file_only() {
+    let tmp = TempDir::new().unwrap();
+    let ws = write_ws(&tmp.path().join("ws"), &[("plan.md", PLAN)]);
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+
+    let mut sub = Conn::open(server.socket_path());
+    assert_eq!(sub.hello(&ws)["ok"], json!(true));
+    assert_eq!(sub.sub(0)["ok"], json!(true));
+
+    // The poison lands behind the engine's back, mid-subscription (the
+    // incident's shape: a non-UTF-8 fixture copied into a live corpus).
+    fs::write(ws.join("poison.md"), b"# P\n\n\xff\xfe raw bytes\n").unwrap();
+
+    let frame = sub
+        .next_frame()
+        .expect("the delta still arrives — one poison member refuses nothing");
+    let files = frame["delta"]["files"]
+        .as_array()
+        .expect("the delta carries file entries");
+    assert_eq!(files.len(), 1, "one change, one entry: {frame}");
+    let entry = &files[0];
+    assert_eq!(entry["path"], json!("poison.md"), "{frame}");
+    assert_eq!(entry["change"], json!("created"), "{frame}");
+    assert_eq!(
+        entry["nodes"],
+        json!([]),
+        "an unserved member serves no spans/nodes — §52: {frame}"
+    );
+    assert!(
+        entry.get("file_rev_after").is_none(),
+        "an unserved member mints no rev: {frame}"
+    );
+
+    // Siblings still served: the next healthy edit arrives in full, chained
+    // onto the poison frame — the baseline advanced through it.
+    external_edit(
+        &ws,
+        "plan.md",
+        "# Goals\n\nship by September\n\n# Notes\n\nnothing yet\n",
+    );
+    let next = sub.next_frame().expect("the subscription is still live");
+    assert_eq!(
+        next["delta"]["root_before"], frame["delta"]["root_after"],
+        "the chain advanced THROUGH the poison frame: {next}"
+    );
+    let entry = &next["delta"]["files"][0];
+    assert_eq!(entry["path"], json!("plan.md"), "{next}");
+    assert!(
+        entry["file_rev_after"].is_string()
+            && entry["nodes"].as_array().is_some_and(|n| !n.is_empty()),
+        "the healthy sibling keeps full node grain: {next}"
+    );
+    server.shutdown();
+}
+
 /// Framing: a live subscription must not disturb another connection.
 ///
 /// *Mutation:* push notifications from `handle_line` instead of converting in
