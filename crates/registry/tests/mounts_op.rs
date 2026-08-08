@@ -107,6 +107,7 @@ fn rows(frame: &Value) -> &Vec<Value> {
 /// `mount_table_invalid` (env) naming the offending entry — and never serves
 /// the previous table as current; a repaired file recovers without redialing.
 #[test]
+#[allow(clippy::too_many_lines)] // one sequential lifecycle script by design
 fn mounts_lifecycle_freshness_and_changed_invalid_refusal() {
     let tmp = TempDir::new().unwrap();
     let wiki = tmp.path().join("wiki");

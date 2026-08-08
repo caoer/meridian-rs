@@ -111,9 +111,9 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
 
     // The corpora are built before the mount table, because they say which roots the
     // table must build; each interval's corpus is built exactly once.
-    let worktree_docs = build_corpus(worktree_files)?;
+    let worktree_docs = build_corpus(worktree_files);
     let staged_docs = match &interval {
-        Interval::Diverges(bytes) => Some(build_corpus(bytes.files.clone())?),
+        Interval::Diverges(bytes) => Some(build_corpus(bytes.files.clone())),
         _ => None,
     };
 
@@ -593,10 +593,10 @@ fn assess(
 /// One interval's bytes, parsed into the corpus both the root scan and the assessment
 /// read. Split out of [`assess`], which needs the corpus in hand before the mount
 /// table exists.
-fn build_corpus(files: fs::DomainFiles) -> Result<BTreeMap<String, Document>, Fail> {
+fn build_corpus(files: fs::DomainFiles) -> BTreeMap<String, Document> {
     let (_index, docs, unserved) = fs::build_corpus(files);
     crate::voice_unserved(&unserved);
-    Ok(docs)
+    docs
 }
 
 /// The interval the commit spans: the worktree snapshot with the index's bytes

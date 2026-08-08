@@ -1225,6 +1225,7 @@ fn to_json(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_human(
     scanned: usize,
     unserved: usize,
