@@ -772,7 +772,8 @@ mod tests {
         );
     }
 
-    /// Values with `: ` quote through shared `yaml_safe_value` predicate.
+    /// Values with `: ` quote through shared `yaml_safe_value` predicate — in
+    /// the § A.6.3 double-quoted spelling, since the predicate is the one owner.
     #[test]
     fn property_value_quotes_through_shared_predicate() {
         let edits = super::lower(
@@ -785,10 +786,12 @@ mod tests {
         )
         .expect("lowers");
         let (_, text) = put_text(&edits[0]);
-        assert_eq!(text, "note: 'a: b'");
+        assert_eq!(text, "note: \"a: b\"");
     }
 
-    /// Empty value keeps trailing space (`k: `, not model-upsert `k:`).
+    /// Empty value keeps the trailing space (never the model-upsert `k:`) and
+    /// lands the § A.6.3 empty STRING: this plane is typed `string`, so a bare
+    /// `k: ` would emit a null the caller has no way to mean.
     #[test]
     fn property_empty_value_keeps_trailing_space() {
         let edits = super::lower(
@@ -801,7 +804,7 @@ mod tests {
         )
         .expect("lowers");
         let (_, text) = put_text(&edits[0]);
-        assert_eq!(text, "note: ");
+        assert_eq!(text, "note: \"\"");
     }
 
     /// Duplicate headings refuse without an occurrence rather than silently
