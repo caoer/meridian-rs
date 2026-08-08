@@ -224,6 +224,52 @@ actual I/O, and a program is free to read only a few of the paths it was handed.
 256 covers S2-class fan-out over a large board without letting a runaway glob
 return the corpus.
 
+**§5.3a The entry's cost model — explicit contract (2026-08-08).** The wall
+clock is a budget over round trips, so the contract states what one round trip
+costs. Before this amendment nothing did, and the implementation paid a cost
+this table never priced: every round trip re-read and re-hashed every domain
+file (`fs::domain_snapshot` per warm check), so per-round-trip cost was
+O(domain **bytes**). On a production corpus (~24k domain files, ~160 MB) that
+was ~0.6–2.7 s per round trip, and any multi-read program died inside the 7 s
+budget. The budget's value was never the defect; the unpriced round trip was.
+
+The cost classes, binding on the engine:
+
+| Round trip | Freshness paid | Scales with |
+|---|---|---|
+| serves ONE document (`toc`, `cat`, `extract`, composed `read`, `check_write`) | document-grain: one stat of the served file | served bytes only — never corpus size |
+| mints or checks a CORPUS token (`fingerprint`/`root`; the splice world guard §5.1) | corpus-grain: one stat per domain file + re-hash of files whose stat identity moved | domain **file count** (stat-grade), plus changed bytes — never unchanged bytes |
+
+A program can therefore bound its own ceiling by round-trip count: one entry ≈
+one corpus-grain leg (the entry fingerprint) + Σ per-read round trips (2+N per
+whole-file read, § the wall clock layer 1) + the commit's corpus-grain legs.
+Corpus growth moves the stat-grade legs, not the per-document legs.
+
+**The freshness law (what "reads are LIVE" costs).** Every serve verifies the
+served document against the live filesystem before answering; every corpus
+token derives from a live walk of the domain at mint/check time. No timer, no
+TTL, no entry-pinned state — the snapshot ban below stands untouched. **Stat
+identity** is (inode, size, mtime_ns, ctime_ns). A file whose stat identity is
+unchanged keeps its content leaf; a moved identity re-reads and re-hashes that
+file; the corpus root folds the leaves in the §12.2 encoding, so the derived
+root equals a cold fold byte-for-byte. Stated residual: a byte change that
+leaves all four identity fields unchanged is invisible until any stat-visible
+change lands. The engine's own writes cannot produce it — every engine write
+is tmp+fsync+rename and mints a new inode — and an in-place out-of-band write
+advances ctime, which userland cannot reset. This is the same
+detection-not-prevention class as the write door's verify→rename residual
+(`crates/fs` charter) and it is stated here rather than hidden.
+
+**The serve stamp may lag; the guard may not.** The `fingerprint` stamp riding
+a per-document serve is the resident corpus root: under concurrent
+out-of-band writes to OTHER files it may lag until the next corpus-grain
+derivation — the §10.1 honest-tense law (no lag bounds promised), extended to
+serve stamps by wire-contract § A.7. The commit's world guard is still checked
+against the live root inside the write flock, so the transaction guarantee
+below — a committed script is consistent with exactly one workspace
+fingerprint — is unchanged: a lagging pin refuses `fingerprint_mismatch` and
+retries; it never commits against a moved world.
+
 **The transaction — stand-still optimistic.** The word **snapshot is
 banned** here: the daemon has no MVCC and v1 must not grow one.
 

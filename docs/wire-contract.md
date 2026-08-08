@@ -1266,6 +1266,32 @@ what empty means; they may not disagree about which SPELLING of it is real.
 Deliberately not empty: whitespace, `0`, `false`, an empty list. Those are
 values a caller authored. This is a predicate about absence, never truthiness.
 
+### A.7 Serve stamps and the corpus freshness model (2026-08-08)
+
+Zero schema delta — no field is added, removed, or reshaped. This section
+states the tense of two things the schema already carries.
+
+**Per-document serves stamp the resident root.** The `fingerprint` header on a
+per-document op (§4.1 `toc`, §4.2 `cat`, §4.3 `extract`, § A.3 `read` /
+`check_write`) is the resident corpus root. The served document itself is
+verified against the live filesystem before the answer is assembled
+(document-grain freshness — one stat of the served path), so the map, spans,
+revs, and bytes answered are live for that document. Under concurrent
+out-of-band writes to OTHER files the stamp may lag until the next
+corpus-grain derivation; §10.1's honest-tense law (**no lag bounds are
+promised, ever**) covers the stamp. The §4.1 commit-guard idiom — read a toc,
+later pass `if_fingerprint` — is unweakened: §5.1 checks the pin against the
+live root at splice, so a lagging pin refuses `fingerprint_mismatch` (retry),
+never commits against a moved world.
+
+**Corpus-token ops derive live.** `fingerprint`/`root` (§4.7) and the splice
+world guard (§5.1) always derive from a live walk of the hash domain at
+mint/check time: one stat per domain file, re-read + re-hash only of files
+whose stat identity — (inode, size, mtime_ns, ctime_ns) — moved, folded in the
+§12.2 encoding so the value equals a cold fold byte-for-byte. Cost model,
+freshness law, and the stated stat-identity residual: `docs/run-plane.md`
+§5.3a.
+
 ---
 
 ## § B. Process
