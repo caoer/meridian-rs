@@ -525,6 +525,26 @@ mod toc_tests {
             .collect();
         assert_eq!(kinds, vec![("task", "t-1"), ("paragraph", "p-1")]);
     }
+
+    /// Truth-telling (dogfood P2-c): the anchor row echoes its REAL host kind
+    /// (§4.1 — "echoing their HOST block kind"). A heading-line anchor says
+    /// `heading`; a frontmatter caret-tail says `frontmatter`. Before this,
+    /// both fell through the raw-byte probe to `paragraph`, and every refusal
+    /// built on the row repeated the lie.
+    #[test]
+    fn anchor_host_kind_heading_and_frontmatter() {
+        let raw = "---\ntitle: x ^fm-anchor\n---\n## Has anchor ^anch-head\n\nbody\n";
+        let got = rows(raw);
+        let kinds: Vec<(&str, &str)> = got
+            .iter()
+            .filter_map(|r| r.anchor.as_deref().map(|a| (r.kind.as_str(), a)))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![("frontmatter", "fm-anchor"), ("heading", "anch-head")],
+            "the anchor row names the host it actually sits on, never a paragraph fallback"
+        );
+    }
 }
 
 #[cfg(test)]
