@@ -1105,3 +1105,74 @@ fn put_help_states_the_bare_array_stdin_shape() {
         "the help must not show the envelope it refuses:\n{page}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// duplicate block ids (dogfood-p1-read-ambiguous-ref) — door symmetry
+// ---------------------------------------------------------------------------
+
+/// Two list items carrying ONE block id — the wire-contract A.3 "door symmetry
+/// over duplicate block ids" shape.
+const DUP_ANCHOR: &str = "# Tasks\n\n- first ^same-id\n\n- second ^same-id\n";
+
+/// P1 gate — `read --section ^id` on a duplicated id refuses `ambiguous_ref`
+/// (exit 1), never serving the first occurrence silently: the `sec_rev` it
+/// would hand out is one the write door refuses, so the silent serve made
+/// read-then-write on a duplicated anchor unserviceable.
+#[test]
+fn read_of_a_duplicated_anchor_refuses_instead_of_serving_the_first() {
+    let sb = sandbox();
+    let ws = sb.workspace_with(DUP_ANCHOR);
+    let out = sb.run(&ws, &["read", "doc.md", "--section", "^same-id"]);
+    assert_eq!(
+        code(&out),
+        1,
+        "a duplicated id is a refusal, not a serve — stdout: {} stderr: {}",
+        stdout(&out),
+        stderr(&out)
+    );
+    assert!(
+        !stdout(&out).contains("first"),
+        "no occurrence is served: {}",
+        stdout(&out)
+    );
+    let err = stderr(&out);
+    assert!(
+        err.contains("\"^same-id\" is ambiguous (2 blocks carry this id"),
+        "{err}"
+    );
+    assert!(
+        !err.contains("rename one heading"),
+        "the remedy speaks the anchor grammar, never the heading one: {err}"
+    );
+}
+
+/// P3 gate — the write door's refusal on the same shape speaks the anchor
+/// remedy (give each block a distinct id), never the off-grammar
+/// "rename one heading".
+#[test]
+fn put_refusal_on_a_duplicated_anchor_speaks_the_anchor_remedy() {
+    let sb = sandbox();
+    let ws = sb.workspace_with(DUP_ANCHOR);
+    let edits = serde_json::to_string(&serde_json::json!([{
+        "target": {"anchor": "same-id"},
+        "edit": {"match": {"old": "first", "new": "FIRST"}},
+    }]))
+    .expect("edits json");
+    let out = sb.run_stdin(&ws, &["put", "doc.md", "--dry"], &edits);
+    assert_ne!(
+        code(&out),
+        0,
+        "a duplicated anchor target refuses: {}",
+        stdout(&out)
+    );
+    let err = stderr(&out);
+    assert!(
+        err.contains("is ambiguous — 2 blocks carry this id"),
+        "{err}"
+    );
+    assert!(
+        err.contains("give each duplicate block a distinct id"),
+        "the remedy speaks the anchor grammar: {err}"
+    );
+    assert!(!err.contains("rename one heading"), "{err}");
+}
