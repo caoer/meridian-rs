@@ -311,7 +311,7 @@ fn board_rows(ws: &Path) -> Vec<BoardRow> {
     let canonical = workspace::canonicalize(ws).expect("canonicalize");
     let root = fs::WorkspaceRoot(canonical);
     let (files, _fp) = fs::domain_snapshot(&root).expect("snapshot");
-    let (_index, docs) = fs::build_corpus(files).expect("build corpus");
+    let (_index, docs, _unserved) = fs::build_corpus(files);
     let conn = view::read_face::open_board(&docs).expect("open_board");
     let mut stmt = conn
         .prepare(
@@ -840,7 +840,7 @@ fn decorate_the_way_the_daemon_does(ws: &Path, rel: &str, section: &str) -> Stri
     let canonical = workspace::canonicalize(ws).expect("canonicalize");
     let root = fs::WorkspaceRoot(canonical);
     let (files, _fp) = fs::domain_snapshot(&root).expect("snapshot");
-    let (index, docs) = fs::build_corpus(files).expect("build corpus");
+    let (index, docs, _unserved) = fs::build_corpus(files);
     let decorations = wire_serve::read::page_decorations(&index, &docs, rel);
     let doc = docs.get(rel).expect("the page is in the corpus");
     let params = wire_serve::read::ReadParams {

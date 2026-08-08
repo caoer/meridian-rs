@@ -75,8 +75,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
 
     let (files, _fold) = fs::domain_snapshot(&root)
         .map_err(|e| Fail::tool(format!("cannot read the corpus: {e}")))?;
-    let (_index, docs) =
-        fs::build_corpus(files).map_err(|e| Fail::tool(format!("cannot build the corpus: {e}")))?;
+    let (_index, docs, _unserved) = fs::build_corpus(files);
 
     let mut survey = survey(&docs, parsed.page.as_deref())?;
     let repo = git::Repo::at(root.0.clone());

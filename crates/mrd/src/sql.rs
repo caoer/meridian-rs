@@ -421,8 +421,7 @@ fn build_and_run_ephemeral(
     // differ when the corpus moved.
     let (files, f0) = fs::domain_snapshot(&root)
         .map_err(|e| EphemeralError::NoCorpus(format!("cannot read the corpus: {e}")))?;
-    let (_index, docs) = fs::build_corpus(files)
-        .map_err(|e| EphemeralError::Fail(Fail::tool(format!("cannot build the corpus: {e}"))))?;
+    let (_index, docs, _unserved) = fs::build_corpus(files);
     // The ephemeral view is built with mount authority, from the same loader the
     // pin and link planes use; without it a cross-vault link projects as dangling.
     // Corpora narrow to the roots ambient wikilink/embed targets name; the
