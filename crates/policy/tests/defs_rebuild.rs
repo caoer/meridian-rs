@@ -231,9 +231,12 @@ fn set_property_refuses_multiline_values_that_forge_frontmatter_keys() {
         policy::defs::yaml_safe_value("seeded\ninjected:pwned"),
         Err(policy::defs::MultiLineValue)
     );
+    // The quoted SPELLING is double, not single (§ A.6.3, amended 2026-08-07):
+    // the encoder emits the fleet-canonical form so two writers on one tree do
+    // not churn each other's bytes. Same trigger, same value, one style.
     assert_eq!(
         policy::defs::yaml_safe_value("review: pending"),
-        Ok("'review: pending'".to_string())
+        Ok("\"review: pending\"".to_string())
     );
 }
 
@@ -377,7 +380,7 @@ fn rebuild_candidate_bytes_match_go_plan_semantics() {
         cand.raw
     );
 
-    // set_property: unsafe value gets single-quoted (yamlSafeValue).
+    // set_property: unsafe value gets double-quoted (yamlSafeValue, § A.6.3).
     let cand = run(
         DOC,
         &[PlanEdit {
@@ -387,7 +390,7 @@ fn rebuild_candidate_bytes_match_go_plan_semantics() {
     )
     .expect("quoted prop rebuilds");
     assert!(
-        cand.raw.contains("\nstatus: 'review: pending'\n"),
+        cand.raw.contains("\nstatus: \"review: pending\"\n"),
         "yamlSafeValue quoting: {}",
         cand.raw
     );

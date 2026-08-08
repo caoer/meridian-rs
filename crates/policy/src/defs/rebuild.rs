@@ -736,38 +736,76 @@ impl std::fmt::Display for MultiLineValue {
     }
 }
 
-/// Go `yamlSafeValue` (E2 finding 1): quote IFF the `k: <val>` probe ERRORS
-/// or decodes a MAP; everything that parses non-map passes VERBATIM — typed
-/// scalars, flow lists, and crucially list-of-list (`[[a, b]]`), which lands
-/// raw so the I4 nested-frontmatter law (not a shape check) judges it. The
-/// error class is approximated by its two live shapes: an unquoted mid-value
-/// `": "` (mapping in value position) and an unterminated leading quote.
+/// The `set_property` value ENCODER — wire-contract § A.6.3, and the inverse of
+/// the § A.6.1 decode every read seam serves through.
+///
+/// **The rule is one sentence:** emit the plain form when the plain form
+/// decodes back to exactly the caller's string; otherwise emit a double-quoted
+/// scalar. The plane is typed `string`, so any emit that would be read back as
+/// something else — a null, a nested collection, a comment, a mapping, or a
+/// quoted scalar the caller never wrote — is a value the engine forged.
+///
+/// [`needs_quoting`] carries the enumerated triggers. Two spellings stay
+/// VERBATIM by standing contract: a typed scalar (`true`, `7`, `2026-08-07`)
+/// and a one-level flow list (`[a, b]`) are the only way this string plane can
+/// author a non-string value, and no reported defect touches them.
+///
+/// The double-quoted form is the fleet-canonical one (`ccc-cli task claim`
+/// writes it), so two writers on one tree stop churning each other's bytes.
+/// **This replaces the former single-quoted emit and the former verbatim
+/// list-of-list emit** — the latter made `owner: [[b1892b5a]]` out of a flat
+/// caller string and then let the I4 nested-frontmatter law refuse it, blaming
+/// the caller for the emitter's nesting (dogfood season 1, finding 2).
+///
 /// SHARED (U8b): the splice plan-lowering quotes `set_property` values through
 /// THIS predicate — single-owner discipline, so the `check_write` candidate and
 /// the written bytes cannot drift.
 ///
 /// # Errors
 /// `MultiLineValue` when the value carries a `\n`/`\r` (D11): the server writes
-/// `{key}: {value}`, and a single-quoted YAML scalar CANNOT escape a raw
-/// newline — an escaped-scalar approach leaks, so a multi-line value is refused,
-/// never sanitized. Fallibility is the guard: no caller can mint a quoted value
+/// `{key}: {value}`, and a single-line YAML scalar CANNOT carry a raw newline —
+/// an escaped-scalar approach leaks, so a multi-line value is refused, never
+/// sanitized. Fallibility is the guard: no caller can mint a quoted value
 /// without passing it.
 pub fn yaml_safe_value(val: &str) -> Result<String, MultiLineValue> {
     if val.contains(['\n', '\r']) {
         return Err(MultiLineValue);
     }
-    if val.is_empty() {
-        return Ok(String::new());
-    }
-    let map_shaped = val.starts_with('{');
-    let unquoted = !val.starts_with(['\'', '"']);
-    let colon_space = unquoted && val.contains(": ");
-    let unterminated_quote = (val.starts_with('\'') && (val.len() < 2 || !val.ends_with('\'')))
-        || (val.starts_with('"') && (val.len() < 2 || !val.ends_with('"')));
-    if map_shaped || colon_space || unterminated_quote {
-        return Ok(format!("'{}'", val.replace('\'', "''")));
+    if needs_quoting(val) {
+        return Ok(model::scalar::double_quote(val));
     }
     Ok(val.to_string())
+}
+
+/// The § A.6.3 quote triggers, enumerated. Each row names a way the PLAIN emit
+/// would be read back as something other than the caller's string.
+fn needs_quoting(val: &str) -> bool {
+    // The trim is the read seam's first act (§ A.6.1), so surrounding
+    // whitespace only survives inside quotes. Empty lands here too: a bare
+    // `key: ` is a null, and this plane has no null to mean.
+    if val != val.trim() || val.is_empty() {
+        return true;
+    }
+    // A leading quote byte would be read back AS quoting, losing itself.
+    if val.starts_with(['\'', '"']) {
+        return true;
+    }
+    // A comment in value position: the value would read back empty.
+    if val.starts_with('#') || val.contains(" #") || val.contains("\t#") {
+        return true;
+    }
+    // A mapping in value position — the pre-A.6 trigger, kept.
+    if val.contains(": ") || val.ends_with(':') {
+        return true;
+    }
+    // Whatever the plain emit would PARSE as, asked of the checker's own
+    // classifier so the encoder cannot judge by a second rule. `Nested` is the
+    // I4 class the emitter must never manufacture; `Null` is the type this
+    // plane cannot express.
+    matches!(
+        super::fm::classify_scalar_or_flow(val),
+        super::fm::FmValue::Nested | super::fm::FmValue::Null
+    )
 }
 
 fn plan_anchored(
