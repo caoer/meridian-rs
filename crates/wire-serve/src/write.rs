@@ -2884,12 +2884,18 @@ fn model_edits_and_before_facts(
                     // § A.6.3a): the caller's `text` is a flat string, so it
                     // passes the ONE encoder `set_property` writes through and
                     // `[[x]]` lands `"[[x]]"` instead of a nested flow
-                    // sequence the I4 law would refuse. The model kernel below
-                    // stays raw-grain — the run plane's `md.set_field` rides
-                    // `plan_fm_upsert` with whole-value grains that must land
-                    // as sent.
+                    // sequence the I4 law would refuse. An existing key's
+                    // stored line (the non-empty before span) feeds § A.6.3c,
+                    // so a write-back of the served value keeps the stored
+                    // spelling. The model kernel below stays raw-grain — the
+                    // run plane's `md.set_field` rides `plan_fm_upsert` with
+                    // whole-value grains that must land as sent.
                     text: if matches!(at, PutAt::Upsert) {
-                        policy::defs::yaml_safe_value(text).map_err(|_| {
+                        let stored_line = before_facts
+                            .last()
+                            .filter(|t| t.span.start < t.span.end)
+                            .map(|t| &doc.raw[t.span.clone()]);
+                        policy::defs::yaml_preserve_or_encode(stored_line, text).map_err(|_| {
                             bad_request("put at:upsert value must be single-line (no newline)")
                         })?
                     } else {
