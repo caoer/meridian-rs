@@ -170,18 +170,27 @@ fn cat_heading_miss_teaches_instead_of_failing_bare() {
     assert!(msg.contains("toc read"), "the fix names the section map: {msg}");
 }
 
-/// A composed-read anchor miss names the nearest face-addressable ids inside
-/// the standing miss spelling — appended, never reshaped, so every consumer
-/// of the standing prefix still matches.
+/// A composed-read anchor miss names the nearest live ids inside the
+/// standing miss spelling — appended, never reshaped, so every consumer of
+/// the standing prefix still matches. The pool spans every `^id` on the page
+/// (wire-contract § A.3, season-1b addendum): the task-hosted `^t1` is
+/// offered WITH its host-kind gate instead of being silently excluded.
 #[test]
 fn composed_read_anchor_miss_teaches_nearest() {
     let err = *read(Some(vec![ReadSel::parse("^gaol")])).expect_err("^gaol is absent");
     assert_eq!(err.code, ErrorCode::RefNotFound);
     let msg = err.message.as_deref().expect("message");
     assert!(
-        msg.contains("no section addressed by \"^gaol\" (nearest live block anchors: ^gate, ^goal)"),
-        "the hint names the face-addressable ids, bigram-ranked, inside the \
-         standing miss spelling: {msg}"
+        msg.contains(
+            "no section addressed by \"^gaol\" (nearest live block anchors: ^gate, ^goal, \
+             ^t1 (task-hosted"
+        ),
+        "every live id is offered, bigram-ranked, non-addressable hosts \
+         carrying their gate, inside the standing miss spelling: {msg}"
+    );
+    assert!(
+        msg.contains("read its enclosing section by heading path"),
+        "the non-addressable candidate teaches the servable way in: {msg}"
     );
 }
 
@@ -298,7 +307,7 @@ fn partial_read_notice_carries_the_anchor_teaching() {
     };
     let notice = notice.expect("a partial read carries its notice");
     assert!(
-        notice.contains("^gaol (nearest live block anchors: ^gate, ^goal)"),
+        notice.contains("^gaol (nearest live block anchors: ^gate, ^goal, ^t1 (task-hosted"),
         "{notice}"
     );
 }
