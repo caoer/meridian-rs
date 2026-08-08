@@ -198,7 +198,7 @@ fn check_properties(meta: &fm::FmMeta, def: &Def, path: &str, rep: &mut Report) 
             ));
             continue;
         };
-        if matches!(v, FmValue::Null) {
+        if fm::is_empty(Some(v)) {
             continue; // present-but-empty = absent; required-ness below
         }
         if !shape::check_shape(&spec.shape, v) {
@@ -216,7 +216,7 @@ fn check_properties(meta: &fm::FmMeta, def: &Def, path: &str, rep: &mut Report) 
         }
     }
     for (key, spec) in &def.props {
-        let absent = !matches!(meta.get(key), Some(v) if !matches!(v, FmValue::Null));
+        let absent = fm::is_empty(meta.get(key));
         if spec.required && absent {
             rep.findings.push(finding(
                 "def/required",
@@ -240,7 +240,7 @@ fn check_cross_field(meta: &fm::FmMeta, def: &Def, path: &str, rep: &mut Report)
     {
         let status = fm::string_field(meta, "status");
         terminal = spec.terminal.contains(&status);
-        let closed = !matches!(meta.get("closed_at"), None | Some(FmValue::Null));
+        let closed = !fm::is_empty(meta.get("closed_at"));
         if terminal && !closed {
             rep.findings.push(finding(
                     "def/biconditional",
@@ -262,8 +262,8 @@ fn check_cross_field(meta: &fm::FmMeta, def: &Def, path: &str, rep: &mut Report)
     for (key, spec) in &def.props {
         for g in &spec.guard {
             if let Some((kind, arg)) = shape::parse_guard(g) {
-                let key_set = !matches!(meta.get(key), None | Some(FmValue::Null));
-                let arg_empty = matches!(meta.get(arg.as_str()), None | Some(FmValue::Null));
+                let key_set = !fm::is_empty(meta.get(key));
+                let arg_empty = fm::is_empty(meta.get(arg.as_str()));
                 if kind == "requires" && key_set && arg_empty {
                     rep.findings.push(finding(
                         "def/requires",

@@ -8,7 +8,7 @@ use std::path::Path;
 
 use super::cascade::{ResolveOutcome, discover_layers, resolve};
 use super::check::{check, scan_nested};
-use super::fm::{self, FmValue};
+use super::fm::{self};
 use super::load::Def;
 use super::{BodyError, Finding};
 
@@ -198,7 +198,7 @@ fn plan_close_stamps(doc: &model::Document, def: &Def, now: &str) -> Vec<Repair>
     let stamp = stamp_now(now);
     let mut out = Vec::new();
     for (key, p) in &def.props {
-        let empty = matches!(meta.get(key.as_str()), None | Some(FmValue::Null));
+        let empty = fm::is_empty(meta.get(key.as_str()));
         if p.stamp == "close" && empty {
             out.push(Repair {
                 key: key.clone(),

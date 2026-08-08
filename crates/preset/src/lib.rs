@@ -227,8 +227,13 @@ fn parse_ephemeral(raw: &str) -> Vec<String> {
 }
 
 /// Read a scalar frontmatter value off the parsed frontmatter map (the public
-/// [`YamlMap`] surface). Multi-line block values are read through the grain
-/// ([`read_inputs_grain`]), never here.
+/// [`YamlMap`] surface), DECODED through the one scalar owner (wire-contract
+/// § A.6.1). This is a value plane: the `^properties` rule check compares what
+/// it returns against a def-supplied string, so a fleet-canonical
+/// `status: "done"` read raw would compare false against `done` and the face
+/// would render a legitimate-looking "no violation" — § A.6's read-half defect,
+/// in a checker instead of a script. Multi-line block values are read through
+/// the grain ([`read_inputs_grain`]), never here.
 fn fm_scalar(doc: &Document, key: &str) -> Option<String> {
     fn find(node: &model::Node) -> Option<&YamlMap> {
         if let NodeKind::Frontmatter { map } = &node.kind {
@@ -238,7 +243,7 @@ fn fm_scalar(doc: &Document, key: &str) -> Option<String> {
     }
     find(&doc.root)
         .and_then(|m| m.0.iter().find(|(k, _)| k == key))
-        .map(|(_, v)| v.clone())
+        .map(|(_, v)| model::scalar::text(v))
 }
 
 /// Read the `inputs` block sequence through the U2.11 whole-value grain

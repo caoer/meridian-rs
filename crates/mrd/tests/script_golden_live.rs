@@ -456,6 +456,62 @@ fn an_append_to_a_target_the_script_never_read_is_refused_whole() {
     );
 }
 
+/// **The season-1 canary, closed.** Dogfood season-1 finding 1: the golden
+/// page's motivating scenario — a claim keyed on frontmatter — could not fire
+/// against a card whose frontmatter follows fleet convention
+/// (`owner: "3f9a1c07"` — QUOTED), because `card.fm[k]` served the quote bytes
+/// and the comparison silently evaluated false. Zero armed, and the face
+/// rendered a legitimate-looking "no effects".
+///
+/// This is scenario 2b's shape against a fleet-canonical quoted card, over a
+/// live daemon and real files: the § A.6 read law must make it arm, and the
+/// § A.6.3 write law must land the release as canonical bytes on disk.
+#[test]
+fn a_condition_keyed_on_a_quoted_scalar_arms_and_commits() {
+    const QUOTED_CARD: &str = "tasks/0001-quoted-owner.md";
+    const CANARY: &str = r#"
+card = read("tasks/0001-quoted-owner.md")
+if card.fm["owner"] == "3f9a1c07":
+    put("tasks/0001-quoted-owner.md", props={"owner": "", "status": "todo"})
+"#;
+    let fixture = Fixture::start_with(vec![(
+        QUOTED_CARD,
+        format!("---\nowner: \"{DEAD}\"\nstatus: doing\n---\n\n# Goals\n\nbody\n"),
+    )]);
+    let scenario = Scenario {
+        id: "season-1 canary — quoted owner",
+        source: CANARY,
+        files: false,
+        dry: false,
+        pin_entry: false,
+        ends: Ends::Committed,
+        writes: &[QUOTED_CARD],
+    };
+    let (trace, door) = fixture.run(&scenario);
+
+    assert_eq!(
+        ends_of(&trace, &door),
+        Ends::Committed,
+        "a quoted fleet-canonical owner must compare equal and arm — the \
+         season-1 failure was a silent zero-armed run. trace: {:?}",
+        trace.outcome
+    );
+    let on_disk = std::fs::read_to_string(fixture.ws.join(QUOTED_CARD)).expect("read back");
+    assert!(
+        on_disk.lines().any(|l| l == "status: todo"),
+        "the claim landed as the plain line: {on_disk}"
+    );
+    assert!(
+        on_disk.lines().any(|l| l == r#"owner: """#),
+        "the release cleared the owner to the § A.6.3 explicit-empty line, not \
+         a forged null: {on_disk}"
+    );
+    assert!(
+        !on_disk.contains(DEAD),
+        "no trace of the dead owner remains: {on_disk}"
+    );
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 /// What this run actually amounted to, at the grain the golden page depicts —
@@ -539,9 +595,15 @@ struct Fixture {
 
 impl Fixture {
     fn start() -> Self {
+        Self::start_with(corpus())
+    }
+
+    /// The same daemon over a caller-chosen corpus — one scenario that needs a
+    /// card the golden table does not carry seeds its own.
+    fn start_with(files: Vec<(&'static str, String)>) -> Self {
         let tmp = TempDir::new().expect("tempdir");
         let ws = tmp.path().join("ws");
-        for (rel, content) in corpus() {
+        for (rel, content) in files {
             let path = ws.join(rel);
             std::fs::create_dir_all(path.parent().expect("a parent")).expect("mkdir");
             std::fs::write(path, content).expect("seed");
