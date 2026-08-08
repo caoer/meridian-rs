@@ -4,14 +4,7 @@
 use std::path::PathBuf;
 
 /// Correctness crates that must never list `view` as a dependency.
-const FORBIDDEN_DEPENDERS: &[&str] = &[
-    "model",
-    "query",
-    "fs",
-    "syntax",
-    "wire",
-    "wire-serve",
-];
+const FORBIDDEN_DEPENDERS: &[&str] = &["model", "query", "fs", "syntax", "wire", "wire-serve"];
 
 const DEP_TABLES: &[&str] = &["dependencies", "dev-dependencies", "build-dependencies"];
 
