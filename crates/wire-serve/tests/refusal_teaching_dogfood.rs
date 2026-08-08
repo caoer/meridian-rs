@@ -63,12 +63,21 @@ fn bad_path_on_an_inside_absolute_spelling_teaches_rule_and_respelling() {
     let root = fs::WorkspaceRoot(canonical.clone());
 
     let absolute = canonical.join("f.md").to_str().expect("utf8").to_owned();
-    let err = splice(&root, None, &args_for(absolute.clone(), fm_key("title")), &[], None)
-        .expect_err("an absolute spelling refuses at the write door");
+    let err = splice(
+        &root,
+        None,
+        &args_for(absolute.clone(), fm_key("title")),
+        &[],
+        None,
+    )
+    .expect_err("an absolute spelling refuses at the write door");
 
     // Frozen surface: the code stays `bad_path`, the offending path stays echoed.
     assert_eq!(err.code, ErrorCode::BadPath);
-    assert_eq!(err.path.as_ref().map(|p| p.0.as_str()), Some(absolute.as_str()));
+    assert_eq!(
+        err.path.as_ref().map(|p| p.0.as_str()),
+        Some(absolute.as_str())
+    );
 
     let m = err
         .message
@@ -86,7 +95,10 @@ fn bad_path_on_an_inside_absolute_spelling_teaches_rule_and_respelling() {
         "names the relative respelling: {m}"
     );
     // 3. Partial state disclosed.
-    assert!(m.contains("Nothing was written"), "discloses partial state: {m}");
+    assert!(
+        m.contains("Nothing was written"),
+        "discloses partial state: {m}"
+    );
 }
 
 /// P2-a control: an absolute path OUTSIDE this workspace still teaches the
@@ -145,7 +157,10 @@ fn fm_key_miss_fix_states_value_only_upsert_semantics() {
         .as_deref()
         .expect("the refusal is a sentence, not a bare code");
     // The Fix keeps teaching the door…
-    assert!(m.contains("at: upsert"), "still teaches the upsert door: {m}");
+    assert!(
+        m.contains("at: upsert"),
+        "still teaches the upsert door: {m}"
+    );
     // …and now states its value-plane grain: the text is the VALUE alone,
     // the engine composes the `key: value` line.
     assert!(

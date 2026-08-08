@@ -440,9 +440,7 @@ pub fn splice(
         },
     )
     .map_err(|e| match e {
-        CommitError::Refused(v) => {
-            verdict_to_wire(&v, effective_edits, &doc, &args.path)
-        }
+        CommitError::Refused(v) => verdict_to_wire(&v, effective_edits, &doc, &args.path),
         CommitError::Env(err) => err,
         CommitError::Io(err) => commit_io_to_wire(&err, &args.path),
     })?;

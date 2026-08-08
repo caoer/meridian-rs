@@ -674,10 +674,7 @@ struct AnchorTeach {
 ///
 /// `None` for non-anchor selectors. The host-kind probe re-projects the toc
 /// only on this error path, never on a served read.
-fn anchor_sel_teach(
-    doc: &model::Document,
-    sel: &wire::ReadSel,
-) -> Option<AnchorTeach> {
+fn anchor_sel_teach(doc: &model::Document, sel: &wire::ReadSel) -> Option<AnchorTeach> {
     let wire::ReadSel::Anchor { anchor } = sel else {
         return None;
     };
@@ -857,9 +854,10 @@ fn composed_sections(
         // which cannot list the id it just named (dogfood P2-c).
         let fix = match &failures[0] {
             SelFail::Miss {
-                teach: Some(AnchorTeach {
-                    host: Some(host), ..
-                }),
+                teach:
+                    Some(AnchorTeach {
+                        host: Some(host), ..
+                    }),
                 ..
             } => unaddressable_fix(host, display),
             other => crate::section_recovery(&other.display(), Some(display)),
@@ -872,7 +870,10 @@ fn composed_sections(
     }
     let notice = (!failures.is_empty()).then(|| {
         let entries: Vec<String> = failures.iter().map(SelFail::notice_entry).collect();
-        format!("unresolved selectors (no rev minted): {}", entries.join(", "))
+        format!(
+            "unresolved selectors (no rev minted): {}",
+            entries.join(", ")
+        )
     });
     let unresolved: Vec<wire::ReadUnresolved> = failures.iter().map(SelFail::row).collect();
     let job = render::RenderJob::Sections {
@@ -1312,11 +1313,7 @@ fn cat_miss(sec: &SecRef, doc: &model::Document) -> ErrorBody {
 /// shared by [`ref_not_found`] (write voice) and [`cat_miss`] (read voice),
 /// which differ only in their partial-state clause. `display_path` is `None`
 /// where the caller holds no path (`cat` serves one borrowed document).
-fn miss_parts(
-    sec: &SecRef,
-    doc: &model::Document,
-    display_path: Option<&str>,
-) -> (String, String) {
+fn miss_parts(sec: &SecRef, doc: &model::Document, display_path: Option<&str>) -> (String, String) {
     match sec {
         SecRef::Hpath { hpath } => {
             let asked = join_h(hpath);

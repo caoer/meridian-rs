@@ -73,7 +73,9 @@ pub(crate) fn serve(cache: &MountsCache) -> Result<ResponseBody, Box<ErrorBody>>
     // Changed hash (or first call): re-derive. A failure refuses loud and
     // caches nothing — the fix is editing the binding file, not re-dialing.
     let resolution = config::resolve(&env).map_err(|e| invalid(&e.path, &e.to_string()))?;
-    let table = resolution.bind().map_err(|e| invalid(&e.path, &e.to_string()))?;
+    let table = resolution
+        .bind()
+        .map_err(|e| invalid(&e.path, &e.to_string()))?;
     let derived = Derived {
         path,
         // The resolution's own rev — the bytes the table actually derived
@@ -98,9 +100,7 @@ fn project(table: &config::mount::MountTable) -> Vec<MountRow> {
             name: m.name().to_owned(),
             kind: m.kind().as_str().to_owned(),
             state: m.state().word().to_owned(),
-            workspace: m
-                .canonical_path()
-                .map(|p| p.to_string_lossy().into_owned()),
+            workspace: m.canonical_path().map(|p| p.to_string_lossy().into_owned()),
         })
         .collect()
 }

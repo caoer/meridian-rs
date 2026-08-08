@@ -209,7 +209,7 @@ fn a_write_back_of_the_served_value_is_byte_stable() {
         "---\ntype: task\nowner: \"3f9a1c07\"\n---\n\n# Todo\n",
         "---\ntype: task\nowner: 'doing'\n---\n\n# Todo\n", // legacy single-quoted spelling
         "---\ntype: task\nowner: \"42\"\n---\n\n# Todo\n",  // quoted typed scalar stays a STRING
-        "---\ntype: task\nowner: plain\n---\n\n# Todo\n",   // plain spelling: encoder emits it anyway
+        "---\ntype: task\nowner: plain\n---\n\n# Todo\n", // plain spelling: encoder emits it anyway
     ] {
         let d = doc(raw);
         let served = reads_back_as(&d, "owner");

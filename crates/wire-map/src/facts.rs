@@ -256,7 +256,11 @@ pub fn selector_matches<'a>(facts: &'a [ReadFact], sel: &wire::ReadSel) -> Vec<&
 #[must_use]
 pub fn resolve_selector<'a>(facts: &'a [ReadFact], sel: &wire::ReadSel) -> Option<&'a ReadFact> {
     let matches = selector_matches(facts, sel);
-    if matches.len() == 1 { Some(matches[0]) } else { None }
+    if matches.len() == 1 {
+        Some(matches[0])
+    } else {
+        None
+    }
 }
 
 /// Per-segment address equality: same length, same raw text, and a selector
@@ -436,7 +440,11 @@ mod tests {
             .filter(|f| f.anchor.is_none())
             .map(|f| f.n.as_str())
             .collect();
-        assert_eq!(headings, vec!["1"], "one real heading, no re-kinded anchor row");
+        assert_eq!(
+            headings,
+            vec!["1"],
+            "one real heading, no re-kinded anchor row"
+        );
     }
 
     /// A duplicated block id matches EVERY carrier, in document order — the

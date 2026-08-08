@@ -106,7 +106,10 @@ fn ephemeral_query_is_fresh_and_writes_nothing() {
         ],
     );
 
-    let out = sb.run(&ws, &["sql", "--json", "SELECT path FROM doc ORDER BY path"]);
+    let out = sb.run(
+        &ws,
+        &["sql", "--json", "SELECT path FROM doc ORDER BY path"],
+    );
     assert!(out.status.success(), "sql failed: {}", stderr(&out));
     let doc = json(&out);
 
@@ -164,7 +167,11 @@ fn stale_surfaces_when_the_corpus_moves_inside_the_window() {
         &["sql", "--json", "SELECT path FROM doc ORDER BY path"],
         &[("MRD_SQL_TEST_MUTATE", mutated.to_str().unwrap())],
     );
-    assert!(out.status.success(), "a STALE frame is a success: {}", stderr(&out));
+    assert!(
+        out.status.success(),
+        "a STALE frame is a success: {}",
+        stderr(&out)
+    );
     let doc = json(&out);
 
     assert_eq!(doc["state"], "STALE", "as_of != live at the sample: {doc}");
@@ -188,10 +195,19 @@ fn raced_surfaces_when_a_bounded_fresh_cannot_converge() {
 
     let out = sb.run_env(
         &ws,
-        &["sql", "--json", "--fresh", "SELECT path FROM doc ORDER BY path"],
+        &[
+            "sql",
+            "--json",
+            "--fresh",
+            "SELECT path FROM doc ORDER BY path",
+        ],
         &[("MRD_SQL_TEST_MUTATE", mutated.to_str().unwrap())],
     );
-    assert!(out.status.success(), "a RACED frame is a success: {}", stderr(&out));
+    assert!(
+        out.status.success(),
+        "a RACED frame is a success: {}",
+        stderr(&out)
+    );
     let doc = json(&out);
 
     assert_eq!(doc["state"], "RACED", "the retry could not converge: {doc}");
@@ -240,7 +256,10 @@ fn dml_against_the_ephemeral_view_is_accepted_and_writes_nothing() {
 
     // The write died with the process: a fresh invocation rebuilds from the
     // corpus and the ghost row is gone.
-    let after = sb.run(&ws, &["sql", "--json", "SELECT path FROM doc ORDER BY path"]);
+    let after = sb.run(
+        &ws,
+        &["sql", "--json", "SELECT path FROM doc ORDER BY path"],
+    );
     assert!(after.status.success(), "{}", stderr(&after));
     assert_eq!(
         json(&after)["rows"],

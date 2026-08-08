@@ -86,10 +86,22 @@ impl Conn {
 /// asserted present and returned for content pins.
 fn file_not_found_message(conn: &mut Conn, path: &str) -> String {
     let refusal = conn.call(&json!({"op": "toc", "path": path}));
-    assert_eq!(refusal["ok"], json!(false), "{path} does not serve: {refusal}");
+    assert_eq!(
+        refusal["ok"],
+        json!(false),
+        "{path} does not serve: {refusal}"
+    );
     let error = &refusal["error"];
-    assert_eq!(error["code"], json!("file_not_found"), "code frozen: {refusal}");
-    assert_eq!(error["path"], json!(path), "the path stays echoed: {refusal}");
+    assert_eq!(
+        error["code"],
+        json!("file_not_found"),
+        "code frozen: {refusal}"
+    );
+    assert_eq!(
+        error["path"],
+        json!(path),
+        "the path stays echoed: {refusal}"
+    );
     error["message"]
         .as_str()
         .unwrap_or_else(|| panic!("the refusal is a sentence, not a bare code: {refusal}"))

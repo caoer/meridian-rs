@@ -95,10 +95,21 @@ fn the_fragment_is_selector_bytes_to_its_end_and_round_trips() {
         ("page.md#Deploy@prod", "Deploy@prod"),
         ("page.md#Deploy @ prod", "Deploy @ prod"),
         ("page.md#Sec@green.b3af12cd", "Sec@green.b3af12cd"),
-        ("sessions:a/b.md#^claim@fp1.span2.b3.dead", "^claim@fp1.span2.b3.dead"),
+        (
+            "sessions:a/b.md#^claim@fp1.span2.b3.dead",
+            "^claim@fp1.span2.b3.dead",
+        ),
     ] {
         let addr = addr::Addr::parse(spelling).expect("parses");
-        assert_eq!(addr.selector(), selector, "{spelling}: every fragment byte is selector bytes");
-        assert_eq!(addr.to_string(), spelling, "{spelling}: lossless round-trip");
+        assert_eq!(
+            addr.selector(),
+            selector,
+            "{spelling}: every fragment byte is selector bytes"
+        );
+        assert_eq!(
+            addr.to_string(),
+            spelling,
+            "{spelling}: lossless round-trip"
+        );
     }
 }

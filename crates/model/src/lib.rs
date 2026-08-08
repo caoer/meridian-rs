@@ -2699,7 +2699,11 @@ mod tests {
             panic!("a whole-tree rewrite plus an edit inside it must refuse overlap");
         };
         assert_eq!(edits, vec![0, 1], "the offending pair, batch order");
-        assert_eq!(spans, vec![20..150, 64..73], "Goals rewrite ⊃ Q3 match bytes");
+        assert_eq!(
+            spans,
+            vec![20..150, 64..73],
+            "Goals rewrite ⊃ Q3 match bytes"
+        );
     }
 
     /// The region-grain mirror of gate 4a: NESTED TARGETS whose replaced

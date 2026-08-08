@@ -90,11 +90,20 @@ fn dump(scenario: &str, pass: usize, bytes: &str) {
 fn shapes() -> Vec<(&'static str, String)> {
     vec![
         // key present, with a value
-        ("with_value", "---\nnote: x\nkeep: 1\n---\n# B\n\nt\n".to_string()),
+        (
+            "with_value",
+            "---\nnote: x\nkeep: 1\n---\n# B\n\nt\n".to_string(),
+        ),
         // key present, BARE colon (no trailing space) — the sibling's P0 cell
-        ("bare_colon", "---\nnote:\nkeep: 1\n---\n# B\n\nt\n".to_string()),
+        (
+            "bare_colon",
+            "---\nnote:\nkeep: 1\n---\n# B\n\nt\n".to_string(),
+        ),
         // key present, colon + trailing space, empty value
-        ("colon_space", "---\nnote: \nkeep: 1\n---\n# B\n\nt\n".to_string()),
+        (
+            "colon_space",
+            "---\nnote: \nkeep: 1\n---\n# B\n\nt\n".to_string(),
+        ),
         // key ABSENT — the create path
         ("absent", "---\nkeep: 1\n---\n# B\n\nt\n".to_string()),
     ]
@@ -112,8 +121,7 @@ fn splice_matrix_empty_value_across_colon_shapes_twice() {
                 json!(true),
                 "{name} pass{pass}: set_property(note,\"\") lands: {reply}"
             );
-            let disk =
-                std::fs::read_to_string(dir.path().join("cards/one.md")).expect("read back");
+            let disk = std::fs::read_to_string(dir.path().join("cards/one.md")).expect("read back");
             dump(name, pass, &disk);
 
             // The engine must serve back exactly the caller's string.
@@ -160,7 +168,13 @@ fn splice_matrix_empty_value_across_colon_shapes_twice() {
 /// beyond the empty case, since a read->write churn moves every fingerprint.
 #[test]
 fn splice_matrix_fleet_values_are_byte_idempotent() {
-    for value in ["[[b1892b5a]]", "doing", "review: pending", "2026-08-07", "[a, b]"] {
+    for value in [
+        "[[b1892b5a]]",
+        "doing",
+        "review: pending",
+        "2026-08-07",
+        "[a, b]",
+    ] {
         for (name, seed) in shapes() {
             let dir = ws("cards/one.md", &seed);
             let r1 = set_property(dir.path(), "note", value);
@@ -175,7 +189,14 @@ fn splice_matrix_fleet_values_are_byte_idempotent() {
                 Some(value),
                 "{name}/{value:?}: round trip"
             );
-            dump(&format!("val_{}_{name}", value.replace([' ', ':', '[', ']', '/'], "_")), 1, &d1);
+            dump(
+                &format!(
+                    "val_{}_{name}",
+                    value.replace([' ', ':', '[', ']', '/'], "_")
+                ),
+                1,
+                &d1,
+            );
         }
     }
 }

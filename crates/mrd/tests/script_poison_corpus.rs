@@ -22,9 +22,9 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
 
+use mrd::script::ScriptOutcome;
 use mrd::script::cmd::attempt;
 use mrd::script::wire_host::SocketDoor;
-use mrd::script::ScriptOutcome;
 use registry::{Config, RunningServer};
 use tempfile::TempDir;
 
@@ -76,12 +76,8 @@ fn the_script_entry_serves_with_a_poison_member_present() {
     });
 
     let argv = vec!["--actor".to_owned(), "e50dfd13".to_owned()];
-    let trace = attempt(
-        &argv,
-        r#"card = read("tasks/0011-card.md")"#,
-        &mut door,
-    )
-    .expect("a read-only attempt runs");
+    let trace = attempt(&argv, r#"card = read("tasks/0011-card.md")"#, &mut door)
+        .expect("a read-only attempt runs");
     assert_eq!(
         trace.outcome,
         ScriptOutcome::NoEffect,

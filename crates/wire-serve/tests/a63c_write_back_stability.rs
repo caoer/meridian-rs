@@ -52,13 +52,12 @@ fn native_args(path: &str, edits: Vec<Edit>) -> SpliceArgs {
 }
 
 /// The fleet-canonical card: quoted spellings exactly as `ccc-cli` lands them.
-const DOC: &str = "---\ntype: task\nstatus: \"doing\"\nowner: \"3f9a1c07\"\n---\n\n# Memo\n\nbody\n";
+const DOC: &str =
+    "---\ntype: task\nstatus: \"doing\"\nowner: \"3f9a1c07\"\n---\n\n# Memo\n\nbody\n";
 
 fn upsert(key: &str, text: &str) -> Edit {
     Edit {
-        target: SecRef::FmKey {
-            fm_key: key.into(),
-        },
+        target: SecRef::FmKey { fm_key: key.into() },
         edit: EditShape::Put {
             at: PutAt::Upsert,
             text: text.into(),
@@ -118,7 +117,10 @@ fn upsert_write_back_is_byte_stable() {
     .expect("the no-op upsert commits");
 
     let bytes = std::fs::read_to_string(dir.path().join("card.md")).expect("read back");
-    assert_eq!(bytes, DOC, "a semantic no-op upsert keeps the stored spelling");
+    assert_eq!(
+        bytes, DOC,
+        "a semantic no-op upsert keeps the stored spelling"
+    );
 }
 
 /// Two keys in one plan batch stay a no-op together — the group lowering

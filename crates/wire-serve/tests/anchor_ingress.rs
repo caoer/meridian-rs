@@ -47,7 +47,11 @@ fn toc_mode_publishes_the_anchor_plane_in_its_own_array() {
         panic!("composed read answers a Read body");
     };
     let ids: Vec<&str> = anchors.iter().map(|a| a.anchor.as_str()).collect();
-    assert_eq!(ids, vec!["goal", "gate"], "list-item anchors, document order");
+    assert_eq!(
+        ids,
+        vec!["goal", "gate"],
+        "list-item anchors, document order"
+    );
     for a in &anchors {
         let (start, end) = (a.span.0 as usize, a.span.1 as usize);
         assert!(
@@ -110,7 +114,10 @@ fn cat_anchor_miss_teaches_nearest_live_anchors() {
     )
     .expect_err("^gale is absent");
     assert_eq!(err.code, ErrorCode::RefNotFound);
-    let msg = err.message.as_deref().expect("a miss carries a sentence, never a bare code");
+    let msg = err
+        .message
+        .as_deref()
+        .expect("a miss carries a sentence, never a bare code");
     assert!(msg.contains("no node addressed by \"^gale\""), "{msg}");
     assert!(
         msg.contains("Nothing was read and no rev was minted."),
@@ -141,10 +148,7 @@ fn cat_anchor_miss_on_an_anchorless_page_says_so() {
     )
     .expect_err("nothing to resolve");
     let msg = err.message.as_deref().expect("message");
-    assert!(
-        msg.contains("This page carries no block anchors."),
-        "{msg}"
-    );
+    assert!(msg.contains("This page carries no block anchors."), "{msg}");
     assert!(
         !msg.contains("Nearest live block anchors"),
         "no fabricated candidates on an anchorless page: {msg}"
@@ -165,9 +169,15 @@ fn cat_heading_miss_teaches_instead_of_failing_bare() {
         }),
     )
     .expect_err("Ghost is absent");
-    let msg = err.message.as_deref().expect("a miss carries a sentence, never a bare code");
+    let msg = err
+        .message
+        .as_deref()
+        .expect("a miss carries a sentence, never a bare code");
     assert!(msg.contains("no node addressed by \"Ghost\""), "{msg}");
-    assert!(msg.contains("toc read"), "the fix names the section map: {msg}");
+    assert!(
+        msg.contains("toc read"),
+        "the fix names the section map: {msg}"
+    );
 }
 
 /// A composed-read anchor miss names the nearest live ids inside the
@@ -253,7 +263,10 @@ fn heading_hosted_anchor_refusal_names_heading_and_serves_a_path() {
         msg.contains("host block is a heading"),
         "the limit names the TRUE host kind: {msg}"
     );
-    assert!(!msg.contains("paragraph"), "the paragraph lie is retired: {msg}");
+    assert!(
+        !msg.contains("paragraph"),
+        "the paragraph lie is retired: {msg}"
+    );
     assert!(
         !msg.contains("anchors[]"),
         "the Fix must not point at an array that cannot list this id: {msg}"
@@ -282,7 +295,10 @@ fn fm_hosted_anchor_refusal_names_frontmatter_and_serves_props() {
         msg.contains("frontmatter"),
         "the limit names the TRUE host — the frontmatter: {msg}"
     );
-    assert!(!msg.contains("paragraph"), "the paragraph lie is retired: {msg}");
+    assert!(
+        !msg.contains("paragraph"),
+        "the paragraph lie is retired: {msg}"
+    );
     assert!(
         !msg.contains("anchors[]"),
         "the Fix must not point at an array that cannot list this id: {msg}"
@@ -297,11 +313,8 @@ fn fm_hosted_anchor_refusal_names_frontmatter_and_serves_props() {
 /// all-fail refusal — one vocabulary on both paths.
 #[test]
 fn partial_read_notice_carries_the_anchor_teaching() {
-    let body = read(Some(vec![
-        ReadSel::parse("Tasks"),
-        ReadSel::parse("^gaol"),
-    ]))
-    .expect("one selector serves");
+    let body = read(Some(vec![ReadSel::parse("Tasks"), ReadSel::parse("^gaol")]))
+        .expect("one selector serves");
     let ResponseBody::Read { notice, .. } = body else {
         panic!("composed read answers a Read body");
     };

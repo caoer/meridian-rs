@@ -605,8 +605,7 @@ fn a_host_with_no_session_refuses_an_actor_pin_and_says_why() {
     assert!(
         err.message
             .as_deref()
-            .is_some_and(|m| m.contains("no read-receipt ledger")
-                && m.contains("resident daemon")),
+            .is_some_and(|m| m.contains("no read-receipt ledger") && m.contains("resident daemon")),
         "{:?}",
         err.message
     );

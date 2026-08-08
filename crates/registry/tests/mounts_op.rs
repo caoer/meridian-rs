@@ -126,23 +126,40 @@ fn mounts_lifecycle_freshness_and_changed_invalid_refusal() {
     let server = RunningServer::start(test_config(&tmp)).unwrap();
     let mut conn = Conn::open(server.socket_path());
     let hi = conn.hello_v3_bare();
-    assert_eq!(hi["ok"], json!(true), "workspace-less v3 hello binds nothing and succeeds: {hi}");
+    assert_eq!(
+        hi["ok"],
+        json!(true),
+        "workspace-less v3 hello binds nothing and succeeds: {hi}"
+    );
 
     // The live table, machine-scoped: served with NO workspace bound.
     let first = conn.call(&json!({"id": 7, "op": "mounts"}));
-    assert_eq!(first["ok"], json!(true), "mounts serves workspace-less: {first}");
+    assert_eq!(
+        first["ok"],
+        json!(true),
+        "mounts serves workspace-less: {first}"
+    );
     assert_eq!(first["id"], json!(7));
     let rev1 = first["body"]["config_rev"]
         .as_str()
         .unwrap_or_else(|| panic!("config_rev present: {first}"));
-    assert_eq!(rev1.len(), 16, "config_rev is 16 hex (file_rev family): {first}");
+    assert_eq!(
+        rev1.len(),
+        16,
+        "config_rev is 16 hex (file_rev family): {first}"
+    );
     assert!(
-        rev1.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+        rev1.chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
         "config_rev is lowercase hex: {first}"
     );
 
     let table = rows(&first);
-    assert_eq!(table.len(), 2, "both declared mounts served, document order: {first}");
+    assert_eq!(
+        table.len(),
+        2,
+        "both declared mounts served, document order: {first}"
+    );
     // Row d-15c: {name, kind, state, workspace?} in the engine's own words.
     assert_eq!(table[0]["name"], json!("wiki"));
     assert_eq!(table[0]["kind"], json!("vault"));
@@ -198,13 +215,25 @@ fn mounts_lifecycle_freshness_and_changed_invalid_refusal() {
     // 3-row table as if current, and must not serve the broken one.
     write_config(
         &config_path,
-        &format!("{}{}", vault_block("wiki", &wiki), vault_block("wiki-two", &wiki)),
+        &format!(
+            "{}{}",
+            vault_block("wiki", &wiki),
+            vault_block("wiki-two", &wiki)
+        ),
     );
     let refused = conn.call(&json!({"id": 10, "op": "mounts"}));
-    assert_eq!(refused["ok"], json!(false), "changed-invalid refuses: {refused}");
+    assert_eq!(
+        refused["ok"],
+        json!(false),
+        "changed-invalid refuses: {refused}"
+    );
     let err = &refused["error"];
     assert_eq!(err["code"], json!("mount_table_invalid"), "{refused}");
-    assert_eq!(err["recovery"], json!("env"), "the binding file is an environment fact: {refused}");
+    assert_eq!(
+        err["recovery"],
+        json!("env"),
+        "the binding file is an environment fact: {refused}"
+    );
     assert_eq!(
         err["path"],
         json!(config_path.to_str().unwrap()),
@@ -220,8 +249,16 @@ fn mounts_lifecycle_freshness_and_changed_invalid_refusal() {
     // nothing, so recovery is editing the file, not redialing.
     write_config(&config_path, &base);
     let healed = conn.call(&json!({"id": 11, "op": "mounts"}));
-    assert_eq!(healed["ok"], json!(true), "a repaired table serves again: {healed}");
-    assert_eq!(healed["body"]["config_rev"], json!(rev1), "same bytes, same token: {healed}");
+    assert_eq!(
+        healed["ok"],
+        json!(true),
+        "a repaired table serves again: {healed}"
+    );
+    assert_eq!(
+        healed["body"]["config_rev"],
+        json!(rev1),
+        "same bytes, same token: {healed}"
+    );
     assert_eq!(rows(&healed).len(), 2);
 }
 

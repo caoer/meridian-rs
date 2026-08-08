@@ -260,9 +260,10 @@ impl<'a> DocView<'a> {
         };
         let chain_matches = |s: &SecX| {
             s.hpath.len() == hpath.len()
-                && hpath.iter().enumerate().all(|(i, sel)| {
-                    sel.h == s.hpath[i] && sel.n.is_none_or(|k| k == s.occ[i])
-                })
+                && hpath
+                    .iter()
+                    .enumerate()
+                    .all(|(i, sel)| sel.h == s.hpath[i] && sel.n.is_none_or(|k| k == s.occ[i]))
         };
         let hits: Vec<&SecX> = self
             .sections

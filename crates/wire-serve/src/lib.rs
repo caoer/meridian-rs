@@ -492,7 +492,10 @@ mod tests {
         assert_eq!(
             plan_edits,
             vec![wire::PlanEdit::Append {
-                hpath: vec![wire::HpathSeg { h: "A".into(), n: None }],
+                hpath: vec![wire::HpathSeg {
+                    h: "A".into(),
+                    n: None
+                }],
                 body: "x".into(),
                 rev: Some("abc123".into()),
             }]

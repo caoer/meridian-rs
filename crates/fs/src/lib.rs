@@ -499,11 +499,10 @@ impl DomainCache {
                                 s = idle.wait(s).unwrap_or_else(PoisonError::into_inner);
                             }
                         };
-                        let scanned = scan_dir(prior, root, &rel)
-                            .map(|scan| {
-                                let split = classify(&scan.entries, &rel, domain);
-                                (scan, split)
-                            });
+                        let scanned = scan_dir(prior, root, &rel).map(|scan| {
+                            let split = classify(&scan.entries, &rel, domain);
+                            (scan, split)
+                        });
                         let mut s = shared.lock().unwrap_or_else(PoisonError::into_inner);
                         s.active -= 1;
                         match scanned {
@@ -546,7 +545,6 @@ impl DomainCache {
     pub fn listings(&self) -> u64 {
         self.listings
     }
-
 }
 
 /// One directory's scan during [`DomainCache`]'s walk: its identity, its
@@ -732,8 +730,9 @@ pub fn domain_snapshot(root: &WorkspaceRoot) -> io::Result<(DomainFiles, model::
         // A member that cannot be read refuses the whole snapshot — a
         // corpus-scoped refusal, so it names the member (`CorpusMemberError`):
         // the raw OS error carries no path at all.
-        let bytes = fs::read(root.0.join(&rel))
-            .map_err(|e| corpus_member_refusal(e.kind(), &rel_str, format!("cannot be read ({e})")))?;
+        let bytes = fs::read(root.0.join(&rel)).map_err(|e| {
+            corpus_member_refusal(e.kind(), &rel_str, format!("cannot be read ({e})"))
+        })?;
         files.push((rel_str, bytes));
     }
     let entries: Vec<(&str, &[u8])> = files
@@ -2769,11 +2768,19 @@ mod domain_cache_parallel_tests {
         );
         // Scanned: root + d0..d2 + 12 subdirs = 16. The dot-dir and the
         // pruned dir are never entered, so they must not count.
-        assert_eq!(cache.listings(), 16, "every directory enumerated exactly once");
+        assert_eq!(
+            cache.listings(),
+            16,
+            "every directory enumerated exactly once"
+        );
 
         let warm = cache.root(&root).unwrap();
         assert_eq!(warm, cold, "warm parallel walk returns the same root");
-        assert_eq!(cache.listings(), 16, "an unchanged tree re-enumerates nothing");
+        assert_eq!(
+            cache.listings(),
+            16,
+            "an unchanged tree re-enumerates nothing"
+        );
 
         std::thread::sleep(std::time::Duration::from_millis(10));
         write(root_path, "d1/s2/new.md", "# New\n");
@@ -2833,7 +2840,10 @@ mod domain_cache_parallel_tests {
         let mut cache = DomainCache::new();
         let refused = cache.root(&root);
         fs::set_permissions(&sealed, fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(refused.is_err(), "an unscannable directory refuses the pass");
+        assert!(
+            refused.is_err(),
+            "an unscannable directory refuses the pass"
+        );
 
         assert_eq!(
             cache.root(&root).unwrap(),

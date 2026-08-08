@@ -429,7 +429,9 @@ fn the_builder_picks_the_richest_computable_rung_not_the_first_that_works() {
 /// backticked token before the word "guard" — "resend … with `X` as its
 /// guard" reads X; "resend … as its `Y` guard" reads Y.
 fn taught_guard_field(message: &str) -> String {
-    let before = &message[..message.find(" guard").expect("the fix clause names a guard")];
+    let before = &message[..message
+        .find(" guard")
+        .expect("the fix clause names a guard")];
     let close = before.rfind('`').expect("the guard noun is backticked");
     let open = before[..close].rfind('`').expect("a backtick pair");
     before[open + 1..close].to_owned()

@@ -229,7 +229,16 @@ fn a_plan_append_carrying_its_section_rev_lands() {
     let rev = sec_rev(&root, tasks());
     let a = SpliceArgs {
         plan_edits: vec![PlanEdit::Append {
-            hpath: vec![HpathSeg { h: "Memo".into(), n: None }, HpathSeg { h: "Tasks".into(), n: None }],
+            hpath: vec![
+                HpathSeg {
+                    h: "Memo".into(),
+                    n: None,
+                },
+                HpathSeg {
+                    h: "Tasks".into(),
+                    n: None,
+                },
+            ],
             body: "- item two".into(),
             rev: Some(rev.0),
         }],
@@ -250,7 +259,16 @@ fn a_plan_append_without_a_rev_still_refuses() {
     let (_d, root) = ws();
     let a = SpliceArgs {
         plan_edits: vec![PlanEdit::Append {
-            hpath: vec![HpathSeg { h: "Memo".into(), n: None }, HpathSeg { h: "Tasks".into(), n: None }],
+            hpath: vec![
+                HpathSeg {
+                    h: "Memo".into(),
+                    n: None,
+                },
+                HpathSeg {
+                    h: "Tasks".into(),
+                    n: None,
+                },
+            ],
             body: "- item two".into(),
             rev: None,
         }],
@@ -273,7 +291,16 @@ fn a_plan_append_with_a_stale_rev_does_not_write() {
     let (_d, root) = ws();
     let a = SpliceArgs {
         plan_edits: vec![PlanEdit::Append {
-            hpath: vec![HpathSeg { h: "Memo".into(), n: None }, HpathSeg { h: "Tasks".into(), n: None }],
+            hpath: vec![
+                HpathSeg {
+                    h: "Memo".into(),
+                    n: None,
+                },
+                HpathSeg {
+                    h: "Tasks".into(),
+                    n: None,
+                },
+            ],
             body: "- item two".into(),
             rev: Some("not-this-sections-rev".into()),
         }],
@@ -363,7 +390,10 @@ fn plan_create_is_guarded_by_absence() {
     let (_d, root) = ws();
     let already = SpliceArgs {
         plan_edits: vec![PlanEdit::Create {
-            parent_hpath: vec![HpathSeg { h: "Memo".into(), n: None }],
+            parent_hpath: vec![HpathSeg {
+                h: "Memo".into(),
+                n: None,
+            }],
             title: "Tasks".into(),
             body: "x\n".into(),
             rev: None,
@@ -380,7 +410,10 @@ fn plan_create_is_guarded_by_absence() {
 
     let fresh = SpliceArgs {
         plan_edits: vec![PlanEdit::Create {
-            parent_hpath: vec![HpathSeg { h: "Memo".into(), n: None }],
+            parent_hpath: vec![HpathSeg {
+                h: "Memo".into(),
+                n: None,
+            }],
             title: "Notes".into(),
             body: "x\n".into(),
             rev: None,
@@ -483,7 +516,16 @@ fn the_fix_clause_names_the_slot_the_caller_actually_has() {
 
     let plan_match = SpliceArgs {
         plan_edits: vec![PlanEdit::Match {
-            hpath: vec![HpathSeg { h: "Memo".into(), n: None }, HpathSeg { h: "Tasks".into(), n: None }],
+            hpath: vec![
+                HpathSeg {
+                    h: "Memo".into(),
+                    n: None,
+                },
+                HpathSeg {
+                    h: "Tasks".into(),
+                    n: None,
+                },
+            ],
             old: "item one".into(),
             new: "item ONE".into(),
             all: false,
@@ -501,7 +543,16 @@ fn the_fix_clause_names_the_slot_the_caller_actually_has() {
 
     let plan_append = SpliceArgs {
         plan_edits: vec![PlanEdit::Append {
-            hpath: vec![HpathSeg { h: "Memo".into(), n: None }, HpathSeg { h: "Tasks".into(), n: None }],
+            hpath: vec![
+                HpathSeg {
+                    h: "Memo".into(),
+                    n: None,
+                },
+                HpathSeg {
+                    h: "Tasks".into(),
+                    n: None,
+                },
+            ],
             body: "- item two".into(),
             rev: None,
         }],
@@ -861,4 +912,3 @@ fn force_bypasses_the_create_demand_and_names_the_parent() {
         "a forced write lands its bytes"
     );
 }
-

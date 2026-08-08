@@ -12,7 +12,8 @@ const DOC: &str = "# Top\n\n## Dup\n\nfirst copy\n\n## Dup\n\nsecond copy\n\n## 
 
 /// Two list items carrying ONE block id — the dogfood-p1-read-ambiguous-ref
 /// shape (wire-contract A.3, door symmetry over duplicate block ids).
-const DUP_ANCHOR_DOC: &str = "# Tasks\n\n- first ^same-id\n\n- second ^same-id\n\n# Notes\n\nalone\n";
+const DUP_ANCHOR_DOC: &str =
+    "# Tasks\n\n- first ^same-id\n\n- second ^same-id\n\n# Notes\n\nalone\n";
 
 fn doc_of(body: &str) -> model::Document {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -102,7 +103,10 @@ fn all_fail_refusal_names_every_failed_selector() {
     assert!(msg.contains("no section addressed by \"Ghost\""), "{msg}");
     assert!(msg.contains("no section addressed by \"Phantom\""), "{msg}");
     assert!(msg.contains("\"Top/Dup\" is ambiguous (2 matches"), "{msg}");
-    assert!(msg.contains("Nothing was read and no rev was minted."), "{msg}");
+    assert!(
+        msg.contains("Nothing was read and no rev was minted."),
+        "{msg}"
+    );
 }
 
 /// The single-miss refusal keeps its standing spelling byte-for-byte, and its
