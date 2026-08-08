@@ -6,11 +6,14 @@
 //! Mirrored, not repaired (the authoritative target is the captured golden
 //! corpus). One deliberate Go behavior rides along:
 //!
-//! - Only rows of kind `"heading"` and `"list_item"` become facts. An anchor
-//!   whose HOST block is a task/callout/fence/table/paragraph projects under
-//!   that kind and is DROPPED — exactly as the Go `switch` drops it, so e.g.
-//!   a `- [ ] item ^t1` task anchor is NOT addressable on the read face (the
-//!   `basic` golden pins `^task1` unresolved).
+//! - Only heading rows and `list_item` anchor rows become facts. An anchor
+//!   whose HOST block is anything else — task/callout/fence/table/paragraph,
+//!   or a heading/frontmatter host (truth-told since dogfood P2-c) — projects
+//!   under that kind and is DROPPED — exactly as the Go `switch` drops it, so
+//!   e.g. a `- [ ] item ^t1` task anchor is NOT addressable on the read face
+//!   (the `basic` golden pins `^task1` unresolved). An anchor row is an
+//!   anchor-plane row whatever host kind it echoes: it never enters the
+//!   heading plane, so a `heading`-kinded ANCHOR row is not a section fact.
 //!
 //! One deliberate departure from the Go face:
 //!
@@ -64,8 +67,10 @@ pub fn read_facts(rows: &[wire::TocNode], raw: &[u8]) -> Vec<ReadFact> {
     let mut dewey = DeweyCounter::new();
     let raw_addrs = raw_addresses(rows);
     for (i, row) in rows.iter().enumerate() {
+        // An anchor row echoing a heading host must not be lifted into the
+        // heading plane (its `hpath` is None — it addresses nothing here).
         match row.kind.as_str() {
-            "heading" => {
+            "heading" if row.anchor.is_none() => {
                 let level = row.level.unwrap_or(0);
                 let segs = row.hpath.as_deref().unwrap_or_default();
                 let title = segs.last().map(|s| s.h.clone()).unwrap_or_default();
@@ -148,7 +153,9 @@ fn raw_addresses(rows: &[wire::TocNode]) -> Vec<Vec<wire::HpathSeg>> {
     // (`#` then `###`) do not disturb this.
     let mut stack: Vec<usize> = Vec::new();
     for (i, row) in rows.iter().enumerate() {
-        if row.kind != "heading" {
+        // Anchor rows never carry a heading address, whatever host kind they
+        // echo — one entering here would corrupt the ancestor stack.
+        if row.kind != "heading" || row.anchor.is_some() {
             continue;
         }
         let Some(text) = row.hpath.as_deref().and_then(<[_]>::last) else {
