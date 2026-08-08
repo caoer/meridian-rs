@@ -60,20 +60,26 @@ fn reads_back_as(cand: &model::Document, key: &str) -> String {
 /// `ccc-cli task claim` writes — passed as the flat string it is, lands as a
 /// scalar, and the I4 judge finds nothing to refuse.
 ///
-/// On the unfixed base this reddens twice over: the emitted line is
-/// `reviewer: [[b1892b5a]]` and `scan_nested` returns the substrate-law error.
+/// **The I4 judge is asserted FIRST, on purpose.** The receipts' refusal is the
+/// defect; the emitted bytes are only how it got there. Asserting the line first
+/// would redden on the base for a string mismatch and never reach the finding
+/// that actually refused the write, so the negative proof would show the wrong
+/// failure. On the unfixed base this reddens on the substrate-law finding
+/// itself, verbatim from the receipts.
 #[test]
 fn a_wikilink_shaped_value_lands_as_a_scalar_and_i4_is_silent() {
     let cand = set_property("reviewer", "[[b1892b5a]]");
+    let findings = scan_nested(&cand, "cand.md");
+    assert!(
+        findings.is_empty(),
+        "the emitter must never manufacture the nesting I4 then refuses. \
+         Candidate line: {:?}; findings: {findings:?}",
+        line_for(&cand, "reviewer")
+    );
     assert_eq!(
         line_for(&cand, "reviewer"),
         r#"reviewer: "[[b1892b5a]]""#,
         "the emit is the fleet-canonical quoted form"
-    );
-    let findings = scan_nested(&cand, "cand.md");
-    assert!(
-        findings.is_empty(),
-        "the emitter must never manufacture the nesting I4 then refuses: {findings:?}"
     );
 }
 
