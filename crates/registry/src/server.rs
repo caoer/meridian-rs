@@ -1272,6 +1272,20 @@ fn warm_engine_read<R>(
     registry
         .warm_or_build(canonical)
         .map_err(|e| warm_err_to_wire(&e))?;
+    // Test-only: park here when the gate is armed (see the field docs) —
+    // the warm→borrow window the idle reaper can win.
+    #[cfg(test)]
+    {
+        let gate = registry
+            .pause_before_borrow
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some((arrived, release)) = gate {
+            let _ = arrived.send(());
+            let _ = release.recv();
+        }
+    }
     registry.with_engine(canonical, |engine| match engine {
         Some(engine) => f(engine),
         None => Err(Box::new(ErrorBody::new(ErrorCode::Internal))),
@@ -1455,5 +1469,166 @@ mod backoff_tests {
             next_prewarm_delay(BASE, BASE, Duration::from_millis(1), true),
             BASE
         );
+    }
+}
+
+/// p2-recovery-class-truth red gates (contract §8): two read-path refusals
+/// teach the wrong recovery class. The truthful class for both is `retry` —
+/// a benign race with a cooperating actor (the idle reaper; a concurrent
+/// delete), where the same request re-derives from the current world.
+///
+/// Deterministic via the `pause_before_borrow` seam (the PR #9
+/// `pause_before_insert` precedent, disclosed): a real reap cannot be
+/// scheduled into the warm→borrow gap from outside the process.
+#[cfg(test)]
+mod recovery_class_truth_tests {
+    use super::warm_engine_read;
+    use crate::registry::Registry;
+    use crate::state::StateStore;
+    use std::fs::{create_dir_all, write};
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, PoisonError};
+
+    fn registry_in(home: &Path) -> Registry {
+        let cache_root = home.join("cache");
+        create_dir_all(&cache_root).unwrap();
+        Registry::new(
+            StateStore::new(home.join("state.json")),
+            cache_root,
+            Vec::new(),
+        )
+    }
+
+    fn write_ws(home: &Path, files: &[(&str, &str)]) -> PathBuf {
+        let ws = home.join("ws");
+        create_dir_all(&ws).unwrap();
+        for (rel, content) in files {
+            let path = ws.join(rel);
+            if let Some(parent) = path.parent() {
+                create_dir_all(parent).unwrap();
+            }
+            write(path, content).unwrap();
+        }
+        ws
+    }
+
+    /// Defect 1 (sonnet P2, verdict § C5): the idle reaper dropping the
+    /// engine between `warm_or_build` and `with_engine` must teach `retry` —
+    /// the function's own doc says "idle-reap won the race — client
+    /// retries" — never `internal`/`respawn`, which teaches the client to
+    /// tear down a healthy channel.
+    #[test]
+    fn idle_reap_between_warm_and_borrow_teaches_retry_not_respawn() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = Arc::new(registry_in(home.path()));
+        let ws = write_ws(home.path(), &[("a.md", "# A\n")]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.register(&canonical);
+
+        // Arm the one-shot warm→borrow gate for the read pass (thread A).
+        let (arrived_tx, arrived) = std::sync::mpsc::channel();
+        let (release, release_rx) = std::sync::mpsc::channel();
+        *reg
+            .pause_before_borrow
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some((arrived_tx, release_rx));
+
+        // A: warms, then parks before its borrow.
+        let a = {
+            let reg = Arc::clone(&reg);
+            let canonical = canonical.clone();
+            std::thread::spawn(move || {
+                warm_engine_read(&reg, &canonical, |engine| Ok(engine.docs.len()))
+            })
+        };
+        arrived.recv().expect("thread A parked after its warm");
+
+        // The reaper wins the window: entry + engine drop
+        // (`reap_drops_the_warm_engine` proves the drop).
+        let reaped = reg.reap(u64::MAX, 0);
+        assert!(reaped.contains(&canonical), "the reaper took the engine");
+
+        release.send(()).expect("thread A parked on the release gate");
+        let err = a
+            .join()
+            .expect("thread A panicked")
+            .expect_err("the borrow found no engine — the read refuses");
+
+        assert_eq!(
+            err.recovery,
+            wire::Recovery::Retry,
+            "a lost idle-reap race is transient by construction — the same \
+             request re-warms; got {:?}/{:?}",
+            err.code,
+            err.recovery
+        );
+        let message = err.message.as_deref().unwrap_or_default();
+        assert!(
+            message.contains("reap"),
+            "the message names the actor that won the race (the idle \
+             reaper), so the client learns why retry succeeds: {message:?}"
+        );
+    }
+
+    /// Defect 2 (opus P2-3, verdict § C5): a member deleted between the
+    /// domain walk and its stat refuses the whole read as `io_error`/`env` —
+    /// "the world outside is wrong; fix it" — where the truthful teaching is
+    /// `retry`: the window is per-round-trip, and the next snapshot serves
+    /// the post-delete corpus. The frame keeps naming the member (Law A-3c).
+    ///
+    /// Exercised at the one mapping seam (`warm_err_to_wire`) with the error
+    /// exactly as `fs::member_identities` mints it (`CorpusMemberError`
+    /// inside a `NotFound`): pausing the fs stat sweep itself would need a
+    /// second seam in another card's named file.
+    #[test]
+    fn member_vanished_mid_snapshot_teaches_retry_not_env() {
+        let e = std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            fs::CorpusMemberError {
+                member: "notes/x.md".to_owned(),
+                condition: "vanished between the domain walk and its stat".to_owned(),
+            },
+        );
+        let err = super::warm_err_to_wire(&e);
+        assert_eq!(
+            err.recovery,
+            wire::Recovery::Retry,
+            "a member the walk listed and the stat missed is a concurrent \
+             delete — transient, not an environment fault; got {:?}/{:?}",
+            err.code,
+            err.recovery
+        );
+        assert_eq!(
+            err.path.as_ref().map(|p| p.0.as_str()),
+            Some("notes/x.md"),
+            "the refusal still names the member (Law A-3c)"
+        );
+    }
+
+    /// Control (green on base, guards the fix against over-widening): a
+    /// member that exists but cannot be read is a real environment fault —
+    /// retry never fixes permissions.
+    #[test]
+    fn member_unreadable_stays_env() {
+        let e = std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            fs::CorpusMemberError {
+                member: "notes/x.md".to_owned(),
+                condition: "cannot be read (permission denied)".to_owned(),
+            },
+        );
+        let err = super::warm_err_to_wire(&e);
+        assert_eq!(err.code, wire::ErrorCode::IoError);
+        assert_eq!(err.recovery, wire::Recovery::Env);
+    }
+
+    /// Control (green on base): a plain `NotFound` with no corpus member —
+    /// the workspace itself is gone — stays `env`; nothing was racing.
+    #[test]
+    fn workspace_gone_stays_env() {
+        let e = std::io::Error::new(std::io::ErrorKind::NotFound, "no such workspace");
+        let err = super::warm_err_to_wire(&e);
+        assert_eq!(err.code, wire::ErrorCode::IoError);
+        assert_eq!(err.recovery, wire::Recovery::Env);
     }
 }
