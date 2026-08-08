@@ -213,11 +213,17 @@ impl<'d> WireHost<'d> {
     }
 
     /// Refuse a wire call that starts past the host's wall clock.
+    ///
+    /// The wording claims nothing about armed state, because the host cannot
+    /// see it: arms are the KERNEL's list, and this refusal renders directly
+    /// below that list's rows on the face. What it does claim is what the host
+    /// knows — a failed attempt sends no armed edit and commits nothing
+    /// (`cmd::run` never issues a splice for a failed eval).
     fn within_deadline(&self, fault: &dyn Fn(String) -> ReadFault) -> Result<(), ReadFault> {
         if Instant::now() > self.deadline {
             return Err(fault(
-                "the script entry's wall clock elapsed before this read — nothing was armed by \
-                 the reads that did run, and nothing commits"
+                "the script entry's wall clock elapsed before this read — the attempt aborts \
+                 whole: any edits the script armed are never sent, and nothing commits"
                     .to_owned(),
             ));
         }
@@ -673,5 +679,93 @@ mod tests {
             "the socket's own deadline is what fired, not something faster: {elapsed:?}"
         );
         held.join().expect("the mute listener finishes");
+    }
+
+    /// **The deadline refusal is pinned, and it claims nothing the host cannot
+    /// see.** Armed state is the kernel's — the host holds no armed list — so
+    /// the refusal names only what the host knows: the clock fired before the
+    /// trip, the attempt aborts whole, any armed edits are never sent, and
+    /// nothing commits. Pinned exactly: this text renders verbatim on the face
+    /// after its `SCRIPT:` opener.
+    #[test]
+    fn the_deadline_refusal_is_pinned_and_claims_nothing_the_host_cannot_see() {
+        let mut door = Fake::still();
+        let fault = {
+            let mut host = WireHost::new(
+                &mut door,
+                "zt".to_owned(),
+                Instant::now() - Duration::from_millis(1),
+            );
+            host.toc(PAGE)
+                .expect_err("an elapsed clock refuses the read")
+        };
+        assert_eq!(
+            fault.reason,
+            "the script entry's wall clock elapsed before this read — the attempt aborts \
+             whole: any edits the script armed are never sent, and nothing commits"
+        );
+        assert_eq!(door.calls, 0, "the refusal fires before the trip is spent");
+    }
+
+    /// **The refusal must not contradict the armed row rendered above it**
+    /// (defect NEW-6). A script that arms an edit and then meets the clock on a
+    /// later read used to answer a face whose armed block said `armed …` while
+    /// the refusal directly below said "nothing was armed by the reads that did
+    /// run". The host cannot see the kernel's armed list, so the refusal may
+    /// not claim armed state either way — the armed block is the face's one
+    /// truth about it.
+    #[test]
+    fn an_armed_run_that_meets_the_clock_answers_a_face_that_does_not_deny_the_arm() {
+        use super::super::trace::{CommitLeg, ScriptTrace};
+
+        let mut door = Fake::still();
+        let mut host = WireHost::new(
+            &mut door,
+            "zt".to_owned(),
+            Instant::now() - Duration::from_millis(1),
+        );
+        let ctx = effects::ScriptCtx {
+            id: "script".to_owned(),
+            args: std::collections::BTreeMap::new(),
+            files: vec![PAGE.to_owned()],
+        };
+        let eval = effects::eval_script(
+            &format!("put({PAGE:?}, props={{\"status\": \"done\"}})\ncard = read({PAGE:?})\n"),
+            &ctx,
+            effects::ScriptLimits::default(),
+            &mut host,
+        );
+        assert_eq!(
+            eval.armed.len(),
+            1,
+            "the put() armed before the clock fired"
+        );
+        assert!(eval.outcome.is_err(), "the read met the clock and aborted");
+
+        let trace = ScriptTrace::assemble("b3:00", &eval, CommitLeg::NotIssued);
+        let armed: Vec<_> = trace.armed_entries().collect();
+        assert_eq!(armed.len(), 1, "the armed row renders — the honesty law");
+        assert!(!armed[0].committed, "and it renders `[not committed]`");
+        let fault = trace
+            .fault
+            .as_ref()
+            .expect("the clock's refusal is the fault");
+        assert!(
+            fault.reason.contains("wall clock elapsed before this read"),
+            "the refusal names the clock that fired: {}",
+            fault.reason
+        );
+        assert!(
+            !fault.reason.contains("nothing was armed"),
+            "the refusal directly below an armed row must not deny the arm: {}",
+            fault.reason
+        );
+        assert!(
+            fault
+                .reason
+                .contains("any edits the script armed are never sent"),
+            "the refusal tells the armed truth the host can tell: {}",
+            fault.reason
+        );
     }
 }
