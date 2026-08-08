@@ -3119,6 +3119,65 @@ mod tests {
         assert_ne!(bump_v0, bump_v1);
     }
 
+    /// §9 name truthfulness, the red gate (6b ruling, 2026-08-08): two
+    /// DISTINCT non-UTF-8 names produce DISTINCT leaves, therefore distinct
+    /// roots. At the pre-fix pin this was inexpressible — the fold took `&str`,
+    /// so the fs layer lossy-decoded names first, and both names below decode
+    /// to ONE replacement string (`a\u{FFFD}.md`): one leaf, last write wins,
+    /// a content change could leave the fingerprint unmoved.
+    #[test]
+    fn distinct_non_utf8_names_distinct_leaves_9() {
+        let name_ff: &[u8] = b"a\xFF.md";
+        let name_fe: &[u8] = b"a\xFE.md";
+        // The collapse premise the lossy decode created (the pin's flaw):
+        assert_eq!(
+            String::from_utf8_lossy(name_ff),
+            String::from_utf8_lossy(name_fe),
+            "lossy decode maps both names to one string — why it is banned from the hash path"
+        );
+        let content: &[u8] = b"# one\n";
+        let one = merkle_root(&[(name_ff, content)], 0);
+        let two = merkle_root(&[(name_fe, content)], 0);
+        assert_ne!(one, two, "distinct name bytes ⇒ distinct leaves ⇒ distinct roots");
+        let both = merkle_root(&[(name_ff, content), (name_fe, b"# two\n" as &[u8])], 0);
+        assert_ne!(both, one, "both members are in the tree — no collapse");
+        assert_ne!(both, two, "both members are in the tree — no collapse");
+    }
+
+    /// §9 name truthfulness: a `&str` name hashes as its UTF-8 bytes —
+    /// identity, not conversion — so every valid-UTF-8 corpus keeps its pinned
+    /// fingerprint. R0 is the frozen §12.1 ground truth; the byte-spelled call
+    /// must fold the same root.
+    #[test]
+    fn str_and_byte_names_fold_identically_9() {
+        let f = merkle_fixtures();
+        let via_str = merkle_root(
+            &[
+                ("notes/plan.md", f.plan_v0.as_bytes()),
+                ("receipts/2026-07-18.md", f.receipts_v0.as_bytes()),
+            ],
+            0,
+        );
+        let via_bytes = merkle_root(
+            &[
+                (b"notes/plan.md" as &[u8], f.plan_v0.as_bytes()),
+                (b"receipts/2026-07-18.md" as &[u8], f.receipts_v0.as_bytes()),
+            ],
+            0,
+        );
+        assert_eq!(via_str, via_bytes, "str names are their UTF-8 bytes — identity");
+        assert_eq!(via_str.0, format!("b3:{R0_HEX}"));
+    }
+
+    /// §4: a backslash inside a name is a NAME byte, never a separator — the
+    /// single file `a\b.md` and the nested path `a/b.md` fold different roots.
+    #[test]
+    fn backslash_is_a_name_byte_4() {
+        let flat = merkle_root(&[(r"a\b.md", b"x" as &[u8])], 0);
+        let nested = merkle_root(&[("a/b.md", b"x" as &[u8])], 0);
+        assert_ne!(flat, nested, "a separator rewrite would collapse these");
+    }
+
     /// §12.3 prefix mapping — the bijective base-26 suffix after `b3`.
     #[test]
     fn root_prefix_bijective_base26() {
