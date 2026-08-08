@@ -252,52 +252,6 @@ const COLON_SHAPES: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// **The § A.6.3b regression.** An empty value written over each colon shape,
-/// through the real `set_property` door, twice — and the assertion is the
-/// STORED LINE, not the round-tripped value.
-///
-/// On the unfused base:
-/// - the bare-key row stores `note:""` — the separator guard tested the
-///   CALLER's value (empty) instead of the ENCODED one (`""`, 2 bytes), so it
-///   inserted no space. That line is not a property to any external parser,
-///   and it voids the WHOLE frontmatter block, `other: keep` included.
-/// - the absent-key row stores a bare `note:` — the create special case forged
-///   the YAML null § A.6.3 says this plane cannot express.
-///
-/// Both survive a round-trip-value assertion, which is why this test asserts
-/// bytes and hands the result to PyYAML (§ A.6.4).
-#[test]
-fn an_empty_value_stores_one_line_shape_on_every_colon_shape() {
-    for (name, seed, stored_line) in COLON_SHAPES {
-        let dir = ws("cards/one.md", seed);
-        // Twice: the second write is the idempotency half — a door that
-        // repairs its own bytes on the second pass has not written them.
-        for pass in 1..=2 {
-            let reply = set_property(dir.path(), "cards/one.md", "note", "");
-            assert_eq!(
-                reply["ok"],
-                json!(true),
-                "{name}, pass {pass}: the empty write lands: {reply}"
-            );
-            let disk = std::fs::read_to_string(dir.path().join("cards/one.md")).expect("read back");
-            assert!(
-                disk.lines().any(|l| l == *stored_line),
-                "{name}, pass {pass}: the STORED LINE is {stored_line:?} — a bare \
-                 `note:` is a forged null and `note:\"\"` is not a property at \
-                 all; file:\n{disk}"
-            );
-            // The rest of the block must still be there: the A.6.3b failure is
-            // not local to the key that was set.
-            assert!(
-                disk.contains("other: keep"),
-                "{name}, pass {pass}: the untouched key survives:\n{disk}"
-            );
-            assert_foreign_parse(&disk, &[("note", ""), ("other", "keep")], name, pass);
-            assert_round_trip(dir.path(), "cards/one.md", "note", "");
-        }
-    }
-}
-
 /// The same matrix through the OTHER write door — the upsert door reaches the
 /// same splice consumer, so it carries the same guarantee.
 #[test]
@@ -321,6 +275,35 @@ fn the_upsert_door_stores_one_line_shape_on_every_colon_shape() {
     }
 }
 
+/// **The malformed-quoting canary — the read half this fuse deliberately KEPT.**
+///
+/// § A.6.1 unquotes a value only when it is a WELL-FORMED quoted scalar, and
+/// serves everything else verbatim: *malformed quoting, which no reader may
+/// guess at*. `owner: "zt" # is "them"` is that class — a stored line whose
+/// interior carries an unescaped `"`.
+///
+/// A looser decoder (strip the outer quote bytes, no well-formedness check, no
+/// comment rule) mints `zt" # is "them` — a string that appears in neither the
+/// stored bytes nor any parser's reading of them. This engine serves the value
+/// decoded to ITSELF instead. The review gate named the stricter half as the
+/// one to keep (2026-08-08); this pins it so no later merge loosens it
+/// silently.
+#[test]
+fn malformed_quoting_decodes_to_itself() {
+    const STORED: &str = r#""zt" # is "them""#;
+    let dir = ws(
+        "cards/one.md",
+        &format!("---\nowner: {STORED}\n---\n# Body\n\ntext\n"),
+    );
+    let kv = read_props(dir.path(), "cards/one.md");
+    assert_eq!(
+        kv,
+        vec![("owner".to_owned(), STORED.to_owned())],
+        "malformed quoting is served verbatim — a reader that guessed would \
+         forge a string present in neither the bytes nor any parser's reading"
+    );
+}
+
 // ── helpers ─────────────────────────────────────────────────────────────────
 
 /// The round-trip half: the props plane serves back exactly the caller's
@@ -342,7 +325,7 @@ fn assert_round_trip(dir: &std::path::Path, path: &str, key: &str, value: &str) 
 /// assert the expected pairs. The engine's own decode is tolerant, so only a
 /// foreign parser can answer the question this law is actually about: does the
 /// rest of the fleet still read this file?
-fn assert_foreign_parse(disk: &str, expected: &[(&str, &str)], name: &str, pass: u32) {
+pub(crate) fn assert_foreign_parse(disk: &str, expected: &[(&str, &str)], name: &str, pass: u32) {
     let Some(fm) = disk
         .strip_prefix("---\n")
         .and_then(|rest| rest.split_once("\n---").map(|(fm, _)| fm))

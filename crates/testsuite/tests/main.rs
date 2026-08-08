@@ -14,6 +14,7 @@ mod meridian_md;
 mod pf_frozen_sweep;
 mod props_plane;
 mod s1_authz_facts;
+mod splice_matrix;
 mod u14_read_face_contract;
 mod u15_toon_goldens;
 mod u36_per_language_elision;

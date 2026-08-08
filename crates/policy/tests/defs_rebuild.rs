@@ -669,3 +669,82 @@ fn occurrence_abstention_refuses_and_out_of_range_falls_closed() {
         "out-of-range-occurrence-falls-closed",
     );
 }
+
+/// **§ A.6.3b at the door the guard actually lives behind.**
+///
+/// The review gate mutation-proved that `!safe.is_empty()` had zero coverage.
+/// Locating it precisely on THIS base: the WIRE's `set_property` lowering
+/// (`wire-serve::plan::lower_property_group`) composes a whole `{key}: {value}`
+/// line and never reaches this guard, so a wire-door matrix — however thorough
+/// — leaves it untested. `rebuild` is the door that reaches it: the def-plane
+/// rebuild and the `check_write` candidate that shares its owner.
+///
+/// The matrix is the same one the wire door gets: every stored colon shape x
+/// the empty value x applied TWICE. Each case asserts the STORED LINE, because
+/// the two failures this pins are invisible to a round-tripped value —
+/// `note:""` is not a property to any external parser, and a bare `note:` is
+/// the YAML null § A.6.3 forbids the engine from forging.
+///
+/// Mutation check: reverting the guard to `!val.is_empty()` reddens the
+/// bare-colon row here, and nothing else in the workspace.
+#[test]
+fn set_property_empty_value_stores_one_line_shape_on_every_colon_shape() {
+    // (case, seeded frontmatter line for `note`)
+    let shapes: &[(&str, &str)] = &[
+        ("with_value", "note: something\n"),
+        ("bare_colon", "note:\n"),
+        ("colon_space", "note: \n"),
+        ("absent", ""),
+    ];
+    for (name, seeded) in shapes {
+        let mut raw = format!("---\n{seeded}keep: 1\n---\n\n# Body\n\ntext\n");
+        for pass in 1..=2 {
+            let cand = run(
+                &raw,
+                &[PlanEdit {
+                    body: String::new(),
+                    ..edit("set_property", "note")
+                }],
+            )
+            .unwrap_or_else(|e| panic!("{name} pass{pass}: rebuild refused: {}", e.render()));
+            assert!(
+                cand.raw.lines().any(|l| l == r#"note: """#),
+                "{name} pass{pass}: the stored line is `note: \"\"` — a \
+                 separator-less `note:\"\"` is no property to any external \
+                 parser, and a bare `note:` is a forged null; got:\n{}",
+                cand.raw
+            );
+            assert!(
+                !cand.raw.contains(r#"note:"""#),
+                "{name} pass{pass}: emitted a separator-less line:\n{}",
+                cand.raw
+            );
+            assert!(
+                cand.raw.contains("keep: 1"),
+                "{name} pass{pass}: the sibling key survived:\n{}",
+                cand.raw
+            );
+            let once = cand.raw.matches("note:").count();
+            assert_eq!(
+                once, 1,
+                "{name} pass{pass}: exactly one `note` line — an update that \
+                 appended would leave the stale one behind:\n{}",
+                cand.raw
+            );
+            raw = cand.raw.clone();
+        }
+        // Idempotency: pass 2 changed nothing pass 1 had not already settled.
+        let again = run(
+            &raw,
+            &[PlanEdit {
+                body: String::new(),
+                ..edit("set_property", "note")
+            }],
+        )
+        .expect("third pass rebuilds");
+        assert_eq!(
+            again.raw, raw,
+            "{name}: set_property is not byte-idempotent on the empty value"
+        );
+    }
+}
