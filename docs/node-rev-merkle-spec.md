@@ -77,9 +77,33 @@ Node spans (wire laws — block spans exclude the final line terminator):
 
 | node | span | node_rev = blake3(span bytes)[:16] |
 |---|---|---|
-| frontmatter | `[0,19)` (`---\ntitle: demo\n---`) | `22c54c415778475e` |
+| frontmatter | `[0,20)` (`---\ntitle: demo\n---\n`) | `c93f2c5ca47ac0a0` |
 | section `#Alpha` (resolve, heading-inclusive) | `[21,64)` | `3d5903c3604ee3ac` |
 | section `#Alpha/Beta` | `[45,64)` | `780d2fb4cf68f60f` |
+
+> **Frontmatter row receipt** (regenerated 2026-08-08 through the deployed
+> engine, `mrd 0.0.0 (git fdcf0d2562fa765ea9000b4e8e83bdd49b4c88e3)`). The
+> frontmatter node is terminator-INCLUSIVE: a fence-to-fence container,
+> span-lawed with the section (newline-inclusive) family, not the leaf-block
+> family — `wire-contract.md` §18 row 3 (waived, declared). This row carried
+> the pre-waiver `[0,19)` / `22c54c415778475e` values; the engine never
+> served them. Regeneration (fixture workspace = this section's two files,
+> byte-exact):
+>
+> ```
+> $ printf '%s\n' '{"id":1,"op":"hello","proto":1,"client":"p2-regen/0.1","workspace":"/private/tmp/p2-spec-regen.YfNM"}' \
+>                 '{"id":2,"op":"toc","path":"tasks/x.md"}' \
+>   | nc -U ~/.cache/meridian/registry/daemon.sock
+> {"id":2,"ok":true,"body":{"path":"tasks/x.md","file_rev":"1e56548abcd43053",
+>  "root":"b3:807b69c693ad2c65e290422a1123198f22be6161c2caa43d71fab029fa4763cd","nodes":[
+>  {"kind":"frontmatter","span":[0,20],"node_rev":"c93f2c5ca47ac0a0","text_prefix_16b":"---\ntitle: demo\n","keys":["title"]},
+>  {"kind":"heading","level":1,"hpath":[{"h":"Alpha"}],"span":[21,64],"content_span":[29,64],"node_rev":"3d5903c3604ee3ac","text_prefix_16b":"# Alpha\n\nbody li"},
+>  {"kind":"heading","level":2,"hpath":[{"h":"Alpha"},{"h":"Beta"}],"span":[45,64],"content_span":[53,64],"node_rev":"780d2fb4cf68f60f","text_prefix_16b":"## Beta\n\nbeta bo"}]}}
+> ```
+>
+> (Response reflowed for line width only; values verbatim. The two section
+> rows and the fingerprint match this section's pinned values, confirming the
+> divergence was isolated to the frontmatter row.)
 
 Leaves (blake3 over whole raw file):
 
