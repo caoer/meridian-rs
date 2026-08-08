@@ -230,7 +230,18 @@ impl Registry {
     /// content hash changed (U1). Reuse key is the content hash (R5), not
     /// workspace-identity Merkle. `Reused` ⇒ zero parses (`build_corpus` is
     /// rebuild-only). Fingerprint read and parse are outside the `engines`
-    /// write lock (insert only) so workspaces do not block each other.
+    /// write lock (the locked section compares fingerprints and inserts —
+    /// no I/O, no parse) so workspaces do not block each other.
+    ///
+    /// Concurrent rebuilds of one workspace are WITNESS-GUARDED: a rebuild
+    /// records what was resident when it judged the rebuild necessary, and
+    /// its insert lands only while the resident engine is still exactly that
+    /// witness. A build that lost the race never replaces the winner blind —
+    /// the pass goes around: it re-derives freshness from disk bytes and
+    /// either adopts the resident (fingerprints equal) or rebuilds again.
+    /// The resident engine therefore never regresses to an older corpus
+    /// state. Both sides of every comparison are byte-derived fingerprints;
+    /// no clock ordering and no memo-carried digest decides freshness.
     ///
     /// # Errors
     /// Canonicalize failure or corpus unreadable. A non-UTF-8 MEMBER is not an
@@ -241,63 +252,88 @@ impl Registry {
             .map_err(|e| io::Error::new(io::ErrorKind::NotFound, e))?;
         let root = fs::WorkspaceRoot(canonical.clone());
 
-        // Cheap half (no parse, and no re-read of anything that did not move):
-        // content hash from disk through the leaf memo.
-        let fingerprint = {
-            let mut caches = self
-                .domain_caches
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            caches.entry(canonical.clone()).or_default().root(&root)?
-        };
+        // Documents parsed by this call's most recent rebuild pass. `None`
+        // until the first rebuild: only a call that parsed nothing may report
+        // `Reused` — the outcome's zero-parse proof stays per-call.
+        let mut parsed: Option<usize> = None;
 
-        // Warm + unchanged → reuse, zero parses. Nothing is copied out of the
-        // memo on this path: it is the hot one, and a 20k-entry clone per
-        // currency pass would put back a slice of what the memo just removed.
-        {
-            let engines = self.engines.read().unwrap_or_else(PoisonError::into_inner);
-            if engines
-                .get(&canonical)
-                .is_some_and(|engine| engine.at_fingerprint == fingerprint)
+        loop {
+            // Cheap half (no parse, and no re-read of anything that did not
+            // move): content hash from disk through the leaf memo.
+            let fingerprint = {
+                let mut caches = self
+                    .domain_caches
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                caches.entry(canonical.clone()).or_default().root(&root)?
+            };
+
+            // Warm + unchanged → done. Nothing is copied out of the memo on
+            // this path: it is the hot one, and a 20k-entry clone per currency
+            // pass would put back a slice of what the memo just removed. A
+            // miss records the resident fingerprint as the WITNESS the guarded
+            // insert below checks against.
+            let witness = {
+                let engines = self.engines.read().unwrap_or_else(PoisonError::into_inner);
+                match engines.get(&canonical) {
+                    Some(engine) if engine.at_fingerprint == fingerprint => {
+                        return Ok(match parsed {
+                            None => WarmOutcome::Reused,
+                            Some(docs) => WarmOutcome::Built { docs },
+                        });
+                    }
+                    Some(engine) => Some(engine.at_fingerprint.clone()),
+                    None => None,
+                }
+            };
+
+            // Cold or content changed → rebuild (only parse site). The rebuild
+            // re-reads from disk rather than from the memo: `docs` must be the
+            // bytes it parsed, and `domain_snapshot`'s fold is the byte-derived
+            // one, so the reuse key a served answer is stamped with never comes
+            // from a digest the memo carried forward.
+            let (files, fingerprint) = fs::domain_snapshot(&root)?;
+            let (index, docs, unserved) = fs::build_corpus(files);
+            let docs_parsed = docs.len();
+            parsed = Some(docs_parsed);
+            let engine = WorkspaceEngine {
+                index,
+                docs,
+                unserved,
+                at_fingerprint: fingerprint,
+            };
+
+            // Test-only: park here when the gate is armed (see the field docs).
+            #[cfg(test)]
             {
-                return Ok(WarmOutcome::Reused);
+                let gate = self
+                    .pause_before_insert
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take();
+                if let Some((arrived, release)) = gate {
+                    let _ = arrived.send(());
+                    let _ = release.recv();
+                }
             }
-        }
 
-        // Cold or content changed → rebuild once (only parse site). The rebuild
-        // re-reads from disk rather than from the memo: `docs` must be the bytes
-        // it parsed, and `domain_snapshot`'s fold is the byte-derived one, so
-        // the reuse key a served answer is stamped with never comes from a
-        // digest the memo carried forward.
-        let (files, fingerprint) = fs::domain_snapshot(&root)?;
-        let (index, docs, unserved) = fs::build_corpus(files);
-        let parsed = docs.len();
-        let engine = WorkspaceEngine {
-            index,
-            docs,
-            unserved,
-            at_fingerprint: fingerprint,
-        };
-
-        // Test-only: park here when the gate is armed (see the field docs).
-        #[cfg(test)]
-        {
-            let gate = self
-                .pause_before_insert
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take();
-            if let Some((arrived, release)) = gate {
-                let _ = arrived.send(());
-                let _ = release.recv();
+            {
+                let mut engines = self.engines.write().unwrap_or_else(PoisonError::into_inner);
+                let resident = engines.get(&canonical).map(|e| e.at_fingerprint.clone());
+                if resident.as_ref() == Some(&engine.at_fingerprint) {
+                    // A concurrent rebuild already installed this exact corpus
+                    // state — keeping it IS this build, delivered.
+                    return Ok(WarmOutcome::Built { docs: docs_parsed });
+                }
+                if resident == witness {
+                    engines.insert(canonical.clone(), engine);
+                    return Ok(WarmOutcome::Built { docs: docs_parsed });
+                }
             }
+            // The resident engine moved while this pass was off the lock: a
+            // concurrent rebuild landed, and this build may be the older disk
+            // state. Never regress on a guess — go around and re-derive.
         }
-
-        self.engines
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(canonical, engine);
-        Ok(WarmOutcome::Built { docs: parsed })
     }
 
     /// Borrow the warm engine for `canonical` under the read lock. Callers
