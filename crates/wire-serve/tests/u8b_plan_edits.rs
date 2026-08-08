@@ -288,6 +288,62 @@ fn plan_rev_threads_into_the_native_cas_guard() {
     );
 }
 
+/// The fleet-canonical value commits and round-trips (wire-contract § A.3,
+/// 2026-08-07 — dogfood season-1 finding 2): a `set_property` whose value
+/// would decode NESTED in plain form is emitted double-quoted, passes the I4
+/// substrate law as the scalar it is, and reads back through the composed
+/// read's props plane as the caller's original string. On the unfixed base
+/// this splice is REFUSED (`E_CONFORMANCE`, nested frontmatter) — the emitter
+/// manufactured the violation and the refusal blamed the caller.
+#[test]
+fn plan_set_property_lands_the_fleet_canonical_quoted_form_and_reads_back() {
+    let (dir, root) = ws(&[("card.md", DOC)]);
+    splice(
+        &root,
+        None,
+        &plan_args(
+            "card.md",
+            vec![PlanEdit::SetProperty {
+                key: "reviewer".into(),
+                value: "[[b1892b5a]]".into(),
+                rev: None,
+            }],
+        ),
+        &[],
+        None,
+    )
+    .expect("the fleet-canonical wikilink value commits");
+
+    let on_disk = std::fs::read_to_string(dir.path().join("card.md")).expect("read back");
+    assert!(
+        on_disk.contains("reviewer: \"[[b1892b5a]]\"\n"),
+        "the emission is the fleet-canonical double-quoted form: {on_disk}"
+    );
+
+    // The loop closes: what the write seam quoted, the read seam decodes.
+    let doc = model::build(on_disk.clone(), syntax::parse(&on_disk));
+    let body = wire_serve::read::composed_read(
+        &doc,
+        &WPath("card.md".into()),
+        &wire::Root("r".into()),
+        &wire_serve::read::ReadParams::default(),
+        None,
+        &wire_serve::read::NO_DECORATIONS,
+    )
+    .expect("the composed read serves");
+    let ResponseBody::Read { props, .. } = body else {
+        panic!("composed_read answers a Read body");
+    };
+    let reviewer = props
+        .iter()
+        .find(|p| p.key == "reviewer")
+        .expect("the reviewer row");
+    assert_eq!(
+        reviewer.value, "[[b1892b5a]]",
+        "the served value is the caller's scalar, quote bytes resolved"
+    );
+}
+
 /// S4b/D11: multiline `set_property` value forges keys → `bad_request`, no write.
 #[test]
 fn plan_set_property_refuses_multiline_values_and_writes_nothing() {

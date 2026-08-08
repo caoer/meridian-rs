@@ -237,6 +237,64 @@ fn set_property_refuses_multiline_values_that_forge_frontmatter_keys() {
     );
 }
 
+/// The nested-collection quote class (wire-contract § A.3, 2026-08-07 —
+/// dogfood season-1 finding 2): a value whose PLAIN emission would decode as
+/// a nested collection under the engine's own grammar is emitted
+/// DOUBLE-quoted — the fleet-canonical form — so the emitter never
+/// manufactures the substrate-law violation the I4 gate would then refuse.
+/// One-level flow lists still land verbatim (the caller spelled a list).
+#[test]
+fn set_property_quotes_values_whose_plain_form_decodes_nested() {
+    // The season-1 value: the fleet's canonical wikilink id.
+    assert_eq!(
+        policy::defs::yaml_safe_value("[[b1892b5a]]"),
+        Ok("\"[[b1892b5a]]\"".to_string()),
+        "the fleet-canonical emission is double-quoted"
+    );
+    // The nested class, all shapes: list-of-list, mid-list nesting, an
+    // unterminated flow (a probe error — the Go error class).
+    assert_eq!(
+        policy::defs::yaml_safe_value("[[a, b]]"),
+        Ok("\"[[a, b]]\"".to_string())
+    );
+    assert_eq!(
+        policy::defs::yaml_safe_value("[a, [b]]"),
+        Ok("\"[a, [b]]\"".to_string())
+    );
+    assert_eq!(
+        policy::defs::yaml_safe_value("[unterminated"),
+        Ok("\"[unterminated\"".to_string())
+    );
+    // The emitter escapes: a nested value carrying a quote or a backslash
+    // round-trips through the canonical escape table.
+    assert_eq!(
+        policy::defs::yaml_safe_value("[[a\"b]]"),
+        Ok("\"[[a\\\"b]]\"".to_string())
+    );
+    assert_eq!(
+        policy::defs::quote_scalar("a\"b\\c"),
+        "\"a\\\"b\\\\c\"".to_string()
+    );
+    // Unchanged classes: a one-level flow list is a LIST the caller spelled —
+    // it lands verbatim; plain scalars land bare; the Go-parity classes keep
+    // their single quotes.
+    assert_eq!(
+        policy::defs::yaml_safe_value("[a, b]"),
+        Ok("[a, b]".to_string()),
+        "one level is the existing value contract — I4 admits it"
+    );
+    assert_eq!(policy::defs::yaml_safe_value("[]"), Ok("[]".to_string()));
+    assert_eq!(
+        policy::defs::yaml_safe_value("1ed98864"),
+        Ok("1ed98864".to_string()),
+        "a plain scalar lands bare (season-1's working case)"
+    );
+    assert_eq!(
+        policy::defs::yaml_safe_value(""),
+        Ok(String::new())
+    );
+}
+
 /// Finding 5 / R5: the KEY half of the composed `{key}: {value}` line gets the
 /// same shape S4b gave the value — a fallible owner. `SafeKey`'s field is
 /// private, so the only way to obtain the spelling the composition accepts is
