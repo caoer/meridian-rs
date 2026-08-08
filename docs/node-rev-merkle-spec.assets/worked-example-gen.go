@@ -21,8 +21,10 @@ func main() {
 	fb := []byte(file)
 	fmt.Printf("file bytes (%d):\n%q\n\n", len(fb), file)
 
-	// Node spans per wire-contract v1 laws (block spans exclude final newline):
-	// frontmatter: bytes 0..19  ("---\ntitle: demo\n---")
+	// Node spans per the standing wire laws (wire-contract.md §1 span
+	// sub-laws; frontmatter is terminator-INCLUSIVE — fence-to-fence
+	// container, span-lawed with the section family, §18 row 3):
+	// frontmatter: bytes 0..20  ("---\ntitle: demo\n---\n")
 	// heading Alpha: find "# Alpha"
 	// heading Beta: "## Beta"
 	idx := func(s string) int {
@@ -33,7 +35,7 @@ func main() {
 		}
 		return -1
 	}
-	fmSpan := [2]int{0, 19}
+	fmSpan := [2]int{0, 20}
 	aStart := idx("# Alpha")
 	bStart := idx("## Beta")
 	aSpan := [2]int{aStart, aStart + len("# Alpha")}
@@ -42,7 +44,8 @@ func main() {
 	fmt.Printf("heading Alpha span %v => %q\n", aSpan, string(fb[aSpan[0]:aSpan[1]]))
 	fmt.Printf("heading Beta  span %v => %q\n", bSpan, string(fb[bSpan[0]:bSpan[1]]))
 
-	// SECTION spans (resolve): heading line through end of subtree (wire §6.1)
+	// SECTION spans (resolve): heading line through end of subtree
+	// (wire-contract.md §1 span sub-laws)
 	// Alpha section: from aStart to EOF; Beta section: from bStart to EOF.
 	alphaSec := fb[aStart:]
 	betaSec := fb[bStart:]
