@@ -1288,7 +1288,19 @@ fn warm_engine_read<R>(
     }
     registry.with_engine(canonical, |engine| match engine {
         Some(engine) => f(engine),
-        None => Err(Box::new(ErrorBody::new(ErrorCode::Internal))),
+        None => {
+            // Idle-reap won the warm→borrow race: the engine this request
+            // just warmed was reclaimed, not broken. `respawn` would teach
+            // the client to tear down a healthy channel; the truthful §8
+            // class is `retry` — the same request re-warms.
+            let mut e = ErrorBody::new(ErrorCode::CorpusRace);
+            e.message = Some(
+                "the idle reaper reclaimed this workspace's warm engine between warm and \
+                 serve — transient; the same request re-warms it"
+                    .to_owned(),
+            );
+            Err(Box::new(e))
+        }
     })
 }
 
@@ -1347,7 +1359,9 @@ fn doc_or_refusal<'e>(
 }
 
 /// Map a `warm_or_build` I/O failure onto its wire frame: `InvalidData` is
-/// `invalid_utf8` (refused, never lossy-decoded); anything else (the
+/// `invalid_utf8` (refused, never lossy-decoded); a member the walk listed
+/// but the stat/read found gone (`NotFound` carrying the member) is the
+/// transient delete window — `corpus_race`, retry class; anything else (the
 /// workspace is gone, an I/O error) carries its cause on `io_error`.
 ///
 /// A warm failure is CORPUS-scoped — the caller asked for one file and the
@@ -1366,6 +1380,21 @@ fn warm_err_to_wire(e: &io::Error) -> Box<ErrorBody> {
             err.path = Some(wire::Path(member.member.clone()));
         }
         err.message = Some(e.to_string());
+        return Box::new(err);
+    }
+    if e.kind() == io::ErrorKind::NotFound
+        && let Some(member) = fs::corpus_member_error(e)
+    {
+        // The walk listed the member; the stat/read found it gone — a
+        // concurrent delete won a benign per-round-trip race. The next
+        // snapshot serves the post-delete corpus, so the truthful §8 class
+        // is `retry`, not `env`; the frame keeps naming the member
+        // (Law A-3c).
+        let mut err = ErrorBody::new(ErrorCode::CorpusRace);
+        err.path = Some(wire::Path(member.member.clone()));
+        err.message = Some(format!(
+            "{e} — transient; the same request snapshots the current corpus"
+        ));
         return Box::new(err);
     }
     let mut err = ErrorBody::new(ErrorCode::IoError);
@@ -1562,6 +1591,11 @@ mod recovery_class_truth_tests {
             err.code,
             err.recovery
         );
+        assert_eq!(
+            err.code,
+            wire::ErrorCode::CorpusRace,
+            "the code names the race, statically bound to retry"
+        );
         let message = err.message.as_deref().unwrap_or_default();
         assert!(
             message.contains("reap"),
@@ -1597,6 +1631,11 @@ mod recovery_class_truth_tests {
              delete — transient, not an environment fault; got {:?}/{:?}",
             err.code,
             err.recovery
+        );
+        assert_eq!(
+            err.code,
+            wire::ErrorCode::CorpusRace,
+            "the code names the race, statically bound to retry"
         );
         assert_eq!(
             err.path.as_ref().map(|p| p.0.as_str()),
