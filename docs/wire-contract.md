@@ -1013,6 +1013,7 @@ form — normalization is a value-plane law, never a re-hash.
   plain emit would misread or refuse double-quotes with `\"`/`\\` escaping
   — fleet-canonical form: the empty string emits `""` (the R4 three-states
   explicit-empty the fleet writes, never the bare null spelling), a
+  whitespace-led or -trailed value (the read trim would eat the edge), a
   quote-led value, a `{`-led value, a `[`-led value whose one-level flow
   parse is the NESTED class (`[[1ed98864]]` emits `"[[1ed98864]]"`), a
   value carrying `": "`, a `#`-led value, and a value carrying a ` #`
@@ -1029,7 +1030,11 @@ form — normalization is a value-plane law, never a re-hash.
   replays (the recording IS the world) all serve stored bytes as before.
   Null spellings still emit verbatim — writing the STRING `"null"` as a
   present value stays inexpressible through `set_property`, a named
-  future-amendment candidate, not silently changed here.
+  future-amendment candidate, not silently changed here. The run plane's
+  `md.set_field` effect is a RAW-GRAIN door, not a value-plane door: task
+  fields are whole-value frontmatter grains and the caller's spelling
+  lands verbatim (`run-plane.md`), so the encoder guards the wire property
+  doors and never the raw kernel underneath them.
 
 CLI inventory (descriptive): `status.md`. Cross-root agent address grammar: `address-grammar.md`. Config parse: `meridian-md-schema.md`.
 
