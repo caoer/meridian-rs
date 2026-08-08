@@ -948,11 +948,18 @@ deferral):**
 - Row shape `{key, value, span, prop_rev}`:
   - `key` — the top-level key, the same string the §2.1 `fm_key` form
     addresses; the read→set loop closes off this row.
-  - `value` — the key line's value as stored: the colon remainder,
-    whitespace-trimmed, quotes kept. A block value (indented continuation
-    lines) serves the key line's own remainder — empty when that line
-    carries none. The engine re-serializes nothing (no YAML library —
-    honest limit, stated not worked around).
+  - `value` — the key line's DECODED scalar: the colon remainder,
+    whitespace-trimmed, then YAML scalar quote normalization (the
+    normalization law below — `owner: ""` serves the empty string,
+    `owner: "[[x]]"` serves `[[x]]`, no quote bytes). A block value
+    (indented continuation lines) serves the key line's own remainder —
+    empty when that line carries none — and is never quote-decoded: a
+    multi-line grain is not a scalar. Still no YAML library: the decoder
+    is the closed hand-parsed subset below. *(Amended 2026-08-07,
+    frontmatter scalar normalization — was "quotes kept", which put the
+    fleet's own quoting convention inside the value and made every
+    consumer compensate or silently compare against quote bytes;
+    dogfood-season-1 findings 1–2, R43.)*
   - `prop_rev` — the key's CAS token: blake3 over the full key grain span
     bytes (the key line plus its indented continuation lines), 16 hex —
     the SAME token `cat` on the `fm_key` node serves and `if_node_rev`
@@ -973,6 +980,56 @@ deferral):**
 - Delta grain unchanged: this plane is the map tense of the frontmatter
   plane (§7.2 — one projection, three tenses); §7.4's ruled node-grain and
   its named future-only `keys` amendment path are untouched.
+
+**Frontmatter scalar normalization — the value plane (docs-first,
+2026-08-07, engine leg of dogfood-season-1 findings 1–2, R43):**
+
+The fleet quotes frontmatter scalars by convention — `owner: "[[1ed98864]]"`
+is what `ccc-cli task claim` writes — and this engine served the quote bytes
+as part of the value on read, while its unquoted emit turned the same value
+into a nested flow sequence on write, which the substrate law correctly
+refused. One defect, two faces: quoting was not part of the value contract at
+either seam. This law makes it the contract. The byte planes are untouched:
+`cat` serves grain bytes verbatim, `span`/`node_rev`/`prop_rev` hash STORED
+bytes, and the `props1` property-fingerprint canonical bytes stay the stored
+form — normalization is a value-plane law, never a re-hash.
+
+- **Read (decode).** A plane serving a frontmatter scalar VALUE — the
+  composed `read`'s `props[].value`, and the script plane's `fm`
+  (`run-plane.md`) — serves the DECODED scalar: the colon remainder,
+  whitespace-trimmed; a well-formed single-quoted wrapper then decodes with
+  `''` → `'`, and a well-formed double-quoted wrapper decodes with the
+  `\n` `\t` `\"` `\\` escapes (an unknown escape keeps its backslash) —
+  the same closed yaml.v3-outcome subset the def checker already decodes,
+  so the value plane and the typed plane cannot disagree about what a
+  quoted scalar says. A multi-line grain (block value) passes through
+  unchanged.
+- **Write (encode).** Every server-composed `{key}: {value}` line — the
+  `set_property` plan lowering, its `check_write` candidate, and the native
+  `put{at:"upsert"}` door — passes the value through ONE encoder. A plain
+  round-trippable scalar emits verbatim: typed scalars (ints, floats,
+  bools, dates, null spellings) and plain strings keep today's bytes, and a
+  one-level flow list `[a, b]` still lands as a real list. A value whose
+  plain emit would misread or refuse double-quotes with `\"`/`\\` escaping
+  — fleet-canonical form: the empty string emits `""` (the R4 three-states
+  explicit-empty the fleet writes, never the bare null spelling), a
+  quote-led value, a `{`-led value, a `[`-led value whose one-level flow
+  parse is the NESTED class (`[[1ed98864]]` emits `"[[1ed98864]]"`), a
+  value carrying `": "`, a `#`-led value, and a value carrying a ` #`
+  comment introducer. The newline refusal is unchanged: a `\n`/`\r`-bearing
+  value refuses (`MultiLineValue`), never sanitizes.
+- **Round-trip law.** For every value the encoder accepts, decoding the
+  emitted line yields the caller's string exactly — on the value plane and
+  the typed plane alike. The nested-frontmatter refusal is thereby
+  unreachable from a flat string through the property write doors: what
+  the fleet can read, the engine can write, and what the engine writes,
+  the fleet reads back unchanged.
+- **Unchanged and named:** the v2 `toc` `keys` echo, `cat` grain bytes,
+  view/query rows, fingerprint canonical bytes, and recorded script
+  replays (the recording IS the world) all serve stored bytes as before.
+  Null spellings still emit verbatim — writing the STRING `"null"` as a
+  present value stays inexpressible through `set_property`, a named
+  future-amendment candidate, not silently changed here.
 
 CLI inventory (descriptive): `status.md`. Cross-root agent address grammar: `address-grammar.md`. Config parse: `meridian-md-schema.md`.
 
