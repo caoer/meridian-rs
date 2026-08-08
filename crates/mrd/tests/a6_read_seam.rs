@@ -9,11 +9,34 @@
 //! the surface degraded on production data and passed on its own fixtures.
 //!
 //! **Why the assertion is an OUTCOME and not a string.** A test that read `fm`
-//! and compared it here would prove the test's own decode, not the engine's.
-//! These drive the real script entry through its `Door` seam and assert on what
-//! the run DID: a decoded value arms the claim and reaches `Committed`; a value
-//! still carrying quote bytes leaves the run at `NoEffect`. That is exactly the
-//! silent face the receipts caught, so it cannot pass vacuously.
+//! and compared it here would prove the test's own comparison, not the engine's
+//! behaviour. These drive the real script entry through its `Door` seam and
+//! assert on what the run DID: a decoded value arms the claim and reaches
+//! `Committed`; a value still carrying quote bytes leaves the run at
+//! `NoEffect`. That is exactly the silent face the receipts caught, so it
+//! cannot pass vacuously. **Unchanged by the rewrite below.**
+//!
+//! **Rewritten 2026-08-08 (Amendment 1a).** `read(path)` no longer fetches
+//! frontmatter with one `cat` per key; it takes the whole plane from the
+//! composed read's `props[]`, which the daemon serves already decoded
+//! (`wire-serve::read` `read_props`). So the decode moved OUT of the code path
+//! this file exercises, and a fake serving raw key lines would now be testing
+//! nothing.
+//!
+//! The law is therefore gated in two places instead of one, and this file keeps
+//! the half it can still prove:
+//!
+//! - **That the daemon decodes** — `wire-serve::read::props_scalar_tests`,
+//!   net-new, asserting `read_props` applies the § A.6 codec across every
+//!   stored form. That gate did not exist before this change.
+//! - **That the script plane carries a decoded value through and does not
+//!   re-decode it** — here. The fake serves each stored form through the
+//!   production codec, exactly as the daemon would, and the assertions on what
+//!   the run DID are untouched.
+//!
+//! The fake calls `model::scalar::text` rather than hardcoding decoded strings:
+//! standing in for the daemon means using the daemon's own function, not a
+//! second implementation of it that could drift.
 
 use std::io;
 
@@ -31,6 +54,8 @@ const CARD: &str = "tasks/0011-token-audit.md";
 /// disk. Everything else it answers is fixed, so two runs differing only in
 /// `owner_line` differ only in the stored quoting.
 struct Fake {
+    /// The bytes after `owner:` on disk — the receipts' left-hand column.
+    stored: String,
     owner_line: String,
 }
 
@@ -39,6 +64,7 @@ impl Fake {
     /// carries them — the receipts' left-hand column.
     fn serving(stored: &str) -> Self {
         Self {
+            stored: stored.to_owned(),
             owner_line: format!("owner:{stored}\n"),
         }
     }
@@ -70,6 +96,14 @@ impl Door for Fake {
                 "toc": [],
                 "anchors": [],
                 "rendered_text": "",
+                // The daemon decodes; standing in for it means using ITS
+                // function, so this cannot drift from production behaviour.
+                "props": [
+                    {"key": "owner", "value": model::scalar::text(&self.stored),
+                     "span": [4, 11], "prop_rev": "33d5b0e1"},
+                    {"key": "status", "value": "todo",
+                     "span": [12, 25], "prop_rev": "41f643f0"},
+                ],
             }})
             .to_string(),
             "cat" => {

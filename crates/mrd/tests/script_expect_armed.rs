@@ -115,6 +115,11 @@ impl Door for Fake {
                 "toc": [],
                 "anchors": [],
                 "rendered_text": "",
+                // § A.6-decoded frontmatter, as the real composed read serves it.
+                "props": [
+                    {"key": "owner", "value": "", "span": [4, 11], "prop_rev": "33d5b0e1"},
+                    {"key": "status", "value": "todo", "span": [12, 25], "prop_rev": "41f643f0"},
+                ],
             }})
             .to_string(),
             "cat" => {

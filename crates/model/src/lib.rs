@@ -1381,23 +1381,56 @@ fn apply_regions(raw: &str, planned: &[PlannedEdit]) -> String {
 /// dirs pruned; workspace root name not hashed.
 #[must_use]
 pub fn merkle_root(files: &[(&str, &[u8])], version: u32) -> MerkleRoot {
+    let leaves: Vec<(&str, [u8; 32])> = files
+        .iter()
+        .map(|(path, bytes)| (*path, leaf_digest(bytes)))
+        .collect();
+    merkle_root_of_leaves(&leaves, version)
+}
+
+/// The §12.2 leaf: `blake3(raw)`. The ONE definition, so a caller that has
+/// already hashed a file's bytes can hand the digest to
+/// [`merkle_root_of_leaves`] instead of the bytes and get the same root by
+/// construction rather than by a second implementation agreeing.
+#[must_use]
+pub fn leaf_digest(bytes: &[u8]) -> [u8; 32] {
+    *blake3::hash(bytes).as_bytes()
+}
+
+/// [`merkle_root`] over leaves that are ALREADY hashed — the same tree, the
+/// same encoding, the same root.
+///
+/// This exists because the daemon re-derives the corpus root far more often
+/// than the corpus changes: a currency check that reuses the leaf digest of
+/// every unmoved file reads no bytes and copies none, while a file whose stat
+/// identity moved is re-read and re-hashed through [`leaf_digest`]. The fold
+/// cannot drift from [`merkle_root`]'s, because that function is now this
+/// function with a hashing step in front of it.
+///
+/// `version` and the encoding are exactly [`merkle_root`]'s.
+#[must_use]
+pub fn merkle_root_of_leaves(leaves: &[(&str, [u8; 32])], version: u32) -> MerkleRoot {
     let mut tree = MerkleDir::default();
-    for (path, bytes) in files {
-        tree.insert(path, bytes);
+    for (path, digest) in leaves {
+        tree.insert(path, *digest);
     }
     let hex = blake3::Hash::from_bytes(tree.fold()).to_hex().to_string();
     MerkleRoot(format!("{}{hex}", root_prefix(version)))
 }
 
-/// A directory in the merkle tree — named entries, each a file (raw bytes,
-/// leaf-hashed on fold) or a subdirectory.
+/// A directory in the merkle tree — named entries, each a file (its §12.2 leaf
+/// digest) or a subdirectory.
+///
+/// The file arm holds the 32-byte digest rather than the raw bytes: the fold
+/// only ever needed `blake3(raw)`, and keeping the bytes meant every root
+/// derivation copied the whole corpus into the tree before hashing it.
 #[derive(Default)]
 struct MerkleDir {
     entries: BTreeMap<String, MerkleEntry>,
 }
 
 enum MerkleEntry {
-    File(Vec<u8>),
+    File([u8; 32]),
     Dir(MerkleDir),
 }
 
@@ -1406,7 +1439,7 @@ impl MerkleDir {
     /// path). Empty segments are dropped; a path that collides with an existing
     /// file prefix is ignored — a hash domain never mixes a file and a directory
     /// at one name.
-    fn insert(&mut self, path: &str, bytes: &[u8]) {
+    fn insert(&mut self, path: &str, digest: [u8; 32]) {
         let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
         let Some((file_name, dirs)) = segs.split_last() else {
             return;
@@ -1423,7 +1456,7 @@ impl MerkleDir {
             }
         }
         dir.entries
-            .insert((*file_name).to_string(), MerkleEntry::File(bytes.to_vec()));
+            .insert((*file_name).to_string(), MerkleEntry::File(digest));
     }
 
     /// Fold this directory to its 32-byte node hash (§12.2): children ordered by
@@ -1433,9 +1466,7 @@ impl MerkleDir {
         let mut children: Vec<(&str, bool, [u8; 32])> = Vec::new();
         for (name, entry) in &self.entries {
             match entry {
-                MerkleEntry::File(bytes) => {
-                    children.push((name, false, *blake3::hash(bytes).as_bytes()));
-                }
+                MerkleEntry::File(digest) => children.push((name, false, *digest)),
                 MerkleEntry::Dir(dir) if !dir.entries.is_empty() => {
                     children.push((name, true, dir.fold()));
                 }
@@ -3105,11 +3136,11 @@ mod tests {
     fn empty_dir_is_pruned_12_2() {
         let mut base = MerkleDir::default();
         base.entries
-            .insert("a.md".to_string(), MerkleEntry::File(b"x".to_vec()));
+            .insert("a.md".to_string(), MerkleEntry::File(leaf_digest(b"x")));
         let mut with_empty = MerkleDir::default();
         with_empty
             .entries
-            .insert("a.md".to_string(), MerkleEntry::File(b"x".to_vec()));
+            .insert("a.md".to_string(), MerkleEntry::File(leaf_digest(b"x")));
         with_empty
             .entries
             .insert("empty".to_string(), MerkleEntry::Dir(MerkleDir::default()));

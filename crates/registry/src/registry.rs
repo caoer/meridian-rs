@@ -77,6 +77,10 @@ pub struct Registry {
     /// workspace. Matching signature skips the corpus fold. Advisory only —
     /// missing/stale costs one extra snapshot, never a wrong answer.
     prewarm_signatures: Mutex<HashMap<PathBuf, u64>>,
+    /// Per-workspace §12.2 leaf memo — what makes a currency pass cost one
+    /// `stat` per domain member instead of a re-read of the whole corpus.
+    /// Same lifetime as the engine: dropped on idle-reap.
+    domain_caches: Mutex<HashMap<PathBuf, fs::DomainCache>>,
     /// G11 activity clock: request count + last request unix secs. Pre-warm
     /// backoff and idle-exit both read this.
     requests: AtomicU64,
@@ -109,6 +113,8 @@ impl Registry {
             // Cold: no rings; pre-restart `from_seq` ⇒ `root_unknown` (§7.1).
             rings: Mutex::new(HashMap::new()),
             prewarm_signatures: Mutex::new(HashMap::new()),
+            // Cold: no memo; the first currency pass reads every member once.
+            domain_caches: Mutex::new(HashMap::new()),
             requests: AtomicU64::new(0),
             // Clock starts at birth so idle-exit can age an unused daemon.
             last_request: AtomicU64::new(now_secs()),
@@ -223,10 +229,19 @@ impl Registry {
             .map_err(|e| io::Error::new(io::ErrorKind::NotFound, e))?;
         let root = fs::WorkspaceRoot(canonical.clone());
 
-        // Cheap half (no parse): content hash from disk.
-        let (files, fingerprint) = fs::domain_snapshot(&root)?;
+        // Cheap half (no parse, and no re-read of anything that did not move):
+        // content hash from disk through the leaf memo.
+        let fingerprint = {
+            let mut caches = self
+                .domain_caches
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            caches.entry(canonical.clone()).or_default().root(&root)?
+        };
 
-        // Warm + unchanged → reuse, zero parses.
+        // Warm + unchanged → reuse, zero parses. Nothing is copied out of the
+        // memo on this path: it is the hot one, and a 20k-entry clone per
+        // currency pass would put back a slice of what the memo just removed.
         {
             let engines = self.engines.read().unwrap_or_else(PoisonError::into_inner);
             if engines
@@ -237,7 +252,12 @@ impl Registry {
             }
         }
 
-        // Cold or content changed → rebuild once (only parse site).
+        // Cold or content changed → rebuild once (only parse site). The rebuild
+        // re-reads from disk rather than from the memo: `docs` must be the bytes
+        // it parsed, and `domain_snapshot`'s fold is the byte-derived one, so
+        // the reuse key a served answer is stamped with never comes from a
+        // digest the memo carried forward.
+        let (files, fingerprint) = fs::domain_snapshot(&root)?;
         let (index, docs) = fs::build_corpus(files)?;
         let parsed = docs.len();
         let engine = WorkspaceEngine {
@@ -444,6 +464,17 @@ impl Registry {
                 mints.remove(key);
             }
             drop(mints);
+            // The leaf memo is a projection of the engine it serves: it dies on
+            // the same horizon, so a re-warmed workspace re-reads its members
+            // rather than trusting digests from before the gap.
+            let mut caches = self
+                .domain_caches
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            for key in &reaped {
+                caches.remove(key);
+            }
+            drop(caches);
             // Ring dies on the same horizon; later `sub` gets a fresh epoch.
             let mut rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
             for key in &reaped {
@@ -643,6 +674,36 @@ mod engine_tests {
             WarmOutcome::Reused,
             "the query after a pre-warm parses nothing — latency moved to the watch event"
         );
+    }
+
+    /// Write `bytes` to `rel`, past the filesystem's timestamp granularity —
+    /// a same-tick rewrite would be testing the stat memo's blind spot.
+    fn rewrite(ws: &Path, rel: &str, bytes: &str) {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        fs::write(ws.join(rel), bytes).unwrap();
+    }
+
+    /// The whole-corpus pass stays exact: `warm_or_build` is what `fingerprint`
+    /// and the ambient root go through, and it still moves on any member's
+    /// change — including one no read has asked about.
+    #[test]
+    fn the_corpus_pass_still_sees_every_change() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(home.path(), &[("a.md", "# A\n"), ("b.md", "# B\n")]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+
+        reg.warm_or_build(&ws).unwrap();
+        let before = reg.with_engine(&canonical, |e| e.unwrap().at_fingerprint.clone());
+
+        rewrite(&canonical, "b.md", "# B moved\n");
+        assert_eq!(
+            reg.warm_or_build(&ws).unwrap(),
+            WarmOutcome::Built { docs: 2 },
+            "the corpus pass is not memo-blind"
+        );
+        let after = reg.with_engine(&canonical, |e| e.unwrap().at_fingerprint.clone());
+        assert_ne!(before, after, "and the ambient root advanced");
     }
 
     /// P2 crash recovery: cold start, first query rebuilds from disk (no new machinery).
