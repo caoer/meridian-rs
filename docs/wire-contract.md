@@ -1232,6 +1232,39 @@ type A.6.3 says this plane cannot express, forged by the engine out of a
 caller's empty string. The encoder never returns empty bytes, so the uniform
 shape needs no special case to be correct.
 
+**A.6.3c Spelling preservation on a semantic no-op (2026-08-08).** An UPDATE
+whose stored spelling already decodes to the caller's string keeps the stored
+bytes: when `decode(stored)` (§ A.6.1) equals the caller's value, and the
+stored spelling classifies as neither `Nested` nor `Null`, the door keeps the
+stored value bytes verbatim instead of re-encoding. The read-modify-write of
+an untouched value is therefore byte-stable — `owner: "3f9a1c07"` reads as
+`3f9a1c07` and writes back as `owner: "3f9a1c07"` — and nothing computed over
+SOURCE BYTES moves: `prop_rev`, `span`, the `props1` fingerprint, and any pin
+held over the key survive the no-op. The two writers § A.6.3 names stop
+oscillating: the fleet's quoted spelling and the engine's plain emit are each
+fixed points under the other's write-back. ONE owner implements the predicate,
+beside the encoder, and every § A.6.3a door consults it on update — the
+value-span splice keeps the span bytes; the line-composing doors keep the
+value spelling inside the one `{key}: {spelling}` line shape.
+
+Excluded, deliberately — each is a standing law outranking byte quiet:
+
+- **A stored NULL spelling** (bare `key:`, `~`, `null`): a text-equal
+  write-back still re-encodes to the quoted string. Preserving would leave the
+  one type this plane cannot express (§ A.6.3) standing under an `ok` string
+  write; R4 demands the write of a string LAND a string, distinguishable from
+  the null it replaces.
+- **A stored NESTED spelling**: preserving would leave the I4 class in place
+  under an `ok` write. The no-op write repairs it to the quoted canonical
+  form instead.
+- **A multi-line caller value**: REFUSED (D11) before preservation is
+  consulted, so a stored escape spelling that decodes to the same text cannot
+  smuggle a newline past the uniform refusal.
+
+Preservation is of the VALUE spelling, never the line geometry: a nonstandard
+stored geometry (a doubled separator space) normalizes once at a line-composing
+door and is byte-stable thereafter.
+
 **A.6.4 What conformance means here.** Round-trip is the test, per direction and
 composed: a fleet-canonical quoted value reads back without its quote bytes, and
 a `set_property` of an `[[id]]`-shaped value lands quoted and reads back as the
@@ -1239,18 +1272,19 @@ caller's string. A quote-tolerant comparison ANYWHERE — in a host, a caller, o
 a second engine seam — is a defect against this section, not a compatibility
 measure.
 
-**A write-back may RE-SPELL, and that is not a byte no-op** *(stated
-2026-08-08; the earlier "two writers no longer churn each other's bytes"
-promised more than this law delivers)*. Decode and encode are inverses on the
-VALUE, not on the bytes: a stored `owner: "3f9a1c07"` serves `3f9a1c07`, and
-writing that value straight back emits the plain `owner: 3f9a1c07`, because the
-plain form decodes to exactly the caller's string. The value is preserved; the
-spelling is not. Anything computed over SOURCE BYTES therefore moves on a
-semantic no-op — `prop_rev`, `span`, the `props1` fingerprint, and any pin held
-over the key (§ A.6.2's planes are exactly the ones affected). A caller that
-needs byte stability across a read-modify-write must compare values, never
-tokens. Making the round trip byte-stable is a separate change to the encoder's
-canonical form, carded on its own; this section does not claim it.
+**A write-back that CHANGES the value may RE-SPELL; a semantic no-op may not**
+*(amended 2026-08-08 by § A.6.3c. This paragraph formerly opened "A write-back
+may RE-SPELL, and that is not a byte no-op" and closed "Making the round trip
+byte-stable is a separate change to the encoder's canonical form, carded on
+its own; this section does not claim it" — that card landed as § A.6.3c)*.
+Decode and encode are inverses on the VALUE, not on the bytes: a write that
+lands a DIFFERENT value emits the encoder's spelling, and anything computed
+over SOURCE BYTES moves with it — `prop_rev`, `span`, the `props1`
+fingerprint, and any pin held over the key (§ A.6.2's planes are exactly the
+ones affected). A write-back of the value a read served is the no-op
+§ A.6.3c pins byte-stable, under its three named exclusions. A caller
+comparing across a read-modify-write still compares values, never tokens: the
+exclusions re-spell, and a value CHANGE never promises byte geometry.
 
 **Round-trip alone is not the test.** A conformance test asserts the STORED
 LINE SHAPE, byte for byte, and only then the round trip. The engine's own
