@@ -213,10 +213,13 @@ pub fn slice_span<'a>(raw: &'a [u8], span: &wire::Span) -> &'a [u8] {
 /// minimal, carrying `n` only where ambiguous ([`raw_addresses`]) — resolve
 /// back to the one row they were published from.
 ///
-/// The dewey and anchor arms stay first-match (≤1 entry): a dewey ordinal is a
-/// positional row handle whose duplicates are a numbering artifact, not an
-/// ambiguity (see `write::canonical_selector`), and a duplicate block id
-/// cannot be disambiguated by naming more of it.
+/// The anchor arm returns ALL blocks carrying the id, in document order: a
+/// duplicate block id is an ambiguity like a duplicate heading, and the caller
+/// refuses `ambiguous_ref` rather than silently serving the first carrier
+/// (§2.1; wire-contract A.3, door symmetry over duplicate block ids). The
+/// dewey arm stays first-match (≤1 entry): a dewey ordinal is a positional row
+/// handle whose duplicates are a numbering artifact, not an ambiguity (see
+/// `write::canonical_selector`).
 #[must_use]
 pub fn selector_matches<'a>(facts: &'a [ReadFact], sel: &wire::ReadSel) -> Vec<&'a ReadFact> {
     match sel {
@@ -227,15 +230,15 @@ pub fn selector_matches<'a>(facts: &'a [ReadFact], sel: &wire::ReadSel) -> Vec<&
         wire::ReadSel::Dewey { n } => facts.iter().find(|f| &f.n == n).into_iter().collect(),
         wire::ReadSel::Anchor { anchor } => facts
             .iter()
-            .find(|f| f.anchor.as_deref() == Some(anchor))
-            .into_iter()
+            .filter(|f| f.anchor.as_deref() == Some(anchor))
             .collect(),
     }
 }
 
 /// [`selector_matches`] collapsed to the unique case: the fact when exactly
-/// one row matches, `None` on a miss — and `None` on an ambiguous heading
-/// selector, which a read-op caller must instead refuse with candidates.
+/// one row matches, `None` on a miss — and `None` on an ambiguous selector
+/// (duplicate heading or duplicate block id), which a caller must instead
+/// refuse with the ambiguity's own message, never report as a miss.
 #[must_use]
 pub fn resolve_selector<'a>(facts: &'a [ReadFact], sel: &wire::ReadSel) -> Option<&'a ReadFact> {
     let matches = selector_matches(facts, sel);
@@ -399,6 +402,30 @@ mod tests {
         assert!(resolve_selector(&got, &sel("^t1")).is_none());
         let p1 = resolve_selector(&got, &sel("^p1")).expect("list_item anchor resolves");
         assert_eq!((p1.n.as_str(), p1.depth, p1.words), ("^p1", 0, 0));
+    }
+
+    /// A duplicated block id matches EVERY carrier, in document order — the
+    /// caller refuses `ambiguous_ref`; first-match was the silent-pick defect
+    /// (dogfood-p1-read-ambiguous-ref; wire-contract A.3, door symmetry over
+    /// duplicate block ids).
+    #[test]
+    fn a_duplicated_block_id_matches_every_carrier_in_document_order() {
+        let raw = "# Tasks\n\n- first ^same-id\n\n- second ^same-id\n";
+        let got = facts(raw);
+        let matches = selector_matches(&got, &sel("^same-id"));
+        assert_eq!(matches.len(), 2, "both carriers match");
+        assert!(
+            matches[0].span.0 < matches[1].span.0,
+            "document order, never re-sorted"
+        );
+        assert!(
+            resolve_selector(&got, &sel("^same-id")).is_none(),
+            "the collapsed resolver refuses to pick one"
+        );
+        // A unique id still resolves to its one carrier.
+        let unique = "# Tasks\n\n- only ^one-id\n";
+        let got = facts(unique);
+        assert_eq!(selector_matches(&got, &sel("^one-id")).len(), 1);
     }
 
     /// Duplicate headings: both occurrences get rows (dewey disambiguates),
