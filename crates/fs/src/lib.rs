@@ -317,10 +317,14 @@ impl StatKey {
 #[derive(Debug, Default)]
 pub struct DomainCache {
     leaves: BTreeMap<String, (StatKey, [u8; 32])>,
-    dirs: BTreeMap<PathBuf, (StatKey, Vec<DirEntryKind>)>,
+    dirs: DirMemo,
     reads: u64,
     listings: u64,
 }
+
+/// The remembered listings: each directory's [`StatKey`] at enumeration time
+/// and the entry set it held then.
+type DirMemo = BTreeMap<PathBuf, (StatKey, Vec<DirEntryKind>)>;
 
 /// One remembered directory entry: its name and its `read_dir` file type — the
 /// only facts [`hash_domain`]'s walk takes from an enumeration, so remembering
@@ -431,14 +435,24 @@ impl DomainCache {
     ///
     /// Returns `(member files, fresh dir memo, enumerations run)`.
     fn walk_tree(
-        prior: &BTreeMap<PathBuf, (StatKey, Vec<DirEntryKind>)>,
+        prior: &DirMemo,
         root: &Path,
         domain: &domain::Domain,
-    ) -> io::Result<(
-        Vec<PathBuf>,
-        BTreeMap<PathBuf, (StatKey, Vec<DirEntryKind>)>,
-        u64,
-    )> {
+    ) -> io::Result<(Vec<PathBuf>, DirMemo, u64)> {
+        struct Shared {
+            /// Rel dirs awaiting a scan.
+            todo: VecDeque<PathBuf>,
+            /// Scans in flight — with `todo`, the termination witness: the
+            /// walk is done when the queue is empty AND no worker holds one.
+            active: usize,
+            files: Vec<PathBuf>,
+            dirs: Vec<(PathBuf, (StatKey, Vec<DirEntryKind>))>,
+            listings: u64,
+            /// The first scan failure; the sweep fails with it (a tree that
+            /// cannot be walked refuses the whole pass, unchanged).
+            err: Option<io::Error>,
+        }
+
         let mut files = Vec::new();
         let mut fresh_dirs = BTreeMap::new();
         let mut listings = 0u64;
@@ -455,19 +469,6 @@ impl DomainCache {
             return Ok((files, fresh_dirs, listings));
         }
 
-        struct Shared {
-            /// Rel dirs awaiting a scan.
-            todo: VecDeque<PathBuf>,
-            /// Scans in flight — with `todo`, the termination witness: the
-            /// walk is done when the queue is empty AND no worker holds one.
-            active: usize,
-            files: Vec<PathBuf>,
-            dirs: Vec<(PathBuf, (StatKey, Vec<DirEntryKind>))>,
-            listings: u64,
-            /// The first scan failure; the sweep fails with it (a tree that
-            /// cannot be walked refuses the whole pass, unchanged).
-            err: Option<io::Error>,
-        }
         let shared = std::sync::Mutex::new(Shared {
             todo: subdirs.into(),
             active: 0,
@@ -560,11 +561,7 @@ struct DirScan {
 /// listing from `prior` when the identity is unmoved, `read_dir` otherwise.
 /// An unreadable directory stat re-enumerates rather than trusting what the
 /// memo remembers — the serial walk's own failure posture.
-fn scan_dir(
-    prior: &BTreeMap<PathBuf, (StatKey, Vec<DirEntryKind>)>,
-    root: &Path,
-    rel_dir: &Path,
-) -> io::Result<DirScan> {
+fn scan_dir(prior: &DirMemo, root: &Path, rel_dir: &Path) -> io::Result<DirScan> {
     let abs_dir = if rel_dir.as_os_str().is_empty() {
         root.to_path_buf()
     } else {
@@ -577,21 +574,20 @@ fn scan_dir(
             .filter(|(seen, _)| *seen == key)
             .map(|(_, entries)| entries.clone())
     });
-    let (entries, enumerated) = match remembered {
-        Some(entries) => (entries, false),
-        None => {
-            let mut entries = Vec::new();
-            for entry in fs::read_dir(&abs_dir)? {
-                let entry = entry?;
-                let file_type = entry.file_type()?;
-                entries.push(DirEntryKind {
-                    is_dir: file_type.is_dir(),
-                    is_file: file_type.is_file(),
-                    name: entry.file_name(),
-                });
-            }
-            (entries, true)
+    let (entries, enumerated) = if let Some(entries) = remembered {
+        (entries, false)
+    } else {
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(&abs_dir)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            entries.push(DirEntryKind {
+                is_dir: file_type.is_dir(),
+                is_file: file_type.is_file(),
+                name: entry.file_name(),
+            });
         }
+        (entries, true)
     };
     Ok(DirScan {
         key,
