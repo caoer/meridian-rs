@@ -171,6 +171,7 @@ fn a_fault_keeps_its_armed_entries_flagged_not_committed() {
         EvalError::Runtime {
             rule_id: "script".to_owned(),
             reason: "no frontmatter key \"report_path\"".to_owned(),
+            line: Some(4),
         },
         vec![armed_props(2)],
         vec![toc_read(1, ReadPosition::Echo)],
@@ -185,6 +186,25 @@ fn a_fault_keeps_its_armed_entries_flagged_not_committed() {
         .expect("a fault outcome carries a fault");
     assert_eq!(fault.class, FaultClass::Runtime);
     assert!(fault.reason.contains("report_path"));
+    // The harmonized wording (defect-ledger DIV-1): the entry is not a rule,
+    // so the face labels the fault class and names the faulting line instead
+    // of the rules-plane framing.
+    assert_eq!(
+        fault.line,
+        Some(4),
+        "a runtime fault names its faulting line"
+    );
+    assert!(
+        fault.reason.starts_with("runtime fault at line 4 — "),
+        "the face opens with the fault label and line: {}",
+        fault.reason
+    );
+    assert!(
+        !fault.reason.contains("rule 'script'"),
+        "the script entry is not a rule; the rules-plane framing is not this \
+         face's: {}",
+        fault.reason
+    );
 
     let armed: Vec<_> = trace.armed_entries().collect();
     assert_eq!(armed.len(), 1, "the arm that landed is still traced");

@@ -87,7 +87,10 @@ fn task_id_ctx_task_divergence_is_refused() {
     // task.id (errors) and ctx.task (effects) must be one identity.
     let t = Rule::new("other-name", "def run(ctx):\n    pass\n");
     let err = eval_run(&t, &ctx(), EvalLimits::default()).unwrap_err();
-    let EvalError::Runtime { rule_id, reason } = err else {
+    let EvalError::Runtime {
+        rule_id, reason, ..
+    } = err
+    else {
         panic!("expected Runtime refusal");
     };
     assert_eq!(rule_id, "other-name");

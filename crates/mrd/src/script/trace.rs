@@ -60,9 +60,10 @@ pub enum FaultClass {
 }
 
 /// Why the run produced nothing. `line` is present exactly when the kernel could
-/// attribute one — the arm-time refusals name their `put()` call; a parse or
-/// budget fault carries the position inside `reason` when the evaluator knew it.
-/// Absence is absence, never a synthesized line 0.
+/// attribute one — the arm-time refusals name their `put()` call, and a runtime
+/// fault carries the line of its Starlark span; a parse or budget fault carries
+/// the position inside `reason` when the evaluator knew it. Absence is absence,
+/// never a synthesized line 0.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScriptFault {
     /// 1-based source line, when the kernel attributed one.
@@ -314,8 +315,9 @@ impl ScriptTrace {
             // threaded each row's CAS token, which is the same list the commit
             // sends as `plan_edits[]`. Hashing the pre-threading rows would
             // publish a digest for a set that never goes on any wire.
-            armed_digest: (!eval.armed.is_empty())
-                .then(|| super::digest::armed_digest(&super::digest::ArmedRow::of_all(&eval.armed))),
+            armed_digest: (!eval.armed.is_empty()).then(|| {
+                super::digest::armed_digest(&super::digest::ArmedRow::of_all(&eval.armed))
+            }),
             telemetry: eval.telemetry,
         }
     }
@@ -360,14 +362,30 @@ impl ScriptTrace {
 
 /// Classify a kernel error into the closed fault taxonomy. `reason` is the
 /// kernel's own `Display`, carried verbatim: the refusal wordings are already
-/// the face's (golden scenarios 2a and 4), so re-phrasing them here would fork
-/// the text in two places.
+/// the face's (golden scenario 2a), so re-phrasing them here would fork the
+/// text in two places. The one exception is the runtime fault (golden
+/// scenario 4): the shared `Display` frames it as a rules-plane fact
+/// (`rule 'script' evaluation error`), but the script entry is not a rule —
+/// its face opens with the fault label and the faulting line, with the
+/// kernel's message verbatim after the label (defect-ledger DIV-1).
 fn fault_of(error: &EvalError) -> ScriptFault {
+    if let EvalError::Runtime { reason, line, .. } = error {
+        return ScriptFault {
+            line: *line,
+            class: FaultClass::Runtime,
+            reason: match line {
+                Some(line) => format!("runtime fault at line {line} — {reason}"),
+                None => format!("runtime fault — {reason}"),
+            },
+        };
+    }
     let (class, line) = match error {
         EvalError::Parse { .. } => (FaultClass::Parse, None),
+        // Returned above; the arm stays for exhaustiveness.
+        EvalError::Runtime { .. } => unreachable!("handled above"),
         // The script entry has no hook, so it never raises `MissingEntry`; if a
         // future entry does, it is an evaluation failure like any other.
-        EvalError::Runtime { .. } | EvalError::MissingEntry { .. } => (FaultClass::Runtime, None),
+        EvalError::MissingEntry { .. } => (FaultClass::Runtime, None),
         EvalError::Budget { .. }
         | EvalError::SourceTooLarge { .. }
         | EvalError::ReadBudget { .. } => (FaultClass::Budget, None),
