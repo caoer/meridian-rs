@@ -594,7 +594,8 @@ fn assess(
 /// read. Split out of [`assess`], which needs the corpus in hand before the mount
 /// table exists.
 fn build_corpus(files: fs::DomainFiles) -> Result<BTreeMap<String, Document>, Fail> {
-    let (_index, docs, _unserved) = fs::build_corpus(files);
+    let (_index, docs, unserved) = fs::build_corpus(files);
+    crate::voice_unserved(&unserved);
     Ok(docs)
 }
 
