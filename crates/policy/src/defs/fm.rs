@@ -134,7 +134,11 @@ fn strip_comment(v: &str) -> &str {
 }
 
 /// Classify an inline value: flow collection or scalar.
-fn classify_scalar_or_flow(v: &str) -> FmValue {
+///
+/// `pub(super)` for the write side: `yaml_safe_value` asks THIS function what
+/// its own plain emit would parse as, so the encoder and the checker judge one
+/// candidate by one rule (§ A.6.3).
+pub(super) fn classify_scalar_or_flow(v: &str) -> FmValue {
     if v.starts_with('{') {
         return FmValue::Nested;
     }
@@ -212,13 +216,16 @@ fn classify_block(cont: &[&str]) -> FmValue {
 }
 
 /// yaml.v3 core-schema scalar outcomes for one unwrapped scalar token.
-fn classify_scalar(v: &str) -> FmValue {
-    if let Some(q) = v.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')) {
-        return FmValue::Str(q.replace("''", "'"));
-    }
-    if let Some(q) = v.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
-        return FmValue::Str(unescape_double(q));
-    }
+///
+/// The quoting layer is NOT decided here: it is `model::scalar` (§ A.6.1), the
+/// same owner the read seams decode through, so the def checker and the served
+/// value cannot drift into two dialects of one law. A quoted scalar is a string
+/// in the core schema — the typed ladder below runs on the plain arm only.
+pub(super) fn classify_scalar(v: &str) -> FmValue {
+    let v = match model::scalar::decode(v) {
+        model::scalar::Scalar::Quoted(s) => return FmValue::Str(s),
+        model::scalar::Scalar::Plain(p) => p,
+    };
     match v {
         "" | "~" | "null" | "Null" | "NULL" => return FmValue::Null,
         "true" | "True" | "TRUE" => return FmValue::Bool(true),
@@ -237,29 +244,6 @@ fn classify_scalar(v: &str) -> FmValue {
         return FmValue::Timestamp(v.to_string());
     }
     FmValue::Str(v.to_string())
-}
-
-fn unescape_double(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c != '\\' {
-            out.push(c);
-            continue;
-        }
-        match chars.next() {
-            Some('n') => out.push('\n'),
-            Some('t') => out.push('\t'),
-            Some('"') => out.push('"'),
-            Some('\\') => out.push('\\'),
-            Some(other) => {
-                out.push('\\');
-                out.push(other);
-            }
-            None => out.push('\\'),
-        }
-    }
-    out
 }
 
 fn is_int(v: &str) -> bool {

@@ -319,6 +319,11 @@ fn read_anchor(f: &wire_map::facts::ReadFact) -> Option<wire::ReadAnchor> {
 /// off the same `fm_key` grain resolution the write plane compares against,
 /// so the served `prop_rev` and a later `if_node_rev` cannot be two
 /// derivations of one fact.
+///
+/// `value` is the § A.6.1 DECODED scalar, not the stored bytes: this plane is
+/// typed `string`, and a reader comparing `owner` against an id must not be
+/// handed quote bytes it never asked about. `span`/`prop_rev` stay over the
+/// stored form (§ A.6.2) — they answer a guard question, not a value one.
 fn read_props(doc: &model::Document) -> Vec<wire::ReadProp> {
     let Some(map) = frontmatter_map(&doc.root) else {
         return Vec::new();
@@ -333,7 +338,7 @@ fn read_props(doc: &model::Document) -> Vec<wire::ReadProp> {
                 .expect("frontmatter map key resolves against its own document");
             wire::ReadProp {
                 key: key.clone(),
-                value: value.clone(),
+                value: model::scalar::text(value),
                 span: Span(target.span.start as u64, target.span.end as u64),
                 prop_rev: NodeRev(target.node_rev.0),
             }
