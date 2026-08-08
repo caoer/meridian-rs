@@ -232,11 +232,29 @@ ceiling instead of discovering it as a refusal.
 entry against a corpus of `C` domain members:
 
 ```
-wall clock  ≥  trips × pass(C)
+ceiling = f(reads, corpus)
 
-trips = 3 + Σ per read: (2) whole-file
-                        (1) sectioned
+wall clock  ≥  trips(R) × pass(C)
+
+trips(R) = 3 + Σ per read: (2) whole-file
+                           (1) sectioned
+
+pass(C)  = O(C) in `stat`s, O(changed) in bytes      <- the linear term
 ```
+
+**Both arguments matter, and the second one is linear.** `pass(C)` is not a
+constant: a currency pass `stat`s every domain member, so it grows with the
+corpus even though it no longer reads it. Measured on this engine, doubling the
+corpus (23,758 → 47,477 members) multiplies the pass by **1.84×**, and with
+trips minimised a program's per-read cost converges on the pass and moves with
+it — **1.91×** measured end to end.
+
+So a program that fits today does not automatically fit on a corpus twice the
+size. What the trip collapse removed is the *amplification*: cost no longer
+scales with reads × frontmatter × corpus, only with reads × corpus. Making
+`pass(C)` itself constant would need the root maintained incrementally rather
+than re-derived — an OS event watcher or a persistent index — which v1 does not
+have and this contract does not promise.
 
 `3` is the fixed frame — `hello`, `fingerprint`, and the commit. A whole-file
 `read(path)` is **two** trips: the `toc` op, and the composed `read` (§4.1, toc
