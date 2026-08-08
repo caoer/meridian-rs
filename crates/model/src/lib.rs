@@ -1373,6 +1373,12 @@ fn apply_regions(raw: &str, planned: &[PlannedEdit]) -> String {
 /// token (§12.3). `files` = domain-filtered vault paths + **raw bytes** (leaf =
 /// raw hash; parse tree plays no part). Membership is `fs`'s call.
 ///
+/// **Names are raw bytes** (merkle-spec §4/§9 name truthfulness): the path is
+/// anything byte-viewable — `&str` (its UTF-8 bytes, identity), `&[u8]` (the
+/// exact on-disk `OsStr` bytes). `/` is the segment separator; every other
+/// byte, valid UTF-8 or not, is a name byte. Distinct names are distinct
+/// leaves by construction — no decode, so no decode can collapse them.
+///
 /// `version` = domain prefix counter (`0`⇒`b3:`, `1`⇒`b3a:`, …) so domain-rule
 /// bumps cannot silently match. Plain integer keeps `model` fs-blind.
 ///
@@ -1380,10 +1386,10 @@ fn apply_regions(raw: &str, planned: &[PlannedEdit]) -> String {
 /// sorted by name bytes, each `uleb128(len)‖name‖type(0x00/0x01)‖hash32`; empty
 /// dirs pruned; workspace root name not hashed.
 #[must_use]
-pub fn merkle_root(files: &[(&str, &[u8])], version: u32) -> MerkleRoot {
-    let leaves: Vec<(&str, [u8; 32])> = files
+pub fn merkle_root<N: AsRef<[u8]>>(files: &[(N, &[u8])], version: u32) -> MerkleRoot {
+    let leaves: Vec<(&[u8], [u8; 32])> = files
         .iter()
-        .map(|(path, bytes)| (*path, leaf_digest(bytes)))
+        .map(|(path, bytes)| (path.as_ref(), leaf_digest(bytes)))
         .collect();
     merkle_root_of_leaves(&leaves, version)
 }
@@ -1409,24 +1415,25 @@ pub fn leaf_digest(bytes: &[u8]) -> [u8; 32] {
 ///
 /// `version` and the encoding are exactly [`merkle_root`]'s.
 #[must_use]
-pub fn merkle_root_of_leaves(leaves: &[(&str, [u8; 32])], version: u32) -> MerkleRoot {
+pub fn merkle_root_of_leaves<N: AsRef<[u8]>>(leaves: &[(N, [u8; 32])], version: u32) -> MerkleRoot {
     let mut tree = MerkleDir::default();
     for (path, digest) in leaves {
-        tree.insert(path, *digest);
+        tree.insert(path.as_ref(), *digest);
     }
     let hex = blake3::Hash::from_bytes(tree.fold()).to_hex().to_string();
     MerkleRoot(format!("{}{hex}", root_prefix(version)))
 }
 
 /// A directory in the merkle tree — named entries, each a file (its §12.2 leaf
-/// digest) or a subdirectory.
+/// digest) or a subdirectory. Names are **raw bytes** (spec §4/§9): the tree
+/// never decodes them, so a name that is not valid UTF-8 keeps its identity.
 ///
 /// The file arm holds the 32-byte digest rather than the raw bytes: the fold
 /// only ever needed `blake3(raw)`, and keeping the bytes meant every root
 /// derivation copied the whole corpus into the tree before hashing it.
 #[derive(Default)]
 struct MerkleDir {
-    entries: BTreeMap<String, MerkleEntry>,
+    entries: BTreeMap<Vec<u8>, MerkleEntry>,
 }
 
 enum MerkleEntry {
@@ -1438,9 +1445,13 @@ impl MerkleDir {
     /// Insert one file at its `/`-split path (last write wins on a duplicate
     /// path). Empty segments are dropped; a path that collides with an existing
     /// file prefix is ignored — a hash domain never mixes a file and a directory
-    /// at one name.
-    fn insert(&mut self, path: &str, digest: [u8; 32]) {
-        let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    /// at one name. Splitting on the byte `0x2F` is exact: UTF-8 continuation
+    /// bytes are ≥ `0x80`, so no multi-byte sequence can hide a `/`.
+    fn insert(&mut self, path: &[u8], digest: [u8; 32]) {
+        let segs: Vec<&[u8]> = path
+            .split(|b| *b == b'/')
+            .filter(|s| !s.is_empty())
+            .collect();
         let Some((file_name, dirs)) = segs.split_last() else {
             return;
         };
@@ -1448,7 +1459,7 @@ impl MerkleDir {
         for seg in dirs {
             let entry = dir
                 .entries
-                .entry((*seg).to_string())
+                .entry(seg.to_vec())
                 .or_insert_with(|| MerkleEntry::Dir(MerkleDir::default()));
             match entry {
                 MerkleEntry::Dir(sub) => dir = sub,
@@ -1456,27 +1467,21 @@ impl MerkleDir {
             }
         }
         dir.entries
-            .insert((*file_name).to_string(), MerkleEntry::File(digest));
+            .insert(file_name.to_vec(), MerkleEntry::File(digest));
     }
 
     /// Fold this directory to its 32-byte node hash (§12.2): children ordered by
-    /// raw name bytes, encoded `uleb128(len) ‖ name ‖ type ‖ hash32`, then
-    /// `blake3` of the buffer. Empty subdirs contribute nothing.
+    /// raw name bytes (the map's key order — `Vec<u8>` sorts bytewise), encoded
+    /// `uleb128(len) ‖ name ‖ type ‖ hash32`, then `blake3` of the buffer.
+    /// Empty subdirs contribute nothing.
     fn fold(&self) -> [u8; 32] {
-        let mut children: Vec<(&str, bool, [u8; 32])> = Vec::new();
-        for (name, entry) in &self.entries {
-            match entry {
-                MerkleEntry::File(digest) => children.push((name, false, *digest)),
-                MerkleEntry::Dir(dir) if !dir.entries.is_empty() => {
-                    children.push((name, true, dir.fold()));
-                }
-                MerkleEntry::Dir(_) => {} // empty dir pruned (§12.2)
-            }
-        }
-        children.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
         let mut enc: Vec<u8> = Vec::new();
-        for (name, is_dir, hash) in children {
-            let name = name.as_bytes();
+        for (name, entry) in &self.entries {
+            let (is_dir, hash) = match entry {
+                MerkleEntry::File(digest) => (false, *digest),
+                MerkleEntry::Dir(dir) if !dir.entries.is_empty() => (true, dir.fold()),
+                MerkleEntry::Dir(_) => continue, // empty dir pruned (§12.2)
+            };
             write_uleb128(&mut enc, name.len());
             enc.extend_from_slice(name);
             enc.push(u8::from(is_dir));
@@ -3119,6 +3124,74 @@ mod tests {
         assert_ne!(bump_v0, bump_v1);
     }
 
+    /// §9 name truthfulness, the red gate (6b ruling, 2026-08-08): two
+    /// DISTINCT non-UTF-8 names produce DISTINCT leaves, therefore distinct
+    /// roots. At the pre-fix pin this was inexpressible — the fold took `&str`,
+    /// so the fs layer lossy-decoded names first, and both names below decode
+    /// to ONE replacement string (`a\u{FFFD}.md`): one leaf, last write wins,
+    /// a content change could leave the fingerprint unmoved.
+    #[test]
+    fn distinct_non_utf8_names_distinct_leaves_9() {
+        let first_name: &[u8] = b"a\xFF.md";
+        let second_name: &[u8] = b"a\xFE.md";
+        // The collapse premise the lossy decode created (the pin's flaw):
+        assert_eq!(
+            String::from_utf8_lossy(first_name),
+            String::from_utf8_lossy(second_name),
+            "lossy decode maps both names to one string — why it is banned from the hash path"
+        );
+        let content: &[u8] = b"# one\n";
+        let one = merkle_root(&[(first_name, content)], 0);
+        let two = merkle_root(&[(second_name, content)], 0);
+        assert_ne!(
+            one, two,
+            "distinct name bytes ⇒ distinct leaves ⇒ distinct roots"
+        );
+        let both = merkle_root(
+            &[(first_name, content), (second_name, b"# two\n" as &[u8])],
+            0,
+        );
+        assert_ne!(both, one, "both members are in the tree — no collapse");
+        assert_ne!(both, two, "both members are in the tree — no collapse");
+    }
+
+    /// §9 name truthfulness: a `&str` name hashes as its UTF-8 bytes —
+    /// identity, not conversion — so every valid-UTF-8 corpus keeps its pinned
+    /// fingerprint. R0 is the frozen §12.1 ground truth; the byte-spelled call
+    /// must fold the same root.
+    #[test]
+    fn str_and_byte_names_fold_identically_9() {
+        let f = merkle_fixtures();
+        let via_str = merkle_root(
+            &[
+                ("notes/plan.md", f.plan_v0.as_bytes()),
+                ("receipts/2026-07-18.md", f.receipts_v0.as_bytes()),
+            ],
+            0,
+        );
+        let via_bytes = merkle_root(
+            &[
+                (b"notes/plan.md" as &[u8], f.plan_v0.as_bytes()),
+                (b"receipts/2026-07-18.md" as &[u8], f.receipts_v0.as_bytes()),
+            ],
+            0,
+        );
+        assert_eq!(
+            via_str, via_bytes,
+            "str names are their UTF-8 bytes — identity"
+        );
+        assert_eq!(via_str.0, format!("b3:{R0_HEX}"));
+    }
+
+    /// §4: a backslash inside a name is a NAME byte, never a separator — the
+    /// single file `a\b.md` and the nested path `a/b.md` fold different roots.
+    #[test]
+    fn backslash_is_a_name_byte_4() {
+        let flat = merkle_root(&[(r"a\b.md", b"x" as &[u8])], 0);
+        let nested = merkle_root(&[("a/b.md", b"x" as &[u8])], 0);
+        assert_ne!(flat, nested, "a separator rewrite would collapse these");
+    }
+
     /// §12.3 prefix mapping — the bijective base-26 suffix after `b3`.
     #[test]
     fn root_prefix_bijective_base26() {
@@ -3140,14 +3213,14 @@ mod tests {
     fn empty_dir_is_pruned_12_2() {
         let mut base = MerkleDir::default();
         base.entries
-            .insert("a.md".to_string(), MerkleEntry::File(leaf_digest(b"x")));
+            .insert(b"a.md".to_vec(), MerkleEntry::File(leaf_digest(b"x")));
         let mut with_empty = MerkleDir::default();
         with_empty
             .entries
-            .insert("a.md".to_string(), MerkleEntry::File(leaf_digest(b"x")));
+            .insert(b"a.md".to_vec(), MerkleEntry::File(leaf_digest(b"x")));
         with_empty
             .entries
-            .insert("empty".to_string(), MerkleEntry::Dir(MerkleDir::default()));
+            .insert(b"empty".to_vec(), MerkleEntry::Dir(MerkleDir::default()));
         assert_eq!(
             base.fold(),
             with_empty.fold(),

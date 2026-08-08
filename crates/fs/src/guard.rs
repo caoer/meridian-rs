@@ -70,7 +70,10 @@ pub struct StepGuard {
     root: WorkspaceRoot,
     domain: Domain,
     config: ConfigState,
-    pre: BTreeMap<String, Vec<u8>>,
+    /// Keyed by raw name bytes (merkle-spec §4/§9): two names that would
+    /// merge under a lossy decode stay two entries, so the residual compare
+    /// cannot be blinded by a hostile name.
+    pre: BTreeMap<Vec<u8>, Vec<u8>>,
 }
 
 /// The captured domain-config state: the raw bytes of both declaration
@@ -251,10 +254,10 @@ impl StepGuard {
     /// and the bracket opening, and the exec must not start).
     #[must_use]
     pub fn pre_root(&self) -> model::MerkleRoot {
-        let refs: Vec<(&str, &[u8])> = self
+        let refs: Vec<(&[u8], &[u8])> = self
             .pre
             .iter()
-            .map(|(p, b)| (p.as_str(), b.as_slice()))
+            .map(|(p, b)| (p.as_slice(), b.as_slice()))
             .collect();
         model::merkle_root(&refs, self.domain.version())
     }
@@ -293,16 +296,18 @@ impl StepGuard {
         let mut expected = self.pre;
         for edit in edits {
             if self.domain.contains(Path::new(&edit.path)) {
-                expected.insert(edit.path.clone(), edit.bytes.clone());
+                // A governed edit's path is a String (run-plane input, UTF-8);
+                // its UTF-8 bytes are its raw name bytes — identity.
+                expected.insert(edit.path.clone().into_bytes(), edit.bytes.clone());
             }
         }
         let delta = residual(&expected, &actual);
         if !delta.is_empty() {
             return Err(GuardError::OutOfBand(delta));
         }
-        let refs: Vec<(&str, &[u8])> = actual
+        let refs: Vec<(&[u8], &[u8])> = actual
             .iter()
-            .map(|(p, b)| (p.as_str(), b.as_slice()))
+            .map(|(p, b)| (p.as_slice(), b.as_slice()))
             .collect();
         Ok(model::merkle_root(&refs, self.domain.version()))
     }
@@ -371,15 +376,17 @@ fn read_config_file(root: &WorkspaceRoot, rel: &str) -> Result<Option<Vec<u8>>, 
 fn strict_domain_files(
     root: &WorkspaceRoot,
     domain: &Domain,
-) -> Result<BTreeMap<String, Vec<u8>>, GuardError> {
+) -> Result<BTreeMap<Vec<u8>, Vec<u8>>, GuardError> {
     let mut files = BTreeMap::new();
     for rel in walk_strict(root, domain)? {
         if !domain.contains(&rel) {
             continue;
         }
-        let rel_str = rel.to_string_lossy().replace('\\', "/");
-        let bytes = read_nofollow(&root.0.join(&rel), &rel_str)?;
-        files.insert(rel_str, bytes);
+        let bytes = read_nofollow(
+            &root.0.join(&rel),
+            &crate::display_name(crate::hash_name(&rel)),
+        )?;
+        files.insert(crate::hash_name(&rel).to_vec(), bytes);
     }
     Ok(files)
 }
@@ -419,7 +426,7 @@ fn walk_strict_dir(
         }
         if file_type.is_symlink() {
             return Err(GuardError::Symlink {
-                path: rel.to_string_lossy().replace('\\', "/"),
+                path: crate::display_name(crate::hash_name(&rel)),
             });
         }
         if file_type.is_dir() {
@@ -480,20 +487,23 @@ fn open_nofollow(path: &Path) -> io::Result<File> {
 /// expected set, path-by-path, byte-by-byte. Sorted output by construction
 /// (both maps iterate in path order) — reports are deterministic.
 fn residual(
-    expected: &BTreeMap<String, Vec<u8>>,
-    actual: &BTreeMap<String, Vec<u8>>,
+    expected: &BTreeMap<Vec<u8>, Vec<u8>>,
+    actual: &BTreeMap<Vec<u8>, Vec<u8>>,
 ) -> ResidualDelta {
+    // The compare runs on raw name bytes; the delta LISTS are report prose,
+    // rendered through the §9 display law (identity for UTF-8 names,
+    // injective escape otherwise — never a merge).
     let mut delta = ResidualDelta::default();
     for (path, bytes) in expected {
         match actual.get(path) {
-            None => delta.missing.push(path.clone()),
-            Some(a) if a != bytes => delta.altered.push(path.clone()),
+            None => delta.missing.push(crate::display_name(path)),
+            Some(a) if a != bytes => delta.altered.push(crate::display_name(path)),
             Some(_) => {}
         }
     }
     for path in actual.keys() {
         if !expected.contains_key(path) {
-            delta.unexpected.push(path.clone());
+            delta.unexpected.push(crate::display_name(path));
         }
     }
     delta
