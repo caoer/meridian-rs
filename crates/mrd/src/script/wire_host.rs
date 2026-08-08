@@ -768,4 +768,62 @@ mod tests {
             fault.reason
         );
     }
+
+    /// **A runtime fault is labelled and names its faulting line** (defect
+    /// DIV-1, golden scenario 4's wording). The generic face was the
+    /// rules-plane framing around a bare Starlark key error — `rule 'script'
+    /// evaluation error: error: Key … was not found` — with no fault label and
+    /// no structured line. The script entry is not a rule: its face opens
+    /// `runtime fault at line N — ` and carries the kernel's message verbatim
+    /// after the label, with the same line on [`ScriptFault::line`].
+    #[test]
+    fn a_runtime_fault_face_is_labelled_and_names_its_line() {
+        use super::super::trace::{CommitLeg, FaultClass, ScriptTrace};
+
+        let mut door = Fake::still();
+        let mut host = WireHost::new(
+            &mut door,
+            "zt".to_owned(),
+            Instant::now() + Duration::from_secs(30),
+        );
+        let ctx = effects::ScriptCtx {
+            id: "script".to_owned(),
+            args: std::collections::BTreeMap::new(),
+            files: vec![PAGE.to_owned()],
+        };
+        // Line 1 reads; line 2 indexes a frontmatter key the page does not
+        // carry — the G7 shape.
+        let eval = effects::eval_script(
+            &format!("card = read({PAGE:?})\nx = card.fm[\"report_path\"]\n"),
+            &ctx,
+            effects::ScriptLimits::default(),
+            &mut host,
+        );
+        assert!(eval.outcome.is_err(), "the missing key aborts the attempt");
+
+        let trace = ScriptTrace::assemble("b3:00", &eval, CommitLeg::NotIssued);
+        let fault = trace.fault.as_ref().expect("the key error is the fault");
+        assert_eq!(fault.class, FaultClass::Runtime);
+        assert_eq!(
+            fault.line,
+            Some(2),
+            "the kernel attributes the faulting line from the Starlark span"
+        );
+        assert!(
+            fault.reason.starts_with("runtime fault at line 2 — "),
+            "the face opens with the fault label and line: {}",
+            fault.reason
+        );
+        assert!(
+            fault.reason.contains("report_path"),
+            "the kernel's own message rides verbatim after the label: {}",
+            fault.reason
+        );
+        assert!(
+            !fault.reason.contains("rule 'script'"),
+            "the script entry is not a rule; the rules-plane framing is not \
+             this face's: {}",
+            fault.reason
+        );
+    }
 }
