@@ -948,11 +948,13 @@ deferral):**
 - Row shape `{key, value, span, prop_rev}`:
   - `key` — the top-level key, the same string the §2.1 `fm_key` form
     addresses; the read→set loop closes off this row.
-  - `value` — the key line's value as stored: the colon remainder,
-    whitespace-trimmed, quotes kept. A block value (indented continuation
-    lines) serves the key line's own remainder — empty when that line
-    carries none. The engine re-serializes nothing (no YAML library —
-    honest limit, stated not worked around).
+  - `value` — the key line's value **decoded through the § A.6 scalar law**:
+    the colon remainder, whitespace-trimmed, then unquoted when it is a
+    well-formed quoted scalar. A block value (indented continuation lines)
+    serves the key line's own remainder — empty when that line carries none.
+    **Amended 2026-08-07 (§ A.6): this bullet formerly read "quotes kept",
+    which made the plane serve source bytes where every reader expects a
+    value; the superseded wording and why it failed are recorded at § A.6.**
   - `prop_rev` — the key's CAS token: blake3 over the full key grain span
     bytes (the key line plus its indented continuation lines), 16 hex —
     the SAME token `cat` on the `fm_key` node serves and `if_node_rev`
@@ -1059,6 +1061,90 @@ Do not bolt the triple on.
 required argument — today a loud error — into a success returning content the
 caller never asked for. `read`'s arguments stay required; discovery is its own
 op.
+
+### A.6 The frontmatter scalar law — decode on read, encode on write
+
+*Docs-first (2026-08-07, dogfood season 1 findings 1 and 2). One law, two
+directions: what the engine PUBLISHES as a property value is the decoded
+string, and what the engine WRITES for a property value is a YAML scalar that
+decodes back to exactly the caller's string. Read and write are inverses, and
+nothing between them is quote-tolerant.*
+
+**The defect this closes.** Every property value plane on this wire is a plane
+of STRINGS — `props[].value`, the `fm_key` `cat` remainder, and the
+`set_property` value are all `string`, never a YAML node. Before this law the
+engine served the value's SOURCE BYTES on the read side and wrote the caller's
+string as SOURCE BYTES on the write side, so quoting was in neither
+direction's contract and the two ends disagreed with the corpus:
+
+- **Read, fail-INERT.** `owner: "3f9a1c07"` served `"3f9a1c07"` — 10 bytes with
+  the quotes — so a comparison against `3f9a1c07` was false, no rule armed, and
+  the face rendered the legitimate "no effects armed". A silent false.
+- **Write, fail-CLOSED.** `set_property owner=[[b1892b5a]]` emitted
+  `owner: [[b1892b5a]]`, which is a list-of-list, so the I4 substrate law
+  refused the write and blamed the caller's value for a nesting the EMITTER
+  manufactured.
+- Net: the engine could read the fleet-canonical `owner: "[[b1892b5a]]"` and
+  could not write it. Superseded wording, § A.3 `value` bullet, verbatim:
+  *"the key line's value as stored: the colon remainder, whitespace-trimmed,
+  quotes kept … The engine re-serializes nothing (no YAML library — honest
+  limit, stated not worked around)."* The limit was honest about the library
+  and wrong about the plane: unquoting a scalar is not a YAML library, and
+  serving source bytes where the schema says `string` is not an honest limit.
+
+**A.6.1 Decode (every read seam).** A value is unquoted when — and only when —
+it is a **well-formed** quoted scalar: `'…'` with interior `'` only as `''`, or
+`"…"` with no unescaped interior `"`. Single-quoted resolves `''`→`'` and
+nothing else; double-quoted resolves `\\ \" \n \t \r` and leaves any other
+escape verbatim. Everything else is served verbatim after the whitespace trim:
+plain scalars, flow collections (`[a, b]`), and **malformed quoting, which no
+reader may guess at**. A quoted scalar is a STRING in every schema — the
+decode is the quoting layer only, never type inference.
+
+The law binds three seams and no fourth: the composed read's `props[].value`
+(§ A.3), the `fm_key` value a script's `fm` dict carries, and the run plane's
+frontmatter binding values. One owner implements it (`model::scalar`) so the
+def checker and the read seams cannot drift into two dialects.
+
+**A.6.2 The stored form stays raw where hashing is the point.** `prop_rev`,
+`span`, the props fingerprint (`props1`) and every node rev are computed over
+SOURCE BYTES and are untouched by this law. This is not an inconsistency, it is
+the reason the law is safe: a guard token must distinguish `owner: ""` from
+`owner:` — the R4 three-state law (absent ≠ null ≠ empty string) lives in the
+stored form, where the distinction exists. Decoding at the hash grain would
+collapse two states into one and weaken the guard. The published VALUE plane
+and the GUARD plane answer different questions, and only the first one is a
+string.
+
+**A.6.3 Encode (`set_property`, and the `check_write` candidate that shares
+its owner).** The emitted line is `{key}: {encoded}`, and the encoding is the
+inverse of A.6.1: **emit the plain form when the plain form decodes back to
+exactly the caller's string; otherwise emit a double-quoted scalar** (`\` and
+`"` escaped). The quoted form is the fleet-canonical one — the spelling
+`ccc-cli task claim` writes — so two writers on one tree no longer churn each
+other's bytes. Concretely, a value is quoted when it:
+
+- is empty, or is a null spelling (`~`, `null`, `Null`, `NULL`) — the plane has
+  no null, so emitting one would forge a type the caller cannot express;
+- starts with `'` or `"` — the plain form would be decoded back as quoting;
+- would parse as a **map or a nested collection** (`{…}`, `[[…]]`, an
+  unterminated `[…]`) — the I4 nesting was the emitter's, never the caller's;
+- carries `: ` unquoted, starts with `#`, or carries ` #` — a mapping or a
+  comment in value position.
+
+Unchanged, deliberately: a **typed scalar** (`true`, `7`, `2026-08-07`) and a
+**one-level flow list** (`[a, b]`) still emit verbatim. Those spellings are the
+only way this string plane can author a non-string value, and no reported
+defect touches them. A newline in a value is still REFUSED, never sanitized: a
+single-line frontmatter value cannot carry one, and an escaped-scalar workaround
+leaks.
+
+**A.6.4 What conformance means here.** Round-trip is the test, per direction and
+composed: a fleet-canonical quoted value reads back without its quote bytes, and
+a `set_property` of an `[[id]]`-shaped value lands quoted and reads back as the
+caller's string. A quote-tolerant comparison ANYWHERE — in a host, a caller, or
+a second engine seam — is a defect against this section, not a compatibility
+measure.
 
 ---
 
