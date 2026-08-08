@@ -4,16 +4,23 @@
 //! raw file bytes.
 //!
 //! Mirrored, not repaired (the authoritative target is the captured golden
-//! corpus). Two deliberate Go behaviors ride along:
+//! corpus). One deliberate Go behavior rides along:
 //!
 //! - Only rows of kind `"heading"` and `"list_item"` become facts. An anchor
 //!   whose HOST block is a task/callout/fence/table/paragraph projects under
 //!   that kind and is DROPPED — exactly as the Go `switch` drops it, so e.g.
 //!   a `- [ ] item ^t1` task anchor is NOT addressable on the read face (the
 //!   `basic` golden pins `^task1` unresolved).
-//! - Selector resolution returns the FIRST match in row order (duplicate
-//!   headings: read resolves the first occurrence; refusing ambiguous writes
-//!   is the write plane's job, never last-wins).
+//!
+//! One deliberate departure from the Go face:
+//!
+//! - Selector resolution returns ALL matches in document order (headings and
+//!   block anchors alike): a bare duplicate yields >1 and the caller refuses
+//!   `ambiguous_ref` naming the candidates — the strict plane never silently
+//!   picks (§2.1; wire-contract A.3, door symmetry over duplicate ids). The
+//!   dewey arm stays first-match (≤1 entry): a dewey ordinal is a positional
+//!   row handle whose duplicates are a numbering artifact, not an ambiguity
+//!   ([`selector_matches`]).
 
 use crate::gotext::{DeweyCounter, fields_count};
 
