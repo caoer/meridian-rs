@@ -83,40 +83,34 @@ perform no I/O at call time. The law: **script eval is a pure function of
 read response, so re-evaluating against the recorded responses is
 deterministic and byte-identical. Decision #17 (no exec) stands unchanged.
 
-**`read(path)` IS the wire toc face, 1:1.** The recorded toc face is
-`{rev, fm, toc, words}`, and `words` is the wire's own `words_total` — a
-delivered fact the host carries, never a count the consumer plane computes. A
-script sees `t.words` for the same reason it sees `t.rev`: the wire answered
-it. **Which op answers it:** the composed `read` (§4.1, toc mode) carries
-`words_total`; the `toc` op's body is `{path, file_rev, root, nodes}` and
-carries none, so a whole-file `read(path)` asks both — `toc` for the rev and
-the section map, `read` for the count. Zero wire delta: both ops are already
-declared, and a toc-mode read mints no receipt, so the second ask is
-side-effect-free (ruling 2026-08-07, `words:` on the read face).
+**`read(path)` composes two engine facts.** The recorded toc face is
+`{rev, fm, toc, words}`. The `toc` op supplies the rev and section map; the
+composed `read` (§4.1, toc mode) supplies `words_total` and the semantic
+frontmatter `props` plane from one engine snapshot. The consumer carries those
+facts and parses no markdown or YAML. Zero wire delta: both ops already exist,
+and a toc-mode read mints no receipt, so the second ask is side-effect-free.
 
 **A composed read is BRACKETED by `file_rev`, or it refuses.** A whole-file
-`read(path)` is 2+N round trips — `toc`, one `cat` per frontmatter key, then the
-closing `read` — and reads are LIVE, so the world may move between any two of
-them. Composing one face from two revisions would hand the script a state that
-never existed, and the stand-still guarantee is about exactly that. So the
-`file_rev` the opening `toc` answered is compared against the `file_rev` the
-closing `read` answers, and a difference **refuses the read** naming both revs.
-The closing op is the count op deliberately: it already had to be asked, so the
-bracket costs **no additional round trip**, and every intermediate `cat` sits
-inside two agreeing observations of the same revision. Sequence order is
-therefore load-bearing — the count is asked LAST, never second. A single
-`read(path, section=…)` is one `cat` and needs no bracket: one op is one
+`read(path)` is two round trips: the opening `toc`, then the closing composed
+`read`. Reads are LIVE, so the world may move between them. Composing one face
+from two revisions would hand the script a state that never existed. The
+opening `file_rev` is therefore compared with the closing `file_rev`; a
+difference refuses the read and names both revs. The closing op already carries
+both the frontmatter values and word count, so the bracket costs no extra round
+trip. This is not a retry: no read is repeated, a moving world faults the
+evaluation, and nothing arms from the refused read. A wire error at either call
+likewise refuses the whole script read; no partial face is recorded. A single
+`read(path, section=…)` remains one `cat` and needs no bracket: one op is one
 revision by construction.
 
 **What the bracket does NOT catch, stated beside the guarantee it bounds.** A
 `file_rev` is content-derived, so an A→B→A sequence — a write and a
-byte-identical restoration, both landing inside one composed read — closes the
-bracket with two agreeing observations of A while the `cat` values in between
-were taken at B. The face is then internally consistent with A and the values
-came from a state that A also describes byte-for-byte, so nothing false is
-published; what is lost is the ability to SAY that the file did not move. The
-bracket is a revision-identity check, never a mutation counter, and the wire
-offers no mutation counter to check instead. The commit is unaffected either
+byte-identical restoration between the two observations — closes the bracket
+with two agreeing observations of A. The returned section map, properties, and
+word count are internally consistent with A, so nothing false is published;
+what is lost is the ability to SAY that the file moved transiently. The bracket
+is a revision-identity check, never a mutation counter, and the wire offers no
+mutation counter to check instead. The commit is unaffected either
 way: it carries the entry fingerprint and §5.1 checks it first, so a world that
 moved and came back still refuses there if the fingerprint moved. Naming this
 limit is the point — a guarantee stated without its known limit reads as a
@@ -128,9 +122,12 @@ stronger claim than the mechanism makes.
 are `splice.plan_edits[]` items (§A.3) carried **verbatim** — the armed list IS
 `plan_edits[]`, lowered by the engine's existing intake
 (`wire-serve::plan::lower`), so no third edit grammar is minted and the wire
-schema is untouched. One `put()` call may arm several items; arm order is
-execution order, and each armed item records its source line and nesting depth.
-Depth is a trace fact only: **an applied effect renders at any depth** — the
+schema is untouched. A `set_property.value` is the semantic string the script
+holds, not a YAML fragment; engine lowering emits its fleet-canonical scalar
+(`[[id]]` becomes `"[[id]]"`, and `""` stays the empty semantic value). One
+`put()` call may arm several items; arm order is execution order, and each armed
+item records its source line and nesting depth. Depth is a trace fact only: **an
+applied effect renders at any depth** — the
 echo/quiet rule governs reads, not arms.
 
 An `append` **addresses a section**. `PlanEdit::Append` carries an hpath and an

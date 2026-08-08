@@ -948,17 +948,31 @@ deferral):**
 - Row shape `{key, value, span, prop_rev}`:
   - `key` — the top-level key, the same string the §2.1 `fm_key` form
     addresses; the read→set loop closes off this row.
-  - `value` — the key line's value as stored: the colon remainder,
-    whitespace-trimmed, quotes kept. A block value (indented continuation
-    lines) serves the key line's own remainder — empty when that line
-    carries none. The engine re-serializes nothing (no YAML library —
-    honest limit, stated not worked around).
+  - `value` — the semantic string at the key line, not its YAML token. A
+    complete one-line single- or double-quoted scalar is decoded, including
+    its quote escaping; a plain scalar is the whitespace-trimmed colon
+    remainder. Thus `owner: ""`, `owner: "3f9a1c07"`, and
+    `owner: "[[1ed98864]]"` serve `""`, `"3f9a1c07"`, and
+    `"[[1ed98864]]"` respectively, with no quote bytes. Flow collections and
+    block values are outside this scalar normalization: they retain the key
+    line's own remainder (empty for a key whose value starts on continuation
+    lines). Callers never strip or tolerate YAML quotes.
   - `prop_rev` — the key's CAS token: blake3 over the full key grain span
     bytes (the key line plus its indented continuation lines), 16 hex —
     the SAME token `cat` on the `fm_key` node serves and `if_node_rev`
     compares (§5.1: one rev per node, re-derived at execution, no second
     derivation).
   - `span` — that grain span; intra-file byte offsets, root-independent.
+- Scalar write symmetry: `splice.plan_edits[].set_property.value` carries a
+  semantic string, never caller-made YAML; this is the plan row that
+  `put(properties={…})` lowers onto. The engine emits the fleet-canonical
+  one-line scalar: plain only when
+  YAML reads the same string without changing structure or type; otherwise
+  double-quoted with escapes. In particular, the empty string emits `""` and
+  `[[1ed98864]]` emits `"[[1ed98864]]"`. The candidate is then checked by the
+  ordinary write-conformance gate. A flat string can therefore never become a
+  nested collection manufactured by the emitter, and write→read returns the
+  same semantic string without a caller quoting or unquoting it.
 - Emission law (the `anchors` precedent): always emitted — empty means
   "this document has no top-level frontmatter keys", never "ask again with
   a flag". Decoding stays tolerant of older recorded frames; serialization
