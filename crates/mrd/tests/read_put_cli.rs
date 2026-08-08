@@ -314,6 +314,145 @@ fn read_frag_miss_is_the_engines_verbatim_refusal() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// the fragment selector door (db-frag-selector-door) — the `#FRAG` tail goes
+// through the one selector door, so `#^id` and `#1.1` reach the lanes that
+// serve them instead of dying as literal heading text (season-1 finding 5,
+// attribution overturned onto the faces; engine cleared).
+// ---------------------------------------------------------------------------
+
+/// One list-item anchor (`^goal`) beside the nested-heading pair, so every
+/// selector kind has a live target: heading `Alpha/Beta`, dewey `1.1`,
+/// anchor `^goal`.
+const ANCHORED: &str = "# Alpha\n\n- pinned goal ^goal\n\n## Beta\n\nfour five\n";
+
+/// Gate (ingress receipt E → PASS) — `path#^id` serves the same answer as
+/// `--section '^id'`: one selector door, so the fragment spelling and the
+/// section spelling of one address cannot diverge.
+#[test]
+fn read_frag_anchor_serves_the_section_lane_answer() {
+    let sb = sandbox();
+    let ws = sb.workspace_with(ANCHORED);
+    let frag = sb.run(&ws, &["read", "doc.md#^goal", "--json"]);
+    assert_eq!(
+        code(&frag),
+        0,
+        "the anchor fragment serves: {}",
+        stderr(&frag)
+    );
+    let section = sb.run(&ws, &["read", "doc.md", "--section", "^goal", "--json"]);
+    assert_eq!(
+        code(&section),
+        0,
+        "the section lane serves: {}",
+        stderr(&section)
+    );
+    assert_eq!(
+        stdout(&frag),
+        stdout(&section),
+        "one door, one answer — the two spellings of one address"
+    );
+}
+
+/// Gate (ingress receipt H → PASS) — the dewey arm rides the same door.
+#[test]
+fn read_frag_dewey_serves_the_section_lane_answer() {
+    let sb = sandbox();
+    let ws = sb.workspace_with(ANCHORED);
+    let frag = sb.run(&ws, &["read", "doc.md#1.1", "--json"]);
+    assert_eq!(code(&frag), 0, "the dewey fragment serves: {}", stderr(&frag));
+    let section = sb.run(&ws, &["read", "doc.md", "--section", "1.1", "--json"]);
+    assert_eq!(
+        code(&section),
+        0,
+        "the section lane serves: {}",
+        stderr(&section)
+    );
+    assert_eq!(stdout(&frag), stdout(&section), "one door, one answer");
+}
+
+/// Gate (ingress receipt I unchanged) — a heading fragment stays the
+/// whole-call scope on the frag lane: the answer is a scoped TOC (`toc`
+/// rides, `sections` does not), never a misrouted section read.
+#[test]
+fn read_frag_heading_still_scopes_the_toc_read() {
+    let sb = sandbox();
+    let ws = sb.workspace_with(ANCHORED);
+    let out = sb.run(&ws, &["read", "doc.md#Alpha", "--json"]);
+    assert_eq!(code(&out), 0, "the heading fragment serves: {}", stderr(&out));
+    let v: Value = serde_json::from_str(&stdout(&out)).expect("json parses");
+    let body = &v["read"];
+    assert!(
+        body["toc"].is_array(),
+        "a heading fragment answers the scoped map: {body}"
+    );
+    assert!(
+        body["sections"].is_null(),
+        "and never a section read: {body}"
+    );
+}
+
+/// U8 negative, anchor lane — an absent `^id` fragment refuses ON the anchor
+/// lane, in the sections-mode miss voice with its Law A-3 teaching, never as
+/// a heading literally spelled `^nope`.
+#[test]
+fn read_frag_anchor_miss_refuses_on_the_anchor_lane() {
+    let sb = sandbox();
+    let ws = sb.workspace_with(ANCHORED);
+    let out = sb.run(&ws, &["read", "doc.md#^nope"]);
+    assert_eq!(code(&out), 1, "a miss is the finding leg");
+    let e = stderr(&out);
+    assert!(
+        e.contains("no section addressed by \"^nope\""),
+        "the sections-lane miss voice: {e}"
+    );
+    assert!(
+        !e.contains("no section at"),
+        "never the heading-lane voice for an anchor spelling: {e}"
+    );
+}
+
+/// U8 negative, dewey lane — same door, same honesty.
+#[test]
+fn read_frag_dewey_miss_refuses_on_the_dewey_lane() {
+    let sb = sandbox();
+    let ws = sb.workspace_with(ANCHORED);
+    let out = sb.run(&ws, &["read", "doc.md#9.9"]);
+    assert_eq!(code(&out), 1, "a miss is the finding leg");
+    let e = stderr(&out);
+    assert!(
+        e.contains("no section addressed by \"9.9\""),
+        "the sections-lane miss voice: {e}"
+    );
+    assert!(
+        !e.contains("no section at"),
+        "never the heading-lane voice for a dewey spelling: {e}"
+    );
+}
+
+/// The either/or law is untouched by the door: any `#FRAG` beside
+/// `--section` still refuses whole, whatever the fragment's kind — the
+/// engine's `bad_request`, exit 2.
+#[test]
+fn read_frag_with_sections_still_refuses_whole() {
+    let sb = sandbox();
+    let ws = sb.workspace_with(ANCHORED);
+    for frag in ["doc.md#Alpha", "doc.md#^goal", "doc.md#1.1"] {
+        let out = sb.run(&ws, &["read", frag, "--section", "Beta"]);
+        assert_eq!(
+            code(&out),
+            2,
+            "both planes is a bad_request ({frag}): {}",
+            stderr(&out)
+        );
+        assert!(
+            stderr(&out).contains("not both"),
+            "the either/or teaching ({frag}): {}",
+            stderr(&out)
+        );
+    }
+}
+
 /// Gate — A5: `--mode` is retired, so it is an unknown flag (exit 2), not a quietly-accepted
 /// word. The selector alone says which face the caller wants, and a stale invocation learns
 /// that here rather than getting a toc it did not ask for.
