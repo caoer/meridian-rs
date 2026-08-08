@@ -1101,10 +1101,39 @@ plain scalars, flow collections (`[a, b]`), and **malformed quoting, which no
 reader may guess at**. A quoted scalar is a STRING in every schema — the
 decode is the quoting layer only, never type inference.
 
-The law binds three seams and no fourth: the composed read's `props[].value`
-(§ A.3), the `fm_key` value a script's `fm` dict carries, and the run plane's
-frontmatter binding values. One owner implements it (`model::scalar`) so the
-def checker and the read seams cannot drift into two dialects.
+The law binds the VALUE seams — every seam that publishes a frontmatter value
+to a consumer, or compares one against a caller-supplied string. One owner
+implements it (`model::scalar`) so the def checker and the read seams cannot
+drift into two dialects. The enumerated set, audited 2026-08-08:
+
+| Seam | Plane |
+|---|---|
+| composed read `props[].value` (§ A.3) | published value |
+| a script's `fm` dict (`fm_key` value) | published value |
+| the run plane's frontmatter binding values | published value |
+| `preset`'s `^properties` rule check and its `type`/`defines`/`root`/`births` reads | compared value |
+| `realise`'s `FieldEquals` — BOTH halves: the page's declared `realise.expected` and the observed field | compared value |
+
+**Why the last two rows joined (2026-08-08).** They read a value and compare it
+against a caller-supplied string, which is exactly the shape § A.6's read-half
+defect took: a fleet-canonical `status: "done"` compared raw against `done` is
+false, no rule fires, and the face renders a legitimate-looking "no violation".
+A silent false in a reconciliation loop is the same defect as a silent false in
+a script condition, so the same law governs it. Both halves of a comparison
+must decode, or the decode moves the mismatch instead of closing it.
+
+**What stays raw, and why it is not an omission** (§ A.6.2's reasoning, the
+same stance `cat` takes): `lock` (guard tokens), the `view` index rows, and
+`policy::change`'s `diff_fields` all answer questions ABOUT THE STORED BYTES.
+A quoting-only edit IS a change to the stored form, and a differ that decoded
+would report no change where the file's bytes moved.
+
+**Named residual, not silently left:** `policy::change`'s `DocFacts.frontmatter`
+— the `(key, value)` pairs the effect kernel's `on_change(event)` receives — is
+a published value plane by this section's own test and still serves stored
+bytes. It is out of this amendment's scope (it lands with the change-kernel's
+own contract work), recorded here so the next reader finds it named rather than
+missed.
 
 **A.6.2 The stored form stays raw where hashing is the point.** `prop_rev`,
 `span`, the props fingerprint (`props1`) and every node rev are computed over
@@ -1116,9 +1145,8 @@ collapse two states into one and weaken the guard. The published VALUE plane
 and the GUARD plane answer different questions, and only the first one is a
 string.
 
-**A.6.3 Encode (`set_property`, and the `check_write` candidate that shares
-its owner).** The emitted line is `{key}: {encoded}`, and the encoding is the
-inverse of A.6.1: **emit the plain form when the plain form decodes back to
+**A.6.3 Encode (every value-plane write door).** The emitted line is
+`{key}: {encoded}`, and the encoding is the inverse of A.6.1: **emit the plain form when the plain form decodes back to
 exactly the caller's string; otherwise emit a double-quoted scalar** (`\` and
 `"` escaped). The quoted form is the fleet-canonical one — the spelling
 `ccc-cli task claim` writes — so two writers on one tree no longer churn each
@@ -1139,12 +1167,58 @@ defect touches them. A newline in a value is still REFUSED, never sanitized: a
 single-line frontmatter value cannot carry one, and an escaped-scalar workaround
 leaks.
 
+**A.6.3a The write doors this encoder owns (2026-08-08).** Two doors write a
+frontmatter VALUE, and both encode:
+
+| Door | Path |
+|---|---|
+| `set_property` (and the `check_write` candidate sharing its owner) | the splice plan lowering |
+| `put{at:"upsert"}` on an `fm_key` target | the native wire write door |
+
+The upsert door is a value-plane door: its `text` is a caller's flat STRING,
+never a YAML node, so the same encoder governs it. Without this, the wire's own
+door could not write the value its own read seam decodes — `[[b1892b5a]]` would
+land as a nested flow sequence and the I4 substrate law would refuse it,
+blaming the caller for nesting the emitter manufactured. **Both doors refuse a
+multi-line value** — the encoder's `MultiLineValue` refusal, uniform at every
+value-plane write door. A newline is refused, never sanitized.
+
+**The kernel below the doors stays raw-grain.** `model::plan_fm_upsert`
+composes the value verbatim, because the run plane's `md.set_field` writes
+WHOLE-VALUE grains through it and their spelling must land as sent. The encode
+belongs at the door, where the input is known to be a flat string, and nowhere
+below it.
+
+**A.6.3b The splice consumer reads the ENCODED value.** When `set_property`
+updates an existing key, the separator guard — the one that inserts the space
+in `{key}: {value}` over a stored bare `key:` line — must test the ENCODED
+bytes, not the caller's string. The two differ exactly where this law bites:
+the empty string encodes to `""`, so a guard on the caller's value sees "empty,
+no separator needed" and emits `note:""` — which no external YAML parser reads
+as a property. One malformed line voids the whole frontmatter block for
+yaml.v3, PyYAML, Obsidian and `ccc-cli` alike, so the failure is not local to
+the key that was set.
+
+For the same reason a CREATE has ONE line shape, `{key}: {encoded}\n`. The
+former empty-value special case emitted a bare `{key}:\n` — a YAML null, the
+type A.6.3 says this plane cannot express, forged by the engine out of a
+caller's empty string. The encoder never returns empty bytes, so the uniform
+shape needs no special case to be correct.
+
 **A.6.4 What conformance means here.** Round-trip is the test, per direction and
 composed: a fleet-canonical quoted value reads back without its quote bytes, and
 a `set_property` of an `[[id]]`-shaped value lands quoted and reads back as the
 caller's string. A quote-tolerant comparison ANYWHERE — in a host, a caller, or
 a second engine seam — is a defect against this section, not a compatibility
 measure.
+
+**Round-trip alone is not the test.** A conformance test asserts the STORED
+LINE SHAPE, byte for byte, and only then the round trip. The engine's own
+decode is tolerant by design, so a value-only assertion passes over bytes that
+no external parser accepts: `note:""` round-trips through this engine and voids
+the frontmatter block for everyone else. A test that asserts the value and not
+the line is the escape hatch the A.6.3b defect hid behind. The bytes are the
+contract; the round trip only proves the engine agrees with itself.
 
 ---
 
