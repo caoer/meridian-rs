@@ -995,6 +995,60 @@ deferral):**
   plane (§7.2 — one projection, three tenses); §7.4's ruled node-grain and
   its named future-only `keys` amendment path are untouched.
 
+**Per-selector unresolved facts on the composed `read` (docs-first,
+2026-08-08, engine leg of the 07-05 miss-facts card):**
+
+- The composed-read reply gains an `unresolved` plane: one row per section
+  selector that resolved to no served section, in request order. This is the
+  machine tense of the facts the partial-read `notice` and the all-fail
+  refusal already phrase in prose — the A.3 symmetry law, now three tenses of
+  ONE fact set — so a consumer acts on each failure individually instead of
+  parsing one human sentence. The prose `notice` and `truncated` stay
+  unchanged beside it (the props precedent: the plane lands beside the prose
+  it structures, and both derive from the same resolution pass, so they
+  cannot disagree).
+- Row shape `{sel, reason, candidates, count?, host?, nearest}`:
+  - `sel` — the failed selector echoed in its own request grammar
+    (`{"hpath":…}` / `{"n":…}` / `{"anchor":…}`): the caller correlates by
+    shape or position, never by re-parsing a display string.
+  - `reason` — closed vocabulary, one per row:
+    `no_match` (nothing carries the address) ·
+    `ambiguous` (a heading or dewey selector matched more than one node) ·
+    `duplicate_anchor` (more than one block carries the `^id`) ·
+    `unaddressable_host` (the id exists on the page, but its host block kind
+    is outside the face's anchor plane — the P2-c truth-telling row, distinct
+    from `no_match` because the honest remedy differs).
+  - `candidates` — `ambiguous` only: each candidate's machine address as the
+    §2.1 `n`-carrying segment array (actual arrays, never encoded strings),
+    in the order the refusal names them. Always serialized; `[]` on every
+    other reason — including `duplicate_anchor`, where no per-candidate
+    machine address exists (the 2026-08-08 door-symmetry law above).
+  - `count` — `duplicate_anchor` only: how many blocks carry the id.
+  - `host` — `unaddressable_host` only: the true host kind (`paragraph`,
+    `task`, `heading`, `frontmatter`, …) — the same open string the toc
+    anchor row echoes, never a fallback.
+  - `nearest` — anchor-`no_match` only: the nearest live ids as
+    `{anchor, kind}` rows. **The candidate pool spans every `^id` on the
+    page, non-addressable hosts included** (season-1b addendum: a typo one
+    character short of a paragraph-hosted id refused with no candidate,
+    because the pool held face-addressable ids only — excluding exactly the
+    ids that would explain the miss). `kind` is the host kind, so a render
+    teaches the host-kind gate on a non-addressable candidate instead of
+    implying absence. Empty when the page carries no `^id` at all. Always
+    serialized.
+- The prose teaching draws from the same widened pool: the miss clause's
+  nearest list names a non-addressable candidate with its host kind and the
+  servable way in, and the no-anchors clause claims a bare page only when
+  the page truly carries no `^id` of any host kind.
+- Emission law (the `anchors`/`props` precedent): always emitted — empty
+  means "every selector resolved" (a toc read trivially so), never "ask
+  again with a flag". Decoding stays tolerant of older recorded frames;
+  serialization is unconditional.
+- v3-only by construction: the composed read is v3-only at dispatch, so the
+  plane never appears on a v2 session and the frozen v2 caps and bytes stay
+  byte-identical. No new cap: a response-side additive field under the
+  tolerant-client law (§3.2) — the `words`/`anchors`/`props` precedent.
+
 CLI inventory (descriptive): `status.md`. Cross-root agent address grammar: `address-grammar.md`. Config parse: `meridian-md-schema.md`.
 
 ### A.4 What this document does not teach as core

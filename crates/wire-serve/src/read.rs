@@ -249,6 +249,7 @@ pub fn composed_read(
             sections: Some(rendered_sections),
             truncated: body.notice.is_some().then_some(true),
             notice: body.notice,
+            unresolved: body.unresolved,
             rendered_text: agent_plane_face(body.text)?,
         });
     }
@@ -281,6 +282,7 @@ pub fn composed_read(
         sections: None,
         truncated: None,
         notice: None,
+        unresolved: Vec::new(),
         rendered_text,
     })
 }
@@ -510,36 +512,82 @@ fn collect_links<'a>(node: &'a model::Node, out: &mut Vec<(&'a String, &'a Strin
 struct SectionsRender {
     text: String,
     notice: Option<String>,
+    /// The unresolved plane (wire-contract § A.3): the machine tense of
+    /// `notice`, built from the same [`SelFail`] set as the prose.
+    unresolved: Vec<wire::ReadUnresolved>,
 }
 
 /// One failed section selector with its honest reason (wire-contract A.3): a
 /// miss (an anchor miss carries its Law A-3 teaching clause), or an ambiguity
-/// carrying each candidate's machine address.
+/// carrying each candidate's machine address. One value, three tenses: the
+/// all-fail [`Self::phrase`], the notice [`Self::notice_entry`], and the
+/// structured [`Self::row`] — derived from one resolution pass so they
+/// cannot disagree.
 enum SelFail {
     Miss {
-        display: String,
+        sel: wire::ReadSel,
         /// The `^id` teaching ([`anchor_sel_teach`]); `None` on heading
         /// and dewey misses, whose teaching is the aggregate recovery clause.
         teach: Option<AnchorTeach>,
     },
     Ambiguous {
-        display: String,
-        candidates: Vec<String>,
+        sel: wire::ReadSel,
+        candidates: Vec<Vec<wire::HpathSeg>>,
     },
     /// A duplicated block id: >1 carrier, but unlike [`SelFail::Ambiguous`] no
     /// machine address exists per candidate — duplicate ids share one spelling
     /// and the anchor grammar has no occurrence index — so the entry counts
     /// the carriers and teaches the anchor remedy (wire-contract A.3, door
     /// symmetry over duplicate block ids).
-    DupAnchor { display: String, count: usize },
+    DupAnchor { sel: wire::ReadSel, count: usize },
 }
 
 impl SelFail {
-    fn display(&self) -> &str {
+    fn sel(&self) -> &wire::ReadSel {
         match self {
-            SelFail::Miss { display, .. }
-            | SelFail::Ambiguous { display, .. }
-            | SelFail::DupAnchor { display, .. } => display,
+            SelFail::Miss { sel, .. }
+            | SelFail::Ambiguous { sel, .. }
+            | SelFail::DupAnchor { sel, .. } => sel,
+        }
+    }
+
+    fn display(&self) -> String {
+        self.sel().display()
+    }
+
+    /// The selector's row on the `unresolved` plane — same facts as the two
+    /// prose tenses, in the § A.3 row shape.
+    fn row(&self) -> wire::ReadUnresolved {
+        let bare = |reason| wire::ReadUnresolved {
+            sel: self.sel().clone(),
+            reason,
+            candidates: Vec::new(),
+            count: None,
+            host: None,
+            nearest: Vec::new(),
+        };
+        match self {
+            SelFail::Miss { teach: None, .. } => bare(wire::UnresolvedReason::NoMatch),
+            SelFail::Miss {
+                teach: Some(teach), ..
+            } => match &teach.host {
+                Some(kind) => wire::ReadUnresolved {
+                    host: Some(kind.clone()),
+                    ..bare(wire::UnresolvedReason::UnaddressableHost)
+                },
+                None => wire::ReadUnresolved {
+                    nearest: teach.nearest.clone(),
+                    ..bare(wire::UnresolvedReason::NoMatch)
+                },
+            },
+            SelFail::Ambiguous { candidates, .. } => wire::ReadUnresolved {
+                candidates: candidates.clone(),
+                ..bare(wire::UnresolvedReason::Ambiguous)
+            },
+            SelFail::DupAnchor { count, .. } => wire::ReadUnresolved {
+                count: Some(*count as u64),
+                ..bare(wire::UnresolvedReason::DuplicateAnchor)
+            },
         }
     }
 
@@ -549,25 +597,19 @@ impl SelFail {
     /// ambiguous arm never says "no section addressed" — two sections matched,
     /// and the honest answer names both and how to pin one (dogfood F4).
     fn phrase(&self) -> String {
+        let display = self.display();
         match self {
+            SelFail::Miss { teach: None, .. } => format!("no section addressed by \"{display}\""),
             SelFail::Miss {
-                display,
-                teach: None,
-            } => format!("no section addressed by \"{display}\""),
-            SelFail::Miss {
-                display,
-                teach: Some(teach),
+                teach: Some(teach), ..
             } => format!("no section addressed by \"{display}\" ({})", teach.clause),
-            SelFail::Ambiguous {
-                display,
-                candidates,
-            } => format!(
+            SelFail::Ambiguous { candidates, .. } => format!(
                 "\"{display}\" is ambiguous ({} matches — pin one occurrence by its machine \
                  address, or its dewey ordinal from the toc: {})",
                 candidates.len(),
-                candidates.join(" or ")
+                candidate_addrs(candidates).join(" or ")
             ),
-            SelFail::DupAnchor { display, count } => format!(
+            SelFail::DupAnchor { count, .. } => format!(
                 "\"{display}\" is ambiguous ({count} blocks carry this id — give each a \
                  distinct id, or read the enclosing section by heading path)"
             ),
@@ -577,28 +619,28 @@ impl SelFail {
     /// The partial-read notice's per-selector entry — same facts as
     /// [`SelFail::phrase`], in the notice's established bare-selector shape.
     fn notice_entry(&self) -> String {
+        let display = self.display();
         match self {
+            SelFail::Miss { teach: None, .. } => display,
             SelFail::Miss {
-                display,
-                teach: None,
-            } => display.clone(),
-            SelFail::Miss {
-                display,
-                teach: Some(teach),
+                teach: Some(teach), ..
             } => format!("{display} ({})", teach.clause),
-            SelFail::Ambiguous {
-                display,
-                candidates,
-            } => format!(
+            SelFail::Ambiguous { candidates, .. } => format!(
                 "{display} (ambiguous, {} matches: {})",
                 candidates.len(),
-                candidates.join(" or ")
+                candidate_addrs(candidates).join(" or ")
             ),
-            SelFail::DupAnchor { display, count } => {
+            SelFail::DupAnchor { count, .. } => {
                 format!("{display} (ambiguous, {count} blocks carry this id)")
             }
         }
     }
+}
+
+/// The prose spelling of an ambiguity's candidate list — each machine
+/// address rendered verbatim, refusal order.
+fn candidate_addrs(candidates: &[Vec<wire::HpathSeg>]) -> Vec<String> {
+    candidates.iter().map(|c| machine_addr(c)).collect()
 }
 
 /// One `^id` miss teaching: the parenthetical clause the refusal carries,
@@ -610,6 +652,10 @@ struct AnchorTeach {
     /// `Some(kind)` = the id exists but its host is outside the face's anchor
     /// plane; `None` = the id is absent from the page.
     host: Option<String>,
+    /// Absent-id arm only: the nearest live ids over the whole-page pool,
+    /// host kinds included — the `unresolved` row's `nearest` and the prose
+    /// clause render these same rows (§ A.3).
+    nearest: Vec<wire::ReadNearestAnchor>,
 }
 
 /// Face-scoped `^id` miss teaching (Law A-3: a miss teaches before it
@@ -630,14 +676,14 @@ struct AnchorTeach {
 /// only on this error path, never on a served read.
 fn anchor_sel_teach(
     doc: &model::Document,
-    facts: &[wire_map::facts::ReadFact],
     sel: &wire::ReadSel,
 ) -> Option<AnchorTeach> {
     let wire::ReadSel::Anchor { anchor } = sel else {
         return None;
     };
-    if let Some(row) = wire_map::project_toc(doc)
-        .into_iter()
+    let toc = wire_map::project_toc(doc);
+    if let Some(row) = toc
+        .iter()
         .find(|r| r.anchor.as_deref() == Some(anchor.as_str()))
     {
         let clause = if row.kind == "frontmatter" {
@@ -656,25 +702,66 @@ fn anchor_sel_teach(
         };
         return Some(AnchorTeach {
             clause,
-            host: Some(row.kind),
+            host: Some(row.kind.clone()),
+            nearest: Vec::new(),
         });
     }
-    let ids: Vec<String> = facts.iter().filter_map(|f| f.anchor.clone()).collect();
-    if ids.is_empty() {
+    // The candidate pool spans every `^id` on the page, non-addressable hosts
+    // included (§ A.3): the ids that would explain a near-miss typo must not
+    // be excluded just because this face cannot serve them. First occurrence
+    // wins on a duplicated id — the pool ranks spellings, not carriers.
+    let mut pool: Vec<(String, String)> = Vec::new();
+    for row in &toc {
+        if let Some(id) = &row.anchor {
+            if !pool.iter().any(|(a, _)| a == id) {
+                pool.push((id.clone(), row.kind.clone()));
+            }
+        }
+    }
+    if pool.is_empty() {
         return Some(AnchorTeach {
-            clause: "this page carries no addressable block anchors".to_owned(),
+            clause: "this page carries no block anchors".to_owned(),
             host: None,
+            nearest: Vec::new(),
         });
     }
-    let shown: Vec<String> = model::selector::nearest(anchor, &ids)
+    let ids: Vec<String> = pool.iter().map(|(a, _)| a.clone()).collect();
+    let nearest: Vec<wire::ReadNearestAnchor> = model::selector::nearest(anchor, &ids)
         .iter()
         .take(model::selector::NEAREST_SHOWN)
-        .map(|c| format!("^{c}"))
+        .map(|c| wire::ReadNearestAnchor {
+            anchor: c.clone(),
+            kind: pool
+                .iter()
+                .find(|(a, _)| a == c)
+                .map(|(_, k)| k.clone())
+                .unwrap_or_default(),
+        })
         .collect();
+    let shown: Vec<String> = nearest.iter().map(nearest_teach).collect();
     Some(AnchorTeach {
         clause: format!("nearest live block anchors: {}", shown.join(", ")),
         host: None,
+        nearest,
     })
+}
+
+/// One nearest candidate's prose spelling. A face-addressable id is offered
+/// bare; a non-addressable one carries the host-kind gate and the servable
+/// way in (§ A.3: teach the gate, never imply absence).
+fn nearest_teach(row: &wire::ReadNearestAnchor) -> String {
+    match row.kind.as_str() {
+        "list_item" => format!("^{}", row.anchor),
+        "frontmatter" => format!(
+            "^{} (frontmatter-hosted — its keys are on the `props` plane)",
+            row.anchor
+        ),
+        kind => format!(
+            "^{} ({kind}-hosted — outside this read face; read its enclosing section by \
+             heading path)",
+            row.anchor
+        ),
+    }
 }
 
 /// The servable Fix for an anchor whose host is outside the face's anchor
@@ -733,8 +820,8 @@ fn composed_sections(
         match matches.as_slice() {
             &[fact] => rows.push(render::SectionRow { sel, fact }),
             [] => failures.push(SelFail::Miss {
-                display: sel.display(),
-                teach: anchor_sel_teach(doc, facts, sel),
+                sel: sel.clone(),
+                teach: anchor_sel_teach(doc, sel),
             }),
             many => failures.push(match sel {
                 // A duplicated block id has no per-candidate machine address
@@ -742,12 +829,12 @@ fn composed_sections(
                 // so its entry counts the carriers instead of listing
                 // addresses (A.3, door symmetry over duplicate block ids).
                 wire::ReadSel::Anchor { .. } => SelFail::DupAnchor {
-                    display: sel.display(),
+                    sel: sel.clone(),
                     count: many.len(),
                 },
                 _ => SelFail::Ambiguous {
-                    display: sel.display(),
-                    candidates: many.iter().map(|f| machine_addr(&f.hpath)).collect(),
+                    sel: sel.clone(),
+                    candidates: many.iter().map(|f| f.hpath.clone()).collect(),
                 },
             }),
         }
@@ -775,7 +862,7 @@ fn composed_sections(
                 }),
                 ..
             } => unaddressable_fix(host, display),
-            other => crate::section_recovery(other.display(), Some(display)),
+            other => crate::section_recovery(&other.display(), Some(display)),
         };
         e.message = Some(format!(
             "read: {} in {display}. Nothing was read and no rev was minted. {fix}",
@@ -787,6 +874,7 @@ fn composed_sections(
         let entries: Vec<String> = failures.iter().map(SelFail::notice_entry).collect();
         format!("unresolved selectors (no rev minted): {}", entries.join(", "))
     });
+    let unresolved: Vec<wire::ReadUnresolved> = failures.iter().map(SelFail::row).collect();
     let job = render::RenderJob::Sections {
         header,
         rows: &rows,
@@ -824,6 +912,7 @@ fn composed_sections(
         SectionsRender {
             text: rendered.text,
             notice,
+            unresolved,
         },
         sections,
     ))
