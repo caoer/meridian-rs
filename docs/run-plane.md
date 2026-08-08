@@ -312,10 +312,12 @@ named term, the `≥` that remains is measurement honesty — the OS may always
 be slower — never an unpriced structural cost.
 
 **The linear term has a measured slope, and the slope is the honest headline**
-*(amended 2026-08-08 — the review battery's three-point curve, filed P1
-against the pre-fuse base)*. Per-read cost multiplies by **~2.1× per root
-doubling** (the pre-memo engine's own slope was 2.35×, so the memo bought
-about one root doubling — a constant, not a change of shape). The consequence
+*(amended 2026-08-08 — the memo design's own disclosure, the ratios above,
+independently confirmed by the review battery's three-point curve)*. Per-read
+cost multiplies by **~2.1× per root doubling** as independently measured (the
+design disclosed 1.84× pass / 1.91× end-to-end before anyone re-measured; the
+pre-memo engine's slope was 2.35×, so the memo bought about one root
+doubling — a constant, not a change of shape). The consequence
 stated rather than implied: a 10-read program clearing ~3.8 s at a 2× root
 returns to roughly ~7.8 s at 4× on the same slope — over the budget again.
 Capacity planning must read `ceiling = f(reads, corpus)` WITH that slope;
