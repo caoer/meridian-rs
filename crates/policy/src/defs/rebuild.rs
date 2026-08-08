@@ -3,6 +3,7 @@
 //! normalized forms. Rev neutralization and string fidelity are load-bearing.
 
 use super::BodyError;
+use super::fm;
 use super::go_fmt::go_quote;
 
 /// One address segment — the policy-boundary twin of `wire::HpathSeg` (C-08:
@@ -738,10 +739,17 @@ impl std::fmt::Display for MultiLineValue {
 
 /// Go `yamlSafeValue` (E2 finding 1): quote IFF the `k: <val>` probe ERRORS
 /// or decodes a MAP; everything that parses non-map passes VERBATIM — typed
-/// scalars, flow lists, and crucially list-of-list (`[[a, b]]`), which lands
-/// raw so the I4 nested-frontmatter law (not a shape check) judges it. The
-/// error class is approximated by its two live shapes: an unquoted mid-value
-/// `": "` (mapping in value position) and an unterminated leading quote.
+/// scalars and one-level flow lists. AMENDED (wire-contract § A.3,
+/// 2026-08-07, dogfood season-1 finding 2): a value whose plain emission
+/// would decode as a NESTED collection no longer lands raw for the I4 law to
+/// refuse after the fact — the emitter was manufacturing the substrate-law
+/// violation out of a flat string, and the refusal blamed the caller. That
+/// class emits DOUBLE-quoted through [`fm::quote_scalar`] — the
+/// fleet-canonical form (`owner: "[[id]]"`) — probed by the SAME grammar the
+/// gate judges with ([`fm::classify_scalar_or_flow`]), so the emission cannot
+/// drift from its read-back. The remaining error class is approximated by its
+/// two live shapes: an unquoted mid-value `": "` (mapping in value position)
+/// and an unterminated leading quote.
 /// SHARED (U8b): the splice plan-lowering quotes `set_property` values through
 /// THIS predicate — single-owner discipline, so the `check_write` candidate and
 /// the written bytes cannot drift.
@@ -766,6 +774,13 @@ pub fn yaml_safe_value(val: &str) -> Result<String, MultiLineValue> {
         || (val.starts_with('"') && (val.len() < 2 || !val.ends_with('"')));
     if map_shaped || colon_space || unterminated_quote {
         return Ok(format!("'{}'", val.replace('\'', "''")));
+    }
+    // The nested-collection class: plain emission would decode as a list
+    // inside a list (or an unterminated flow — the probe-error shape), which
+    // the I4 substrate law must refuse. The value is a flat string the caller
+    // passed, so it emits as the fleet-canonical double-quoted scalar.
+    if val.starts_with('[') && fm::classify_scalar_or_flow(val) == fm::FmValue::Nested {
+        return Ok(fm::quote_scalar(val));
     }
     Ok(val.to_string())
 }

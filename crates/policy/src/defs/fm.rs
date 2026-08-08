@@ -133,8 +133,11 @@ fn strip_comment(v: &str) -> &str {
     v
 }
 
-/// Classify an inline value: flow collection or scalar.
-fn classify_scalar_or_flow(v: &str) -> FmValue {
+/// Classify an inline value: flow collection or scalar. `pub(super)` so the
+/// write seam ([`super::rebuild::yaml_safe_value`]) probes the SAME grammar
+/// the gate judges with — the emission cannot drift from the classification
+/// it will be read back through.
+pub(super) fn classify_scalar_or_flow(v: &str) -> FmValue {
     if v.starts_with('{') {
         return FmValue::Nested;
     }
