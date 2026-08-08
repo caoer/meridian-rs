@@ -66,18 +66,22 @@ enum Door {
 struct DoorPin {
     /// Workspace-relative path of the file carrying the mint.
     file: &'static str,
-    /// **The door** — the function a caller enters. For four of the five
-    /// `write.rs` doors this is also where the mint and the guard sit; `splice`
-    /// is the one that spans three functions, which is why the door and its mint
-    /// are separate fields rather than one.
+    /// **The door** — the function whose body lands the bytes. For `splice`
+    /// and `create` the public wrappers keep their pre-cache signatures and
+    /// delegate here with `cache=None`, so the door is the cached variant the
+    /// daemon enters. For four of the five `write.rs` doors this is also where
+    /// the mint and the guard sit; `splice_cached` is the one that spans three
+    /// functions, which is why the door and its mint are separate fields
+    /// rather than one.
     door_fn: &'static str,
     /// **The mint site** — the function whose body holds the `candidate_of_*`
     /// call. With `file` this is the census key, because it is the thing the scan
     /// can measure.
     mint_fn: &'static str,
     /// **The discharge site** — the function calling `stored_form_guard_lazy` for
-    /// THIS door, or `None` for a door outside this unit. `splice` discharges in
-    /// `translate_stored_candidate`; the other three discharge in themselves.
+    /// THIS door, or `None` for a door outside this unit. `splice_cached`
+    /// discharges in `translate_stored_candidate`; the other four discharge in
+    /// themselves.
     guard_fn: Option<&'static str>,
     /// What a reader calls this door. Prose, never matched against the tree.
     label: &'static str,
@@ -90,18 +94,18 @@ const DOORS: &[DoorPin] = &[
     // ---- wire-serve/write.rs — U12's own file, all five guarded ----
     DoorPin {
         file: WRITE_RS,
-        door_fn: "splice",
+        door_fn: "splice_cached",
         mint_fn: "build_after_doc",
         guard_fn: Some("translate_stored_candidate"),
-        label: "splice (via build_after_doc)",
+        label: "splice (door body in splice_cached; splice delegates, cache=None)",
         class: Door::TranslatedAndGuarded,
     },
     DoorPin {
         file: WRITE_RS,
-        door_fn: "create",
-        mint_fn: "create",
-        guard_fn: Some("create"),
-        label: "create (the birth door)",
+        door_fn: "create_cached",
+        mint_fn: "create_cached",
+        guard_fn: Some("create_cached"),
+        label: "create (the birth door; body in create_cached, create delegates)",
         class: Door::TranslatedAndGuarded,
     },
     DoorPin {
