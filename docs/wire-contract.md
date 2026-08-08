@@ -948,11 +948,13 @@ deferral):**
 - Row shape `{key, value, span, prop_rev}`:
   - `key` — the top-level key, the same string the §2.1 `fm_key` form
     addresses; the read→set loop closes off this row.
-  - `value` — the key line's value as stored: the colon remainder,
-    whitespace-trimmed, quotes kept. A block value (indented continuation
-    lines) serves the key line's own remainder — empty when that line
-    carries none. The engine re-serializes nothing (no YAML library —
-    honest limit, stated not worked around).
+  - `value` — the key line's value as stored, DECODED per § A.6: the colon
+    remainder, whitespace-trimmed, quote bytes stripped and double-quoted
+    escapes unescaped. A block value (indented continuation lines) serves
+    the key line's own remainder — empty when that line carries none. The
+    engine re-serializes nothing (no YAML library — honest limit, stated
+    not worked around); the decode is the § A.6 scalar law, a string-level
+    strip, not a re-serialization.
   - `prop_rev` — the key's CAS token: blake3 over the full key grain span
     bytes (the key line plus its indented continuation lines), 16 hex —
     the SAME token `cat` on the `fm_key` node serves and `if_node_rev`
@@ -1059,6 +1061,61 @@ Do not bolt the triple on.
 required argument — today a loud error — into a success returning content the
 caller never asked for. `read`'s arguments stay required; discovery is its own
 op.
+
+### A.6 Frontmatter scalar law — decode on read, encode on write
+
+*Docs-first (2026-08-07, bakeoff-yaml): this section lands before its code.
+The frontmatter value seams were asymmetric: reads served the stored bytes
+verbatim (quote bytes included), writes emitted unquoted — so the
+fleet-canonical quoted form (`owner: "[[id]]"`, the convention `ccc-cli task
+claim` writes) could be read only WITH its quote bytes, and could not be
+written at all, because the unquoted emit turned `[[id]]` into a YAML flow
+sequence the I4 nested-frontmatter law refuses. This section closes the
+asymmetry engine-side: the value contract at both seams is the DECODED
+scalar, and the write seam stores the fleet-canonical spelling. Host-side
+normalization is refused — the fix lives entirely in the engine.*
+
+- **The value contract.** A frontmatter value is the decoded scalar: quote
+  bytes stripped, double-quoted escapes unescaped. Every value-serving
+  surface serves this form; every write accepts this form and stores the
+  fleet-canonical spelling.
+- **Read seam.** The value-serving surfaces — the composed read's `props`
+  plane (§ A.3) and the script plane's `card.fm` — serve the decoded
+  scalar. `cat` on an `fm_key` node is NOT a value surface: it serves the
+  node's full span bytes, quote bytes included, because "what you read is
+  exactly what is hashed" (§4.2) is the rev law. The decode happens at the
+  value boundary, never in the byte plane.
+- **Write seam.** The write seam (`yaml_safe_value`, shared by the native
+  splice rebuild and the wire plan-lowering) encodes the caller's value
+  into the fleet-canonical spelling: a value whose unquoted emit would not
+  read back as the same plain string is quoted. The fleet-canonical quoting
+  is double-quoted — the fleet's own convention (`owner: "[[id]]"`,
+  `owner: ""`). The legacy Go-parity single-quote cases (map-shaped,
+  `: `-bearing, unterminated-quote) are retained byte-identically.
+- **The encode rule.** Given a caller value `v`:
+  - multi-line (`\n`/`\r`) → refused (unchanged, D11);
+  - empty → `""` — the fleet's canonical empty; a bare `key:` reads as
+    absent to the def checker, so the quoted empty is the writable form of
+    "present but empty";
+  - map-shaped (`{`-start), unquoted `: `-bearing, or unterminated-quote →
+    single-quoted (unchanged, Go parity);
+  - flow-sequence-shaped (`[`-start) whose flow-seq parse is the nested
+    class (list-in-list) → double-quoted — the `[[id]]` case;
+  - everything else → verbatim: plain scalars and one-level flow lists
+    (`tags: [a, b]`) pass through, matching the fleet's own unquoted
+    spellings.
+- **Round-trip law.** The two seams are inverse on the decoded domain: for
+  every value the read seam serves, the write seam stores a spelling that
+  reads back as that same value — `decode(encode(v)) == v`. A caller who
+  passes an already-quoted spelling stores it verbatim, so the
+  fleet-canonical form is always writable directly. The engine's encode is
+  value-based; the fleet's per-key intent (quoting plain session ids) is
+  not reproducible by a value-based rule and is not attempted — a plain
+  scalar round-trips either way.
+- **Frozen v2 surfaces.** No wire type changes: the `props` plane's `value`
+  field is a `String` before and after; only the served value semantics
+  change. The frozen v2 key sets, caps, and `cat` byte identity stay
+  byte-identical.
 
 ---
 
