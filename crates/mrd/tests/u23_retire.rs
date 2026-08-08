@@ -147,6 +147,15 @@ fn as_pairs<'a>(v: &'a [(&'static str, String)]) -> Vec<(&'static str, &'a str)>
     v.iter().map(|(p, b)| (*p, b.as_str())).collect()
 }
 
+/// A hash-domain member the corpus does not serve: a real markdown prefix, then
+/// a byte no UTF-8 decode accepts. Written directly — the fixture table carries
+/// `&str` bodies, which cannot hold invalid UTF-8 by construction.
+fn poison(ws: &Path, rel: &str, line: &str) {
+    let mut bytes = format!("# P\n\n## Body\n\n{line}\n").into_bytes();
+    bytes.extend_from_slice(b"\xFF\n");
+    std::fs::write(ws.join(rel), bytes).expect("write poison member");
+}
+
 /// The workspace fingerprint the report publishes — the SAME token
 /// `--expect-root` is compared against by `splice`'s §5.1 world guard.
 fn fingerprint(sb: &Sandbox, ws: &Path) -> String {
@@ -621,7 +630,117 @@ fn a_holding_hpath_that_addresses_nothing_refuses() {
 }
 
 // ---------------------------------------------------------------------------
-// The refusal-contract sweep — all eight reason words, four properties each
+// Pin 9 — the sweep certifies only what its corpus serves
+// ---------------------------------------------------------------------------
+
+/// Pin 9. A retirement term whose ONLY live reference sits in a non-UTF-8
+/// member must NOT report a clean sweep. The corpus does not serve that member
+/// (node-rev-merkle-spec §3 per-file degradation), so the scan cannot see
+/// inside it — the sweep refuses `retire-member-unserved` on both faces and
+/// `mark` writes nothing. *Mutation:* drop the unserved refusal, and `mark`
+/// closes a retirement while a real reference survives in the skipped file.
+/// *Vacuity control:* the same vault without the poisoned member raises
+/// nothing.
+#[test]
+fn a_poisoned_member_with_the_only_live_reference_refuses_rather_than_reporting_clean() {
+    // Mid-retirement vault: guide.md's occurrence is already marked, so the
+    // scan over SERVED files sees nothing left to do — the exact state in
+    // which a silent skip reads as a completed retirement.
+    let files = vec![
+        (
+            "decisions/retire.md",
+            declaration("hpath-text", "hpath_text", "hpath", true),
+        ),
+        (
+            "guide.md",
+            "# Guide\n\n## Usage\n\nThe ~~hpath_text~~ hpath (retired: hpath-text) field carried it.\nSee the hpath column.\n"
+                .to_owned(),
+        ),
+    ];
+
+    let sb = sandbox();
+    let ws = sb.workspace(&as_pairs(&files));
+    poison(&ws, "poison.md", "hpath_text survives here");
+
+    let report_out = sb.run(&ws, &["retire", "report", "--json"]);
+    let report = json(&report_out);
+    assert!(
+        reasons(&report).contains(&"retire-member-unserved".to_owned()),
+        "the unserved member is a REFUSAL, never a silent skip: {report}"
+    );
+    assert_eq!(code(&report_out), 1, "a refusal is a finding");
+    let fp = report["fingerprint"]
+        .as_str()
+        .expect("fingerprint")
+        .to_owned();
+
+    let mark = sb.run(&ws, &["retire", "mark", "--expect-root", &fp, "--json"]);
+    assert_eq!(
+        code(&mark),
+        1,
+        "mark refuses the sweep whole: {}",
+        stdout(&mark)
+    );
+    assert!(
+        reasons(&json(&mark)).contains(&"retire-member-unserved".to_owned()),
+        "mark carries the same refusal: {}",
+        stdout(&mark)
+    );
+    assert_eq!(
+        fingerprint(&sb, &ws),
+        fp,
+        "nothing was written under the refusal"
+    );
+
+    // VACUITY CONTROL: the same vault, fully served, raises nothing.
+    let sb2 = sandbox();
+    let ws2 = sb2.workspace(&as_pairs(&files));
+    let out2 = sb2.run(&ws2, &["retire", "report", "--json"]);
+    assert!(
+        !reasons(&json(&out2)).contains(&"retire-member-unserved".to_owned()),
+        "VACUITY CONTROL: a fully served corpus raises nothing: {}",
+        stdout(&out2)
+    );
+    assert_eq!(code(&out2), 0, "and the report is clean: {}", stdout(&out2));
+}
+
+/// Pin 9b. The published denominator counts files the scan actually READ:
+/// `files_scanned` is the SERVED corpus, and the unserved population is its own
+/// key — never folded into the total. *Mutation:* set `scanned` back to the raw
+/// pre-split domain count, and "matched 0 of N scanned files" overclaims
+/// coverage by exactly the files the scan never saw.
+#[test]
+fn the_scan_denominator_counts_served_files_never_the_raw_domain() {
+    // The clean twin measures the served population; the poisoned workspace
+    // must publish the SAME `files_scanned`, not one more.
+    let sb_clean = sandbox();
+    let ws_clean = sb_clean.workspace(&as_pairs(&base_vault(true)));
+    let clean = json(&sb_clean.run(&ws_clean, &["retire", "report", "--json"]));
+    let served = clean["files_scanned"].as_u64().expect("files_scanned");
+    assert_eq!(
+        clean["files_unserved"].as_u64(),
+        Some(0),
+        "the clean shape keeps the key, at zero: {clean}"
+    );
+
+    let sb = sandbox();
+    let ws = sb.workspace(&as_pairs(&base_vault(true)));
+    poison(&ws, "poison.md", "no live reference here");
+    let report = json(&sb.run(&ws, &["retire", "report", "--json"]));
+    assert_eq!(
+        report["files_scanned"].as_u64(),
+        Some(served),
+        "the poisoned member is NOT in the scanned denominator: {report}"
+    );
+    assert_eq!(
+        report["files_unserved"].as_u64(),
+        Some(1),
+        "the unserved population is published beside it: {report}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The refusal-contract sweep — every reason word, four properties each
 // ---------------------------------------------------------------------------
 
 /// The four-property contract, asserted PER REFUSAL on its own structured
@@ -661,9 +780,9 @@ fn assert_contract(reason: &str, r: &Value) {
     );
 }
 
-/// The coverage gate: every one of the eight reason words is TRIGGERED by its
-/// own fixture and put through [`assert_contract`]. A table rather than eight
-/// tests, because coverage is a claim about the SET.
+/// The coverage gate: every reason word is TRIGGERED by its own fixture and
+/// put through [`assert_contract`]. A table rather than one test per word,
+/// because coverage is a claim about the SET.
 fn contract_cases() -> Vec<(&'static str, Vec<(&'static str, String)>)> {
     vec![
         (
@@ -786,6 +905,31 @@ fn every_reason_word_carries_the_four_property_contract() {
         assert_contract(reason, found);
         assert_eq!(code(&out), 1, "{reason}: a refusal is a finding");
         covered.push((*reason).to_owned());
+    }
+
+    // The ninth reason needs BYTES the `&str` fixture table cannot carry: a
+    // non-UTF-8 hash-domain member, written after the workspace exists.
+    {
+        let reason = "retire-member-unserved";
+        let sb = sandbox();
+        let ws = sb.workspace(&as_pairs(&base_vault(true)));
+        poison(&ws, "poison.md", "quiet");
+        let out = sb.run(&ws, &["retire", "report", "--json"]);
+        let report = json(&out);
+        let found = report["refusals"]
+            .as_array()
+            .expect("refusals")
+            .iter()
+            .find(|r| r["reason"] == reason)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{reason}: the fixture did not trigger it — it triggered {:?}: {report}",
+                    reasons(&report)
+                )
+            });
+        assert_contract(reason, found);
+        assert_eq!(code(&out), 1, "{reason}: a refusal is a finding");
+        covered.push(reason.to_owned());
     }
 
     // The census reads the ENGINE, not a copy of it: `Reason::ALL` is the crate's

@@ -78,12 +78,19 @@ pub enum Reason {
     /// term already removed by hand, and a retirement declared early are indistinguishable
     /// here, so the name states only what is detected.
     TermNeverMatched,
+    /// R7 — a hash-domain member the corpus does not serve (not UTF-8,
+    /// node-rev-merkle-spec §3 per-file degradation). The sweep certifies
+    /// ABSENCE, and it cannot certify absence over a corpus it did not fully
+    /// read: a term or control occurrence inside the unserved member is
+    /// invisible to every scan loop, so a clean count would be a false clean
+    /// sweep.
+    MemberUnserved,
 }
 
 impl Reason {
     /// Every reason word this surface can emit, in declaration order — what the
     /// coverage census reads.
-    pub const ALL: [Reason; 8] = [
+    pub const ALL: [Reason; 9] = [
         Reason::BlockMalformed,
         Reason::ControlSilent,
         Reason::HoldingUnresolvable,
@@ -92,6 +99,7 @@ impl Reason {
         Reason::MarkerOrphaned,
         Reason::MarkerMalformed,
         Reason::TermNeverMatched,
+        Reason::MemberUnserved,
     ];
 
     /// The reason word, one spelling across the human line and `--json`.
@@ -106,6 +114,7 @@ impl Reason {
             Reason::MarkerOrphaned => "retire-marker-orphaned",
             Reason::MarkerMalformed => "retire-marker-malformed",
             Reason::TermNeverMatched => "retire-term-never-matched",
+            Reason::MemberUnserved => "retire-member-unserved",
         }
     }
 }
@@ -124,6 +133,7 @@ const fn index_in_all(r: Reason) -> usize {
         Reason::MarkerOrphaned => 5,
         Reason::MarkerMalformed => 6,
         Reason::TermNeverMatched => 7,
+        Reason::MemberUnserved => 8,
     }
 }
 
@@ -925,12 +935,31 @@ fn run(args: &[String], writing: bool) -> Result<(), Fail> {
             e.message.unwrap_or_default()
         ))
     })?;
-    let scanned = files.len();
-    let (_index, docs, _unserved) = fs::build_corpus(files);
+    let (_index, docs, unserved) = fs::build_corpus(files);
+    // The denominator counts files the scan READS. The raw domain count also
+    // held members the corpus does not serve — folding those in is how
+    // "matched 0 of N scanned files" overclaimed coverage by exactly the
+    // files no loop below ever saw.
+    let scanned = docs.len();
 
     // 1 · collect every declaration in the vault.
     let mut decls: Vec<Decl> = Vec::new();
     let mut refusals: Vec<Refusal> = Vec::new();
+
+    // R7 — the corpus must serve the whole hash domain, or the sweep cannot
+    // certify absence. Minted per member and ahead of every scan: the refusal
+    // gates `mark` regardless of which id is selected.
+    for (member, condition) in &unserved {
+        refusals.push(Refusal {
+            reason: Reason::MemberUnserved,
+            subject: format!("hash-domain member `{member}` {condition}"),
+            cause: "— the corpus does not serve it, so this sweep cannot see inside it; a clean count over a partial corpus certifies nothing, and a reference surviving in that file would be reported retired.".to_owned(),
+            partial: NO_MARK_CLAUSE.to_owned(),
+            fix: format!(
+                "re-encode {member} as valid UTF-8, or move it out of the hash domain; then run `mrd retire report --json` and confirm `files_unserved` is 0."
+            ),
+        });
+    }
     for (path, doc) in &docs {
         for fence in fences(&doc.raw, &doc.root) {
             if fence.lang != RETIRE_LANG {
@@ -1105,6 +1134,7 @@ fn run(args: &[String], writing: bool) -> Result<(), Fail> {
             "{}",
             serde_json::to_string_pretty(&to_json(
                 scanned,
+                unserved.len(),
                 &fingerprint,
                 &per_decl,
                 &refusals,
@@ -1116,6 +1146,7 @@ fn run(args: &[String], writing: bool) -> Result<(), Fail> {
             "{}",
             render_human(
                 scanned,
+                unserved.len(),
                 &fingerprint,
                 &per_decl,
                 &refusals,
@@ -1154,6 +1185,7 @@ fn display_hpath(hpath: &[HpathSeg]) -> String {
 
 fn to_json(
     scanned: usize,
+    unserved: usize,
     fingerprint: &Root,
     per_decl: &[(&Decl, Counts, Vec<Plan>)],
     refusals: &[Refusal],
@@ -1161,6 +1193,9 @@ fn to_json(
 ) -> Value {
     json!({
         "files_scanned": scanned,
+        // The population the scan did NOT read, published beside its
+        // denominator — never folded into it.
+        "files_unserved": unserved,
         "fingerprint": fingerprint.0,
         "retirements": per_decl.iter().map(|(d, c, _)| json!({
             "id": d.id,
@@ -1192,6 +1227,7 @@ fn to_json(
 
 fn render_human(
     scanned: usize,
+    unserved: usize,
     fingerprint: &Root,
     per_decl: &[(&Decl, Counts, Vec<Plan>)],
     refusals: &[Refusal],
@@ -1202,7 +1238,7 @@ fn render_human(
     let mut out = String::new();
     let _ = writeln!(
         out,
-        "files scanned: {scanned}   declarations: {}   fingerprint: {}",
+        "files scanned: {scanned}   unserved: {unserved}   declarations: {}   fingerprint: {}",
         per_decl.len(),
         fingerprint.0
     );

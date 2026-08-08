@@ -55,6 +55,24 @@ const EXIT_FINDINGS: u8 = 1;
 /// or a structural fault (a malformed scenario, a pairing hard error).
 const EXIT_FAIL: u8 = 2;
 
+/// The unserved-member voice, shared by every CLI face that builds the corpus
+/// in-process: one line per hash-domain member [`fs::build_corpus`] could not
+/// serve (its third slot), on stderr so machine stdout stays clean. The wording
+/// mirrors the daemon's per-file `invalid_utf8` teaching (registry
+/// `doc_or_refusal`), plus the one fact a SCANNING face owes its operator: this
+/// scan never saw inside the member. A face that discards the slot goes
+/// silently blind — its scan over a partial corpus reads as a scan of the
+/// whole vault. `mrd retire` deliberately does NOT voice through here: a sweep
+/// that certifies absence REFUSES on an unserved member instead
+/// (`retire_cmd::Reason::MemberUnserved`).
+pub(crate) fn voice_unserved(unserved: &std::collections::BTreeMap<String, String>) {
+    for (member, condition) in unserved {
+        eprintln!(
+            "mrd: warning: {member} {condition} — the file serves no spans/nodes; its bytes stay under the root; this scan does not see inside it"
+        );
+    }
+}
+
 /// The title line and the gutter legend. Held apart from [`LISTING`] so the legend, which is
 /// prose and not a verb block, can never be lexed as one.
 const HEADER: &str = "\
