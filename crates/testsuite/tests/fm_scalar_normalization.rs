@@ -6,9 +6,9 @@
 //! the round trip (§ A.6.4). The engine's own decode is tolerant by design, so
 //! a value-only assertion passes over bytes no external parser accepts —
 //! `note:""` round-trips through this engine and voids the frontmatter block
-//! for yaml.v3, PyYAML, Obsidian and `ccc-cli` alike. That escape hatch is what
+//! for yaml.v3, `PyYAML`, Obsidian and `ccc-cli` alike. That escape hatch is what
 //! the A.6.3b defect hid behind, so the empty-value matrix below also parses
-//! the result with PyYAML: a foreign parser, never the engine's own.
+//! the result with `PyYAML`: a foreign parser, never the engine's own.
 
 use serde_json::{Value, json};
 
@@ -324,7 +324,7 @@ fn assert_round_trip(dir: &std::path::Path, path: &str, key: &str, value: &str) 
     );
 }
 
-/// Parse the file's frontmatter with an EXTERNAL YAML parser (PyYAML) and
+/// Parse the file's frontmatter with an EXTERNAL YAML parser (`PyYAML`) and
 /// assert the expected pairs. The engine's own decode is tolerant, so only a
 /// foreign parser can answer the question this law is actually about: does the
 /// rest of the fleet still read this file?
