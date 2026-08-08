@@ -35,7 +35,12 @@ fn run(ws: &str) -> Result<(), String> {
     let canonical = workspace::canonicalize(Path::new(ws)).map_err(|e| format!("resolve: {e}"))?;
     let root = fs::WorkspaceRoot(canonical);
     let (files, _fingerprint) = fs::domain_snapshot(&root).map_err(|e| format!("snapshot: {e}"))?;
-    let (_index, docs, _unserved) = fs::build_corpus(files);
+    let (_index, docs, unserved) = fs::build_corpus(files);
+    // A dev tool still owes the operator the same fact the CLI faces voice:
+    // which members this scan never saw.
+    for (member, condition) in &unserved {
+        eprintln!("board_colors: warning: {member} {condition} — skipped by this scan");
+    }
 
     // The board off U2.9's locked read face — the same default-face SQL the U5.1 gates assert
     // (empty journal: the trace is not exercised by the color leg).
