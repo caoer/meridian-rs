@@ -248,6 +248,246 @@ pub fn domain_stat_signature(root: &WorkspaceRoot) -> io::Result<u64> {
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
+/// The identity one file must keep for a cached §12.2 leaf digest to be reused:
+/// `(device, inode, size, mtime, ctime)`, each at the resolution the filesystem
+/// reports.
+///
+/// `ctime` is what makes this worth trusting. `mtime` alone is settable
+/// (`utimes(2)`), so a writer can restore it; `ctime` is bumped by the kernel on
+/// every inode change and no API sets it, so a same-size in-place rewrite that
+/// forges an unchanged `mtime` still moves `ctime`. `dev`/`ino` catch the path
+/// being re-pointed at a different file.
+///
+/// Same standing as [`domain_stat_signature`]: evidence, not proof. It gates
+/// re-READING a file whose content is already hashed — never what a committed
+/// answer is stamped with. The write path folds from bytes
+/// ([`domain_snapshot`]), so a memo that ever disagreed with disk refuses the
+/// commit instead of landing it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatKey {
+    dev: u64,
+    ino: u64,
+    size: u64,
+    mtime: (i64, i64),
+    ctime: (i64, i64),
+}
+
+impl StatKey {
+    /// The identity of `meta`.
+    #[must_use]
+    pub fn of(meta: &fs::Metadata) -> StatKey {
+        use std::os::unix::fs::MetadataExt as _;
+        StatKey {
+            dev: meta.dev(),
+            ino: meta.ino(),
+            size: meta.size(),
+            mtime: (meta.mtime(), meta.mtime_nsec()),
+            ctime: (meta.ctime(), meta.ctime_nsec()),
+        }
+    }
+
+    /// The identity of the file at `abs`, or `None` when nothing is there.
+    /// Symlinks are not followed, matching the domain walk.
+    ///
+    /// # Errors
+    /// I/O failure other than the file being absent.
+    pub fn of_path(abs: &Path) -> io::Result<Option<StatKey>> {
+        match fs::symlink_metadata(abs) {
+            Ok(meta) => Ok(Some(StatKey::of(&meta))),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+}
+
+/// A resident memo of the hash domain's §12.2 leaf digests, keyed by
+/// [`StatKey`] — the daemon's currency check.
+///
+/// The corpus root is re-derived far more often than the corpus changes: every
+/// wire round trip needs to know the warm engine is still current, and the only
+/// honest answer was to re-read and re-fold every domain byte. This holds
+/// `blake3(raw)` per file instead, so a currency pass costs one `stat` per
+/// domain member and reads only the members whose identity moved — O(corpus) in
+/// `stat`s, O(changed) in bytes.
+///
+/// It is a cache of a pure function ([`model::leaf_digest`]) and holds exactly
+/// one generation. It retains no history and answers no as-of question: there
+/// is nothing here to select a version from.
+#[derive(Debug, Default)]
+pub struct DomainCache {
+    leaves: BTreeMap<String, (StatKey, [u8; 32])>,
+    dirs: BTreeMap<PathBuf, (StatKey, Vec<DirEntryKind>)>,
+    reads: u64,
+    listings: u64,
+}
+
+/// One remembered directory entry: its name and its `read_dir` file type — the
+/// only facts [`hash_domain`]'s walk takes from an enumeration, so remembering
+/// them is remembering the listing.
+///
+/// Both flags are kept because `read_dir`'s type is `lstat`-shaped: a symlink
+/// is neither `is_dir` nor `is_file`, and the domain walk descends only the
+/// first and admits only the second. Deriving one from the other would quietly
+/// start following symlinks into the hash domain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DirEntryKind {
+    name: std::ffi::OsString,
+    is_dir: bool,
+    is_file: bool,
+}
+
+impl DomainCache {
+    /// An empty memo — the first [`root`](Self::root) reads every member.
+    #[must_use]
+    pub fn new() -> DomainCache {
+        DomainCache::default()
+    }
+
+    /// How many domain members this memo has READ (not `stat`ed) for their
+    /// bytes, over its whole life.
+    ///
+    /// The companion of [`fold_count`]: that counts full folds, this counts how
+    /// much of the corpus each currency pass actually touched. Per-memo rather
+    /// than process-global precisely so an exact-count assertion does not
+    /// depend on nothing else folding at the same time.
+    #[must_use]
+    pub fn leaves_read(&self) -> u64 {
+        self.reads
+    }
+
+    /// The domain's current [`model::MerkleRoot`], reading only what moved.
+    ///
+    /// The walk and the `stat`s are live: the member SET is observed now, and
+    /// every member's identity is checked now. Vanished members are dropped, so
+    /// the memo cannot outlive its corpus.
+    ///
+    /// The root is byte-identical to [`domain_snapshot`]'s over the same tree —
+    /// both fold through [`model::merkle_root_of_leaves`], and a member whose
+    /// digest is not memoized is read and hashed by [`model::leaf_digest`], the
+    /// same leaf the other path uses.
+    ///
+    /// # Errors
+    /// I/O failure loading the domain config, traversing the root, `stat`ing a
+    /// member, or reading a member whose identity moved.
+    pub fn root(&mut self, root: &WorkspaceRoot) -> io::Result<model::MerkleRoot> {
+        let domain = domain::Domain::load(root)?;
+        let mut rels = Vec::new();
+        let mut fresh_dirs = BTreeMap::new();
+        self.walk(&root.0, Path::new(""), &domain, &mut rels, &mut fresh_dirs)?;
+        self.dirs = fresh_dirs;
+        rels.sort();
+        let mut fresh: BTreeMap<String, (StatKey, [u8; 32])> = BTreeMap::new();
+        for rel in rels {
+            let rel_str = rel.to_string_lossy().replace('\\', "/");
+            let abs = root.0.join(&rel);
+            let key = StatKey::of_path(&abs)?.ok_or_else(|| {
+                // Walked a moment ago and gone now: a corpus-scoped refusal
+                // names its member, like every other one here.
+                corpus_member_refusal(
+                    io::ErrorKind::NotFound,
+                    &rel_str,
+                    "vanished between the domain walk and its stat".to_owned(),
+                )
+            })?;
+            let digest = match self.leaves.get(&rel_str) {
+                Some((seen, digest)) if *seen == key => *digest,
+                _ => {
+                    self.reads += 1;
+                    let bytes = fs::read(&abs).map_err(|e| {
+                        corpus_member_refusal(e.kind(), &rel_str, format!("cannot be read ({e})"))
+                    })?;
+                    model::leaf_digest(&bytes)
+                }
+            };
+            fresh.insert(rel_str, (key, digest));
+        }
+        self.leaves = fresh;
+        let leaves: Vec<(&str, [u8; 32])> = self
+            .leaves
+            .iter()
+            .map(|(rel, (_, digest))| (rel.as_str(), *digest))
+            .collect();
+        Ok(model::merkle_root_of_leaves(&leaves, domain.version()))
+    }
+
+    /// [`hash_domain`]'s traversal, with the listing of an unmoved directory
+    /// taken from memory instead of from a `read_dir`.
+    ///
+    /// A directory's own `mtime`/`ctime` move when an entry is created,
+    /// removed, or renamed inside it — that is what a directory's timestamps
+    /// ARE — so an unmoved directory has the entry set it had last time. It
+    /// says nothing about the CONTENT of the files in it, which is why every
+    /// member is still `stat`ed by the caller: this memo skips enumeration, and
+    /// never a member's own currency check.
+    ///
+    /// Same evidence-not-proof standing as [`StatKey`], and it fails the safe
+    /// way: an unreadable directory stat re-enumerates rather than trusting
+    /// what it remembers.
+    fn walk(
+        &mut self,
+        abs_dir: &Path,
+        rel_dir: &Path,
+        domain: &domain::Domain,
+        out: &mut Vec<PathBuf>,
+        fresh_dirs: &mut BTreeMap<PathBuf, (StatKey, Vec<DirEntryKind>)>,
+    ) -> io::Result<()> {
+        let key = StatKey::of_path(abs_dir)?;
+        let remembered = key.and_then(|key| {
+            self.dirs
+                .get(rel_dir)
+                .filter(|(seen, _)| *seen == key)
+                .map(|(_, entries)| entries.clone())
+        });
+        let entries = match remembered {
+            Some(entries) => entries,
+            None => {
+                self.listings += 1;
+                let mut entries = Vec::new();
+                for entry in fs::read_dir(abs_dir)? {
+                    let entry = entry?;
+                    let file_type = entry.file_type()?;
+                    entries.push(DirEntryKind {
+                        is_dir: file_type.is_dir(),
+                        is_file: file_type.is_file(),
+                        name: entry.file_name(),
+                    });
+                }
+                entries
+            }
+        };
+        if let Some(key) = key {
+            fresh_dirs.insert(rel_dir.to_path_buf(), (key, entries.clone()));
+        }
+        for entry in entries {
+            let rel = rel_dir.join(&entry.name);
+            if entry.is_dir {
+                // Dot-segment: structurally outside the hash domain at any
+                // depth. Pruning is sound only where re-inclusion is
+                // impossible — the same two rules `walk_domain_dir` applies.
+                if entry.name.to_string_lossy().starts_with('.') {
+                    continue;
+                }
+                if domain.prunes_dir(&rel) {
+                    continue;
+                }
+                self.walk(&abs_dir.join(&entry.name), &rel, domain, out, fresh_dirs)?;
+            } else if entry.is_file && domain.contains(&rel) {
+                out.push(rel);
+            }
+        }
+        Ok(())
+    }
+
+    /// How many directories this memo has ENUMERATED (`read_dir`) over its
+    /// life, as against re-used from the listing memo. The walk's counterpart
+    /// to [`leaves_read`](Self::leaves_read).
+    #[must_use]
+    pub fn listings(&self) -> u64 {
+        self.listings
+    }
+
+}
+
 /// The domain files of a workspace as `(workspace-relative path, raw bytes)`
 /// pairs — the shape [`domain_snapshot`] returns and [`build_corpus`] consumes.
 pub type DomainFiles = Vec<(String, Vec<u8>)>;
@@ -2057,5 +2297,200 @@ mod corpus_refusal_tests {
         let (files, _) = domain_snapshot(&root).unwrap();
         let (_index, docs) = build_corpus(files).unwrap();
         assert_eq!(docs.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod domain_cache_tests {
+    //! The currency memo: same root as the byte-derived fold, reading only what
+    //! moved (`docs/run-plane.md` § What an entry costs).
+
+    use super::{DomainCache, WorkspaceRoot, domain_snapshot};
+    use std::fs;
+
+    fn workspace(files: &[(&str, &[u8])]) -> (tempfile::TempDir, WorkspaceRoot) {
+        let tmp = tempfile::tempdir().unwrap();
+        for (rel, bytes) in files {
+            let path = tmp.path().join(rel);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, bytes).unwrap();
+        }
+        let root = WorkspaceRoot(fs::canonicalize(tmp.path()).unwrap());
+        (tmp, root)
+    }
+
+    /// Write `bytes` to `rel` and force a distinguishable mtime — a test that
+    /// rewrites a file inside one filesystem timestamp tick would be asserting
+    /// the memo's blind spot, not its behaviour.
+    fn rewrite(root: &WorkspaceRoot, rel: &str, bytes: &[u8]) {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        fs::write(root.0.join(rel), bytes).unwrap();
+    }
+
+    /// The whole point: the memo's root IS the byte-derived root, at every
+    /// state of the tree. If these two ever disagreed the daemon would stamp
+    /// answers with a token the commit guard refuses.
+    #[test]
+    fn the_memo_root_equals_the_byte_derived_root_through_every_change() {
+        let (_tmp, root) = workspace(&[
+            ("a.md", b"# A\n".as_slice()),
+            ("notes/b.md", b"# B\n".as_slice()),
+            ("notes/deep/c.md", b"# C\n".as_slice()),
+        ]);
+        let mut cache = DomainCache::new();
+
+        let agrees = |cache: &mut DomainCache, at: &str| {
+            let memo = cache.root(&root).unwrap();
+            let bytes = domain_snapshot(&root).unwrap().1;
+            assert_eq!(memo, bytes, "memo and byte fold disagree {at}");
+            memo
+        };
+
+        let r0 = agrees(&mut cache, "at rest");
+
+        rewrite(&root, "notes/b.md", b"# B changed\n");
+        let r1 = agrees(&mut cache, "after a modify");
+        assert_ne!(r0, r1, "a modified member moves the root");
+
+        fs::write(root.0.join("notes/d.md"), b"# D\n").unwrap();
+        let r2 = agrees(&mut cache, "after an add");
+        assert_ne!(r1, r2, "an added member moves the root");
+
+        fs::remove_file(root.0.join("notes/d.md")).unwrap();
+        let r3 = agrees(&mut cache, "after a delete");
+        assert_ne!(r2, r3, "a removed member moves the root");
+        assert_eq!(r1, r3, "removing the addition restores the earlier root");
+
+        fs::remove_file(root.0.join("notes/deep/c.md")).unwrap();
+        agrees(&mut cache, "after emptying a subtree");
+    }
+
+    /// The cost claim, measured rather than timed: a currency pass over an
+    /// unchanged corpus reads ZERO members, and one over a corpus with one
+    /// changed member reads exactly that one.
+    #[test]
+    fn a_currency_pass_reads_only_what_moved() {
+        let (_tmp, root) = workspace(&[
+            ("a.md", b"# A\n".as_slice()),
+            ("b.md", b"# B\n".as_slice()),
+            ("c.md", b"# C\n".as_slice()),
+        ]);
+        let mut cache = DomainCache::new();
+
+        cache.root(&root).unwrap();
+        assert_eq!(
+            cache.leaves_read(),
+            3,
+            "a cold memo reads every member once"
+        );
+
+        cache.root(&root).unwrap();
+        cache.root(&root).unwrap();
+        assert_eq!(
+            cache.leaves_read(),
+            3,
+            "an unchanged corpus is re-folded without reading a single byte"
+        );
+
+        rewrite(&root, "b.md", b"# B changed\n");
+        cache.root(&root).unwrap();
+        assert_eq!(
+            cache.leaves_read(),
+            4,
+            "one moved member costs one read, not a corpus"
+        );
+    }
+
+    /// The listing memo's own cost claim, and its safety claim, in one test:
+    /// an unchanged tree is not re-enumerated, and a directory that GAINED a
+    /// member is — because that is what a directory's own timestamps record.
+    ///
+    /// The safety half is the one that matters. A listing memo that missed a
+    /// new file would leave it out of the fold, and the daemon would serve a
+    /// root describing a corpus that no longer exists.
+    #[test]
+    fn an_unchanged_directory_is_not_re_enumerated_but_a_grown_one_is() {
+        let (_tmp, root) = workspace(&[
+            ("a.md", b"# A\n".as_slice()),
+            ("notes/b.md", b"# B\n".as_slice()),
+            ("notes/deep/c.md", b"# C\n".as_slice()),
+        ]);
+        let mut cache = DomainCache::new();
+
+        cache.root(&root).unwrap();
+        assert_eq!(
+            cache.listings(),
+            3,
+            "a cold memo enumerates every directory: root, notes, notes/deep"
+        );
+
+        let quiet = cache.root(&root).unwrap();
+        assert_eq!(
+            cache.listings(),
+            3,
+            "an unchanged tree is re-folded without a single read_dir"
+        );
+
+        // A new member moves its OWN directory's timestamps and no other's.
+        rewrite(&root, "notes/new.md", b"# New\n");
+        let grown = cache.root(&root).unwrap();
+        assert_ne!(quiet, grown, "the new member is in the fold");
+        assert_eq!(
+            grown,
+            domain_snapshot(&root).unwrap().1,
+            "and the fold still agrees with the byte-derived root"
+        );
+        assert_eq!(
+            cache.listings(),
+            4,
+            "exactly one directory was re-enumerated — the one that grew"
+        );
+    }
+
+    /// A same-size rewrite is the case a size-only check would miss. It must
+    /// move the root: this is the property the whole mechanism rests on.
+    #[test]
+    fn a_same_size_rewrite_still_moves_the_root() {
+        let (_tmp, root) = workspace(&[("a.md", b"# AAA\n".as_slice())]);
+        let mut cache = DomainCache::new();
+        let before = cache.root(&root).unwrap();
+
+        rewrite(&root, "a.md", b"# BBB\n");
+        assert_eq!(
+            fs::metadata(root.0.join("a.md")).unwrap().len(),
+            6,
+            "the rewrite is the same size"
+        );
+
+        let after = cache.root(&root).unwrap();
+        assert_ne!(before, after, "a same-size rewrite is not invisible");
+        assert_eq!(
+            after,
+            domain_snapshot(&root).unwrap().1,
+            "and it agrees with the byte fold"
+        );
+    }
+
+    /// The memo holds one generation and never outlives its corpus: a member
+    /// that is deleted is dropped, so re-creating it with different content
+    /// cannot be answered from the digest it used to have.
+    #[test]
+    fn a_deleted_member_is_dropped_not_remembered() {
+        let (_tmp, root) = workspace(&[("a.md", b"# A\n".as_slice())]);
+        let mut cache = DomainCache::new();
+        let with_a = cache.root(&root).unwrap();
+
+        fs::remove_file(root.0.join("a.md")).unwrap();
+        let without_a = cache.root(&root).unwrap();
+        assert_ne!(with_a, without_a, "the deletion is observed");
+
+        rewrite(&root, "a.md", b"# A different\n");
+        let reborn = cache.root(&root).unwrap();
+        assert_ne!(reborn, with_a, "the reborn file is not the remembered one");
+        assert_eq!(
+            reborn,
+            domain_snapshot(&root).unwrap().1,
+            "and it agrees with the byte fold"
+        );
     }
 }
