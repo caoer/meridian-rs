@@ -91,8 +91,14 @@ fn card_pivot_predicate_matches_quoted_corpus() {
         "SELECT count(*) FROM card WHERE owner = '3f9a1c07' AND status = 'doing'",
     );
     assert_eq!(hits, 1, "the board predicate must see the decoded value");
-    let raw_hits = scalar_i64(&conn, "SELECT count(*) FROM card WHERE owner = '\"3f9a1c07\"'");
-    assert_eq!(raw_hits, 0, "no quote-tolerant row remains to compare against");
+    let raw_hits = scalar_i64(
+        &conn,
+        "SELECT count(*) FROM card WHERE owner = '\"3f9a1c07\"'",
+    );
+    assert_eq!(
+        raw_hits, 0,
+        "no quote-tolerant row remains to compare against"
+    );
 }
 
 /// § A.6.2 differential: a quoting-only edit IS a change to the stored form.
@@ -102,7 +108,10 @@ fn card_pivot_predicate_matches_quoted_corpus() {
 fn quoting_only_edit_moves_node_rev_not_value() {
     let quoted = {
         let mut docs = BTreeMap::new();
-        docs.insert("d.md".to_string(), doc("---\nowner: \"3f9a1c07\"\n---\n# H\n"));
+        docs.insert(
+            "d.md".to_string(),
+            doc("---\nowner: \"3f9a1c07\"\n---\n# H\n"),
+        );
         let conn = build(&docs);
         conn.query_row(
             "SELECT value, node_rev FROM frontmatter WHERE path='d.md' AND key='owner'",
@@ -148,5 +157,8 @@ fn quoted_flow_list_yields_clean_tag_rows() {
         &conn,
         "SELECT count(*) FROM frontmatter_tag WHERE path='q.md' AND (tag LIKE '[%' OR tag LIKE '%]')",
     );
-    assert_eq!(mangled, 0, "no bracket fragments from parsing through quote bytes");
+    assert_eq!(
+        mangled, 0,
+        "no bracket fragments from parsing through quote bytes"
+    );
 }
