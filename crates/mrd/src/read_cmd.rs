@@ -24,7 +24,7 @@ use std::path::Path;
 
 use registry::Client;
 use serde_json::{Value, json};
-use wire::Path as WirePath;
+use wire::{ErrorBody, Path as WirePath};
 
 use crate::engine::{self, EngineSource};
 use crate::{Fail, Format, current_dir};
@@ -131,20 +131,42 @@ impl Read {
     }
 }
 
-/// Answer the composed read: dial the resident daemon (auto-spawning it), and on any
-/// daemon-path failure degrade to the in-process engine — the same leaves, the same projection,
-/// only the reported source differs.
+/// What the daemon path answered. The split matters: a refusal is an ANSWER —
+/// the warm engine looked and said no, with its teaching (path, message,
+/// recovery) — while `Unavailable` means the question never reached an engine
+/// at all, the one case where the in-process degrade answers instead.
+enum DaemonRead {
+    /// `ok:true` — the wire success body.
+    Served(Value),
+    /// `ok:false` with a well-formed §8 error envelope — the engine's typed
+    /// refusal, surfaced verbatim. Degrading past it would remint from a
+    /// single-file load that cannot know what the corpus-holding engine said
+    /// (e.g. the per-file `invalid_utf8` naming an unserved member).
+    Refused(Box<ErrorBody>),
+    /// The daemon path itself failed: socket, spawn, handshake, or a frame
+    /// that does not parse as the wire vocabulary.
+    Unavailable,
+}
+
+/// Answer the composed read: dial the resident daemon (auto-spawning it) and serve its answer —
+/// success or typed refusal alike. Only when the daemon is unreachable degrade to the
+/// in-process engine — the same leaves, the same projection, only the reported source differs.
 fn answer_read(workspace: &Path, r: &Read) -> Result<(EngineSource, Value), Fail> {
-    if let Some(body) = try_daemon_read(workspace, r) {
-        return Ok((EngineSource::Daemon, body));
+    match try_daemon_read(workspace, r) {
+        DaemonRead::Served(body) => Ok((EngineSource::Daemon, body)),
+        DaemonRead::Refused(error) => Err(engine::refusal_fail(&error)),
+        DaemonRead::Unavailable => Ok((EngineSource::Ephemeral, in_process_read(workspace, r)?)),
     }
-    Ok((EngineSource::Ephemeral, in_process_read(workspace, r)?))
 }
 
 /// The whole daemon path: socket, ensure-up, `hello` (v3, workspace-bound), then the `read` op.
-/// `None` on any failure — including an op error, where the in-process recompute is
-/// authoritative and mints the same typed refusal for the exit triad.
-fn try_daemon_read(workspace: &Path, r: &Read) -> Option<Value> {
+fn try_daemon_read(workspace: &Path, r: &Read) -> DaemonRead {
+    daemon_read(workspace, r).unwrap_or(DaemonRead::Unavailable)
+}
+
+/// `None` on any transport or handshake failure — the caller degrades. An op-level `ok:false`
+/// is NOT such a failure: it comes back as [`DaemonRead::Refused`] carrying the engine's frame.
+fn daemon_read(workspace: &Path, r: &Read) -> Option<DaemonRead> {
     let client = Client::from_default().ok()?;
     engine::ensure_daemon(&client).ok()?;
     let stream = UnixStream::connect(client.socket_path()).ok()?;
@@ -168,10 +190,12 @@ fn try_daemon_read(workspace: &Path, r: &Read) -> Option<Value> {
 
     let response = engine::call(&mut writer, &mut reader, &r.request()).ok()?;
     if response.get("ok").and_then(Value::as_bool) == Some(true) {
-        response.get("body").cloned()
-    } else {
-        None
+        return Some(DaemonRead::Served(response.get("body")?.clone()));
     }
+    // A refusal frame that does not parse as the §8 envelope is a broken
+    // channel, not a refusal — that one degrades.
+    let error: ErrorBody = serde_json::from_value(response.get("error")?.clone()).ok()?;
+    Some(DaemonRead::Refused(Box::new(error)))
 }
 
 /// A fragment the user typed → the segment array the wire takes. It scopes a heading subtree, so
