@@ -1269,6 +1269,16 @@ fn composed_read_warm(
 
 /// Warm for `canonical` (idempotent), then serve through `f`. `None` after a
 /// successful warm means idle-reap won the race — client retries.
+///
+/// **Every** read op goes through this, and the corpus pass it takes is
+/// whole-corpus on purpose: a read is corpus-scoped, not file-scoped. A poison
+/// member anywhere in the domain refuses a read of a healthy member, naming the
+/// poison (Law A-3c, `registry/tests/corpus_refusal.rs`). Narrowing this to
+/// "verify only the file being asked for" would serve a healthy answer out of a
+/// corpus that cannot be parsed.
+///
+/// What the leaf memo changed is the COST of the pass, never its scope
+/// (`docs/run-plane.md` § What an entry costs).
 fn warm_engine_read<R>(
     registry: &Registry,
     canonical: &Path,
