@@ -17,7 +17,7 @@
 //! cycles off the flock so writers are not spuriously `workspace_busy`.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use wire::{DeltaFrame, ErrorBody, Root};
@@ -50,12 +50,24 @@ struct RingState {
 
 /// Live subscription claim. Decrements on drop so EOF, broken pipe, or panic
 /// always releases; a leaked count would keep the workspace un-reapable forever.
+///
+/// Owns its ring (`Arc`), so the claim is created where the `sub` is accepted
+/// and carried into the push plane — there is no arm-to-convert gap in which
+/// an acked subscription is still reapable.
 #[derive(Debug)]
-pub struct SubGuard<'a> {
-    ring: &'a WorkspaceRing,
+pub struct SubGuard {
+    ring: Arc<WorkspaceRing>,
 }
 
-impl Drop for SubGuard<'_> {
+impl SubGuard {
+    /// The subscribed ring — the same epoch the `sub` was acked on.
+    #[must_use]
+    pub fn ring(&self) -> &Arc<WorkspaceRing> {
+        &self.ring
+    }
+}
+
+impl Drop for SubGuard {
     fn drop(&mut self) {
         self.ring.subscribers.fetch_sub(1, Ordering::SeqCst);
     }
@@ -94,9 +106,11 @@ impl WorkspaceRing {
     }
 
     /// Register a subscription. Guard lifetime is the subscription's.
-    pub fn subscribe(&self) -> SubGuard<'_> {
+    pub fn subscribe(self: &Arc<Self>) -> SubGuard {
         self.subscribers.fetch_add(1, Ordering::SeqCst);
-        SubGuard { ring: self }
+        SubGuard {
+            ring: Arc::clone(self),
+        }
     }
 
     /// Anyone watching? Reaper and detector both ask this.
