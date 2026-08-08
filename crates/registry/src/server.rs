@@ -1339,7 +1339,7 @@ fn file_not_found(path: &wire::Path) -> Box<ErrorBody> {
     let mut e = ErrorBody::new(ErrorCode::FileNotFound);
     e.path = Some(path.clone());
     e.message = Some(format!(
-        "the corpus does not serve {}: either no such file exists under the \
+        "file_not_found: the corpus does not serve {}: either no such file exists under the \
          workspace root, or the file is real but outside the hash domain \
          (md-only floor, dot-segment and `meridian/domain.md` ignores — \
          wire-contract §12). Nothing was read and no rev was minted. Fix: check \

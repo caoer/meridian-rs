@@ -112,7 +112,7 @@ pub fn load_doc(root: &fs::WorkspaceRoot, path: &Path) -> Result<model::Document
                 let mut err = ErrorBody::new(ErrorCode::FileNotFound);
                 err.path = Some(path.clone());
                 err.message = Some(format!(
-                    "no file at {} under the workspace root — nothing was served and \
+                    "file_not_found: no file at {} under the workspace root — nothing was served and \
                      nothing was written. Fix: check the workspace-relative spelling \
                      (`results/f.md`, never absolute); a write to a missing path never \
                      births it — birth is its own door (wire `create`; `mrd new` for \
