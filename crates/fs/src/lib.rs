@@ -18,6 +18,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fs::{self, File};
 use std::io::{self, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::PoisonError;
@@ -125,8 +126,20 @@ pub fn user_rule_pages(anchor: &Path) -> io::Result<DomainFiles> {
     rels.sort();
     let mut pages = Vec::with_capacity(rels.len());
     for rel in rels {
+        // A rule page whose name has no UTF-8 spelling must not register
+        // under a rewritten name (silent policy drift) — refuse loud instead
+        // (merkle-spec §9 name truthfulness; the display form is escaped).
+        let Some(rel_str) = rel.to_str() else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "user rule page {} has a non-UTF-8 name and cannot be truthfully registered",
+                    display_name(hash_name(&rel))
+                ),
+            ));
+        };
         let bytes = fs::read(user_scope.join(&rel))?;
-        pages.push((rel.to_string_lossy().replace('\\', "/"), bytes));
+        pages.push((rel_str.to_owned(), bytes));
     }
     Ok(pages)
 }
@@ -238,7 +251,7 @@ pub fn domain_stat_signature(root: &WorkspaceRoot) -> io::Result<u64> {
             .ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
-        eat(rel.to_string_lossy().as_bytes());
+        eat(hash_name(rel));
         eat(&mtime.to_le_bytes());
         eat(&meta.len().to_le_bytes());
     }
@@ -316,7 +329,7 @@ impl StatKey {
 /// is nothing here to select a version from.
 #[derive(Debug, Default)]
 pub struct DomainCache {
-    leaves: BTreeMap<String, (StatKey, [u8; 32])>,
+    leaves: BTreeMap<PathBuf, (StatKey, [u8; 32])>,
     dirs: DirMemo,
     reads: u64,
     listings: u64,
@@ -381,25 +394,31 @@ impl DomainCache {
         self.listings += listings;
         rels.sort();
         let identities = member_identities(&root.0, &rels, PARALLEL_STAT_FLOOR)?;
-        let mut fresh: BTreeMap<String, (StatKey, [u8; 32])> = BTreeMap::new();
-        for (rel_str, key) in identities {
-            let digest = match self.leaves.get(&rel_str) {
+        let mut fresh: BTreeMap<PathBuf, (StatKey, [u8; 32])> = BTreeMap::new();
+        for (rel, key) in identities {
+            let digest = match self.leaves.get(&rel) {
                 Some((seen, digest)) if *seen == key => *digest,
                 _ => {
                     self.reads += 1;
-                    let bytes = fs::read(root.0.join(&rel_str)).map_err(|e| {
-                        corpus_member_refusal(e.kind(), &rel_str, format!("cannot be read ({e})"))
+                    let bytes = fs::read(root.0.join(&rel)).map_err(|e| {
+                        corpus_member_refusal(
+                            e.kind(),
+                            &display_name(hash_name(&rel)),
+                            format!("cannot be read ({e})"),
+                        )
                     })?;
                     model::leaf_digest(&bytes)
                 }
             };
-            fresh.insert(rel_str, (key, digest));
+            fresh.insert(rel, (key, digest));
         }
         self.leaves = fresh;
-        let leaves: Vec<(&str, [u8; 32])> = self
+        // Raw name bytes into the fold (merkle-spec §4/§9) — the same names
+        // `domain_snapshot` folds, so the byte-identity holds on any corpus.
+        let leaves: Vec<(&[u8], [u8; 32])> = self
             .leaves
             .iter()
-            .map(|(rel, (_, digest))| (rel.as_str(), *digest))
+            .map(|(rel, (_, digest))| (hash_name(rel), *digest))
             .collect();
         Ok(model::merkle_root_of_leaves(&leaves, domain.version()))
     }
@@ -645,26 +664,25 @@ fn member_identities(
     root: &Path,
     rels: &[PathBuf],
     floor: usize,
-) -> io::Result<Vec<(String, StatKey)>> {
-    let identity_of = |rel: &PathBuf| -> io::Result<(String, StatKey)> {
-        let rel_str = rel.to_string_lossy().replace('\\', "/");
+) -> io::Result<Vec<(PathBuf, StatKey)>> {
+    let identity_of = |rel: &PathBuf| -> io::Result<(PathBuf, StatKey)> {
         let key = StatKey::of_path(&root.join(rel))?.ok_or_else(|| {
             // Walked a moment ago and gone now: a corpus-scoped refusal
             // names its member, like every other one here.
             corpus_member_refusal(
                 io::ErrorKind::NotFound,
-                &rel_str,
+                &display_name(hash_name(rel)),
                 "vanished between the domain walk and its stat".to_owned(),
             )
         })?;
-        Ok((rel_str, key))
+        Ok((rel.clone(), key))
     };
     if rels.is_empty() || rels.len() < floor {
         return rels.iter().map(identity_of).collect();
     }
     let workers = std::thread::available_parallelism().map_or(2, |n| n.get().clamp(2, 8));
     let chunk = rels.len().div_ceil(workers);
-    let mut rows: Vec<io::Result<Vec<(String, StatKey)>>> = Vec::new();
+    let mut rows: Vec<io::Result<Vec<(PathBuf, StatKey)>>> = Vec::new();
     std::thread::scope(|scope| {
         let handles: Vec<_> = rels
             .chunks(chunk)
@@ -704,10 +722,18 @@ pub fn fold_count() -> u64 {
     FOLD_COUNT.load(Ordering::Relaxed)
 }
 
-/// The §12 hash-domain snapshot: every domain file's bytes (as
+/// The §12 hash-domain snapshot: every SERVABLE domain file's bytes (as
 /// `(workspace-relative path, raw bytes)`) plus the corpus [`model::MerkleRoot`]
-/// folded over exactly those bytes — one read, one fold, so a consumer parses
+/// folded over the WHOLE domain — one read, one fold, so a consumer parses
 /// the same bytes the root describes and the answer cannot drift from its stamp.
+///
+/// **Name truthfulness (merkle-spec §4/§9):** the fold carries each member's
+/// raw name bytes ([`hash_name`]) — never a lossy decode, never a separator
+/// rewrite. A member whose NAME is not valid UTF-8 enters the root with its
+/// exact bytes yet does not appear in the returned files: wire paths are UTF-8,
+/// so such a member is integrity-covered but unservable — the §3 analog of
+/// non-UTF-8 CONTENT (hashed, serves no spans). On any corpus this engine can
+/// serve at all, the two sets coincide and the name conversion is identity.
 ///
 /// This is the CHEAP half of a resident rebuild: it reads and folds but does
 /// not parse. The daemon uses the returned root as the corpus content hash —
@@ -721,21 +747,26 @@ pub fn domain_snapshot(root: &WorkspaceRoot) -> io::Result<(DomainFiles, model::
     let domain = domain::Domain::load(root)?;
     let rels = hash_domain(root, &domain)?;
     let mut files = Vec::with_capacity(rels.len());
+    let mut leaves: Vec<(Vec<u8>, [u8; 32])> = Vec::with_capacity(rels.len());
     for rel in rels {
-        let rel_str = rel.to_string_lossy().replace('\\', "/");
         // A member that cannot be read refuses the whole snapshot — a
         // corpus-scoped refusal, so it names the member (`CorpusMemberError`):
         // the raw OS error carries no path at all.
         let bytes = fs::read(root.0.join(&rel)).map_err(|e| {
-            corpus_member_refusal(e.kind(), &rel_str, format!("cannot be read ({e})"))
+            corpus_member_refusal(
+                e.kind(),
+                &display_name(hash_name(&rel)),
+                format!("cannot be read ({e})"),
+            )
         })?;
-        files.push((rel_str, bytes));
+        leaves.push((hash_name(&rel).to_vec(), model::leaf_digest(&bytes)));
+        if let Some(rel_str) = rel.to_str() {
+            files.push((rel_str.to_owned(), bytes));
+        }
     }
-    let entries: Vec<(&str, &[u8])> = files
-        .iter()
-        .map(|(p, b)| (p.as_str(), b.as_slice()))
-        .collect();
-    let folded = model::merkle_root(&entries, domain.version());
+    let leaf_refs: Vec<(&[u8], [u8; 32])> =
+        leaves.iter().map(|(n, d)| (n.as_slice(), *d)).collect();
+    let folded = model::merkle_root_of_leaves(&leaf_refs, domain.version());
     Ok((files, folded))
 }
 
@@ -753,19 +784,23 @@ pub fn domain_snapshot(root: &WorkspaceRoot) -> io::Result<(DomainFiles, model::
 /// here — they are not hashed in either interval — so a caller may pass whatever
 /// its producer reported without filtering it first.
 ///
-/// Ordering is correctness: the files are re-keyed by [`PathBuf`] so the emitted
-/// order is byte-for-byte the order [`walk`] produces. Any other order hashes
-/// the same content to a different root, and every baseline compare against it
-/// would refuse a tree that is actually current.
+/// Names stay the exact strings the inputs carry (merkle-spec §4/§9: a `&str`
+/// name folds as its UTF-8 bytes — identity, never a rewrite). The map key is
+/// a [`PathBuf`] for ORDER only — component-wise, the order [`walk`] and
+/// [`hash_domain`] emit — so the returned list is order-identical to
+/// [`domain_snapshot`]'s over the same tree; the emitted NAME is the input
+/// string verbatim, carried beside the key, never re-derived from it. Both
+/// inputs are UTF-8-named by type, so this fold covers the SERVABLE
+/// interval — the same set [`domain_snapshot`] returns.
 #[must_use]
 pub fn overlay_snapshot(
     worktree: &DomainFiles,
     overlay: &[(String, Option<Vec<u8>>)],
     domain: &domain::Domain,
 ) -> (DomainFiles, model::MerkleRoot) {
-    let mut keyed: BTreeMap<PathBuf, Vec<u8>> = worktree
+    let mut keyed: BTreeMap<PathBuf, (String, Vec<u8>)> = worktree
         .iter()
-        .map(|(rel, bytes)| (PathBuf::from(rel), bytes.clone()))
+        .map(|(rel, bytes)| (PathBuf::from(rel), (rel.clone(), bytes.clone())))
         .collect();
     for (rel, content) in overlay {
         let path = PathBuf::from(rel);
@@ -774,23 +809,72 @@ pub fn overlay_snapshot(
         }
         match content {
             Some(bytes) => {
-                keyed.insert(path, bytes.clone());
+                keyed.insert(path, (rel.clone(), bytes.clone()));
             }
             None => {
                 keyed.remove(&path);
             }
         }
     }
-    let files: DomainFiles = keyed
-        .into_iter()
-        .map(|(path, bytes)| (path.to_string_lossy().replace('\\', "/"), bytes))
-        .collect();
+    let files: DomainFiles = keyed.into_values().collect();
     let entries: Vec<(&str, &[u8])> = files
         .iter()
         .map(|(p, b)| (p.as_str(), b.as_slice()))
         .collect();
     let folded = model::merkle_root(&entries, domain.version());
     (files, folded)
+}
+
+/// The raw name bytes a workspace-relative path contributes to a merkle fold
+/// (merkle-spec §4/§9 name truthfulness): the `OsStr` bytes verbatim — `/` as
+/// segment separator, every other byte a name byte. Never a decode, never a
+/// separator rewrite. The ONE conversion point from walk output to fold input,
+/// so no hash path can re-grow a lossy spelling.
+#[must_use]
+pub fn hash_name(rel: &Path) -> &[u8] {
+    rel.as_os_str().as_bytes()
+}
+
+/// Display spelling for a member name in refusal prose (merkle-spec §9 display
+/// law): a valid-UTF-8 name verbatim (identity — two-way, zero loss); a name
+/// with no UTF-8 spelling escaped injectively — `\` doubled, each invalid byte
+/// as `\xNN` — so a refusal can never name the wrong member. Takes the raw
+/// name bytes ([`hash_name`]'s output).
+#[must_use]
+pub fn display_name(name: &[u8]) -> String {
+    if let Ok(s) = std::str::from_utf8(name) {
+        return s.to_owned();
+    }
+    let mut bytes = name;
+    let mut out = String::with_capacity(bytes.len() + 8);
+    let push_valid = |out: &mut String, s: &str| {
+        for c in s.chars() {
+            if c == '\\' {
+                out.push_str("\\\\");
+            } else {
+                out.push(c);
+            }
+        }
+    };
+    loop {
+        match std::str::from_utf8(bytes) {
+            Ok(s) => {
+                push_valid(&mut out, s);
+                return out;
+            }
+            Err(e) => {
+                let (valid, rest) = bytes.split_at(e.valid_up_to());
+                // `valid` is valid UTF-8 by `valid_up_to`'s contract.
+                push_valid(&mut out, std::str::from_utf8(valid).unwrap_or(""));
+                let bad = e.error_len().unwrap_or(rest.len());
+                for b in &rest[..bad] {
+                    use std::fmt::Write as _;
+                    let _ = write!(out, "\\x{b:02X}"); // infallible on String
+                }
+                bytes = &rest[bad..];
+            }
+        }
+    }
 }
 
 /// The typed corpus-scoped refusal: the corpus cannot be served because ONE
