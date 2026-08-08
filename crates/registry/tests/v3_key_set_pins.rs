@@ -747,9 +747,11 @@ fn the_remaining_error_key_sets_are_pinned() {
     );
 
     let missing = conn.call(&json!({"id": 24, "op": "toc", "path": "missing.md"}));
+    // `message` joined deliberately (card p2-dogfood-refusal-teaching): the
+    // domain-scoped miss teaches instead of echoing a bare token.
     pin_keys(
         &missing["error"],
-        &["code", "path", "recovery"],
+        &["code", "message", "path", "recovery"],
         "file_not_found error",
     );
 
