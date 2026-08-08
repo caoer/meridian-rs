@@ -31,7 +31,7 @@ use wire::{
 };
 
 use crate::read::{ambiguous, to_model_ref};
-use crate::{ambient_root, bad_request, load_doc};
+use crate::{ambient_root, ambient_root_cached, bad_request, load_doc};
 
 /// One splice request's decoded fields. Both hosts build this from the decoded
 /// `wire::Op::Splice`, then call [`splice`].
@@ -116,13 +116,32 @@ pub struct SpliceOutcome {
 /// I/O failure in the commit after that rename lands can leave the marker
 /// behind. It is fingerprint-neutral and idempotently reused by the next pin.
 /// Every refusal rung, including all of the pin's, runs before that rename.
-#[allow(clippy::too_many_lines)]
 pub fn splice(
     root: &fs::WorkspaceRoot,
     seq: Option<&dyn crate::seq::SeqSink>,
     args: &SpliceArgs,
     rulesets: &[policy::CompiledRuleset],
     mints: Option<&receipt::read_mint::ReadMintStore>,
+) -> Result<SpliceOutcome, Box<ErrorBody>> {
+    splice_cached(root, seq, args, rulesets, mints, None)
+}
+
+/// [`splice`] with a caller-held §5.3a leaf cache: every root derivation on
+/// the door (the world guard's `root_before`, the pin re-derive, the commit
+/// seam's before/after) goes through [`ambient_root_cached`] instead of a
+/// whole-corpus byte fold. The resident daemon calls this; the cacheless
+/// spelling stays [`splice`] — a one-shot process has nothing to retain.
+///
+/// # Errors
+/// As [`splice`].
+#[allow(clippy::too_many_lines)]
+pub fn splice_cached(
+    root: &fs::WorkspaceRoot,
+    seq: Option<&dyn crate::seq::SeqSink>,
+    args: &SpliceArgs,
+    rulesets: &[policy::CompiledRuleset],
+    mints: Option<&receipt::read_mint::ReadMintStore>,
+    cache: Option<&fs::LeafCache>,
 ) -> Result<SpliceOutcome, Box<ErrorBody>> {
     // Workspace-root confinement: `Path::join` with an absolute path discards
     // the root, so an absolute or `..`-bearing splice path would read and write
@@ -139,7 +158,7 @@ pub fn splice(
     let flock = acquire_write_lock(root)?;
 
     let mut doc = load_doc(root, &args.path)?;
-    let mut root_before = ambient_root(root)?;
+    let mut root_before = ambient_root_cached(root, cache)?;
 
     // §5.1 order: the world guard first — so a stale plan refuses before any
     // per-target resolution can answer for it, and before this splice's own
@@ -403,7 +422,7 @@ pub fn splice(
         // re-guard the batch on the current value: re-comparing the client's
         // pre-promotion token would self-refuse `root_mismatch` on our own
         // write. The client's guard was already honored above.
-        root_before = ambient_root(root)?;
+        root_before = ambient_root_cached(root, cache)?;
         batch.if_root = args
             .if_root
             .as_ref()
@@ -438,6 +457,7 @@ pub fn splice(
             actor: args.actor.clone(),
             now: args.now.clone(),
         },
+        cache,
     )
     .map_err(|e| match e {
         CommitError::Refused(v) => {
@@ -613,6 +633,22 @@ pub fn create(
     args: &CreateArgs,
     rulesets: &[policy::CompiledRuleset],
 ) -> Result<CreateOutcome, Box<ErrorBody>> {
+    create_cached(root, seq, args, rulesets, None)
+}
+
+/// [`create`] with a caller-held §5.3a leaf cache — the same split as
+/// [`splice_cached`] / [`splice`]: the resident daemon derives its root
+/// stat-grade; a one-shot process folds whole.
+///
+/// # Errors
+/// As [`create`].
+pub fn create_cached(
+    root: &fs::WorkspaceRoot,
+    seq: Option<&dyn crate::seq::SeqSink>,
+    args: &CreateArgs,
+    rulesets: &[policy::CompiledRuleset],
+    cache: Option<&fs::LeafCache>,
+) -> Result<CreateOutcome, Box<ErrorBody>> {
     let fs_path = FsPath::new(&args.path.0);
     path_confined(&args.path)?;
 
@@ -620,7 +656,7 @@ pub fn create(
     // this also closes the `if_absent` check→rename window for cooperators.
     let flock = acquire_write_lock(root)?;
 
-    let root_before = ambient_root(root)?;
+    let root_before = ambient_root_cached(root, cache)?;
     world_guard(args.if_root.as_ref(), &root_before)?;
 
     // The payload IS the candidate document here, so `strip_fp` over the whole
@@ -712,7 +748,7 @@ pub fn create(
             _ => io_to_wire(&e),
         });
     }
-    let root_after = ambient_root(root)?;
+    let root_after = ambient_root_cached(root, cache)?;
 
     let committed = birth_death_delta(
         seq,
@@ -3120,6 +3156,7 @@ pub fn commit_batch(
     seq: Option<&dyn crate::seq::SeqSink>,
     flock: &fs::WriteLock,
     req: &CommitRequest,
+    cache: Option<&fs::LeafCache>,
 ) -> Result<DeltaFrame, CommitError> {
     // The workspace comes from the lock, and that is the guard: the daemon holds
     // many workspace roots at once, so a separately-passed root could name a
@@ -3132,7 +3169,7 @@ pub fn commit_batch(
         Some((rp, _)) => load_optional(root, rp)?,
         None => None,
     };
-    let root_before = ambient(root)?;
+    let root_before = ambient(root, cache)?;
 
     // Validate (§5.1 order) — mints the sealed batch, the only path to fs.
     let sealed = match model::validate_batch(
@@ -3178,7 +3215,7 @@ pub fn commit_batch(
         Some((rp, _)) => load_optional(root, rp)?,
         None => None,
     };
-    let root_after = ambient(root)?;
+    let root_after = ambient(root, cache)?;
 
     // Change facts → wire projection, in §7.1 print order: content file first,
     // then the receipt file.
@@ -3249,8 +3286,8 @@ fn load_optional(
 }
 
 /// The ambient root as a [`CommitError`] (the commit seam's envelope shape).
-fn ambient(root: &fs::WorkspaceRoot) -> Result<Root, CommitError> {
-    ambient_root(root).map_err(CommitError::Env)
+fn ambient(root: &fs::WorkspaceRoot, cache: Option<&fs::LeafCache>) -> Result<Root, CommitError> {
+    ambient_root_cached(root, cache).map_err(CommitError::Env)
 }
 
 /// The write path's one production `policy::evaluate` call site: run every

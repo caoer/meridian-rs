@@ -282,3 +282,135 @@ fn admin_verbs_share_the_socket_after_unification() {
 
     server.shutdown();
 }
+
+/// §5.3a fold economy, counted not timed: once the engine is warm, quiet
+/// per-document serves run NO whole-corpus fold (`fs::fold_count`) and re-read
+/// NO file bytes (`fs::leaf_reread_count`). At the pinned base every one of
+/// these round trips folded the whole corpus — the O(domain bytes) per round
+/// trip this wave removes.
+///
+/// Serial-only counters: this test must not run concurrently with other
+/// folding tests in one process, so it takes the instruments in one test body
+/// (cold warm, then the quiet window) rather than splitting across tests.
+#[test]
+fn quiet_serves_fold_nothing_and_re_read_nothing() {
+    let tmp = TempDir::new().unwrap();
+    let ws = write_ws(
+        &tmp,
+        &[("a.md", "# A\n\nsee [[b]]\n"), ("b.md", "# B\n"), ("c.md", "# C\n")],
+    );
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(server.socket_path());
+    assert_eq!(conn.hello(&ws)["ok"], json!(true));
+
+    // Warm is done; open the quiet window.
+    let folds = ::fs::fold_count();
+    let rereads = ::fs::leaf_reread_count();
+
+    for _ in 0..3 {
+        assert_eq!(conn.call(&json!({"op": "toc", "path": "a.md"}))["ok"], json!(true));
+        assert_eq!(
+            conn.call(&json!({"op": "cat", "path": "b.md"}))["ok"],
+            json!(true)
+        );
+        assert_eq!(
+            conn.call(&json!({"op": "read", "path": "c.md"}))["ok"],
+            json!(true)
+        );
+        assert_eq!(conn.call(&json!({"op": "fingerprint"}))["ok"], json!(true));
+    }
+
+    assert_eq!(
+        ::fs::fold_count() - folds,
+        0,
+        "a quiet window serves without one whole-corpus fold"
+    );
+    assert_eq!(
+        ::fs::leaf_reread_count() - rereads,
+        0,
+        "a quiet window re-reads zero file bytes — corpus-grain legs are stat-grade"
+    );
+
+    server.shutdown();
+}
+
+/// Reads are LIVE at document grain: an out-of-band write to the served file
+/// (the rename discipline every real writer uses) is visible on the very next
+/// serve of that file — no sweep, no subscription, no second call.
+#[test]
+fn an_out_of_band_write_is_served_on_the_next_read_of_that_file() {
+    let tmp = TempDir::new().unwrap();
+    let ws = write_ws(&tmp, &[("a.md", "# A\n"), ("b.md", "# B\n")]);
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(server.socket_path());
+    assert_eq!(conn.hello(&ws)["ok"], json!(true));
+
+    let before = conn.call(&json!({"op": "toc", "path": "a.md"}));
+    assert_eq!(before["ok"], json!(true));
+    let stamp_before = before["body"]["fingerprint"].as_str().unwrap().to_owned();
+
+    // Out-of-band writer: tmp + rename, the discipline editors and engines share.
+    let tmp_file = ws.join(".a.md.oob.tmp");
+    fs::write(&tmp_file, "# A moved\n\nnew body\n").unwrap();
+    fs::rename(&tmp_file, ws.join("a.md")).unwrap();
+
+    let after = conn.call(&json!({"op": "toc", "path": "a.md"}));
+    assert_eq!(after["ok"], json!(true), "the moved file serves: {after}");
+    let titles: Vec<&str> = after["body"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|n| n["text_prefix_16b"].as_str())
+        .collect();
+    assert!(
+        titles.iter().any(|t| t.starts_with("# A moved")),
+        "the NEXT read of the moved file serves the new bytes: {titles:?}"
+    );
+    assert_ne!(
+        after["body"]["fingerprint"].as_str().unwrap(),
+        stamp_before,
+        "the stamp advanced with the world"
+    );
+
+    server.shutdown();
+}
+
+/// The write-door-ran-ahead regression, pinned: a daemon-door write advances
+/// the leaf cache before any engine rebuild. A per-document serve of an
+/// UNTOUCHED file must not let the stale engine vouch for itself — the serve
+/// after the write carries the post-write fingerprint, not the pre-write one.
+#[test]
+fn a_serve_after_a_daemon_write_never_stamps_the_pre_write_root() {
+    let tmp = TempDir::new().unwrap();
+    let ws = write_ws(&tmp, &[("a.md", "# A\n")]);
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(server.socket_path());
+    assert_eq!(conn.hello(&ws)["ok"], json!(true));
+
+    let before = conn.call(&json!({"op": "toc", "path": "a.md"}));
+    let stamp_before = before["body"]["fingerprint"].as_str().unwrap().to_owned();
+
+    let born = conn.call(&json!({
+        "op": "create",
+        "path": "born.md",
+        "body": "# Born\n",
+        "actor": "94ef2cb0",
+    }));
+    assert_eq!(born["ok"], json!(true), "the birth lands: {born}");
+    let root_after = born["body"]["fingerprint_after"]
+        .as_str()
+        .expect("a birth reports the advanced root")
+        .to_owned();
+    assert_ne!(root_after, stamp_before, "the birth moved the root");
+
+    let after = conn.call(&json!({"op": "toc", "path": "a.md"}));
+    assert_eq!(after["ok"], json!(true));
+    assert_eq!(
+        after["body"]["fingerprint"].as_str().unwrap(),
+        root_after,
+        "an untouched file's serve after the write stamps the post-write root — \
+         the cache that ran ahead may not vouch for the stale engine"
+    );
+
+    server.shutdown();
+}

@@ -83,11 +83,13 @@ impl Conn {
     }
 }
 
-/// The exemplar, reproduced: a healthy corpus binds and serves; then one
-/// poison member lands through ordinary external activity; a read of a
-/// HEALTHY member now refuses — and the refusal must name the corpus scope
-/// and the poison member, not strand the caller with a bare `invalid_utf8`
-/// they can only pin on the file they asked for.
+/// The exemplar, reproduced under the §5.3a cost model (run-plane): a healthy
+/// corpus binds and serves; one poison member lands through ordinary external
+/// activity. A per-document serve of a healthy file may still answer until
+/// the FIRST corpus-grain leg (here: `fingerprint`) discovers the poison —
+/// the documented §5.3a lag — and from that leg on, EVERY read refuses,
+/// naming the corpus scope and the poison member, not stranding the caller
+/// with a bare `invalid_utf8` they can only pin on the file they asked for.
 #[test]
 fn corpus_refusal_names_scope_and_poison_member() {
     let tmp = TempDir::new().unwrap();
@@ -105,6 +107,31 @@ fn corpus_refusal_names_scope_and_poison_member() {
     fs::create_dir_all(ws.join("notes")).unwrap();
     fs::write(ws.join("notes/poison.md"), b"# Poison\n\n\xff\xfe raw bytes\n").unwrap();
 
+    // §5.3a: the untouched file's per-document serve may still answer — the
+    // stamp is the pre-poison root, and no corpus-grain leg has run yet. This
+    // is the stated lag, pinned so it cannot silently widen or narrow.
+    let lagging = conn.call(&json!({"op": "toc", "path": "healthy.md"}));
+    assert_eq!(
+        lagging["ok"],
+        json!(true),
+        "a per-document serve before any corpus-grain leg still answers: {lagging}"
+    );
+
+    // The first corpus-grain leg discovers the poison and refuses, named.
+    let fingerprint = conn.call(&json!({"op": "fingerprint"}));
+    assert_eq!(
+        fingerprint["ok"],
+        json!(false),
+        "the corpus-grain leg refuses on the poisoned corpus: {fingerprint}"
+    );
+    assert_eq!(
+        fingerprint["error"]["path"],
+        json!("notes/poison.md"),
+        "and it names the member: {fingerprint}"
+    );
+
+    // From that leg on, the per-document serve refuses too: the advanced
+    // derivation means the resident engine can no longer be vouched for.
     let refusal = conn.call(&json!({"op": "toc", "path": "healthy.md"}));
     assert_eq!(refusal["ok"], json!(false), "poisoned corpus refuses: {refusal}");
     let error = &refusal["error"];

@@ -131,6 +131,30 @@ pub fn ambient_root(root: &fs::WorkspaceRoot) -> Result<Root, Box<ErrorBody>> {
     Ok(domain_snapshot(root)?.1)
 }
 
+/// [`ambient_root`] through a caller-held §5.3a leaf cache when one exists:
+/// the same live §12.2 root at stat-grade cost ([`fs::LeafCache::derive`] —
+/// run-plane §5.3a). `None` is the cacheless caller (a one-shot CLI process,
+/// a test) and folds whole, exactly as before.
+///
+/// # Errors
+/// Wire `io_error` when the derivation's walk, stat, or changed-file read fails.
+pub fn ambient_root_cached(
+    root: &fs::WorkspaceRoot,
+    cache: Option<&fs::LeafCache>,
+) -> Result<Root, Box<ErrorBody>> {
+    match cache {
+        Some(cache) => {
+            let folded = cache.derive(root).map_err(|e| {
+                let mut err = ErrorBody::new(ErrorCode::IoError);
+                err.cause = Some(e.to_string());
+                Box::new(err)
+            })?;
+            Ok(Root(folded.0))
+        }
+        None => ambient_root(root),
+    }
+}
+
 /// §12 hash-domain snapshot: domain file bytes + folded root in one read/fold (no stamp drift).
 ///
 /// # Errors

@@ -1039,21 +1039,21 @@ fn dispatch_read(
         ));
     };
     match op {
-        Op::Toc { path } => warm_engine_read(registry, ws, |engine| {
+        Op::Toc { path } => doc_engine_read(registry, ws, &path.0, |engine| {
             let doc = engine
                 .docs
                 .get(&path.0)
                 .ok_or_else(|| file_not_found(&path))?;
             Ok(wire_serve::read::toc(doc, &path, &engine_root(engine)))
         }),
-        Op::Cat { path, sec } => warm_engine_read(registry, ws, |engine| {
+        Op::Cat { path, sec } => doc_engine_read(registry, ws, &path.0, |engine| {
             let doc = engine
                 .docs
                 .get(&path.0)
                 .ok_or_else(|| file_not_found(&path))?;
             wire_serve::read::cat(doc, sec)
         }),
-        Op::Extract { path, kinds } => warm_engine_read(registry, ws, |engine| {
+        Op::Extract { path, kinds } => doc_engine_read(registry, ws, &path.0, |engine| {
             let doc = engine
                 .docs
                 .get(&path.0)
@@ -1147,7 +1147,17 @@ fn dispatch_read(
             // U20b: numbered producer on this workspace's ring. Sink inside
             // flock; advance after flock drops (allocator makes the gap safe).
             let ring = registry.ring(ws);
-            let out = wire_serve::write::splice(&ws_root, Some(&*ring), &args, &[], Some(&mints))?;
+            // §5.3a: the write door's root derivations ride the same leaf
+            // cache the read plane keeps current.
+            let cache = registry.leaf_cache(ws);
+            let out = wire_serve::write::splice_cached(
+                &ws_root,
+                Some(&*ring),
+                &args,
+                &[],
+                Some(&mints),
+                Some(&cache),
+            )?;
             if let Some(frame) = out.committed {
                 ring.advance(frame);
             }
@@ -1175,7 +1185,14 @@ fn dispatch_read(
             };
             // Birth is a root advance — owes the chain a seq.
             let ring = registry.ring(ws);
-            let out = wire_serve::write::create(&ws_root, Some(&*ring), &args, &[])?;
+            let cache = registry.leaf_cache(ws);
+            let out = wire_serve::write::create_cached(
+                &ws_root,
+                Some(&*ring),
+                &args,
+                &[],
+                Some(&cache),
+            )?;
             if let Some(frame) = out.committed.clone() {
                 ring.advance(frame);
             }
@@ -1188,7 +1205,7 @@ fn dispatch_read(
             actor,
             now,
             edits,
-        } if v3 => warm_engine_read(registry, ws, |engine| {
+        } if v3 => doc_engine_read(registry, ws, &path.0, |engine| {
             let doc = engine
                 .docs
                 .get(&path.0)
@@ -1241,6 +1258,7 @@ fn engine_root(engine: &WorkspaceEngine) -> Root {
 /// Composed read over the warm engine: one borrow supplies doc, `file_rev`,
 /// and ambient root (D6 one-snapshot). Session host hands the read-mint ledger
 /// ([`Registry::read_mints`]) — taken before the engine borrow (H1).
+/// Document-grain freshness (§5.3a) like every per-document serve.
 fn composed_read_warm(
     registry: &Registry,
     ws: &Path,
@@ -1248,7 +1266,7 @@ fn composed_read_warm(
     params: &wire_serve::read::ReadParams,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
     let mints = registry.read_mints(ws);
-    warm_engine_read(registry, ws, |engine| {
+    doc_engine_read(registry, ws, &path.0, |engine| {
         let doc = engine
             .docs
             .get(&path.0)
@@ -1277,6 +1295,47 @@ fn warm_engine_read<R>(
     registry
         .warm_or_build(canonical)
         .map_err(|e| warm_err_to_wire(&e))?;
+    registry.with_engine(canonical, |engine| match engine {
+        Some(engine) => f(engine),
+        None => Err(Box::new(ErrorBody::new(ErrorCode::Internal))),
+    })
+}
+
+/// The document-grain freshness gate (run-plane §5.3a serve leg): when the
+/// warm engine's stamp is the leaf cache's last derived root AND `rel`'s live
+/// stat identity is unchanged, the engine may answer for `rel` with no corpus
+/// walk at all — one stat is the whole freshness cost. Any miss (cold engine,
+/// a cache that ran ahead of the engine, a moved or unknown file) takes the
+/// corpus-grain path, which re-derives and rebuilds as needed. `false` is
+/// never wrong, only slower.
+fn ensure_doc_fresh(
+    registry: &Registry,
+    canonical: &Path,
+    rel: &str,
+) -> Result<(), Box<ErrorBody>> {
+    let cache = registry.leaf_cache(canonical);
+    let root = fs::WorkspaceRoot(canonical.to_path_buf());
+    let fresh = registry.with_engine(canonical, |engine| {
+        engine.is_some_and(|e| cache.doc_fresh(&root, rel, &e.at_fingerprint))
+    });
+    if !fresh {
+        registry
+            .warm_or_build(canonical)
+            .map_err(|e| warm_err_to_wire(&e))?;
+    }
+    Ok(())
+}
+
+/// [`warm_engine_read`] for a per-document op: document-grain freshness for
+/// `rel` ([`ensure_doc_fresh`]), then serve from the warm engine. The `None`
+/// arm is the same idle-reap race as [`warm_engine_read`]'s.
+fn doc_engine_read<R>(
+    registry: &Registry,
+    canonical: &Path,
+    rel: &str,
+    f: impl FnOnce(&WorkspaceEngine) -> Result<R, Box<ErrorBody>>,
+) -> Result<R, Box<ErrorBody>> {
+    ensure_doc_fresh(registry, canonical, rel)?;
     registry.with_engine(canonical, |engine| match engine {
         Some(engine) => f(engine),
         None => Err(Box::new(ErrorBody::new(ErrorCode::Internal))),

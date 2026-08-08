@@ -1383,21 +1383,45 @@ fn apply_regions(raw: &str, planned: &[PlannedEdit]) -> String {
 pub fn merkle_root(files: &[(&str, &[u8])], version: u32) -> MerkleRoot {
     let mut tree = MerkleDir::default();
     for (path, bytes) in files {
-        tree.insert(path, bytes);
+        tree.insert(path, leaf_digest(bytes));
     }
     let hex = blake3::Hash::from_bytes(tree.fold()).to_hex().to_string();
     MerkleRoot(format!("{}{hex}", root_prefix(version)))
 }
 
-/// A directory in the merkle tree — named entries, each a file (raw bytes,
-/// leaf-hashed on fold) or a subdirectory.
+/// The §12.2 leaf: `blake3(raw bytes)`, 32 bytes. The ONE leaf definition —
+/// [`merkle_root`] hashes through it, and a caller holding per-file digests
+/// (run-plane §5.3a: the corpus-grain freshness cache) folds the same value
+/// through [`merkle_root_of_leaves`] because both paths mint leaves here.
+#[must_use]
+pub fn leaf_digest(bytes: &[u8]) -> [u8; 32] {
+    *blake3::hash(bytes).as_bytes()
+}
+
+/// [`merkle_root`] from already-minted leaf digests — the same tree, the same
+/// §12.2 encoding, byte-for-byte the same root. Exists so a caller that knows
+/// which files changed re-hashes only those files' bytes and folds the rest
+/// from retained leaves; the fold itself never re-reads content on either
+/// path (files are leaf-hashed at insert).
+#[must_use]
+pub fn merkle_root_of_leaves(files: &[(&str, [u8; 32])], version: u32) -> MerkleRoot {
+    let mut tree = MerkleDir::default();
+    for (path, leaf) in files {
+        tree.insert(path, *leaf);
+    }
+    let hex = blake3::Hash::from_bytes(tree.fold()).to_hex().to_string();
+    MerkleRoot(format!("{}{hex}", root_prefix(version)))
+}
+
+/// A directory in the merkle tree — named entries, each a file (its §12.2
+/// leaf digest) or a subdirectory.
 #[derive(Default)]
 struct MerkleDir {
     entries: BTreeMap<String, MerkleEntry>,
 }
 
 enum MerkleEntry {
-    File(Vec<u8>),
+    File([u8; 32]),
     Dir(MerkleDir),
 }
 
@@ -1406,7 +1430,7 @@ impl MerkleDir {
     /// path). Empty segments are dropped; a path that collides with an existing
     /// file prefix is ignored — a hash domain never mixes a file and a directory
     /// at one name.
-    fn insert(&mut self, path: &str, bytes: &[u8]) {
+    fn insert(&mut self, path: &str, leaf: [u8; 32]) {
         let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
         let Some((file_name, dirs)) = segs.split_last() else {
             return;
@@ -1423,7 +1447,7 @@ impl MerkleDir {
             }
         }
         dir.entries
-            .insert((*file_name).to_string(), MerkleEntry::File(bytes.to_vec()));
+            .insert((*file_name).to_string(), MerkleEntry::File(leaf));
     }
 
     /// Fold this directory to its 32-byte node hash (§12.2): children ordered by
@@ -1433,8 +1457,8 @@ impl MerkleDir {
         let mut children: Vec<(&str, bool, [u8; 32])> = Vec::new();
         for (name, entry) in &self.entries {
             match entry {
-                MerkleEntry::File(bytes) => {
-                    children.push((name, false, *blake3::hash(bytes).as_bytes()));
+                MerkleEntry::File(leaf) => {
+                    children.push((name, false, *leaf));
                 }
                 MerkleEntry::Dir(dir) if !dir.entries.is_empty() => {
                     children.push((name, true, dir.fold()));
@@ -1482,6 +1506,63 @@ fn root_prefix(version: u32) -> String {
     }
     let suffix: String = suffix.chars().rev().collect();
     format!("b3{suffix}:")
+}
+
+#[cfg(test)]
+mod merkle_leaf_tests {
+    //! The two fold entry points are one fold: [`merkle_root_of_leaves`] over
+    //! [`leaf_digest`]s must equal [`merkle_root`] over the same bytes, or the
+    //! §5.3a corpus-grain cache would mint a second, weaker root.
+
+    use super::{leaf_digest, merkle_root, merkle_root_of_leaves};
+
+    const FILES: &[(&str, &[u8])] = &[
+        ("notes/plan.md", b"# Goals\n\nship\n"),
+        ("notes/deep/dir/leaf.md", b"# Leaf\n"),
+        ("receipts/2026-07-18.md", b"# Receipts\n\n- row ^r-1\n"),
+        ("top.md", b""),
+    ];
+
+    #[test]
+    fn leaves_fold_to_the_same_root_as_bytes() {
+        for version in [0, 1, 27] {
+            let by_bytes = merkle_root(FILES, version);
+            let leaves: Vec<(&str, [u8; 32])> = FILES
+                .iter()
+                .map(|(path, bytes)| (*path, leaf_digest(bytes)))
+                .collect();
+            let by_leaves = merkle_root_of_leaves(&leaves, version);
+            assert_eq!(
+                by_bytes, by_leaves,
+                "the two entry points must fold one §12.2 root (version {version})"
+            );
+        }
+    }
+
+    #[test]
+    fn a_changed_leaf_changes_the_root_and_a_reordered_input_does_not() {
+        let leaves: Vec<(&str, [u8; 32])> = FILES
+            .iter()
+            .map(|(path, bytes)| (*path, leaf_digest(bytes)))
+            .collect();
+        let baseline = merkle_root_of_leaves(&leaves, 0);
+
+        let mut moved = leaves.clone();
+        moved[1].1 = leaf_digest(b"# Leaf edited\n");
+        assert_ne!(
+            baseline,
+            merkle_root_of_leaves(&moved, 0),
+            "a moved leaf must move the root"
+        );
+
+        let mut reversed = leaves.clone();
+        reversed.reverse();
+        assert_eq!(
+            baseline,
+            merkle_root_of_leaves(&reversed, 0),
+            "the tree orders by name bytes; input order carries nothing"
+        );
+    }
 }
 
 /// The resident corpus name index — derived, disposable model state (law 2).
@@ -3105,11 +3186,11 @@ mod tests {
     fn empty_dir_is_pruned_12_2() {
         let mut base = MerkleDir::default();
         base.entries
-            .insert("a.md".to_string(), MerkleEntry::File(b"x".to_vec()));
+            .insert("a.md".to_string(), MerkleEntry::File(leaf_digest(b"x")));
         let mut with_empty = MerkleDir::default();
         with_empty
             .entries
-            .insert("a.md".to_string(), MerkleEntry::File(b"x".to_vec()));
+            .insert("a.md".to_string(), MerkleEntry::File(leaf_digest(b"x")));
         with_empty
             .entries
             .insert("empty".to_string(), MerkleEntry::Dir(MerkleDir::default()));

@@ -302,6 +302,183 @@ pub fn domain_snapshot(root: &WorkspaceRoot) -> io::Result<(DomainFiles, model::
     Ok((files, folded))
 }
 
+/// Re-reads [`LeafCache::derive`] performed in this process (files whose stat
+/// identity moved since the cache last saw them). An instrument, like
+/// [`fold_count`]: it counts, it never skips — a "no unchanged byte is
+/// re-read" claim is assertable rather than timed.
+static LEAF_REREAD_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// How many per-file re-reads [`LeafCache::derive`] has performed in this
+/// process. Same discipline as [`fold_count`]: read before and after the work
+/// under test, assert the difference; exact-count tests must not run
+/// concurrently with other deriving work in one process.
+#[must_use]
+pub fn leaf_reread_count() -> u64 {
+    LEAF_REREAD_COUNT.load(Ordering::Relaxed)
+}
+
+/// One file's stat identity — the §5.3a freshness gate (run-plane): a file
+/// whose (inode, size, `mtime_ns`, `ctime_ns`) is unchanged keeps its content
+/// leaf. The engine's own writes always move it (tmp+fsync+rename mints a new
+/// inode), and an in-place out-of-band write advances ctime, which userland
+/// cannot reset. The stated residual — a byte change leaving all four fields
+/// unchanged — is run-plane §5.3a's, detection-not-prevention class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StatIdentity {
+    ino: u64,
+    size: u64,
+    mtime_ns: i128,
+    ctime_ns: i128,
+}
+
+impl StatIdentity {
+    fn of(meta: &fs::Metadata) -> Self {
+        use std::os::unix::fs::MetadataExt as _;
+        StatIdentity {
+            ino: meta.ino(),
+            size: meta.len(),
+            mtime_ns: i128::from(meta.mtime()) * 1_000_000_000 + i128::from(meta.mtime_nsec()),
+            ctime_ns: i128::from(meta.ctime()) * 1_000_000_000 + i128::from(meta.ctime_nsec()),
+        }
+    }
+}
+
+/// One retained leaf: the stat identity the digest was minted under.
+#[derive(Debug, Clone)]
+struct LeafEntry {
+    identity: StatIdentity,
+    digest: [u8; 32],
+}
+
+/// The §5.3a corpus-grain freshness cache: per-file §12.2 leaf digests keyed
+/// by workspace-relative path, each pinned to the [`StatIdentity`] it was
+/// minted under. [`LeafCache::derive`] walks the live hash domain, stats every
+/// member, re-reads and re-hashes ONLY files whose identity moved, and folds
+/// the retained leaves through [`model::merkle_root_of_leaves`] — the same
+/// §12.2 value a cold [`domain_snapshot`] folds, at O(domain files) stat cost
+/// instead of O(domain bytes) read cost.
+///
+/// In-memory only (the crate charter's "no snapshot files, no second
+/// database" stands): a disposable projection of disk, owned by whoever holds
+/// the process (the registry daemon keeps one per workspace and drops it on
+/// idle-reap). Interior mutability so concurrent holders share one cache; a
+/// `derive` holds the lock for its whole walk, so corpus-grain derivations
+/// serialize rather than duplicate work.
+///
+/// This is NOT [`domain_stat_signature`]'s latency-only gate: the root served
+/// out of here is a CONTENT root — every leaf is `blake3` of file bytes — and
+/// stat identity only decides which files must be re-read to keep it one.
+#[derive(Debug, Default)]
+pub struct LeafCache {
+    inner: std::sync::Mutex<LeafState>,
+}
+
+#[derive(Debug, Default)]
+struct LeafState {
+    leaves: std::collections::HashMap<String, LeafEntry>,
+    /// The root of the leaf set as last derived — what [`LeafCache::doc_fresh`]
+    /// compares an engine's build stamp against, so a cache that ran ahead of
+    /// the engine (a write door derived; no rebuild yet) can never vouch for
+    /// the engine's stale bytes.
+    last_root: Option<model::MerkleRoot>,
+}
+
+impl LeafCache {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Derive the LIVE corpus root: walk the hash domain, stat every member,
+    /// re-read + re-hash only moved files, fold. Deleted files leave the fold
+    /// by leaving the walk; the retained map is rebuilt each call, so entries
+    /// for gone paths do not accumulate.
+    ///
+    /// Racily-clean discipline: a file is re-stat'd after its bytes are read,
+    /// and the leaf is RETAINED only when the two identities agree — the fold
+    /// still uses the digest of the bytes actually read (exactly what
+    /// [`domain_snapshot`] would have folded mid-write), but an unstable file
+    /// is never allowed to vouch for itself next time.
+    ///
+    /// # Errors
+    /// I/O failure loading the domain config, traversing the root, statting or
+    /// reading a member (a member refusal names the member, as
+    /// [`domain_snapshot`]'s does).
+    pub fn derive(&self, root: &WorkspaceRoot) -> io::Result<model::MerkleRoot> {
+        let domain = domain::Domain::load(root)?;
+        let rels = hash_domain(root, &domain)?;
+        let mut state = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut fresh: std::collections::HashMap<String, LeafEntry> =
+            std::collections::HashMap::with_capacity(rels.len());
+        let mut leaves: Vec<(String, [u8; 32])> = Vec::with_capacity(rels.len());
+        for rel in rels {
+            let rel_str = rel.to_string_lossy().replace('\\', "/");
+            let abs = root.0.join(&rel);
+            let meta = fs::symlink_metadata(&abs).map_err(|e| {
+                corpus_member_refusal(e.kind(), &rel_str, format!("cannot be stat'd ({e})"))
+            })?;
+            let identity = StatIdentity::of(&meta);
+            if let Some(entry) = state.leaves.get(&rel_str)
+                && entry.identity == identity
+            {
+                leaves.push((rel_str.clone(), entry.digest));
+                fresh.insert(rel_str, entry.clone());
+                continue;
+            }
+            LEAF_REREAD_COUNT.fetch_add(1, Ordering::Relaxed);
+            let bytes = fs::read(&abs).map_err(|e| {
+                corpus_member_refusal(e.kind(), &rel_str, format!("cannot be read ({e})"))
+            })?;
+            let digest = model::leaf_digest(&bytes);
+            leaves.push((rel_str.clone(), digest));
+            // Racily-clean: retain the leaf only when the file stood still
+            // across the read; the fold above uses it either way.
+            let after = fs::symlink_metadata(&abs).map_err(|e| {
+                corpus_member_refusal(e.kind(), &rel_str, format!("cannot be stat'd ({e})"))
+            })?;
+            if StatIdentity::of(&after) == identity {
+                fresh.insert(rel_str, LeafEntry { identity, digest });
+            }
+        }
+        let borrowed: Vec<(&str, [u8; 32])> =
+            leaves.iter().map(|(p, d)| (p.as_str(), *d)).collect();
+        let folded = model::merkle_root_of_leaves(&borrowed, domain.version());
+        state.leaves = fresh;
+        state.last_root = Some(folded.clone());
+        Ok(folded)
+    }
+
+    /// Document-grain freshness (run-plane §5.3a serve leg): may a serve built
+    /// at `engine_root` answer for `rel` without a corpus-grain re-derivation?
+    ///
+    /// True only when BOTH hold: `engine_root` is the root this cache last
+    /// derived — an engine the cache ran ahead of (a write landed; no rebuild
+    /// yet) is stale for EVERY path — and the live stat identity of `rel`
+    /// equals the retained one, so the served bytes are the bytes on disk. Any
+    /// miss (unknown path, unstable file, moved identity, stat failure)
+    /// answers `false` and the caller takes the corpus-grain path; `false` is
+    /// never wrong, only slower.
+    #[must_use]
+    pub fn doc_fresh(
+        &self,
+        root: &WorkspaceRoot,
+        rel: &str,
+        engine_root: &model::MerkleRoot,
+    ) -> bool {
+        let state = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.last_root.as_ref() != Some(engine_root) {
+            return false;
+        }
+        let Some(entry) = state.leaves.get(rel) else {
+            return false;
+        };
+        let Ok(meta) = fs::symlink_metadata(root.0.join(rel)) else {
+            return false;
+        };
+        StatIdentity::of(&meta) == entry.identity
+    }
+}
+
 /// [`domain_snapshot`] over a DIFFERENT INTERVAL: the worktree snapshot with an
 /// overlay of the bytes another interval carries, folded by the same domain
 /// filter and the same fold.
@@ -2058,4 +2235,150 @@ mod corpus_refusal_tests {
         let (_index, docs) = build_corpus(files).unwrap();
         assert_eq!(docs.len(), 1);
     }
+}
+
+#[cfg(test)]
+mod leafcache_tests {
+    //! §5.3a corpus-grain cache gates: the derived root IS the cold fold's
+    //! root across every change shape, unchanged bytes are never re-read
+    //! (instrument-counted, not timed), and `doc_fresh` vouches only for what
+    //! the live disk still backs.
+
+    use super::{LeafCache, WorkspaceRoot, domain_snapshot, leaf_reread_count};
+    use std::fs;
+
+    /// [`leaf_reread_count`] is process-global, so the tests of this module —
+    /// the only deriving code in the crate — serialize on one lock; exact
+    /// counts stay exact under a parallel test runner.
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn ws(files: &[(&str, &str)]) -> (tempfile::TempDir, WorkspaceRoot) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for (rel, content) in files {
+            let path = dir.path().join(rel);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(path, content).unwrap();
+        }
+        let root = WorkspaceRoot(dir.path().to_path_buf());
+        (dir, root)
+    }
+
+    /// Bump a file's stat identity deliberately: the test's writes can land
+    /// within one timestamp granule of each other, and the cache's whole
+    /// design says a granule-identical same-size write is the stated residual
+    /// — so the test moves what production writers move. The engine's own
+    /// discipline is tmp+fsync+rename (a fresh inode every write); this
+    /// mirrors it.
+    fn rewrite(root: &WorkspaceRoot, rel: &str, content: &str) {
+        let dst = root.0.join(rel);
+        let tmp = root.0.join(format!(".{}.rewrite.tmp", rel.replace('/', "_")));
+        fs::write(&tmp, content).unwrap();
+        fs::rename(&tmp, &dst).unwrap();
+    }
+
+    const FILES: &[(&str, &str)] = &[
+        ("notes/plan.md", "# Goals\n\nship\n"),
+        ("notes/deep/leaf.md", "# Leaf\n"),
+        ("top.md", "# Top\n"),
+    ];
+
+    #[test]
+    fn derive_equals_the_cold_fold_across_every_change_shape() {
+        let _serial = SERIAL.lock().unwrap();
+        let (_d, root) = ws(FILES);
+        let cache = LeafCache::new();
+
+        // Cold cache, quiet world.
+        assert_eq!(cache.derive(&root).unwrap(), domain_snapshot(&root).unwrap().1);
+
+        // Modify.
+        rewrite(&root, "notes/plan.md", "# Goals\n\nship by September\n");
+        assert_eq!(cache.derive(&root).unwrap(), domain_snapshot(&root).unwrap().1);
+
+        // Add.
+        fs::write(root.0.join("notes/new.md"), "# New\n").unwrap();
+        assert_eq!(cache.derive(&root).unwrap(), domain_snapshot(&root).unwrap().1);
+
+        // Rename (a remove + an add in one act).
+        fs::rename(root.0.join("notes/new.md"), root.0.join("notes/renamed.md")).unwrap();
+        assert_eq!(cache.derive(&root).unwrap(), domain_snapshot(&root).unwrap().1);
+
+        // Delete.
+        fs::remove_file(root.0.join("notes/renamed.md")).unwrap();
+        assert_eq!(cache.derive(&root).unwrap(), domain_snapshot(&root).unwrap().1);
+    }
+
+    #[test]
+    fn a_quiet_world_re_reads_nothing_and_one_change_re_reads_one_file() {
+        let _serial = SERIAL.lock().unwrap();
+        let (_d, root) = ws(FILES);
+        let cache = LeafCache::new();
+
+        let cold = leaf_reread_count();
+        cache.derive(&root).unwrap();
+        assert_eq!(
+            leaf_reread_count() - cold,
+            FILES.len() as u64,
+            "a cold cache reads every domain file once"
+        );
+
+        let quiet = leaf_reread_count();
+        cache.derive(&root).unwrap();
+        cache.derive(&root).unwrap();
+        assert_eq!(
+            leaf_reread_count() - quiet,
+            0,
+            "a quiet world re-reads NO bytes — the §5.3a claim, counted not timed"
+        );
+
+        rewrite(&root, "top.md", "# Top moved\n");
+        let one = leaf_reread_count();
+        cache.derive(&root).unwrap();
+        assert_eq!(
+            leaf_reread_count() - one,
+            1,
+            "one moved file re-reads exactly one file"
+        );
+    }
+
+    #[test]
+    fn doc_fresh_vouches_only_for_the_engine_root_it_derived() {
+        let _serial = SERIAL.lock().unwrap();
+        let (_d, root) = ws(FILES);
+        let cache = LeafCache::new();
+        let derived = cache.derive(&root).unwrap();
+
+        assert!(
+            cache.doc_fresh(&root, "notes/plan.md", &derived),
+            "an unchanged file at the derived root is fresh"
+        );
+        assert!(
+            !cache.doc_fresh(&root, "notes/absent.md", &derived),
+            "an unknown path is never fresh"
+        );
+
+        let stale = super::test_stale_root();
+        assert!(
+            !cache.doc_fresh(&root, "notes/plan.md", &stale),
+            "an engine the cache did not derive is stale for EVERY path — \
+             the write-door-ran-ahead regression"
+        );
+
+        rewrite(&root, "notes/plan.md", "# Goals\n\nmoved\n");
+        assert!(
+            !cache.doc_fresh(&root, "notes/plan.md", &derived),
+            "a moved stat identity is never fresh"
+        );
+        assert!(
+            cache.doc_fresh(&root, "top.md", &derived),
+            "an untouched sibling still is — freshness is per document"
+        );
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_stale_root() -> model::MerkleRoot {
+    model::MerkleRoot("b3:0000000000000000000000000000000000000000000000000000000000000000".into())
 }

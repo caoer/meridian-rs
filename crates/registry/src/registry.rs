@@ -73,6 +73,11 @@ pub struct Registry {
     /// U20b delta plane, one ring per workspace — same create/reap as
     /// [`Self::read_mints`]. S6: key is canonical path (not a global ring).
     rings: Mutex<HashMap<PathBuf, Arc<crate::ring::WorkspaceRing>>>,
+    /// §5.3a corpus-grain freshness cache per workspace ([`fs::LeafCache`]) —
+    /// same create/reap as [`Self::read_mints`]. Not on [`WorkspaceEngine`]:
+    /// rebuilds replace the engine, and the cache's whole value is surviving
+    /// them (unchanged files keep their leaves across a one-file change).
+    leaf_caches: Mutex<HashMap<PathBuf, Arc<fs::LeafCache>>>,
     /// G11 pre-warm quiet map: last [`fs::domain_stat_signature`] per warm
     /// workspace. Matching signature skips the corpus fold. Advisory only —
     /// missing/stale costs one extra snapshot, never a wrong answer.
@@ -108,6 +113,8 @@ impl Registry {
             read_mints: Mutex::new(HashMap::new()),
             // Cold: no rings; pre-restart `from_seq` ⇒ `root_unknown` (§7.1).
             rings: Mutex::new(HashMap::new()),
+            // Cold: empty caches; the first derive re-hashes the corpus once.
+            leaf_caches: Mutex::new(HashMap::new()),
             prewarm_signatures: Mutex::new(HashMap::new()),
             requests: AtomicU64::new(0),
             // Clock starts at birth so idle-exit can age an unused daemon.
@@ -212,8 +219,15 @@ impl Registry {
     /// Warm the resident engine for `workspace`; rebuild only when the corpus
     /// content hash changed (U1). Reuse key is the content hash (R5), not
     /// workspace-identity Merkle. `Reused` ⇒ zero parses (`build_corpus` is
-    /// rebuild-only). Fingerprint read and parse are outside the `engines`
-    /// write lock (insert only) so workspaces do not block each other.
+    /// rebuild-only). Fingerprint derivation and parse are outside the
+    /// `engines` write lock (insert only) so workspaces do not block each other.
+    ///
+    /// The freshness check is the §5.3a leaf cache ([`fs::LeafCache::derive`]):
+    /// one stat per domain file, content re-read only for files whose stat
+    /// identity moved — never a whole-corpus byte re-read per request, which is
+    /// what made every wire round trip O(domain bytes). The rebuild path still
+    /// snapshots whole (one read, one fold, one parse over the SAME bytes), so
+    /// an engine's stamp and its parsed docs cannot drift.
     ///
     /// # Errors
     /// Canonicalize failure, corpus unreadable, or non-UTF-8
@@ -223,8 +237,9 @@ impl Registry {
             .map_err(|e| io::Error::new(io::ErrorKind::NotFound, e))?;
         let root = fs::WorkspaceRoot(canonical.clone());
 
-        // Cheap half (no parse): content hash from disk.
-        let (files, fingerprint) = fs::domain_snapshot(&root)?;
+        // Cheap half (no parse, no unchanged-byte read): live root off the
+        // leaf cache.
+        let fingerprint = self.leaf_cache(&canonical).derive(&root)?;
 
         // Warm + unchanged → reuse, zero parses.
         {
@@ -237,7 +252,11 @@ impl Registry {
             }
         }
 
-        // Cold or content changed → rebuild once (only parse site).
+        // Cold or content changed → rebuild once (only parse site). The full
+        // snapshot re-derives the stamp from the bytes it parses; if the world
+        // moved between the derive above and this read, the engine keys to the
+        // newer state and the next derive re-syncs the cache.
+        let (files, fingerprint) = fs::domain_snapshot(&root)?;
         let (index, docs) = fs::build_corpus(files)?;
         let parsed = docs.len();
         let engine = WorkspaceEngine {
@@ -275,6 +294,22 @@ impl Registry {
                 workspace.to_path_buf(),
             )))
         }))
+    }
+
+    /// The workspace's §5.3a leaf cache, created on first use. `workspace`
+    /// must be canonical (same key as `engines`/`inner`). [`Arc`] so a derive
+    /// in one connection never holds this map's lock.
+    #[must_use]
+    pub fn leaf_cache(&self, workspace: &Path) -> Arc<fs::LeafCache> {
+        let mut caches = self
+            .leaf_caches
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        Arc::clone(
+            caches
+                .entry(workspace.to_path_buf())
+                .or_insert_with(|| Arc::new(fs::LeafCache::new())),
+        )
     }
 
     /// Read-is-the-mint ledger (S6), created on first use. `workspace` must be
@@ -448,6 +483,16 @@ impl Registry {
             let mut rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
             for key in &reaped {
                 rings.remove(key);
+            }
+            drop(rings);
+            // Leaf cache dies with the registration too (R4's one horizon);
+            // a re-registered workspace re-derives from disk.
+            let mut caches = self
+                .leaf_caches
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            for key in &reaped {
+                caches.remove(key);
             }
         }
         reaped
