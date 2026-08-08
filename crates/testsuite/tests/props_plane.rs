@@ -1,11 +1,11 @@
 //! The frontmatter-properties plane on the composed `read` (wire-contract
 //! § A.3): key facts served at the same snapshot as the rest of the body.
 //!
-//! Four laws, each pinned here: one row per top-level key in document order
-//! with the value as stored; `prop_rev`/`span` agree with the `cat` `fm_key`
-//! grain (one rev per node — no second derivation); always emitted, empty
-//! without frontmatter; document-grain — neither `frag` nor sections mode
-//! scopes it away.
+//! Five laws, each pinned here: one row per top-level key in document order
+//! with the value DECODED through § A.6.1; `prop_rev`/`span` agree with the
+//! `cat` `fm_key` grain (one rev per node — no second derivation) and stay over
+//! the STORED bytes (§ A.6.2); always emitted, empty without frontmatter;
+//! document-grain — neither `frag` nor sections mode scopes it away.
 
 use serde_json::{Value, json};
 
@@ -20,7 +20,7 @@ fn serve(doc_dir: &std::path::Path, requests: &[Value]) -> Vec<Value> {
 }
 
 /// Keys, values, and the cross-op rev agreement: each `props` row carries the
-/// document-order key, the key line's stored value, and exactly the span +
+/// document-order key, the key line's decoded value, and exactly the span +
 /// CAS token the `cat` `fm_key` door serves for the same key.
 #[test]
 fn props_serve_key_facts_that_agree_with_the_cat_fm_key_grain() {
@@ -46,7 +46,7 @@ fn props_serve_key_facts_that_agree_with_the_cat_fm_key_grain() {
     assert_eq!(
         kv,
         vec![("type", "note"), ("status", "seeded")],
-        "one row per top-level key, document order, value as stored"
+        "one row per top-level key, document order, value decoded (§ A.6.1)"
     );
     for (row, cat) in props.iter().zip(&frames[2..=3]) {
         assert_eq!(cat["ok"], json!(true), "cat fm_key serves: {cat}");
@@ -145,5 +145,66 @@ fn a_block_value_serves_the_key_line_remainder_and_the_full_grain() {
     assert_eq!(
         props[0]["prop_rev"], frames[2]["body"]["node_rev"],
         "the CAS token is minted over the full grain bytes"
+    );
+}
+
+/// **§ A.6 on the wire, both halves in one read.** The fleet quotes its
+/// frontmatter by convention, so this is the shape production data actually
+/// has. Two things must hold at once, and they pull in opposite directions:
+///
+/// - the `value` plane is typed `string`, so it serves the DECODED scalar —
+///   before § A.6 it served `"\"[[1ed98864]]\""` and every caller comparison
+///   against an id was silently false;
+/// - `prop_rev` and `span` are GUARD facts over the stored bytes, so they must
+///   still agree with the `cat` `fm_key` grain, which decodes nothing. Were the
+///   decode pushed down to the hash grain instead, `owner: ""` and `owner:`
+///   would mint one token and the R4 three-state law would lose a state.
+#[test]
+fn quoted_values_serve_decoded_while_the_guard_facts_stay_over_stored_bytes() {
+    let home = tempfile::tempdir().expect("workspace");
+    let dir = home.path().join("corpus");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    // The fleet-canonical spellings, verbatim from the season-1 read table.
+    let raw = "---\nowner: \"[[1ed98864]]\"\nclaimed_by: \"3f9a1c07\"\nempty: \"\"\nstatus: doing\n---\n\n# Body\n";
+    std::fs::write(dir.join("fleet.md"), raw).expect("fixture");
+    let frames = serve(
+        home.path(),
+        &[
+            json!({"id":1,"op":"read","path":"corpus/fleet.md"}),
+            json!({"id":2,"op":"cat","path":"corpus/fleet.md","sec":{"fm_key":"owner"}}),
+        ],
+    );
+    let props = frames[1]["body"]["props"].as_array().expect("props plane");
+    let kv: Vec<(&str, &str)> = props
+        .iter()
+        .map(|p| {
+            (
+                p["key"].as_str().expect("key"),
+                p["value"].as_str().expect("value"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        kv,
+        vec![
+            ("owner", "[[1ed98864]]"),
+            ("claimed_by", "3f9a1c07"),
+            ("empty", ""),
+            ("status", "doing"),
+        ],
+        "the value plane is decoded (§ A.6.1)"
+    );
+
+    // The guard half: unchanged, and still the `cat` grain's own token.
+    assert_eq!(
+        props[0]["prop_rev"], frames[2]["body"]["node_rev"],
+        "the CAS token is minted over the STORED bytes (§ A.6.2)"
+    );
+    assert_eq!(props[0]["span"], frames[2]["body"]["span"]);
+    assert_eq!(
+        frames[2]["body"]["content"],
+        json!("owner: \"[[1ed98864]]\""),
+        "and the content door still serves the bytes as they sit on disk \
+         (the fm_key leaf span excludes its terminator)"
     );
 }
