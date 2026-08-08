@@ -10,7 +10,7 @@
 //! this workspace green and reddens this file alone.
 //!
 //! Two changes from the artifact, both stated: the foreign-parser judgment is
-//! made INLINE here (PyYAML on every pass, not only on the dumped artifacts),
+//! made INLINE here (`PyYAML` on every pass, not only on the dumped artifacts),
 //! and the artifact's `read_then_write_back_is_byte_stable` is NOT ported —
 //! its claim is false on both bake-off branches (a quoted read written back
 //! re-spells plain), which is carded as its own follow-up rather than
@@ -19,7 +19,7 @@
 //! Matrix: three stored colon shapes x the empty value x applied TWICE
 //! (idempotency), driven through the REAL `set_property` wire door. Each
 //! resulting document is dumped to `$MRD_MATRIX_OUT` so an EXTERNAL YAML
-//! parser (PyYAML) judges the bytes — the engine's own parse is not the
+//! parser (`PyYAML`) judges the bytes — the engine's own parse is not the
 //! oracle here, because that is precisely the blind spot that let the
 //! sibling branch emit `note:""` and pass its own suite.
 
@@ -150,7 +150,7 @@ fn splice_matrix_empty_value_across_colon_shapes_twice() {
                 &disk,
                 &[("note", ""), ("keep", "1")],
                 name,
-                pass as u32,
+                u32::try_from(pass).unwrap(),
             );
         }
         // Idempotency: pass 2 must not differ from pass 1.
