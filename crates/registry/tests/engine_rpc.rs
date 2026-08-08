@@ -283,56 +283,11 @@ fn admin_verbs_share_the_socket_after_unification() {
     server.shutdown();
 }
 
-/// §5.3a fold economy, counted not timed: once the engine is warm, quiet
-/// per-document serves run NO whole-corpus fold (`fs::fold_count`) and re-read
-/// NO file bytes (`fs::leaf_reread_count`). At the pinned base every one of
-/// these round trips folded the whole corpus — the O(domain bytes) per round
-/// trip this wave removes.
-///
-/// Serial-only counters: this test must not run concurrently with other
-/// folding tests in one process, so it takes the instruments in one test body
-/// (cold warm, then the quiet window) rather than splitting across tests.
-#[test]
-fn quiet_serves_fold_nothing_and_re_read_nothing() {
-    let tmp = TempDir::new().unwrap();
-    let ws = write_ws(
-        &tmp,
-        &[("a.md", "# A\n\nsee [[b]]\n"), ("b.md", "# B\n"), ("c.md", "# C\n")],
-    );
-    let server = RunningServer::start(test_config(&tmp)).unwrap();
-    let mut conn = Conn::open(server.socket_path());
-    assert_eq!(conn.hello(&ws)["ok"], json!(true));
-
-    // Warm is done; open the quiet window.
-    let folds = ::fs::fold_count();
-    let rereads = ::fs::leaf_reread_count();
-
-    for _ in 0..3 {
-        assert_eq!(conn.call(&json!({"op": "toc", "path": "a.md"}))["ok"], json!(true));
-        assert_eq!(
-            conn.call(&json!({"op": "cat", "path": "b.md"}))["ok"],
-            json!(true)
-        );
-        assert_eq!(
-            conn.call(&json!({"op": "read", "path": "c.md"}))["ok"],
-            json!(true)
-        );
-        assert_eq!(conn.call(&json!({"op": "fingerprint"}))["ok"], json!(true));
-    }
-
-    assert_eq!(
-        ::fs::fold_count() - folds,
-        0,
-        "a quiet window serves without one whole-corpus fold"
-    );
-    assert_eq!(
-        ::fs::leaf_reread_count() - rereads,
-        0,
-        "a quiet window re-reads zero file bytes — corpus-grain legs are stat-grade"
-    );
-
-    server.shutdown();
-}
+// The §5.3a fold-economy gate (`quiet_serves_fold_nothing_and_re_read_nothing`)
+// lives in its own binary, `tests/fold_economy.rs`: its counters are
+// process-global and every test here folds once at cold warm, so any sibling
+// overlapping its counter window reds it with the mechanism innocent
+// (measured 3/20 at default parallelism, 0/20 alone in the process).
 
 /// Reads are LIVE at document grain: an out-of-band write to the served file
 /// (the rename discipline every real writer uses) is visible on the very next
