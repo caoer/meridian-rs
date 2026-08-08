@@ -1,13 +1,22 @@
-//! Corpus-scoped refusals name their scope and their offending member
-//! (Law A-3c, session 07-05 decisions/0002 gate f).
+//! Per-file UTF-8 degradation at the wire doors (node-rev-merkle-spec §3,
+//! line 52 — ratified): files that are not valid UTF-8 "still get leaf hashes
+//! (blake3 needs no UTF-8) and participate in the root; they simply serve no
+//! spans/nodes (wire `invalid_utf8` law). Integrity coverage and span service
+//! are independent properties."
 //!
-//! The motivating incident: one poison member (non-UTF-8 bytes) landed in a
-//! live corpus, and every read — of any file — refused with a bare
-//! `invalid_utf8` the caller could only attribute to the file they asked for.
-//! The engine was right to refuse the corpus (wire-contract §8: refuse, never
-//! lossy-decode); the refusal was useless because it named no locus. These
-//! gates pin the actionable shape: the frame carries the poison member's path
-//! and a message naming corpus scope, member, and condition.
+//! The motivating incident (dogfood 2026-08-08, P1): one poison member
+//! (non-UTF-8 bytes) landed in a live corpus and the daemon refused the ENTIRE
+//! workspace at `hello` — every `mrd script` fleet-wide died "cannot dial the
+//! daemon" until the file was hunted down and removed. The ruled degradation
+//! grain is the FILE: the poison member itself refuses `invalid_utf8` naming
+//! itself (wire-contract §8: refuse, never lossy-decode), every healthy member
+//! keeps serving, and the poison bytes stay under integrity coverage (they
+//! participate in the root).
+//!
+//! Corpus-scoped refusals still exist — a member the snapshot cannot READ has
+//! no bytes to hash, and an ambiguous domain config leaves no domain at all —
+//! and those keep Law A-3c's shape: scope named, member named. UTF-8 is just
+//! not one of them.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -83,13 +92,12 @@ impl Conn {
     }
 }
 
-/// The exemplar, reproduced: a healthy corpus binds and serves; then one
-/// poison member lands through ordinary external activity; a read of a
-/// HEALTHY member now refuses — and the refusal must name the corpus scope
-/// and the poison member, not strand the caller with a bare `invalid_utf8`
-/// they can only pin on the file they asked for.
+/// The incident, replayed under the ruled grain: a healthy corpus binds and
+/// serves; one poison member lands through ordinary external activity; every
+/// HEALTHY member keeps serving, and only the poison member itself refuses —
+/// per-file `invalid_utf8`, naming itself.
 #[test]
-fn corpus_refusal_names_scope_and_poison_member() {
+fn a_poison_member_degrades_itself_not_the_corpus() {
     let tmp = TempDir::new().unwrap();
     let ws = write_ws(&tmp, &[("healthy.md", "# Healthy\n\nfine.\n")]);
     let server = RunningServer::start(test_config(&tmp)).unwrap();
@@ -105,56 +113,92 @@ fn corpus_refusal_names_scope_and_poison_member() {
     fs::create_dir_all(ws.join("notes")).unwrap();
     fs::write(ws.join("notes/poison.md"), b"# Poison\n\n\xff\xfe raw bytes\n").unwrap();
 
-    let refusal = conn.call(&json!({"op": "toc", "path": "healthy.md"}));
-    assert_eq!(refusal["ok"], json!(false), "poisoned corpus refuses: {refusal}");
+    // §52 clause "healthy members serve": the corpus is NOT refused.
+    let toc = conn.call(&json!({"op": "toc", "path": "healthy.md"}));
+    assert_eq!(
+        toc["ok"],
+        json!(true),
+        "one poison member must not poison the whole workspace: {toc}"
+    );
+
+    // §52 clause "serves no spans/nodes": the poison member itself refuses,
+    // per-file, wearing the closed-taxonomy code and naming itself.
+    let refusal = conn.call(&json!({"op": "toc", "path": "notes/poison.md"}));
+    assert_eq!(refusal["ok"], json!(false), "the poison member serves nothing: {refusal}");
     let error = &refusal["error"];
-    assert_eq!(
-        error["code"],
-        json!("invalid_utf8"),
-        "the condition keeps its closed-taxonomy code: {refusal}"
-    );
-    assert_eq!(
-        error["recovery"],
-        json!("env"),
-        "invalid_utf8 stays env-class: {refusal}"
-    );
-    // Law A-3c, clause "member named": the frame's path is the POISON member,
-    // never the healthy file the caller asked for.
+    assert_eq!(error["code"], json!("invalid_utf8"), "{refusal}");
+    assert_eq!(error["recovery"], json!("env"), "invalid_utf8 stays env-class: {refusal}");
     assert_eq!(
         error["path"],
         json!("notes/poison.md"),
-        "the refusal names the offending member: {refusal}"
+        "the per-file refusal names the file itself: {refusal}"
     );
-    // Law A-3c, clause "scope named": the message states the corpus scope and
-    // the condition, so the caller learns the file they asked for is fine.
-    let message = error["message"].as_str().unwrap_or_else(|| {
-        panic!("a corpus-scoped refusal carries a message: {refusal}")
-    });
+    let message = error["message"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the refusal carries a message: {refusal}"));
     assert!(
-        message.contains("corpus") && message.contains("notes/poison.md") && message.contains("UTF-8"),
-        "the message names scope, member, and condition: {refusal}"
+        message.contains("notes/poison.md") && message.contains("UTF-8"),
+        "the message names the member and the condition: {refusal}"
     );
 
     server.shutdown();
 }
 
-/// The same law at the OTHER wire door: a `hello` that declares a poisoned
-/// workspace refuses at bind, naming the member.
+/// The other wire door, same grain: a `hello` that declares a workspace with a
+/// poison member BINDS and serves — the fleet-killing shape (refuse the entire
+/// workspace at handshake) is exactly what §52 rules out.
 #[test]
-fn hello_at_a_poisoned_workspace_names_the_member() {
+fn hello_at_a_poisoned_workspace_binds_and_serves() {
     let tmp = TempDir::new().unwrap();
     let ws = write_ws(&tmp, &[("healthy.md", "# Healthy\n")]);
     fs::write(ws.join("poison.md"), b"# P\n\xc3\x28\n").unwrap();
     let server = RunningServer::start(test_config(&tmp)).unwrap();
     let mut conn = Conn::open(server.socket_path());
 
-    let refusal = conn.hello(&ws);
-    assert_eq!(refusal["ok"], json!(false), "poisoned bind refuses: {refusal}");
-    assert_eq!(refusal["error"]["code"], json!("invalid_utf8"), "{refusal}");
+    let ack = conn.hello(&ws);
     assert_eq!(
-        refusal["error"]["path"],
-        json!("poison.md"),
-        "hello's refusal names the offending member: {refusal}"
+        ack["ok"],
+        json!(true),
+        "a poisoned workspace still binds — degradation is per-file: {ack}"
+    );
+    let toc = conn.call(&json!({"op": "toc", "path": "healthy.md"}));
+    assert_eq!(toc["ok"], json!(true), "healthy member serves at once: {toc}");
+
+    server.shutdown();
+}
+
+/// §52's other half: the poison bytes stay under INTEGRITY coverage — the file
+/// gets a leaf hash and participates in the root, so changing its (still
+/// non-UTF-8) bytes moves the workspace root. Span service and integrity
+/// coverage are independent properties.
+#[test]
+fn poison_bytes_participate_in_the_root() {
+    let tmp = TempDir::new().unwrap();
+    let ws = write_ws(&tmp, &[("healthy.md", "# Healthy\n")]);
+    fs::write(ws.join("poison.md"), b"# P\n\xff\xfe v1\n").unwrap();
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(server.socket_path());
+
+    assert_eq!(conn.hello(&ws)["ok"], json!(true));
+    // v3 spells the world-grain op `fingerprint` (rev projection root ↔
+    // fingerprint) — the `script_golden_live` dial precedent.
+    let before = conn.call(&json!({"op": "fingerprint"}));
+    assert_eq!(before["ok"], json!(true), "{before}");
+    let before_fp = before["body"]["fingerprint"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the answer carries the fingerprint: {before}"))
+        .to_owned();
+
+    fs::write(ws.join("poison.md"), b"# P\n\xff\xfe v2\n").unwrap();
+    let after = conn.call(&json!({"op": "fingerprint"}));
+    assert_eq!(after["ok"], json!(true), "{after}");
+    let after_fp = after["body"]["fingerprint"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the answer carries the fingerprint: {after}"))
+        .to_owned();
+    assert_ne!(
+        before_fp, after_fp,
+        "a poison member's bytes must move the root — leaf hashes need no UTF-8"
     );
 
     server.shutdown();
@@ -181,7 +225,8 @@ fn healthy_corpus_serves_unchanged() {
 /// condition that is not "these bytes are not UTF-8" must not wear
 /// `invalid_utf8`. Two domain configs both decode perfectly — the workspace is
 /// ambiguous, not corrupt — so the refusal rides `io_error{cause}`, still env
-/// class, still carrying the remedy.
+/// class, still carrying the remedy. This refusal IS corpus-scoped (there is
+/// no domain to build any corpus with) and keeps Law A-3c's shape.
 #[test]
 fn two_domain_configs_refuse_as_io_error_not_invalid_utf8() {
     let tmp = TempDir::new().unwrap();
