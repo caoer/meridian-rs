@@ -49,7 +49,8 @@ fn toc_mode_publishes_the_anchor_plane_in_its_own_array() {
     let ids: Vec<&str> = anchors.iter().map(|a| a.anchor.as_str()).collect();
     assert_eq!(ids, vec!["goal", "gate"], "list-item anchors, document order");
     for a in &anchors {
-        let (start, end) = (a.span.0 as usize, a.span.1 as usize);
+        let start = usize::try_from(a.span.0).expect("fixture span start fits usize");
+        let end = usize::try_from(a.span.1).expect("fixture span end fits usize");
         assert!(
             DOC[start..end].contains(&format!("^{}", a.anchor)),
             "the published span carries its own marker: {:?}",

@@ -71,24 +71,12 @@ fn plan_batch_equals_the_host_built_native_batch() {
                     rev: None,
                 },
                 PlanEdit::Append {
-                    hpath: vec![
-                        HpathSeg {
-                            h: "Memo".into(),
-                            n: None,
-                        },
-                        HpathSeg {
-                            h: "Tasks".into(),
-                            n: None,
-                        },
-                    ],
+                    hpath: vec![seg("Memo"), seg("Tasks")],
                     body: "- item three".into(),
                     rev: None,
                 },
                 PlanEdit::Create {
-                    parent_hpath: vec![HpathSeg {
-                        h: "Archive".into(),
-                        n: None,
-                    }],
+                    parent_hpath: vec![seg("Archive")],
                     title: "Log".into(),
                     body: "created".into(),
                     rev: None,
