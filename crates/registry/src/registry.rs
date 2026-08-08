@@ -507,6 +507,9 @@ impl Registry {
     /// Live subscriptions are exempt (U20b): push-only connections never touch
     /// `last_use`. Reaping them would fork the per-workspace `seq` (§4.7) —
     /// next `sub` would mint a second ring — not merely stop delivery.
+    /// The claim behind the exemption is taken at arm time, inside the `sub`
+    /// dispatch and before the ack renders — an acked subscription is never in
+    /// a reapable window (`server::arm_time_exemption_tests`).
     pub fn reap(&self, now: u64, threshold_secs: u64) -> Vec<PathBuf> {
         let cutoff = now.saturating_sub(threshold_secs);
         // Exemption set before `inner` write lock — concurrent `sub` safe.

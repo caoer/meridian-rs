@@ -34,6 +34,7 @@ use wire_serve::rev::Rev;
 use crate::engine::WorkspaceEngine;
 use crate::protocol::{Request, Response};
 use crate::registry::{PinOutcome, RegisterOutcome, Registry, ResolveOutcome};
+use crate::ring::SubGuard;
 use crate::state::StateStore;
 use crate::{
     DEFAULT_IDLE_EXIT, DEFAULT_IDLE_REAP, DEFAULT_PREWARM_INTERVAL, DEFAULT_PREWARM_QUIET_MAX,
@@ -533,12 +534,13 @@ fn serve_conn(
             workspace,
             rev,
             from_seq,
+            guard,
         } => push_loop(
-            registry,
             &workspace,
             &mut writer,
             rev,
             from_seq,
+            guard,
             shutdown,
             deadlines,
         ),
@@ -552,7 +554,8 @@ pub enum ServeOutcome {
     Eof,
     /// An accepted `sub` armed the connection for push: the caller owns the
     /// push plane from here (`serve_conn` enters `push_loop`; a socketless
-    /// caller has no push plane to enter).
+    /// caller has no push plane to enter and releases the claim by dropping
+    /// the outcome).
     Armed {
         /// The bound workspace (canonical) the subscription reads.
         workspace: PathBuf,
@@ -560,7 +563,19 @@ pub enum ServeOutcome {
         rev: Rev,
         /// The subscription anchor the accepted `sub` declared.
         from_seq: u64,
+        /// The live subscription claim, taken at arm time inside the dispatch
+        /// — the reaper exemption is engaged before the ack renders, and every
+        /// exit path (push loop end, error, drop) releases it.
+        guard: SubGuard,
     },
+}
+
+/// An accepted `sub` in flight between its dispatch and the push plane: the
+/// declared anchor plus the subscription claim taken at arm time.
+#[derive(Debug)]
+struct ArmedSub {
+    from_seq: u64,
+    guard: SubGuard,
 }
 
 /// The request-line half of one connection: NDJSON in, one NDJSON response per
@@ -598,8 +613,8 @@ pub fn serve_lines(
         }
         // Activity clock: every frame counts, before dispatch, success or not.
         registry.note_request();
-        // Set by an accepted `sub` only — see `push_loop`.
-        let mut armed: Option<u64> = None;
+        // Set by an accepted `sub` only — carries the claim into `push_loop`.
+        let mut armed: Option<ArmedSub> = None;
         let out = handle_line(
             registry,
             &mut attached,
@@ -610,7 +625,7 @@ pub fn serve_lines(
         );
         writer.write_all(out.as_bytes())?;
         writer.flush()?;
-        if let Some(from_seq) = armed {
+        if let Some(ArmedSub { from_seq, guard }) = armed {
             let workspace = attached
                 .take()
                 .expect("an accepted sub proves a bound workspace");
@@ -618,6 +633,7 @@ pub fn serve_lines(
                 workspace,
                 rev,
                 from_seq,
+                guard,
             });
         }
     }
@@ -650,8 +666,10 @@ const PUSH_TICK: Duration = Duration::from_millis(50);
 /// Push channel: detect, deliver undelivered frames, repeat.
 ///
 /// Ends on client disconnect (broken pipe is normal), daemon shutdown, or drop.
-/// [`SubGuard`](crate::ring::SubGuard) keeps the reaper off this workspace for
-/// the lifetime and releases on every exit path.
+/// The [`SubGuard`](crate::ring::SubGuard) arrives with the accepted `sub`
+/// (claimed at arm time, inside the dispatch — before the ack rendered), keeps
+/// the reaper off this workspace for the lifetime, and releases on every exit
+/// path.
 ///
 /// An armed sub holds the idle-exit clock open (R2/S3) and parks an OS thread,
 /// so three signals keep it mortal:
@@ -662,18 +680,24 @@ const PUSH_TICK: Duration = Duration::from_millis(50);
 /// - **peer wedged on a quiet workspace** (R2b) — neither of the above can fire
 ///   there, so `deadlines.idle_write` drops a sub that has written zero frames
 ///   for that long.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "ownership is the mechanism: the push plane HOLDS the subscription \
+              claim, and returning from this function is what releases it"
+)]
 fn push_loop(
-    registry: &Registry,
     ws: &Path,
     writer: &mut UnixStream,
     rev: Rev,
     from_seq: u64,
+    guard: SubGuard,
     shutdown: &AtomicBool,
     deadlines: PushDeadlines,
 ) -> io::Result<()> {
-    let ring = registry.ring(ws);
-    // Subscribe before first detect — otherwise a reap can leave a silent hole.
-    let _subscribed = ring.subscribe();
+    // The guard's ring is the epoch the `sub` was acked on — and the claim has
+    // protected it from the reaper since arm time, so it cannot have been
+    // replaced by a fresh epoch in between.
+    let ring = Arc::clone(guard.ring());
     // A timed-out write may leave a partial frame on the wire; the connection is
     // dropped right after, so the client reads a truncated line then EOF,
     // redials, and resyncs by root (§7.1).
@@ -739,7 +763,7 @@ fn handle_line(
     registry: &Registry,
     attached: &mut Option<PathBuf>,
     rev: &mut Rev,
-    armed: &mut Option<u64>,
+    armed: &mut Option<ArmedSub>,
     line: &str,
     build_sha: Option<&str>,
 ) -> String {
@@ -976,7 +1000,7 @@ fn hello_body(
 fn serve_wire(
     registry: &Registry,
     attached: Option<&Path>,
-    armed: &mut Option<u64>,
+    armed: &mut Option<ArmedSub>,
     obj: &Map<String, Value>,
     rev: Rev,
 ) -> (wire::Response, Option<u64>) {
@@ -1017,7 +1041,7 @@ fn serve_wire(
 fn dispatch_read(
     registry: &Registry,
     attached: Option<&Path>,
-    armed: &mut Option<u64>,
+    armed: &mut Option<ArmedSub>,
     id: Option<u64>,
     op: Op,
     v3: bool,
@@ -1209,7 +1233,16 @@ fn dispatch_read(
             // ack-then-prime would swallow interim edits.
             let root = ring.prime(&fs::WorkspaceRoot(ws.to_path_buf()))?;
             // Armed only on success — refused `sub` leaves a request channel.
-            *armed = Some(from_seq);
+            // The subscription claim is taken HERE, before the ack renders:
+            // from the moment the client can observe `ok`, the workspace is
+            // reaper-exempt (U20b — a subscribed workspace is not reaped).
+            // Subscribing in `push_loop` instead left a window between the
+            // acked `sub` and the loop's own subscribe that the reaper could
+            // win (CI run 31276217830, deterministic on the 2-core runner).
+            *armed = Some(ArmedSub {
+                from_seq,
+                guard: ring.subscribe(),
+            });
             // §4.7 ack: baseline root so first frame's `root_before` matches.
             Ok(ResponseBody::Root {
                 root,
@@ -1691,5 +1724,90 @@ mod recovery_class_truth_tests {
         let err = super::warm_err_to_wire(&e);
         assert_eq!(err.code, wire::ErrorCode::IoError);
         assert_eq!(err.recovery, wire::Recovery::Env);
+    }
+}
+
+/// U20b arm-time exemption gates: the reaper exemption engages when the `sub`
+/// is accepted — inside the dispatch, before the ack renders, before the push
+/// plane starts — and releases when the claim drops.
+///
+/// Closes the arm-to-convert window CI run 31276217830 lost deterministically
+/// (2-core runner): `serve_lines` returned `Armed`, the client acted on its
+/// ack, and `reap` won against `push_loop`'s own late subscribe. Holding the
+/// `Armed` outcome without entering the push plane IS that window, held open
+/// indefinitely — a stronger schedule than any yield storm, and deterministic.
+#[cfg(test)]
+mod arm_time_exemption_tests {
+    use super::{ServeOutcome, serve_lines};
+    use crate::registry::Registry;
+    use crate::state::StateStore;
+    use std::fs::{create_dir_all, write};
+    use std::path::Path;
+    use std::sync::Arc;
+
+    fn registry_in(home: &Path) -> Registry {
+        let cache_root = home.join("cache");
+        create_dir_all(&cache_root).unwrap();
+        Registry::new(
+            StateStore::new(home.join("state.json")),
+            cache_root,
+            Vec::new(),
+        )
+    }
+
+    /// `hello` (binds + registers) then `sub` from 0 — the accepted-sub line
+    /// dialogue, socketless (`serve_lines` is the socket's own path).
+    fn hello_then_sub(ws: &Path) -> String {
+        format!(
+            "{{\"op\":\"hello\",\"proto\":1,\"workspace\":{}}}\n{{\"op\":\"sub\",\"from_seq\":0}}\n",
+            serde_json::to_string(ws.to_str().unwrap()).unwrap()
+        )
+    }
+
+    /// The exemption is live from the moment the `sub` is accepted: with the
+    /// connection parked between its ack and the push plane (the old window),
+    /// the widest-horizon reap takes nothing, and the ring keeps its epoch.
+    /// Dropping the claim restores mortality — which also proves the survival
+    /// above was the claim's doing, not a workspace the reaper never saw.
+    #[test]
+    fn an_accepted_sub_is_reaper_exempt_before_the_push_plane_starts() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = home.path().join("ws");
+        create_dir_all(&ws).unwrap();
+        write(ws.join("plan.md"), "# Goals\n\nship\n").unwrap();
+
+        let mut out = Vec::new();
+        let outcome =
+            serve_lines(&reg, hello_then_sub(&ws).as_bytes(), &mut out, None).expect("serve_lines");
+        let ServeOutcome::Armed {
+            workspace, guard, ..
+        } = outcome
+        else {
+            let dialogue = String::from_utf8_lossy(&out);
+            panic!("sub was not accepted; dialogue: {dialogue}");
+        };
+
+        // The old window, held open: armed and acked, push plane not entered.
+        let before = reg.ring(&workspace);
+        let reaped = reg.reap(u64::MAX, 0);
+        assert!(
+            !reaped.contains(&workspace),
+            "a subscribed workspace is not reaped — the claim is taken at arm \
+             time, before the ack renders: {reaped:?}"
+        );
+        assert!(
+            Arc::ptr_eq(&before, &reg.ring(&workspace)),
+            "one workspace keeps ONE ring across a reap — a second ring would \
+             fork the per-workspace seq counter §4.7 defines"
+        );
+
+        drop(guard);
+        let reaped = reg.reap(u64::MAX, 0);
+        assert!(
+            reaped.contains(&workspace),
+            "dropping the claim restores mortality (and proves the survival \
+             above was the claim, not an unregistered workspace): {reaped:?}"
+        );
     }
 }
