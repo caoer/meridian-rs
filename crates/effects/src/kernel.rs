@@ -1116,6 +1116,7 @@ fn metered_eval(
                 aborted,
                 depth_overflow,
                 fault,
+                fault_line,
                 missing,
                 wrong_plane,
             } = dispatch_entry(&mut eval, &module, entry, ast, globals, arg_value);
@@ -1144,6 +1145,7 @@ fn metered_eval(
                     Err(EvalError::Runtime {
                         rule_id: rule.id.clone(),
                         reason: fault.unwrap_or_default(),
+                        line: fault_line,
                     })
                 }
             } else if over_budget {
@@ -1178,6 +1180,9 @@ struct EntryRun {
     aborted: bool,
     depth_overflow: bool,
     fault: Option<String>,
+    /// 1-based source line of the fault, when the Starlark error carried a
+    /// span. Lines are 1-based for a reader; the resolver is 0-based.
+    fault_line: Option<u32>,
     /// The hooked plane found no hook of its own.
     missing: bool,
     /// …and the other plane's hook is what the source defines instead.
@@ -1200,6 +1205,11 @@ fn dispatch_entry<'v>(
         aborted: true,
         depth_overflow: is_depth_overflow(e),
         fault: Some(e.to_string()),
+        // 1-based for a reader; the resolver is 0-based (the read-record
+        // convention).
+        fault_line: e
+            .span()
+            .map(|span| u32::try_from(span.resolve_span().begin.line + 1).unwrap_or(u32::MAX)),
         missing: false,
         wrong_plane: None,
     };
@@ -1207,6 +1217,7 @@ fn dispatch_entry<'v>(
         aborted: false,
         depth_overflow: false,
         fault: None,
+        fault_line: None,
         missing: false,
         wrong_plane: None,
     };
@@ -1252,6 +1263,7 @@ fn budget(limits: EvalLimits) -> EvalError {
 fn runtime(rule: &Rule, e: impl std::fmt::Display) -> EvalError {
     EvalError::Runtime {
         rule_id: rule.id.clone(),
+        line: None,
         reason: e.to_string(),
     }
 }

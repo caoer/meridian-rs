@@ -171,6 +171,7 @@ fn a_fault_keeps_its_armed_entries_flagged_not_committed() {
         EvalError::Runtime {
             rule_id: "script".to_owned(),
             reason: "no frontmatter key \"report_path\"".to_owned(),
+            line: Some(4),
         },
         vec![armed_props(2)],
         vec![toc_read(1, ReadPosition::Echo)],
