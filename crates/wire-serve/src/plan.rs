@@ -141,7 +141,7 @@ pub fn lower(
     let mut edits = if props.is_empty() {
         Vec::new()
     } else {
-        lower_property_group(&idx, &props)?
+        lower_property_group(doc, &idx, &props)?
     };
 
     for e in plan_edits {
@@ -354,8 +354,12 @@ fn lower_create(
 }
 
 /// Property group: existing → `Put{all}`; absent after last key (carrier fold
-/// if last is being set). Keys/values only through `yaml_safe_key`/`yaml_safe_value`.
+/// if last is being set). Keys/values only through `yaml_safe_key`/
+/// `yaml_preserve_or_encode` — an existing key's stored line feeds the
+/// § A.6.3c no-op preservation, so a write-back of the served value recomposes
+/// the stored spelling byte-identically.
 fn lower_property_group(
+    doc: &model::Document,
     idx: &PlanIndex,
     props: &std::collections::BTreeMap<&str, &str>,
 ) -> Result<Vec<Edit>, Box<ErrorBody>> {
@@ -386,8 +390,18 @@ fn lower_property_group(
     let mut quoted: std::collections::BTreeMap<policy::defs::SafeKey<'_>, String> =
         std::collections::BTreeMap::new();
     for (k, v) in &keyed {
+        // An existing key's stored line, for § A.6.3c preservation. A resolve
+        // miss (e.g. a duplicate key) just falls back to the fresh encode —
+        // preservation is byte quiet, never a new refusal surface.
+        let stored_line = if fm_key_set.contains(k.as_str()) {
+            model::resolve(doc, &model::Ref::FmKey(k.as_str().to_string()))
+                .ok()
+                .map(|t| doc.raw[t.span].to_string())
+        } else {
+            None
+        };
         // A newline in a value forges frontmatter keys — refuse, never sanitize.
-        let safe = policy::defs::yaml_safe_value(v).map_err(|_| {
+        let safe = policy::defs::yaml_preserve_or_encode(stored_line.as_deref(), v).map_err(|_| {
             bad_request(format!(
                 "property value for {} contains a newline — frontmatter values are single-line in v1; put multi-line content in a body section",
                 policy::defs::go_quote(k.as_str())

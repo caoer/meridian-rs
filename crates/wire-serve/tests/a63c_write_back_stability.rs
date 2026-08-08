@@ -121,8 +121,8 @@ fn upsert_write_back_is_byte_stable() {
     assert_eq!(bytes, DOC, "a semantic no-op upsert keeps the stored spelling");
 }
 
-/// Both doors together on one batch stay a no-op: the composed write is the
-/// A.6.4 conformance shape, asserted on the STORED LINE bytes.
+/// Two keys in one plan batch stay a no-op together — the group lowering
+/// preserves each key's stored spelling independently.
 #[test]
 fn a_two_key_write_back_batch_is_byte_stable() {
     let (dir, root) = ws(&[("card.md", DOC)]);
