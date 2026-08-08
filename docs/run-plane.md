@@ -84,7 +84,12 @@ read response, so re-evaluating against the recorded responses is
 deterministic and byte-identical. Decision #17 (no exec) stands unchanged.
 
 **`read(path)` IS the wire toc face, 1:1.** The recorded toc face is
-`{rev, fm, toc, words}`, and `words` is the wire's own `words_total` — a
+`{rev, fm, toc, words}`. `fm` values are DECODED scalars — the frontmatter
+scalar law (wire-contract § A.6) governs this plane exactly as it governs the
+composed read's `props[].value`, so `owner: "[[x]]"` reaches a script as
+`[[x]]` and a comparison against the unquoted form arms
+*(amended 2026-08-07, dogfood-season-1 finding 1)*. `words` is the wire's own
+`words_total` — a
 delivered fact the host carries, never a count the consumer plane computes. A
 script sees `t.words` for the same reason it sees `t.rev`: the wire answered
 it. **Which op answers it:** the composed `read` (§4.1, toc mode) carries

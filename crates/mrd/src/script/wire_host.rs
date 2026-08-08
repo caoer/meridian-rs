@@ -361,12 +361,18 @@ fn toc_entry(node: &Value) -> Option<TocEntry> {
 /// `k.trim().trim_matches(['"', '\''])`), so the split is on the first colon
 /// rather than on the key text. A block value spanning several lines comes back
 /// whole; only the line terminator is dropped.
+///
+/// The remainder is decoded through the § A.6.1 scalar law, the same law the
+/// composed read's `props` plane serves: a script comparing `card.fm["owner"]`
+/// against an id is holding a VALUE, and the fleet quotes its frontmatter by
+/// convention. Serving the stored bytes here made every such comparison
+/// silently false (dogfood season 1, finding 1).
 fn fm_value_of(line: &str) -> String {
     let rest = line
         .split_once(':')
         .map_or(line, |(_, value)| value)
         .trim_end_matches('\n');
-    rest.strip_prefix(' ').unwrap_or(rest).to_owned()
+    model::scalar::text(rest)
 }
 
 #[cfg(test)]

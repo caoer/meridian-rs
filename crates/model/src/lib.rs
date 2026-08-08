@@ -22,6 +22,7 @@ use addr::{Addr, AddrError, MountName, MountSet};
 pub mod delta;
 pub mod fingerprint;
 pub mod gotext;
+pub mod scalar;
 pub mod selector;
 pub mod walk;
 

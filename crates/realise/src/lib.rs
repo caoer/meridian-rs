@@ -125,7 +125,11 @@ impl Check for FieldEquals {
 }
 
 /// Read one frontmatter field's current value off a parsed document, using only
-/// the public model surface (the frontmatter node's [`model::YamlMap`]).
+/// the public model surface (the frontmatter node's [`model::YamlMap`]),
+/// DECODED through the one scalar owner (wire-contract § A.6.1). This is the
+/// OBSERVED half of a value comparison; the declared half (`realise.expected`,
+/// read at the page edge) decodes through the same owner, because a decode on
+/// one side alone moves the mismatch instead of closing it.
 fn fm_value(doc: &model::Document, field: &str) -> Option<String> {
     fn find(node: &model::Node) -> Option<&model::YamlMap> {
         if let model::NodeKind::Frontmatter { map } = &node.kind {
@@ -135,7 +139,7 @@ fn fm_value(doc: &model::Document, field: &str) -> Option<String> {
     }
     find(&doc.root)
         .and_then(|m| m.0.iter().find(|(k, _)| k == field))
-        .map(|(_, v)| v.clone())
+        .map(|(_, v)| model::scalar::text(v))
 }
 
 /// A claim's apply program — a run-plane task binding. Running it drives the

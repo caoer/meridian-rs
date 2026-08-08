@@ -134,7 +134,11 @@ fn strip_comment(v: &str) -> &str {
 }
 
 /// Classify an inline value: flow collection or scalar.
-fn classify_scalar_or_flow(v: &str) -> FmValue {
+///
+/// `pub(super)` for the write side: `yaml_safe_value` asks THIS function what
+/// its own plain emit would parse as, so the encoder and the checker judge one
+/// candidate by one rule (§ A.6.3).
+pub(super) fn classify_scalar_or_flow(v: &str) -> FmValue {
     if v.starts_with('{') {
         return FmValue::Nested;
     }
@@ -212,13 +216,16 @@ fn classify_block(cont: &[&str]) -> FmValue {
 }
 
 /// yaml.v3 core-schema scalar outcomes for one unwrapped scalar token.
-fn classify_scalar(v: &str) -> FmValue {
-    if let Some(q) = v.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')) {
-        return FmValue::Str(q.replace("''", "'"));
-    }
-    if let Some(q) = v.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
-        return FmValue::Str(unescape_double(q));
-    }
+///
+/// The quoting layer is NOT decided here: it is `model::scalar` (§ A.6.1), the
+/// same owner the read seams decode through, so the def checker and the served
+/// value cannot drift into two dialects of one law. A quoted scalar is a string
+/// in the core schema — the typed ladder below runs on the plain arm only.
+pub(super) fn classify_scalar(v: &str) -> FmValue {
+    let v = match model::scalar::decode(v) {
+        model::scalar::Scalar::Quoted(s) => return FmValue::Str(s),
+        model::scalar::Scalar::Plain(p) => p,
+    };
     match v {
         "" | "~" | "null" | "Null" | "NULL" => return FmValue::Null,
         "true" | "True" | "TRUE" => return FmValue::Bool(true),
@@ -237,29 +244,6 @@ fn classify_scalar(v: &str) -> FmValue {
         return FmValue::Timestamp(v.to_string());
     }
     FmValue::Str(v.to_string())
-}
-
-fn unescape_double(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c != '\\' {
-            out.push(c);
-            continue;
-        }
-        match chars.next() {
-            Some('n') => out.push('\n'),
-            Some('t') => out.push('\t'),
-            Some('"') => out.push('"'),
-            Some('\\') => out.push('\\'),
-            Some(other) => {
-                out.push('\\');
-                out.push(other);
-            }
-            None => out.push('\\'),
-        }
-    }
-    out
 }
 
 fn is_int(v: &str) -> bool {
@@ -315,6 +299,35 @@ fn is_yaml_timestamp(v: &str) -> bool {
             })
     };
     hm_ok(time_part)
+}
+
+/// **The def plane's ONE emptiness predicate** — R4's three states at the
+/// typed grain: `absent ≠ empty ≠ set`, where EMPTY has two spellings.
+///
+/// A key is empty when it is absent, when it is the YAML null (`key:`, `~`,
+/// `null`), or when it is the **explicit empty string** (`key: ""`). The third
+/// spelling is the one § A.6.3 makes every value-plane write door emit for an
+/// empty value — `ccc-cli task claim`'s release write, and now the engine's own
+/// — so a predicate that tests `Null` alone reads a released card as still
+/// owned (review gate 2026-08-08, finding 2: `set_property(owner, "")` passed a
+/// required-prop conformance check that the bare-null spelling refused, and
+/// `closed_at: ""` satisfied the terminal biconditional with no close time).
+///
+/// RATIFIED by ZT, 2026-08-08 (relayed via 2c47b75e). It aligns the code with
+/// its own refusal text, which already reads
+/// *"missing or empty"*. The alternative — emitting a bare null instead — is
+/// closed: § A.6.3 forbids forging the type this string plane cannot express.
+///
+/// Deliberately NOT empty: a whitespace-only string, a `0`, a `false`, an empty
+/// list. Those are values the caller authored, and this predicate is about the
+/// absence of one, never about its truthiness.
+#[must_use]
+pub(super) fn is_empty(v: Option<&FmValue>) -> bool {
+    match v {
+        None | Some(FmValue::Null) => true,
+        Some(FmValue::Str(s)) => s.is_empty(),
+        Some(_) => false,
+    }
 }
 
 /// Go `Doc.StringField`: the value if it decoded as a string, else "".

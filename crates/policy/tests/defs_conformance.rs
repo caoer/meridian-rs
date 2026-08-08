@@ -221,6 +221,73 @@ fn defs_conformance_matches_the_u0_goldens() {
         "terminal-close-stamp-repair: repair set"
     );
 
+    // 10b–10e. R4 AT THE DEF GRAIN — the explicit-empty spelling is empty.
+    //
+    // § A.6.3 makes every value-plane write door emit `key: ""` for an empty
+    // value (the null it replaced was a type this string plane cannot express).
+    // The def plane's emptiness predicates read the TYPED value, where that
+    // lands as `Str("")` rather than `Null` — so a predicate that tests `Null`
+    // alone reads a released card as still set. Measured before the repair
+    // (review gate 2026-08-08, finding 2): `status: ""` passed the required
+    // check that `status:` refused, and `closed_at: ""` satisfied the terminal
+    // biconditional with no close time.
+    //
+    // The two spellings are asserted as ONE behavior, twice each, so neither
+    // can drift alone. The refusal text needs no change: it already reads
+    // "missing or empty".
+    let quoted_empty_closed = REC_ITEM.replace("closed_at:\n", "closed_at: \"\"\n");
+
+    // 10b. required — the explicit-empty spelling refuses exactly as the null does.
+    assert_refusal(
+        &run(
+            item,
+            REC_ITEM,
+            &REC_ITEM.replace("status: open", "status: \"\""),
+        ),
+        "write violates the probe def: status: required by the probe def, missing or empty — the write was refused; the file is unchanged. Fix the violation (`md def check $SESSION/records/item.md` explains the def) — errors are never forceable",
+        &session,
+        "required-empty-explicit",
+    );
+
+    // 10c. close-stamp autofill — a terminal transition over `closed_at: ""`
+    //      mints the same repair the null spelling mints.
+    let done_from_quoted = run(
+        item,
+        &quoted_empty_closed,
+        &quoted_empty_closed.replace("status: open", "status: done"),
+    );
+    assert_pass(&done_from_quoted, "terminal-close-stamp-repair-explicit");
+    assert_eq!(
+        done_from_quoted.repairs,
+        vec![policy::defs::Repair {
+            key: "closed_at".to_string(),
+            value: "2026-07-24T13:00:00".to_string()
+        }],
+        "terminal-close-stamp-repair-explicit: an empty close stamp is empty in \
+         both spellings — otherwise a card reaches a terminal status carrying no \
+         close time and nothing mints one"
+    );
+
+    // 10d. the biconditional's other direction — `closed_at: ""` on an OPEN
+    //      record is NOT "closed", so it must not refuse.
+    assert_pass(
+        &run(item, REC_ITEM, &quoted_empty_closed),
+        "biconditional-explicit-empty-is-not-closed",
+    );
+
+    // 10e. and a REAL value still reads as set, in both directions — the
+    //      predicate learned one empty spelling, not a truthiness rule.
+    assert_refusal(
+        &run(
+            item,
+            REC_ITEM,
+            &REC_ITEM.replace("closed_at:\n", "closed_at: \"2026-07-20T10:00:00\"\n"),
+        ),
+        "write violates the probe def: closed_at is set but status \"open\" ∉ terminal [done retired] (status ∈ terminal ⟺ closed_at set) — the write was refused; the file is unchanged. Fix the violation (`md def check $SESSION/records/item.md` explains the def) — errors are never forceable",
+        &session,
+        "biconditional-quoted-value-is-set",
+    );
+
     // 11. unknown key warns → refuses (on the closed/terminal variant).
     let item_done = REC_ITEM
         .replace("status: open", "status: done")

@@ -948,11 +948,13 @@ deferral):**
 - Row shape `{key, value, span, prop_rev}`:
   - `key` — the top-level key, the same string the §2.1 `fm_key` form
     addresses; the read→set loop closes off this row.
-  - `value` — the key line's value as stored: the colon remainder,
-    whitespace-trimmed, quotes kept. A block value (indented continuation
-    lines) serves the key line's own remainder — empty when that line
-    carries none. The engine re-serializes nothing (no YAML library —
-    honest limit, stated not worked around).
+  - `value` — the key line's value **decoded through the § A.6 scalar law**:
+    the colon remainder, whitespace-trimmed, then unquoted when it is a
+    well-formed quoted scalar. A block value (indented continuation lines)
+    serves the key line's own remainder — empty when that line carries none.
+    **Amended 2026-08-07 (§ A.6): this bullet formerly read "quotes kept",
+    which made the plane serve source bytes where every reader expects a
+    value; the superseded wording and why it failed are recorded at § A.6.**
   - `prop_rev` — the key's CAS token: blake3 over the full key grain span
     bytes (the key line plus its indented continuation lines), 16 hex —
     the SAME token `cat` on the `fm_key` node serves and `if_node_rev`
@@ -1059,6 +1061,210 @@ Do not bolt the triple on.
 required argument — today a loud error — into a success returning content the
 caller never asked for. `read`'s arguments stay required; discovery is its own
 op.
+
+### A.6 The frontmatter scalar law — decode on read, encode on write
+
+*Docs-first (2026-08-07, dogfood season 1 findings 1 and 2). One law, two
+directions: what the engine PUBLISHES as a property value is the decoded
+string, and what the engine WRITES for a property value is a YAML scalar that
+decodes back to exactly the caller's string. Read and write are inverses, and
+nothing between them is quote-tolerant.*
+
+**The defect this closes.** Every property value plane on this wire is a plane
+of STRINGS — `props[].value`, the `fm_key` `cat` remainder, and the
+`set_property` value are all `string`, never a YAML node. Before this law the
+engine served the value's SOURCE BYTES on the read side and wrote the caller's
+string as SOURCE BYTES on the write side, so quoting was in neither
+direction's contract and the two ends disagreed with the corpus:
+
+- **Read, fail-INERT.** `owner: "3f9a1c07"` served `"3f9a1c07"` — 10 bytes with
+  the quotes — so a comparison against `3f9a1c07` was false, no rule armed, and
+  the face rendered the legitimate "no effects armed". A silent false.
+- **Write, fail-CLOSED.** `set_property owner=[[b1892b5a]]` emitted
+  `owner: [[b1892b5a]]`, which is a list-of-list, so the I4 substrate law
+  refused the write and blamed the caller's value for a nesting the EMITTER
+  manufactured.
+- Net: the engine could read the fleet-canonical `owner: "[[b1892b5a]]"` and
+  could not write it. Superseded wording, § A.3 `value` bullet, verbatim:
+  *"the key line's value as stored: the colon remainder, whitespace-trimmed,
+  quotes kept … The engine re-serializes nothing (no YAML library — honest
+  limit, stated not worked around)."* The limit was honest about the library
+  and wrong about the plane: unquoting a scalar is not a YAML library, and
+  serving source bytes where the schema says `string` is not an honest limit.
+
+**A.6.1 Decode (every read seam).** A value is unquoted when — and only when —
+it is a **well-formed** quoted scalar: `'…'` with interior `'` only as `''`, or
+`"…"` with no unescaped interior `"`. Single-quoted resolves `''`→`'` and
+nothing else; double-quoted resolves `\\ \" \n \t \r` and leaves any other
+escape verbatim. Everything else is served verbatim after the whitespace trim:
+plain scalars, flow collections (`[a, b]`), and **malformed quoting, which no
+reader may guess at**. A quoted scalar is a STRING in every schema — the
+decode is the quoting layer only, never type inference.
+
+The law binds the VALUE seams — every seam that publishes a frontmatter value
+to a consumer, or compares one against a caller-supplied string. One owner
+implements it (`model::scalar`) so the def checker and the read seams cannot
+drift into two dialects. The enumerated set, audited 2026-08-08:
+
+| Seam | Plane |
+|---|---|
+| composed read `props[].value` (§ A.3) | published value |
+| a script's `fm` dict (`fm_key` value) | published value |
+| the run plane's frontmatter binding values | published value |
+| `preset`'s `^properties` rule check and its `type`/`defines`/`root`/`births` reads | compared value |
+| `realise`'s `FieldEquals` — BOTH halves: the page's declared `realise.expected` and the observed field | compared value |
+
+**Why the last two rows joined (2026-08-08).** They read a value and compare it
+against a caller-supplied string, which is exactly the shape § A.6's read-half
+defect took: a fleet-canonical `status: "done"` compared raw against `done` is
+false, no rule fires, and the face renders a legitimate-looking "no violation".
+A silent false in a reconciliation loop is the same defect as a silent false in
+a script condition, so the same law governs it. Both halves of a comparison
+must decode, or the decode moves the mismatch instead of closing it.
+
+**What stays raw, and why it is not an omission** (§ A.6.2's reasoning, the
+same stance `cat` takes): `lock` (guard tokens), the `view` index rows, and
+`policy::change`'s `diff_fields` all answer questions ABOUT THE STORED BYTES.
+A quoting-only edit IS a change to the stored form, and a differ that decoded
+would report no change where the file's bytes moved.
+
+**Named residual, not silently left:** `policy::change`'s `DocFacts.frontmatter`
+— the `(key, value)` pairs the effect kernel's `on_change(event)` receives — is
+a published value plane by this section's own test and still serves stored
+bytes. It is out of this amendment's scope (it lands with the change-kernel's
+own contract work), recorded here so the next reader finds it named rather than
+missed.
+
+**A.6.2 The stored form stays raw where hashing is the point.** `prop_rev`,
+`span`, the props fingerprint (`props1`) and every node rev are computed over
+SOURCE BYTES and are untouched by this law. This is not an inconsistency, it is
+the reason the law is safe: a guard token must distinguish `owner: ""` from
+`owner:` — the R4 three-state law (absent ≠ null ≠ empty string) lives in the
+stored form, where the distinction exists. Decoding at the hash grain would
+collapse two states into one and weaken the guard. The published VALUE plane
+and the GUARD plane answer different questions, and only the first one is a
+string.
+
+**A.6.3 Encode (every value-plane write door).** The emitted line is
+`{key}: {encoded}`, and the encoding is the inverse of A.6.1: **emit the plain form when the plain form decodes back to
+exactly the caller's string; otherwise emit a double-quoted scalar** (`\` and
+`"` escaped). The quoted form is the fleet-canonical one — the spelling
+`ccc-cli task claim` writes — so a value this engine writes and a value the
+fleet writes are the same bytes. Concretely, a value is quoted when it:
+
+- is empty, or is a null spelling (`~`, `null`, `Null`, `NULL`) — the plane has
+  no null, so emitting one would forge a type the caller cannot express;
+- starts with `'` or `"` — the plain form would be decoded back as quoting;
+- would parse as a **map or a nested collection** (`{…}`, `[[…]]`, an
+  unterminated `[…]`) — the I4 nesting was the emitter's, never the caller's;
+- carries `: ` unquoted, starts with `#`, or carries ` #` — a mapping or a
+  comment in value position.
+
+Unchanged, deliberately: a **typed scalar** (`true`, `7`, `2026-08-07`) and a
+**one-level flow list** (`[a, b]`) still emit verbatim. Those spellings are the
+only way this string plane can author a non-string value, and no reported
+defect touches them. A newline in a value is still REFUSED, never sanitized: a
+single-line frontmatter value cannot carry one, and an escaped-scalar workaround
+leaks.
+
+**A.6.3a The write doors this encoder owns (2026-08-08).** Two doors write a
+frontmatter VALUE, and both encode:
+
+| Door | Path |
+|---|---|
+| `set_property` (and the `check_write` candidate sharing its owner) | the splice plan lowering |
+| `put{at:"upsert"}` on an `fm_key` target | the native wire write door |
+
+The upsert door is a value-plane door: its `text` is a caller's flat STRING,
+never a YAML node, so the same encoder governs it. Without this, the wire's own
+door could not write the value its own read seam decodes — `[[b1892b5a]]` would
+land as a nested flow sequence and the I4 substrate law would refuse it,
+blaming the caller for nesting the emitter manufactured. **Both doors refuse a
+multi-line value** — the encoder's `MultiLineValue` refusal, uniform at every
+value-plane write door. A newline is refused, never sanitized.
+
+**The kernel below the doors stays raw-grain.** `model::plan_fm_upsert`
+composes the value verbatim, because the run plane's `md.set_field` writes
+WHOLE-VALUE grains through it and their spelling must land as sent. The encode
+belongs at the door, where the input is known to be a flat string, and nowhere
+below it.
+
+**A.6.3b The splice consumer reads the ENCODED value.** One `set_property`
+lowering splices the VALUE SPAN of an existing key rather than composing a
+whole line: the def-plane `rebuild` path, and the `check_write` candidate that
+shares its owner. There the separator guard — the one that inserts the space in
+`{key}: {value}` over a stored bare `key:` line — must test the ENCODED bytes,
+not the caller's string.
+
+*(Located precisely, 2026-08-08: the WIRE's own `set_property` lowering
+composes the full `{key}: {value}` line and never reaches this guard, so a
+wire-door test cannot cover it and a wire-door matrix that passes says nothing
+about it. Coverage belongs at the `rebuild` door — measured, and
+mutation-proven there.)* The two differ exactly where this law bites:
+the empty string encodes to `""`, so a guard on the caller's value sees "empty,
+no separator needed" and emits `note:""` — which no external YAML parser reads
+as a property. One malformed line voids the whole frontmatter block for
+yaml.v3, PyYAML, Obsidian and `ccc-cli` alike, so the failure is not local to
+the key that was set.
+
+For the same reason a CREATE has ONE line shape, `{key}: {encoded}\n`. The
+former empty-value special case emitted a bare `{key}:\n` — a YAML null, the
+type A.6.3 says this plane cannot express, forged by the engine out of a
+caller's empty string. The encoder never returns empty bytes, so the uniform
+shape needs no special case to be correct.
+
+**A.6.4 What conformance means here.** Round-trip is the test, per direction and
+composed: a fleet-canonical quoted value reads back without its quote bytes, and
+a `set_property` of an `[[id]]`-shaped value lands quoted and reads back as the
+caller's string. A quote-tolerant comparison ANYWHERE — in a host, a caller, or
+a second engine seam — is a defect against this section, not a compatibility
+measure.
+
+**A write-back may RE-SPELL, and that is not a byte no-op** *(stated
+2026-08-08; the earlier "two writers no longer churn each other's bytes"
+promised more than this law delivers)*. Decode and encode are inverses on the
+VALUE, not on the bytes: a stored `owner: "3f9a1c07"` serves `3f9a1c07`, and
+writing that value straight back emits the plain `owner: 3f9a1c07`, because the
+plain form decodes to exactly the caller's string. The value is preserved; the
+spelling is not. Anything computed over SOURCE BYTES therefore moves on a
+semantic no-op — `prop_rev`, `span`, the `props1` fingerprint, and any pin held
+over the key (§ A.6.2's planes are exactly the ones affected). A caller that
+needs byte stability across a read-modify-write must compare values, never
+tokens. Making the round trip byte-stable is a separate change to the encoder's
+canonical form, carded on its own; this section does not claim it.
+
+**Round-trip alone is not the test.** A conformance test asserts the STORED
+LINE SHAPE, byte for byte, and only then the round trip. The engine's own
+decode is tolerant by design, so a value-only assertion passes over bytes that
+no external parser accepts: `note:""` round-trips through this engine and voids
+the frontmatter block for everyone else. A test that asserts the value and not
+the line is the escape hatch the A.6.3b defect hid behind. The bytes are the
+contract; the round trip only proves the engine agrees with itself.
+
+**A.6.5 R4 binds the DEF plane too — the empty string is empty**
+*(**RATIFIED** by ZT, 2026-08-08, relayed via `2c47b75e`)*. A.6.3 makes every value-plane write door emit `key: ""`
+for an empty value. The def plane reads the TYPED frontmatter value, where that
+lands as a string rather than the YAML null, so every emptiness predicate
+written against the null alone silently reads a released card as still set.
+Measured before the repair: `set_property(owner, "")` on a card whose def marks
+`owner` required returned `ok`, landed `owner: ""`, and PASSED conformance — the
+bare-null spelling refused the identical write. `closed_at: ""` satisfied the
+terminal biconditional, so a card reached a terminal status carrying no close
+time and the close-stamp autofill minted no repair.
+
+**The ruling: the predicates learn the second spelling.** A key is empty when
+it is absent, when it is the null, or when it is the empty string. This aligns
+the code with its own refusal text, which already reads *"missing or empty"*,
+and it keeps R4's three states — absent ≠ empty ≠ set — readable at the def
+grain where they are judged.
+
+**Rejected: emitting a bare null instead.** It re-opens exactly what A.6.3
+closes — forging the one type this string plane cannot express — and reinstates
+the A.6.3b splice geometry. The value plane and the def plane must agree on
+what empty means; they may not disagree about which SPELLING of it is real.
+
+Deliberately not empty: whitespace, `0`, `false`, an empty list. Those are
+values a caller authored. This is a predicate about absence, never truthiness.
 
 ---
 

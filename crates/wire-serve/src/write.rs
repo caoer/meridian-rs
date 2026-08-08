@@ -2807,7 +2807,21 @@ fn model_edits_and_before_facts(
                         PutAt::End => model::PutAt::End,
                         PutAt::Upsert => model::PutAt::Upsert,
                     },
-                    text: text.clone(),
+                    // `put{at:"upsert"}` is a VALUE-plane door (wire-contract
+                    // § A.6.3a): the caller's `text` is a flat string, so it
+                    // passes the ONE encoder `set_property` writes through and
+                    // `[[x]]` lands `"[[x]]"` instead of a nested flow
+                    // sequence the I4 law would refuse. The model kernel below
+                    // stays raw-grain — the run plane's `md.set_field` rides
+                    // `plan_fm_upsert` with whole-value grains that must land
+                    // as sent.
+                    text: if matches!(at, PutAt::Upsert) {
+                        policy::defs::yaml_safe_value(text).map_err(|_| {
+                            bad_request("put at:upsert value must be single-line (no newline)")
+                        })?
+                    } else {
+                        text.clone()
+                    },
                 },
             },
             if_node_rev: edit
