@@ -33,8 +33,8 @@ if card.fm["owner"] == "":
     put("tasks/0011-token-audit.md", props={"owner": me(), "status": "doing"})
 "#;
 
-/// A fake daemon behind the one door: it records every op it is asked for, and
-/// answers the five this verb is allowed to speak.
+/// A fake daemon behind the one door: it records every op it is asked for and
+/// answers the declared read and write vocabulary.
 struct Fake {
     /// Every `op` in call order — the socket census the zero-delta law needs.
     ops: Vec<String>,
@@ -100,6 +100,12 @@ impl Door for Fake {
                 "words_total": WORDS,
                 "toc": [],
                 "anchors": [],
+                "props": [
+                    {"key": "owner", "value": "", "span": [4, 10],
+                     "prop_rev": "33d5b0e1b27cb48b"},
+                    {"key": "status", "value": "todo", "span": [11, 23],
+                     "prop_rev": "44e6c1f2d38ac970"},
+                ],
                 "rendered_text": "",
             }})
             .to_string(),
@@ -141,9 +147,9 @@ fn claim(door: &mut Fake, flags: &[&str]) -> mrd::script::ScriptTrace {
 /// harmless it looks — asserted as a closed set, so an addition fails rather
 /// than passing unnoticed.
 ///
-/// `hello` (§3.2) is issued by the door itself when it dials; the five this
-/// attempt speaks are `fingerprint` (§4.7), `toc` (§4.1), `read` (§4.1, the
-/// composed read that carries `words_total`), `cat` (§4.2) and `splice` (§4.4).
+/// `hello` (§3.2) is issued by the door itself when it dials. Whole-file reads
+/// use `toc` plus composed `read`; section reads use `cat`; commits use `splice`,
+/// and `fingerprint` supplies the entry guard.
 #[test]
 fn the_ops_on_the_socket_are_only_the_ones_the_contract_already_declares() {
     const DECLARED: [&str; 6] = ["hello", "fingerprint", "toc", "cat", "read", "splice"];
@@ -160,6 +166,10 @@ fn the_ops_on_the_socket_are_only_the_ones_the_contract_already_declares() {
     // And the census is not vacuous: this run really did read and really did
     // commit through the one write op.
     assert!(door.asked("fingerprint") && door.asked("toc") && door.asked("splice"));
+    assert!(
+        !door.asked("cat"),
+        "a whole-file read consumes normalized props instead of parsing fm-key lines"
+    );
     assert_eq!(trace.outcome, ScriptOutcome::Committed);
 }
 

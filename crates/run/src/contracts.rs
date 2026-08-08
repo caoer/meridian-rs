@@ -102,10 +102,7 @@ fn is_identifier(name: &str) -> bool {
 /// Parse one comma/whitespace-separated name list, validating each name.
 fn parse_names(task: &str, raw: &str) -> Result<Vec<String>, ContractError> {
     let mut out: Vec<String> = Vec::new();
-    for name in raw
-        .trim()
-        .trim_matches(['"', '\''])
-        .split([',', ' ', '\t'])
+    for name in raw.trim().split([',', ' ', '\t'])
         .filter(|s| !s.is_empty())
     {
         if !is_identifier(name) {

@@ -264,7 +264,7 @@ pub fn configured_timeout(root: Option<&Path>) -> Result<Duration, TimeoutConfig
     let Some((_, raw)) = map.0.iter().find(|(k, _)| k == TIMEOUT_KEY) else {
         return Ok(DEFAULT_TIMEOUT);
     };
-    match raw.trim().trim_matches(['"', '\'']).parse::<u64>() {
+    match raw.trim().parse::<u64>() {
         Ok(secs) if secs > 0 => Ok(Duration::from_secs(secs)),
         _ => Err(TimeoutConfigError {
             path: root.join(config::mount::DECLARATION_FILENAME),

@@ -158,10 +158,7 @@ impl CapSet {
     /// [`CapsError::BadCap`] on the first malformed cap.
     pub fn parse(raw: &str) -> Result<Self, CapsError> {
         let mut set = BTreeSet::new();
-        for word in raw
-            .trim()
-            .trim_matches(['"', '\''])
-            .split([',', ' ', '\t'])
+        for word in raw.trim().split([',', ' ', '\t'])
             .filter(|s| !s.is_empty())
         {
             set.insert(Cap::parse(word)?);

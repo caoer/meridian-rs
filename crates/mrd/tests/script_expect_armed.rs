@@ -114,6 +114,12 @@ impl Door for Fake {
                 "words_total": 41,
                 "toc": [],
                 "anchors": [],
+                "props": [
+                    {"key": "owner", "value": "", "span": [4, 10],
+                     "prop_rev": "33d5b0e1b27cb48b"},
+                    {"key": "status", "value": "todo", "span": [11, 23],
+                     "prop_rev": "44e6c1f2d38ac970"},
+                ],
                 "rendered_text": "",
             }})
             .to_string(),

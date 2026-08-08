@@ -456,6 +456,106 @@ fn an_append_to_a_target_the_script_never_read_is_refused_whole() {
     );
 }
 
+/// Season-one regression corpus: quoted empty, id, and wikilink-shaped scalars
+/// reach the script as semantic values, while a plain scalar remains unchanged.
+/// The condition must arm, so a quote-wrapped comparison cannot fail inert.
+#[test]
+fn quoted_frontmatter_scalars_reach_the_script_as_semantic_values() {
+    let fixture = Fixture::start();
+    let cases = [
+        (FILES[0], "\"\""),
+        (FILES[1], "\"3f9a1c07\""),
+        (FILES[2], "\"[[1ed98864]]\""),
+        (FILES[3], "3f9a1c07"),
+    ];
+    for (path, owner) in cases {
+        std::fs::write(
+            fixture.ws.join(path),
+            format!("---\nowner: {owner}\nstatus: doing\n---\n\n# Goals\n\nbody\n"),
+        )
+        .expect("seed the quoting case");
+    }
+
+    let source = r#"
+empty = read("tasks/0004-index-rebuild.md")
+id = read("tasks/0009-peer-gossip.md")
+link = read("tasks/0011-token-audit.md")
+plain = read("tasks/0012-cache-sweep.md")
+if (empty.fm["owner"] == ""
+    and id.fm["owner"] == "3f9a1c07"
+    and link.fm["owner"] == "[[1ed98864]]"
+    and plain.fm["owner"] == "3f9a1c07"
+    and link.fm["status"] == "doing"):
+    put("tasks/0004-index-rebuild.md", props={"status": "done"})
+"#;
+    let mut door = LiveDoor::open(fixture.server.socket_path(), &fixture.ws);
+    let argv = ["--actor".to_owned(), ME.to_owned()];
+    let trace = attempt(&argv, source, &mut door).expect("the attempt runs");
+
+    assert_eq!(
+        trace.outcome,
+        ScriptOutcome::Committed,
+        "all normalized comparisons arm the write: {trace:?}"
+    );
+    let written = std::fs::read_to_string(fixture.ws.join(FILES[0])).expect("read result");
+    assert!(
+        written.contains("\nstatus: done\n"),
+        "the branch proved true and its write landed: {written}"
+    );
+}
+
+/// A property value is a semantic string, not caller-made YAML. The write must
+/// quote a wikilink-shaped string, pass conformance, and read back without the
+/// quote bytes on a later script attempt.
+#[test]
+fn wikilink_shaped_property_round_trips_through_put() {
+    const REVIEWER: &str = "[[1ed98864]]";
+    let fixture = Fixture::start();
+    let argv = ["--actor".to_owned(), ME.to_owned()];
+
+    let mut write_door = LiveDoor::open(fixture.server.socket_path(), &fixture.ws);
+    let write = attempt(
+        &argv,
+        "card = read(\"tasks/0011-token-audit.md\")\n\
+         put(\"tasks/0011-token-audit.md\", props={\"reviewer\": \"[[1ed98864]]\"})\n",
+        &mut write_door,
+    )
+    .expect("the write attempt runs");
+    assert_eq!(
+        write.outcome,
+        ScriptOutcome::Committed,
+        "a flat string must not be reclassified as nested frontmatter: {write:?}"
+    );
+
+    let stored = std::fs::read_to_string(fixture.ws.join(CARD)).expect("read stored page");
+    assert!(
+        stored.contains("\nreviewer: \"[[1ed98864]]\"\n"),
+        "the engine emits the fleet-canonical quoted scalar: {stored}"
+    );
+    assert!(
+        !stored.contains("\nreviewer: [[1ed98864]]\n"),
+        "the unsafe unquoted form never lands: {stored}"
+    );
+
+    let mut readback_door = LiveDoor::open(fixture.server.socket_path(), &fixture.ws);
+    let readback = attempt(
+        &argv,
+        &format!(
+            r#"card = read("{CARD}")
+if card.fm["reviewer"] == "{REVIEWER}":
+    put("{CARD}", props={{"status": "done"}})
+"#
+        ),
+        &mut readback_door,
+    )
+    .expect("the readback attempt runs");
+    assert_eq!(
+        readback.outcome,
+        ScriptOutcome::Committed,
+        "write then read returns the same semantic string: {readback:?}"
+    );
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 /// What this run actually amounted to, at the grain the golden page depicts —
@@ -689,11 +789,10 @@ impl Door for MidReadWriter {
 }
 
 /// **The production wire really does answer two revisions across one composed
-/// read — measured, not reasoned.** `read(path)` is `toc` + one `cat` per
-/// frontmatter key + the closing `read`, and `wire-serve` computes `file_rev`
-/// when it answers each one. So a writer landing between them makes the two
-/// observations disagree, and the composition would otherwise hand the script a
-/// map from one revision and a count from another: a state that never existed.
+/// read — measured, not reasoned.** `read(path)` is an opening `toc` plus the
+/// closing composed `read`, and `wire-serve` computes `file_rev` for each. A
+/// writer landing between them makes the two observations disagree; without the
+/// bracket the script would combine an old section map with new props and words.
 ///
 /// This is the reachability half of the gate that
 /// `wire_host::tests::a_composition_spanning_two_revisions_refuses_instead_of_being_assembled`

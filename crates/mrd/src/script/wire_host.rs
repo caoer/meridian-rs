@@ -3,8 +3,8 @@
 //!
 //! Two things live here. [`Door`] is one NDJSON round trip, so the wire client
 //! is testable without a daemon and the ops it puts on the socket are
-//! observable. [`WireHost`] is the `effects::ScriptHost` whose `read()` lowers
-//! to `toc`/`cat` — the entry's only effectful seam.
+//! observable. [`WireHost`] is the `effects::ScriptHost` whose whole-file
+//! `read()` composes `toc` with the v3 `read` fact plane; section reads use `cat`.
 //!
 //! **Zero wire delta.** Every op this module emits is an op the contract already
 //! declares: `hello` (§3.2), `fingerprint` (§4.7), `toc` (§4.1), `cat` (§4.2),
@@ -131,17 +131,10 @@ impl Frame {
     }
 }
 
-/// The wire-backed [`ScriptHost`]: `read(path)` lowers to `toc` (§4.1) plus one
-/// `cat` per frontmatter key, and `read(path, section=…)` lowers to `cat`
-/// (§4.2).
-///
-/// **Why the per-key `cat`.** The script's toc face publishes `fm` as
-/// key → value, and no wire op serves frontmatter VALUES: `toc` publishes the
-/// frontmatter row's `keys` only, and the composed read "body carries no
-/// frontmatter plane" (`wire-serve::read::ref_not_found`, verbatim). So the
-/// values come the one way the wire offers them — `cat` against the
-/// `{"fm_key":…}` target, whose node IS that key's line. Read amplification is
-/// the honest cost of not minting a wire op for it.
+/// The wire-backed [`ScriptHost`]: `read(path)` combines `toc` (§4.1) with the
+/// composed read's `props` and `words_total` facts, while
+/// `read(path, section=…)` lowers to `cat` (§4.2). The engine-normalized props
+/// plane is the only source of frontmatter values; this consumer parses no YAML.
 pub(crate) struct WireHost<'d> {
     door: &'d mut dyn Door,
     actor: String,
@@ -165,8 +158,8 @@ impl<'d> WireHost<'d> {
     /// One round trip, mapped into the read-fault shape the script plane speaks.
     ///
     /// **The clock is checked here, not at the script-level read**, because one
-    /// `read(path)` fans out to 2+N round trips: a check per script-level read
-    /// bounds the NUMBER of checks and not the time (§ Where the budgets bind,
+    /// `read(path)` spans two round trips: a check per script-level read bounds
+    /// the NUMBER of checks and not the time (§ Where the budgets bind,
     /// layer 1).
     fn ask(
         &mut self,
@@ -217,7 +210,6 @@ impl ScriptHost for WireHost<'_> {
             .ok_or_else(|| fault("toc answered no nodes".to_owned()))?
             .clone();
 
-        // Frontmatter keys first, then one `cat` each for the values.
         let keys: Vec<String> = nodes
             .iter()
             .filter(|node| node.get("kind").and_then(Value::as_str) == Some("frontmatter"))
@@ -225,32 +217,10 @@ impl ScriptHost for WireHost<'_> {
             .flatten()
             .filter_map(|key| key.as_str().map(str::to_owned))
             .collect();
-        let mut fm = std::collections::BTreeMap::new();
-        for key in keys {
-            let line = self.ask(
-                &json!({"op": "cat", "path": path, "sec": {"fm_key": key}}),
-                &fault,
-            )?;
-            let content = line
-                .get("content")
-                .and_then(Value::as_str)
-                .ok_or_else(|| fault(format!("cat fm_key={key} answered no content")))?;
-            fm.insert(key.clone(), fm_value_of(content));
-        }
 
-        // THE BRACKET, and the count, in one op. The word count is a DELIVERED
-        // fact, never one this host computes: the composed `read` op (§4.1, toc
-        // mode) carries `words_total`, while the `toc` op's own body is
-        // `{path, file_rev, root, nodes}` and carries none. It also carries the
-        // `file_rev` this composition has to agree with — so asking it LAST
-        // closes the window instead of sitting inside it, and the coherence
-        // check costs no round trip that was not already being made.
-        //
-        // Reads are LIVE. Without this the face could be assembled from a `toc`
-        // at one revision and `cat` values at another: a state that never
-        // existed, handed to a script whose whole premise is that the world
-        // stood still. Zero wire delta — both ops are already declared, and a
-        // toc-mode read mints no receipt (`wire-serve::read`).
+        // THE BRACKET, frontmatter values, and count in one closing op. The
+        // composed `read` owns semantic props; this client must not parse the
+        // raw fm-key lines or tolerate quotes itself.
         let read_body = self.ask(&json!({"op": "read", "path": path}), &fault)?;
         let closing_rev = read_body
             .get("file_rev")
@@ -262,6 +232,32 @@ impl ScriptHost for WireHost<'_> {
                  {rev} and the closing `read` answered {closing_rev}. A face composed from two \
                  revisions would be a state that never existed, so this read refuses whole: \
                  nothing was armed by it and nothing commits. Reads are live — re-read"
+            )));
+        }
+        let props = read_body
+            .get("props")
+            .and_then(Value::as_array)
+            .ok_or_else(|| fault("read answered no props".to_owned()))?;
+        let mut fm = std::collections::BTreeMap::new();
+        let mut prop_keys = Vec::with_capacity(props.len());
+        for prop in props {
+            let key = prop
+                .get("key")
+                .and_then(Value::as_str)
+                .ok_or_else(|| fault("read answered a prop with no key".to_owned()))?;
+            let value = prop
+                .get("value")
+                .and_then(Value::as_str)
+                .ok_or_else(|| fault(format!("read prop {key} answered no value")))?;
+            if fm.insert(key.to_owned(), value.to_owned()).is_some() {
+                return Err(fault(format!("read answered duplicate prop key {key}")));
+            }
+            prop_keys.push(key.to_owned());
+        }
+        if prop_keys != keys {
+            return Err(fault(format!(
+                "toc keys and composed-read props disagree at one file revision — toc: {keys:?}; \
+                 props: {prop_keys:?}"
             )));
         }
         let words = usize::try_from(
@@ -354,21 +350,6 @@ fn toc_entry(node: &Value) -> Option<TocEntry> {
     })
 }
 
-/// The value on a frontmatter key line — the inverse of the server's own
-/// compose (`model::PutAt::Upsert`: "the server composes `{key}: {value}`").
-///
-/// The key may be quoted on disk (the resolver matches
-/// `k.trim().trim_matches(['"', '\''])`), so the split is on the first colon
-/// rather than on the key text. A block value spanning several lines comes back
-/// whole; only the line terminator is dropped.
-fn fm_value_of(line: &str) -> String {
-    let rest = line
-        .split_once(':')
-        .map_or(line, |(_, value)| value)
-        .trim_end_matches('\n');
-    rest.strip_prefix(' ').unwrap_or(rest).to_owned()
-}
-
 #[cfg(test)]
 mod tests {
     //! The two bounds a composed read has to carry, each proved by MEASUREMENT
@@ -388,9 +369,8 @@ mod tests {
 
     use super::{Door, Instant, ScriptHost, SocketDoor, Value, WireHost, io, json};
 
-    /// The one page the fake door serves. Two frontmatter keys, so a whole-file
-    /// read is FOUR round trips — `toc`, `cat`, `cat`, `read` — which is what
-    /// makes "once per read" and "once per round trip" distinguishable at all.
+    /// The one page the fake door serves. A whole-file read is two round trips:
+    /// `toc` for addressing, then composed `read` for props and words.
     const PAGE: &str = "tasks/0011-token-audit.md";
     const REV: &str = "7c40e1a8b2f9d356";
 
@@ -440,13 +420,17 @@ mod tests {
                          "text_prefix_16b": "---\n", "keys": ["owner", "status"]},
                     ],
                 }}),
-                "cat" => json!({"ok": true, "body": {
-                    "span": [4, 12], "node_rev": "33d5b0e1", "content": "owner: zt\n",
-                }}),
                 "read" => json!({"ok": true, "body": {
                     "path": PAGE, "file_rev": self.moved_rev.unwrap_or(REV),
                     "root": "b3:00", "words_total": 41,
-                    "toc": [], "anchors": [], "rendered_text": "",
+                    "toc": [], "anchors": [],
+                    "props": [
+                        {"key": "owner", "value": "zt", "span": [4, 13],
+                         "prop_rev": "33d5b0e1"},
+                        {"key": "status", "value": "todo", "span": [14, 26],
+                         "prop_rev": "44e6c1f2"},
+                    ],
+                    "rendered_text": "",
                 }}),
                 other => panic!("the composed read asked for an op it must not know: {other}"),
             }
@@ -455,14 +439,11 @@ mod tests {
     }
 
     /// **The bound fires mid-composition — the control run proves the door is
-    /// otherwise willing.** One `read(path)` fans out to four round trips, so a
-    /// clock checked once per script-level read bounds the NUMBER of checks and
-    /// not the time: the old shape let all four calls run and answered facts.
-    /// Here the same slow door is driven twice, and only the deadline differs.
+    /// otherwise willing.** One `read(path)` spans two round trips, so a clock
+    /// checked once per script-level read would not bound the second call.
     #[test]
     fn the_wall_clock_is_checked_before_every_round_trip_not_once_per_read() {
-        // Control: the same door, a deadline nothing can reach. Four calls, and
-        // a face comes back.
+        // Control: the same door, a deadline nothing can reach. Both calls run.
         let mut open = Fake::slow(Duration::from_millis(40));
         let facts = {
             let mut host = WireHost::new(
@@ -473,19 +454,16 @@ mod tests {
             host.toc(PAGE).expect("the control composition answers")
         };
         assert_eq!(facts.rev, REV);
-        assert_eq!(
-            open.calls, 4,
-            "the control run makes the whole composition: toc + one cat per fm key + the closing read"
-        );
+        assert_eq!(open.calls, 2, "toc plus the closing composed read");
 
-        // Measured: a deadline the second round trip crosses. Same door, same
-        // page, same script-level read — one read() call, and it refuses.
+        // Measured: the opening call crosses the deadline, so the closing call
+        // is refused before it starts.
         let mut bounded = Fake::slow(Duration::from_millis(40));
         let fault = {
             let mut host = WireHost::new(
                 &mut bounded,
                 "zt".to_owned(),
-                Instant::now() + Duration::from_millis(50),
+                Instant::now() + Duration::from_millis(30),
             );
             host.toc(PAGE).expect_err("the bounded composition refuses")
         };
@@ -494,10 +472,9 @@ mod tests {
             "the refusal names the clock that fired: {}",
             fault.reason
         );
-        assert!(
-            bounded.calls < 4,
-            "the clock stopped the composition mid-flight; it made {} of 4 calls",
-            bounded.calls
+        assert_eq!(
+            bounded.calls, 1,
+            "the clock stopped the closing read before it reached the door"
         );
     }
 
@@ -539,7 +516,7 @@ mod tests {
             fault.reason
         );
         assert_eq!(
-            moving.calls, 4,
+            moving.calls, 2,
             "the bracket is the closing op itself — it costs no extra round trip"
         );
     }

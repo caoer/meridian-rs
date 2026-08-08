@@ -15,6 +15,7 @@
 //! the serving host's projection seam (law 3).
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::ops::Range;
 
 use addr::{Addr, AddrError, MountName, MountSet};
@@ -57,7 +58,8 @@ pub struct MerkleRoot(pub String);
 
 /// Parsed frontmatter, document order preserved — wire `keys` must echo
 /// document order (B1 predicate 4). Flat `(key, value)` pairs, first occurrence
-/// wins; no YAML library (no-serde crate law).
+/// wins. Quoted scalar tokens are normalized to semantic strings at this model
+/// boundary; collections remain raw because this plane is deliberately flat.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct YamlMap(pub Vec<(String, String)>);
 
@@ -347,9 +349,10 @@ fn trim_terminator(bytes: &[u8], start: usize, mut end: usize) -> usize {
 }
 
 /// Model's own flat-frontmatter parse (top-level `key: value`, column 0) — the
-/// keys authority, not `syntax`'s best-effort list. No serde/YAML crate
-/// (no-serde crate law). Key order is document order, first occurrence wins —
-/// the wire `keys` surface echoes it verbatim (B1 predicate 4).
+/// keys authority, not `syntax`'s best-effort list. This stays dependency-free:
+/// it normalizes only complete string-scalar tokens and does not build a typed
+/// YAML tree. Key order is document order, first occurrence wins — the wire
+/// `keys` surface echoes it verbatim (B1 predicate 4).
 fn parse_frontmatter(raw: &str, span: &ByteSpan) -> YamlMap {
     let block = raw.get(span.clone()).unwrap_or_default();
     let mut pairs: Vec<(String, String)> = Vec::new();
@@ -368,11 +371,218 @@ fn parse_frontmatter(raw: &str, span: &ByteSpan) -> YamlMap {
                 continue;
             }
             if pairs.iter().all(|(k, _)| *k != key) {
-                pairs.push((key, line[colon + 1..].trim().to_string()));
+                pairs.push((key, frontmatter_scalar_value(&line[colon + 1..])));
             }
         }
     }
     YamlMap(pairs)
+}
+
+/// Normalize one flat frontmatter value token. Complete quoted string scalars
+/// become semantic strings; plain scalars and collection tokens stay trimmed
+/// source text. An invalid quoted token stays raw rather than losing bytes.
+#[must_use]
+pub fn frontmatter_scalar_value(token: &str) -> String {
+    let token = token.trim();
+    decode_frontmatter_scalar(token).unwrap_or_else(|| token.to_owned())
+}
+
+/// Decode a complete one-line YAML single- or double-quoted string scalar.
+/// `None` means the token is plain, a collection, or not a complete scalar.
+#[must_use]
+pub fn decode_frontmatter_scalar(token: &str) -> Option<String> {
+    if let Some(inner) = token
+        .strip_prefix('\'')
+        .and_then(|value| value.strip_suffix('\''))
+    {
+        return decode_single_quoted(inner);
+    }
+    let inner = token
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))?;
+    decode_double_quoted(inner)
+}
+
+fn decode_single_quoted(inner: &str) -> Option<String> {
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\'' {
+            out.push(ch);
+            continue;
+        }
+        if chars.next() != Some('\'') {
+            return None;
+        }
+        out.push('\'');
+    }
+    Some(out)
+}
+
+fn decode_double_quoted(inner: &str) -> Option<String> {
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '"' || matches!(ch, '\r' | '\n') {
+            return None;
+        }
+        if ch != '\\' {
+            out.push(ch);
+            continue;
+        }
+        let decoded = match chars.next()? {
+            '0' => '\0',
+            'a' => '\u{0007}',
+            'b' => '\u{0008}',
+            't' => '\t',
+            'n' => '\n',
+            'v' => '\u{000b}',
+            'f' => '\u{000c}',
+            'r' => '\r',
+            'e' => '\u{001b}',
+            ' ' => ' ',
+            '"' => '"',
+            '/' => '/',
+            '\\' => '\\',
+            'N' => '\u{0085}',
+            '_' => '\u{00a0}',
+            'L' => '\u{2028}',
+            'P' => '\u{2029}',
+            'x' => decode_hex_escape(&mut chars, 2)?,
+            'u' => decode_hex_escape(&mut chars, 4)?,
+            'U' => decode_hex_escape(&mut chars, 8)?,
+            _ => return None,
+        };
+        out.push(decoded);
+    }
+    Some(out)
+}
+
+fn decode_hex_escape(chars: &mut std::str::Chars<'_>, width: usize) -> Option<char> {
+    let mut value = 0_u32;
+    for _ in 0..width {
+        value = value.checked_mul(16)? + chars.next()?.to_digit(16)?;
+    }
+    char::from_u32(value)
+}
+
+/// Encode a semantic string as the fleet-canonical one-line YAML scalar token:
+/// plain only when YAML keeps both its string type and structure, otherwise a
+/// double-quoted scalar with escapes.
+#[must_use]
+pub fn frontmatter_scalar_token(value: &str) -> String {
+    if plain_frontmatter_string(value) {
+        return value.to_owned();
+    }
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '\0' => out.push_str("\\0"),
+            '\u{0007}' => out.push_str("\\a"),
+            '\u{0008}' => out.push_str("\\b"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\u{000b}' => out.push_str("\\v"),
+            '\u{000c}' => out.push_str("\\f"),
+            '\r' => out.push_str("\\r"),
+            '\u{001b}' => out.push_str("\\e"),
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\u{0085}' => out.push_str("\\N"),
+            '\u{2028}' => out.push_str("\\L"),
+            '\u{2029}' => out.push_str("\\P"),
+            c if c.is_control() => {
+                let code = u32::from(c);
+                if code <= 0xffff {
+                    write!(out, "\\u{code:04X}").expect("writing to a String cannot fail");
+                } else {
+                    write!(out, "\\U{code:08X}").expect("writing to a String cannot fail");
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn plain_frontmatter_string(value: &str) -> bool {
+    if value.is_empty() || value.trim() != value {
+        return false;
+    }
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    let second = chars.next();
+    if matches!(
+        first,
+        '!' | '&'
+            | '*'
+            | '{'
+            | '}'
+            | '['
+            | ']'
+            | ','
+            | '#'
+            | '|'
+            | '>'
+            | '\''
+            | '"'
+            | '%'
+            | '@'
+            | '`'
+    ) || (matches!(first, '-' | '?' | ':') && second.is_none_or(char::is_whitespace))
+    {
+        return false;
+    }
+    if value
+        .chars()
+        .any(|ch| ch.is_control() || matches!(ch, '[' | ']' | '{' | '}' | '\u{2028}' | '\u{2029}'))
+    {
+        return false;
+    }
+    let chars: Vec<char> = value.chars().collect();
+    for (index, ch) in chars.iter().copied().enumerate() {
+        let previous_is_space = index > 0 && chars[index - 1].is_whitespace();
+        let next_is_space = chars
+            .get(index + 1)
+            .is_some_and(|next| next.is_whitespace());
+        if (ch == '#' && previous_is_space) || (ch == ':' && next_is_space) {
+            return false;
+        }
+    }
+    !looks_like_yaml_core_value(value)
+}
+
+fn looks_like_yaml_core_value(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    if matches!(lower.as_str(), "~" | "null" | "true" | "false") {
+        return true;
+    }
+    let compact = value.replace('_', "");
+    let lower_compact = compact.to_ascii_lowercase();
+    if matches!(lower_compact.as_str(), ".nan" | ".inf" | "+.inf" | "-.inf") {
+        return true;
+    }
+    let unsigned = compact
+        .strip_prefix('+')
+        .or_else(|| compact.strip_prefix('-'))
+        .unwrap_or(&compact);
+    if let Some(octal) = unsigned.strip_prefix("0o")
+        && !octal.is_empty()
+        && octal.bytes().all(|byte| matches!(byte, b'0'..=b'7'))
+    {
+        return true;
+    }
+    if let Some(hex) = unsigned.strip_prefix("0x")
+        && !hex.is_empty()
+        && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return true;
+    }
+    compact.parse::<i64>().is_ok() || compact.parse::<f64>().is_ok()
 }
 
 /// Map a leaf dialect construct to its model node kind. `Heading`/`Frontmatter`
@@ -1971,6 +2181,66 @@ mod tests {
                 .find_map(|(k, v)| (k == "title").then_some(v.as_str())),
             Some("Plan")
         );
+    }
+
+    #[test]
+    fn frontmatter_scalar_tokens_normalize_to_semantic_strings() {
+        let raw = r#"---
+empty: ""
+id: "3f9a1c07"
+owner: "[[1ed98864]]"
+single: 'can''t'
+escaped: "line\nquote: \" slash: \\"
+status: doing
+tags: [type/task, domain/locus]
+malformed: "unterminated
+---
+"#;
+        let doc = build(raw.to_owned(), syntax::parse(raw));
+        let fm = find(&doc.root, &|node| {
+            matches!(node.kind, NodeKind::Frontmatter { .. })
+        })
+        .expect("frontmatter");
+        let NodeKind::Frontmatter { map } = &fm.kind else {
+            unreachable!()
+        };
+        let value = |key: &str| {
+            map.0
+                .iter()
+                .find_map(|(found, value)| (found == key).then_some(value.as_str()))
+        };
+
+        assert_eq!(value("empty"), Some(""));
+        assert_eq!(value("id"), Some("3f9a1c07"));
+        assert_eq!(value("owner"), Some("[[1ed98864]]"));
+        assert_eq!(value("single"), Some("can't"));
+        assert_eq!(value("escaped"), Some("line\nquote: \" slash: \\"));
+        assert_eq!(value("status"), Some("doing"));
+        assert_eq!(value("tags"), Some("[type/task, domain/locus]"));
+        assert_eq!(value("malformed"), Some("\"unterminated"));
+    }
+
+    #[test]
+    fn frontmatter_scalar_tokens_use_the_fleet_canonical_form() {
+        for (value, token) in [
+            ("", "\"\""),
+            ("3f9a1c07", "3f9a1c07"),
+            ("[[1ed98864]]", "\"[[1ed98864]]\""),
+            ("doing", "doing"),
+            ("true", "\"true\""),
+            ("123", "\"123\""),
+            ("2026-08-07", "2026-08-07"),
+            ("review: pending", "\"review: pending\""),
+            ("line\nnext", "\"line\\nnext\""),
+            ("quote \" slash \\", "quote \" slash \\"),
+        ] {
+            assert_eq!(frontmatter_scalar_token(value), token, "encode {value:?}");
+            assert_eq!(
+                frontmatter_scalar_value(token),
+                value,
+                "decode the token the engine emitted"
+            );
+        }
     }
 
     #[test]

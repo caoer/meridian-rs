@@ -736,38 +736,20 @@ impl std::fmt::Display for MultiLineValue {
     }
 }
 
-/// Go `yamlSafeValue` (E2 finding 1): quote IFF the `k: <val>` probe ERRORS
-/// or decodes a MAP; everything that parses non-map passes VERBATIM — typed
-/// scalars, flow lists, and crucially list-of-list (`[[a, b]]`), which lands
-/// raw so the I4 nested-frontmatter law (not a shape check) judges it. The
-/// error class is approximated by its two live shapes: an unquoted mid-value
-/// `": "` (mapping in value position) and an unterminated leading quote.
-/// SHARED (U8b): the splice plan-lowering quotes `set_property` values through
-/// THIS predicate — single-owner discipline, so the `check_write` candidate and
-/// the written bytes cannot drift.
+/// Encode one semantic `set_property` string for the composed `{key}: {value}`
+/// line. The model owns the scalar token grammar used by both write and read:
+/// plain-safe strings stay plain; empty, typed, or structure-shaped strings are
+/// double-quoted and escaped. A caller never supplies YAML to this boundary.
 ///
 /// # Errors
-/// `MultiLineValue` when the value carries a `\n`/`\r` (D11): the server writes
-/// `{key}: {value}`, and a single-quoted YAML scalar CANNOT escape a raw
-/// newline — an escaped-scalar approach leaks, so a multi-line value is refused,
-/// never sanitized. Fallibility is the guard: no caller can mint a quoted value
-/// without passing it.
+/// `MultiLineValue` when the value carries a `\n`/`\r` (D11). The plan-edit
+/// surface remains single-line even though the canonical scalar encoder can
+/// represent line breaks for other engine callers.
 pub fn yaml_safe_value(val: &str) -> Result<String, MultiLineValue> {
     if val.contains(['\n', '\r']) {
         return Err(MultiLineValue);
     }
-    if val.is_empty() {
-        return Ok(String::new());
-    }
-    let map_shaped = val.starts_with('{');
-    let unquoted = !val.starts_with(['\'', '"']);
-    let colon_space = unquoted && val.contains(": ");
-    let unterminated_quote = (val.starts_with('\'') && (val.len() < 2 || !val.ends_with('\'')))
-        || (val.starts_with('"') && (val.len() < 2 || !val.ends_with('"')));
-    if map_shaped || colon_space || unterminated_quote {
-        return Ok(format!("'{}'", val.replace('\'', "''")));
-    }
-    Ok(val.to_string())
+    Ok(model::frontmatter_scalar_token(val))
 }
 
 fn plan_anchored(

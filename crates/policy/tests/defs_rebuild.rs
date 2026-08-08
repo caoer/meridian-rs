@@ -198,8 +198,8 @@ fn set_property_refuses_multiline_values_that_forge_frontmatter_keys() {
         "prop-injection-forged-key",
     );
 
-    // The quoted spelling: a mid-value ": " DOES trigger the single quote, and
-    // the quote leaks across the newline — refused for the same reason.
+    // A value that also needs scalar quoting still cannot carry a physical
+    // newline through this single-line plan surface.
     assert_err(
         run(
             DOC,
@@ -225,15 +225,28 @@ fn set_property_refuses_multiline_values_that_forge_frontmatter_keys() {
         "prop-injection-carriage-return",
     );
 
-    // The predicate itself is the owner: no caller can mint a quoted value for
-    // a multi-line input, and single-line values still quote unchanged.
+    // The predicate itself is the owner: no caller can mint a token for a
+    // multi-line input, and scalar strings use the fleet-canonical form.
     assert_eq!(
         policy::defs::yaml_safe_value("seeded\ninjected:pwned"),
         Err(policy::defs::MultiLineValue)
     );
     assert_eq!(
         policy::defs::yaml_safe_value("review: pending"),
-        Ok("'review: pending'".to_string())
+        Ok("\"review: pending\"".to_string())
+    );
+    assert_eq!(policy::defs::yaml_safe_value(""), Ok("\"\"".to_string()));
+    assert_eq!(
+        policy::defs::yaml_safe_value("3f9a1c07"),
+        Ok("3f9a1c07".to_string())
+    );
+    assert_eq!(
+        policy::defs::yaml_safe_value("[[1ed98864]]"),
+        Ok("\"[[1ed98864]]\"".to_string())
+    );
+    assert_eq!(
+        policy::defs::yaml_safe_value("doing"),
+        Ok("doing".to_string())
     );
 }
 
@@ -377,7 +390,7 @@ fn rebuild_candidate_bytes_match_go_plan_semantics() {
         cand.raw
     );
 
-    // set_property: unsafe value gets single-quoted (yamlSafeValue).
+    // set_property: unsafe value gets fleet-canonical double quotes.
     let cand = run(
         DOC,
         &[PlanEdit {
@@ -387,7 +400,7 @@ fn rebuild_candidate_bytes_match_go_plan_semantics() {
     )
     .expect("quoted prop rebuilds");
     assert!(
-        cand.raw.contains("\nstatus: 'review: pending'\n"),
+        cand.raw.contains("\nstatus: \"review: pending\"\n"),
         "yamlSafeValue quoting: {}",
         cand.raw
     );

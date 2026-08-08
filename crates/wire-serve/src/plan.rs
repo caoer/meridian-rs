@@ -720,7 +720,7 @@ mod tests {
         .expect("lowers");
         assert_eq!(edits.len(), 1);
         let (at, text) = put_text(&edits[0]);
-        assert_eq!((*at, text), (PutAt::End, "\nzeta: 1"));
+        assert_eq!((*at, text), (PutAt::End, "\nzeta: \"1\""));
         assert!(matches!(&edits[0].target, SecRef::FmKey { fm_key } if fm_key == "owner"));
 
         let edits = super::lower(
@@ -746,7 +746,7 @@ mod tests {
         .expect("lowers");
         assert_eq!(edits.len(), 2);
         let (at, text) = put_text(&edits[0]);
-        assert_eq!((*at, text), (PutAt::All, "owner: e\nzeta: 1"));
+        assert_eq!((*at, text), (PutAt::All, "owner: e\nzeta: \"1\""));
         assert!(matches!(&edits[0].target, SecRef::FmKey { fm_key } if fm_key == "owner"));
         let (at, text) = put_text(&edits[1]);
         assert_eq!((*at, text), (PutAt::All, "status: closed"));
@@ -785,12 +785,12 @@ mod tests {
         )
         .expect("lowers");
         let (_, text) = put_text(&edits[0]);
-        assert_eq!(text, "note: 'a: b'");
+        assert_eq!(text, "note: \"a: b\"");
     }
 
-    /// Empty value keeps trailing space (`k: `, not model-upsert `k:`).
+    /// Empty string is distinct from YAML null and therefore quotes.
     #[test]
-    fn property_empty_value_keeps_trailing_space() {
+    fn property_empty_value_emits_an_empty_string_scalar() {
         let edits = super::lower(
             &doc("---\nnote: x\n---\n# A\n\nx\n"),
             &[PlanEdit::SetProperty {
@@ -801,7 +801,22 @@ mod tests {
         )
         .expect("lowers");
         let (_, text) = put_text(&edits[0]);
-        assert_eq!(text, "note: ");
+        assert_eq!(text, "note: \"\"");
+    }
+
+    #[test]
+    fn property_wikilink_shape_is_an_inert_string_scalar() {
+        let edits = super::lower(
+            &doc("---\nreviewer:\n---\n# A\n\nx\n"),
+            &[PlanEdit::SetProperty {
+                key: "reviewer".into(),
+                value: "[[1ed98864]]".into(),
+                rev: None,
+            }],
+        )
+        .expect("lowers");
+        let (_, text) = put_text(&edits[0]);
+        assert_eq!(text, "reviewer: \"[[1ed98864]]\"");
     }
 
     /// Duplicate headings refuse without an occurrence rather than silently
