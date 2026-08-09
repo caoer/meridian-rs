@@ -594,6 +594,28 @@ The derived rule for a host that appends many receipts to ONE shared file across
 
 A host that derives from a caller-supplied id inherits that id's charset duty: the mint routes through the block-id door (`[A-Za-z0-9-]`, §2.4) and refuses loudly rather than publishing an unaddressable anchor.
 
+### §6.7 The rendering law — structure comes from the TEMPLATE, never from the data (2026-08-09)
+
+§6.4 makes the md rendering replaceable. It does not make it free. Every template that renders the armed facts into markdown carries one obligation, and it is a §6.1 obligation rather than a stylistic one: a receipt is ordinary markdown inside the hash domain, so a line that READS as a different structure than the facts it carries is a receipt that misreports the write — the facts were armed, the bytes say something else. Heading text is user content; a receipt whose structure can be moved by user content is not a receipt.
+
+Two rules discharge it, and both answer the same question: which bytes belong to the template, and which to the data.
+
+**Rule 1 — every interpolated value is escaped.** A value stands verbatim only if every character is *receipt-identifier text*: ASCII graphic, minus `[` and `]` (no wikilink or embed can form), minus the backtick and the backslash (spent as escape delimiters). The charset excludes whitespace and line endings by construction, so no token boundary and no row boundary can be forged. Anything else renders as an inline code span with out-of-charset characters escaped `\u{…}` and `\` doubled — reversible, so the value is preserved exactly (§5.2).
+
+**Rule 2 — where the template writes §2.1 JSON, the punctuation is TEMPLATE bytes.** §6.3 mandates the segment form for target identity (`target.hpath=[{"h":"Goals"},{"h":"Q3"}]`). Every `[`, `]`, `{`, `}`, `"`, `:` and `,` in that form is written by the template. Only a segment's heading text and its occurrence index `n` come from the data, and the heading text goes through the **segment renderer**, which is a different renderer from rule 1's:
+
+- it emits the BODY of a JSON string and never its quotes;
+- a character stands verbatim only if it is receipt-identifier text AND is not `"`;
+- everything else — the double quote, the backslash, the brackets, the backtick, every space, every control character, every non-ASCII character — becomes a JSON `\uXXXX` escape (surrogate pairs above U+FFFF).
+
+The output therefore carries no `"`, and no backslash that does not open a complete six-byte escape. The JSON string cannot be closed early, the object cannot be extended with forged keys, and no markdown structure can form inside it. The escape is JSON's own, so a strict parser over the rendered array returns the original segments byte-for-byte — the receipt's target stays machine-readable as the §2.1 address it echoes.
+
+**Why the segment renderer must exist separately, stated so it is not re-derived as redundant.** Rule 1's charset excludes `[` and `]`, so routing a whole JSON array through rule 1 escapes the array itself into a code span — the address stops being an address. The brackets must come from the template, and that hands the template the quotes as well. But rule 1's charset **permits** `"`. A heading carrying a double quote, interpolated between template quotes, closes the string early and forges the object: the receipt then names a structurally different target than the write actually took, which is precisely the §6.1 misreport this section exists to forbid — minted by a heading any user is entitled to write.
+
+**This law is escape-only and byte-neutral on conforming text.** A heading whose characters are all receipt-identifier text and not `"` renders identically with and without it — §6.3's `Goals` and `Q3` among them, so §6.3's byte arithmetic and §18 row 10's figures are unmoved by this section. Adopting the law changes no published byte; it bounds what an unpublished one can be.
+
+**Sequencing (2026-08-09).** The shipped default template does not yet write the §2.1 form at all — it writes the pretty join §6.3 forbids, which is §18 row 10's 38 B debt and is carded separately as a fixture act. The segment renderer is that card's PREREQUISITE and lands ahead of it: the forging hazard is created the moment the JSON form is emitted, so the escape must exist before the emission, never alongside it.
+
 ## §7 The Delta noun — the fifth noun, stable at birth
 
 ### §7.1 Shape (stable)

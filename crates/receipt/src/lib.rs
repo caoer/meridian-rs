@@ -24,6 +24,13 @@
 //! construction. Guarding the charset also excludes whitespace and line
 //! endings (which would forge token/row boundaries) and backticks (which
 //! would close the escape span early).
+//!
+//! Segment law (§6.7 rule 2): where a template writes the §2.1 JSON target
+//! form, the JSON punctuation is TEMPLATE bytes and only a segment's heading
+//! text is interpolated — through [`render_hpath_segment_text`], never
+//! [`render_field`]. The two renderers differ on exactly one character: the
+//! field charset PERMITS `"`, which between template quotes would close the
+//! JSON string early and forge the target object.
 
 use std::borrow::Cow;
 use std::fmt::Write;
@@ -76,6 +83,67 @@ pub fn render_field(s: &str) -> Cow<'_, str> {
     }
     out.push('`');
     Cow::Owned(out)
+}
+
+/// May `c` stand verbatim inside a template-quoted JSON string — receipt
+/// identifier text that is not the quote the template owns?
+fn is_hpath_segment_verbatim(c: char) -> bool {
+    is_receipt_ident_char(c) && c != '"'
+}
+
+/// Render one hpath segment's heading text as the BODY of a JSON string —
+/// the template owns the surrounding quotes (§6.7 rule 2).
+///
+/// Receipt-identifier text other than `"` stands verbatim; every other
+/// character — the quote, the backslash, the brackets, the backtick, spaces,
+/// control characters, everything non-ASCII — becomes a JSON `\u` escape
+/// (surrogate pairs above U+FFFF). The result therefore carries no `"` and no
+/// backslash that does not open a complete six-byte escape, so the string
+/// cannot be closed early and no markdown structure can form inside it. The
+/// escape is JSON's own, so a strict parser recovers `s` byte-for-byte.
+///
+/// This is NOT [`render_field`]: that charset permits `"`, and a heading
+/// carrying one would forge the target object rather than be quoted by it.
+#[must_use]
+pub fn render_hpath_segment_text(s: &str) -> Cow<'_, str> {
+    if s.chars().all(is_hpath_segment_verbatim) {
+        return Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        if is_hpath_segment_verbatim(c) {
+            out.push(c);
+            continue;
+        }
+        let mut buf = [0u16; 2];
+        for unit in c.encode_utf16(&mut buf) {
+            let _ = write!(out, "\\u{unit:04x}");
+        }
+    }
+    Cow::Owned(out)
+}
+
+/// Render an hpath as the §2.1 JSON array a receipt template writes —
+/// `[{"h":"Goals"},{"h":"Beta","n":2}]`.
+///
+/// Every byte of punctuation here is template text; only the heading text
+/// (through [`render_hpath_segment_text`]) and the occurrence index come from
+/// the data. Absent `n` writes no key, matching the wire spelling (§2.1).
+#[must_use]
+pub fn render_hpath_json(hpath: &[wire::HpathSeg]) -> String {
+    let mut out = String::from("[");
+    for (i, seg) in hpath.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        let _ = write!(out, "{{\"h\":\"{}\"", render_hpath_segment_text(&seg.h));
+        if let Some(n) = seg.n {
+            let _ = write!(out, ",\"n\":{n}");
+        }
+        out.push('}');
+    }
+    out.push(']');
+    out
 }
 
 /// The armed-fact set for one batch, borrowed from the request + armed

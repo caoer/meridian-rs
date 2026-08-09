@@ -2718,6 +2718,7 @@ dependencies = [
 name = "receipt"
 version = "1.0.0"
 dependencies = [
+ "serde_json",
  "syntax",
  "wire",
 ]
