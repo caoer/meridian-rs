@@ -29,9 +29,9 @@ const GH_README: &str = "# CI notes\n";
 const DRAFT_TMP: &str = "scratch\n";
 
 /// §6.3 E3 receipt line, frozen bytes (no terminator; the append adds `\n`).
-const E3_LINE: &str = "- splice notes/plan.md id=42 actor=agent:b0864fb2 now=2026-07-18T20:31:04Z root_before=b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9 edits=1 Goals>Q3 match 33d5b0e1b27cb48b->41f643f034e5681f ^r-000042";
+const E3_LINE: &str = "- splice notes/plan.md id=42 actor=agent:b0864fb2 now=2026-07-18T20:31:04Z fingerprint_before=b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9 edits=1 target.hpath=[{\"h\":\"Goals\"},{\"h\":\"Q3\"}] match 33d5b0e1b27cb48b->41f643f034e5681f ^r-000042";
 /// §6.3 E4 receipt line, frozen bytes.
-const E4_LINE: &str = "- splice notes/plan.md id=57 actor=agent:b0864fb2 now=2026-07-18T20:33:41Z root_before=b3:10769ae1c77f5646750f3f52df2d055156b411145a02b8361ecd32af1357a1b7 edits=1 Goals>Q4 put:end 4b8bc385a58da0e0->f43203a1f0b4c9a3 ^r-000043";
+const E4_LINE: &str = "- splice notes/plan.md id=57 actor=agent:b0864fb2 now=2026-07-18T20:33:41Z fingerprint_before=b3:7f3b44376c719be236279e168c22fa2f4d346cd6e5da5bcf0784adb72e7c1f12 edits=1 target.hpath=[{\"h\":\"Goals\"},{\"h\":\"Q4\"}] put:end 4b8bc385a58da0e0->f43203a1f0b4c9a3 ^r-000043";
 
 /// Independent 16-hex rev — blake3-256 of the given bytes, first 16 hex. A
 /// test-only dev-edge (blake3 dev-dependency) so a pin does not lean on
@@ -136,7 +136,7 @@ fn assert_toc_row(
 
 /// The derivation anchor: derived S1/S2 endpoints match the frozen §0.3 byte
 /// counts and the COMMITTED S2 fixtures byte-for-byte. id-72 closes here — the
-/// committed `s2/receipts` (474 B, computed) is the byte source the §4.5 worked
+/// committed `s2/receipts` (550 B, computed) is the byte source the §4.5 worked
 /// resolve fixture reads.
 #[test]
 fn s03_states_byte_counts_and_committed_s2_identity() {
@@ -146,11 +146,11 @@ fn s03_states_byte_counts_and_committed_s2_identity() {
     assert_eq!(GH_README.len(), 11, ".github/README.md (§0.3)");
     assert_eq!(DRAFT_TMP.len(), 8, "drafts/tmp.md (§0.3)");
     assert_eq!(s.plan[1].len(), 139, "plan v1 (§0.3)");
-    assert_eq!(s.receipts[1].len(), 249, "receipts v1 (§0.3)");
+    assert_eq!(s.receipts[1].len(), 287, "receipts v1 (§0.3)");
     assert_eq!(s.plan[2].len(), 150, "plan v2 (§0.3)");
     assert_eq!(
         s.receipts[2].len(),
-        474,
+        550,
         "receipts v2 (§0.3) — id-72 target"
     );
 
@@ -198,11 +198,11 @@ fn s03_file_revs_and_roots() {
         "R0"
     );
     assert_eq!(
-        r1, "b3:10769ae1c77f5646750f3f52df2d055156b411145a02b8361ecd32af1357a1b7",
+        r1, "b3:7f3b44376c719be236279e168c22fa2f4d346cd6e5da5bcf0784adb72e7c1f12",
         "R1"
     );
     assert_eq!(
-        r2, "b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68",
+        r2, "b3:6e866e13b5e65ef9961c050f8a621cf1980b00ee293be650deef5f4dbc6823f0",
         "R2"
     );
     // R0/R1/R2 all distinct tokens (the three states are genuinely different).
@@ -325,8 +325,8 @@ fn s41_plan_s0_toc_frame() {
 }
 
 /// receipts toc @ S1 (rows 39–48): the whole-file H1 + the r-000042 anchor row.
-/// A3 (H1 `node_rev` == `file_rev`) and A4/A5 (H1 `content_span` `[26,249]` INCLUSIVE
-/// vs anchor `[26,248]` EXCLUDED) are pinned here as DISTINCT grains.
+/// A3 (H1 `node_rev` == `file_rev`) and A4/A5 (H1 `content_span` `[26,287]` INCLUSIVE
+/// vs anchor `[26,286]` EXCLUDED) are pinned here as DISTINCT grains.
 #[test]
 fn s41_receipts_s1_toc_frame_a3_a4_a5() {
     let s = states();
@@ -334,18 +334,18 @@ fn s41_receipts_s1_toc_frame_a3_a4_a5() {
     let rows = toc(raw);
     let file_rev = rev16(raw.as_bytes());
     assert_eq!(
-        file_rev, "2731acfa39bbb92c",
+        file_rev, "51ad6428f5b5a898",
         "receipts file_rev@S1 (rows 39/109)"
     );
 
-    // A3: the lone H1 spans the whole file [0,249] → its node_rev EQUALS
+    // A3: the lone H1 spans the whole file [0,287] → its node_rev EQUALS
     // file_rev, deliberately the SAME value (distinctness lint must not fire).
     let h1 = heading(&rows, "Receipts — 2026-07-18");
     assert_toc_row(
         h1,
-        (0, 249),
-        Some((26, 249)),
-        "2731acfa39bbb92c",
+        (0, 287),
+        Some((26, 287)),
+        "51ad6428f5b5a898",
         "# Receipts — 2",
     );
     assert_eq!(
@@ -353,22 +353,22 @@ fn s41_receipts_s1_toc_frame_a3_a4_a5() {
         "A3: receipts H1 node_rev == file_rev, by whole-file heading design"
     );
 
-    // A4/A5 the terminator-grain trap: H1 content_span end 249 (newline-inclusive
-    // to EOF) vs the r-000042 block-leaf end 248 (terminator excluded). Same
+    // A4/A5 the terminator-grain trap: H1 content_span end 287 (newline-inclusive
+    // to EOF) vs the r-000042 block-leaf end 286 (terminator excluded). Same
     // start (26), ends differ by exactly one — asserted as-is, NEVER normalized.
     let a = anchor_row(&rows, "r-000042");
     assert_eq!(a.kind, "list_item", "anchor echoes host block kind");
-    assert_toc_row(a, (26, 248), None, "639a2dca46f6fcc8", "- splice notes/p");
+    assert_toc_row(a, (26, 286), None, "60bbee70d4a63a48", "- splice notes/p");
     assert_eq!(
         (h1.content_span.as_ref().unwrap().1, a.span.1),
-        (249, 248),
-        "A4/A5: heading-family end 249 (incl terminator) ≠ leaf-family end 248 (excl) — distinct grains"
+        (287, 286),
+        "A4/A5: heading-family end 287 (incl terminator) ≠ leaf-family end 286 (excl) — distinct grains"
     );
-    // and the file length is span-end + 1 terminator (249 = 248 + the trailing LF).
+    // and the file length is span-end + 1 terminator (287 = 286 + the trailing LF).
     assert_eq!(
         raw.len(),
-        249,
-        "receipts@S1 length = leaf end 248 + 1 terminator"
+        287,
+        "receipts@S1 length = leaf end 286 + 1 terminator"
     );
 }
 
@@ -477,7 +477,7 @@ fn s44_armed_transitions_and_fm_key_grain() {
 /// The worked resolve fixture — the id-72 closure. Built over the S2 corpus
 /// (committed s2 plan + the newly-committed s2 receipts), it resolves the five
 /// §4.5 frames through the real `model::walk`. id 72 (`2026-07-18` → whole
-/// receipts file `[0,474]`) is the frame that NEEDED the S2 receipts bytes.
+/// receipts file `[0,550]`) is the frame that NEEDED the S2 receipts bytes.
 #[test]
 fn s45_worked_resolve_frames_id72_closure() {
     let s = states();
@@ -511,14 +511,14 @@ fn s45_worked_resolve_frames_id72_closure() {
         }),
         "id 71 case-insensitive resolve → same [49,75]"
     );
-    // id 72: basename 2026-07-18 → whole receipts file @ S2, span [0,474].
+    // id 72: basename 2026-07-18 → whole receipts file @ S2, span [0,550].
     assert_eq!(
         walk(&index, &docs, from, "2026-07-18"),
         Ok(Location {
             dest: "receipts/2026-07-18.md".into(),
-            span: 0..474
+            span: 0..550
         }),
-        "id 72 resolve 2026-07-18 → whole receipts file [0,474] (id-72 closure)"
+        "id 72 resolve 2026-07-18 → whole receipts file [0,550] (id-72 closure)"
     );
     // id 73: plan#Goals#Q9 subpath miss → stage 2, dest observable.
     assert_eq!(
@@ -586,8 +586,8 @@ fn s52_failure_split_rev_stability_and_counts() {
 // §6.3 — worked receipts leaf grains (rows 97–100)
 // ===========================================================================
 
-/// The E3/E4 receipt lines: byte lengths (223/225 incl. terminator) and the
-/// block-leaf spans `[26,248]` / `[249,473]` (terminator EXCLUDED — A4/A5 leaf
+/// The E3/E4 receipt lines: byte lengths (261/263 incl. terminator) and the
+/// block-leaf spans `[26,286]` / `[287,549]` (terminator EXCLUDED — A4/A5 leaf
 /// family), recomputed over the derived receipts states.
 #[test]
 fn s63_receipt_leaf_grains() {
@@ -595,38 +595,38 @@ fn s63_receipt_leaf_grains() {
     // line lengths WITH the terminator (§6.3 "receipt line bytes").
     assert_eq!(
         format!("{E3_LINE}\n").len(),
-        223,
+        261,
         "E3 receipt line bytes (incl \\n)"
     );
     assert_eq!(
         format!("{E4_LINE}\n").len(),
-        225,
+        263,
         "E4 receipt line bytes (incl \\n)"
     );
 
-    // r-000042 leaf @ S1 [26,248] and r-000043 leaf @ S2 [249,473] — both
+    // r-000042 leaf @ S1 [26,286] and r-000043 leaf @ S2 [287,549] — both
     // terminator-EXCLUDED; each width = line length − 1 (the trailing LF).
     let rows_s1 = toc(&s.receipts[1]);
     let r42 = anchor_row(&rows_s1, "r-000042");
     assert_eq!(
         (r42.span.0, r42.span.1),
-        (26, 248),
+        (26, 286),
         "r-000042 leaf span (excl terminator)"
     );
-    assert_eq!(r42.node_rev.0, "639a2dca46f6fcc8", "r-000042 node_rev");
+    assert_eq!(r42.node_rev.0, "60bbee70d4a63a48", "r-000042 node_rev");
     let rows_s2 = toc(&s.receipts[2]);
     let r43 = anchor_row(&rows_s2, "r-000043");
     assert_eq!(
         (r43.span.0, r43.span.1),
-        (249, 473),
+        (287, 549),
         "r-000043 leaf span (excl terminator)"
     );
-    assert_eq!(r43.node_rev.0, "c912d4578883f288", "r-000043 node_rev");
-    // A5: S2 file length 474 = leaf end 473 + 1 terminator.
+    assert_eq!(r43.node_rev.0, "5c6ca7ec00ae279e", "r-000043 node_rev");
+    // A5: S2 file length 550 = leaf end 549 + 1 terminator.
     assert_eq!(
         s.receipts[2].len(),
-        474,
-        "receipts@S2 length = r-000043 end 473 + terminator"
+        550,
+        "receipts@S2 length = r-000043 end 549 + terminator"
     );
 }
 
@@ -653,12 +653,12 @@ fn s71_delta_file_revs_and_seqs() {
     );
     assert_eq!(
         rev16(s.receipts[1].as_bytes()),
-        "2731acfa39bbb92c",
+        "51ad6428f5b5a898",
         "receipts file_rev@S1"
     );
     assert_eq!(
         rev16(s.receipts[2].as_bytes()),
-        "9167b12b0eb13be6",
+        "6cb0e939ce2edf5a",
         "receipts file_rev@S2"
     );
     // seq counters ride the delta headers (E3 seq 1, E4 seq 2) — monotone.
@@ -693,7 +693,7 @@ fn s102_s111_stale_view_roots_and_goals_s2_verdict_a2() {
         "stale_view.required = R0"
     );
     assert_eq!(
-        r2, "b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68",
+        r2, "b3:6e866e13b5e65ef9961c050f8a621cf1980b00ee293be650deef5f4dbc6823f0",
         "stale_view.as_of/live = R2"
     );
     assert_ne!(r0, r2, "stale_view fires because required ≠ live");
@@ -771,11 +771,11 @@ fn s121_s123_domain_roots_and_a7_full_token() {
     );
     let v1_bump = root_token(&files2, 1);
     assert_eq!(
-        v0_drafts, "b3:05f0c6192308db5937c3e1352d1f9a6fc31b89b1a57175c8af6ce7903525aa4a",
+        v0_drafts, "b3:f8b4c62ce36f5873eb46db5cdf41db2436a3cba67ec5c47bebadbeaa8fe71ea3",
         "v0 root (drafts hashed)"
     );
     assert_eq!(
-        v1_bump, "b3a:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68",
+        v1_bump, "b3a:6e866e13b5e65ef9961c050f8a621cf1980b00ee293be650deef5f4dbc6823f0",
         "v1 bump root (b3a: prefix)"
     );
 

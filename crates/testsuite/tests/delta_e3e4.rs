@@ -12,9 +12,9 @@
 use serde_json::{Value, json};
 
 /// §6.3 E3 receipt line, frozen bytes (also pinned in `crates/receipt`).
-const E3_LINE: &str = "- splice notes/plan.md id=42 actor=agent:b0864fb2 now=2026-07-18T20:31:04Z root_before=b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9 edits=1 Goals>Q3 match 33d5b0e1b27cb48b->41f643f034e5681f ^r-000042";
+const E3_LINE: &str = "- splice notes/plan.md id=42 actor=agent:b0864fb2 now=2026-07-18T20:31:04Z fingerprint_before=b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9 edits=1 target.hpath=[{\"h\":\"Goals\"},{\"h\":\"Q3\"}] match 33d5b0e1b27cb48b->41f643f034e5681f ^r-000042";
 /// §6.3 E4 receipt line, frozen bytes.
-const E4_LINE: &str = "- splice notes/plan.md id=57 actor=agent:b0864fb2 now=2026-07-18T20:33:41Z root_before=b3:10769ae1c77f5646750f3f52df2d055156b411145a02b8361ecd32af1357a1b7 edits=1 Goals>Q4 put:end 4b8bc385a58da0e0->f43203a1f0b4c9a3 ^r-000043";
+const E4_LINE: &str = "- splice notes/plan.md id=57 actor=agent:b0864fb2 now=2026-07-18T20:33:41Z fingerprint_before=b3:7f3b44376c719be236279e168c22fa2f4d346cd6e5da5bcf0784adb72e7c1f12 edits=1 target.hpath=[{\"h\":\"Goals\"},{\"h\":\"Q4\"}] put:end 4b8bc385a58da0e0->f43203a1f0b4c9a3 ^r-000043";
 
 fn wsfix(rel: &str) -> String {
     std::fs::read_to_string(testsuite::wsfix_dir().join(rel))
@@ -71,7 +71,7 @@ fn e3_printed() -> Value {
     json!({"delta":{
      "seq":1,
      "root_before":"b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9",
-     "root_after":"b3:10769ae1c77f5646750f3f52df2d055156b411145a02b8361ecd32af1357a1b7",
+     "root_after":"b3:7f3b44376c719be236279e168c22fa2f4d346cd6e5da5bcf0784adb72e7c1f12",
      "actor":"agent:b0864fb2","now":"2026-07-18T20:31:04Z",
      "files":[
       {"path":"notes/plan.md","change":"modified",
@@ -80,17 +80,17 @@ fn e3_printed() -> Value {
                  "node_rev_before":"33d5b0e1b27cb48b","node_rev_after":"41f643f034e5681f",
                  "span_after":[49,75]}]},
       {"path":"receipts/2026-07-18.md","change":"modified",
-       "file_rev_before":"920a40c4ee23d37c","file_rev_after":"2731acfa39bbb92c",
+       "file_rev_before":"920a40c4ee23d37c","file_rev_after":"51ad6428f5b5a898",
        "nodes":[{"anchor":"r-000042","change":"added",
-                 "node_rev_after":"639a2dca46f6fcc8","span_after":[26,248]}]}]}})
+                 "node_rev_after":"60bbee70d4a63a48","span_after":[26,286]}]}]}})
 }
 
 /// The §7.1 printed E4 frame, verbatim.
 fn e4_printed() -> Value {
     json!({"delta":{
      "seq":2,
-     "root_before":"b3:10769ae1c77f5646750f3f52df2d055156b411145a02b8361ecd32af1357a1b7",
-     "root_after":"b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68",
+     "root_before":"b3:7f3b44376c719be236279e168c22fa2f4d346cd6e5da5bcf0784adb72e7c1f12",
+     "root_after":"b3:6e866e13b5e65ef9961c050f8a621cf1980b00ee293be650deef5f4dbc6823f0",
      "actor":"agent:b0864fb2","now":"2026-07-18T20:33:41Z",
      "files":[
       {"path":"notes/plan.md","change":"modified",
@@ -99,9 +99,9 @@ fn e4_printed() -> Value {
                  "node_rev_before":"4b8bc385a58da0e0","node_rev_after":"f43203a1f0b4c9a3",
                  "span_after":[75,150]}]},
       {"path":"receipts/2026-07-18.md","change":"modified",
-       "file_rev_before":"2731acfa39bbb92c","file_rev_after":"9167b12b0eb13be6",
+       "file_rev_before":"51ad6428f5b5a898","file_rev_after":"6cb0e939ce2edf5a",
        "nodes":[{"anchor":"r-000043","change":"added",
-                 "node_rev_after":"c912d4578883f288","span_after":[249,473]}]}]}})
+                 "node_rev_after":"5c6ca7ec00ae279e","span_after":[287,549]}]}]}})
 }
 
 struct States {
@@ -133,8 +133,8 @@ fn derived_states_match_committed_and_frozen_counts() {
     let s = states();
     assert_eq!(s.plan[1].len(), 139, "S1 plan bytes (§0.3)");
     assert_eq!(s.plan[2].len(), 150, "S2 plan bytes (§0.3)");
-    assert_eq!(s.receipts[1].len(), 249, "S1 receipts bytes (§0.3)");
-    assert_eq!(s.receipts[2].len(), 474, "S2 receipts bytes (§0.3)");
+    assert_eq!(s.receipts[1].len(), 287, "S1 receipts bytes (§0.3)");
+    assert_eq!(s.receipts[2].len(), 550, "S2 receipts bytes (§0.3)");
     assert_eq!(
         s.plan[2],
         wsfix("s2/notes/plan.md"),

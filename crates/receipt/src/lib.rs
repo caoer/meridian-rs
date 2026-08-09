@@ -174,8 +174,13 @@ pub struct EditFact<'a> {
 /// (the batch writer owns terminators and file joining).
 ///
 /// Worked shape (§6.3 E3, byte-exact under test):
-/// `- splice notes/plan.md id=42 actor=… now=… root_before=b3:… edits=1
-/// Goals>Q3 match 33d5…->41f6… ^r-000042`
+/// `- splice notes/plan.md id=42 actor=… now=… fingerprint_before=b3:…
+/// edits=1 target.hpath=[{"h":"Goals"},{"h":"Q3"}] match 33d5…->41f6…
+/// ^r-000042`
+///
+/// The token spells `fingerprint_before`, §6.1's standing noun, over the
+/// `root_before` fact the wire response carries — the two name one value and
+/// only the rendered spelling is this template's to choose.
 #[must_use]
 pub fn render_line(facts: &ArmedFacts<'_>) -> String {
     let mut out = String::new();
@@ -191,7 +196,7 @@ pub fn render_line(facts: &ArmedFacts<'_>) -> String {
     }
     let _ = write!(
         out,
-        " root_before={} edits={}",
+        " fingerprint_before={} edits={}",
         render_field(&facts.root_before.0),
         facts.edits.len()
     );
@@ -199,7 +204,7 @@ pub fn render_line(facts: &ArmedFacts<'_>) -> String {
         let _ = write!(
             out,
             " {} {} {}->{}",
-            render_field(&target_display(edit.target)),
+            target_token(edit.target),
             shape_display(edit.shape),
             render_field(&edit.before.0),
             render_field(&edit.after.0)
@@ -217,24 +222,29 @@ pub fn anchor(n: u64) -> String {
     format!("r-{n:06}")
 }
 
-/// Target display text — display inside the default template, never a
-/// second address grammar (§6.4): hpath segments joined `>`, an occurrence
-/// index as `(n)`, anchors as `^id`, frontmatter keys bare.
+/// The target token the default template writes for one edit.
+///
+/// An hpath renders as `target.hpath=` plus the §2.1 JSON array — the form
+/// §6.3 mandates and the pretty join it forbids in the same breath. The array
+/// goes in WHOLE and never through [`render_field`]: that charset excludes
+/// `[` and `]`, so routing the address through it would escape the address
+/// into a code span. Its punctuation is template bytes and only the heading
+/// text is interpolated, through [`render_hpath_segment_text`] (§6.7 rule 2).
+///
+/// The anchor and `fm_key` forms are single tokens, not joins, so they keep
+/// rule 1's escaping and their existing spelling.
+fn target_token(target: &wire::SecRef) -> String {
+    match target {
+        wire::SecRef::Hpath { hpath } => format!("target.hpath={}", render_hpath_json(hpath)),
+        other => render_field(&target_display(other)).into_owned(),
+    }
+}
+
+/// Target display text for the non-hpath forms — anchors as `^id`,
+/// frontmatter keys bare. Never a second address grammar (§6.4).
 pub(crate) fn target_display(target: &wire::SecRef) -> String {
     match target {
-        wire::SecRef::Hpath { hpath } => {
-            let mut out = String::new();
-            for (i, seg) in hpath.iter().enumerate() {
-                if i > 0 {
-                    out.push('>');
-                }
-                out.push_str(&seg.h);
-                if let Some(n) = seg.n {
-                    let _ = write!(out, "({n})");
-                }
-            }
-            out
-        }
+        wire::SecRef::Hpath { hpath } => render_hpath_json(hpath),
         wire::SecRef::Anchor { anchor } => format!("^{anchor}"),
         wire::SecRef::FmKey { fm_key } => fm_key.clone(),
     }

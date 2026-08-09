@@ -437,7 +437,7 @@ mod toc_tests {
     const PLAN_S0: &str = "---\ntitle: Plan\n---\n# Goals\n\nShip the contract.\n\n## Q3\n\nship by August\n\n## Q4\n\n- item one\n- see [[2026-07-18]]\n- blocked on [[roadmap]]\n";
 
     /// §6.3 E3 receipt line, frozen bytes (also pinned in `crates/receipt`).
-    const E3_LINE: &str = "- splice notes/plan.md id=42 actor=agent:b0864fb2 now=2026-07-18T20:31:04Z root_before=b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9 edits=1 Goals>Q3 match 33d5b0e1b27cb48b->41f643f034e5681f ^r-000042";
+    const E3_LINE: &str = "- splice notes/plan.md id=42 actor=agent:b0864fb2 now=2026-07-18T20:31:04Z fingerprint_before=b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9 edits=1 target.hpath=[{\"h\":\"Goals\"},{\"h\":\"Q3\"}] match 33d5b0e1b27cb48b->41f643f034e5681f ^r-000042";
 
     fn rows(raw: &str) -> Vec<wire::TocNode> {
         project_toc(&model::build(raw.to_string(), syntax::parse(raw)))
@@ -512,7 +512,7 @@ mod toc_tests {
     #[test]
     fn worked_s1_receipts_anchor_toc_rows() {
         let raw = format!("# Receipts — 2026-07-18\n{E3_LINE}\n");
-        assert_eq!(raw.len(), 249, "S1 receipts byte count (worked §0.3)");
+        assert_eq!(raw.len(), 287, "S1 receipts byte count (worked §0.3)");
         let got = rows(&raw);
         let expected = vec![
             wire::TocNode {
@@ -520,9 +520,9 @@ mod toc_tests {
                 level: Some(1),
                 hpath: Some(vec![seg("Receipts — 2026-07-18")]),
                 anchor: None,
-                span: wire::Span(0, 249),
-                content_span: Some(wire::Span(26, 249)),
-                node_rev: wire::NodeRev("2731acfa39bbb92c".into()),
+                span: wire::Span(0, 287),
+                content_span: Some(wire::Span(26, 287)),
+                node_rev: wire::NodeRev("51ad6428f5b5a898".into()),
                 text_prefix_16b: "# Receipts — 2".into(),
                 keys: None,
             },
@@ -531,9 +531,9 @@ mod toc_tests {
                 level: None,
                 hpath: None,
                 anchor: Some("r-000042".into()),
-                span: wire::Span(26, 248),
+                span: wire::Span(26, 286),
                 content_span: None,
-                node_rev: wire::NodeRev("639a2dca46f6fcc8".into()),
+                node_rev: wire::NodeRev("60bbee70d4a63a48".into()),
                 text_prefix_16b: "- splice notes/p".into(),
                 keys: None,
             },
