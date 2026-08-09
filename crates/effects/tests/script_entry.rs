@@ -209,6 +209,62 @@ fn me_returns_the_injected_actor() {
     assert_eq!(eval.recording.actor, "8ab41c02");
 }
 
+/// run-plane § The statement-position rule: "Suppression syntax does not exist
+/// in v1 (`_ = read(…)` is rejected permanently)". The refusal is pre-eval and
+/// parse-class — the rule it defends is syntactic — so the banned spelling
+/// never reads, never binds, and never renders.
+#[test]
+fn the_banned_suppression_spelling_is_refused_before_evaluation() {
+    let mut host = NoReadHost::new();
+    let eval = eval_script(
+        "_ = read(\"tasks/0011.md\")\n",
+        &ctx(),
+        ScriptLimits::default(),
+        &mut host,
+    );
+    let error = eval
+        .outcome
+        .expect_err("`_ = read(…)` is rejected permanently");
+    println!("POPULATION refusal = {error}");
+    assert!(
+        matches!(error, EvalError::Parse { .. }),
+        "the statement-position rule is syntactic, so its refusal is parse-class: {error:?}"
+    );
+    let said = error.to_string();
+    for owed in ["_ = read", "rejected permanently", "line 1"] {
+        assert!(said.contains(owed), "the refusal owes `{owed}`: {said}");
+    }
+    // Pre-eval: nothing was read (NoReadHost would have panicked) and nothing
+    // was recorded.
+    assert!(eval.recording.reads.is_empty(), "a refused script reads none");
+}
+
+/// The refusal is the SPELLING, at any depth — a suppression inside a function
+/// body is the same non-positional grammar the law rejects. An ordinary `_`
+/// binding of a non-read value is untouched: `_` is a plain Starlark name.
+#[test]
+fn the_suppression_spelling_is_refused_at_any_depth_and_only_for_read() {
+    let mut host = NoReadHost::new();
+    let nested = eval_script(
+        "def scan(p):\n    _ = read(p)\n    return 1\n",
+        &ctx(),
+        ScriptLimits::default(),
+        &mut host,
+    );
+    let error = nested
+        .outcome
+        .expect_err("the spelling is refused wherever it is written");
+    assert!(matches!(error, EvalError::Parse { .. }), "{error:?}");
+    assert!(error.to_string().contains("line 2"), "{error}");
+
+    // `_` itself stays an ordinary name — only the read spelling is banned.
+    let (ordinary, _) = run("_ = 1 + 2\nkept = _\n");
+    let facts = ordinary
+        .outcome
+        .expect("`_` is a plain name when no read is suppressed");
+    assert_eq!(facts.bindings.get("kept").map(String::as_str), Some("3"));
+}
+
 /// Acceptance 2 — golden scenario 5's three read positions: a top-level
 /// statement echoes; a comprehension and an `if` condition stay quiet.
 #[test]
