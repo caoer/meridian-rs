@@ -342,6 +342,48 @@ fn spelled(error: &ErrorBody) -> String {
             actual.0
         );
     }
+    // The match-law pair (dogfood P3-a): the wire's `matches` count is the
+    // whole machine face (§4.4 `not_unique{matches}`), so the human face
+    // renders it into the law and its working fix instead of a bare token.
+    if error.code == wire::ErrorCode::NoMatch {
+        return format!(
+            "no_match: `old` occurs {} times in the target — the §4.4 match law wants exactly \
+             one occurrence, byte-exact against the current content. {} Fix: re-read the \
+             target and copy `old` verbatim (whitespace included); an `if_node_rev`-guarded \
+             miss is provably a typo, an unguarded one may be a moved world (§5.2).",
+            error.matches.unwrap_or(0),
+            wire_serve::NO_PARTIAL_WRITE_CLAUSE
+        );
+    }
+    if error.code == wire::ErrorCode::NotUnique {
+        return format!(
+            "not_unique: `old` occurs {} times in the target — the §4.4 match law wants \
+             exactly one occurrence. {} Fix: extend `old` with surrounding bytes until one \
+             occurrence remains, or aim the target at a narrower section.",
+            error.matches.unwrap_or(0),
+            wire_serve::NO_PARTIAL_WRITE_CLAUSE
+        );
+    }
+    // Dogfood NEW-B: contract §4.4 promises `would_corrupt{lost:[hpath…]}` —
+    // the chains ride the wire, so the human face names what the commit would
+    // lose and the newline law behind the commonest cause.
+    if error.code == wire::ErrorCode::WouldCorrupt
+        && let Some(lost) = &error.lost
+    {
+        let chains = lost
+            .iter()
+            .map(|chain| format!("`{}`", wire_serve::display_hpath(chain)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return format!(
+            "would_corrupt: committed, this batch would re-parse to a document that loses \
+             containment — {chains} would fall out of the section tree. {} Fix: carry your \
+             own newlines — `at:\"end\"` is raw byte concatenation (§4.4), so inserted text \
+             that runs up against a following heading must end with `\\n` or the heading \
+             line glues onto it and stops parsing as a heading.",
+            wire_serve::NO_PARTIAL_WRITE_CLAUSE
+        );
+    }
     match (&error.expected, &error.actual, &error.path) {
         (Some(expected), Some(actual), _) => {
             format!("{code}: expected {}, actual {}", expected.0, actual.0)
