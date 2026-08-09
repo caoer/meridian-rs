@@ -631,16 +631,19 @@ impl SelFail {
             SelFail::Miss {
                 teach: Some(teach), ..
             } => format!("no section addressed by \"{display}\" ({})", teach.clause),
+            // The parenthetical carries FACTS; the remedy is the message's own
+            // `Fix:`, from the one published constant per plane. It used to
+            // carry the remedy here and let a discovery clause take the `Fix:`
+            // label — two clauses disagreeing about what to do next, with the
+            // authoritative-looking one circular.
             SelFail::Ambiguous { candidates, .. } => format!(
-                "\"{display}\" is ambiguous ({} matches — pin one occurrence by its machine \
-                 address, or its dewey ordinal from the toc: {})",
+                "\"{display}\" is ambiguous ({} matches: {})",
                 candidates.len(),
                 candidate_addrs(candidates).join(" or ")
             ),
-            SelFail::DupAnchor { count, .. } => format!(
-                "\"{display}\" is ambiguous ({count} blocks carry this id — give each a \
-                 distinct id, or read the enclosing section by heading path)"
-            ),
+            SelFail::DupAnchor { count, .. } => {
+                format!("\"{display}\" is ambiguous ({count} blocks carry this id)")
+            }
         }
     }
 
@@ -878,9 +881,21 @@ fn composed_sections(
             ErrorCode::RefNotFound
         });
         let phrases: Vec<String> = failures.iter().map(SelFail::phrase).collect();
-        // The aggregate Fix follows the first failure, as before — but an
-        // unaddressable-host miss must not send the caller to `anchors[]`,
-        // which cannot list the id it just named (dogfood P2-c).
+        // The aggregate Fix follows the first failure, as before — and it is
+        // chosen by that failure's KIND, because the remedy for a miss is not
+        // the remedy for an ambiguity.
+        //
+        // `section_recovery` teaches DISCOVERY: how to find a selector that
+        // exists. That is the remedy for a MISS. An ambiguity is the opposite
+        // failure — the caller's selector resolved, twice — so a discovery
+        // clause sends them to look up an address they already typed, and the
+        // one actionable sentence in the message is not the one labelled
+        // `Fix:`. Both ambiguity planes therefore answer with their own
+        // published remedy, byte-shared with the exemplar the write door
+        // renders, so the two doors cannot drift apart again.
+        //
+        // The unaddressable-host miss keeps its own arm: `anchors[]` cannot
+        // list the id it just named (dogfood P2-c) — a Fix must be servable.
         let fix = match &failures[0] {
             SelFail::Miss {
                 teach:
@@ -889,6 +904,8 @@ fn composed_sections(
                     }),
                 ..
             } => unaddressable_fix(host, display),
+            SelFail::DupAnchor { .. } => model::selector::ANCHOR_AMBIGUITY_FIX.to_owned(),
+            SelFail::Ambiguous { .. } => model::selector::AMBIGUITY_FIX.to_owned(),
             other => crate::section_recovery(&other.display(), Some(display)),
         };
         e.message = Some(format!(

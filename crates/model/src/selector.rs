@@ -487,6 +487,23 @@ fn bigram_overlap(a: &str, b: &str) -> usize {
 
 // Ambiguity teaching refusal (d1 — verbatim anchor)
 
+/// The d1 remedy, as ONE published sentence: the legal forms that pin one
+/// duplicate heading.
+///
+/// It is a constant rather than inline text because two doors answer this
+/// failure — the write door through [`render_ambiguity`], the read face
+/// through its aggregate `Fix:` — and a remedy spelled twice is a remedy that
+/// drifts once. Sharing the bytes puts both doors under the exemplar
+/// assertion (`docs/meridian-md-schema.md` § 8.3: a `Fix:` names the LEGAL
+/// FORM).
+///
+/// "above" is answered by the candidate list every carrier prints before it.
+pub const AMBIGUITY_FIX: &str = "Fix: pin one occurrence by its n-carrying machine address above, or by its dewey ordinal from the toc; renaming one of the duplicate headings also fixes it, at the cost of editing the document.";
+
+/// The anchor-plane remedy, as ONE published sentence — the [`AMBIGUITY_FIX`]
+/// sibling, and it never speaks the heading grammar (wire-contract A.3).
+pub const ANCHOR_AMBIGUITY_FIX: &str = "Fix: give each duplicate block a distinct id (a block id addresses exactly one block in its file), or address the enclosing section by heading path.";
+
 /// d1 teaching-refusal exemplar, verbatim. [`render_ambiguity`] interpolates
 /// the real selector/candidates; drift fails tests.
 pub const D1_TEACHING_REFUSAL_EXEMPLAR: &str = "refused: selector 'Task/Objective' is ambiguous — 2 matches: n=1.2 (^a1b2c3), n=1.5 (^d4e5f6). Unambiguous writes to this file remain served. Fix: pin one occurrence by its n-carrying machine address above, or by its dewey ordinal from the toc; renaming one of the duplicate headings also fixes it, at the cost of editing the document.";
@@ -517,9 +534,7 @@ pub fn render_ambiguity(selector: &str, candidates: &[AmbiguityCandidate]) -> St
         .join(", ");
     format!(
         "refused: selector '{selector}' is ambiguous — {count} matches: {named}. \
-         Unambiguous writes to this file remain served. Fix: pin one occurrence by its \
-         n-carrying machine address above, or by its dewey ordinal from the toc; renaming \
-         one of the duplicate headings also fixes it, at the cost of editing the document.",
+         Unambiguous writes to this file remain served. {AMBIGUITY_FIX}",
         count = candidates.len()
     )
 }
@@ -540,9 +555,7 @@ pub const ANCHOR_AMBIGUITY_REFUSAL_EXEMPLAR: &str = "refused: selector '^same-id
 pub fn render_anchor_ambiguity(selector: &str, count: usize) -> String {
     format!(
         "refused: selector '{selector}' is ambiguous — {count} blocks carry this id. \
-         Unambiguous reads and writes to this file remain served. Fix: give each \
-         duplicate block a distinct id (a block id addresses exactly one block in \
-         its file), or address the enclosing section by heading path."
+         Unambiguous reads and writes to this file remain served. {ANCHOR_AMBIGUITY_FIX}"
     )
 }
 

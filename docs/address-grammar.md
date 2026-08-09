@@ -332,6 +332,37 @@ It **names the missing mount** and **teaches the fix**, per D8, and it carries �
 sentence — *"Not red — nothing drifted; you just cannot see from here"* — rather than paraphrasing
 it.
 
+### 6.0b One remedy per plane, and the `Fix:` answers the failure it is attached to (2026-08-09)
+
+`docs/meridian-md-schema.md` § 8.3 requires a `Fix:` that **names the legal form**. Two failures at
+the selector doors look similar and take opposite remedies, and the difference is what this section
+exists to state:
+
+| failure | what the caller holds | the remedy |
+|---|---|---|
+| **miss** — no node answers the selector | an address that does not resolve | **discovery**: list the sections, feed a row back |
+| **ambiguity** — the selector resolved TWICE | an address that resolves too well | **disambiguation**: pin one occurrence, or make the duplicate ids distinct |
+
+A discovery clause attached to an ambiguity sends the caller to look up an address **they already
+typed**, so the sentence labelled `Fix:` is the one sentence in the message that cannot help. That is
+a taught-recovery loop even when every other clause is correct — and it is worse than an absent
+remedy, because the authoritative-looking clause is the circular one.
+
+**Each ambiguity plane therefore publishes ONE remedy sentence, and every door renders those bytes:**
+`selector::AMBIGUITY_FIX` (heading plane, carried inside `D1_TEACHING_REFUSAL_EXEMPLAR`) and
+`selector::ANCHOR_AMBIGUITY_FIX` (anchor plane, inside `ANCHOR_AMBIGUITY_REFUSAL_EXEMPLAR`). The
+constants exist because **two doors answer each of these failures** — the write door through the
+exemplar renderers, the read face through its aggregate `Fix:` — and a remedy spelled twice is a
+remedy that drifts once. Sharing the bytes puts both doors under the exemplar assertions that
+already exist.
+
+> **Measured receipt (dogfood pass 1, f05).** The write door rendered both exemplars verbatim while
+> the read door derived its `Fix:` from the MISS vocabulary for **every** failure kind — so the
+> duplicate-anchor AND duplicate-heading refusals both demoted their real remedy into a parenthetical
+> and labelled a discovery step `Fix:`. The exemplars were asserted the whole time: the assertions
+> covered the renderers, and **the read face did not call them.** An exemplar constrains only the
+> doors that render it.
+
 ### 6.1 The vocabulary is grey-exit-1's, and it is not re-spelled here
 
 > Grey **refuses**. It rides **exit 1**, with the distinct reason word **`grey(unmounted)`** — in
