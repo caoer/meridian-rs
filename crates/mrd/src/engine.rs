@@ -316,7 +316,14 @@ fn dial_links(socket: &Path, workspace: &Path, path: Option<&str>) -> io::Result
 /// CLI's own refusals (flags, stdin), which are minted before any engine contact and never
 /// pass through here (dogfood P3-b: the split is what lets a script tell "fix your command
 /// line" from "read the engine's message").
-pub(crate) fn refusal_fail(error: &ErrorBody) -> Fail {
+///
+/// PRIVATE ON PURPOSE. This helper mints the stderr half alone, and a verb that reached it
+/// directly published a `--json` refusal with an EMPTY stdout — the defect
+/// [`json_refusal`] was created to end and then left at `pin` and `retire mark`. Every
+/// module outside this one converts an engine [`ErrorBody`] through [`json_refusal`], which
+/// takes the [`Format`] and cannot skip the envelope. Privacy is the enforcement: a new
+/// caller that tries to skip it does not compile.
+fn refusal_fail(error: &ErrorBody) -> Fail {
     let mut text = match &error.message {
         Some(message) => message.clone(),
         None => spelled(error),

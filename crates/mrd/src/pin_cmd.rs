@@ -78,8 +78,8 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     };
     // seq 0, like the resident daemon (no epoch ring); no read-mint ledger
     // exists in a CLI process, which is why the gate is bypassed above.
-    let outcome =
-        splice(&root, None, &splice_args, &[], None).map_err(|e| refusal_with_cause(&e))?;
+    let outcome = splice(&root, None, &splice_args, &[], None)
+        .map_err(|e| refusal_with_cause(parsed.format, &resolved.workspace, &e))?;
 
     let body = serde_json::to_value(&outcome.body)
         .map_err(|e| Fail::tool(format!("cannot render the answer: {e}")))?;
@@ -104,11 +104,21 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     Ok(())
 }
 
-/// The engine's refusal with its `cause` carried, in the same `class (cause)` shape
-/// [`crate::status_cmd`] degrades in (`unknown (not a git repository: …)`).
-fn refusal_with_cause(error: &wire::ErrorBody) -> Fail {
-    let mut fail = engine::refusal_fail(error);
-    if let Some(cause) = &error.cause {
+/// The engine's refusal on both faces: [`engine::json_refusal`] owns the `{workspace, error}`
+/// envelope for every `--json` face, so `pin` reaches it the same way `read` and `put` do. The
+/// stderr half keeps the `class (cause)` shape [`crate::status_cmd`] degrades in
+/// (`unknown (not a git repository: …)`), appended only where the shared helper did not already
+/// carry the cause — it inlines one for a message-less `io_error`, and rendering it twice is
+/// what this door did before.
+fn refusal_with_cause(
+    format: Format,
+    workspace: &std::path::Path,
+    error: &wire::ErrorBody,
+) -> Fail {
+    let mut fail = engine::json_refusal(format, workspace, error);
+    if let Some(cause) = &error.cause
+        && !fail.message.contains(cause.as_str())
+    {
         fail.message = format!("{} ({cause})", fail.message);
     }
     fail
