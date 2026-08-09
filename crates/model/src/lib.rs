@@ -3228,6 +3228,38 @@ mod tests {
         );
     }
 
+    /// `MerkleDir::insert` collision symmetry (review finding, three teams:
+    /// grok G-P3-1 + sonnet P3 + fable F9): a hash domain never mixes a file
+    /// and a directory at one name, and the guard must hold in BOTH
+    /// directions. The file-prefix arm already ignores `a/b.md` after file
+    /// `a`; this gate pins the mirror — a file landing on an existing
+    /// DIRECTORY name is ignored, never allowed to silently drop the subtree.
+    /// Unreachable from the fs walk (a real tree cannot hold both); pub-API
+    /// hygiene.
+    #[test]
+    fn file_on_dir_collision_preserves_subtree() {
+        let subtree_only = merkle_root(&[("a/b.md", b"x" as &[u8])], 0);
+        let file_on_dir = merkle_root(&[("a/b.md", b"x" as &[u8]), ("a", b"y" as &[u8])], 0);
+        assert_eq!(
+            file_on_dir, subtree_only,
+            "a file colliding with an existing directory is ignored — the subtree survives"
+        );
+
+        // The already-guarded mirror stays: a path under an existing file
+        // prefix is ignored.
+        let file_only = merkle_root(&[("a", b"y" as &[u8])], 0);
+        let dir_under_file = merkle_root(&[("a", b"y" as &[u8]), ("a/b.md", b"x" as &[u8])], 0);
+        assert_eq!(
+            dir_under_file, file_only,
+            "a path under an existing file prefix is ignored"
+        );
+
+        // Last write wins on a duplicate PATH — untouched by the guard.
+        let second = merkle_root(&[("a", b"y2" as &[u8])], 0);
+        let dup = merkle_root(&[("a", b"y1" as &[u8]), ("a", b"y2" as &[u8])], 0);
+        assert_eq!(dup, second, "duplicate path: last write still wins");
+    }
+
     /// The §12.2 varint is unsigned LEB128 (single byte below 128).
     #[test]
     fn write_uleb128_matches_spec() {
