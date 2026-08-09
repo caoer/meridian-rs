@@ -359,19 +359,18 @@ fn read_stdin_edits() -> Result<Vec<Edit>, Fail> {
     // refusal is exit 2, and a VALUE law (§2.4's block-id charset) is not this
     // seam's to judge — the engine refuses that one at exit 1 with its
     // structured frame, which is the exit triad `docs/status.md` states.
-    let edits: Vec<Edit> = wire_serve::decode::decode_edits(
-        &value,
-        wire_serve::decode::Laws::ShapeOnly,
-    )
-    .map_err(|e| {
-        refuse_stdin(
-            "the edits on stdin are not the §4.4 batch shape",
-            e.message
-                .as_deref()
-                .unwrap_or("the §4.4 edit grammar was not met"),
-            &raw,
-        )
-    })?;
+    let edits: Vec<Edit> =
+        wire_serve::decode::decode_edits(&value, wire_serve::decode::Laws::ShapeOnly).map_err(
+            |e| {
+                refuse_stdin(
+                    "the edits on stdin are not the §4.4 batch shape",
+                    e.message
+                        .as_deref()
+                        .unwrap_or("the §4.4 edit grammar was not met"),
+                    &raw,
+                )
+            },
+        )?;
     Ok(edits)
 }
 

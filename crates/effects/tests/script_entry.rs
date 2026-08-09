@@ -236,7 +236,10 @@ fn the_banned_suppression_spelling_is_refused_before_evaluation() {
     }
     // Pre-eval: nothing was read (NoReadHost would have panicked) and nothing
     // was recorded.
-    assert!(eval.recording.reads.is_empty(), "a refused script reads none");
+    assert!(
+        eval.recording.reads.is_empty(),
+        "a refused script reads none"
+    );
 }
 
 /// The refusal is the SPELLING, at any depth — a suppression inside a function
