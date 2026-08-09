@@ -657,7 +657,9 @@ fn excluded_holders(
         if domain.contains(&rel) {
             continue;
         }
-        let Some(rel_str) = rel.to_str() else { continue };
+        let Some(rel_str) = rel.to_str() else {
+            continue;
+        };
         let Ok(bytes) = std::fs::read(root.0.join(&rel)) else {
             continue;
         };
