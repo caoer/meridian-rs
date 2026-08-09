@@ -25,7 +25,7 @@ use starlark::values::dict::AllocDict;
 use starlark::values::list::UnpackList;
 use starlark::values::none::NoneType;
 use starlark::values::structs::AllocStruct;
-use starlark_syntax::syntax::ast::{AstExpr, AstStmt, Expr, Stmt};
+use starlark_syntax::syntax::ast::{AssignTarget, AstExpr, AstStmt, Expr, Stmt};
 use wire::PlanEdit;
 
 use crate::script_edit::{ArmRefusal, plan_items};
@@ -488,6 +488,37 @@ fn effect_api(builder: &mut GlobalsBuilder) {
         store(eval)?.push(EffectKind::Notice, args);
         Ok(NoneType)
     }
+}
+
+/// The banned suppression spelling `_ = read(…)`, located syntactically on the
+/// parsed module — 1-based line of the first occurrence, or `None`.
+///
+/// `run-plane.md` § The statement-position rule: "Suppression syntax does not
+/// exist in v1 (`_ = read(…)` is rejected permanently)". Echo and quiet are a
+/// POSITION property the kernel reads off the AST; a spelling that claims to
+/// suppress a read would be a second, non-positional grammar for the same
+/// thing. The check is syntactic like the rule it defends — the name `read` and
+/// the target `_` as written, at any nesting depth, never a value-level test.
+fn banned_suppression(ast: &AstModule) -> Option<u32> {
+    fn walk(stmt: &AstStmt, found: &mut Vec<starlark_syntax::codemap::Span>) {
+        if let Stmt::Assign(assign) = &**stmt
+            && let AssignTarget::Identifier(ident) = &*assign.lhs
+            && ident.node.ident == "_"
+            && let Expr::Call(callee, _) = &*assign.rhs
+            && let Expr::Identifier(name) = &***callee
+            && name.node.ident == "read"
+        {
+            found.push(stmt.span);
+        }
+        stmt.visit_stmt(|child| walk(child, found));
+    }
+
+    let mut found = Vec::new();
+    walk(ast.statement(), &mut found);
+    found.first().map(|span| {
+        let begin = ast.file_span(*span).resolve_span().begin;
+        u32::try_from(begin.line + 1).unwrap_or(u32::MAX)
+    })
 }
 
 /// Script-plane globals: Starlark stdlib + `read` / `me`. A SEPARATE surface —
@@ -1107,8 +1138,21 @@ fn metered_eval(
             };
 
             // The script plane's echo positions are read off this AST — the one
-            // parse, no second pass over the source.
+            // parse, no second pass over the source. The banned suppression
+            // spelling is refused off the same AST, BEFORE eval: a permanently
+            // rejected spelling must not read, bind, or render.
             if let EvalEntry::Script(script) = entry {
+                if let Some(line) = banned_suppression(&ast) {
+                    return RuleRun::failed(EvalError::Parse {
+                        rule_id: rule.id.clone(),
+                        reason: format!(
+                            "suppression syntax does not exist: `_ = read(…)` at line {line} is \
+                             rejected permanently. A read is echoed or quiet by POSITION — bind \
+                             it to a name to echo it, or call it inside a comprehension, an `if` \
+                             condition, a loop body, or a function body to stay quiet"
+                        ),
+                    });
+                }
                 script.note_echo_positions(&ast);
             }
 
