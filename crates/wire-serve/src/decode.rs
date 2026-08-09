@@ -30,6 +30,29 @@ pub(crate) const SPLICE_V3_FIELDS: [&str; 10] = [
     "pin",
 ];
 
+/// Which laws one decode pass enforces.
+///
+/// The strict FIELD wall (§3.2) is unconditional at every grain under both — a
+/// door that leaks an unknown field turns a guarded write into an unguarded one.
+/// What varies is the §2.4 block-id charset, a judgment on a VALUE inside a
+/// shape that is already legal:
+///
+/// - [`Laws::Full`] — the wire door. Every refusal leaves through one error
+///   frame, so there is nothing to distinguish and the decoder judges both.
+/// - [`Laws::ShapeOnly`] — the CLI seam (`mrd put` reading the `edits` value off
+///   stdin). Here the refusal legs are different exits: `docs/status.md`'s triad
+///   makes exit 2 the CLI's OWN refusal of a malformed invocation and exit 1 the
+///   ENGINE refusing a well-formed one. A bad block id is the second kind, and
+///   the engine judges it anyway on the resolve walk — so the seam leaves that
+///   value alone rather than converting an engine refusal into its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Laws {
+    /// Shape and value laws both.
+    Full,
+    /// The §4.4 shape alone; values stay the engine's judgment.
+    ShapeOnly,
+}
+
 /// Strict-decode one request into [`wire::Op`] by hand (§3.2). Shared by both hosts.
 ///
 /// `rev` gates only `splice`'s field list (`plan_edits` under v3); other ops are
@@ -76,7 +99,10 @@ pub fn decode(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody>> 
         }
         "cat" => {
             check_fields(obj, op, &["path", "sec"])?;
-            let sec = obj.get("sec").map(decode_sec).transpose()?;
+            let sec = obj
+                .get("sec")
+                .map(|v| decode_sec(v, Laws::Full))
+                .transpose()?;
             Ok(Op::Cat {
                 path: req_path(obj, op, "path")?,
                 sec,
@@ -290,7 +316,7 @@ fn decode_splice(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody
                     "`edits` and `plan_edits` are mutually exclusive on `splice`",
                 ));
             }
-            decode_edits(edits_v)?
+            decode_edits(edits_v, Laws::Full)?
         }
         None if plan_edits.is_empty() && pin.is_none() => {
             // Frozen v2 refusal, verbatim.
@@ -499,7 +525,19 @@ fn decode_receipt(v: &Value) -> Result<wire::ReceiptAddr, Box<ErrorBody>> {
 }
 
 /// §4.4 batch edits: each `{target, edit, if_node_rev?}`; empty array refuses.
-fn decode_edits(v: &Value) -> Result<Vec<wire::Edit>, Box<ErrorBody>> {
+///
+/// Public because the `edits` value has a SECOND door: `mrd put` reads the bare
+/// array off stdin (§4.4 "the CLI seam reads the `edits` VALUE"). One decoder
+/// serves both, so the strict wall (§3.2 grain law) cannot hold at one door and
+/// leak at the other — a `deny_unknown_fields`-less serde decode there dropped
+/// `if_rev` silently and turned a guarded write into an unguarded one.
+///
+/// `laws` says which grain this door enforces — see [`Laws`]. The field wall is
+/// unconditional; only the §2.4 block-id charset rides the flag.
+///
+/// # Errors
+/// `bad_request` naming the offending field/value and the closed set it checked.
+pub fn decode_edits(v: &Value, laws: Laws) -> Result<Vec<wire::Edit>, Box<ErrorBody>> {
     let Value::Array(items) = v else {
         return Err(bad_request("`edits` must be an array"));
     };
@@ -514,7 +552,16 @@ fn decode_edits(v: &Value) -> Result<Vec<wire::Edit>, Box<ErrorBody>> {
         };
         for key in e.keys() {
             if !["target", "edit", "if_node_rev"].contains(&key.as_str()) {
-                return Err(bad_request(format!("unknown field `{key}` in edit")));
+                // The legal set is named because THIS field carries the CAS
+                // guard: a caller who typed `if_rev` needs the spelling back,
+                // not just the news that the key was wrong (§3.2 grain law).
+                // Phrasing follows the config door's refusal exemplar
+                // (`config::UNKNOWN_FIELD_REFUSAL_EXEMPLAR`) — one house style
+                // for "you typed a field that does not exist".
+                return Err(bad_request(format!(
+                    "unknown field `{key}` in edit — legal fields are `target`, `edit`, \
+                     `if_node_rev`"
+                )));
             }
         }
         let Some(target_v) = e.get("target") else {
@@ -529,7 +576,7 @@ fn decode_edits(v: &Value) -> Result<Vec<wire::Edit>, Box<ErrorBody>> {
             Some(_) => return Err(bad_request("`if_node_rev` must be a string")),
         };
         edits.push(wire::Edit {
-            target: decode_sec(target_v)?,
+            target: decode_sec(target_v, laws)?,
             edit: decode_edit_shape(shape_v)?,
             if_node_rev,
         });
@@ -544,14 +591,18 @@ fn decode_edit_shape(v: &Value) -> Result<wire::EditShape, Box<ErrorBody>> {
     };
     for key in shape.keys() {
         if !["match", "put"].contains(&key.as_str()) {
-            return Err(bad_request(format!("unknown field `{key}` in `edit`")));
+            return Err(bad_request(format!(
+                "unknown field `{key}` in `edit` — legal fields are `match`, `put`"
+            )));
         }
     }
     match (shape.get("match"), shape.get("put")) {
         (Some(Value::Object(m)), None) => {
             for key in m.keys() {
                 if !["old", "new"].contains(&key.as_str()) {
-                    return Err(bad_request(format!("unknown field `{key}` in `match`")));
+                    return Err(bad_request(format!(
+                        "unknown field `{key}` in `match` — legal fields are `old`, `new`"
+                    )));
                 }
             }
             Ok(wire::EditShape::Match {
@@ -562,7 +613,9 @@ fn decode_edit_shape(v: &Value) -> Result<wire::EditShape, Box<ErrorBody>> {
         (None, Some(Value::Object(p))) => {
             for key in p.keys() {
                 if !["at", "text"].contains(&key.as_str()) {
-                    return Err(bad_request(format!("unknown field `{key}` in `put`")));
+                    return Err(bad_request(format!(
+                        "unknown field `{key}` in `put` — legal fields are `at`, `text`"
+                    )));
                 }
             }
             let at = match p.get("at") {
@@ -667,18 +720,21 @@ fn req_path(obj: &Map<String, Value>, op: &str, key: &str) -> Result<Path, Box<E
 }
 
 /// §2.1 mint ref: exactly one of `hpath`/`anchor`/`fm_key`; anchor mint-guarded.
-fn decode_sec(v: &Value) -> Result<SecRef, Box<ErrorBody>> {
+fn decode_sec(v: &Value, laws: Laws) -> Result<SecRef, Box<ErrorBody>> {
     let Value::Object(sec) = v else {
         return Err(bad_request("`sec` must be an object"));
     };
     for key in sec.keys() {
         if !["hpath", "anchor", "fm_key"].contains(&key.as_str()) {
-            return Err(bad_request(format!("unknown field `{key}` in `sec`")));
+            return Err(bad_request(format!(
+                "unknown field `{key}` in the section ref (`sec` on a read, `target` on \
+                 an edit) — legal fields are `hpath`, `anchor`, `fm_key`"
+            )));
         }
     }
     match (sec.get("hpath"), sec.get("anchor"), sec.get("fm_key")) {
         (Some(h), None, None) => decode_hpath(h),
-        (None, Some(a), None) => decode_anchor(a),
+        (None, Some(a), None) => decode_anchor(a, laws),
         (None, None, Some(k)) => match k {
             Value::String(s) => Ok(SecRef::FmKey { fm_key: s.clone() }),
             _ => Err(bad_request("`fm_key` must be a string")),
@@ -689,12 +745,19 @@ fn decode_sec(v: &Value) -> Result<SecRef, Box<ErrorBody>> {
     }
 }
 
-fn decode_anchor(v: &Value) -> Result<SecRef, Box<ErrorBody>> {
+fn decode_anchor(v: &Value, laws: Laws) -> Result<SecRef, Box<ErrorBody>> {
     let Value::String(id) = v else {
         return Err(bad_request("`anchor` must be a string"));
     };
     // Strip `@fp` before mint-guard; unrecognized `@` shapes still refuse below.
     let id = syntax::split_fp(id).0;
+    if laws == Laws::ShapeOnly {
+        // The shape is legal and the charset is a VALUE law — the engine's to
+        // judge, and it does, on the resolve walk. See [`Laws::ShapeOnly`].
+        return Ok(SecRef::Anchor {
+            anchor: id.to_owned(),
+        });
+    }
     // mint-guard: one block-id charset, both planes (§2.4)
     match model::Ref::anchor(id.to_owned()) {
         Ok(_) => Ok(SecRef::Anchor {
@@ -730,7 +793,7 @@ fn decode_seg(v: &Value) -> Result<HpathSeg, Box<ErrorBody>> {
             for key in seg.keys() {
                 if !["h", "n"].contains(&key.as_str()) {
                     return Err(bad_request(format!(
-                        "unknown field `{key}` in hpath segment"
+                        "unknown field `{key}` in hpath segment — legal fields are `h`, `n`"
                     )));
                 }
             }
