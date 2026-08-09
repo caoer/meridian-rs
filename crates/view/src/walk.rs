@@ -222,10 +222,33 @@ pub fn lock_pin_colors_rooted(
     corpus: &model::RootedCorpus<'_>,
     mounts: &addr::MountSet,
 ) -> Vec<PinColor> {
+    lock_pin_colors_rooted_with_sources(corpus, mounts, &BTreeMap::new())
+}
+
+/// [`lock_pin_colors_rooted`] over ADDITIONAL pin SOURCES — pages that hold
+/// pins but whose bytes the hash domain does not carry.
+///
+/// `mrd pin` admits an out-of-domain holder and mints the pin at exit 0, so a
+/// face that reads its rows only from the hashed corpus asserts a universal
+/// over a population it silently narrowed. `extra_sources` are read for their
+/// `meridian-lock` rows and for nothing else.
+///
+/// ⚠️ **The corpus is NOT widened, and that is the load-bearing part.** The
+/// index and the corpus below are built from the ambient docs alone, so a pin's
+/// TARGET resolves in exactly the world it resolved in before: an out-of-domain
+/// target stays `grey(outside-hash-domain)` — reported, never gated — and no
+/// ambient link resolves that did not resolve already. Holder and target are
+/// independent axes (session decision 0045); this widens the holder axis only.
+#[must_use]
+pub fn lock_pin_colors_rooted_with_sources(
+    corpus: &model::RootedCorpus<'_>,
+    mounts: &addr::MountSet,
+    extra_sources: &BTreeMap<String, Document>,
+) -> Vec<PinColor> {
     let docs = corpus.ambient_docs();
     let index = corpus_index(docs);
     let mut out = Vec::new();
-    for (path, doc) in docs {
+    for (path, doc) in docs.iter().chain(extra_sources.iter()) {
         for item in page_lock_items_in_rooted_corpus(path, doc, &index, corpus, mounts) {
             if !item.is_colourable() {
                 // Fail-closed: uncolourable is skip, never green. Same predicate
