@@ -112,7 +112,7 @@ usage:
                            2 bad invocation.
 ! mrd put <PATH> [--dry | --validate] [--force] [--actor A] [--now T]
           [--if-fingerprint FP] [--receipt PATH#ANCHOR] [--json]
-                           batch write. STDIN = bare JSON array
+                           batch write. STDIN = BARE JSON array
                            [{target, edit, if_node_rev?}] — the VALUE of
                            wire §4.4 edits, NEVER the full request object
                            (no id/op/path; those are argv).
