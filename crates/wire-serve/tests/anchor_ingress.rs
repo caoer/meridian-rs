@@ -327,3 +327,87 @@ fn partial_read_notice_carries_the_anchor_teaching() {
         "{notice}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The fragment lane's miss voice (db-frag-selector-door follow-through).
+// `frag` is the heading plane BY TYPE (`Vec<HpathSeg>`), so every miss here
+// is a heading-lane miss. A `^id`- or dewey-shaped spelling arrives on this
+// plane only from a caller that bypassed an ingress door (both faces route
+// those spellings onto `sections` now) — and the refusal must say which lane
+// ran instead of dressing itself in the requested selector's spelling, the
+// anti-teaching that misattributed season-1 finding 5 to the engine.
+// ---------------------------------------------------------------------------
+
+fn read_frag(frag: &str) -> Result<ResponseBody, Box<wire::ErrorBody>> {
+    composed_read(
+        &doc(),
+        &WPath("card.md".into()),
+        &wire::Root("r".into()),
+        &ReadParams {
+            frag: Some(vec![wire::HpathSeg {
+                h: frag.into(),
+                n: None,
+            }]),
+            display_path: Some("card.md".into()),
+            ..ReadParams::default()
+        },
+        None,
+        &NO_DECORATIONS,
+    )
+}
+
+/// An anchor-shaped fragment miss names the lane that ran (heading, literal
+/// text) and the lane that serves the spelling (`sections`) — never the
+/// anchors[] recovery clause for a lane that was never consulted.
+#[test]
+fn an_anchor_shaped_frag_miss_names_the_lane_that_ran() {
+    let err = read_frag("^goal").expect_err("no heading is literally spelled ^goal");
+    assert_eq!(err.code, ErrorCode::RefNotFound);
+    let m = err.message.as_deref().expect("a sentence, not a bare code");
+    assert!(
+        m.contains("searched as literal heading text"),
+        "the lane that ran is named: {m}"
+    );
+    assert!(
+        m.contains("--section '^goal'"),
+        "the Fix names the lane that serves the spelling: {m}"
+    );
+    assert!(
+        !m.contains("the section map does not list"),
+        "never the anchors[] clause for a lane that never ran: {m}"
+    );
+}
+
+/// The dewey shape gets the same honesty.
+#[test]
+fn a_dewey_shaped_frag_miss_names_the_lane_that_ran() {
+    let err = read_frag("9.9").expect_err("no heading is literally spelled 9.9");
+    assert_eq!(err.code, ErrorCode::RefNotFound);
+    let m = err.message.as_deref().expect("a sentence, not a bare code");
+    assert!(
+        m.contains("searched as literal heading text"),
+        "the lane that ran is named: {m}"
+    );
+    assert!(
+        m.contains("dewey"),
+        "the never-consulted lane is named: {m}"
+    );
+}
+
+/// A heading-shaped fragment miss keeps the standing spelling byte-for-byte
+/// — the heading lane is unchanged by the door.
+#[test]
+fn a_heading_shaped_frag_miss_keeps_the_standing_spelling() {
+    let err = read_frag("Nope").expect_err("no such heading");
+    assert_eq!(err.code, ErrorCode::RefNotFound);
+    let m = err.message.as_deref().expect("a sentence, not a bare code");
+    assert_eq!(
+        m,
+        &format!(
+            "read: no section at \"Nope\" in card.md. Nothing was read and no rev was \
+             minted. {}",
+            wire_serve::section_recovery("Nope", Some("card.md"))
+        ),
+        "the heading lane's miss is byte-stable"
+    );
+}
