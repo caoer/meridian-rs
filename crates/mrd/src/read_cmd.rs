@@ -161,9 +161,56 @@ enum DaemonRead {
 fn answer_read(workspace: &Path, r: &Read) -> Result<(EngineSource, Value), Fail> {
     match try_daemon_read(workspace, r) {
         DaemonRead::Served(body) => Ok((EngineSource::Daemon, body)),
-        DaemonRead::Refused(error) => Err(engine::refusal_fail(&error)),
+        DaemonRead::Refused(mut error) => {
+            teach_bad_path(workspace, &mut error);
+            Err(engine::refusal_fail(&error))
+        }
         DaemonRead::Unavailable => Ok((EngineSource::Ephemeral, in_process_read(workspace, r)?)),
     }
+}
+
+/// The §1 path-law admission the warm decoder applies (`req_path`), mirrored
+/// so the two transports cannot drift: before this gate the daemonless read
+/// served any absolute spelling — `/etc/hosts` included — that the warm door
+/// refuses (dogfood NEW-A, degrade half).
+fn violates_path_law(path: &str) -> bool {
+    path.is_empty()
+        || path.starts_with('/')
+        || path
+            .split('/')
+            .any(|seg| seg.is_empty() || seg == "." || seg == "..")
+}
+
+/// The read door's `bad_path` teaching (dogfood NEW-A): the warm decoder's
+/// refusal echoes only the offending path, so the face composes the §1 rule
+/// and — when the spelling lies inside this workspace — the respell the write
+/// door already computes ([`wire_serve::write::relative_respelling`]: one
+/// implementation, both doors, so the read door untrains the same mistake the
+/// write door untrains). No-op on any other code or an already-taught refusal.
+fn teach_bad_path(workspace: &Path, error: &mut ErrorBody) {
+    if error.code != wire::ErrorCode::BadPath || error.message.is_some() {
+        return;
+    }
+    let Some(path) = error.path.clone() else {
+        return;
+    };
+    let mut m = format!(
+        "{} is not a workspace-relative path — the read door admits only workspace-relative \
+         spellings (§1 path law: no absolute path, no `.`/`..`/empty segment). Nothing was \
+         read and no rev was minted.",
+        path.0
+    );
+    if let Ok(canonical) = workspace::canonicalize(workspace) {
+        let root = fs::WorkspaceRoot(canonical);
+        if let Some(rel) = wire_serve::write::relative_respelling(&root, &path.0) {
+            use std::fmt::Write as _;
+            let _ = write!(
+                m,
+                " This path lies inside this workspace — respell it as `{rel}`."
+            );
+        }
+    }
+    error.message = Some(m);
 }
 
 /// The whole daemon path: socket, ensure-up, `hello` (v3, workspace-bound), then the `read` op.
@@ -267,6 +314,15 @@ impl Read {
 /// daemon serves, then run the same v3 vocabulary projection — warm and degrade bodies are
 /// byte-identical for the same state.
 fn in_process_read(workspace: &Path, r: &Read) -> Result<Value, Fail> {
+    // The same admission the warm decoder runs before any engine contact —
+    // without it `fs::load`'s `root.join(path)` resolves an absolute spelling
+    // verbatim and serves bytes from outside the root.
+    if violates_path_law(&r.path) {
+        let mut error = ErrorBody::new(wire::ErrorCode::BadPath);
+        error.path = Some(WirePath(r.path.clone()));
+        teach_bad_path(workspace, &mut error);
+        return Err(engine::refusal_fail(&error));
+    }
     let canonical = workspace::canonicalize(workspace).map_err(|e| {
         Fail::tool(format!(
             "cannot resolve workspace {} ({e})",
