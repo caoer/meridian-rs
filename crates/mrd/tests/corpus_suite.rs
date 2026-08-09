@@ -742,3 +742,55 @@ fn malformed_spec_is_a_tool_failure() {
         "the tool failure names the malformed case: {stderr}"
     );
 }
+
+/// A production splice the corpus tier cannot perform is exit 2 — the SPEC declared an edit the
+/// engine refuses, which is a bad input to the harness rather than a finding about the rule. The
+/// EXIT is this tier's own judgement; the SENTENCE is not, and this tier used to render the
+/// error body by hand: `{:?}: {message-or-empty}`, which spelled the code in Rust's `Debug`
+/// vocabulary and printed nothing at all after the colon whenever the engine had composed no
+/// `message` — which is the common case, `no_match` included.
+///
+/// Measured before the fix: `production splice refused counterfactual write to
+/// tasks/b3-gatecheck.md: NoMatch: ` — 9 characters of reason, ending on a colon that promises
+/// one. The same refusal at the `put` door served 347 characters naming the count, the law and
+/// the remedy. Same engine, same error body, two renderings.
+#[test]
+fn a_refused_production_edit_carries_the_engines_sentence() {
+    let out = mrd()
+        .arg("test")
+        .arg("--corpus")
+        .arg(spec("splice-refusal"))
+        .output()
+        .expect("run mrd test --corpus");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a spec the engine refuses is a bad input to the harness, not a findings run"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    // The WIRE spelling, which is what every other door prints and what a reader greps for.
+    assert!(
+        stderr.contains("no_match"),
+        "the refusal names its code in the wire vocabulary, never Rust's Debug form: {stderr}"
+    );
+    assert!(
+        !stderr.contains("NoMatch"),
+        "`NoMatch` is the Debug spelling and it reaches no other face: {stderr}"
+    );
+
+    // The engine's teaching, not merely its class. A message-less refusal is exactly the case
+    // the hand-rolled renderer dropped, so assert the remedy rather than the code alone.
+    for owed in ["occurs 0 times", "§4.4", "Fix:"] {
+        assert!(
+            stderr.contains(owed),
+            "the operator is owed {owed} from the engine's own sentence: {stderr}"
+        );
+    }
+
+    // The precise regression shape: a line that ends where its reason should begin.
+    assert!(
+        !stderr.trim_end().ends_with(':'),
+        "a refusal that ends on a bare colon promises a reason it never gives: {stderr}"
+    );
+}

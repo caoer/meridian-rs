@@ -324,12 +324,28 @@ fn dial_links(socket: &Path, workspace: &Path, path: Option<&str>) -> io::Result
 /// takes the [`Format`] and cannot skip the envelope. Privacy is the enforcement: a new
 /// caller that tries to skip it does not compile.
 fn refusal_fail(error: &ErrorBody) -> Fail {
+    Fail::findings(refusal_text(error))
+}
+
+/// An engine refusal AS PROSE, with no exit code attached: the engine's own message where it
+/// composed one, [`spelled`] where it did not, plus the [`extras`] a terminal cannot read off
+/// the wire.
+///
+/// Separate from [`refusal_fail`] because the exit code is the CALLER's judgement and the
+/// sentence is not. `mrd test --corpus` refuses at exit 2 — its spec declared an edit the engine
+/// will not perform, which is a bad input rather than the engine refusing the caller's request —
+/// and it still owes the operator the sentence this composes. It used to render the body by hand
+/// as `{:?}: {message-or-empty}`, which spelled the code in Rust's `Debug` vocabulary
+/// (`NoMatch`, where every other door says `no_match`) and printed NOTHING after the colon for
+/// the message-less refusals that are the common case. One owner for the prose; the triad stays
+/// with the verb.
+pub(crate) fn refusal_text(error: &ErrorBody) -> String {
     let mut text = match &error.message {
         Some(message) => message.clone(),
         None => spelled(error),
     };
     text.push_str(&extras(error));
-    Fail::findings(text)
+    text
 }
 
 /// The `--json` face's refusal envelope on stdout — `{workspace, error}`, the engine's §8 error
