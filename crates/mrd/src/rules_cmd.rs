@@ -371,6 +371,11 @@ struct RulesReport {
     /// filter, so a workspace ignore rule does not reach it and its own skip
     /// does not reach the workspace.
     declined_user: Vec<String>,
+    /// Excluded markdown whose rule-ness CANNOT BE ANSWERED, because its
+    /// frontmatter does not parse. Neither a dropped rule page nor established
+    /// not to be one — so it carries its own verdict string rather than being
+    /// folded into either answer.
+    undecidable: Vec<String>,
     /// Armed rows this answer counts in its header and shows nowhere.
     armed_orphans: Vec<ArmedOrphan>,
 }
@@ -527,6 +532,13 @@ fn build(workspace: &Path, at: &str, view: View) -> Result<RulesReport, Fail> {
     // armed row would look orphaned. That would be a manufactured finding in
     // the direction that certifies a defect — the worst direction — so the
     // view is asked first.
+    let (workspace_declined, workspace_undecidable) = declined_workspace(workspace, &corpus);
+    let (user_declined, user_undecidable) = declined_user();
+    let mut undecidable = workspace_undecidable;
+    undecidable.extend(user_undecidable);
+    undecidable.sort();
+    undecidable.dedup();
+
     let armed_orphans = if view.admits(ScopeLayer::Workspace) {
         orphans(artifact.as_ref(), at, &effective, workspace)
     } else {
@@ -542,8 +554,9 @@ fn build(workspace: &Path, at: &str, view: View) -> Result<RulesReport, Fail> {
         rows,
         refused: narrowed.refused().iter().map(ToString::to_string).collect(),
         unreadable,
-        declined_workspace: declined_workspace(workspace, &corpus),
-        declined_user: declined_user(),
+        declined_workspace: workspace_declined,
+        declined_user: user_declined,
+        undecidable,
         armed_orphans,
     })
 }
@@ -565,10 +578,10 @@ fn build(workspace: &Path, at: &str, view: View) -> Result<RulesReport, Fail> {
 /// never by a path predicate: a page counts when it OFFERS ITSELF to
 /// registration, whether it then registers or is refused. Both are rule pages
 /// whose law is missing from this answer, and a refused one is arguably worse.
-fn declined_workspace(workspace: &Path, corpus: &BTreeMap<String, String>) -> Vec<String> {
+fn declined_workspace(workspace: &Path, corpus: &BTreeMap<String, String>) -> (Vec<String>, Vec<String>) {
     let root = fs::WorkspaceRoot(workspace.to_path_buf());
     let Ok(all) = fs::walk(&root) else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
     let outside: Vec<(String, String)> = all
         .iter()
@@ -585,26 +598,52 @@ fn declined_workspace(workspace: &Path, corpus: &BTreeMap<String, String>) -> Ve
     rule_pages_among(&outside)
 }
 
-/// The pages in `candidates` that OFFER THEMSELVES to rule registration —
-/// registered or refused, since both are pages whose law this answer is missing.
+/// Split `candidates` into the pages that OFFER THEMSELVES to rule
+/// registration and the pages whose rule-ness CANNOT BE ANSWERED.
 ///
-/// The registrar decides, not a predicate here: a second reading of what makes
-/// a rule page would be a fork of `policy`'s law that could disagree with it.
-fn rule_pages_among(candidates: &[(String, String)]) -> Vec<String> {
+/// ⛔ THERE ARE THREE STATES HERE, NOT TWO, and collapsing them is how this
+/// function shipped wrong twice. `RegisterFault::FrontmatterUnparsed` says in
+/// its own words that whether the page carries a registration tag *cannot be
+/// answered*; EVERY OTHER fault variant presupposes the tag was there. So a
+/// page with a broken frontmatter block is neither a dropped rule page nor
+/// established not to be one.
+///
+/// Receipt: this repo's own `frontmatter-unparseable.md` is a `meridian-config`
+/// fixture with an unclosed flow sequence. Counting it as a dropped rule page
+/// was a FALSE SENTENCE about a page that is not one; dropping it silently
+/// would be the very defect this card exists to end. It gets its own verdict
+/// string instead — a state without one is not enumerated, it is mentioned.
+///
+/// The registrar decides, never a predicate here: a second reading of what
+/// makes a rule page would be a fork of `policy`'s law that could disagree
+/// with it.
+fn rule_pages_among(candidates: &[(String, String)]) -> (Vec<String>, Vec<String>) {
     let index = RuleIndex::discover(candidates.iter().map(|(page, bytes)| PageRef {
         layer: ScopeLayer::Workspace,
         page,
         bytes,
     }));
-    let mut out: Vec<String> = index
+    let mut offered: Vec<String> = index
         .registered()
         .iter()
         .map(|r| r.page().to_owned())
-        .chain(index.refused().iter().map(|r| r.page().to_owned()))
         .collect();
-    out.sort();
-    out.dedup();
-    out
+    let mut undecidable = Vec::new();
+    for refusal in index.refused() {
+        if matches!(
+            refusal.fault(),
+            policy::RegisterFault::FrontmatterUnparsed { .. }
+        ) {
+            undecidable.push(refusal.page().to_owned());
+        } else {
+            offered.push(refusal.page().to_owned());
+        }
+    }
+    offered.sort();
+    offered.dedup();
+    undecidable.sort();
+    undecidable.dedup();
+    (offered, undecidable)
 }
 
 /// RULE PAGES under the user `rules/` tree that a dot segment declined, from
@@ -614,15 +653,15 @@ fn rule_pages_among(candidates: &[(String, String)]) -> Vec<String> {
 /// Narrowed by the registrar for the same reason as [`declined_workspace`]: a
 /// stray `.notes/scratch.md` under `rules/` is not a dropped rule page and
 /// naming it as one would teach the operator to ignore the line.
-fn declined_user() -> Vec<String> {
+fn declined_user() -> (Vec<String>, Vec<String>) {
     let Ok(anchor) = config::resolve_path(&config::Env::from_process()) else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
     let Some(user_scope) = anchor.parent().map(Path::to_path_buf) else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
     let Ok(declined) = fs::user_rule_pages_declined(&anchor) else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
     let candidates: Vec<(String, String)> = declined
         .into_iter()
@@ -878,6 +917,14 @@ fn render_human(report: &RulesReport) -> String {
             report.declined_workspace.join(", ")
         );
     }
+    if !report.undecidable.is_empty() {
+        let _ = writeln!(
+            out,
+            "cannot be answered — {} excluded markdown file(s) have frontmatter that does not parse, so whether they carry a rule is unknown, not decided: {}",
+            report.undecidable.len(),
+            report.undecidable.join(", ")
+        );
+    }
     if !report.declined_user.is_empty() {
         let _ = writeln!(
             out,
@@ -967,6 +1014,7 @@ fn to_json(workspace: &Path, report: &RulesReport) -> Value {
             "not_offered": {
                 "workspace": report.declined_workspace,
                 "user": report.declined_user,
+                "undecidable": report.undecidable,
             },
         }
     })
@@ -1003,6 +1051,7 @@ mod tests {
             unreadable: Vec::new(),
             declined_workspace: Vec::new(),
             declined_user: Vec::new(),
+            undecidable: Vec::new(),
             armed_orphans: Vec::new(),
         }
     }

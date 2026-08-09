@@ -500,10 +500,27 @@ fn meridian_rs_itself_is_clean_while_a_refusal_still_reddens_its_own_subtree() {
         "meridian-rs itself carries no finding: {stdout}{}",
         String::from_utf8_lossy(&out.stderr)
     );
+    // ⛔ ASSERTION RE-POINTED, NOT DELETED — `ca6faccb`, 2026-08-09, under the
+    // P0 on `rules-drops-an-excluded-rule-page-silently`. It used to read
+    // `!stdout.contains("frontmatter-unparseable")`, on the reasoning that an
+    // out-of-domain page "is not even printed". THAT INVISIBILITY IS THE
+    // DEFECT THE CARD EXISTS TO END: an enumerator may exclude what it cannot
+    // attest, and may never exclude SILENTLY.
+    //
+    // What the fixture must NOT be is claimed as a dropped RULE page — it is a
+    // `meridian-config` fixture with an unclosed flow sequence, so whether it
+    // carries a rule tag CANNOT BE ANSWERED (`RegisterFault::FrontmatterUnparsed`).
+    // It is named under its own verdict string and nowhere else.
     assert!(
-        !stdout.contains("frontmatter-unparseable"),
-        "and the fixture is not even printed — it is outside the hash domain, so no \
-         walk of this repo encounters it: {stdout}"
+        stdout.contains("cannot be answered")
+            && stdout.contains("frontmatter-unparseable"),
+        "the excluded fixture is named under the undecidable verdict: {stdout}"
+    );
+    assert!(
+        !stdout.contains("not offered to registration"),
+        "and it is NOT claimed as a dropped rule page — it is not one, and a \
+         false sentence here is the wrong-population defect this card is \
+         about: {stdout}"
     );
 
     // ── half 2: the same shape, deliberately mounted in a sandbox ────────────
