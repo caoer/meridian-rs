@@ -15,6 +15,19 @@
 //! does not hold the recorded blob. A red pin whose blob is still in the store is ordinary drift
 //! with its evidence intact; it is not lost and this verb does not touch it.
 //!
+//! # Two rungs, and the target assessment is a DOOR
+//! The PIN SWEEP is an enumerator — a population of pins under a root. The per-pin TARGET
+//! ASSESSMENT is a DOOR, because the pin row names ONE target, so it owes the read every
+//! named-path door owes: the target is READ FROM DISK whether or not the hash domain holds it
+//! (§12.1 — corpus residency is never a read admission test). An intact target means the pin is
+//! NOT LOST, so the row stays byte-identical as the ordinary consequence of having read it —
+//! not as a carve-out for excluded paths.
+//!
+//! # The floor
+//! Under every remedy shape: a repair never writes `hash` to a blob absent from disk while
+//! `fingerprint` describes one that is present. [`floor`] asserts that against the disk alone,
+//! before any page is written.
+//!
 //! # The repair
 //! One `git log` (`git::Repo::path_history`) over every lost target, then one
 //! `git cat-file --batch` (`git::Repo::blobs_with_oids_at`) for every version those commits
@@ -84,10 +97,10 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
 
     let mut survey = survey(&docs, parsed.page.as_deref())?;
     let repo = git::Repo::at(root.0.clone());
-    let lost = lost_pins(&repo, &docs, std::mem::take(&mut survey.candidates))?;
+    let lost = lost_pins(&repo, &root, &docs, std::mem::take(&mut survey.candidates))?;
 
     progress(&format!(
-        "scanned {} pin(s) in {} page(s) — {} lost, {} outside this root",
+        "scanned {} pin(s) in {} page(s) — {} lost, {} in another root's object store",
         survey.scanned,
         survey.pages,
         lost.len(),
@@ -221,6 +234,7 @@ fn survey(docs: &BTreeMap<String, Document>, page: Option<&str>) -> Result<Surve
 /// two is not this verb's business.
 fn lost_pins(
     repo: &git::Repo,
+    root: &fs::WorkspaceRoot,
     docs: &BTreeMap<String, Document>,
     candidates: Vec<PinSite>,
 ) -> Result<Vec<PinSite>, Fail> {
@@ -240,7 +254,7 @@ fn lost_pins(
             // Drift with its blob intact, whatever the claim plane says — not a loss.
             continue;
         }
-        if matches!(live_color(docs, &site), Color::Green) {
+        if matches!(live_color(root, docs, &site), Color::Green) {
             // The live target still verifies the claim, even though the recorded blob is gone.
             continue;
         }
@@ -251,9 +265,31 @@ fn lost_pins(
 
 /// The pin's colour against the live target, through [`model::selector::classify_pin`] itself.
 /// The lock-row-to-selector projection is likewise the one `view::walk` colours through.
-fn live_color(docs: &BTreeMap<String, Document>, site: &PinSite) -> Color {
+///
+/// The pin row names ONE target, so this assessment is a DOOR and owes the read every named-path
+/// door owes: the corpus snapshot is the hash domain, and **corpus residency is never a read
+/// admission test** (§12.1, `wire-contract.md:465`, `:813`). A target the domain excludes is
+/// therefore READ FROM DISK here rather than answered as absent — otherwise an intact pin reads
+/// as lost purely because its target is out of domain, and `repair` moves its `hash` off live
+/// content. `pin` already obeyed this law when the caller named such a target.
+fn live_color(
+    root: &fs::WorkspaceRoot,
+    docs: &BTreeMap<String, Document>,
+    site: &PinSite,
+) -> Color {
     let selector = view::walk::model_selector(&site.entry.object, &site.entry.selector);
-    model::selector::classify_pin(&selector, &site.entry.fingerprint, docs.get(&site.target))
+    match docs.get(&site.target) {
+        Some(doc) => {
+            model::selector::classify_pin(&selector, &site.entry.fingerprint, Some(doc))
+        }
+        None => {
+            // A miss here is "not in the hash domain" OR "no such file"; the door read tells them
+            // apart. A read failure leaves the answer exactly what it was before this clause —
+            // the pin is assessed against no document, never against a fabricated one.
+            let loaded = fs::load(root, std::path::Path::new(&site.target)).ok();
+            model::selector::classify_pin(&selector, &site.entry.fingerprint, loaded.as_ref())
+        }
+    }
 }
 
 // the walk — one `git log`, one `cat-file --batch`
@@ -375,11 +411,12 @@ fn recover(repo: &git::Repo, lost: &[PinSite], prefix: &str) -> Result<Vec<Outco
             }
         }
         progress(&format!(
-            "[{}/{}] `{}` pin `{}` — {}",
+            "[{}/{}] `{}` pin `{}` target `{}` — {}",
             index + 1,
             lost.len(),
             site.src_path,
             site.entry.object,
+            site.target,
             match &recovered {
                 Some(found) => format!("recovered at {}", short(&found.commit)),
                 None => "TRUE LOSS".to_owned(),
@@ -396,6 +433,52 @@ fn recover(repo: &git::Repo, lost: &[PinSite], prefix: &str) -> Result<Vec<Outco
 
 // the write — through the existing lock door
 
+/// THE FLOOR — the one thing a repair may never do, asserted on its own arm and independent of
+/// every domain question above it: **a repair may never write `hash:` to a blob absent from disk
+/// while `fingerprint:` describes one that is present.** The two fields of one pin row may not
+/// disagree about which version they attest.
+///
+/// This asks the DISK and nothing else — not the corpus, not the hash domain, not how the pin was
+/// classified — so it still holds if the assessment above it is later reshaped. A target that
+/// verifies the fingerprint right now IS the version the claim plane describes, and repointing the
+/// retrieval plane at some other blob would move the attestation off live content.
+///
+/// It runs BEFORE any page is written, so a violation writes nothing at all rather than leaving a
+/// half-repaired corpus.
+fn floor(root: &fs::WorkspaceRoot, outcomes: &[Outcome]) -> Result<(), Fail> {
+    for outcome in outcomes {
+        let Some(recovered) = outcome.recovered.as_ref() else {
+            continue;
+        };
+        if recovered.oid == outcome.site.entry.hash {
+            continue;
+        }
+        let selector =
+            view::walk::model_selector(&outcome.site.entry.object, &outcome.site.entry.selector);
+        let Ok(live) = fs::load(root, std::path::Path::new(&outcome.site.target)) else {
+            continue;
+        };
+        if !matches!(
+            model::selector::classify_pin(&selector, &outcome.site.entry.fingerprint, Some(&live)),
+            Color::Green
+        ) {
+            continue;
+        }
+        return Err(Fail::tool(format!(
+            "refusing to repair `{}` pin `{}`: its target `{}` is PRESENT on disk and still \
+             carries the content its fingerprint describes, so this pin is not lost and its \
+             `hash` would be moved to `{}` — a blob that is not that live version. The two \
+             fields of one pin row may not disagree about which version they attest. Nothing \
+             was written for any page.",
+            outcome.site.src_path,
+            outcome.site.entry.object,
+            outcome.site.target,
+            recovered.oid
+        )));
+    }
+    Ok(())
+}
+
 /// Land every recovery, one guarded lock write per declaring page, through
 /// `wire_serve::write::lock_write` — inheriting its flock, world guard, write-what-you-read CAS
 /// and artifact guard whole.
@@ -405,6 +488,7 @@ fn apply(
     outcomes: &[Outcome],
     dry: bool,
 ) -> Result<usize, Fail> {
+    floor(root, outcomes)?;
     let mut by_page: BTreeMap<&str, Vec<&Outcome>> = BTreeMap::new();
     for outcome in outcomes {
         if outcome.recovered.is_some() {
@@ -498,6 +582,7 @@ fn emit(
                     json!({
                         "page": outcome.site.src_path,
                         "object": outcome.site.entry.object,
+                        "target": outcome.site.target,
                         "fingerprint": outcome.site.entry.fingerprint,
                         "hash_before": outcome.site.entry.hash,
                         "versions_read": outcome.versions,
@@ -535,23 +620,35 @@ fn emit(
             );
             for outcome in outcomes {
                 match &outcome.recovered {
+                    // Every action names WHICH PIN and WHICH TARGET. This verb acts on many pins
+                    // in one invocation, so an aggregate count is not correlatable by a caller
+                    // holding its own request — the subject rides each line.
                     Some(found) => println!(
-                        "  repaired  {} · {} → hash {} (at {}, {} version(s) read)",
+                        "  repaired  {} · pin {} · target {} — hash {} → {} (at {}, {} \
+                         version(s) read)",
                         outcome.site.src_path,
                         outcome.site.entry.object,
+                        outcome.site.target,
+                        short(&outcome.site.entry.hash),
                         short(&found.oid),
                         short(&found.commit),
                         outcome.versions
                     ),
                     None => println!(
-                        "  TRUE LOSS {} · {} — {} recorded version(s) read, none carries the \
-                         pinned content",
-                        outcome.site.src_path, outcome.site.entry.object, outcome.versions
+                        "  TRUE LOSS {} · pin {} · target {} — {} recorded version(s) read, none \
+                         carries the pinned content",
+                        outcome.site.src_path,
+                        outcome.site.entry.object,
+                        outcome.site.target,
+                        outcome.versions
                     ),
                 }
             }
             if !survey.outside.is_empty() {
-                println!("outside this root (not measured): {}", survey.outside.len());
+                println!(
+                    "in another root's object store (not measured here): {}",
+                    survey.outside.len()
+                );
             }
             if !survey.unaskable.is_empty() {
                 for line in &survey.unaskable {
@@ -596,5 +693,86 @@ impl Repair {
             }
         }
         Ok(Self { page, dry, format })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A workspace holding one dot-segment target, plus the pin row that names it
+    /// with a fingerprint minted over the section as it stands on disk.
+    fn dot_segment_pin(body: &str) -> (tempfile::TempDir, fs::WorkspaceRoot, PinSite) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = fs::WorkspaceRoot(tmp.path().to_path_buf());
+        std::fs::create_dir_all(tmp.path().join(".github")).expect("mkdir");
+        std::fs::write(tmp.path().join(".github/dotspec.md"), body).expect("write");
+
+        let doc = fs::load(&root, std::path::Path::new(".github/dotspec.md")).expect("load");
+        let selector = model::selector::Selector::parse(".github/dotspec#Rule");
+        let (_, resolved) =
+            model::selector::resolve_selector(&selector, Some(&doc)).expect("the section resolves");
+        let fingerprint = model::fingerprint::fingerprint_span(&doc, &resolved.span, &[])
+            .expect("the section is non-empty")
+            .into_string();
+
+        let site = PinSite {
+            src_path: "holder.md".to_owned(),
+            entry: lock::PinEntry {
+                object: ".github/dotspec".to_owned(),
+                // A blob the store does not hold — the retrieval plane is dark, which
+                // is what put this pin in front of the walk at all.
+                hash: "1111111111111111111111111111111111111111".to_owned(),
+                selector: lock::Selector::Path(vec!["Rule".to_owned()]),
+                fingerprint,
+                extra: BTreeMap::new(),
+            },
+            target: ".github/dotspec.md".to_owned(),
+        };
+        (tmp, root, site)
+    }
+
+    fn outcome(site: PinSite, oid: &str) -> Outcome {
+        Outcome {
+            site,
+            recovered: Some(Recovered {
+                commit: "2222222222222222222222222222222222222222".to_owned(),
+                oid: oid.to_owned(),
+            }),
+            versions: 1,
+        }
+    }
+
+    /// ⛔ THE FLOOR, asserted on its own arm and reached DIRECTLY — not through
+    /// the assessment above it, so it still binds if that assessment is later
+    /// reshaped. The target is PRESENT on disk and still carries the content its
+    /// fingerprint describes, so moving `hash` to any other blob would leave the
+    /// two fields of one pin row attesting different versions.
+    #[test]
+    fn the_floor_refuses_to_move_a_hash_off_content_that_is_present() {
+        let (_tmp, root, site) = dot_segment_pin("# Rule\n\nthe value is SEVEN\n");
+        let outcomes = vec![outcome(site, "3333333333333333333333333333333333333333")];
+        let refused = floor(&root, &outcomes).expect_err("the floor refuses");
+        let said = format!("{refused:?}");
+        assert!(
+            said.contains(".github/dotspec.md"),
+            "and it names the target it read: {said}"
+        );
+    }
+
+    /// The control that makes the gate above discriminate: when the live target
+    /// does NOT carry the pinned content, the fingerprint describes nothing that
+    /// is present, the floor has no opinion, and an ordinary repair proceeds.
+    #[test]
+    fn the_floor_is_silent_when_the_live_target_no_longer_carries_the_claim() {
+        let (_tmp, root, mut site) = dot_segment_pin("# Rule\n\nthe value is SEVEN\n");
+        std::fs::write(
+            root.0.join(".github/dotspec.md"),
+            "# Rule\n\nthe value DRIFTED away from the claim\n",
+        )
+        .expect("drift the target");
+        site.entry.hash = "1111111111111111111111111111111111111111".to_owned();
+        let outcomes = vec![outcome(site, "3333333333333333333333333333333333333333")];
+        floor(&root, &outcomes).expect("a genuinely lost pin is not blocked by the floor");
     }
 }
