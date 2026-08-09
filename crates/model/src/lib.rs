@@ -976,17 +976,39 @@ pub enum SpliceVerdict {
         edits: Vec<usize>,
         spans: Vec<ByteSpan>,
     },
-    /// The post-apply reparse loses containment → `would_corrupt{lost}` (§4.4).
-    /// `lost` = the hpath chains of sections destroyed outside the edited
-    /// regions (byte-disjoint from every replaced region, yet gone after
-    /// reparse: corrupted, not rewritten).
-    WouldCorrupt { lost: Vec<Vec<String>> },
+    /// The post-apply reparse loses containment →
+    /// `would_corrupt{containment_lost}` (§4.4). `lost` = the hpath chains of
+    /// sections destroyed outside the edited regions (byte-disjoint from every
+    /// replaced region, yet gone after reparse: corrupted, not rewritten).
+    /// `cause` is what the reparse MEASURED, and is `None` when the lost
+    /// sections do not share one — the remedy a face teaches computes from it,
+    /// so an unmeasured cause must teach nothing rather than guess.
+    WouldCorrupt {
+        lost: Vec<Vec<String>>,
+        cause: Option<CorruptCause>,
+    },
     /// A replaced region would split a multi-byte UTF-8 character →
     /// `bad_request` (§1 write-side multibyte refusal). Unreachable through the
     /// public `match`/`put` API — valid-UTF-8 edits at char-aligned resolved
     /// spans are self-synchronizing — but retained so any mid-char region
     /// refuses loudly rather than corrupting bytes.
     MultibyteSplit,
+}
+
+/// WHY a byte-disjoint section stopped resolving, measured on the post-apply
+/// reparse — never inferred from the edit text. The two causes want unlike
+/// remedies, and one refusal that teaches the other's is a taught-recovery
+/// loop: following it repairs nothing and the caller resends the same batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CorruptCause {
+    /// The heading line no longer parses as a heading at all — its text is not
+    /// a heading of its own level anywhere in the reparse. The commonest source
+    /// is `at:"end"` glue (raw byte concatenation, §4.4).
+    HeadingDestroyed,
+    /// The heading still parses at its own level, but its ancestry moved, so
+    /// the hpath no longer resolves — a heading in the written text adopted the
+    /// sections that follow it.
+    Reparented,
 }
 
 /// Batch that passed validation. Only `model` mints (private `_sealed`); `fs`
@@ -1198,8 +1220,8 @@ pub fn validate_batch(
 
     // 4. One simulated reparse (§4.4): a post-apply parse that loses containment
     // refuses `would_corrupt`.
-    if let Some(lost) = would_corrupt(doc, &planned) {
-        return SpliceVerdict::WouldCorrupt { lost };
+    if let Some((lost, cause)) = would_corrupt(doc, &planned) {
+        return SpliceVerdict::WouldCorrupt { lost, cause };
     }
 
     // Mint the sealed batch — edits in pre-batch offset order.
@@ -1300,12 +1322,22 @@ fn first_overlap(planned: &[PlannedEdit]) -> Option<(Vec<usize>, Vec<ByteSpan>)>
 /// inside an edited region is legitimately rewritten; one outside every edit
 /// whose heading a neighbouring edit destroyed (e.g. a separator-less
 /// `at:"end"`) is corruption. `None` when containment holds.
-fn would_corrupt(doc: &Document, planned: &[PlannedEdit]) -> Option<Vec<Vec<String>>> {
+/// The cause rides along: it is measured on the same reparse, per lost section,
+/// and reported only when every lost section agrees on it.
+fn would_corrupt(
+    doc: &Document,
+    planned: &[PlannedEdit],
+) -> Option<(Vec<Vec<String>>, Option<CorruptCause>)> {
     let new_raw = apply_regions(&doc.raw, planned);
     let new_doc = build(new_raw.clone(), syntax::parse(&new_raw));
-    let mut lost: Vec<Vec<String>> = Vec::new();
+    let mut lost: Vec<(Vec<String>, CorruptCause)> = Vec::new();
     collect_lost(&doc.root, planned, &new_doc, &mut lost);
-    if lost.is_empty() { None } else { Some(lost) }
+    if lost.is_empty() {
+        return None;
+    }
+    let first = lost[0].1;
+    let cause = lost.iter().all(|(_, c)| *c == first).then_some(first);
+    Some((lost.into_iter().map(|(h, _)| h).collect(), cause))
 }
 
 /// Recurse the pre-batch tree; for each `Section` byte-disjoint from every
@@ -1314,9 +1346,13 @@ fn collect_lost(
     node: &Node,
     planned: &[PlannedEdit],
     new_doc: &Document,
-    lost: &mut Vec<Vec<String>>,
+    lost: &mut Vec<(Vec<String>, CorruptCause)>,
 ) {
-    if let NodeKind::Section { .. } = &node.kind {
+    if let NodeKind::Section {
+        heading_text,
+        level,
+    } = &node.kind
+    {
         let disjoint = planned
             .iter()
             .all(|p| region_disjoint(&node.span, &p.region));
@@ -1336,13 +1372,39 @@ fn collect_lost(
                 resolve_full(new_doc, &Ref::Hpath(segs)),
                 Err(ResolveError::NotFound)
             ) {
-                lost.push(hpath.clone());
+                // The cause is READ OFF the reparse, never inferred from the
+                // edit text: the heading either still parses at its own level
+                // somewhere (its ancestry moved) or it stopped being a heading.
+                let cause = if heading_survives(&new_doc.root, heading_text, *level) {
+                    CorruptCause::Reparented
+                } else {
+                    CorruptCause::HeadingDestroyed
+                };
+                lost.push((hpath.clone(), cause));
             }
         }
     }
     for c in &node.children {
         collect_lost(c, planned, new_doc, lost);
     }
+}
+
+/// Does a section with this heading text and level exist anywhere in the
+/// post-reparse tree? Identity-at-its-own-level, ancestry ignored — that is
+/// exactly the difference between a reparented section and a destroyed one.
+fn heading_survives(node: &Node, text: &str, level: u8) -> bool {
+    if let NodeKind::Section {
+        heading_text,
+        level: l,
+    } = &node.kind
+        && heading_text == text
+        && *l == level
+    {
+        return true;
+    }
+    node.children
+        .iter()
+        .any(|c| heading_survives(c, text, level))
 }
 
 /// Two byte ranges are disjoint (touching boundaries and zero-width inserts at a
@@ -2802,13 +2864,48 @@ mod tests {
         // `MORE` (no leading \n) inserted at Q3's span-end (= Q4's heading start)
         // yields `…September\n\nMORE## Q4…` — `## Q4` is no longer at line start.
         let b = batch(vec![put_edit(hpath(&["Goals", "Q3"]), PutAt::End, "MORE")]);
-        let SpliceVerdict::WouldCorrupt { lost } = validate_batch(&doc, None, &b, None) else {
+        let SpliceVerdict::WouldCorrupt { lost, cause } = validate_batch(&doc, None, &b, None)
+        else {
             panic!("heading-destroying append must refuse would_corrupt");
         };
         assert_eq!(
             lost,
             vec![vec!["Goals".to_string(), "Q4".to_string()]],
             "Q4 (disjoint from the edit) was destroyed"
+        );
+        assert_eq!(
+            cause,
+            Some(CorruptCause::HeadingDestroyed),
+            "`## Q4` stopped parsing as a heading — the newline law's own cause"
+        );
+    }
+
+    /// GATE 4c (§4.4 `would_corrupt{containment_lost}`, cause `reparented`): a
+    /// SHALLOWER heading written into a section's content adopts the sections
+    /// that follow it. Their headings still parse — the hpaths do not resolve —
+    /// so the measured cause must NOT be the newline-glue one, whose remedy
+    /// (carry your own `\n`) cannot repair this batch.
+    #[test]
+    fn gate4_would_corrupt_reparented() {
+        let doc = plan_s2();
+        let b = batch(vec![put_edit(
+            hpath(&["Goals", "Q3"]),
+            PutAt::Content,
+            "pre\n\n# Zombie\n\npost\n",
+        )]);
+        let SpliceVerdict::WouldCorrupt { lost, cause } = validate_batch(&doc, None, &b, None)
+        else {
+            panic!("a level-1 heading injected into a level-2 body reparents Q4");
+        };
+        assert_eq!(
+            lost,
+            vec![vec!["Goals".to_string(), "Q4".to_string()]],
+            "Q4 now hangs under Zombie, so Goals/Q4 no longer resolves"
+        );
+        assert_eq!(
+            cause,
+            Some(CorruptCause::Reparented),
+            "`## Q4` still parses at level 2 — its ancestry moved, nothing was destroyed"
         );
     }
 

@@ -1537,6 +1537,98 @@ fn put_would_corrupt_names_the_lost_sections_and_the_newline_law() {
         m.contains("\\n"),
         "teaches the carry-your-own-newlines law: {m}"
     );
+
+    // The cause is measured, and it rides the wire beside the family.
+    let out = sb.run_stdin(
+        &ws,
+        &["put", "doc.md", "--json"],
+        r#"[{"target":{"hpath":[{"h":"Alpha"}]},"edit":{"put":{"at":"end","text":"- glued"}}}]"#,
+    );
+    let v: Value = serde_json::from_str(&stdout(&out)).expect("--json refusal answers JSON");
+    assert_eq!(v["error"]["code"], "would_corrupt", "{v}");
+    assert_eq!(v["error"]["family"], "containment_lost", "{v}");
+    assert_eq!(v["error"]["cause"], "heading_destroyed", "{v}");
+}
+
+/// Gate (post-v1 fix wave) — a `would_corrupt` drawn by REPARENTING must not
+/// teach the newline-glue remedy. The refused batch's lines are fully
+/// terminated, so "carry your own newlines" diagnoses a cause this batch does
+/// not have and repairing by it changes nothing — the caller loops. Measured
+/// against v1.0.0, where the remedy clause was one hardwired string.
+#[test]
+fn put_would_corrupt_on_reparenting_teaches_the_reparenting_remedy() {
+    let sb = sandbox();
+    let ws = sb.workspace_with("# Goals\n\n## Q3\n\nship\n\n## Q4\n\nlater\n");
+    let edits = r#"[{"target":{"hpath":[{"h":"Goals"},{"h":"Q3"}]},
+        "edit":{"put":{"at":"content","text":"pre\n\n# Zombie\n\npost\n"}}}]"#;
+    let out = sb.run_stdin(&ws, &["put", "doc.md"], edits);
+    assert_eq!(code(&out), 1, "would_corrupt refuses: {}", stderr(&out));
+    let m = stderr(&out);
+    assert!(m.contains("would_corrupt"), "keeps the code: {m}");
+    assert!(
+        m.contains("`Goals/Q4`"),
+        "names the path the reparse would lose: {m}"
+    );
+    assert!(
+        !m.contains("carry your own newlines"),
+        "the newline cause was NOT measured here — teaching it is the loop: {m}"
+    );
+    assert!(
+        m.contains("Deepen that heading's level"),
+        "teaches the remedy that repairs THIS batch: {m}"
+    );
+
+    let out = sb.run_stdin(&ws, &["put", "doc.md", "--json"], edits);
+    let v: Value = serde_json::from_str(&stdout(&out)).expect("--json refusal answers JSON");
+    assert_eq!(v["error"]["code"], "would_corrupt", "{v}");
+    assert_eq!(v["error"]["family"], "containment_lost", "{v}");
+    assert_eq!(v["error"]["cause"], "reparented", "{v}");
+    assert_eq!(v["error"]["recovery"], "fix", "the class is unchanged: {v}");
+}
+
+/// Gate (post-v1 fix wave) — target-identity death is the OTHER §4.4 family
+/// and now carries the same code with `family:"target_identity"`. Under v1.0.0
+/// it served generic `bad_request`, so one documented code covered two families
+/// and a caller could not tell them apart from the refusal.
+#[test]
+fn put_target_identity_death_serves_would_corrupt_with_its_own_family() {
+    let sb = sandbox();
+    let ws = sb.workspace_with("# Goals\n\n## Q4\n\nlater\n");
+    // at:"all" replacing the section with body-only text: the heading the
+    // target is addressed by does not survive its own edit.
+    let edits = r#"[{"target":{"hpath":[{"h":"Goals"},{"h":"Q4"}]},
+        "edit":{"put":{"at":"all","text":"plain body, no heading\n"}}}]"#;
+    let out = sb.run_stdin(&ws, &["put", "doc.md", "--json"], edits);
+    assert_eq!(code(&out), 1, "the identity death refuses: {}", stderr(&out));
+    let v: Value = serde_json::from_str(&stdout(&out)).expect("--json refusal answers JSON");
+    assert_eq!(v["error"]["code"], "would_corrupt", "{v}");
+    assert_eq!(v["error"]["family"], "target_identity", "{v}");
+    assert_eq!(v["error"]["recovery"], "fix", "the class is unchanged: {v}");
+    assert_eq!(
+        v["error"]["target"]["hpath"][1]["h"], "Q4",
+        "the refusal echoes the target whose identity dies: {v}"
+    );
+    assert!(
+        v["error"]["lost"].is_null(),
+        "the containment extra belongs to the other family only: {v}"
+    );
+
+    // The teaching rides the refusal's own `message` (server-side), so every
+    // face — this CLI and the host doors — serves the same remedy.
+    let out = sb.run_stdin(&ws, &["put", "doc.md"], edits);
+    let m = stderr(&out);
+    assert!(
+        m.contains("target identity does not survive"),
+        "names the law: {m}"
+    );
+    assert!(
+        m.contains("No edit was applied"),
+        "discloses partial state: {m}"
+    );
+    assert!(
+        m.contains("parent's content slot"),
+        "teaches the way to retire an identity: {m}"
+    );
 }
 
 /// Gate (NEW-A) — an absolute spelling that lies INSIDE the workspace refuses
