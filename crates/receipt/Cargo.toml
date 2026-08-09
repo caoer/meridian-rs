@@ -21,3 +21,9 @@ wire = { workspace = true }
 # predicate the put plane and the run plane are judged by, so the receipt plane
 # is judged by it too rather than by a hand-rolled reading of the output.
 syntax = { workspace = true }
+# TEST-ONLY (§6.7 rule 2), same reasoning one layer over: the segment
+# renderer's claim is that a strict JSON parser recovers the heading exactly,
+# so the claim must be checked by a strict JSON parser rather than by a
+# hand-rolled reading of the escape. The shipped crate still depends on `wire`
+# alone.
+serde_json = { workspace = true }
