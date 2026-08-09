@@ -1338,6 +1338,30 @@ blaming the caller for nesting the emitter manufactured. **Both doors refuse a
 multi-line value** — the encoder's `MultiLineValue` refusal, uniform at every
 value-plane write door. A newline is refused, never sanitized.
 
+**A.6.3a′ One armed fact per key — the `set_property` CREATE arm is the upsert
+door (2026-08-09, dogfood s11-40/s11-50).** The plan lowering emits ONE edit per
+key, each targeting its OWN `fm_key`: an existing key as `put{at:"all"}` over
+its line, an **absent key as `put{at:"upsert"}`**, which is the only shape that
+addresses a key the document does not carry yet. It is therefore the same door
+row above, reached by lowering rather than by a caller, and it encodes there —
+`set_property`'s own multi-line refusal still fires first, in the door's words.
+
+Why the grain is law and not style: armed facts carry *op, target identities and
+rev transitions* (§6.1) and a node entry names the deepest node containing each
+changed byte range (§7.1), so a fact must name the key that moved. The former
+lowering folded every create onto the **last existing key** with `put{at:"end"}`
+— a batch setting `owner` and `status` over frontmatter holding `title` armed
+and receipted `title put:end <rev>-><same rev>`: an identity the batch never
+wrote, an op nobody asked for, a transition claiming nothing changed while two
+keys landed, and a count two short of the intents. Facts are the normative
+receipt content (§6.4), so the collapse made every props write unauditable and a
+§11 lint asserting receipts against intents would false-negative on all of them.
+
+Consequence carried deliberately: a created key lands at the upsert door's
+insertion point (first-key position) rather than after the last key. Key
+ORDER inside the block is not a law of this contract — the auditable identity
+of the write is.
+
 **The kernel below the doors stays raw-grain.** `model::plan_fm_upsert`
 composes the value verbatim, because the run plane's `md.set_field` writes
 WHOLE-VALUE grains through it and their spelling must land as sent. The encode

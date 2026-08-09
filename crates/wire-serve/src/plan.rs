@@ -359,11 +359,30 @@ fn lower_create(
     })
 }
 
-/// Property group: existing → `Put{all}`; absent after last key (carrier fold
-/// if last is being set). Keys/values only through `yaml_safe_key`/
+/// Property group: ONE edit per key, each targeting its OWN `fm_key` — an
+/// existing key as `Put{all}` over its line, an absent key as `Put{upsert}`
+/// (the § A.6.3a create-or-replace door, which addresses a key that does not
+/// exist yet). Keys/values only through `yaml_safe_key`/
 /// `yaml_preserve_or_encode` — an existing key's stored line feeds the
 /// § A.6.3c no-op preservation, so a write-back of the served value recomposes
 /// the stored spelling byte-identically.
+///
+/// One edit per key is the ARMED-FACT law, not a style choice (§6.1: armed
+/// facts carry op, target identities and rev transitions; §7.1: a node entry
+/// names the deepest node containing each changed byte range). The former
+/// shape folded every absent key into ONE edit targeting the LAST EXISTING key
+/// with `Put{end}`, so a batch setting `owner` and `status` on a document whose
+/// frontmatter holds `title` armed — and receipted — `title put:end
+/// <rev>-><same rev>`: an identity the batch never wrote, an op nobody asked
+/// for, and a no-op transition beside two keys that landed. The facts are the
+/// normative receipt content (§6.4), so that collapse made every props write
+/// unauditable.
+///
+/// The absent arm passes the caller's RAW value: the upsert door encodes it
+/// (§ A.6.3a), with an absent key's empty before-span selecting the fresh
+/// encode — the same bytes this function's own encode produces. The encode
+/// above still runs for every key, because its newline refusal teaches in the
+/// `set_property` door's words.
 fn lower_property_group(
     doc: &model::Document,
     idx: &PlanIndex,
@@ -417,16 +436,6 @@ fn lower_property_group(
     }
     let line = |k: policy::defs::SafeKey<'_>| format!("{k}: {}", quoted[&k]);
 
-    let mut existing = Vec::new();
-    let mut absent = Vec::new();
-    for k in quoted.keys() {
-        if fm_key_set.contains(k.as_str()) {
-            existing.push(*k);
-        } else {
-            absent.push(*k);
-        }
-    }
-
     let fm_put = |key: &str, at: PutAt, text: String| Edit {
         target: SecRef::FmKey {
             fm_key: key.to_string(),
@@ -436,35 +445,12 @@ fn lower_property_group(
     };
 
     let mut edits = Vec::new();
-    let mut carrier: Option<&str> = None;
-    if !absent.is_empty() {
-        let mut absent_lines = String::new();
-        for k in &absent {
-            absent_lines.push('\n');
-            absent_lines.push_str(&line(*k));
-        }
-        // Inserts after the last key; fold into Put{all} if that key is itself being set.
-        let last = idx
-            .fm_keys
-            .last()
-            .expect("fm_keys non-empty when keys are absent")
-            .as_str();
-        if let Some(carrier_key) = quoted.keys().copied().find(|k| k.as_str() == last) {
-            edits.push(fm_put(
-                last,
-                PutAt::All,
-                format!("{}{absent_lines}", line(carrier_key)),
-            ));
-            carrier = Some(last);
+    for k in quoted.keys().copied() {
+        if fm_key_set.contains(k.as_str()) {
+            edits.push(fm_put(k.as_str(), PutAt::All, line(k)));
         } else {
-            edits.push(fm_put(last, PutAt::End, absent_lines));
+            edits.push(fm_put(k.as_str(), PutAt::Upsert, keyed[&k].to_string()));
         }
-    }
-    for k in existing {
-        if carrier == Some(k.as_str()) {
-            continue;
-        }
-        edits.push(fm_put(k.as_str(), PutAt::All, line(k)));
     }
     Ok(edits)
 }
@@ -751,7 +737,10 @@ mod tests {
         );
     }
 
-    /// Property dance: Put{all} existing; absent after last; carrier fold when last set.
+    /// Property dance: ONE edit per key, each on its OWN `fm_key` — existing as
+    /// `Put{all}` over its line, absent as `Put{upsert}` carrying the caller's
+    /// raw value for the § A.6.3a door to encode. The identity a receipt reads
+    /// back is the key that was written, never the last key of the block.
     #[test]
     fn property_group_dance() {
         let raw = "---\nstatus: open\nowner: d\n---\n# A\n\nx\n";
@@ -781,8 +770,15 @@ mod tests {
         .expect("lowers");
         assert_eq!(edits.len(), 1);
         let (at, text) = put_text(&edits[0]);
-        assert_eq!((*at, text), (PutAt::End, "\nzeta: 1"));
-        assert!(matches!(&edits[0].target, SecRef::FmKey { fm_key } if fm_key == "owner"));
+        assert_eq!(
+            (*at, text),
+            (PutAt::Upsert, "1"),
+            "an absent key is created through its own upsert door, raw value"
+        );
+        assert!(
+            matches!(&edits[0].target, SecRef::FmKey { fm_key } if fm_key == "zeta"),
+            "the created key is the target — never the last key of the block"
+        );
 
         let edits = super::lower(
             &doc(raw),
@@ -805,12 +801,19 @@ mod tests {
             ],
         )
         .expect("lowers");
-        assert_eq!(edits.len(), 2);
-        let (at, text) = put_text(&edits[0]);
-        assert_eq!((*at, text), (PutAt::All, "owner: e\nzeta: 1"));
-        assert!(matches!(&edits[0].target, SecRef::FmKey { fm_key } if fm_key == "owner"));
-        let (at, text) = put_text(&edits[1]);
-        assert_eq!((*at, text), (PutAt::All, "status: closed"));
+        // Three keys, three edits — key-sorted, each naming what it wrote.
+        assert_eq!(edits.len(), 3, "one armed edit per key the caller set");
+        let named = |e: &wire::Edit| match &e.target {
+            SecRef::FmKey { fm_key } => fm_key.clone(),
+            other => panic!("fm_key target, got {other:?}"),
+        };
+        assert_eq!(
+            edits.iter().map(named).collect::<Vec<_>>(),
+            vec!["owner", "status", "zeta"]
+        );
+        assert_eq!(put_text(&edits[0]), (&PutAt::All, "owner: e"));
+        assert_eq!(put_text(&edits[1]), (&PutAt::All, "status: closed"));
+        assert_eq!(put_text(&edits[2]), (&PutAt::Upsert, "1"));
     }
 
     /// No frontmatter to anchor a new key refuses.
