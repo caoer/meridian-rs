@@ -2829,6 +2829,19 @@ fn lock_artifact_guard(
 /// decorated render face would otherwise never match its own document: an
 /// address is compared, never stored. Every native and lowered edit passes
 /// through this one funnel, so no put shape can skip it.
+/// The uniform `MultiLineValue` refusal, in the words BOTH value-plane write
+/// doors speak (wire-contract § A.6.3a). `set_property` already named the key
+/// and taught the body-section escape while the upsert door said only that the
+/// value must be single-line — one law refused in two dialects is two laws to
+/// the callers who meet it, and recovery quality became a function of which
+/// door the caller entered.
+fn multi_line_value_refusal(key: &str) -> String {
+    format!(
+        "property value for \"{key}\" contains a newline — frontmatter values are \
+         single-line in v1; put multi-line content in a body section"
+    )
+}
+
 fn model_edits_and_before_facts(
     doc: &model::Document,
     edits: &[Edit],
@@ -2838,6 +2851,14 @@ fn model_edits_and_before_facts(
     let mut before_facts = Vec::with_capacity(edits.len());
     for edit in edits {
         let target = to_model_ref(&edit.target)?;
+        // The upsert door's key, kept for the multi-line refusal below: the
+        // target is moved into the model edit before that arm runs, and the
+        // refusal names the offending key (§ A.6.3a — one law, one sentence, at
+        // both value-plane doors).
+        let upsert_key = match &target {
+            model::Ref::FmKey(key) => Some(key.clone()),
+            _ => None,
+        };
         // `put at:upsert` is the one create-or-replace shape: the `fm_key` may
         // not exist yet, so its BEFORE fact is synthesized (`fm_upsert_before`)
         // rather than resolved; a plain `resolve` would `ref_not_found` on the
@@ -2856,9 +2877,7 @@ fn model_edits_and_before_facts(
                 ));
             };
             if text.contains(['\n', '\r']) {
-                return Err(bad_request(
-                    "put at:upsert value must be single-line (no newline)",
-                ));
+                return Err(bad_request(multi_line_value_refusal(key)));
             }
             model::fm_upsert_before(doc, key)
         } else {
@@ -2902,7 +2921,9 @@ fn model_edits_and_before_facts(
                             .filter(|t| t.span.start < t.span.end)
                             .map(|t| &doc.raw[t.span.clone()]);
                         policy::defs::yaml_preserve_or_encode(stored_line, text).map_err(|_| {
-                            bad_request("put at:upsert value must be single-line (no newline)")
+                            bad_request(multi_line_value_refusal(
+                                upsert_key.as_deref().unwrap_or(""),
+                            ))
                         })?
                     } else {
                         text.clone()

@@ -136,28 +136,10 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     Ok(())
 }
 
-/// An engine refusal, on both faces. Under `--json` the machine face gets the refusal envelope
-/// on stdout — `{workspace, error}`, the engine's error body in the v3 vocabulary (the same
-/// lifted projection the commit frame gets) — so a machine consumer branches on the frame,
-/// exactly as it does for `mrd script --json` on a fault. The human diagnostic still rides
-/// stderr via the returned [`Fail`], and the exit triad is untouched.
+/// An engine refusal, on both faces — [`engine::json_refusal`], which owns the envelope for
+/// every `--json` face rather than for this verb alone.
 fn refusal(parsed: &Put, workspace: &std::path::Path, error: &ErrorBody) -> Fail {
-    if matches!(parsed.format, Format::Json) {
-        let mut frame = json!({
-            "error": serde_json::to_value(error).expect("json"),
-        });
-        wire_serve::rev::project_response(&mut frame);
-        let error_v3 = frame
-            .as_object_mut()
-            .and_then(|obj| obj.remove("error"))
-            .unwrap_or(Value::Null);
-        let value = json!({
-            "workspace": workspace.display().to_string(),
-            "error": error_v3,
-        });
-        println!("{}", serde_json::to_string_pretty(&value).expect("json"));
-    }
-    engine::refusal_fail(error)
+    engine::json_refusal(parsed.format, workspace, error)
 }
 
 /// The `--dry` diff: the file's current bytes → the candidate the rehearsal built, through the

@@ -848,6 +848,20 @@ intact is reported in `narrowed[]`. The builtin `check-*` / `verify-*` ceiling
 is absolute, and those names refuse a bash fence loudly at load. Caps bind at
 the executor choke point before any I/O: one violation refuses the whole batch.
 
+**The denial names the ceiling that ate the grant (2026-08-09, dogfood s12-50).**
+`narrowed[]` reports the narrowing on the LISTING face; the refusal itself is a
+second face and must stand alone. A block whose own frontmatter declares
+`md.set_field` and is nevertheless denied `md.set_field` reads, at the denial,
+as an engine ignoring a grant that is plainly on the page — and the remedy the
+caller derives (declare the cap) is already in place. So a `capability denied`
+refusal names **which ceiling removed the cap**: the winning `run.caps.<pattern>`
+convention entry, or the builtin `check-*` / `verify-*` ceiling.
+
+⛔ **Only when the ceiling is measured.** A denial that no ceiling caused —
+deny-default, an explicit grant that never held the cap — names the cause and
+STOPS. The engine never attaches a fixed remedy string to a cause it did not
+measure: a remedy that may misdiagnose is worse than none.
+
 ### Where the convention table lives (marker-retirement ruling, 2026-07-26)
 
 **The root declares.** The table is read from the root's own `MERIDIAN.md`
@@ -1108,6 +1122,15 @@ Its body declares, in named sections:
 - `# Ephemeral` — the **allowlist** of declared-disposable paths. Empty by
   construction, so a def that declares nothing disposable can prune nothing.
 
+**The parenthetical is a REQUIRED byte of the heading line (2026-08-09, dogfood
+s13-20).** `(^properties)` and `(^template)` are block ids that must stand ON
+the heading line — `# Properties ^properties`. The loader finds these blocks by
+ANCHOR, never by heading text, so a def carrying a visually complete
+`# Properties` section with no anchor id declares no `^properties` block at all.
+The two spellings are indistinguishable to a reader and total opposites to the
+loader, so both the element above and the `def_invalid` refusal below state the
+anchor rule outright.
+
 **Law 2.1 — `inputs` is read and written whole.** It is a multi-line block
 sequence, read through the whole-value frontmatter grain and written as whole
 birth bytes. A line-oriented scan that stops at the key line, or a single-line
@@ -1157,7 +1180,11 @@ guarded door — a verb that grows its own copy of any of those is wrong-design.
 against every `^properties` rule; the FIRST violation refuses `def_invalid`
 naming the rule verbatim. A def with no `^properties` block, no `^template`, or
 a rule that did not parse is itself invalid — the same refusal, because a def
-that cannot state its own contract cannot birth a record that satisfies it.
+that cannot state its own contract cannot birth a record that satisfies it. The
+missing-block refusal states the anchor rule (Law 2.1's neighbour above): the
+block is found by its `^` id on the heading line, so an author staring at a
+visible `# Properties` heading is told which byte is absent, not merely that the
+block "does not exist".
 
 **`unfold` is the first birth; `reconcile` is every birth after it.** That is
 the whole difference: unfold treats an occupied path as a finding because it

@@ -231,6 +231,9 @@ fn choke_point_denies_undeclared_kind_before_any_io() {
         ExecError::CapDenied {
             kind: "md.set_field".to_owned(),
             target: "status".to_owned(),
+            // No ceiling narrowed here: the grant simply never held the cap,
+            // so the refusal names the cause and teaches no fix.
+            ceiling: None,
         }
     );
     assert_eq!(page_text(&root), PAGE, "nothing applied");

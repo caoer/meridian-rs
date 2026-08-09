@@ -95,6 +95,11 @@ pub struct PresetDef {
     /// or exact paths [`reconcile`] MAY prune (ruling #3). Empty ⇒ nothing is
     /// disposable, so reconcile prunes no file.
     pub ephemeral: Vec<String>,
+    /// A `# Properties` heading stands in the body but carries no `^properties`
+    /// id, so the anchor-driven loader found no block. Measured at load, because
+    /// this is the ONE shape where "declares no ^properties block" reads as
+    /// false to the author staring at their visible heading.
+    pub anchorless_properties: bool,
 }
 
 /// A tool-level failure (mrd exit 2): the def could not be loaded or a birth
@@ -214,6 +219,8 @@ pub fn load_def(root: &fs::WorkspaceRoot, def_path: &str) -> Result<PresetDef, P
         births: fm_scalar(&doc, "births"),
         inputs: read_inputs_grain(&doc),
         properties: parse_properties(&doc.raw),
+        anchorless_properties: parse_properties(&doc.raw).is_none()
+            && title_section(&doc.raw, "Properties").is_some(),
         template: parse_template(&doc.raw),
         scaffold: parse_unfold(&doc.raw),
         ephemeral: parse_ephemeral(&doc.raw),
@@ -459,6 +466,29 @@ pub struct NewRefusal {
     pub reason: RefusalReason,
 }
 
+/// The missing-`^properties` refusal, which states the anchor rule (run-plane
+/// § presets): the loader finds the block by its `^` id ON the heading line, so
+/// a def carrying a visually complete `# Properties` section with no id declares
+/// no block at all. Without the rule, the refusal tells an author that a heading
+/// they are looking at does not exist.
+///
+/// The anchor-less heading clause rides only where the heading was MEASURED —
+/// a def with no `# Properties` text anywhere gets the rule, not a diagnosis of
+/// a heading it does not have.
+fn missing_properties_refusal(def: &PresetDef) -> String {
+    let mut out = String::from(
+        "the def declares no ^properties block — the loader finds it by the `^properties` id \
+         ON the heading line (`# Properties ^properties`), never by the heading text",
+    );
+    if def.anchorless_properties {
+        out.push_str(
+            ". This def HAS a `# Properties` heading; the missing byte is its anchor id. Fix: \
+             add `^properties` to that heading line",
+        );
+    }
+    out
+}
+
 /// Birth one record from a def's `^template` (`mrd new <kind> <id>`, d3
 /// §1.3/§6): resolve the def, fill the `^template`, validate the filled record
 /// against the def's `^properties`, and birth the first rev through the U2.6
@@ -486,7 +516,7 @@ pub fn new_record(
     let Some(properties) = &def.properties else {
         return Ok(refuse_new(
             target,
-            RefusalReason::def_invalid("the def declares no ^properties block"),
+            RefusalReason::def_invalid(missing_properties_refusal(&def)),
         ));
     };
     let Some(template) = &def.template else {
