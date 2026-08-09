@@ -3261,12 +3261,12 @@ fn verdict_to_wire(
             let mut e = ErrorBody::new(ErrorCode::WouldCorrupt);
             e.family = Some(WouldCorruptFamily::TransitionUnrepresentable);
             e.message = Some(format!(
-                "the edit changed the file but not \"{}\" — its `node_rev` is unmoved, so the \
-                 bytes landed OUTSIDE the node the edit names and its armed transition is \
-                 unrepresentable. {} Fix: a leaf span excludes its line terminator, so an \
-                 `at:\"end\"` append whose text carries a newline lands in a new line the node \
-                 never covers — write inside the node with `at:\"all\"`, re-supplying its \
-                 content, or aim the append at the enclosing section.",
+                "this edit writes past \"{}\" — some of its bytes land outside that node's own \
+                 span, so the node never receives them and its `node_rev` cannot move, leaving \
+                 `if_node_rev` guarding a value this write can never change. {} Fix: a leaf's \
+                 span EXCLUDES its line terminator, so its extent ends there — drop the \
+                 trailing separator from your text, or aim the write at the enclosing section, \
+                 whose span contains the bytes you meant to add.",
                 target_display(&sec),
                 crate::NO_PARTIAL_WRITE_CLAUSE
             ));

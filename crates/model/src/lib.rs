@@ -987,13 +987,14 @@ pub enum SpliceVerdict {
         lost: Vec<Vec<String>>,
         cause: Option<CorruptCause>,
     },
-    /// An edit changed bytes while its own target's `node_rev` stood still →
-    /// `would_corrupt{transition_unrepresentable}` (§4.4). `node_rev` is a
-    /// function of the node's span bytes (node-rev-merkle-spec §2), so a batch
-    /// that changes the file while leaving its target's rev identical wrote
-    /// OUTSIDE the node it names: arming that commit would state a transition
-    /// that did not happen, and `if_node_rev` would compare a value the write
-    /// can never move. `target` is the offending edit's own ref.
+    /// An edit wrote past the span it named →
+    /// `would_corrupt{transition_unrepresentable}` (§4.4, `decisions/0018`).
+    /// §4.4 makes the target's span the region an edit rewrites and §1 excludes
+    /// a leaf's line terminator from that span, so a `text` ending in a
+    /// separator places bytes the node never covers. Those bytes cannot move
+    /// `node_rev` (a function of the node's span bytes, node-rev-merkle-spec
+    /// §2), so the armed transition would be a lie and `if_node_rev` would
+    /// compare a constant. `target` is the offending edit's own ref.
     TransitionUnrepresentable { target: Ref },
     /// A replaced region would split a multi-byte UTF-8 character →
     /// `bad_request` (§1 write-side multibyte refusal). Unreachable through the
@@ -1244,15 +1245,14 @@ pub fn validate_batch(
         return SpliceVerdict::WouldCorrupt { lost, cause };
     }
 
-    // 4b. Rev-on-change for pure insertions (node-rev-merkle-spec §2):
-    // `node_rev` hashes the node's span bytes, so an insertion the node
-    // adopted must move it. An unmoved rev therefore proves the inserted bytes
-    // ALL landed outside the node the edit named — the `at:"end"` point of a
-    // terminator-excluding leaf (anchor blocks §1, `fm_key` §4.4) sits ON the
-    // terminator, so `text` carrying a newline opens a fresh line the node
-    // never covers. Committing that arms a transition which did not happen and
-    // leaves `if_node_rev` comparing a value the write can never move.
-    if let Some(target) = first_unmoved_rev(&planned, &new_doc, &guarded) {
+    // 4b. An edit must write INSIDE the span it named (decisions/0018; §4.4
+    // with node-rev-merkle-spec §2). A leaf's span excludes its line
+    // terminator (§1, and §4.4 for `fm_key`), so its extent ends there and a
+    // `text` carrying a separator writes a byte the node never covers. Those
+    // bytes cannot change the node's bytes, so `node_rev` cannot move and
+    // `if_node_rev` would guard a constant — two callers holding the same rev
+    // both write, both succeed, and neither is told.
+    if let Some(target) = first_write_past_its_span(raw, &planned, &new_doc, &guarded) {
         return SpliceVerdict::TransitionUnrepresentable { target };
     }
 
@@ -1372,44 +1372,51 @@ fn would_corrupt(
 }
 
 /// The first caller edit that changed bytes yet left its own target's
-/// `node_rev` standing still, as that edit's ref — the rev-on-change guard
-/// (node-rev-merkle-spec §2). `None` when every byte-changing edit moved the
-/// rev of the node it named.
+/// `node_rev` standing still, as that edit's ref — the write-past-the-named-span
+/// guard (`decisions/0018`; node-rev-merkle-spec §2 with §4.4). `None` when
+/// every byte-changing edit moved the rev of the node it named.
 ///
-/// Scope, and why it is exactly this wide: the guard examines PURE INSERTIONS
-/// (a zero-width replaced region — the `at:"end"` shape). There the reasoning
-/// is a theorem rather than a heuristic. A zero-width region replaces none of
-/// the node's existing bytes, so the node can only change by ADOPTING inserted
-/// ones; if its rev is also unmoved, then not one inserted byte joined the
-/// node, and the caller's whole contribution landed somewhere it never
-/// addressed.
+/// **The test is the UNMOVED REV, and containment is its explanation rather
+/// than its predicate — the two are NOT equivalent.** A write may place some
+/// bytes outside its target and still move that target's rev (an `at:"end"`
+/// section append whose text opens a sibling heading shrinks the section and
+/// grows it by the separator): the transition is then truthful, the guard is
+/// live, and nothing is owed. What cannot stand is a changed file over a rev
+/// that did not move — then the node never received the bytes at all,
+/// `if_node_rev` compares a constant, and two callers holding that rev both
+/// write, both succeed, and neither is told.
 ///
-/// A non-empty region is deliberately NOT judged here. `at:"all"` hands the
-/// node its own new content, so an unmoved rev there means the caller wrote
-/// the same bytes back — a no-op on the node, not a write that escaped it.
-/// (A trailing separator on such a rewrite can still land outside the node and
-/// leave `if_node_rev` unmovable; that residual is a measured finding of its
-/// own and wants its own ruling, not a silent widening of this one.)
+/// **Keyed on the mechanism, never on the `at:` scope**, and that bound is
+/// measured: the escape is reachable through `at:"end"`, `at:"all"`,
+/// `at:"content"` AND `match` — and `match` is not an `at:` scope at all, so a
+/// guard enumerating scopes misses it by construction. A leaf's span excludes
+/// its line terminator (§1), so its extent ENDS there and a `text` carrying a
+/// separator writes a byte the node never covers.
 ///
-/// An edit that changes no bytes at all is skipped: its rev standing still is
-/// the truth. A target that stopped resolving is NOT this guard's finding —
-/// that is the `target_identity` death, measured at the door that arms the
-/// facts.
-fn first_unmoved_rev(
+/// An edit whose text equals the bytes it replaces is skipped: it is a lawful
+/// no-op and its rev standing still is the truth. A target that stopped
+/// resolving is NOT this guard's finding — that is the `target_identity` death,
+/// measured at the door that arms the facts.
+fn first_write_past_its_span(
+    raw: &str,
     planned: &[PlannedEdit],
     new_doc: &Document,
     guarded: &[Option<(Ref, NodeRev)>],
 ) -> Option<Ref> {
-    for (plan, slot) in planned.iter().zip(guarded) {
+    for (i, slot) in guarded.iter().enumerate() {
         let Some((target, before_rev)) = slot else {
             continue;
         };
-        if plan.region.start != plan.region.end || plan.text.is_empty() {
+        let plan = &planned[i];
+        // A put whose text equals the bytes it replaces changes nothing, so its
+        // rev standing still is the TRUTH rather than a misreport.
+        if raw[plan.region.clone()] == *plan.text {
             continue;
         }
-        if let Ok(after) = resolve_full(new_doc, target)
-            && after.node_rev == *before_rev
-        {
+        let Ok(after) = resolve_full(new_doc, target) else {
+            continue;
+        };
+        if after.node_rev == *before_rev {
             return Some(target.clone());
         }
     }
@@ -2875,34 +2882,72 @@ mod tests {
         }
     }
 
-    /// The same escape on an `fm_key` leaf, whose span excludes its terminator
-    /// by the §4.4 leaf law: the guard is defined over the SPAN LAW, not over
-    /// the anchor door, so the frontmatter plane inherits it.
+    /// EVERY scope that can reach the escape, measured at v1.0.0 and held here
+    /// so no future narrowing can quietly drop one. `at:"end"`, `at:"all"`,
+    /// `at:"content"` and `match` all place a byte past a leaf's span when
+    /// their text ends in a separator — and `match` is NOT an `at:` scope, so
+    /// a guard enumerating scopes would miss it by construction
+    /// (`decisions/0018`).
     #[test]
-    fn end_append_escaping_an_fm_key_leaf_refuses() {
-        let raw = "---\ntitle: Plan\n---\n\n# Top\n\nbody\n";
-        let doc = build(raw.to_string(), syntax::parse(raw));
-        let b = batch(vec![put_edit(
-            Ref::FmKey("title".into()),
-            PutAt::End,
-            "\nowner: zt",
-        )]);
-        let SpliceVerdict::TransitionUnrepresentable { target } =
-            validate_batch(&doc, None, &b, None)
-        else {
-            panic!("an fm_key end-append that escapes its node must refuse");
-        };
-        assert_eq!(target, Ref::FmKey("title".into()));
+    fn every_scope_that_writes_past_a_leaf_span_refuses() {
+        let raw = "- item one ^li-1\n- item two\n";
+        let li = || Ref::anchor("li-1").unwrap();
+        let cases: Vec<(&str, Edit)> = vec![
+            ("at:end", put_edit(li(), PutAt::End, "\nX")),
+            ("at:all + separator", put_edit(li(), PutAt::All, "- item one ^li-1\n")),
+            ("at:content + separator", put_edit(li(), PutAt::Content, "- item one ^li-1\n")),
+            (
+                "match, new ends in a separator",
+                Edit {
+                    target: li(),
+                    edit: EditKind::Match {
+                        old: "^li-1".into(),
+                        new: "^li-1\n".into(),
+                    },
+                    if_node_rev: None,
+                },
+            ),
+        ];
+        for (name, edit) in cases {
+            let doc = build(raw.to_string(), syntax::parse(raw));
+            let SpliceVerdict::TransitionUnrepresentable { target } =
+                validate_batch(&doc, None, &batch(vec![edit]), None)
+            else {
+                panic!("{name}: a write past the named span must refuse");
+            };
+            assert_eq!(target, li(), "{name}: names the offender");
+        }
     }
 
-    /// The guard's NO-fire half, which is what keeps it from being a blanket
-    /// ban on `at:"end"`: a write landing INSIDE its node moves the rev and
-    /// validates. Without these two the refusal above would pass just as well
-    /// on an engine that refused everything.
+    /// The same escape on an `fm_key` leaf, whose span excludes its terminator
+    /// by the §4.4 leaf law — the family is defined over the SPAN LAW, not over
+    /// the anchor door.
+    #[test]
+    fn fm_key_leaf_writes_past_its_span_refuse() {
+        let raw = "---\ntitle: Plan\n---\n\n# Top\n\nbody\n";
+        let key = || Ref::FmKey("title".into());
+        for (name, edit) in [
+            ("at:end", put_edit(key(), PutAt::End, "\nowner: zt")),
+            ("at:all + separator", put_edit(key(), PutAt::All, "title: Plan\n")),
+        ] {
+            let doc = build(raw.to_string(), syntax::parse(raw));
+            let SpliceVerdict::TransitionUnrepresentable { target } =
+                validate_batch(&doc, None, &batch(vec![edit]), None)
+            else {
+                panic!("fm_key {name}: a write past the named span must refuse");
+            };
+            assert_eq!(target, key());
+        }
+    }
+
+    /// The NO-fire half, and it is what keeps the guard from being a blanket
+    /// ban: a write whose bytes land INSIDE its target commits. Without these
+    /// the refusals above would pass just as well on an engine that refused
+    /// everything.
     #[test]
     fn writes_that_land_inside_their_node_still_validate() {
         // A section span is newline-inclusive and runs to the next heading, so
-        // its `at:"end"` insertion point is inside the node.
+        // every scope's bytes land inside it — including a trailing separator.
         let doc = plan_s1();
         let b = batch(vec![put_edit(
             hpath(&["Goals", "Q4"]),
@@ -2914,37 +2959,31 @@ mod tests {
             "at:end on a section writes inside its own span"
         );
 
-        // `at:"all"` replaces the node's own bytes on the same anchor the
-        // guard refuses at `at:"end"`.
-        let raw = "# Top\n\ncompletely different paragraph text here ^zzz-9\n\n## Alpha\n\nbody\n";
-        let doc = build(raw.to_string(), syntax::parse(raw));
-        let b = batch(vec![put_edit(
-            Ref::anchor("zzz-9").unwrap(),
-            PutAt::All,
-            "rewritten paragraph ^zzz-9",
-        )]);
-        assert!(
-            matches!(validate_batch(&doc, None, &b, None), SpliceVerdict::Validated(_)),
-            "at:all rewrites the node's own bytes, so the rev moves"
-        );
-    }
-
-    /// The guard judges PURE INSERTIONS only. `at:"all"` hands the node its own
-    /// new content, so an unmoved rev there means the caller wrote the same
-    /// bytes back — a no-op on the node, not an insertion that escaped it.
-    /// Held by a test because the boundary is the whole reason the guard is a
-    /// theorem and not a heuristic; widening it silently would re-break the
-    /// `@fp` address rewrite (`wire-serve` s10), which replaces an anchor line
-    /// with its own text plus a separator.
-    #[test]
-    fn a_rewrite_that_lands_the_same_bytes_is_not_an_escape() {
+        // The same scopes on the leaf, WITHOUT a trailing separator: the bytes
+        // are contained, so they commit. This is the line the guard walks.
         let raw = "- item one ^li-1\n- item two\n";
-        let doc = build(raw.to_string(), syntax::parse(raw));
-        for text in ["- item one ^li-1", "- item one ^li-1\n"] {
-            let b = batch(vec![put_edit(Ref::anchor("li-1").unwrap(), PutAt::All, text)]);
+        let li = || Ref::anchor("li-1").unwrap();
+        for (name, edit) in [
+            ("at:all", put_edit(li(), PutAt::All, "- item ONE ^li-1")),
+            (
+                "match",
+                Edit {
+                    target: li(),
+                    edit: EditKind::Match {
+                        old: "one".into(),
+                        new: "ONE".into(),
+                    },
+                    if_node_rev: None,
+                },
+            ),
+        ] {
+            let doc = build(raw.to_string(), syntax::parse(raw));
             assert!(
-                matches!(validate_batch(&doc, None, &b, None), SpliceVerdict::Validated(_)),
-                "at:all writing {text:?} back is a rewrite, not an escaped insertion"
+                matches!(
+                    validate_batch(&doc, None, &batch(vec![edit]), None),
+                    SpliceVerdict::Validated(_)
+                ),
+                "{name} without a trailing separator lands inside the node"
             );
         }
     }
