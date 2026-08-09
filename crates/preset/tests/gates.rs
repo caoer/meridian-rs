@@ -160,6 +160,33 @@ fn unfold_births_every_scaffold_file() {
         !grain_text.contains("---"),
         "the grain stops before the fence — no orphan: {grain_text:?}"
     );
+    // Law 6.2: the def pin rides FIRST, then every declared floor pin in
+    // declared order — the floor is readable from the session itself, not only
+    // through the def blob.
+    for pin in &report.floor {
+        assert!(
+            grain_text.contains(&format!("\n  - \"{pin}\"")),
+            "the born root record drops the declared floor pin {pin}: {grain_text:?}"
+        );
+    }
+    assert!(
+        grain_text.find("conventions/reviewer-not-owner")
+            < grain_text.find("conventions/claim-cas"),
+        "the floor pins ride in declared order: {grain_text:?}"
+    );
+    assert!(
+        !session.contains("the convention floor page"),
+        "Law 6.1: a floor pin is a pin, never a copy of the floor's content"
+    );
+    // Law 3.5: `preset:` names the DEF, never the record itself.
+    assert!(
+        session.contains("\npreset: presets/session.md\n"),
+        "the root record names the def it was born from: {session:?}"
+    );
+    assert!(
+        session.contains("# session — born from presets/session.md"),
+        "the provenance heading names the def: {session:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
