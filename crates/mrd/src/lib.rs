@@ -86,345 +86,250 @@ mrd — the meridian workspace CLI
 const LISTING: &str = "\
 usage:
 ! mrd init [PATH] [--name NAME]
-                           declare the root — write PATH's own MERIDIAN.md
-                           self-declaration (type: meridian-root, named after
-                           the directory unless --name says otherwise), register
-                           the drawer, reconcile shadowed descendant drawers. A
-                           declaration does NOT anchor the resolution ladder, so
-                           the report also names the tier and root this path
-                           resolves to. An existing valid declaration is left
-                           byte-for-byte; a MERIDIAN.md that is present but does
-                           not read as a root declaration refuses (exit 2)
+                           declare the root: write PATH's MERIDIAN.md (type:
+                           meridian-root; name = dir unless --name), register
+                           the drawer, reconcile shadowed descendant drawers.
+                           Declaration does NOT anchor the resolution ladder —
+                           the report also names the tier/root PATH resolves
+                           to. Valid existing declaration left byte-for-byte;
+                           present-but-invalid MERIDIAN.md refuses (exit 2).
 ! mrd unregister [PATH]    drop the daemon entry (if a daemon answers) and the
-                           workspace's drawer
-  mrd resolve [PATH]       report how a path resolves — the tier that answered
-                           and the root it named (read-only, writes nothing)
-  mrd links [PATH]         the corpus edge map (whole corpus, or one file),
-                           answered by the daemon (auto-spawned) or in-process
+                           workspace drawer.
+  mrd resolve [PATH]       how PATH resolves: the tier that answered and the
+                           root it named.
+  mrd links [PATH]         corpus edge map (whole corpus, or one file). Daemon
+                           (auto-spawned) or in-process.
   mrd read <PATH>[#FRAG] [--section SEL]
-                           the composed read: addressing + content + render at
-                           ONE engine snapshot, answered by the daemon (auto
-                           -spawned) or in-process. No --section = the section
-                           map ALONE (dewey ordinal n, depth, raw title, words,
-                           sec_rev) under the read's own fingerprint - the fp
-                           `put --if-fingerprint` takes; --section (repeatable:
-                           a heading path, dewey ordinal, or ^anchor) IS the
-                           section read, and is what serves bodies. A body
-                           opens with its `== n ==` marker; the head declares
-                           each body's byte length, which is where it ends.
-                           Human output is the rendered text verbatim; --json
-                           on a toc read serves the structured toc[] alone and
-                           does not repeat it as rendered_text. Exits:
-                           0 served / 1 the engine refused (its message,
-                           verbatim) / 2 bad invocation
+                           composed read at ONE engine snapshot (daemon or
+                           in-process). No --section = section map alone (dewey
+                           n, depth, title, words, sec_rev) under the read's
+                           fingerprint (the fp put --if-fingerprint takes).
+                           --section (repeatable: heading path, dewey, or
+                           ^anchor) serves bodies; each body opens with == n ==
+                           and the head declares its byte length. Human:
+                           rendered text. --json toc: structured toc[] only, no
+                           rendered_text. Exits: 0 served / 1 engine refused /
+                           2 bad invocation.
 ! mrd put <PATH> [--dry | --validate] [--force] [--actor A] [--now T]
           [--if-fingerprint FP] [--receipt PATH#ANCHOR] [--json]
-                           the batch write: the edits ride STDIN as a BARE JSON
-                           ARRAY — [{target, edit, if_node_rev?}], which is the
-                           VALUE of the wire §4.4 `edits` field and NEVER the
-                           request object §4.4 shows around it (no id, no op,
-                           no path — those are argv's here). target addresses
-                           one node: {\"hpath\":[{\"h\":\"Raw Title\"},...]}
-                           (the raw heading path a read publishes, {\"n\":2}
-                           only on a duplicated segment) /
-                           {\"anchor\":\"block-id\"} / {\"fm_key\":\"key\"}.
-                           edit is NESTED, never a bare string:
-                           {\"match\":{\"old\":\"...\",\"new\":\"...\"}}
-                           replaces the ONE occurrence of old in the target's
-                           span; {\"put\":{\"at\":\"end\",\"text\":\"...\"}}
-                           writes a whole slot (at: all | content | end |
-                           upsert). A working batch, whole:
+                           batch write. STDIN = bare JSON array
+                           [{target, edit, if_node_rev?}] — the VALUE of
+                           wire §4.4 edits, NEVER the full request object
+                           (no id/op/path; those are argv).
+                           target: {\"hpath\":[{\"h\":\"Raw Title\"},...]} — the raw
+                           heading path mrd read publishes ({\"n\":2} only on a
+                           duplicate) / {\"anchor\":\"id\"} / {\"fm_key\":\"key\"}.
+                           edit nested, never a bare string:
+                           {\"match\":{\"old\":\"…\",\"new\":\"…\"}} (one occurrence)
+                           or {\"put\":{\"at\":\"end|all|content|upsert\",
+                           \"text\":\"…\"}}. A working batch, whole:
                            [{\"target\":{\"hpath\":[{\"h\":\"Title\"}]},
                              \"edit\":{\"match\":{\"old\":\"a\",\"new\":\"b\"}}}]
-                           Routed through the production splice choke-point
-                           (CAS + armed gate + write flock — never bypassed).
-                           --dry and --validate are ONE rehearsal (everything
-                           except disk) with two faces: --dry SHOWS the
-                           unified diff current -> candidate, --validate says
-                           nothing and answers with the exit code alone.
-                           --force: escape an armed binding-break/block
-                           refusal (the skip is rendered in the verdict, never
-                           silent). --if-fingerprint: the world-grain guard.
-                           --json: the machine face on BOTH legs — a commit
-                           answers {workspace, put}; an engine refusal answers
-                           {workspace, error} on stdout (the engine's error
-                           body, v3 vocabulary), never an empty stdout. Exits:
-                           0 committed (or a rehearsal that passed) / 1
-                           refused (the engine's message, verbatim) / 2 bad
-                           invocation
+                           Production splice only (CAS + armed gate + write
+                           flock). --dry and --validate = one rehearsal (no
+                           disk): --dry prints unified diff; --validate is
+                           exit-only. --force escapes armed binding-break/
+                           block (skip shown in verdict). --if-fingerprint
+                           = world-grain guard. --json machine face on both
+                           legs: commit {workspace,put}; refusal
+                           {workspace,error} on stdout. Exits: 0
+                           committed|rehearsal-ok / 1 refused / 2 bad
+                           invocation.
 ! mrd pin <PAGE> <TARGET>#<SELECTOR> [--vibe] [--dry]
-                           the attestation verb: record in PAGE's meridian-lock
-                           block that it draws from TARGET#SELECTOR at that
-                           section's content fingerprint, and give the target a
-                           stable slug ^block-id to be addressed by. PAGE is the
-                           drawing end (A pins B); SELECTOR is a sanitized
-                           heading path or a ^id, in the same grammar mrd read
-                           takes. The lock write rides the production splice
-                           choke-point, so the page's content and its lock land
-                           in ONE flocked commit. --vibe additionally writes the
-                           target's blob into git's object store, so the pin is
-                           retrievable before any commit references it. Exits:
-                           0 pinned (or dry) / 1 refused (the engine's message,
-                           verbatim) / 2 bad invocation
+                           attest: record in PAGE's meridian-lock that it draws
+                           from TARGET#SELECTOR at that section's content
+                           fingerprint, and mint a stable ^block-id on the
+                           target. PAGE draws (A pins B); SELECTOR is a
+                           sanitized heading path or ^id (same grammar as mrd
+                           read). Lock write rides the production splice with
+                           the page content (one flocked commit). --vibe also
+                           writes the target blob into git's object store so
+                           the pin is retrievable before any commit references
+                           it. Exits: 0 pinned|dry / 1 refused / 2 bad
+                           invocation.
 ! mrd repair [PAGE] [--dry]
-                           lost-pin repair by git-history walk. A pin is LOST
-                           when BOTH planes are dark: the live target no longer
-                           verifies the fingerprint AND git no longer holds the
-                           recorded blob — a red pin whose blob is still held is
-                           ordinary drift and is not touched. ONE git log plus
-                           ONE cat-file --batch recover every recorded version of
-                           the lost targets; a version whose content the pin's
-                           own fingerprint verifies IS the pinned content, and
-                           the repair rewrites that pin's hash to that version's
-                           blob — object, selector and fingerprint are NEVER
-                           rewritten, so a genuinely drifted target stays red
-                           after a repair. No matching version anywhere in the
-                           history is a TRUE LOSS: reported, never auto-fixed,
-                           nothing invented. Pins naming another root are outside
-                           this handle's jurisdiction and their count is stated.
-                           --dry is the skip-the-final-write rehearsal (the walk
-                           runs, the lock write does not), never a diff face.
-                           Progress counts go to stderr, so --json stays clean.
-                           Exits: 0 nothing lost or all repaired (or dry) / 1 a
-                           TRUE LOSS / 2 bad invocation
+                           lost-pin repair via git history. LOST = live target
+                           no longer verifies the fingerprint AND git no longer
+                           holds the recorded blob (red pin with blob still
+                           held = ordinary drift, not touched). A version whose
+                           content matches the pin's fingerprint is restored by
+                           rewriting only the pin's hash to that blob —
+                           object/selector/fingerprint never rewritten, so true
+                           drift stays red. No matching version = TRUE LOSS
+                           (reported, never invented). Pins on another root:
+                           outside jurisdiction (count stated). --dry runs the
+                           walk, skips the lock write. Exits: 0
+                           none-lost|all-repaired|dry / 1 TRUE LOSS / 2 bad
+                           invocation.
 ! mrd retire <report|mark> [--id ID] [--dry-run] [--expect-root ROOT]
-                           the type-2 retirement DSL: sweep markdown `~~`
-                           markers over the terms declared in meridian-retire
-                           blocks, then run over those markers and report. A
-                           marker is `~~term~~ replacer (retired: ID)` —
-                           visible, non-destructive, and carrying an opaque KEY,
-                           never an address; the ruled array-hpath link to the
-                           holding section lives once, in the block. mark is
-                           idempotent by construction: a second run writes
-                           nothing, leaves the fingerprint byte-identical, and
-                           still prints its count. mark REQUIRES --expect-root
-                           (a file-set-grain world guard, chained across the
-                           sweep) unless --dry-run; quiesce the fleet and commit
-                           the vault first — the guard catches their violation,
-                           it does not replace them. The report labels every
-                           number measured or declared and never inspects a
-                           test. Exits: 0 clean / 1 a refusal or an open
-                           retirement / 2 bad invocation
+                           type-2 retirement DSL: sweep
+                           `~~term~~ replacer (retired: ID)` markers over terms in
+                           meridian-retire blocks, then report. Marker carries
+                           an opaque KEY, never an address; the array-hpath
+                           link lives once in the block. mark is idempotent
+                           (second run writes nothing, fp byte-identical, still
+                           prints count). mark
+                           REQUIRES --expect-root (file-set world guard) unless
+                           --dry-run; quiesce fleet + commit vault first.
+                           report
+                           labels measured vs declared, never inspects a test.
+                           Exits: 0 clean / 1 refusal or open retirement / 2
+                           bad
+                           invocation.
   mrd walk <PAGE> [--down] [--depth N]
-                           the context-assembly listing over the meridian-lock
-                           pin graph: up (default) = what PAGE draws from, --down =
-                           who pins PAGE + blast radius (--depth 1 = direct
-                           dependents). Read-only; every answer cites the revs
-                           it read. Exits: 0 clean / 1 a red edge / 2 bad
-                           invocation or in-snapshot cycle
+                           pin-graph context assembly. up (default) = what PAGE
+                           draws from; --down = who pins PAGE + blast radius
+                           (--depth 1 = direct). Every answer cites the revs it
+                           read. Exits: 0 clean / 1 red edge / 2 bad invocation
+                           or in-snapshot cycle.
   mrd rules [PATH] [--workspace | --user]
-                           the effective-rules print verb: what governs at PATH
-                           (default cwd) after id-based override resolution.
-                           Per rule id, one block — the winning page with its
-                           rev and scope, then every page it SHADOWS beneath it,
-                           winner first in ladder order, never collapsed (`git
-                           config --show-origin`). The scope ladder is user
-                           space (rules under the MERIDIAN.md anchor's scope) ->
-                           workspace root -> folder/session tree, and resolution
-                           is NARROWED to PATH's own chain: a same-id page on a
-                           sibling chain is no conflict. `armed=` is a SEPARATE
-                           column, read from the attested armed set (never
-                           recomputed), so `registered here` and `armed here`
-                           stay distinct — `armed=-` unarmed, `armed=<mode>`
-                           armed on the page that governs,
-                           `armed=<mode>@<page>` armed on a different page (the
-                           freeze: arming pins resolution, later discovery never
-                           moves it), `(drifted)`/`(missing)` when the pinned
-                           page no longer stands. An id in collision at one
-                           scope on one chain renders REFUSED naming every tied
-                           page — never an arbitrary winner, never omitted.
-                           --workspace prints the workspace-root layer alone;
-                           --user the user layer alone (empty, and saying so,
-                           when no MERIDIAN.md anchors a user scope). Read-only:
-                           arms nothing, mints no receipt, spends no cap.
-                           Exits: 0 clean / 1 a finding (a collision, a refused
-                           rule page, a red armed row, an unreadable armed set)
-                           / 2 bad invocation or a PATH outside the workspace
-  mrd config               the MERIDIAN.md config plane: resolve the bootstrap
-                           chain (MERIDIAN_CONFIG, then $HOME/MERIDIAN.md) and
-                           print what it found — the resolved path, the state,
-                           the origin: which rung supplied that path, which the
-                           path cannot say when both rungs name one file,
-                           the config's own rev and fingerprint, the BOUND mount
-                           table (canonical name / vault name / path, plus each
-                           root's state), and the declared tools in document
-                           order. This is the verb that PUBLISHES the mount
-                           table: the render face elides meridian-* blocks, so
-                           `mrd read` on the same file shows its prose and none
-                           of its entries. Read-only.
-                           Exits: 0 resolved and every root bound / 1 the config
-                           refused, or any root refuses — grey(...) and red(...)
-                           alike, each with its own reason word / 2 bad
-                           invocation
-  mrd check [--core]       the pure READ validity verb (what lies?): layer-0 core
-                           observes every claim against the current tree and reads
-                           the pin plane — the CLAIM half (did pinned content
-                           drift) and the RETRIEVAL half (is the pinned blob
-                           durably anchored). Writes nothing.
-                           WRITE HISTORY IS NOT ASSESSED, by design: the engine
-                           keeps no memory — history is pinned to git at lock, and
-                           anything between locks is not history. So chain
-                           continuity and last-receipt-vs-live are not checked at
-                           all (not grey, NOT CHECKED) and both faces say so with
-                           the reason. A green here is NARROWER than the green this
-                           verb once returned: it means the world still matches the
-                           pins, and nothing about how it got that way.
-                           Archaeology is git; attribution is transcript JSONL.
-                           --commit-gate --require-pins REFUSES a corpus that
-                           declares no pin at all. Opt-in, and only with
-                           --commit-gate. By default a pinless corpus PASSES: the
-                           gate asks `does the world still match the pins`, and
-                           over zero pins that is vacuously true, so nothing is
-                           unknown because nothing was asked. A grey pin or an
-                           unaskable object store still fails CLOSED either way —
-                           that is a question that WAS put and could not be
-                           answered, which is a different thing. The flag is for
-                           callers that want no-coverage to mean refuse in the
-                           EXIT CODE, since a shell cannot read a disclosure line.
-                           Exits: 0 green / 1 a
-                           finding, grey(cannot-assess), or no-pin-coverage under
-                           --require-pins — the exit says do-not-proceed, the
-                           reason word says why / 2 bad invocation
-  mrd skill hook           EMIT the commit-fence contract to stdout, and nothing
-                           else: the markdown IS the contract — what to place, at
-                           which three doors (pre-commit, pre-merge-commit,
-                           pre-applypatch, per $GIT_COMMON_DIR), the fence body
-                           verbatim (it runs `mrd check --commit-gate` and
-                           rejects on its exit), the MRD_HOOK_FORCE grammar, the
-                           generation line, when to REFUSE to place it (a
-                           submodule, core.hooksPath set, a foreign hook, a fence
-                           from a newer engine, a workspace that is not the
-                           worktree top-level, a non-repository), and how to
-                           verify. The READER of the document does the placing:
-                           this verb writes no file, reads no git dir, resolves
-                           no workspace. `mrd check` reports what a checkout is
-                           actually fenced by, on its fence: line. There is no
-                           --json face — the document is markdown. Exits: 0 the
-                           document was written to stdout / 2 bad invocation
-  mrd cache ls             list registered drawers
-! mrd cache clean [--all]  reap stale / orphaned / retired drawers (--all: every
-                           drawer)
-  mrd sql <query>          run SQL over an ephemeral in-memory projection of
-                           the corpus, with the honest-tense freshness frame
-  mrd status [--cwd PATH]  the bare, pure-local drift + freshness summary: the
-                           armed INDEX line (armed / drifted / forced-since
-                           -realise), the composed three-axis line (pin color ·
-                           anchor state · convention severity), the anchor
-                           -qualified tip axis, and one violation row per forced
-                           write. O(armed) — reads ONE index file, fetch-less,
-                           never evaluates a predicate. Exits: 0 clean / 1 a
-                           finding (drift / forced / faulted INDEX) / 2 bad
-                           invocation
-! mrd daemon               run the registry daemon in the foreground
-  mrd test --corpus <SPEC> tier-2 corpus runner: drive CHECK/HOOK rule pages over
-                           SYNTHETIC changes and report fire-where-expected, zero
-                           dead rules, fuel + heap p50/p99, and FIX/HOOK quiescence
-                           by reachable trigger graph + counterfactual fuel. Exits:
-                           0 clean / 1 a mismatch, dead rule, budget finding, or
-                           failed quiescence / 2 malformed spec or unreadable corpus
+                           effective rules at PATH (default cwd) after id-based
+                           override. Per id: winning page (rev + scope), then
+                           pages it SHADOWS (winner first; never collapsed).
+                           Ladder: user
+                           space (MERIDIAN.md-anchored) → workspace root →
+                           folder/session; narrowed to PATH's chain (sibling
+                           same-id is no conflict). armed= is a separate column
+                           from the
+                           attested armed set (not recomputed): armed=- |
+                           armed=<mode> | armed=<mode>@<page> (freeze: arming
+                           pins resolution); (drifted)/(missing) when the
+                           pinned page no
+                           longer stands. Collision at one scope on one chain =
+                           REFUSED naming every tied page. --workspace / --user
+                           print that layer alone. Exits: 0 clean /
+                           1 finding (collision | refused rule page | red armed row)
+                           / 2 bad invocation or PATH outside workspace.
+  mrd config               MERIDIAN.md config plane: resolve bootstrap
+                           (MERIDIAN_CONFIG, then $HOME/MERIDIAN.md) and print
+                           path, state, origin, rev/fingerprint, BOUND mount
+                           table (canonical/vault/path + root state), and
+                           declared tools. This verb PUBLISHES the mount table
+                           (render face elides meridian-* blocks, so mrd read
+                           shows prose only). Exits: 0 every root bound / 1
+                           config or root refused / 2 bad invocation.
+  mrd check [--core] [--commit-gate [--require-pins]]
+                           pure READ validity (what lies?). Layer-0 core: claim
+                           plane (pinned content drift) + retrieval plane
+                           (pinned blob
+                           durably anchored). WRITE HISTORY is NOT assessed
+                           (NOT CHECKED, never grey) — engine keeps no memory;
+                           history is git at lock. Green means the world still
+                           matches the pins, not how it got there.
+                           --commit-gate --require-pins refuses a pinless
+                           corpus (opt-in; default pinless PASSES as vacuously
+                           true). Grey pin / unaskable object store fails
+                           CLOSED either way. Exits: 0 green / 1
+                           finding|grey|no-pin-coverage under --require-pins /
+                           2 bad invocation.
+  mrd skill hook           EMIT the commit-fence contract to stdout
+                           only: the markdown IS the contract (doors;
+                           fence body runs mrd check --commit-gate;
+                           MRD_HOOK_FORCE; generation; when to REFUSE to
+                           place; how to verify). The READER places it —
+                           this verb writes no file, reads no git dir,
+                           resolves no workspace. mrd check reports what
+                           a checkout is actually fenced by, on its
+                           fence: line. There is no --json face — the document is markdown.
+                           Exits: 0 document on stdout / 2 bad invocation.
+  mrd cache ls             list registered drawers.
+! mrd cache clean [--all]  reap stale / orphaned / retired drawers (--all:
+                           every drawer).
+  mrd sql <query>          SQL over an ephemeral in-memory corpus projection
+                           (honest-tense freshness frame).
+  mrd status [--cwd PATH]  pure-local drift + freshness: armed INDEX line,
+                           three-axis line (pin · anchor · convention), tip
+                           axis,
+                           one row per forced write. O(armed), fetch-less. Exits: 0
+                           clean / 1 finding / 2 bad invocation.
+! mrd daemon               run the registry daemon in the foreground.
+  mrd test --corpus <SPEC> tier-2 corpus runner: drive CHECK/HOOK rules over
+                           SYNTHETIC changes; report fire-where-expected, zero
+                           dead rules, fuel+heap p50/p99, FIX/HOOK quiescence.
+                           Exits: 0 clean / 1 mismatch|dead|budget|quiescence /
+                           2 bad spec.
   mrd test --history WORKSPACE --rule PAGE [--spec PAGE]
-                           the history tier: replay the workspace's OWN git
-                           history (one row per commit-and-path, the commit and
-                           its first parent giving the write's after/before
-                           bytes), rebuild the docs, and compare PAGE's CHECK
-                           refusals with the golden list declared in --spec's
-                           ```golden fence (a HOOK-only page refuses zero
-                           changes). History is git — the engine keeps no memory
-                           of its own, so an item is named <commit>:<path> and
-                           the retired receipt journal names nothing. --spec
-                           names a spec page whose `rule:` reference must resolve
-                           to PAGE; omitting it declares nothing. The report
-                           always names the exact history span; a would-refuse
-                           item absent from that fence fails, a declared item
-                           passes with its reason rendered, and unreconstructable
-                           rows are counted grey, never guessed. Exits: 0 clean /
-                           1 an undeclared would-refuse item / 2 tool failure
+                           history tier: replay WORKSPACE git history
+                           (commit:path rows from commit vs first parent),
+                           rebuild docs, compare PAGE CHECK refusals to
+                           --spec's ```golden fence (HOOK-only page refuses
+                           zero). --spec's rule: must resolve to PAGE; omit =
+                           declare nothing. Undeclared would-refuse fails;
+                           unreconstructable rows are grey. Exits: 0 clean / 1
+                           undeclared would-refuse / 2 tool failure.
 ! mrd run <PAGE> [TASK] [-- ARGS]
-                           run a task block addressed by the page's frontmatter
-                           (task.<name> bindings; PAGE is workspace-relative).
-                           TASK omitted: one declared task runs, several list
-                           and exit 2. Exits: 0 clean / 1 run refused or failed
-                           / 2 bad invocation
+                           run a task block from page frontmatter (task.<name>;
+                           PAGE workspace-relative). TASK omitted: one declared
+                           task runs, several list and exit 2. Exits: 0 clean /
+                           1 refused|failed / 2 bad invocation.
 ! mrd script [--files PATH]... [--args JSON] [--dry] [--actor A] [--now T]
           [--if-fingerprint FP] [--expect-armed DIGEST] [--receipt PATH#ANCHOR]
-                           evaluate inline Starlark from STDIN as the caller and
-                           commit what it arms. The module top level IS the
-                           program: read(PATH[, section=]) reads through the
-                           daemon, put(PATH, props={..} | section=.., append=..)
-                           arms wire plan edits, and ONE guarded splice applies
-                           them. The transaction stands still — the entry pins
-                           one fingerprint and the commit guards on it, so a
-                           world that moved refuses and NOTHING lands. Single
-                           attempt: the retry loop is the caller's. --dry
-                           rehearses (everything except disk); --json emits the
-                           trace, which is the contract a host renders from.
-                           Exits: 0 committed or nothing armed / 1 conflict,
-                           fault or refusal / 2 bad invocation
+                           evaluate inline Starlark from STDIN as the caller
+                           and commit what it arms. Top level IS the program:
+                           read(PATH[, section=]), put(PATH,
+                           props=|section=,append=) arms wire plan edits; ONE
+                           guarded splice applies them. Entry pins one
+                           fingerprint; commit guards on it — world moved ⇒
+                           refuse, nothing lands. Single attempt (retry is the
+                           caller's). --dry rehearses; --json emits the trace.
+                           Exits: 0 committed|nothing-armed / 1
+                           conflict|fault|refusal / 2 bad invocation.
 ! mrd new <KIND> <ID> [--dry] [--actor A] [--now T]
-                           file birth: resolve the def (presets/<KIND>.md or a
-                           page path), fill its ^template, validate the filled
-                           record against its ^properties, and birth the first
-                           rev through the guarded create (inline birth
-                           receipt). An invalid def refuses def_invalid naming the
-                           rule; an occupied target refuses cas_mismatch. Exits: 0
-                           born (or dry) / 1 refused / 2 bad invocation
+                           file birth: resolve def (presets/<KIND>.md or page
+                           path), fill ^template, validate against ^properties,
+                           birth first rev via guarded create (inline birth
+                           receipt). Invalid def → def_invalid; occupied →
+                           cas_mismatch. Exits: 0 born|dry / 1 refused / 2 bad
+                           invocation.
 ! mrd unfold <PRESET> [--dry] [--actor A] [--now T]
-                           materialize a preset's declared scaffold: every
-                           # Unfold file is born through the guarded create, so
-                           each carries a birth receipt; an existing path refuses
-                           via the if_absent CAS, byte-untouched. Exits: 0 all
-                           born (or dry) / 1 a path already existed / 2 bad
-                           invocation
+                           materialize preset scaffold: each # Unfold file via
+                           guarded create (birth receipt); existing path
+                           refuses if_absent CAS, byte-untouched. Exits: 0 all
+                           born|dry / 1 path existed / 2 bad invocation.
 ! mrd reconcile <PRESET> [--prune] [--dry] [--actor A] [--now T]
-                           reconcile the tree toward a preset's declared scaffold:
-                           materialize ALL missing declared paths (guarded
-                           create). --prune removes ONLY declared-ephemeral files
-                           (guarded remove) + empty-undeclared dirs beneath the
-                           scaffold; undeclared content renders as findings,
-                           NEVER a prune. Exits: 0 converged (or dry) / 1 a
-                           finding / 2 bad invocation
+                           reconcile tree to preset scaffold: materialize all
+                           missing declared paths (guarded create). --prune
+                           removes only declared-ephemeral files + empty
+                           undeclared dirs; undeclared content = findings,
+                           never pruned. Exits: 0 converged|dry / 1 finding / 2
+                           bad invocation.
 ! mrd realise <PAGE> [--dry]
-                           the reconciliation loop: observe -> check ->
-                           apply (only on drift, once) -> re-check over the page's
-                           declared claim (realise.field/realise.expected +
-                           realise.apply). Apply rides mrd run. Reports one terminal
-                           state: converged / drifted-fixed / non-convergent /
-                           pending-agent. Exits: 0 converged/drifted-fixed (or dry)
-                           / 1 non-convergent or pending-agent / 2 bad invocation
+                           reconciliation loop: observe → check → apply (only
+                           on drift, once) → re-check over the page's declared
+                           claim (realise.field/expected + realise.apply).
+                           Apply rides mrd run. Terminal: converged /
+                           drifted-fixed / non-convergent / pending-agent.
+                           Exits: 0 converged|drifted-fixed|dry / 1
+                           non-convergent|pending-agent / 2 bad invocation.
 
 options:
-  --json                   emit JSON instead of a human table
-  --env KEY=VALUE          (run) supply one declared env entry (repeatable)
-  --dry                    (run) starlark: evaluate hermetically and print the
-                           full effect set, apply nothing; bash: show the block
-                           + resolved caps, refuse to exec
-  --list                   (run) list the page's tasks with contracts and caps
+  --json                   emit JSON instead of a human table.
+  --env KEY=VALUE          (run) supply one declared env entry (repeatable).
+  --dry                    (run) starlark: evaluate hermetically, print full
+                           effect set, apply nothing; bash: show block + caps,
+                           refuse to exec.
+  --list                   (run) list the page's tasks with contracts and caps.
   --files PATH             (script) one host-enumerated path, bound inert as
-                           `files` (repeatable). Paths only — content enters
-                           through read() alone, which is what makes a run
-                           replayable
-  --args JSON              (script) a JSON object of strings, bound inert as
-                           the `args` dict — callers name inputs, not count them
-  --if-fingerprint FP      (script, put, pin) the world-grain guard: refuse
-                           unless the workspace still stands at FP
-  --expect-armed DIGEST    (script) the armed-set guard: refuse BEFORE the
-                           splice is issued unless what this run armed hashes
-                           to DIGEST. A host that gates a script's write set
-                           runs the entry twice — once --dry to see the set,
-                           then to commit — and passes the arm trace's own
-                           `armed_digest` here, so the commit cannot quietly
-                           arm something the gate never saw. The receipt is
-                           NOT an armed row and is outside this value
-  --history                (test) the history tier over WORKSPACE (a git repo)
-  --rule PAGE              (test --history) the workspace-relative rule PAGE to run
-  --spec PAGE              (test --history) the workspace-relative SPEC page whose
-                           ```golden fence declares the exceptions; its `rule:`
-                           reference must resolve to --rule's PAGE. Omitted:
-                           nothing is declared
-  -V, --version            print the build identity — package version + the
-                           commit this binary was built from (`unknown` when
-                           the build could read no repository)
-  -h, --help               print this help
+                           files (repeatable). Paths only — content enters
+                           through read() alone.
+  --args JSON              (script) JSON object of strings, bound inert as the
+                           args dict.
+  --if-fingerprint FP      (script, put, pin) world-grain guard: refuse unless
+                           the workspace still stands at FP.
+  --expect-armed DIGEST    (script) refuse BEFORE splice unless this run's
+                           armed set hashes to DIGEST. Hosts that gate write
+                           sets run --dry first and pass the trace's
+                           armed_digest. Receipt is not an armed row.
+  --history                (test) the history tier over WORKSPACE (a git repo).
+  --rule PAGE              (test --history) workspace-relative rule PAGE to
+                           run.
+  --spec PAGE              (test --history) workspace-relative SPEC page whose
+                           ```golden fence declares exceptions; its rule: must
+                           resolve to --rule's PAGE. Omitted: nothing declared.
+  -V, --version            build identity: package version + commit this binary
+                           was built from (`unknown` when no repository was
+                           readable).
+  -h, --help               print this help.
 ";
 
 /// A command failure: the process exit code plus a diagnostic for stderr.
