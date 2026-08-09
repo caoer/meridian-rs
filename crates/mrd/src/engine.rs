@@ -309,19 +309,20 @@ fn dial_links(socket: &Path, workspace: &Path, path: Option<&str>) -> io::Result
     }
 }
 
-/// Map an engine refusal to the CLI exit triad (shared by `read`/`put`): `bad_request` is a bad
-/// invocation (exit 2); every other refusal is a finding (exit 1).
+/// Map an engine refusal to the CLI exit triad (shared by `read`/`put`): EVERY engine refusal
+/// is the findings leg (exit 1) — `bad_request` included, because a request the ENGINE judges
+/// invalid (a §4.4 batch overlap, a multi-line upsert value) is the engine refusing a
+/// well-formed invocation, not the CLI refusing the invocation itself. Exit 2 belongs to the
+/// CLI's own refusals (flags, stdin), which are minted before any engine contact and never
+/// pass through here (dogfood P3-b: the split is what lets a script tell "fix your command
+/// line" from "read the engine's message").
 pub(crate) fn refusal_fail(error: &ErrorBody) -> Fail {
     let mut text = match &error.message {
         Some(message) => message.clone(),
         None => spelled(error),
     };
     text.push_str(&extras(error));
-    if error.code == wire::ErrorCode::BadRequest {
-        Fail::tool(text)
-    } else {
-        Fail::findings(text)
-    }
+    Fail::findings(text)
 }
 
 /// A message-less refusal, spelled out: name the failure, say what did not happen, give the fix.

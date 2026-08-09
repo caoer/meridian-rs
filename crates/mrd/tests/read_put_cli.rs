@@ -442,7 +442,8 @@ fn read_frag_dewey_miss_refuses_on_the_dewey_lane() {
 
 /// The either/or law is untouched by the door: any `#FRAG` beside
 /// `--section` still refuses whole, whatever the fragment's kind — the
-/// engine's `bad_request`, exit 2.
+/// engine's `bad_request`, exit 1 (the exit taxonomy routes every engine
+/// refusal to 1; 2 is the CLI's own refusals, before engine contact).
 #[test]
 fn read_frag_with_sections_still_refuses_whole() {
     let sb = sandbox();
@@ -451,7 +452,7 @@ fn read_frag_with_sections_still_refuses_whole() {
         let out = sb.run(&ws, &["read", frag, "--section", "Beta"]);
         assert_eq!(
             code(&out),
-            2,
+            1,
             "both planes is a bad_request ({frag}): {}",
             stderr(&out)
         );

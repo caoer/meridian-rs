@@ -21,8 +21,9 @@
 //! rev projection, so warm and degrade answers never drift. Human output is
 //! `rendered_text` verbatim; `--json` wraps the projected body in the house frame.
 //!
-//! Exit triad: 0 served / 1 the engine refused (the message is the engine's
-//! verbatim, golden-pinned string) / 2 bad invocation or `bad_request`.
+//! Exit triad: 0 served / 1 the engine refused (EVERY engine refusal,
+//! `bad_request` included — the message is the engine's verbatim, golden-pinned
+//! string) / 2 bad invocation (the CLI's own refusals, before any engine contact).
 
 use std::io::BufReader;
 use std::os::unix::net::UnixStream;
@@ -36,8 +37,8 @@ use crate::engine::{self, EngineSource};
 use crate::{Fail, Format, current_dir};
 
 /// Run `mrd read <PATH>[FRAG] [--section SEL] [--json]`. Errors [`Fail`] — exit 2 on a bad
-/// invocation or a `bad_request` refusal; exit 1 on any other engine refusal (`ref_not_found`
-/// …), message verbatim.
+/// invocation (the CLI's own refusals, before any engine contact); exit 1 on any engine
+/// refusal (`bad_request`, `ref_not_found` …), message verbatim.
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let parsed = Read::parse(args)?;
     let cwd = current_dir()?;
