@@ -14,7 +14,7 @@
 //! **No serde on any public type** — model facts reach the wire only via
 //! the serving host's projection seam (law 3).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, btree_map};
 use std::ops::Range;
 
 use addr::{Addr, AddrError, MountName, MountSet};
@@ -1443,10 +1443,13 @@ enum MerkleEntry {
 
 impl MerkleDir {
     /// Insert one file at its `/`-split path (last write wins on a duplicate
-    /// path). Empty segments are dropped; a path that collides with an existing
-    /// file prefix is ignored — a hash domain never mixes a file and a directory
-    /// at one name. Splitting on the byte `0x2F` is exact: UTF-8 continuation
-    /// bytes are ≥ `0x80`, so no multi-byte sequence can hide a `/`.
+    /// path). Empty segments are dropped; a collision between a file and a
+    /// directory at one name is ignored in BOTH directions — a path under an
+    /// existing file prefix, and a file at a name holding an existing
+    /// directory — because a hash domain never mixes a file and a directory
+    /// at one name, and neither side may silently destroy the other.
+    /// Splitting on the byte `0x2F` is exact: UTF-8 continuation bytes are
+    /// ≥ `0x80`, so no multi-byte sequence can hide a `/`.
     fn insert(&mut self, path: &[u8], digest: [u8; 32]) {
         let segs: Vec<&[u8]> = path
             .split(|b| *b == b'/')
@@ -1466,8 +1469,16 @@ impl MerkleDir {
                 MerkleEntry::File(_) => return,
             }
         }
-        dir.entries
-            .insert(file_name.to_vec(), MerkleEntry::File(digest));
+        match dir.entries.entry(file_name.to_vec()) {
+            btree_map::Entry::Occupied(mut slot) => {
+                if let MerkleEntry::File(existing) = slot.get_mut() {
+                    *existing = digest;
+                }
+            }
+            btree_map::Entry::Vacant(slot) => {
+                slot.insert(MerkleEntry::File(digest));
+            }
+        }
     }
 
     /// Fold this directory to its 32-byte node hash (§12.2): children ordered by
@@ -3226,6 +3237,38 @@ mod tests {
             with_empty.fold(),
             "empty dir contributes nothing"
         );
+    }
+
+    /// `MerkleDir::insert` collision symmetry (review finding, three teams:
+    /// grok G-P3-1 + sonnet P3 + fable F9): a hash domain never mixes a file
+    /// and a directory at one name, and the guard must hold in BOTH
+    /// directions. The file-prefix arm already ignores `a/b.md` after file
+    /// `a`; this gate pins the mirror — a file landing on an existing
+    /// DIRECTORY name is ignored, never allowed to silently drop the subtree.
+    /// Unreachable from the fs walk (a real tree cannot hold both); pub-API
+    /// hygiene.
+    #[test]
+    fn file_on_dir_collision_preserves_subtree() {
+        let subtree_only = merkle_root(&[("a/b.md", b"x" as &[u8])], 0);
+        let file_on_dir = merkle_root(&[("a/b.md", b"x" as &[u8]), ("a", b"y" as &[u8])], 0);
+        assert_eq!(
+            file_on_dir, subtree_only,
+            "a file colliding with an existing directory is ignored — the subtree survives"
+        );
+
+        // The already-guarded mirror stays: a path under an existing file
+        // prefix is ignored.
+        let file_only = merkle_root(&[("a", b"y" as &[u8])], 0);
+        let dir_under_file = merkle_root(&[("a", b"y" as &[u8]), ("a/b.md", b"x" as &[u8])], 0);
+        assert_eq!(
+            dir_under_file, file_only,
+            "a path under an existing file prefix is ignored"
+        );
+
+        // Last write wins on a duplicate PATH — untouched by the guard.
+        let second = merkle_root(&[("a", b"y2" as &[u8])], 0);
+        let dup = merkle_root(&[("a", b"y1" as &[u8]), ("a", b"y2" as &[u8])], 0);
+        assert_eq!(dup, second, "duplicate path: last write still wins");
     }
 
     /// The §12.2 varint is unsigned LEB128 (single byte below 128).
