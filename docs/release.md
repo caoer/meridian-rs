@@ -90,7 +90,7 @@ specifies, at `hello` with `contract:"v3"`.
 | Promise | Law |
 |---|---|
 | One wire door — the daemon's unix socket; NDJSON line dialogue | §3.1, §3.3 |
-| Raw-lexeme `id` validation before typed decode; `id:null` + `id_raw` on a bad lexeme | §3.1 |
+| The `id` **echo** for conforming ids — a JSON integer lexeme in `[0, 2^53)` comes back unchanged. **A non-conforming lexeme is nulled and the request is still SERVED**: no refusal, no `id_raw`. §3.1 requires the refusal and `id_raw`, the law STANDS, and the artifact does not yet serve it — declared, measured, at `wire-contract.md` §18 row 9 | §3.1; §18 row 9 |
 | Strict server / tolerant client; unknown request fields reject loudly | §3.2 |
 | `node_rev` is MUST on every `toc`/`cat`/`extract` node while `splice ∈ caps` | §3.2 |
 | Every error carries `code` + `recovery` from the CLOSED six-class enum | §8 |
