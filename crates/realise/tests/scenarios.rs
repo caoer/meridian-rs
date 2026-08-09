@@ -465,3 +465,82 @@ fn a_malformed_now_refuses_the_card_mint() {
         "no card is born on a malformed clock"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The receipt address plane: two invocations against the SHARED
+// `receipts/realise.md` must not mint the same anchor (contract §6.6).
+// ---------------------------------------------------------------------------
+
+/// Every `^id` published in the receipts file, in order.
+fn receipt_anchors(root: &fs::WorkspaceRoot) -> Vec<String> {
+    std::fs::read_to_string(root.0.join("receipts/realise.md"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.rsplit_once(" ^").map(|(_, id)| id.to_owned()))
+        .collect()
+}
+
+fn converge_claim(page: &str) -> Claim {
+    Claim {
+        selector: format!("{page}-status-must-be-done"),
+        rule: None,
+        check: field_check(page, "status", "done"),
+        apply: Some(binding(page, "fix")),
+        retry_budget: 2,
+    }
+}
+
+/// THE REGRESSION (dogfood s13-88): the receipt writer numbered every
+/// invocation from `^r-000001` into one shared file, so invocation 2 re-minted
+/// invocation 1's id and `read --section '^r-000001'` refused ambiguous — the
+/// receipt was published and unaddressable. The anchor now carries the
+/// caller's invocation id, so it is unique across invocations.
+#[test]
+fn two_invocations_publish_distinct_receipt_anchors() {
+    // Two pages, one per invocation — the shared file is `receipts/realise.md`,
+    // which is where the collision lived. (Re-drifting ONE page by hand instead
+    // would trip the run plane's foreign-edit guard, not this gate.)
+    let (_tmp, root, scratch) = workspace(&[
+        ("work-a.md", CONVERGES_PAGE),
+        ("work-b.md", CONVERGES_PAGE),
+    ]);
+
+    let mut first = spec(&scratch);
+    first.invocation_id = "realise-1000-11".to_owned();
+    realise(&root, &[converge_claim("work-a.md")], &first).unwrap();
+
+    let mut second = spec(&scratch);
+    second.invocation_id = "realise-2000-22".to_owned();
+    realise(&root, &[converge_claim("work-b.md")], &second).unwrap();
+
+    let anchors = receipt_anchors(&root);
+    assert_eq!(anchors.len(), 2, "one receipt per applying invocation: {anchors:?}");
+    assert_ne!(
+        anchors[0], anchors[1],
+        "the shared receipts file must not carry a duplicate block id: {anchors:?}"
+    );
+    assert!(
+        anchors[0].contains("realise-1000-11") && anchors[1].contains("realise-2000-22"),
+        "each anchor carries its own invocation id: {anchors:?}"
+    );
+}
+
+/// An invocation id outside the block-id charset would mint an anchor no
+/// strict door can address, so it refuses at the mint — before any apply runs
+/// (§2.4 charset, §6.6 the caller's minting duty).
+#[test]
+fn an_invocation_id_outside_the_block_id_charset_refuses_before_applying() {
+    let (_tmp, root, scratch) = workspace(&[("work.md", CONVERGES_PAGE)]);
+
+    let mut s = spec(&scratch);
+    s.invocation_id = "realise_bad id".to_owned(); // `_` and a space (ruling 011)
+    let err = realise(&root, &[converge_claim("work.md")], &s).unwrap_err();
+    assert!(
+        format!("{err:?}").contains("BadInvocationId"),
+        "expected the charset refusal, got {err:?}"
+    );
+    assert!(
+        !root.0.join("receipts/realise.md").exists(),
+        "no receipt is published on a refused mint"
+    );
+}
