@@ -78,7 +78,7 @@ ship by August
 - blocked on [[roadmap]]
 ```
 
-The remaining fixture bytes (every file this document hashes **at S0 or in the §12.3 example** is printed in this section; the S1/S2 receipt entries are the one declared exception — §18 row 10):
+The remaining fixture bytes (every file this document hashes is printed — at S0 in this section, and the S1/S2 receipt entries in §6.3, whose two lines ARE the fixture's bytes since the 2026-08-09 template rebaseline. The declared exception §18 row 10 carried is CLOSED; the row records how it closed):
 
 - `receipts/2026-07-18.md` at S0, exact bytes (26 B — the `—` is 3-byte UTF-8): `# Receipts — 2026-07-18` + LF.
 - `.github/README.md`, exact bytes (11 B): `# CI notes` + LF.
@@ -105,13 +105,13 @@ ignore:
 # Hash domain
 ```
 
-Timeline: **S0** →(E3 edit)→ **S1** (`plan.md` 139 B, receipts 249 B) →(E4 append)→ **S2** (`plan.md` 150 B, receipts 474 B). Roots:
+Timeline: **S0** →(E3 edit)→ **S1** (`plan.md` 139 B, receipts 287 B) →(E4 append)→ **S2** (`plan.md` 150 B, receipts 550 B). Roots:
 
 | State | Fingerprint (full width, never truncated) |
 |---|---|
 | R0 (S0) | `b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9` |
-| R1 (S1) | `b3:10769ae1c77f5646750f3f52df2d055156b411145a02b8361ecd32af1357a1b7` |
-| R2 (S2) | `b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68` |
+| R1 (S1) | `b3:7f3b44376c719be236279e168c22fa2f4d346cd6e5da5bcf0784adb72e7c1f12` |
+| R2 (S2) | `b3:6e866e13b5e65ef9961c050f8a621cf1980b00ee293be650deef5f4dbc6823f0` |
 
 ## §1 The five wire nouns
 
@@ -276,16 +276,16 @@ toc is the complete write kit: hpath + `node_rev` per section, anchors with thei
 ```json
 {"id":4,"op":"toc","path":"receipts/2026-07-18.md"}
 {"id":4,"ok":true,"body":{
- "path":"receipts/2026-07-18.md","file_rev":"2731acfa39bbb92c",
- "fingerprint":"b3:10769ae1c77f5646750f3f52df2d055156b411145a02b8361ecd32af1357a1b7",
+ "path":"receipts/2026-07-18.md","file_rev":"51ad6428f5b5a898",
+ "fingerprint":"b3:7f3b44376c719be236279e168c22fa2f4d346cd6e5da5bcf0784adb72e7c1f12",
  "nodes":[
-  {"kind":"heading","level":1,"hpath":[{"h":"Receipts — 2026-07-18"}],"span":[0,249],
-   "content_span":[26,249],"node_rev":"2731acfa39bbb92c","text_prefix_16b":"# Receipts — 2"},
-  {"kind":"list_item","anchor":"r-000042","span":[26,248],
-   "node_rev":"639a2dca46f6fcc8","text_prefix_16b":"- splice notes/p"}]}}
+  {"kind":"heading","level":1,"hpath":[{"h":"Receipts — 2026-07-18"}],"span":[0,287],
+   "content_span":[26,287],"node_rev":"51ad6428f5b5a898","text_prefix_16b":"# Receipts — 2"},
+  {"kind":"list_item","anchor":"r-000042","span":[26,286],
+   "node_rev":"60bbee70d4a63a48","text_prefix_16b":"- splice notes/p"}]}}
 ```
 
-The `^r-000042` block echoes as a `list_item` node keyed by its `anchor` ref (§2.1) carrying its own `node_rev` over the block-leaf span (terminator excluded — `[26,248]`, byte-identical to the receipt facts armed in §4.4; §6.3's line is illustrative shape and does not carry these 222 bytes — §6.3, §18 row 10); the lone top-level heading spans the whole file, so its `node_rev` equals `file_rev` (`2731acfa39bbb92c`). An anchor becomes a write target by the same one-hop path as a section.
+The `^r-000042` block echoes as a `list_item` node keyed by its `anchor` ref (§2.1) carrying its own `node_rev` over the block-leaf span (terminator excluded — `[26,286]`, byte-identical to the receipt facts armed in §4.4; §6.3's E3 line IS these 260 bytes since the 2026-08-09 rebaseline, no longer illustrative shape — §6.3, §18 row 10); the lone top-level heading spans the whole file, so its `node_rev` equals `file_rev` (`51ad6428f5b5a898`). An anchor becomes a write target by the same one-hop path as a section.
 
 ### §4.2 cat — read one section, not the disk
 
@@ -356,9 +356,9 @@ Response (S0→S1, all values computed):
     "node_rev_before":"33d5b0e1b27cb48b","node_rev_after":"41f643f034e5681f",
     "span_after":[49,75]}]},
  "receipt":{"path":"receipts/2026-07-18.md","anchor":"r-000042",
-            "node_rev":"639a2dca46f6fcc8","span_after":[26,248]},
+            "node_rev":"60bbee70d4a63a48","span_after":[26,286]},
  "fingerprint_before":"b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9",
- "fingerprint_after":"b3:10769ae1c77f5646750f3f52df2d055156b411145a02b8361ecd32af1357a1b7",
+ "fingerprint_after":"b3:7f3b44376c719be236279e168c22fa2f4d346cd6e5da5bcf0784adb72e7c1f12",
  "seq":1,"verdicts":[]}}
 ```
 
@@ -382,9 +382,9 @@ The append verb is the same op:
     "node_rev_before":"4b8bc385a58da0e0","node_rev_after":"f43203a1f0b4c9a3",
     "span_after":[75,150]}]},
  "receipt":{"path":"receipts/2026-07-18.md","anchor":"r-000043",
-            "node_rev":"c912d4578883f288","span_after":[249,473]},
- "fingerprint_before":"b3:10769ae1c77f5646750f3f52df2d055156b411145a02b8361ecd32af1357a1b7",
- "fingerprint_after":"b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68",
+            "node_rev":"5c6ca7ec00ae279e","span_after":[287,549]},
+ "fingerprint_before":"b3:7f3b44376c719be236279e168c22fa2f4d346cd6e5da5bcf0784adb72e7c1f12",
+ "fingerprint_after":"b3:6e866e13b5e65ef9961c050f8a621cf1980b00ee293be650deef5f4dbc6823f0",
  "seq":2,"verdicts":[]}}
 ```
 
@@ -401,7 +401,7 @@ Frontmatter-plane write, dry (fm_key node = the full key line, computed: span `[
    {"target":{"fm_key":"title"},
     "node_rev_before":"fa77480c79a853bc","node_rev_after":"fb49e9df2257fab8",
     "span_after":[4,18]}]},
- "fingerprint_before":"b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68",
+ "fingerprint_before":"b3:6e866e13b5e65ef9961c050f8a621cf1980b00ee293be650deef5f4dbc6823f0",
  "fingerprint_after":null,"dry":true,"verdicts":[]}}
 ```
 
@@ -419,7 +419,7 @@ Frontmatter-plane write, dry (fm_key node = the full key line, computed: span `[
 {"id":71,"ok":true,"body":{"dest":"notes/plan.md","span":[49,75]}}
 
 {"id":72,"op":"resolve","from":"notes/plan.md","ref":"2026-07-18"}
-{"id":72,"ok":true,"body":{"dest":"receipts/2026-07-18.md","span":[0,474]}}
+{"id":72,"ok":true,"body":{"dest":"receipts/2026-07-18.md","span":[0,550]}}
 
 {"id":73,"op":"resolve","from":"notes/plan.md","ref":"plan#Goals#Q9"}
 {"id":73,"ok":false,"error":{"code":"ref_not_found","recovery":"refresh",
@@ -438,8 +438,8 @@ The mined record's biggest read pattern (`read`-as-oracle, 188×) becomes a fact
 ```json
 {"id":80,"op":"links","path":"notes/plan.md"}
 {"id":80,"ok":true,"body":{
- "as_of_fingerprint":"b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68",
- "live_fingerprint":"b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68",
+ "as_of_fingerprint":"b3:6e866e13b5e65ef9961c050f8a621cf1980b00ee293be650deef5f4dbc6823f0",
+ "live_fingerprint":"b3:6e866e13b5e65ef9961c050f8a621cf1980b00ee293be650deef5f4dbc6823f0",
  "changes_seq":2,
  "files":{"notes/plan.md":{
    "resolved":{"receipts/2026-07-18.md":1},
@@ -453,7 +453,7 @@ Shape mirrors the app's `resolvedLinks`/`unresolvedLinks` — per-edge counts; d
 ```json
 {"id":90,"op":"fingerprint"}
 {"id":90,"ok":true,"body":{
- "fingerprint":"b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68","seq":2}}
+ "fingerprint":"b3:6e866e13b5e65ef9961c050f8a621cf1980b00ee293be650deef5f4dbc6823f0","seq":2}}
 ```
 
 `diff` is reserved AT the integrity rung with its shape standing now — the compound front door:
@@ -461,7 +461,7 @@ Shape mirrors the app's `resolvedLinks`/`unresolvedLinks` — per-edge counts; d
 ```json
 {"id":95,"op":"diff",
  "from_fingerprint":"b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9",
- "to_fingerprint":"b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68"}
+ "to_fingerprint":"b3:6e866e13b5e65ef9961c050f8a621cf1980b00ee293be650deef5f4dbc6823f0"}
 {"id":95,"ok":true,"body":{"batches":[ /* Delta seq 1, Delta seq 2 — §7, byte-identical
                                           to the live notification frames */ ]}}
 ```
@@ -547,7 +547,7 @@ A receipt **cannot contain the root it produces**: `fingerprint_after` covers th
 
 **Normative content is the armed-fact set on the wire response** (§4.4), not any particular md line shape. Target identity is always §2.1 form — e.g. `{"hpath":[{"h":"Goals"},{"h":"Q3"}]}` — never a joined string.
 
-Illustrative default receipt line (segment target only):
+The default receipt line, byte-exact (segment target only) — these are the fixture's own S1/S2 receipt bytes, not an illustration of them (rebaselined 2026-08-09; see the arithmetic below):
 
 ```markdown
 - splice notes/plan.md id=42 actor=agent:b0864fb2 now=2026-07-18T20:31:04Z fingerprint_before=b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9 edits=1 target.hpath=[{"h":"Goals"},{"h":"Q3"}] match 33d5b0e1b27cb48b->41f643f034e5681f ^r-000042
@@ -556,25 +556,29 @@ Illustrative default receipt line (segment target only):
 E4 append via `put{at:"end"}`:
 
 ```markdown
-- splice notes/plan.md id=57 actor=agent:b0864fb2 now=2026-07-18T20:33:41Z fingerprint_before=b3:10769ae1c77f5646750f3f52df2d055156b411145a02b8361ecd32af1357a1b7 edits=1 target.hpath=[{"h":"Goals"},{"h":"Q4"}] put:end 4b8bc385a58da0e0->f43203a1f0b4c9a3 ^r-000043
+- splice notes/plan.md id=57 actor=agent:b0864fb2 now=2026-07-18T20:33:41Z fingerprint_before=b3:7f3b44376c719be236279e168c22fa2f4d346cd6e5da5bcf0784adb72e7c1f12 edits=1 target.hpath=[{"h":"Goals"},{"h":"Q4"}] put:end 4b8bc385a58da0e0->f43203a1f0b4c9a3 ^r-000043
 ```
 
 **Do not re-teach** pretty joins (`Goals>Q3`). Template replaceability (D-C10) is not permission for a second address grammar.
 
-**Byte arithmetic, stated rather than implied (2026-08-09).** The two lines above measure **260 B** and **262 B**. The fixture's own S1/S2 receipt entries measure **222 B** and **224 B** — that is what the spans `[26,248]` and `[249,473]` (§4.4, §7.1) and the receipts file's 26 → 249 → 474 B growth (§0.3) require, terminator excluded per the leaf-block span law (§1). The lines above are therefore **illustrative shape, not the fixture's receipt bytes**: 38 B per line separate them, and this document does not print the S1/S2 receipt bytes anywhere. The consequence is declared, not hidden — R1, R2 and every S1/S2-anchored value are published but not reconstructable from this document. §18 row 10.
+**Byte arithmetic, and the two lines above now close it (REBASELINED 2026-08-09).** The two lines measure **260 B** and **262 B** on the node basis, and those are the widths the fixture's own S1/S2 receipt entries carry: the spans `[26,286]` and `[287,549]` (§4.4, §7.1) and the receipts file's 26 → 287 → 550 B growth (§0.3) require exactly these numbers, terminator excluded per the leaf-block span law (§1). **The gap between this section's lines and the fixture's bytes is 0 B.** R1, R2 and every S1/S2-anchored value are therefore reconstructable from this document — the printing debt §18 row 10 declared is closed, and the row records how.
 
-**The third width — what the shipped template actually WRITES (2026-08-09).** Both numbers above are about this document. The number a reader of a deviation ledger actually needs is the third one: replaying E3 **through the CLI lane (`mrd put`)** under this section's own `actor` and `now`, so deterministic, the shipped default template writes **216 B node bytes** (**217 B line**, terminator included — the form the dogfood step reports, s15-70). Every width COMPARED in this section — 260/262, 222/224, and the 216 — is **node bytes, terminator excluded, per the leaf-block span law (§1)**; the line figure carries its own label because the two bases differ by exactly the terminator, and mixing them is what made this arithmetic wrong by 1 B until it was measured on both.
+**What moved, so the closure is auditable rather than asserted.** Until this rebaseline the template wrote two deviations from this document's own law, worth 38 B per line: `root_before=` where §6.1's standing noun is `fingerprint_before=` (**7 B**), and the target joined as `Goals>Q3` where §2.1 form is mandatory (**31 B**) — the pretty join this section forbids in its own words two paragraphs up. Closing them moved receipt bytes, which is why it was a FIXTURE act and not an edit to this section: receipts are ordinary markdown inside the hash domain (§6.1), so the receipt node rev moved, the workspace fingerprint moved with it, and R1 and R2 were recomputed rather than re-typed. The superseded values are not scrubbed — they are the pre-rebaseline R1 `b3:10769ae1…` and R2 `b3:83b4ba59…`, recorded here and in §18 row 10.
 
-**The 216 is a LANE width, not the template's (AMENDED 2026-08-09).** This paragraph first read "the shipped default template writes 216 B", and that conflates the lane with the template it ran through. The **same shipped template writes the fixture's 222 B exactly** when the request carries an id — gated byte-for-byte, not inferred, by `crates/receipt/tests/frozen_receipts.rs :: e3_receipt_line_byte_exact`, which renders `id: Some(42)` and asserts both this section's E3 line and `line.len() == 248 - 26`. A CLI invocation is not a wire request and mints no request id, so §9's absent-inputs law makes writing no `id=` token the **correct** rendering, not a defect. **The 216 and the 222 are two lanes of one template, never two templates.**
+**The lane width — what the shipped template writes with no request id (2026-08-09).** Replaying E3 **through the CLI lane (`mrd put`)** under this section's own `actor` and `now`, so deterministic, the template writes **254 B node bytes** (**255 B line**, terminator included — the form the dogfood step reports, s15-70). Every width COMPARED in this section — 260/262 and the 254 — is **node bytes, terminator excluded, per the leaf-block span law (§1)**; the line figure carries its own label because the two bases differ by exactly the terminator, and mixing them is what made this arithmetic wrong by 1 B until it was measured on both.
 
-**So the 6 B IS attributable, and this paragraph formerly denied it.** It read "a net against bytes this document does not print, so it is not attributable to any one of the three". Measured: `222 - 216 = 6` is the `id=42 ` token **alone**, and nothing else differs between those two lines. The three deviations therefore split across the two gaps rather than pooling against one, and each gap is decomposable:
+**The 254 is a LANE width, not the template's.** The **same shipped template writes the fixture's 260 B exactly** when the request carries an id — gated byte-for-byte, not inferred, by `crates/receipt/tests/frozen_receipts.rs :: e3_receipt_line_byte_exact`, which renders `id: Some(42)` and asserts both this section's E3 line and `line.len() == 286 - 26`. A CLI invocation is not a wire request and mints no request id, so §9's absent-inputs law makes writing no `id=` token the **correct** rendering, not a defect. **The 254 and the 260 are two lanes of one template, never two templates.**
+
+One gap remains, and it is ruled rather than owed:
 
 | gap | width | causes |
 |---|---|---|
-| shipped CLI lane 216 → fixture 222 | **6 B** | `id=` alone — **ruled, not a defect** (§9, lane) |
-| fixture 222 → illustration 260 | **38 B** | `root_before=` for `fingerprint_before=` **7 B** + the `Goals>Q3` join **31 B** |
+| shipped CLI lane 254 → fixture / this section 260 | **6 B** | `id=` alone — **ruled, not a defect** (§9, lane) |
+| fixture 260 → this section's lines 260 | **0 B** | closed by the 2026-08-09 rebaseline (was 38 B) |
 
-216 + 6 + 7 + 31 = 260 still closes, and the 38 is §18 row 10's own long-standing figure — the two readings agree on every number and disagree only about which gap each cause sits in. **Only the second gap holds actual deviations from this document's law**: §6.1's standing noun is `fingerprint_before`, and this section says in its own words never to re-teach the pretty join. Both are carded (`receipt-template-joined-emission`) and neither is fixed here, because closing them moves receipt bytes and is therefore the FIXTURE act §18 row 10 names, not an edit to this section. **When they close, the illustration above stops being illustrative**: the wire lane would then write those 260 B literally, and the printing debt of §18 row 10 closes with them.
+`254 + 6 = 260` closes to the byte. **The consequence of the surviving 6 B is unchanged and stays stated:** R1 and R2 are WIRE-lane values, so replaying the fixture through the CLI lane still cannot land on them — the receipt node differs by the `id=` token alone, and a different receipt node is a different fingerprint. That is a lane mismatch, not an engine shortfall, and it is why the CLI lane's own timeline is not the published one.
+
+**The target form is written by the TEMPLATE, and its escaping is §6.7's.** Every `[`, `]`, `{`, `}`, `"`, `:` and `,` in `target.hpath=…` above is template text; only the heading text is interpolated, through the segment renderer §6.7 rule 2 mandates. `Goals`, `Q3` and `Q4` are receipt-identifier text carrying no `"`, so the escape is the identity on them and the widths above are unmoved by it.
 
 ### §6.4 Replaceability (D-C10 — facts are the contract)
 
@@ -614,7 +618,9 @@ The output therefore carries no `"`, and no backslash that does not open a compl
 
 **This law is escape-only and byte-neutral on conforming text.** A heading whose characters are all receipt-identifier text and not `"` renders identically with and without it — §6.3's `Goals` and `Q3` among them, so §6.3's byte arithmetic and §18 row 10's figures are unmoved by this section. Adopting the law changes no published byte; it bounds what an unpublished one can be.
 
-**Sequencing (2026-08-09).** The shipped default template does not yet write the §2.1 form at all — it writes the pretty join §6.3 forbids, which is §18 row 10's 38 B debt and is carded separately as a fixture act. The segment renderer is that card's PREREQUISITE and lands ahead of it: the forging hazard is created the moment the JSON form is emitted, so the escape must exist before the emission, never alongside it.
+**Sequencing (2026-08-09), and it held.** When this section was written the shipped default template did not write the §2.1 form at all — it wrote the pretty join §6.3 forbids, which was §18 row 10's 38 B debt and was carded separately as a fixture act. The segment renderer was that card's PREREQUISITE and landed ahead of it, at `b1fcc6e3`, because the forging hazard is created the moment the JSON form is emitted: the escape must exist before the emission, never alongside it. The emission lands in the commit carrying this sentence, so rule 2 is now law over shipped bytes rather than a rule waiting for its subject.
+
+**A note on this paragraph's tense, because it was nearly written wrong.** The forward-looking version above was authored before either card landed, and an edit that flipped it to past tense was staged into the shared tree while HEAD still contained neither — which would have put a false history into the constitution itself. Law may be written ahead of its subject; a claim that the subject arrived may not, because that claim has an instrument and `git log` is it. The tense turns in the same commit that earns it.
 
 ## §7 The Delta noun — the fifth noun, stable at birth
 
@@ -626,7 +632,7 @@ One Delta = one batch = one fingerprint advance. E3's delta, every value compute
 {"delta":{
  "seq":1,
  "fingerprint_before":"b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9",
- "fingerprint_after":"b3:10769ae1c77f5646750f3f52df2d055156b411145a02b8361ecd32af1357a1b7",
+ "fingerprint_after":"b3:7f3b44376c719be236279e168c22fa2f4d346cd6e5da5bcf0784adb72e7c1f12",
  "actor":"agent:b0864fb2","now":"2026-07-18T20:31:04Z",
  "files":[
   {"path":"notes/plan.md","change":"modified",
@@ -635,9 +641,9 @@ One Delta = one batch = one fingerprint advance. E3's delta, every value compute
              "node_rev_before":"33d5b0e1b27cb48b","node_rev_after":"41f643f034e5681f",
              "span_after":[49,75]}]},
   {"path":"receipts/2026-07-18.md","change":"modified",
-   "file_rev_before":"920a40c4ee23d37c","file_rev_after":"2731acfa39bbb92c",
+   "file_rev_before":"920a40c4ee23d37c","file_rev_after":"51ad6428f5b5a898",
    "nodes":[{"anchor":"r-000042","change":"added",
-             "node_rev_after":"639a2dca46f6fcc8","span_after":[26,248]}]}]}}
+             "node_rev_after":"60bbee70d4a63a48","span_after":[26,286]}]}]}}
 ```
 
 E4's delta, in full (every value computed):
@@ -645,8 +651,8 @@ E4's delta, in full (every value computed):
 ```json
 {"delta":{
  "seq":2,
- "fingerprint_before":"b3:10769ae1c77f5646750f3f52df2d055156b411145a02b8361ecd32af1357a1b7",
- "fingerprint_after":"b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68",
+ "fingerprint_before":"b3:7f3b44376c719be236279e168c22fa2f4d346cd6e5da5bcf0784adb72e7c1f12",
+ "fingerprint_after":"b3:6e866e13b5e65ef9961c050f8a621cf1980b00ee293be650deef5f4dbc6823f0",
  "actor":"agent:b0864fb2","now":"2026-07-18T20:33:41Z",
  "files":[
   {"path":"notes/plan.md","change":"modified",
@@ -655,9 +661,9 @@ E4's delta, in full (every value computed):
              "node_rev_before":"4b8bc385a58da0e0","node_rev_after":"f43203a1f0b4c9a3",
              "span_after":[75,150]}]},
   {"path":"receipts/2026-07-18.md","change":"modified",
-   "file_rev_before":"2731acfa39bbb92c","file_rev_after":"9167b12b0eb13be6",
+   "file_rev_before":"51ad6428f5b5a898","file_rev_after":"6cb0e939ce2edf5a",
    "nodes":[{"anchor":"r-000043","change":"added",
-             "node_rev_after":"c912d4578883f288","span_after":[249,473]}]}]}}
+             "node_rev_after":"5c6ca7ec00ae279e","span_after":[287,549]}]}]}}
 ```
 
 Laws: `seq` is a monotone per-workspace batch counter (the `changes_seq` of §10), **per-daemon-epoch** — a daemon restart resets it (memory is disposable and disk is markdown-only, §14, so no counter survives on disk to reload), which means `from_seq`/`changes_seq` catchup is valid only within one epoch and cross-epoch catchup is diff-by-root (§4.7), the root being the only restart-durable handle; file `change ∈ {created, modified, deleted, renamed}` (renamed carries `from_path`); node `change ∈ {added, edited, removed}`; node entries name the **deepest section containing each changed byte range** — ancestor section revs change implicitly (rev = span hash) and are re-readable via `toc`, never duplicated into the delta. External changes (a human editing in Obsidian) produce deltas with `actor`/`now` **absent** — the engine never invents identity or time it wasn't given; `seq` is assigned at detection.
@@ -724,8 +730,8 @@ Anything view-shaped — today `links`, tomorrow any corpus-wide fact op — dec
  "require_fingerprint":"b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9"}
 {"id":81,"ok":false,"error":{"code":"stale_view","recovery":"retry",
  "required":"b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9",
- "as_of_fingerprint":"b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68",
- "live_fingerprint":"b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68"}}
+ "as_of_fingerprint":"b3:6e866e13b5e65ef9961c050f8a621cf1980b00ee293be650deef5f4dbc6823f0",
+ "live_fingerprint":"b3:6e866e13b5e65ef9961c050f8a621cf1980b00ee293be650deef5f4dbc6823f0"}}
 ```
 
 (The client demanded R0; the world is at R2.) `stale_view` is retryable, never silent.
@@ -941,7 +947,7 @@ The draft implementation plan sequenced against this table is a downstream deliv
 
 The fix-at-freeze rule requires each reviewer-flagged debt fixed or waived with reason, here, never silently. Rows 1–5 are the winner-pick fix list; rows 6–7 consolidate the v1 deviations already declared in the body; rows 9–13 are measured against the shipped v1 artifact and this document's own arithmetic (dogfood, 2026-08-09).
 
-**Rows 9 and 12 are a different KIND of row, and the difference is load-bearing.** Rows 1–7 and 11 record where this DOCUMENT departed from ruled law. Rows 9 and 12 record where the shipped ARTIFACT departs from this document — and **row 10, as amended 2026-08-09, carries BOTH legs**: a printing debt in this document, and beside it the width the artifact actually writes — measured at the v1 cut against the built binary, not read off the source. Recording it is what §15's assumption-audit law demands: a deviation found without a row here is a contract bug, so the row FIXES that bug by this contract's own procedure. **Declaring is not legislating.** The law a row names stays in force, unamended, and the row is the observation — never a licence. (The contrast that fixes the rule: amending the constitution to legalize an implementation's behavior is breach; recording non-conformance while the law stands is this ledger working as designed.)
+**Rows 9 and 12 are a different KIND of row, and the difference is load-bearing.** Rows 1–7 and 11 record where this DOCUMENT departed from ruled law. Rows 9 and 12 record where the shipped ARTIFACT departs from this document — and **row 10 carried BOTH legs and is now CLOSED** (rebaselined 2026-08-09): a printing debt in this document, since discharged, and beside it the width the artifact actually writes — measured at the v1 cut against the built binary, not read off the source. Recording it is what §15's assumption-audit law demands: a deviation found without a row here is a contract bug, so the row FIXES that bug by this contract's own procedure. **Declaring is not legislating.** The law a row names stays in force, unamended, and the row is the observation — never a licence. (The contrast that fixes the rule: amending the constitution to legalize an implementation's behavior is breach; recording non-conformance while the law stands is this ledger working as designed.)
 
 | # | Item | Disposition |
 |---|---|---|
@@ -953,7 +959,7 @@ The fix-at-freeze rule requires each reviewer-flagged debt fixed or waived with 
 | 6 | v1 `not_found` retired | Declared at §8 with rationale (split into `file_not_found` env / `ref_not_found` refresh) |
 | 7 | v1's frozen "unknown `kinds` match nothing" reversed to loud `bad_request` | Declared at §4.3 with rationale (the strict-server evolution law applied to values) |
 | 9 | **The v1 artifact deviates from the raw-lexeme id law (§3.1).** §3.1 fixes valid ids as JSON integer lexemes in `[0, 2^53)` and requires a non-conforming lexeme to be refused with `id:null` plus the offending lexeme verbatim in `id_raw`. Measured at the v1 cut against the built release binary over a live socket: every non-conforming lexeme — `"1"`, `-1`, `1.5`, `true`, `null` — is silently nulled and **the request is SERVED**. No refusal, and `id_raw` is never emitted. A conforming integer echoes correctly (`{"id":7}` → `id:7`). Not op-specific: on `mounts`, `{"id":5}` echoes while `{"id":"5"}` answers `id:null` — same frame, same op, only the lexeme differs | **DECLARED, not waived, and §3.1 STANDS UNAMENDED.** The law is the law; the artifact does not yet serve it. **The corruption-law interaction, stated plainly:** a client sending non-conforming ids receives served work AND frames that §3.1's null-id corruption law instructs it to treat as channel corruption — fail all outstanding, respawn. Two subsystems tell such a client opposite things. **Why this declares rather than blocks the release:** only NON-CONFORMING senders can reach it; no promised surface serves a wrong result to a CONFORMING caller; and the blast radius is a misbehaving client receiving a confusing-but-defensive signal, never silent corruption of a correct one. **CONFORMANCE IS OWED.** Serving `id_raw` and refusing non-conforming lexemes per §3.1 is the standing **v1.x direction** — this row records a gap on the way to it, and is not the end state |
-| 10 | **The fixture's S1/S2 receipt bytes are printed nowhere.** §6.3's illustrative receipt lines measure 260 B / 262 B against the 222 B / 224 B the fixture's own spans (`[26,248]`, `[249,473]` — §4.4, §7.1) and file sizes (receipts 26 → 249 → 474 B, §0.3) require: 38 B per line unprinted (dogfood 2026-08-09, s10). §0.3's promise that "every file this document hashes is printed in this section" did not hold for S1/S2 | **DECLARED, and the arithmetic stated at all THREE ends** (two ends only until the amendment below, 2026-08-09). §6.3 prints both measurements and names the gap; §0.3's promise is scoped to what it actually prints (S0 + the §12.3 example) with this row as the named exception. Consequence, unhidden: R1, R2 and every S1/S2-anchored value stay published-but-unreconstructable from this document. **This is a printing debt, not a hash debt** — the S0 set, R0 and every S0-anchored value are untouched. Closing it (printing the receipt bytes, or reconciling the default template to them) is a FIXTURE act carrying an S1/S2 rebaseline, never an editorial one, and is owed. **AMENDED 2026-08-09 — the THIRD width, and it is this row's own subject.** The two widths above are both about this document; a deviation ledger that omits what the shipped artifact WRITES is missing its subject. Measured by replay under §6.3's own `actor`/`now`, deterministic (dogfood s15-70): the shipped default template **on the CLI lane** writes **216 B node** / **217 B line**. **Every width COMPARED in this row is node bytes, terminator excluded (§1)** — 222/224 and 260/262 always were, and the line figure is labelled separately rather than left as a parenthetical: the two bases differ by exactly the terminator, and a number with an implied basis gets compared against the wrong one. That is not hypothetical — it is how this shortfall was first stated as 5 B, by measuring a LINE against two NODE widths. The shipped node is **6 B short** of the fixture's 222 B; the 44 B against §6.3's illustration decomposes exactly as `id=` 6 + `root_before=`/`fingerprint_before=` 7 + `Goals>Q3` join 31, each carded separately and none fixed here. **AMENDED again 2026-08-09 — the 6 B and the 38 B are DIFFERENT LANES, and only the 38 B is a deviation.** The 216 is what the template writes with no wire request id to interpolate; given one it writes the fixture's 222 B byte-for-byte (gated: `crates/receipt/tests/frozen_receipts.rs :: e3_receipt_line_byte_exact`). So `id=` is §9's absent-inputs law working, not a defect, and the 6 B is fully attributable to it — this row previously pooled all three causes against the 44 B and called the 6 B unattributable. What this row's DECLARED debt actually rests on is the remaining **38 B**: the `fingerprint_before=` spelling and the pretty join, both already forbidden by §6.1 and §6.3's own words. See §6.3's amended arithmetic for the two-gap table. **The consequence is CAUSAL, not a reader's inconvenience:** receipts are ordinary markdown inside the hash domain (§6.1), so a receipt entry whose bytes differ from the fixture's carries a different receipt node rev and advances the workspace fingerprint to a different value. Live S1/S2 therefore **LEAVE** the published R1/R2 timeline — measured `b3:829059dd…` ≠ R1, final `b3:db9b9dc3…` ≠ R2 — while every `plan.md` node-grain value stays exact. That is why the closing act above is a fixture act: the template and the fixture cannot both be right about these bytes |
+| 10 | **The fixture's S1/S2 receipt bytes were printed nowhere.** §6.3's receipt lines measured 260 B / 262 B against the 222 B / 224 B the fixture's own spans and file sizes required: 38 B per line unprinted (dogfood 2026-08-09, s10). §0.3's promise that "every file this document hashes is printed in this section" did not hold for S1/S2 | **CLOSED 2026-08-09 by rebaseline — this row is now the RECORD of a closed debt, not a declaration of an open one.** The two causes were deviations from this document's own law and were fixed in the TEMPLATE, not waived in the text: `root_before=` where §6.1's standing noun is `fingerprint_before=` (**7 B**), and the `Goals>Q3` pretty join where §2.1 form is mandatory and §6.3 says in its own words not to re-teach it (**31 B**). **This was a FIXTURE act, which is why it took a rebaseline and not an edit.** Receipts are ordinary markdown inside the hash domain (§6.1), so moving receipt bytes moved the receipt node rev, which advanced the workspace fingerprint. R1 and R2 were RECOMPUTED by the engine over the new fixture bytes, never re-typed: R1 `b3:10769ae1…` → `b3:7f3b4437…`, R2 `b3:83b4ba59…` → `b3:6e866e13…`, receipts `file_rev@S1` `2731acfa…` → `51ad6428…`, `file_rev@S2` `9167b12b…` → `6cb0e939…`, the `r-000042` leaf `[26,248]`/`639a2dca…` → `[26,286]`/`60bbee70…`, the `r-000043` leaf `[249,473]`/`c912d457…` → `[287,549]`/`5c6ca7ec…`, and the receipts file 26 → 249 → 474 B → 26 → 287 → 550 B. Every one is gated by recomputation in `crates/testsuite/tests/pf_frozen_sweep.rs`, which derives them from the committed S0 bytes rather than transcribing them — so a wrong value fails a test instead of shipping. **§0.3's promise now holds without exception**: §6.3 prints the S1/S2 receipt bytes, and they ARE the fixture's. **What did NOT close, and is not owed:** the shipped CLI lane writes **254 B** node (**255 B** line) because a CLI invocation is not a wire request and mints no request id — `id=` is 6 B of §9's absent-inputs law working, ruled not a defect, and the same template writes the fixture's 260 B byte-for-byte when a request carries one (gated: `crates/receipt/tests/frozen_receipts.rs :: e3_receipt_line_byte_exact`). Live S1/S2 therefore still leave the published R1/R2 timeline on the CLI lane, by lane and not by shortfall. **The escaping this form now requires is §6.7 rule 2**, landed ahead of this rebaseline for a reason stated there: the forging hazard is created by emitting the JSON form, so the escape had to exist before the emission, never alongside it |
 | 11 | **§12.3's worked table taught its arithmetic through a forbidden surface.** The published S2-anchored v0/v1 pair closes only if the domain config's own bytes stay out of the domain — true of the legacy non-md `mdfs_config.yaml`, false of the standing `meridian/domain.md`, which self-hashes by design (`crates/fs/src/domain.rs`). §12.3's values therefore contradicted §0.3's own "participates when present" note and were unreachable from the surface §12.1 mandates (dogfood 2026-08-09, s10) | **FIXED** — §12.3 recomputes over the standing `meridian/domain.md` with engine-measured values, §0.3 prints that file's v0 and v1 bytes, and the superseded pair is printed at §12.3 rather than scrubbed. §12.1 stands unamended: the legacy filename remains do-not-create, do-not-teach. **The S0 file set did not move** — `meridian/domain.md` is ABSENT at S0, R0 unchanged, and printing a file's bytes never makes it a member (proved on a fresh fixture: absent → R0, v0 present → `b3:23421037…`, removed → R0 returns). Ruled 2026-08-09, advisor scope |
 | 12 | **CLI-lane commits advance the fingerprint and mint no Delta.** §7.1 laws one Delta per batch per fingerprint advance and §10.1's `changes_seq` is that counter. Measured at the v1 cut (dogfood 2026-08-09, s9): an `mrd put` commit moves the fingerprint the same daemon serves immediately, while `changes_seq` reads 0 before AND after | **DECLARED, not waived; §7.1 and §10.1 STAND UNAMENDED.** A consumer using `changes_seq` as a change monotone misses every CLI-lane write, silently — the answer is in an honest tense but the counter under it never moved. The fingerprint is the only monotone covering both lanes today, so cross-lane catchup is diff-by-root (§4.7), the same answer §7.1 already gives for cross-epoch catchup. Minting the delta on the CLI lane is owed |
 

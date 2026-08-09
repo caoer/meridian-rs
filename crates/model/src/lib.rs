@@ -221,7 +221,7 @@ pub fn build(raw: String, nodes: Vec<syntax::DialectNode>) -> Document {
 /// The host block-leaf span for an anchor whose inline `^id` marker occupies
 /// `marker`: the marker's own line, start-of-line → line end with the final
 /// terminator excluded (contract §1 leaf-block law; §2.1 write-target; §4.1 /
-/// §6.3 worked `^r-000042` → `[26,248]`). The write-target is the host block the
+/// §6.3 worked `^r-000042` → `[26,286]`). The write-target is the host block the
 /// anchor keys, not the marker span `syntax` emits.
 ///
 /// A heading-line anchor keys the heading line leaf (terminator excluded),
@@ -2431,27 +2431,27 @@ mod tests {
 
     /// On the §6.3 worked S1 receipts fixture, `resolve_anchor` serves the
     /// anchor's host block-leaf — the `^r-000042` list-item line, terminator
-    /// excluded (`[26,248]`, rev `639a2dca46f6fcc8`) — not the 9-byte
-    /// `[239,248]` inline `^id` marker span (§1 / §2.1 / §4.1 / §6.3).
+    /// excluded (`[26,286]`, rev `60bbee70d4a63a48`) — not the 9-byte
+    /// `[277,286]` inline `^id` marker span (§1 / §2.1 / §4.1 / §6.3).
     #[test]
     fn resolve_anchor_serves_host_block_leaf_s1_receipts() {
         let raw = merkle_fixtures().receipts_v1;
-        assert_eq!(raw.len(), 249, "S1 receipts fixture is 249 bytes (§0.3)");
+        assert_eq!(raw.len(), 287, "S1 receipts fixture is 287 bytes (§0.3)");
         let doc = build(raw.clone(), syntax::parse(&raw));
         let t = resolve(&doc, &Ref::anchor("r-000042").unwrap()).expect("mint resolves ^r-000042");
         assert_eq!(
             t.span,
-            26..248,
-            "host block-leaf span, not the [239,248] marker"
+            26..286,
+            "host block-leaf span, not the [277,286] marker"
         );
         assert_eq!(
-            t.node_rev.0, "639a2dca46f6fcc8",
+            t.node_rev.0, "60bbee70d4a63a48",
             "§6.3 rev over the block-leaf bytes"
         );
-        assert_ne!(t.span, 239..248, "marker-grain defect must not resurface");
+        assert_ne!(t.span, 277..286, "marker-grain defect must not resurface");
         // independent rev check over exactly the block-leaf bytes.
         let independent =
-            blake3::hash(&raw.as_bytes()[26..248]).to_hex().as_str()[..16].to_string();
+            blake3::hash(&raw.as_bytes()[26..286]).to_hex().as_str()[..16].to_string();
         assert_eq!(
             t.node_rev.0, independent,
             "rev = blake3(block-leaf bytes)[:16]"
@@ -3090,11 +3090,11 @@ mod tests {
 
     // Frozen hex ground truth (independently recomputed).
     const R0_HEX: &str = "74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9";
-    const R1_HEX: &str = "10769ae1c77f5646750f3f52df2d055156b411145a02b8361ecd32af1357a1b7";
-    const R2_HEX: &str = "83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68";
+    const R1_HEX: &str = "7f3b44376c719be236279e168c22fa2f4d346cd6e5da5bcf0784adb72e7c1f12";
+    const R2_HEX: &str = "6e866e13b5e65ef9961c050f8a621cf1980b00ee293be650deef5f4dbc6823f0";
     const R0_WRONG_HEX: &str = "75a61c883e372102cfe7d75e94992b9be65e33fbe95956897a4cf2ea45bb8f1b";
     const R_V0_DRAFTS_HEX: &str =
-        "05f0c6192308db5937c3e1352d1f9a6fc31b89b1a57175c8af6ce7903525aa4a";
+        "f8b4c62ce36f5873eb46db5cdf41db2436a3cba67ec5c47bebadbeaa8fe71ea3";
 
     // Non-plan fixture bytes, verbatim from the contract §0.3 fixture bytes (docs/wire-contract.md).
     const RECEIPTS_V0: &str = "# Receipts \u{2014} 2026-07-18\n"; // em dash = 3-byte UTF-8
@@ -3119,15 +3119,16 @@ mod tests {
         let plan_v2 = format!("{plan_v1}- new item\n");
 
         let receipts_v0 = RECEIPTS_V0.to_string();
-        // Receipt lines exactly as §6.3 prints them (root_before + section revs).
+        // Receipt lines exactly as §6.3 prints them (fingerprint_before + §2.1
+        // JSON target form, rebaselined 2026-08-09).
         let receipt_42 = format!(
             "- splice notes/plan.md id=42 actor=agent:b0864fb2 now=2026-07-18T20:31:04Z \
-             root_before=b3:{R0_HEX} edits=1 Goals>Q3 match 33d5b0e1b27cb48b->41f643f034e5681f ^r-000042\n"
+             fingerprint_before=b3:{R0_HEX} edits=1 target.hpath=[{{\"h\":\"Goals\"}},{{\"h\":\"Q3\"}}] match 33d5b0e1b27cb48b->41f643f034e5681f ^r-000042\n"
         );
         let receipts_v1 = format!("{receipts_v0}{receipt_42}");
         let receipt_43 = format!(
             "- splice notes/plan.md id=57 actor=agent:b0864fb2 now=2026-07-18T20:33:41Z \
-             root_before=b3:{R1_HEX} edits=1 Goals>Q4 put:end 4b8bc385a58da0e0->f43203a1f0b4c9a3 ^r-000043\n"
+             fingerprint_before=b3:{R1_HEX} edits=1 target.hpath=[{{\"h\":\"Goals\"}},{{\"h\":\"Q4\"}}] put:end 4b8bc385a58da0e0->f43203a1f0b4c9a3 ^r-000043\n"
         );
         let receipts_v2 = format!("{receipts_v1}{receipt_43}");
 
@@ -3136,10 +3137,10 @@ mod tests {
         assert_eq!(plan_v1.len(), 139);
         assert_eq!(plan_v2.len(), 150);
         assert_eq!(receipts_v0.len(), 26);
-        assert_eq!(receipt_42.len(), 223);
-        assert_eq!(receipt_43.len(), 225);
-        assert_eq!(receipts_v1.len(), 249);
-        assert_eq!(receipts_v2.len(), 474);
+        assert_eq!(receipt_42.len(), 261);
+        assert_eq!(receipt_43.len(), 263);
+        assert_eq!(receipts_v1.len(), 287);
+        assert_eq!(receipts_v2.len(), 550);
 
         MerkleFixtures {
             plan_v0,
