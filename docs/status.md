@@ -413,6 +413,23 @@ answers exactly one question — *may this proceed?* — and red and grey both a
 no. The *reason* is a different fact, and it lives in the output where a reader
 can read it: `grey(cannot-assess)` versus `red(…)`.
 
+#### The findings enumeration is COMPLETE, never worst-of
+
+The refusal on stderr is a numbered list — `check refuses (<interval>) — N
+findings:` — and a caller reads it as the fix-list. **It carries every finding
+the refusing interval holds, red AND grey, in worst-of ORDER but never worst-of
+SELECTION.** The exit code is one bit and may be decided by the worst colour; the
+list is the reason half, and a reason half that drops the greys sends an operator
+away believing the corpus clean once the reds are fixed. Grey findings sort after
+red ones and keep their own reason word; the count is the count of everything
+listed.
+
+(Measured against v1.0.0, `mrd-dogfood` s14-70: a grey pin beside four red
+findings was neither counted nor named — "4 findings" while five questions stood.
+Unmasked at s14-40 the same grey WAS the one-finding list. One unverifiable pin
+may not hide inside a green fleet; it may not hide inside a red fleet's findings
+list either.)
+
 **This is honest degradation, not the missing capability.** A workspace that has
 ever been spliced still refuses — now truthfully. Making `check` able to answer
 (journaling the splice, or reading the pin plane, which it has no `lock`/`git`/
@@ -505,8 +522,39 @@ renders (`0 blobs (0 bytes)`); a gauge that hides at zero is not a gauge.
 `composed.lock.color` is `null` on a corpus with no pins — never an absent field
 a reader could mistake for "not checked".
 
+#### The exit reads the ARMED PLANE ONLY — every other axis is a reading (R12)
+
+`status`'s exit-1 leg is narrow, and deliberately so. Spelled here because the
+prose above reads wider than the face acts, and one surface may not carry two
+spellings:
+
+| axis | moves the exit | |
+|---|---|---|
+| the ARMED plane — an armed rule drifted, or the armed-rules artifact faulted | **yes** ⇒ exit 1 | the `pin` axis and the armed-rules line |
+| `lock` | **no** — `red …`, `grey …` and `unreadable (<why>)` all exit 0 | a READING, not a gate |
+| `anchor` | no | freshness, and `status` cannot fetch |
+| `vibe-debt` | no | a meter, never a gate (above) |
+
+**This is R12, and it is ratified design, not debt.** The lock roll-up is
+rendered so a reader sees it; it is not a verdict the shell may branch on. Five
+in-repo gates assert it by name — `crates/mrd/tests/u14_check_pin_plane.rs`
+("`mrd status`'s exit triad does NOT change — the rollup is a reading, not a
+gate"), `crates/mrd/tests/u13_per_root_anchoring.rs` (five arms), and
+`crates/mrd/tests/status_e2e.rs` ("debt is not a finding").
+
+**So `mrd status || alarm` does NOT fire on attestation drift. The fail-closed
+door is `mrd check`** — a shell that must refuse on a red or grey pin runs
+`check`, whose exit triad answers exactly that question and whose grey leg fails
+closed. `status` answers *what does this workspace look like*, and only the armed
+plane makes it refuse.
+
+Read the composed line, not the exit, for the lock verdict. The roll-up's
+worst-of law (grey above green) governs what is RENDERED — it never promised an
+exit code, and none of the three lock verdicts has ever produced one (measured on
+v1.0.0 three ways: `mrd-dogfood` s14-70 red, s14-40 grey, s14-43 lock-refused).
+
 Output is JSON under `--json`, a human table otherwise; exit codes are 0 clean /
-1 findings / 2 tool failure. The workspace it ran over is printed with the tier
+1 findings (the armed plane, per the table above) / 2 tool failure. The workspace it ran over is printed with the tier
 that answered — `status <root> (git-root)` — and `--json` carries the same word
 as `source`, because a status line that named only a path would leave the reader
 to guess which root it judged.
