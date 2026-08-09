@@ -1,3 +1,12 @@
+---
+type: reference
+id: log
+status: optional
+updated: 2026-08-06
+description: Time-sensitive notes, external provenance, machine measurements and former filenames. Not design law; deletable at any time.
+owns: [time-sensitive provenance]
+---
+
 # Worker log (optional — deletable)
 
 **Not design law.** Time-sensitive notes, external provenance, machine measurements, and former filenames. **Delete this file anytime** — every other file under `docs/` must still read correctly without it.

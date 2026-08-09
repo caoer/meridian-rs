@@ -1,3 +1,12 @@
+---
+type: spec
+id: addr
+status: standing
+updated: 2026-08-07
+description: Normative spec for cross-root addressing, the mount table, and the `addr::Addr` type. Ships no engine code.
+owns: [cross-root addressing, mounts, "addr::Addr"]
+---
+
 # The address grammar — the cross-root address type and the mount-table law
 
 > **Standing:** Design law is `wire-contract.md` (one contract). Mint addresses = segments only. Receipts = armed wire facts. DuckDB/`view_path` not agent core. **Doc correct > code correct; docs first.** See `README.md`.

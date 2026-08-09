@@ -1,3 +1,12 @@
+---
+type: reference
+id: status
+status: standing
+updated: 2026-08-09
+description: What the binary exposes and verifies today, reproducible from the commands shown. Also the home of R12, the armed-plane exit reading.
+owns: [what the binary exposes today, R12 — the armed-plane exit reading]
+---
+
 # Status
 
 A snapshot of what is built and verified today. Numbers here are reproducible

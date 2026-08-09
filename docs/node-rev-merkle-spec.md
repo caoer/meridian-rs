@@ -1,3 +1,12 @@
+---
+type: spec
+id: merkle
+status: standing
+updated: 2026-08-08
+description: Normative hash law for `node_rev` and the workspace merkle fingerprint, with worked examples.
+owns: [node_rev, merkle encoding]
+---
+
 # node_rev + workspace fingerprint (merkle) spec
 
 > **Standing:** Design law is `wire-contract.md` (one contract). Mint addresses = segments only. Receipts = armed wire facts. DuckDB/`view_path` not agent core. **Doc correct > code correct; docs first.** See `README.md`.

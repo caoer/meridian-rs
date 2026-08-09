@@ -1,3 +1,12 @@
+---
+type: contract
+id: laws
+status: standing
+updated: 2026-08-09
+description: The three architecture laws, enforced as crate dependency edges rather than conventions, plus the charter of every crate.
+owns: [architecture laws, crate charters]
+---
+
 # The three laws
 
 `meridian-rs` is split into crates so that its core invariants are dependency

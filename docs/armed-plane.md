@@ -1,3 +1,12 @@
+---
+type: spec
+id: armed
+status: standing
+updated: 2026-08-06
+description: Normative spec for the floor-convention arming ladder (U4.4) and the `gate()` seam (U4.2).
+owns: [the arming ladder, the gate() seam]
+---
+
 # Armed plane — bootstrap ladder + gate seam
 
 > **Standing:** Design law is `wire-contract.md` (one contract). Mint addresses = segments only. Receipts = armed wire facts. DuckDB/`view_path` not agent core. **Doc correct > code correct; docs first.** See `README.md`.
