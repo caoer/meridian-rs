@@ -1105,6 +1105,7 @@ fn dispatch_read(
             wire_serve::read::require_root_check(require_root.as_ref(), &as_of)?;
             let live = as_of.clone();
             wire_serve::read::links(
+                &fs::WorkspaceRoot(ws.to_path_buf()),
                 &engine.index,
                 &engine.docs,
                 &engine.unserved,

@@ -1007,24 +1007,26 @@ pub fn unserved_refusal(path: &Path, condition: &str) -> Box<ErrorBody> {
     Box::new(e)
 }
 
-/// The links doors' shared miss split: an unserved member is its per-file
-/// `invalid_utf8` ([`unserved_refusal`]); anything else the docs map lacks is
-/// `file_not_found`.
-fn links_miss(
+/// The links doors' shared miss split, resolved the way §12.1 binds a door that
+/// was asked about ONE named path: a member answers from the corpus (`None`); an
+/// unserved member is its per-file `invalid_utf8` ([`unserved_refusal`]); a real
+/// file the domain excludes is LOADED and returned (`Some`), because corpus
+/// residency is not an admission test; only a path with no file under the root
+/// is `file_not_found`.
+fn links_nonmember(
+    root: &fs::WorkspaceRoot,
     docs: &BTreeMap<String, model::Document>,
     unserved: &BTreeMap<String, String>,
     path: Option<&Path>,
-) -> Result<(), Box<ErrorBody>> {
-    let Some(p) = path else { return Ok(()) };
+) -> Result<Option<model::Document>, Box<ErrorBody>> {
+    let Some(p) = path else { return Ok(None) };
     if docs.contains_key(&p.0) {
-        return Ok(());
+        return Ok(None);
     }
     if let Some(condition) = unserved.get(&p.0) {
         return Err(unserved_refusal(p, condition));
     }
-    let mut e = ErrorBody::new(ErrorCode::FileNotFound);
-    e.path = Some(p.clone());
-    Err(Box::new(e))
+    crate::load_doc(root, p).map(Some)
 }
 
 /// wire §4.6 the corpus edge map under the §10.1 staleness triple, served from
@@ -1035,10 +1037,13 @@ fn links_miss(
 /// sampled only on the success path. Call [`require_root_check`] before this.
 ///
 /// # Errors
-/// `path` names an unserved member (per-file `invalid_utf8`, §52) or a file
-/// the corpus does not carry (`file_not_found`), or the caller's `live_root`
-/// sample fails.
+/// `path` names an unserved member (per-file `invalid_utf8`, §52) or no file
+/// under the workspace root (`file_not_found`), or the caller's `live_root`
+/// sample fails. A real file OUTSIDE the hash domain is served, never refused
+/// (§12.1: the door family binds every door the caller names a path at).
+#[allow(clippy::too_many_arguments)]
 pub fn links(
+    root: &fs::WorkspaceRoot,
     index: &model::CorpusIndex,
     docs: &BTreeMap<String, model::Document>,
     unserved: &BTreeMap<String, String>,
@@ -1047,20 +1052,57 @@ pub fn links(
     changes_seq: u64,
     live_root: impl FnOnce() -> Result<Root, Box<ErrorBody>>,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
-    links_miss(docs, unserved, path)?;
+    let nonmember = links_nonmember(root, docs, unserved, path)?;
     // `query::links`, never `links_rooted` with a default table: an empty
     // `MountSet` would turn "I did not consult a mount table" into "this
     // machine binds nothing". Rooted spellings come back `unresolved` here,
     // and the CLI degrades rather than serve that answer
     // (see `mrd::engine::answer_links`).
-    let map = query::links(index, docs, path.map(|p| p.0.as_str()));
+    let map = match (&nonmember, path) {
+        (Some(doc), Some(p)) => one_file_map(
+            &query::file_links(index, &p.0, doc, &model::RootedCorpus::ambient(docs), None),
+            p,
+        ),
+        _ => query::links(index, docs, path.map(|p| p.0.as_str())),
+    };
     let live = live_root()?;
     Ok(ResponseBody::Links {
         as_of_root,
         live_root: live,
         changes_seq,
         files: map.into_iter().map(|(p, e)| (p, into_wire(e))).collect(),
+        excluded: excluded_members(root, docs, unserved, path),
     })
+}
+
+/// The domain-excluded population of an ENUMERATION: markdown under the root
+/// that the corpus does not hold, so `files` is published beside what it left
+/// out rather than as the whole vault (§4.6, §12.1 enumerator clause). Empty
+/// for the NAMED form — a named path is served, so nothing was left out.
+fn excluded_members(
+    root: &fs::WorkspaceRoot,
+    docs: &BTreeMap<String, model::Document>,
+    unserved: &BTreeMap<String, String>,
+    path: Option<&Path>,
+) -> Vec<String> {
+    if path.is_some() {
+        return Vec::new();
+    }
+    fs::walk(root)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|rel| rel.to_str().map(str::to_owned))
+        .filter(|rel| !docs.contains_key(rel) && !unserved.contains_key(rel))
+        .collect()
+}
+
+/// The one-entry answer for a named page the corpus does not carry: its edges
+/// resolve against the corpus it is not in, and it is the only file in the map
+/// because the caller named it.
+fn one_file_map(edges: &query::FileLinks, path: &Path) -> BTreeMap<String, query::FileLinks> {
+    let mut map = BTreeMap::new();
+    map.insert(path.0.clone(), edges.clone());
+    map
 }
 
 /// [`links`] against a root-keyed corpus and a mount table — the cross-root
@@ -1075,6 +1117,7 @@ pub fn links(
 /// As [`links`].
 #[allow(clippy::too_many_arguments)]
 pub fn links_rooted(
+    root: &fs::WorkspaceRoot,
     index: &model::CorpusIndex,
     docs: &BTreeMap<String, model::Document>,
     unserved: &BTreeMap<String, String>,
@@ -1085,14 +1128,21 @@ pub fn links_rooted(
     changes_seq: u64,
     live_root: impl FnOnce() -> Result<Root, Box<ErrorBody>>,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
-    links_miss(docs, unserved, path)?;
-    let map = query::links_rooted(index, docs, corpus, mounts, path.map(|p| p.0.as_str()));
+    let nonmember = links_nonmember(root, docs, unserved, path)?;
+    let map = match (&nonmember, path) {
+        (Some(doc), Some(p)) => one_file_map(
+            &query::file_links(index, &p.0, doc, corpus, Some(mounts)),
+            p,
+        ),
+        _ => query::links_rooted(index, docs, corpus, mounts, path.map(|p| p.0.as_str())),
+    };
     let live = live_root()?;
     Ok(ResponseBody::Links {
         as_of_root,
         live_root: live,
         changes_seq,
         files: map.into_iter().map(|(p, e)| (p, into_wire(e))).collect(),
+        excluded: excluded_members(root, docs, unserved, path),
     })
 }
 

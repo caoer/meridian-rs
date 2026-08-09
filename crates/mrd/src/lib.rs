@@ -73,6 +73,40 @@ pub(crate) fn voice_unserved(unserved: &std::collections::BTreeMap<String, Strin
     }
 }
 
+/// The domain-excluded voice, shared by every in-process face that ENUMERATES
+/// the corpus: one line naming the markdown under the root that the hash domain
+/// does not carry (a dot-segment path, a `meridian/domain.md` ignore rule), on
+/// stderr so machine stdout stays clean.
+///
+/// Twin of [`voice_unserved`], and for the same reason: an enumeration's answer
+/// is stamped `as_of` a fingerprint that an out-of-domain file's bytes cannot
+/// move, so the row is rightly absent — but a scan that reports a partial
+/// population as if it were the whole one reads as a scan of the whole vault.
+/// An enumerator MAY exclude what its attestation cannot reach; it may never
+/// exclude SILENTLY (session decision 0017; `docs/wire-contract.md` §12.1,
+/// enumerator clause). Doors asked about ONE named path do not voice here —
+/// they serve the path instead (`walk_cmd::admit_named_page`).
+pub(crate) fn voice_excluded(
+    root: &fs::WorkspaceRoot,
+    docs: &std::collections::BTreeMap<String, model::Document>,
+    unserved: &std::collections::BTreeMap<String, String>,
+) {
+    let Ok(all) = fs::walk(root) else { return };
+    let excluded: Vec<String> = all
+        .iter()
+        .filter_map(|rel| rel.to_str().map(str::to_owned))
+        .filter(|rel| !docs.contains_key(rel) && !unserved.contains_key(rel))
+        .collect();
+    if excluded.is_empty() {
+        return;
+    }
+    eprintln!(
+        "mrd: note: {} markdown file(s) under this root are outside the hash domain and are NOT in this listing — {}. They are addressable by explicit path (`mrd read`, `mrd links <PATH>`); their bytes do not move the fingerprint this answer is stamped with.",
+        excluded.len(),
+        excluded.join(", ")
+    );
+}
+
 /// The title line and the gutter legend. Held apart from [`LISTING`] so the legend, which is
 /// prose and not a verb block, can never be lexed as one.
 const HEADER: &str = "\

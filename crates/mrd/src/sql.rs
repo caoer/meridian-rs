@@ -423,6 +423,7 @@ fn build_and_run_ephemeral(
         .map_err(|e| EphemeralError::NoCorpus(format!("cannot read the corpus: {e}")))?;
     let (_index, docs, unserved) = fs::build_corpus(files);
     crate::voice_unserved(&unserved);
+    crate::voice_excluded(&root, &docs, &unserved);
     // The ephemeral view is built with mount authority, from the same loader the
     // pin and link planes use; without it a cross-vault link projects as dangling.
     // Corpora narrow to the roots ambient wikilink/embed targets name; the
