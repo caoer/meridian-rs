@@ -1,9 +1,10 @@
 //! `mrd --version` — the build identity, over the process boundary.
 //!
 //! Gated here: all three spellings (`--version`, `-V`, bare `version`) answer on
-//! stdout at exit 0; the answer is one line carrying a commit; the commit is
-//! read, never invented — the real HEAD, or the literal `unknown` where a build
-//! could reach no repository.
+//! stdout at exit 0; the answer is one line carrying a commit; the commit and
+//! the state of the tree around it are read, never invented — the real HEAD
+//! with a `-dirty` marker where tracked content diverged from it, or the literal
+//! `unknown` where neither question could be answered.
 
 use std::process::{Command, Output};
 
@@ -55,34 +56,58 @@ fn every_spelling_prints_the_same_identity() {
     }
 }
 
-/// The commit is the repositorys own HEAD — read, never invented. When git cannot answer here
-/// (a source tree with no repository), the only legal identity is the literal `unknown`.
+/// The identity is the repository's own HEAD plus whether the build came from the WHOLE of it —
+/// read, never invented (`docs/release.md` §5.1). `<sha>` asserts a clean tree, `<sha>-dirty`
+/// says tracked content diverged, and `unknown` is the only legal answer where git could not be
+/// asked at all.
+///
+/// This asserts the exact token rather than the sha alone, because the marker is the half a
+/// reader acts on and an assertion that ignores it would pass on a binary lying about its tree.
+/// It can only be exact because the build script re-runs on every build: cargo therefore
+/// restamps before this test runs, and the one window left — another process editing this tree
+/// between the build and this line — cannot arise in the isolated tree a candidate is built in.
 #[test]
-fn the_commit_is_the_one_git_names() {
+fn the_identity_names_the_commit_and_the_state_of_its_tree() {
     let line = stdout(&mrd(&["--version"]));
-    let sha = line
+    let stamp = line
         .trim()
         .rsplit_once("(git ")
         .and_then(|(_, tail)| tail.strip_suffix(')'))
         .expect("the identity line carries a (git …) field")
         .to_owned();
 
-    let head = Command::new("git")
-        .arg("-C")
-        .arg(env!("CARGO_MANIFEST_DIR"))
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .ok()
-        .filter(|out| out.status.success())
-        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned());
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .arg("-C")
+            .arg(env!("CARGO_MANIFEST_DIR"))
+            .args(args)
+            .output()
+            .ok()
+            .filter(|out| out.status.success())
+            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+    };
 
-    match head {
-        Some(head) => assert_eq!(sha, head, "the identity names the commit git names"),
-        None => assert_eq!(
-            sha, "unknown",
-            "no repository to read: the only honest answer is `unknown`"
-        ),
-    }
+    let head = git(&["rev-parse", "HEAD"]).filter(|sha| !sha.is_empty());
+    let dirty = git(&[
+        "--no-optional-locks",
+        "status",
+        "--porcelain",
+        "--untracked-files=no",
+    ])
+    .map(|status| !status.is_empty());
+
+    let expected = match (head, dirty) {
+        (Some(head), Some(false)) => head,
+        (Some(head), Some(true)) => format!("{head}-dirty"),
+        // Either question unanswerable: the build published no attributable identity, and
+        // neither may this expectation invent one.
+        _ => "unknown".to_owned(),
+    };
+
+    assert_eq!(
+        stamp, expected,
+        "the identity states the commit git names and whether the tree matched it"
+    );
 }
 
 /// The flag is documented where a caller looks for it, so the surface and the
