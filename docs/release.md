@@ -234,14 +234,28 @@ renames the other.** A release numbered 1 ships contract rev v3. Renaming the
 contract rev to match a release number would break every client that negotiates
 `contract:"v3"` — it is not a tidying, it is a wire break, and it is refused.
 
-**Bound consequence, named not hidden:** the daemon's `hello` `server` string is
-a hardcoded `meridian-daemon/0.1` (`crates/registry/src/server.rs`), independent
-of the workspace version. §3.2 makes that string informational — no version
-sniffing, ever — so no promise breaks when it disagrees with the release number.
-It is a reader-facing drift, not a contract one. Deriving it from
-`CARGO_PKG_VERSION` so it cannot drift again is the honest repair, and it is a
-code change on a downstream-visible string: it belongs to whoever rules the
-version stamp, never to a doc edit.
+**The `server` string is DERIVED, and that closed a drift class** *(done at the
+v1 stamp, 2026-08-09)*. It used to be a hardcoded `meridian-daemon/0.1`
+(`crates/registry/src/server.rs`) independent of the workspace version, so a
+release numbered 1 would have announced `0.1` to its own customer. §3.2 makes
+the string informational — no version sniffing, ever — so nothing broke while it
+disagreed, and nothing breaks now that it agrees: it was a reader-facing drift,
+never a contract one.
+
+It is now `concat!("meridian-daemon/", env!("CARGO_PKG_VERSION"))`, so the
+string cannot drift from the stamp again. The repair rode WITH the version bump
+because it is a code change on a downstream-visible string — it belonged to
+whoever ruled the stamp, never to a doc edit alone. It was safe to make in the
+same change because the value's only readers were checked first: in
+`ccc-statusd`, this engine's customer, `meridian-daemon/0.1` appears **only in
+test fixtures** (the `registryclient` `client_test` / `lifecycle_test` /
+`pool_test` fake responses) — no production code parses the field's value.
+
+A third reader-visible surface therefore joins the two above:
+
+| Surface | Today |
+|---|---|
+| `hello.server` | `meridian-daemon/{CARGO_PKG_VERSION}` — informational, never sniffed (§3.2) |
 
 ### §5.2 The tag
 

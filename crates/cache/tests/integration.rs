@@ -12,8 +12,14 @@ use cache::{CacheDrawer, Probe, Sentinel, probe, register};
 
 const SENTINEL: &str = "registered.json";
 
+/// The version+salt path segment the crate builds (`layout::version_segment`).
+/// The version is DERIVED from the workspace stamp so a release bump cannot red
+/// these gates; the salt stays a literal, like the sentinel filename above,
+/// because it is on-disk contract rather than a stamp.
+const VERSION_SEGMENT: &str = concat!(env!("CARGO_PKG_VERSION"), "-s0");
+
 fn drawer(tmp: &Path) -> std::path::PathBuf {
-    tmp.join("hash").join("0.0.0-s0")
+    tmp.join("hash").join(VERSION_SEGMENT)
 }
 
 fn parse_sentinel(dir: &Path) -> Sentinel {
@@ -70,7 +76,7 @@ fn corrupt_sentinels_are_a_miss_never_error() {
     .iter()
     .enumerate()
     {
-        let dir = tmp.path().join(format!("c{i}")).join("0.0.0-s0");
+        let dir = tmp.path().join(format!("c{i}")).join(VERSION_SEGMENT);
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join(SENTINEL), body).unwrap();
         assert_eq!(probe(&dir), Probe::Miss, "corrupt body {i} must be a miss");
