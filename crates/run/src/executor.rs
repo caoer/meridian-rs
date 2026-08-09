@@ -1017,7 +1017,7 @@ fn render_receipt(
         reason: format!("receipt: {e}"),
     };
     // Free-text fields go through the receipt crate's field law. `task` is
-    // already an identifier (`address::bindings` refuses any other shape) and
+    // already an identifier (`address::declared` refuses any other shape) and
     // `invocation`/`now`/roots/revs are minted or engine hex — `page` and the
     // edit targets are the two that arrive as arbitrary bytes.
     let facts = ReceiptFacts {

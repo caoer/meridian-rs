@@ -800,7 +800,20 @@ task name to a same-file fenced code block; `task.<name>.caps` / `.args` /
 `.env` carry its capability declaration and input contract. Cross-file refs
 are an S1 **non-goal** (decision #11) and refuse with a typed error. Every
 addressing fault is distinct and pre-eval: no such task, dangling binding,
-ambiguous anchor, not-a-code-block, unknown fence language.
+ambiguous anchor, not-a-code-block, unknown fence language, cross-file ref.
+
+**A binding fault is scoped to its own row.** A binding VALUE is validated when
+its own task is addressed, so `mrd run PAGE TASK` always answers TASK's fault —
+a sibling's malformed or cross-file binding never masks it. `--list` renders
+every declared row and prints a faulty row's typed error in place of its
+language and caps, so one broken declaration neither hides the page nor
+vanishes from it.
+
+The one page-eager guard is the task **NAME** charset (§2.4, ruling 011): a key
+outside `[A-Za-z0-9-]` refuses the whole page, including `--list`. Its reason is
+not addressing but forgery — a name is stamped verbatim into every run receipt
+(`task`, and the actor `run:<name>`), and listing it would print the forged
+bytes it exists to keep out.
 
 ## Capabilities — deny-by-default (verdict ruling 3, decision #15)
 
