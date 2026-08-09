@@ -500,10 +500,8 @@ fn two_invocations_publish_distinct_receipt_anchors() {
     // Two pages, one per invocation — the shared file is `receipts/realise.md`,
     // which is where the collision lived. (Re-drifting ONE page by hand instead
     // would trip the run plane's foreign-edit guard, not this gate.)
-    let (_tmp, root, scratch) = workspace(&[
-        ("work-a.md", CONVERGES_PAGE),
-        ("work-b.md", CONVERGES_PAGE),
-    ]);
+    let (_tmp, root, scratch) =
+        workspace(&[("work-a.md", CONVERGES_PAGE), ("work-b.md", CONVERGES_PAGE)]);
 
     let mut first = spec(&scratch);
     first.invocation_id = "realise-1000-11".to_owned();
@@ -514,7 +512,11 @@ fn two_invocations_publish_distinct_receipt_anchors() {
     realise(&root, &[converge_claim("work-b.md")], &second).unwrap();
 
     let anchors = receipt_anchors(&root);
-    assert_eq!(anchors.len(), 2, "one receipt per applying invocation: {anchors:?}");
+    assert_eq!(
+        anchors.len(),
+        2,
+        "one receipt per applying invocation: {anchors:?}"
+    );
     assert_ne!(
         anchors[0], anchors[1],
         "the shared receipts file must not carry a duplicate block id: {anchors:?}"

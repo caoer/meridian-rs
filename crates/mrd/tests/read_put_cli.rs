@@ -1775,7 +1775,12 @@ fn put_target_identity_death_serves_would_corrupt_with_its_own_family() {
     let edits = r#"[{"target":{"hpath":[{"h":"Goals"},{"h":"Q4"}]},
         "edit":{"put":{"at":"all","text":"plain body, no heading\n"}}}]"#;
     let out = sb.run_stdin(&ws, &["put", "doc.md", "--json"], edits);
-    assert_eq!(code(&out), 1, "the identity death refuses: {}", stderr(&out));
+    assert_eq!(
+        code(&out),
+        1,
+        "the identity death refuses: {}",
+        stderr(&out)
+    );
     let v: Value = serde_json::from_str(&stdout(&out)).expect("--json refusal answers JSON");
     assert_eq!(v["error"]["code"], "would_corrupt", "{v}");
     assert_eq!(v["error"]["family"], "target_identity", "{v}");
