@@ -113,7 +113,10 @@ fn a_batch_overlap_is_the_engines_refusal_at_exit_1() {
     .expect("edits json");
     let out = sb.run_stdin(&ws, &["put", "doc.md"], &edits);
     let err = stderr(&out);
-    assert!(err.contains("edits["), "the overlap refusal names the edits:\n{err}");
+    assert!(
+        err.contains("edits["),
+        "the overlap refusal names the edits:\n{err}"
+    );
     assert_eq!(
         code(&out),
         1,

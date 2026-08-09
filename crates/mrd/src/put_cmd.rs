@@ -23,9 +23,10 @@
 //! caller packs), and the cross-process write flock. Rule packs are the empty set, so `verdicts`
 //! stay `[]`.
 //!
-//! Exit triad: 0 committed (or a rehearsal that passed) / 1 refused (`no_match`,
-//! `not_unique`, `cas_mismatch`, `root_mismatch`, `workspace_busy`, an armed
-//! gate refusal — the engine's verbatim message) / 2 bad invocation.
+//! Exit triad: 0 committed (or a rehearsal that passed) / 1 refused (EVERY engine
+//! refusal — `no_match`, `not_unique`, `cas_mismatch`, `root_mismatch`,
+//! `workspace_busy`, `bad_request`, an armed gate refusal — the engine's verbatim
+//! message) / 2 bad invocation (the CLI's own refusals, before any engine contact).
 
 use std::io::Read as _;
 
@@ -36,8 +37,8 @@ use wire_serve::write::{SpliceArgs, splice};
 use crate::{Fail, Format, current_dir, engine};
 
 /// Run `mrd put <PATH> [flags] < edits.json`. Errors [`Fail`] — exit 2 on a bad invocation (bad
-/// flags, malformed stdin JSON, a malformed `--now`, a `bad_request` refusal); exit 1 on any
-/// other engine refusal, message verbatim.
+/// flags, malformed stdin JSON, a malformed `--now` — the CLI's own refusals, before any engine
+/// contact); exit 1 on every engine refusal, `bad_request` included, message verbatim.
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let parsed = Put::parse(args)?;
     let edits = read_stdin_edits()?;
