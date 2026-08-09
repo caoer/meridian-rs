@@ -346,17 +346,39 @@ fn read_stdin_edits() -> Result<Vec<Edit>, Fail> {
     // decode runs before the workspace is resolved and before any splice, so a refusal here has
     // had zero engine contact. The decoder's own words locate the byte; the grammar clause is
     // what the refused caller actually needs (G-P2-6: serde's variant names taught nothing).
-    let edits: Vec<Edit> = serde_json::from_str(&raw).map_err(|e| {
-        Fail::tool(format!(
-            "malformed edits JSON on stdin: {e}{}. The §4.4 grammar: target is \
-             {{\"hpath\":[{{\"h\":\"Raw Title\"}}]}} / {{\"anchor\":\"block-id\"}} / \
-             {{\"fm_key\":\"key\"}}; edit is the NESTED {{\"match\":{{\"old\":\"…\",\"new\":\"…\"}}}} \
-             or {{\"put\":{{\"at\":\"end\",\"text\":\"…\"}}}} — a working batch: {WORKING_BATCH}. \
-             Nothing was parsed and nothing was written.",
-            envelope_hint(&raw)
-        ))
-    })?;
+    let value: Value = serde_json::from_str(&raw).map_err(|e| malformed(&e.to_string(), &raw))?;
+    // The engine's own edit decoder (§3.2 grain law): the strict wall holds at
+    // EVERY object of the batch — the edit object, its shape body, its target,
+    // each hpath segment — and names the closed set it checked against. A serde
+    // decode here was strict only where the types happened to be untagged, so a
+    // typo'd guard field (`if_rev` for `if_node_rev`) was DROPPED and the write
+    // armed unguarded. One decoder, both doors, no drift.
+    let edits: Vec<Edit> =
+        wire_serve::decode::decode_edits(&value).map_err(|e| {
+            malformed(
+                e.message
+                    .as_deref()
+                    .unwrap_or("the §4.4 edit grammar was not met"),
+                &raw,
+            )
+        })?;
     Ok(edits)
+}
+
+/// The one malformed-stdin refusal shape, shared by the JSON-syntax leg and the
+/// strict-decode leg: the decoder's own words locate the byte or the field, the
+/// grammar clause is what the refused caller needs, and the nothing-happened
+/// clause is unconditional — both legs run before the workspace is resolved and
+/// before any splice, so a refusal here has had zero engine contact.
+fn malformed(reason: &str, raw: &str) -> Fail {
+    Fail::tool(format!(
+        "malformed edits JSON on stdin: {reason}{}. The §4.4 grammar: target is \
+         {{\"hpath\":[{{\"h\":\"Raw Title\"}}]}} / {{\"anchor\":\"block-id\"}} / \
+         {{\"fm_key\":\"key\"}}; edit is the NESTED {{\"match\":{{\"old\":\"…\",\"new\":\"…\"}}}} \
+         or {{\"put\":{{\"at\":\"end\",\"text\":\"…\"}}}} — a working batch: {WORKING_BATCH}. \
+         Nothing was parsed and nothing was written.",
+        envelope_hint(raw)
+    ))
 }
 
 /// The one refusal worth naming: stdin carried the whole §4.4 request object instead of the

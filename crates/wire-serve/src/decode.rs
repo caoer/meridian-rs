@@ -499,7 +499,16 @@ fn decode_receipt(v: &Value) -> Result<wire::ReceiptAddr, Box<ErrorBody>> {
 }
 
 /// §4.4 batch edits: each `{target, edit, if_node_rev?}`; empty array refuses.
-fn decode_edits(v: &Value) -> Result<Vec<wire::Edit>, Box<ErrorBody>> {
+///
+/// Public because the `edits` value has a SECOND door: `mrd put` reads the bare
+/// array off stdin (§4.4 "the CLI seam reads the `edits` VALUE"). One decoder
+/// serves both, so the strict wall (§3.2 grain law) cannot hold at one door and
+/// leak at the other — a `deny_unknown_fields`-less serde decode there dropped
+/// `if_rev` silently and turned a guarded write into an unguarded one.
+///
+/// # Errors
+/// `bad_request` naming the offending field/value and the closed set it checked.
+pub fn decode_edits(v: &Value) -> Result<Vec<wire::Edit>, Box<ErrorBody>> {
     let Value::Array(items) = v else {
         return Err(bad_request("`edits` must be an array"));
     };
@@ -514,7 +523,16 @@ fn decode_edits(v: &Value) -> Result<Vec<wire::Edit>, Box<ErrorBody>> {
         };
         for key in e.keys() {
             if !["target", "edit", "if_node_rev"].contains(&key.as_str()) {
-                return Err(bad_request(format!("unknown field `{key}` in edit")));
+                // The legal set is named because THIS field carries the CAS
+                // guard: a caller who typed `if_rev` needs the spelling back,
+                // not just the news that the key was wrong (§3.2 grain law).
+                // Phrasing follows the config door's refusal exemplar
+                // (`config::UNKNOWN_FIELD_REFUSAL_EXEMPLAR`) — one house style
+                // for "you typed a field that does not exist".
+                return Err(bad_request(format!(
+                    "unknown field `{key}` in edit — legal fields are `target`, `edit`, \
+                     `if_node_rev`"
+                )));
             }
         }
         let Some(target_v) = e.get("target") else {
@@ -544,14 +562,18 @@ fn decode_edit_shape(v: &Value) -> Result<wire::EditShape, Box<ErrorBody>> {
     };
     for key in shape.keys() {
         if !["match", "put"].contains(&key.as_str()) {
-            return Err(bad_request(format!("unknown field `{key}` in `edit`")));
+            return Err(bad_request(format!(
+                "unknown field `{key}` in `edit` — legal fields are `match`, `put`"
+            )));
         }
     }
     match (shape.get("match"), shape.get("put")) {
         (Some(Value::Object(m)), None) => {
             for key in m.keys() {
                 if !["old", "new"].contains(&key.as_str()) {
-                    return Err(bad_request(format!("unknown field `{key}` in `match`")));
+                    return Err(bad_request(format!(
+                        "unknown field `{key}` in `match` — legal fields are `old`, `new`"
+                    )));
                 }
             }
             Ok(wire::EditShape::Match {
@@ -562,7 +584,9 @@ fn decode_edit_shape(v: &Value) -> Result<wire::EditShape, Box<ErrorBody>> {
         (None, Some(Value::Object(p))) => {
             for key in p.keys() {
                 if !["at", "text"].contains(&key.as_str()) {
-                    return Err(bad_request(format!("unknown field `{key}` in `put`")));
+                    return Err(bad_request(format!(
+                        "unknown field `{key}` in `put` — legal fields are `at`, `text`"
+                    )));
                 }
             }
             let at = match p.get("at") {
@@ -673,7 +697,9 @@ fn decode_sec(v: &Value) -> Result<SecRef, Box<ErrorBody>> {
     };
     for key in sec.keys() {
         if !["hpath", "anchor", "fm_key"].contains(&key.as_str()) {
-            return Err(bad_request(format!("unknown field `{key}` in `sec`")));
+            return Err(bad_request(format!(
+                "unknown field `{key}` in `sec` — legal fields are `hpath`, `anchor`, `fm_key`"
+            )));
         }
     }
     match (sec.get("hpath"), sec.get("anchor"), sec.get("fm_key")) {
@@ -730,7 +756,7 @@ fn decode_seg(v: &Value) -> Result<HpathSeg, Box<ErrorBody>> {
             for key in seg.keys() {
                 if !["h", "n"].contains(&key.as_str()) {
                     return Err(bad_request(format!(
-                        "unknown field `{key}` in hpath segment"
+                        "unknown field `{key}` in hpath segment — legal fields are `h`, `n`"
                     )));
                 }
             }
