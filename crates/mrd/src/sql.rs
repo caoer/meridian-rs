@@ -430,7 +430,11 @@ fn build_and_run_ephemeral(
     // MountSet stays whole.
     let mounts =
         crate::walk_cmd::load_mounts_for(&crate::walk_cmd::link_addressed_roots(&docs, None));
-    let corpus = mounts.rooted(&docs);
+    // The same filter this snapshot was taken under, so any face reading the
+    // corpus tells an excluded path from a missing one (§12.1 verdict plane).
+    let domain = fs::domain::Domain::load(&root)
+        .map_err(|e| EphemeralError::NoCorpus(format!("cannot read the hash domain: {e}")))?;
+    let corpus = mounts.rooted(&docs, &domain, &root);
     let conn = view::build_memory_rooted(&docs, &corpus, mounts.set(), &f0.0)
         .map_err(|e| EphemeralError::Fail(Fail::tool(format!("cannot build the view: {e}"))))?;
 

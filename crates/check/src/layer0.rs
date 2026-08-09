@@ -135,9 +135,23 @@ pub struct PinPlane {
     /// Pins whose colour is RED — the ledger claims content that is no longer
     /// there.
     pub red: Vec<PinRow>,
-    /// Pins whose colour is GREY — outside sight, each carrying its own reason
-    /// word.
+    /// Pins whose colour is GREY *for want of a measure* — outside sight, each
+    /// carrying its own reason word. These GATE: an unread plane is not a clean
+    /// one.
     pub grey: Vec<PinRow>,
+    /// Pins whose target the hash domain EXCLUDES — `grey(outside-hash-domain)`.
+    /// Reported, never gated, and deliberately not in `grey`.
+    ///
+    /// The split is a difference in kind, not in severity (`wire-contract.md`
+    /// §12.1, verdict-plane clause + enumerator clause). `check` asks *does the
+    /// world still match the pins* over the ATTESTED surface; an out-of-domain
+    /// target is outside that surface by the workspace's own declaration, so
+    /// nothing was owed and nothing went unanswered. Folding it into `grey`
+    /// refuses the whole workspace over a pin the engine itself minted at rc=0 —
+    /// the P0 this field exists to keep fixed. Named in the render regardless:
+    /// an enumerator MAY exclude what its attestation cannot reach, never
+    /// silently.
+    pub unattested: Vec<PinRow>,
     /// Pinned blobs nothing holds and nothing will — the anchoring FINDING.
     /// See [`OrphanedBlob`] for why the refusal is this pair and not a bare
     /// state.
@@ -202,6 +216,12 @@ impl PinPlane {
         !self.grey.is_empty() || self.cannot_ask.is_some()
     }
 
+    /// Every grey row the plane holds, gating and non-gating alike — the render's
+    /// list, never the gate's. Order is stable: gating greys first.
+    pub fn every_grey(&self) -> impl Iterator<Item = &PinRow> {
+        self.grey.iter().chain(&self.unattested)
+    }
+
     /// Nothing to report and everything asked — the assessed green. Distinct from
     /// "no pins in the corpus" only in that both are true readings; a corpus that
     /// declares no pins genuinely owes nothing.
@@ -231,6 +251,7 @@ pub fn pin_plane(
     let mut plane = PinPlane {
         red: Vec::new(),
         grey: Vec::new(),
+        unattested: Vec::new(),
         orphaned: Vec::new(),
         anchored: 0,
         pending: 0,
@@ -242,6 +263,11 @@ pub fn pin_plane(
     for pin in pins {
         match pin.color {
             Color::Red(_) => plane.red.push(pin.clone()),
+            // The one grey that is a policy statement rather than an absence of
+            // measure — sorted out here so the gate never sees it.
+            Color::Grey(model::selector::GreyReason::OutsideHashDomain { .. }) => {
+                plane.unattested.push(pin.clone());
+            }
             Color::Grey(_) => plane.grey.push(pin.clone()),
             Color::Green => {}
         }
@@ -463,6 +489,55 @@ mod tests {
         }
     }
 
+    /// The grey bucket splits by KIND, and the split decides whether `check`
+    /// refuses the whole workspace.
+    ///
+    /// `grey(outside-hash-domain)` is a policy statement about the attested
+    /// surface, so it is NAMED and gates nothing; every other grey is an absence
+    /// of measure and still gates. Both halves are asserted here — a gate that
+    /// only checked the new arm would pass a change that stopped refusing on
+    /// blindness too, which is the fail-open this split must never become.
+    #[test]
+    fn the_domain_grey_is_reported_while_a_blindness_grey_still_gates() {
+        let root = WorkspaceRoot(std::path::PathBuf::from("/nonexistent"));
+        let docs = BTreeMap::new();
+
+        let unattested = pin_plane(
+            &root,
+            &docs,
+            &[pin(Color::Grey(model::selector::GreyReason::OutsideHashDomain {
+                path: "drafts/tmp.md".to_string(),
+            }))],
+        );
+        assert!(
+            unattested.grey.is_empty() && unattested.unattested.len() == 1,
+            "the domain grey is sorted out of the gating bucket"
+        );
+        assert!(
+            !unattested.cannot_assess(),
+            "nothing went unanswered: the workspace declared this surface unattested"
+        );
+        assert!(
+            !unattested.is_red() && unattested.is_green(),
+            "so `check` must not refuse the workspace over a pin the engine minted at rc=0"
+        );
+        assert_eq!(
+            unattested.every_grey().count(),
+            1,
+            "and it is still NAMED — an enumerator excludes, never silently"
+        );
+
+        let blind = pin_plane(
+            &root,
+            &docs,
+            &[pin(Color::Grey(model::selector::GreyReason::Ambiguous))],
+        );
+        assert!(
+            blind.cannot_assess() && !blind.is_green(),
+            "a grey for want of a measure still gates — an unread plane is not a clean one"
+        );
+    }
+
     /// The sort is load-bearing in both directions: a red pin is a FINDING, a
     /// grey pin a refusal-for-want-of-evidence.
     #[test]
@@ -502,6 +577,7 @@ mod tests {
         let lifecycle = PinPlane {
             red: Vec::new(),
             grey: Vec::new(),
+            unattested: Vec::new(),
             orphaned: Vec::new(),
             anchored: 1,
             pending: 1,

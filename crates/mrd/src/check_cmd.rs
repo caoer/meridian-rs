@@ -125,12 +125,12 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     }
     let mounts = crate::walk_cmd::load_mounts_for(&needed);
 
-    let worktree = assess(&root, &mounts, &worktree_docs);
+    let worktree = assess(&root, &mounts, &worktree_docs, &domain);
 
     let staged = match (&interval, &staged_docs) {
         (Interval::Diverges(bytes), Some(docs)) => Some(Assessed {
             paths: bytes.paths.clone(),
-            report: assess(&root, &mounts, docs).report,
+            report: assess(&root, &mounts, docs, &domain).report,
         }),
         _ => None,
     };
@@ -601,8 +601,11 @@ fn assess(
     root: &fs::WorkspaceRoot,
     mounts: &crate::walk_cmd::Mounts,
     docs: &BTreeMap<String, Document>,
+    domain: &fs::domain::Domain,
 ) -> Assessed {
-    let corpus = mounts.rooted(docs);
+    // The same domain the snapshot was taken under — the colour plane must be
+    // filtered by the filter that built its corpus, never by a second reading.
+    let corpus = mounts.rooted(docs, domain, root);
     let pins = pin_rows(&corpus, mounts.set());
     Assessed {
         paths: Vec::new(),
@@ -855,10 +858,13 @@ fn render_report(report: &CoreReport) -> String {
     // `pins:` reads the claim plane (did the content drift) and `anchoring:` reads
     // the retrieval plane (is the blob durably held).
     let pins = &report.pins;
-    if pins.red.is_empty() && pins.grey.is_empty() {
+    if pins.red.is_empty() && pins.grey.is_empty() && pins.unattested.is_empty() {
         let _ = writeln!(out, "  pins: green");
     } else {
-        for pin in pins.red.iter().chain(&pins.grey) {
+        // Every row, gating and not — the enumeration is COMPLETE, never
+        // worst-of. The unattested rows are NAMED here and gate nothing
+        // (§12.1 enumerator clause); their own reason word says which they are.
+        for pin in pins.red.iter().chain(pins.every_grey()) {
             let _ = writeln!(out, "  pins: {}", pin_line(pin));
         }
     }
@@ -1031,6 +1037,13 @@ fn pins_json(report: &CoreReport) -> Value {
     json!({
         "red": pins.red.iter().map(row).collect::<Vec<_>>(),
         "grey": pins.grey.iter().map(row).collect::<Vec<_>>(),
+        // The sight line for the CLAIM plane, beside `anchoring_out_of_jurisdiction`
+        // for the retrieval plane: pins whose target the hash domain excludes.
+        // Reported, never gated (§12.1 verdict-plane clause). Its own key rather
+        // than a member of `grey`, so a scripted caller gating on `grey` keeps
+        // refusing for want of a measure and never for a declared exclusion —
+        // and so the exclusion is never silent on this face either.
+        "unattested": pins.unattested.iter().map(row).collect::<Vec<_>>(),
         "anchoring": match &pins.cannot_ask {
             Some(_) => Value::Null,
             // The three-state reading plus its population: an empty `orphaned` over
@@ -1114,6 +1127,7 @@ mod tests {
         PinPlane {
             red: Vec::new(),
             grey: Vec::new(),
+            unattested: Vec::new(),
             orphaned: Vec::new(),
             anchored: 0,
             pending: 0,

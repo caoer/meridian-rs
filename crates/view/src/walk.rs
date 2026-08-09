@@ -410,7 +410,11 @@ fn edge_page(edge: &LockItem) -> String {
 /// Colour one edge on the fingerprint plane.
 ///
 /// Pre-compare arms: lock-refusal → grey; unmounted root → grey (R-3, first);
-/// root absence → red `file-not-found`; else `classify_pin` on fingerprint.
+/// target outside the hash domain → the disk decides between red
+/// `file-not-found` (absent — decision 0049, absence outranks domain
+/// membership) and grey `outside-hash-domain` (present but unhashable, R-3,
+/// before every red); root absence → red `file-not-found`; else `classify_pin`
+/// on fingerprint.
 fn edge_color(corpus: &model::RootedCorpus<'_>, edge: &LockItem) -> Color {
     if let Some(reason) = &edge.lock_refusal {
         return Color::Grey(GreyReason::LockRefused {
@@ -422,10 +426,39 @@ fn edge_color(corpus: &model::RootedCorpus<'_>, edge: &LockItem) -> Color {
     if let Some(reason) = &edge.root_refusal {
         return Color::Grey(reason.clone());
     }
+    // R-3 again: the hash domain gates HASHING, not addressing, so a target it
+    // excludes was never loaded into this corpus and every red below would
+    // assert an absence nobody measured (§12.1 verdict-plane clause, decision
+    // 0034). `pin` attests such a target at rc=0, so red here sends the caller
+    // to destroy the engine's own attestation. `None` = the face supplied no
+    // domain: cannot say, so nothing changes.
+    //
+    // ABSENCE OUTRANKS DOMAIN MEMBERSHIP (decision 0049): the grey is scoped to
+    // a target that EXISTS and cannot be hashed, so the existence question is
+    // answered BEFORE the domain answer is used. The corpus map cannot answer
+    // it — an excluded target is missing from the map whether it is on disk or
+    // deleted, which is the whole defect — and `root_absence` is not the signal
+    // either: `read_face` sets it only for a miss inside a MOUNTED root. So this
+    // is a DISK READ of the named path at the root it resolves under (decision
+    // 0045's mechanism), asked of the corpus's builder. `None` there = the face
+    // supplied no disk: cannot say, and the pre-0049 grey stands rather than a
+    // guess.
+    if corpus.in_hash_domain(edge.to_root.as_ref(), &edge.to_path) == Some(false) {
+        if corpus.on_ambient_disk(edge.to_root.as_ref(), &edge.to_path) == Some(false) {
+            return Color::Red(RedReason::FileNotFound {
+                root: None,
+                path: edge.to_path.clone(),
+                selector: (!edge.to_sel.is_empty()).then(|| edge.to_sel.clone()),
+            });
+        }
+        return Color::Grey(GreyReason::OutsideHashDomain {
+            path: edge.to_path.clone(),
+        });
+    }
     // U21: root reached, file absent — before ambient miss → wrong red cause.
     if let Some(root) = &edge.root_absence {
         return Color::Red(RedReason::FileNotFound {
-            root: root.clone(),
+            root: Some(root.clone()),
             path: edge.to_path.clone(),
             selector: (!edge.to_sel.is_empty()).then(|| edge.to_sel.clone()),
         });
@@ -1148,5 +1181,107 @@ mod tests {
         let rows = lock_pin_colors(&docs);
         assert_eq!(rows.len(), 1, "the refusal is still visible: {rows:?}");
         assert_eq!(color_tone(&rows[0].color), "grey");
+    }
+
+    /// The §12.1 verdict-plane law, as a family — the gate for the P0 where the
+    /// engine mints a pin and two commands later calls it broken.
+    ///
+    /// A domain that excludes exactly one path, asserted over the WHOLE family
+    /// on ONE corpus: the excluded target greys with its own reason word, and
+    /// every other outcome is UNCHANGED. The controls are the point — a fix that
+    /// greys everything passes the excluded arm alone.
+    #[test]
+    fn an_out_of_domain_target_greys_and_every_other_verdict_is_unchanged() {
+        /// A domain holding everything except the paths it is told to exclude.
+        #[derive(Debug)]
+        struct Excluding(&'static [&'static str]);
+        impl model::HashDomain for Excluding {
+            fn contains(&self, rel: &str) -> bool {
+                !self.0.contains(&rel)
+            }
+        }
+
+        let target_raw = "# Target\n\nbody v1\n";
+        let token = live_token(target_raw);
+
+        // Four pinning pages, one per arm, all pinning at the SAME live token.
+        let mut docs = BTreeMap::new();
+        docs.insert(
+            "excluded-src.md".to_string(),
+            doc(&format!("# S\n\n{}\n", chain_block("ignored/target", &token))),
+        );
+        docs.insert(
+            "green-src.md".to_string(),
+            doc(&format!("# S\n\n{}\n", chain_block("kept", &token))),
+        );
+        docs.insert(
+            "drift-src.md".to_string(),
+            doc(&format!("# S\n\n{}\n", chain_block("drifted", &token))),
+        );
+        docs.insert(
+            "miss-src.md".to_string(),
+            doc(&format!("# S\n\n{}\n", chain_block("gone", &token))),
+        );
+        // The in-domain targets. `ignored/target.md` is deliberately ABSENT from
+        // the map exactly as the hash-domain walk leaves it, and `gone.md` is
+        // absent because it does not exist — the same corpus fact, two causes.
+        docs.insert("kept.md".to_string(), doc(target_raw));
+        docs.insert("drifted.md".to_string(), doc("# Target\n\nbody v2 edited\n"));
+
+        let domain = Excluding(&["ignored/target.md"]);
+        let corpus = model::RootedCorpus::ambient(&docs).with_hash_domain(&domain);
+        let colors: BTreeMap<String, Color> =
+            lock_pin_colors_rooted(&corpus, &addr::MountSet::default())
+                .into_iter()
+                .map(|pin| (pin.src_path, pin.color))
+                .collect();
+
+        // The arm under test: policy, not blindness — and it names the path.
+        let excluded = &colors["excluded-src.md"];
+        assert_eq!(
+            excluded,
+            &Color::Grey(GreyReason::OutsideHashDomain {
+                path: "ignored/target.md".to_string()
+            }),
+            "an out-of-domain target is grey: the engine did not look"
+        );
+        assert_eq!(color_reason(excluded), Some("outside-hash-domain"));
+
+        // The three controls, on the same run and the same corpus.
+        assert_eq!(
+            colors["green-src.md"],
+            Color::Green,
+            "an in-domain pin at its live token still reads green"
+        );
+        assert_eq!(
+            colors["drift-src.md"],
+            Color::Red(RedReason::Drifted),
+            "in-domain drift is still red — greying it would hide real drift"
+        );
+        assert!(
+            matches!(colors["miss-src.md"], Color::Red(_)),
+            "an in-domain target that is genuinely absent stays RED: there the \
+             engine DID look. Got {:?}",
+            colors["miss-src.md"]
+        );
+    }
+
+    /// Without a domain the corpus cannot say, and cannot-say must not become
+    /// grey: the pre-0034 verdict stands rather than a guess.
+    #[test]
+    fn a_corpus_with_no_domain_colours_exactly_as_before() {
+        let token = live_token("# Target\n\nbody v1\n");
+        let mut docs = BTreeMap::new();
+        docs.insert(
+            "src.md".to_string(),
+            doc(&format!("# S\n\n{}\n", chain_block("ignored/target", &token))),
+        );
+        let corpus = model::RootedCorpus::ambient(&docs);
+        let rows = lock_pin_colors_rooted(&corpus, &addr::MountSet::default());
+        assert!(
+            matches!(rows[0].color, Color::Red(_)),
+            "no domain supplied ⇒ no claim about the domain: {:?}",
+            rows[0].color
+        );
     }
 }

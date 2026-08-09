@@ -441,7 +441,36 @@ fn lock_planes(workspace: &Path) -> (LockAxis, VibeDebt) {
     // use, so the planes agree by construction. The corpora are narrowed to the
     // roots this corpus's own lock addresses name; the table itself is not.
     let mounts = crate::walk_cmd::load_mounts_for(&crate::walk_cmd::lock_addressed_roots(&docs));
-    let corpus = mounts.rooted(&docs);
+    // The hash domain rides with the corpus: without it every out-of-domain pin
+    // rolls the lock axis red (decision 0034). Unreadable is reported, never
+    // defaulted — a default domain claims everything is hashed.
+    let domain = match crate::walk_cmd::load_domain(workspace) {
+        Ok(domain) => domain,
+        Err(fail) => {
+            let axis = LockAxis {
+                rows: 0,
+                rollup: None,
+                unreadable: Some(fail.message.clone()),
+            };
+            return (axis, VibeDebt::unknown(fail.message));
+        }
+    };
+    // The root the corpus was built from, for the same reason the domain rides
+    // with it: without a disk to read, an out-of-domain pin whose target is GONE
+    // greys instead of reddening (decision 0049). Unreadable is reported here
+    // too — a face that cannot resolve its root cannot answer the lock axis.
+    let root = match crate::walk_cmd::workspace_root(workspace) {
+        Ok(root) => root,
+        Err(fail) => {
+            let axis = LockAxis {
+                rows: 0,
+                rollup: None,
+                unreadable: Some(fail.message.clone()),
+            };
+            return (axis, VibeDebt::unknown(fail.message));
+        }
+    };
+    let corpus = mounts.rooted(&docs, &domain, &root);
     let colors: Vec<Color> = view::walk::lock_pin_colors_rooted(&corpus, mounts.set())
         .into_iter()
         .map(|p| p.color)

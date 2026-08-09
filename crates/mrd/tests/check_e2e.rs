@@ -231,6 +231,12 @@ fn check_is_green_on_a_governed_corpus_and_the_render_is_pinned() {
             "pins": {
                 "red": [],
                 "grey": [],
+                // Pins whose target the hash domain excludes — reported, never
+                // gated (`wire-contract.md` §12.1 verdict-plane clause). Empty
+                // here and PINNED empty: this shape gate is what forces the key
+                // to be declared rather than to appear, and a caller gating on
+                // `grey` must keep seeing an exclusion in its own key.
+                "unattested": [],
                 "anchoring": {
                     "asked": 0,
                     "anchored": 0,
@@ -527,6 +533,12 @@ fn check_json_discloses_write_history_and_carries_no_chain_keys() {
             "pins": {
                 "red": [],
                 "grey": [],
+                // Pins whose target the hash domain excludes — reported, never
+                // gated (`wire-contract.md` §12.1 verdict-plane clause). Empty
+                // here and PINNED empty: this shape gate is what forces the key
+                // to be declared rather than to appear, and a caller gating on
+                // `grey` must keep seeing an exclusion in its own key.
+                "unattested": [],
                 "anchoring": {
                     "asked": 0,
                     "anchored": 0,

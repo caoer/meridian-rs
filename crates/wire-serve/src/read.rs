@@ -1206,7 +1206,7 @@ fn render_refused_edge(link: &str, edge: &query::RefusedEdge) -> wire::RefusedEd
             path,
             selector,
         } => Color::Red(RedReason::FileNotFound {
-            root: root.clone(),
+            root: Some(root.clone()),
             path: path.clone(),
             selector: selector.clone(),
         }),
