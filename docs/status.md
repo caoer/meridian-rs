@@ -249,16 +249,34 @@ law asks finds its baked sha is no longer an ancestor of `main` the moment its
 own work lands:
 
 ```
-t=$(git rev-parse <baked-sha>^{tree})
-git log --format="%h %T" <base>..HEAD | awk -v t="$t" '$2==t'
+cd <the directory under test>                  # NOT the shared checkout you are standing in
+git cherry $(git rev-parse HEAD) <baked-sha>
+git show <baked-sha> | git patch-id --stable   # compare against the landing directly
 ```
 
-A MATCH means the commit was RE-LANDED UNDER A NEW SHA — same tree, different id
-— which is benign and is exactly what a cherry-picked landing looks like from
-the candidate side. NO MATCH, with the baked sha not an ancestor, leaves the
-foreign-checkout hazard as the live reading. **Without this rung the detector
-fires hardest on the seats whose work just landed correctly**, which is the
-failure mode that retires a detector fastest.
+`-` means your change LANDED UNDER ANOTHER SHA — benign, and exactly what a
+cherry-picked landing looks like from the candidate side. `+` means no equivalent
+is upstream IN THIS TREE and, with the baked sha not an ancestor, leaves the
+foreign-checkout hazard as the live reading.
+
+⛔ **EMPTY output is a THIRD answer and it is not "no finding".** `git cherry`
+lists nothing when the baked sha is already an ancestor of the HEAD you gave it —
+so running it from the SHARED CHECKOUT, which is where everyone already is,
+prints silence for a row that answers `+` against its own tree. **Name the HEAD
+explicitly and stand in the directory under test**; treat empty as *wrong tree,
+re-run*, never as a pass.
+
+⛔ **Do NOT use tree identity for this.** Resolving the sha to its `^{tree}` and
+hunting that tree in `<base>..HEAD` holds ONLY when the re-land sits on the SAME
+PARENT; a cherry-pick onto a MOVED base produces a DIFFERENT TREE for the same
+change, which is the normal landing shape here. Measured on candidate
+`689dde53`: **no tree match anywhere in history — the tree rule calls it the
+hazard — while `patch-id` is `b4c15235…` for both it and its landing `f42ace82`,
+and `git cherry` prints `-`.** Tree said hazard, patch equivalence said landed,
+and the second is right. Tree identity is a SPECIAL CASE of patch equivalence and
+must not be used alone. **Without this rung the detector fires hardest on the
+seats whose work just landed correctly** — the failure mode that retires a
+detector fastest, and the reason this paragraph has now been sharpened twice.
 
 ⚠️ Run the first check against the binary in that
 directory's own `target/`, never a PATH-resolved `mrd` — the installed engine is
