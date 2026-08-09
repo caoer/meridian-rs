@@ -174,6 +174,54 @@ outside the §2.4 charset, an `old` that matches nothing, a region that overlaps
 doing so converts an engine refusal into a bad-invocation report and blanks the
 `--json` frame the caller branches on.
 
+### Teaching rows — five true facts about this face an agent would not predict
+
+Each row is scoping, not defect: the CLI face is lawful and its behaviour still
+surprises a reader who arrived from `wire-contract.md`. Recorded 2026-08-09
+from the v1.0.0 dogfood sweep.
+
+**`<PATH>#FRAG` is a MAP FILTER, never a body read.** `mrd read
+notes/plan.md#Goals/Q3` serves the SUBTREE'S TOC ROW — its address, span and
+rev — and no body. `--section SEL` is what serves bodies. This follows the wire
+law (a `frag` scopes the subtree; it is not a content selector), but the usage
+line above spells `<PATH>[#FRAG]` beside `[--section SEL]` without separating
+them, so an agent reaching for `#FRAG` to read a section gets a map at exit 0.
+
+**`mrd put` here is IN-PROCESS, so two wire demands do not reach it.** A
+guardless `--dry` returns the armed diff and never `guard_required`: § A.1's
+fingerprint-or-force demand binds WIRE doors, and this face is outside its
+scope by §3.3 (one wire door). And an in-process commit rides no daemon epoch,
+so it serves `seq:0` — §7.1's `seq` is per-daemon-epoch, and there is no epoch
+here to count within. Neither is a CLI defect and neither is a general
+statement about the engine: **the wire-door guard demand and the `seq` ladder
+are untested at this face and belong to the MCP phase.** Do not carry a `seq`
+expectation from this face onto a daemon-backed one.
+
+**A `--json` face answers `{workspace, error}` on EVERY leg that can refuse
+(settled 2026-08-09; was an open asymmetry).** `mrd put --json` already did;
+`mrd read --json` answered EMPTY stdout plus the human stderr line on every
+refusal leg (all-fail, ambiguous, duplicate-anchor, unaddressable-host,
+§2.4 charset, ambiguous-domain). **An absent frame is indistinguishable, to a
+parsing agent, from success with no output** — which is why this is a defect and
+not a face preference: the caller cannot tell "refused" from "nothing to say"
+without reading a sentence off stderr. So the refusal envelope is the law of the
+`--json` face itself, not of one verb: the engine's §8 error body in the v3
+vocabulary, on stdout, beside the unchanged human stderr line and exit triad.
+A.3's `reason` vocabulary and its `candidates` arrays reach a machine consumer
+at the leg the plane was invented to structure.
+
+**`io_error` carries its `{cause}` onto the human face.** §8 computes
+`io_error{cause}` and the engine composes real prose into it — the
+ambiguous-domain refusal names both config files and which one to delete. The
+CLI printed the bare token `mrd: io_error`, so the one refusal whose remedy is
+genuinely non-obvious was the one whose teaching was swallowed. The cause is
+rendered verbatim; nothing is invented beside it.
+
+**The human read face carries no VALUE plane.** The composed read's `props`
+rows (A.3) are machine-face facts. `mrd read`'s human output is the rendered
+text verbatim, so frontmatter values arrive only as rendered source. Read
+`--json` when you want the decoded value and its `prop_rev`.
+
 ### The joined selector coat — one dead delimiter, two escapes
 
 `--section SEL` and `mrd pin`'s `#SELECTOR` share ONE human-string door

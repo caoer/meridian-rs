@@ -269,6 +269,8 @@ Request: `{"id":2,"op":"toc","path":"notes/plan.md"}` — response at S0 (every 
 
 toc is the complete write kit: hpath + `node_rev` per section, anchors with their revs when present, frontmatter keys. The header `fingerprint` makes the commit-guard idiom ambient — read a toc, later pass `if_fingerprint`. `content_span` is served for interface use (heading-preserving display) but mints nothing (§1).
 
+**Teaching row — displayed bytes are not hashed bytes.** A face rendering from `content_span` shows FEWER bytes than the row's `node_rev` covers: Q3 above displays 17 content bytes while its rev hashes the full 23-byte span. The same split runs at the anchor grain in the other direction — a rendered block line elides the trailing ` ^id` that the leaf span carries and the rev hashes. So a caller that diffs what it was shown against what was hashed mismatches by exactly the heading prefix or the id suffix. Compare against `cat`'s full span bytes (§4.2), never against a display column.
+
 **The anchor toc row, worked** (`receipts/2026-07-18.md` at S1 — the only block-id-bearing file in the fixture; every value computed): the plan.md toc above shows no anchor row because no plan.md section carried a block id at toc time, so the "anchors with their revs" clause is worked here instead.
 
 ```json
@@ -360,7 +362,11 @@ Response (S0→S1, all values computed):
  "seq":1,"verdicts":[]}}
 ```
 
+**Teaching row — the `target_identity` family is the WHOLE of `at:"end"` on an anchor, not an edge of it.** A block-leaf span excludes its terminator, so the insertion point sits after the id: EVERY bare end-append to an `{"anchor":id}` target un-ids the block and refuses. The remedy is not a repair to reach for occasionally — an append to an anchor must re-supply the id line-final in its own `text`, every time.
+
 The response carries what the write **ARMED** — target identities, rev transitions, spans after, the receipt fact, the root transition — never delivery claims. `verdicts` is the rules-as-data surface (§11). Spans appear in *responses* freely: the wire's business, never argv's.
+
+**Teaching row — an armed row echoes the node's BATCH transition, never an intermediate.** Two edits on one node both serve the same `node_rev_before`, `node_rev_after` and `span_after`: the node's pre-batch and post-batch state, repeated per edit. Guards resolve against the pre-batch state, so this is the same law read from the response side. A consumer that counts distinct rev transitions by counting armed rows over-counts on a same-node batch; count distinct `node_rev_after` values instead.
 
 The append verb is the same op:
 
@@ -978,6 +984,8 @@ When a workspace is **armed** (attested INDEX present), after CAS and before byt
 - Duplicate ids share one spelling, and the anchor grammar carries no occurrence index (`n` disambiguates hpath segments; `{"anchor":id}` has no `n` slot), so **no machine address exists per candidate**: the refusal's `candidates` stays `[]` and the message names how many blocks carry the id. The map stays honest evidence: `toc`'s `anchors[]` publishes every occurrence with its span, duplicates included.
 - The remedy **speaks the anchor grammar, never the heading one**: give each duplicate block a distinct id (a block id addresses exactly one block in its file), or address the enclosing section by heading path. "Rename one heading" is the heading-duplicate remedy and never appears on an anchor refusal.
 
+**Teaching row — the anchor host-kind gate is a READ-face law, and the write door does not carry it (2026-08-09):** `unaddressable_host` and the set `anchors[]` publishes are both scoped to the block kinds this read face addresses. The write door has no host-kind gate. So a paragraph-hosted `^id` that the map never publishes, and that the read door refuses `unaddressable_host`, is still a legal `{"anchor":id}` splice target and arms a rev transition normally. Read this in one direction only: the map remains honest about its OWN door — every address it publishes, it serves — but it is not an index of the write plane, and absence from `anchors[]` is not evidence that a write will refuse.
+
 **`check_write` — the standalone pre-flight (recorded 2026-08-07: the deployed host consumes this op on every guarded put):**
 
 - Request: `{"op":"check_write","path":…,"target":…,"actor":…,"now":…,"edits":[…]}`, strict-decoded, v3-only at dispatch (`crates/wire-serve/src/decode.rs:194-227`); advertised in v3 `caps` (`crates/wire-serve/src/rev.rs:103`). Each edit is `{op, at, find?, body?, rev?, all?}`; `at` is the §2.1 segment array (`{h, n?}`), the same shape the committer takes — the single-segment forms carry a block `^id` or a frontmatter key (`crates/wire/src/lib.rs:842-861`). `path` addresses the file under the workspace root; `target` is the raw host path that labels refusal strings.
@@ -1363,6 +1371,15 @@ Consequence carried deliberately: a created key lands at the upsert door's
 insertion point (first-key position) rather than after the last key. Key
 ORDER inside the block is not a law of this contract — the auditable identity
 of the write is.
+
+**Teaching row — the create arm's `node_rev_before` is `blake3("")[:16]`, and
+that token is not a claim that an empty key existed.** No node stood at the
+address, so the door arms the empty-input hash (`af1349b9f5f9a1a6`) as the
+before-token. A.6.5 keeps ABSENT and EMPTY apart as distinct ratified states;
+armed facts do NOT — a consumer reading facts alone cannot tell born-from-
+nothing from born-from-empty, and must read the op (`put{at:"upsert"}` is the
+create arm) rather than the token. The same arm births a MISSING frontmatter
+block outright when the document carries none.
 
 **The kernel below the doors stays raw-grain.** `model::plan_fm_upsert`
 composes the value verbatim, because the run plane's `md.set_field` writes
