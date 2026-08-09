@@ -289,6 +289,63 @@ It used to re-read and re-fold every domain byte on every trip. On a 24k-file,
 seconds of the 7s budget and a two-read program did not fit at all. The budget
 was never the defect.
 
+**A stale engine pays a rebuild, and `pass(C)` never prices it** *(added
+2026-08-08 — fable F8, merged-verdict.md § C7 disposition)*. The formula above
+prices the read side on the assumption the resident engine already agrees
+with disk — that agreement is exactly what the currency check tests, and the
+check's other branch is not `pass(C)` scaled up, it is a different regime the
+formula does not name.
+
+**The trigger is any fingerprint move, including one the caller itself just
+made.** A splice commits straight to disk and returns without touching the
+resident engine at all — the engine finds out only on its own next currency
+check, and that check treats a caller's own just-landed commit exactly like
+any stranger's concurrent write. The clean case is a retry: the host's own
+retry loop (budget 2, above) fires precisely because the fingerprint moved,
+so the retried attempt's reads land on a stale engine by construction — a
+write-bearing program's ceiling on its next trip is not bounded by the
+formula above at all.
+
+**What the rebuild costs, and why it does not compose with `pass(C)` by
+scaling.** A currency miss re-reads every domain member unconditionally — the
+leaf memo `pass(C)` consults is bypassed on this path, not merely widened —
+and then re-parses every member to replace the resident index and document
+map wholesale. There is no incremental engine update: one changed byte
+anywhere in the corpus pays the same full re-read and full re-parse as a
+rewritten corpus, because the rebuild does not know which byte moved, only
+that the fingerprint disagrees.
+
+```
+rebuild(C)  =  O(corpus) in full reads  +  O(corpus) in full reparse,
+               paid whole regardless of how much of C actually changed
+```
+
+A trip landing on a stale engine pays `rebuild(C)` in place of `pass(C)`, not
+in addition to it — the ceiling formula above (`wall clock ≥ trips(R) ×
+pass(C)`) holds only for a trip that lands on an already-current engine; the
+write-bearing `commit(C)` term below composes with either.
+
+**What is and is not measured here.** `rebuild(C)`'s re-read half is
+`fs::domain_snapshot`, the unconditional-read arm `crates/fs/examples/domain_cost.rs`
+exists to benchmark directly against a real root — but no run of it is
+recorded in this tree, and its scaling is not assumed to match `pass(C)`'s
+measured slope, which was measured against the leaf-memo path `pass(C)`
+actually ships as. The reparse half (`fs::build_corpus`) carries no dedicated
+benchmark at all. The only order-of-magnitude figure on record for the
+combined read-plus-reparse rebuild is the cold-daemon-start case
+(`node-rev-merkle-spec.md` § 0): 2.2–5.2s on a 50,319-node, 9.5 GB corpus
+(M4 Max) — the same functions, a related path, not a controlled measurement
+of this specific mid-session trigger.
+
+Evidence: `Registry::warm_or_build` (`crates/registry/src/registry.rs`) is
+the sole site of this branch — a fingerprint match returns `Reused` at
+`pass(C)`'s cost, a mismatch calls `fs::domain_snapshot` (unconditional
+full re-read) and `fs::build_corpus` (`syntax::parse` + `model::build` over
+every member), and no partial-rebuild path exists. `Op::Splice`
+(`crates/registry/src/server.rs`) writes disk and returns without touching
+the resident engine; its own comment states the consequence: the warm engine
+rebuilds on next read, because the fingerprint moved.
+
 **A write-bearing program pays a byte term the pass never does** *(amended
 2026-08-08 — the review battery's cross-arm cost-model finding)*. The formula
 above prices the read side; taken alone as the computable ceiling it is a

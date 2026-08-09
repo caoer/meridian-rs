@@ -314,6 +314,155 @@ fn read_frag_miss_is_the_engines_verbatim_refusal() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// the fragment selector door (db-frag-selector-door) — the `#FRAG` tail goes
+// through the one selector door, so `#^id` and `#1.1` reach the lanes that
+// serve them instead of dying as literal heading text (season-1 finding 5,
+// attribution overturned onto the faces; engine cleared).
+// ---------------------------------------------------------------------------
+
+/// One list-item anchor (`^goal`) beside the nested-heading pair, so every
+/// selector kind has a live target: heading `Alpha/Beta`, dewey `1.1`,
+/// anchor `^goal`.
+const ANCHORED: &str = "# Alpha\n\n- pinned goal ^goal\n\n## Beta\n\nfour five\n";
+
+/// Gate (ingress receipt E → PASS) — `path#^id` serves the same answer as
+/// `--section '^id'`: one selector door, so the fragment spelling and the
+/// section spelling of one address cannot diverge.
+#[test]
+fn read_frag_anchor_serves_the_section_lane_answer() {
+    let sb = sandbox();
+    let ws = sb.workspace_with(ANCHORED);
+    let frag = sb.run(&ws, &["read", "doc.md#^goal", "--json"]);
+    assert_eq!(
+        code(&frag),
+        0,
+        "the anchor fragment serves: {}",
+        stderr(&frag)
+    );
+    let section = sb.run(&ws, &["read", "doc.md", "--section", "^goal", "--json"]);
+    assert_eq!(
+        code(&section),
+        0,
+        "the section lane serves: {}",
+        stderr(&section)
+    );
+    assert_eq!(
+        stdout(&frag),
+        stdout(&section),
+        "one door, one answer — the two spellings of one address"
+    );
+}
+
+/// Gate (ingress receipt H → PASS) — the dewey arm rides the same door.
+#[test]
+fn read_frag_dewey_serves_the_section_lane_answer() {
+    let sb = sandbox();
+    let ws = sb.workspace_with(ANCHORED);
+    let frag = sb.run(&ws, &["read", "doc.md#1.1", "--json"]);
+    assert_eq!(
+        code(&frag),
+        0,
+        "the dewey fragment serves: {}",
+        stderr(&frag)
+    );
+    let section = sb.run(&ws, &["read", "doc.md", "--section", "1.1", "--json"]);
+    assert_eq!(
+        code(&section),
+        0,
+        "the section lane serves: {}",
+        stderr(&section)
+    );
+    assert_eq!(stdout(&frag), stdout(&section), "one door, one answer");
+}
+
+/// Gate (ingress receipt I unchanged) — a heading fragment stays the
+/// whole-call scope on the frag lane: the answer is a scoped TOC (`toc`
+/// rides, `sections` does not), never a misrouted section read.
+#[test]
+fn read_frag_heading_still_scopes_the_toc_read() {
+    let sb = sandbox();
+    let ws = sb.workspace_with(ANCHORED);
+    let out = sb.run(&ws, &["read", "doc.md#Alpha", "--json"]);
+    assert_eq!(
+        code(&out),
+        0,
+        "the heading fragment serves: {}",
+        stderr(&out)
+    );
+    let v: Value = serde_json::from_str(&stdout(&out)).expect("json parses");
+    let body = &v["read"];
+    assert!(
+        body["toc"].is_array(),
+        "a heading fragment answers the scoped map: {body}"
+    );
+    assert!(
+        body["sections"].is_null(),
+        "and never a section read: {body}"
+    );
+}
+
+/// U8 negative, anchor lane — an absent `^id` fragment refuses ON the anchor
+/// lane, in the sections-mode miss voice with its Law A-3 teaching, never as
+/// a heading literally spelled `^nope`.
+#[test]
+fn read_frag_anchor_miss_refuses_on_the_anchor_lane() {
+    let sb = sandbox();
+    let ws = sb.workspace_with(ANCHORED);
+    let out = sb.run(&ws, &["read", "doc.md#^nope"]);
+    assert_eq!(code(&out), 1, "a miss is the finding leg");
+    let e = stderr(&out);
+    assert!(
+        e.contains("no section addressed by \"^nope\""),
+        "the sections-lane miss voice: {e}"
+    );
+    assert!(
+        !e.contains("no section at"),
+        "never the heading-lane voice for an anchor spelling: {e}"
+    );
+}
+
+/// U8 negative, dewey lane — same door, same honesty.
+#[test]
+fn read_frag_dewey_miss_refuses_on_the_dewey_lane() {
+    let sb = sandbox();
+    let ws = sb.workspace_with(ANCHORED);
+    let out = sb.run(&ws, &["read", "doc.md#9.9"]);
+    assert_eq!(code(&out), 1, "a miss is the finding leg");
+    let e = stderr(&out);
+    assert!(
+        e.contains("no section addressed by \"9.9\""),
+        "the sections-lane miss voice: {e}"
+    );
+    assert!(
+        !e.contains("no section at"),
+        "never the heading-lane voice for a dewey spelling: {e}"
+    );
+}
+
+/// The either/or law is untouched by the door: any `#FRAG` beside
+/// `--section` still refuses whole, whatever the fragment's kind — the
+/// engine's `bad_request`, exit 2.
+#[test]
+fn read_frag_with_sections_still_refuses_whole() {
+    let sb = sandbox();
+    let ws = sb.workspace_with(ANCHORED);
+    for frag in ["doc.md#Alpha", "doc.md#^goal", "doc.md#1.1"] {
+        let out = sb.run(&ws, &["read", frag, "--section", "Beta"]);
+        assert_eq!(
+            code(&out),
+            2,
+            "both planes is a bad_request ({frag}): {}",
+            stderr(&out)
+        );
+        assert!(
+            stderr(&out).contains("not both"),
+            "the either/or teaching ({frag}): {}",
+            stderr(&out)
+        );
+    }
+}
+
 /// Gate — A5: `--mode` is retired, so it is an unknown flag (exit 2), not a quietly-accepted
 /// word. The selector alone says which face the caller wants, and a stale invocation learns
 /// that here rather than getting a toc it did not ask for.
@@ -859,6 +1008,71 @@ fn put_json_speaks_the_v3_vocabulary() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// the machine face on the refusal leg (dogfood P3-a)
+// ---------------------------------------------------------------------------
+
+/// Gate (P3-a) — a refusal under `--json` answers JSON on stdout: the same
+/// machine face `mrd script --json` keeps on a fault. An empty stdout beside a
+/// human stderr line is a face a machine consumer cannot branch on.
+#[test]
+fn put_json_refusal_emits_the_error_envelope_on_stdout() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let out = sb.run_stdin(
+        &ws,
+        &["put", "doc.md", "--json"],
+        &beta_match("absent text", "anything"),
+    );
+    assert_eq!(code(&out), 1, "no_match refuses: {}", stderr(&out));
+    let v: Value = serde_json::from_str(&stdout(&out))
+        .expect("a --json refusal answers JSON on stdout, never nothing");
+    assert!(
+        v["workspace"].is_string(),
+        "the frame names the workspace, like the commit frame: {v}"
+    );
+    assert_eq!(
+        v["error"]["code"], "no_match",
+        "the engine's own code rides: {v}"
+    );
+    assert_eq!(
+        v["error"]["matches"], 0,
+        "the code-specific extras ride untouched: {v}"
+    );
+    assert!(
+        stderr(&out).contains("no_match") || stderr(&out).contains("occurrence"),
+        "the human diagnostic still rides stderr: {}",
+        stderr(&out)
+    );
+}
+
+/// Gate (P3-a) — the envelope speaks the v3 vocabulary, the same lifted
+/// projection the commit frame gets: a world-grain guard failure is
+/// `fingerprint_mismatch`, never the v2 `root_mismatch` a v3 caller has no
+/// branch for.
+#[test]
+fn put_json_refusal_envelope_speaks_the_v3_vocabulary() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let out = sb.run_stdin(
+        &ws,
+        &[
+            "put",
+            "doc.md",
+            "--json",
+            "--if-fingerprint",
+            "b3b:0000000000000000000000000000000000000000000000000000000000000000",
+        ],
+        &beta_match("four five", "six"),
+    );
+    assert_eq!(code(&out), 1, "the guard refuses: {}", stderr(&out));
+    let v: Value = serde_json::from_str(&stdout(&out)).expect("json on stdout");
+    assert_eq!(
+        v["error"]["code"], "fingerprint_mismatch",
+        "projected exactly as the daemon projects it for a v3 session: {v}"
+    );
+}
+
 /// Gate — a match with no occurrence is the engine's typed refusal at exit 1.
 #[test]
 fn put_no_match_is_the_finding_leg() {
@@ -1104,6 +1318,58 @@ fn put_help_states_the_bare_array_stdin_shape() {
         !page.contains("\"edits\":"),
         "the help must not show the envelope it refuses:\n{page}"
     );
+}
+
+/// Gate (G-P2-6) — `mrd put --help` teaches the target and edit shapes with a
+/// working batch. The live probe failed three times on plausible spellings (an
+/// `op` verb word, a bare-string edit) before finding the nested match form —
+/// the page must show the shape that works, not delegate it to module docs a
+/// caller at a terminal cannot see.
+#[test]
+fn put_help_teaches_the_target_and_edit_shapes() {
+    let sb = sandbox();
+    let out = sb.run(sb.tmp.path(), &["put", "--help"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let page = stdout(&out);
+    for shape in [
+        // The two non-hpath targets, by their own spelling.
+        "{\"anchor\":",
+        "{\"fm_key\":",
+        // The NESTED edit forms — the exact shapes the probes missed.
+        "\"match\":{\"old\"",
+        "\"put\":{\"at\"",
+        // A working batch, whole, starting as the door takes it.
+        "[{\"target\":{\"hpath\":[{\"h\":",
+    ] {
+        assert!(page.contains(shape), "the page teaches {shape}:\n{page}");
+    }
+}
+
+/// Gate (G-P2-6) — a malformed batch is refused WITH the working shape beside
+/// the decoder's own words: serde's `expected struct variant EditShape::Match`
+/// names Rust internals, and the caller it refused needs the grammar, not the
+/// type tree. Pinned on the two probe spellings the face refused in the live
+/// dogfood run.
+#[test]
+fn a_malformed_edits_refusal_teaches_the_working_shape() {
+    for stdin in [
+        r#"[{"target":{"hpath":[{"h":"Alpha"}]},"edit":{"op":"replace","old":"a","new":"b"}}]"#,
+        r#"[{"target":{"hpath":[{"h":"Alpha"}]},"edit":"body"}]"#,
+    ] {
+        let sb = sandbox();
+        let ws = sb.workspace();
+        let out = sb.run_stdin(&ws, &["put", "doc.md"], stdin);
+        assert_eq!(code(&out), 2, "bad invocation for {stdin}");
+        let err = stderr(&out);
+        assert!(
+            err.contains(r#""edit":{"match":{"old"#),
+            "the refusal shows the working shape for {stdin}:\n{err}"
+        );
+        assert!(
+            err.contains("Nothing was parsed and nothing was written"),
+            "the nothing-happened clause stays for {stdin}:\n{err}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
