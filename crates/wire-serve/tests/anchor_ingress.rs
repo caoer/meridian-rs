@@ -388,7 +388,10 @@ fn a_dewey_shaped_frag_miss_names_the_lane_that_ran() {
         m.contains("searched as literal heading text"),
         "the lane that ran is named: {m}"
     );
-    assert!(m.contains("dewey"), "the never-consulted lane is named: {m}");
+    assert!(
+        m.contains("dewey"),
+        "the never-consulted lane is named: {m}"
+    );
 }
 
 /// A heading-shaped fragment miss keeps the standing spelling byte-for-byte
