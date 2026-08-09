@@ -10,6 +10,12 @@
 //! read's fingerprint. `--section` (repeatable — a heading path, a dewey
 //! ordinal, or a `^anchor`) is the section read that serves bodies.
 //!
+//! The `#FRAG` tail goes through the same selector door as `--section`
+//! (Law A-2: a fragment is selector bytes): a heading path scopes the whole
+//! call as its subtree; a `^id` or dewey spelling names one node, so it rides
+//! `sections` and serves that node's body — `path#^id` and
+//! `path --section '^id'` are two spellings of one address.
+//!
 //! Answered by the resident daemon (auto-spawned) or the in-process degrade —
 //! both run the same [`wire_serve::read::composed_read`] leaves and the same v3
 //! rev projection, so warm and degrade answers never drift. Human output is
@@ -198,16 +204,39 @@ fn daemon_read(workspace: &Path, r: &Read) -> Option<DaemonRead> {
     Some(DaemonRead::Refused(Box::new(error)))
 }
 
-/// A fragment the user typed → the segment array the wire takes. It scopes a heading subtree, so
-/// it is parsed as a heading path and nothing else: a `^id` or a dewey ordinal in this position
-/// would be a subtree with no descendants, which is a section read, not a scope.
-fn frag_segments(frag: &str) -> Vec<wire::HpathSeg> {
-    frag.split('/')
-        .map(|h| wire::HpathSeg {
-            h: h.to_owned(),
-            n: None,
-        })
-        .collect()
+/// The two selector inputs routed to their wire fields — the CLI's half of the
+/// one-door law (Law A-2: a fragment is selector bytes). The fragment goes
+/// through [`wire::ReadSel::parse`] like every human selector string: a
+/// heading path is a subtree scope and stays `frag`; a `^id` or dewey
+/// spelling names one node — a section read — so it MOVES onto `sections`,
+/// never onto both planes (the engine refuses `frag` + `sections` together).
+/// Before this door, `#^id` reached the engine as a heading whose literal
+/// text was `^id`, missed, and refused — the anchor lane was never entered
+/// (season-1 finding 5, attribution overturned onto the faces).
+///
+/// With explicit `--section` values beside a fragment, nothing moves: both
+/// planes ride as given and the engine's either/or refusal answers, exactly
+/// as before the door (it refuses on presence, before reading any content).
+fn route_selectors(
+    frag: Option<&str>,
+    sections: &[String],
+) -> (Option<Vec<wire::HpathSeg>>, Option<Vec<wire::ReadSel>>) {
+    let explicit: Option<Vec<wire::ReadSel>> =
+        (!sections.is_empty()).then(|| sections.iter().map(|s| wire::ReadSel::parse(s)).collect());
+    let Some(frag) = frag else {
+        return (None, explicit);
+    };
+    match wire::ReadSel::parse(frag) {
+        wire::ReadSel::Hpath { hpath } => (Some(hpath), explicit),
+        sel if explicit.is_none() => (None, Some(vec![sel])),
+        _ => (
+            Some(vec![wire::HpathSeg {
+                h: frag.to_owned(),
+                n: None,
+            }]),
+            explicit,
+        ),
+    }
 }
 
 impl Read {
@@ -220,17 +249,14 @@ impl Read {
             "display_path": self.path,
         });
         // Both selector fields are structured on the wire; this is where a typed string becomes
-        // structure — once, at the edge, so nothing inward of the CLI carries a joined address.
-        if let Some(frag) = &self.frag {
-            req["frag"] = json!(frag_segments(frag));
+        // structure — once, at the edge, through the one selector door, so nothing inward of
+        // the CLI carries a joined address.
+        let (frag, sections) = route_selectors(self.frag.as_deref(), &self.sections);
+        if let Some(frag) = frag {
+            req["frag"] = json!(frag);
         }
-        if !self.sections.is_empty() {
-            let tagged: Vec<wire::ReadSel> = self
-                .sections
-                .iter()
-                .map(|s| wire::ReadSel::parse(s))
-                .collect();
-            req["sections"] = json!(tagged);
+        if let Some(sections) = sections {
+            req["sections"] = json!(sections);
         }
         req
     }
@@ -250,12 +276,12 @@ fn in_process_read(workspace: &Path, r: &Read) -> Result<Value, Fail> {
     let wpath = WirePath(r.path.clone());
     let doc = wire_serve::load_doc(&root, &wpath).map_err(|e| engine::refusal_fail(&e))?;
     let ambient = wire_serve::ambient_root(&root).map_err(|e| engine::refusal_fail(&e))?;
+    // The same routing the wire request does — one door, two transports,
+    // so warm and degrade cannot diverge on what a selector means.
+    let (frag, sections) = route_selectors(r.frag.as_deref(), &r.sections);
     let params = wire_serve::read::ReadParams {
-        // The same conversion the wire request does — one door, two transports,
-        // so warm and degrade cannot diverge on what a selector means.
-        frag: r.frag.as_deref().map(frag_segments),
-        sections: (!r.sections.is_empty())
-            .then(|| r.sections.iter().map(|s| wire::ReadSel::parse(s)).collect()),
+        frag,
+        sections,
         display_path: Some(r.path.clone()),
         // Read provenance is the daemon's to stamp; the local CLI sends none on
         // both warm and degrade paths (symmetry with the wire call).
@@ -284,4 +310,57 @@ fn in_process_read(workspace: &Path, r: &Read) -> Result<Value, Fail> {
         .as_object_mut()
         .and_then(|obj| obj.remove("body"))
         .unwrap_or(Value::Null))
+}
+
+#[cfg(test)]
+mod frag_door_tests {
+    //! The router alone — both transports call it, so these four facts are
+    //! the whole door: heading stays the scope, `^id`/dewey move onto
+    //! `sections`, never both planes from one fragment, and an explicit
+    //! `--section` beside any fragment leaves the either/or refusal to the
+    //! engine.
+
+    use super::route_selectors;
+
+    #[test]
+    fn a_heading_fragment_stays_the_whole_call_scope() {
+        let (frag, sections) = route_selectors(Some("Alpha/Beta"), &[]);
+        let hpath = frag.expect("the heading plane rides");
+        let texts: Vec<&str> = hpath.iter().map(|s| s.h.as_str()).collect();
+        assert_eq!(texts, ["Alpha", "Beta"]);
+        assert!(sections.is_none(), "nothing moved onto sections");
+    }
+
+    #[test]
+    fn an_anchor_fragment_moves_onto_sections() {
+        let (frag, sections) = route_selectors(Some("^goal"), &[]);
+        assert!(frag.is_none(), "the frag plane is vacated");
+        assert_eq!(
+            sections.expect("the section read rides"),
+            vec![wire::ReadSel::Anchor {
+                anchor: "goal".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn a_dewey_fragment_moves_onto_sections() {
+        let (frag, sections) = route_selectors(Some("1.1"), &[]);
+        assert!(frag.is_none(), "the frag plane is vacated");
+        assert_eq!(
+            sections.expect("the section read rides"),
+            vec![wire::ReadSel::Dewey { n: "1.1".into() }]
+        );
+    }
+
+    #[test]
+    fn explicit_sections_beside_any_fragment_keep_both_planes() {
+        for frag in ["Alpha", "^goal", "1.1"] {
+            let (f, s) = route_selectors(Some(frag), &["Beta".to_owned()]);
+            assert!(
+                f.is_some() && s.is_some(),
+                "both planes ride for {frag}, so the engine's either/or refusal answers"
+            );
+        }
+    }
 }
