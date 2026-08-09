@@ -42,11 +42,22 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
             cwd.display()
         ))
     })?;
-    let mut docs = build_docs(&resolved.workspace)?;
-    if let Ok(canonical) = workspace::canonicalize(&resolved.workspace) {
-        admit_named_page(&fs::WorkspaceRoot(canonical), &mut docs, &parsed.page);
-    }
+    let InProcessCorpus {
+        root,
+        mut docs,
+        unserved,
+    } = build_corpus_in_process(&resolved.workspace)?;
+    admit_named_page(&root, &mut docs, &parsed.page);
     let docs = docs;
+
+    // `--down` answers a POPULATION the caller did not name — the blast radius — so it owes the
+    // enumerator clause: it may exclude what its attestation cannot reach, never SILENTLY
+    // (`crate::voice_excluded`, §12.1). Voiced AFTER `admit_named_page`, or the door's own named
+    // subject reads as an exclusion. `--up` is not gated in: it drops nothing, naming an
+    // excluded ancestor by its correct path at a red edge (measured, `1ee5317a`).
+    if matches!(parsed.direction, Direction::Down) {
+        crate::voice_excluded(&root, &docs, &unserved);
+    }
 
     // The mount table, with a corpus for the roots this workspace's own lock addresses name and
     // no others. `mounts` owns the document maps; `corpus` borrows them — hence two bindings.
@@ -358,6 +369,24 @@ fn parse_depth(raw: &str) -> Result<u32, Fail> {
 /// Build the corpus in-process from the workspace on disk, through the same `fs::build_corpus`
 /// the daemon and the `links` degrade use, so the walk reads exactly the served projection.
 pub(crate) fn build_docs(workspace: &Path) -> Result<BTreeMap<String, Document>, Fail> {
+    build_corpus_in_process(workspace).map(|corpus| corpus.docs)
+}
+
+/// The in-process corpus build, whole: what [`build_docs`] returns plus the two values it
+/// drops. [`crate::voice_excluded`] takes all three, and a caller that only ever gets `docs`
+/// back cannot name what the hash domain left out.
+struct InProcessCorpus {
+    /// The canonical workspace root the snapshot was taken at.
+    root: fs::WorkspaceRoot,
+    /// The served projection — the corpus the walk reads.
+    docs: BTreeMap<String, Document>,
+    /// Hash-domain members `fs::build_corpus` could not serve, by member and condition.
+    unserved: BTreeMap<String, String>,
+}
+
+/// Build [`InProcessCorpus`] from the workspace on disk. [`build_docs`] is this with the two
+/// extra values dropped.
+fn build_corpus_in_process(workspace: &Path) -> Result<InProcessCorpus, Fail> {
     let canonical = workspace::canonicalize(workspace).map_err(|e| {
         Fail::tool(format!(
             "cannot resolve workspace {} ({e})",
@@ -369,7 +398,11 @@ pub(crate) fn build_docs(workspace: &Path) -> Result<BTreeMap<String, Document>,
         .map_err(|e| Fail::tool(format!("cannot read the corpus: {e}")))?;
     let (_index, docs, unserved) = fs::build_corpus(files);
     crate::voice_unserved(&unserved);
-    Ok(docs)
+    Ok(InProcessCorpus {
+        root,
+        docs,
+        unserved,
+    })
 }
 
 /// Fold a NAMED page the hash domain excludes into the corpus map before a door
