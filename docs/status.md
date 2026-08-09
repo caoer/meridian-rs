@@ -164,6 +164,16 @@ contradictory flag pair — issued before any engine contact. A script branches
 on the exit alone: 2 means fix the invocation, 1 means read the engine's
 message.
 
+**The line between them is SHAPE vs VALUE.** The CLI's own refusals stop at the
+shape of the invocation: a flag it does not know, stdin that is not the §4.4
+batch shape (including a field outside an edit object's closed set). Every
+judgment on a VALUE sitting inside a shape that is already legal — a block id
+outside the §2.4 charset, an `old` that matches nothing, a region that overlaps
+— is the ENGINE's, and leaves at exit 1 with its structured `--json` frame.
+**A strict decoder at the CLI seam must not drag value laws across that line**:
+doing so converts an engine refusal into a bad-invocation report and blanks the
+`--json` frame the caller branches on.
+
 ### The joined selector coat — one dead delimiter, two escapes
 
 `--section SEL` and `mrd pin`'s `#SELECTOR` share ONE human-string door

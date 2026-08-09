@@ -1107,6 +1107,179 @@ fn put_malformed_stdin_is_exit_2() {
     );
 }
 
+/// Gate (§3.2 grain law) — a typo'd GUARD FIELD on the edit object refuses
+/// loud, on BOTH arms. `if_rev` (for `if_node_rev`) used to decode silently:
+/// serde dropped the unknown key and the write armed with the guard the caller
+/// believed they wrote never consulted — a guarded write silently converted to
+/// an unguarded one. Both arms are pinned because only the pair is airtight:
+/// the matching-old arm proved the guard was never consulted (it ARMED at exit
+/// 0), the non-matching arm proved the edit had decoded and run (plain
+/// `no_match`, exit 1). Neither may reach the engine now.
+#[test]
+fn a_typoed_guard_field_on_an_edit_object_refuses_loud_on_both_arms() {
+    for old in ["four five", "no such text anywhere"] {
+        let sb = sandbox();
+        let ws = sb.workspace();
+        let before = std::fs::read_to_string(ws.join("doc.md")).expect("read");
+        let stdin = serde_json::to_string(&serde_json::json!([{
+            "target": {"hpath": [{"h": "Alpha"}, {"h": "Beta"}]},
+            "edit": {"match": {"old": old, "new": "six"}},
+            "if_rev": "0000000000000000",
+        }]))
+        .expect("edits json");
+        let out = sb.run_stdin(&ws, &["put", "doc.md", "--dry"], &stdin);
+        let err = stderr(&out);
+        assert_eq!(
+            code(&out),
+            2,
+            "the CLI's own decoder refuses (old={old}): {err}"
+        );
+        assert!(
+            err.contains("unknown field `if_rev`"),
+            "the refusal names the offending field (old={old}):\n{err}"
+        );
+        assert!(
+            err.contains("legal fields are `target`, `edit`, `if_node_rev`"),
+            "and the legal set it was checked against, so the caller gets the \
+             spelling back (old={old}):\n{err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(ws.join("doc.md")).expect("read back"),
+            before,
+            "nothing was written (old={old})"
+        );
+    }
+}
+
+/// Gate (§3.2 grain law) — the strict wall holds at EVERY object of the batch,
+/// not only the outermost one. One case per grain below the edit object: the
+/// edit-shape body, the target, and an hpath segment. Each names its own
+/// offending field, so a caller learns which object it typed into.
+#[test]
+fn unknown_fields_refuse_at_every_grain_of_the_edit_batch() {
+    for (grain, stdin) in [
+        (
+            "`match` body",
+            serde_json::json!([{
+                "target": {"hpath": [{"h": "Alpha"}, {"h": "Beta"}]},
+                "edit": {"match": {"old": "four five", "new": "six", "junk": 1}},
+            }]),
+        ),
+        (
+            "target",
+            serde_json::json!([{
+                "target": {"hpath": [{"h": "Alpha"}, {"h": "Beta"}], "sec": "Beta"},
+                "edit": {"match": {"old": "four five", "new": "six"}},
+            }]),
+        ),
+        (
+            "hpath segment",
+            serde_json::json!([{
+                "target": {"hpath": [{"h": "Alpha"}, {"h": "Beta", "occurrence": 1}]},
+                "edit": {"match": {"old": "four five", "new": "six"}},
+            }]),
+        ),
+    ] {
+        let sb = sandbox();
+        let ws = sb.workspace();
+        let before = std::fs::read_to_string(ws.join("doc.md")).expect("read");
+        let out = sb.run_stdin(
+            &ws,
+            &["put", "doc.md", "--dry"],
+            &serde_json::to_string(&stdin).expect("edits json"),
+        );
+        let err = stderr(&out);
+        assert_eq!(code(&out), 2, "{grain} refuses at the CLI door: {err}");
+        assert!(
+            err.contains("unknown field") && err.contains("legal fields are"),
+            "{grain}: the refusal names the field and its legal set:\n{err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(ws.join("doc.md")).expect("read back"),
+            before,
+            "{grain}: nothing was written"
+        );
+    }
+}
+
+/// Gate — the strictness is the ENGINE's own decoder, reached through the CLI
+/// seam: a batch the wire door accepts is a batch this door accepts, so the two
+/// cannot drift into a hole on one side. The positive half of the two gates
+/// above — a well-formed guarded batch still decodes, and refuses at the CAS
+/// grain, which is engine contact at exit 1, not a decode refusal at exit 2.
+#[test]
+fn a_well_formed_guarded_batch_still_reaches_the_engine() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let stdin = serde_json::to_string(&serde_json::json!([{
+        "target": {"hpath": [{"h": "Alpha"}, {"h": "Beta"}]},
+        "edit": {"match": {"old": "four five", "new": "six"}},
+        "if_node_rev": "0000000000000000",
+    }]))
+    .expect("edits json");
+    let out = sb.run_stdin(&ws, &["put", "doc.md", "--dry"], &stdin);
+    assert_eq!(
+        code(&out),
+        1,
+        "an engine refusal, not a decode refusal: {}",
+        stderr(&out)
+    );
+    assert!(
+        stderr(&out).contains("if_node_rev"),
+        "the CAS refusal, not the decoder's: {}",
+        stderr(&out)
+    );
+}
+
+/// Gate (the exit triad, `docs/status.md`) — a §2.4 block-id charset violation
+/// on stdin is a VALUE judgment on a batch whose SHAPE is legal, so it is the
+/// ENGINE refusing a well-formed invocation: exit 1, with the `{workspace,
+/// error}` frame on stdout under `--json`. It is not the CLI's own refusal
+/// (exit 2), and it is not "malformed JSON" — the bytes parsed. Closing the
+/// unknown-field hole must not drag value laws across that line: a script
+/// branches on the exit alone, and 2 tells it to go fix an invocation that is
+/// in fact well formed.
+#[test]
+fn a_bad_block_id_is_the_engines_refusal_not_the_clis() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let stdin = serde_json::to_string(&serde_json::json!([{
+        "target": {"anchor": "bad_id"},
+        "edit": {"match": {"old": "four five", "new": "six"}},
+    }]))
+    .expect("edits json");
+    let out = sb.run_stdin(&ws, &["put", "doc.md", "--json"], &stdin);
+    assert_eq!(
+        code(&out),
+        1,
+        "an engine refusal, not the CLI's: {}",
+        stderr(&out)
+    );
+    assert!(
+        stderr(&out).contains("outside the one charset"),
+        "the §2.4 charset refusal: {}",
+        stderr(&out)
+    );
+    assert!(
+        !stderr(&out).contains("malformed"),
+        "the JSON parsed — never the malformed-JSON voice: {}",
+        stderr(&out)
+    );
+    // `--json` answers on stdout on the refusal leg too: an agent parsing the
+    // frame gets `code` + `recovery`, never a blank.
+    let frame: Value =
+        serde_json::from_str(&stdout(&out)).expect("a --json refusal frame on stdout");
+    assert_eq!(frame["error"]["code"], "bad_request", "{frame}");
+    assert_eq!(frame["error"]["recovery"], "fix", "{frame}");
+    assert!(
+        frame["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("§2.4"),
+        "{frame}"
+    );
+}
+
 /// Gate — empty stdin teaches the grammar, exit 2.
 #[test]
 fn put_empty_stdin_is_exit_2() {
@@ -1172,7 +1345,10 @@ fn a_non_envelope_object_gets_no_envelope_hint() {
     let out = sb.run_stdin(&ws, &["put", "doc.md", "--validate"], r#"{"nope":1}"#);
     assert_eq!(code(&out), 2);
     let err = stderr(&out);
-    assert!(err.contains("malformed edits JSON on stdin"), "{err}");
+    // These bytes ARE valid JSON, so the lead names the law they missed — the
+    // §4.4 shape — never "malformed JSON" about JSON that parsed.
+    assert!(err.contains("not the §4.4 batch shape"), "{err}");
+    assert!(err.contains("`edits` must be an array"), "{err}");
     assert!(!err.contains("BARE edits ARRAY"), "{err}");
 }
 

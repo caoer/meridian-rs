@@ -346,17 +346,53 @@ fn read_stdin_edits() -> Result<Vec<Edit>, Fail> {
     // decode runs before the workspace is resolved and before any splice, so a refusal here has
     // had zero engine contact. The decoder's own words locate the byte; the grammar clause is
     // what the refused caller actually needs (G-P2-6: serde's variant names taught nothing).
-    let edits: Vec<Edit> = serde_json::from_str(&raw).map_err(|e| {
-        Fail::tool(format!(
-            "malformed edits JSON on stdin: {e}{}. The §4.4 grammar: target is \
-             {{\"hpath\":[{{\"h\":\"Raw Title\"}}]}} / {{\"anchor\":\"block-id\"}} / \
-             {{\"fm_key\":\"key\"}}; edit is the NESTED {{\"match\":{{\"old\":\"…\",\"new\":\"…\"}}}} \
-             or {{\"put\":{{\"at\":\"end\",\"text\":\"…\"}}}} — a working batch: {WORKING_BATCH}. \
-             Nothing was parsed and nothing was written.",
-            envelope_hint(&raw)
-        ))
+    let value: Value = serde_json::from_str(&raw)
+        .map_err(|e| refuse_stdin("malformed edits JSON on stdin", &e.to_string(), &raw))?;
+    // The engine's own edit decoder (§3.2 grain law): the strict wall holds at
+    // EVERY object of the batch — the edit object, its shape body, its target,
+    // each hpath segment — and names the closed set it checked against. A serde
+    // decode here was strict only where the types happened to be untagged, so a
+    // typo'd guard field (`if_rev` for `if_node_rev`) was DROPPED and the write
+    // armed unguarded. One decoder, both doors, no drift.
+    //
+    // `ShapeOnly` because the exits differ here and only here: this seam's own
+    // refusal is exit 2, and a VALUE law (§2.4's block-id charset) is not this
+    // seam's to judge — the engine refuses that one at exit 1 with its
+    // structured frame, which is the exit triad `docs/status.md` states.
+    let edits: Vec<Edit> = wire_serve::decode::decode_edits(
+        &value,
+        wire_serve::decode::Laws::ShapeOnly,
+    )
+    .map_err(|e| {
+        refuse_stdin(
+            "the edits on stdin are not the §4.4 batch shape",
+            e.message
+                .as_deref()
+                .unwrap_or("the §4.4 edit grammar was not met"),
+            &raw,
+        )
     })?;
     Ok(edits)
+}
+
+/// The one stdin-refusal shape, shared by the JSON-syntax leg and the
+/// strict-decode leg: `lead` names WHICH law the bytes missed — the two are not
+/// the same news, and calling a batch that parsed cleanly "malformed JSON" tells
+/// the caller to go look at a byte that is fine. The decoder's own words then
+/// locate the byte or the field, the grammar clause is what the refused caller
+/// needs, and the nothing-happened clause is unconditional and one spelling
+/// across the family — both legs run before the workspace is resolved and before
+/// any splice, so a refusal here has had zero engine contact (exit 2, the CLI's
+/// own).
+fn refuse_stdin(lead: &str, reason: &str, raw: &str) -> Fail {
+    Fail::tool(format!(
+        "{lead}: {reason}{}. The §4.4 grammar: target is \
+         {{\"hpath\":[{{\"h\":\"Raw Title\"}}]}} / {{\"anchor\":\"block-id\"}} / \
+         {{\"fm_key\":\"key\"}}; edit is the NESTED {{\"match\":{{\"old\":\"…\",\"new\":\"…\"}}}} \
+         or {{\"put\":{{\"at\":\"end\",\"text\":\"…\"}}}} — a working batch: {WORKING_BATCH}. \
+         Nothing was parsed and nothing was written.",
+        envelope_hint(raw)
+    ))
 }
 
 /// The one refusal worth naming: stdin carried the whole §4.4 request object instead of the

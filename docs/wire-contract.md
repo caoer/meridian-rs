@@ -217,6 +217,8 @@ Correlation: one response per request, id echoed by value; in-flight uniqueness 
 
 **Evolution:** strict server — unknown request fields and unknown enum values in requests are rejected loudly; tolerant client — unknown response fields and unknown open-kind strings are ignored. Server-first rollout.
 
+**Grain of the strict wall:** "request fields" means **every object in the request, at every depth** — the top-level op object, each `edits[]` edit object, its edit-shape body (`match`/`put`), its `target`, and each hpath segment. The wall is loud at each grain and names the legal field set it checked against. This is not a nicety: a guard field lives on a *nested* object, so a decoder strict only at the top level drops `if_rev` (a typo for `if_node_rev`) and **silently converts a guarded write into an unguarded one** — the guard-you-believe-is-armed trap this law exists to kill. The rule binds every door that decodes a request, including the CLI seam that reads the `edits` value off stdin (§4.4).
+
 ### §3.3 Hosts — one wire door
 
 **RULED — DROP (ZT, 2026-08-06, session `06-00-adhoc`).** The stdio sidecar host (`crates/sidecar`, deployed `ccc-sidecar`) is deleted; the daemon's unix socket is the **only** wire door. ZT, verbatim: *"there is no reason to have sidecar ever existed. debugability is lie, sending data over socket do the same job."* This executes R3b ("sidecar death row", session `05-19-meridian-socket-mcp-leg`), whose precondition — ccc-statusd's markdown ops moved off the exec'd sidecar onto the registry socket — shipped 2026-08-05.
