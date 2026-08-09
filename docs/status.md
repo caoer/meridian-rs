@@ -255,9 +255,23 @@ git show <baked-sha> | git patch-id --stable   # compare against the landing dir
 ```
 
 `-` means your change LANDED UNDER ANOTHER SHA — benign, and exactly what a
-cherry-picked landing looks like from the candidate side. `+` means no equivalent
-is upstream IN THIS TREE and, with the baked sha not an ancestor, leaves the
-foreign-checkout hazard as the live reading.
+cherry-picked landing looks like from the candidate side. **`+` does NOT settle
+it on its own** — it proves only that THIS PATCH is not upstream, and it cannot
+separate *never landed* from *superseded by a different patch that did land*. A
+cherry-pick PRESERVES the patch; an AMEND REPLACES it, and both leave
+`is-ancestor NO` with `+`. So the rung is three-way, run in the directory under
+test:
+
+| reading | verdict |
+|---|---|
+| `is-ancestor NO` + `-` | landed under another sha. **BENIGN** |
+| `is-ancestor NO` + `+` + `git reflog` shows `commit (amend)` there | **the HANDOVER SENTENCE is stale**, not a hazard. Verify the dir and land what is in it |
+| `is-ancestor NO` + `+` + no such reflog entry | the foreign-checkout **HAZARD** stands |
+
+**No wording fix reaches this** — it is why the middle row cites the reflog
+rather than a sharper reading of `+`. Receipt: a card declared `5312ea1b` while
+its dir sat at `f6ed1aa7`, `+` with genuinely different patch-ids, and the
+reflog named `commit (amend)`. `+` was TRUE and its stated meaning was FALSE.
 
 ⛔ **EMPTY output is a THIRD answer and it is not "no finding".** `git cherry`
 lists nothing when the baked sha is already an ancestor of the HEAD you gave it —
