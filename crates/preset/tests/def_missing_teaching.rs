@@ -56,14 +56,13 @@ fn the_missing_properties_refusal_teaches_the_anchor_on_the_heading_line() {
     )
     .expect("write");
 
-    let refusal = |page: &str| {
-        match preset::new_record(&root, page, "x1", &preset::BirthOptions::default())
+    let refusal =
+        |page: &str| match preset::new_record(&root, page, "x1", &preset::BirthOptions::default())
             .expect("a def defect is a refusal, not a tool failure")
         {
             preset::NewOutcome::Refused(r) => format!("{:?}", r.reason),
             preset::NewOutcome::Born(_) => panic!("an invalid def must not birth"),
-        }
-    };
+        };
 
     // Both arms carry the RULE — it is always true of the loader.
     for page in ["presets/noanchor.md", "presets/nothing.md"] {
