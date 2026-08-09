@@ -2895,6 +2895,114 @@ fn lock_artifact_guard(
 /// decorated render face would otherwise never match its own document: an
 /// address is compared, never stored. Every native and lowered edit passes
 /// through this one funnel, so no put shape can skip it.
+/// A caller-facing value scope on an `fm_key` target (§ A.6.3a): the two shapes
+/// whose input is a FRAGMENT of a value rather than a composed line.
+enum FmValueScope<'a> {
+    /// `put{at:"end"}` — the fragment appends to the stored value.
+    Append(&'a str),
+    /// `match` — the fragment replaces a unique run inside the stored value.
+    Match { old: &'a str, new: &'a str },
+}
+
+/// Classify an edit as a caller-facing `fm_key` value scope, or not one.
+///
+/// `at:"all"` and `at:"content"` are deliberately absent: they are the LOWERING's
+/// own line slots (§ A.6.3a′ lowers `set_property` through `at:"all"` carrying an
+/// already-encoded line), so they stay raw. Encoding or refusing there would
+/// break `set_property`. `at:"upsert"` already encodes on its own path.
+fn fm_value_scope<'a>(upsert_key: &Option<String>, edit: &'a EditShape) -> Option<FmValueScope<'a>> {
+    upsert_key.as_ref()?;
+    match edit {
+        EditShape::Put {
+            at: PutAt::End,
+            text,
+        } => Some(FmValueScope::Append(text)),
+        EditShape::Match { old, new } => Some(FmValueScope::Match { old, new }),
+        _ => None,
+    }
+}
+
+/// Whether the kernel's CAS check will refuse this edit, in which case the door
+/// composes nothing and lets the kernel answer.
+///
+/// The kernel tests `if_node_rev` BEFORE it resolves a match region, so a door
+/// that refused `no_match` first would report a typo where the world had moved
+/// — and the mismatch ladder's rung-1 recovery is bound to `cas_mismatch`.
+fn cas_defers(edit: &Edit, before: &model::Target) -> bool {
+    edit.if_node_rev
+        .as_ref()
+        .is_some_and(|r| r.0 != before.node_rev.0)
+}
+
+/// Compose, encode and lower a caller-facing `fm_key` value scope (§ A.6.3a,
+/// ruling `0021-fmkey-value-grain-ruling`).
+///
+/// The encoder takes a WHOLE value while these doors supply a FRAGMENT, so it
+/// cannot simply be routed to: encoding the fragment alone emits
+/// `owner: seed"hand: x"` — broken in a new way. The door therefore DECODES the
+/// stored value (§ A.6.1), composes the caller's result, encodes the whole of it
+/// through the one encoder every § A.6.3a door shares, and lowers to the
+/// `at:"all"` line slot. Composing below the door is forbidden — the kernel
+/// stays raw-grain because the run plane's `md.set_field` writes whole-value
+/// grains through it.
+///
+/// The stored LINE feeds § A.6.3c, so a semantic no-op through either scope
+/// keeps the stored spelling and leaves `prop_rev`, `span` and `props1` unmoved.
+/// The key is carried from the stored bytes, never re-spelled from the target.
+///
+/// # Errors
+/// The uniform § A.6.3a multi-line refusal, in the same words as every other
+/// value-plane door; and `match`'s own `no_match`/`not_unique` refusals, which
+/// the door mints itself because the composition happens above the kernel that
+/// would otherwise mint them.
+fn lower_fm_value_scope(
+    doc: &model::Document,
+    before: &model::Target,
+    key: &str,
+    scope: FmValueScope<'_>,
+) -> Result<model::EditKind, Box<ErrorBody>> {
+    let stored_line = &doc.raw[before.span.clone()];
+    // A key line without a colon is not a mapping line; the def checker's own
+    // refusal is the honest one, so leave the bytes alone rather than invent a
+    // composition over them.
+    let Some(colon) = stored_line.find(':') else {
+        return Err(bad_request(multi_line_value_refusal(key)));
+    };
+    let stored_key = &stored_line[..colon];
+    let rest = &stored_line[colon + 1..];
+    let stored_value = rest.strip_prefix(' ').unwrap_or(rest);
+    let current = model::scalar::text(stored_value);
+
+    let composed = match scope {
+        FmValueScope::Append(text) => format!("{current}{text}"),
+        FmValueScope::Match { old, new } => {
+            let old = syntax::strip_fp(old);
+            // The kernel's `match_region` rule, applied to the VALUE: unique,
+            // non-overlapping, left→right. The grain moves; the arithmetic and
+            // the refusals do not.
+            let hits = current.matches(old.as_ref()).count();
+            if hits == 0 {
+                let mut e = ErrorBody::new(ErrorCode::NoMatch);
+                e.matches = Some(0);
+                return Err(Box::new(e));
+            }
+            if hits > 1 {
+                let mut e = ErrorBody::new(ErrorCode::NotUnique);
+                e.matches = Some(u32::try_from(hits).unwrap_or(u32::MAX));
+                return Err(Box::new(e));
+            }
+            current.replacen(old.as_ref(), new, 1)
+        }
+    };
+
+    let encoded = policy::defs::yaml_preserve_or_encode(Some(stored_line), &composed)
+        .map_err(|_| bad_request(multi_line_value_refusal(key)))?;
+    Ok(model::EditKind::Put {
+        at: model::PutAt::All,
+        text: format!("{stored_key}: {encoded}"),
+    })
+}
+
 fn model_edits_and_before_facts(
     doc: &model::Document,
     edits: &[Edit],
@@ -2946,7 +3054,23 @@ fn model_edits_and_before_facts(
         before_facts.push(before);
         model_edits.push(model::Edit {
             target,
-            edit: match &edit.edit {
+            // A stale `if_node_rev` is refused BEFORE the composition is
+            // attempted: the kernel checks CAS ahead of `match_region`, so a
+            // door that minted `no_match` first would answer a moved world with
+            // the wrong refusal — and the ladder's rung-1 recovery hangs off
+            // `cas_mismatch`. Deferring to the kernel keeps ONE ordering.
+            edit: match fm_value_scope(&upsert_key, &edit.edit)
+                .filter(|_| !cas_defers(edit, &before_facts[before_facts.len() - 1]))
+            {
+                // § A.6.3a caller-facing value scopes on an `fm_key` — composed
+                // and encoded AT the door, then lowered to the line slot.
+                Some(scope) => lower_fm_value_scope(
+                    doc,
+                    &before_facts[before_facts.len() - 1],
+                    upsert_key.as_deref().unwrap_or(""),
+                    scope,
+                )?,
+                None => match &edit.edit {
                 EditShape::Match { old, new } => model::EditKind::Match {
                     old: syntax::strip_fp(old).into_owned(),
                     new: new.clone(),
@@ -2981,6 +3105,7 @@ fn model_edits_and_before_facts(
                     } else {
                         text.clone()
                     },
+                },
                 },
             },
             if_node_rev: edit

@@ -1401,20 +1401,23 @@ defect touches them. A newline in a value is still REFUSED, never sanitized: a
 single-line frontmatter value cannot carry one, and an escaped-scalar workaround
 leaks.
 
-**A.6.3a The write doors this encoder owns (2026-08-08, third door added
-2026-08-09).** THREE doors write a frontmatter VALUE, and all three encode:
+**A.6.3a The write doors this encoder owns (2026-08-08; the birth door and the
+two caller-facing `fm_key` value scopes added 2026-08-09).** FIVE doors write a
+frontmatter VALUE, and all five encode:
 
 | Door | Path |
 |---|---|
 | `set_property` (and the `check_write` candidate sharing its owner) | the splice plan lowering |
 | `put{at:"upsert"}` on an `fm_key` target | the native wire write door |
 | the preset BIRTH door — a `^template` placeholder standing in a frontmatter value position | `preset::new_record` / `unfold` (run-plane Law 3.6) |
+| `put{at:"end"}` on an `fm_key` target | the native wire write door, composed at the door |
+| `match` on an `fm_key` target | the native wire write door, composed at the door |
 
 The upsert door is a value-plane door: its `text` is a caller's flat STRING,
 never a YAML node, so the same encoder governs it. Without this, the wire's own
 door could not write the value its own read seam decodes — `[[b1892b5a]]` would
 land as a nested flow sequence and the I4 substrate law would refuse it,
-blaming the caller for nesting the emitter manufactured. **All three doors
+blaming the caller for nesting the emitter manufactured. **All five doors
 refuse a multi-line value** — the encoder's `MultiLineValue` refusal, uniform at
 every value-plane write door. A newline is refused, never sanitized.
 
@@ -1445,6 +1448,35 @@ that trips a § A.6.3 quote trigger now lands in the canonical quoted spelling
 DECODED value is unchanged, the plain form is still emitted whenever it decodes
 back to the caller's string, and the encoder is the shared one — a birth-door
 dialect of its own is exactly the drift this section exists to prevent.
+
+**The rule the table's silence used to leave (2026-08-09, ruling
+`0021-fmkey-value-grain-ruling`).** The table enumerated its doors one by one and said nothing
+about the OTHER scopes reaching an `fm_key`, so `at:"end"` and `match` wrote
+raw: `owner: seedhand: x` at exit 0, YAML that no external parser accepts, and
+`hand #c` committing with the comment silently dropped. v1.0.0 behaviour at four
+engines. **The line that decides every future scope, so the next one falls under
+a rule instead of a silence:**
+
+> **A CALLER-FACING value scope on an `fm_key` target is VALUE-grain — the
+> engine owes the encode. An ENGINE-INTERNAL lowering slot is LINE-grain — it
+> carries a pre-composed line and stays raw.**
+
+`at:"end"` and `match` are caller-facing: their input is a fragment of a VALUE,
+so the door composes stored + fragment, encodes the WHOLE result, and writes it
+as a span replace. `at:"all"` and `at:"content"` are the lowering's own slots —
+A.6.3a′ lowers `set_property` through `at:"all"` carrying an already-encoded
+line, so encoding or refusing there would break `set_property`. One target, one
+grain: the `fm_key` address is the value plane, and a caller addressing a key is
+thinking in values.
+
+**The composition is AT the door, never below it.** The encoder takes a WHOLE
+value while these doors supply a FRAGMENT, so "route the door through the
+encoder" is not an available shape — encoding the fragment yields
+`owner: seed"hand: x"`, broken in a new way. The door composes and lowers to a
+`put{at:"all"}` span replace; the kernel stays raw-grain per the sentence below.
+**The receipt renders the CALLER's edit** (`put:end`, `match`) — the lowering is
+engine-internal mechanism, exactly as `set_property`'s lowering renders today
+(A.6.3a′ precedent). Armed facts state true before/after revs regardless.
 
 **Uniform means the WORDS too (2026-08-09, dogfood s7).** One law refused in two
 dialects is two laws to the callers who meet it: the `set_property` door named
