@@ -75,8 +75,12 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
 
     let (files, _fold) = fs::domain_snapshot(&root)
         .map_err(|e| Fail::tool(format!("cannot read the corpus: {e}")))?;
-    let (_index, docs, unserved) = fs::build_corpus(files);
+    let (_index, mut docs, unserved) = fs::build_corpus(files);
     crate::voice_unserved(&unserved);
+    if let Some(page) = parsed.page.as_deref() {
+        crate::walk_cmd::admit_named_page(&root, &mut docs, page);
+    }
+    let docs = docs;
 
     let mut survey = survey(&docs, parsed.page.as_deref())?;
     let repo = git::Repo::at(root.0.clone());

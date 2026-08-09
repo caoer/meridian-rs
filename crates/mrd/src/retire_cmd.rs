@@ -942,6 +942,23 @@ fn run(args: &[String], writing: bool) -> Result<(), Fail> {
     // files no loop below ever saw.
     let scanned = docs.len();
 
+    // The OTHER population this sweep cannot see: markdown under the root that
+    // the hash domain excludes (a dot-segment path, a `meridian/domain.md`
+    // ignore rule). It is enumerated, never scanned — an out-of-domain page's
+    // bytes cannot move the fingerprint this answer is stamped `as_of`, so a row
+    // for it would sit under a stamp that does not cover it. Excluding it is
+    // lawful; excluding it SILENTLY is not: this verb CERTIFIES ABSENCE, so a
+    // reference living in such a page would be reported retired
+    // (session decision 0017; `docs/wire-contract.md` §12.1, enumerator clause;
+    // charter 03's absence split). Same discipline as `files_unserved` above —
+    // published BESIDE the denominator, never folded into it.
+    let excluded: Vec<String> = fs::walk(&root)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|rel| rel.to_str().map(str::to_owned))
+        .filter(|rel| !docs.contains_key(rel) && !unserved.contains_key(rel))
+        .collect();
+
     // 1 · collect every declaration in the vault.
     let mut decls: Vec<Decl> = Vec::new();
     let mut refusals: Vec<Refusal> = Vec::new();
@@ -1136,6 +1153,7 @@ fn run(args: &[String], writing: bool) -> Result<(), Fail> {
             serde_json::to_string_pretty(&to_json(
                 scanned,
                 unserved.len(),
+                &excluded,
                 &fingerprint,
                 &per_decl,
                 &refusals,
@@ -1148,6 +1166,7 @@ fn run(args: &[String], writing: bool) -> Result<(), Fail> {
             render_human(
                 scanned,
                 unserved.len(),
+                &excluded,
                 &fingerprint,
                 &per_decl,
                 &refusals,
@@ -1187,6 +1206,7 @@ fn display_hpath(hpath: &[HpathSeg]) -> String {
 fn to_json(
     scanned: usize,
     unserved: usize,
+    excluded: &[String],
     fingerprint: &Root,
     per_decl: &[(&Decl, Counts, Vec<Plan>)],
     refusals: &[Refusal],
@@ -1197,6 +1217,11 @@ fn to_json(
         // The population the scan did NOT read, published beside its
         // denominator — never folded into it.
         "files_unserved": unserved,
+        // The domain-excluded population, named rather than implied: markdown
+        // under the root this sweep did not read because the hash domain does
+        // not carry it (decision 0017 — an enumerator may exclude, never
+        // silently).
+        "files_excluded": excluded,
         "fingerprint": fingerprint.0,
         "retirements": per_decl.iter().map(|(d, c, _)| json!({
             "id": d.id,
@@ -1230,6 +1255,7 @@ fn to_json(
 fn render_human(
     scanned: usize,
     unserved: usize,
+    excluded: &[String],
     fingerprint: &Root,
     per_decl: &[(&Decl, Counts, Vec<Plan>)],
     refusals: &[Refusal],
@@ -1244,6 +1270,14 @@ fn render_human(
         per_decl.len(),
         fingerprint.0
     );
+    if !excluded.is_empty() {
+        let _ = writeln!(
+            out,
+            "outside the hash domain: {} markdown file(s) under this root were NOT scanned — {}. This sweep certifies absence over the domain only: a reference living in one of these files is NOT retired and is NOT reported here (decision 0017).",
+            excluded.len(),
+            excluded.join(", ")
+        );
+    }
     for (decl, c, _) in per_decl {
         let _ = writeln!(
             out,

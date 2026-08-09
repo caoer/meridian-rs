@@ -121,40 +121,61 @@ fn links_with(
     docs.iter()
         .filter(|(source, _)| path.is_none_or(|p| p == source.as_str()))
         .map(|(source, doc)| {
-            let mut entry = FileLinks::default();
-            for (target, _span) in link_nodes(doc) {
-                match resolve_edge(index, source, target, corpus, mounts) {
-                    RefResolution::Ambient(dest) => *entry.resolved.entry(dest).or_insert(0) += 1,
-                    RefResolution::Rooted { root, path } => {
-                        *entry
-                            .resolved_rooted
-                            .entry(root)
-                            .or_default()
-                            .entry(path)
-                            .or_insert(0) += 1;
-                    }
-                    // An ambient miss stays first-class and non-refusing — the
-                    // ordinary authoring state.
-                    RefResolution::NotFound { root: None, .. } => {
-                        *entry.unresolved.entry(target.to_string()).or_insert(0) += 1;
-                    }
-                    // Everything else is the address owner refusing, and the
-                    // refusal is carried whole rather than collapsed to a word.
-                    resolution => {
-                        let slot = entry
-                            .refused
-                            .entry(target.to_string())
-                            .or_insert(RefusedEdge {
-                                resolution,
-                                count: 0,
-                            });
-                        slot.count += 1;
-                    }
-                }
-            }
-            (source.clone(), entry)
+            (
+                source.clone(),
+                file_links(index, source, doc, corpus, mounts),
+            )
         })
         .collect()
+}
+
+/// One document's outgoing edges, resolved against `index`/`corpus`.
+///
+/// Split out of [`links_with`] because `source` need not be a corpus MEMBER:
+/// a path outside the hash domain is addressable by explicit path (§12.1), so
+/// the door that is asked about one page loads it and resolves its edges
+/// against the corpus it is not in. Membership decides what the enumeration
+/// walks, never what a named path is entitled to.
+#[must_use]
+pub fn file_links(
+    index: &CorpusIndex,
+    source: &str,
+    doc: &Document,
+    corpus: &RootedCorpus<'_>,
+    mounts: Option<&MountSet>,
+) -> FileLinks {
+    let mut entry = FileLinks::default();
+    for (target, _span) in link_nodes(doc) {
+        match resolve_edge(index, source, target, corpus, mounts) {
+            RefResolution::Ambient(dest) => *entry.resolved.entry(dest).or_insert(0) += 1,
+            RefResolution::Rooted { root, path } => {
+                *entry
+                    .resolved_rooted
+                    .entry(root)
+                    .or_default()
+                    .entry(path)
+                    .or_insert(0) += 1;
+            }
+            // An ambient miss stays first-class and non-refusing — the
+            // ordinary authoring state.
+            RefResolution::NotFound { root: None, .. } => {
+                *entry.unresolved.entry(target.to_string()).or_insert(0) += 1;
+            }
+            // Everything else is the address owner refusing, and the
+            // refusal is carried whole rather than collapsed to a word.
+            resolution => {
+                let slot = entry
+                    .refused
+                    .entry(target.to_string())
+                    .or_insert(RefusedEdge {
+                        resolution,
+                        count: 0,
+                    });
+                slot.count += 1;
+            }
+        }
+    }
+    entry
 }
 
 /// Find-references: every wikilink/embed in the corpus resolving to `target`

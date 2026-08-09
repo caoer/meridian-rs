@@ -442,12 +442,29 @@ fn links_body_and_file_key_sets_are_frozen() {
         as_of_root: root(),
         live_root: root(),
         changes_seq: 2,
-        files,
+        files: files.clone(),
+        excluded: Vec::new(),
     };
+    // §4.6: `excluded` is omitted when empty, so a workspace whose hash domain
+    // is its whole md tree carries the frozen v2 key set byte for byte.
     pin_keys(
         &links,
         &["as_of_root", "changes_seq", "files", "live_root"],
         "Links body",
+    );
+    // And it is PRESENT the moment the enumeration left something out — the
+    // enumerator clause is a wire fact, not a CLI courtesy (§12.1).
+    let with_excluded = ResponseBody::Links {
+        as_of_root: root(),
+        live_root: root(),
+        changes_seq: 2,
+        files,
+        excluded: vec![".github/README.md".to_string()],
+    };
+    pin_keys(
+        &with_excluded,
+        &["as_of_root", "changes_seq", "excluded", "files", "live_root"],
+        "Links body naming an excluded population",
     );
     pin_keys(
         &FileLinks::default(),

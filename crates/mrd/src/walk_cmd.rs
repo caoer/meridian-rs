@@ -42,7 +42,11 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
             cwd.display()
         ))
     })?;
-    let docs = build_docs(&resolved.workspace)?;
+    let mut docs = build_docs(&resolved.workspace)?;
+    if let Ok(canonical) = workspace::canonicalize(&resolved.workspace) {
+        admit_named_page(&fs::WorkspaceRoot(canonical), &mut docs, &parsed.page);
+    }
+    let docs = docs;
 
     // The mount table, with a corpus for the roots this workspace's own lock addresses name and
     // no others. `mounts` owns the document maps; `corpus` borrows them — hence two bindings.
@@ -366,6 +370,31 @@ pub(crate) fn build_docs(workspace: &Path) -> Result<BTreeMap<String, Document>,
     let (_index, docs, unserved) = fs::build_corpus(files);
     crate::voice_unserved(&unserved);
     Ok(docs)
+}
+
+/// Fold a NAMED page the hash domain excludes into the corpus map before a door
+/// answers about it.
+///
+/// `fs::build_corpus` projects the domain, and the domain gates HASHING, not
+/// load: a door the caller names ONE path at serves it or is a door defect
+/// (`docs/wire-contract.md` §12.1, the door-family clause). So membership decides
+/// what an ENUMERATION walks, never what a named path is entitled to — the same
+/// single-file load the read and write doors already run (registry
+/// `doc_or_refusal`, `wire_serve::load_doc`), reached from the in-process faces.
+///
+/// A path with no file, or one whose bytes are not UTF-8, is left absent: the
+/// caller's own miss diagnostic then says so, as it does for any other miss.
+pub(crate) fn admit_named_page(
+    root: &fs::WorkspaceRoot,
+    docs: &mut BTreeMap<String, Document>,
+    page: &str,
+) {
+    if docs.contains_key(page) {
+        return;
+    }
+    if let Ok(doc) = fs::load(root, Path::new(page)) {
+        docs.insert(page.to_owned(), doc);
+    }
 }
 
 /// Map a [`WalkError`] to the exit-2 tool failure with a teaching diagnostic.

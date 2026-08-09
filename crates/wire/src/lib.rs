@@ -1293,6 +1293,13 @@ pub enum ResponseBody {
         live_root: Root,
         changes_seq: u64,
         files: BTreeMap<String, FileLinks>,
+        /// §4.6 / §12.1: the markdown under the root the hash domain does NOT
+        /// hold, so an enumeration names what it left out instead of publishing
+        /// a partial population as the whole one. Filled on the whole-corpus
+        /// form only — a NAMED path is served, never excluded — and omitted
+        /// from the wire when empty.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        excluded: Vec<String>,
     },
 }
 

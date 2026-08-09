@@ -105,6 +105,9 @@ pub(crate) fn run_command(path_arg: Option<&str>, format: Format) -> Result<(), 
         ))
     })?;
     let answer = answer_links(&resolved.workspace, path_arg)?;
+    // Read off the ANSWER, so warm and degrade voice one fact from one source:
+    // an enumeration names the population it did not carry (§4.6 `excluded`).
+    voice_excluded(&answer.body);
 
     match format {
         Format::Json => {
@@ -129,6 +132,31 @@ pub(crate) fn run_command(path_arg: Option<&str>, format: Format) -> Result<(), 
         return Ok(());
     }
     Err(Fail::findings(refusals.join("\n")))
+}
+
+/// Voice the enumeration's domain-excluded population on stderr, so machine
+/// stdout stays byte-identical to what the wire carried.
+///
+/// The list rides the answer (§4.6 `excluded`), never a second disk walk here:
+/// a face that re-derived it could disagree with the door that served it, which
+/// is the door/face split this rule exists to close. Empty on the named form —
+/// a named path is served, so nothing was left out (§12.1).
+fn voice_excluded(body: &Value) {
+    let names: Vec<&str> = body
+        .get("excluded")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    if names.is_empty() {
+        return;
+    }
+    eprintln!(
+        "mrd: note: {} markdown file(s) under this root are outside the hash domain and are NOT in this listing — {}. They stay addressable by explicit path (`mrd read`, `mrd links <PATH>`); their bytes do not move the fingerprint this answer is stamped with.",
+        names.len(),
+        names.join(", ")
+    );
 }
 
 /// How many times the page wrote a refused linkpath.
@@ -572,6 +600,7 @@ fn in_process_links(workspace: &Path, path: Option<&str>) -> Result<Value, Fail>
         crate::walk_cmd::load_mounts_for(&crate::walk_cmd::link_addressed_roots(&docs, path));
     let corpus = mounts.rooted(&docs);
     let body = wire_serve::read::links_rooted(
+        &root,
         &index,
         &docs,
         &unserved,
@@ -603,6 +632,11 @@ fn render_wire_error(error: &ErrorBody) -> String {
         .and_then(|v| v.as_str().map(str::to_owned))
         .unwrap_or_else(|| "error".to_owned());
     match (&error.message, &error.path) {
+        // A typed message that already opens with its own code is not prefixed
+        // twice: `file_not_found: file_not_found: no file at …` reads as two
+        // refusals stacked, and the doubling appears the moment a door that
+        // used to answer with a bare code starts carrying a teaching message.
+        (Some(message), _) if message.starts_with(&format!("{code}:")) => message.clone(),
         (Some(message), _) => format!("{code}: {message}"),
         (None, Some(path)) => format!("{code}: {}", path.0),
         (None, None) => code,
