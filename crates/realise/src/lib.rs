@@ -216,7 +216,12 @@ pub struct ClaimResult {
 /// clock and no identity).
 #[derive(Debug, Clone)]
 pub struct RealiseSpec {
-    /// Base invocation id; each apply derives `<invocation_id>~<n>`.
+    /// Base invocation id; each apply derives `<invocation_id>~<n>` for the run
+    /// plane and `r-<invocation_id>-<n>` for its receipt anchor. The anchor
+    /// carries the base id because `receipts/realise.md` is shared across
+    /// invocations (§6.6), so the id must be unique per invocation and inside
+    /// the block-id charset (`[A-Za-z0-9-]`, §2.4) — a violation refuses with
+    /// [`RealiseError::BadInvocationId`] before any apply runs.
     pub invocation_id: String,
     /// Caller-supplied time fact stamped onto every apply receipt and board
     /// card; absent stays absent, never invented.
@@ -291,6 +296,14 @@ pub enum RealiseError {
         /// The underlying refusal.
         reason: String,
     },
+    /// The caller's invocation id cannot carry an apply receipt anchor: the id
+    /// the anchor derives from bears a char outside the block-id charset
+    /// (`[A-Za-z0-9-]`, §2.4). Refused before any apply runs — an anchor no
+    /// strict door can address is a receipt published unusable (§6.6).
+    BadInvocationId {
+        /// The offending caller-supplied id.
+        invocation_id: String,
+    },
 }
 
 impl std::fmt::Display for RealiseError {
@@ -310,6 +323,11 @@ impl std::fmt::Display for RealiseError {
             RealiseError::CardMint { selector, reason } => {
                 write!(f, "board card for '{selector}': {reason}")
             }
+            RealiseError::BadInvocationId { invocation_id } => write!(
+                f,
+                "invocation id '{invocation_id}' is outside the block-id charset [A-Za-z0-9-] \
+                 (§2.4) — an apply receipt anchor derives from it and would be unaddressable"
+            ),
         }
     }
 }
@@ -459,7 +477,7 @@ fn run_apply(
 ) -> Result<Option<Applied>, RealiseError> {
     let receipt = ReceiptAddr {
         path: REALISE_RECEIPT_PATH.to_owned(),
-        anchor: format!("r-{attempt:06}"),
+        anchor: apply_anchor(&spec.invocation_id, attempt)?,
     };
     let invocation = format!("{}~{attempt}", spec.invocation_id);
     let run_spec = RunSpec {
@@ -483,6 +501,26 @@ fn run_apply(
         reason: e.to_string(),
     })?;
     Ok(applied_of(report.outcome))
+}
+
+/// Mint one apply receipt's anchor: `r-<invocation-id>-<attempt>`, unique
+/// within the SHARED `receipts/realise.md` across invocations (contract §6.6 —
+/// the anchor is the caller's to mint, and a mint that collides publishes a
+/// receipt no strict door can address). A per-invocation counter is unique only
+/// inside its own process, so from invocation 2 on it re-mints invocation 1's
+/// ids; the caller's invocation id is what makes the id file-scoped.
+///
+/// The mint routes through the block-id door (`model::Ref::anchor`, §2.4) so a
+/// caller-supplied id outside `[A-Za-z0-9-]` refuses here rather than
+/// publishing an unaddressable anchor.
+fn apply_anchor(invocation_id: &str, attempt: u64) -> Result<String, RealiseError> {
+    let id = format!("r-{invocation_id}-{attempt:06}");
+    match model::Ref::anchor(id.clone()) {
+        Ok(_) => Ok(id),
+        Err(_) => Err(RealiseError::BadInvocationId {
+            invocation_id: invocation_id.to_owned(),
+        }),
+    }
 }
 
 /// Extract the executor's commit from a run-plane report — the md.* apply of

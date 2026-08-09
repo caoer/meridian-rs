@@ -563,6 +563,16 @@ The md *rendering* is a shipped default template; a non-ccc consumer replaces it
 
 The batch writes two files via tmp+fsync+rename each; a crash between renames can land content without receipt. Recovery is re-derive (cold rebuild → correct root, never wrong data) and the missing receipt is exactly what the lint finds — the failure is loud in the world model, not hidden in engine state. Stated as a limit (§13.6); multi-file atomic commit is a rung-3 amendment candidate, not assumed.
 
+### §6.6 The anchor is the caller's to mint, and a mint that collides is a defect (2026-08-09)
+
+§6.4 states the mechanism — "append these facts at this address with this anchor" — so the anchor arrives from the caller and the engine appends what it is given. That leaves one obligation unstated until now, and a host met it wrongly in the field (dogfood 2026-08-09, s13): **an anchor MUST be unique within the receipt file it names.**
+
+The obligation is not stylistic. §6.1 promises a receipt resolvable via `#^anchor`; §2.1 resolves an anchor ref by exact block id and A.3 refuses `ambiguous` when a file carries the id twice. A writer that repeats an id inside one file therefore publishes a receipt no strict door can address — the receipt exists, is hashed, and is unreachable. **Published-but-unusable, minted by the writer, in obedience to no rule it broke.** The engine does not police this: an append is one file's edit and carries no cross-invocation memory, so nothing below the caller can see the collision coming.
+
+The derived rule for a host that appends many receipts to ONE shared file across invocations: **derive the anchor from the invocation identity, never from a counter that restarts.** A per-invocation counter (`^r-000001`, `^r-000002`, …) is unique only within its own process; the second invocation against the same file re-mints the first id. Derive from a monotonic file-scoped counter (read the file, continue past its last id) or from the caller's invocation id plus an in-run sequence — the second costs no read and is what `mrd run` already does (`r-<invocation-id>`).
+
+A host that derives from a caller-supplied id inherits that id's charset duty: the mint routes through the block-id door (`[A-Za-z0-9-]`, §2.4) and refuses loudly rather than publishing an unaddressable anchor.
+
 ## §7 The Delta noun — the fifth noun, stable at birth
 
 ### §7.1 Shape (stable)
