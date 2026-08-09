@@ -120,7 +120,10 @@ fn head_sha_names_the_commit_git_names() {
         .args(["rev-parse", "HEAD"])
         .output()
         .expect("spawn git");
-    let expected = String::from_utf8(out.stdout).expect("utf8").trim().to_owned();
+    let expected = String::from_utf8(out.stdout)
+        .expect("utf8")
+        .trim()
+        .to_owned();
 
     assert_eq!(head_sha(repo.path()), Some(expected));
 }
