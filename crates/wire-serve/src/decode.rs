@@ -698,7 +698,8 @@ fn decode_sec(v: &Value) -> Result<SecRef, Box<ErrorBody>> {
     for key in sec.keys() {
         if !["hpath", "anchor", "fm_key"].contains(&key.as_str()) {
             return Err(bad_request(format!(
-                "unknown field `{key}` in `sec` — legal fields are `hpath`, `anchor`, `fm_key`"
+                "unknown field `{key}` in the section ref (`sec` on a read, `target` on \
+                 an edit) — legal fields are `hpath`, `anchor`, `fm_key`"
             )));
         }
     }
