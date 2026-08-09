@@ -161,6 +161,61 @@ removal. `README.md` § A.4's "no dual wire constitutions for agents" is a
 TEACHING law — agents learn one constitution — never a claim that the frozen
 dialect is unserved.
 
+### §4.5 Multi-root addressing is NOT promised
+
+The `roots` surface advertises every bound root, while `read` serves one. That
+disagreement is a single defect family — the stage-2 reserved-prefix face
+shadows the registered-root lane — and this release does **not** promise
+cross-root addressing through it.
+
+The truthful shape of the statement matters: `multi-root` and `roots` appear in
+**no promise row** of §2 or §3, so naming the non-promise here retreats from
+nothing. It records what a reader must not infer from the advertisement.
+
+**The defect is the advertisement, not the refusal.** A refusal on a root the
+face never bound is correct behavior; advertising five bound roots while `read`
+serves one is what misleads. Consequence, stated rather than left to be
+discovered: the taught recovery line for that refusal is **known-inexecutable**
+pending multi-root — a caller following it cannot succeed today.
+
+Executable recovery on this path is a stated **v1.x direction**, not a v1
+promise.
+
+### §4.6 Refusal CODES are promised; teaching lines are best-effort
+
+§2.4 promises that every error carries `code` + `recovery` from the closed
+six-class enum. This release promises exactly that and no more: the classified
+refusal, not the sentence that teaches a way out.
+
+The distinction was tested at the write door and the promise held.
+`crates/wire-serve/src/write.rs` refuses through `bad_request(...)`, and
+`bad_request` (`crates/wire-serve/src/lib.rs`) sets `ErrorCode::BadRequest` with
+`Recovery::Fix` — asserted by its own unit test
+`bad_request_carries_the_fix_class_and_message`. Both promised fields are
+present. What is absent on that leg is a **teaching clause**, and no promise row
+in §2 or §3 requires one. Teaching lines are best-effort, and their absence is
+not a broken promise.
+
+Two facts recorded beside it, neither narrowing a promise:
+
+- `replace_section` is the refusal taxonomy's **known unreached path** in this
+  tree — classified in law, not exercised by a landed case.
+- An `append` at the same address with the same rev landed correctly, so the
+  address layer underneath is sound. The gap is in the taxonomy's coverage, not
+  in addressing.
+
+### §4.7 Recorded at cut time — limits named, promises unchanged
+
+These were found at the v1 cut and are written down rather than repaired. None
+narrows a promise row; recording them is what keeps §1's two-key rule honest.
+
+| Recorded | What it says |
+|---|---|
+| **G10** | At production corpus scale the 7 s script wall binds **before** the 64-read ceiling — the read-count limit is not the operative one. Reads with §7 |
+| **D4** | The surface enumerates **paths**, not mount names |
+| **D6** | Structurally unreachable in this deployment shape — both admitted roots are `kind: vault`, so the other branch has no way to arise here |
+| **D5** | **SKIPPED with reason.** Staging an unmounted root touches `~/MERIDIAN.md` — ZT's own floor — while he is dogfooding on it. Ruled post-cut, in an advisor-coordinated window outside his active hours |
+
 ## §5 Stamp mechanics
 
 ### §5.1 The version string
@@ -224,3 +279,31 @@ prose claims.
 
 A surface that neither doc nor `caps` names is not a promise, and no release
 note may create one.
+
+## §7 What the 7 s script wall bounds
+
+The script entry carries one wall-clock budget — `WALL_CLOCK = 7 s`
+(`crates/mrd/src/script/cmd.rs`). **It is an ENGINE budget, never the
+operator's process wall**, and a reader who confuses the two will infer headroom
+that does not exist and pressure that is not there.
+
+The budget binds at **three layers inside the engine process**, each named in
+the constant's own doc comment and in `run-plane.md` § Where the budgets bind:
+
+| Layer | Where it binds |
+|---|---|
+| ask | before every round trip (`WireHost::ask`) |
+| connect | on the socket itself (`SocketDoor::connect`) |
+| run | before the commit is issued (`run`) |
+
+**Startup and teardown sit outside all three.** The MCP host's bound on the
+child process is a **fourth** layer, and it lives in the other repo — it is not
+this budget and this file does not rule it.
+
+Consequence for reading measurements: **the decisive cell in the fuse report is
+ENGINE ms.** Two of three write-bearing runs crossed 7 s of PROCESS wall while
+committing correctly, precisely because the process wall is not what the budget
+bounds. No door headroom may be inferred from that cell in either direction.
+
+**G10 rides here** (§4.7): at production corpus scale this wall binds before the
+64-read ceiling, so a program's operative limit is time, not read count.
