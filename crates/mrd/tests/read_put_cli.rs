@@ -1231,6 +1231,55 @@ fn a_well_formed_guarded_batch_still_reaches_the_engine() {
     );
 }
 
+/// Gate (the exit triad, `docs/status.md`) — a §2.4 block-id charset violation
+/// on stdin is a VALUE judgment on a batch whose SHAPE is legal, so it is the
+/// ENGINE refusing a well-formed invocation: exit 1, with the `{workspace,
+/// error}` frame on stdout under `--json`. It is not the CLI's own refusal
+/// (exit 2), and it is not "malformed JSON" — the bytes parsed. Closing the
+/// unknown-field hole must not drag value laws across that line: a script
+/// branches on the exit alone, and 2 tells it to go fix an invocation that is
+/// in fact well formed.
+#[test]
+fn a_bad_block_id_is_the_engines_refusal_not_the_clis() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let stdin = serde_json::to_string(&serde_json::json!([{
+        "target": {"anchor": "bad_id"},
+        "edit": {"match": {"old": "four five", "new": "six"}},
+    }]))
+    .expect("edits json");
+    let out = sb.run_stdin(&ws, &["put", "doc.md", "--json"], &stdin);
+    assert_eq!(
+        code(&out),
+        1,
+        "an engine refusal, not the CLI's: {}",
+        stderr(&out)
+    );
+    assert!(
+        stderr(&out).contains("outside the one charset"),
+        "the §2.4 charset refusal: {}",
+        stderr(&out)
+    );
+    assert!(
+        !stderr(&out).contains("malformed"),
+        "the JSON parsed — never the malformed-JSON voice: {}",
+        stderr(&out)
+    );
+    // `--json` answers on stdout on the refusal leg too: an agent parsing the
+    // frame gets `code` + `recovery`, never a blank.
+    let frame: Value =
+        serde_json::from_str(&stdout(&out)).expect("a --json refusal frame on stdout");
+    assert_eq!(frame["error"]["code"], "bad_request", "{frame}");
+    assert_eq!(frame["error"]["recovery"], "fix", "{frame}");
+    assert!(
+        frame["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("§2.4"),
+        "{frame}"
+    );
+}
+
 /// Gate — empty stdin teaches the grammar, exit 2.
 #[test]
 fn put_empty_stdin_is_exit_2() {
@@ -1296,7 +1345,10 @@ fn a_non_envelope_object_gets_no_envelope_hint() {
     let out = sb.run_stdin(&ws, &["put", "doc.md", "--validate"], r#"{"nope":1}"#);
     assert_eq!(code(&out), 2);
     let err = stderr(&out);
-    assert!(err.contains("malformed edits JSON on stdin"), "{err}");
+    // These bytes ARE valid JSON, so the lead names the law they missed — the
+    // §4.4 shape — never "malformed JSON" about JSON that parsed.
+    assert!(err.contains("not the §4.4 batch shape"), "{err}");
+    assert!(err.contains("`edits` must be an array"), "{err}");
     assert!(!err.contains("BARE edits ARRAY"), "{err}");
 }
 
