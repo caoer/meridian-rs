@@ -148,8 +148,10 @@ mrd cache ls list the on-disk cache drawers
 mrd cache clean [--all] reap stale / orphaned / retired drawers
 mrd daemon run the registry daemon in the foreground
 mrd --version the build identity, one line: package version + the
- commit the build read (`unknown` when it could reach
- no repository — read, never invented)
+ tree the build read — a bare commit where that tree
+ was clean, `<commit>-dirty` where tracked content
+ diverged from it, `unknown` where neither could be
+ read (read, never invented)
 ```
 
 `mrd help` is the authoritative surface — flags, refusal legs, and per-verb
