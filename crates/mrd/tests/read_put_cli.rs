@@ -360,7 +360,12 @@ fn read_frag_dewey_serves_the_section_lane_answer() {
     let sb = sandbox();
     let ws = sb.workspace_with(ANCHORED);
     let frag = sb.run(&ws, &["read", "doc.md#1.1", "--json"]);
-    assert_eq!(code(&frag), 0, "the dewey fragment serves: {}", stderr(&frag));
+    assert_eq!(
+        code(&frag),
+        0,
+        "the dewey fragment serves: {}",
+        stderr(&frag)
+    );
     let section = sb.run(&ws, &["read", "doc.md", "--section", "1.1", "--json"]);
     assert_eq!(
         code(&section),
@@ -379,7 +384,12 @@ fn read_frag_heading_still_scopes_the_toc_read() {
     let sb = sandbox();
     let ws = sb.workspace_with(ANCHORED);
     let out = sb.run(&ws, &["read", "doc.md#Alpha", "--json"]);
-    assert_eq!(code(&out), 0, "the heading fragment serves: {}", stderr(&out));
+    assert_eq!(
+        code(&out),
+        0,
+        "the heading fragment serves: {}",
+        stderr(&out)
+    );
     let v: Value = serde_json::from_str(&stdout(&out)).expect("json parses");
     let body = &v["read"];
     assert!(
