@@ -25,6 +25,10 @@ use std::fmt::Write as _;
 use std::io::ErrorKind;
 use std::path::Path as FsPath;
 
+// The uniform § A.6.3a refusal sentence — one owner beside the `MultiLineValue`
+// it renders, so this door, `set_property` and the preset birth door cannot
+// drift into three dialects of one law.
+use policy::defs::multi_line_value_refusal;
 use wire::{
     Armed, ArmedEdit, Delta, DeltaFile, DeltaFrame, Edit, EditShape, ErrorBody, ErrorCode,
     HpathSeg, NodeRev, Path, PutAt, ReceiptAddr, ReceiptFact, ResponseBody, Root, SecRef, Severity,
@@ -2891,19 +2895,6 @@ fn lock_artifact_guard(
 /// decorated render face would otherwise never match its own document: an
 /// address is compared, never stored. Every native and lowered edit passes
 /// through this one funnel, so no put shape can skip it.
-/// The uniform `MultiLineValue` refusal, in the words BOTH value-plane write
-/// doors speak (wire-contract § A.6.3a). `set_property` already named the key
-/// and taught the body-section escape while the upsert door said only that the
-/// value must be single-line — one law refused in two dialects is two laws to
-/// the callers who meet it, and recovery quality became a function of which
-/// door the caller entered.
-fn multi_line_value_refusal(key: &str) -> String {
-    format!(
-        "property value for \"{key}\" contains a newline — frontmatter values are \
-         single-line in v1; put multi-line content in a body section"
-    )
-}
-
 fn model_edits_and_before_facts(
     doc: &model::Document,
     edits: &[Edit],

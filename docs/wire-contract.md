@@ -1381,21 +1381,50 @@ defect touches them. A newline in a value is still REFUSED, never sanitized: a
 single-line frontmatter value cannot carry one, and an escaped-scalar workaround
 leaks.
 
-**A.6.3a The write doors this encoder owns (2026-08-08).** Two doors write a
-frontmatter VALUE, and both encode:
+**A.6.3a The write doors this encoder owns (2026-08-08, third door added
+2026-08-09).** THREE doors write a frontmatter VALUE, and all three encode:
 
 | Door | Path |
 |---|---|
 | `set_property` (and the `check_write` candidate sharing its owner) | the splice plan lowering |
 | `put{at:"upsert"}` on an `fm_key` target | the native wire write door |
+| the preset BIRTH door — a `^template` placeholder standing in a frontmatter value position | `preset::new_record` / `unfold` (run-plane Law 3.6) |
 
 The upsert door is a value-plane door: its `text` is a caller's flat STRING,
 never a YAML node, so the same encoder governs it. Without this, the wire's own
 door could not write the value its own read seam decodes — `[[b1892b5a]]` would
 land as a nested flow sequence and the I4 substrate law would refuse it,
-blaming the caller for nesting the emitter manufactured. **Both doors refuse a
-multi-line value** — the encoder's `MultiLineValue` refusal, uniform at every
-value-plane write door. A newline is refused, never sanitized.
+blaming the caller for nesting the emitter manufactured. **All three doors
+refuse a multi-line value** — the encoder's `MultiLineValue` refusal, uniform at
+every value-plane write door. A newline is refused, never sanitized.
+
+**Why the birth door joined (2026-08-09, dogfood pass 1 f03).** It was the
+door that had never been named here, and the omission was measurable: `mrd new
+--actor $'zt\nstatus: closed'` against a template carrying `owner: {{actor}}`
+interpolated the caller's SOURCE BYTES, so the born record carried `status:`
+TWICE. § A.3's props plane serves one row per key, first occurrence wins, so
+disk said `closed` while every read door served `open` — and no governed edit
+could reach the shadow line (`fm_key` addresses the first occurrence; a `match`
+needle over the served value finds 0 occurrences). The birth door wrote bytes
+only a non-meridian editor could remove.
+
+Two laws bind together here and name one answer. Run-plane Law 3.4 stamps
+`actor`/`now` **exactly as given**, so sanitizing the caller's identity is
+forbidden — a door that strips a newline falsifies the provenance it records.
+§ A.6.3 refuses a multi-line value at every value-plane door, because a
+single-line scalar cannot carry a newline and an escaped-scalar workaround
+leaks. Together: **encode what is representable, refuse what is not, alter
+nothing.** A multi-line `--actor` therefore REFUSES THE BIRTH (`bad_request` /
+`fix`, the uniform sentence plus the placeholder that carried the newline), and
+a representable value — `zt: closed`, `[[b1892b5a]]` — is born quoted and
+decodes back to exactly the caller's string.
+
+**Byte-level consequence, stated rather than discovered later:** a born value
+that trips a § A.6.3 quote trigger now lands in the canonical quoted spelling
+(`owner: "[[b1892b5a]]"` where the pin wrote `owner: [[b1892b5a]]`). The
+DECODED value is unchanged, the plain form is still emitted whenever it decodes
+back to the caller's string, and the encoder is the shared one — a birth-door
+dialect of its own is exactly the drift this section exists to prevent.
 
 **Uniform means the WORDS too (2026-08-09, dogfood s7).** One law refused in two
 dialects is two laws to the callers who meet it: the `set_property` door named

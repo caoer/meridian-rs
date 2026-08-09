@@ -169,6 +169,20 @@ impl RefusalReason {
         }
     }
 
+    /// A `bad_request` refusal (recovery `fix`): the CALLER's value cannot be
+    /// written where the template puts it. Distinct from `def_invalid`, which
+    /// blames the def — here the def is well-formed and the birth envelope is
+    /// what the door cannot represent, so the message must not name a def rule.
+    #[must_use]
+    fn bad_request(message: String) -> Self {
+        RefusalReason {
+            code: "bad_request",
+            recovery: "fix",
+            message,
+            rule: None,
+        }
+    }
+
     /// A `cas_mismatch` refusal (rows 13/14, recovery `refresh`): the birth path
     /// is already occupied — the `if_absent` CAS held, no byte landed.
     #[must_use]
@@ -532,7 +546,10 @@ pub fn new_record(
         ));
     }
 
-    let body = fill_template(template, id, &def.defines, opts);
+    let body = match fill_template(template, id, &def.defines, opts) {
+        Ok(body) => body,
+        Err(reason) => return Ok(refuse_new(target, reason)),
+    };
     let record = model::build(body.clone(), syntax::parse(&body));
 
     // The FIRST violation names the failing def rule (def_invalid, row 17).
@@ -582,22 +599,183 @@ fn first_violated_rule<'a>(rules: &'a [PropRule], record: &Document) -> Option<&
 }
 
 /// Fill a `^template` body: replace `{{id}}`, `{{kind}}`, `{{actor}}`, `{{now}}`.
-fn fill_template(template: &str, id: &str, kind: &str, opts: &BirthOptions) -> String {
-    fill_vars(
-        template,
-        id,
-        kind,
-        opts.actor.as_deref(),
-        opts.now.as_deref(),
-    )
+///
+/// The template's BODY fills verbatim. Inside its FRONTMATTER BLOCK the same
+/// substitution is a **value-plane write** (wire-contract § A.6.3a), so it goes
+/// through the one encoder every other value-plane door uses: the emitted value
+/// is the plain form when the plain form decodes back to exactly the caller's
+/// string, and a double-quoted scalar otherwise. Without this the door
+/// interpolated source bytes, and a caller value carrying `: ` or a newline
+/// minted a SECOND key line — one key twice, which § A.3's first-occurrence
+/// model cannot represent, so disk and the read plane disagreed and no governed
+/// edit could reach the shadow line.
+///
+/// # Errors
+/// A [`RefusalReason`] (`bad_request`/`fix`) when a filled frontmatter value
+/// carries a newline. A single-line YAML scalar cannot carry one and an
+/// escaped-scalar workaround leaks (§ A.6.3), so the birth is REFUSED — never
+/// sanitized, because §3.4 stamps `actor`/`now` exactly as given and a door
+/// that trims the caller's identity falsifies the provenance it records.
+fn fill_template(
+    template: &str,
+    id: &str,
+    kind: &str,
+    opts: &BirthOptions,
+) -> Result<String, RefusalReason> {
+    let actor = opts.actor.as_deref();
+    let now = opts.now.as_deref();
+    let Some(fm_end) = frontmatter_block_end(template) else {
+        return Ok(fill_vars(template, id, kind, actor, now));
+    };
+    let vars = birth_vars(id, kind, actor, now);
+
+    let mut out = String::with_capacity(template.len());
+    // The key a value line belongs to — carried across a block sequence, whose
+    // `  - item` lines hold values for the key line above them.
+    let mut key = String::new();
+    for line in template[..fm_end].split_inclusive('\n') {
+        let text = line.trim_end_matches(['\n', '\r']);
+        let eol = &line[text.len()..];
+        if let Some(k) = line_key(text) {
+            key = k.to_string();
+        }
+        out.push_str(&fill_fm_line(text, &key, &vars)?);
+        out.push_str(eol);
+    }
+    out.push_str(&fill_vars(&template[fm_end..], id, kind, actor, now));
+    Ok(out)
+}
+
+/// The four birth placeholders paired with the values that replace them.
+fn birth_vars<'a>(
+    id: &'a str,
+    kind: &'a str,
+    actor: Option<&'a str>,
+    now: Option<&'a str>,
+) -> [(&'static str, &'a str); 4] {
+    [
+        ("{{id}}", id),
+        ("{{kind}}", kind),
+        ("{{actor}}", actor.unwrap_or("")),
+        ("{{now}}", now.unwrap_or("")),
+    ]
+}
+
+/// The byte just past the template's leading frontmatter block (its closing
+/// fence line and newline included), or `None` when the template opens no block
+/// or never closes one — in which case there is no frontmatter plane to govern
+/// and the whole text fills as body.
+fn frontmatter_block_end(template: &str) -> Option<usize> {
+    let mut offset = template.strip_prefix("---\n").map(|_| 4)?;
+    while offset < template.len() {
+        let line = template[offset..].split_inclusive('\n').next()?;
+        if line.trim_end_matches(['\n', '\r']) == "---" {
+            return Some(offset + line.len());
+        }
+        offset += line.len();
+    }
+    None
+}
+
+/// The key a frontmatter line declares (`key:` at the line start), or `None` for
+/// a sequence item, a continuation, or a comment.
+fn line_key(text: &str) -> Option<&str> {
+    if text.starts_with([' ', '\t', '-', '#']) {
+        return None;
+    }
+    let key = text.split_once(':')?.0;
+    (!key.is_empty()).then_some(key)
+}
+
+/// Fill one frontmatter line. A placeholder standing in a VALUE position is
+/// composed and then encoded (§ A.6.3); anything else fills verbatim, with the
+/// newline refusal still standing — a newline is illegal anywhere in this block.
+fn fill_fm_line(text: &str, key: &str, vars: &[(&str, &str)]) -> Result<String, RefusalReason> {
+    if !text.contains("{{") {
+        return Ok(text.to_string());
+    }
+    if let Some(split) = value_region(text)
+        && text[split..].contains("{{")
+    {
+        let (prefix, region) = text.split_at(split);
+        let core = quoted_lone_placeholder(region).unwrap_or_else(|| region.trim_end());
+        let composed = fill_all(core, vars);
+        let encoded = policy::defs::yaml_safe_value(&composed)
+            .map_err(|_| multi_line_refusal(key, core, vars))?;
+        return Ok(format!("{prefix}{encoded}"));
+    }
+    // No value region (a placeholder in the KEY position, or a shape this door
+    // does not model): the fill stays verbatim, but a newline still cannot ride
+    // into the block — it would mint lines the caller never wrote.
+    if let Some((name, _)) = substituted_multiline(text, vars) {
+        return Err(multi_line_refusal_named(key, name));
+    }
+    Ok(fill_all(text, vars))
+}
+
+/// Where a frontmatter line's VALUE starts: past `key:` and its one space, or
+/// past a sequence item's `- `. `None` when the line is neither shape.
+fn value_region(text: &str) -> Option<usize> {
+    let indent = text.len() - text.trim_start().len();
+    if let Some(rest) = text.trim_start().strip_prefix('-') {
+        return Some(indent + 1 + (rest.len() - rest.trim_start().len()));
+    }
+    let colon = text.find(':')?;
+    let rest = &text[colon + 1..];
+    Some(colon + 1 + (rest.len() - rest.trim_start().len()))
+}
+
+/// The placeholder inside an author-quoted lone value (`"{{actor}}"`), whose
+/// quotes spell "this whole value is the variable" — the encoder re-mints that
+/// quoting canonically, so stripping them here reads the author's intent rather
+/// than dropping it.
+fn quoted_lone_placeholder(region: &str) -> Option<&str> {
+    let r = region.trim();
+    let inner = r
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .or_else(|| r.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))?;
+    (inner.starts_with("{{") && inner.ends_with("}}") && inner.len() > 4).then_some(inner)
+}
+
+/// Replace every birth placeholder in `text`.
+fn fill_all(text: &str, vars: &[(&str, &str)]) -> String {
+    vars.iter().fold(text.to_string(), |acc, (name, value)| {
+        acc.replace(name, value)
+    })
+}
+
+/// The first placeholder that both occurs in `text` and carries a newline.
+fn substituted_multiline<'a>(
+    text: &str,
+    vars: &'a [(&'a str, &'a str)],
+) -> Option<&'a (&'a str, &'a str)> {
+    vars.iter()
+        .find(|(name, value)| text.contains(name) && value.contains(['\n', '\r']))
+}
+
+/// The multi-line refusal for whichever placeholder in `core` carried the
+/// newline — the composed value is the caller's, so the message names which
+/// caller value it was.
+fn multi_line_refusal(key: &str, core: &str, vars: &[(&str, &str)]) -> RefusalReason {
+    let name = substituted_multiline(core, vars).map_or("{{actor}}", |(name, _)| *name);
+    multi_line_refusal_named(key, name)
+}
+
+/// The uniform § A.6.3a sentence — one owner, `policy::defs` — plus this door's
+/// provenance clause naming the birth placeholder that carried the newline.
+fn multi_line_refusal_named(key: &str, placeholder: &str) -> RefusalReason {
+    let key = if key.is_empty() { placeholder } else { key };
+    RefusalReason::bad_request(format!(
+        "{} — the birth door filled {placeholder} there, and `mrd new` stamps a \
+         caller's value exactly as given (§3.4), so it refuses rather than rewrite it",
+        policy::defs::multi_line_value_refusal(key)
+    ))
 }
 
 /// Replace the four birth placeholders in `text`.
 fn fill_vars(text: &str, id: &str, kind: &str, actor: Option<&str>, now: Option<&str>) -> String {
-    text.replace("{{id}}", id)
-        .replace("{{kind}}", kind)
-        .replace("{{actor}}", actor.unwrap_or(""))
-        .replace("{{now}}", now.unwrap_or(""))
+    fill_all(text, &birth_vars(id, kind, actor, now))
 }
 
 // ---------------------------------------------------------------------------
