@@ -78,8 +78,15 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     };
     // seq 0, like the resident daemon (no epoch ring); no read-mint ledger
     // exists in a CLI process, which is why the gate is bypassed above.
+    // The face's own helper, exactly as `read` and `put` reach it. `pin` used to wrap it and
+    // append ` ({cause})`, because the shared helper once dropped the cause; it no longer does —
+    // `engine::spelled` inlines an `io_error` cause and CONSUMES a `would_corrupt` one to pick
+    // its remedy sentence, and those are the only two codes wire-serve sets a cause on. The
+    // wrapper had become one renderer too many: it printed the io_error cause a second time, and
+    // on `would_corrupt` it would have appended a bare machine token to a sentence that already
+    // teaches what the token means.
     let outcome = splice(&root, None, &splice_args, &[], None)
-        .map_err(|e| refusal_with_cause(parsed.format, &resolved.workspace, &e))?;
+        .map_err(|e| engine::json_refusal(parsed.format, &resolved.workspace, &e))?;
 
     let body = serde_json::to_value(&outcome.body)
         .map_err(|e| Fail::tool(format!("cannot render the answer: {e}")))?;
@@ -102,26 +109,6 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         Format::Human => print_human(&parsed, &body),
     }
     Ok(())
-}
-
-/// The engine's refusal on both faces: [`engine::json_refusal`] owns the `{workspace, error}`
-/// envelope for every `--json` face, so `pin` reaches it the same way `read` and `put` do. The
-/// stderr half keeps the `class (cause)` shape [`crate::status_cmd`] degrades in
-/// (`unknown (not a git repository: …)`), appended only where the shared helper did not already
-/// carry the cause — it inlines one for a message-less `io_error`, and rendering it twice is
-/// what this door did before.
-fn refusal_with_cause(
-    format: Format,
-    workspace: &std::path::Path,
-    error: &wire::ErrorBody,
-) -> Fail {
-    let mut fail = engine::json_refusal(format, workspace, error);
-    if let Some(cause) = &error.cause
-        && !fail.message.contains(cause.as_str())
-    {
-        fail.message = format!("{} ({cause})", fail.message);
-    }
-    fail
 }
 
 /// The human summary: what was pinned, at which digest, with the stable anchor
