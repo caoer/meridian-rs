@@ -63,6 +63,56 @@ fn bare_duplicate_selector_refuses_ambiguous_naming_candidates() {
             && msg.contains(r#"[{"h":"Top"},{"h":"Dup","n":2}]"#),
         "both candidates named by machine address: {msg}"
     );
+    // The heading plane's half of the same law: the `Fix:` is the published d1
+    // remedy, byte-shared with what the write door renders — not a toc-read
+    // discovery clause, which would send the caller to look up an address the
+    // message has just printed twice.
+    assert!(
+        msg.contains(model::selector::AMBIGUITY_FIX),
+        "the read face teaches the published d1 remedy verbatim: {msg}"
+    );
+    assert!(
+        !msg.contains("list this document's section paths"),
+        "an ambiguity is not a miss; discovery is the MISS remedy: {msg}"
+    );
+}
+
+/// The family statement, asserted rather than described: at the read door,
+/// each failure kind answers with the remedy for ITS OWN failure.
+///
+/// A miss teaches DISCOVERY — find a selector that exists. An ambiguity is the
+/// opposite failure (the selector resolved, twice), so the same clause would
+/// send the caller after an address they already typed. This test exists
+/// because the discovery clause was previously the `Fix:` for every kind, and
+/// nothing compared the two doors' answers.
+#[test]
+fn each_failure_kind_teaches_its_own_remedy_and_not_the_miss_clause() {
+    let miss = *read(vec![ReadSel::parse("Ghost")]).expect_err("miss refuses");
+    let miss_msg = miss.message.as_deref().expect("message").to_owned();
+    assert!(
+        miss_msg.contains("list this document's section paths"),
+        "a MISS still teaches discovery — that IS its remedy: {miss_msg}"
+    );
+
+    let dup_heading = *read(vec![ReadSel::parse("Top/Dup")]).expect_err("ambiguity refuses");
+    let dup_heading = dup_heading.message.as_deref().expect("message").to_owned();
+
+    let dup_anchor = *read_of(DUP_ANCHOR_DOC, vec![ReadSel::parse("^same-id")])
+        .expect_err("a duplicated block id refuses");
+    let dup_anchor = dup_anchor.message.as_deref().expect("message").to_owned();
+
+    assert!(dup_heading.contains(model::selector::AMBIGUITY_FIX), "{dup_heading}");
+    assert!(
+        dup_anchor.contains(model::selector::ANCHOR_AMBIGUITY_FIX),
+        "{dup_anchor}"
+    );
+    for (plane, msg) in [("heading", &dup_heading), ("anchor", &dup_anchor)] {
+        assert!(
+            !msg.contains("list this document's section paths")
+                && !msg.contains("the section map does not list"),
+            "the {plane} ambiguity must not carry the miss plane's discovery clause: {msg}"
+        );
+    }
 }
 
 /// F4: the machine address (segment array with `n`) resolves the exact
@@ -145,9 +195,19 @@ fn duplicate_anchor_selector_refuses_ambiguous_never_serves_first() {
         msg.contains("\"^same-id\" is ambiguous (2 blocks carry this id"),
         "{msg}"
     );
+    // Against the PUBLISHED constant, not a hand-copied fragment of it: the
+    // remedy the read face teaches must be the same bytes the write door
+    // renders from `ANCHOR_AMBIGUITY_REFUSAL_EXEMPLAR`. A substring pin was
+    // what let the two doors drift apart while both looked asserted.
     assert!(
-        msg.contains("give each a distinct id"),
-        "the remedy speaks the anchor grammar: {msg}"
+        msg.contains(model::selector::ANCHOR_AMBIGUITY_FIX),
+        "the read face teaches the published anchor remedy verbatim: {msg}"
+    );
+    assert!(
+        msg.contains(model::selector::ANCHOR_AMBIGUITY_FIX)
+            && model::selector::ANCHOR_AMBIGUITY_REFUSAL_EXEMPLAR
+                .contains(model::selector::ANCHOR_AMBIGUITY_FIX),
+        "and those bytes are the exemplar's own — one remedy, both doors"
     );
     assert!(
         !msg.contains("rename one heading"),
