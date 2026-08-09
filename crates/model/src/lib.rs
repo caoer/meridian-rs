@@ -987,6 +987,14 @@ pub enum SpliceVerdict {
         lost: Vec<Vec<String>>,
         cause: Option<CorruptCause>,
     },
+    /// An edit changed bytes while its own target's `node_rev` stood still →
+    /// `would_corrupt{transition_unrepresentable}` (§4.4). `node_rev` is a
+    /// function of the node's span bytes (node-rev-merkle-spec §2), so a batch
+    /// that changes the file while leaving its target's rev identical wrote
+    /// OUTSIDE the node it names: arming that commit would state a transition
+    /// that did not happen, and `if_node_rev` would compare a value the write
+    /// can never move. `target` is the offending edit's own ref.
+    TransitionUnrepresentable { target: Ref },
     /// A replaced region would split a multi-byte UTF-8 character →
     /// `bad_request` (§1 write-side multibyte refusal). Unreachable through the
     /// public `match`/`put` API — valid-UTF-8 edits at char-aligned resolved
@@ -1132,6 +1140,11 @@ pub fn validate_batch(
     // 2. Per edit, in order: resolve → CAS → compute the replaced region. The
     // first failure (in edit order) is returned — the §5.2 single-error shape.
     let mut planned: Vec<PlannedEdit> = Vec::with_capacity(batch.edits.len());
+    // The rev-on-change guard's inputs, index-aligned with the caller's edits:
+    // each edit's own target and the pre-batch rev it resolved to. `None` for
+    // the `fm_key` upsert door, whose before-rev is legitimately the empty
+    // insertion point on a create — a move from nothing is a real transition.
+    let mut guarded: Vec<Option<(Ref, NodeRev)>> = Vec::with_capacity(batch.edits.len());
     for edit in &batch.edits {
         // Upsert on an `fm_key` target plans before the resolve gate: the key
         // may not exist yet, and resolve would refuse it `RefNotFound`. CAS
@@ -1161,6 +1174,7 @@ pub fn validate_batch(
                 region: plan.region,
                 text: plan.text,
             });
+            guarded.push(None);
             continue;
         }
         let resolved = match resolve_full(doc, &edit.target) {
@@ -1200,6 +1214,7 @@ pub fn validate_batch(
             return v;
         }
         planned.push(PlannedEdit { region, text });
+        guarded.push(Some((edit.target.clone(), resolved.node_rev.clone())));
     }
 
     // 2b. The engine-minted span edit joins the planned set after the caller's
@@ -1218,10 +1233,27 @@ pub fn validate_batch(
         return SpliceVerdict::Overlap { edits, spans };
     }
 
-    // 4. One simulated reparse (§4.4): a post-apply parse that loses containment
-    // refuses `would_corrupt`.
-    if let Some((lost, cause)) = would_corrupt(doc, &planned) {
+    // 4. One simulated reparse (§4.4), shared by both post-reparse guards — the
+    // one-reparse law is why they take the built document rather than each
+    // building their own.
+    let new_raw = apply_regions(raw, &planned);
+    let new_doc = build(new_raw.clone(), syntax::parse(&new_raw));
+
+    // 4a. A post-apply parse that loses containment refuses `would_corrupt`.
+    if let Some((lost, cause)) = would_corrupt(doc, &planned, &new_doc) {
         return SpliceVerdict::WouldCorrupt { lost, cause };
+    }
+
+    // 4b. Rev-on-change for pure insertions (node-rev-merkle-spec §2):
+    // `node_rev` hashes the node's span bytes, so an insertion the node
+    // adopted must move it. An unmoved rev therefore proves the inserted bytes
+    // ALL landed outside the node the edit named — the `at:"end"` point of a
+    // terminator-excluding leaf (anchor blocks §1, `fm_key` §4.4) sits ON the
+    // terminator, so `text` carrying a newline opens a fresh line the node
+    // never covers. Committing that arms a transition which did not happen and
+    // leaves `if_node_rev` comparing a value the write can never move.
+    if let Some(target) = first_unmoved_rev(&planned, &new_doc, &guarded) {
+        return SpliceVerdict::TransitionUnrepresentable { target };
     }
 
     // Mint the sealed batch — edits in pre-batch offset order.
@@ -1327,17 +1359,61 @@ fn first_overlap(planned: &[PlannedEdit]) -> Option<(Vec<usize>, Vec<ByteSpan>)>
 fn would_corrupt(
     doc: &Document,
     planned: &[PlannedEdit],
+    new_doc: &Document,
 ) -> Option<(Vec<Vec<String>>, Option<CorruptCause>)> {
-    let new_raw = apply_regions(&doc.raw, planned);
-    let new_doc = build(new_raw.clone(), syntax::parse(&new_raw));
     let mut lost: Vec<(Vec<String>, CorruptCause)> = Vec::new();
-    collect_lost(&doc.root, planned, &new_doc, &mut lost);
+    collect_lost(&doc.root, planned, new_doc, &mut lost);
     if lost.is_empty() {
         return None;
     }
     let first = lost[0].1;
     let cause = lost.iter().all(|(_, c)| *c == first).then_some(first);
     Some((lost.into_iter().map(|(h, _)| h).collect(), cause))
+}
+
+/// The first caller edit that changed bytes yet left its own target's
+/// `node_rev` standing still, as that edit's ref — the rev-on-change guard
+/// (node-rev-merkle-spec §2). `None` when every byte-changing edit moved the
+/// rev of the node it named.
+///
+/// Scope, and why it is exactly this wide: the guard examines PURE INSERTIONS
+/// (a zero-width replaced region — the `at:"end"` shape). There the reasoning
+/// is a theorem rather than a heuristic. A zero-width region replaces none of
+/// the node's existing bytes, so the node can only change by ADOPTING inserted
+/// ones; if its rev is also unmoved, then not one inserted byte joined the
+/// node, and the caller's whole contribution landed somewhere it never
+/// addressed.
+///
+/// A non-empty region is deliberately NOT judged here. `at:"all"` hands the
+/// node its own new content, so an unmoved rev there means the caller wrote
+/// the same bytes back — a no-op on the node, not a write that escaped it.
+/// (A trailing separator on such a rewrite can still land outside the node and
+/// leave `if_node_rev` unmovable; that residual is a measured finding of its
+/// own and wants its own ruling, not a silent widening of this one.)
+///
+/// An edit that changes no bytes at all is skipped: its rev standing still is
+/// the truth. A target that stopped resolving is NOT this guard's finding —
+/// that is the `target_identity` death, measured at the door that arms the
+/// facts.
+fn first_unmoved_rev(
+    planned: &[PlannedEdit],
+    new_doc: &Document,
+    guarded: &[Option<(Ref, NodeRev)>],
+) -> Option<Ref> {
+    for (plan, slot) in planned.iter().zip(guarded) {
+        let Some((target, before_rev)) = slot else {
+            continue;
+        };
+        if plan.region.start != plan.region.end || plan.text.is_empty() {
+            continue;
+        }
+        if let Ok(after) = resolve_full(new_doc, target)
+            && after.node_rev == *before_rev
+        {
+            return Some(target.clone());
+        }
+    }
+    None
 }
 
 /// Recurse the pre-batch tree; for each `Section` byte-disjoint from every
@@ -2761,6 +2837,116 @@ mod tests {
             "pure raw concat — no synthesized separator"
         );
         assert_eq!(vb.edits[0].span, 139..139, "insert at Q4 span-end");
+    }
+
+    /// The rev-on-change guard (node-rev-merkle-spec §2), on the host kinds
+    /// that carry a terminator-excluding leaf span. `at:"end"` puts its
+    /// insertion point ON the terminator, so a `text` opening with a newline
+    /// lands in a fresh line the node never covers: the file changes, the
+    /// node does not, and the armed transition would be a lie.
+    ///
+    /// HOST KIND IS NOT THE DISCRIMINATOR — paragraph, list-item and heading
+    /// hosts all refuse identically once `text` is held fixed. The v1.0.0
+    /// finding read the divergence as paragraph-vs-list because its two cells
+    /// varied the host AND the text together.
+    #[test]
+    fn end_append_escaping_its_node_refuses_on_every_anchor_host() {
+        for (name, raw, id) in [
+            (
+                "paragraph",
+                "# Top\n\ncompletely different paragraph text here ^zzz-9\n\n## Alpha\n\nbody\n",
+                "zzz-9",
+            ),
+            ("list item", "- item one ^li-1\n- item two\n", "li-1"),
+            ("heading line", "# Top ^h-1\n\nbody text\n", "h-1"),
+        ] {
+            let doc = build(raw.to_string(), syntax::parse(raw));
+            let b = batch(vec![put_edit(
+                Ref::anchor(id).unwrap(),
+                PutAt::End,
+                "\nX",
+            )]);
+            let SpliceVerdict::TransitionUnrepresentable { target } =
+                validate_batch(&doc, None, &b, None)
+            else {
+                panic!("{name} host: an end-append that escapes its node must refuse");
+            };
+            assert_eq!(target, Ref::anchor(id).unwrap(), "{name}: names the offender");
+        }
+    }
+
+    /// The same escape on an `fm_key` leaf, whose span excludes its terminator
+    /// by the §4.4 leaf law: the guard is defined over the SPAN LAW, not over
+    /// the anchor door, so the frontmatter plane inherits it.
+    #[test]
+    fn end_append_escaping_an_fm_key_leaf_refuses() {
+        let raw = "---\ntitle: Plan\n---\n\n# Top\n\nbody\n";
+        let doc = build(raw.to_string(), syntax::parse(raw));
+        let b = batch(vec![put_edit(
+            Ref::FmKey("title".into()),
+            PutAt::End,
+            "\nowner: zt",
+        )]);
+        let SpliceVerdict::TransitionUnrepresentable { target } =
+            validate_batch(&doc, None, &b, None)
+        else {
+            panic!("an fm_key end-append that escapes its node must refuse");
+        };
+        assert_eq!(target, Ref::FmKey("title".into()));
+    }
+
+    /// The guard's NO-fire half, which is what keeps it from being a blanket
+    /// ban on `at:"end"`: a write landing INSIDE its node moves the rev and
+    /// validates. Without these two the refusal above would pass just as well
+    /// on an engine that refused everything.
+    #[test]
+    fn writes_that_land_inside_their_node_still_validate() {
+        // A section span is newline-inclusive and runs to the next heading, so
+        // its `at:"end"` insertion point is inside the node.
+        let doc = plan_s1();
+        let b = batch(vec![put_edit(
+            hpath(&["Goals", "Q4"]),
+            PutAt::End,
+            "- new item\n",
+        )]);
+        assert!(
+            matches!(validate_batch(&doc, None, &b, None), SpliceVerdict::Validated(_)),
+            "at:end on a section writes inside its own span"
+        );
+
+        // `at:"all"` replaces the node's own bytes on the same anchor the
+        // guard refuses at `at:"end"`.
+        let raw = "# Top\n\ncompletely different paragraph text here ^zzz-9\n\n## Alpha\n\nbody\n";
+        let doc = build(raw.to_string(), syntax::parse(raw));
+        let b = batch(vec![put_edit(
+            Ref::anchor("zzz-9").unwrap(),
+            PutAt::All,
+            "rewritten paragraph ^zzz-9",
+        )]);
+        assert!(
+            matches!(validate_batch(&doc, None, &b, None), SpliceVerdict::Validated(_)),
+            "at:all rewrites the node's own bytes, so the rev moves"
+        );
+    }
+
+    /// The guard judges PURE INSERTIONS only. `at:"all"` hands the node its own
+    /// new content, so an unmoved rev there means the caller wrote the same
+    /// bytes back — a no-op on the node, not an insertion that escaped it.
+    /// Held by a test because the boundary is the whole reason the guard is a
+    /// theorem and not a heuristic; widening it silently would re-break the
+    /// `@fp` address rewrite (`wire-serve` s10), which replaces an anchor line
+    /// with its own text plus a separator.
+    #[test]
+    fn a_rewrite_that_lands_the_same_bytes_is_not_an_escape() {
+        let raw = "- item one ^li-1\n- item two\n";
+        let doc = build(raw.to_string(), syntax::parse(raw));
+        for text in ["- item one ^li-1", "- item one ^li-1\n"] {
+            let b = batch(vec![put_edit(Ref::anchor("li-1").unwrap(), PutAt::All, text)]);
+            assert!(
+                matches!(validate_batch(&doc, None, &b, None), SpliceVerdict::Validated(_)),
+                "at:all writing {text:?} back is a rewrite, not an escaped insertion"
+            );
+        }
     }
 
     /// GATE 4a (§4.4 disjointness, region grain): two edits whose replaced

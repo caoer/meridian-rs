@@ -3246,6 +3246,33 @@ fn verdict_to_wire(
             );
             e
         }
+        model::SpliceVerdict::TransitionUnrepresentable { target } => {
+            // Name the offender in the CALLER's own spelling: find the request
+            // edit whose ref is the model ref the guard returned, the same
+            // re-projection `ref_not_found` and `ambiguous` use.
+            let sec = edits
+                .iter()
+                .map(|e| &e.target)
+                .find(|t| to_model_ref(t).is_ok_and(|r| r == *target))
+                .cloned()
+                .unwrap_or_else(|| SecRef::Anchor {
+                    anchor: String::new(),
+                });
+            let mut e = ErrorBody::new(ErrorCode::WouldCorrupt);
+            e.family = Some(WouldCorruptFamily::TransitionUnrepresentable);
+            e.message = Some(format!(
+                "the edit changed the file but not \"{}\" — its `node_rev` is unmoved, so the \
+                 bytes landed OUTSIDE the node the edit names and its armed transition is \
+                 unrepresentable. {} Fix: a leaf span excludes its line terminator, so an \
+                 `at:\"end\"` append whose text carries a newline lands in a new line the node \
+                 never covers — write inside the node with `at:\"all\"`, re-supplying its \
+                 content, or aim the append at the enclosing section.",
+                target_display(&sec),
+                crate::NO_PARTIAL_WRITE_CLAUSE
+            ));
+            e.target = Some(sec);
+            e
+        }
         model::SpliceVerdict::MultibyteSplit => {
             let mut e = ErrorBody::new(ErrorCode::BadRequest);
             e.message = Some("edit region splits a multi-byte character (§1)".into());
