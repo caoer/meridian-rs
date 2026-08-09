@@ -1004,3 +1004,477 @@ fn mask_revs(line: &str) -> String {
     out.push_str(rest);
     out
 }
+
+// ── the declined populations, and the armed rows nobody was shown ─────────────
+//
+// Card `rules-drops-an-excluded-rule-page-silently` (P0, upgraded by 413602e8
+// once the armed cell measured). The family crosses FEED — the workspace hash
+// domain (`fs::domain_snapshot`) against the user rung
+// (`fs::walk_user_rules_dir`) — with EXCLUSION MECHANISM and ARMED STATE.
+// `261554cd` measured the unarmed workspace cells through a shell fixture and
+// named why a shell fixture is structurally blind to the armed half: arming is
+// an engine act through `policy::armed::arm`, there is no `mrd arm` CLI verb,
+// and a hand-typed artifact is one the arming act never approved.
+//
+// ⛔ THE TWO FEEDS EXCLUDE BY DIFFERENT CODE AND OWE DIFFERENT SENTENCES. The
+// workspace feed consults the residency filter; the user rung never does. A
+// remedy written over "rule pages" as one population would spell a sentence
+// about a feed that excludes nothing by that mechanism.
+
+/// The engine actually under measurement, printed rather than assumed — an
+/// unprinted default is not allowed (broadcast 0043). ALL FOUR selectors are
+/// asserted EMPTY and refuse if set, `MRD_BIN` included: it is this harness's
+/// own documented override, which is exactly why a gate that closes a family
+/// cell may not honour it — an overridden engine measures a subject nobody
+/// chose. Asserted rather than unset, because an unset runs clean whether the
+/// variable was there or not and cannot tell you it just saved you
+/// (broadcasts 0043 + 0044).
+fn engine_witness() -> String {
+    for selector in [
+        "CCC_MRD_BIN",
+        "MERIDIAN_MRD_BIN",
+        "MERIDIAN_DAEMON_BIN",
+        "MRD_BIN",
+    ] {
+        assert_eq!(
+            std::env::var(selector).unwrap_or_default(),
+            "",
+            "{selector} is set in this test process and would redirect the engine \
+             out from under the measurement — assert it empty, never unset it"
+        );
+    }
+    let bin = mrd_bin();
+    let version = Command::new(&bin)
+        .arg("--version")
+        .output()
+        .expect("the engine answers --version");
+    let stamp = String::from_utf8_lossy(&version.stdout).trim().to_owned();
+
+    // ⛔ The identity anchor is the CLOSING PAREN, not a 40-hex substring
+    // (broadcast 0049, `f5a45ad0`): `mrd 1.0.0 (git <40hex>-dirty)` yields the
+    // bare sha to any substring extractor, so a binary that is the RIGHT COMMIT
+    // AND THE WRONG BYTES passes a literal comparison cleanly. The gate binds
+    // the COMMIT and is blind to the TREE unless the field is required to close.
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let head = git(repo, &["rev-parse", "HEAD"]);
+    let closed = format!("(git {head})");
+    let dirty = format!("(git {head}-dirty)");
+    assert!(
+        stamp.ends_with(&closed) || stamp.ends_with(&dirty),
+        "the engine under test does not stamp this checkout's HEAD as a CLOSED \
+         field.\nHEAD   {head}\nengine {stamp}\nat     {}\n\
+         A binary from a tree that no longer exists produces rows that are not \
+         wrong but UNATTRIBUTABLE, which is worse — it looks fine in a table.",
+        bin.display()
+    );
+
+    // A `-dirty` stamp is tolerated ONLY while every dirty path is a TEST file:
+    // integration tests are not linked into the engine, so they cannot change
+    // what the rows measure.
+    //
+    // ⚠️ STATED LIMIT, because this bound travels only with it: THIS PORCELAIN
+    // READ HAPPENS AT TEST TIME, NOT AT BUILD TIME. A non-test file that was
+    // dirty when the compiler read it and reverted before this line runs is
+    // invisible here. The only cover for that is the producing worktree's
+    // `git rev-parse HEAD^{tree}` re-read after the build, which belongs
+    // OUTSIDE this binary — a gate that lives inside the artifact it is gating
+    // cannot protect the case where the artifact is stale.
+    if stamp.ends_with(&dirty) {
+        let porcelain = git(repo, &["status", "--porcelain"]);
+        // ⛔ Take the LAST whitespace-separated field, not a fixed byte offset.
+        // The first form sliced `line[3..]` on the assumption that porcelain is
+        // always `XY<space>PATH`, and it printed `rates/fs/src/lib.rs` for
+        // `crates/fs/src/lib.rs` — a gate that MISREPORTS THE PATH IT REFUSES
+        // ON, which is the wrong-cause family inside the guard itself. The
+        // verdict happened to be right and the evidence it showed was wrong.
+        let carried: Vec<&str> = porcelain
+            .lines()
+            .filter_map(|line| line.split_whitespace().last())
+            .filter(|path| !path.contains("/tests/"))
+            .collect();
+        assert!(
+            carried.is_empty(),
+            "the engine stamps `-dirty` and the dirt is NOT confined to test \
+             files, so the binary carries content no sha can recover: {carried:?}"
+        );
+    }
+
+    format!("engine {} :: {stamp}", bin.display())
+}
+
+/// One `git` read in the checkout under test, refusing loudly rather than
+/// answering empty — a silent empty here would defeat the identity gate above.
+fn git(repo: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("git {args:?} did not run: {e}"));
+    assert!(
+        out.status.success(),
+        "git {args:?} exited {:?}: {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout)
+        .expect("utf-8")
+        .trim()
+        .to_owned()
+}
+
+/// Whether any socket was created under this sandbox's private cache root —
+/// MEASURED, never reasoned. Pinning `MERIDIAN_DAEMON_BIN` at a nonexistent
+/// path and handing each sandbox its own `XDG_CACHE_HOME` is an argument that
+/// no daemon COULD answer; this is the check that none DID. Gate-time identity
+/// is not run-time identity, and the row a foreign daemon answers is usually
+/// the CONTROL — the row nobody re-checks.
+fn sockets_under_cache(s: &Sandbox) -> Vec<String> {
+    fn walk(dir: &Path, out: &mut Vec<String>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let Ok(kind) = entry.file_type() else { continue };
+            if kind.is_dir() {
+                walk(&entry.path(), out);
+            } else if std::os::unix::fs::FileTypeExt::is_socket(&kind) {
+                out.push(entry.path().display().to_string());
+            }
+        }
+    }
+    let mut found = Vec::new();
+    walk(&s.cache_home, &mut found);
+    found
+}
+
+/// Exclusion class (a): a CUSTOM ignore rule in `meridian/domain.md`. The rule
+/// page stays on disk, at its own path, byte-for-byte — only the declared
+/// domain moves. This is the ONLY class reachable on the armed axis, because it
+/// is the only one that can be declared AFTER a page is armed.
+fn exclude_by_ignore_rule(s: &Sandbox) {
+    s.write(
+        "meridian/domain.md",
+        "---\nversion: 1\nignore:\n  - \"rules/**\"\n---\n\n# domain\n\n\
+         `rules/` is out of the attested surface.\n",
+    );
+}
+
+/// stdout + stderr + exit code of one drive, with the engine and the daemon
+/// witness attached, so a failing gate prints the whole arm rather than a bare
+/// boolean.
+fn drive(s: &Sandbox, args: &[&str]) -> (String, String, Option<i32>) {
+    let out = s.run(args);
+    assert!(
+        sockets_under_cache(s).is_empty(),
+        "a socket appeared under this arm's private cache root — a foreign \
+         daemon may have answered these rows"
+    );
+    (
+        String::from_utf8_lossy(&out.stdout).to_string(),
+        String::from_utf8_lossy(&out.stderr).to_string(),
+        out.status.code(),
+    )
+}
+
+/// **THE ARMED CELL, AND IT IS NOT A SILENCE.**
+///
+/// An armed rule page that leaves the hash domain used to produce an answer that
+/// CONTRADICTED ITSELF: the header kept printing `armed-set … (1 row(s))` while
+/// the body printed `(no rules in effect)`, four lines apart, at exit 0 with an
+/// empty stderr. The redness was computed by `verify_at` and DISCARDED, because
+/// the armed cell is only reached for a row discovery still resolves.
+///
+/// The control must FIRE before any downstream claim counts — this card's author
+/// twice built a probe that never presented its subject, and both times the tell
+/// was two arms coming back identical.
+#[test]
+fn an_armed_page_leaving_the_domain_is_named_not_dropped() {
+    let witness = engine_witness();
+    let s = sandbox();
+    s.write(
+        "rules/notify.md",
+        &rule_page("hook", "task.notify", "the workspace rule"),
+    );
+    // Armed while the page is INSIDE the domain — the only order the engine
+    // permits, and the order an operator actually produces.
+    arm(&s, &[("", "task.notify", "armed")]);
+
+    let (control, control_err, control_rc) = drive(&s, &["rules"]);
+    assert!(
+        control.contains("armed-set  meridian/armed-rules.md (1 row(s))")
+            && control.contains("task.notify  armed=armed")
+            && control.contains("rules/notify.md"),
+        "the control did not fire — the subject was never presented:\n{witness}\n{control}"
+    );
+    assert_eq!(control_rc, Some(0), "a clean armed set is clean: {control}");
+    assert!(
+        !control.contains("armed rows counted above"),
+        "the no-exclusion control must stay SILENT about orphans: {control}"
+    );
+    assert_eq!(control_err, "", "and quiet on stderr: {control_err:?}");
+
+    exclude_by_ignore_rule(&s);
+    let (subject, _subject_err, subject_rc) = drive(&s, &["rules"]);
+
+    // The predicted disagreement (broadcast 0041), and it is one the UNFIXED
+    // engine also produces — the unfixed engine printed `(no rules in effect)`
+    // where the control printed a row.
+    assert_ne!(
+        control, subject,
+        "both arms identical — the exclusion never took effect:\n{witness}\n{subject}"
+    );
+
+    // ⭐ THE HEADER AND THE BODY MUST NO LONGER CONTRADICT EACH OTHER.
+    assert!(
+        subject.contains("armed rows counted above whose pinned page is NOT in this answer:"),
+        "the answer still counts an armed row it never shows:\n{witness}\n{subject}"
+    );
+    assert!(
+        subject.contains("task.notify  armed=armed at scope= — pinned rules/notify.md"),
+        "the orphan names the id, its mode, its arm root and its pinned page:\n{subject}"
+    );
+
+    // ⛔ THE CAUSE IS ESTABLISHED, NOT MINTED. `policy` reddens this row
+    // `Missing` because a PageSource that cannot serve a page can say nothing
+    // else — but the page is ON DISK, unmodified, and only the declared domain
+    // moved. A refusal naming the wrong cause costs more than one naming none:
+    // the reader stops looking.
+    assert!(
+        subject.contains("on disk, outside the hash domain"),
+        "the cause must be the one that is true here:\n{subject}"
+    );
+    assert!(
+        !subject.contains("not on disk"),
+        "the page IS on disk — this cause would send a reader to hunt a \
+         deleted file:\n{subject}"
+    );
+
+    // The published contract is honoured rather than changed: `mrd rules --help`
+    // already promises "1 finding (collision | refused rule page | RED ARMED
+    // ROW)". An orphan IS a red armed row.
+    assert_eq!(
+        subject_rc,
+        Some(1),
+        "the shipped help promises exit 1 for a red armed row:\n{subject}"
+    );
+}
+
+/// The workspace feed's OTHER exclusion class — the dot-segment structural
+/// floor — on the UNARMED axis, which is the only axis it has.
+///
+/// ⛔ THE TWO CLASSES ARE NOT SYMMETRIC AND THE ASYMMETRY IS A FINDING: a custom
+/// ignore rule can be declared AFTER a page is armed, leaving it on disk; a
+/// dot-segment page can never be armed at all, because it is never in the domain
+/// to be discovered. This gate asserts the class that CAN exist, so the family
+/// is not closed over a subset.
+#[test]
+fn a_dot_segment_workspace_rule_page_is_named_not_dropped() {
+    let witness = engine_witness();
+    let s = sandbox();
+
+    // CONTROL — a plain path. Registers, and says nothing about declines.
+    s.write(
+        "rules/notify.md",
+        &rule_page("hook", "task.notify", "the workspace rule"),
+    );
+    let (control, _, control_rc) = drive(&s, &["rules"]);
+    assert!(
+        control.contains("task.notify") && control.contains("rules/notify.md"),
+        "the control did not fire:\n{witness}\n{control}"
+    );
+    assert!(
+        !control.contains("not offered to registration"),
+        "the no-exclusion control must stay SILENT: {control}"
+    );
+
+    // SUBJECT — the same bytes, one dot-prefixed segment in the path.
+    std::fs::remove_file(s.ws.join("rules/notify.md")).expect("drop the plain copy");
+    s.write(
+        ".hidden/notify.md",
+        &rule_page("hook", "task.notify", "the workspace rule"),
+    );
+    let (subject, _, subject_rc) = drive(&s, &["rules"]);
+    assert_ne!(control, subject, "both arms identical:\n{subject}");
+    assert!(
+        subject.contains("not offered to registration")
+            && subject.contains("outside the hash domain")
+            && subject.contains(".hidden/notify.md"),
+        "the declined page is NAMED, not dropped:\n{witness}\n{subject}"
+    );
+
+    // Exit-neutral, and deliberately so: a page outside the attested surface is
+    // legitimately absent from the answer. The door owes a VOICE, not a
+    // finding. Only the armed orphan moves the exit, because only it is a red
+    // armed row the shipped help already promised to report.
+    assert_eq!(control_rc, Some(0), "{control}");
+    assert_eq!(
+        subject_rc,
+        Some(0),
+        "naming a declined page is not itself a finding:\n{subject}"
+    );
+}
+
+/// **THE SECOND FEED.** `fs::walk_user_rules_dir` declines any dot-prefixed
+/// segment under the user `rules/` tree — its OWN exclusion, not the residency
+/// filter, which this feed never consults.
+///
+/// ⛔ THE DOT TEST SITS BEFORE THE `is_dir` BRANCH, so a dot FILE and a dot
+/// DIRECTORY are declined by the SAME LINE and are ONE member of this
+/// population, not two. A remedy fixing one and leaving the other would be
+/// patching a line that does not distinguish them — so both are asserted here.
+#[test]
+fn a_dot_segment_user_rule_page_is_named_not_dropped() {
+    let witness = engine_witness();
+    let s = sandbox();
+    let page = rule_page("hook", "task.notify", "the user-space rule");
+
+    // CONTROL — a plain path under the user rung.
+    s.write_home("rules/notify.md", &page);
+    let (control, _, control_rc) = drive(&s, &["rules", "--user"]);
+    assert!(
+        control.contains("task.notify") && control.contains("rules/notify.md"),
+        "the control did not fire — the user rung never presented the page:\n{witness}\n{control}"
+    );
+    assert!(
+        !control.contains("not offered to registration"),
+        "the no-exclusion control must stay SILENT: {control}"
+    );
+    assert_eq!(control_rc, Some(0), "{control}");
+
+    // SUBJECT 1 — a dot-prefixed DIRECTORY.
+    std::fs::remove_file(s.home.join("rules/notify.md")).expect("drop the plain copy");
+    s.write_home("rules/.hidden/notify.md", &page);
+    let (by_dir, _, by_dir_rc) = drive(&s, &["rules", "--user"]);
+    assert_ne!(control, by_dir, "both arms identical:\n{by_dir}");
+    assert!(
+        by_dir.contains("declined by a dot-prefixed segment")
+            && by_dir.contains("rules/.hidden/notify.md"),
+        "the declined page is NAMED:\n{witness}\n{by_dir}"
+    );
+    assert_eq!(by_dir_rc, Some(0), "a decline is a voice, not a finding");
+
+    // SUBJECT 2 — a dot-prefixed FILE, the same line's other half.
+    std::fs::remove_dir_all(s.home.join("rules/.hidden")).expect("drop the dir copy");
+    s.write_home("rules/.notify.md", &page);
+    let (by_file, _, by_file_rc) = drive(&s, &["rules", "--user"]);
+    assert!(
+        by_file.contains("declined by a dot-prefixed segment")
+            && by_file.contains("rules/.notify.md"),
+        "the FILE half of the same skip is named too:\n{by_file}"
+    );
+    assert_eq!(by_file_rc, Some(0));
+}
+
+/// **THE CELL THAT CANNOT EXIST, RECORDED ABSENT BY CONSTRUCTION WITH ITS
+/// MECHANISM NAMED** — never marked closed (charter 09: a cell that cannot
+/// exist is not a cell that is closed).
+///
+/// No user-scope rule page can be armed by the only act that mints an approved
+/// artifact. The answer is taken FROM THE ARM ACT ITSELF, never read off the
+/// source, so this gate fails the day the arm act changes its mind.
+///
+/// ⚠️ Its bound, stated rather than glossed: a HAND-FORGED artifact could still
+/// spell a user page, because `validate_workspace_path` accepts `rules/x.md` as
+/// a legal workspace spelling. That is the artifact the arming act never
+/// approved, so it is outside this family — but it is a reachable state of the
+/// DISK, and "cannot be armed" must not read as "cannot exist".
+#[test]
+fn a_user_layer_winner_cannot_be_armed_and_the_act_says_why() {
+    let s = sandbox();
+    s.write_home(
+        "rules/user-notify.md",
+        &rule_page("hook", "task.notify", "the user-space rule"),
+    );
+
+    let root = fs::WorkspaceRoot(s.ws.clone());
+    let (files, _) = fs::domain_snapshot(&root).expect("snapshot");
+    let mut text: Vec<(policy::ScopeLayer, String, String)> = files
+        .into_iter()
+        .map(|(page, bytes)| {
+            (
+                policy::ScopeLayer::Workspace,
+                page,
+                String::from_utf8(bytes).expect("utf-8"),
+            )
+        })
+        .collect();
+    for (page, bytes) in
+        fs::user_rule_pages(&s.home.join("MERIDIAN.md")).expect("the user rung reads")
+    {
+        text.push((
+            policy::ScopeLayer::User,
+            page,
+            String::from_utf8(bytes).expect("utf-8"),
+        ));
+    }
+    let index = policy::RuleIndex::discover(text.iter().map(|(layer, page, bytes)| {
+        policy::PageRef {
+            layer: *layer,
+            page,
+            bytes,
+        }
+    }));
+    let armroot = policy::armed::ArmRoot::parse("").expect("a legal root");
+    let resolved = index.narrowed_to("").resolve();
+    let winner = resolved
+        .get("task.notify")
+        .expect("the id resolves")
+        .winner();
+    assert_eq!(
+        winner.scope().layer(),
+        policy::ScopeLayer::User,
+        "the fixture must present a USER winner or it tests nothing"
+    );
+    let attested_rev = winner.rev().to_owned();
+
+    let faults = policy::armed::arm(
+        &index,
+        &armroot,
+        vec![policy::armed::ArmRequest {
+            id: policy::RuleId::parse("task.notify").expect("a legal id"),
+            mode: policy::armed::Mode::parse("armed").expect("a legal mode"),
+            attested_rev,
+        }],
+    )
+    .expect_err("the arm act refuses a user-layer winner");
+    let rendered = faults
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains("resolves to the USER-space page")
+            && rendered.contains("has no unambiguous spelling here"),
+        "the refusal must NAME its mechanism, so this cell's disposition is a \
+         measurement and not an assumption:\n{rendered}"
+    );
+}
+
+/// The `--user` view may not manufacture orphans. The armed artifact's `page`
+/// column is a WORKSPACE spelling by construction, so under `--user` the
+/// resolved set holds no workspace id and EVERY armed row would look orphaned.
+///
+/// ⛔ This is the control for the remedy itself, and it guards the direction
+/// that certifies a defect — the direction nobody re-checks.
+#[test]
+fn the_user_view_does_not_manufacture_armed_orphans() {
+    let s = sandbox();
+    s.write(
+        "rules/notify.md",
+        &rule_page("hook", "task.notify", "the workspace rule"),
+    );
+    arm(&s, &[("", "task.notify", "armed")]);
+    s.write_home(
+        "rules/user-notify.md",
+        &rule_page("check", "user.only", "a user rule"),
+    );
+
+    let (user_view, _, rc) = drive(&s, &["rules", "--user"]);
+    assert!(
+        !user_view.contains("armed rows counted above"),
+        "an armed row pinned in the WORKSPACE is not an orphan of the USER \
+         view — it is simply not this view's subject:\n{user_view}"
+    );
+    assert_eq!(rc, Some(0), "and the view stays clean:\n{user_view}");
+}
