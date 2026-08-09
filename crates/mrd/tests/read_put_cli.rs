@@ -859,6 +859,71 @@ fn put_json_speaks_the_v3_vocabulary() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// the machine face on the refusal leg (dogfood P3-a)
+// ---------------------------------------------------------------------------
+
+/// Gate (P3-a) — a refusal under `--json` answers JSON on stdout: the same
+/// machine face `mrd script --json` keeps on a fault. An empty stdout beside a
+/// human stderr line is a face a machine consumer cannot branch on.
+#[test]
+fn put_json_refusal_emits_the_error_envelope_on_stdout() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let out = sb.run_stdin(
+        &ws,
+        &["put", "doc.md", "--json"],
+        &beta_match("absent text", "anything"),
+    );
+    assert_eq!(code(&out), 1, "no_match refuses: {}", stderr(&out));
+    let v: Value = serde_json::from_str(&stdout(&out))
+        .expect("a --json refusal answers JSON on stdout, never nothing");
+    assert!(
+        v["workspace"].is_string(),
+        "the frame names the workspace, like the commit frame: {v}"
+    );
+    assert_eq!(
+        v["error"]["code"], "no_match",
+        "the engine's own code rides: {v}"
+    );
+    assert_eq!(
+        v["error"]["matches"], 0,
+        "the code-specific extras ride untouched: {v}"
+    );
+    assert!(
+        stderr(&out).contains("no_match") || stderr(&out).contains("occurrence"),
+        "the human diagnostic still rides stderr: {}",
+        stderr(&out)
+    );
+}
+
+/// Gate (P3-a) — the envelope speaks the v3 vocabulary, the same lifted
+/// projection the commit frame gets: a world-grain guard failure is
+/// `fingerprint_mismatch`, never the v2 `root_mismatch` a v3 caller has no
+/// branch for.
+#[test]
+fn put_json_refusal_envelope_speaks_the_v3_vocabulary() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let out = sb.run_stdin(
+        &ws,
+        &[
+            "put",
+            "doc.md",
+            "--json",
+            "--if-fingerprint",
+            "b3b:0000000000000000000000000000000000000000000000000000000000000000",
+        ],
+        &beta_match("four five", "six"),
+    );
+    assert_eq!(code(&out), 1, "the guard refuses: {}", stderr(&out));
+    let v: Value = serde_json::from_str(&stdout(&out)).expect("json on stdout");
+    assert_eq!(
+        v["error"]["code"], "fingerprint_mismatch",
+        "projected exactly as the daemon projects it for a v3 session: {v}"
+    );
+}
+
 /// Gate — a match with no occurrence is the engine's typed refusal at exit 1.
 #[test]
 fn put_no_match_is_the_finding_leg() {
@@ -1104,6 +1169,58 @@ fn put_help_states_the_bare_array_stdin_shape() {
         !page.contains("\"edits\":"),
         "the help must not show the envelope it refuses:\n{page}"
     );
+}
+
+/// Gate (G-P2-6) — `mrd put --help` teaches the target and edit shapes with a
+/// working batch. The live probe failed three times on plausible spellings (an
+/// `op` verb word, a bare-string edit) before finding the nested match form —
+/// the page must show the shape that works, not delegate it to module docs a
+/// caller at a terminal cannot see.
+#[test]
+fn put_help_teaches_the_target_and_edit_shapes() {
+    let sb = sandbox();
+    let out = sb.run(sb.tmp.path(), &["put", "--help"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let page = stdout(&out);
+    for shape in [
+        // The two non-hpath targets, by their own spelling.
+        "{\"anchor\":",
+        "{\"fm_key\":",
+        // The NESTED edit forms — the exact shapes the probes missed.
+        "\"match\":{\"old\"",
+        "\"put\":{\"at\"",
+        // A working batch, whole, starting as the door takes it.
+        "[{\"target\":{\"hpath\":[{\"h\":",
+    ] {
+        assert!(page.contains(shape), "the page teaches {shape}:\n{page}");
+    }
+}
+
+/// Gate (G-P2-6) — a malformed batch is refused WITH the working shape beside
+/// the decoder's own words: serde's `expected struct variant EditShape::Match`
+/// names Rust internals, and the caller it refused needs the grammar, not the
+/// type tree. Pinned on the two probe spellings the face refused in the live
+/// dogfood run.
+#[test]
+fn a_malformed_edits_refusal_teaches_the_working_shape() {
+    for stdin in [
+        r#"[{"target":{"hpath":[{"h":"Alpha"}]},"edit":{"op":"replace","old":"a","new":"b"}}]"#,
+        r#"[{"target":{"hpath":[{"h":"Alpha"}]},"edit":"body"}]"#,
+    ] {
+        let sb = sandbox();
+        let ws = sb.workspace();
+        let out = sb.run_stdin(&ws, &["put", "doc.md"], stdin);
+        assert_eq!(code(&out), 2, "bad invocation for {stdin}");
+        let err = stderr(&out);
+        assert!(
+            err.contains(r#""edit":{"match":{"old"#),
+            "the refusal shows the working shape for {stdin}:\n{err}"
+        );
+        assert!(
+            err.contains("Nothing was parsed and nothing was written"),
+            "the nothing-happened clause stays for {stdin}:\n{err}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
