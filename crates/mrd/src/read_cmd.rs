@@ -218,12 +218,33 @@ fn try_daemon_read(workspace: &Path, r: &Read) -> DaemonRead {
     daemon_read(workspace, r).unwrap_or(DaemonRead::Unavailable)
 }
 
+/// Dial the registry socket, spawning a daemon only when nothing answers.
+///
+/// **A successful connect IS the liveness proof**, so the warm path asks the question once
+/// instead of twice. It used to call [`engine::ensure_daemon`] first, whose own liveness test
+/// (`Client::ping`) opens a SEPARATE connection — two dials where one answers, and the daemon's
+/// accept loop polls a non-blocking listener on a fixed quantum, so each dial waits out its own
+/// sleep. That doubled the fixed cost of every warm read
+/// (`results/perf-finding-accept-poll-countdown-2026-08-09.md`).
+///
+/// The pre-flight is NOT redundant, which is why it is reordered rather than deleted: its answer
+/// decides whether to AUTO-SPAWN, and dropping it outright would leave the first read after boot
+/// silently degrading in-process forever instead of starting the daemon. The cold path is
+/// unchanged — an absent or refusing socket still reaches `ensure_daemon`, which spawns and waits
+/// for readiness.
+fn connect_or_spawn(client: &Client) -> std::io::Result<UnixStream> {
+    if let Ok(stream) = UnixStream::connect(client.socket_path()) {
+        return Ok(stream);
+    }
+    engine::ensure_daemon(client)?;
+    UnixStream::connect(client.socket_path())
+}
+
 /// `None` on any transport or handshake failure — the caller degrades. An op-level `ok:false`
 /// is NOT such a failure: it comes back as [`DaemonRead::Refused`] carrying the engine's frame.
 fn daemon_read(workspace: &Path, r: &Read) -> Option<DaemonRead> {
     let client = Client::from_default().ok()?;
-    engine::ensure_daemon(&client).ok()?;
-    let stream = UnixStream::connect(client.socket_path()).ok()?;
+    let stream = connect_or_spawn(&client).ok()?;
     let mut writer = stream.try_clone().ok()?;
     let mut reader = BufReader::new(stream);
 
