@@ -147,6 +147,8 @@ that it waits.
 | C-1 | The link plane resolves cross-vault refs IN-PROCESS, not in the daemon | residue | U21's degrade — **successor named below** |
 | H-1 | The `#` refusal on a heading whose raw text carries `#` | candidate | **owed by U14** — see below |
 | S-1 | The stored-plane narrowing refusal (U21 Q1a) | candidate | **owed by U14** — see below |
+| D-1 | The joined `--section` coat splits on `/`, so a heading whose raw text carries `/` is not addressable by that one spelling | residue | **ruled by ZT — widening the coat is C2, and C2 stays reserved** — see below |
+| G-1 | The §2.4 block-id charset is enforced at the structured ingress only, so an unmintable `^id` MISSES at the read and walk doors instead of refusing | candidate | **face decision proposed, advisor ratifies** — see below |
 
 ### S-1 — the stored-plane narrowing refusal, and the trigger that makes it owed
 
@@ -321,6 +323,132 @@ Corrected under
 > was the only false part. Writing its
 shapes here now would assert a tree that this tree contradicts, which is the
 defect this whole section exists to prevent.
+
+### D-1 — the `/`-coat limitation, and why C2 stays reserved
+
+U14 landed the `/`-heading ruling in BOTH halves, and only one half reached a
+doc. The machine half: a heading whose raw text carries `/` is representable
+and pinnable as ONE segment of an hpath array (`{"hpath":[{"h":"Guide"},
+{"h":"A/B"}]}`) — gated by
+`crates/wire-serve/tests/s7_pin.rs::a_slash_bearing_heading_pins_end_to_end_and_stores_as_one_array_element`.
+The coat half: `ReadSel::parse` (`crates/wire/src/lib.rs`, the ONE
+human-string ingress door) splits its string on `/`, so the joined spelling
+cannot address that heading — it yields a well-formed address resolving to
+nothing, and the door MISSES rather than silently serving a different section.
+Gated as a characterization test:
+`crates/wire-serve/tests/s7_pin.rs::the_cli_string_coat_still_cannot_address_a_slash_bearing_heading`.
+
+**D-1 and G-1 are two properties of ONE function.** `ReadSel::parse` is
+infallible by signature (`pub fn parse(s: &str) -> Self`): it splits the
+heading arm on `/` (this row) and takes an `^id` verbatim with no charset test
+(G-1). A ratification that makes that signature fallible moves both rows at
+once, and the D-1 characterization test above is where it shows.
+
+**The coat is not widened.** Widening it means an escape grammar over a flat
+selector, which is C2, and C2 stays reserved on ZT's own words (2026-08-01,
+session `86449b4e`): *"using string as selector is not ideal … use C2 if we
+really needed it"* and *"we never have to do sanitization. the put path is an
+array, no ambiguity."* This row exists because that reservation lived only in
+session archives until 2026-08-09, when live dogfood rediscovered it as an
+unknown bug.
+
+**A miss, not a refusal — and the line that makes this row and its neighbours
+one law.** Agreed 2026-08-09 between the two seats carrying the delimiter rows,
+stated once here and cited from the others rather than restated:
+
+> **Refuse what can never exist; miss what exists but this door cannot spell —
+> and the taught recovery must be the one that actually repairs it.**
+
+The test is what a corpus edit could do. An input naming something **no corpus
+could ever carry** is outside the minting grammar, so it REFUSES `bad_request`
+— "look again" is a recovery that loops forever (§2.4's `_`-bearing block ids).
+A `/`-bearing heading is the other case: the corpus carries it, the machine
+plane pins it, and only this ingress cannot spell it — so the door MISSES, and
+the miss owes the caller the spellings that DO reach it.
+
+**The scoping is PER DELIMITER, PER INGRESS.** A blanket "live delimiters of
+the joined spelling" claim would be wrong — each door has its own boundary:
+
+| Ingress | `/` | `#` |
+|---|---|---|
+| CLI joined `--section SEL`, `mrd pin`'s selector (`ReadSel::parse`) | **delimiter** — splits; a `/`-bearing heading is unreachable by this spelling | **heading TEXT** — `--section 'Top/C#D'` serves |
+| CLI `PATH#FRAG` (the frag door) | inherited from `ReadSel::parse` — same split | splits on the FIRST `#` only; the tail is selector bytes, so `notes.md#Top/C#D` serves |
+| wire / MCP segment arrays (`{"hpath":[…]}`) | heading TEXT | heading TEXT |
+| wikilink / `path#fragment` heading refusal | — | **H-1's column, untouched by this row** |
+
+**The two escapes the face must teach.** A heading the joined coat cannot
+spell is still addressable two ways, and both come off the row the toc already
+published: its **dewey ordinal** (`--section 1.2`) and its **raw heading
+segments** as an hpath array (one entry per heading, no joining). So the
+refusal owes the caller those two forms — pointing back at the toc read alone
+hands back the same un-feedable title and the recovery loops (dogfood finding
+#1, reproduced on v1.0.0). The one teaching site is
+`wire_serve::section_recovery`; the in-tree precedent it follows is the
+duplicate-heading refusal, which already teaches machine address + dewey.
+
+### G-1 — the §2.4 charset is enforced at one ingress of two
+
+**This row is a DIVERGENCE, named as a candidate because the fix is a face
+decision nobody has ratified yet — not because the behaviour is defensible.**
+D-1's neighbour in the table and its opposite in verdict: read the refuse/miss
+line stated at D-1 first, because it is what makes these two rows one law
+instead of two moods.
+
+wire-contract §2.4 rules ONE block-id charset, `[A-Za-z0-9-]+`, on BOTH planes,
+and states that a `_`-bearing anchor is outside the strict-plane grammar
+(`bad_request`). §4.5 and GOAL 2 say the same thing twice more for the walk
+plane ("refuses loudly"). Measured on v1.0.0 (`9318479730bf`), three doors
+answer the one law three ways:
+
+| Door | `_`-bearing id | Recovery taught |
+|---|---|---|
+| write (`put`, structured) | `bad_request`, charset named, §2.4 cited | **fix** — the ruled shape |
+| read (composed / `--section`) | `no_match` + nearest list | re-read |
+| walk (`resolve`) | `ref_not_found{stage:2}` | refresh |
+
+**Why this is a divergence and not a taste.** `no_match` and `ref_not_found`
+both teach *the thing you named is not there right now*. For an id §2.4
+forbids minting anywhere, that sentence is false in a way no future corpus can
+make true, so the taught recovery is a circuit with no exit — an agent that
+typos `_` into an id is told "it dangles" instead of "it can never exist", and
+the unrepresentable/merely-absent distinction is unobservable in any
+transcript. Only `bad_request`/fix terminates.
+
+**The doors do not disagree about the law — one ingress carries the
+decode-time charset guard and the other does not.** (Not the *mint-guard*:
+§2.4 assigns that named artifact to the phase-2 impl-taskpack, §13.8, and it
+governs MINTING going forward. What G-1 measures is refusal at decode when
+ADDRESSING an id that already exists out of grammar — which §2.4 rules
+present-tense and defers nowhere.) The structured ingress refuses at decode
+(`wire-serve::decode::decode_anchor`, `wire-serve::read::to_model_ref`). The
+human-string ingress does not: `wire::ReadSel::parse` is infallible by
+signature and takes `^id` verbatim with no charset test, so every door
+inheriting it — CLI `--section`, the `PATH#FRAG` frag door, `mrd pin` — carries
+an out-of-grammar id past decode into resolution, where it can only land as a
+miss. The walk leg is the same omission in its own parser
+(`model::walk::parse_linktext`), whose `Miss{stage,dest}` has no arm that could
+carry a grammar refusal even if it wanted one. **This is the same function D-1
+describes splitting on `/`: the two rows are two properties of one door.**
+
+§18 already leans on the ruled behaviour — the former walk-plane charset row
+was *dissolved* on the reasoning that a `_`-bearing anchor refusing loudly is
+conforming. That dissolution's premise is currently unmet in code.
+
+**The proposed face decision, for advisor ratification** (full argument, the
+measured fragments, and the blast-radius measurement:
+`results/anchor-charset-door-asymmetry-proposal.md`, session
+`08-06-triple-impl-wave1`): the §2.4 boundary is a DECODE-TIME boundary
+enforced at every ingress before any lookup, so an out-of-grammar id never
+becomes a selector and can never surface as a miss; the other two doors adopt
+the write door's existing refusal string verbatim, so one law gets one
+sentence; the guard sits at the `resolve` op boundary, never inside `walk()`,
+which stays pure best-effort app-parity as §4.5 requires; and the refusal never
+becomes an `unresolved` row, because that vocabulary is a *resolution*
+vocabulary and a grammar arm inside it would re-create the conflation this row
+exists to remove.
+
+**Nothing moves in code under this row.** It is a candidate: the divergence is
+recorded, the fix is proposed, and the ruling is that it waits.
 
 ## Amendment — capabilities do not apply to bash
 

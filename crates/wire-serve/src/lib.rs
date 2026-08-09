@@ -49,6 +49,20 @@ pub fn bad_request(message: impl Into<String>) -> Box<ErrorBody> {
     Box::new(e)
 }
 
+/// The two forms a toc row can be fed back as an address, named in every
+/// section-miss recovery clause.
+///
+/// A toc read alone is not a recovery: it republishes the raw title, and the
+/// joined selector coat cannot always spell that title back (`laws.md` D-1 —
+/// `ReadSel::parse` splits the heading arm on `/`, and widening the coat is
+/// C2, reserved). So the clause names the two forms that always work — the
+/// segment array and the dewey ordinal — rather than sending the caller back
+/// to the same un-feedable string. Wording follows the duplicate-heading
+/// refusal, which already teaches machine address + dewey.
+pub const SECTION_FORMS: &str = "the row's raw heading segments as an hpath array (one entry per \
+     heading, no joining), or its dewey ordinal (CLI: `--section 1.2`). The joined selector string \
+     splits on `/`, so a heading whose raw text carries one is reachable only by those two forms.";
+
 /// Section-address recovery clause — one place the engine says how to find a
 /// real selector.
 ///
@@ -72,11 +86,14 @@ pub fn section_recovery(selector: &str, display_path: Option<&str>) -> String {
             .to_owned(),
         (false, Some(p)) => format!(
             "Fix: list this document's section paths with a toc read of {p} (MCP read: \
-             mode:\"toc\"; CLI: `mrd read {p}` with no --section)."
+             mode:\"toc\"; CLI: `mrd read {p}` with no --section), then feed its row back \
+             in one of the two addressing forms: {SECTION_FORMS}"
         ),
-        (false, None) => "Fix: list the document's section paths with a toc read (MCP \
-             read: mode:\"toc\"; CLI: a read with no --section)."
-            .to_owned(),
+        (false, None) => format!(
+            "Fix: list the document's section paths with a toc read (MCP read: \
+             mode:\"toc\"; CLI: a read with no --section), then feed its row back in one \
+             of the two addressing forms: {SECTION_FORMS}"
+        ),
     }
 }
 
