@@ -210,6 +210,21 @@ vocabulary, on stdout, beside the unchanged human stderr line and exit triad.
 A.3's `reason` vocabulary and its `candidates` arrays reach a machine consumer
 at the leg the plane was invented to structure.
 
+**Two MEASURED instances, which is what makes this a class and not an
+anecdote.** The rule is stated once above rather than per-verb because the
+defect arrived twice, from two unrelated directions:
+
+| # | leg | what `--json` stdout served |
+|---|---|---|
+| 1 | the ambiguous-domain refusal (`io_error`, two domain configs) | **EMPTY** — §8's `{cause}` and its remedy swallowed on both faces |
+| 2 | the §2.4 charset violation at the unified decoder | **NOTHING** — where v1.0.0 had served a structured frame carrying `code` and `recovery` |
+
+Instance 1 is the s10 dogfood fragment; instance 2 was measured during
+verification of the `edit-object` card, where a candidate REGRESSED a frame the
+release binary served. One instance reads as a verb's oversight and gets fixed
+in that verb. Two instances from unrelated legs read as what they are — the
+face never held the invariant — and the fix belongs at the face.
+
 **`io_error` carries its `{cause}` onto the human face.** §8 computes
 `io_error{cause}` and the engine composes real prose into it — the
 ambiguous-domain refusal names both config files and which one to delete. The

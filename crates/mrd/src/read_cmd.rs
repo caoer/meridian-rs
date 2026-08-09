@@ -163,7 +163,7 @@ fn answer_read(workspace: &Path, r: &Read) -> Result<(EngineSource, Value), Fail
         DaemonRead::Served(body) => Ok((EngineSource::Daemon, body)),
         DaemonRead::Refused(mut error) => {
             teach_bad_path(workspace, &mut error);
-            Err(engine::refusal_fail(&error))
+            Err(engine::json_refusal(r.format, workspace, &error))
         }
         DaemonRead::Unavailable => Ok((EngineSource::Ephemeral, in_process_read(workspace, r)?)),
     }
@@ -321,7 +321,7 @@ fn in_process_read(workspace: &Path, r: &Read) -> Result<Value, Fail> {
         let mut error = ErrorBody::new(wire::ErrorCode::BadPath);
         error.path = Some(WirePath(r.path.clone()));
         teach_bad_path(workspace, &mut error);
-        return Err(engine::refusal_fail(&error));
+        return Err(engine::json_refusal(r.format, workspace, &error));
     }
     let canonical = workspace::canonicalize(workspace).map_err(|e| {
         Fail::tool(format!(
@@ -331,8 +331,10 @@ fn in_process_read(workspace: &Path, r: &Read) -> Result<Value, Fail> {
     })?;
     let root = fs::WorkspaceRoot(canonical);
     let wpath = WirePath(r.path.clone());
-    let doc = wire_serve::load_doc(&root, &wpath).map_err(|e| engine::refusal_fail(&e))?;
-    let ambient = wire_serve::ambient_root(&root).map_err(|e| engine::refusal_fail(&e))?;
+    let doc = wire_serve::load_doc(&root, &wpath)
+        .map_err(|e| engine::json_refusal(r.format, workspace, &e))?;
+    let ambient = wire_serve::ambient_root(&root)
+        .map_err(|e| engine::json_refusal(r.format, workspace, &e))?;
     // The same routing the wire request does — one door, two transports,
     // so warm and degrade cannot diverge on what a selector means.
     let (frag, sections) = route_selectors(r.frag.as_deref(), &r.sections);
@@ -356,7 +358,7 @@ fn in_process_read(workspace: &Path, r: &Read) -> Result<Value, Fail> {
         None,
         &wire_serve::read::NO_DECORATIONS,
     )
-    .map_err(|e| engine::refusal_fail(&e))?;
+    .map_err(|e| engine::json_refusal(r.format, workspace, &e))?;
     let body = serde_json::to_value(&body)
         .map_err(|e| Fail::tool(format!("cannot render the answer: {e}")))?;
     // The same lifted projection the daemon applies for a v3 session

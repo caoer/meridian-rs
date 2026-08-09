@@ -301,6 +301,29 @@ impl std::fmt::Display for ConventionSource {
     }
 }
 
+/// Which ceiling narrowed a grant. Named so a denial can say what ate the cap
+/// the caller can see on their own page (run-plane § capabilities) — the
+/// identity is carried from the resolution, never re-derived at the refusal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Ceiling {
+    /// The root's `run.caps.<pattern>` entry that won the match.
+    Convention(String),
+    /// The builtin `check-*` / `verify-*` read-only ceiling, and the pattern
+    /// the task name matched.
+    BuiltinReadOnly(String),
+}
+
+impl std::fmt::Display for Ceiling {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Convention(pattern) => write!(f, "the root convention `run.caps.{pattern}`"),
+            Self::BuiltinReadOnly(pattern) => {
+                write!(f, "the builtin read-only ceiling on `{pattern}` names")
+            }
+        }
+    }
+}
+
 /// A block's resolved capabilities: the effective set, where the grant came
 /// from, and every granted cap a ceiling narrowed away (never silent).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -311,6 +334,26 @@ pub struct CapResolution {
     pub source: CapSource,
     /// Granted caps that did not survive the ceilings intact.
     pub narrowed: Vec<Cap>,
+    /// Each ceiling that narrowed, WITH the caps it took — the pairing is what
+    /// lets a denial name the ceiling responsible for THIS descriptor instead
+    /// of the last one that happened to run.
+    pub ceilings: Vec<(Ceiling, Vec<Cap>)>,
+}
+
+impl CapResolution {
+    /// The ceiling that took a cap which would have admitted `kind`/`target` —
+    /// `None` when no ceiling is the reason this descriptor is denied (a
+    /// deny-default block, or an explicit grant that never held the cap).
+    ///
+    /// The denial teaches a ceiling remedy ONLY on `Some`: a remedy derived
+    /// from a cause the engine did not measure is worse than no remedy.
+    #[must_use]
+    pub fn ceiling_denying(&self, kind: &str, target: Option<&str>) -> Option<&Ceiling> {
+        self.ceilings
+            .iter()
+            .find(|(_, taken)| taken.iter().any(|c| c.admits(kind, target)))
+            .map(|(ceiling, _)| ceiling)
+    }
 }
 
 /// What the engine may claim about one block's effects — the one value
@@ -342,6 +385,7 @@ impl Authority {
             effective,
             source: CapSource::Explicit,
             narrowed: Vec::new(),
+            ceilings: Vec::new(),
         })
     }
 
@@ -540,25 +584,30 @@ pub fn resolve_caps(
     };
 
     let mut effective = grant;
-    let mut narrowed = Vec::new();
+    let mut ceilings: Vec<(Ceiling, Vec<Cap>)> = Vec::new();
     // A convention over an explicit grant is a ceiling (narrow only, never
     // widen) — when the grant CAME from the convention this is a no-op.
     if source == CapSource::Explicit
-        && let Some((_, ceiling)) = convention_match
+        && let Some((pattern, ceiling)) = convention_match
     {
         let (e, n) = effective.narrow(ceiling);
         effective = e;
-        narrowed.extend(n);
+        if !n.is_empty() {
+            ceilings.push((Ceiling::Convention(pattern.to_owned()), n));
+        }
     }
     // The builtin read-only ceiling is absolute.
-    if read_only_match.is_some() {
+    if let Some(pattern) = read_only_match {
         let (e, n) = effective.narrow(&CapSet::none());
         effective = e;
-        narrowed.extend(n);
+        if !n.is_empty() {
+            ceilings.push((Ceiling::BuiltinReadOnly((*pattern).to_owned()), n));
+        }
     }
     CapResolution {
         effective,
         source,
-        narrowed,
+        narrowed: ceilings.iter().flat_map(|(_, n)| n.clone()).collect(),
+        ceilings,
     }
 }

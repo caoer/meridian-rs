@@ -325,12 +325,50 @@ pub(crate) fn refusal_fail(error: &ErrorBody) -> Fail {
     Fail::findings(text)
 }
 
+/// The `--json` face's refusal envelope on stdout — `{workspace, error}`, the engine's §8 error
+/// body lifted into the v3 vocabulary — beside the human stderr line [`refusal_fail`] returns.
+///
+/// The law is the FACE's, not one verb's (status.md § teaching rows): a machine consumer cannot
+/// tell an absent frame from success with no output, so every leg of a `--json` face that can
+/// refuse emits one. Human format prints nothing here and the exit triad is untouched.
+pub(crate) fn json_refusal(format: Format, workspace: &Path, error: &ErrorBody) -> Fail {
+    if matches!(format, Format::Json) {
+        let mut frame = json!({
+            "error": serde_json::to_value(error).expect("json"),
+        });
+        wire_serve::rev::project_response(&mut frame);
+        let error_v3 = frame
+            .as_object_mut()
+            .and_then(|obj| obj.remove("error"))
+            .unwrap_or(Value::Null);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "workspace": workspace.display().to_string(),
+                "error": error_v3,
+            }))
+            .expect("json")
+        );
+    }
+    refusal_fail(error)
+}
+
 /// A message-less refusal, spelled out: name the failure, say what did not happen, give the fix.
 fn spelled(error: &ErrorBody) -> String {
     let code = serde_json::to_value(error.code)
         .ok()
         .and_then(|v| v.as_str().map(str::to_owned))
         .unwrap_or_else(|| "error".to_owned());
+    // §8 binds `io_error{cause}` and the engine composes real prose into it —
+    // the ambiguous-domain refusal names both config files and which one to
+    // delete. Rendering the bare token strands the caller at exactly the leg
+    // whose remedy is least guessable. The cause is carried verbatim: it is the
+    // measured one, and nothing is invented beside it.
+    if error.code == wire::ErrorCode::IoError
+        && let Some(cause) = &error.cause
+    {
+        return format!("io_error: {cause}");
+    }
     if error.code == wire::ErrorCode::RootMismatch
         && let Some(actual) = &error.actual
     {

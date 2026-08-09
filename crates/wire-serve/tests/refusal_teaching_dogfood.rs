@@ -199,3 +199,36 @@ fn file_not_found_on_the_load_plane_names_the_miss_and_a_fix() {
     // birth is its own door.
     assert!(m.contains("birth"), "points writes at the birth door: {m}");
 }
+
+/// One law, one sentence, at BOTH value-plane write doors (wire-contract
+/// § A.6.3a, dogfood s7). The upsert door used to say only that the value must
+/// be single-line — no key, no remedy — so recovery quality was a function of
+/// which door the caller entered.
+#[test]
+fn both_value_plane_doors_spell_the_multi_line_refusal_the_same_way() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("f.md"), PAGE).expect("fixture");
+    let root = fs::WorkspaceRoot(dir.path().canonicalize().expect("canonicalize"));
+
+    let mut args = args_for("f.md".into(), fm_key("ml"));
+    args.edits[0].edit = EditShape::Put {
+        at: wire::PutAt::Upsert,
+        text: "a\nb".to_owned(),
+    };
+    let err = splice(&root, None, &args, &[], None)
+        .expect_err("a newline in a frontmatter value is refused, never sanitized");
+
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    let m = err
+        .message
+        .as_deref()
+        .expect("the refusal is a sentence, not a bare code");
+    // The key by name, the v1 rule, and the executable escape — the words the
+    // `set_property` door already spoke.
+    assert!(m.contains("\"ml\""), "names the offending key: {m}");
+    assert!(m.contains("single-line in v1"), "states the rule: {m}");
+    assert!(
+        m.contains("put multi-line content in a body section"),
+        "teaches the escape: {m}"
+    );
+}

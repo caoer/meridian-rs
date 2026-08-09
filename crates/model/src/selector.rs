@@ -489,7 +489,7 @@ fn bigram_overlap(a: &str, b: &str) -> usize {
 
 /// d1 teaching-refusal exemplar, verbatim. [`render_ambiguity`] interpolates
 /// the real selector/candidates; drift fails tests.
-pub const D1_TEACHING_REFUSAL_EXEMPLAR: &str = "refused: selector 'Task/Objective' is ambiguous — 2 matches: n=1.2 (^a1b2c3), n=1.5 (^d4e5f6). Unambiguous writes to this file remain served. Fix: address the duplicate by block id or node index and rename one heading; see [[selector-grammar]].";
+pub const D1_TEACHING_REFUSAL_EXEMPLAR: &str = "refused: selector 'Task/Objective' is ambiguous — 2 matches: n=1.2 (^a1b2c3), n=1.5 (^d4e5f6). Unambiguous writes to this file remain served. Fix: pin one occurrence by its n-carrying machine address above, or by its dewey ordinal from the toc; renaming one of the duplicate headings also fixes it, at the cost of editing the document.";
 
 /// One ambiguous candidate: its 1-based node index (the occurrence `n=`, the
 /// §2.1 addressable disambiguator) and its block id if it carries one (`^block`).
@@ -517,8 +517,9 @@ pub fn render_ambiguity(selector: &str, candidates: &[AmbiguityCandidate]) -> St
         .join(", ");
     format!(
         "refused: selector '{selector}' is ambiguous — {count} matches: {named}. \
-         Unambiguous writes to this file remain served. Fix: address the duplicate \
-         by block id or node index and rename one heading; see [[selector-grammar]].",
+         Unambiguous writes to this file remain served. Fix: pin one occurrence by its \
+         n-carrying machine address above, or by its dewey ordinal from the toc; renaming \
+         one of the duplicate headings also fixes it, at the cost of editing the document.",
         count = candidates.len()
     )
 }
@@ -531,7 +532,7 @@ pub fn render_ambiguity(selector: &str, candidates: &[AmbiguityCandidate]) -> St
 /// `{"anchor":id}` has no `n` slot), so nothing machine-addressable exists to
 /// name — and the remedy speaks the anchor grammar, never "rename one heading"
 /// (wire-contract A.3, door symmetry over duplicate block ids).
-pub const ANCHOR_AMBIGUITY_REFUSAL_EXEMPLAR: &str = "refused: selector '^same-id' is ambiguous — 2 blocks carry this id. Unambiguous reads and writes to this file remain served. Fix: give each duplicate block a distinct id (a block id addresses exactly one block in its file), or address the enclosing section by heading path; see [[selector-grammar]].";
+pub const ANCHOR_AMBIGUITY_REFUSAL_EXEMPLAR: &str = "refused: selector '^same-id' is ambiguous — 2 blocks carry this id. Unambiguous reads and writes to this file remain served. Fix: give each duplicate block a distinct id (a block id addresses exactly one block in its file), or address the enclosing section by heading path.";
 
 /// Render the anchor-plane ambiguity refusal for a duplicated block id.
 /// Wording is carried verbatim from [`ANCHOR_AMBIGUITY_REFUSAL_EXEMPLAR`].
@@ -541,8 +542,7 @@ pub fn render_anchor_ambiguity(selector: &str, count: usize) -> String {
         "refused: selector '{selector}' is ambiguous — {count} blocks carry this id. \
          Unambiguous reads and writes to this file remain served. Fix: give each \
          duplicate block a distinct id (a block id addresses exactly one block in \
-         its file), or address the enclosing section by heading path; see \
-         [[selector-grammar]]."
+         its file), or address the enclosing section by heading path."
     )
 }
 
@@ -800,8 +800,9 @@ mod tests {
     #[test]
     fn render_ambiguity_carries_d1_teaching_verbatim() {
         const TEACH_TAIL: &str = ". Unambiguous writes to this file remain served. \
-             Fix: address the duplicate by block id or node index and rename one \
-             heading; see [[selector-grammar]].";
+             Fix: pin one occurrence by its n-carrying machine address above, or by \
+             its dewey ordinal from the toc; renaming one of the duplicate headings also \
+             fixes it, at the cost of editing the document.";
         assert!(
             D1_TEACHING_REFUSAL_EXEMPLAR.ends_with(TEACH_TAIL),
             "the d1 exemplar const must carry the verbatim teaching tail"

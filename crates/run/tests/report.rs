@@ -51,6 +51,7 @@ fn caps(effective: &str, source: CapSource, narrowed: &[&str]) -> CapResolution 
         effective: CapSet::parse(effective).unwrap(),
         source,
         narrowed: narrowed.iter().map(|c| Cap::parse(c).unwrap()).collect(),
+        ceilings: Vec::new(),
     }
 }
 

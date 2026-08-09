@@ -30,3 +30,58 @@ fn missing_def_names_the_page_the_searched_path_and_the_resolution_rule() {
         "teaches the bare-kind resolution rule: {m}"
     );
 }
+
+/// The anchor rule rides the missing-`^properties` refusal (run-plane § presets,
+/// dogfood s13-20): the loader finds the block by its `^` id ON the heading
+/// line, so a def with a visually complete `# Properties` heading and no id
+/// declares no block — and the refusal must say which byte is absent instead of
+/// telling the author that a heading they are looking at does not exist.
+#[test]
+fn the_missing_properties_refusal_teaches_the_anchor_on_the_heading_line() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = fs::WorkspaceRoot(dir.path().canonicalize().expect("canonicalize"));
+    std::fs::create_dir_all(root.0.join("presets")).expect("presets dir");
+
+    let def = |body: &str| {
+        format!("---\ntype: def\ndefines: session\nbirths: s/{{{{id}}}}.md\n---\n{body}")
+    };
+    std::fs::write(
+        root.0.join("presets/noanchor.md"),
+        def("# Properties\n\n- title\n\n# Template ^template\n\n```\n# x\n```\n"),
+    )
+    .expect("write");
+    std::fs::write(
+        root.0.join("presets/nothing.md"),
+        def("# Template ^template\n\n```\n# x\n```\n"),
+    )
+    .expect("write");
+
+    let refusal = |page: &str| {
+        match preset::new_record(&root, page, "x1", &preset::BirthOptions::default())
+            .expect("a def defect is a refusal, not a tool failure")
+        {
+            preset::NewOutcome::Refused(r) => format!("{:?}", r.reason),
+            preset::NewOutcome::Born(_) => panic!("an invalid def must not birth"),
+        }
+    };
+
+    // Both arms carry the RULE — it is always true of the loader.
+    for page in ["presets/noanchor.md", "presets/nothing.md"] {
+        let m = refusal(page);
+        assert!(
+            m.contains("^properties") && m.contains("heading line"),
+            "{page} states the anchor rule: {m}"
+        );
+    }
+    // Only the MEASURED arm carries the diagnosis of an anchor-less heading.
+    let anchorless = refusal("presets/noanchor.md");
+    assert!(
+        anchorless.contains("HAS a `# Properties` heading"),
+        "the measured arm names the offending heading: {anchorless}"
+    );
+    let absent = refusal("presets/nothing.md");
+    assert!(
+        !absent.contains("HAS a `# Properties` heading"),
+        "a def with no such heading is never told it has one: {absent}"
+    );
+}

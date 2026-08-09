@@ -990,6 +990,8 @@ When a workspace is **armed** (attested INDEX present), after CAS and before byt
 
 - An `n`-less address that matches more than one node refuses `ambiguous_ref`-class at **every** door — read and write alike (`splice.plan_edits`, and any host lowering onto it). No door may pick an occurrence the caller did not name: the write-door refusal names each candidate's machine address (its `n`-carrying segment array) and teaches `n`, the same evidence the read door gives. Two doors, one answer — a selector one door refuses as ambiguous, no other door resolves.
 - The published loop is untouched: addresses the read face publishes carry `n` exactly where the document is ambiguous, so read → verbatim address → write always lands.
+- **The PROSE is symmetric too (2026-08-09, dogfood s4).** The machine bodies already matched while the sentences did not: the read door taught *"pin one occurrence by its machine address, or its dewey ordinal from the toc"*, and the write door taught *"address the duplicate by block id or node index"* — which never names `n`, and whose "block id" prescribes minting an id on a heading the caller may not own. The write door speaks the read door's remedy: **pin one occurrence by its `n`-carrying machine address, or by its dewey ordinal from the toc.** Renaming a duplicate heading stays a legitimate, secondary fix and is named as one — it edits the document, where the `n` address does not.
+- ⛔ **Neither ambiguity refusal ends in a wikilink.** `[[selector-grammar]]` inside a machine-facing message is a vault-local address the caller cannot dereference — it names a page without saying how to reach it, and it survives into logs and agent transcripts as literal brackets. Both ambiguity remedies are self-contained (an `n` address, a dewey ordinal, a distinct block id), so the citation bought nothing it was paying for. *Scoped to the ambiguity pair: the `see [[address-grammar]]` tail on the `crates/addr` refusals is the same class and is NOT swept here — recorded as a finding rather than changed under a card that did not measure it.*
 
 **Door symmetry over duplicate block ids (2026-08-08, dogfood-p1-read-ambiguous-ref):**
 
@@ -1360,6 +1362,15 @@ land as a nested flow sequence and the I4 substrate law would refuse it,
 blaming the caller for nesting the emitter manufactured. **Both doors refuse a
 multi-line value** — the encoder's `MultiLineValue` refusal, uniform at every
 value-plane write door. A newline is refused, never sanitized.
+
+**Uniform means the WORDS too (2026-08-09, dogfood s7).** One law refused in two
+dialects is two laws to the callers who meet it: the `set_property` door named
+the offending key and taught the executable escape (*"frontmatter values are
+single-line in v1; put multi-line content in a body section"*), while the upsert
+door said only *"put at:upsert value must be single-line (no newline)"* — no key,
+no remedy. Recovery quality became a function of which door the caller happened
+to enter. Both doors now carry the same sentence: the key by name, the v1
+single-line rule, and the body-section escape.
 
 **A.6.3a′ One armed fact per key — the `set_property` CREATE arm is the upsert
 door (2026-08-09, dogfood s11-40/s11-50).** The plan lowering emits ONE edit per
