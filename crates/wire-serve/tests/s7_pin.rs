@@ -1120,6 +1120,12 @@ fn a_slash_bearing_heading_pins_end_to_end_and_stores_as_one_array_element() {
 /// The other half of the boundary: `ReadSel::parse` splits on `/`, so
 /// `"Guide/A/B"` is three segments resolving to nothing — the coat refuses
 /// rather than silently pinning the wrong section.
+///
+/// The refusal is where the reservation is PAID FOR (`laws.md` D-1): the coat
+/// stays un-widened, so the miss owes the caller the two forms that do address
+/// the heading — the segment array and the dewey ordinal. A remedy naming only
+/// the toc read hands back the same un-feedable title and the recovery loops
+/// (dogfood finding #1, reproduced on v1.0.0).
 #[test]
 fn the_cli_string_coat_still_cannot_address_a_slash_bearing_heading() {
     let (_dir, root) = workspace();
@@ -1140,6 +1146,15 @@ fn the_cli_string_coat_still_cannot_address_a_slash_bearing_heading() {
         err.code,
         ErrorCode::PinTargetMissing,
         "it MISSES — it must never silently pin a different section: {err:?}"
+    );
+    let msg = err.message.as_deref().expect("the miss carries a message");
+    assert!(
+        msg.contains("hpath array") && msg.contains("dewey ordinal"),
+        "the refusal teaches both working forms, not the toc read alone: {msg}"
+    );
+    assert!(
+        msg.contains("splits on `/`"),
+        "and it names the delimiter that made this spelling unaddressable: {msg}"
     );
 }
 

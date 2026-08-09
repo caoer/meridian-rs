@@ -73,7 +73,10 @@ mrd links [PATH] the corpus edge map (whole corpus, or one file),
 mrd read <PATH>[#FRAG] [--section SEL]
  the composed read: addressing + content + render at
  ONE engine snapshot (daemon or in-process; human
- output is the rendered text verbatim)
+ output is the rendered text verbatim). SEL is a
+ heading chain, a `^id`, or a dewey ordinal — the
+ chain joins on `/` and that delimiter is dead for
+ heading text (§ the joined selector coat)
 mrd put <PATH> [--dry | --validate] [--force] [--actor A] [--now T]
  [--if-fingerprint FP] [--receipt PATH#ANCHOR] [--json]
  the batch write: the edits ride stdin as a BARE JSON
@@ -160,6 +163,25 @@ Exit 2 is the CLI's OWN refusal — an unknown flag, malformed stdin, a
 contradictory flag pair — issued before any engine contact. A script branches
 on the exit alone: 2 means fix the invocation, 1 means read the engine's
 message.
+
+### The joined selector coat — one dead delimiter, two escapes
+
+`--section SEL` and `mrd pin`'s `#SELECTOR` share ONE human-string door
+(`wire::ReadSel::parse`). Its heading arm joins on `/`, so **a heading whose
+raw text carries `/` is not addressable by the joined spelling** — the door
+misses rather than serving a different section, and widening the coat is C2,
+reserved by ruling (`laws.md` D-1).
+
+- The limitation is **per delimiter, per ingress**. `#` is NOT a delimiter of
+ this door: `--section 'Top/C#D'` serves, and `PATH#FRAG` splits on the FIRST
+ `#` only, so `notes.md#Top/C#D` serves as a frag-scoped map.
+- **Two escapes, both published by the toc row the caller already read:** the
+ **dewey ordinal** (`--section 1.2`) and the **raw heading segments** as the
+ wire's hpath array (`{"hpath":[{"h":"Guide"},{"h":"A/B"}]}`) — one entry per
+ heading, no joining. The machine plane addresses and pins such a heading
+ end-to-end; only the joined coat cannot spell it.
+- A miss on this door **teaches both escapes in the refusal** — a remedy that
+ named only the toc read handed back the same un-feedable title.
 
 ### Operator SQL face — `mrd sql` (NOT agent core)
 
