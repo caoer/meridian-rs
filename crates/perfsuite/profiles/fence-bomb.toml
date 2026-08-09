@@ -1,0 +1,27 @@
+# Adversarial: fence-saturated corpus, half the files ending in an open fence
+# (the pathology lane0 found 12 real instances of). Stresses fence-state
+# tracking and the swallow-to-EOF path.
+
+name = "fence-bomb"
+provenance = "synthetic adversarial; pathology motivated by lane0's 12 real unterminated fences"
+files = 50
+
+[size]
+median_bytes = 8192
+sigma = 0.6
+max_bytes = 65536
+
+[constructs.heading]
+file_rate = 1.0
+per_file = 4.0
+
+[constructs.fence]
+file_rate = 1.0
+per_file = 30.0
+
+[constructs.inline_code]
+file_rate = 1.0
+per_file = 20.0
+
+[pathology]
+unterminated_fence_rate = 0.5

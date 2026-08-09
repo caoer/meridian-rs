@@ -1,0 +1,29 @@
+[package]
+name = "receipt"
+description = "The engine-side receipt renderer, a leaf crate: armed facts → the default md receipt line (contract v2 §6.3 template; D-C10 — template replaceable, facts normative)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+wire = { workspace = true }
+
+[dev-dependencies]
+# TEST-ONLY (fix9). The shipped crate still depends on `wire` alone — the
+# charter's gate holds, because the field guard is a CHARSET over bytes, never a
+# second spelling of the dialect grammar. The claim it proves, though, must be
+# checked by the grammar's ONE owner: `syntax::fp_removals` is the same
+# predicate the put plane and the run plane are judged by, so the receipt plane
+# is judged by it too rather than by a hand-rolled reading of the output.
+syntax = { workspace = true }
+# TEST-ONLY (§6.7 rule 2), same reasoning one layer over: the segment
+# renderer's claim is that a strict JSON parser recovers the heading exactly,
+# so the claim must be checked by a strict JSON parser rather than by a
+# hand-rolled reading of the escape. The shipped crate still depends on `wire`
+# alone.
+serde_json = { workspace = true }

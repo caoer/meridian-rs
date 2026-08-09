@@ -1,0 +1,77 @@
+[package]
+name = "run"
+description = "The mrd-local run plane (S1, U2 slice): task addressing over the §2.1 fm_key→block grammar, fence-language detection (starlark|bash), arg/env contract validation, and deny-by-default capability resolution. Pure pre-eval resolution — no eval, no apply, no I/O beyond page load and the root's own MERIDIAN.md declaration."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# The wall-time gate is the PERF lane's, not the PR lane's — `ci.yml` says so in
+# its own header ("Wall-time numbers are NEVER gated in this lane … that's
+# perf.yml's job on the pinned fleet runner"). `required-features` is what makes
+# that mechanically true: `cargo test --workspace` skips the target (so no
+# wall-clock assert rides the correctness suite, and no vacuous pass replaces it),
+# `ci.yml` lints it explicitly so it cannot bit-rot, and `perf.yml` runs it for
+# real on the pinned runner. The 5s budget is UNCHANGED — relocation, not
+# relaxation. Why it moved: `crates/run/tests/exec_walltime.rs` header.
+[features]
+perf-walltime = []
+
+[[test]]
+name = "exec_walltime"
+path = "tests/exec_walltime.rs"
+required-features = ["perf-walltime"]
+
+[dependencies]
+# Page parse chain: fs::load → syntax::parse → model::build; mint-plane anchor
+# resolution (model::resolve) is the §2.1 lookup task bindings reuse. The
+# executor rides the same seam: model::validate_batch mints the sealed batch,
+# fs::apply_batch is the only write path.
+fs = { workspace = true }
+model = { workspace = true }
+# md.* effect descriptors in (executor input), ChangeEvent synthesis out.
+effects = { workspace = true }
+# U4.2: the armed-plane gate. The run plane lands bytes through fs::apply_batch
+# (not the wire choke-point), so it mounts the SAME `policy::gate` over the
+# change it produces — byte-landing parity with wire-serve. Policy stays I/O-free;
+# `crates/run/src/gate.rs` injects the disk reads.
+policy = { workspace = true }
+# Block-id charset guard (`is_block_id`) — the ONE charset, ruling 011.
+syntax = { workspace = true }
+# The receipt-line FIELD law (`receipt::render_field`). The run plane composes a
+# receipt line of its own, so it renders that line's free-text fields through the
+# crate that owns receipt rendering rather than re-spelling the charset here —
+# a second spelling is the disease this milestone keeps diagnosing. `receipt` is
+# a leaf (its only dependency is `wire`), so this adds no graph depth.
+receipt = { workspace = true }
+# R25 artifact guard: `lock::block_texts` locates the `meridian-lock` bytes so
+# the run plane can refuse changing them. The grammar has ONE owner — re-deriving
+# "which bytes are the lock" here would be a second spelling of it.
+lock = { workspace = true }
+# The root's own `MERIDIAN.md` self-declaration, which carries the run plane's
+# convention table (`run.caps.<pattern>`) and its timeout ceiling. What a VALID
+# root declaration is has ONE owner — the `type:`/`version:` discriminator lives
+# in `config`, and re-deriving it here would be a second spelling of it, the same
+# argument the `lock` edge above is taken on. `config` reads; this crate
+# interprets only its OWN key namespace, so `config` stays ignorant that run
+# exists. Measured cost: `config` + `workspace` + `cache` enter the graph and NO
+# new external crate does — `serde_yaml` already arrives via `policy` and `addr`
+# via `model`.
+config = { workspace = true }
+# Run-plane receipt line body (machine-re-readable — the decision-#26
+# foreign-edit check parses prior receipts back).
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+# Workspace flock (decision #9) — same flock(2) discipline as cache's drawer lock.
+libc = "0.2"
+# Run-log content hash (U8): full sha256 over streamed stdout — the same
+# content-address discipline as cache's drawer key.
+sha2 = { workspace = true }
+
+[dev-dependencies]
+# test-only: on-disk workspace fixtures for load_page / conventions tests.
+tempfile = "3"

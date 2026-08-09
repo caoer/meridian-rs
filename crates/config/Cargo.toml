@@ -1,0 +1,56 @@
+[package]
+name = "config"
+description = "The MERIDIAN.md plane: the one entry point parsed as content (a rev and a fingerprint like any page), fail-loud with no partial mount table"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# The document tree, the file_rev law (`blake3(bytes)[:16]`), and the
+# fingerprint plane. `MERIDIAN.md` is parsed by the engine's own parser — that
+# is what "config is content" means — so this crate is downstream of `model`
+# and mints no rev law of its own (schema §7.1).
+model = { workspace = true }
+# S3-R49 — the ONE source for the `path-unseeable` reason word this plane and the
+# address plane both print. A std-only leaf already in the graph via `model`; no
+# new external crate enters, `cargo deny` unchanged.
+addr = { workspace = true }
+syntax = { workspace = true }
+# The reserved `meridian-*` block-language namespace predicate
+# (`lock::is_meridian_lang`). ONE predicate for every engine block, never an
+# enumerated list (decision #8 §1) — this crate reuses it rather than growing a
+# second spelling of the namespace.
+lock = { workspace = true }
+# The frontmatter is USER-authored YAML carrying arbitrary unknown keys
+# (Obsidian properties: flow sequences, block sequences), and schema §4 requires
+# `frontmatter-unparseable` to carry "the parser's own message". A hand-rolled
+# `key: value` scanner reads `tags: [config, meridian` as a valid string and
+# never notices — the exact implementation the pack's `frontmatter-unparseable`
+# case exists to kill. So this crate takes the workspace's already-decided YAML
+# library.
+#
+# SECOND PRODUCTION EDGE, accepted (S3-R14(b)): this crate was the deviation
+# from `policy`'s one-crate-owns-YAML claim, stated rather than absorbed. The
+# Advisor accepted it — the violation was forced, not chosen — and ruled that
+# the confinement gets an instrument or gets struck. No NEW external crate
+# entered the graph and the lockfile is unchanged (`cargo deny` unchanged).
+# ENFORCED: `crates/testsuite/tests/yaml_confinement.rs` derives the taker set
+# from `cargo metadata` and permits exactly `{policy, config}`. A third crate
+# reddens it by name; dropping this edge reddens it too.
+serde = { workspace = true }
+serde_yaml = "0.9"
+# THE CEILING. Every mount path passes `workspace::deny_reason` before it is
+# bound (`docs/address-grammar.md` §8 B-2), so this is a PRODUCTION edge as of
+# U7 — U6 held it as dev-only because nothing bound yet. The predicate is
+# REUSED, never re-implemented: a second spelling of the ceiling would let the
+# two disagree, and config would be the one that binds. `workspace` is a leaf
+# (`std` + `cache`), so no cycle and no new external crate.
+workspace = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

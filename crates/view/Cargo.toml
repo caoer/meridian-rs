@@ -1,0 +1,55 @@
+[package]
+name = "view"
+description = "DuckDB ephemeral projection + lock-aware read face: projects the parsed corpus into an in-process :memory: DuckDB, writes nothing to disk (view-never-store; C2 crate-topology leaf; published-file organ dropped by ruling, wire-contract §10.4 2026-08-06)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# ARM 1 of "the residue gates may not vanish" — and it is deliberately NOT a
+# test. `board_residue` is a disclosed counter at a permanent production zero, so
+# its gates ARE the instrument: delete them and the counter becomes a decoration
+# with every gate still green, because a deleted test and a passing test emit the
+# same bytes to a gate.
+#
+# Naming them here makes cargo resolve these paths at TARGET RESOLUTION, before a
+# test runner exists. Deleting or renaming either file is then a build failure —
+# unfilterable, un-`#[ignore]`-able, and impossible to mistake for a pass. The
+# in-place disarms a manifest cannot see (a dropped `#[test]`, a rename, an
+# `#[ignore]`) are arm 2, in `tests/residue_gates_may_not_vanish.rs`.
+#
+# Autodiscovery is NOT disabled by these entries (that needs `autotests = false`)
+# — measured, not assumed: all eight of this crate's test binaries still run.
+[[test]]
+name = "board_residue_gates"
+path = "tests/board_residue_gates.rs"
+
+[[test]]
+name = "residue_gates_may_not_vanish"
+path = "tests/residue_gates_may_not_vanish.rs"
+
+[dependencies]
+# the address grammar — an address is parsed ONCE, at the ingress (U10)
+addr = { workspace = true }
+# read the parsed corpus (Document/Node/NodeKind) — the projector's only source
+model = { workspace = true }
+# the `meridian-lock` block format — ONE owner for the lock grammar (`lock::find`
+# parses it; this crate only projects its `pins:` into the read face)
+lock = { workspace = true }
+# the DuckDB sink. `bundled` compiles the vendored amalgamation, so the gate SQL
+# (generated columns, UNION ALL BY NAME, no statement_timeout, READ_ONLY INSERT
+# refusal) is pinned to one DuckDB version, never the host's libduckdb.
+duckdb = { workspace = true }
+
+[dev-dependencies]
+# fixture addresses for the gate tests
+addr = { workspace = true }
+# build Document fixtures for the gate tests (parse -> model::build); a dev-only
+# edge, never a runtime dependency of the projector.
+syntax = { workspace = true }
+tempfile = "3"
+toml = { workspace = true }

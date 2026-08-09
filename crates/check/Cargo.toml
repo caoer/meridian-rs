@@ -1,0 +1,67 @@
+[package]
+name = "check"
+description = "The check engine (U2.10): the pure READ verb over the run plane — what lies? Layer 0 is rule-free (chain integrity by full recompute of the receipt journal, claims realised by observe-then-compare, and the mechanical journal TRACE that catches a foreign_edit by last-receipt-vs-live). Layer 1 runs the workspace's ARMED RULES read-only over the law policy::resolve_armed_law resolved at the write's own path — the SAME check_change surface the door mounts (U4.2), byte-for-byte. Writes nothing, mints no receipt, needs no cap."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Layer 0 chain recompute: the U2.1 journal primitives — parse the reserved
+# journal page into rows and recompute chain continuity (`check_chain`), catching
+# a spliced/forged row with a row cite.
+receipt = { workspace = true }
+# The workspace root handle + the live §12 tree merkle (`domain_snapshot`) the
+# foreign_edit trace compares against the last receipt's recorded root_after.
+fs = { workspace = true }
+# The layer-0 claims-realised read reuses the realise engine's pure-detection
+# surface (observe → CheckOutcome) rather than forking it — the SAME check the
+# realise loop would converge, run here read-only (no apply, no cap).
+realise = { workspace = true }
+# Layer 1: the rulepack-api@2 `check_change` surface (Change / Rule / Refusal),
+# the resolved armed law it evaluates (ArmedRule — construction sealed to
+# `resolve_armed_law`, so the layer cannot be handed a set the door would not have
+# honoured), the arming vocabulary (armed::Mode), and the ONE armed-law fault
+# vocabulary (ArmedFault) it reports an unevaluable rule in. The armed law
+# evaluates read-only through this, verbatim.
+policy = { workspace = true }
+# ── U14: the PIN PLANE (S3-R3 — an APPLICATION, not a charter change) ────────
+# The fence's verb was structurally blind to half its own job: with no `lock` and
+# no `git`, NO run output could contain a pin verdict, because the code could not
+# construct one (FINDING 01). `git` is by its own charter "a std-only leaf, no
+# production dependency" — being taken as a dependency is what a leaf exists for
+# — and `laws.md` § Additivity governs. An anchoring read is PURE: it asks git
+# questions and writes nothing, so `check`'s charter ("the pure READ verb") is
+# unchanged.
+#
+# The lock grammar's ONE owner, so the `objects:` plane this crate reads is the
+# same plane `mrd status`'s gauge and `mrd walk`'s listing read. A second lock
+# parser is how two planes come to disagree about one page.
+lock = { workspace = true }
+# The object store handle. `git::Repo` is a handle and never a singleton (seam
+# rule D12), so the per-root law (U13) is one classification run against whichever
+# repository the caller names.
+git = { workspace = true }
+# Types only, and already in this crate's effective surface: `fs::build_corpus`
+# hands back `model::Document`s and `lock::find` takes one. Both arrive with
+# `lock` regardless (it depends on them), so naming them adds no crate to the
+# graph — it only lets the signatures say what they already carry.
+model = { workspace = true }
+addr = { workspace = true }
+
+[dev-dependencies]
+# The end-to-end fixtures mount a REAL tmpdir workspace and seed its journal
+# through the PRODUCTION write path (no in-memory double): a guarded `create`
+# mints real journal rows with real tree roots, then the fixtures splice a forged
+# row (chain) or edit a page out-of-band (foreign_edit).
+tempfile = "3"
+wire-serve = { workspace = true }
+wire = { workspace = true }
+# Build real `Document`s for the layer-1 change derivation in the byte-for-byte
+# and read-only fixtures.
+model = { workspace = true }
+syntax = { workspace = true }

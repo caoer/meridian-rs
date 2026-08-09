@@ -1,0 +1,573 @@
+//! Shared typed edge: strict decode + read-op arms for the serving host.
+//!
+//! Owns [`decode`] (§3.2: unknown fields/enums refuse loud — serde `deny_unknown_fields`
+//! does not compose with `flatten`), [`read`] over borrowed model state, and
+//! [`write::splice`] (the write choke-point). Read arms never own corpus/disk. Write is
+//! stateful but one shared impl. `root`/`diff` stay host plumbing (cursor/history).
+//!
+//! [`ring`] and [`watch`] are the delta plane: one retention law, one external-change
+//! classifier. Host driver only (the registry daemon, at its subscription detection
+//! cycle — the one wire door since the sidecar's DROP, §3.3) — never the classification.
+
+pub mod armed_disk;
+pub mod check_write;
+pub mod decode;
+pub mod gate;
+pub mod guard;
+pub mod ladder;
+pub mod plan;
+pub(crate) mod positions;
+pub mod reaction;
+pub mod read;
+pub mod rev;
+pub mod ring;
+pub mod seq;
+pub mod watch;
+pub mod write;
+
+use wire::{ErrorBody, ErrorCode, Path, Root};
+
+/// Protocol both hosts speak (wire §3.2, proto-1). Strict decode validates `hello`'s `proto` against this.
+pub const PROTO: u32 = 1;
+
+/// The build sha a host publishes when its build could not name a commit — the
+/// spelling `crates/mrd/build.rs` bakes, carried unchanged to
+/// `hello.identity.build`.
+pub const UNKNOWN_BUILD: &str = "unknown";
+
+/// Whether `rev` is a contract rev the server serves (v3 amendment). Unknown rev refused loud at hello; never silent downgrade.
+#[must_use]
+pub fn is_known_rev(rev: &str) -> bool {
+    matches!(rev, "v2" | "v3")
+}
+
+/// `bad_request` with a human message (wire §8: `bad_request` ⇒ recovery `fix`).
+#[must_use]
+pub fn bad_request(message: impl Into<String>) -> Box<ErrorBody> {
+    let mut e = ErrorBody::new(ErrorCode::BadRequest);
+    e.message = Some(message.into());
+    Box::new(e)
+}
+
+/// The two forms a toc row can be fed back as an address, named in every
+/// section-miss recovery clause.
+///
+/// A toc read alone is not a recovery: it republishes the raw title, and the
+/// joined selector coat cannot always spell that title back (`laws.md` D-1 —
+/// `ReadSel::parse` splits the heading arm on `/`, and widening the coat is
+/// C2, reserved). So the clause names the two forms that always work — the
+/// segment array and the dewey ordinal — rather than sending the caller back
+/// to the same un-feedable string. Wording follows the duplicate-heading
+/// refusal, which already teaches machine address + dewey.
+pub const SECTION_FORMS: &str = "the row's raw heading segments as an hpath array (one entry per \
+     heading, no joining), or its dewey ordinal (CLI: `--section 1.2`). The joined selector string \
+     splits on `/`, so a heading whose raw text carries one is reachable only by those two forms.";
+
+/// Section-address recovery clause — one place the engine says how to find a
+/// real selector.
+///
+/// Selector-aware: hpath/dewey ride `toc`; `^` anchors ride `anchors[]` (not
+/// printed by `render::toc_text`).
+///
+/// The engine serves more than one caller surface, so the clause names the
+/// OPERATION in each surface's own dialect — never one host's tool name alone
+/// (wire-contract A.3; dogfood F5: an MCP agent has no `mrd`).
+///
+/// `display_path` is `None` on plan-lowering (doc held, path unknown).
+#[must_use]
+pub fn section_recovery(selector: &str, display_path: Option<&str>) -> String {
+    match (selector.starts_with('^'), display_path) {
+        (true, Some(p)) => format!(
+            "Fix: the section map does not list `^` anchors — find the id inline in the \
+             section's content, or via CLI `mrd read {p} --json` in its `anchors[]`."
+        ),
+        (true, None) => "Fix: the section map does not list `^` anchors — find the id \
+             inline in the section's content, or via CLI `--json` in its `anchors[]`."
+            .to_owned(),
+        (false, Some(p)) => format!(
+            "Fix: list this document's section paths with a toc read of {p} (MCP read: \
+             mode:\"toc\"; CLI: `mrd read {p}` with no --section), then feed its row back \
+             in one of the two addressing forms: {SECTION_FORMS}"
+        ),
+        (false, None) => format!(
+            "Fix: list the document's section paths with a toc read (MCP read: \
+             mode:\"toc\"; CLI: a read with no --section), then feed its row back in one \
+             of the two addressing forms: {SECTION_FORMS}"
+        ),
+    }
+}
+
+/// Display-only spelling of a segment address — segments joined on `/`, a
+/// pinned occurrence as `#k`. Not invertible: the machine grammar is the
+/// segment array itself, and re-deriving an address from this joined form
+/// re-creates a known collision.
+#[must_use]
+pub fn display_hpath(hpath: &[wire::HpathSeg]) -> String {
+    hpath
+        .iter()
+        .map(|s| match s.n {
+            Some(n) => format!("{}#{n}", s.h),
+            None => s.h.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// The write plane's partial-state disclosure: a refused batch lands nothing.
+/// Write-side twin of `config::NO_PARTIAL_LOAD_CLAUSE`.
+pub const NO_PARTIAL_WRITE_CLAUSE: &str = "No edit was applied; the batch is refused whole.";
+
+/// `fs::load` with §8 error split: `file_not_found` / `invalid_utf8` / `io_error{cause}`.
+/// Shared fs→wire mapper for both hosts' reads and the write path.
+///
+/// # Errors
+/// Wire envelope for missing file, non-UTF-8, or I/O failure.
+pub fn load_doc(root: &fs::WorkspaceRoot, path: &Path) -> Result<model::Document, Box<ErrorBody>> {
+    fs::load(root, std::path::Path::new(&path.0)).map_err(|e| {
+        Box::new(match e.kind() {
+            std::io::ErrorKind::NotFound => {
+                let mut err = ErrorBody::new(ErrorCode::FileNotFound);
+                err.path = Some(path.clone());
+                err.message = Some(format!(
+                    "file_not_found: no file at {} under the workspace root — nothing was served and \
+                     nothing was written. Fix: check the workspace-relative spelling \
+                     (`results/f.md`, never absolute); a write to a missing path never \
+                     births it — birth is its own door (wire `create`; `mrd new` for \
+                     records).",
+                    path.0
+                ));
+                err
+            }
+            std::io::ErrorKind::InvalidData => {
+                // §8 binds `invalid_utf8{path,message}`: name the member and
+                // teach where its bytes stand — the bare code token strands
+                // the operator. Wording mirrors the daemon's per-file frame
+                // (registry `doc_or_refusal`) so warm and degrade do not
+                // drift.
+                let mut err = ErrorBody::new(ErrorCode::InvalidUtf8);
+                err.path = Some(path.clone());
+                err.message = Some(format!(
+                    "{} is not UTF-8 — the file serves no spans/nodes; its bytes stay under \
+                     the root",
+                    path.0
+                ));
+                err
+            }
+            _ => {
+                let mut err = ErrorBody::new(ErrorCode::IoError);
+                err.cause = Some(e.to_string());
+                err
+            }
+        })
+    })
+}
+
+/// Ambient workspace root (v2 §4.1/§12): domain file bytes folded via `model::merkle_root`.
+///
+/// # Errors
+/// Wire `io_error` when domain snapshot read/fold fails.
+pub fn ambient_root(root: &fs::WorkspaceRoot) -> Result<Root, Box<ErrorBody>> {
+    Ok(domain_snapshot(root)?.1)
+}
+
+/// §12 hash-domain snapshot: domain file bytes + folded root in one read/fold (no stamp drift).
+///
+/// # Errors
+/// Wire `io_error` when domain snapshot read/fold fails.
+pub fn domain_snapshot(
+    root: &fs::WorkspaceRoot,
+) -> Result<(fs::DomainFiles, Root), Box<ErrorBody>> {
+    let (files, folded) = fs::domain_snapshot(root).map_err(|e| {
+        let mut err = ErrorBody::new(ErrorCode::IoError);
+        err.cause = Some(e.to_string());
+        Box::new(err)
+    })?;
+    Ok((files, Root(folded.0)))
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{Value, json};
+    use wire::{ErrorCode, Op};
+
+    use super::{bad_request, is_known_rev};
+
+    fn obj(v: Value) -> serde_json::Map<String, Value> {
+        match v {
+            Value::Object(map) => map,
+            _ => panic!("test frame is an object"),
+        }
+    }
+
+    #[test]
+    fn known_rev_set_is_v2_and_v3() {
+        assert!(is_known_rev("v2"));
+        assert!(is_known_rev("v3"));
+        assert!(!is_known_rev("v4"));
+        assert!(!is_known_rev(""));
+    }
+
+    #[test]
+    fn bad_request_carries_the_fix_class_and_message() {
+        let e = bad_request("boom");
+        assert_eq!(e.code, ErrorCode::BadRequest);
+        assert_eq!(e.recovery, wire::Recovery::Fix);
+        assert_eq!(e.message.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn decode_accepts_a_read_op() {
+        let op = super::decode::decode(
+            &obj(json!({"op": "toc", "path": "a.md"})),
+            super::rev::Rev::V2,
+        )
+        .expect("toc decodes");
+        assert!(matches!(op, Op::Toc { path } if path.0 == "a.md"));
+    }
+
+    #[test]
+    fn decode_rejects_an_unknown_field_by_name() {
+        // serde would silently drop `bogus`; strict pass refuses loud.
+        let e = super::decode::decode(
+            &obj(json!({"op": "toc", "path": "a.md", "bogus": 1})),
+            super::rev::Rev::V2,
+        )
+        .expect_err("unknown field is refused");
+        assert_eq!(e.code, ErrorCode::BadRequest);
+        assert!(
+            e.message.as_deref().is_some_and(|m| m.contains("bogus")),
+            "the refusal names the field: {:?}",
+            e.message
+        );
+    }
+
+    #[test]
+    fn decode_answers_unknown_op_for_an_unarmed_name() {
+        let e = super::decode::decode(&obj(json!({"op": "nope"})), super::rev::Rev::V2)
+            .expect_err("unknown op refused");
+        assert_eq!(e.code, ErrorCode::UnknownOp);
+    }
+
+    fn plan_splice() -> Value {
+        json!({"op": "splice", "path": "a.md",
+            "plan_edits": [{"append": {"hpath": [{"h": "A"}], "body": "x"}}]})
+    }
+
+    /// Frozen v2 negative: `plan_edits` under v2 hits unknown-field wall byte-for-byte.
+    #[test]
+    fn v2_splice_plan_edits_refuses_on_the_frozen_wall() {
+        let e = super::decode::decode(&obj(plan_splice()), super::rev::Rev::V2)
+            .expect_err("v2 plan_edits refused");
+        assert_eq!(e.code, ErrorCode::BadRequest);
+        assert_eq!(
+            e.message.as_deref(),
+            Some("unknown request field `plan_edits` on `splice`"),
+            "the frozen check_fields refusal, verbatim"
+        );
+    }
+
+    /// v3 decodes all five plan shapes into the typed union.
+    #[test]
+    fn v3_splice_plan_edits_decodes_all_shapes() {
+        let frame = json!({"op": "splice", "path": "a.md", "plan_edits": [
+            {"append": {"hpath": [{"h": "A"}], "body": "x"}},
+            {"match": {"hpath": [{"h": "A"}], "old": "a", "new": "b", "all": true, "rev": "r"}},
+            {"replace_section": {"hpath": [{"h": "A"}], "body": "x", "rev": "r"}},
+            {"create": {"parent_hpath": [{"h": "A"}], "title": "B", "body": "x"}},
+            {"set_property": {"key": "k", "value": "v"}},
+        ]});
+        let op = super::decode::decode(&obj(frame), super::rev::Rev::V3).expect("v3 decodes");
+        let Op::Splice {
+            edits, plan_edits, ..
+        } = op
+        else {
+            panic!("splice op");
+        };
+        assert!(edits.is_empty(), "plan form carries no native edits");
+        assert_eq!(plan_edits.len(), 5);
+        assert!(matches!(&plan_edits[1],
+            wire::PlanEdit::Match { all: true, rev: Some(r), .. } if r == "r"));
+    }
+
+    /// Pin: v3-only, strict keys, no actor key; pin-only splice is a complete batch.
+    #[test]
+    fn v3_splice_pin_decodes_and_carries_no_actor() {
+        let frame = json!({"op": "splice", "path": "plan.md",
+            "pin": {"target": "guide.md",
+                    "selector": {"hpath": [{"h": "Guide"}, {"h": "Q3"}]},
+                    "vibe": true}});
+        let op = super::decode::decode(&obj(frame), super::rev::Rev::V3).expect("v3 decodes");
+        let Op::Splice { edits, pin, .. } = op else {
+            panic!("splice op");
+        };
+        assert!(edits.is_empty(), "a pin-only splice needs no edits");
+        let pin = pin.expect("the pin decoded");
+        assert_eq!(pin.target, wire::Path("guide.md".into()));
+        assert_eq!(
+            pin.selector,
+            wire::ReadSel::Hpath {
+                hpath: vec![
+                    wire::HpathSeg {
+                        h: "Guide".into(),
+                        n: None
+                    },
+                    wire::HpathSeg {
+                        h: "Q3".into(),
+                        n: None
+                    },
+                ]
+            },
+            "U14: the pin selector is tagged on the wire"
+        );
+        assert_eq!(pin.vibe, Some(true));
+
+        // No pin.actor — identity is splice's daemon-derived actor only.
+        let forged = json!({"op": "splice", "path": "plan.md",
+            "pin": {"target": "guide.md", "selector": {"hpath": [{"h": "Q3"}]},
+                    "actor": "someone-else"}});
+        let e = super::decode::decode(&obj(forged), super::rev::Rev::V3)
+            .expect_err("a pin actor is not a field");
+        assert_eq!(
+            e.message.as_deref(),
+            Some("unknown request field `actor` on `pin`")
+        );
+    }
+
+    /// v2 wall and per-key strictness around pin.
+    #[test]
+    fn splice_pin_strict_negatives() {
+        // v2 never heard of `pin` — frozen unknown-field refusal.
+        let v2 = json!({"op": "splice", "path": "plan.md",
+            "pin": {"target": "guide.md", "selector": "Q3"}});
+        let e = super::decode::decode(&obj(v2.clone()), super::rev::Rev::V2)
+            .expect_err("v2 refuses the pin field");
+        assert_eq!(e.code, ErrorCode::BadRequest);
+        assert_eq!(
+            e.message.as_deref(),
+            Some("unknown request field `pin` on `splice`")
+        );
+
+        for (frame, want) in [
+            (
+                json!({"op": "splice", "path": "p.md", "pin": {"target": "g.md"}}),
+                "missing `selector` on `pin`",
+            ),
+            (
+                json!({"op": "splice", "path": "p.md",
+                       "pin": {"selector": {"hpath": [{"h": "Q3"}]}}}),
+                "missing `target` on `pin`",
+            ),
+            (
+                json!({"op": "splice", "path": "p.md",
+                       "pin": {"target": "g.md", "selector": {"hpath": [{"h": "  "}]}}}),
+                "`pin.selector` must name a section (a heading path, a `^id`, or a dewey \
+                 ordinal) — no segment may be blank",
+            ),
+            (
+                json!({"op": "splice", "path": "p.md", "pin": []}),
+                "`pin` must be an object on `splice`",
+            ),
+        ] {
+            let e = super::decode::decode(&obj(frame), super::rev::Rev::V3)
+                .expect_err("strict pin decode");
+            assert_eq!(e.message.as_deref(), Some(want));
+        }
+    }
+
+    /// Full create field set decodes into typed birth op, `if_root` included.
+    #[test]
+    fn create_decodes_its_whole_field_set() {
+        let frame = json!({"id": 9, "op": "create", "path": "notes/newborn.md",
+            "body": "# X\n", "actor": "agent:e7c3bb2e",
+            "now": "2026-07-26T13:30:00-04:00", "if_root": "b3:a", "dry": true});
+        let op = super::decode::decode(&obj(frame), super::rev::Rev::V3).expect("create decodes");
+        let Op::Create {
+            path,
+            body,
+            actor,
+            now,
+            if_root,
+            dry,
+        } = op
+        else {
+            panic!("create op");
+        };
+        assert_eq!(path, wire::Path("notes/newborn.md".into()));
+        assert_eq!(body, "# X\n");
+        assert_eq!(actor.as_deref(), Some("agent:e7c3bb2e"));
+        assert_eq!(now.as_deref(), Some("2026-07-26T13:30:00-04:00"));
+        assert_eq!(if_root, Some(wire::Root("b3:a".into())));
+        assert_eq!(dry, Some(true));
+    }
+
+    /// Create decode is rev-agnostic; v3 gate is at dispatch (do not move refusal into decode).
+    #[test]
+    fn create_decode_is_rev_agnostic_the_gate_is_dispatch() {
+        let frame = json!({"op": "create", "path": "a.md", "body": "x"});
+        for rev in [super::rev::Rev::V2, super::rev::Rev::V3] {
+            let op = super::decode::decode(&obj(frame.clone()), rev)
+                .unwrap_or_else(|e| panic!("create decodes under {rev:?}: {e:?}"));
+            assert!(matches!(op, Op::Create { .. }));
+        }
+    }
+
+    /// No `force` / batch vocabulary on create; each unknown field refused by name.
+    #[test]
+    fn create_refuses_the_fields_it_deliberately_lacks() {
+        for extra in ["force", "edits", "receipt", "plan_edits", "pin", "sec"] {
+            let mut frame = json!({"op": "create", "path": "a.md", "body": "x"});
+            frame[extra] = json!(true);
+            let e = super::decode::decode(&obj(frame), super::rev::Rev::V3)
+                .expect_err("the field wall refuses it");
+            assert_eq!(e.code, ErrorCode::BadRequest);
+            assert_eq!(
+                e.message.as_deref(),
+                Some(format!("unknown request field `{extra}` on `create`").as_str()),
+                "the refusal must name `{extra}`"
+            );
+        }
+    }
+
+    /// Anti-vacuity: declared create fields are admitted.
+    #[test]
+    fn create_admits_exactly_its_declared_fields() {
+        for field in super::decode::CREATE_FIELDS {
+            let mut frame = json!({"op": "create", "path": "a.md", "body": "x"});
+            frame[field] = match field {
+                "dry" => json!(true),
+                "now" => json!("2026-07-26T13:30:00-04:00"),
+                _ => json!("x"),
+            };
+            let op = super::decode::decode(&obj(frame), super::rev::Rev::V3)
+                .unwrap_or_else(|e| panic!("declared field `{field}` is admitted: {e:?}"));
+            assert!(matches!(op, Op::Create { .. }));
+        }
+    }
+
+    /// Strict-decode refusals asserted by cause message (what the client fixes).
+    #[test]
+    fn create_strict_negatives_name_their_cause() {
+        for (frame, want) in [
+            (
+                json!({"op": "create", "path": "a.md"}),
+                "missing `body` on `create`",
+            ),
+            (
+                json!({"op": "create", "body": "x"}),
+                "missing `path` on `create`",
+            ),
+            (
+                json!({"op": "create", "path": "a.md", "body": 7}),
+                "`body` on `create` must be a string",
+            ),
+            (
+                json!({"op": "create", "path": "a.md", "body": "x", "dry": "yes"}),
+                "`dry` on `create` must be a boolean",
+            ),
+            (
+                json!({"op": "create", "path": "a.md", "body": "x", "bogus": 1}),
+                "unknown request field `bogus` on `create`",
+            ),
+            (
+                json!({"op": "create", "path": "a.md", "body": "x", "force": true}),
+                "unknown request field `force` on `create`",
+            ),
+            (
+                json!({"op": "create", "path": "a.md", "body": "x", "now": "yesterday"}),
+                "`now` must be RFC 3339 (§9, validated never generated): `yesterday`",
+            ),
+        ] {
+            let e = super::decode::decode(&obj(frame), super::rev::Rev::V3)
+                .expect_err("strict create decode");
+            assert_eq!(e.code, ErrorCode::BadRequest);
+            assert_eq!(e.message.as_deref(), Some(want));
+        }
+    }
+
+    /// Path-law wall first: birth cannot be spelled outside workspace (`bad_path` before engine).
+    #[test]
+    fn create_path_law_refuses_before_the_engine_is_reached() {
+        for bad in ["/etc/passwd", "../escape.md", "", "a/../../b.md"] {
+            let frame = json!({"op": "create", "path": bad, "body": "x"});
+            let e = super::decode::decode(&obj(frame), super::rev::Rev::V3)
+                .expect_err("path law refuses the escape");
+            assert_eq!(e.code, ErrorCode::BadPath, "path `{bad}`");
+            assert_eq!(e.path.as_ref().map(|p| p.0.as_str()), Some(bad));
+        }
+    }
+
+    /// `append` carries its own node token, so the decoder must admit `rev`
+    /// on that shape — the field wall would otherwise refuse the guarded door.
+    #[test]
+    fn v3_append_admits_its_rev_token() {
+        let frame = json!({"op": "splice", "path": "a.md",
+            "plan_edits": [{"append": {"hpath": [{"h": "A"}], "body": "x", "rev": "abc123"}}]});
+        let op = super::decode::decode(&obj(frame), super::rev::Rev::V3).expect("decodes");
+        let Op::Splice { plan_edits, .. } = op else {
+            panic!("splice op");
+        };
+        assert_eq!(
+            plan_edits,
+            vec![wire::PlanEdit::Append {
+                hpath: vec![wire::HpathSeg {
+                    h: "A".into(),
+                    n: None
+                }],
+                body: "x".into(),
+                rev: Some("abc123".into()),
+            }]
+        );
+    }
+
+    /// `plan_edits`: mutual exclusion, empty-array law, per-shape strictness.
+    #[test]
+    fn v3_plan_edits_strict_negatives() {
+        // both edits and plan_edits → bad_request
+        let both = json!({"op": "splice", "path": "a.md",
+            "edits": [{"target": {"hpath": [{"h": "A"}]}, "edit": {"put": {"at": "end", "text": "x"}}}],
+            "plan_edits": [{"append": {"hpath": [{"h": "A"}], "body": "x"}}]});
+        let e = super::decode::decode(&obj(both), super::rev::Rev::V3).expect_err("both refused");
+        assert_eq!(
+            e.message.as_deref(),
+            Some("`edits` and `plan_edits` are mutually exclusive on `splice`")
+        );
+
+        // present-but-empty plan_edits → explicit empty-batch refusal
+        let empty = json!({"op": "splice", "path": "a.md", "plan_edits": []});
+        let e = super::decode::decode(&obj(empty), super::rev::Rev::V3).expect_err("empty refused");
+        assert_eq!(
+            e.message.as_deref(),
+            Some("`plan_edits` must carry at least one edit")
+        );
+
+        // neither → frozen v2 missing-edits refusal
+        let neither = json!({"op": "splice", "path": "a.md"});
+        let e =
+            super::decode::decode(&obj(neither), super::rev::Rev::V3).expect_err("neither refused");
+        assert_eq!(e.message.as_deref(), Some("missing `edits` on `splice`"));
+
+        // unknown field inside a shape → named refusal
+        let bad_field = json!({"op": "splice", "path": "a.md",
+            "plan_edits": [{"append": {"hpath": [{"h": "A"}], "body": "x", "bogus": 1}}]});
+        let e = super::decode::decode(&obj(bad_field), super::rev::Rev::V3)
+            .expect_err("shape field wall");
+        assert_eq!(
+            e.message.as_deref(),
+            Some("unknown field `bogus` in `append`")
+        );
+
+        // two tags on one item → exactly-one refusal
+        let two_tags = json!({"op": "splice", "path": "a.md",
+            "plan_edits": [{"append": {"hpath": [{"h": "A"}], "body": "x"},
+                            "match": {"hpath": [{"h": "A"}], "old": "a", "new": "b"}}]});
+        let e = super::decode::decode(&obj(two_tags), super::rev::Rev::V3)
+            .expect_err("two tags refused");
+        assert!(
+            e.message
+                .as_deref()
+                .is_some_and(|m| m.contains("exactly one")),
+            "{:?}",
+            e.message
+        );
+    }
+}

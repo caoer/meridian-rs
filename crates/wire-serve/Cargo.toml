@@ -1,0 +1,70 @@
+[package]
+name = "wire-serve"
+description = "The shared typed edge: the hand-rolled strict-decode pass (wire §3.2 server law) plus the read-op arms served over BORROWED parsed state. One implementation, one host — the resident registry daemon serving from its warm engine (the one wire door since the sidecar's DROP, wire-contract §3.3, 2026-08-06). Wiring only: parsing is fs/syntax's, tree law is model's, projection is wire-map's, edges are query's."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# the address grammar — the wire boundary constructs an address BY HAND (U10)
+addr = { workspace = true }
+# U12 — the mount table, for the STORED-FORM translation at the candidate.
+# The stored plane is spelled in Obsidian VAULT names, and the mount table is
+# the single authority for the name <-> vault axis, so the write choke-point
+# cannot mint a stored form without it. Read-only and LAZY: the table is loaded
+# only when a candidate actually carries a cross-root position, so the ordinary
+# single-root corpus pays nothing. `config` is downstream of `model` and nothing
+# it names depends on this crate, so the edge adds no cycle and no new external
+# crate.
+config = { workspace = true }
+# The frozen wire vocabulary this crate decodes into and answers with.
+wire = { workspace = true }
+# The named wire<->model projection seam (toc/extract node rows, delta files).
+wire-map = { workspace = true }
+render = { workspace = true }
+# Tree law + resolution: the read arms operate on borrowed `model::Document`s
+# and the `CorpusIndex`; `model::resolve`/`model::walk` back cat/resolve, and the
+# write choke-point validates + simulates the after-doc through `model`.
+model = { workspace = true }
+# The corpus edge map (§4.6 links), read over the borrowed index + docs.
+query = { workspace = true }
+# Disk (W1): the write choke-point loads fresh bytes, folds the ambient root, and
+# lands the two-file atomic commit (`fs::load`/`domain_snapshot`/`apply_batch`);
+# the shared `load_doc`/`ambient_root`/`domain_snapshot` mappers live here too.
+fs = { workspace = true }
+# The parser the write path reparses the simulated after-state with (§4.4
+# one-reparse law) — the same parse the corpus build folds in.
+syntax = { workspace = true }
+# CALL-ONLY (advisor ruling, d4-splice): the splice choke-point renders receipt
+# lines through it; edits to the crate itself need an ownership ruling.
+receipt = { workspace = true }
+# The meridian-lock FORMAT law (U11, decision #8): types, strict parse,
+# canonical render, locate. This crate is the format's SOLE writer — the
+# guarded `lock_write` path splices `lock::render` bytes and nothing else.
+lock = { workspace = true }
+# S7 the pin plane: git owns content-addressing (D5), so the `objects:` blob
+# oid is shelled out through the zero-dep plumbing crate — read-only for a
+# normal pin, `hash-object -w` for `--vibe`.
+git = { workspace = true }
+# The DELIBERATE composition edge (P6-VERDICTS, advisor Ruling 1): the write
+# choke-point evaluates whatever admitted rule packs the CALLER hands in over the
+# post-batch doc and projects §11.1 findings to `wire::Verdict`. Zero edges run
+# the OTHER way (policy consumes supplied facts, names no wire/serve type).
+policy = { workspace = true }
+# Decode-time JSON: the strict-decode pass validates the raw request object by
+# hand (serde's `deny_unknown_fields` does not compose with `flatten`).
+serde_json = { workspace = true }
+
+[dev-dependencies]
+# canonical reaction receipt assertion
+effects = { workspace = true }
+# fixture addresses for the lock gate tests
+addr = { workspace = true }
+# test-only: create/remove birth/death gates need a real on-disk workspace
+# (atomic file writes, journal-page append, root re-folds).
+tempfile = "3"

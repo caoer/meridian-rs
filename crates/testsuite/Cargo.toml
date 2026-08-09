@@ -1,0 +1,59 @@
+[package]
+name = "testsuite"
+description = "Consolidated integration-test member carrying the frozen GT pack as data — no library code"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# One consolidated integration-test binary (matklad doctrine: one binary,
+# many modules — compile time ÷3, artifacts ÷5).
+autotests = false
+
+[lints]
+workspace = true
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
+
+[dependencies]
+syntax = { workspace = true }
+model = { workspace = true }
+wire = { workspace = true }
+wire-map = { workspace = true }
+render = { workspace = true }
+fs = { workspace = true }
+transport = { workspace = true }
+# The MERIDIAN.md config plane (U6), driven against U2's 37-case pack under
+# `data/meridian-md/`. `crates/testsuite/Cargo.toml` sets `autotests = false`,
+# so the pack's driver is a MODULE of `tests/main.rs` — a stray
+# `tests/meridian_md.rs` would never compile and never run.
+config = { workspace = true }
+
+[dev-dependencies]
+# test-only: the two crates that each keep a copy of the armed-plane disk edge.
+# `tests/armed_disk_agreement.rs` pins the copies against each other; nothing else
+# in this crate names either.
+run = { workspace = true }
+# the armed-plane vocabulary the two disk edges both resolve into
+policy = { workspace = true }
+# fixture addresses for the lock gate tests
+addr = { workspace = true }
+serde_json = { workspace = true }
+# test-only: recompute file_rev independently of the model tree for the M2-BUILD
+# oracle gate (conforming per gate 3 — blake3 stays a dev-edge outside `model`).
+blake3 = "1"
+# test-only (U4b real-lock gate): drive the ENGINE lock write (wire-serve
+# U11) against a real on-disk workspace, then validate the render-face
+# elision vs the raw face over the engine-written page.
+wire-serve = { workspace = true }
+fs = { workspace = true }
+lock = { workspace = true }
+# test-only: the one remaining wire host (hosts ruling, wire-contract §3.3,
+# 2026-08-06 — the stdio sidecar is DROPPED). The frame-layer tests drive the
+# registry daemon's connection-serve path in-process (`registry::serve_lines`),
+# so byte-level NDJSON coverage lives on the door that ships.
+registry = { workspace = true }
+tempfile = "3"

@@ -1,0 +1,21 @@
+[package]
+name = "query"
+description = "Rung-5 corpus reads: backlinks, the §4.6 edge map, span-exact rename planning — borrows the model's index, applies nothing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# the `std`-only address leaf: the mount table this plane injects, and the ONE
+# lexical predicate that decides whether the address plane owns a spelling
+addr = { workspace = true }
+model = { workspace = true }
+
+[dev-dependencies]
+# test-only: building in-memory corpora for the edge-map fixtures
+syntax = { workspace = true }

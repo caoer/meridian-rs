@@ -1,0 +1,260 @@
+[package]
+name = "mrd"
+description = "The mrd CLI: wires the workspace / cache / registry foundation into the settled verb surface (init, unregister, resolve, cache ls, cache clean, daemon). Hand-rolled subcommand parsing, no clap; tier-4 ephemeral degrade and Cargo-model last-use auto-GC."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# The wall-time gate is the PERF lane's, not the PR lane's — `ci.yml` says so in
+# its own header ("Wall-time numbers are NEVER gated in this lane … that's
+# perf.yml's job on the pinned fleet runner"). `required-features` is what makes
+# that mechanically true: `cargo test --workspace` skips the target (so no
+# wall-clock assert rides the correctness suite, and no vacuous pass replaces it),
+# `ci.yml` lints it explicitly so it cannot bit-rot, and `perf.yml` runs it for
+# real on the pinned runner. The 1000 ms budget is UNCHANGED — relocation, not
+# relaxation. Why it moved: `crates/mrd/tests/status_walltime.rs` header.
+[features]
+perf-walltime = []
+
+[[test]]
+name = "status_walltime"
+path = "tests/status_walltime.rs"
+required-features = ["perf-walltime"]
+
+# The multi-root profile, in the SAME lane and behind the same feature — it is a
+# measurement gate, so it belongs where wall/CPU numbers are allowed to be gated
+# and nowhere else. Its own target rather than a second `#[test]` in the file
+# above, because it reads `RUSAGE_CHILDREN`: cargo runs test binaries one at a
+# time, so a target holding exactly one test can attribute the delta to its own
+# child. Why it exists at all: `crates/mrd/tests/status_multiroot_cpu.rs` header.
+[[test]]
+name = "status_multiroot_cpu"
+path = "tests/status_multiroot_cpu.rs"
+required-features = ["perf-walltime"]
+
+# W5 — the same gate for the two verbs W2 left eager. One target each, for the
+# `RUSAGE_CHILDREN` reason above: separate test TARGETS are separate processes,
+# so their children never fold into each other's measurement, where two
+# `#[test]`s in one file would. All three share `tests/multiroot_fixture/mod.rs`
+# so the table they measure through cannot drift apart between them.
+[[test]]
+name = "walk_multiroot_cpu"
+path = "tests/walk_multiroot_cpu.rs"
+required-features = ["perf-walltime"]
+
+[[test]]
+name = "check_multiroot_cpu"
+path = "tests/check_multiroot_cpu.rs"
+required-features = ["perf-walltime"]
+
+# Residual after W5 — the two call sites W5 flagged and left unmeasured
+# (`engine.rs` ephemeral links, `sql.rs` ephemeral build). Same fixture, same
+# `RUSAGE_CHILDREN` law, one target each so their children never fold together.
+[[test]]
+name = "links_multiroot_cpu"
+path = "tests/links_multiroot_cpu.rs"
+required-features = ["perf-walltime"]
+
+[[test]]
+name = "sql_multiroot_cpu"
+path = "tests/sql_multiroot_cpu.rs"
+required-features = ["perf-walltime"]
+
+# Perf-lane daemon teardown control: the status/walk/check CPU targets are
+# pure-local and never spawn a resident, so they cannot prove the harness reaps
+# one. This target auto-spawns via `links`, tears down by pidfile, and asserts
+# a two-cycle census of this binary stays flat. Behind the same feature so the
+# correctness suite never pays for it; its own target so a panic cannot fold
+# into a neighbouring `RUSAGE_CHILDREN` measurement. Why it exists:
+# `crates/mrd/tests/perf_daemon_teardown.rs` header.
+[[test]]
+name = "perf_daemon_teardown"
+path = "tests/perf_daemon_teardown.rs"
+required-features = ["perf-walltime"]
+
+# lib + bin: the bin (`main.rs`) is process wiring only; every verb lives in the
+# library so integration tests can drive both the real binary (CARGO_BIN_EXE_mrd)
+# and the typed entry points.
+[lib]
+name = "mrd"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mrd"
+path = "src/main.rs"
+
+[dependencies]
+# The three landed foundation crates this CLI wires together.
+workspace = { workspace = true }
+cache = { workspace = true }
+registry = { workspace = true }
+# The engine-client path (P1, decision 0002 §3): dial the resident daemon over
+# its socket, or degrade to an in-process ephemeral engine built from `fs` and
+# answered through the shared `wire-serve` read arms — the SAME projection the
+# daemon serves, so the two paths never drift. `fs::build_corpus` is U1's
+# builder, reused for the degrade; `wire` names the frozen request/response
+# shapes. All three are already in the graph via `registry`, so no new external
+# crate enters and `cargo deny` is unchanged.
+fs = { workspace = true }
+wire = { workspace = true }
+wire-serve = { workspace = true }
+# The `mrd test --history` tier (U1.6): reconstruct historical changes off GIT,
+# which is where history lives by law (ZT 2026-08-03 — the engine keeps no
+# memory). `git::Repo::path_history` enumerates one row per (commit, path) and
+# `git::Repo::blobs_at` recovers both sides' bytes; from there mrd builds the
+# before/after `Document`s through the fixture doc-building path (`syntax::parse` →
+# `model::build`), derive the `rulepack-api@2` change, and run the convention's
+# `check_change` — the SAME loader/evaluator the door uses. `policy` is the
+# convention loader + `derive_change` + the
+# full-`EvalLimits` CHECK evaluator; `model`/`syntax` build the docs. `effects` is
+# still the `mrd test`/`mrd run` eval kernel. All are path crates already in the
+# graph (`policy`/`receipt` via `wire-serve`) — no new external crate enters,
+# `cargo deny` unchanged.
+effects = { workspace = true }
+model = { workspace = true }
+syntax = { workspace = true }
+policy = { workspace = true }
+receipt = { workspace = true }
+# The local run plane (U10, verdict ruling 7): `mrd run` mounts `crates/run` —
+# §2.1 task addressing, arg/env contracts, deny-by-default caps (U2), and the
+# hermetic `--dry` truth through the U5 `evaluate` seam. mrd stays a local
+# CLIENT of the engine crates (docs/laws.md charter): never a resident organ,
+# never the serve path; run→model is the one reviewable engine edge.
+run = { workspace = true }
+# The view-organ (V3, design tournament-duckdb/team-a §Q5). `mrd sql` links DuckDB
+# `mrd sql` builds an ephemeral `:memory:` view per query (`view::build_memory_rooted`
+# — writes nothing to disk), and walk/status/check/repair read the lock-aware
+# read face (`view::walk`, `view::read_face`). The C2 topology test allows
+# `view -> mrd` (mrd is not a forbidden depender). `duckdb` (bundled) is already
+# in the graph via `view`, so no new external crate enters and `cargo deny` is
+# unchanged.
+view = { workspace = true }
+duckdb = { workspace = true }
+# The git plumbing leaf (S5): `mrd status`'s vibe-debt gauge asks git which
+# lock-referenced blobs are reachable from a commit — ONE `rev-list --objects
+# --all` into a `ReachableSet` plus ONE batched `cat-file --batch-check`, never a
+# call per blob. The `test --history` walk is the same leaf's other half: ONE
+# `log --name-status` plus ONE `cat-file --batch`, never a call per commit. `git` is a std-only path crate already in the workspace; no new
+# external crate enters and `cargo deny` is unchanged.
+git = { workspace = true }
+# The `mrd test` scenario runner (U1.2): `^put` routes through the PRODUCTION
+# write path (`wire-serve` splice/create/remove over a real `fs` mount — no
+# in-memory double), and `^expect` runs fenced Starlark under FULL `EvalLimits`
+# (tick + heap + call-depth + source-size + nesting). `starlark`/`allocative` are
+# already in the graph via `effects`/`policy` (no new external crate enters,
+# `cargo deny` unchanged); `effects::validate` supplies the source-size + nesting
+# + parse guards so the harness reuses the tested kernel guard, never a fork.
+starlark = { workspace = true }
+allocative = "0.3"
+anyhow = { workspace = true }
+# `mrd pin`: resolve + compose atomically, evaluate check: predicates, and splice
+# the `meridian-lock` block through the strict writer. (R1.3 — the U2.4 verb this
+# note described read an `inputs:` manifest and spliced an `^inputs` lock; the
+# stage-2 verb speaks the lock grammar.)
+# writer. A local CLIENT of the pin op — `pin` orchestrates model/view/wire-serve
+# and is already in the graph via those crates; no new external crate enters.
+# `mrd attest` (U2.5): attest = realised-gate + pin + receipt. A local CLIENT of
+# the attest op — `attest` composes `pin` (already in the graph) and reads the
+# realise board for the realised-gate; no new external crate enters.
+# `mrd new` / `mrd unfold` (U5.3): presets + session birth. A local CLIENT of the
+# `preset` op — it loads a def, validates ^properties, and births the scaffold /
+# record through the U2.6 guarded create (already in the graph via `wire-serve`);
+# no new external crate enters.
+preset = { workspace = true }
+# `mrd check` (U2.10): the pure READ validity verb. A local CLIENT of the `check`
+# engine — layer 0 recomputes the receipt journal's chain continuity and the
+# foreign_edit trace over the resolved workspace. `check` composes receipt / fs /
+# realise / policy, already in the graph; no new external crate enters.
+check = { workspace = true }
+# `mrd realise` (U3.5b): the reconciliation-loop verb. A local CLIENT of the
+# `realise` engine (U3.5a) — observe → check → apply (rides `run`) → re-check,
+# the A4 classifier, the pending-agent board mint. Already in the graph via
+# `check`; no new external crate enters.
+realise = { workspace = true }
+# `mrd config` (U6): the MERIDIAN.md plane. A local CLIENT of the `config`
+# engine — it resolves the two-rung bootstrap chain and publishes the parsed
+# mount table, because the render face elides `meridian-*` blocks and so
+# `mrd read` cannot be that surface. `config` is a path crate downstream of
+# `model` (already in the graph); no new external crate enters, `cargo deny`
+# unchanged.
+config = { workspace = true }
+# U11 — `mrd walk` names the canonical root type and the resolution-facing
+# mount projection to build the root-keyed corpus. A std-only leaf already in
+# the graph via `model`/`view` — no new external crate, `cargo deny` unchanged.
+addr = { workspace = true }
+# U23 — `mrd retire` asks ONE question of `lock`: `is_engine_emitted(lang)`, the
+# elision law's own predicate, so the marker sweep refuses to write into bytes
+# the engine writes. Naming the languages here instead would be a second
+# spelling of a law that already has an owner (decision #8 §1). A std-only path
+# crate already in the graph via `model`/`wire-serve` — no new external crate
+# enters, `cargo deny` unchanged.
+lock = { workspace = true }
+# JSON output (the house grammar). All already in the graph.
+serde = { workspace = true }
+serde_json = { workspace = true }
+# U15 — the armed-set digest `mrd script --expect-armed` compares
+# (`crates/mrd/src/script/digest.rs`). sha256 rather than the blake3 the rev/hash
+# law uses, deliberately: this is not a rev, it is an agreement token whose other
+# reader is the Go MCP host, where sha256 is stdlib and blake3 is a new module —
+# and the cheaper an independent verification is to write, the less likely a host
+# invents a second canonicalization. `sha2` is already a workspace dependency and
+# already in the graph via `cache`, so no new external crate enters and
+# `cargo deny` is unchanged.
+sha2 = { workspace = true }
+# The `mrd test` scenario runner mounts each scenario's `base/` into a REAL
+# tmpdir (fidelity — the production write path lands actual bytes). `tempfile` is
+# already a graph dependency (dev-deps + other crates); no new external crate.
+tempfile = "3"
+# Foreground-daemon signal handling (SIGINT/SIGTERM → graceful shutdown).
+# libc is already a graph dependency (cache depends on it); no new crate enters
+# the graph and it passes `cargo deny` unchanged.
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+# The perf lane's CPU measure (crates/mrd/tests/status_multiroot_cpu.rs):
+# `getrusage(RUSAGE_CHILDREN)` reads the measured child's user+sys, which is the
+# load-independent number on this shared host — wall-clock there measures the
+# neighbours. Already a regular dependency of this crate; no new external crate
+# enters the graph and `cargo deny` is unchanged.
+libc = "0.2"
+# R31 gate (crates/mrd/tests/color_planes_e2e.rs): mint the empty-span token a
+# HAND-AUTHORED lock carries — `blake3` of zero bytes — through the same hasher
+# family the engine uses, so the witness is computed, never a literal that could
+# drift from the thing it stands for. The engine's own mint deliberately REFUSES
+# to produce it, which is the defect being closed, so the gate cannot ask
+# `model` for it. Already in the graph and the lockfile via `model` (blake3 =
+# "1") — no new external crate enters the workspace, `cargo deny` unchanged.
+blake3 = "1"
+# Integration gates (crates/mrd/tests/sql_e2e.rs and friends). All are path
+# crates already in the graph — no new external crate enters, `cargo deny`
+# unchanged.
+view = { workspace = true }
+fs = { workspace = true }
+cache = { workspace = true }
+workspace = { workspace = true }
+registry = { workspace = true }
+model = { workspace = true }
+# build three-doc-chain Document fixtures for the U2.3 walk e2e gate: compute
+# each page's live rev (model::build ∘ syntax::parse — the SAME parse
+# fs::build_corpus runs) so the on-disk R4 lock pins are byte-correct. A
+# dev-only edge; `syntax` is a path crate already in the graph, `cargo deny`
+# unchanged.
+syntax = { workspace = true }
+# The D12 address-owner gate (crates/mrd/tests/address_owner.rs) names the
+# injected mount table (`addr::MountSet`) U11 added to `resolve_ref`. A std-only
+# leaf already in the graph via `model` — no new external crate enters,
+# `cargo deny` unchanged.
+addr = { workspace = true }
+duckdb = { workspace = true }
+# The U1.6 `test --history` gate (crates/mrd/tests/history.rs) drives the tier over
+# the REAL embedded seed convention: `policy::seed_convention_files()` supplies the
+# exact `reviewer-not-owner` CHECK bytes the test writes into the workspace's
+# convention folder, so the gate exercises the shipped law, never a hand-copied
+# rule. `policy` is a path crate already in the graph — no new external crate.
+policy = { workspace = true }

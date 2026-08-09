@@ -1,0 +1,25 @@
+[package]
+name = "git"
+description = "The git plumbing organ: shell-out content-addressing (blob object ids, the eager blob write) and object reachability against a repo handle — git owns content-addressing, the engine never computes an oid"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# Production dependencies: NONE. This crate is `std` plus the `git` binary, so
+# the whole shell-out surface is auditable in one leaf and every consumer
+# (mrd, wire-serve, view) can take the edge without dragging model/wire in.
+[dependencies]
+
+[dev-dependencies]
+# test-only: the composed three-state gate runs THIS crate's plumbing into the
+# classifier that consumes it (`receipt::anchor::ObjectAnchor`), so the two
+# halves of S5 are proven together against a real fixture repo. Production deps
+# stay empty — the edge is one direction and dev-only.
+receipt = { workspace = true }
+# test-only: fixture repos live in tmpdirs. Already in the graph (fs, cache).
+tempfile = "3"

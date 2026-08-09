@@ -1,0 +1,48 @@
+[package]
+name = "effects"
+description = "The effect kernel: pure Starlark evaluation — rules in, effect descriptors out, zero I/O, zero integration, advisory-only (decisions/0003, decision #7)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# The sealed evaluation engine (fenced Starlark → effect descriptors). Pinned at
+# the workspace root (=0.14.2), shared with `policy`. Zero ambient I/O: the only
+# capabilities a rule gets are the effect-descriptor builtins registered here —
+# the standard globals carry no file/net/os surface (research-starlark-mcp §1).
+starlark = { workspace = true }
+# `#[starlark_module]` builtins return `anyhow::Result`; the effect constructors use it.
+anyhow = { workspace = true }
+# The parsed-AST types behind `AstModule`: the script entry walks the module's
+# top-level statements once, at parse time, to learn which `read(…)` calls sit in
+# echo position. Same exact pin as `starlark` — one AST, never two.
+starlark_syntax = { workspace = true }
+# Effect descriptors serialize for golden snapshots and the (reserved) wire
+# `effects[]` field. serde derive only — pure, no I/O.
+serde = { workspace = true }
+# The script plane's `put()` arms `splice.plan_edits[]` items VERBATIM (ruling
+# B′): the armed shapes ARE `wire::PlanEdit`, so the kernel never re-types what
+# the wire owns and a new plan verb costs this crate nothing. `wire` is
+# serde-only and does zero I/O (Law 2), so the kernel stays pure — and the
+# dependency is acyclic: `wire` names no engine crate.
+wire = { workspace = true }
+# `receipt_addr(path, rev)` mints a receipt anchor as `blake3(path \0 rev)[:16]` —
+# the SAME rev law the world model and the attested INDEX already speak (contract
+# §1: blake3-256, first 16 hex), so a receipt address is not a second hash grammar.
+# Version "1" matches `model`'s and `policy`'s pins — one graph copy. Pure compute,
+# no I/O; the crate stays advisory and side-effect free.
+blake3 = "1"
+
+[dev-dependencies]
+# Golden descriptor snapshots (rule + event → exact effect set).
+insta = { workspace = true }
+# Invariants: determinism across runs/threads, fuel bounds, no panic on any event,
+# idempotency-key stability. proptest is the stable-runnable fuzz layer.
+proptest = { workspace = true }
+# Golden fixtures + property assertions render effects to canonical JSON.
+serde_json = { workspace = true }

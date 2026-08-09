@@ -1,0 +1,60 @@
+[package]
+name = "registry"
+description = "The daemon-held workspace registry (watchman model): a unix-socket NDJSON RPC server plus client library. The daemon is the sole writer of warm registrations — canonicalize, deny-ceiling enforce, first-writer-wins insert, drawer sentinel via cache, atomic state file, idle-reap (decision 0001 round 5). A DECLARED root (the hello `workspace` field) pins exactly and never widens to a registered ancestor; the ancestor walk serves cwd hints only."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+# The identity + safety layer: canonicalize (drawer-key input) and the
+# deny-ceiling predicate the daemon enforces on every register. Leaf crate.
+workspace = { workspace = true }
+# The hashed drawer + sentinel: the daemon writes the drawer sentinel on a
+# successful register (the single warm-registration writer). Leaf crate; its
+# DrawerLock also serves as the daemon-singleton flock (no libc edge needed).
+cache = { workspace = true }
+# The resident query engine (decision 0002 spine root U1): the daemon holds a
+# warm CorpusIndex + document map per workspace, rebuilt only when the corpus
+# content hash changes. `fs` reads + folds the snapshot and parses it into the
+# engine (the shared build primitives — one implementation, this one host);
+# `model` carries the resident types (CorpusIndex, Document, MerkleRoot fingerprint).
+fs = { workspace = true }
+model = { workspace = true }
+# The spine's read surface (U2): `query` serves toc/links over the resident
+# index; `syntax` is the parser the resident build folds in (via `fs`). Declared
+# here as the U1 engine's read/parse edges; the U1 gate exercises `query` over a
+# warm engine to prove the resident state answers real queries.
+query = { workspace = true }
+syntax = { workspace = true }
+# The wire contract (U2): the daemon socket now answers the frozen wire read ops
+# (toc/cat/extract/links/root/diff/resolve). `wire` is the request/response
+# vocabulary; `wire-serve` is the shared strict-decode + read-op arms, served
+# from the resident engine's borrowed state (one implementation, this one host —
+# hosts ruling, wire-contract §3.3).
+wire = { workspace = true }
+wire-serve = { workspace = true }
+# Stage-2 S6: the read-is-the-mint ledger type (`receipt::read_mint`). The daemon
+# HOLDS one per workspace — the in-memory session layer a composed read mints
+# into — deliberately outside the warm engine, whose rebuild would otherwise
+# evaporate the receipt a pin's own write depends on. A path crate already in the
+# graph via `wire-serve`, so no new external crate enters and `cargo deny` is
+# unchanged.
+receipt = { workspace = true }
+# The `mounts` op (wire-contract § A.5): the daemon serves the machine's
+# mount table — `config` owns resolve/parse/bind and every refusal word; the
+# daemon only projects. `blake3` mints the § A.5 freshness token
+# (`blake3(config bytes)[:16]`, the §1 file_rev law) for the per-call hash
+# gate — the same dev-edge precedent as `policy`/`effects` (blake3 stays
+# outside `model`'s public surface). Both already in the graph and lockfile.
+config = { workspace = true }
+blake3 = "1"
+
+[dev-dependencies]
+tempfile = "3"
