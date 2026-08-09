@@ -31,6 +31,7 @@
 | `README.md` | Process, standing corrections, inventory |
 | `wire-contract.md` | Standing wire constitution |
 | `laws.md` | Architecture laws + crate charters |
+| `release.md` | What a release promises (two-key rule) + stamp/tag mechanics |
 | `address-grammar.md` | Cross-root / mount / `addr::Addr` |
 | `meridian-md-schema.md` | `MERIDIAN.md` config parse |
 | `node-rev-merkle-spec.md` | `node_rev` + merkle encoding (+ `.assets/`) |
@@ -47,5 +48,6 @@
 3. `laws.md` if editing crates  
 4. Task SPECs as needed  
 5. `status.md` only for “what the binary exposes today”  
+6. `release.md` only when cutting or consuming a release  
 
 Do **not** start from `worker-log.md`.
