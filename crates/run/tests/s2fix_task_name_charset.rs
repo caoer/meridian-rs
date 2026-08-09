@@ -41,7 +41,7 @@ fn a_hostile_name_refuses_even_when_another_task_is_the_one_addressed() {
     let d = doc(page);
     assert!(
         matches!(
-            address::bindings(&d),
+            address::declared(&d),
             Err(AddressError::InvalidTaskName { .. })
         ),
         "the whole binding set refuses, so --list cannot print the forged name"
@@ -72,7 +72,7 @@ fn every_markdown_forging_name_shape_refuses_not_just_the_fp_token() {
         let page = format!("---\n\"task.{hostile}\": \"[[#^t-1]]\"\n---\n");
         assert!(
             matches!(
-                address::bindings(&doc(&page)),
+                address::declared(&doc(&page)),
                 Err(AddressError::InvalidTaskName { .. })
             ),
             "name {hostile:?} must refuse at the boundary"
@@ -86,7 +86,7 @@ fn every_markdown_forging_name_shape_refuses_not_just_the_fp_token() {
 #[test]
 fn a_literal_line_ending_never_becomes_a_task_key_at_all() {
     let page = "---\n\"task.fix\nrow\": \"[[#^t-1]]\"\n---\n";
-    let all = address::bindings(&doc(page)).expect("no binding forms, so none refuses");
+    let all = address::declared(&doc(page)).expect("no binding forms, so none refuses");
     assert!(
         all.is_empty(),
         "a newline-bearing key does not parse as a binding: {all:?}"
@@ -134,7 +134,7 @@ fn every_task_name_in_the_corpora_still_resolves() {
 #[test]
 fn reserved_sub_keys_are_skipped_before_the_name_guard() {
     let page = "---\ntask.fix-drift: \"[[#^t-1]]\"\ntask.fix-drift.caps: md.set_field:status\ntask.fix-drift.args: page\ntask.fix-drift.env: HOME_WIKI\n---\n\n```bash\necho hi\n```\n^t-1\n";
-    let all = address::bindings(&doc(page)).expect("declarations are not bindings");
+    let all = address::declared(&doc(page)).expect("declarations are not bindings");
     assert_eq!(all.len(), 1);
     assert_eq!(all[0].name, "fix-drift");
 }

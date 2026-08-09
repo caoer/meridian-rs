@@ -399,7 +399,7 @@ fn list_tasks(
     conventions: &Conventions,
     format: Format,
 ) -> Result<(), Fail> {
-    let bindings = address::bindings(doc).map_err(|e| fail_address(&e))?;
+    let bindings = address::declared(doc).map_err(|e| fail_address(&e))?;
     match format {
         Format::Json => {
             let rows: Vec<serde_json::Value> = bindings

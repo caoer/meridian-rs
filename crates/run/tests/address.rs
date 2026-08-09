@@ -177,10 +177,10 @@ true
 #[test]
 fn sub_key_declarations_are_not_bindings() {
     let d = doc(PAGE);
-    let names: Vec<String> = address::bindings(&d)
+    let names: Vec<String> = address::declared(&d)
         .unwrap()
         .into_iter()
-        .map(|b| b.name)
+        .map(|d| d.name)
         .collect();
     let reserved = address::RESERVED_SUFFIXES;
     assert!(

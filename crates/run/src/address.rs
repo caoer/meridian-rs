@@ -227,14 +227,26 @@ fn parse_binding_value(name: &str, raw_value: &str) -> Result<String, AddressErr
     Ok(block.to_owned())
 }
 
-/// Every task binding the page declares, in document order, each value
-/// validated. A malformed binding ANYWHERE refuses loudly at load — one broken
-/// declaration must not silently vanish from `--list`.
+/// One row of the page's task table: the declared name, and either its parsed
+/// binding or the typed fault its OWN value carries. Value faults are row-scoped
+/// — a sibling's broken binding never masks the task a caller addressed, and
+/// `--list` prints the fault as the row instead of losing the page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclaredTask {
+    /// The task name (the fm key minus the `task.` prefix).
+    pub name: String,
+    /// The binding, or this row's own value fault.
+    pub binding: Result<TaskBinding, AddressError>,
+}
+
+/// Every task the page declares, in document order, each value validated into
+/// its own row. The one page-eager refusal is the NAME charset guard: a name is
+/// stamped verbatim into run receipts, so listing a forging name is itself the
+/// harm (ruling 011).
 ///
 /// # Errors
-/// [`AddressError::InvalidBinding`] / [`AddressError::CrossFileRef`] for the
-/// first malformed binding.
-pub fn bindings(doc: &Document) -> Result<Vec<TaskBinding>, AddressError> {
+/// [`AddressError::InvalidTaskName`] for the first name outside the charset.
+pub fn declared(doc: &Document) -> Result<Vec<DeclaredTask>, AddressError> {
     let Some(map) = frontmatter(doc) else {
         return Ok(Vec::new());
     };
@@ -260,10 +272,12 @@ pub fn bindings(doc: &Document) -> Result<Vec<TaskBinding>, AddressError> {
                 name: rest.to_owned(),
             });
         }
-        let anchor = parse_binding_value(rest, value)?;
-        out.push(TaskBinding {
+        out.push(DeclaredTask {
             name: rest.to_owned(),
-            anchor,
+            binding: parse_binding_value(rest, value).map(|anchor| TaskBinding {
+                name: rest.to_owned(),
+                anchor,
+            }),
         });
     }
     Ok(out)
@@ -275,23 +289,23 @@ pub fn bindings(doc: &Document) -> Result<Vec<TaskBinding>, AddressError> {
 /// # Errors
 /// Every [`AddressError`] variant except the page-load class.
 pub fn resolve_task(doc: &Document, task: Option<&str>) -> Result<ResolvedTask, AddressError> {
-    let all = bindings(doc)?;
-    let names = || all.iter().map(|b| b.name.clone()).collect::<Vec<_>>();
-    let binding = match task {
+    let all = declared(doc)?;
+    let names = || all.iter().map(|d| d.name.clone()).collect::<Vec<_>>();
+    let row = match task {
         Some(name) => all
             .iter()
-            .find(|b| b.name == name)
-            .cloned()
+            .find(|d| d.name == name)
             .ok_or_else(|| AddressError::NoTask {
                 name: name.to_owned(),
                 available: names(),
             })?,
         None => match all.as_slice() {
             [] => return Err(AddressError::NoTasks),
-            [only] => only.clone(),
+            [only] => only,
             _ => return Err(AddressError::ManyTasks { available: names() }),
         },
     };
+    let binding = row.binding.clone()?;
     resolve_binding(doc, &binding)
 }
 
