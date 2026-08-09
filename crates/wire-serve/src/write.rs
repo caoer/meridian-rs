@@ -147,6 +147,11 @@ pub fn splice(
     // promotion can advance the root it guards on.
     world_guard(args.if_root.as_ref(), &root_before)?;
 
+    // §6.6 pre-flight: the requested receipt anchor is resolved against the
+    // receipt file BEFORE any byte moves, so a collision refuses the batch
+    // whole instead of being detected after the commit that minted it.
+    preflight_receipt_anchor(root, args.receipt.as_ref())?;
+
     // The pin prologue, ordered gate → fingerprint + blob → anchor promotion.
     // It runs inside the flock this splice already holds, so the receipt's
     // rev-recheck reads the same pre-image the batch will validate against,
@@ -2180,6 +2185,63 @@ fn birth_death_delta(
         now,
         files,
     )
+}
+
+/// The §6.6 pre-flight: the requested receipt anchor passes the block-id
+/// mint-guard and does not already stand in the receipt file — both answered
+/// before any byte moves.
+///
+/// The engine reads the receipt file in the same act that appends to it, so a
+/// collision with the requested anchor is visible up front. Answering it
+/// afterwards is what made a refusal write: the append minted a second block
+/// under one id, [`resolve_receipt_fact`] then found two and reported a corrupt
+/// receipt over two already-committed files, and the `fix` it taught appended
+/// the caller's content twice.
+///
+/// A receipt file that does not exist yet cannot collide — [`receipt_input`]
+/// births it.
+///
+/// # Errors
+/// `bad_request` when the anchor id fails the mint-guard, or when the receipt
+/// file already carries that anchor — once, or already more than once.
+fn preflight_receipt_anchor(
+    root: &fs::WorkspaceRoot,
+    receipt: Option<&ReceiptAddr>,
+) -> Result<(), Box<ErrorBody>> {
+    let Some(addr) = receipt else {
+        return Ok(());
+    };
+    let target = model::Ref::anchor(addr.anchor.clone()).map_err(|_| {
+        bad_request(format!(
+            "receipt anchor ^{} is outside the block-id charset ([A-Za-z0-9-], §2.4), so no \
+             door could address the receipt it would mint. No edit was applied; the batch is \
+             refused whole. Fix: re-send with an anchor in that charset.",
+            addr.anchor
+        ))
+    })?;
+    if !root.0.join(&addr.path.0).exists() {
+        return Ok(());
+    }
+    let receipt_doc = load_doc(root, &addr.path)?;
+    let standing = match model::resolve(&receipt_doc, &target) {
+        Err(model::ResolveError::NotFound) => return Ok(()),
+        Ok(_) => 1,
+        Err(model::ResolveError::Ambiguous(hits)) => hits.len(),
+    };
+    let mut e = bad_request(format!(
+        "receipt anchor ^{} already stands in {} ({standing} block{} carr{} it), and an anchor \
+         MUST be unique within the receipt file it names (§6.6): appending a second block under \
+         that id publishes a receipt no strict door can address. No edit was applied; the batch \
+         is refused whole. Fix: re-send with an anchor no block in {} carries — an id derived \
+         from the invocation (`r-<invocation-id>`) never collides, a counter that restarts does.",
+        addr.anchor,
+        addr.path.0,
+        if standing == 1 { "" } else { "s" },
+        if standing == 1 { "ies" } else { "y" },
+        addr.path.0,
+    ));
+    e.path = Some(addr.path.clone());
+    Err(e)
 }
 
 /// The post-commit receipt fact: resolve the anchor in the just-committed
