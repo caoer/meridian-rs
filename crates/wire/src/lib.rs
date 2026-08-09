@@ -1066,6 +1066,16 @@ pub struct Response {
 /// error envelope under the `error` key. `ok` mirrors which arm rides.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "both arms are large by construction and the lint's own remedy provably \
+              relocates it: measured on this tree, ErrorBody is 520 bytes and ResponseBody \
+              288, so boxing the error arm leaves 288 vs 8 — a WIDER gap, warning the other \
+              way. Only boxing both silences it, at every response construction site, to \
+              trade one pointer chase for another. The §8 extras set is flat and frozen \
+              (extras beside `code`, never nested), so the struct's width is contract shape, \
+              not a layout accident"
+)]
 pub enum ResponsePayload {
     Body { body: ResponseBody },
     Error { error: ErrorBody },
@@ -1613,8 +1623,9 @@ pub enum ErrorCode {
     /// v2 §8/§4.4: `old` occurs 2+ times. Extras: `matches` (the count) —
     /// add context bytes to `old`.
     NotUnique,
-    /// v2 §8/§4.4: the post-apply reparse would lose containment. Extras:
-    /// `lost` (the hpaths that would vanish).
+    /// v2 §8/§4.4: an identity does not survive the post-apply reparse. Extras:
+    /// `family` (which of the two §4.4 families), plus `lost` + optional
+    /// `cause` on `containment_lost`, or `target` on `target_identity`.
     WouldCorrupt,
     /// v2 §8: the world outside the workspace — the file is gone. Echoes
     /// `path`.
@@ -1758,6 +1769,20 @@ impl ErrorCode {
     }
 }
 
+/// The two §4.4 `would_corrupt` families — which identity does not survive the
+/// post-apply reparse. One code, two families: the caller dispatches on this
+/// rather than probing which extras a refusal happens to carry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WouldCorruptFamily {
+    /// A section byte-disjoint from every edit no longer resolves. Extras:
+    /// `lost` (always) + `cause` (when the lost sections share one).
+    ContainmentLost,
+    /// The edit's own target no longer resolves, so its armed facts are
+    /// unrepresentable. Extra: `target`.
+    TargetIdentity,
+}
+
 /// v2 §8: the error envelope — a nested object under the response's `error`
 /// key: `code` + the required closed `recovery` class + optional human
 /// `message` + code-specific extras beside them (never nested further).
@@ -1822,11 +1847,23 @@ pub struct ErrorBody {
     /// the target's full span bytes (v2 §5.2 worked frames).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub matches: Option<u32>,
-    /// `would_corrupt`: the hpaths the post-apply parse would lose (v2 §4.4
-    /// batch laws) — identities in the §2.1 grammar's segments.
+    /// `would_corrupt`: which of the two §4.4 families this refusal is. A
+    /// caller dispatches on this, never on which extras happen to be present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub family: Option<WouldCorruptFamily>,
+    /// `would_corrupt{containment_lost}`: the hpaths the post-apply parse would
+    /// lose (v2 §4.4 batch laws) — identities in the §2.1 grammar's segments.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lost: Option<Vec<Vec<HpathSeg>>>,
+    /// `would_corrupt{target_identity}`: the offending edit's own target, which
+    /// no longer resolves after the reparse (a ref-carrying surface).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<SecRef>,
     /// `io_error`: the underlying cause, carried (v2 §8).
+    /// `would_corrupt{containment_lost}`: the MEASURED cause token —
+    /// `heading_destroyed` or `reparented` (v2 §4.4) — absent when the lost
+    /// sections do not share one cause. `code` (plus `family`) discriminates
+    /// the grain, as it does for `expected`/`actual`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cause: Option<String>,
     /// `bad_request` on non-disjoint batch targets (v2 §4.4): the offending
@@ -1880,7 +1917,9 @@ impl ErrorBody {
             unknown_kinds: None,
             id_raw: None,
             matches: None,
+            family: None,
             lost: None,
+            target: None,
             cause: None,
             overlap: None,
             rung: None,

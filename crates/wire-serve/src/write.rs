@@ -28,7 +28,7 @@ use std::path::Path as FsPath;
 use wire::{
     Armed, ArmedEdit, Delta, DeltaFile, DeltaFrame, Edit, EditShape, ErrorBody, ErrorCode,
     HpathSeg, NodeRev, Path, PutAt, ReceiptAddr, ReceiptFact, ResponseBody, Root, SecRef, Severity,
-    Span, Verdict,
+    Span, Verdict, WouldCorruptFamily,
 };
 
 use crate::read::{ambiguous, to_model_ref};
@@ -2944,8 +2944,25 @@ fn simulate_armed_edits(
         let after = model::resolve(after_doc, &target).map_err(|_| {
             // A target whose identity does not survive its own edit (e.g. a
             // heading rewritten by put at:all) has no worked armed shape in
-            // the frozen text — refuse loud rather than invent one.
-            bad_request("target identity does not survive the edit — armed facts unrepresentable")
+            // the frozen text — refuse loud rather than invent one. This is
+            // the §4.4 `target_identity` family: the same post-reparse death
+            // as containment loss, one code, discriminated by `family`.
+            let mut e = ErrorBody::new(ErrorCode::WouldCorrupt);
+            e.family = Some(WouldCorruptFamily::TargetIdentity);
+            e.target = Some(edit.target.clone());
+            // The teaching rides the wire, not one face: this refusal has a
+            // `message`, and every face prefers it, so a remedy written into
+            // the CLI alone would never reach the host doors.
+            e.message = Some(format!(
+                "target identity does not survive the edit — \"{}\" does not resolve after this \
+                 batch, so its armed facts are unrepresentable. {} Fix: re-supply the identity \
+                 the slot overwrites — a section heading for `at:\"all\"`, a line-final block id \
+                 for `at:\"end\"` on an anchor; to RETIRE an identity, write through the parent's \
+                 content slot instead of its own.",
+                target_display(&edit.target),
+                crate::NO_PARTIAL_WRITE_CLAUSE
+            ));
+            Box::new(e)
         })?;
         armed_edits.push(ArmedEdit {
             target: edit.target.clone(),
@@ -3130,8 +3147,16 @@ fn verdict_to_wire(
             edits: offending,
             spans: _,
         } => overlap_refusal(offending, edits),
-        model::SpliceVerdict::WouldCorrupt { lost } => {
+        model::SpliceVerdict::WouldCorrupt { lost, cause } => {
             let mut e = ErrorBody::new(ErrorCode::WouldCorrupt);
+            e.family = Some(WouldCorruptFamily::ContainmentLost);
+            e.cause = cause.map(|c| {
+                match c {
+                    model::CorruptCause::HeadingDestroyed => "heading_destroyed",
+                    model::CorruptCause::Reparented => "reparented",
+                }
+                .to_owned()
+            });
             e.lost = Some(
                 lost.iter()
                     .map(|chain| {

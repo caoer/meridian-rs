@@ -364,25 +364,46 @@ fn spelled(error: &ErrorBody) -> String {
             wire_serve::NO_PARTIAL_WRITE_CLAUSE
         );
     }
-    // Dogfood NEW-B: contract §4.4 promises `would_corrupt{lost:[hpath…]}` —
-    // the chains ride the wire, so the human face names what the commit would
-    // lose and the newline law behind the commonest cause.
-    if error.code == wire::ErrorCode::WouldCorrupt
-        && let Some(lost) = &error.lost
-    {
-        let chains = lost
-            .iter()
-            .map(|chain| format!("`{}`", wire_serve::display_hpath(chain)))
-            .collect::<Vec<_>>()
-            .join(", ");
-        return format!(
-            "would_corrupt: committed, this batch would re-parse to a document that loses \
-             containment — {chains} would fall out of the section tree. {} Fix: carry your \
-             own newlines — `at:\"end\"` is raw byte concatenation (§4.4), so inserted text \
-             that runs up against a following heading must end with `\\n` or the heading \
-             line glues onto it and stops parsing as a heading.",
-            wire_serve::NO_PARTIAL_WRITE_CLAUSE
-        );
+    // Dogfood NEW-B: contract §4.4 promises `would_corrupt{family,…}` — the
+    // family and the measured cause ride the wire, so the human face names what
+    // dies AND the remedy that repairs THIS batch. The remedy is never a fixed
+    // string: a remedy for a cause the engine did not measure is a
+    // taught-recovery loop, so an unmeasured cause teaches nothing.
+    // The `target_identity` family is not spelled here: that refusal carries
+    // its own `message` (wire-serve), which every face prefers over this one.
+    if error.code == wire::ErrorCode::WouldCorrupt {
+        if let Some(lost) = &error.lost {
+            let chains = lost
+                .iter()
+                .map(|chain| format!("`{}`", wire_serve::display_hpath(chain)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let remedy = match error.cause.as_deref() {
+                Some("heading_destroyed") => {
+                    " Fix: carry your own newlines — `at:\"end\"` is raw byte concatenation \
+                     (§4.4), so inserted text that runs up against a following heading must \
+                     end with `\\n` or the heading line glues onto it and stops parsing as a \
+                     heading."
+                }
+                Some("reparented") => {
+                    " Fix: the text you wrote opens a heading shallow enough to adopt the \
+                     sections after it — those headings still parse, their paths just moved. \
+                     Deepen that heading's level so it nests under the target, or aim the \
+                     edit at the parent whose whole subtree you meant to rewrite."
+                }
+                // Measured nothing shared: name the loss, teach no cause.
+                _ => {
+                    " Fix: re-read the file and compare the section tree your text would \
+                     produce against the one above — the lost paths do not share one cause, \
+                     so no single remedy is safe to teach."
+                }
+            };
+            return format!(
+                "would_corrupt: committed, this batch would re-parse to a document that loses \
+                 containment — {chains} would fall out of the section tree. {}{remedy}",
+                wire_serve::NO_PARTIAL_WRITE_CLAUSE
+            );
+        }
     }
     match (&error.expected, &error.actual, &error.path) {
         (Some(expected), Some(actual), _) => {
