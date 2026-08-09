@@ -1443,3 +1443,147 @@ fn put_refusal_on_a_duplicated_anchor_speaks_the_anchor_remedy() {
     );
     assert!(!err.contains("rename one heading"), "{err}");
 }
+
+// ---------------------------------------------------------------------------
+// Bare-token refusal family (dogfood P3-a + NEW-A + NEW-B): the named refusal
+// faces teach — what happened, what was not done, the fix — instead of serving
+// their code as a bare token. Pins properties, not bytes (the
+// `refusal_teaching_dogfood` precedent). Codes, exit triad, and the machine
+// face's key set stay frozen — human teaching text only.
+// ---------------------------------------------------------------------------
+
+/// Gate (P3-a) — `not_unique` counts what it saw and teaches the working
+/// shape: the §4.4 match law wants exactly one occurrence, so the fix is more
+/// surrounding bytes or a narrower target. Was the bare token `mrd: not_unique`.
+#[test]
+fn put_not_unique_counts_the_matches_and_teaches_the_working_shape() {
+    let sb = sandbox();
+    let ws = sb.workspace_with("# Alpha\n\nitem one\nnew item\n");
+    let edits =
+        r#"[{"target":{"hpath":[{"h":"Alpha"}]},"edit":{"match":{"old":"item","new":"entry"}}}]"#;
+    let out = sb.run_stdin(&ws, &["put", "doc.md"], edits);
+    assert_eq!(code(&out), 1, "not_unique refuses: {}", stderr(&out));
+    let m = stderr(&out);
+    assert!(m.contains("not_unique"), "keeps the code: {m}");
+    assert!(m.contains("2 times"), "counts the occurrences it saw: {m}");
+    assert!(m.contains("exactly one"), "names the §4.4 law: {m}");
+    assert!(
+        m.contains("No edit was applied"),
+        "discloses partial state: {m}"
+    );
+    assert!(
+        m.contains("surrounding bytes"),
+        "teaches the working shape: {m}"
+    );
+
+    // The dogfood's exact --json probe: the same refusal answers the error
+    // envelope on stdout — never an empty stdout a machine cannot branch on.
+    let out = sb.run_stdin(&ws, &["put", "doc.md", "--json"], edits);
+    assert_eq!(code(&out), 1);
+    let v: Value = serde_json::from_str(&stdout(&out))
+        .expect("a --json not_unique refusal answers JSON on stdout");
+    assert_eq!(v["error"]["code"], "not_unique", "{v}");
+    assert_eq!(v["error"]["matches"], 2, "the count rides the wire: {v}");
+}
+
+/// Gate (P3-a) — `no_match` names the byte-exact law and the §5.2 guard split
+/// (a guarded miss is provably a typo; an unguarded one may be a moved world).
+/// Was the bare token `mrd: no_match`.
+#[test]
+fn put_no_match_teaches_the_byte_exact_law() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let out = sb.run_stdin(
+        &ws,
+        &["put", "doc.md"],
+        &beta_match("absent text", "anything"),
+    );
+    assert_eq!(code(&out), 1, "no_match refuses: {}", stderr(&out));
+    let m = stderr(&out);
+    assert!(m.contains("no_match"), "keeps the code: {m}");
+    assert!(m.contains("0 times"), "counts what it saw: {m}");
+    assert!(m.contains("byte-exact"), "names the match law: {m}");
+    assert!(
+        m.contains("No edit was applied"),
+        "discloses partial state: {m}"
+    );
+    assert!(
+        m.contains("if_node_rev"),
+        "teaches the §5.2 disambiguating guard: {m}"
+    );
+}
+
+/// Gate (NEW-B) — `would_corrupt` names the sections the commit would lose
+/// (contract §4.4: `would_corrupt{lost:[hpath…]}`) and the newline law behind
+/// the commonest cause. Was the bare token `mrd: would_corrupt`.
+#[test]
+fn put_would_corrupt_names_the_lost_sections_and_the_newline_law() {
+    let sb = sandbox();
+    let ws = sb.workspace_with("# Alpha\n\none two\n\n# Beta\n\nfour five\n");
+    let out = sb.run_stdin(
+        &ws,
+        &["put", "doc.md"],
+        r#"[{"target":{"hpath":[{"h":"Alpha"}]},"edit":{"put":{"at":"end","text":"- glued"}}}]"#,
+    );
+    assert_eq!(code(&out), 1, "would_corrupt refuses: {}", stderr(&out));
+    let m = stderr(&out);
+    assert!(m.contains("would_corrupt"), "keeps the code: {m}");
+    assert!(m.contains("`Beta`"), "names the section it would lose: {m}");
+    assert!(
+        m.contains("No edit was applied"),
+        "discloses partial state: {m}"
+    );
+    assert!(
+        m.contains("\\n"),
+        "teaches the carry-your-own-newlines law: {m}"
+    );
+}
+
+/// Gate (NEW-A) — an absolute spelling that lies INSIDE the workspace refuses
+/// with the §1 rule and the computed respell — the same teaching the write
+/// door already gives for the same violation. Was the bare token
+/// `mrd: bad_path: /abs/…` on the warm path, and SERVED on the degrade path.
+#[test]
+fn read_absolute_inside_spelling_refuses_with_the_respell() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let abs = ws.canonicalize().expect("canonicalize").join("doc.md");
+    let out = sb.run(&ws, &["read", abs.to_str().expect("utf8")]);
+    assert_eq!(code(&out), 1, "bad_path refuses: {}", stdout(&out));
+    assert_eq!(stdout(&out), "", "nothing is served");
+    let m = stderr(&out);
+    assert!(
+        m.contains("workspace-relative"),
+        "names the confinement rule: {m}"
+    );
+    assert!(
+        m.contains("respell it as") && m.contains("`doc.md`"),
+        "computes the respell, as the write door does: {m}"
+    );
+}
+
+/// NEW-A control — an absolute path OUTSIDE any workspace still refuses with
+/// the rule but proposes no respelling (there is none to propose), and its
+/// bytes are never served. Before this gate the degrade path served
+/// `/etc/hosts` at exit 0.
+#[test]
+fn read_absolute_outside_spelling_refuses_without_serving() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let out = sb.run(&ws, &["read", "/etc/hosts"]);
+    assert_eq!(code(&out), 1, "bad_path refuses: {}", stdout(&out));
+    assert_eq!(
+        stdout(&out),
+        "",
+        "the outside file's bytes are never served"
+    );
+    let m = stderr(&out);
+    assert!(
+        m.contains("workspace-relative"),
+        "names the confinement rule: {m}"
+    );
+    assert!(
+        !m.contains("respell it as"),
+        "proposes no respelling for a path outside the root: {m}"
+    );
+}
