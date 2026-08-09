@@ -110,6 +110,16 @@ pub struct Registry {
     #[cfg(test)]
     pub(crate) pause_before_borrow:
         Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+    /// Test-only pause gate for the reap's exemption window: when armed, the
+    /// reap pass announces itself on the first channel, then parks on the
+    /// second — after its exemption reading, before its decide-and-remove.
+    /// A subscription claim landing in that park must still be honored.
+    /// One-shot: the pass that hits it consumes it. `cfg(test)` excludes it
+    /// from every release build by construction (disclosed; same seam class
+    /// as `pause_before_insert`, the PR #9 precedent).
+    #[cfg(test)]
+    pub(crate) pause_in_reap_window:
+        Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
 }
 
 impl Registry {
@@ -145,6 +155,8 @@ impl Registry {
             pause_before_insert: Mutex::new(None),
             #[cfg(test)]
             pause_before_borrow: Mutex::new(None),
+            #[cfg(test)]
+            pause_in_reap_window: Mutex::new(None),
         }
     }
 
@@ -373,6 +385,15 @@ impl Registry {
         }))
     }
 
+    /// Take a live subscription claim on `workspace`'s ring (created on first
+    /// use — same key discipline as [`ring`](Self::ring)). The one claim door
+    /// for the `sub` dispatch: the reaper exemption (U20b) is engaged from the
+    /// moment this returns.
+    #[must_use]
+    pub fn subscribe(&self, workspace: &Path) -> crate::ring::SubGuard {
+        self.ring(workspace).subscribe()
+    }
+
     /// Read-is-the-mint ledger (S6), created on first use. `workspace` must be
     /// canonical (same key as `engines`/`inner`). [`Arc`] so a slow read never
     /// holds this map's lock.
@@ -514,6 +535,19 @@ impl Registry {
         let cutoff = now.saturating_sub(threshold_secs);
         // Exemption set before `inner` write lock — concurrent `sub` safe.
         let subscribed = self.subscribed_workspaces();
+        // Test-only: park here when the gate is armed (see the field docs).
+        #[cfg(test)]
+        {
+            let gate = self
+                .pause_in_reap_window
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            if let Some((arrived, release)) = gate {
+                let _ = arrived.send(());
+                let _ = release.recv();
+            }
+        }
         let reaped: Vec<PathBuf> = {
             let mut map = self.inner.write().unwrap_or_else(PoisonError::into_inner);
             let reaped: Vec<PathBuf> = map
@@ -720,6 +754,63 @@ mod engine_tests {
         assert!(
             !reg.engines.read().unwrap().contains_key(&canonical),
             "reap drops the warm engine with the registration"
+        );
+    }
+
+    /// The reap's exemption window (pre-existing; disclosed by PR #28's
+    /// review): the exemption set was read before the decide-and-remove, so a
+    /// claim landing between the two could still see its workspace reaped and
+    /// its ring dropped from the map. The next writer would mint a second
+    /// ring — the per-workspace `seq` forks (§4.7) and delivery silently
+    /// dies. Deterministic via the `pause_in_reap_window` seam (the PR #9
+    /// `pause_before_insert` precedent, disclosed): the reap parks in its
+    /// window, the claim lands, the reap resumes.
+    #[test]
+    fn a_claim_landing_in_the_reap_window_keeps_workspace_and_ring() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = Arc::new(registry_in(home.path()));
+        let ws = write_ws(home.path(), &[("a.md", "# A\n")]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.register(&canonical);
+
+        // Arm the one-shot reap-window gate for the reap pass (thread A).
+        let (arrived_tx, arrived) = std::sync::mpsc::channel();
+        let (release, release_rx) = std::sync::mpsc::channel();
+        *reg.pause_in_reap_window
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some((arrived_tx, release_rx));
+
+        // A: the widest-horizon reap, parked in its exemption window.
+        let a = {
+            let reg = Arc::clone(&reg);
+            std::thread::spawn(move || reg.reap(u64::MAX, 0))
+        };
+        arrived.recv().expect("the reap reached its window gate");
+
+        // The claim lands while the reap is parked — from here the client
+        // holds an honored subscription (the `sub` ack renders on it).
+        let guard = reg.subscribe(&canonical);
+
+        release.send(()).expect("the reap parked on the release gate");
+        let reaped = a.join().expect("the reap panicked");
+
+        assert!(
+            !reaped.contains(&canonical),
+            "a claimed workspace is not reaped, even by a reap already past \
+             its exemption reading when the claim landed: {reaped:?}"
+        );
+        assert!(
+            Arc::ptr_eq(guard.ring(), &reg.ring(&canonical)),
+            "the claimed ring IS the workspace's live ring — a second ring \
+             would fork the per-workspace seq counter §4.7 defines"
+        );
+
+        drop(guard);
+        let reaped = reg.reap(u64::MAX, 0);
+        assert!(
+            reaped.contains(&canonical),
+            "dropping the claim restores mortality (the survival above was \
+             the claim's doing): {reaped:?}"
         );
     }
 
