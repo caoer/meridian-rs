@@ -75,12 +75,23 @@ mrd read <PATH>[#FRAG] [--section SEL]
  ONE engine snapshot (daemon or in-process; human
  output is the rendered text verbatim)
 mrd put <PATH> [--dry | --validate] [--force] [--actor A] [--now T]
- [--if-fingerprint FP] [--receipt PATH#ANCHOR]
+ [--if-fingerprint FP] [--receipt PATH#ANCHOR] [--json]
  the batch write: the edits ride stdin as a BARE JSON
  array — the VALUE of the wire §4.4 `edits` field, not
  the request object around it (id / op / path are
  argv's here) — through the production splice
- choke-point (CAS + armed gate + write flock)
+ choke-point (CAS + armed gate + write flock). The face
+ teaches the grammar itself: `--help` states the target
+ shapes ({"hpath":[…]} / {"anchor":"…"} / {"fm_key":"…"})
+ and the nested edit shapes ({"match":{"old","new"}} /
+ {"put":{"at","text"}}) with a working batch, and a
+ malformed-stdin refusal repeats that working shape
+ beside the decoder's own words. `--json` is the machine
+ face on BOTH legs: a commit answers {workspace, put};
+ an engine refusal answers {workspace, error} on stdout
+ (the engine's §8 error body, v3 vocabulary — never
+ empty stdout) beside the human stderr line, exit triad
+ unchanged
 mrd pin <PAGE> <TARGET>#<SELECTOR> [--vibe] [--dry] [--json]
  mint a meridian-lock pin: PAGE records the claim,
  TARGET#SELECTOR is the content being attested
