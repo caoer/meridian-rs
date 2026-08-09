@@ -753,6 +753,23 @@ impl std::fmt::Display for MultiLineValue {
     }
 }
 
+/// The uniform `MultiLineValue` refusal sentence, spoken by EVERY value-plane
+/// write door (wire-contract § A.6.3a). One law refused in two dialects is two
+/// laws to the callers who meet it — recovery quality became a function of
+/// which door the caller entered — so the sentence lives here, beside the
+/// refusal it renders, and every door calls it rather than spelling its own.
+///
+/// A door MAY append its own provenance clause (which caller value carried the
+/// newline); the sentence itself is fixed: the key by name, the v1 single-line
+/// rule, and the body-section escape.
+#[must_use]
+pub fn multi_line_value_refusal(key: &str) -> String {
+    format!(
+        "property value for \"{key}\" contains a newline — frontmatter values are \
+         single-line in v1; put multi-line content in a body section"
+    )
+}
+
 /// The `set_property` value ENCODER — wire-contract § A.6.3, and the inverse of
 /// the § A.6.1 decode every read seam serves through.
 ///

@@ -1164,6 +1164,27 @@ the root record and each scaffold stub alike — carries `preset:` holding the
 DEF's page path. A root record that names itself there makes its own provenance
 line false and gives one key two meanings inside a single birth.
 
+**Law 3.6 — a `^template` placeholder in a frontmatter value position is a
+VALUE-PLANE WRITE.** `{{id}}`, `{{kind}}`, `{{actor}}` and `{{now}}` fill the
+template BODY verbatim; inside the template's frontmatter block the same
+substitution goes through the one encoder wire-contract § A.6.3a names, the
+encoder `set_property` and `put{at:"upsert"}` already speak. The emitted value
+is the plain form when the plain form decodes back to exactly the caller's
+string, and the canonical double-quoted scalar otherwise.
+
+A value that cannot be ONE frontmatter line — one carrying `\n` or `\r` —
+**refuses the birth** (`bad_request` / `fix`), naming the key, the v1
+single-line rule, the body-section escape, and the placeholder that carried it.
+Nothing is written. This is Law 3.4 holding, not bending: sanitizing the
+caller's actor would falsify the provenance the birth records, and an
+escaped-scalar workaround leaks, so the door refuses instead of rewriting.
+
+Measured (dogfood pass 1, f03): before this law the door interpolated source
+bytes, and `--actor $'zt\nstatus: closed'` born against `owner: {{actor}}`
+minted a record carrying `status:` twice — disk `closed`, every read door
+`open`, and no governed edit able to reach the shadow line. One law missing at
+a third door, where two doors already carried it.
+
 ## 4. The three verbs
 
 The plane offers exactly three births, and they differ only in **what set of
@@ -1314,6 +1335,7 @@ the next reader, who has no way to tell an unexamined law from a passing one.
 | 3.2 never clobber | **conformant** | `if_absent` CAS; `BirthResult::Occupied` is a finding, never a fallback write. `opts.dry` is passed to the door, so a dry run refuses too. |
 | 3.3 guarded remove | **conformant** | `prune_file` reads the live rev and removes under it. The `rmdir` exception is the empty-directory case, now stated in the element rather than only in a comment. |
 | 3.4 no minted identity or clock | **conformant** | `actor` / `now` are `Option<String>` on `BirthOptions` and are never defaulted from a clock; `fill_vars` renders an absent one as empty. |
+| **3.6 template fill is a value-plane write** | **WAS ABSENT — added 2026-08-09** | The door interpolated source bytes into the born frontmatter, so a caller value carrying `\n` or `: ` minted a second key line (dogfood pass 1, f03). `fill_template` now routes a frontmatter value position through `policy::defs::yaml_safe_value` — the encoder the other two § A.6.3a doors use — and refuses a multi-line value in their uniform words. Gated by `crates/preset/tests/birth_value_plane.rs`, six tests including the plain-value control and the body-verbatim control. |
 | 4 three verbs, one door | **conformant** | All three call `load_def` and `birth`; none carries a private write path or a second renderer. |
 | 4 `new` validates before writing | **conformant** | Structural def checks, then `first_violated_rule`, then birth. A def that cannot satisfy its own `^properties` refuses before any byte moves. |
 | 5.1 additive by diff, subtractive by allowlist | **conformant** | `reconcile_plan` is a pure fold and keeps the two halves as separate fields. |
