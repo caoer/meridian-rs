@@ -2000,7 +2000,12 @@ fn path_confined(root: &fs::WorkspaceRoot, path: &Path) -> Result<(), Box<ErrorB
 /// Canonicalizes to survive symlinked prefixes (`/tmp` vs `/private/tmp`); a
 /// missing leaf canonicalizes through its parent so a write to a not-yet-born
 /// inside path still gets its respelling.
-fn relative_respelling(root: &fs::WorkspaceRoot, path: &str) -> Option<String> {
+///
+/// Public because both doors teach it: the write door's [`path_confined`]
+/// here, and the read door's `bad_path` face at the CLI (dogfood NEW-A —
+/// one computation, so the two doors cannot train opposite habits).
+#[must_use]
+pub fn relative_respelling(root: &fs::WorkspaceRoot, path: &str) -> Option<String> {
     if !path.starts_with('/') {
         return None;
     }
