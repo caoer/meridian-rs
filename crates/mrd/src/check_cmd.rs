@@ -125,12 +125,23 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     }
     let mounts = crate::walk_cmd::load_mounts_for(&needed);
 
-    let worktree = assess(&root, &mounts, &worktree_docs, &domain);
+    // The pins the workspace DECLARES outside the hash domain. Read once: the
+    // two intervals differ in which bytes were HASHED, and an excluded page's
+    // bytes are hashed in neither.
+    //
+    // ⚠️ DECLARED BLIND SPOT: these bytes come from the WORKTREE for both
+    // intervals. A holder that is BOTH domain-excluded AND staged-modified is
+    // read at its worktree bytes under `--commit-gate`, so a pin ROW added or
+    // removed in the index alone is not seen. Strictly more than today, where
+    // the row does not exist at either interval; named rather than assumed.
+    let excluded = excluded_holders(&root, &domain);
+
+    let worktree = assess(&root, &mounts, &worktree_docs, &domain, &excluded);
 
     let staged = match (&interval, &staged_docs) {
         (Interval::Diverges(bytes), Some(docs)) => Some(Assessed {
             paths: bytes.paths.clone(),
-            report: assess(&root, &mounts, docs, &domain).report,
+            report: assess(&root, &mounts, docs, &domain, &excluded).report,
         }),
         _ => None,
     };
@@ -602,15 +613,60 @@ fn assess(
     mounts: &crate::walk_cmd::Mounts,
     docs: &BTreeMap<String, Document>,
     domain: &fs::domain::Domain,
+    excluded_holders: &BTreeMap<String, Document>,
 ) -> Assessed {
     // The same domain the snapshot was taken under — the colour plane must be
     // filtered by the filter that built its corpus, never by a second reading.
     let corpus = mounts.rooted(docs, domain, root);
-    let pins = pin_rows(&corpus, mounts.set());
+    let pins = pin_rows(&corpus, mounts.set(), excluded_holders);
     Assessed {
         paths: Vec::new(),
         report: check::core_of(root, docs, &pins),
     }
+}
+
+/// The markdown under the root the hash domain does NOT carry, parsed as pin
+/// SOURCES and nothing else.
+///
+/// `mrd pin` admits an out-of-domain holder and mints the pin at exit 0, so
+/// these pages hold claims the workspace has made. Reading the pin plane from
+/// the hashed corpus alone lets `--commit-gate` assert *every pin in the
+/// interval holds* over a population it narrowed, and answer green over a
+/// drifted pin (`docs/status.md`, the pin-population clause).
+///
+/// The exclusion is decided by the SAME predicate that decides the population —
+/// `domain.contains` — and never by a path shape. A path-shaped test over a
+/// content-defined population is blind to whatever the content rule excludes
+/// that the path rule does not: the dot-segment floor and the
+/// `meridian/domain.md` ignore list are two classes of one exclusion, and a
+/// reading keyed to the first silently drops the second.
+///
+/// An unreadable member is SKIPPED here rather than refusing the verb: this
+/// widens a population the caller already gets nothing from, so a failure to
+/// read one leaves the assessment exactly where it stands today. It is never
+/// counted as an absence of pins.
+fn excluded_holders(
+    root: &fs::WorkspaceRoot,
+    domain: &fs::domain::Domain,
+) -> BTreeMap<String, Document> {
+    let Ok(all) = fs::walk(root) else {
+        return BTreeMap::new();
+    };
+    let mut files: fs::DomainFiles = Vec::new();
+    for rel in all {
+        if domain.contains(&rel) {
+            continue;
+        }
+        let Some(rel_str) = rel.to_str() else {
+            continue;
+        };
+        let Ok(bytes) = std::fs::read(root.0.join(&rel)) else {
+            continue;
+        };
+        files.push((rel_str.to_owned(), bytes));
+    }
+    let (_index, docs, _unserved) = fs::build_corpus(files);
+    docs
 }
 
 /// One interval's bytes, parsed into the corpus both the root scan and the assessment
@@ -665,8 +721,12 @@ fn staged_interval(
 /// Colour every `meridian-lock` pin in the corpus through the one pin computer —
 /// `view::walk::lock_pin_colors_rooted`, exactly what `mrd status`'s lock axis reads
 /// and what colours a `mrd walk` listing — so the three planes agree by construction.
-fn pin_rows(corpus: &model::RootedCorpus<'_>, mounts: &addr::MountSet) -> Vec<PinRow> {
-    view::walk::lock_pin_colors_rooted(corpus, mounts)
+fn pin_rows(
+    corpus: &model::RootedCorpus<'_>,
+    mounts: &addr::MountSet,
+    excluded_holders: &BTreeMap<String, Document>,
+) -> Vec<PinRow> {
+    view::walk::lock_pin_colors_rooted_with_sources(corpus, mounts, excluded_holders)
         .into_iter()
         .map(|pin| PinRow {
             src_path: pin.src_path,

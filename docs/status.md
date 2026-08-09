@@ -689,6 +689,27 @@ and not `mrd check --staged`.**
 | unscoped | worst-of across every interval assessed | the whole write history |
 | `--commit-gate` | ONE interval — the one a commit records | whether the record accounts for it, and whether its pins hold |
 
+**The pin population is the pins the workspace DECLARES, not the hash domain.**
+`mrd pin` admits a holder page the hash domain excludes — a dot-segment path, a
+`meridian/domain.md` ignore rule — and mints the pin at exit 0. The pin plane
+therefore reads its rows from **every markdown page under the root**, not only
+from the corpus the fold is taken over: a page the domain excludes is excluded
+from HASHING, and a pin it holds is a claim the workspace has made regardless.
+Reading the rows only from the hashed corpus makes `--commit-gate` assert *every
+pin in the interval holds* over a population it silently narrowed, and answer
+GREEN over a pin that has drifted.
+
+⚠️ **The narrowing is a property of EXCLUSION, not of dot segments** — the
+custom ignore list reproduces it identically.
+
+**What does NOT change is the target's colour.** The hash domain still gates
+HASHING and never addressing: a pin whose TARGET the domain excludes stays
+`grey(outside-hash-domain)`, reported and never gated, exactly as before
+(`wire-contract.md` §12.1, verdict-plane clause). Holder and target are
+independent axes (session decision 0045). Widening the population of pin SOURCES
+does not widen the corpus that resolves pin TARGETS, and the excluded holder's
+bytes never enter the merkle root.
+
 **The permanence is untouched.** Unscoped `mrd check` stays red forever, citing
 the same row; under `--commit-gate` the standing break is **printed on stderr at
 every commit**, pass or refuse. The blocking is downgraded; the telling never is.
