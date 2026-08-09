@@ -26,11 +26,15 @@
 //! Exit triad: 0 committed (or a rehearsal that passed) / 1 refused (`no_match`,
 //! `not_unique`, `cas_mismatch`, `root_mismatch`, `workspace_busy`, an armed
 //! gate refusal — the engine's verbatim message) / 2 bad invocation.
+//!
+//! Under `--json` BOTH legs answer on stdout: a commit the `{workspace, put}`
+//! frame, an engine refusal the `{workspace, error}` envelope ([`refusal`]) —
+//! never an empty stdout a machine consumer cannot branch on.
 
 use std::io::Read as _;
 
 use serde_json::{Value, json};
-use wire::{Edit, Path as WirePath, ReceiptAddr, Root};
+use wire::{Edit, ErrorBody, Path as WirePath, ReceiptAddr, Root};
 use wire_serve::write::{SpliceArgs, splice};
 
 use crate::{Fail, Format, current_dir, engine};
@@ -73,13 +77,14 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     };
     // seq 0, like the resident daemon (no epoch ring); the emitted DeltaFrame
     // has no subscriber here, so it is dropped with the outcome.
-    let outcome =
-        splice(&root, None, &splice_args, &[], None).map_err(|e| engine::refusal_fail(&e))?;
+    let outcome = splice(&root, None, &splice_args, &[], None)
+        .map_err(|e| refusal(&parsed, &resolved.workspace, &e))?;
 
     // The rehearsal preview renders the candidate the choke-point already built (§4.4 one-reparse
     // law); the CLI holds no second implementation of what a batch does to a document.
     let diff = if parsed.dry {
-        rehearsal_diff(&root, &parsed.path, outcome.candidate.as_deref())?
+        rehearsal_diff(&root, &parsed.path, outcome.candidate.as_deref())
+            .map_err(|e| refusal(&parsed, &resolved.workspace, &e))?
     } else {
         None
     };
@@ -130,19 +135,42 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     Ok(())
 }
 
+/// An engine refusal, on both faces. Under `--json` the machine face gets the refusal envelope
+/// on stdout — `{workspace, error}`, the engine's error body in the v3 vocabulary (the same
+/// lifted projection the commit frame gets) — so a machine consumer branches on the frame,
+/// exactly as it does for `mrd script --json` on a fault. The human diagnostic still rides
+/// stderr via the returned [`Fail`], and the exit triad is untouched.
+fn refusal(parsed: &Put, workspace: &std::path::Path, error: &ErrorBody) -> Fail {
+    if matches!(parsed.format, Format::Json) {
+        let mut frame = json!({
+            "error": serde_json::to_value(error).expect("json"),
+        });
+        wire_serve::rev::project_response(&mut frame);
+        let error_v3 = frame
+            .as_object_mut()
+            .and_then(|obj| obj.remove("error"))
+            .unwrap_or(Value::Null);
+        let value = json!({
+            "workspace": workspace.display().to_string(),
+            "error": error_v3,
+        });
+        println!("{}", serde_json::to_string_pretty(&value).expect("json"));
+    }
+    engine::refusal_fail(error)
+}
+
 /// The `--dry` diff: the file's current bytes → the candidate the rehearsal built, through the
 /// one line-diff renderer in the tree ([`wire_serve::ladder::unified_diff`]). `None` when the
-/// batch changes no line.
+/// batch changes no line. Errors the engine's refusal body, so the caller keeps both faces.
 fn rehearsal_diff(
     root: &fs::WorkspaceRoot,
     path: &str,
     candidate: Option<&str>,
-) -> Result<Option<String>, Fail> {
+) -> Result<Option<String>, Box<ErrorBody>> {
     let Some(candidate) = candidate else {
         return Ok(None);
     };
-    let doc = wire_serve::load_doc(root, &WirePath(path.to_owned()))
-        .map_err(|e| engine::refusal_fail(&e))?;
+    let doc = wire_serve::load_doc(root, &WirePath(path.to_owned()))?;
     Ok(wire_serve::ladder::unified_diff(
         "current",
         "candidate",
@@ -298,6 +326,10 @@ impl Put {
     }
 }
 
+/// The working batch every door teaches — ONE spelling shared by the empty-stdin refusal and
+/// the malformed-decode refusal, so the taught grammar cannot drift between them.
+const WORKING_BATCH: &str = "[{\"target\":{\"hpath\":[{\"h\":\"Title\"}]},\"edit\":{\"match\":{\"old\":\"a\",\"new\":\"b\"}}}]";
+
 /// Read and strict-decode the edits array from stdin (the wire §4.4 grammar).
 fn read_stdin_edits() -> Result<Vec<Edit>, Fail> {
     let mut raw = String::new();
@@ -305,19 +337,21 @@ fn read_stdin_edits() -> Result<Vec<Edit>, Fail> {
         .read_to_string(&mut raw)
         .map_err(|e| Fail::tool(format!("cannot read edits from stdin: {e}")))?;
     if raw.trim().is_empty() {
-        return Err(Fail::tool(
-            "put wants the edits JSON on stdin — a §4.4 array like \
-             [{\"target\":{\"hpath\":[{\"h\":\"Title\"}]},\"edit\":{\"match\":{\"old\":\"a\",\"new\":\"b\"}}}]"
-                .to_owned(),
-        ));
+        return Err(Fail::tool(format!(
+            "put wants the edits JSON on stdin — a §4.4 array like {WORKING_BATCH}"
+        )));
     }
     // Shape advice is conditional ([`envelope_hint`]); the nothing-happened clause is not — the
     // decode runs before the workspace is resolved and before any splice, so a refusal here has
-    // had zero engine contact.
+    // had zero engine contact. The decoder's own words locate the byte; the grammar clause is
+    // what the refused caller actually needs (G-P2-6: serde's variant names taught nothing).
     let edits: Vec<Edit> = serde_json::from_str(&raw).map_err(|e| {
         Fail::tool(format!(
-            "malformed edits JSON on stdin: {e}{}. Nothing was parsed and nothing was \
-             written.",
+            "malformed edits JSON on stdin: {e}{}. The §4.4 grammar: target is \
+             {{\"hpath\":[{{\"h\":\"Raw Title\"}}]}} / {{\"anchor\":\"block-id\"}} / \
+             {{\"fm_key\":\"key\"}}; edit is the NESTED {{\"match\":{{\"old\":\"…\",\"new\":\"…\"}}}} \
+             or {{\"put\":{{\"at\":\"end\",\"text\":\"…\"}}}} — a working batch: {WORKING_BATCH}. \
+             Nothing was parsed and nothing was written.",
             envelope_hint(&raw)
         ))
     })?;
