@@ -368,6 +368,35 @@ fn plan_set_property_refuses_multiline_values_and_writes_nothing() {
     );
 }
 
+/// Everything a legal `set_property` create PROMISES, and nothing more.
+///
+/// WHERE inside the block the new key lands is deliberately not asserted:
+/// §A.6.3 states "Key ORDER inside the block is not a law of this contract —
+/// the auditable identity of the write is", and the create arm lands at the
+/// upsert insertion point rather than after the last key. A whole-file spelling
+/// pins that non-promise, so it reddens whenever the insertion point
+/// legitimately moves — which is how the assertion this replaces became an
+/// undeclared base red at `b1fcc6e3` (card `base-red-u8b-plan-edits-key-order`).
+fn assert_legal_create_landed(after: &str) {
+    assert!(
+        after.contains("\nreview-state_2: pending\n"),
+        "the legal key landed with its value: {after}"
+    );
+    assert!(
+        after.contains("\ntitle: Plan\n"),
+        "the pre-existing key survives the create: {after}"
+    );
+    assert_eq!(
+        after.matches("---\n").count(),
+        2,
+        "one frontmatter block, both delimiters intact: {after}"
+    );
+    assert!(
+        after.ends_with("---\n\n# Plan\n\nbody\n"),
+        "the body below the block is untouched: {after}"
+    );
+}
+
 /// R5: unsafe property KEY refuses at pre-flight and plan commit.
 /// Same owner as value (`yaml_safe_key`); assert is the refusal itself.
 #[test]
@@ -469,10 +498,7 @@ fn plan_set_property_refuses_forged_keys_at_both_doors_and_writes_nothing() {
         None,
     )
     .expect("a legal key still commits");
-    assert_eq!(
-        std::fs::read_to_string(dir.path().join("plan.md")).expect("read"),
-        "---\ntitle: Plan\nreview-state_2: pending\n---\n\n# Plan\n\nbody\n"
-    );
+    assert_legal_create_landed(&std::fs::read_to_string(dir.path().join("plan.md")).expect("read"));
 }
 
 /// Golden MUST-CARRY refusals: p-replace-on-block + p-create-top (engine, no write).
