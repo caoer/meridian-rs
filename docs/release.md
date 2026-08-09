@@ -229,6 +229,52 @@ two reader-visible surfaces:
 | `mrd --version` | `mrd {CARGO_PKG_VERSION} (git {MRD_BUILD_SHA})` | the sha is read at compile time, never invented |
 | `hello.identity.build` | the build sha, or `unknown` | § A.3; sha only — the version does not ride here |
 
+#### The sha token states the TREE, not only the commit *(2026-08-09)*
+
+`MRD_BUILD_SHA` is a sha with an optional marker, not a bare sha. It reads
+`<sha>` where the build's worktree matched HEAD, `<sha>-dirty` where tracked
+content diverged from it, and `unknown` where no attributable identity could be
+read at all. The marker rides the sha token — git-describe's convention — so
+`hello.identity.build` carries it with no schema change and no third identity
+field.
+
+Two baked facts distinguish three build states, and the third is DERIVED:
+
+| Build state | `--version` says | What tells the reader |
+|---|---|---|
+| built clean at `X` | `(git X)` | a bare sha |
+| built from a dirty tree based at `X` | `(git X-dirty)` | the marker |
+| built at `X`, tree has since moved to `Y` | `(git X)` while HEAD is `Y` | the reader COMPARES — a binary cannot observe commits made after it |
+
+**The stamp proves identity; identity plus comparison proves provenance.** A
+binary can state what it was built from and whether that was a whole commit. It
+can never state what the tree did afterwards, which is why a gate compares the
+string against a declared sha rather than trusting it alone.
+
+**A clean build's string is unchanged, byte for byte.** Only a dirty build says
+anything new, so the marker adds a refusal where there was a silent pass and
+moves nothing else.
+
+**Mechanism and its cost, both stated because a flag without its mechanism is
+not a design.** The answer is a function of the working tree, so the build
+script re-runs on EVERY build — it names a sentinel path that never exists,
+which is cargo's way of saying always. A stamp that outlives its tree is the
+defect this closes, and a watch list keyed on HEAD cannot see an uncommitted
+edit. Measured 2026-08-09 at `440245b3`, five runs each: `git rev-parse HEAD`
+20 ms, `git status --porcelain --untracked-files=no --no-optional-locks` 20 ms —
+per cargo invocation, plus one relink of `mrd` at each clean↔dirty transition,
+where the binary's identity genuinely did change. `--no-optional-locks` keeps
+the probe from writing the index, so a build can never block a concurrent git in
+the same tree. Untracked files are excluded deliberately: the question is
+whether this build is attributable to HEAD, and an untracked file that reaches
+the compiler does so through a tracked `mod` line.
+
+A probe that cannot be read publishes `unknown`, never clean. **An unverifiable
+clean claim is never published** — that is the whole rule in one sentence.
+`MRD_BUILD_SHA` supplied in the environment rides verbatim with no probe: the
+supplier owns the claim, and supplying it to make a gate agree invents the
+answer the pin exists to give.
+
 **The release version and the contract rev are DIFFERENT AXES and neither
 renames the other.** A release numbered 1 ships contract rev v3. Renaming the
 contract rev to match a release number would break every client that negotiates

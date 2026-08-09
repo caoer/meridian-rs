@@ -327,9 +327,11 @@ options:
   --spec PAGE              (test --history) workspace-relative SPEC page whose
                            ```golden fence declares exceptions; its rule: must
                            resolve to --rule's PAGE. Omitted: nothing declared.
-  -V, --version            build identity: package version + commit this binary
-                           was built from (`unknown` when no repository was
-                           readable).
+  -V, --version            build identity: package version + the tree this
+                           binary was built from — a bare commit where that
+                           tree was clean, `<commit>-dirty` where tracked
+                           content diverged from it, `unknown` where neither
+                           could be read.
   -h, --help               print this help.
 ";
 
@@ -400,9 +402,11 @@ fn usage() -> String {
     format!("{HEADER}\n{LISTING}")
 }
 
-/// The build identity, one line: the package version and the commit `build.rs` read at compile
+/// The build identity, one line: the package version and the tree `build.rs` read at compile
 /// time. The version alone cannot identify a binary — every crate carries the one workspace
-/// stamp, so it names the release, never the build.
+/// stamp, so it names the release, never the build. The commit token carries a `-dirty` marker
+/// where tracked content diverged from it, so a bare sha ASSERTS a whole commit rather than
+/// merely naming one (`docs/release.md` §5.1).
 fn version() -> String {
     format!(
         "mrd {} (git {})",
