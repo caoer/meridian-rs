@@ -86,13 +86,14 @@ mrd — the meridian workspace CLI
 const LISTING: &str = "\
 usage:
 ! mrd init [PATH] [--name NAME]
-                           declare the root: write PATH's MERIDIAN.md (type:
-                           meridian-root; name = dir unless --name), register
-                           the drawer, reconcile shadowed descendant drawers.
-                           Declaration does NOT anchor the resolution ladder —
-                           the report also names the tier/root PATH resolves
-                           to. Valid existing declaration left byte-for-byte;
-                           present-but-invalid MERIDIAN.md refuses (exit 2).
+                           declare the root: write PATH's MERIDIAN.md
+                           (type: meridian-root; name = dir unless --name),
+                           register the drawer, reconcile shadowed descendant
+                           drawers. Declaration does NOT anchor the resolution
+                           ladder — the report also names the tier/root PATH
+                           resolves to. Valid existing declaration left
+                           byte-for-byte; present-but-invalid MERIDIAN.md
+                           refuses (exit 2).
 ! mrd unregister [PATH]    drop the daemon entry (if a daemon answers) and the
                            workspace drawer.
   mrd resolve [PATH]       how PATH resolves: the tier that answered and the
@@ -249,10 +250,10 @@ usage:
                            Exits: 0 clean / 1 mismatch|dead|budget|quiescence /
                            2 bad spec.
   mrd test --history WORKSPACE --rule PAGE [--spec PAGE]
-                           history tier: replay WORKSPACE git history
-                           (commit:path rows from commit vs first parent),
-                           rebuild docs, compare PAGE CHECK refusals to
-                           --spec's ```golden fence (HOOK-only page refuses
+                           history tier — History is git: replay WORKSPACE git
+                           history (<commit>:<path> rows from commit vs first
+                           parent), rebuild docs, compare PAGE CHECK refusals
+                           to --spec's ```golden fence (HOOK-only page refuses
                            zero). --spec's rule: must resolve to PAGE; omit =
                            declare nothing. Undeclared would-refuse fails;
                            unreconstructable rows are grey. Exits: 0 clean / 1
