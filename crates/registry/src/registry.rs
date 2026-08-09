@@ -112,8 +112,9 @@ pub struct Registry {
         Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
     /// Test-only pause gate for the reap's exemption window: when armed, the
     /// reap pass announces itself on the first channel, then parks on the
-    /// second — after its exemption reading, before its decide-and-remove.
-    /// A subscription claim landing in that park must still be honored.
+    /// second — before its decide-and-remove critical section, where the
+    /// pre-linearization sweep had already read its exemption snapshot. A
+    /// subscription claim landing in that park must still be honored.
     /// One-shot: the pass that hits it consumes it. `cfg(test)` excludes it
     /// from every release build by construction (disclosed; same seam class
     /// as `pause_before_insert`, the PR #9 precedent).
@@ -389,9 +390,24 @@ impl Registry {
     /// use — same key discipline as [`ring`](Self::ring)). The one claim door
     /// for the `sub` dispatch: the reaper exemption (U20b) is engaged from the
     /// moment this returns.
+    ///
+    /// The claim is taken while the `rings` map lock is held — the same lock
+    /// [`reap`](Self::reap) holds for its decide-and-remove — so claim and
+    /// removal are linearized: a claim that lands first is seen and exempts
+    /// the workspace; a reap that lands first has already removed the ring,
+    /// and the claim mints the fresh epoch that IS the workspace's live ring.
+    /// A fetch-then-claim through [`ring`](Self::ring) has no such guarantee
+    /// (the fetched ring can be orphaned before the claim lands), which is
+    /// why the dispatch claims here and not there.
     #[must_use]
     pub fn subscribe(&self, workspace: &Path) -> crate::ring::SubGuard {
-        self.ring(workspace).subscribe()
+        let mut rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
+        let ring = rings.entry(workspace.to_path_buf()).or_insert_with(|| {
+            Arc::new(crate::ring::WorkspaceRing::new(&fs::WorkspaceRoot(
+                workspace.to_path_buf(),
+            )))
+        });
+        ring.subscribe()
     }
 
     /// Read-is-the-mint ledger (S6), created on first use. `workspace` must be
@@ -529,12 +545,14 @@ impl Registry {
     /// `last_use`. Reaping them would fork the per-workspace `seq` (§4.7) —
     /// next `sub` would mint a second ring — not merely stop delivery.
     /// The claim behind the exemption is taken at arm time, inside the `sub`
-    /// dispatch and before the ack renders — an acked subscription is never in
-    /// a reapable window (`server::arm_time_exemption_tests`).
+    /// dispatch and before the ack renders (`server::arm_time_exemption_tests`)
+    /// — and it is taken under the `rings` map lock ([`Self::subscribe`]), the
+    /// same lock this sweep holds while it decides and removes. Claim and reap
+    /// are linearized: there is no exemption snapshot a landing claim can
+    /// trail. Lock order is `inner` → `rings`; no path takes them the other
+    /// way.
     pub fn reap(&self, now: u64, threshold_secs: u64) -> Vec<PathBuf> {
         let cutoff = now.saturating_sub(threshold_secs);
-        // Exemption set before `inner` write lock — concurrent `sub` safe.
-        let subscribed = self.subscribed_workspaces();
         // Test-only: park here when the gate is armed (see the field docs).
         #[cfg(test)]
         {
@@ -550,14 +568,23 @@ impl Registry {
         }
         let reaped: Vec<PathBuf> = {
             let mut map = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+            let mut rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
             let reaped: Vec<PathBuf> = map
                 .iter()
-                .filter(|(key, entry)| entry.last_use <= cutoff && !subscribed.contains(*key))
+                .filter(|(key, entry)| {
+                    entry.last_use <= cutoff
+                        && !rings.get(*key).is_some_and(|ring| ring.has_subscribers())
+                })
                 .map(|(key, _)| key.clone())
                 .collect();
             for key in &reaped {
                 map.remove(key);
+                // Ring dies inside the same critical section its exemption was
+                // decided in — a later `sub` gets a fresh epoch, never an
+                // orphaned ring a concurrent claim is riding.
+                rings.remove(key);
             }
+            drop(rings);
             if !reaped.is_empty() {
                 self.persist(&map);
             }
@@ -587,24 +614,8 @@ impl Registry {
             for key in &reaped {
                 caches.remove(key);
             }
-            drop(caches);
-            // Ring dies on the same horizon; later `sub` gets a fresh epoch.
-            let mut rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
-            for key in &reaped {
-                rings.remove(key);
-            }
         }
         reaped
-    }
-
-    /// Workspaces with ≥1 live subscription — reaper exemption set.
-    fn subscribed_workspaces(&self) -> std::collections::HashSet<PathBuf> {
-        let rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
-        rings
-            .iter()
-            .filter(|(_, ring)| ring.has_subscribers())
-            .map(|(key, _)| key.clone())
-            .collect()
     }
 
     /// Persist the current map to the state file, logging (never failing) on a
@@ -791,7 +802,9 @@ mod engine_tests {
         // holds an honored subscription (the `sub` ack renders on it).
         let guard = reg.subscribe(&canonical);
 
-        release.send(()).expect("the reap parked on the release gate");
+        release
+            .send(())
+            .expect("the reap parked on the release gate");
         let reaped = a.join().expect("the reap panicked");
 
         assert!(
