@@ -62,7 +62,12 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     // The mount table, with a corpus for the roots this workspace's own lock addresses name and
     // no others. `mounts` owns the document maps; `corpus` borrows them — hence two bindings.
     let mounts = load_mounts_for(&lock_addressed_roots(&docs));
-    let corpus = mounts.rooted(&docs);
+    let domain = load_domain(&resolved.workspace)?;
+    // `root` is the one `build_corpus_in_process` returned above — the root this
+    // corpus was BUILT from, and therefore the root its existence questions are
+    // asked at (0045/0049), never the caller's cwd. Re-deriving it here would be
+    // two answers to one fact inside one function.
+    let corpus = mounts.rooted(&docs, &domain, &root);
     let mount_set = mounts.set();
 
     let report = walk::walk_rooted(
@@ -271,11 +276,23 @@ impl Mounts {
     /// The root-keyed corpus over `docs`: the ambient workspace plus one root per bound mount.
     /// One owner for this assembly — `walk`, `check` and `status` all colour pins through the
     /// same computer, so they must hand it the same corpus.
+    /// `domain` is the ambient workspace's hash domain, and it is REQUIRED
+    /// rather than optional: a colour door that cannot say which paths its
+    /// corpus was filtered by reds every out-of-domain target (decision 0034).
+    /// Forcing it at the one assembly point is what keeps the three doors
+    /// answering alike.
+    /// `root` is REQUIRED for the same reason one level down (decision 0049): a
+    /// colour door that knows a target is out of domain but cannot READ that
+    /// target greys an absence, and the corpus map cannot tell the two apart.
     pub(crate) fn rooted<'a>(
         &'a self,
         docs: &'a BTreeMap<String, Document>,
+        domain: &'a fs::domain::Domain,
+        root: &'a fs::WorkspaceRoot,
     ) -> model::RootedCorpus<'a> {
-        let mut corpus = model::RootedCorpus::ambient(docs);
+        let mut corpus = model::RootedCorpus::ambient(docs)
+            .with_hash_domain(domain)
+            .with_ambient_disk(root);
         for mount in &self.corpora {
             corpus = corpus.with_root(mount.name.clone(), mount.kind.clone(), &mount.docs);
         }
@@ -368,6 +385,36 @@ fn parse_depth(raw: &str) -> Result<u32, Fail> {
 
 /// Build the corpus in-process from the workspace on disk, through the same `fs::build_corpus`
 /// the daemon and the `links` degrade use, so the walk reads exactly the served projection.
+/// The workspace's hash domain — the filter [`build_docs`] projected, handed to
+/// the colour plane so it can tell an excluded target from a missing one.
+///
+/// An unreadable domain config FAILS the door. Degrading to the default domain
+/// would claim every path is hashed, which is exactly the false red decision
+/// 0034 ruled out — a fail-open in the plane whose job is to be believed.
+pub(crate) fn load_domain(workspace: &Path) -> Result<fs::domain::Domain, Fail> {
+    let canonical = workspace::canonicalize(workspace).map_err(|e| {
+        Fail::tool(format!(
+            "cannot resolve workspace {} ({e})",
+            workspace.display()
+        ))
+    })?;
+    fs::domain::Domain::load(&fs::WorkspaceRoot(canonical))
+        .map_err(|e| Fail::tool(format!("cannot read the hash domain: {e}")))
+}
+
+/// The canonical workspace root, resolved exactly as [`build_docs`] and
+/// [`load_domain`] resolve it — the root the ambient corpus was built from, and
+/// therefore the root its existence questions are asked at (decision 0049).
+pub(crate) fn workspace_root(workspace: &Path) -> Result<fs::WorkspaceRoot, Fail> {
+    let canonical = workspace::canonicalize(workspace).map_err(|e| {
+        Fail::tool(format!(
+            "cannot resolve workspace {} ({e})",
+            workspace.display()
+        ))
+    })?;
+    Ok(fs::WorkspaceRoot(canonical))
+}
+
 pub(crate) fn build_docs(workspace: &Path) -> Result<BTreeMap<String, Document>, Fail> {
     build_corpus_in_process(workspace).map(|corpus| corpus.docs)
 }

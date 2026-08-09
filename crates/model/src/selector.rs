@@ -88,16 +88,43 @@ impl Selector {
 pub enum Color {
     /// `live_rev == pinned_rev` — the pinned content is current.
     Green,
-    /// The ledger cannot verify this edge; the reason names why.
+    /// The ledger **does not** verify this edge; the reason names why.
+    ///
+    /// The noun is deliberately wider than *cannot* (ruled 2026-08-09, session
+    /// decision 0034): most greys mean **blindness** — outside sight, the engine
+    /// could not look — but [`GreyReason::OutsideHashDomain`] and
+    /// [`GreyReason::ImmutableRoot`] mean **policy** — the engine can see the
+    /// target and declines to hash it. Both are the same absence of a measure,
+    /// so both are grey; **the reason word is what says which**, and no reader
+    /// should have to infer it from the tone.
     Grey(GreyReason),
     /// The pinned edge is wrong; the reason distinguishes content drift from an
     /// address that no longer resolves (decision #9).
     Red(RedReason),
 }
 
-/// Why an edge renders grey (the ledger cannot verify it).
+/// Why an edge renders grey (the ledger does not verify it — [`Color::Grey`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GreyReason {
+    /// The target is a real, addressable path the **hash domain excludes**
+    /// (`wire-contract.md` §12.1) — md-only floor, dot-segment default ignore,
+    /// or a `meridian/domain.md` custom rule. **Policy, not blindness:** the
+    /// engine can read this file and `pin` attests it, but its bytes never
+    /// enter the merkle root, so the colour plane's corpus never held it.
+    ///
+    /// **Grey, never red** (R-3, and the verdict-plane clause of §12.1). The
+    /// reds below would assert a measured absence nobody measured: the engine
+    /// did not look. `pin` mints a real fingerprint here, so red would send the
+    /// caller to destroy an attestation the engine itself wrote.
+    ///
+    /// Distinct from [`Unmounted`] (root outside sight) and from
+    /// [`RedReason::FileNotFound`] (root reached, path genuinely absent).
+    ///
+    /// [`Unmounted`]: GreyReason::Unmounted
+    OutsideHashDomain {
+        /// Workspace-relative path the domain excludes, as addressed.
+        path: String,
+    },
     /// A `session-id#seq-N` transcript hop — recognized, not verified; the
     /// address class cannot drift by construction (d2 §2.2/§2.3).
     ImmutableRoot,
@@ -163,10 +190,28 @@ pub enum RedReason {
     /// [`GreyReason::Unmounted`]). Not [`SelectorUnresolved`], which asserts the
     /// page resolved and the selector failed.
     ///
+    /// **"The engine looked" is a claim about the DOMAIN, not the corpus map**
+    /// (ruled 2026-08-09, session decision 0034). Absent-from-the-corpus is
+    /// evidence of absence only for paths the hash domain holds; for a path it
+    /// excludes, the engine never looked and the honest verdict is
+    /// [`GreyReason::OutsideHashDomain`], checked first. Colouring an
+    /// out-of-domain target red asserted evidence the engine did not have — the
+    /// defect this note exists to keep fixed.
+    ///
+    /// **And absence outranks domain membership** (ruled 2026-08-09, session
+    /// decision 0049). The clause above is scoped to a target that EXISTS and
+    /// cannot be hashed. When the engine READS the named path and the disk holds
+    /// nothing there, the miss is measured and this red is the verdict whether
+    /// or not the domain would have excluded it — a grey "not in the hash
+    /// domain" over a file that is not there is a false sentence failing in the
+    /// certifying direction.
+    ///
     /// [`SelectorUnresolved`]: RedReason::SelectorUnresolved
     FileNotFound {
-        /// Root of the miss — never the ambient root.
-        root: addr::MountName,
+        /// Root of the miss. `None` = the ambient root — a named path the
+        /// engine read at the workspace root and did not find. `Some` = a
+        /// mounted root, where resolution measured the miss.
+        root: Option<addr::MountName>,
         /// Path missing inside that root.
         path: String,
         /// Selector as declared (`None` = page grain). Joined at render only (R1.6).
@@ -198,6 +243,7 @@ pub fn color_reason(color: &Color) -> Option<&'static str> {
         Color::Grey(GreyReason::MalformedFingerprint) => Some("malformed-fingerprint"),
         Color::Grey(GreyReason::LockRefused { .. }) => Some("lock-refused"),
         Color::Grey(GreyReason::Unmounted { .. }) => Some("unmounted"),
+        Color::Grey(GreyReason::OutsideHashDomain { .. }) => Some("outside-hash-domain"),
         // Shared word (S3-R49); a config compile-assert fails the build on drift.
         Color::Grey(GreyReason::PathUnseeable { .. }) => Some(addr::PATH_UNSEEABLE_REASON_WORD),
         Color::Red(RedReason::Drifted) => Some("content-drifted"),
@@ -240,14 +286,25 @@ pub fn color_detail(color: &Color) -> Option<String> {
         }
         Color::Grey(GreyReason::LockRefused { reason }) => Some(reason.clone()),
         Color::Grey(GreyReason::Unmounted { root }) => Some(format!("root '{root}'")),
+        // The path, because the domain excludes paths — the caller's next act is
+        // to read `meridian/domain.md` against this spelling.
+        Color::Grey(GreyReason::OutsideHashDomain { path }) => {
+            Some(format!("'{path}' is not in the hash domain"))
+        }
         // Path, not the mount entry (S3-R43 distinction).
         Color::Grey(GreyReason::PathUnseeable { path, detail, .. }) => {
             Some(format!("{path} ({detail})"))
         }
         // Root + path: root alone omits what is missing; path alone reads ambient.
-        Color::Red(RedReason::FileNotFound { root, path, .. }) => {
-            Some(format!("root '{root}' holds no '{path}'"))
-        }
+        Color::Red(RedReason::FileNotFound {
+            root: Some(root),
+            path,
+            ..
+        }) => Some(format!("root '{root}' holds no '{path}'")),
+        // Ambient: no root name to print, and the workspace is the subject.
+        Color::Red(RedReason::FileNotFound {
+            root: None, path, ..
+        }) => Some(format!("this workspace holds no '{path}'")),
         Color::Grey(GreyReason::Uncolourable) => Some(
             "this row carried neither a fingerprint nor a refusal; \
              its appearance here is itself the defect — report it"
@@ -263,6 +320,9 @@ pub fn color_detail(color: &Color) -> Option<String> {
 pub fn color_teaching(color: &Color, address: &str) -> Option<String> {
     match color {
         Color::Grey(GreyReason::Unmounted { root }) => Some(render_unmounted(root, address)),
+        Color::Grey(GreyReason::OutsideHashDomain { path }) => {
+            Some(render_outside_hash_domain(path, address))
+        }
         Color::Grey(GreyReason::PathUnseeable { root, path, detail }) => {
             Some(render_path_unseeable(root, path, detail))
         }
@@ -273,7 +333,7 @@ pub fn color_teaching(color: &Color, address: &str) -> Option<String> {
             path,
             selector,
         }) => Some(render_file_not_found(
-            root,
+            root.as_ref(),
             path,
             selector.as_deref(),
             target_is_non_markdown(path),
@@ -577,13 +637,24 @@ pub fn target_is_non_markdown(path: &str) -> bool {
         .is_some_and(|ext| !ext.eq_ignore_ascii_case("md"))
 }
 
+/// Measured-absence teaching. `root` is the mounted root of the miss, or `None`
+/// for the ambient root — the workspace the caller is standing in.
+///
+/// The ambient branch exists because absence outranks domain membership
+/// (decision 0049): a pinned target the domain excludes AND the disk does not
+/// hold is a measured absence, and the teaching says so in the workspace's own
+/// terms — there is no mount name to print, and offering domain exclusion as a
+/// second reading of the miss is the thing §12.1 forbids at every door.
 #[must_use]
 pub fn render_file_not_found(
-    root: &addr::MountName,
+    root: Option<&addr::MountName>,
     missing: &str,
     selector: Option<&str>,
     md_only: bool,
 ) -> String {
+    let Some(root) = root else {
+        return render_ambient_file_not_found(missing, selector);
+    };
     let limit = if md_only {
         " Cross-vault links are markdown-only in v1, so a non-.md target is not addressable even when the file exists."
     } else {
@@ -604,10 +675,54 @@ pub fn render_file_not_found(
     )
 }
 
+/// Ambient measured-absence teaching, verbatim anchor for the workspace branch
+/// of [`render_file_not_found`].
+pub const RED_AMBIENT_FILE_NOT_FOUND_EXEMPLAR: &str = "red(file-not-found): the address 'drafts/tmp.md#Draft/Alpha' names a path under this workspace root, and the engine read that path and found no file there. This is a measured absence, not grey: the hash domain decides what is HASHED, never what is on disk, so an ignored path that is gone is gone. Nothing was resolved for this ref and no rev was minted; every other ref on this page is unaffected. Fix: restore 'drafts/tmp.md', or repoint the pin at the target that replaced it — `mrd repair` will not invent it; see [[address-grammar]].";
+
+/// The ambient branch of [`render_file_not_found`] — wording carried verbatim
+/// from [`RED_AMBIENT_FILE_NOT_FOUND_EXEMPLAR`].
+#[must_use]
+fn render_ambient_file_not_found(missing: &str, selector: Option<&str>) -> String {
+    // Subject = address as written; absence = page path (not the selector).
+    let address = match selector {
+        Some(sel) => format!("{missing}#{sel}"),
+        None => missing.to_string(),
+    };
+    format!(
+        "red(file-not-found): the address '{address}' names a path under this \
+         workspace root, and the engine read that path and found no file there. \
+         This is a measured absence, not grey: the hash domain decides what is \
+         HASHED, never what is on disk, so an ignored path that is gone is gone. \
+         {NO_PARTIAL_RESOLVE_CLAUSE} Fix: restore '{missing}', or repoint the pin \
+         at the target that replaced it — `mrd repair` will not invent it; see \
+         [[address-grammar]]."
+    )
+}
+
 // Unmounted-root teaching refusal (D8 — verbatim anchor)
 
 /// Unmounted-root teaching refusal, verbatim. Names the mount and the fix (D8).
 pub const GREY_UNMOUNTED_REFUSAL_EXEMPLAR: &str = "grey(unmounted): root 'assets' is not mounted — the address 'assets:domains/media/logo.md#Design' names a root this machine does not bind. Not red: nothing drifted, you just cannot see from here. Refs to mounted roots remain served. Fix: declare 'assets' in ~/MERIDIAN.md as a mount entry (name / path / kind); see [[address-grammar]].";
+
+/// `grey(outside-hash-domain)` — the target is real and readable, and the hash
+/// domain excludes it (`wire-contract.md` §12.1, verdict-plane clause).
+///
+/// The teaching says the pin is INTACT, because the taught response to a colour
+/// that reads as broken is to edit the target or drop the pin, and both would
+/// destroy an attestation the engine minted itself.
+#[must_use]
+pub fn render_outside_hash_domain(path: &str, address: &str) -> String {
+    format!(
+        "grey(outside-hash-domain): '{path}' is not in this workspace's hash \
+         domain — the address '{address}' names a real file whose bytes never \
+         enter the workspace fingerprint (md-only floor, dot-segment ignore, or \
+         a rule in meridian/domain.md). Not red: nothing drifted and nothing is \
+         missing — the pin is intact and the engine did not look. Do not repin \
+         or edit the target on account of this colour. Fix (only if you want it \
+         verified): bring '{path}' into the domain via meridian/domain.md; see \
+         [[wire-contract]] §12."
+    )
+}
 
 /// D8 teaching refusal for an unmounted root; wording from
 /// [`GREY_UNMOUNTED_REFUSAL_EXEMPLAR`].
@@ -1070,7 +1185,7 @@ mod u21_file_not_found {
     #[test]
     fn the_refusal_meets_the_house_four_property_bar() {
         let root = addr::MountName::parse("sessions").expect("a name");
-        let m = render_file_not_found(&root, "24-01-retro/notes.md", Some("Design"), false);
+        let m = render_file_not_found(Some(&root), "24-01-retro/notes.md", Some("Design"), false);
 
         // 1. SUBJECT — the address, the root, and the path, all three named.
         assert!(
@@ -1117,7 +1232,7 @@ mod u21_file_not_found {
     #[test]
     fn the_pinned_exemplar_is_reproduced_by_the_renderer() {
         let root = addr::MountName::parse("sessions").expect("a name");
-        let produced = render_file_not_found(&root, "24-01-retro/notes.md", Some("Design"), false);
+        let produced = render_file_not_found(Some(&root), "24-01-retro/notes.md", Some("Design"), false);
         assert_eq!(
             produced, RED_FILE_NOT_FOUND_REFUSAL_EXEMPLAR,
             "the renderer and the pinned exemplar must not drift apart",
@@ -1130,8 +1245,8 @@ mod u21_file_not_found {
     fn the_refusal_is_scoped_to_the_root_that_missed() {
         let sessions = addr::MountName::parse("sessions").expect("a name");
         let assets = addr::MountName::parse("assets").expect("a name");
-        let a = render_file_not_found(&sessions, "notes.md", None, false);
-        let b = render_file_not_found(&assets, "notes.md", None, false);
+        let a = render_file_not_found(Some(&sessions), "notes.md", None, false);
+        let b = render_file_not_found(Some(&assets), "notes.md", None, false);
         assert_ne!(a, b, "one path, two roots, two refusals");
         assert!(a.contains("'sessions'") && !a.contains("'assets'"), "{a}");
         assert!(b.contains("'assets'") && !b.contains("'sessions'"), "{b}");
@@ -1142,14 +1257,14 @@ mod u21_file_not_found {
     #[test]
     fn a_non_markdown_target_names_the_v1_limit_instead_of_implying_absence() {
         let root = addr::MountName::parse("assets").expect("a name");
-        let png = render_file_not_found(&root, "media/logo.png", None, true);
+        let png = render_file_not_found(Some(&root), "media/logo.png", None, true);
         assert!(
             png.contains("markdown-only in v1")
                 && png.contains("not addressable even when the file exists"),
             "a non-.md target must name the limit, never imply absence: {png}"
         );
         // The negative half — an ordinary .md miss must not carry it.
-        let md = render_file_not_found(&root, "notes.md", None, false);
+        let md = render_file_not_found(Some(&root), "notes.md", None, false);
         assert!(
             !md.contains("markdown-only"),
             "an .md miss must not claim a markdown limit: {md}"

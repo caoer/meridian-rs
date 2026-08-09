@@ -246,6 +246,16 @@ impl Domain {
     }
 }
 
+/// The filter, as the question `model` asks — one predicate, one owner. The
+/// colour plane needs it to tell *the engine did not look* from *the engine
+/// looked and the file is gone* (`wire-contract.md` §12.1, verdict-plane
+/// clause); `model` cannot name a filesystem, so it names this trait instead.
+impl model::HashDomain for Domain {
+    fn contains(&self, rel: &str) -> bool {
+        Domain::contains(self, Path::new(rel))
+    }
+}
+
 /// The reserved-path family: every page that is engine substrate rather than
 /// content, and whose parent directories must therefore stay walkable whatever
 /// the ignore list says. Public so a cross-crate test can assert the family's

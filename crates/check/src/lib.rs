@@ -291,6 +291,7 @@ mod honesty {
         let clean = || PinPlane {
             red: Vec::new(),
             grey: Vec::new(),
+            unattested: Vec::new(),
             orphaned: Vec::new(),
             anchored: 0,
             pending: 0,

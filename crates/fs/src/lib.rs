@@ -86,6 +86,38 @@ fn walk_dir(abs_dir: &Path, rel_dir: &Path, out: &mut Vec<PathBuf>) -> io::Resul
     Ok(())
 }
 
+/// The disk behind the ambient root, as the question `model` asks — one
+/// predicate, one owner, the same division [`domain::Domain`] answers
+/// [`model::HashDomain`] under.
+///
+/// The colour plane needs it because **absence outranks domain membership**
+/// (`wire-contract.md` §12.1, verdict-plane clause; session decision 0049): the
+/// corpus map holds no out-of-domain path whether that path is on disk or
+/// deleted, so only a read separates *present but unhashable* (grey) from
+/// *genuinely gone* (red). `model` cannot name a filesystem, so it names the
+/// trait and this answers it. [`WorkspaceRoot`] itself is the implementor —
+/// the root IS the disk the ambient corpus was built from, and a second type
+/// would be a second answer to one fact.
+impl model::AmbientDisk for WorkspaceRoot {
+    /// The path law first, then one `stat`.
+    ///
+    /// A path that does not spell a location strictly inside the root answers
+    /// `None` — never `false`. `false` is a MEASURED absence that the colour
+    /// plane renders as red `file-not-found`, and a path the engine refused to
+    /// read is not a path the engine measured.
+    fn exists(&self, rel: &str) -> Option<bool> {
+        let path = Path::new(rel);
+        if rel.is_empty()
+            || !path
+                .components()
+                .all(|c| matches!(c, std::path::Component::Normal(_)))
+        {
+            return None;
+        }
+        Some(self.0.join(path).is_file())
+    }
+}
+
 /// The directory user-scope rule pages live under, relative to the user scope.
 pub const USER_RULES_DIR: &str = "rules";
 

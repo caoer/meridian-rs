@@ -598,7 +598,11 @@ fn in_process_links(workspace: &Path, path: Option<&str>) -> Result<Value, Fail>
     // A full-table eager load cost ~27 s CPU on a workspace naming zero roots.
     let mounts =
         crate::walk_cmd::load_mounts_for(&crate::walk_cmd::link_addressed_roots(&docs, path));
-    let corpus = mounts.rooted(&docs);
+    // Carried with the corpus for the same reason `walk` carries it: a face that
+    // cannot name its filter cannot tell excluded from missing (§12.1).
+    let domain = fs::domain::Domain::load(&root)
+        .map_err(|e| Fail::tool(format!("cannot read the hash domain: {e}")))?;
+    let corpus = mounts.rooted(&docs, &domain, &root);
     let body = wire_serve::read::links_rooted(
         &root,
         &index,

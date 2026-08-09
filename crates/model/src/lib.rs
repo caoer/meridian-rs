@@ -1907,6 +1907,56 @@ impl MountedRoot<'_> {
 pub struct RootedCorpus<'a> {
     ambient: &'a BTreeMap<String, Document>,
     mounted: BTreeMap<MountName, MountedRoot<'a>>,
+    /// The filter that decided which ambient paths are in this map, when the
+    /// builder supplied it. `None` = this corpus cannot say, never "everything
+    /// is in the domain" — see [`RootedCorpus::in_hash_domain`].
+    ambient_domain: Option<&'a dyn HashDomain>,
+    /// The disk behind the ambient root, when the builder supplied it. `None` =
+    /// this corpus cannot say whether a path it does not hold is absent or
+    /// merely unhashed — see [`RootedCorpus::on_ambient_disk`].
+    ambient_disk: Option<&'a dyn AmbientDisk>,
+}
+
+/// The §12 hash-domain question, asked by whoever holds a corpus and answered
+/// by whoever built it (`fs::Domain`).
+///
+/// `model` owns no filesystem, so it owns the QUESTION and never the filter.
+/// The question is load-bearing on the colour plane: a corpus is the hash
+/// domain, so a target absent from it is *outside sight* rather than *missing*
+/// whenever the domain excludes it, and only the domain can tell the two apart
+/// (`wire-contract.md` §12.1, verdict-plane clause).
+pub trait HashDomain: std::fmt::Debug {
+    /// Do this root-relative path's bytes enter the merkle root?
+    ///
+    /// `false` means "not hashed", never "not addressable": the excluded file
+    /// is still served by every door the caller names a path at.
+    fn contains(&self, rel: &str) -> bool;
+}
+
+/// The existence question — "is there a file at this ambient-root-relative
+/// path?" — asked by whoever holds a corpus and answered by whoever built it
+/// (`fs::AmbientRootDisk`).
+///
+/// Same division as [`HashDomain`]: `model` owns no filesystem, so it owns the
+/// QUESTION. The question is load-bearing on the colour plane because
+/// **absence outranks domain membership** (`wire-contract.md` §12.1,
+/// verdict-plane clause; session decision 0049): the corpus map cannot tell an
+/// out-of-domain file that is PRESENT from one that is DELETED — both are
+/// missing from it for the same reason — and only a disk read separates them. A
+/// grey "not in the hash domain" over a file that is not there is a false
+/// sentence, and it fails in the certifying direction.
+pub trait AmbientDisk: std::fmt::Debug {
+    /// Does a file exist at this ambient-root-relative path?
+    ///
+    /// The path is resolved against the ambient root the corpus was built from,
+    /// never against the caller's working directory (session decision 0045: a
+    /// named target is assessed by READING it, at the root it resolves under).
+    ///
+    /// `None` = **this path is not askable here** — it does not spell a location
+    /// strictly inside the root, so no read happened. The implementor never
+    /// answers `false` for a path it did not read: `false` is a MEASURED
+    /// absence and the colour plane turns it into a red.
+    fn exists(&self, rel: &str) -> Option<bool>;
 }
 
 impl<'a> RootedCorpus<'a> {
@@ -1916,6 +1966,76 @@ impl<'a> RootedCorpus<'a> {
         RootedCorpus {
             ambient: docs,
             mounted: BTreeMap::new(),
+            ambient_domain: None,
+            ambient_disk: None,
+        }
+    }
+
+    /// Record the hash domain the ambient map was built under. Chainable.
+    ///
+    /// A face that colours pins supplies this; without it the corpus answers
+    /// [`in_hash_domain`](Self::in_hash_domain) with `None` and the colour
+    /// plane keeps its pre-0034 behaviour rather than guessing.
+    #[must_use]
+    pub fn with_hash_domain(mut self, domain: &'a dyn HashDomain) -> Self {
+        self.ambient_domain = Some(domain);
+        self
+    }
+
+    /// Record the disk the ambient map was built from. Chainable.
+    ///
+    /// A face that colours pins supplies this beside
+    /// [`with_hash_domain`](Self::with_hash_domain); without it the corpus
+    /// answers [`on_ambient_disk`](Self::on_ambient_disk) with `None` and the
+    /// colour plane cannot separate an out-of-domain PRESENT target from a
+    /// DELETED one, so it says the weaker of the two things rather than guessing.
+    #[must_use]
+    pub fn with_ambient_disk(mut self, disk: &'a dyn AmbientDisk) -> Self {
+        self.ambient_disk = Some(disk);
+        self
+    }
+
+    /// The ambient hash domain this corpus was built under, when the builder
+    /// supplied one — for a face that must carry it further, never to re-answer
+    /// [`in_hash_domain`](Self::in_hash_domain) by hand.
+    #[must_use]
+    pub fn hash_domain(&self) -> Option<&'a dyn HashDomain> {
+        self.ambient_domain
+    }
+
+    /// Is `path` inside the hash domain of the root it belongs to?
+    ///
+    /// `None` = **cannot say** — no domain was supplied for that root. Callers
+    /// must not read `None` as `true`: the whole point of the question is that
+    /// absence from the corpus map means two different things.
+    ///
+    /// Mounted roots answer `None` today: each is built by its own workspace's
+    /// domain and no face carries those filters here yet.
+    #[must_use]
+    pub fn in_hash_domain(&self, root: Option<&MountName>, path: &str) -> Option<bool> {
+        match root {
+            None => self.ambient_domain.map(|d| d.contains(path)),
+            Some(_) => None,
+        }
+    }
+
+    /// Is there a file at `path` on the ambient root's disk?
+    ///
+    /// `None` = **cannot say** — no disk was supplied, exactly as
+    /// [`in_hash_domain`](Self::in_hash_domain) answers when no domain was.
+    /// Callers must not read `None` as `true`.
+    ///
+    /// Mounted roots answer `None`: a miss inside a mounted root is already
+    /// measured by resolution (`RefResolution::NotFound { root: Some(_), .. }`),
+    /// so nothing here needs to re-ask it. The ambient root is the one whose
+    /// absence the corpus map cannot express, because the hash domain removes
+    /// present files from that map for a reason that has nothing to do with the
+    /// disk.
+    #[must_use]
+    pub fn on_ambient_disk(&self, root: Option<&MountName>, path: &str) -> Option<bool> {
+        match root {
+            None => self.ambient_disk.and_then(|d| d.exists(path)),
+            Some(_) => None,
         }
     }
 
