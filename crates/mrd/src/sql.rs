@@ -431,7 +431,13 @@ fn build_and_run_ephemeral(
     let mounts =
         crate::walk_cmd::load_mounts_for(&crate::walk_cmd::link_addressed_roots(&docs, None));
     let corpus = mounts.rooted(&docs);
-    let conn = view::build_memory_rooted(&docs, &corpus, mounts.set(), &f0.0)
+    // `link.exclusion` — the same mint the link doors ask through, injected as
+    // data so `view` stays disk-free (session decision 0034).
+    let domain = fs::domain::Domain::load(&root).unwrap_or_default();
+    let exclusion = |target: &str| {
+        fs::domain::link_target_exclusion(&root, &domain, target).map(|why| why.word().to_owned())
+    };
+    let conn = view::build_memory_rooted(&docs, &corpus, mounts.set(), &f0.0, Some(&exclusion))
         .map_err(|e| EphemeralError::Fail(Fail::tool(format!("cannot build the view: {e}"))))?;
 
     let as_of = read_as_of(&conn).map_err(EphemeralError::Fail)?;

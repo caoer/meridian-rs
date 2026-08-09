@@ -74,6 +74,78 @@ pub struct Domain {
     rules: Vec<Rule>,
 }
 
+/// WHICH §12.1 rule keeps a path out of the hash domain.
+///
+/// The vocabulary is the contract's own: the md-only floor, the dot-segment
+/// default ignore, and the custom rules on `meridian/domain.md`. A face
+/// renders [`ExclusionReason::word`]; it never spells one of these itself,
+/// because a second spelling is how two faces come to name one rule
+/// differently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ExclusionReason {
+    /// The md-only floor (§12.1 rule 1): the path is not `*.md`.
+    NonMarkdown,
+    /// The dot-segment default ignore (§12.1 rule 2), structural — a custom
+    /// `!` re-include cannot lift it.
+    DotSegment,
+    /// A custom ignore rule on `meridian/domain.md` (§12.1 rule 3).
+    CustomIgnore,
+}
+
+impl ExclusionReason {
+    /// The face-facing word. One mint, shared by every plane.
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            ExclusionReason::NonMarkdown => "non-md",
+            ExclusionReason::DotSegment => "dot-segment",
+            ExclusionReason::CustomIgnore => "custom-ignore",
+        }
+    }
+}
+
+impl std::fmt::Display for ExclusionReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.word())
+    }
+}
+
+/// WHY a wikilink target is a real file the hash domain does not carry, or
+/// `None`. THE ONE MINT for the edge-map planes: the `links` doors and the
+/// `sql link` projection both ask through here, so a `dot-segment` in one face
+/// can never be a `custom-ignore` in the other (session decision 0034).
+///
+/// TWO CONDITIONS, and the first is the discriminator the card exists for:
+///
+/// 1. **A file must really be there.** Without the disk probe a reason would
+///    attach to `[[.private/typo]]` — a path with no file behind it — and a
+///    GENUINE TYPO MUST CARRY NO REASON. That is what tells an author "your
+///    link is broken" apart from "this file is deliberately unhashed".
+/// 2. The domain must exclude it, per [`Domain::exclusion`].
+///
+/// The probe is the literal target plus the `.md` append rule — the spelling a
+/// caller writes for a page. An excluded file is absent from the corpus index
+/// by construction, so the ambient basename search cannot answer for it; a
+/// shortest-path basename fallback over out-of-domain files is deliberately
+/// NOT implemented here and is named as NOT MEASURED on the card.
+#[must_use]
+pub fn link_target_exclusion(
+    root: &WorkspaceRoot,
+    domain: &Domain,
+    target: &str,
+) -> Option<ExclusionReason> {
+    let rel = Path::new(target);
+    let candidate = if rel.extension().is_some() {
+        rel.to_path_buf()
+    } else {
+        rel.with_extension("md")
+    };
+    if !root.0.join(&candidate).is_file() {
+        return None;
+    }
+    domain.exclusion(&candidate)
+}
+
 impl Domain {
     /// The default domain: md-only floor + dot-segment ignore, no custom rules,
     /// `version` 0.
@@ -167,11 +239,32 @@ impl Domain {
     /// `false` for any non-md file, any dot-segment path, or a path the custom
     /// rules ignore. A `false` here means "not hashed", never "not
     /// addressable": the ignored file is still `load`-able by explicit path.
+    ///
+    /// One mint with [`Domain::exclusion`]: membership is the absence of a
+    /// reason, so the predicate and the reason word can never disagree about
+    /// one path. Two predicates that merely agree drift the moment either is
+    /// edited.
     #[must_use]
     pub fn contains(&self, rel: &Path) -> bool {
+        self.exclusion(rel).is_none()
+    }
+
+    /// WHY `rel` is outside the hash domain, or `None` when it is a member.
+    ///
+    /// The three §12.1 rules are checked in their published order and the
+    /// FIRST one that fires is the answer — the same order [`contains`] has
+    /// always evaluated, so this reports the rule that actually decided.
+    ///
+    /// This exists because four distinct facts — the three exclusion classes
+    /// and a genuine typo — collapsed to one word at every face, leaving an
+    /// excluded file indistinguishable from a broken link (session decision
+    /// 0034). The reason is what ends that collapse; it never changes what is
+    /// hashed.
+    #[must_use]
+    pub fn exclusion(&self, rel: &Path) -> Option<ExclusionReason> {
         // 1. md-only floor.
         if !is_markdown(rel) {
-            return false;
+            return Some(ExclusionReason::NonMarkdown);
         }
         let segments: Vec<&str> = rel
             .components()
@@ -183,7 +276,7 @@ impl Domain {
         // 2. default ignore — any dot-prefixed segment (structural floor,
         //    above custom rules: a `!` re-include cannot lift a dot path).
         if segments.iter().any(|s| s.starts_with('.')) {
-            return false;
+            return Some(ExclusionReason::DotSegment);
         }
         // 3. custom ignore — gitignore last-match-wins.
         let mut ignored = false;
@@ -192,7 +285,7 @@ impl Domain {
                 ignored = !rule.negate;
             }
         }
-        !ignored
+        ignored.then_some(ExclusionReason::CustomIgnore)
     }
 
     /// May a traversal skip `rel_dir` and everything beneath it WITHOUT

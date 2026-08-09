@@ -206,8 +206,16 @@ fn render_links_human(body: &Value) {
                 println!("    -> {root}:{dest} ({count})");
             }
         }
+        // Verdict then reason, spelled exactly as the refused rows below spell
+        // it — `(count, verdict reason)`. A reason rides only where the target
+        // is a real file the domain does not carry; a genuine typo keeps the
+        // bare `unresolved` it has always had (decision 0034).
+        let why = edges.get("unresolved_reason").and_then(Value::as_object);
         for (link, count) in unresolved.into_iter().flatten() {
-            println!("    -> {link} ({count}, unresolved)");
+            match why.and_then(|w| w.get(link)).and_then(Value::as_str) {
+                Some(reason) => println!("    -> {link} ({count}, unresolved {reason})"),
+                None => println!("    -> {link} ({count}, unresolved)"),
+            }
         }
         for (link, refusal) in refused.into_iter().flatten() {
             let tone = refusal
