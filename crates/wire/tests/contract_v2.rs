@@ -156,9 +156,9 @@ fn worked_anchor_toc_frame_matches_contract() {
         payload: wire::ResponsePayload::Body {
             body: wire::ResponseBody::Toc {
                 path: wire::Path("receipts/2026-07-18.md".into()),
-                file_rev: wire::NodeRev("2731acfa39bbb92c".into()),
+                file_rev: wire::NodeRev("51ad6428f5b5a898".into()),
                 root: wire::Root(
-                    "b3:10769ae1c77f5646750f3f52df2d055156b411145a02b8361ecd32af1357a1b7".into(),
+                    "b3:7f3b44376c719be236279e168c22fa2f4d346cd6e5da5bcf0784adb72e7c1f12".into(),
                 ),
                 nodes: vec![
                     wire::TocNode {
@@ -166,9 +166,9 @@ fn worked_anchor_toc_frame_matches_contract() {
                         level: Some(1),
                         hpath: Some(vec![seg("Receipts — 2026-07-18")]),
                         anchor: None,
-                        span: wire::Span(0, 249),
-                        content_span: Some(wire::Span(26, 249)),
-                        node_rev: wire::NodeRev("2731acfa39bbb92c".into()),
+                        span: wire::Span(0, 287),
+                        content_span: Some(wire::Span(26, 287)),
+                        node_rev: wire::NodeRev("51ad6428f5b5a898".into()),
                         text_prefix_16b: "# Receipts — 2".into(),
                         keys: None,
                     },
@@ -177,9 +177,9 @@ fn worked_anchor_toc_frame_matches_contract() {
                         level: None,
                         hpath: None,
                         anchor: Some("r-000042".into()),
-                        span: wire::Span(26, 248),
+                        span: wire::Span(26, 286),
                         content_span: None,
-                        node_rev: wire::NodeRev("639a2dca46f6fcc8".into()),
+                        node_rev: wire::NodeRev("60bbee70d4a63a48".into()),
                         text_prefix_16b: "- splice notes/p".into(),
                         keys: None,
                     },
@@ -189,14 +189,14 @@ fn worked_anchor_toc_frame_matches_contract() {
     };
     let expected: Value = json!({
         "id":4,"ok":true,"body":{
-            "path":"receipts/2026-07-18.md","file_rev":"2731acfa39bbb92c",
-            "root":"b3:10769ae1c77f5646750f3f52df2d055156b411145a02b8361ecd32af1357a1b7",
+            "path":"receipts/2026-07-18.md","file_rev":"51ad6428f5b5a898",
+            "root":"b3:7f3b44376c719be236279e168c22fa2f4d346cd6e5da5bcf0784adb72e7c1f12",
             "nodes":[
                 {"kind":"heading","level":1,"hpath":[{"h":"Receipts — 2026-07-18"}],
-                 "span":[0,249],"content_span":[26,249],
-                 "node_rev":"2731acfa39bbb92c","text_prefix_16b":"# Receipts — 2"},
-                {"kind":"list_item","anchor":"r-000042","span":[26,248],
-                 "node_rev":"639a2dca46f6fcc8","text_prefix_16b":"- splice notes/p"}]}
+                 "span":[0,287],"content_span":[26,287],
+                 "node_rev":"51ad6428f5b5a898","text_prefix_16b":"# Receipts — 2"},
+                {"kind":"list_item","anchor":"r-000042","span":[26,286],
+                 "node_rev":"60bbee70d4a63a48","text_prefix_16b":"- splice notes/p"}]}
     });
     assert_eq!(serde_json::to_value(&frame).unwrap(), expected);
     assert_eq!(
@@ -370,7 +370,7 @@ fn worked_root_frames_match_contract() {
         payload: wire::ResponsePayload::Body {
             body: wire::ResponseBody::Root {
                 root: wire::Root(
-                    "b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68".into(),
+                    "b3:6e866e13b5e65ef9961c050f8a621cf1980b00ee293be650deef5f4dbc6823f0".into(),
                 ),
                 seq: 2,
             },
@@ -379,7 +379,7 @@ fn worked_root_frames_match_contract() {
     assert_eq!(
         serde_json::to_value(&frame).unwrap(),
         json!({"id":90,"ok":true,"body":{
-            "root":"b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68",
+            "root":"b3:6e866e13b5e65ef9961c050f8a621cf1980b00ee293be650deef5f4dbc6823f0",
             "seq":2}})
     );
 }
@@ -390,7 +390,7 @@ fn worked_diff_request_matches_contract() {
     let request: wire::Request = serde_json::from_value(json!({
         "id":95,"op":"diff",
         "from_root":"b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9",
-        "to_root":"b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68"
+        "to_root":"b3:6e866e13b5e65ef9961c050f8a621cf1980b00ee293be650deef5f4dbc6823f0"
     }))
     .unwrap();
     assert_eq!(
@@ -400,7 +400,7 @@ fn worked_diff_request_matches_contract() {
                 "b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9".into()
             ),
             to_root: wire::Root(
-                "b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68".into()
+                "b3:6e866e13b5e65ef9961c050f8a621cf1980b00ee293be650deef5f4dbc6823f0".into()
             ),
         }
     );
@@ -416,7 +416,7 @@ fn root_mismatch_scope_drop_deviation_fixture() {
         "b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9".into(),
     ));
     error.actual = Some(wire::NodeRev(
-        "b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68".into(),
+        "b3:6e866e13b5e65ef9961c050f8a621cf1980b00ee293be650deef5f4dbc6823f0".into(),
     ));
     error.changed = Some(vec![wire::Path("notes/plan.md".into())]);
     let frame = wire::Response {
@@ -430,7 +430,7 @@ fn root_mismatch_scope_drop_deviation_fixture() {
         json!({"id":96,"ok":false,"error":{
             "code":"root_mismatch","recovery":"resync",
             "expected":"b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9",
-            "actual":"b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68",
+            "actual":"b3:6e866e13b5e65ef9961c050f8a621cf1980b00ee293be650deef5f4dbc6823f0",
             "changed":["notes/plan.md"]}})
     );
     // exactly the frozen keys, scope absent
@@ -515,14 +515,14 @@ fn worked_splice_frames_match_contract() {
                 receipt: Some(wire::ReceiptFact {
                     path: wire::Path("receipts/2026-07-18.md".into()),
                     anchor: "r-000042".into(),
-                    node_rev: wire::NodeRev("639a2dca46f6fcc8".into()),
-                    span_after: wire::Span(26, 248),
+                    node_rev: wire::NodeRev("60bbee70d4a63a48".into()),
+                    span_after: wire::Span(26, 286),
                 }),
                 root_before: wire::Root(
                     "b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9".into(),
                 ),
                 root_after: Some(wire::Root(
-                    "b3:10769ae1c77f5646750f3f52df2d055156b411145a02b8361ecd32af1357a1b7".into(),
+                    "b3:7f3b44376c719be236279e168c22fa2f4d346cd6e5da5bcf0784adb72e7c1f12".into(),
                 )),
                 seq: Some(1),
                 dry: None,
@@ -541,9 +541,9 @@ fn worked_splice_frames_match_contract() {
                  "node_rev_before":"33d5b0e1b27cb48b","node_rev_after":"41f643f034e5681f",
                  "span_after":[49,75]}]},
             "receipt":{"path":"receipts/2026-07-18.md","anchor":"r-000042",
-                       "node_rev":"639a2dca46f6fcc8","span_after":[26,248]},
+                       "node_rev":"60bbee70d4a63a48","span_after":[26,286]},
             "root_before":"b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9",
-            "root_after":"b3:10769ae1c77f5646750f3f52df2d055156b411145a02b8361ecd32af1357a1b7",
+            "root_after":"b3:7f3b44376c719be236279e168c22fa2f4d346cd6e5da5bcf0784adb72e7c1f12",
             "seq":1,"verdicts":[]}})
     );
 }
@@ -604,7 +604,7 @@ fn worked_dry_splice_frame_matches_contract() {
                 },
                 receipt: None,
                 root_before: wire::Root(
-                    "b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68".into(),
+                    "b3:6e866e13b5e65ef9961c050f8a621cf1980b00ee293be650deef5f4dbc6823f0".into(),
                 ),
                 root_after: None,
                 seq: None,
@@ -624,7 +624,7 @@ fn worked_dry_splice_frame_matches_contract() {
                 {"target":{"fm_key":"title"},
                  "node_rev_before":"fa77480c79a853bc","node_rev_after":"fb49e9df2257fab8",
                  "span_after":[4,18]}]},
-            "root_before":"b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68",
+            "root_before":"b3:6e866e13b5e65ef9961c050f8a621cf1980b00ee293be650deef5f4dbc6823f0",
             "root_after":null,"dry":true,"verdicts":[]}})
     );
     assert!(
@@ -774,7 +774,7 @@ fn e3_delta() -> wire::DeltaFrame {
                 "b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9".into(),
             ),
             root_after: wire::Root(
-                "b3:10769ae1c77f5646750f3f52df2d055156b411145a02b8361ecd32af1357a1b7".into(),
+                "b3:7f3b44376c719be236279e168c22fa2f4d346cd6e5da5bcf0784adb72e7c1f12".into(),
             ),
             actor: Some("agent:b0864fb2".into()),
             now: Some("2026-07-18T20:31:04Z".into()),
@@ -800,15 +800,15 @@ fn e3_delta() -> wire::DeltaFrame {
                     change: wire::FileChange::Modified,
                     from_path: None,
                     file_rev_before: Some(wire::NodeRev("920a40c4ee23d37c".into())),
-                    file_rev_after: Some(wire::NodeRev("2731acfa39bbb92c".into())),
+                    file_rev_after: Some(wire::NodeRev("51ad6428f5b5a898".into())),
                     nodes: vec![wire::DeltaNode {
                         target: wire::SecRef::Anchor {
                             anchor: "r-000042".into(),
                         },
                         change: wire::NodeChange::Added,
                         node_rev_before: None,
-                        node_rev_after: Some(wire::NodeRev("639a2dca46f6fcc8".into())),
-                        span_after: Some(wire::Span(26, 248)),
+                        node_rev_after: Some(wire::NodeRev("60bbee70d4a63a48".into())),
+                        span_after: Some(wire::Span(26, 286)),
                     }],
                 },
             ],
@@ -820,7 +820,7 @@ fn e3_delta_json() -> Value {
     json!({"delta":{
      "seq":1,
      "root_before":"b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9",
-     "root_after":"b3:10769ae1c77f5646750f3f52df2d055156b411145a02b8361ecd32af1357a1b7",
+     "root_after":"b3:7f3b44376c719be236279e168c22fa2f4d346cd6e5da5bcf0784adb72e7c1f12",
      "actor":"agent:b0864fb2","now":"2026-07-18T20:31:04Z",
      "files":[
       {"path":"notes/plan.md","change":"modified",
@@ -829,9 +829,9 @@ fn e3_delta_json() -> Value {
                  "node_rev_before":"33d5b0e1b27cb48b","node_rev_after":"41f643f034e5681f",
                  "span_after":[49,75]}]},
       {"path":"receipts/2026-07-18.md","change":"modified",
-       "file_rev_before":"920a40c4ee23d37c","file_rev_after":"2731acfa39bbb92c",
+       "file_rev_before":"920a40c4ee23d37c","file_rev_after":"51ad6428f5b5a898",
        "nodes":[{"anchor":"r-000042","change":"added",
-                 "node_rev_after":"639a2dca46f6fcc8","span_after":[26,248]}]}]}})
+                 "node_rev_after":"60bbee70d4a63a48","span_after":[26,286]}]}]}})
 }
 
 /// E4's delta, every value from the frozen §7.1 frame.
@@ -841,10 +841,10 @@ fn e4_delta() -> wire::DeltaFrame {
         delta: wire::Delta {
             seq: 2,
             root_before: wire::Root(
-                "b3:10769ae1c77f5646750f3f52df2d055156b411145a02b8361ecd32af1357a1b7".into(),
+                "b3:7f3b44376c719be236279e168c22fa2f4d346cd6e5da5bcf0784adb72e7c1f12".into(),
             ),
             root_after: wire::Root(
-                "b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68".into(),
+                "b3:6e866e13b5e65ef9961c050f8a621cf1980b00ee293be650deef5f4dbc6823f0".into(),
             ),
             actor: Some("agent:b0864fb2".into()),
             now: Some("2026-07-18T20:33:41Z".into()),
@@ -869,16 +869,16 @@ fn e4_delta() -> wire::DeltaFrame {
                     path: wire::Path("receipts/2026-07-18.md".into()),
                     change: wire::FileChange::Modified,
                     from_path: None,
-                    file_rev_before: Some(wire::NodeRev("2731acfa39bbb92c".into())),
-                    file_rev_after: Some(wire::NodeRev("9167b12b0eb13be6".into())),
+                    file_rev_before: Some(wire::NodeRev("51ad6428f5b5a898".into())),
+                    file_rev_after: Some(wire::NodeRev("6cb0e939ce2edf5a".into())),
                     nodes: vec![wire::DeltaNode {
                         target: wire::SecRef::Anchor {
                             anchor: "r-000043".into(),
                         },
                         change: wire::NodeChange::Added,
                         node_rev_before: None,
-                        node_rev_after: Some(wire::NodeRev("c912d4578883f288".into())),
-                        span_after: Some(wire::Span(249, 473)),
+                        node_rev_after: Some(wire::NodeRev("5c6ca7ec00ae279e".into())),
+                        span_after: Some(wire::Span(287, 549)),
                     }],
                 },
             ],
@@ -889,8 +889,8 @@ fn e4_delta() -> wire::DeltaFrame {
 fn e4_delta_json() -> Value {
     json!({"delta":{
      "seq":2,
-     "root_before":"b3:10769ae1c77f5646750f3f52df2d055156b411145a02b8361ecd32af1357a1b7",
-     "root_after":"b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68",
+     "root_before":"b3:7f3b44376c719be236279e168c22fa2f4d346cd6e5da5bcf0784adb72e7c1f12",
+     "root_after":"b3:6e866e13b5e65ef9961c050f8a621cf1980b00ee293be650deef5f4dbc6823f0",
      "actor":"agent:b0864fb2","now":"2026-07-18T20:33:41Z",
      "files":[
       {"path":"notes/plan.md","change":"modified",
@@ -899,9 +899,9 @@ fn e4_delta_json() -> Value {
                  "node_rev_before":"4b8bc385a58da0e0","node_rev_after":"f43203a1f0b4c9a3",
                  "span_after":[75,150]}]},
       {"path":"receipts/2026-07-18.md","change":"modified",
-       "file_rev_before":"2731acfa39bbb92c","file_rev_after":"9167b12b0eb13be6",
+       "file_rev_before":"51ad6428f5b5a898","file_rev_after":"6cb0e939ce2edf5a",
        "nodes":[{"anchor":"r-000043","change":"added",
-                 "node_rev_after":"c912d4578883f288","span_after":[249,473]}]}]}})
+                 "node_rev_after":"5c6ca7ec00ae279e","span_after":[287,549]}]}]}})
 }
 
 /// The two §7.1 worked delta notification frames, value-for-value, both
@@ -924,7 +924,7 @@ fn no_effects_e3_frame_preserves_pre_c5_bytes() {
     let bytes = serde_json::to_vec(&e3_delta()).unwrap();
     assert_eq!(
         bytes,
-        br#"{"delta":{"seq":1,"root_before":"b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9","root_after":"b3:10769ae1c77f5646750f3f52df2d055156b411145a02b8361ecd32af1357a1b7","actor":"agent:b0864fb2","now":"2026-07-18T20:31:04Z","files":[{"path":"notes/plan.md","change":"modified","file_rev_before":"e3c4acaceb75b907","file_rev_after":"a9794a262e67ed02","nodes":[{"hpath":[{"h":"Goals"},{"h":"Q3"}],"change":"edited","node_rev_before":"33d5b0e1b27cb48b","node_rev_after":"41f643f034e5681f","span_after":[49,75]}]},{"path":"receipts/2026-07-18.md","change":"modified","file_rev_before":"920a40c4ee23d37c","file_rev_after":"2731acfa39bbb92c","nodes":[{"anchor":"r-000042","change":"added","node_rev_after":"639a2dca46f6fcc8","span_after":[26,248]}]}]}}"#
+        br#"{"delta":{"seq":1,"root_before":"b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9","root_after":"b3:7f3b44376c719be236279e168c22fa2f4d346cd6e5da5bcf0784adb72e7c1f12","actor":"agent:b0864fb2","now":"2026-07-18T20:31:04Z","files":[{"path":"notes/plan.md","change":"modified","file_rev_before":"e3c4acaceb75b907","file_rev_after":"a9794a262e67ed02","nodes":[{"hpath":[{"h":"Goals"},{"h":"Q3"}],"change":"edited","node_rev_before":"33d5b0e1b27cb48b","node_rev_after":"41f643f034e5681f","span_after":[49,75]}]},{"path":"receipts/2026-07-18.md","change":"modified","file_rev_before":"920a40c4ee23d37c","file_rev_after":"51ad6428f5b5a898","nodes":[{"anchor":"r-000042","change":"added","node_rev_after":"60bbee70d4a63a48","span_after":[26,286]}]}]}}"#
     );
 }
 
@@ -1041,7 +1041,7 @@ fn external_delta_absent_actor_now_and_no_keys_slot() {
 // ---------------------------------------------------------------------------
 
 const R0: &str = "b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9";
-const R2: &str = "b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68";
+const R2: &str = "b3:6e866e13b5e65ef9961c050f8a621cf1980b00ee293be650deef5f4dbc6823f0";
 
 /// v2 §4.6, the worked exchange — id 80, the printed triple plus the
 /// resolved/unresolved per-edge counts, round-tripped through the typed
