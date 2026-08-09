@@ -260,11 +260,7 @@ pub fn composed_read(
         }
         .display();
         let mut e = ErrorBody::new(ErrorCode::RefNotFound);
-        e.message = Some(format!(
-            "read: no section at \"{asked}\" in {display}. Nothing was read and no \
-             rev was minted. {}",
-            crate::section_recovery(&asked, Some(display))
-        ));
+        e.message = Some(frag_miss_message(&asked, display));
         return Err(Box::new(e));
     }
     // One row set for the heading plane: `rendered_text` renders these rows
@@ -285,6 +281,38 @@ pub fn composed_read(
         unresolved: Vec::new(),
         rendered_text,
     })
+}
+
+/// The toc-mode fragment miss, honestly attributed. `frag` is the heading
+/// plane BY TYPE (`Vec<HpathSeg>`), so every miss here is a heading-lane
+/// miss: segments compared against raw heading text, nothing matched. A
+/// `^id`- or dewey-shaped spelling can still arrive on this plane from a
+/// caller that bypassed an ingress door (both faces route those spellings
+/// onto `sections` now) — and the old arm dressed exactly that miss in the
+/// requested selector's spelling, handing a heading miss the anchors[]
+/// recovery clause for a lane that never ran. That anti-teaching sent
+/// season 1 at the engine (finding 5, attribution overturned). The
+/// classification is the selector door's own ([`wire::ReadSel::parse`]), so
+/// the message and the door cannot disagree about what a spelling means.
+fn frag_miss_message(asked: &str, display: &str) -> String {
+    let lane = match wire::ReadSel::parse(asked) {
+        wire::ReadSel::Hpath { .. } => {
+            return format!(
+                "read: no section at \"{asked}\" in {display}. Nothing was read and no \
+                 rev was minted. {}",
+                crate::section_recovery(asked, Some(display))
+            );
+        }
+        wire::ReadSel::Anchor { .. } => "anchor",
+        wire::ReadSel::Dewey { .. } => "dewey",
+    };
+    format!(
+        "read: no section at \"{asked}\" in {display} — the fragment rides the heading \
+         plane, so \"{asked}\" was searched as literal heading text and the {lane} lane \
+         was never consulted. Nothing was read and no rev was minted. Fix: read that \
+         node with a section selector (MCP read: sections:[\"{asked}\"]; CLI: \
+         `mrd read {display} --section '{asked}'`)."
+    )
 }
 
 /// One heading fact → one wire composed-read row: the addressing facts plus
