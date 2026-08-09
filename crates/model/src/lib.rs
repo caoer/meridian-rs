@@ -2988,17 +2988,17 @@ mod tests {
             ("heading line", "# Top ^h-1\n\nbody text\n", "h-1"),
         ] {
             let doc = build(raw.to_string(), syntax::parse(raw));
-            let b = batch(vec![put_edit(
-                Ref::anchor(id).unwrap(),
-                PutAt::End,
-                "\nX",
-            )]);
+            let b = batch(vec![put_edit(Ref::anchor(id).unwrap(), PutAt::End, "\nX")]);
             let SpliceVerdict::TransitionUnrepresentable { target } =
                 validate_batch(&doc, None, &b, None)
             else {
                 panic!("{name} host: an end-append that escapes its node must refuse");
             };
-            assert_eq!(target, Ref::anchor(id).unwrap(), "{name}: names the offender");
+            assert_eq!(
+                target,
+                Ref::anchor(id).unwrap(),
+                "{name}: names the offender"
+            );
         }
     }
 
@@ -3014,8 +3014,14 @@ mod tests {
         let li = || Ref::anchor("li-1").unwrap();
         let cases: Vec<(&str, Edit)> = vec![
             ("at:end", put_edit(li(), PutAt::End, "\nX")),
-            ("at:all + separator", put_edit(li(), PutAt::All, "- item one ^li-1\n")),
-            ("at:content + separator", put_edit(li(), PutAt::Content, "- item one ^li-1\n")),
+            (
+                "at:all + separator",
+                put_edit(li(), PutAt::All, "- item one ^li-1\n"),
+            ),
+            (
+                "at:content + separator",
+                put_edit(li(), PutAt::Content, "- item one ^li-1\n"),
+            ),
             (
                 "match, new ends in a separator",
                 Edit {
@@ -3048,7 +3054,10 @@ mod tests {
         let key = || Ref::FmKey("title".into());
         for (name, edit) in [
             ("at:end", put_edit(key(), PutAt::End, "\nowner: zt")),
-            ("at:all + separator", put_edit(key(), PutAt::All, "title: Plan\n")),
+            (
+                "at:all + separator",
+                put_edit(key(), PutAt::All, "title: Plan\n"),
+            ),
         ] {
             let doc = build(raw.to_string(), syntax::parse(raw));
             let SpliceVerdict::TransitionUnrepresentable { target } =
@@ -3075,7 +3084,10 @@ mod tests {
             "- new item\n",
         )]);
         assert!(
-            matches!(validate_batch(&doc, None, &b, None), SpliceVerdict::Validated(_)),
+            matches!(
+                validate_batch(&doc, None, &b, None),
+                SpliceVerdict::Validated(_)
+            ),
             "at:end on a section writes inside its own span"
         );
 

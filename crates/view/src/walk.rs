@@ -1208,7 +1208,10 @@ mod tests {
         let mut docs = BTreeMap::new();
         docs.insert(
             "excluded-src.md".to_string(),
-            doc(&format!("# S\n\n{}\n", chain_block("ignored/target", &token))),
+            doc(&format!(
+                "# S\n\n{}\n",
+                chain_block("ignored/target", &token)
+            )),
         );
         docs.insert(
             "green-src.md".to_string(),
@@ -1226,7 +1229,10 @@ mod tests {
         // the map exactly as the hash-domain walk leaves it, and `gone.md` is
         // absent because it does not exist — the same corpus fact, two causes.
         docs.insert("kept.md".to_string(), doc(target_raw));
-        docs.insert("drifted.md".to_string(), doc("# Target\n\nbody v2 edited\n"));
+        docs.insert(
+            "drifted.md".to_string(),
+            doc("# Target\n\nbody v2 edited\n"),
+        );
 
         let domain = Excluding(&["ignored/target.md"]);
         let corpus = model::RootedCorpus::ambient(&docs).with_hash_domain(&domain);
@@ -1274,7 +1280,10 @@ mod tests {
         let mut docs = BTreeMap::new();
         docs.insert(
             "src.md".to_string(),
-            doc(&format!("# S\n\n{}\n", chain_block("ignored/target", &token))),
+            doc(&format!(
+                "# S\n\n{}\n",
+                chain_block("ignored/target", &token)
+            )),
         );
         let corpus = model::RootedCorpus::ambient(&docs);
         let rows = lock_pin_colors_rooted(&corpus, &addr::MountSet::default());

@@ -505,9 +505,11 @@ mod tests {
         let unattested = pin_plane(
             &root,
             &docs,
-            &[pin(Color::Grey(model::selector::GreyReason::OutsideHashDomain {
-                path: "drafts/tmp.md".to_string(),
-            }))],
+            &[pin(Color::Grey(
+                model::selector::GreyReason::OutsideHashDomain {
+                    path: "drafts/tmp.md".to_string(),
+                },
+            ))],
         );
         assert!(
             unattested.grey.is_empty() && unattested.unattested.len() == 1,

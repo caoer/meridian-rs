@@ -1232,7 +1232,8 @@ mod u21_file_not_found {
     #[test]
     fn the_pinned_exemplar_is_reproduced_by_the_renderer() {
         let root = addr::MountName::parse("sessions").expect("a name");
-        let produced = render_file_not_found(Some(&root), "24-01-retro/notes.md", Some("Design"), false);
+        let produced =
+            render_file_not_found(Some(&root), "24-01-retro/notes.md", Some("Design"), false);
         assert_eq!(
             produced, RED_FILE_NOT_FOUND_REFUSAL_EXEMPLAR,
             "the renderer and the pinned exemplar must not drift apart",
