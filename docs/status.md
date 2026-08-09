@@ -141,6 +141,15 @@ mrd --version the build identity, one line: package version + the
 `mrd help` is the authoritative surface — flags, refusal legs, and per-verb
 exit codes live there.
 
+**The exit triad is one law across the engine-backed verbs (read / put / pin):**
+exit 1 is the ENGINE refusing — every engine refusal, `bad_request` included,
+because a §4.4 batch the engine judges invalid (overlapping regions, a
+multi-line upsert value) is the engine refusing a well-formed invocation.
+Exit 2 is the CLI's OWN refusal — an unknown flag, malformed stdin, a
+contradictory flag pair — issued before any engine contact. A script branches
+on the exit alone: 2 means fix the invocation, 1 means read the engine's
+message.
+
 ### Operator SQL face — `mrd sql` (NOT agent core)
 
 **Normative framing (`wire-contract.md` §10.3–§10.4; `README.md` standing C):**
