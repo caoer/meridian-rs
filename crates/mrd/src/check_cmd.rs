@@ -175,10 +175,16 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     worst_of_exit(&worktree.report, staged.as_ref())
 }
 
-/// The corpus-wide question's exit: worst-of across intervals, then worst-of
-/// within one — red first, grey next, green last. Red and grey refuse on the same
-/// leg; the reason word tells a finding from an absence of evidence, and every
-/// refusal names its interval. `--commit-gate` never reaches here.
+/// The corpus-wide question's exit: worst-of across intervals — the interval
+/// carrying the worst colour answers. Red and grey refuse on the same leg; the
+/// reason word tells a finding from an absence of evidence, and every refusal
+/// names its interval. `--commit-gate` never reaches here.
+///
+/// **The SELECTION is worst-of; the LIST is not.** Once an interval is chosen it
+/// refuses with every finding it holds, red then grey, because the exit code is
+/// one bit and the enumeration is its reason half: a numbered fix-list that drops
+/// the greys sends an operator away believing the corpus clean once the reds are
+/// fixed (status.md § The findings enumeration is COMPLETE, never worst-of).
 ///
 /// # Errors
 /// [`Fail`] exit 1 on the worst finding across the assessed intervals.
@@ -187,15 +193,29 @@ fn worst_of_exit(worktree: &CoreReport, staged: Option<&Assessed>) -> Result<(),
     if let Some(staged) = staged {
         intervals.push((STAGED, &staged.report));
     }
-    for summarise in [CoreReport::red_summary, CoreReport::grey_summary] {
-        if let Some((label, summary)) = intervals
+    for worst in [CoreReport::is_red, CoreReport::cannot_assess] {
+        if let Some((label, report)) = intervals
             .iter()
-            .find_map(|(label, report)| summarise(report).map(|s| (*label, s)))
+            .find_map(|(label, report)| worst(report).then_some((*label, *report)))
         {
-            return Err(Fail::with_code(EXIT_FINDING, refusal_list(label, &summary)));
+            return Err(Fail::with_code(
+                EXIT_FINDING,
+                refusal_list(label, &all_findings(report)),
+            ));
         }
     }
     Ok(())
+}
+
+/// Every finding one interval holds, worst-of ORDERED and never worst-of
+/// SELECTED: the red lines first, then the grey ones, each keeping the reason
+/// word its own plane spelled.
+fn all_findings(report: &CoreReport) -> String {
+    [report.red_summary(), report.grey_summary()]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<String>>()
+        .join("\n")
 }
 
 /// The refusal line for a summary that carries N findings: a count, then one
@@ -1275,6 +1295,91 @@ mod tests {
         };
         assert!(!gate.permits());
         assert_eq!(gate.word(), GREY_CANNOT_ASSESS);
+    }
+
+    /// A report holding both colours — the shape `mrd-dogfood` s14-70 measured
+    /// on the live corpus: red pins beside one grey.
+    fn red_beside_grey() -> CoreReport {
+        CoreReport {
+            drifted_claims: vec![check::ClaimFinding {
+                selector: "target.md#Beta".to_string(),
+                detail: "observed != expected".to_string(),
+            }],
+            pins: PinPlane {
+                red: vec![pin(
+                    model::selector::Color::Red(model::selector::RedReason::Drifted),
+                    "red content-drifted",
+                )],
+                grey: vec![pin(
+                    model::selector::Color::Grey(model::selector::GreyReason::Ambiguous),
+                    "grey unverifiable-fingerprint",
+                )],
+                ..holding_pins()
+            },
+            orphans: Vec::new(),
+        }
+    }
+
+    /// The masking probe: with reds present the grey is still counted and named.
+    /// v1.0.0 returned the red summary alone — "4 findings" while five questions
+    /// stood — so an operator who fixed the list believed the corpus clean.
+    #[test]
+    fn the_findings_list_keeps_the_grey_beside_the_reds() {
+        let report = red_beside_grey();
+        let refusal = worst_of_exit(&report, None).expect_err("reds refuse");
+        let text = format!("{refusal:?}");
+        assert!(
+            text.contains("3 findings"),
+            "the count is everything listed — one claim, one red pin, one grey pin: {text}"
+        );
+        assert!(
+            text.contains("grey unverifiable-fingerprint"),
+            "the grey is NAMED, not merely counted: {text}"
+        );
+        assert!(
+            text.contains("red content-drifted"),
+            "and the reds keep their lines: {text}"
+        );
+        let red_at = text.find("red content-drifted").expect("red line");
+        let grey_at = text
+            .find("grey unverifiable-fingerprint")
+            .expect("grey line");
+        assert!(
+            red_at < grey_at,
+            "worst-of ORDER survives — the selection is what stopped being worst-of: {text}"
+        );
+    }
+
+    /// The control (s14-40): the same grey with no red anywhere is still the
+    /// one-finding list, on the same leg. Unmasking must not have changed it.
+    #[test]
+    fn a_lone_grey_is_still_the_whole_list() {
+        let report = CoreReport {
+            drifted_claims: Vec::new(),
+            pins: PinPlane {
+                grey: vec![pin(
+                    model::selector::Color::Grey(model::selector::GreyReason::Ambiguous),
+                    "grey unverifiable-fingerprint",
+                )],
+                ..holding_pins()
+            },
+            orphans: Vec::new(),
+        };
+        let refusal = worst_of_exit(&report, None).expect_err("grey fails closed");
+        let text = format!("{refusal:?}");
+        assert!(text.contains("1 finding"), "{text}");
+        assert!(text.contains("grey unverifiable-fingerprint"), "{text}");
+    }
+
+    /// A green report exits 0 — the widened list must not invent a refusal.
+    #[test]
+    fn a_green_report_still_exits_zero() {
+        let report = CoreReport {
+            drifted_claims: Vec::new(),
+            pins: holding_pins(),
+            orphans: Vec::new(),
+        };
+        assert!(worst_of_exit(&report, None).is_ok());
     }
 
     #[test]
