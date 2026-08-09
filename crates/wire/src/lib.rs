@@ -1781,6 +1781,12 @@ pub enum WouldCorruptFamily {
     /// The edit's own target no longer resolves, so its armed facts are
     /// unrepresentable. Extra: `target`.
     TargetIdentity,
+    /// The edit's own target still resolves, but its `node_rev` did not move
+    /// over a batch that changed the file — the bytes landed outside the node
+    /// the edit names, so its armed transition is unrepresentable and a
+    /// caller's `if_node_rev` would guard a value the write cannot move.
+    /// Extra: `target`.
+    TransitionUnrepresentable,
 }
 
 /// v2 §8: the error envelope — a nested object under the response's `error`
