@@ -1220,7 +1220,18 @@ fn dispatch_read(
         // No actor: delta stream is not actor-scoped (identities/revs/spans only).
         // v2 `read`/`check_write`/`create` fall through to `unknown_op` below.
         Op::Sub { from_seq } => {
-            let ring = registry.ring(ws);
+            // The claim is taken HERE, at fetch, under the rings map lock
+            // (`Registry::subscribe`) — linearized against the reaper's
+            // decide-and-remove, so from this line the workspace is
+            // reaper-exempt (U20b) and the ring cannot be orphaned under the
+            // prime below or before the ack renders. Subscribing in
+            // `push_loop` instead left a window between the acked `sub` and
+            // the loop's own subscribe that the reaper could win (CI run
+            // 31276217830, deterministic on the 2-core runner); a bare
+            // fetch-then-claim left the same window one level down. A refused
+            // `sub` drops the guard on return — the transient claim releases.
+            let guard = registry.subscribe(ws);
+            let ring = Arc::clone(guard.ring());
             if !ring.can_anchor(from_seq) {
                 let mut e = ErrorBody::new(ErrorCode::RootUnknown);
                 e.message = Some(
@@ -1233,16 +1244,7 @@ fn dispatch_read(
             // ack-then-prime would swallow interim edits.
             let root = ring.prime(&fs::WorkspaceRoot(ws.to_path_buf()))?;
             // Armed only on success — refused `sub` leaves a request channel.
-            // The subscription claim is taken HERE, before the ack renders:
-            // from the moment the client can observe `ok`, the workspace is
-            // reaper-exempt (U20b — a subscribed workspace is not reaped).
-            // Subscribing in `push_loop` instead left a window between the
-            // acked `sub` and the loop's own subscribe that the reaper could
-            // win (CI run 31276217830, deterministic on the 2-core runner).
-            *armed = Some(ArmedSub {
-                from_seq,
-                guard: ring.subscribe(),
-            });
+            *armed = Some(ArmedSub { from_seq, guard });
             // §4.7 ack: baseline root so first frame's `root_before` matches.
             Ok(ResponseBody::Root {
                 root,
