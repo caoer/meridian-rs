@@ -47,14 +47,15 @@ The base design carried each of these as a conditional with both outcomes design
 
 ### §0.3 The worked fixture (all examples run against this)
 
-Workspace `wsfix/` — three timeline states. State **S0**:
+Workspace `wsfix/` — three timeline states. State **S0** is exactly these three files on disk:
 
 ```
 notes/plan.md            136 bytes   file_rev e3c4acaceb75b907
 receipts/2026-07-18.md    26 bytes   file_rev 920a40c4ee23d37c
 .github/README.md         11 bytes   (md, but OUTSIDE the hash domain — default ignore, §12)
-meridian/domain.md                   (standing domain declaration; md, inside hash domain when present, §12)
 ```
+
+**`meridian/domain.md` is ABSENT at S0.** It is not a member of the S0 set and R0 does not cover it: R0 is the fingerprint of `notes/plan.md` and `receipts/2026-07-18.md` alone. The file is markdown and **hashes itself** when present (§12.1 rule 3; `crates/fs/src/domain.rs` — "the file that defines the attested surface is itself attested"), so writing it to disk moves the fingerprint off R0. The §12.3 domain-bump example is the only place this document puts it on disk, and its bytes are printed below **because §12.3 hashes them there**. Printing a file's bytes in this section never makes it an S0 member — the distinction is load-bearing: reading it the other way is a fingerprint change, not an editorial one.
 
 `notes/plan.md` at S0, exact bytes (LF endings, trailing newline):
 
@@ -77,12 +78,32 @@ ship by August
 - blocked on [[roadmap]]
 ```
 
-The remaining fixture bytes (every file this document hashes is printed in this section):
+The remaining fixture bytes (every file this document hashes **at S0 or in the §12.3 example** is printed in this section; the S1/S2 receipt entries are the one declared exception — §18 row 10):
 
 - `receipts/2026-07-18.md` at S0, exact bytes (26 B — the `—` is 3-byte UTF-8): `# Receipts — 2026-07-18` + LF.
 - `.github/README.md`, exact bytes (11 B): `# CI notes` + LF.
 - `drafts/tmp.md` (appears only in the §12.3 domain-bump example), exact bytes (8 B): `scratch` + LF.
-- `meridian/domain.md` at v0/v1 declares the custom ignore list and domain `version` (§12.3). It is markdown and participates in the hash domain when present.
+- `meridian/domain.md` — **absent at S0**, written only by the §12.3 example, in the two forms printed below.
+
+`meridian/domain.md` **v0**, exact bytes (33 B) — a `version` and no custom ignore list:
+
+```markdown
+---
+version: 0
+---
+# Hash domain
+```
+
+`meridian/domain.md` **v1**, exact bytes (57 B) — the same page carrying a custom ignore list:
+
+```markdown
+---
+version: 1
+ignore:
+  - "drafts/**"
+---
+# Hash domain
+```
 
 Timeline: **S0** →(E3 edit)→ **S1** (`plan.md` 139 B, receipts 249 B) →(E4 append)→ **S2** (`plan.md` 150 B, receipts 474 B). Roots:
 
@@ -260,7 +281,7 @@ toc is the complete write kit: hpath + `node_rev` per section, anchors with thei
    "node_rev":"639a2dca46f6fcc8","text_prefix_16b":"- splice notes/p"}]}}
 ```
 
-The `^r-000042` block echoes as a `list_item` node keyed by its `anchor` ref (§2.1) carrying its own `node_rev` over the block-leaf span (terminator excluded — `[26,248]`, byte-identical to the receipt facts armed in §4.4 and printed in §6.3); the lone top-level heading spans the whole file, so its `node_rev` equals `file_rev` (`2731acfa39bbb92c`). An anchor becomes a write target by the same one-hop path as a section.
+The `^r-000042` block echoes as a `list_item` node keyed by its `anchor` ref (§2.1) carrying its own `node_rev` over the block-leaf span (terminator excluded — `[26,248]`, byte-identical to the receipt facts armed in §4.4; §6.3's line is illustrative shape and does not carry these 222 bytes — §6.3, §18 row 10); the lone top-level heading spans the whole file, so its `node_rev` equals `file_rev` (`2731acfa39bbb92c`). An anchor becomes a write target by the same one-hop path as a section.
 
 ### §4.2 cat — read one section, not the disk
 
@@ -516,6 +537,8 @@ E4 append via `put{at:"end"}`:
 
 **Do not re-teach** pretty joins (`Goals>Q3`). Template replaceability (D-C10) is not permission for a second address grammar.
 
+**Byte arithmetic, stated rather than implied (2026-08-09).** The two lines above measure **260 B** and **262 B**. The fixture's own S1/S2 receipt entries measure **222 B** and **224 B** — that is what the spans `[26,248]` and `[249,473]` (§4.4, §7.1) and the receipts file's 26 → 249 → 474 B growth (§0.3) require, terminator excluded per the leaf-block span law (§1). The lines above are therefore **illustrative shape, not the fixture's receipt bytes**: 38 B per line separate them, and this document does not print the S1/S2 receipt bytes anywhere. The consequence is declared, not hidden — R1, R2 and every S1/S2-anchored value are published but not reconstructable from this document. §18 row 10.
+
 ### §6.4 Replaceability (D-C10 — facts are the contract)
 
 The md *rendering* is a shipped default template; a non-ccc consumer replaces it freely — the normative receipt content is the armed-fact set, defined by the wire response shape. The engine mechanism is generic: "append these facts at this address with this anchor". "No intent past-due without a receipt" is lintable: a rules pack can assert every splice-bearing transcript row has its receipt anchor resolvable (§11).
@@ -710,14 +733,21 @@ Leaf = blake3(whole raw file), full 32 B. Interior = blake3 over children sorted
 
 ### §12.3 Domain-rule changes bump the prefix
 
-An ignore-list (or algorithm) change re-defines the domain, so the token prefix advances: `b3:` → `b3a:` → … The domain `version` field rides **`meridian/domain.md`** with the ignore list so domain definition and prefix travel together. Worked at S2 with `drafts/tmp.md` present:
+An ignore-list (or algorithm) change re-defines the domain, so the token prefix advances: `b3:` → `b3a:` → … The domain `version` field rides **`meridian/domain.md`** with the ignore list so domain definition and prefix travel together.
 
-| Config | Fingerprint |
-|---|---|
-| v0 (drafts in domain) | `b3:05f0c6192308db5937c3e1352d1f9a6fc31b89b1a57175c8af6ce7903525aa4a` |
-| v1 (ignore `drafts/**`) | `b3a:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68` |
+Worked at **S0**, writing `meridian/domain.md` in the forms §0.3 prints. `drafts/tmp.md` may be on disk for **rows 3–5 only** — each of those declares an ignore list covering it, so its presence moves nothing there. **Rows 1 and 2 require it ABSENT**: they declare no ignore list, so a `drafts/` file joins the domain and neither row's value is served. The config is markdown, so **its own bytes are in the domain it declares** — that is why v0 and v1 differ in hex over the same member set. Every value is measured against the shipped engine, 2026-08-09:
 
-Same surviving hex can never compare equal across prefixes — receipts must not silently match a redefined domain.
+| `meridian/domain.md` | Files hashed | Fingerprint |
+|---|---|---|
+| absent (S0 as printed in §0.3) | plan, receipts | `b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9` (= R0) |
+| v0 — `version: 0`, no ignore list | plan, receipts, **domain.md** | `b3:23421037fa8d4a947aa7104941797b325e38c67878787773f76bc1009c63bab4` |
+| v1 — ignore `drafts/**` | plan, receipts, **domain.md** | `b3a:48c0b314c7e0bf2d570936a302a4d5be4802a03187a988353efc5725b45067b1` |
+| v1 — ignore `drafts/**`, `meridian/**` | plan, receipts | `b3a:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9` |
+| v2 — same ignore list | plan, receipts | `b3b:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9` |
+
+Two laws read straight off the table. **The prefix tracks the domain RULES, never the member set** — row 2 adds a file and stays at `b3:`, because declaring `version: 0` with no ignore list changes no rule; rows 3–5 advance because the rules moved. And **the same surviving hex can never compare equal across prefixes**: rows 1, 4 and 5 carry one 64-hex value under three different tokens, by design — receipts must not silently match a redefined domain.
+
+**Amendment, 2026-08-09.** Before this date §12.3 published a pair anchored at S2 — v0 `b3:05f0c6192308db5937c3e1352d1f9a6fc31b89b1a57175c8af6ce7903525aa4a`, v1 `b3a:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68`. Those values close arithmetically only if the domain config's own bytes stay OUT of the domain, which is true of the legacy non-md `mdfs_config.yaml` and false of the standing `meridian/domain.md`. The published worked example was therefore reproducible only through the surface §12.1 says do not create and do not teach. Ruled (advisor, 2026-08-09): the table recomputes over the standing surface. §12.1 stands untouched — the legacy filename stays forbidden — and the superseded values are printed here rather than scrubbed. §18 row 11.
 
 ## §13 Threat and limit register (the honesty standard, throughout)
 
@@ -838,9 +868,9 @@ The draft implementation plan sequenced against this table is a downstream deliv
 
 ## §18 Deviation & waiver ledger (fix-at-freeze)
 
-The fix-at-freeze rule requires each reviewer-flagged debt fixed or waived with reason, here, never silently. Rows 1–5 are the winner-pick fix list; rows 6–7 consolidate the v1 deviations already declared in the body.
+The fix-at-freeze rule requires each reviewer-flagged debt fixed or waived with reason, here, never silently. Rows 1–5 are the winner-pick fix list; rows 6–7 consolidate the v1 deviations already declared in the body; rows 9–12 are measured against the shipped v1 artifact and this document's own arithmetic (dogfood, 2026-08-09).
 
-**Row 9 is a different KIND of row, and the difference is load-bearing.** Rows 1–7 record where this DOCUMENT departed from ruled law. Row 9 records where the shipped ARTIFACT departs from this document — measured at the v1 cut against the built binary, not read off the source. Recording it is what §15's assumption-audit law demands: a deviation found without a row here is a contract bug, so the row FIXES that bug by this contract's own procedure. **Declaring is not legislating.** The law a row names stays in force, unamended, and the row is the observation — never a licence. (The contrast that fixes the rule: amending the constitution to legalize an implementation's behavior is breach; recording non-conformance while the law stands is this ledger working as designed.)
+**Rows 9 and 12 are a different KIND of row, and the difference is load-bearing.** Rows 1–7 and 10–11 record where this DOCUMENT departed from ruled law. Rows 9 and 12 record where the shipped ARTIFACT departs from this document — measured at the v1 cut against the built binary, not read off the source. Recording it is what §15's assumption-audit law demands: a deviation found without a row here is a contract bug, so the row FIXES that bug by this contract's own procedure. **Declaring is not legislating.** The law a row names stays in force, unamended, and the row is the observation — never a licence. (The contrast that fixes the rule: amending the constitution to legalize an implementation's behavior is breach; recording non-conformance while the law stands is this ledger working as designed.)
 
 | # | Item | Disposition |
 |---|---|---|
@@ -852,6 +882,9 @@ The fix-at-freeze rule requires each reviewer-flagged debt fixed or waived with 
 | 6 | v1 `not_found` retired | Declared at §8 with rationale (split into `file_not_found` env / `ref_not_found` refresh) |
 | 7 | v1's frozen "unknown `kinds` match nothing" reversed to loud `bad_request` | Declared at §4.3 with rationale (the strict-server evolution law applied to values) |
 | 9 | **The v1 artifact deviates from the raw-lexeme id law (§3.1).** §3.1 fixes valid ids as JSON integer lexemes in `[0, 2^53)` and requires a non-conforming lexeme to be refused with `id:null` plus the offending lexeme verbatim in `id_raw`. Measured at the v1 cut against the built release binary over a live socket: every non-conforming lexeme — `"1"`, `-1`, `1.5`, `true`, `null` — is silently nulled and **the request is SERVED**. No refusal, and `id_raw` is never emitted. A conforming integer echoes correctly (`{"id":7}` → `id:7`). Not op-specific: on `mounts`, `{"id":5}` echoes while `{"id":"5"}` answers `id:null` — same frame, same op, only the lexeme differs | **DECLARED, not waived, and §3.1 STANDS UNAMENDED.** The law is the law; the artifact does not yet serve it. **The corruption-law interaction, stated plainly:** a client sending non-conforming ids receives served work AND frames that §3.1's null-id corruption law instructs it to treat as channel corruption — fail all outstanding, respawn. Two subsystems tell such a client opposite things. **Why this declares rather than blocks the release:** only NON-CONFORMING senders can reach it; no promised surface serves a wrong result to a CONFORMING caller; and the blast radius is a misbehaving client receiving a confusing-but-defensive signal, never silent corruption of a correct one. **CONFORMANCE IS OWED.** Serving `id_raw` and refusing non-conforming lexemes per §3.1 is the standing **v1.x direction** — this row records a gap on the way to it, and is not the end state |
+| 10 | **The fixture's S1/S2 receipt bytes are printed nowhere.** §6.3's illustrative receipt lines measure 260 B / 262 B against the 222 B / 224 B the fixture's own spans (`[26,248]`, `[249,473]` — §4.4, §7.1) and file sizes (receipts 26 → 249 → 474 B, §0.3) require: 38 B per line unprinted (dogfood 2026-08-09, s10). §0.3's promise that "every file this document hashes is printed in this section" did not hold for S1/S2 | **DECLARED, and the arithmetic now stated at both ends.** §6.3 prints both measurements and names the gap; §0.3's promise is scoped to what it actually prints (S0 + the §12.3 example) with this row as the named exception. Consequence, unhidden: R1, R2 and every S1/S2-anchored value stay published-but-unreconstructable from this document. **This is a printing debt, not a hash debt** — the S0 set, R0 and every S0-anchored value are untouched. Closing it (printing the receipt bytes, or reconciling the default template to them) is a FIXTURE act carrying an S1/S2 rebaseline, never an editorial one, and is owed |
+| 11 | **§12.3's worked table taught its arithmetic through a forbidden surface.** The published S2-anchored v0/v1 pair closes only if the domain config's own bytes stay out of the domain — true of the legacy non-md `mdfs_config.yaml`, false of the standing `meridian/domain.md`, which self-hashes by design (`crates/fs/src/domain.rs`). §12.3's values therefore contradicted §0.3's own "participates when present" note and were unreachable from the surface §12.1 mandates (dogfood 2026-08-09, s10) | **FIXED** — §12.3 recomputes over the standing `meridian/domain.md` with engine-measured values, §0.3 prints that file's v0 and v1 bytes, and the superseded pair is printed at §12.3 rather than scrubbed. §12.1 stands unamended: the legacy filename remains do-not-create, do-not-teach. **The S0 file set did not move** — `meridian/domain.md` is ABSENT at S0, R0 unchanged, and printing a file's bytes never makes it a member (proved on a fresh fixture: absent → R0, v0 present → `b3:23421037…`, removed → R0 returns). Ruled 2026-08-09, advisor scope |
+| 12 | **CLI-lane commits advance the fingerprint and mint no Delta.** §7.1 laws one Delta per batch per fingerprint advance and §10.1's `changes_seq` is that counter. Measured at the v1 cut (dogfood 2026-08-09, s9): an `mrd put` commit moves the fingerprint the same daemon serves immediately, while `changes_seq` reads 0 before AND after | **DECLARED, not waived; §7.1 and §10.1 STAND UNAMENDED.** A consumer using `changes_seq` as a change monotone misses every CLI-lane write, silently — the answer is in an honest tense but the counter under it never moved. The fingerprint is the only monotone covering both lanes today, so cross-lane catchup is diff-by-root (§4.7), the same answer §7.1 already gives for cross-epoch catchup. Minting the delta on the CLI lane is owed |
 
 Row 8 is **not reused**: the paragraph below refers to the dissolved row by that number, so retiring it keeps the record unambiguous.
 

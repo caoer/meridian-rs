@@ -684,6 +684,18 @@ cargo bench -p perfsuite
  loaded; where packs are sourced is the host's concern.
 - `transport-proto` is an opt-in typed path; the default transport is the
  untyped NDJSON codec.
+- **`require_fingerprint` has no CLI spelling.** `links.require_fingerprint`
+ is a served wire cap (`wire-contract.md` §10.2; release §2.1), but
+ `mrd links --require-fingerprint` answers `unknown flag`, exit 2. The §10.2
+ posture — refuse with `stale_view` instead of answering in an unnamed tense
+ — is reachable at the socket only, never from the operator face (dogfood
+ 2026-08-09, s9).
+- **CLI-committed writes advance the fingerprint, never `changes_seq`.** An
+ `mrd put` commit moves the workspace fingerprint the daemon serves
+ immediately, and mints no Delta, so `changes_seq` reads the same value
+ before and after (dogfood 2026-08-09, s9; declared at `wire-contract.md`
+ §18 row 12). A consumer polling `changes_seq` as a change monotone misses
+ every CLI-lane write — diff by fingerprint (§4.7) instead.
 
 Accepted residuals (attestation surfaces) — documented, not prevented. Full statements in
 `wire-contract.md` § Named residuals.
