@@ -1,3 +1,12 @@
+---
+type: spec
+id: run
+status: standing
+updated: 2026-08-09
+description: The run plane — how `mrd run` executes an addressed task block and turns what it emits into governed effects, plus preset and session birth.
+owns: [the run plane, preset and session birth]
+---
+
 # The run plane — `mrd run` (S1)
 
 > **Standing:** Design law is `wire-contract.md` (one contract). Mint addresses = segments only. Receipts = armed wire facts. DuckDB/`view_path` not agent core. **Doc correct > code correct; docs first.** See `README.md`.
