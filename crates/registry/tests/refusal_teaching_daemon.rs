@@ -1,10 +1,12 @@
-//! Dogfood 2026-08-08, opus P3-2 — warm plane (card `p2-dogfood-refusal-teaching`).
+//! Dogfood 2026-08-08 opus P3-2, amended by dogfood 2026-08-09 s10 — warm plane.
 //!
-//! The daemon's single-file reads are hash-domain-scoped: a file that does not
-//! exist and a real `.md` that sits outside the hash domain (wire-contract §12)
-//! answer the SAME `file_not_found`. The refusal must say so — name the miss,
-//! the domain-scoped-vs-missing distinction, and a servable Fix — instead of
-//! echoing the path as a bare token. Code and recovery class stay frozen.
+//! The daemon's single-file reads are NOT hash-domain-scoped: §12.1's hash
+//! domain ⊂ addressable domain holds at every door, so a real `.md` outside the
+//! domain SERVES by explicit path (the write door always committed to it) and
+//! `file_not_found` means one thing only — no file under the workspace root.
+//! The refusal names the miss, discloses the partial state, carries a servable
+//! Fix, and never offers domain exclusion as a second reading of the miss.
+//! Code and recovery class stay frozen.
 //!
 //! Harness: the `corpus_refusal` precedent (real daemon over a Unix socket).
 
@@ -108,10 +110,11 @@ fn file_not_found_message(conn: &mut Conn, path: &str) -> String {
         .to_owned()
 }
 
-/// A file that truly does not exist: the refusal names the miss, the
-/// domain-scoped grain of the answer, and a servable Fix.
+/// A file that truly does not exist: the refusal names the miss, discloses the
+/// partial state, carries a servable Fix, and states that domain exclusion is
+/// NOT what this refusal means (§12.1).
 #[test]
-fn warm_read_of_a_missing_file_teaches_the_domain_scoped_miss() {
+fn warm_read_of_a_missing_file_teaches_the_miss_and_not_domain_exclusion() {
     let tmp = TempDir::new().unwrap();
     let ws = write_ws(&tmp, &[("healthy.md", "# Healthy\n\nfine.\n")]);
     let server = RunningServer::start(test_config(&tmp)).unwrap();
@@ -121,23 +124,31 @@ fn warm_read_of_a_missing_file_teaches_the_domain_scoped_miss() {
 
     let m = file_not_found_message(&mut conn, "missing.md");
     assert!(m.contains("missing.md"), "names the file: {m}");
-    // The distinction: this one refusal covers a missing file AND a real file
-    // outside the hash domain — the caller must be told both readings exist.
-    assert!(m.contains("hash domain"), "names the domain scoping: {m}");
     assert!(
         m.contains("Nothing was read") && m.contains("no rev was minted"),
         "discloses the partial state: {m}"
     );
     assert!(m.contains("Fix:"), "carries a fix clause: {m}");
+    // The inverted teaching this refusal used to carry (dogfood s10): offering
+    // domain exclusion as the second reading taught the caller that an ignored
+    // path is unservable — the opposite of §12.1. The sentence must now deny it.
+    assert!(
+        m.contains("NOT this refusal"),
+        "denies domain exclusion as a reading of the miss: {m}"
+    );
 
     server.shutdown();
 }
 
-/// The trap's other face: a REAL `.md` on disk whose path the default ignore
-/// excludes (dot-prefixed segment, §12.1) answers the same `file_not_found` —
-/// and the same teaching must reach it, naming where the domain rules live.
+/// §12.1 addressability at the warm read door: a REAL `.md` the default ignore
+/// excludes (dot-prefixed segment) SERVES by explicit path — same spans, same
+/// `file_rev` the guarded write door needs — while the workspace fingerprint
+/// never moves. Before the disk fallback in `doc_or_refusal` this path answered
+/// `file_not_found` while `splice` on the SAME path committed (dogfood s10).
+///
+/// *Mutation:* drop the fallback — the `toc` below refuses `file_not_found`.
 #[test]
-fn warm_read_of_a_real_but_domain_excluded_file_teaches_the_distinction() {
+fn warm_read_of_a_real_but_domain_excluded_file_serves_it() {
     let tmp = TempDir::new().unwrap();
     let ws = write_ws(
         &tmp,
@@ -151,14 +162,43 @@ fn warm_read_of_a_real_but_domain_excluded_file_teaches_the_distinction() {
     let ack = conn.hello(&ws);
     assert_eq!(ack["ok"], json!(true), "corpus binds: {ack}");
 
-    let m = file_not_found_message(&mut conn, ".github/real.md");
-    assert!(m.contains(".github/real.md"), "names the file: {m}");
-    assert!(m.contains("hash domain"), "names the domain scoping: {m}");
-    // The servable half: where the exclusion rules live, so a caller holding a
-    // real file can find out WHY it does not serve.
+    let before = conn.call(&json!({"op": "root"}));
+    assert_eq!(before["ok"], json!(true), "{before}");
+
+    let toc = conn.call(&json!({"op": "toc", "path": ".github/real.md"}));
+    assert_eq!(
+        toc["ok"],
+        json!(true),
+        "the ignored path is addressable (§12.1): {toc}"
+    );
+
+    // The read door mints the CAS token a guarded write needs — the asymmetry
+    // was that only the write door could mint it for this page.
+    let read = conn.call(&json!({
+        "op": "read",
+        "path": ".github/real.md",
+        "display_path": ".github/real.md",
+    }));
+    assert_eq!(read["ok"], json!(true), "the composed read serves: {read}");
     assert!(
-        m.contains("meridian/domain.md"),
-        "names the standing domain declaration: {m}"
+        read["body"]["file_rev"].is_string(),
+        "the read mints file_rev for an out-of-domain page: {read}"
+    );
+
+    // Reading out-of-domain bytes never moves the fingerprint.
+    let after = conn.call(&json!({"op": "root"}));
+    assert_eq!(
+        after["body"]["fingerprint"], before["body"]["fingerprint"],
+        "out-of-domain reads are fingerprint-neutral: {before} -> {after}"
+    );
+
+    // Control: a path with no file behind it still refuses.
+    let missing = conn.call(&json!({"op": "toc", "path": ".github/ghost.md"}));
+    assert_eq!(missing["ok"], json!(false), "{missing}");
+    assert_eq!(
+        missing["error"]["code"],
+        json!("file_not_found"),
+        "{missing}"
     );
 
     server.shutdown();
