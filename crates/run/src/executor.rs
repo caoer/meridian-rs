@@ -305,7 +305,16 @@ pub enum ExecError {
     /// A non-md descriptor reached the executor — a dispatch bug, refused loud.
     NonMdEffect { kind: String },
     /// A descriptor's kind/target is not admitted by the block's caps.
-    CapDenied { kind: String, target: String },
+    CapDenied {
+        kind: String,
+        target: String,
+        /// The ceiling that took a cap which WOULD have admitted this
+        /// descriptor, when one did. `None` is not "unknown" — it is the
+        /// measured absence of a ceiling cause (deny-default, or a grant that
+        /// never held the cap), and the refusal then names the cause and stops
+        /// rather than teaching a fix it cannot derive.
+        ceiling: Option<String>,
+    },
     /// A descriptor argument is missing or wrongly shaped (kernel constructors
     /// make this unreachable; hand-built descriptors fault here).
     BadDescriptor { kind: String, reason: String },
@@ -360,8 +369,27 @@ impl std::fmt::Display for ExecError {
             ExecError::NonMdEffect { kind } => {
                 write!(f, "executor applies md.* only, got '{kind}'")
             }
-            ExecError::CapDenied { kind, target } => {
-                write!(f, "capability denied: {kind} on '{target}'")
+            ExecError::CapDenied {
+                kind,
+                target,
+                ceiling,
+            } => {
+                write!(f, "capability denied: {kind} on '{target}'")?;
+                // run-plane § capabilities: a block whose own frontmatter
+                // declares the cap reads this refusal as the engine ignoring a
+                // grant that is plainly on the page, and derives a remedy
+                // already in place. Naming the ceiling is the only remedy that
+                // repairs THIS denial — and it is taught only where the
+                // resolution measured one.
+                match ceiling {
+                    Some(ceiling) => write!(
+                        f,
+                        " — the grant was narrowed away by {ceiling}. Conventions narrow only, \
+                         never widen, so declaring the cap again cannot lift it. Fix: widen or \
+                         remove that ceiling entry, or aim the effect inside what it leaves."
+                    ),
+                    None => Ok(()),
+                }
             }
             ExecError::BadDescriptor { kind, reason } => {
                 write!(f, "bad {kind} descriptor: {reason}")
@@ -608,9 +636,15 @@ pub fn apply_under(
     for effect in req.effects {
         let (kind, target) = descriptor_surface(effect)?;
         if !req.authority.admits(kind, Some(&target)) {
+            let ceiling = req
+                .authority
+                .capabilities()
+                .and_then(|caps| caps.ceiling_denying(kind, Some(&target)))
+                .map(ToString::to_string);
             return Err(ExecError::CapDenied {
                 kind: kind.to_owned(),
                 target,
+                ceiling,
             });
         }
     }

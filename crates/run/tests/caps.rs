@@ -217,3 +217,33 @@ fn a_malformed_cap_entry_is_a_loud_error_never_no_policy() {
         CapsError::BadPattern { .. }
     ));
 }
+
+/// A denial names the ceiling that ate the grant, and ONLY where a ceiling is
+/// what ate it (run-plane § capabilities, dogfood s12-50). A caller whose own
+/// page declares `md.set_field` and is denied `md.set_field` would otherwise
+/// derive the one remedy already in place.
+#[test]
+fn a_ceiling_narrowed_denial_names_the_ceiling_and_an_unnarrowed_one_does_not() {
+    let conventions = conventions(&[("fix-note", &["md.set_field:status"])]);
+    let explicit = set(&["md.set_field", "md.append_section"]);
+
+    let narrowed = caps::resolve_caps("fix-note", Some(&explicit), &conventions);
+    let ceiling = narrowed
+        .ceiling_denying("md.set_field", Some("owner"))
+        .expect("the convention ceiling took the wide grant");
+    assert!(
+        ceiling.to_string().contains("run.caps.fix-note"),
+        "names the winning pattern: {ceiling}"
+    );
+
+    // Same descriptor, no ceiling in force: the grant simply never held it, so
+    // there is no measured cause and the refusal teaches no fix.
+    let scoped = set(&["md.set_field:status"]);
+    let unnarrowed = caps::resolve_caps("plain", Some(&scoped), &Conventions::none());
+    assert!(
+        unnarrowed
+            .ceiling_denying("md.set_field", Some("owner"))
+            .is_none(),
+        "no ceiling is a measured absence, never an unknown"
+    );
+}
