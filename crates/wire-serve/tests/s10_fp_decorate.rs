@@ -477,6 +477,17 @@ fn the_wire_decoder_strips_before_its_own_mint_guard() {
 }
 
 /// Well-formed `@fp` on address strips before `Ref::anchor` and resolves to stored spelling.
+///
+/// The `text` carries NO trailing newline, and that is load-bearing rather than
+/// cosmetic (`decisions/0018`, 2026-08-09). A leaf block's span EXCLUDES its
+/// line terminator, so a trailing separator here would place a byte outside the
+/// node this edit names — the engine refuses that now, and it committed it at
+/// v1.0.0 with a `node_rev` that could not move. This fixture previously
+/// carried the separator, which made it depend on that escape to pass: the
+/// defect encoded as its own precondition. Re-pointed at the LAW per charter
+/// 03; **the assertions below are untouched**, because the trailing newline
+/// was never what this test measures — it measures that `@fp` is stripped from
+/// an ADDRESS and never reaches disk.
 #[test]
 fn a_well_formed_fp_address_strips_and_resolves() {
     let (_dir, root) = workspace();
@@ -488,7 +499,7 @@ fn a_well_formed_fp_address_strips_and_resolves() {
     };
     args.edits[0].edit = EditShape::Put {
         at: PutAt::All,
-        text: "^leaders-guideline\n".into(),
+        text: "^leaders-guideline".into(),
     };
     splice(&root, None, &args, &[], None).expect("the decorated address resolves");
 
