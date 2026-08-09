@@ -1323,11 +1323,14 @@ fn apply_production_edit(
         plan_edits: Vec::new(),
         pin: None,
     };
+    // Exit 2, not the findings leg: the SPEC declared an edit the engine will not perform, which
+    // is a bad input to this harness rather than the engine refusing a caller's request. The
+    // sentence still comes from the one owner — rendering the body here spelled the code
+    // `Debug`-style and dropped every message-less refusal to an empty string.
     splice(&root, None, &args, &[], None).map_err(|error| {
         Fail::tool(format!(
-            "production splice refused counterfactual write to {path}: {:?}: {}",
-            error.code,
-            error.message.as_deref().unwrap_or_default()
+            "production splice refused counterfactual write to {path}: {}",
+            crate::engine::refusal_text(&error)
         ))
     })?;
     std::fs::read_to_string(&full).map_err(|error| {
