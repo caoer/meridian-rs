@@ -154,6 +154,122 @@ mrd --version the build identity, one line: package version + the
  read (read, never invented)
 ```
 
+⛔ **The commit names the tree THE BUILD READ. It is not a claim about YOUR
+HEAD, and a bare commit is not proof the build came from YOUR commit.** Three
+outcomes are what `build.rs` can WRITE — bare commit, `-dirty`, `unknown` — and
+there is a FOURTH STATE none of them distinguishes: a binary whose stamp was
+never re-computed at all, because it was built from artifacts seeded out of
+another tree whose git paths its freshness still watches. That reads as outcome
+one, in a clean tree at porcelain 0, and `(read, never invented)` is exactly the
+reassurance it defeats — the value WAS read faithfully, from a stale artifact of
+a repository you cannot see. (Measured 2026-08-09; the demonstrated instance is
+preserved at `/Users/Shared/scratch/act1-019e7ce2/{W2,Z2}`.)
+
+And the probe is not the only producer: `build.rs` takes the value from the
+environment first (`env_sha()`, falling back to the probe), so **`MRD_BUILD_SHA`
+rides verbatim with no probe at all** — a supported input that can name a commit
+unrelated to the tree, independently of any stale artifact. Supplying it to make a
+gate agree invents the answer the pin exists to give; the supplier owns that
+claim. Read at `crates/mrd/build.rs`, HEAD `b8fe2a43`.
+
+⛔ **So the first rung is the environment, not the stamp.** A supplied value
+passes the sha match, the ancestor discriminator AND the watch-list grep — every
+read-time check below is defeated by it, because none of them can see where the
+value came from. **An unset `MRD_BUILD_SHA` is a precondition of every other rung
+here.** Check it first.
+
+Then three checks, and they answer different questions:
+
+```
+env | grep MRD_BUILD_SHA                       # rung 0: the precondition. Any value voids everything below
+mrd --version  vs  git rev-parse HEAD          # the SYMPTOM, in that dir, on that dir's own binary
+git rev-parse --git-dir ; git rev-parse --git-common-dir   # the CAUSE: what "yours" means
+grep -h rerun-if-changed target/debug/.fingerprint/mrd-*/run-build-script-*.json | sort -u
+```
+
+**A watched path is YOURS when it sits under your own `--git-dir` or
+`--git-common-dir` AND every `/worktrees/<name>/` segment in it names YOUR OWN
+worktree. Anything else is FOREIGN.** The `/worktrees/<name>/` clause is
+load-bearing and a common-dir test alone does not cover it: a foreign worktree OF
+THE SAME REPOSITORY sits inside your common dir and is exactly the hazard, so
+"inside my common dir = normal" passes the case it was written to catch. ⭐ It is
+also the one check that fires at SEED TIME: a foreign worktree name is wrong
+immediately, before the receiving tree's HEAD has moved and while the sha still
+agrees.
+
+📌 **Predicate provenance, because this one moved faster than the page.** Derive
+the rate rather than trusting this sentence: the `ts:` frontmatter of the fleet
+notices that retired each form gives **three predicates in 5.2 minutes**, and
+**8.6 minutes** to the fourth revision that also replaced the file this section
+tells you to read (`all-hands/0015` `16:18:29Z` → `0018` `16:23:44Z` → `0020`
+`16:27:05Z`).
+The form above is the one measured into fleet law on 2026-08-09, superseding a
+common-dir-only test and, before that, a bare *any absolute path* test — each
+retired for admitting or flagging the wrong population. **A detector that young
+rots faster than the page around it**, so treat this paragraph as the last form
+this document SAW, not as proof it is the last form there is: if a later fleet
+notice sharpens it, that notice is current and this line is how you know to go
+looking. The stable half of this section — that the commit names the tree the
+build READ, that a fourth state exists which no output distinguishes, and that
+builds after `2500a4be` cannot enter it — does not move with the predicate.
+
+Do not tighten it into *any absolute path*, either — **a linked worktree's own
+refs genuinely live in the common dir, so absolute paths there are expected.**
+That loose form flags every worktree on the machine and teaches the reader to
+ignore the check. The predicate is *governed by a DIFFERENT REPOSITORY OR A
+DIFFERENT WORKTREE*, never *an absolute path*. And **list them all: the dep-info
+is a UNION, not one donor** — a tree can be governed by several invisible
+repositories at once, so the count is the interesting part and finding one is not
+finishing.
+
+⛔ **Name the instrument, because the two files disagree and only one decides.**
+
+| | File | Read it for |
+|---|---|---|
+| **INSTRUMENT** | `target/debug/.fingerprint/mrd-*/run-build-script-*.json` | what cargo STORED and what it COMPARES — the verdict |
+| **MISLEADING** | `target/debug/build/mrd-*/output` | what the script EMITTED — absolute by nature, understanding only |
+
+Cargo relativises a path under the package root BEFORE storing it, so the emitted
+file reads absolute where the stored form is relative and harmless. **A check
+globbing `output` cries wolf on every donor-seeded clone** — measured: six emitted
+paths, five naming the shared repo, reading exactly like the hazard, with the
+stored lists beside them relative and clean. A check that fires on healthy trees
+teaches the shrug just as surely as one that misses the hazard. Never take a
+verdict from `output`.
+
+The split is predictable from git's output form rather than empirical:
+`git rev-parse --git-path HEAD` returns a RELATIVE `.git/HEAD` in a main tree
+and an ABSOLUTE `…/.git/worktrees/<name>/HEAD` in a linked worktree, and
+`Path::join` discards the manifest prefix when its argument is absolute. On a disagreement,
+`git merge-base --is-ancestor <baked-sha> HEAD` splits the readings: YES is
+ordinary staleness (truthful about an earlier state of its own history). **NO is
+NOT yet the hazard — a third rung decides it**, because a CHERRY-PICKED landing
+puts your content under a NEW sha, so a seat that did everything the build-order
+law asks finds its baked sha is no longer an ancestor of `main` the moment its
+own work lands:
+
+```
+t=$(git rev-parse <baked-sha>^{tree})
+git log --format="%h %T" <base>..HEAD | awk -v t="$t" '$2==t'
+```
+
+A MATCH means the commit was RE-LANDED UNDER A NEW SHA — same tree, different id
+— which is benign and is exactly what a cherry-picked landing looks like from
+the candidate side. NO MATCH, with the baked sha not an ancestor, leaves the
+foreign-checkout hazard as the live reading. **Without this rung the detector
+fires hardest on the seats whose work just landed correctly**, which is the
+failure mode that retires a detector fastest.
+
+⚠️ Run the first check against the binary in that
+directory's own `target/`, never a PATH-resolved `mrd` — the installed engine is
+held BEHIND the tree by design, so it disagrees with HEAD for every seat and
+that is the pin working, not a defect. For an installed release compare the TAG
+(`git rev-parse v1.0.0^{commit}`).
+
+**Builds after `2500a4be` cannot enter this state**: the identity probe watches
+a sentinel inside its own `OUT_DIR` and no git path at all, so there is nothing
+foreign left to inherit. Measured 6 foreign paths → 0 across that commit.
+
 `mrd help` is the authoritative surface — flags, refusal legs, and per-verb
 exit codes live there.
 
