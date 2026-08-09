@@ -469,9 +469,31 @@ fn plan_set_property_refuses_forged_keys_at_both_doors_and_writes_nothing() {
         None,
     )
     .expect("a legal key still commits");
+    // The key landed, the block is still one block, and the body is untouched.
+    // WHERE inside the block the new key lands is deliberately NOT asserted:
+    // §A.6.3 states "Key ORDER inside the block is not a law of this contract —
+    // the auditable identity of the write is", and the create arm lands at the
+    // upsert insertion point rather than after the last key. A whole-file
+    // spelling pins that non-promise, so it reddens whenever the insertion
+    // point legitimately moves — which is how this assertion became an
+    // undeclared base red at `b1fcc6e3` (card base-red-u8b-plan-edits-key-order).
+    let after = std::fs::read_to_string(dir.path().join("plan.md")).expect("read");
+    assert!(
+        after.contains("\nreview-state_2: pending\n"),
+        "the legal key landed with its value: {after}"
+    );
+    assert!(
+        after.contains("\ntitle: Plan\n"),
+        "the pre-existing key survives the create: {after}"
+    );
     assert_eq!(
-        std::fs::read_to_string(dir.path().join("plan.md")).expect("read"),
-        "---\ntitle: Plan\nreview-state_2: pending\n---\n\n# Plan\n\nbody\n"
+        after.matches("---\n").count(),
+        2,
+        "one frontmatter block, both delimiters intact: {after}"
+    );
+    assert!(
+        after.ends_with("---\n\n# Plan\n\nbody\n"),
+        "the body below the block is untouched: {after}"
     );
 }
 
