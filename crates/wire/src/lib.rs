@@ -1781,10 +1781,11 @@ pub enum WouldCorruptFamily {
     /// The edit's own target no longer resolves, so its armed facts are
     /// unrepresentable. Extra: `target`.
     TargetIdentity,
-    /// The edit's own target still resolves, but its `node_rev` did not move
-    /// over a batch that changed the file — the bytes landed outside the node
-    /// the edit names, so its armed transition is unrepresentable and a
-    /// caller's `if_node_rev` would guard a value the write cannot move.
+    /// The edit wrote past the span it named: some of its bytes land outside
+    /// the target's post-batch span, so that node never receives them, its
+    /// `node_rev` cannot move, and a caller's `if_node_rev` would guard a
+    /// constant. Reachable through every write scope AND through `match`, so
+    /// the family is keyed on this mechanism rather than on the `at:` scope.
     /// Extra: `target`.
     TransitionUnrepresentable,
 }
