@@ -646,7 +646,7 @@ pub fn unfold(
     let mut files = Vec::with_capacity(def.scaffold.len());
     for path in &def.scaffold {
         let body = if *path == def.root_record {
-            render_root_record(&def, path, opts.now.as_deref())
+            render_root_record(&def, opts.now.as_deref())
         } else {
             render_stub(&def, path, opts.now.as_deref())
         };
@@ -819,7 +819,7 @@ pub fn reconcile(
     let mut materialized = Vec::with_capacity(plan.materialize.len());
     for path in &plan.materialize {
         let body = if *path == def.root_record {
-            render_root_record(&def, path, opts.now.as_deref())
+            render_root_record(&def, opts.now.as_deref())
         } else {
             render_stub(&def, path, opts.now.as_deref())
         };
@@ -1038,16 +1038,23 @@ fn scan_scope(root: &fs::WorkspaceRoot, declared: &[String]) -> Vec<String> {
     live
 }
 
-/// Render the session root record's birth bytes: it pins the PRESET (`inputs:
-/// [preset@rev]`) so the declared shape is re-derivable forever (d3 §6). The pin
+/// Render the session root record's birth bytes: `inputs` pins the DEF
+/// (`defpath@rev`) so the declared shape is re-derivable forever (d3 §1), then
+/// every declared floor pin, in declared order, so the law the session was born
+/// under is readable from the session itself (d3 §6, Law 6.2). The pin sequence
 /// is a multi-line block sequence rendered through the U2.11 safe grain and
 /// written atomically as the birth bytes — never a single-line properties patch.
-fn render_root_record(def: &PresetDef, preset_path: &str, now: Option<&str>) -> String {
+/// `preset:` names the DEF, never the record itself (Law 3.5).
+fn render_root_record(def: &PresetDef, now: Option<&str>) -> String {
     let created = now.unwrap_or("");
-    let inputs = render_block_sequence("inputs", &[format!("{}@{}", def.path, def.rev)]);
+    let mut pins = Vec::with_capacity(1 + def.inputs.len());
+    pins.push(format!("{}@{}", def.path, def.rev));
+    pins.extend(def.inputs.iter().cloned());
+    let inputs = render_block_sequence("inputs", &pins);
     format!(
-        "---\ntype: {kind}\npreset: {preset_path}\ncreated: {created}\n{inputs}\n---\n\n# {kind} — born from {preset_path}\n",
+        "---\ntype: {kind}\npreset: {preset}\ncreated: {created}\n{inputs}\n---\n\n# {kind} — born from {preset}\n",
         kind = def.defines,
+        preset = def.path,
     )
 }
 

@@ -1123,6 +1123,11 @@ exception is stated here so it cannot be widened silently.
 caller-supplied and stamped exactly as given. Absent stays absent. A crate that
 reads the wall clock cannot be tested against a fixture and cannot be replayed.
 
+**Law 3.5 — a born record names the def it was born from.** Every born record —
+the root record and each scaffold stub alike — carries `preset:` holding the
+DEF's page path. A root record that names itself there makes its own provenance
+line false and gives one key two meanings inside a single birth.
+
 ## 4. The three verbs
 
 The plane offers exactly three births, and they differ only in **what set of
@@ -1188,6 +1193,13 @@ long after the def has moved on.
 
 **Law 6.1 — a floor pin is a pin, not a copy.** The preset records `path@rev`;
 it never inlines the floor's content into the born tree.
+
+**Law 6.2 — the born root record carries the floor pins itself.** Its `inputs`
+is one block sequence holding the def pin first, then every floor pin the def
+declared, in declared order. A root record carrying the def pin alone leaves the
+floor readable only transitively — def@rev, then the def's content — which is
+one indirection weaker than "readable from the session itself" and survives only
+while the def blob does.
 
 ## 7. Refusals and exit codes
 
