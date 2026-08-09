@@ -1071,16 +1071,16 @@ fn dispatch_read(
     };
     match op {
         Op::Toc { path } => warm_engine_read(registry, ws, |engine| {
-            let doc = doc_or_refusal(engine, &path)?;
-            Ok(wire_serve::read::toc(doc, &path, &engine_root(engine)))
+            let doc = doc_or_refusal(engine, ws, &path)?;
+            Ok(wire_serve::read::toc(&doc, &path, &engine_root(engine)))
         }),
         Op::Cat { path, sec } => warm_engine_read(registry, ws, |engine| {
-            let doc = doc_or_refusal(engine, &path)?;
-            wire_serve::read::cat(doc, sec)
+            let doc = doc_or_refusal(engine, ws, &path)?;
+            wire_serve::read::cat(&doc, sec)
         }),
         Op::Extract { path, kinds } => warm_engine_read(registry, ws, |engine| {
-            let doc = doc_or_refusal(engine, &path)?;
-            Ok(wire_serve::read::extract(doc, &path, kinds, v3))
+            let doc = doc_or_refusal(engine, ws, &path)?;
+            Ok(wire_serve::read::extract(&doc, &path, kinds, v3))
         }),
         // Composed read — v3-only (§3.2); one warm-engine snapshot (D6).
         Op::Read {
@@ -1217,9 +1217,9 @@ fn dispatch_read(
             now,
             edits,
         } if v3 => warm_engine_read(registry, ws, |engine| {
-            let doc = doc_or_refusal(engine, &path)?;
+            let doc = doc_or_refusal(engine, ws, &path)?;
             Ok(wire_serve::check_write::check_write(
-                doc, &target, &actor, &now, &edits,
+                &doc, &target, &actor, &now, &edits,
             ))
         }),
         // U20b §4.7 push channel. Arm here; convert after ack (`serve_conn`).
@@ -1285,12 +1285,12 @@ fn composed_read_warm(
 ) -> Result<ResponseBody, Box<ErrorBody>> {
     let mints = registry.read_mints(ws);
     warm_engine_read(registry, ws, |engine| {
-        let doc = doc_or_refusal(engine, path)?;
+        let doc = doc_or_refusal(engine, ws, path)?;
         // S10: claim-link colors from the pinned corpus, same warm snapshot (D6).
         let decorations =
             wire_serve::read::page_decorations(&engine.index, &engine.docs, path.0.as_str());
         wire_serve::read::composed_read(
-            doc,
+            &doc,
             path,
             &engine_root(engine),
             params,
@@ -1379,43 +1379,57 @@ fn resolve_cold(
     wire_serve::read::resolve(&index, &docs, from, link, want_content)
 }
 
-/// `file_not_found` for a wire read op whose `path` is not in the resident
-/// corpus (the daemon's single-file reads are hash-domain-scoped) — and the
-/// message says so: a file that does not exist and a real `.md` outside the
-/// hash domain answer this SAME refusal, so the caller is told both readings
-/// exist and where the domain rules live (dogfood 2026-08-08, opus P3-2).
+/// `file_not_found` for a wire read op whose `path` names no file under the
+/// workspace root. It means exactly that one thing (§12.1 addressability):
+/// corpus residency is not the read admission test, so domain exclusion is
+/// never a second reading of this miss — offering it taught the caller that an
+/// out-of-domain file is unservable, the opposite of the law (dogfood
+/// 2026-08-09, s10).
 fn file_not_found(path: &wire::Path) -> Box<ErrorBody> {
     let mut e = ErrorBody::new(ErrorCode::FileNotFound);
     e.path = Some(path.clone());
     e.message = Some(format!(
-        "file_not_found: the corpus does not serve {}: either no such file exists under the \
-         workspace root, or the file is real but outside the hash domain \
-         (md-only floor, dot-segment and `meridian/domain.md` ignores — \
-         wire-contract §12). Nothing was read and no rev was minted. Fix: check \
-         the workspace-relative spelling; if the file is real on disk it is \
-         domain-excluded, and `meridian/domain.md` names the ignore rules.",
+        "file_not_found: no file at {} under the workspace root. Nothing was read and no rev \
+         was minted. Fix: check the workspace-relative spelling (`results/f.md`, never \
+         absolute). Being outside the hash domain is NOT this refusal: an ignored path is \
+         served by explicit path like any other (wire-contract §12.1); its bytes simply do \
+         not move the fingerprint.",
         path.0
     ));
     Box::new(e)
 }
 
-/// The warm engine's document for `path`, or the refusal the miss means:
-/// an UNSERVED member (in the hash domain, not UTF-8 — node-rev-merkle-spec
-/// §3 per-file degradation) is the per-file `invalid_utf8` naming itself;
-/// anything else is `file_not_found`.
+/// The document for `path` on this snapshot, or the refusal the miss means.
+///
+/// Resident corpus first (the warm parse); an UNSERVED member (in the hash
+/// domain, not UTF-8 — node-rev-merkle-spec §3 per-file degradation) is the
+/// per-file `invalid_utf8` naming itself. A path the corpus does not hold is
+/// then loaded from disk: §12.1's hash domain ⊂ addressable domain holds at
+/// every door, so an ignored `.md` reads exactly as a member reads — same
+/// spans, same `file_rev` — and only a path with no file behind it refuses
+/// `file_not_found`. Before this fallback the warm read door refused what the
+/// write door committed on the same path (dogfood 2026-08-09, s10).
 fn doc_or_refusal<'e>(
     engine: &'e WorkspaceEngine,
+    ws: &Path,
     path: &wire::Path,
-) -> Result<&'e model::Document, Box<ErrorBody>> {
+) -> Result<std::borrow::Cow<'e, model::Document>, Box<ErrorBody>> {
     if let Some(doc) = engine.docs.get(&path.0) {
-        return Ok(doc);
+        return Ok(std::borrow::Cow::Borrowed(doc));
     }
     if let Some(condition) = engine.unserved.get(&path.0) {
         // One mint for the §52 per-file refusal, shared with the links doors
         // on both hosts (`wire_serve::read::unserved_refusal`).
         return Err(wire_serve::read::unserved_refusal(path, condition));
     }
-    Err(file_not_found(path))
+    // Out-of-domain read: the same single-file load the write door and the
+    // daemonless degrade already run, so all three agree on what a path serves.
+    let root = fs::WorkspaceRoot(ws.to_path_buf());
+    match wire_serve::load_doc(&root, path) {
+        Ok(doc) => Ok(std::borrow::Cow::Owned(doc)),
+        Err(e) if e.code == ErrorCode::FileNotFound => Err(file_not_found(path)),
+        Err(e) => Err(e),
+    }
 }
 
 /// Map a `warm_or_build` I/O failure onto its wire frame: `InvalidData` is
