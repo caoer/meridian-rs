@@ -118,23 +118,40 @@ usage:
                            0 served / 1 the engine refused (its message,
                            verbatim) / 2 bad invocation
 ! mrd put <PATH> [--dry | --validate] [--force] [--actor A] [--now T]
-          [--if-fingerprint FP] [--receipt PATH#ANCHOR]
+          [--if-fingerprint FP] [--receipt PATH#ANCHOR] [--json]
                            the batch write: the edits ride STDIN as a BARE JSON
                            ARRAY — [{target, edit, if_node_rev?}], which is the
                            VALUE of the wire §4.4 `edits` field and NEVER the
                            request object §4.4 shows around it (no id, no op,
-                           no path — those are argv's here). Routed
-                           through the production splice choke-point (CAS +
-                           armed gate + write flock — never bypassed). --dry
-                           and --validate are ONE rehearsal (everything except
-                           disk) with two faces: --dry SHOWS the unified diff
-                           current -> candidate, --validate says nothing and
-                           answers with the exit code alone. --force: escape an armed
-                           binding-break/block refusal (the skip is rendered in
-                           the verdict, never silent). --if-fingerprint: the
-                           world-grain guard. Exits: 0 committed (or a rehearsal
-                           that passed) / 1 refused (the engine's message,
-                           verbatim) / 2 bad invocation
+                           no path — those are argv's here). target addresses
+                           one node: {\"hpath\":[{\"h\":\"Raw Title\"},...]}
+                           (the raw heading path a read publishes, {\"n\":2}
+                           only on a duplicated segment) /
+                           {\"anchor\":\"block-id\"} / {\"fm_key\":\"key\"}.
+                           edit is NESTED, never a bare string:
+                           {\"match\":{\"old\":\"...\",\"new\":\"...\"}}
+                           replaces the ONE occurrence of old in the target's
+                           span; {\"put\":{\"at\":\"end\",\"text\":\"...\"}}
+                           writes a whole slot (at: all | content | end |
+                           upsert). A working batch, whole:
+                           [{\"target\":{\"hpath\":[{\"h\":\"Title\"}]},
+                             \"edit\":{\"match\":{\"old\":\"a\",\"new\":\"b\"}}}]
+                           Routed through the production splice choke-point
+                           (CAS + armed gate + write flock — never bypassed).
+                           --dry and --validate are ONE rehearsal (everything
+                           except disk) with two faces: --dry SHOWS the
+                           unified diff current -> candidate, --validate says
+                           nothing and answers with the exit code alone.
+                           --force: escape an armed binding-break/block
+                           refusal (the skip is rendered in the verdict, never
+                           silent). --if-fingerprint: the world-grain guard.
+                           --json: the machine face on BOTH legs — a commit
+                           answers {workspace, put}; an engine refusal answers
+                           {workspace, error} on stdout (the engine's error
+                           body, v3 vocabulary), never an empty stdout. Exits:
+                           0 committed (or a rehearsal that passed) / 1
+                           refused (the engine's message, verbatim) / 2 bad
+                           invocation
 ! mrd pin <PAGE> <TARGET>#<SELECTOR> [--vibe] [--dry]
                            the attestation verb: record in PAGE's meridian-lock
                            block that it draws from TARGET#SELECTOR at that
