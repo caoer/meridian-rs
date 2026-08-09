@@ -1,5 +1,5 @@
-//! Build identity for `mrd --version` (G10). The workspace publishes nothing, so
-//! `CARGO_PKG_VERSION` is `0.0.0` for every crate and cannot tell two binaries apart. The
+//! Build identity for `mrd --version` (G10). Every crate carries the one workspace
+//! stamp, so `CARGO_PKG_VERSION` names the release and cannot tell two binaries apart. The
 //! commit can — so this script bakes the commit HEAD named when it last ran into
 //! `MRD_BUILD_SHA`, and the CLI prints it. Before this existed, the only way to ask a `mrd`
 //! binary what it was, was to hash it ( Two rules keep the answer honest: - **It is read, never

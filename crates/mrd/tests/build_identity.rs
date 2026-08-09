@@ -35,7 +35,11 @@ fn the_version_line_names_the_package_and_a_commit() {
         "the identity is one line, not a page:\n{line}"
     );
     let line = line.trim();
-    assert!(line.starts_with("mrd 0.0.0 (git "), "{line}");
+    // Derived, never a literal: the assertion tracks the workspace stamp, so a
+    // release bump cannot red this gate on a version string it was never
+    // testing (v1 stamp, `docs/release.md` §5.1).
+    let expected = concat!("mrd ", env!("CARGO_PKG_VERSION"), " (git ");
+    assert!(line.starts_with(expected), "{line}");
     assert!(line.ends_with(')'), "{line}");
 }
 

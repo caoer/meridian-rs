@@ -869,7 +869,14 @@ fn dispatch_admin(registry: &Registry, request: Request) -> Response {
 }
 
 /// The resident daemon's `hello` server identity (v2 §3.2 server name).
-const SERVER_NAME: &str = "meridian-daemon/0.1";
+///
+/// **Derived, never hardcoded** (v1 stamp, `docs/release.md` §5.1). It used to
+/// be a literal `meridian-daemon/0.1` independent of the workspace version, so
+/// a release could announce a number the build did not carry. §3.2 makes the
+/// string informational — there is no version sniffing, ever, and a caller
+/// reads capability from `caps` — so deriving it breaks no promise; it kills
+/// the drift class instead.
+const SERVER_NAME: &str = concat!("meridian-daemon/", env!("CARGO_PKG_VERSION"));
 
 /// Caps the resident daemon serves (§3.2 discovery honesty). An op is in
 /// `caps` or answers `unknown_op`, never both. `hello` is answered but not a

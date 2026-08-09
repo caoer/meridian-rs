@@ -495,8 +495,8 @@ fn usage() -> String {
 }
 
 /// The build identity, one line: the package version and the commit `build.rs` read at compile
-/// time. The version alone cannot identify a binary — the workspace publishes nothing, so every
-/// crate carries `0.0.0`.
+/// time. The version alone cannot identify a binary — every crate carries the one workspace
+/// stamp, so it names the release, never the build.
 fn version() -> String {
     format!(
         "mrd {} (git {})",
