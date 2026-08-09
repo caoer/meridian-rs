@@ -1112,8 +1112,9 @@ fn run(args: &[String], writing: bool) -> Result<(), Fail> {
                 };
                 // `mrd` is a CLI client and mints no notification sequence, so no
                 // `SeqSink` is passed.
-                let outcome = splice(&root, None, &args, &[], None)
-                    .map_err(|e| crate::engine::refusal_fail(&e))?;
+                let outcome = splice(&root, None, &args, &[], None).map_err(|e| {
+                    crate::engine::json_refusal(parsed.format, &resolved.workspace, &e)
+                })?;
                 if let wire::ResponseBody::Splice { root_after, .. } = &outcome.body {
                     expected.clone_from(root_after);
                 }
