@@ -1194,6 +1194,25 @@ directory and therefore prunes none: the workspace root is never walked for
 directory candidates, because every empty directory in a user's workspace is not
 this shape's territory.
 
+**Teaching row — Law 5.3 OUTRANKS Law 5.1, and the losing entry dies
+silently.** An `# Ephemeral` path that lies outside the scaffold's territory is
+INERT: `--prune` walks past it with no prune row, no finding row and no
+refusal, because territory decides scan scope before the allowlist is ever
+consulted. Measured 2026-08-09 on v1.0.0: `sessions/tmp-cache.md` (allowlisted,
+in territory) pruned, while `scratch/tmp.md` (allowlisted, `scratch/` holding
+no `# Unfold` path) survived untouched and unreported. The precedence is
+correct — it is Law 5.2's safety property, which must not weaken because a def
+ASKED for a deletion outside the shape. **What the face does not do is say
+so.** A def author gets a dead allowlist entry with zero disclosure at declare
+time (`mrd new` accepts the def) and zero at prune time, so the only way to
+learn the entry is dead is to notice the file that should be gone is still
+there. An ephemeral-declared file that IS present renders no row under a
+no-prune reconcile either — neither finding nor ephemeral.
+
+⚠️ Recorded here as the scoping fact it is. Whether the plane owes a
+declare-time or prune-time disclosure on a territory-shadowed allowlist entry
+is NOT settled by this page.
+
 **Law 5.4 — pruning is opt-in.** Without `--prune`, reconcile materializes and
 reports and removes nothing.
 
