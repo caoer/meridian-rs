@@ -260,6 +260,16 @@ have and this contract does not promise.
 `read(path)` is **two** trips: the `toc` op, and the composed `read` (§4.1, toc
 mode) that brackets it and carries `words_total` plus the frontmatter.
 
+**The whole-file 2 / sectioned 1 split is confirmed by an unasked prediction**
+*(added 2026-08-09)*. The split is not read off the code alone: the model
+predicted a figure nobody requested. A sectioned read was expected to cost about
+one trip where a whole-file read of the same page would cost two — ~122 ms
+against ~235 ms — and the measurement landed on the predicted side. A whole-file
+figure near the sectioned one would have falsified `trips(R)` outright. A
+formula that predicts a number nobody asked it for is the strongest form that
+evidence takes, and it is the reason this line is stated as law rather than as
+an inspection of the dispatch code.
+
 **Two is the floor, not one** *(amended 2026-08-08)*. The composed read alone
 almost suffices — it already carries `file_rev`, the heading rows,
 `words_total`, and `props[]` with every value decoded per § A.6. What it does
@@ -361,12 +371,36 @@ commit(C) = 0 for a read-only program
             two byte-folds, O(C) in BYTES, for a write-bearing one
 ```
 
-The folds are O(corpus **bytes**), not `pass(C)`: on the same 24k-file,
-150 MB corpus they cost ~1.8 s together — more than the whole fixed frame. A
-read-only program's `commit(C)` is zero and its ceiling is the first term
-alone; a write-bearing program budgets both. With every engine-side spend a
-named term, the `≥` that remains is measurement honesty — the OS may always
-be slower — never an unpriced structural cost.
+The folds are O(corpus **bytes**), not `pass(C)`: **on the 24k-file, 150 MB
+corpus this section prices throughout**, they cost ~1.8 s together — more than
+the whole fixed frame. A read-only program's `commit(C)` is zero and its ceiling
+is the first term alone; a write-bearing program budgets both. With every
+engine-side spend a named term, the `≥` that remains is measurement honesty —
+the OS may always be slower — never an unpriced structural cost.
+
+**The live-corpus term, measured** *(added 2026-08-09)*. Against the live
+corpus, five trials, medians:
+
+```
+commit(C)  ≈  4.46 s   process wall, live corpus, 5-trial medians
+```
+
+That figure is **process wall as an operator meets it**, and the door seat that
+produced it fenced it in exactly those terms — *"it prices the commit as an
+operator meets it, not as the model decomposes it"*. Read it with the fence
+attached:
+
+- The two byte-folds are **not decomposed** — the number is their sum plus
+  whatever else the commit path spends.
+- The daemon round trip is **not separated** from the splice itself.
+- **Corpus size was not varied**, so this term carries no slope of its own.
+
+**No regression claim attaches to the gap between ~1.8 s and ~4.46 s.** The two
+figures were never verified to measure the same shape — one is an engine-side
+fold pair on a stated corpus, the other an operator-side process wall on the
+live one — so the difference is not evidence of anything having become slower.
+A decomposition run would settle it. That run is **not owed for v1**; it opens
+only if v1 testing hits the term.
 
 **The linear term has a measured slope, and the slope is the honest headline**
 *(amended 2026-08-08 — the memo design's own disclosure, the ratios above,
