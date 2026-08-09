@@ -584,11 +584,14 @@ spellings:
 | `vibe-debt` | no | a meter, never a gate (above) |
 
 **This is R12, and it is ratified design, not debt.** The lock roll-up is
-rendered so a reader sees it; it is not a verdict the shell may branch on. Five
-in-repo gates assert it by name — `crates/mrd/tests/u14_check_pin_plane.rs`
+rendered so a reader sees it; it is not a verdict the shell may branch on.
+THREE in-repo gate files assert it by name — `crates/mrd/tests/u14_check_pin_plane.rs`
 ("`mrd status`'s exit triad does NOT change — the rollup is a reading, not a
-gate"), `crates/mrd/tests/u13_per_root_anchoring.rs` (five arms), and
-`crates/mrd/tests/status_e2e.rs` ("debt is not a finding").
+gate"), `crates/mrd/tests/u13_per_root_anchoring.rs` (five exit-0 arms across
+its four `#[test]` fns — `grep -c 'code, 0'` reads 5, and four of those arms
+name `R12` in the assertion message), and `crates/mrd/tests/status_e2e.rs`
+("debt is not a finding"). Three counts FILES, five counts ASSERTION ARMS —
+different units, so neither number checks the other.
 
 **So `mrd status || alarm` does NOT fire on attestation drift. The fail-closed
 door is `mrd check`** — a shell that must refuse on a red or grey pin runs
