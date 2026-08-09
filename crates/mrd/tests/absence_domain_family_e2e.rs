@@ -33,6 +33,26 @@
 //! colour plane sees them, so they are separable only through the REAL
 //! `fs::Domain` over a REAL disk — which is why this gate is end-to-end and not
 //! a unit test beside `view::walk::edge_color`.
+//!
+//! # The family has TWO axes, and this file drives both
+//!
+//! **CELL axis** — the table above, six worlds through `check --json`.
+//! **FACE axis** — [`every_face_says_file_not_found_about_one_absent_in_domain_target`],
+//! which drives `check --json`, `walk`, `status` and the commit gate over ONE
+//! absent cell.
+//!
+//! ⭐ **Why the face axis rides ONE cell rather than all six**, stated because
+//! the alternative is a 24-assertion grid that gates nothing extra: the faces do
+//! not each carry a verdict of their own. `edge_color` is the single site in the
+//! tree that asks the existence question, and `check`, `walk`, `status`, `sql`
+//! and `engine` all reach it through `mrd`'s `Mounts::rooted` — so **the faces
+//! vary in RENDERING, never in the verdict, and one cell exercises the whole
+//! sharing claim.** Six cells × four faces would re-measure one shared computer
+//! twenty-four times.
+//!
+//! ⛔ **That argument is stated here as a PREMISE, and the face test is what
+//! makes it FAIL LOUDLY when it stops being true.** A premise no assertion
+//! checks is a line that prints.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -316,5 +336,140 @@ fn an_absent_target_reds_file_not_found_on_both_planes_and_both_exclusion_classe
         Some(1),
         "a finding rides exit 1 — the triad stays CLOSED (S3-R6): {}",
         said(&out)
+    );
+}
+
+/// **The FACE axis of the same family** — the test above drives six CELLS
+/// through ONE face, and a family has two axes.
+///
+/// ⛔ **Why this is an assertion and not a paragraph.** The reason one face
+/// *could* speak for the others is a source fact: `edge_color` is the single
+/// site in the tree that asks the existence question, and `check`, `walk`,
+/// `status`, `sql` and `engine` all reach it through `mrd`'s `Mounts::rooted`.
+/// **That fact is true today and nothing executes it.** A later change routing
+/// one face around `edge_color` would leave the argument still readable and no
+/// longer true, and the gate would not notice.
+///
+/// ⭐ **And this family in particular has already done exactly that**: pass 7
+/// measured FOUR FACES DISAGREEING ON ONE PIN AT ONE ENGINE — `repair` and
+/// `walk --down` green while `walk up` and `check` reddened. The shared-call-site
+/// argument is a claim about mechanism, and a mechanism claim is the thing that
+/// failed here before. **A family whose historical failure mode is inter-face
+/// disagreement cannot be gated on the assurance that the faces agree.**
+///
+/// ⛔ **A SEPARATE MINIMAL WORKSPACE — ONE pin, ONE absent target, no other
+/// rows — and the reason is a fixture law, not tidiness.** Run on the six-cell
+/// corpus above, `status`'s WORST-OF rollup (R26) has FIVE reds to choose from,
+/// so an assertion about the word it prints would depend on which member won the
+/// roll-up rather than on the verdict under test. **That is a family fixture's
+/// aggregate MASKING A MEMBER (charter 02 r9)** — the aggregate would still be
+/// red, and this fix could regress with the suite green. One pin makes every
+/// face deterministic and leaves `status` exactly one verdict it can name.
+///
+/// The GREEN-PATH CONTROL below runs BEFORE the deletion, on the faces
+/// themselves: `check` exits 0 and `walk` says nothing about absence while the
+/// target is PRESENT. **A face that only ever prints one answer proves nothing
+/// by printing it** (charter 02 r15, applied to the faces rather than the cells).
+#[test]
+fn every_face_says_file_not_found_about_one_absent_in_domain_target() {
+    let sb = sandbox();
+    let ws = sb.tmp.path().join("one-absent-cell");
+    std::fs::create_dir_all(&ws).expect("mkdir");
+    git(&ws, &["init", "-q"]);
+    git(
+        &ws,
+        &["config", "user.email", "absence-e2e@example.invalid"],
+    );
+    git(&ws, &["config", "user.name", "absence-e2e"]);
+    let init = sb.run(&ws, &["init"]);
+    assert!(init.status.success(), "init: {}", said(&init));
+
+    write(&ws, "target.md", TARGET);
+    write(&ws, "src.md", "# S\n\nthis page draws from its target.\n");
+    git(&ws, &["add", "-A"]);
+    git(&ws, &["commit", "-qm", "corpus"]);
+    let pin = sb.run(&ws, &["pin", "src.md", "target.md#T/Body"]);
+    assert_eq!(pin.status.code(), Some(0), "pin: {}", said(&pin));
+    git(&ws, &["add", "-A"]);
+    git(&ws, &["commit", "-qm", "pin"]);
+
+    // GREEN-PATH CONTROL on every face, BEFORE the deletion — so each face is
+    // shown able to say something OTHER than the verdict under test. A face
+    // that only ever prints one answer proves nothing by printing it.
+    let clean_check = sb.run(&ws, &["check"]);
+    assert_eq!(
+        clean_check.status.code(),
+        Some(0),
+        "the governed corpus is accepted before the deletion: {}",
+        said(&clean_check)
+    );
+    let clean_walk = sb.run(&ws, &["walk", "src.md"]);
+    assert!(
+        !said(&clean_walk).contains("file-not-found"),
+        "walk says nothing about absence while the target is present: {}",
+        said(&clean_walk)
+    );
+
+    std::fs::remove_file(ws.join("target.md")).expect("delete target");
+    assert!(!ws.join("target.md").exists(), "target.md is off the disk");
+
+    // ── FACE 1: `check --json`, the structured door. ──
+    let check = sb.run(&ws, &["check", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&check.stdout))
+        .unwrap_or_else(|e| panic!("check --json parses: {e}\n{}", said(&check)));
+    assert_eq!(
+        pin_labels(&json).get("src.md").map(String::as_str),
+        Some("red file-not-found (this workspace holds no 'target.md')"),
+        "check --json: {}",
+        said(&check)
+    );
+    assert_eq!(check.status.code(), Some(1), "check: {}", said(&check));
+
+    // ── FACE 2: `walk`, the per-pin human verb. ──
+    let walk = sb.run(&ws, &["walk", "src.md"]);
+    assert!(
+        said(&walk).contains("red file-not-found"),
+        "WALK must name the same absence as check — the two per-pin faces share \
+         one colour computer and this is the assertion that says so: {}",
+        said(&walk)
+    );
+    assert_eq!(walk.status.code(), Some(1), "walk reddens: {}", said(&walk));
+
+    // ── FACE 3: `status`, the WORST-OF rollup (R26 — no per-pin grain). ──
+    let status = sb.run(&ws, &["status"]);
+    assert_eq!(status.status.code(), Some(0), "status: {}", said(&status));
+    let lock_axis = String::from_utf8_lossy(&status.stdout)
+        .lines()
+        .find(|l| l.contains("lock "))
+        .unwrap_or_default()
+        .split(" · ")
+        .find(|f| f.trim_start().starts_with("lock "))
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+    assert!(
+        lock_axis.starts_with("lock red "),
+        "status rolls the absence up as a red: {lock_axis:?} — {}",
+        said(&status)
+    );
+    assert!(
+        lock_axis.contains("file-not-found"),
+        "and it names THIS reason, not a resolution red: {lock_axis:?} — {}",
+        said(&status)
+    );
+
+    // ── FACE 4: the commit gate, which is what actually stops a caller. ──
+    let gate = sb.run(&ws, &["check", "--commit-gate"]);
+    assert_ne!(
+        gate.status.code(),
+        Some(0),
+        "the commit gate refuses over a pinned target that is GONE — the face \
+         whose verdict has consequences: {}",
+        said(&gate)
+    );
+    assert!(
+        said(&gate).contains("file-not-found"),
+        "and it refuses with the measured absence, not a resolution red: {}",
+        said(&gate)
     );
 }
