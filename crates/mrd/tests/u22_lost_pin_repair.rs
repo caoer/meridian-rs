@@ -616,19 +616,11 @@ fn a_lost_pin_whose_out_of_domain_target_drifted_is_still_repaired() {
     // The `lost_but_recoverable` shape, on a DOT-SEGMENT target: the INTRO moves
     // around the pin so no commit ever records the pinned FILE blob, while the
     // pinned SECTION survives into commit B.
-    write(
-        &ws,
-        ".github/dotspec.md",
-        &source_at(INTRO_ONE, PINNED_BODY),
-    );
+    write(&ws, ".github/dotspec.md", &source_at(INTRO_ONE, PINNED_BODY));
     write(&ws, "claim.md", "# Claim\n\nwe rely on the guideline.\n");
     commit_all(&ws, "A: the page");
 
-    write(
-        &ws,
-        ".github/dotspec.md",
-        &source_at(INTRO_TWO, PINNED_BODY),
-    );
+    write(&ws, ".github/dotspec.md", &source_at(INTRO_TWO, PINNED_BODY));
     let pin = sb.run(
         &ws,
         &["pin", "claim.md", ".github/dotspec.md#Source/Guideline"],
@@ -653,8 +645,7 @@ fn a_lost_pin_whose_out_of_domain_target_drifted_is_still_repaired() {
     assert_eq!(out.status.code(), Some(0), "repair: {}", said(&out));
     let after = the_pin(&ws, "claim.md");
     assert_ne!(
-        after.hash,
-        before.hash,
+        after.hash, before.hash,
         "the out-of-domain target really is lost, so repair acted on it — a remedy \
          that SKIPPED out-of-domain targets would leave it alone here: {}",
         said(&out)
@@ -691,9 +682,136 @@ fn every_repaired_line_names_its_pin_and_its_target() {
     let json = sb.run(&fresh, &["repair", "--json"]);
     let value: serde_json::Value = serde_json::from_str(&stdout(&json)).expect("json");
     assert_eq!(
-        value["pins"][0]["target"],
-        "source.md",
+        value["pins"][0]["target"], "source.md",
         "and the machine face carries the same subject: {}",
         stdout(&json)
+    );
+}
+
+/// THE SECOND MEMBER of the `--json` refusal-envelope family — the lock-door leg.
+///
+/// The family law lives in `tests/json_refusal_family.rs`; this case lives HERE because the
+/// only leg of `repair` that can carry a §8 `ErrorBody` is the lock write, and reaching it
+/// needs this file's `lost_but_recoverable` corpus. Cross-referenced from that suite so the
+/// enumeration stays readable from one place.
+///
+/// Before the fix, EVERY refusal leg of `mrd repair --json` served zero stdout bytes: the verb
+/// reached `wire_serve::write::lock_write` directly and hand-composed the refusal, so it never
+/// touched `engine` at all — which is why the family suite's privacy argument could not reach
+/// it (`engine::refusal_fail` being private gates the doors that ASK the helper).
+///
+/// ⚠️ EXIT 2, NOT 1, AND THAT IS THE POINT OF THE SEPARATE FRAME EMITTER. `mrd repair` reserves
+/// EXIT 1 FOR A TRUE LOSS. Routing this leg through `engine::json_refusal` — which returns the
+/// findings leg — would publish the envelope and simultaneously tell a scripted caller that a
+/// pin was unrecoverable when the lock door had merely refused. The frame and the exit code are
+/// two judgements; `engine::json_error_frame` emits one and leaves the other to the verb.
+#[test]
+fn repair_serves_the_envelope_when_the_lock_door_refuses() {
+    let sb = sandbox();
+    let ws = lost_but_recoverable(&sb, "envelope-lock-refusal");
+
+    // CONTROL, and it must hold in the fixed AND the unfixed tree: this corpus really does reach
+    // the lock write. Without it, a zero below could mean the walk found nothing to repair —
+    // a verb that never got to the door, rather than a door whose refusal has no frame.
+    let dry = sb.run(&ws, &["repair", "--dry", "--json"]);
+    assert_eq!(
+        dry.status.code(),
+        Some(0),
+        "control: the rehearsal reaches the lock write and succeeds: {}",
+        said(&dry)
+    );
+    let body: serde_json::Value =
+        serde_json::from_slice(&dry.stdout).expect("control: --dry serves its JSON face");
+    assert_eq!(
+        body.get("repaired").and_then(serde_json::Value::as_u64),
+        Some(1),
+        "control: exactly one pin is recoverable, so the write leg is reachable: {body}"
+    );
+
+    // Now make the lock write fail inside the door. ⚠️ NOT by chmod-ing the PAGE: a guarded
+    // write lands a temp file and renames it, and rename needs the DIRECTORY's write bit, not
+    // the file's — a read-only `claim.md` is repaired successfully, which this fixture's own
+    // precondition caught. The WORKSPACE DIRECTORY is the operand.
+    let claim = ws.join("claim.md");
+    let mut ro = std::fs::metadata(&ws).expect("stat").permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut ro, 0o555);
+    std::fs::set_permissions(&ws, ro).expect("chmod ro");
+
+    let out = sb.run(&ws, &["repair", "--json"]);
+
+    let mut rw = std::fs::metadata(&ws).expect("stat").permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut rw, 0o755);
+    std::fs::set_permissions(&ws, rw).expect("chmod rw");
+
+    // PRECONDITION asserted, never assumed: as root, or on a filesystem ignoring mode bits, the
+    // write succeeds and this fixture proves nothing. It must FAIL LOUD rather than skip — a
+    // silent skip reports a green family over a leg nobody exercised.
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "precondition: a read-only declaring page must make the lock door refuse; this fixture \
+         cannot build its condition here and is not quietly passing: {}",
+        said(&out)
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        !stdout.is_empty(),
+        "served 0 stdout bytes — the ABSENT FRAME is the defect, and a parsing agent cannot \
+         tell it from success with no output: {}",
+        said(&out)
+    );
+    let frame: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout is not the JSON envelope: {e}\n{stdout}"));
+    assert!(
+        frame
+            .get("workspace")
+            .and_then(serde_json::Value::as_str)
+            .is_some(),
+        "the envelope names its workspace: {frame}"
+    );
+    assert_eq!(
+        frame
+            .pointer("/error/code")
+            .and_then(serde_json::Value::as_str),
+        Some("io_error"),
+        "the lock door's §8 code rides the frame: {frame}"
+    );
+
+    // The exit triad is NOT moved by the envelope, and this is the assertion that would have
+    // caught the fix I nearly shipped.
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a lock-door refusal stays a TOOL failure — exit 1 in this verb means a TRUE LOSS, and \
+         spelling a refusal as one would tell a script the pin is unrecoverable: {}",
+        said(&out)
+    );
+
+    // The human line still names WHICH page failed: this loop writes page by page, so the page
+    // name and the nothing-was-written clause are the operator's whole recovery.
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(
+        stderr.contains("claim.md"),
+        "the refusal names the page whose repair failed: {stderr}"
+    );
+    assert!(
+        stderr.contains("Nothing was written for that page"),
+        "the refusal states what did not happen: {stderr}"
+    );
+
+    // And the HUMAN face publishes no envelope at the same leg.
+    let mut ro2 = std::fs::metadata(&ws).expect("stat").permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut ro2, 0o555);
+    std::fs::set_permissions(&ws, ro2).expect("chmod ro");
+    let human = sb.run(&ws, &["repair"]);
+    let mut rw2 = std::fs::metadata(&ws).expect("stat").permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut rw2, 0o755);
+    std::fs::set_permissions(&ws, rw2).expect("chmod rw");
+    let _ = &claim;
+    assert!(
+        human.stdout.is_empty(),
+        "the human face says nothing on stdout; the envelope is the `--json` face's: {}",
+        said(&human)
     );
 }
