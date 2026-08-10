@@ -3272,23 +3272,6 @@ fn overlap_refusal(offending: &[usize], edits: &[Edit]) -> ErrorBody {
 /// The §5.2 failure split, mapped: every refusal verdict to its wire frame
 /// (code + required recovery + the frozen extras). `edits` is the effective
 /// batch (post-lowering) — the request targets the extras echo.
-// SUPPRESSION, NOT A FIX (9eca88f7, 2026-08-10, authorized by fix/board 5d8bce96
-// under the same bounded exception as `model::validate_batch`).
-// This is 119 lines against a threshold of 100, and it is the §5.2 verdict-to-frame
-// mapping — one arm per refusal verdict, so its length IS its completeness.
-// Splitting it while the test lane is red would obscure the one thing it must be
-// read for: that every verdict has an arm.
-// REMOVE THIS ATTRIBUTE when whoever owns `crates/wire-serve` restructures the
-// mapping with a green suite in front of them. The lint is stylistic; nothing
-// here is suppressed for correctness.
-//
-// ⛔ THIS DOES NOT MAKE THIS CRATE CLIPPY-CLEAN, AND IT IS NOT MEANT TO. Four
-// further errors stand here and are DELIBERATELY LEFT: `read.rs:909` and
-// `write.rs:2924` (`match_wildcard_for_single_variants` — a wildcard arm silently
-// absorbs a variant added later, so it is a correctness lint and must be fixed,
-// never silenced) and `write.rs:2913` / `write.rs:2965` (signature changes needing
-// the crate's owner). The fix/board declined to extend the exception to them.
-#[allow(clippy::too_many_lines)]
 fn verdict_to_wire(
     verdict: &model::SpliceVerdict,
     edits: &[Edit],
