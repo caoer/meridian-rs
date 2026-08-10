@@ -90,6 +90,11 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         .map_err(|e| Fail::tool(format!("cannot read the corpus: {e}")))?;
     let (_index, mut docs, unserved) = fs::build_corpus(files);
     crate::voice_unserved(&unserved);
+    // The twin. `repair` SWEEPS the corpus for pins, so it is an enumerator on
+    // this axis and owes the same sentence three other surfaces already print
+    // (§12.1 enumerator clause). Voiced BEFORE `admit_named_page`, so a page the
+    // caller named explicitly is not first reported as excluded and then served.
+    crate::voice_excluded(&root, &docs, &unserved);
     if let Some(page) = parsed.page.as_deref() {
         crate::walk_cmd::admit_named_page(&root, &mut docs, page);
     }

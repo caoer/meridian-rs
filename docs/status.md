@@ -709,6 +709,18 @@ HASHING and never addressing: a pin whose TARGET the domain excludes stays
 independent axes (session decision 0045). Widening the population of pin SOURCES
 does not widen the corpus that resolves pin TARGETS, and the excluded holder's
 bytes never enter the merkle root.
+**`check` NAMES what the hash domain left out.** A workspace holding markdown
+the domain does not carry — a dot-segment path, a `meridian/domain.md` ignore
+rule — gets one stderr note listing those files. An enumerator MAY exclude what
+its attestation cannot reach; it may never exclude SILENTLY
+(`wire-contract.md` §12.1, enumerator clause; session decision 0017), and a scan
+that reports a partial population as if it were the whole one reads as a scan of
+the whole vault.
+
+⚠️ **The note claims only what is true of the FOLD:** those files' bytes are
+outside the hash domain and do not move the fingerprint this answer is stamped
+with. It makes no claim about whether anything else in the answer reaches them —
+a clause whose truth depends on a different change belongs to that change.
 
 **The permanence is untouched.** Unscoped `mrd check` stays red forever, citing
 the same row; under `--commit-gate` the standing break is **printed on stderr at

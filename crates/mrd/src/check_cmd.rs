@@ -111,7 +111,16 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
 
     // The corpora are built before the mount table, because they say which roots the
     // table must build; each interval's corpus is built exactly once.
-    let worktree_docs = build_corpus(worktree_files);
+    let (worktree_docs, worktree_unserved) = build_corpus_voiced(worktree_files);
+    // The domain-excluded voice, ONCE and over the WORKTREE corpus. `check` may
+    // assess two intervals, but the exclusion is a property of the DOMAIN and
+    // not of an interval — the same files are outside the fold in both — so a
+    // per-interval voice would print the identical line twice and imply two
+    // different populations.
+    //
+    // The SCAN face, not the listing one: `check` has no listing to be absent
+    // from, and the note claims only what this change itself guarantees.
+    crate::voice_excluded_scan(&root, &worktree_docs, &worktree_unserved);
     let staged_docs = match &interval {
         Interval::Diverges(bytes) => Some(build_corpus(bytes.files.clone())),
         _ => None,
@@ -673,9 +682,24 @@ fn excluded_holders(
 /// read. Split out of [`assess`], which needs the corpus in hand before the mount
 /// table exists.
 fn build_corpus(files: fs::DomainFiles) -> BTreeMap<String, Document> {
+    build_corpus_voiced(files).0
+}
+
+/// [`build_corpus`] keeping the UNSERVED map the caller needs to voice the
+/// domain-excluded population.
+///
+/// The two maps are not interchangeable and the difference is load-bearing:
+/// `unserved` is IN the hash domain and serves no span, while the excluded
+/// population is OUTSIDE the domain entirely. Voicing the exclusion against an
+/// EMPTY unserved map would name every unserved file as out-of-domain — a note
+/// that is wrong about the files it names, printed by the fix for a note that
+/// was missing.
+fn build_corpus_voiced(
+    files: fs::DomainFiles,
+) -> (BTreeMap<String, Document>, BTreeMap<String, String>) {
     let (_index, docs, unserved) = fs::build_corpus(files);
     crate::voice_unserved(&unserved);
-    docs
+    (docs, unserved)
 }
 
 /// The interval the commit spans: the worktree snapshot with the index's bytes

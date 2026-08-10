@@ -91,6 +91,42 @@ pub(crate) fn voice_excluded(
     docs: &std::collections::BTreeMap<String, model::Document>,
     unserved: &std::collections::BTreeMap<String, String>,
 ) {
+    voice_excluded_with(root, docs, unserved, " and are NOT in this listing");
+}
+
+/// [`voice_excluded`] for a face that SCANS rather than LISTS — `check`.
+///
+/// Same population, same reason, one clause shorter: a scan has no listing to
+/// be absent from, and the note must claim only what is true of the FOLD.
+///
+/// ⛔ The omitted clause is not a stylistic trim. A sentence asserting that
+/// nothing in the answer reaches these files is a claim about the whole verb,
+/// and whether that holds is decided by changes OTHER than this one. **Prose
+/// whose truth is a property of a different landing belongs to that landing** —
+/// so this face states the fold fact, which is true in every ordering, and
+/// asserts nothing it does not itself guarantee.
+pub(crate) fn voice_excluded_scan(
+    root: &fs::WorkspaceRoot,
+    docs: &std::collections::BTreeMap<String, model::Document>,
+    unserved: &std::collections::BTreeMap<String, String>,
+) {
+    voice_excluded_with(root, docs, unserved, "");
+}
+
+/// The one enumeration and the one sentence both faces are spelled from, so a
+/// fourth wording cannot drift in behind them. `scope` is the only difference.
+///
+/// The population is CONTENT-DEFINED — whatever the corpus does not carry —
+/// never path-shaped. Both exclusion classes (the dot-segment structural floor
+/// and the `meridian/domain.md` custom ignore list) are therefore covered by
+/// construction: a predicate keyed to dot segments would leave the custom-ignore
+/// class silent, which is this defect wearing a narrower hat.
+fn voice_excluded_with(
+    root: &fs::WorkspaceRoot,
+    docs: &std::collections::BTreeMap<String, model::Document>,
+    unserved: &std::collections::BTreeMap<String, String>,
+    scope: &str,
+) {
     let Ok(all) = fs::walk(root) else { return };
     let excluded: Vec<String> = all
         .iter()
@@ -101,8 +137,9 @@ pub(crate) fn voice_excluded(
         return;
     }
     eprintln!(
-        "mrd: note: {} markdown file(s) under this root are outside the hash domain and are NOT in this listing — {}. They are addressable by explicit path (`mrd read`, `mrd links <PATH>`); their bytes do not move the fingerprint this answer is stamped with.",
+        "mrd: note: {} markdown file(s) under this root are outside the hash domain{} — {}. They are addressable by explicit path (`mrd read`, `mrd links <PATH>`); their bytes do not move the fingerprint this answer is stamped with.",
         excluded.len(),
+        scope,
         excluded.join(", ")
     );
 }
