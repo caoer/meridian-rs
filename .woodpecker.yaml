@@ -31,6 +31,12 @@ variables:
   # Rolling stable — parity with the GH lane's dtolnay/rust-toolchain@stable.
   - &rust_image "rust:1"
   - &cargo_home /ci-cache/meridian-rs/cargo
+  # Cap per-lane build parallelism. cargo's jobserver is shared with the cc
+  # crate, so this also bounds the parallel cc1plus instances compiling the
+  # bundled DuckDB amalgamation (~1.5 GB each). Unbounded on the 30-core /
+  # 58 GB runner, two lanes building DuckDB concurrently OOM-killed cc1plus
+  # (pipeline #20: "error: Killed signal terminated program cc1plus").
+  - &build_jobs "8"
 
 steps:
   # The suite.
@@ -52,6 +58,7 @@ steps:
       CARGO_HOME: *cargo_home
       CARGO_TARGET_DIR: target-ci
       CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_BUILD_JOBS: *build_jobs
     commands:
       - apt-get -qq update && apt-get -qq install -y python3-yaml
       - useradd -m ci
@@ -75,6 +82,7 @@ steps:
     image: *rust_image
     environment:
       CARGO_HOME: *cargo_home
+      CARGO_BUILD_JOBS: *build_jobs
     commands:
       - rustup component add clippy
       - cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -90,6 +98,7 @@ steps:
     image: *rust_image
     environment:
       CARGO_HOME: *cargo_home
+      CARGO_BUILD_JOBS: *build_jobs
     commands:
       - rustup component add clippy
       - |
@@ -135,6 +144,7 @@ steps:
     image: *rust_image
     environment:
       CARGO_HOME: *cargo_home
+      CARGO_BUILD_JOBS: *build_jobs
     commands:
       - cargo bench -p perfsuite --locked -- --test
       - cargo run --locked -p perfsuite --bin bench-report
