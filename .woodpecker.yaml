@@ -124,8 +124,11 @@ steps:
       # and a green exit with zero evidence lines is a broken harness, so it
       # fails the step.
       #
-      # -q suppresses cargo's per-crate `Fresh`/`Running` restamp; `-- --quiet`
-      # puts libtest in one-character-per-test mode. NEITHER touches the
+      # -q does BOTH jobs: it suppresses cargo's per-crate `Fresh`/`Running`
+      # restamp AND forwards --quiet to libtest (one character per test).
+      # Writing `-q -- --quiet` as well is what pipeline #30 died of —
+      # "error: Option 'quiet' given more than once", every binary red, zero
+      # evidence lines. Do not add it back. Neither flag touches the
       # evidence: `^test result` lines print in both modes, so the gate below
       # counts exactly what it counted before, and a FAILING test still prints
       # its name, its panic, and its captured output in full. The trade
@@ -133,7 +136,7 @@ steps:
       # name of every passing test.
       - |
         set +e
-        setpriv --reuid=ci --regid=ci --init-groups env HOME=/home/ci bash -o pipefail -c 'cargo test --workspace --locked --no-fail-fast -q -- --quiet 2>&1 | tee target-ci/suite.log'
+        setpriv --reuid=ci --regid=ci --init-groups env HOME=/home/ci bash -o pipefail -c 'cargo test --workspace --locked --no-fail-fast -q 2>&1 | tee target-ci/suite.log'
         rc=$?
         set -e
         lines=$(grep -c '^test result' target-ci/suite.log || true)
