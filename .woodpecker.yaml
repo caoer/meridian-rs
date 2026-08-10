@@ -1,12 +1,17 @@
 # Correctness lane on the fleet runner. Steps are named so a red pipeline names
 # its own defect instead of saying "test failed".
 #
-# STEP ORDER IS LOAD-BEARING: the measuring step (`test`) runs FIRST, before any
-# linter. Woodpecker aborts the remaining steps when one fails, and an aborted
+# STEP ORDER IS LOAD-BEARING: the measuring step (`test`) runs before every
+# LINTER. Woodpecker aborts the remaining steps when one fails, and an aborted
 # step renders as SKIPPED — which reads as "no news" rather than "not measured".
 # A linter ahead of the tests therefore converts every style nit into an unknown
-# test verdict. Tests first means the suite always produces a verdict, and a
-# lint failure can only ever add information.
+# test verdict; that is what cost this fleet eighteen hours. Tests before lints
+# means the suite always produces a verdict, and a lint failure can only ever
+# ADD information.
+#
+# `build` is the one step that legitimately precedes `test`, because a build
+# failure makes measurement impossible rather than merely unreported. It is
+# split out so that running out of machine says "build", not "test".
 #
 # Event filter is workflow-level: every step inherits it, so a new step cannot
 # be added without one.
@@ -21,26 +26,51 @@ variables:
   # concurrent pipelines. A shared target dir races: a parallel build of
   # another commit deletes test binaries between build and run.
   - &cargo_home /ci-cache/meridian-rs/cargo
+  # THIS HOST HAS 30 CORES, 58 GB AND NO SWAP, and it is a shared fleet
+  # workstation — measured load average 122 while a pipeline was building.
+  # Uncapped, cargo forks ~30 cc1plus processes over the bundled DuckDB C++
+  # amalgamation at ~1.4 GB resident each; the kernel OOM-killer takes them
+  # (measured: pipeline 19, `c++: fatal error: Killed signal terminated program
+  # cc1plus`, dmesg `Out of memory: Killed process ... (cc1plus)`). Cargo
+  # exports this to cc-rs as NUM_JOBS, so it caps the C++ fan-out too.
+  - &build_jobs "8"
 
 steps:
-  # The suite. Runs first and unconditionally, so its verdict is never traded
-  # away for a linter's. See the header.
+  # BUILD IS ITS OWN STEP so that running out of machine names itself.
+  # An OOM-killed compiler and a failing assertion both surface as exit 101
+  # from one combined step; split, the first reds `build` and the second reds
+  # `test`, and nobody spends an hour reading test code after a memory event.
+  - name: build test binaries (no tests run here)
+    image: rust:1
+    environment:
+      CARGO_HOME: *cargo_home
+      CARGO_BUILD_JOBS: *build_jobs
+    commands:
+      - cargo test --workspace --locked --no-run
+
+  # The suite. Runs before every linter, so its verdict is never traded away
+  # for a style nit. See the header.
+  #
+  # --no-fail-fast is load-bearing, not tidiness: without it cargo stops at the
+  # first failing test BINARY, so a red run emits ~29 of the 232 `test result`
+  # lines a green run emits and silently declines to measure the other 88 %.
   #
   # The frontmatter tests cross-validate the engine's YAML against PyYAML.
   # The fs permission tests build "unreadable" fixtures with chmod, and root
   # bypasses permission bits — so run cargo as a created non-root user.
   # setpriv preserves PATH and CARGO_HOME (no PAM, no env reset). The mount
   # tests also precondition an existing XDG base dir ($HOME/.config).
-  - name: test (cargo test --workspace --locked)
+  - name: test (cargo test --workspace --locked --no-fail-fast)
     image: rust:1
     environment:
       CARGO_HOME: *cargo_home
+      CARGO_BUILD_JOBS: *build_jobs
     commands:
       - apt-get -qq update && apt-get -qq install -y python3-yaml
       - useradd -m ci
       - mkdir -p /home/ci/.config "$CARGO_HOME"
       - chown -R ci:ci . "$CARGO_HOME" /home/ci
-      - setpriv --reuid=ci --regid=ci --init-groups env HOME=/home/ci cargo test --workspace --locked
+      - setpriv --reuid=ci --regid=ci --init-groups env HOME=/home/ci cargo test --workspace --locked --no-fail-fast
 
   - name: fmt (cargo fmt --all --check)
     image: rust:1
@@ -54,6 +84,7 @@ steps:
     image: rust:1
     environment:
       CARGO_HOME: *cargo_home
+      CARGO_BUILD_JOBS: *build_jobs
     commands:
       - rustup component add clippy
       - cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -68,6 +99,7 @@ steps:
     image: rust:1
     environment:
       CARGO_HOME: *cargo_home
+      CARGO_BUILD_JOBS: *build_jobs
     commands:
       - rustup component add clippy
       - |
