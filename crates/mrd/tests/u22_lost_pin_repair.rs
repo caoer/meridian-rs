@@ -523,3 +523,167 @@ fn a_corpus_with_nothing_lost_states_its_population() {
         stdout(&out)
     );
 }
+
+// ── the residency family: HOLDER x TARGET are INDEPENDENT axes ───────────────
+//
+// The per-pin TARGET ASSESSMENT is a DOOR (decisions/0045 over 0043): the pin
+// row names ONE target, so repair READS it from disk — corpus residency is
+// never a read admission test (§12.1, wire-contract.md:465, :813). An intact
+// target means the pin is NOT LOST, so the row stays byte-identical as the
+// consequence of having read it.
+//
+// ⭐ THE TWO GATES RUN IN OPPOSITE DIRECTIONS. `an_intact_…` demands NO write;
+// `a_lost_out_of_domain_target_is_still_repaired` demands a write. A remedy
+// that SKIPPED out-of-domain targets would pass the first and fail the second,
+// which is exactly the reading the ruling rejected.
+
+/// The corpus for the target axis: one in-domain target and one the hash domain
+/// excludes (dot-segment), each pinned from an in-domain holder. `pin` writes
+/// its `^slug` anchor into the target AFTER the commit, so both pins name a
+/// working-tree blob the object store does not hold — both retrieval planes are
+/// dark, and only residency of the TARGET differs.
+fn target_axis(sb: &Sandbox, name: &str) -> PathBuf {
+    let ws = sb.git_workspace(name);
+    std::fs::create_dir_all(ws.join(".github")).expect("mkdir .github");
+    write(&ws, "spec.md", "# Rule\n\nthe value is SEVEN\n");
+    write(
+        &ws,
+        ".github/dotspec.md",
+        "# Rule\n\nthe value is ELEVEN and this page is the dot-segment one\n",
+    );
+    write(&ws, "in.md", "# Holder in\n\nit follows the rule.\n");
+    write(&ws, "out.md", "# Holder out\n\nit follows the rule.\n");
+    commit_all(&ws, "A: the fixture");
+
+    let a = sb.run(&ws, &["pin", "in.md", "spec.md#Rule"]);
+    assert_eq!(a.status.code(), Some(0), "pin in-domain: {}", said(&a));
+    let b = sb.run(&ws, &["pin", "out.md", ".github/dotspec.md#Rule"]);
+    assert_eq!(b.status.code(), Some(0), "pin out-of-domain: {}", said(&b));
+    ws
+}
+
+/// ⛔ THE DEFECT GATE. An INTACT pin whose target the hash domain excludes is
+/// left BYTE-IDENTICAL, and the in-domain control of identical construction is
+/// byte-identical in the same run — without that control a rewrite is
+/// indistinguishable from repair doing its job.
+#[test]
+fn an_intact_pin_whose_target_is_out_of_domain_is_left_byte_identical() {
+    let sb = sandbox();
+    let ws = target_axis(&sb, "target-axis");
+    // Fixture premise, asserted rather than assumed: both retrieval planes are
+    // dark, so both pins are CANDIDATES for a wrongful rewrite.
+    let before_in = the_pin(&ws, "in.md");
+    let before_out = the_pin(&ws, "out.md");
+    assert_evidence_is_gone(&ws, &before_in);
+    assert_evidence_is_gone(&ws, &before_out);
+    let bytes_in = read(&ws, "in.md");
+    let bytes_out = read(&ws, "out.md");
+
+    let out = sb.run(&ws, &["repair"]);
+    assert_eq!(out.status.code(), Some(0), "repair: {}", said(&out));
+
+    // THE ACCEPTANCE IS THE BYTES, never the exit code and never the summary.
+    assert_eq!(
+        read(&ws, "out.md"),
+        bytes_out,
+        "SUBJECT: the out-of-domain target is present and intact, so its pin is \
+         not lost and the row is untouched: {}",
+        said(&out)
+    );
+    assert_eq!(
+        read(&ws, "in.md"),
+        bytes_in,
+        "CONTROL: the in-domain arm of identical construction is untouched too — \
+         if this moved, residency was not the variable: {}",
+        said(&out)
+    );
+    assert_eq!(
+        the_pin(&ws, "out.md").hash,
+        before_out.hash,
+        "and the hash names the same blob it named before"
+    );
+}
+
+/// ⭐ THE DISCRIMINATOR. Repair READS the named target; it does not SKIP
+/// out-of-domain ones. A pin whose out-of-domain target GENUINELY drifted is
+/// still lost and still repaired — a skip would leave it alone and pass the
+/// gate above while quietly abandoning the verb outside the domain.
+#[test]
+fn a_lost_pin_whose_out_of_domain_target_drifted_is_still_repaired() {
+    let sb = sandbox();
+    let ws = sb.git_workspace("target-axis-drifted");
+    std::fs::create_dir_all(ws.join(".github")).expect("mkdir .github");
+    // The `lost_but_recoverable` shape, on a DOT-SEGMENT target: the INTRO moves
+    // around the pin so no commit ever records the pinned FILE blob, while the
+    // pinned SECTION survives into commit B.
+    write(&ws, ".github/dotspec.md", &source_at(INTRO_ONE, PINNED_BODY));
+    write(&ws, "claim.md", "# Claim\n\nwe rely on the guideline.\n");
+    commit_all(&ws, "A: the page");
+
+    write(&ws, ".github/dotspec.md", &source_at(INTRO_TWO, PINNED_BODY));
+    let pin = sb.run(
+        &ws,
+        &["pin", "claim.md", ".github/dotspec.md#Source/Guideline"],
+    );
+    assert_eq!(pin.status.code(), Some(0), "pin: {}", said(&pin));
+
+    let after_pin = read(&ws, ".github/dotspec.md");
+    let with_third_intro = after_pin.replace(INTRO_TWO, INTRO_THREE);
+    write(&ws, ".github/dotspec.md", &with_third_intro);
+    commit_all(&ws, "B: the intro moves, the guideline does not");
+    write(
+        &ws,
+        ".github/dotspec.md",
+        &with_third_intro.replace(PINNED_BODY, "the drifted body"),
+    );
+    commit_all(&ws, "C: the guideline drifts");
+
+    let before = the_pin(&ws, "claim.md");
+    assert_evidence_is_gone(&ws, &before);
+
+    let out = sb.run(&ws, &["repair"]);
+    assert_eq!(out.status.code(), Some(0), "repair: {}", said(&out));
+    let after = the_pin(&ws, "claim.md");
+    assert_ne!(
+        after.hash, before.hash,
+        "the out-of-domain target really is lost, so repair acted on it — a remedy \
+         that SKIPPED out-of-domain targets would leave it alone here: {}",
+        said(&out)
+    );
+    assert!(
+        git_holds(&ws, &after.hash),
+        "and it landed on evidence git HOLDS: {}",
+        after.hash
+    );
+    assert_eq!(
+        after.fingerprint, before.fingerprint,
+        "the claim is still not the engine's to move"
+    );
+}
+
+/// The receipt names WHICH PIN and WHICH TARGET per action — this verb acts on
+/// many pins in one invocation, so an aggregate count cannot be correlated by a
+/// caller holding its own request.
+#[test]
+fn every_repaired_line_names_its_pin_and_its_target() {
+    let sb = sandbox();
+    let ws = lost_but_recoverable(&sb, "named-subject");
+    let out = sb.run(&ws, &["repair"]);
+    assert_eq!(out.status.code(), Some(0), "repair: {}", said(&out));
+    let text = stdout(&out);
+    assert!(
+        text.contains("claim.md") && text.contains("target source.md"),
+        "the action line names the declaring page AND the target it acted on: {text}"
+    );
+
+    // A SECOND workspace: the run above already repaired the first one, and a
+    // repaired corpus has nothing left to name.
+    let fresh = lost_but_recoverable(&sb, "named-subject-json");
+    let json = sb.run(&fresh, &["repair", "--json"]);
+    let value: serde_json::Value = serde_json::from_str(&stdout(&json)).expect("json");
+    assert_eq!(
+        value["pins"][0]["target"], "source.md",
+        "and the machine face carries the same subject: {}",
+        stdout(&json)
+    );
+}
