@@ -109,7 +109,14 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
 
     let prefix = repo_prefix(&repo, &root)?;
     let outcomes = recover(&repo, &lost, &prefix)?;
-    let applied = apply(&root, &docs, &outcomes, parsed.dry, parsed.format, &canonical)?;
+    let applied = apply(
+        &root,
+        &docs,
+        &outcomes,
+        parsed.dry,
+        parsed.format,
+        &canonical,
+    )?;
 
     let true_loss = outcomes.iter().filter(|o| o.recovered.is_none()).count();
     emit(

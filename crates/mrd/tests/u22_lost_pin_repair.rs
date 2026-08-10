@@ -616,11 +616,19 @@ fn a_lost_pin_whose_out_of_domain_target_drifted_is_still_repaired() {
     // The `lost_but_recoverable` shape, on a DOT-SEGMENT target: the INTRO moves
     // around the pin so no commit ever records the pinned FILE blob, while the
     // pinned SECTION survives into commit B.
-    write(&ws, ".github/dotspec.md", &source_at(INTRO_ONE, PINNED_BODY));
+    write(
+        &ws,
+        ".github/dotspec.md",
+        &source_at(INTRO_ONE, PINNED_BODY),
+    );
     write(&ws, "claim.md", "# Claim\n\nwe rely on the guideline.\n");
     commit_all(&ws, "A: the page");
 
-    write(&ws, ".github/dotspec.md", &source_at(INTRO_TWO, PINNED_BODY));
+    write(
+        &ws,
+        ".github/dotspec.md",
+        &source_at(INTRO_TWO, PINNED_BODY),
+    );
     let pin = sb.run(
         &ws,
         &["pin", "claim.md", ".github/dotspec.md#Source/Guideline"],
@@ -645,7 +653,8 @@ fn a_lost_pin_whose_out_of_domain_target_drifted_is_still_repaired() {
     assert_eq!(out.status.code(), Some(0), "repair: {}", said(&out));
     let after = the_pin(&ws, "claim.md");
     assert_ne!(
-        after.hash, before.hash,
+        after.hash,
+        before.hash,
         "the out-of-domain target really is lost, so repair acted on it — a remedy \
          that SKIPPED out-of-domain targets would leave it alone here: {}",
         said(&out)
@@ -682,7 +691,8 @@ fn every_repaired_line_names_its_pin_and_its_target() {
     let json = sb.run(&fresh, &["repair", "--json"]);
     let value: serde_json::Value = serde_json::from_str(&stdout(&json)).expect("json");
     assert_eq!(
-        value["pins"][0]["target"], "source.md",
+        value["pins"][0]["target"],
+        "source.md",
         "and the machine face carries the same subject: {}",
         stdout(&json)
     );
