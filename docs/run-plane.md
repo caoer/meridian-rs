@@ -863,7 +863,13 @@ and the guarantee in it becomes true.
 **A lost commit answer states its indeterminacy; it does not resolve it.** Of the
 premise-holding doors, some sent nothing (`splice` refused with no error body) and
 some cannot know (`splice` never answered; a frame that would not parse; an `ok`
-carrying no body). The first kind is an ordinary engine-minted refusal and takes
+carrying no body). The last of those is the one a later reader is most likely to
+"correct": an `ok` bit looks like knowledge. It is not, and the ground is the
+reply itself — **a reply that violates its own schema certifies nothing,
+including its own `ok` bit.** Filing it as "landed but undescribable" would
+over-trust a malformed answer; knowledge at this boundary IS a well-formed
+answer, so this door is genuinely unknown rather than merely unexplained. The
+first kind is an ordinary engine-minted refusal and takes
 its class from the reading above. The second kind may not use `no_effect`,
 `conflict` or a bare `refused`, because **all three assert that nothing landed**,
 and that assertion would be a fabrication aimed at the caller's own file. It
