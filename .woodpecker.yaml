@@ -105,12 +105,28 @@ steps:
       - chown ci:ci . target-ci && chown -R ci:ci "$CARGO_HOME" "$SCCACHE_DIR" /home/ci
       # --no-fail-fast: one failing test binary must not trade away the other
       # binaries' verdicts (pipeline #25 lost ~80% of the suite's evidence to
-      # a single red binary). bash for pipefail — tee must not mask cargo's
-      # exit code.
-      - setpriv --reuid=ci --regid=ci --init-groups env HOME=/home/ci bash -o pipefail -c 'cargo test --workspace --locked --no-fail-fast 2>&1 | tee /tmp/suite.log'
-      # An exit code is not a verdict. A serial run once exited red with ZERO
-      # test output (kernel OOM-killed the compiler); demand evidence lines.
-      - test "$(grep -c '^test result' /tmp/suite.log)" -gt 0
+      # a single red binary). Inner bash for pipefail — tee must not mask
+      # cargo's exit code; the outer step shell stays POSIX.
+      #
+      # The evidence count runs in the SAME command as the suite: a failing
+      # command aborts a step's remaining commands, so a separate gate line
+      # can never fire on the zero-evidence red it exists for (OOM-killed
+      # compiler: red exit, no test output). The count prints on every path —
+      # a silently shrinking suite is the failure mode nobody watches for —
+      # and a green exit with zero evidence lines is a broken harness, so it
+      # fails the step.
+      - |
+        set +e
+        setpriv --reuid=ci --regid=ci --init-groups env HOME=/home/ci bash -o pipefail -c 'cargo test --workspace --locked --no-fail-fast 2>&1 | tee target-ci/suite.log'
+        rc=$?
+        set -e
+        lines=$(grep -c '^test result' target-ci/suite.log || true)
+        echo "evidence lines: $lines"
+        if [ "$rc" -ne 0 ]; then
+          [ "$lines" -gt 0 ] || echo "NO MEASUREMENT — this red is not a test verdict; the build died before any test ran"
+          exit "$rc"
+        fi
+        test "$lines" -gt 0
       # Hit rates in the log make cache regressions diagnosable; the sccache
       # server is ci's, so ask it as ci. Stats must not gate the suite's
       # verdict, but their absence must be loud — a wedged shard degrades to
