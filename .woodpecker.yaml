@@ -1,22 +1,93 @@
+# Correctness lane on the fleet runner. Steps are named so a red pipeline names
+# its own defect instead of saying "test failed".
+#
+# STEP ORDER IS LOAD-BEARING: the measuring step (`test`) runs FIRST, before any
+# linter. Woodpecker aborts the remaining steps when one fails, and an aborted
+# step renders as SKIPPED — which reads as "no news" rather than "not measured".
+# A linter ahead of the tests therefore converts every style nit into an unknown
+# test verdict. Tests first means the suite always produces a verdict, and a
+# lint failure can only ever add information.
+#
+# Event filter is workflow-level: every step inherits it, so a new step cannot
+# be added without one.
+when:
+  - event: [push, pull_request, manual]
+
 labels:
   hostname: workstation-nyc-2
 
+variables:
+  # Share only the registry/git cache — cargo locks it correctly under
+  # concurrent pipelines. A shared target dir races: a parallel build of
+  # another commit deletes test binaries between build and run.
+  - &cargo_home /ci-cache/meridian-rs/cargo
+
 steps:
-  - name: test
+  # The suite. Runs first and unconditionally, so its verdict is never traded
+  # away for a linter's. See the header.
+  #
+  # The frontmatter tests cross-validate the engine's YAML against PyYAML.
+  # The fs permission tests build "unreadable" fixtures with chmod, and root
+  # bypasses permission bits — so run cargo as a created non-root user.
+  # setpriv preserves PATH and CARGO_HOME (no PAM, no env reset). The mount
+  # tests also precondition an existing XDG base dir ($HOME/.config).
+  - name: test (cargo test --workspace --locked)
     image: rust:1
     environment:
-      # Share only the registry/git cache — cargo locks it correctly under
-      # concurrent pipelines. A shared target dir races: a parallel build of
-      # another commit deletes test binaries between build and run.
-      CARGO_HOME: /ci-cache/meridian-rs/cargo
+      CARGO_HOME: *cargo_home
     commands:
-      # The frontmatter tests cross-validate the engine's YAML against PyYAML.
       - apt-get -qq update && apt-get -qq install -y python3-yaml
-      # The fs permission tests build "unreadable" fixtures with chmod, and
-      # root bypasses permission bits — so run cargo as a created non-root
-      # user. setpriv preserves PATH and CARGO_HOME (no PAM, no env reset).
-      # The mount tests also precondition an existing XDG base dir ($HOME/.config).
       - useradd -m ci
       - mkdir -p /home/ci/.config "$CARGO_HOME"
       - chown -R ci:ci . "$CARGO_HOME" /home/ci
       - setpriv --reuid=ci --regid=ci --init-groups env HOME=/home/ci cargo test --workspace --locked
+
+  - name: fmt (cargo fmt --all --check)
+    image: rust:1
+    environment:
+      CARGO_HOME: *cargo_home
+    commands:
+      - rustup component add rustfmt
+      - cargo fmt --all --check
+
+  - name: clippy (workspace lint policy, escalated)
+    image: rust:1
+    environment:
+      CARGO_HOME: *cargo_home
+    commands:
+      - rustup component add clippy
+      - cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  # The perf lane's targets are feature-gated, so --all-targets above skips
+  # them. Lint them here so they cannot bit-rot: this COMPILES the asserts, it
+  # never runs them. The list is DERIVED, not typed — a `required-features =
+  # ["perf-walltime"]` target added tomorrow is picked up automatically, which
+  # the hand-maintained list in .github/workflows/ci.yml was not (it had
+  # already drifted: links_multiroot_cpu and sql_multiroot_cpu were missing).
+  - name: clippy the perf-gated targets (compiled here, never run)
+    image: rust:1
+    environment:
+      CARGO_HOME: *cargo_home
+    commands:
+      - rustup component add clippy
+      - |
+        set -eu
+        found=0
+        for manifest in crates/*/Cargo.toml; do
+          pkg=$(basename "$(dirname "$manifest")")
+          grep -q '^perf-walltime = ' "$manifest" || continue
+          # every [[test]] block whose required-features names perf-walltime
+          targets=$(awk '
+            /^\[\[test\]\]/      { name=""; next }
+            /^name *= *"/        { gsub(/^name *= *"|"$/,""); name=$0 }
+            /perf-walltime/ && /required-features/ && name { print name; name="" }
+          ' "$manifest")
+          for t in $targets; do
+            echo "--- clippy $pkg --test $t"
+            cargo clippy -p "$pkg" --features perf-walltime --test "$t" --locked -- -D warnings
+            found=$((found + 1))
+          done
+        done
+        # A wrong path returns zero targets silently; refuse that.
+        test "$found" -gt 0 || { echo "no perf-gated targets discovered — the discovery is broken, not the repo"; exit 1; }
+        echo "linted $found perf-gated targets"
