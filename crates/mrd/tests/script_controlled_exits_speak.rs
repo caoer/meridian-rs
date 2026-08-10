@@ -112,6 +112,16 @@ impl Door for Fake {
         }
         Ok(match op {
             "fingerprint" => format!(r#"{{"ok":true,"body":{{"fingerprint":"{ENTRY}","seq":2}}}}"#),
+            "toc" => json!({"ok": true, "body": {
+                "path": CARD,
+                "file_rev": "7c40e1a8b2f9d356",
+                "fingerprint": ENTRY,
+                "nodes": [
+                    {"kind": "frontmatter", "span": [0, 32], "node_rev": "26796ebec5d0bf1a",
+                     "text_prefix_16b": "---\nowner:\n", "keys": ["owner", "status"]},
+                ],
+            }})
+            .to_string(),
             "read" => json!({"ok": true, "body": {
                 "path": CARD,
                 "file_rev": "7c40e1a8b2f9d356",
