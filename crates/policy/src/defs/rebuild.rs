@@ -549,10 +549,12 @@ fn plan_replace_section(
                 "replace_section on {} requires a fresh rev (whole-section rewrite is destructive)",
                 go_quote(section)
             ),
-            remedy: format!(
-                "read the section (md read) and pass its rev; current rev is {}",
-                sec.rev
-            ),
+            // The value NAMED here would be `sec.rev` — rev8, message parity
+            // only (see `rev8`). Naming it in the slot that demands a CAS sends
+            // the caller back with a token every door refuses, so the remedy
+            // points at the read that mints the real one (the `plan.rs:295`
+            // twin's wording).
+            remedy: "read the section and pass its rev".to_string(),
             context: vec![
                 ("section".to_string(), section.to_string()),
                 ("current_rev".to_string(), sec.rev.clone()),
@@ -914,10 +916,8 @@ fn plan_anchored(
             return Err(BodyError {
                 code: "ECAS".to_string(),
                 message: format!("an all-occurrence {} requires a rev", e.op),
-                remedy: format!(
-                    "read the section (md read) and pass its rev ({}) to confirm the current content",
-                    sec.rev
-                ),
+                remedy: "read the section and pass its rev to confirm the current content"
+                    .to_string(),
                 context: vec![
                     ("section".to_string(), section.to_string()),
                     ("current_rev".to_string(), sec.rev.clone()),
@@ -1003,9 +1003,8 @@ fn conflict_err(section: &str, expected: &str, sec: &SecX) -> BodyError {
             sec.rev
         ),
         remedy: format!(
-            "the section changed since you read it; re-read it (md read {}) and recompose against rev {}",
-            go_quote(section),
-            sec.rev
+            "the section changed since you read it; re-read {} and recompose against the rev that read publishes",
+            go_quote(section)
         ),
         context: vec![
             ("section".to_string(), section.to_string()),
