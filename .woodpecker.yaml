@@ -1,3 +1,6 @@
+labels:
+  hostname: workstation-nyc-2
+
 steps:
   - name: test
     image: rust:1
