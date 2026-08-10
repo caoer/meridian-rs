@@ -25,6 +25,14 @@ use duckdb::Connection;
 use duckdb::types::Value;
 use model::{CorpusIndex, Document, Node, NodeKind};
 
+/// The caller-injected exclusion probe: given a link target, the word naming why
+/// the hash domain excludes it, or `None` when it does not.
+///
+/// Named because the signature appears at three call depths and the concept —
+/// *"ask the caller, who has the root and the disk, a question this crate cannot
+/// answer"* — is what a reader needs at each of them.
+pub type ExclusionProbe<'a> = &'a dyn Fn(&str) -> Option<String>;
+
 pub use read_face::{
     READ_FACE_SCHEMA_SQL, create_read_face_schema, lock_read_face, open_board, stale_paths,
 };
@@ -97,7 +105,7 @@ pub fn build_memory_rooted(
     corpus: &model::RootedCorpus<'_>,
     mounts: &addr::MountSet,
     as_of: &str,
-    exclusion: Option<&dyn Fn(&str) -> Option<String>>,
+    exclusion: Option<ExclusionProbe<'_>>,
 ) -> Result<Connection, ViewError> {
     let conn = Connection::open_in_memory()?;
     create_schema(&conn)?;
@@ -122,7 +130,7 @@ fn project(
     docs: &BTreeMap<String, Document>,
     corpus: &model::RootedCorpus<'_>,
     mounts: Option<&addr::MountSet>,
-    exclusion: Option<&dyn Fn(&str) -> Option<String>>,
+    exclusion: Option<ExclusionProbe<'_>>,
 ) -> duckdb::Result<()> {
     let index = corpus_index(docs);
     let mut rows = Rows::default();
@@ -146,7 +154,7 @@ fn project(
 /// Only rows with NO destination are considered: a resolved edge is in the
 /// domain by construction, so asking about it would be asking a question whose
 /// answer cannot be true.
-fn fill_exclusions(rows: &mut Rows, exclusion: Option<&dyn Fn(&str) -> Option<String>>) {
+fn fill_exclusions(rows: &mut Rows, exclusion: Option<ExclusionProbe<'_>>) {
     let Some(why) = exclusion else { return };
     for row in &mut rows.link {
         let dangling = matches!(row[LINK_COL_DEST_PATH], Value::Null)
