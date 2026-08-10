@@ -2911,17 +2911,17 @@ enum FmValueScope<'a> {
 /// already-encoded line), so they stay raw. Encoding or refusing there would
 /// break `set_property`. `at:"upsert"` already encodes on its own path.
 fn fm_value_scope<'a>(
-    upsert_key: &Option<String>,
+    upsert_key: Option<&String>,
     edit: &'a EditShape,
 ) -> Option<FmValueScope<'a>> {
-    upsert_key.as_ref()?;
+    upsert_key?;
     match edit {
         EditShape::Put {
             at: PutAt::End,
             text,
         } => Some(FmValueScope::Append(text)),
         EditShape::Match { old, new } => Some(FmValueScope::Match { old, new }),
-        _ => None,
+        EditShape::Put { .. } => None,
     }
 }
 
@@ -2962,7 +2962,7 @@ fn lower_fm_value_scope(
     doc: &model::Document,
     before: &model::Target,
     key: &str,
-    scope: FmValueScope<'_>,
+    scope: &FmValueScope<'_>,
 ) -> Result<model::EditKind, Box<ErrorBody>> {
     let stored_line = &doc.raw[before.span.clone()];
     // A key line without a colon is not a mapping line; the def checker's own
@@ -3062,7 +3062,7 @@ fn model_edits_and_before_facts(
             // door that minted `no_match` first would answer a moved world with
             // the wrong refusal — and the ladder's rung-1 recovery hangs off
             // `cas_mismatch`. Deferring to the kernel keeps ONE ordering.
-            edit: match fm_value_scope(&upsert_key, &edit.edit)
+            edit: match fm_value_scope(upsert_key.as_ref(), &edit.edit)
                 .filter(|_| !cas_defers(edit, &before_facts[before_facts.len() - 1]))
             {
                 // § A.6.3a caller-facing value scopes on an `fm_key` — composed
@@ -3071,7 +3071,7 @@ fn model_edits_and_before_facts(
                     doc,
                     &before_facts[before_facts.len() - 1],
                     upsert_key.as_deref().unwrap_or(""),
-                    scope,
+                    &scope,
                 )?,
                 None => match &edit.edit {
                     EditShape::Match { old, new } => model::EditKind::Match {
