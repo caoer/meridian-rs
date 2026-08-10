@@ -86,6 +86,19 @@ pub(crate) fn voice_unserved(unserved: &std::collections::BTreeMap<String, Strin
 /// exclude SILENTLY (session decision 0017; `docs/wire-contract.md` §12.1,
 /// enumerator clause). Doors asked about ONE named path do not voice here —
 /// they serve the path instead (`walk_cmd::admit_named_page`).
+///
+/// ⚠️ **The PROSE sample is capped at [`EXCLUDED_SHOWN`]; the COUNT never is,
+/// and the wire's `excluded` key stays complete.** Uncapped, this line is a
+/// weapon rather than a courtesy: it is voiced BEFORE the door answers, so a
+/// call that ends up FAILING has already emitted it, and a consumer that folds
+/// stderr into an error payload hands its caller the whole enumeration on the
+/// retry path — measured 2026-08-10 on the newly registered mcp face, where one
+/// failed `walk` returned **3,171,117 characters enumerating 28,936 files**,
+/// enough to destroy an agent's context on a call that walked nothing. The
+/// anti-silence law is satisfied by the COUNT plus a sample plus the pointer to
+/// the complete machine-readable list; it never required prose to be unbounded.
+/// Cap convention borrowed from [`model::selector::NEAREST_SHOWN`], which this
+/// site should have followed from the start.
 pub(crate) fn voice_excluded(
     root: &fs::WorkspaceRoot,
     docs: &std::collections::BTreeMap<String, model::Document>,
@@ -100,12 +113,33 @@ pub(crate) fn voice_excluded(
     if excluded.is_empty() {
         return;
     }
+    let shown: Vec<&str> = excluded
+        .iter()
+        .take(EXCLUDED_SHOWN)
+        .map(String::as_str)
+        .collect();
+    let rest = excluded.len().saturating_sub(shown.len());
+    // The remainder clause exists so the sample can never READ as the whole
+    // list: "a, b, c" and "a, b, c and 28933 more" are the same three names and
+    // opposite claims about the population.
+    let sample = if rest == 0 {
+        shown.join(", ")
+    } else {
+        format!("{} and {rest} more", shown.join(", "))
+    };
     eprintln!(
-        "mrd: note: {} markdown file(s) under this root are outside the hash domain and are NOT in this listing — {}. They are addressable by explicit path (`mrd read`, `mrd links <PATH>`); their bytes do not move the fingerprint this answer is stamped with.",
+        "mrd: note: {} markdown file(s) under this root are outside the hash domain and are NOT in this listing — {sample}. The complete list is the `excluded` key of the machine answer (`--json`, §12.1). They are addressable by explicit path (`mrd read`, `mrd links <PATH>`); their bytes do not move the fingerprint this answer is stamped with.",
         excluded.len(),
-        excluded.join(", ")
     );
 }
+
+/// How many excluded paths the PROSE note names before it defers to the wire.
+///
+/// Three, matching [`model::selector::NEAREST_SHOWN`] — the tree's existing
+/// answer to "how many is enough for a human to recognise the KIND of thing
+/// being excluded". A reader who needs the population reads the count; a reader
+/// who needs the members reads the machine answer.
+const EXCLUDED_SHOWN: usize = 3;
 
 /// The title line and the gutter legend. Held apart from [`LISTING`] so the legend, which is
 /// prose and not a verb block, can never be lexed as one.
