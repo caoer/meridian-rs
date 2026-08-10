@@ -291,3 +291,77 @@ steps:
       # table still prints to stdout for the CI log.
       - cargo run -q --locked --release -p perfsuite --bin bench-report -- --results target/ci-results
       - sccache --show-stats || echo "WARNING sccache stats unavailable — caching may be inoperative"
+
+  # PUBLISH the engine. Downstream repos gate on a LIVE `mrd` (ccc-statusd's
+  # internal/mcpserver, internal/registryclient, internal/cutover — no-skip by
+  # design, MERIDIAN_MRD_BIN or fail), and no CI anywhere could run those lanes
+  # because this repo produced no consumable artifact. It does now.
+  #
+  # The pin a consumer records is (COMMIT, SHA256) and the URL is derived from
+  # the commit — never `latest`, which is what makes a downstream red mean "the
+  # engine changed under me" instead of "the engine drifted silently".
+  #
+  # Forgejo's generic registry is APPEND-ONLY per (name, version, file): a
+  # re-run of the same commit gets 409 and the FIRST published bytes stay
+  # authoritative. That is the property the pin needs — a rebuild that differs
+  # byte-wise (Rust builds are not bit-reproducible here) must never silently
+  # invalidate a digest a consumer already recorded.
+  #
+  # main + manual only: a PR's engine is not a thing anyone should pin.
+  - name: publish mrd (forgejo generic package, keyed by commit)
+    depends_on: []
+    when:
+      - event: push
+        branch: main
+      - event: manual
+    image: *rust_image
+    pull: false
+    environment:
+      CARGO_HOME: *cargo_home
+      CARGO_BUILD_JOBS: *build_jobs
+      CARGO_INCREMENTAL: "0"
+      RUSTC_WRAPPER: sccache
+      SCCACHE_DIR: /ci-cache/sccache/publish
+      SCCACHE_CACHE_SIZE: *sccache_size
+      CC: "sccache cc"
+      CXX: "sccache c++"
+      RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+      CARGO_TERM_COLOR: always
+      FORGEJO_TOKEN:
+        from_secret: forgejo_token
+    commands:
+      # Shared ./target with the bench lane on purpose: bench inherits the
+      # release profile, so the release dep tree is already compiled there and
+      # cargo's build-dir flock serializes the two.
+      - cargo build -q --locked --release -p mrd
+      # The artifact must be the thing consumers run, so ASK it — a build that
+      # produced an unrunnable binary must not reach the registry.
+      - ./target/release/mrd --version
+      - |
+        set -eu
+        sha="$(sha256sum target/release/mrd | cut -d' ' -f1)"
+        rev="$${CI_COMMIT_SHA}"
+        base="https://git.0xdao.app/api/packages/caoer115/generic/mrd/$${rev}"
+        echo "engine: meridian-rs $${rev}"
+        echo "  sha256: $${sha}"
+        echo "$${sha}  mrd-linux-amd64" > /tmp/mrd-linux-amd64.sha256
+        put() {
+          code="$(curl -s -o /tmp/put.out -w '%{http_code}' -X PUT \
+            -H "Authorization: token $${FORGEJO_TOKEN}" \
+            --upload-file "$$1" "$${base}/$$2")"
+          case "$${code}" in
+            201) echo "published $$2" ;;
+            # Append-only: this commit is already published and those bytes win.
+            409) echo "$$2 already published for this commit — keeping the FIRST bytes (append-only)" ;;
+            *)   echo "publish $$2 failed: HTTP $${code}"; cat /tmp/put.out; exit 1 ;;
+          esac
+        }
+        put target/release/mrd mrd-linux-amd64
+        put /tmp/mrd-linux-amd64.sha256 mrd-linux-amd64.sha256
+        # Print what a consumer must record, so the pin is copyable out of the
+        # log rather than reconstructed.
+        echo ''
+        echo 'pin for downstream .mrd-pin:'
+        echo "  MRD_COMMIT=$${rev}"
+        echo "  MRD_SHA256=$$(curl -fsSL -H "Authorization: token $${FORGEJO_TOKEN}" "$${base}/mrd-linux-amd64.sha256" | cut -d' ' -f1)"
+      - sccache --show-stats || echo "WARNING sccache stats unavailable — caching may be inoperative"
