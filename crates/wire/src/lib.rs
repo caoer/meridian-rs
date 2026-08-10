@@ -1939,7 +1939,6 @@ impl ErrorBody {
             supported: None,
             expected: None,
             actual: None,
-            changed: None,
             required: None,
             as_of_root: None,
             live_root: None,
