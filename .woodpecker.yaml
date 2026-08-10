@@ -134,6 +134,11 @@ steps:
     commands:
       - wget -q -O- "https://github.com/cargo-bins/cargo-binstall/releases/latest/download/cargo-binstall-$(uname -m)-unknown-linux-musl.tgz" | tar -xz -C /usr/local/bin
       - cargo binstall -y --install-path /usr/local/bin cargo-deny
+      # The advisory-db cache in shared CARGO_HOME ends up owned by the test
+      # lane's ci user (uid 1000); cargo-deny shells out to the git CLI as
+      # root, which refuses another user's repo ("dubious ownership"). The
+      # exception is root's global config inside this ephemeral container.
+      - git config --global --add safe.directory '*'
       - cargo deny check
 
   # Harness bit-rot catches, not perf gates: one iteration per bench target,
