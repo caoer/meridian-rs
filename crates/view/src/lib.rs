@@ -69,7 +69,7 @@ pub fn build_memory(
 ) -> Result<Connection, ViewError> {
     let conn = Connection::open_in_memory()?;
     create_schema(&conn)?;
-    project(&conn, docs, &model::RootedCorpus::ambient(docs), None)?;
+    project(&conn, docs, &model::RootedCorpus::ambient(docs), None, None)?;
     write_stamp(
         &conn,
         as_of,
@@ -97,10 +97,11 @@ pub fn build_memory_rooted(
     corpus: &model::RootedCorpus<'_>,
     mounts: &addr::MountSet,
     as_of: &str,
+    exclusion: Option<&dyn Fn(&str) -> Option<String>>,
 ) -> Result<Connection, ViewError> {
     let conn = Connection::open_in_memory()?;
     create_schema(&conn)?;
-    project(&conn, docs, corpus, Some(mounts))?;
+    project(&conn, docs, corpus, Some(mounts), exclusion)?;
     write_stamp(
         &conn,
         as_of,
@@ -121,13 +122,45 @@ fn project(
     docs: &BTreeMap<String, Document>,
     corpus: &model::RootedCorpus<'_>,
     mounts: Option<&addr::MountSet>,
+    exclusion: Option<&dyn Fn(&str) -> Option<String>>,
 ) -> duckdb::Result<()> {
     let index = corpus_index(docs);
     let mut rows = Rows::default();
     for (path, doc) in docs {
         collect_doc(path, doc, &index, &mut rows, corpus, mounts);
     }
+    fill_exclusions(&mut rows, exclusion);
     rows.insert(conn)
+}
+
+/// Fill `link.exclusion` for the DANGLING rows whose target is a real file the
+/// hash domain does not carry (session decision 0034).
+///
+/// CALLER-INJECTED, the way `policy::change` injects its one-hop resolver, and
+/// for the same reason: the answer needs the workspace root and a disk probe,
+/// and this crate writes nothing and reads nothing from disk. `None` means the
+/// caller had no root to answer with — every row then keeps the NULL it was
+/// emitted with, which is the honest value for "not asked", not a claim that
+/// nothing is excluded.
+///
+/// Only rows with NO destination are considered: a resolved edge is in the
+/// domain by construction, so asking about it would be asking a question whose
+/// answer cannot be true.
+fn fill_exclusions(rows: &mut Rows, exclusion: Option<&dyn Fn(&str) -> Option<String>>) {
+    let Some(why) = exclusion else { return };
+    for row in &mut rows.link {
+        let dangling = matches!(row[LINK_COL_DEST_PATH], Value::Null)
+            && matches!(row[LINK_COL_DEST_ROOT], Value::Null);
+        if !dangling {
+            continue;
+        }
+        let Value::Text(target) = &row[LINK_COL_TARGET_RAW] else {
+            continue;
+        };
+        if let Some(word) = why(target) {
+            row[LINK_COL_EXCLUSION] = Value::Text(word);
+        }
+    }
 }
 
 /// Corpus name index (basename + frontmatter-alias) — same stage-1 resolver
@@ -406,11 +439,22 @@ fn emit_link(
             Some(Dest::Rooted { path, .. }) => Value::Text(path.clone()),
             _ => Value::Null,
         },
+        // `exclusion` — filled by [`project`] after collection, because the
+        // answer needs the workspace root and this crate holds none.
+        Value::Null,
         Value::UBigInt(u64c(node.span.start)),
         Value::UBigInt(u64c(node.span.end)),
         Value::Text(node.node_rev.0.clone()),
     ]);
 }
+
+/// Column index of `exclusion` in a `link` row, and of the two destination
+/// columns that decide whether a row is dangling. Named once so the row shape
+/// and the fill cannot drift apart silently.
+const LINK_COL_TARGET_RAW: usize = 3;
+const LINK_COL_DEST_PATH: usize = 7;
+const LINK_COL_DEST_ROOT: usize = 8;
+const LINK_COL_EXCLUSION: usize = 10;
 
 /// Emit one inline `tag` row (`Tag.name`, no leading `#`).
 fn emit_tag(node: &Node, path: &str, name: &str, counters: &mut Counters, rows: &mut Rows) {
@@ -542,7 +586,7 @@ impl Rows {
         }
         insert_rows(
             conn,
-            "INSERT INTO link (src_path, seq, kind, target_raw, heading, block, alias, dest_path, dest_root, dest_root_path, span_start, span_end, node_rev) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO link (src_path, seq, kind, target_raw, heading, block, alias, dest_path, dest_root, dest_root_path, exclusion, span_start, span_end, node_rev) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             &self.link,
         )?;
         insert_rows(

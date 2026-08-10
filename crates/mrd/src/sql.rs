@@ -435,7 +435,14 @@ fn build_and_run_ephemeral(
     let domain = fs::domain::Domain::load(&root)
         .map_err(|e| EphemeralError::NoCorpus(format!("cannot read the hash domain: {e}")))?;
     let corpus = mounts.rooted(&docs, &domain, &root);
-    let conn = view::build_memory_rooted(&docs, &corpus, mounts.set(), &f0.0)
+    // `link.exclusion` — the same mint the link doors ask through, injected as
+    // data so `view` stays disk-free (session decision 0034). It reads the same
+    // `domain` the corpus was rooted under, so the column and the rows cannot
+    // disagree about which filter was in force.
+    let exclusion = |target: &str| {
+        fs::domain::link_target_exclusion(&root, &domain, target).map(|why| why.word().to_owned())
+    };
+    let conn = view::build_memory_rooted(&docs, &corpus, mounts.set(), &f0.0, Some(&exclusion))
         .map_err(|e| EphemeralError::Fail(Fail::tool(format!("cannot build the view: {e}"))))?;
 
     let as_of = read_as_of(&conn).map_err(EphemeralError::Fail)?;
