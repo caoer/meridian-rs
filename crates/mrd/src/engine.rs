@@ -376,13 +376,19 @@ pub(crate) fn refusal_text(error: &ErrorBody) -> String {
     text
 }
 
-/// The `--json` face's refusal envelope on stdout — `{workspace, error}`, the engine's §8 error
-/// body lifted into the v3 vocabulary — beside the human stderr line [`refusal_fail`] returns.
+/// EMIT the `--json` face's refusal envelope on stdout — `{workspace, error}`, the engine's §8
+/// error body lifted into the v3 vocabulary — and NOTHING ELSE: no exit code, no sentence.
 ///
 /// The law is the FACE's, not one verb's (status.md § teaching rows): a machine consumer cannot
 /// tell an absent frame from success with no output, so every leg of a `--json` face that can
-/// refuse emits one. Human format prints nothing here and the exit triad is untouched.
-pub(crate) fn json_refusal(format: Format, workspace: &Path, error: &ErrorBody) -> Fail {
+/// refuse emits one. Human format prints nothing here.
+///
+/// Split out of [`json_refusal`] because THE ENVELOPE AND THE EXIT CODE ARE TWO DIFFERENT
+/// JUDGEMENTS — the same separation [`refusal_text`] already makes for the sentence. A verb whose
+/// exit triad reserves 1 for its OWN finding (`mrd repair`: 1 is a TRUE LOSS) must still publish
+/// the frame, and routing it through `json_refusal` would have spelled an engine refusal as that
+/// verb's finding. Emit here, judge the exit at the caller.
+pub(crate) fn json_error_frame(format: Format, workspace: &Path, error: &ErrorBody) {
     if matches!(format, Format::Json) {
         let mut frame = json!({
             "error": serde_json::to_value(error).expect("json"),
@@ -401,6 +407,16 @@ pub(crate) fn json_refusal(format: Format, workspace: &Path, error: &ErrorBody) 
             .expect("json")
         );
     }
+}
+
+/// The `--json` face's refusal envelope on stdout beside the human stderr line, for the verbs
+/// whose exit triad spells an engine refusal as the findings leg (`read`, `put`, `pin`,
+/// `retire mark`). [`json_error_frame`] plus [`refusal_fail`], which is exit 1.
+///
+/// A verb that reserves exit 1 for a finding of its own calls [`json_error_frame`] directly and
+/// mints its own [`Fail`]; the exit triad is untouched either way.
+pub(crate) fn json_refusal(format: Format, workspace: &Path, error: &ErrorBody) -> Fail {
+    json_error_frame(format, workspace, error);
     refusal_fail(error)
 }
 
