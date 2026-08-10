@@ -433,11 +433,11 @@ fn edge_page(edge: &LockItem) -> String {
 /// Colour one edge on the fingerprint plane.
 ///
 /// Pre-compare arms: lock-refusal → grey; unmounted root → grey (R-3, first);
-/// target outside the hash domain → the disk decides between red
-/// `file-not-found` (absent — decision 0049, absence outranks domain
-/// membership) and grey `outside-hash-domain` (present but unhashable, R-3,
-/// before every red); root absence → red `file-not-found`; else `classify_pin`
-/// on fingerprint.
+/// target absent from the ambient disk → red `file-not-found` (decisions 0049
+/// and 0054, absence outranks domain membership on BOTH planes); target outside
+/// the hash domain and present → grey `outside-hash-domain` (R-3, before every
+/// red); root absence → red `file-not-found`; else `classify_pin` on
+/// fingerprint.
 fn edge_color(corpus: &model::RootedCorpus<'_>, edge: &LockItem) -> Color {
     if let Some(reason) = &edge.lock_refusal {
         return Color::Grey(GreyReason::LockRefused {
@@ -449,31 +449,39 @@ fn edge_color(corpus: &model::RootedCorpus<'_>, edge: &LockItem) -> Color {
     if let Some(reason) = &edge.root_refusal {
         return Color::Grey(reason.clone());
     }
-    // R-3 again: the hash domain gates HASHING, not addressing, so a target it
+    // ABSENCE OUTRANKS DOMAIN MEMBERSHIP, ON BOTH PLANES (decisions 0049 and
+    // 0054): THE ORDER OF QUESTIONS IS THE ORDER OF FACTS. Existence is a fact
+    // about the DISK, and the disk does not know the domain — so this arm is
+    // asked FIRST, ahead of the domain arm below and every address arm after
+    // it, rather than nested inside the out-of-domain branch it arrived in.
+    //
+    // It is a DISK READ of the named path at the root it resolves under
+    // (decision 0045's mechanism), asked of the corpus's builder. The corpus
+    // map cannot stand in for it on EITHER plane: out of domain, an excluded
+    // target is missing from the map whether it is on disk or deleted (0049's
+    // defect); in domain, the map does record the absence, but the arm that
+    // reads it asserts a resolution — `selector-unresolved` claims the page
+    // resolved, `dangling-anchor` claims its anchor vanished — and with the page
+    // gone there is no page to resolve (0054's defect). `root_absence` is not
+    // the signal either: `read_face` sets it only for a miss inside a MOUNTED
+    // root. `None` here = the face supplied no disk: cannot say, so every
+    // pre-0049 verdict stands rather than a guess.
+    if corpus.on_ambient_disk(edge.to_root.as_ref(), &edge.to_path) == Some(false) {
+        return Color::Red(RedReason::FileNotFound {
+            root: None,
+            path: edge.to_path.clone(),
+            selector: (!edge.to_sel.is_empty()).then(|| edge.to_sel.clone()),
+        });
+    }
+    // R-3: the hash domain gates HASHING, not addressing, so a target it
     // excludes was never loaded into this corpus and every red below would
     // assert an absence nobody measured (§12.1 verdict-plane clause, decision
     // 0034). `pin` attests such a target at rc=0, so red here sends the caller
-    // to destroy the engine's own attestation. `None` = the face supplied no
-    // domain: cannot say, so nothing changes.
-    //
-    // ABSENCE OUTRANKS DOMAIN MEMBERSHIP (decision 0049): the grey is scoped to
-    // a target that EXISTS and cannot be hashed, so the existence question is
-    // answered BEFORE the domain answer is used. The corpus map cannot answer
-    // it — an excluded target is missing from the map whether it is on disk or
-    // deleted, which is the whole defect — and `root_absence` is not the signal
-    // either: `read_face` sets it only for a miss inside a MOUNTED root. So this
-    // is a DISK READ of the named path at the root it resolves under (decision
-    // 0045's mechanism), asked of the corpus's builder. `None` there = the face
-    // supplied no disk: cannot say, and the pre-0049 grey stands rather than a
-    // guess.
+    // to destroy the engine's own attestation. The grey is scoped to a target
+    // that EXISTS and cannot be hashed — the arm above already took the absent
+    // case. `None` = the face supplied no domain: cannot say, so nothing
+    // changes.
     if corpus.in_hash_domain(edge.to_root.as_ref(), &edge.to_path) == Some(false) {
-        if corpus.on_ambient_disk(edge.to_root.as_ref(), &edge.to_path) == Some(false) {
-            return Color::Red(RedReason::FileNotFound {
-                root: None,
-                path: edge.to_path.clone(),
-                selector: (!edge.to_sel.is_empty()).then(|| edge.to_sel.clone()),
-            });
-        }
         return Color::Grey(GreyReason::OutsideHashDomain {
             path: edge.to_path.clone(),
         });
@@ -1215,15 +1223,6 @@ mod tests {
     /// greys everything passes the excluded arm alone.
     #[test]
     fn an_out_of_domain_target_greys_and_every_other_verdict_is_unchanged() {
-        /// A domain holding everything except the paths it is told to exclude.
-        #[derive(Debug)]
-        struct Excluding(&'static [&'static str]);
-        impl model::HashDomain for Excluding {
-            fn contains(&self, rel: &str) -> bool {
-                !self.0.contains(&rel)
-            }
-        }
-
         let target_raw = "# Target\n\nbody v1\n";
         let token = live_token(target_raw);
 
@@ -1313,6 +1312,217 @@ mod tests {
         assert!(
             matches!(rows[0].color, Color::Red(_)),
             "no domain supplied ⇒ no claim about the domain: {:?}",
+            rows[0].color
+        );
+    }
+
+    /// A domain that holds everything except the paths it is told to exclude.
+    #[derive(Debug)]
+    struct Excluding(&'static [&'static str]);
+    impl model::HashDomain for Excluding {
+        fn contains(&self, rel: &str) -> bool {
+            !self.0.contains(&rel)
+        }
+    }
+
+    /// A disk holding exactly the paths it is given, and nothing else. Every
+    /// answer is MEASURED (`Some`) — `None` is the separate cannot-say world
+    /// its own test below owns.
+    #[derive(Debug)]
+    struct Holding(&'static [&'static str]);
+    impl model::AmbientDisk for Holding {
+        fn exists(&self, rel: &str) -> Option<bool> {
+            Some(self.0.contains(&rel))
+        }
+    }
+
+    /// Pin on `object` at `token` with an explicit selector path (`[]` = page).
+    fn chain_block_at(object: &str, token: &str, segments: &[&str]) -> String {
+        let mut l = lock::Lock::new();
+        l.upsert_pin(lock::PinEntry::new(
+            object,
+            "9ae3f1deadbeef",
+            lock::Selector::Path(segments.iter().map(|s| (*s).to_string()).collect()),
+            token,
+        ));
+        lock::render(&l)
+    }
+
+    /// The one corpus the absence family is read over: seven declaring pages,
+    /// one pin each, and the in-domain PRESENT targets.
+    ///
+    /// `ignored/present.md` is ON DISK and absent from this map because the
+    /// domain excluded it; `in-gone.md` is absent because it is not there. **That
+    /// the map cannot tell those two apart is the whole reason the disk is
+    /// asked** — and it is why the fixture below supplies a disk rather than
+    /// trusting the corpus.
+    fn absence_family_corpus() -> BTreeMap<String, Document> {
+        let live_raw = "# Task\n\nbody v1\n";
+        let token = live_token(live_raw);
+        let mut docs = BTreeMap::new();
+        let mut src = |name: &str, object: &str, segments: &[&str]| {
+            docs.insert(
+                format!("{name}.md"),
+                doc(&format!(
+                    "# S\n\n{}\n",
+                    chain_block_at(object, &token, segments)
+                )),
+            );
+        };
+        // Absent targets — the two planes, at page grain and at block grain.
+        src("indomain-gone-src", "in-gone", &[]);
+        src("indomain-gone-block-src", "in-gone-block", &["^a1"]);
+        src("excluded-gone-src", "ignored/gone", &[]);
+        // Present targets — the verdicts that must NOT move.
+        src("excluded-present-src", "ignored/present", &[]);
+        src("moved-heading-src", "live", &["Taskk"]);
+        src("green-src", "live", &[]);
+        src("drift-src", "drifted", &[]);
+        docs.insert("live.md".to_string(), doc(live_raw));
+        docs.insert("drifted.md".to_string(), doc("# Task\n\nbody v2 edited\n"));
+        docs
+    }
+
+    /// §12.1's absence law AS A FAMILY (decisions 0049 + 0054): an absent page
+    /// is `file-not-found` WHEREVER it is absent — on BOTH planes, and ahead of
+    /// every address arm.
+    ///
+    /// Seven arms on ONE corpus, ONE domain, ONE disk, ONE run, because the
+    /// finding this fixture gates is a DISAGREEMENT BETWEEN ARMS and only a
+    /// shared run can show one. The pairing is the point twice over:
+    ///
+    /// - `indomain-gone` vs `excluded-gone` — same deletion, same bytes, the
+    ///   ONLY variable is whether the domain excludes the path. Before this fix
+    ///   the verdict word FLIPPED across that pair; the law says it must not.
+    /// - `excluded-gone` vs `excluded-present` — same exclusion, the only
+    ///   variable is the disk. The word MUST flip across that pair (0049), and
+    ///   a fix that reddens everything absent from the corpus map breaks it.
+    ///
+    /// `moved-heading` is the control that keeps `selector-unresolved` honest:
+    /// the word survives, with its candidate list, exactly where its claim is
+    /// TRUE — the page resolved and the selector failed. A fix that retired the
+    /// word instead of scoping it fails there.
+    #[test]
+    fn an_absent_target_is_file_not_found_on_both_planes_and_presence_keeps_its_verdict() {
+        let docs = absence_family_corpus();
+        let domain = Excluding(&["ignored/gone.md", "ignored/present.md"]);
+        let disk = Holding(&[
+            "live.md",
+            "drifted.md",
+            "ignored/present.md",
+            "indomain-gone-src.md",
+            "indomain-gone-block-src.md",
+            "excluded-gone-src.md",
+            "excluded-present-src.md",
+            "moved-heading-src.md",
+            "green-src.md",
+            "drift-src.md",
+        ]);
+        let corpus = model::RootedCorpus::ambient(&docs)
+            .with_hash_domain(&domain)
+            .with_ambient_disk(&disk);
+        let colors: BTreeMap<String, Color> =
+            lock_pin_colors_rooted(&corpus, &addr::MountSet::default())
+                .into_iter()
+                .map(|pin| (pin.src_path, pin.color))
+                .collect();
+
+        // ── The absent family: one word on both planes, both grains. ──
+        let absent = |path: &str| {
+            Color::Red(RedReason::FileNotFound {
+                root: None,
+                path: path.to_string(),
+                selector: None,
+            })
+        };
+        assert_eq!(
+            colors["indomain-gone-src.md"],
+            absent("in-gone.md"),
+            "IN-DOMAIN and absent is file-not-found (0054): with the page gone \
+             there is no page to resolve, so selector-unresolved would assert a \
+             resolution that did not occur"
+        );
+        assert_eq!(
+            colors["excluded-gone-src.md"],
+            absent("ignored/gone.md"),
+            "OUT-OF-DOMAIN and absent is file-not-found (0049), unchanged"
+        );
+        assert_eq!(
+            color_reason(&colors["indomain-gone-src.md"]),
+            color_reason(&colors["excluded-gone-src.md"]),
+            "THE PAIR IS THE FINDING: same deletion, same bytes, the only \
+             variable is domain membership — and the verdict word must NOT flip"
+        );
+        assert_eq!(
+            colors["indomain-gone-block-src.md"],
+            Color::Red(RedReason::FileNotFound {
+                root: None,
+                path: "in-gone-block.md".to_string(),
+                selector: Some("^a1".to_string()),
+            }),
+            "the existence question runs ahead of EVERY address arm, so a block \
+             address on an absent page is file-not-found and not dangling-anchor \
+             — dangling-anchor asserts the page resolved just as loudly"
+        );
+
+        // ── The present family: every verdict UNCHANGED. ──
+        assert_eq!(
+            colors["excluded-present-src.md"],
+            Color::Grey(GreyReason::OutsideHashDomain {
+                path: "ignored/present.md".to_string()
+            }),
+            "OUT-OF-DOMAIN and PRESENT stays grey (0049's other state): a fix \
+             that reddens everything missing from the corpus map breaks here"
+        );
+        let Color::Red(RedReason::SelectorUnresolved { candidates }) =
+            &colors["moved-heading-src.md"]
+        else {
+            panic!(
+                "a moved heading on a page that EXISTS is still \
+                 selector-unresolved — the word is scoped, not retired. Got {:?}",
+                colors["moved-heading-src.md"]
+            );
+        };
+        assert_eq!(
+            candidates,
+            &vec!["Task".to_string()],
+            "and it carries the candidate list that the absent case structurally \
+             cannot — which is why the two worlds needed two words"
+        );
+        assert_eq!(
+            colors["green-src.md"],
+            Color::Green,
+            "an in-domain pin at its live token still reads green"
+        );
+        assert_eq!(
+            colors["drift-src.md"],
+            Color::Red(RedReason::Drifted),
+            "in-domain drift is still red — hiding it behind absence would be \
+             the same collapse in the other direction"
+        );
+    }
+
+    /// Without a disk the corpus cannot say, and cannot-say must not become a
+    /// red: the pre-0049 verdict stands rather than a guess — the mirror of
+    /// `a_corpus_with_no_domain_colours_exactly_as_before`.
+    ///
+    /// The no-fire control for the arm above: same absent in-domain target,
+    /// same run shape, and the ONLY variable removed is the disk.
+    #[test]
+    fn a_corpus_with_no_disk_never_mints_an_absence_it_did_not_measure() {
+        let token = live_token("# Task\n\nbody v1\n");
+        let mut docs = BTreeMap::new();
+        docs.insert(
+            "src.md".to_string(),
+            doc(&format!("# S\n\n{}\n", chain_block("in-gone", &token))),
+        );
+        let domain = Excluding(&[]);
+        let corpus = model::RootedCorpus::ambient(&docs).with_hash_domain(&domain);
+        let rows = lock_pin_colors_rooted(&corpus, &addr::MountSet::default());
+        assert_eq!(
+            color_reason(&rows[0].color),
+            Some("selector-unresolved"),
+            "no disk supplied ⇒ no measured absence ⇒ no file-not-found: {:?}",
             rows[0].color
         );
     }
