@@ -14,6 +14,12 @@
 #     correctly under concurrent pipelines. A shared target dir would race:
 #     a parallel build of another commit deletes test binaries between build
 #     and run, so target dirs stay inside the per-pipeline workspace.
+#   - sccache shards its disk cache PER LANE under the same host mount: a
+#     disk cache is single-server, and the lanes run concurrently. The shard
+#     survives pipelines — that cross-pipeline reuse is the point — and a
+#     rare same-lane overlap of two pipelines degrades to a cache miss,
+#     never a wrong artifact (entries are content-addressed and decoded on
+#     read). sccache wraps COMPILES only; linking is mold's job (RUSTFLAGS).
 #   - Root lanes share the workspace ./target; cargo's build-dir flock
 #     serializes their compiles (flock works across containers on one host).
 #   - The test lane runs as a non-root user in its own ./target-ci, so
@@ -28,8 +34,13 @@ labels:
   hostname: workstation-nyc-2
 
 variables:
-  # Rolling stable — parity with the GH lane's dtolnay/rust-toolchain@stable.
-  - &rust_image "rust:1"
+  # Local image, built from Dockerfile.ci on the runner and referenced with
+  # pull: false on every step. It bakes the old per-lane setup (rustfmt/clippy
+  # components, python3-yaml, mold, cargo-deny, sccache) so pipelines start at
+  # the verdict. The toolchain still tracks stable — parity with the GH lane's
+  # dtolnay/rust-toolchain@stable — but moves by image rebuild + tag bump
+  # here, not by a floating pull at CI time.
+  - &rust_image "meridian-ci:2026-08-10"
   - &cargo_home /ci-cache/meridian-rs/cargo
   # Cap per-lane build parallelism. cargo's jobserver is shared with the cc
   # crate, so this also bounds the parallel cc1plus instances compiling the
@@ -37,15 +48,20 @@ variables:
   # 58 GB runner, two lanes building DuckDB concurrently OOM-killed cc1plus
   # (pipeline #20: "error: Killed signal terminated program cc1plus").
   - &build_jobs "8"
+  # Cap per-lane sccache shard. The bundled-DuckDB objects dominate a warm
+  # shard; 30G is ~10x that. If --show-stats shows evictions, raise the test
+  # shard first — it holds the most profile variants.
+  - &sccache_size "30G"
 
 steps:
   # The suite.
   #
-  # The frontmatter tests cross-validate the engine's YAML against PyYAML.
-  # The fs permission tests build "unreadable" fixtures with chmod, and root
-  # bypasses permission bits — so run cargo as a created non-root user.
-  # setpriv preserves PATH and CARGO_* (no PAM, no env reset). The mount
-  # tests also precondition an existing XDG base dir ($HOME/.config).
+  # The frontmatter tests cross-validate the engine's YAML against PyYAML
+  # (python3-yaml is in the image). The fs permission tests build
+  # "unreadable" fixtures with chmod, and root bypasses permission bits — so
+  # run cargo as a created non-root user. setpriv preserves PATH and CARGO_*
+  # (no PAM, no env reset). The mount tests also precondition an existing XDG
+  # base dir ($HOME/.config).
   #
   # CARGO_PROFILE_TEST_DEBUG=0: mrd and every mrd test binary statically
   # embed bundled libduckdb; duplicated debug info is the bulk of the target
@@ -54,38 +70,64 @@ steps:
   - name: test (cargo test --workspace --locked)
     depends_on: []
     image: *rust_image
+    pull: false
     environment:
       CARGO_HOME: *cargo_home
       CARGO_TARGET_DIR: target-ci
       CARGO_PROFILE_TEST_DEBUG: "0"
       CARGO_BUILD_JOBS: *build_jobs
+      # Fresh target dir per pipeline: incremental state would be pure write
+      # overhead. sccache (below) is the cross-pipeline reuse mechanism.
+      CARGO_INCREMENTAL: "0"
+      # RUSTC_WRAPPER caches rustc; the CC/CXX wrappers cache the
+      # bundled-DuckDB cc1plus compiles (the cc crate splits wrapper+command).
+      # Per-lane SCCACHE_DIR shard — see the header.
+      RUSTC_WRAPPER: sccache
+      SCCACHE_DIR: /ci-cache/sccache/test
+      SCCACHE_CACHE_SIZE: *sccache_size
+      CC: "sccache cc"
+      CXX: "sccache c++"
+      # mold over GNU ld: this lane links many binaries that statically embed
+      # libduckdb. mold is in the image; bookworm's gcc 12 accepts
+      # -fuse-ld=mold.
+      RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
     commands:
-      - apt-get -qq update && apt-get -qq install -y python3-yaml
       - useradd -m ci
-      - mkdir -p /home/ci/.config target-ci "$CARGO_HOME"
+      - mkdir -p /home/ci/.config target-ci "$CARGO_HOME" "$SCCACHE_DIR"
       # chown the sources but NOT ./target — the root lanes write it
       # concurrently, and a recursive chown over a churning tree fails on
       # paths that vanish mid-walk.
       - find . -mindepth 1 -maxdepth 1 ! -name 'target*' -exec chown -R ci:ci {} +
-      - chown ci:ci . target-ci && chown -R ci:ci "$CARGO_HOME" /home/ci
+      - chown ci:ci . target-ci && chown -R ci:ci "$CARGO_HOME" "$SCCACHE_DIR" /home/ci
       - setpriv --reuid=ci --regid=ci --init-groups env HOME=/home/ci cargo test --workspace --locked
+      # Hit rates in the log make cache regressions diagnosable; the sccache
+      # server is ci's, so ask it as ci.
+      - setpriv --reuid=ci --regid=ci --init-groups env HOME=/home/ci sccache --show-stats || true
 
   - name: fmt (cargo fmt --all --check)
     depends_on: []
     image: *rust_image
+    pull: false
     commands:
-      - rustup component add rustfmt
       - cargo fmt --all --check
 
   - name: clippy (workspace lint policy, escalated)
     depends_on: []
     image: *rust_image
+    pull: false
     environment:
       CARGO_HOME: *cargo_home
       CARGO_BUILD_JOBS: *build_jobs
+      CARGO_INCREMENTAL: "0"
+      RUSTC_WRAPPER: sccache
+      SCCACHE_DIR: /ci-cache/sccache/clippy
+      SCCACHE_CACHE_SIZE: *sccache_size
+      CC: "sccache cc"
+      CXX: "sccache c++"
+      RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
     commands:
-      - rustup component add clippy
       - cargo clippy --workspace --all-targets --locked -- -D warnings
+      - sccache --show-stats || true
 
   # The perf lane's targets are feature-gated, so --all-targets above skips
   # them. Lint them here so they cannot bit-rot: this COMPILES the asserts, it
@@ -96,11 +138,18 @@ steps:
   - name: clippy the perf-gated targets (compiled here, never run)
     depends_on: []
     image: *rust_image
+    pull: false
     environment:
       CARGO_HOME: *cargo_home
       CARGO_BUILD_JOBS: *build_jobs
+      CARGO_INCREMENTAL: "0"
+      RUSTC_WRAPPER: sccache
+      SCCACHE_DIR: /ci-cache/sccache/clippy-perf
+      SCCACHE_CACHE_SIZE: *sccache_size
+      CC: "sccache cc"
+      CXX: "sccache c++"
+      RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
     commands:
-      - rustup component add clippy
       - |
         set -eu
         found=0
@@ -122,18 +171,19 @@ steps:
         # A wrong path returns zero targets silently; refuse that.
         test "$found" -gt 0 || { echo "no perf-gated targets discovered — the discovery is broken, not the repo"; exit 1; }
         echo "linted $found perf-gated targets"
+      - sccache --show-stats || true
 
   # deny.toml enforces the fork one-copy law, licenses, and sources — parity
-  # with the GH lane's cargo-deny-action. binstall = prebuilt binary, no
-  # compile; installed container-local so the shared cache is never written.
+  # with the GH lane's cargo-deny-action. cargo-deny is baked into the image
+  # (Dockerfile.ci), so the lane is one command; the advisory DB still caches
+  # in the shared CARGO_HOME.
   - name: "deny (cargo-deny: bans, licenses, sources, advisories)"
     depends_on: []
     image: *rust_image
+    pull: false
     environment:
       CARGO_HOME: *cargo_home
     commands:
-      - wget -q -O- "https://github.com/cargo-bins/cargo-binstall/releases/latest/download/cargo-binstall-$(uname -m)-unknown-linux-musl.tgz" | tar -xz -C /usr/local/bin
-      - cargo binstall -y --install-path /usr/local/bin cargo-deny
       # The advisory-db cache in shared CARGO_HOME ends up owned by the test
       # lane's ci user (uid 1000); cargo-deny shells out to the git CLI as
       # root, which refuses another user's repo ("dubious ownership"). The
@@ -144,12 +194,24 @@ steps:
   # Harness bit-rot catches, not perf gates: one iteration per bench target,
   # then render the live claims table into the CI log. Wall-time numbers are
   # NEVER gated in this lane — that stays perf.yml's job.
+  # bench-report runs --release so it reuses the bench-profile artifacts
+  # `cargo bench` just compiled (bench inherits release); a dev-profile run
+  # would rebuild the same dep tree a second time.
   - name: bench smoke + claim verdicts (perfsuite harness)
     depends_on: []
     image: *rust_image
+    pull: false
     environment:
       CARGO_HOME: *cargo_home
       CARGO_BUILD_JOBS: *build_jobs
+      CARGO_INCREMENTAL: "0"
+      RUSTC_WRAPPER: sccache
+      SCCACHE_DIR: /ci-cache/sccache/bench
+      SCCACHE_CACHE_SIZE: *sccache_size
+      CC: "sccache cc"
+      CXX: "sccache c++"
+      RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
     commands:
       - cargo bench -p perfsuite --locked -- --test
-      - cargo run --locked -p perfsuite --bin bench-report
+      - cargo run --locked --release -p perfsuite --bin bench-report
+      - sccache --show-stats || true
