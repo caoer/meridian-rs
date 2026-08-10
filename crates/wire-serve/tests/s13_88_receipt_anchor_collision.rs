@@ -13,7 +13,7 @@
 //! says what the engine decided, and the defect was that the decision came
 //! after the write.
 
-use wire::{Edit, EditShape, Path as WPath, PutAt, ReceiptAddr, ResponseBody, SecRef};
+use wire::{Edit, EditShape, NodeRev, Path as WPath, PutAt, ReceiptAddr, ResponseBody, SecRef};
 use wire_serve::write::{SpliceArgs, splice};
 
 const PLAN: &str = "# Goals\n\n## Q4\n\n- item one\n";
@@ -36,7 +36,18 @@ fn read(root: &fs::WorkspaceRoot, rel: &str) -> String {
 }
 
 /// One append under `Goals › Q4`, receipted at `receipts.md#^anchor`.
+/// A stale token: well-formed, and not any node's. Same value and same reason
+/// as `u11_mismatch_ladder.rs`, which pins that it reaches `cas_mismatch`.
+const STALE_REV: &str = "0000000000000000";
+
+/// The six original cases send an unguarded edit; `args_guarded` is the same
+/// request with a node-grain guard attached, so one request can carry BOTH a
+/// colliding anchor and a stale guard.
 fn args(anchor: &str, dry: bool) -> SpliceArgs {
+    args_guarded(anchor, dry, None)
+}
+
+fn args_guarded(anchor: &str, dry: bool, if_node_rev: Option<NodeRev>) -> SpliceArgs {
     SpliceArgs {
         id: Some(1),
         origin: wire_serve::guard::Origin::InProcess,
@@ -67,7 +78,7 @@ fn args(anchor: &str, dry: bool) -> SpliceArgs {
                 at: PutAt::End,
                 text: "\n- new item".to_string(),
             },
-            if_node_rev: None,
+            if_node_rev,
         }],
         plan_edits: Vec::new(),
         pin: None,
@@ -184,4 +195,77 @@ fn an_anchor_outside_the_block_id_charset_refuses_byte_untouched() {
     assert_eq!(err.code, wire::ErrorCode::BadRequest);
     assert_eq!(read(&root, "plan.md"), PLAN);
     assert_eq!(read(&root, "receipts.md"), RECEIPTS);
+}
+
+/// §6.6 vs §5.1 — THE PRECEDENCE, which the contract declares in prose and no
+/// test held until this one.
+///
+/// §6.6 says the receipt anchor is resolved **FIRST**. That is a claim about
+/// ordering against the OTHER guards, and the six cases above cannot see it:
+/// every one of them sends `if_node_rev: None`, so nothing else is competing to
+/// refuse. Until this case, the only place in the workspace where the ordering
+/// was observable was `crates/registry/tests/v3_key_set_pins.rs:606` — BY
+/// ACCIDENT, and it read the ordering as a failure. Giving that fixture its own
+/// anchor (the sibling half of this change) removes that accidental witness, so
+/// the ordering would have been left unheld by anything.
+///
+/// ⛔ THE CONTROL ARM IS LOAD-BEARING, NOT DECORATION. `bad_request` is also
+/// what a MALFORMED rev would earn, so asserting it alone would pass whether or
+/// not the anchor won — the assertion would be vacuous and would still be green
+/// if the precedence inverted tomorrow. The free-anchor arm proves this exact
+/// rev genuinely reaches the CAS and refuses `cas_mismatch`, so the collision
+/// arm's `bad_request` can only be the anchor arriving first.
+#[test]
+fn a_colliding_anchor_outranks_a_stale_node_guard_in_the_same_request() {
+    let stale = Some(NodeRev(STALE_REV.to_string()));
+
+    // CONTROL — free anchor, same stale guard: the guard IS reached and refuses
+    // at node grain. Without this, the assertion below proves nothing.
+    let (_dc, root_c) = ws(Some(RECEIPTS));
+    let err_c = splice(
+        &root_c,
+        None,
+        &args_guarded("r-free", false, stale.clone()),
+        &[],
+        None,
+    )
+    .expect_err("a stale node guard refuses");
+    assert_eq!(
+        err_c.code,
+        wire::ErrorCode::CasMismatch,
+        "CONTROL: under a FREE anchor this rev must reach the node-grain guard, \
+         or the collision arm below is vacuous: {:?}",
+        err_c.message
+    );
+
+    // SUBJECT — same stale guard, but the anchor collides. §6.6 must win.
+    let (_d, root) = ws(Some(RECEIPTS));
+    let before_plan = read(&root, "plan.md");
+    let before_receipts = read(&root, "receipts.md");
+
+    let err = splice(&root, None, &args_guarded("r-dup", false, stale), &[], None)
+        .expect_err("a colliding receipt anchor refuses");
+
+    assert_eq!(
+        err.code,
+        wire::ErrorCode::BadRequest,
+        "§6.6 resolves the anchor FIRST, so the collision outranks the stale \
+         node guard — cas_mismatch here means the preflight moved after the CAS: {:?}",
+        err.message
+    );
+    assert_eq!(err.recovery, wire::Recovery::Fix);
+    let msg = err.message.as_deref().expect("the refusal teaches");
+    assert!(
+        msg.contains("^r-dup") && msg.contains("§6.6"),
+        "the refusal names the anchor and the law it enforces: {msg}"
+    );
+
+    // Same discipline as the rest of this file: the decision is pinned on BYTES,
+    // because the defect this suite exists for was a refusal that had written.
+    assert_eq!(read(&root, "plan.md"), before_plan, "plan.md moved a byte");
+    assert_eq!(
+        read(&root, "receipts.md"),
+        before_receipts,
+        "receipts.md moved a byte"
+    );
 }

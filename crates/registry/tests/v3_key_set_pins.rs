@@ -602,7 +602,20 @@ fn the_cas_mismatch_error_key_set_is_pinned() {
     );
 
     // The same guard replayed: the section rev moved under it.
-    let stale_retry = conn.call(&write);
+    //
+    // The anchor is FRESH on the retry, and that is load-bearing rather than
+    // cosmetic. `guarded_write` hardcodes `r-000042`, which the first call above
+    // committed into the receipt file — so replaying the request verbatim also
+    // replays the anchor, and §6.6 resolves that collision FIRST and refuses
+    // `bad_request` before the stale rev this test exists to pin is ever
+    // reached. A fresh anchor per write is the engine's own rule
+    // (`crates/realise/src/lib.rs` mints one per attempt) and `r-000043` is
+    // `crates/wire/tests/contract_v2.rs:559`'s convention for exactly this.
+    // The ordering itself is pinned by
+    // `crates/wire-serve/tests/s13_88_receipt_anchor_collision.rs`, not here.
+    let mut stale = write.clone();
+    stale["receipt"]["anchor"] = json!("r-000043");
+    let stale_retry = conn.call(&stale);
     assert_eq!(
         stale_retry["error"]["code"],
         json!("cas_mismatch"),
