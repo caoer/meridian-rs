@@ -20,6 +20,10 @@
 #     rare same-lane overlap of two pipelines degrades to a cache miss,
 #     never a wrong artifact (entries are content-addressed and decoded on
 #     read). sccache wraps COMPILES only; linking is mold's job (RUSTFLAGS).
+#   - The workspace is SHARED: any lane that writes a TRACKED file races
+#     every lane that reads the tree (build_identity asserts tree state —
+#     pipeline #25). Lanes may write only untracked paths: target dirs,
+#     /tmp, the /ci-cache mount.
 #   - Root lanes share the workspace ./target; cargo's build-dir flock
 #     serializes their compiles (flock works across containers on one host).
 #   - The test lane runs as a non-root user in its own ./target-ci, so
@@ -99,10 +103,19 @@ steps:
       # paths that vanish mid-walk.
       - find . -mindepth 1 -maxdepth 1 ! -name 'target*' -exec chown -R ci:ci {} +
       - chown ci:ci . target-ci && chown -R ci:ci "$CARGO_HOME" "$SCCACHE_DIR" /home/ci
-      - setpriv --reuid=ci --regid=ci --init-groups env HOME=/home/ci cargo test --workspace --locked
+      # --no-fail-fast: one failing test binary must not trade away the other
+      # binaries' verdicts (pipeline #25 lost ~80% of the suite's evidence to
+      # a single red binary). bash for pipefail — tee must not mask cargo's
+      # exit code.
+      - setpriv --reuid=ci --regid=ci --init-groups env HOME=/home/ci bash -o pipefail -c 'cargo test --workspace --locked --no-fail-fast 2>&1 | tee /tmp/suite.log'
+      # An exit code is not a verdict. A serial run once exited red with ZERO
+      # test output (kernel OOM-killed the compiler); demand evidence lines.
+      - test "$(grep -c '^test result' /tmp/suite.log)" -gt 0
       # Hit rates in the log make cache regressions diagnosable; the sccache
-      # server is ci's, so ask it as ci.
-      - setpriv --reuid=ci --regid=ci --init-groups env HOME=/home/ci sccache --show-stats || true
+      # server is ci's, so ask it as ci. Stats must not gate the suite's
+      # verdict, but their absence must be loud — a wedged shard degrades to
+      # silent 0% hits, not to an error.
+      - setpriv --reuid=ci --regid=ci --init-groups env HOME=/home/ci sccache --show-stats || echo "WARNING sccache stats unavailable — caching may be inoperative"
 
   - name: fmt (cargo fmt --all --check)
     depends_on: []
@@ -127,7 +140,7 @@ steps:
       RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
     commands:
       - cargo clippy --workspace --all-targets --locked -- -D warnings
-      - sccache --show-stats || true
+      - sccache --show-stats || echo "WARNING sccache stats unavailable — caching may be inoperative"
 
   # The perf lane's targets are feature-gated, so --all-targets above skips
   # them. Lint them here so they cannot bit-rot: this COMPILES the asserts, it
@@ -171,7 +184,7 @@ steps:
         # A wrong path returns zero targets silently; refuse that.
         test "$found" -gt 0 || { echo "no perf-gated targets discovered — the discovery is broken, not the repo"; exit 1; }
         echo "linted $found perf-gated targets"
-      - sccache --show-stats || true
+      - sccache --show-stats || echo "WARNING sccache stats unavailable — caching may be inoperative"
 
   # deny.toml enforces the fork one-copy law, licenses, and sources — parity
   # with the GH lane's cargo-deny-action. cargo-deny is baked into the image
@@ -220,4 +233,4 @@ steps:
       # #25 — a race the bench lane won only when its cache was warm). The
       # table still prints to stdout for the CI log.
       - cargo run --locked --release -p perfsuite --bin bench-report -- --results target/ci-results
-      - sccache --show-stats || true
+      - sccache --show-stats || echo "WARNING sccache stats unavailable — caching may be inoperative"
