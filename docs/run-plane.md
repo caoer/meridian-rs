@@ -806,6 +806,93 @@ before the boundary**; a face left with prose can only match strings. One engine
 one refusal vocabulary: a door that reads it and a door that destroys it is the
 asymmetry this closes.
 
+**A controlled failure exit SPEAKS** (docs-first, 2026-08-10). The clause above
+gives a refusal that reaches `CommitLeg` a typed class. A run can fail without
+ever reaching one, and until now those exits left through `mrd::run`'s `Err(Fail)`
+arm with prose on stderr and **nothing at all on stdout**. That is the same
+disease one door over: a consumer saw a nonzero exit and an absent trace, and
+could not tell a deliberate, fully-understood refusal from a process killed
+mid-write. The two need different remedies — one is the caller's to fix, the
+other must never be resent — so a surface that cannot separate them is not an
+inconvenience, it is a correctness hole at the seam.
+
+**What is CONTROLLED — the definition, not a list.** A failure exit is
+controlled when the process reaches its own exit door under its own control.
+`mrd` has exactly one such door — `mrd::run`, whose `Err(Fail)` arm prints the
+diagnostic and returns `fail.code`; there is no `std::process::exit` and no
+`abort` anywhere in `crates/`. So inside this engine controllability is not a
+discriminator between paths: **every** failure of `mrd` is controlled, and
+controllability discriminates the engine from whatever killed it. What a
+controlled exit may SAY is then decided by two further questions, both
+answerable at the site by a reader writing a new path:
+
+1. **Does it hold the trace's premise?** `ScriptTrace`'s first field is
+   `entry_fingerprint`, the §4.7 value the whole run is consistent with. A path
+   that failed before minting one has no premise, and a synthesized premise would
+   mint a fact — the thing this module's assembler is built never to do. Such a
+   path may not speak a trace, and its silence is contracted below.
+2. **Does it know what the splice did?** A path holding the premise MUST speak,
+   and what it may assert about the workspace is bounded by what it knows: a
+   request that was never sent knows nothing landed; a request sent whose answer
+   never arrived knows nothing either way, and must say so.
+
+**The absence contract — what the survivor may rely on.** The obituary belongs
+to the survivor, so the contract states what absence MEANS rather than leaving a
+consumer to mint a convention:
+
+- **Nonzero exit + a trace on stdout** — the engine answered. Every claim in it
+  is the engine's, including `fault.recovery`.
+- **Exit exactly 2 + empty stdout** — a controlled exit taken before the entry
+  fingerprint existed: a bad invocation, an unreadable script, an unresolvable
+  workspace, or no daemon to answer. **Nothing was armed, no splice was issued,
+  and the workspace is unchanged** — this is a guarantee, not a likelihood. The
+  diagnostic on stderr is a rendering for an operator, and no consumer needs to
+  parse it to act.
+- **Any other nonzero exit with an absent trace** — the engine did not choose
+  this exit. It cannot promise its own obituary, so the consumer classifies from
+  the observable pair and the class is `resync`: a splice already on the wire is
+  the daemon's to finish, so re-read, never resend. `--dry` narrows it to
+  `retry`, because a rehearsal writes nothing and could not have committed.
+
+The second bullet is what the change BUYS, and it is worth stating as the
+reason: today `exit 2 + empty stdout` spans both a provably-nothing-sent refusal
+and a possibly-landed commit whose answer was lost, so it licenses no conclusion
+at all. Once the premise-holding doors speak, that pair means exactly one thing
+and the guarantee in it becomes true.
+
+**A lost commit answer states its indeterminacy; it does not resolve it.** Of the
+premise-holding doors, some sent nothing (`splice` refused with no error body) and
+some cannot know (`splice` never answered; a frame that would not parse; an `ok`
+carrying no body). The first kind is an ordinary engine-minted refusal and takes
+its class from the reading above. The second kind may not use `no_effect`,
+`conflict` or a bare `refused`, because **all three assert that nothing landed**,
+and that assertion would be a fabrication aimed at the caller's own file. It
+carries `recovery: resync` — the class the consumer already dispatches on for a
+killed engine — and, because `refused` alone reads as "nothing was applied", the
+trace states the indeterminacy in band rather than in prose. Prose stays a
+rendering here too: a consumer that needs to know whether it may resend reads the
+class, never the sentence. `--dry` is `retry` on the same reading as the killed
+path — a rehearsal that lost its answer provably committed nothing.
+
+The shape, spelled: `outcome: refused` with `fault.class: refused`,
+`fault.recovery: resync` (or `retry` under `--dry`), no `fault.code` — no frame
+minted one — and **`commit_unknown: true`**, a boolean present exactly when a
+splice was issued and its outcome is not known. The field exists because
+`commit`'s ABSENCE is already spoken for: it means no splice was issued, so a
+lost answer that merely omitted the leg would read as the read-class path. It is
+a field and not a sixth outcome word, and not a fifth fault class, on the
+preceding clause's own reasoning one axis over: **committed-or-not-known is a
+PROPERTY of a run, not a KIND of outcome.** A sixth word would break every
+consumer matching the closed five; a fifth class would break every consumer
+matching `refused`. These doors leave through the findings leg — **exit 1**, with
+`conflict`, `fault` and `refused` — which is also what makes the exit-2 guarantee
+above true, since exit 2 is documented as the bad-invocation leg and a lost
+commit answer is not a bad invocation.
+
+**The migration is ADDITIVE.** A consumer that reads a trace when stdout carries
+one is unaffected; a consumer that treated `exit 2 + empty stdout` as "the engine
+did not answer" keeps that reading, now with a guarantee behind it.
+
 **The `mrd script` human-mode face is non-normative.** The MCP host owns the
 normative text face, rendered from the trace; `mrd script --json` emitting the
 trace is the contract between them. The CLI's human mode is an operator
