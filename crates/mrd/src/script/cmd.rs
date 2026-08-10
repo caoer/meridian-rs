@@ -55,9 +55,9 @@ use effects::{
 use registry::Client;
 use serde_json::value::RawValue;
 use serde_json::{Value, json};
-use wire::{PlanEdit, ReadSel};
+use wire::{ErrorCode, PlanEdit, ReadSel, Recovery};
 
-use super::trace::{CommitLeg, ScriptOutcome, ScriptTrace};
+use super::trace::{CommitLeg, Refusal, ScriptOutcome, ScriptTrace};
 use super::wire_host::{Door, Frame, SocketDoor, WireHost};
 use crate::{Fail, Format, current_dir, engine};
 
@@ -173,11 +173,17 @@ pub(crate) fn run(door: &mut dyn Door, parsed: &Script, source: &str) -> Result<
             return Ok(ScriptTrace::assemble(
                 entry,
                 &eval,
-                CommitLeg::Refused(format!(
-                    "expect_armed_mismatch: this run armed {actual}, the caller pinned \
-                     {expected}. The armed set is not the one that was authorized, so NO \
-                     splice was issued — nothing was sent, nothing landed, no fingerprint \
-                     advanced. re-arm: run the arm leg again and gate the set it publishes"
+                // ENGINE-MINTED: no frame crossed the wire, so no §8 code — and
+                // the class is `fix`, not `retry`: re-running this exact request
+                // arms the same set and refuses again. Only the caller changes it.
+                CommitLeg::Refused(Refusal::minted(
+                    Recovery::Fix,
+                    format!(
+                        "expect_armed_mismatch: this run armed {actual}, the caller pinned \
+                         {expected}. The armed set is not the one that was authorized, so NO \
+                         splice was issued — nothing was sent, nothing landed, no fingerprint \
+                         advanced. re-arm: run the arm leg again and gate the set it publishes"
+                    ),
                 )),
             ));
         }
@@ -188,12 +194,15 @@ pub(crate) fn run(door: &mut dyn Door, parsed: &Script, source: &str) -> Result<
     // and the refusal is the whole answer. Without this the last leg of the
     // entry was the one leg no clock touched.
     let leg = if Instant::now() > deadline {
-        CommitLeg::Refused(
+        // ENGINE-MINTED: nothing was sent, so the same request may succeed on a
+        // faster world — the §8 reading of `retry`, named here because no frame
+        // named it for us.
+        CommitLeg::Refused(Refusal::minted(
+            Recovery::Retry,
             "the script entry's wall clock elapsed before the commit was issued — the armed \
              edits were never sent, nothing landed, and no fingerprint advanced. re-run: the \
-             reads that ran cost the budget"
-                .to_owned(),
-        )
+             reads that ran cost the budget",
+        ))
     } else {
         commit(door, parsed, &eval, &entry)?
     };
@@ -392,7 +401,7 @@ fn commit(
         (false, _, Some(error)) if is_mismatch(&error) => Ok(CommitLeg::Conflict(error)),
         // Every other refusal is a refusal, not a fault, and its message is the
         // engine's own.
-        (false, _, Some(error)) => Ok(CommitLeg::Refused(refusal_reason(&error))),
+        (false, _, Some(error)) => Ok(CommitLeg::Refused(refusal_of(&error))),
         (false, _, None) => Err(Fail::tool(format!(
             "`splice` refused with no error body: {}",
             line.trim()
@@ -409,8 +418,43 @@ fn is_mismatch(error: &RawValue) -> bool {
         .is_some_and(|code| code == "fingerprint_mismatch")
 }
 
+/// The wire's refusal triple, carried across the boundary TYPED: the §8 `code`,
+/// the closed `recovery` class, and the engine's own wording.
+///
+/// `recovery` has ONE source and a stated precedence — the frame's own field
+/// first, because the daemon is the authority on the refusal it minted; on a
+/// frame that carries none, the §8 frozen table's binding for the code
+/// ([`wire::ErrorCode::recovery`]), which is that same source read a second way
+/// and never a second table. Neither available is absence, not a guess.
+fn refusal_of(error: &RawValue) -> Refusal {
+    let parsed: Option<Value> = serde_json::from_str(error.get()).ok();
+    let field = |name: &str| -> Option<String> {
+        parsed
+            .as_ref()
+            .and_then(|e| e.get(name))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    };
+    let code = field("code");
+    let recovery = field("recovery")
+        .and_then(|class| serde_json::from_value::<Recovery>(Value::String(class)).ok())
+        .or_else(|| {
+            code.as_ref().and_then(|code| {
+                serde_json::from_value::<ErrorCode>(Value::String(code.clone()))
+                    .ok()
+                    .map(ErrorCode::recovery)
+            })
+        });
+    Refusal {
+        code,
+        recovery,
+        reason: refusal_reason(error),
+    }
+}
+
 /// The engine's own refusal wording, carried verbatim into the fault reason —
-/// re-phrasing it here would fork the text in two places.
+/// re-phrasing it here would fork the text in two places. It is a RENDERING of
+/// the refusal; the class rides `Refusal::recovery`, never this string.
 fn refusal_reason(error: &RawValue) -> String {
     let parsed: Option<Value> = serde_json::from_str(error.get()).ok();
     let field = |name: &str| -> Option<String> {
