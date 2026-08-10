@@ -2910,7 +2910,10 @@ enum FmValueScope<'a> {
 /// own line slots (§ A.6.3a′ lowers `set_property` through `at:"all"` carrying an
 /// already-encoded line), so they stay raw. Encoding or refusing there would
 /// break `set_property`. `at:"upsert"` already encodes on its own path.
-fn fm_value_scope<'a>(upsert_key: &Option<String>, edit: &'a EditShape) -> Option<FmValueScope<'a>> {
+fn fm_value_scope<'a>(
+    upsert_key: &Option<String>,
+    edit: &'a EditShape,
+) -> Option<FmValueScope<'a>> {
     upsert_key.as_ref()?;
     match edit {
         EditShape::Put {
@@ -3071,41 +3074,43 @@ fn model_edits_and_before_facts(
                     scope,
                 )?,
                 None => match &edit.edit {
-                EditShape::Match { old, new } => model::EditKind::Match {
-                    old: syntax::strip_fp(old).into_owned(),
-                    new: new.clone(),
-                },
-                EditShape::Put { at, text } => model::EditKind::Put {
-                    at: match at {
-                        PutAt::All => model::PutAt::All,
-                        PutAt::Content => model::PutAt::Content,
-                        PutAt::End => model::PutAt::End,
-                        PutAt::Upsert => model::PutAt::Upsert,
+                    EditShape::Match { old, new } => model::EditKind::Match {
+                        old: syntax::strip_fp(old).into_owned(),
+                        new: new.clone(),
                     },
-                    // `put{at:"upsert"}` is a VALUE-plane door (wire-contract
-                    // § A.6.3a): the caller's `text` is a flat string, so it
-                    // passes the ONE encoder `set_property` writes through and
-                    // `[[x]]` lands `"[[x]]"` instead of a nested flow
-                    // sequence the I4 law would refuse. An existing key's
-                    // stored line (the non-empty before span) feeds § A.6.3c,
-                    // so a write-back of the served value keeps the stored
-                    // spelling. The model kernel below stays raw-grain — the
-                    // run plane's `md.set_field` rides `plan_fm_upsert` with
-                    // whole-value grains that must land as sent.
-                    text: if matches!(at, PutAt::Upsert) {
-                        let stored_line = before_facts
-                            .last()
-                            .filter(|t| t.span.start < t.span.end)
-                            .map(|t| &doc.raw[t.span.clone()]);
-                        policy::defs::yaml_preserve_or_encode(stored_line, text).map_err(|_| {
-                            bad_request(multi_line_value_refusal(
-                                upsert_key.as_deref().unwrap_or(""),
-                            ))
-                        })?
-                    } else {
-                        text.clone()
+                    EditShape::Put { at, text } => model::EditKind::Put {
+                        at: match at {
+                            PutAt::All => model::PutAt::All,
+                            PutAt::Content => model::PutAt::Content,
+                            PutAt::End => model::PutAt::End,
+                            PutAt::Upsert => model::PutAt::Upsert,
+                        },
+                        // `put{at:"upsert"}` is a VALUE-plane door (wire-contract
+                        // § A.6.3a): the caller's `text` is a flat string, so it
+                        // passes the ONE encoder `set_property` writes through and
+                        // `[[x]]` lands `"[[x]]"` instead of a nested flow
+                        // sequence the I4 law would refuse. An existing key's
+                        // stored line (the non-empty before span) feeds § A.6.3c,
+                        // so a write-back of the served value keeps the stored
+                        // spelling. The model kernel below stays raw-grain — the
+                        // run plane's `md.set_field` rides `plan_fm_upsert` with
+                        // whole-value grains that must land as sent.
+                        text: if matches!(at, PutAt::Upsert) {
+                            let stored_line = before_facts
+                                .last()
+                                .filter(|t| t.span.start < t.span.end)
+                                .map(|t| &doc.raw[t.span.clone()]);
+                            policy::defs::yaml_preserve_or_encode(stored_line, text).map_err(
+                                |_| {
+                                    bad_request(multi_line_value_refusal(
+                                        upsert_key.as_deref().unwrap_or(""),
+                                    ))
+                                },
+                            )?
+                        } else {
+                            text.clone()
+                        },
                     },
-                },
                 },
             },
             if_node_rev: edit

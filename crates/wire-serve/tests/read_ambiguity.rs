@@ -101,7 +101,10 @@ fn each_failure_kind_teaches_its_own_remedy_and_not_the_miss_clause() {
         .expect_err("a duplicated block id refuses");
     let dup_anchor = dup_anchor.message.as_deref().expect("message").to_owned();
 
-    assert!(dup_heading.contains(model::selector::AMBIGUITY_FIX), "{dup_heading}");
+    assert!(
+        dup_heading.contains(model::selector::AMBIGUITY_FIX),
+        "{dup_heading}"
+    );
     assert!(
         dup_anchor.contains(model::selector::ANCHOR_AMBIGUITY_FIX),
         "{dup_anchor}"
