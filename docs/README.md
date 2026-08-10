@@ -1,3 +1,12 @@
+---
+type: index
+id: index
+status: standing
+updated: 2026-08-08
+description: The corpus front door — the docs-define-law process, the standing corrections, the file inventory and the reading order.
+owns: [process, standing corrections, inventory, reading order]
+---
+
 # meridian-rs `docs/`
 
 ## Docs define law; code follows
@@ -7,6 +16,7 @@
 3. **One standing wire contract:** `wire-contract.md` only (no v2/v3 stack).
 4. **Self-contained tree.** Standing docs cite **only other files in this directory** (plus in-repo `crates/` paths for implementers). No wiki decisions, session result files, or out-of-tree markdown as authorities.
 5. **Optional log:** `worker-log.md` holds time-sensitive provenance. **Safe to delete** — design docs must read correctly without it.
+6. **Form is law too.** `doc-system.md` governs the corpus's shape: the doc-id registry, the citation grammar (`<id> §N` — bare `§N` reads as `wire §N`), one-law-one-home, anchors, and pins. It binds new writing in this directory.
 
 ## Standing corrections (always on)
 
@@ -29,6 +39,7 @@
 | File | Role |
 |---|---|
 | `README.md` | Process, standing corrections, inventory |
+| `doc-system.md` | Corpus form: doc-ids, citation grammar, one-law-one-home, anchors, pins |
 | `wire-contract.md` | Standing wire constitution |
 | `laws.md` | Architecture laws + crate charters |
 | `release.md` | What a release promises (two-key rule) + stamp/tag mechanics |
