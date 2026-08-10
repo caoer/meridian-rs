@@ -1,0 +1,41 @@
+=== SWAP: frame emission -> no-op ===
+=== CONTROL IS DIFFERENT FROM SUBJECT (cmp must report a difference) ===
+cmp: files differ (good)
+655c655
+<         json_error_frame(format, workspace, &e);
+---
+>         let _ = (format, workspace);
+=== UNFIXED: cargo test -p mrd --test json_refusal_family ===
+   Compiling mrd v1.0.0 (/Users/Shared/scratch/df1a64cc-links-b84ccf91/crates/mrd)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.17s
+     Running tests/json_refusal_family.rs (target/debug/deps/json_refusal_family-13b590a392a019d6)
+
+running 7 tests
+test control_put_serves_the_envelope ... ok
+test pin_renders_its_cause_exactly_once ... ok
+test control_read_serves_the_envelope ... ok
+test links_serves_the_envelope_when_the_corpus_read_refuses ... FAILED
+test retire_report_serves_the_envelope_on_its_corpus_leg ... ok
+test retire_mark_serves_the_envelope_on_its_splice_leg ... ok
+test pin_serves_the_envelope_on_every_refusal_leg ... ok
+
+failures:
+
+---- links_serves_the_envelope_when_the_corpus_read_refuses stdout ----
+
+thread 'links_serves_the_envelope_when_the_corpus_read_refuses' (273450599) panicked at crates/mrd/tests/json_refusal_family.rs:123:5:
+links file_not_found: served 0 stdout bytes — the absent frame IS the defect. stderr: mrd: file_not_found: no file at no-such.md under the workspace root — nothing was served and nothing was written. Fix: check the workspace-relative spelling (`results/f.md`, never absolute); a write to a missing path never births it — birth is its own door (wire `create`; `mrd new` for records).
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    links_serves_the_envelope_when_the_corpus_read_refuses
+
+test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.91s
+
+error: test failed, to rerun pass `-p mrd --test json_refusal_family`
+rc=101
+=== RESTORE ===
+restored: byte-identical
+CONTROL DONE
