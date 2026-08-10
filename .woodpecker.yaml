@@ -1,12 +1,23 @@
-# Correctness lane on the fleet runner. Steps are named so a red pipeline names
-# its own defect instead of saying "test failed".
+# Correctness lane on the fleet runner. Steps are named so a red pipeline
+# names its own defect instead of saying "test failed".
 #
-# STEP ORDER IS LOAD-BEARING: the measuring step (`test`) runs FIRST, before any
-# linter. Woodpecker aborts the remaining steps when one fails, and an aborted
-# step renders as SKIPPED — which reads as "no news" rather than "not measured".
-# A linter ahead of the tests therefore converts every style nit into an unknown
-# test verdict. Tests first means the suite always produces a verdict, and a
-# lint failure can only ever add information.
+# DAG, NOT SERIAL: every step declares `depends_on: []`, so all lanes start
+# together and each always produces its own verdict. The previous revision
+# ordered tests first because a serial pipeline aborts the remaining steps on
+# the first failure — a lint nit converted the test verdict into SKIPPED. The
+# DAG removes that coupling structurally: no verdict can mask another, and a
+# new lane cannot reintroduce the problem by being inserted in the wrong slot.
+#
+# What makes the parallelism safe:
+#   - CARGO_HOME shares ONLY the registry/git cache (host /var/cache/ci via
+#     the agent's WOODPECKER_BACKEND_DOCKER_VOLUMES) — cargo locks it
+#     correctly under concurrent pipelines. A shared target dir would race:
+#     a parallel build of another commit deletes test binaries between build
+#     and run, so target dirs stay inside the per-pipeline workspace.
+#   - Root lanes share the workspace ./target; cargo's build-dir flock
+#     serializes their compiles (flock works across containers on one host).
+#   - The test lane runs as a non-root user in its own ./target-ci, so
+#     root-owned artifacts and the ci user's builds never collide.
 #
 # Event filter is workflow-level: every step inherits it, so a new step cannot
 # be added without one.
@@ -17,41 +28,51 @@ labels:
   hostname: workstation-nyc-2
 
 variables:
-  # Share only the registry/git cache — cargo locks it correctly under
-  # concurrent pipelines. A shared target dir races: a parallel build of
-  # another commit deletes test binaries between build and run.
+  # Rolling stable — parity with the GH lane's dtolnay/rust-toolchain@stable.
+  - &rust_image "rust:1"
   - &cargo_home /ci-cache/meridian-rs/cargo
 
 steps:
-  # The suite. Runs first and unconditionally, so its verdict is never traded
-  # away for a linter's. See the header.
+  # The suite.
   #
   # The frontmatter tests cross-validate the engine's YAML against PyYAML.
   # The fs permission tests build "unreadable" fixtures with chmod, and root
   # bypasses permission bits — so run cargo as a created non-root user.
-  # setpriv preserves PATH and CARGO_HOME (no PAM, no env reset). The mount
+  # setpriv preserves PATH and CARGO_* (no PAM, no env reset). The mount
   # tests also precondition an existing XDG base dir ($HOME/.config).
+  #
+  # CARGO_PROFILE_TEST_DEBUG=0: mrd and every mrd test binary statically
+  # embed bundled libduckdb; duplicated debug info is the bulk of the target
+  # dir (it SIGBUS'd rust-lld on the GH runners). Env var, NOT a Cargo.toml
+  # [profile] edit — local dev builds keep full debug.
   - name: test (cargo test --workspace --locked)
-    image: rust:1
+    depends_on: []
+    image: *rust_image
     environment:
       CARGO_HOME: *cargo_home
+      CARGO_TARGET_DIR: target-ci
+      CARGO_PROFILE_TEST_DEBUG: "0"
     commands:
       - apt-get -qq update && apt-get -qq install -y python3-yaml
       - useradd -m ci
-      - mkdir -p /home/ci/.config "$CARGO_HOME"
-      - chown -R ci:ci . "$CARGO_HOME" /home/ci
+      - mkdir -p /home/ci/.config target-ci "$CARGO_HOME"
+      # chown the sources but NOT ./target — the root lanes write it
+      # concurrently, and a recursive chown over a churning tree fails on
+      # paths that vanish mid-walk.
+      - find . -mindepth 1 -maxdepth 1 ! -name 'target*' -exec chown -R ci:ci {} +
+      - chown ci:ci . target-ci && chown -R ci:ci "$CARGO_HOME" /home/ci
       - setpriv --reuid=ci --regid=ci --init-groups env HOME=/home/ci cargo test --workspace --locked
 
   - name: fmt (cargo fmt --all --check)
-    image: rust:1
-    environment:
-      CARGO_HOME: *cargo_home
+    depends_on: []
+    image: *rust_image
     commands:
       - rustup component add rustfmt
       - cargo fmt --all --check
 
   - name: clippy (workspace lint policy, escalated)
-    image: rust:1
+    depends_on: []
+    image: *rust_image
     environment:
       CARGO_HOME: *cargo_home
     commands:
@@ -65,7 +86,8 @@ steps:
   # the hand-maintained list in .github/workflows/ci.yml was not (it had
   # already drifted: links_multiroot_cpu and sql_multiroot_cpu were missing).
   - name: clippy the perf-gated targets (compiled here, never run)
-    image: rust:1
+    depends_on: []
+    image: *rust_image
     environment:
       CARGO_HOME: *cargo_home
     commands:
@@ -91,3 +113,28 @@ steps:
         # A wrong path returns zero targets silently; refuse that.
         test "$found" -gt 0 || { echo "no perf-gated targets discovered — the discovery is broken, not the repo"; exit 1; }
         echo "linted $found perf-gated targets"
+
+  # deny.toml enforces the fork one-copy law, licenses, and sources — parity
+  # with the GH lane's cargo-deny-action. binstall = prebuilt binary, no
+  # compile; installed container-local so the shared cache is never written.
+  - name: "deny (cargo-deny: bans, licenses, sources, advisories)"
+    depends_on: []
+    image: *rust_image
+    environment:
+      CARGO_HOME: *cargo_home
+    commands:
+      - wget -q -O- "https://github.com/cargo-bins/cargo-binstall/releases/latest/download/cargo-binstall-$(uname -m)-unknown-linux-musl.tgz" | tar -xz -C /usr/local/bin
+      - cargo binstall -y --install-path /usr/local/bin cargo-deny
+      - cargo deny check
+
+  # Harness bit-rot catches, not perf gates: one iteration per bench target,
+  # then render the live claims table into the CI log. Wall-time numbers are
+  # NEVER gated in this lane — that stays perf.yml's job.
+  - name: bench smoke + claim verdicts (perfsuite harness)
+    depends_on: []
+    image: *rust_image
+    environment:
+      CARGO_HOME: *cargo_home
+    commands:
+      - cargo bench -p perfsuite --locked -- --test
+      - cargo run --locked -p perfsuite --bin bench-report
