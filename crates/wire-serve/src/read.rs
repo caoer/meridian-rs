@@ -906,7 +906,9 @@ fn composed_sections(
             } => unaddressable_fix(host, display),
             SelFail::DupAnchor { .. } => model::selector::ANCHOR_AMBIGUITY_FIX.to_owned(),
             SelFail::Ambiguous { .. } => model::selector::AMBIGUITY_FIX.to_owned(),
-            other => crate::section_recovery(&other.display(), Some(display)),
+            other @ SelFail::Miss { .. } => {
+                crate::section_recovery(&other.display(), Some(display))
+            }
         };
         e.message = Some(format!(
             "read: {} in {display}. Nothing was read and no rev was minted. {fix}",
