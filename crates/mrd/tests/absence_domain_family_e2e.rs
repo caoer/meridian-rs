@@ -37,9 +37,22 @@
 //! # The family has TWO axes, and this file drives both
 //!
 //! **CELL axis** — the table above, six worlds through `check --json`.
-//! **FACE axis** — [`every_face_says_file_not_found_about_one_absent_in_domain_target`],
-//! which drives `check --json`, `walk`, `status` and the commit gate over ONE
-//! absent cell.
+//! **FACE axis** — [`face_check_json_names_the_measured_absence`],
+//! [`face_walk_names_the_measured_absence`],
+//! [`face_status_rolls_the_absence_up_under_its_own_word`] and
+//! [`face_commit_gate_refuses_over_the_measured_absence`], sharing the
+//! [`absent_cell`] fixture.
+//!
+//! ⛔ **ONE TEST PER FACE, and that is a correction rather than a style.** The
+//! first cut asserted all four faces inside ONE test, and the r15 alarm
+//! demonstration exposed it: under a mutated engine the test refused at its
+//! FIRST assertion — `check --json` — so `walk`, `status` and the commit gate
+//! NEVER SPOKE. **The three assertions that make it a face axis were
+//! undemonstrated, and a regression in `status` alone would have been masked by
+//! `check` failing first.** That is the same aggregate-masking-a-member defect
+//! (charter 02 r9) the one-pin workspace exists to avoid, committed one level up
+//! in the fixture that invokes it. Split, each face refuses on its own line and
+//! names itself.
 //!
 //! ⭐ **Why the face axis rides ONE cell rather than all six**, stated because
 //! the alternative is a 24-assertion grid that gates nothing extra: the faces do
@@ -50,9 +63,24 @@
 //! sharing claim.** Six cells × four faces would re-measure one shared computer
 //! twenty-four times.
 //!
-//! ⛔ **That argument is stated here as a PREMISE, and the face test is what
-//! makes it FAIL LOUDLY when it stops being true.** A premise no assertion
-//! checks is a line that prints.
+//! ⛔ **That argument is stated here as a PREMISE, and the face tests are what
+//! make it FAIL LOUDLY when it stops being true.** A premise no assertion checks
+//! is a line that prints.
+//!
+//! # The alarm demonstration lives in a file, and it expires when this does
+//!
+//! Charter 02 r15 binds a detector to be SEEN REFUSING before it is believed,
+//! and broadcast 0057 sharpens it: **a demonstration is a PROPERTY, not an
+//! event, and a detector edited after its demonstration is undemonstrated
+//! again.** So the demonstration for these four faces is a re-runnable script,
+//! not a transcript that died with its session:
+//!
+//! `<session>/results/p8-absence-95e58644/r15-face-axis-alarm.sh`
+//!
+//! It restores the pre-0054 arm order in `edge_color`, asserts its own mutation
+//! target is present exactly once first, requires ALL FOUR faces to be named
+//! FAILED independently, then restores byte-identically and requires green.
+//! ⛔ **RE-RUN IT AFTER ANY EDIT TO `edge_color` OR TO THESE TESTS.**
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -339,6 +367,9 @@ fn an_absent_target_reds_file_not_found_on_both_planes_and_both_exclusion_classe
     );
 }
 
+/// The fixture the FACE axis shares: ONE pin, ONE absent target, green-path
+/// control run before the deletion.
+///
 /// **The FACE axis of the same family** — the test above drives six CELLS
 /// through ONE face, and a family has two axes.
 ///
@@ -370,8 +401,8 @@ fn an_absent_target_reds_file_not_found_on_both_planes_and_both_exclusion_classe
 /// themselves: `check` exits 0 and `walk` says nothing about absence while the
 /// target is PRESENT. **A face that only ever prints one answer proves nothing
 /// by printing it** (charter 02 r15, applied to the faces rather than the cells).
-#[test]
-fn every_face_says_file_not_found_about_one_absent_in_domain_target() {
+#[must_use]
+fn absent_cell() -> (Sandbox, PathBuf) {
     let sb = sandbox();
     let ws = sb.tmp.path().join("one-absent-cell");
     std::fs::create_dir_all(&ws).expect("mkdir");
@@ -393,9 +424,10 @@ fn every_face_says_file_not_found_about_one_absent_in_domain_target() {
     git(&ws, &["add", "-A"]);
     git(&ws, &["commit", "-qm", "pin"]);
 
-    // GREEN-PATH CONTROL on every face, BEFORE the deletion — so each face is
-    // shown able to say something OTHER than the verdict under test. A face
-    // that only ever prints one answer proves nothing by printing it.
+    // GREEN-PATH CONTROL, BEFORE the deletion — every face is shown able to say
+    // something OTHER than the verdict under test. A face that only ever prints
+    // one answer proves nothing by printing it (charter 02 r15, aimed at the
+    // faces rather than the cells).
     let clean_check = sb.run(&ws, &["check"]);
     assert_eq!(
         clean_check.status.code(),
@@ -412,33 +444,46 @@ fn every_face_says_file_not_found_about_one_absent_in_domain_target() {
 
     std::fs::remove_file(ws.join("target.md")).expect("delete target");
     assert!(!ws.join("target.md").exists(), "target.md is off the disk");
+    (sb, ws)
+}
 
-    // ── FACE 1: `check --json`, the structured door. ──
-    let check = sb.run(&ws, &["check", "--json"]);
-    let json: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&check.stdout))
-        .unwrap_or_else(|e| panic!("check --json parses: {e}\n{}", said(&check)));
+/// FACE 1 — `check --json`, the structured door.
+#[test]
+fn face_check_json_names_the_measured_absence() {
+    let (sb, ws) = absent_cell();
+    let out = sb.run(&ws, &["check", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&out.stdout))
+        .unwrap_or_else(|e| panic!("check --json parses: {e}\n{}", said(&out)));
     assert_eq!(
         pin_labels(&json).get("src.md").map(String::as_str),
         Some("red file-not-found (this workspace holds no 'target.md')"),
         "check --json: {}",
-        said(&check)
+        said(&out)
     );
-    assert_eq!(check.status.code(), Some(1), "check: {}", said(&check));
+    assert_eq!(out.status.code(), Some(1), "check: {}", said(&out));
+}
 
-    // ── FACE 2: `walk`, the per-pin human verb. ──
-    let walk = sb.run(&ws, &["walk", "src.md"]);
+/// FACE 2 — `walk`, the per-pin human verb.
+#[test]
+fn face_walk_names_the_measured_absence() {
+    let (sb, ws) = absent_cell();
+    let out = sb.run(&ws, &["walk", "src.md"]);
     assert!(
-        said(&walk).contains("red file-not-found"),
-        "WALK must name the same absence as check — the two per-pin faces share \
-         one colour computer and this is the assertion that says so: {}",
-        said(&walk)
+        said(&out).contains("red file-not-found"),
+        "WALK must name the same absence check does — the two per-pin faces \
+         share one colour computer and this is the assertion that says so: {}",
+        said(&out)
     );
-    assert_eq!(walk.status.code(), Some(1), "walk reddens: {}", said(&walk));
+    assert_eq!(out.status.code(), Some(1), "walk reddens: {}", said(&out));
+}
 
-    // ── FACE 3: `status`, the WORST-OF rollup (R26 — no per-pin grain). ──
-    let status = sb.run(&ws, &["status"]);
-    assert_eq!(status.status.code(), Some(0), "status: {}", said(&status));
-    let lock_axis = String::from_utf8_lossy(&status.stdout)
+/// FACE 3 — `status`, the WORST-OF rollup (R26 — no per-pin grain).
+#[test]
+fn face_status_rolls_the_absence_up_under_its_own_word() {
+    let (sb, ws) = absent_cell();
+    let out = sb.run(&ws, &["status"]);
+    assert_eq!(out.status.code(), Some(0), "status: {}", said(&out));
+    let lock_axis = String::from_utf8_lossy(&out.stdout)
         .lines()
         .find(|l| l.contains("lock "))
         .unwrap_or_default()
@@ -450,26 +495,30 @@ fn every_face_says_file_not_found_about_one_absent_in_domain_target() {
     assert!(
         lock_axis.starts_with("lock red "),
         "status rolls the absence up as a red: {lock_axis:?} — {}",
-        said(&status)
+        said(&out)
     );
     assert!(
         lock_axis.contains("file-not-found"),
         "and it names THIS reason, not a resolution red: {lock_axis:?} — {}",
-        said(&status)
+        said(&out)
     );
+}
 
-    // ── FACE 4: the commit gate, which is what actually stops a caller. ──
-    let gate = sb.run(&ws, &["check", "--commit-gate"]);
+/// FACE 4 — the commit gate, the only face whose verdict has CONSEQUENCES.
+#[test]
+fn face_commit_gate_refuses_over_the_measured_absence() {
+    let (sb, ws) = absent_cell();
+    let out = sb.run(&ws, &["check", "--commit-gate"]);
     assert_ne!(
-        gate.status.code(),
+        out.status.code(),
         Some(0),
         "the commit gate refuses over a pinned target that is GONE — the face \
-         whose verdict has consequences: {}",
-        said(&gate)
+         that stops a caller rather than informing one: {}",
+        said(&out)
     );
     assert!(
-        said(&gate).contains("file-not-found"),
+        said(&out).contains("file-not-found"),
         "and it refuses with the measured absence, not a resolution red: {}",
-        said(&gate)
+        said(&out)
     );
 }
