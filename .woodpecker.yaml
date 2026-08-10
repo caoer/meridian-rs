@@ -80,6 +80,9 @@ steps:
       CARGO_TARGET_DIR: target-ci
       CARGO_PROFILE_TEST_DEBUG: "0"
       CARGO_BUILD_JOBS: *build_jobs
+      # Cargo strips color on a non-TTY unless told otherwise; Woodpecker's
+      # log viewer renders ANSI. Errors arrive already highlighted.
+      CARGO_TERM_COLOR: always
       # Fresh target dir per pipeline: incremental state would be pure write
       # overhead. sccache (below) is the cross-pipeline reuse mechanism.
       CARGO_INCREMENTAL: "0"
@@ -103,6 +106,11 @@ steps:
       # paths that vanish mid-walk.
       - find . -mindepth 1 -maxdepth 1 ! -name 'target*' -exec chown -R ci:ci {} +
       - chown ci:ci . target-ci && chown -R ci:ci "$CARGO_HOME" "$SCCACHE_DIR" /home/ci
+      # Compile the test binaries in their OWN fold, so the suite's fold holds
+      # verdicts and nothing else. On green this fold is near-empty; on a
+      # compile error the diagnostics still print here, and the suite fold
+      # below is then obviously absent rather than buried.
+      - setpriv --reuid=ci --regid=ci --init-groups env HOME=/home/ci cargo test --workspace --locked --no-run -q
       # --no-fail-fast: one failing test binary must not trade away the other
       # binaries' verdicts (pipeline #25 lost ~80% of the suite's evidence to
       # a single red binary). Inner bash for pipefail — tee must not mask
@@ -115,9 +123,17 @@ steps:
       # a silently shrinking suite is the failure mode nobody watches for —
       # and a green exit with zero evidence lines is a broken harness, so it
       # fails the step.
+      #
+      # -q suppresses cargo's per-crate `Fresh`/`Running` restamp; `-- --quiet`
+      # puts libtest in one-character-per-test mode. NEITHER touches the
+      # evidence: `^test result` lines print in both modes, so the gate below
+      # counts exactly what it counted before, and a FAILING test still prints
+      # its name, its panic, and its captured output in full. The trade
+      # accepted (ZT, 2026-08-10): suite.log keeps binary-level counts, not the
+      # name of every passing test.
       - |
         set +e
-        setpriv --reuid=ci --regid=ci --init-groups env HOME=/home/ci bash -o pipefail -c 'cargo test --workspace --locked --no-fail-fast 2>&1 | tee target-ci/suite.log'
+        setpriv --reuid=ci --regid=ci --init-groups env HOME=/home/ci bash -o pipefail -c 'cargo test --workspace --locked --no-fail-fast -q -- --quiet 2>&1 | tee target-ci/suite.log'
         rc=$?
         set -e
         lines=$(grep -c '^test result' target-ci/suite.log || true)
@@ -154,8 +170,11 @@ steps:
       CC: "sccache cc"
       CXX: "sccache c++"
       RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+      CARGO_TERM_COLOR: always
     commands:
-      - cargo clippy --workspace --all-targets --locked -- -D warnings
+      # -q: a green lane prints NOTHING, so an empty fold is the verdict and
+      # costs no scan. A red lane still prints every diagnostic.
+      - cargo clippy -q --workspace --all-targets --locked -- -D warnings
       - sccache --show-stats || echo "WARNING sccache stats unavailable — caching may be inoperative"
 
   # The perf lane's targets are feature-gated, so --all-targets above skips
@@ -178,6 +197,7 @@ steps:
       CC: "sccache cc"
       CXX: "sccache c++"
       RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+      CARGO_TERM_COLOR: always
     commands:
       - |
         set -eu
@@ -193,7 +213,7 @@ steps:
           ' "$manifest")
           for t in $targets; do
             echo "--- clippy $pkg --test $t"
-            cargo clippy -p "$pkg" --features perf-walltime --test "$t" --locked -- -D warnings
+            cargo clippy -q -p "$pkg" --features perf-walltime --test "$t" --locked -- -D warnings
             found=$((found + 1))
           done
         done
@@ -240,13 +260,16 @@ steps:
       CC: "sccache cc"
       CXX: "sccache c++"
       RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+      CARGO_TERM_COLOR: always
     commands:
-      - cargo bench -p perfsuite --locked -- --test
+      # -q on both invocations: the claims table is the output of this lane,
+      # and a compile scroll ahead of it is what buries it.
+      - cargo bench -q -p perfsuite --locked -- --test
       # --results redirects the renderings into the ignored target dir. The
       # default results/ dir is GIT-TRACKED, and lanes share one workspace:
       # rewriting it mid-pipeline dirtied the tree under the test lane, whose
       # build_identity test asserts binary identity == git state (pipeline
       # #25 — a race the bench lane won only when its cache was warm). The
       # table still prints to stdout for the CI log.
-      - cargo run --locked --release -p perfsuite --bin bench-report -- --results target/ci-results
+      - cargo run -q --locked --release -p perfsuite --bin bench-report -- --results target/ci-results
       - sccache --show-stats || echo "WARNING sccache stats unavailable — caching may be inoperative"
