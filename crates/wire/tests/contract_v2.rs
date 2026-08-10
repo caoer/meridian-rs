@@ -407,8 +407,9 @@ fn worked_diff_request_matches_contract() {
 }
 
 /// The deviation row (§18 row 2): the frozen contract ships
-/// `{expected,actual,changed}` — no `scope` key — so a v1-dialect reader
-/// expecting `scope` finds it absent.
+/// `{expected,actual}` — no `scope` key, and no `changed` since the
+/// 2026-08-10 strike — so a v1-dialect reader expecting either finds it
+/// absent.
 #[test]
 fn root_mismatch_scope_drop_deviation_fixture() {
     let mut error = wire::ErrorBody::new(wire::ErrorCode::RootMismatch);
@@ -418,7 +419,6 @@ fn root_mismatch_scope_drop_deviation_fixture() {
     error.actual = Some(wire::NodeRev(
         "b3:6e866e13b5e65ef9961c050f8a621cf1980b00ee293be650deef5f4dbc6823f0".into(),
     ));
-    error.changed = Some(vec![wire::Path("notes/plan.md".into())]);
     let frame = wire::Response {
         id: Some(96),
         ok: false,
@@ -430,8 +430,7 @@ fn root_mismatch_scope_drop_deviation_fixture() {
         json!({"id":96,"ok":false,"error":{
             "code":"root_mismatch","recovery":"resync",
             "expected":"b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9",
-            "actual":"b3:6e866e13b5e65ef9961c050f8a621cf1980b00ee293be650deef5f4dbc6823f0",
-            "changed":["notes/plan.md"]}})
+            "actual":"b3:6e866e13b5e65ef9961c050f8a621cf1980b00ee293be650deef5f4dbc6823f0"}})
     );
     // exactly the frozen keys, scope absent
     let keys: Vec<&str> = v["error"]
@@ -443,10 +442,11 @@ fn root_mismatch_scope_drop_deviation_fixture() {
     assert!(!keys.contains(&"scope"));
     let mut sorted = keys.clone();
     sorted.sort_unstable();
-    assert_eq!(
-        sorted,
-        ["actual", "changed", "code", "expected", "recovery"]
-    );
+    // `changed` STRUCK 2026-08-10 (§18 row 2; ZT decision 19). The frozen
+    // baseline moves AS DATA with its ruling pointer — a freeze is satisfied by
+    // a visible ruled diff, never by immutability forever. This fixture was the
+    // ONLY thing in the workspace that ever set the field.
+    assert_eq!(sorted, ["actual", "code", "expected", "recovery"]);
 }
 
 // ---------------------------------------------------------------------------

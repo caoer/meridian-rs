@@ -1672,8 +1672,13 @@ pub enum ErrorCode {
     /// choose. Extras: `candidates` (§2.1 refs naming each target exactly).
     AmbiguousRef,
     /// v2 §8/§5.1: a failed world guard (`if_root`) — the plan is invalid,
-    /// not one node's picture. Extras: `expected`/`actual` (roots) +
-    /// `changed`.
+    /// not one node's picture. Extras: `expected`/`actual` (roots).
+    ///
+    /// `changed` was STRUCK 2026-08-10 (§18 row 2; ZT decision 19, U25
+    /// implemented-absent). It was contracted and minted by NOTHING: the world
+    /// guard holds two opaque roots and a merkle root is not invertible, so the
+    /// door cannot name the files that drifted. `recovery: resync` already
+    /// instructs the full re-read that is the set's only honest recovery.
     RootMismatch,
     /// v2 §4.7: a root range outside the retained history — full resync; the
     /// root is the only restart-durable handle. No extras.
@@ -1841,10 +1846,6 @@ pub struct ErrorBody {
     pub expected: Option<NodeRev>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub actual: Option<NodeRev>,
-    /// `root_mismatch`: the files that drifted under the plan — read it,
-    /// re-`toc` the affected files, re-plan, re-arm with the fresh root.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub changed: Option<Vec<Path>>,
     /// `stale_view` (§10.2): the root the request demanded via `require_root`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub required: Option<Root>,
@@ -1938,7 +1939,6 @@ impl ErrorBody {
             supported: None,
             expected: None,
             actual: None,
-            changed: None,
             required: None,
             as_of_root: None,
             live_root: None,
