@@ -651,19 +651,21 @@ put("tasks/0012-second-file.md", props={"owner": me()})
     let argv = ["--actor".to_owned(), "8ab41c02".to_owned()];
     let trace = attempt(&argv, TWO_FILES, &mut door).expect("an arm-time refusal still SPEAKS");
 
-    assert!(
-        !door.splice_issued,
-        "a splice was issued for a two-file armed set: door 367 in `commit()` is now REACHABLE \
-         and has no coverage. Wire it into `OnSplice` and assert what it says."
-    );
     assert_eq!(trace.outcome, ScriptOutcome::Refused);
     let fault = trace.fault.expect("the refusal says why");
     assert_eq!(fault.class, FaultClass::Refused);
     assert!(
         fault.reason.contains("multi_file_write_set"),
-        "this is the law door 367 stands behind, named so a future editor of it can grep \
-         here: {}",
+        "THE ARM-TIME LAW NO LONGER REFUSES A TWO-FILE ARMED SET, so door 367 in `commit()` \
+         (`crates/mrd/src/script/cmd.rs`, the `let [path] = …` arm) is now REACHABLE and has \
+         no test. Wire it into `OnSplice` and assert what it says — do not delete this pin. \
+         The refusal that arrived instead: {}",
         fault.reason
+    );
+    assert!(
+        !door.splice_issued,
+        "a splice went out for a two-file armed set — nothing may reach the wire once the \
+         armed set is refused"
     );
 }
 
