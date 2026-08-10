@@ -114,11 +114,17 @@ steps:
             /^name *= *"/        { gsub(/^name *= *"|"$/,""); name=$0 }
             /perf-walltime/ && /required-features/ && name { print name; name="" }
           ' "$manifest")
+          # ONE cargo invocation per package, not one per target. Each separate
+          # invocation re-checks the whole dependency graph: measured 267 s for
+          # eight serial calls in pipeline 21 against ~20 s for the same eight
+          # targets batched. --test is repeatable, so batch them.
+          args=""
           for t in $targets; do
-            echo "--- clippy $pkg --test $t"
-            cargo clippy -p "$pkg" --features perf-walltime --test "$t" --locked -- -D warnings
+            args="$args --test $t"
             found=$((found + 1))
           done
+          echo "--- clippy $pkg$args"
+          cargo clippy -p "$pkg" --features perf-walltime $args --locked -- -D warnings
         done
         # A wrong path returns zero targets silently; refuse that.
         test "$found" -gt 0 || { echo "no perf-gated targets discovered — the discovery is broken, not the repo"; exit 1; }
