@@ -43,7 +43,8 @@ struct Sandbox {
 /// The system directories a `git commit` needs to run at all. The sandbox `bin/` is prepended,
 /// so OUR `mrd` shadows any deployed one — the ordering is the isolation, and it is the same
 /// ordering an operators own `PATH` has.
-const SYSTEM_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
+mod system_path;
+use system_path::system_path;
 
 fn sandbox() -> Sandbox {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -113,15 +114,17 @@ impl Sandbox {
     /// The `PATH` the hook runs under: ours first, then the system dirs `git`
     /// itself lives in.
     fn hook_path(&self) -> String {
-        format!("{}:{SYSTEM_PATH}", self.bin.display())
+        format!("{}:{}", self.bin.display(), system_path())
     }
 
     /// A commit whose hook runs with a `PATH` that has git but NOT `mrd` — the
     /// "`mrd` is not on PATH at commit time" rescue row, driven rather than
-    /// described. The precondition is asserted: a deployed `mrd` in a system
-    /// directory would make this leg measure a different failure.
+    /// described. The precondition is asserted at the one leg that depends on
+    /// it: `system_path()` drops `mrd`-holding directories itself, and this is
+    /// the leg that silently measures a different failure if it ever stops.
     fn commit_without_mrd(&self, ws: &Path, message: &str) -> Output {
-        for dir in SYSTEM_PATH.split(':') {
+        let path = system_path();
+        for dir in path.split(':') {
             assert!(
                 !Path::new(dir).join("mrd").exists(),
                 "this leg needs a PATH with no `mrd` on it, and {dir} has one — \
@@ -132,7 +135,7 @@ impl Sandbox {
             .arg("-C")
             .arg(ws)
             .args(["commit", "-m", message])
-            .env("PATH", SYSTEM_PATH)
+            .env("PATH", &path)
             .env("XDG_CACHE_HOME", &self.cache_home)
             .env("HOME", &self.home)
             .output()
@@ -934,7 +937,7 @@ fn a_fence_run_against_an_older_engine_refuses_and_names_the_skew() {
         .arg("-C")
         .arg(&ws)
         .args(["commit", "-m", "under an older engine"])
-        .env("PATH", format!("{}:{SYSTEM_PATH}", old.display()))
+        .env("PATH", format!("{}:{}", old.display(), system_path()))
         .env("XDG_CACHE_HOME", &sb.cache_home)
         .env("HOME", &sb.home)
         .env_remove("MERIDIAN_WORKSPACE")
