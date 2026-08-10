@@ -463,7 +463,13 @@ fn links_body_and_file_key_sets_are_frozen() {
     };
     pin_keys(
         &with_excluded,
-        &["as_of_root", "changes_seq", "excluded", "files", "live_root"],
+        &[
+            "as_of_root",
+            "changes_seq",
+            "excluded",
+            "files",
+            "live_root",
+        ],
         "Links body naming an excluded population",
     );
     pin_keys(

@@ -279,9 +279,7 @@ fn live_color(
 ) -> Color {
     let selector = view::walk::model_selector(&site.entry.object, &site.entry.selector);
     match docs.get(&site.target) {
-        Some(doc) => {
-            model::selector::classify_pin(&selector, &site.entry.fingerprint, Some(doc))
-        }
+        Some(doc) => model::selector::classify_pin(&selector, &site.entry.fingerprint, Some(doc)),
         None => {
             // A miss here is "not in the hash domain" OR "no such file"; the door read tells them
             // apart. A read failure leaves the answer exactly what it was before this clause —
@@ -470,10 +468,7 @@ fn floor(root: &fs::WorkspaceRoot, outcomes: &[Outcome]) -> Result<(), Fail> {
              `hash` would be moved to `{}` — a blob that is not that live version. The two \
              fields of one pin row may not disagree about which version they attest. Nothing \
              was written for any page.",
-            outcome.site.src_path,
-            outcome.site.entry.object,
-            outcome.site.target,
-            recovered.oid
+            outcome.site.src_path, outcome.site.entry.object, outcome.site.target, recovered.oid
         )));
     }
     Ok(())
