@@ -35,7 +35,8 @@ struct Sandbox {
     other: PathBuf,
 }
 
-const SYSTEM_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
+mod system_path;
+use system_path::system_path;
 
 fn sandbox() -> Sandbox {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -152,7 +153,7 @@ impl Sandbox {
             .arg("-C")
             .arg(&self.ws)
             .args(["commit", "-m", message])
-            .env("PATH", format!("{}:{SYSTEM_PATH}", self.bin.display()))
+            .env("PATH", format!("{}:{}", self.bin.display(), system_path()))
             .env("HOME", &self.home)
             .env("XDG_CACHE_HOME", &self.cache_home)
             .env("MERIDIAN_CONFIG", &self.config)

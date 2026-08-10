@@ -33,7 +33,8 @@ fn mrd_bin() -> PathBuf {
 
 /// The system directories a `git commit` needs. The fixtures `bin/` is prepended, so our `mrd`
 /// shadows any deployed one — the ordering is the isolation.
-const SYSTEM_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
+mod system_path;
+use system_path::system_path;
 
 /// A scratch repository that is also a meridian workspace, with an `mrd` of our
 /// own on the hook's `PATH` and caches inside the sandbox.
@@ -109,7 +110,7 @@ impl Fixture {
     }
 
     fn hook_path(&self) -> String {
-        format!("{}:{SYSTEM_PATH}", self.bin.display())
+        format!("{}:{}", self.bin.display(), system_path())
     }
 
     fn mrd(&self, args: &[&str]) -> Output {
