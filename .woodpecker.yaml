@@ -5,8 +5,10 @@ steps:
   - name: test
     image: rust:1
     environment:
+      # Share only the registry/git cache — cargo locks it correctly under
+      # concurrent pipelines. A shared target dir races: a parallel build of
+      # another commit deletes test binaries between build and run.
       CARGO_HOME: /ci-cache/meridian-rs/cargo
-      CARGO_TARGET_DIR: /ci-cache/meridian-rs/target
     commands:
       # The config crate's mount tests precondition an existing XDG base dir;
       # a fresh container has no $HOME/.config.
