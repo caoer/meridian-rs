@@ -645,7 +645,6 @@ fn error_body_key_set_is_frozen_plus_the_v3_ladder_extras() {
         supported: Some(vec![1]),
         expected: Some(rev()),
         actual: Some(rev()),
-        changed: Some(vec![path()]),
         required: Some(root()),
         as_of_root: Some(root()),
         live_root: Some(root()),

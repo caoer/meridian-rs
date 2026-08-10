@@ -407,8 +407,9 @@ fn worked_diff_request_matches_contract() {
 }
 
 /// The deviation row (§18 row 2): the frozen contract ships
-/// `{expected,actual,changed}` — no `scope` key — so a v1-dialect reader
-/// expecting `scope` finds it absent.
+/// `{expected,actual}` — no `scope` key, and no `changed` since the
+/// 2026-08-10 strike — so a v1-dialect reader expecting either finds it
+/// absent.
 #[test]
 fn root_mismatch_scope_drop_deviation_fixture() {
     let mut error = wire::ErrorBody::new(wire::ErrorCode::RootMismatch);
