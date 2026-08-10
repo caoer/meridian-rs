@@ -10,7 +10,11 @@ steps:
       # another commit deletes test binaries between build and run.
       CARGO_HOME: /ci-cache/meridian-rs/cargo
     commands:
-      # The config crate's mount tests precondition an existing XDG base dir;
-      # a fresh container has no $HOME/.config.
-      - mkdir -p "$HOME/.config"
-      - cargo test --workspace --locked
+      # The fs permission tests build "unreadable" fixtures with chmod, and
+      # root bypasses permission bits — so run cargo as a created non-root
+      # user. setpriv preserves PATH and CARGO_HOME (no PAM, no env reset).
+      # The mount tests also precondition an existing XDG base dir ($HOME/.config).
+      - useradd -m ci
+      - mkdir -p /home/ci/.config "$CARGO_HOME"
+      - chown -R ci:ci . "$CARGO_HOME" /home/ci
+      - setpriv --reuid=ci --regid=ci --init-groups env HOME=/home/ci cargo test --workspace --locked
