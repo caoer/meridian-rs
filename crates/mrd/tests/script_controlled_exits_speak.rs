@@ -186,7 +186,8 @@ fn speaks(door: &mut dyn Door, flags: &[&str]) -> Result<(), String> {
 #[test]
 fn a_splice_whose_answer_never_came_declares_resync_and_an_unknown_commit() {
     let mut door = Fake::breaking(OnSplice::NeverAnswers);
-    let trace = run(&mut door, &["--actor", "8ab41c02"]).expect("the door SPEAKS, it does not exit");
+    let trace =
+        run(&mut door, &["--actor", "8ab41c02"]).expect("the door SPEAKS, it does not exit");
 
     assert!(door.splice_issued, "the premise of the whole claim");
     assert_eq!(trace.outcome, ScriptOutcome::Refused);

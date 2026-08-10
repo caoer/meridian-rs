@@ -307,7 +307,10 @@ pub struct ScriptTrace {
 
 /// Omit `commit_unknown` unless it is true: the field is a marker, and a `false`
 /// on every ordinary trace would be noise a consumer has to read past.
-#[expect(clippy::trivially_copy_pass_by_ref, reason = "serde predicate signature")]
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde predicate signature"
+)]
 fn is_false(value: &bool) -> bool {
     !*value
 }
