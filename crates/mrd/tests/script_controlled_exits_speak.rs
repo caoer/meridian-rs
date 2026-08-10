@@ -18,6 +18,12 @@
 //! control arm walks the doors BEFORE the premise exists — where the contract
 //! deliberately keeps them silent — and asserts the sweep's own predicate fails
 //! there. Without it this file would certify rather than check.
+//!
+//! ⭐ AND THE SWEEP'S POPULATION IS ANSWERABLE TO THE CODE. A sweep that walks a
+//! hand-maintained list covers only the doors someone remembered; the census at
+//! the bottom derives `commit()`'s arms from its own source and refuses any arm
+//! that is neither swept nor recorded unreachable with the law that keeps it so.
+//! A gate that cannot notice a missing door is the defect it was built to remove.
 
 use std::io;
 
@@ -49,33 +55,69 @@ enum OnSplice {
     Unparseable,
     /// `ok: true` with no body — success asserted, nothing to describe it with.
     OkWithNoBody,
+    /// `ok: false` carrying a §5.1 `fingerprint_mismatch` — the world moved
+    /// under the guard. It speaks as a CONFLICT, not as a fault.
+    ConflictOnMismatch,
+    /// `ok: false` with a readable §8 error body that is not the world moving.
+    RefusedWithErrorBody,
     /// `ok: false` with no error body — a refusal that will not say why.
     RefusedWithNoErrorBody,
 }
 
+/// What SPEAKING means for a door.
+///
+/// The law is one law — a premise-holding commit door does not exit silently —
+/// but the doors do not all speak the same way, and a single predicate that only
+/// knew `fault` would have to drop the conflict door from the population to stay
+/// green. Dropping a door to keep a sweep green is the defect this file exists to
+/// remove, so the door DECLARES its speech and the sweep applies it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Speech {
+    /// A `fault` states why the commit failed.
+    Fault,
+    /// `outcome: conflict` carrying the daemon's own mismatch body. There is no
+    /// fault: a moved world is an answer, not a failure to answer.
+    Conflict,
+}
+
 impl OnSplice {
-    /// Every premise-holding commit door reachable through this seam, in one
-    /// place, so the sweep below cannot silently stop covering one.
+    /// Every premise-holding commit FAILURE door reachable through this seam.
     ///
-    /// The fifth door — an armed set writing more than one content path — is
-    /// unreachable here by construction: the arm-time single-write-file law
-    /// refuses it before any splice is issued, which is why the sweep names four.
-    const ALL: [Self; 4] = [
+    /// This list is no longer trusted to be the population: the census in
+    /// `every_commit_door_is_either_swept_or_recorded_unreachable` derives the
+    /// arms from `commit()`'s own source and refuses a door that is not here.
+    const ALL: [Self; 6] = [
         Self::NeverAnswers,
         Self::Unparseable,
         Self::OkWithNoBody,
+        Self::ConflictOnMismatch,
+        Self::RefusedWithErrorBody,
         Self::RefusedWithNoErrorBody,
     ];
 
+    /// How this door speaks — see [`Speech`].
+    fn speech(self) -> Speech {
+        match self {
+            Self::ConflictOnMismatch => Speech::Conflict,
+            Self::NeverAnswers
+            | Self::Unparseable
+            | Self::OkWithNoBody
+            | Self::RefusedWithErrorBody
+            | Self::RefusedWithNoErrorBody => Speech::Fault,
+        }
+    }
+
     /// Does this door KNOW what happened to the workspace?
     ///
-    /// Three of the four do not: the request was issued and its fate is not
-    /// readable from here. The refusal DOES — `ok: false` means the daemon
-    /// declined, so nothing landed; it simply did not say why.
+    /// Three of the six do not: the request was issued and its fate is not
+    /// readable from here. The three `ok: false` doors DO — the daemon declined,
+    /// so nothing landed; they differ only in how much they say about why.
     fn is_indeterminate(self) -> bool {
         match self {
             Self::NeverAnswers | Self::Unparseable | Self::OkWithNoBody => true,
-            Self::RefusedWithNoErrorBody => false,
+            Self::ConflictOnMismatch
+            | Self::RefusedWithErrorBody
+            | Self::RefusedWithNoErrorBody => false,
         }
     }
 }
@@ -107,6 +149,20 @@ impl Door for Fake {
                 OnSplice::NeverAnswers => Err(io::Error::other("connection reset by peer")),
                 OnSplice::Unparseable => Ok("<html>502 Bad Gateway</html>".to_owned()),
                 OnSplice::OkWithNoBody => Ok(json!({"ok": true}).to_string()),
+                OnSplice::ConflictOnMismatch => Ok(json!({"ok": false, "error": {
+                    "code": "fingerprint_mismatch",
+                    "expected": ENTRY,
+                    "actual": "b3:00ff11ee22dd33cc44bb55aa66997788",
+                    "changed": [CARD],
+                }})
+                .to_string()),
+                // No `recovery` field: the class comes from the §8 frozen table's
+                // binding for the code, which is the precedence the engine states.
+                OnSplice::RefusedWithErrorBody => Ok(json!({"ok": false, "error": {
+                    "code": "would_corrupt",
+                    "message": "the heading identity does not survive the reparse",
+                }})
+                .to_string()),
                 OnSplice::RefusedWithNoErrorBody => Ok(json!({"ok": false}).to_string()),
             };
         }
@@ -169,11 +225,33 @@ fn run(door: &mut dyn Door, flags: &[&str]) -> Result<ScriptTrace, String> {
 }
 
 /// The sweep's predicate, named once so the control arm can apply the SAME one:
-/// this door produced a trace, and that trace speaks about the commit.
-fn speaks(door: &mut dyn Door, flags: &[&str]) -> Result<(), String> {
+/// this door produced a trace, and that trace speaks about the commit in the way
+/// the door declares.
+fn speaks(door: &mut dyn Door, flags: &[&str], speech: Speech) -> Result<(), String> {
     let trace = run(door, flags)?;
-    if trace.fault.is_none() {
-        return Err("a trace with no fault says nothing about why the commit failed".to_owned());
+    match speech {
+        Speech::Fault => {
+            if trace.fault.is_none() {
+                return Err(
+                    "a trace with no fault says nothing about why the commit failed".to_owned(),
+                );
+            }
+        }
+        Speech::Conflict => {
+            if trace.outcome != ScriptOutcome::Conflict {
+                return Err(format!(
+                    "a moved world must arrive as `conflict`, not {:?}",
+                    trace.outcome
+                ));
+            }
+            if trace.commit.is_none() {
+                return Err(
+                    "a conflict with no commit leg drops the daemon's own mismatch body, which \
+                     is the whole answer here"
+                        .to_owned(),
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -285,19 +363,82 @@ fn a_refusal_with_no_error_body_states_that_nothing_landed_and_blames_the_channe
     );
 }
 
+/// A `fingerprint_mismatch` is the world moving, and it is an ANSWER: the daemon
+/// read the guard, declined, and said exactly what changed. It speaks as
+/// `conflict` with the daemon's own body embedded — no fault, because nothing
+/// failed to be understood.
+///
+/// It is in the sweep because the census puts it there: it is one of `commit()`'s
+/// arms, so a change that made it silent would be caught by the same law as the
+/// rest.
+#[test]
+fn a_moved_world_speaks_as_a_conflict_carrying_the_daemons_own_body() {
+    let mut door = Fake::breaking(OnSplice::ConflictOnMismatch);
+    let trace = run(&mut door, &["--actor", "8ab41c02"]).expect("the door SPEAKS");
+
+    assert_eq!(trace.outcome, ScriptOutcome::Conflict);
+    assert!(
+        !trace.commit_unknown,
+        "the daemon answered the guard, so the workspace is known: nothing landed"
+    );
+    let commit = trace
+        .commit
+        .as_ref()
+        .expect("the mismatch body rides the leg");
+    let body: Value = serde_json::from_str(commit.get()).expect("the leg is the daemon's bytes");
+    assert_eq!(body["code"], "fingerprint_mismatch");
+    assert_eq!(
+        body["changed"][0], CARD,
+        "the extras are carried verbatim, never re-typed"
+    );
+    assert!(
+        trace.fault.is_none(),
+        "a moved world is not a fault — a consumer greps the two apart"
+    );
+}
+
+/// A readable §8 refusal that is not the world moving: the engine's own wording
+/// rides into the reason, and the class comes from the frozen table's binding for
+/// the code, because this frame carried no `recovery` of its own.
+#[test]
+fn a_refusal_with_a_readable_error_body_carries_its_code_and_the_tables_class() {
+    let mut door = Fake::breaking(OnSplice::RefusedWithErrorBody);
+    let trace = run(&mut door, &["--actor", "8ab41c02"]).expect("the door SPEAKS");
+
+    assert_eq!(trace.outcome, ScriptOutcome::Refused);
+    assert!(
+        !trace.commit_unknown,
+        "the daemon refused with a readable body, so nothing landed and the run knows it"
+    );
+    let fault = trace.fault.expect("a controlled exit says why");
+    assert_eq!(fault.class, FaultClass::Refused);
+    assert_eq!(fault.code.as_deref(), Some("would_corrupt"));
+    assert_eq!(
+        fault.recovery,
+        Some(Recovery::Fix),
+        "no `recovery` on the frame, so the §8 table's binding for the code decides — \
+         one source read a second way, never a second table"
+    );
+    assert!(
+        fault.reason.contains("does not survive the reparse"),
+        "the daemon's own wording travels verbatim: {}",
+        fault.reason
+    );
+}
+
 // ── the law, and the control that makes it a measurement ─────────────────────
 
 /// **THE LAW.** No premise-holding commit door exits without speaking.
 ///
-/// It walks every door in `OnSplice::ALL` rather than trusting the four tests
-/// above to stay in step with the code: a door added to `commit()` and wired into
-/// this enum is covered by construction, and one added without it is the gap this
-/// sweep cannot see — named in the deliverable as such.
+/// It walks every door in `OnSplice::ALL` rather than trusting the tests above to
+/// stay in step with the code. `ALL` is a maintained list, so on its own it makes
+/// coverage true only for doors someone remembered; the census below is what
+/// makes the list answerable to `commit()`'s real arms.
 #[test]
 fn no_premise_holding_commit_door_exits_silently() {
     for door in OnSplice::ALL {
         let mut fake = Fake::breaking(door);
-        speaks(&mut fake, &["--actor", "8ab41c02"])
+        speaks(&mut fake, &["--actor", "8ab41c02"], door.speech())
             .unwrap_or_else(|why| panic!("{door:?} exited without speaking: {why}"));
         assert!(fake.splice_issued, "{door:?} never reached the commit");
 
@@ -331,7 +472,7 @@ fn no_premise_holding_commit_door_exits_silently() {
 #[test]
 fn the_sweeps_predicate_goes_red_on_a_path_that_deliberately_stays_silent() {
     let mut door = NoPremise;
-    let outcome = speaks(&mut door, &["--actor", "8ab41c02"]);
+    let outcome = speaks(&mut door, &["--actor", "8ab41c02"], Speech::Fault);
 
     let why = outcome.expect_err(
         "a pre-premise failure must NOT produce a trace — if it does, either the \
@@ -341,6 +482,199 @@ fn the_sweeps_predicate_goes_red_on_a_path_that_deliberately_stays_silent() {
     assert!(
         why.contains("fingerprint"),
         "and it names the door it died at, on stderr, for an operator: {why}"
+    );
+}
+
+// ── the census: the population, DERIVED from the code it claims to cover ─────
+
+/// `commit()`'s own source. The sweep above walks a hand-maintained list, and a
+/// hand-maintained list is a literal wearing a derived costume: a door added to
+/// `commit()` and never wired into `OnSplice` is invisible to it, the suite stays
+/// green, and nothing says the coverage shrank.
+///
+/// Reading the source is the cheap instrument that makes the list ANSWERABLE.
+/// The exhaustiveness cannot be a compile-time fact here without the door
+/// taxonomy living in the engine's own types, and it must not: three of these
+/// arms build the SAME `CommitLeg::Unknown` variant, so a variant-exhaustive
+/// match would certify a population it cannot see — the defect one level up.
+/// Precedent for reading a sibling module's source in a test:
+/// `crates/mrd/tests/rules_cli.rs` § `the_cli_layer_holds_no_second_resolver`.
+const COMMIT_SOURCE: &str = include_str!("../src/script/cmd.rs");
+
+/// What the census says about one arm of `commit()`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Coverage {
+    /// A failure door the sweep drives through the `Door` seam.
+    Swept(OnSplice),
+    /// Not a failure exit: the daemon answered and the leg carries its answer.
+    Success,
+    /// Unreachable through the seam, and the law that makes it so is PINNED by
+    /// `door_367_is_unreachable_only_because_the_arm_time_law_refuses_first`.
+    UnreachableByArmTimeLaw,
+}
+
+/// Every `CommitLeg` construction inside `fn commit`, in source order, as
+/// `(1-based line, variant)`.
+///
+/// Comment lines are dropped before matching, so prose naming a leg can neither
+/// satisfy nor break a claim about code — the same discipline the rules-CLI
+/// structural test uses.
+fn commit_arms() -> Vec<(usize, String)> {
+    let lines: Vec<(usize, &str)> = COMMIT_SOURCE
+        .lines()
+        .enumerate()
+        .map(|(i, l)| (i + 1, l))
+        .collect();
+    let start = lines
+        .iter()
+        .position(|(_, line)| line.starts_with("fn commit("))
+        .expect("`fn commit` is the function this census is about");
+    let end = lines[start..]
+        .iter()
+        .position(|(_, line)| *line == "}")
+        .expect("the function closes at column zero")
+        + start;
+
+    let mut arms = Vec::new();
+    for (number, line) in &lines[start..=end] {
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
+        let mut rest = *line;
+        while let Some(at) = rest.find("CommitLeg::") {
+            rest = &rest[at + "CommitLeg::".len()..];
+            let variant: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            arms.push((*number, variant));
+        }
+    }
+    arms
+}
+
+/// ⭐ **THE POPULATION GATE.** Every arm of `commit()` is either swept by the law
+/// above or recorded here as unreachable WITH the law that makes it so.
+///
+/// This is the gate the sweep could not be: the sweep asks "does each door I know
+/// about speak?", and this asks "do I know about every door?". A door added to
+/// `commit()` and not wired in fails HERE, loudly, naming its line — instead of
+/// passing silently as a coverage gap nobody minted a signal for.
+#[test]
+fn every_commit_door_is_either_swept_or_recorded_unreachable() {
+    /// The census, in `commit()`'s own source order. Adding a door to `commit()`
+    /// means adding its row here and either wiring it into `OnSplice` or stating
+    /// the law that keeps it unreachable.
+    const CENSUS: [(&str, Coverage); 9] = [
+        // The armed set writes more than one content path — door 367.
+        ("Refused", Coverage::UnreachableByArmTimeLaw),
+        ("Unknown", Coverage::Swept(OnSplice::NeverAnswers)),
+        ("Unknown", Coverage::Swept(OnSplice::Unparseable)),
+        // `dry` — a rehearsal that ran everything except disk.
+        ("Rehearsal", Coverage::Success),
+        ("Response", Coverage::Success),
+        ("Unknown", Coverage::Swept(OnSplice::OkWithNoBody)),
+        ("Conflict", Coverage::Swept(OnSplice::ConflictOnMismatch)),
+        ("Refused", Coverage::Swept(OnSplice::RefusedWithErrorBody)),
+        ("Refused", Coverage::Swept(OnSplice::RefusedWithNoErrorBody)),
+    ];
+
+    let arms = commit_arms();
+    let rendered = arms
+        .iter()
+        .map(|(line, variant)| format!("  cmd.rs:{line} CommitLeg::{variant}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(
+        arms.len(),
+        CENSUS.len(),
+        "`commit()` has {} arms and the census names {}. A door added to `commit()` is \
+         invisible to the sweep until it is wired into `OnSplice` (or recorded here with the \
+         law that keeps it unreachable). The arms as read from source:\n{rendered}",
+        arms.len(),
+        CENSUS.len(),
+    );
+    for (index, ((line, variant), (expected, _))) in arms.iter().zip(CENSUS).enumerate() {
+        assert_eq!(
+            variant, expected,
+            "census row {index} says `CommitLeg::{expected}` and cmd.rs:{line} builds \
+             `CommitLeg::{variant}` — the population moved under the sweep"
+        );
+    }
+
+    // And the other direction: no door sits in `OnSplice` without a census row,
+    // so the enum cannot drift away from the code either.
+    let mut swept: Vec<OnSplice> = CENSUS
+        .iter()
+        .filter_map(|(_, coverage)| match coverage {
+            Coverage::Swept(door) => Some(*door),
+            _ => None,
+        })
+        .collect();
+    for door in OnSplice::ALL {
+        let at = swept
+            .iter()
+            .position(|candidate| *candidate == door)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{door:?} is in the sweep but names no arm of `commit()` — it tests a \
+                        door the engine no longer has"
+                )
+            });
+        swept.remove(at);
+    }
+    assert!(
+        swept.is_empty(),
+        "the census claims these doors are swept and `OnSplice::ALL` does not walk them: \
+         {swept:?}"
+    );
+}
+
+/// **DOOR 367, WITH ITS REASON — the reason is the deliverable.**
+///
+/// `commit()`'s first arm refuses an armed set that writes more than one content
+/// path. It speaks, and no test reaches it: the arm-time `multi_file_write_set`
+/// law refuses first, so the run never issues a splice and never enters
+/// `commit()` at all. That is correct behaviour with untested code behind it.
+///
+/// So this test pins the REASON rather than the door. It asserts the arm-time law
+/// still refuses, and that no splice was issued — which is exactly the fact that
+/// makes door 367 unreachable. **If that law is ever moved or relaxed, this test
+/// goes red**, and it goes red in front of the person doing the moving, which is
+/// where the warning has to land. A test that asserted door 367's own behaviour
+/// could not run today and would look like coverage while proving nothing.
+///
+/// When it does go red: door 367 is now reachable, and it needs a row in
+/// `OnSplice` plus its own assertion — not a deletion of this test.
+#[test]
+fn door_367_is_unreachable_only_because_the_arm_time_law_refuses_first() {
+    /// Two content paths, armed in one script. The second `put()` is what the
+    /// arm-time law refuses.
+    const TWO_FILES: &str = r#"
+card = read("tasks/0011-token-audit.md")
+put("tasks/0011-token-audit.md", props={"owner": me()})
+put("tasks/0012-second-file.md", props={"owner": me()})
+"#;
+
+    let mut door = Fake::breaking(OnSplice::NeverAnswers);
+    let argv = ["--actor".to_owned(), "8ab41c02".to_owned()];
+    let trace = attempt(&argv, TWO_FILES, &mut door).expect("an arm-time refusal still SPEAKS");
+
+    assert_eq!(trace.outcome, ScriptOutcome::Refused);
+    let fault = trace.fault.expect("the refusal says why");
+    assert_eq!(fault.class, FaultClass::Refused);
+    assert!(
+        fault.reason.contains("multi_file_write_set"),
+        "THE ARM-TIME LAW NO LONGER REFUSES A TWO-FILE ARMED SET, so door 367 in `commit()` \
+         (`crates/mrd/src/script/cmd.rs`, the `let [path] = …` arm) is now REACHABLE and has \
+         no test. Wire it into `OnSplice` and assert what it says — do not delete this pin. \
+         The refusal that arrived instead: {}",
+        fault.reason
+    );
+    assert!(
+        !door.splice_issued,
+        "a splice went out for a two-file armed set — nothing may reach the wire once the \
+         armed set is refused"
     );
 }
 
