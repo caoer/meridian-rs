@@ -204,7 +204,7 @@ pub(crate) fn run(door: &mut dyn Door, parsed: &Script, source: &str) -> Result<
              reads that ran cost the budget",
         ))
     } else {
-        commit(door, parsed, &eval, &entry)?
+        commit(door, parsed, &eval, &entry)
     };
     Ok(ScriptTrace::assemble(entry, &eval, leg))
 }
@@ -354,20 +354,22 @@ fn fingerprint(door: &mut dyn Door) -> Result<String, Fail> {
 ///
 /// The response never round-trips through a typed shape — the leg the trace
 /// embeds is the daemon's own bytes.
-fn commit(
-    door: &mut dyn Door,
-    parsed: &Script,
-    eval: &ScriptEval,
-    entry: &str,
-) -> Result<CommitLeg, Fail> {
+fn commit(door: &mut dyn Door, parsed: &Script, eval: &ScriptEval, entry: &str) -> CommitLeg {
     let paths = eval.content_paths();
     let [path] = paths.as_slice() else {
         // Unreachable by construction: a second content path refuses at arm
         // time (`multi_file_write_set`), so this attempt never reaches here.
-        return Err(Fail::tool(format!(
-            "the armed set writes {} content paths; one script commits to ONE file",
-            paths.len()
-        )));
+        // It still SPEAKS: nothing was sent, so the class is `fix` and the
+        // workspace guarantee is a fact rather than a hope.
+        return CommitLeg::Refused(Refusal::minted(
+            Recovery::Fix,
+            format!(
+                "the armed set writes {} content paths; one script commits to ONE file. NO splice \
+                 was issued — nothing was sent, nothing landed, no fingerprint advanced. fix: arm \
+                 one content path",
+                paths.len()
+            ),
+        ));
     };
     let mut request = json!({
         "op": "splice",
@@ -388,25 +390,103 @@ fn commit(
         request["dry"] = json!(true);
     }
 
-    let line = door
-        .call(&request)
-        .map_err(|e| Fail::tool(format!("the daemon did not answer `splice`: {e}")))?;
-    let frame = Frame::parse(&line).map_err(|e| Fail::tool(e.to_string()))?;
+    // ⭐ FROM HERE THE REQUEST IS ON THE WIRE, and every door below is a
+    // CONTROLLED exit that must SPEAK (`docs/run-plane.md` § A controlled failure
+    // exit SPEAKS). None of them may return `Err(Fail)`: that leaves through
+    // `mrd::run` with prose on stderr and NOTHING on stdout, and a consumer
+    // reading a nonzero exit beside an absent trace cannot tell this from a
+    // process killed mid-write — the two have opposite remedies.
+    let line = match door.call(&request) {
+        Ok(line) => line,
+        // The request went out; the answer never came. This engine does NOT know
+        // whether the splice landed, and no word in the outcome set can say that,
+        // so the trace says it in band.
+        Err(e) => {
+            return CommitLeg::Unknown(lost_answer(
+                parsed.dry,
+                &format!("the daemon did not answer `splice`: {e}"),
+            ));
+        }
+    };
+    let frame = match Frame::parse(&line) {
+        Ok(frame) => frame,
+        // The daemon answered bytes this engine cannot read. Same indeterminacy
+        // as no answer at all: it may have applied the splice before replying.
+        Err(e) => {
+            return CommitLeg::Unknown(lost_answer(
+                parsed.dry,
+                &format!("the daemon's answer to `splice` would not parse: {e}"),
+            ));
+        }
+    };
     match (frame.ok, frame.body, frame.error) {
-        (true, Some(body), _) if parsed.dry => Ok(CommitLeg::Rehearsal(body)),
-        (true, Some(body), _) => Ok(CommitLeg::Response(body)),
-        (true, None, _) => Err(Fail::tool("`splice` answered ok with no body".to_owned())),
+        (true, Some(body), _) if parsed.dry => CommitLeg::Rehearsal(body),
+        (true, Some(body), _) => CommitLeg::Response(body),
+        // `ok` with no body: the daemon says it SUCCEEDED and hands nothing to
+        // describe it with. The commit is not recoverable as a fact — there are no
+        // bytes to embed — so the honest answer is the same one the lost answer
+        // gets. Re-read; the workspace, not this trace, is the authority now.
+        (true, None, _) => CommitLeg::Unknown(lost_answer(
+            parsed.dry,
+            "`splice` answered ok with no body, so there is no commit fact to carry",
+        )),
         // A moved world is the conflict leg: the mismatch extras ride the
         // daemon's own bytes, so `{expected, actual, changed}` need no re-typing.
-        (false, _, Some(error)) if is_mismatch(&error) => Ok(CommitLeg::Conflict(error)),
+        (false, _, Some(error)) if is_mismatch(&error) => CommitLeg::Conflict(error),
         // Every other refusal is a refusal, not a fault, and its message is the
         // engine's own.
-        (false, _, Some(error)) => Ok(CommitLeg::Refused(refusal_of(&error))),
-        (false, _, None) => Err(Fail::tool(format!(
-            "`splice` refused with no error body: {}",
-            line.trim()
-        ))),
+        (false, _, Some(error)) => CommitLeg::Refused(refusal_of(&error)),
+        // `ok: false` — the daemon REFUSED, so nothing landed; it just did not say
+        // why. Determinate, so a plain refusal is honest here, and the class is
+        // `respawn`: a frame that violates §8's own shape is a broken channel, not
+        // a request the caller can fix.
+        (false, _, None) => CommitLeg::Refused(Refusal::minted(
+            Recovery::Respawn,
+            format!(
+                "`splice` refused with no error body, so the refusal cannot be classed: {}. \
+                 Nothing landed — the daemon refused — but the answer violates the §8 frame \
+                 shape. respawn: the channel is the fault, not the script",
+                line.trim()
+            ),
+        )),
     }
+}
+
+/// The engine-minted refusal for a splice whose outcome is NOT KNOWN — the answer
+/// never came, or came unreadable.
+///
+/// The class is the whole point, and it splits on `--dry`, exactly as the
+/// consumer's own killed-engine face already splits
+/// (`ccc-mcp-server internal/mcpserver/scriptexec.go`, `scriptKilledRefusal`):
+///
+/// - a live run is `resync`, because a splice already on the wire is the daemon's
+///   to finish — re-read, never resend, or the resend writes twice;
+/// - a `--dry` run is `retry`, because a rehearsal runs everything except disk,
+///   so it provably committed nothing. Declaring `resync` there would tell a
+///   caller their file might have changed when it could not — the same
+///   fabrication, aimed the other way.
+///
+/// No `code`: no frame minted one, and inventing a §8 value no daemon can answer
+/// with is the thing the triple's own clause forbids.
+fn lost_answer(dry: bool, locus: &str) -> Refusal {
+    if dry {
+        return Refusal::minted(
+            Recovery::Retry,
+            format!(
+                "{locus}. This was a DRY run — it rehearses everything except disk, so nothing \
+                 could have been committed and the workspace is unchanged. retry: re-run the same \
+                 script, a rehearsal writes nothing"
+            ),
+        );
+    }
+    Refusal::minted(
+        Recovery::Resync,
+        format!(
+            "{locus}. The splice was ISSUED, so whether the workspace carries this run is \
+             UNKNOWN — a commit already on the wire is the daemon's to finish. resync: re-read \
+             and re-plan, never resend, because a resend writes twice"
+        ),
+    )
 }
 
 /// Is this the world-grain guard failing (§5.1)? The v3 session spells it
@@ -500,6 +580,13 @@ fn print_human(trace: &ScriptTrace) {
             Some(line) => println!("  SCRIPT: at line {line} — {}", fault.reason),
             None => println!("  SCRIPT: {}", fault.reason),
         }
+    }
+    // The armed block above renders `armed … [not committed]` for an unknown
+    // commit, because nothing zipped it committed. That reads as a promise the
+    // engine cannot make, so the operator face states the indeterminacy too. It is
+    // non-normative, and it still may not lie.
+    if trace.commit_unknown {
+        println!("  COMMIT UNKNOWN: the splice was issued and never answered for");
     }
     let telemetry = &trace.telemetry;
     println!(

@@ -179,6 +179,16 @@ pub enum CommitLeg {
     /// verbatim into [`ScriptFault::reason`] and the outcome is `refused`, so a
     /// refusal and a fault still grep apart.
     Refused(Refusal),
+    /// **The splice was ISSUED and its outcome is not known** — the answer never
+    /// came, or came in bytes this engine cannot read
+    /// (`docs/run-plane.md` § A controlled failure exit SPEAKS).
+    ///
+    /// It is a separate leg from [`CommitLeg::Refused`] because every other leg
+    /// STATES what happened to the workspace, and this one cannot. Assembling it
+    /// as a plain refusal would tell a caller nothing was applied, which is a
+    /// fabrication about their own file — so the trace carries
+    /// [`ScriptTrace::commit_unknown`] beside the refusal instead.
+    Unknown(Refusal),
 }
 
 /// The wire's refusal triple, carried across the script boundary TYPED.
@@ -270,8 +280,39 @@ pub struct ScriptTrace {
     /// courier property above survives it intact.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub armed_digest: Option<String>,
+    /// Present and `true` EXACTLY when a splice was issued and its outcome is
+    /// not known: the answer never arrived, or arrived unreadable
+    /// (`docs/run-plane.md` § A controlled failure exit SPEAKS).
+    ///
+    /// **It exists because [`ScriptTrace::commit`]'s absence is already spoken
+    /// for.** An absent leg means no splice was issued — the read-class path — so
+    /// a lost answer that merely omitted the leg would read as a run that never
+    /// tried to write. The one thing a consumer must not conclude is the one
+    /// thing it would conclude.
+    ///
+    /// It is a FIELD and not a sixth [`ScriptOutcome`], on the same reasoning one
+    /// axis over from why `recovery` is not a fifth [`FaultClass`]:
+    /// committed-or-not-known is a PROPERTY of a run, not a KIND of outcome. A
+    /// sixth word would break every consumer matching the closed five.
+    ///
+    /// The actionable class rides `fault.recovery` — `resync`, because a splice
+    /// on the wire is the daemon's to finish, so re-read and never resend; or
+    /// `retry` under `--dry`, because a rehearsal writes nothing and could not
+    /// have committed.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub commit_unknown: bool,
     /// Always present, whatever the outcome.
     pub telemetry: ScriptTelemetry,
+}
+
+/// Omit `commit_unknown` unless it is true: the field is a marker, and a `false`
+/// on every ordinary trace would be noise a consumer has to read past.
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde predicate signature"
+)]
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl ScriptTrace {
@@ -291,6 +332,7 @@ impl ScriptTrace {
         commit: CommitLeg,
     ) -> Self {
         let mut fault = eval.outcome.as_ref().err().map(fault_of);
+        let mut commit_unknown = false;
         let (outcome, commit) = match (&fault, commit) {
             (Some(fault), _) => (
                 match fault.class {
@@ -310,6 +352,21 @@ impl ScriptTrace {
             (None, CommitLeg::Conflict(body)) => (ScriptOutcome::Conflict, Some(body)),
             (None, CommitLeg::Rehearsal(body)) => (ScriptOutcome::NoEffect, Some(body)),
             (None, CommitLeg::Refused(refusal)) => {
+                fault = Some(ScriptFault {
+                    line: None,
+                    class: FaultClass::Refused,
+                    code: refusal.code,
+                    recovery: refusal.recovery,
+                    reason: refusal.reason,
+                });
+                (ScriptOutcome::Refused, None)
+            }
+            // The splice went out and its outcome is not known. The fault is
+            // shaped exactly like a refusal — one vocabulary — and the marker
+            // beside it is what stops `refused` from being read as "nothing was
+            // applied". No commit leg: there is no answer to embed.
+            (None, CommitLeg::Unknown(refusal)) => {
+                commit_unknown = true;
                 fault = Some(ScriptFault {
                     line: None,
                     class: FaultClass::Refused,
@@ -369,6 +426,7 @@ impl ScriptTrace {
             armed_digest: (!eval.armed.is_empty()).then(|| {
                 super::digest::armed_digest(&super::digest::ArmedRow::of_all(&eval.armed))
             }),
+            commit_unknown,
             telemetry: eval.telemetry,
         }
     }
@@ -393,6 +451,9 @@ impl ScriptTrace {
             // Nothing was armed — the guard refused before evaluation — so there
             // is no armed set to describe. Absence, never a digest of `[]`.
             armed_digest: None,
+            // The guard refused at the door: no splice was issued, so nothing is
+            // unknown about one.
+            commit_unknown: false,
             telemetry: ScriptTelemetry {
                 fuel_used: 0,
                 mem_used: 0,
