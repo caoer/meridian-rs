@@ -359,6 +359,10 @@ fn commit(door: &mut dyn Door, parsed: &Script, eval: &ScriptEval, entry: &str) 
     let [path] = paths.as_slice() else {
         // Unreachable by construction: a second content path refuses at arm
         // time (`multi_file_write_set`), so this attempt never reaches here.
+        // That unreachability is the only reason this door has no test, and it
+        // is pinned at the law rather than asserted here —
+        // `crates/mrd/tests/script_controlled_exits_speak.rs`
+        // § `door_367_is_unreachable_only_because_the_arm_time_law_refuses_first`.
         // It still SPEAKS: nothing was sent, so the class is `fix` and the
         // workspace guarantee is a fact rather than a hope.
         return CommitLeg::Refused(Refusal::minted(

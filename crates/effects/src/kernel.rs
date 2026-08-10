@@ -590,6 +590,14 @@ impl<'h> ScriptEntry<'h> {
         // content path — it rides the splice request's own `receipt` field in
         // the same batch (§6.1), never this list.
         let mut armed = self.armed.borrow_mut();
+        // ⚠️ MOVING OR RELAXING THIS LAW MAKES AN UNTESTED DOOR REACHABLE. The
+        // script entry's `commit()` refuses an armed set that writes more than one
+        // content path (`crates/mrd/src/script/cmd.rs`, the `let [path] = …` arm);
+        // that refusal has no test because THIS check refuses first, so no splice
+        // is ever issued for a two-file set. The unreachability is pinned by
+        // `crates/mrd/tests/script_controlled_exits_speak.rs`
+        // § `door_367_is_unreachable_only_because_the_arm_time_law_refuses_first`,
+        // which goes red here rather than there.
         if let Some(first) = armed.first().map(|a| a.path.clone())
             && first != path
         {
