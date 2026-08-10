@@ -213,5 +213,11 @@ steps:
       RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
     commands:
       - cargo bench -p perfsuite --locked -- --test
-      - cargo run --locked --release -p perfsuite --bin bench-report
+      # --results redirects the renderings into the ignored target dir. The
+      # default results/ dir is GIT-TRACKED, and lanes share one workspace:
+      # rewriting it mid-pipeline dirtied the tree under the test lane, whose
+      # build_identity test asserts binary identity == git state (pipeline
+      # #25 — a race the bench lane won only when its cache was warm). The
+      # table still prints to stdout for the CI log.
+      - cargo run --locked --release -p perfsuite --bin bench-report -- --results target/ci-results
       - sccache --show-stats || true
