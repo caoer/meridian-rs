@@ -407,14 +407,14 @@ fn a_zero_armed_run_issues_no_splice_at_all() {
 /// A write that lands between the entry fingerprint and the commit makes the
 /// splice refuse `fingerprint_mismatch`, and the ENTIRE batch fails: the
 /// workspace is untouched. The mismatch extras reach the trace as the daemon's
-/// own bytes — no re-typing, so `{expected, actual, changed}` cannot drift.
+/// own bytes — no re-typing, so `{expected, actual}` cannot drift.
 ///
 /// The entry does not retry. It answers `conflict` once and hands the decision
 /// up, because a retry loop inside the entry would re-run reads against a world
 /// the caller has not seen.
 #[test]
 fn a_world_that_moved_yields_conflict_with_the_mismatch_extras_verbatim() {
-    const MISMATCH: &str = r#"{"ok":false,"error":{"code":"fingerprint_mismatch","recovery":"resync","expected":"ENTRY_FP","actual":"MOVED_FP","changed":["tasks/0011-token-audit.md"]}}"#;
+    const MISMATCH: &str = r#"{"ok":false,"error":{"code":"fingerprint_mismatch","recovery":"resync","expected":"ENTRY_FP","actual":"MOVED_FP"}}"#;
     let mut door = Fake::new().answering_splice(
         &MISMATCH
             .replace("ENTRY_FP", ENTRY)
@@ -433,7 +433,15 @@ fn a_world_that_moved_yields_conflict_with_the_mismatch_extras_verbatim() {
     assert_eq!(commit["code"], json!("fingerprint_mismatch"));
     assert_eq!(commit["expected"], json!(ENTRY));
     assert_eq!(commit["actual"], json!(MOVED));
-    assert_eq!(commit["changed"], json!([CARD]));
+    // `changed` is STRUCK (§18 row 2, ruled 2026-08-10): no producer ever
+    // minted it, so the old assertion here passed forever over a shape no
+    // daemon can emit. Asserting its ABSENCE is what a re-introduction would
+    // have to answer for.
+    assert!(
+        commit.get("changed").is_none(),
+        "`changed` was struck because nothing mints it; a fixture that carries \
+         it again is imagination, not a record: {commit}"
+    );
     // The armed edit is still rendered, flagged as never applied — the honesty
     // law: a reader sees what the script wanted, and that it did not happen.
     let armed: Vec<_> = trace.armed_entries().collect();

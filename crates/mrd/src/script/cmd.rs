@@ -435,7 +435,7 @@ fn commit(door: &mut dyn Door, parsed: &Script, eval: &ScriptEval, entry: &str) 
             "`splice` answered ok with no body, so there is no commit fact to carry",
         )),
         // A moved world is the conflict leg: the mismatch extras ride the
-        // daemon's own bytes, so `{expected, actual, changed}` need no re-typing.
+        // daemon's own bytes, so `{expected, actual}` need no re-typing.
         (false, _, Some(error)) if is_mismatch(&error) => CommitLeg::Conflict(error),
         // Every other refusal is a refusal, not a fault, and its message is the
         // engine's own.
