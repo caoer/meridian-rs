@@ -153,7 +153,6 @@ impl Door for Fake {
                     "code": "fingerprint_mismatch",
                     "expected": ENTRY,
                     "actual": "b3:00ff11ee22dd33cc44bb55aa66997788",
-                    "changed": [CARD],
                 }})
                 .to_string()),
                 // No `recovery` field: the class comes from the §8 frozen table's
@@ -387,9 +386,10 @@ fn a_moved_world_speaks_as_a_conflict_carrying_the_daemons_own_body() {
         .expect("the mismatch body rides the leg");
     let body: Value = serde_json::from_str(commit.get()).expect("the leg is the daemon's bytes");
     assert_eq!(body["code"], "fingerprint_mismatch");
-    assert_eq!(
-        body["changed"][0], CARD,
-        "the extras are carried verbatim, never re-typed"
+    assert!(
+        body.get("changed").is_none(),
+        "`changed` is STRUCK (§18 row 2, ruled 2026-08-10) — nothing mints it, \
+         and the extras that DO exist ride verbatim: {body}"
     );
     assert!(
         trace.fault.is_none(),

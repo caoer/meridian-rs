@@ -159,7 +159,7 @@ pub enum CommitLeg {
     NotIssued,
     /// The §4.4 splice response, verbatim.
     Response(Box<RawValue>),
-    /// A §5.1 `fingerprint_mismatch{expected, actual, changed}`, verbatim. It is
+    /// A §5.1 `fingerprint_mismatch{expected, actual}`, verbatim. It is
     /// the splice's own response, so it embeds through the same one leg — the
     /// mismatch extras need no second shape either.
     Conflict(Box<RawValue>),
