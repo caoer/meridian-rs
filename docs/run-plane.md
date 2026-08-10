@@ -767,6 +767,43 @@ the face's wrote-lines zip descriptor × result exactly as put faces do today.
 The fault taxonomy is CLOSED at `parse | runtime | budget | refused`: a refusal
 is not a fault, and the two must grep apart.
 
+**A refusal carries the wire's refusal triple, TYPED** (docs-first, 2026-08-10).
+The fault of a `refused` run carries `code`, `recovery` and `reason` — the same
+triple the §8 error frame carries — and `recovery` is `wire::Recovery`, the
+closed six-class enum, taken from the **one** source the wire field's vocabulary
+comes from. Five clauses hold it:
+
+- **Never a fifth fault class.** Transient-vs-permanent is a PROPERTY of a
+  refusal, not a KIND of fault. A `transient` variant beside
+  `parse | runtime | budget | refused` would conflate two axes and silently
+  break every consumer that matches `refused`.
+- **Prose is a rendering, never the carrier.** `reason` keeps the engine's own
+  wording verbatim and the face keeps rendering it; a consumer that needs the
+  class reads the class. A downstream that pins a refusal's SPELLING is the
+  name-promise gap's manufacture channel, and this shape is what retires it.
+- **One source, with a stated precedence.** The daemon's own `error.recovery`
+  wins; when a frame carries none, the class is the §8 frozen table's binding
+  for its `code` (`ErrorCode::recovery()`) — the same table, never a second copy
+  of it. A code the engine cannot parse with no `recovery` beside it yields
+  absence, and absence stays absence.
+- **Engine-minted refusals name their class explicitly**, because no frame
+  minted one for them: an `expect_armed_mismatch` is `fix` (the armed set is not
+  the one authorized — re-arming is the caller's act), and an elapsed wall clock
+  before the commit is `retry` (nothing was sent, so the same request may
+  succeed). They carry no `code`: no wire code was minted, and inventing one
+  would put a value on the §8 surface that no daemon can answer with.
+- **The migration is ADDITIVE.** `code` and `recovery` are optional and omitted
+  when absent, so a consumer matching `outcome: refused` plus `fault.reason` is
+  byte-unaffected by a frame that carries neither.
+
+Why the class must cross here and not above: the engine KNOWS the refusal is
+transient — the daemon frame carries `recovery` first-class and the put door
+reads it — while the script path flattened it into `format!("{code}: {message}")`
+and lost it. **No host-side change can recover a class the engine destroyed
+before the boundary**; a face left with prose can only match strings. One engine,
+one refusal vocabulary: a door that reads it and a door that destroys it is the
+asymmetry this closes.
+
 **The `mrd script` human-mode face is non-normative.** The MCP host owns the
 normative text face, rendered from the trace; `mrd script --json` emitting the
 trace is the contract between them. The CLI's human mode is an operator
