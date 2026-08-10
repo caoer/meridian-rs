@@ -224,8 +224,9 @@ fn try_daemon_read(workspace: &Path, r: &Read) -> DaemonRead {
 /// instead of twice. It used to call [`engine::ensure_daemon`] first, whose own liveness test
 /// (`Client::ping`) opens a SEPARATE connection — two dials where one answers, and the daemon's
 /// accept loop polls a non-blocking listener on a fixed quantum, so each dial waits out its own
-/// sleep. That doubled the fixed cost of every warm read
-/// (`results/perf-finding-accept-poll-countdown-2026-08-09.md`).
+/// sleep. That doubled the fixed cost of every warm read: measured 40.2ms → 20.1ms, a 2.00x
+/// improvement, on the session receipt `09-11-mentor-8h-perfection-loop`
+/// `results/perf-finding-accept-poll-countdown-2026-08-09.md` (a session tree, not this repo).
 ///
 /// The pre-flight is NOT redundant, which is why it is reordered rather than deleted: its answer
 /// decides whether to AUTO-SPAWN, and dropping it outright would leave the first read after boot
