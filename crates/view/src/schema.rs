@@ -68,6 +68,13 @@ CREATE TABLE link (
     -- keeps meaning "a path in this corpus" ALWAYS, rather than only sometimes.
     dest_root      TEXT,                          -- mount name; NULL = ambient
     dest_root_path TEXT,                          -- the path INSIDE dest_root
+    -- Session decision 0034: WHY a dangling edge dangles, when its target IS a
+    -- real file the hash domain does not carry -- the §12.1 rule word
+    -- ('non-md' | 'dot-segment' | 'custom-ignore'). NULL for a resolved edge
+    -- AND for a genuine typo: a target with no file behind it earns no reason,
+    -- which is the discriminator this column exists to restore. `resolved`
+    -- keeps its exact meaning; this is read BESIDE it, never instead of it.
+    exclusion  TEXT,
     resolved   BOOLEAN  GENERATED ALWAYS AS (dest_path IS NOT NULL OR dest_root IS NOT NULL) VIRTUAL,  -- DERIVED, never stored
     span_start UBIGINT  NOT NULL,                 -- C1: Wikilink/Link/Embed node span
     span_end   UBIGINT  NOT NULL,

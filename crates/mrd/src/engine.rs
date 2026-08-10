@@ -104,7 +104,7 @@ pub(crate) fn run_command(path_arg: Option<&str>, format: Format) -> Result<(), 
             cwd.display()
         ))
     })?;
-    let answer = answer_links(&resolved.workspace, path_arg)?;
+    let answer = answer_links(&resolved.workspace, path_arg, format)?;
     // Read off the ANSWER, so warm and degrade voice one fact from one source:
     // an enumeration names the population it did not carry (§4.6 `excluded`).
     voice_excluded(&answer.body);
@@ -206,8 +206,16 @@ fn render_links_human(body: &Value) {
                 println!("    -> {root}:{dest} ({count})");
             }
         }
+        // Verdict then reason, spelled exactly as the refused rows below spell
+        // it — `(count, verdict reason)`. A reason rides only where the target
+        // is a real file the domain does not carry; a genuine typo keeps the
+        // bare `unresolved` it has always had (decision 0034).
+        let why = edges.get("unresolved_reason").and_then(Value::as_object);
         for (link, count) in unresolved.into_iter().flatten() {
-            println!("    -> {link} ({count}, unresolved)");
+            match why.and_then(|w| w.get(link)).and_then(Value::as_str) {
+                Some(reason) => println!("    -> {link} ({count}, unresolved {reason})"),
+                None => println!("    -> {link} ({count}, unresolved)"),
+            }
         }
         for (link, refusal) in refused.into_iter().flatten() {
             let tone = refusal
@@ -237,7 +245,16 @@ const PING_POLL: Duration = Duration::from_millis(25);
 /// Answer `links` for `workspace` (optional workspace-relative `path`): dial the resident
 /// daemon — auto-spawning it — and on any daemon-path failure degrade to the in-process
 /// ephemeral engine.
-pub(crate) fn answer_links(workspace: &Path, path: Option<&str>) -> Result<Answer, Fail> {
+///
+/// `format` reaches here only so the degrade's engine-refusal seam can publish the `--json`
+/// face's `{workspace, error}` envelope ([`in_process_links`]). THE WARM PATH NEVER REFUSES:
+/// [`try_daemon_links`] answers `None` on ANY daemon-path failure and this function degrades,
+/// so `links` has exactly ONE terminal engine-refusal seam and it is in the degrade.
+pub(crate) fn answer_links(
+    workspace: &Path,
+    path: Option<&str>,
+    format: Format,
+) -> Result<Answer, Fail> {
     if let Some(body) = try_daemon_links(workspace, path)
         && !daemon_answer_needs_the_address_plane(&body)
     {
@@ -246,7 +263,7 @@ pub(crate) fn answer_links(workspace: &Path, path: Option<&str>) -> Result<Answe
             body,
         });
     }
-    let body = in_process_links(workspace, path)?;
+    let body = in_process_links(workspace, path, format)?;
     Ok(Answer {
         source: EngineSource::Ephemeral,
         body,
@@ -583,7 +600,7 @@ pub(crate) fn call_line(
 /// The degrade: build the corpus in-process and answer through the same shared `links` read arm
 /// the daemon serves, then re-key it to the v3 vocabulary the CLI negotiated ([`dial_links`]
 /// sends `contract:v3`) so warm and degrade answers do not drift.
-fn in_process_links(workspace: &Path, path: Option<&str>) -> Result<Value, Fail> {
+fn in_process_links(workspace: &Path, path: Option<&str>, format: Format) -> Result<Value, Fail> {
     let canonical = workspace::canonicalize(workspace).map_err(|e| {
         Fail::tool(format!(
             "cannot resolve workspace {} ({e})",
@@ -624,7 +641,21 @@ fn in_process_links(workspace: &Path, path: Option<&str>) -> Result<Value, Fail>
         0,
         || Ok(live),
     )
-    .map_err(|e| Fail::tool(render_wire_error(&e)))?;
+    .map_err(|e| {
+        // THE `--json` FACE'S REFUSAL ENVELOPE, and the exit triad is deliberately NOT moved.
+        // This is the one leg of `links` where a `wire::ErrorBody` is the terminal outcome for an
+        // object the caller addressed, so it owes the frame (status.md § the `--json` face answers
+        // `{workspace, error}` on EVERY leg that can refuse). It stays a TOOL failure at exit 2:
+        // `links` spells its OWN finding — a refused edge — as `Fail::findings` at exit 1 below,
+        // so routing this engine refusal through `json_refusal` would tell a script the corpus
+        // holds a bad edge when the read itself never completed. Frame and exit are two
+        // judgements; `json_error_frame` emits one and leaves the other here.
+        //
+        // The frame names the workspace the CALLER passed, not `canonical`, so a refusal and a
+        // success from the same invocation carry the same `workspace` string.
+        json_error_frame(format, workspace, &e);
+        Fail::tool(render_wire_error(&e))
+    })?;
     let body = serde_json::to_value(&body)
         .map_err(|e| Fail::tool(format!("cannot render the answer: {e}")))?;
     // Run the same lifted projection the daemon runs (`root` → `fingerprint`). It re-keys under
