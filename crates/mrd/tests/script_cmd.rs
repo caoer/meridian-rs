@@ -12,6 +12,7 @@ use effects::ReadFace;
 use mrd::script::cmd::attempt;
 use mrd::script::{Door, ScriptOutcome, TraceEntry};
 use serde_json::{Value, json};
+use wire::Recovery;
 
 /// The entry fingerprint the fake daemon reports (§4.7).
 const ENTRY: &str = "b3:a90f13c7ba0e1d4f5c6b7a8990112233445566778899aabbccddeeff00112233";
@@ -708,4 +709,188 @@ fn read_sel_parse_is_the_only_section_parser_on_the_script_path() {
             );
         }
     }
+}
+
+// ── 9. the refusal triple crosses the boundary TYPED ──────────────────────────
+
+/// The only thing a class-reading consumer is allowed to look at.
+///
+/// It reads the TYPED field and nothing else — no prose, no code spelling. A
+/// consumer written this way cannot be broken by a re-worded engine message,
+/// which is the whole point of carrying the class instead of rendering it.
+fn transient(trace: &mrd::script::ScriptTrace) -> bool {
+    trace
+        .fault
+        .as_ref()
+        .and_then(|fault| fault.recovery)
+        .is_some_and(|recovery| recovery == Recovery::Retry)
+}
+
+/// **The planted positive.** A refusal that IS transient — the daemon's own
+/// `workspace_busy`, retry class, the contention a cooperating writer causes —
+/// crosses the script boundary typed, and a consumer reading only the type sees
+/// it. This class was destroyed before the boundary until now: the frame carried
+/// it, the script path flattened it into prose, and no host-side change could
+/// recover it.
+#[test]
+fn a_transient_refusal_crosses_typed_and_a_consumer_reads_it_as_transient() {
+    const BUSY: &str = r#"{"ok":false,"error":{"code":"workspace_busy","recovery":"retry","message":"another meridian writer holds .meridian/write.lock"}}"#;
+    let mut door = Fake::new().answering_splice(BUSY);
+    let trace = claim(&mut door, &["--actor", "8ab41c02"]);
+
+    assert_eq!(trace.outcome, ScriptOutcome::Refused);
+    let fault = trace.fault.as_ref().expect("a refusal names itself");
+    assert_eq!(
+        fault.recovery,
+        Some(Recovery::Retry),
+        "the daemon's own class, carried — not re-derived, not re-worded"
+    );
+    assert_eq!(fault.code.as_deref(), Some("workspace_busy"));
+    assert!(
+        transient(&trace),
+        "a consumer that reads only the type sees the transient class"
+    );
+}
+
+/// **The control arm.** A refusal that is NOT transient still reads permanent.
+/// Without this the lane could gain a declare-transient-for-everything path,
+/// which declares nothing: a class every refusal carries is not a class.
+///
+/// Both fixtures are the frames the pre-existing tests already use — neither
+/// carries a `recovery` field — so this also measures the precedence: absent on
+/// the frame, the class comes from the §8 frozen table via the code, and it
+/// comes out `fix`, never `retry`.
+#[test]
+fn a_permanent_refusal_still_reads_permanent() {
+    const PERMANENT: [(&str, &str); 2] = [
+        (
+            "would_corrupt",
+            r#"{"ok":false,"error":{"code":"would_corrupt","message":"the candidate loses containment of \"Goals\""}}"#,
+        ),
+        (
+            "guard_required",
+            r#"{"ok":false,"error":{"code":"guard_required","message":"frontmatter key \"owner\" changes existing content with no fingerprint"}}"#,
+        ),
+    ];
+    for (code, frame) in PERMANENT {
+        let mut door = Fake::new().answering_splice(frame);
+        let trace = claim(&mut door, &["--actor", "8ab41c02"]);
+
+        assert_eq!(trace.outcome, ScriptOutcome::Refused, "for {code}");
+        let fault = trace.fault.as_ref().expect("a refusal names itself");
+        assert_eq!(
+            fault.recovery,
+            Some(Recovery::Fix),
+            "{code} is the caller's to fix, and the §8 table is what says so"
+        );
+        assert!(!transient(&trace), "{code} must not read as transient");
+    }
+}
+
+/// A code this engine cannot parse, with no `recovery` beside it, yields
+/// ABSENCE — never a guess and never a default. A defaulted class would be the
+/// declare-something-for-everything shape one level down, and it would read as
+/// the daemon's word when nothing said it.
+#[test]
+fn an_unrecognized_code_with_no_class_beside_it_carries_no_class() {
+    const UNKNOWN: &str = r#"{"ok":false,"error":{"code":"a_code_from_a_later_engine","message":"whatever it means"}}"#;
+    let mut door = Fake::new().answering_splice(UNKNOWN);
+    let trace = claim(&mut door, &["--actor", "8ab41c02"]);
+
+    let fault = trace.fault.as_ref().expect("a refusal names itself");
+    assert_eq!(fault.recovery, None, "absence stays absence");
+    assert_eq!(
+        fault.code.as_deref(),
+        Some("a_code_from_a_later_engine"),
+        "the code is carried verbatim even when this engine cannot type it"
+    );
+    assert!(!transient(&trace));
+}
+
+/// A frame's OWN class wins over the table: the daemon is the authority on the
+/// refusal it minted, and a client that preferred its own table would overrule
+/// the sender. Planted with a deliberately disagreeing pair — the §8 table binds
+/// `would_corrupt` to `fix`, and this frame says `retry`.
+#[test]
+fn the_frames_own_class_wins_over_the_table() {
+    const DISAGREEING: &str = r#"{"ok":false,"error":{"code":"would_corrupt","recovery":"retry","message":"whatever this engine meant"}}"#;
+    let mut door = Fake::new().answering_splice(DISAGREEING);
+    let trace = claim(&mut door, &["--actor", "8ab41c02"]);
+
+    assert_eq!(
+        trace.fault.as_ref().and_then(|fault| fault.recovery),
+        Some(Recovery::Retry),
+        "the sender's own word, not this client's table"
+    );
+}
+
+/// The engine's OWN refusals name their class, because no frame named one for
+/// them — and they name two DIFFERENT classes, which is what proves the naming
+/// is a judgment per site rather than a constant. An elapsed clock sent nothing,
+/// so the same request may succeed (`retry`); a mismatched armed set will arm
+/// the same set on every re-run, so only the caller can change it (`fix`).
+///
+/// Neither carries a `code`: no wire code was minted, and inventing one would
+/// put a value on the §8 surface no daemon can answer with.
+#[test]
+fn an_engine_minted_refusal_names_its_own_class_and_no_code() {
+    let mut slow = StallingFake::new(std::time::Duration::from_millis(7_100));
+    let argv = ["--actor".to_owned(), "8ab41c02".to_owned()];
+    let elapsed = attempt(&argv, CLAIM, &mut slow).expect("the stalled attempt answers a trace");
+    let fault = elapsed.fault.as_ref().expect("a refusal names itself");
+    assert_eq!(fault.recovery, Some(Recovery::Retry));
+    assert_eq!(fault.code, None, "nothing crossed the wire, so no §8 code");
+    assert!(transient(&elapsed));
+
+    let mut door = Fake::new();
+    let mismatch = claim(
+        &mut door,
+        &[
+            "--actor",
+            "8ab41c02",
+            "--expect-armed",
+            "b3-armed:v1:deadbeef",
+        ],
+    );
+    let fault = mismatch.fault.as_ref().expect("a refusal names itself");
+    assert_eq!(mismatch.outcome, ScriptOutcome::Refused);
+    assert_eq!(fault.recovery, Some(Recovery::Fix));
+    assert_eq!(fault.code, None);
+    assert!(
+        !transient(&mismatch),
+        "a set the caller did not authorize is not fixed by running it again"
+    );
+}
+
+/// **The migration is additive, measured rather than argued.** The prose a
+/// consumer has always read is byte-identical, and the trace it deserializes
+/// from — captured BEFORE this change, with no `code` and no `recovery` in the
+/// fault — still parses, with both new fields absent.
+#[test]
+fn the_typed_class_is_additive_to_every_consumer_that_reads_the_prose() {
+    const REFUSAL: &str = r#"{"ok":false,"error":{"code":"would_corrupt","recovery":"fix","message":"the candidate loses containment of \"Goals\""}}"#;
+    let mut door = Fake::new().answering_splice(REFUSAL);
+    let trace = claim(&mut door, &["--actor", "8ab41c02"]);
+
+    assert_eq!(
+        trace.fault.as_ref().expect("a refusal names itself").reason,
+        "would_corrupt: the candidate loses containment of \"Goals\"",
+        "the rendering is unchanged to the byte — the class rides beside it, \
+         never inside it"
+    );
+
+    // A trace serialized by the engine BEFORE the two fields existed.
+    const PRE_CHANGE: &str = r#"{
+      "entry_fingerprint": "b3:a90f13c7",
+      "outcome": "refused",
+      "trace": [],
+      "fault": {"class": "refused", "reason": "would_corrupt: an older engine's words"},
+      "telemetry": {"fuel_used": 0, "mem_used": 0, "reads_used": 0, "wall_ms": 0}
+    }"#;
+    let old: mrd::script::ScriptTrace =
+        serde_json::from_str(PRE_CHANGE).expect("a pre-change trace still deserializes");
+    let fault = old.fault.expect("its fault survives the round trip");
+    assert_eq!(fault.code, None);
+    assert_eq!(fault.recovery, None);
+    assert_eq!(fault.reason, "would_corrupt: an older engine's words");
 }
