@@ -62,7 +62,8 @@ fn xxh64_rev8_matches_the_go_domain() {
 
 #[test]
 fn rebuild_refusals_match_the_u0_goldens() {
-    // 1. rev-less replace_section (ECAS, remedy embeds the Go-domain rev).
+    // 1. rev-less replace_section (ECAS; the remedy names NO rev — the only
+    //    value this layer holds is rev8, which no door accepts as a CAS).
     assert_err(
         run(
             DOC,
@@ -71,11 +72,11 @@ fn rebuild_refusals_match_the_u0_goldens() {
                 ..edit("replace_section", "Notes")
             }],
         ),
-        "ECAS: replace_section on \"Notes\" requires a fresh rev (whole-section rewrite is destructive) — read the section (md read) and pass its rev; current rev is 7a90261e",
+        "ECAS: replace_section on \"Notes\" requires a fresh rev (whole-section rewrite is destructive) — read the section and pass its rev",
         "replace-section-no-rev",
     );
 
-    // 2. rev-less all-occurrence replace (ECAS, rev in remedy).
+    // 2. rev-less all-occurrence replace (ECAS, no rev in remedy — as above).
     assert_err(
         run(
             DOC,
@@ -86,7 +87,7 @@ fn rebuild_refusals_match_the_u0_goldens() {
                 ..edit("replace", "Notes")
             }],
         ),
-        "ECAS: an all-occurrence replace requires a rev — read the section (md read) and pass its rev (7a90261e) to confirm the current content",
+        "ECAS: an all-occurrence replace requires a rev — read the section and pass its rev to confirm the current content",
         "replace-all-no-rev",
     );
 
