@@ -791,7 +791,9 @@ comes from. Five clauses hold it:
   the one authorized — re-arming is the caller's act), and an elapsed wall clock
   before the commit is `retry` (nothing was sent, so the same request may
   succeed). They carry no `code`: no wire code was minted, and inventing one
-  would put a value on the §8 surface that no daemon can answer with.
+  would put a value on the §8 surface that no daemon can answer with. The
+  arm-time single-write-file law refuses `fix` on the same reading — the script
+  armed a set no splice may carry, and only the script can change that.
 - **The migration is ADDITIVE.** `code` and `recovery` are optional and omitted
   when absent, so a consumer matching `outcome: refused` plus `fault.reason` is
   byte-unaffected by a frame that carries neither.
