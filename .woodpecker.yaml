@@ -228,7 +228,7 @@ steps:
   # deny.toml enforces the fork one-copy law, licenses, and sources — parity
   # with the GH lane's cargo-deny-action. cargo-deny is baked into the image
   # (Dockerfile.ci), so the lane is one command; the advisory DB still caches
-  # in the shared CARGO_HOME.
+  # in the shared CARGO_HOME — under a flock, see below.
   - name: "deny (cargo-deny: bans, licenses, sources, advisories)"
     depends_on: []
     image: *rust_image
@@ -241,7 +241,22 @@ steps:
       # root, which refuses another user's repo ("dubious ownership"). The
       # exception is root's global config inside this ephemeral container.
       - git config --global --add safe.directory '*'
-      - cargo deny check
+      # flock, because the advisory DB is a GIT WORKING COPY in shared cache,
+      # and unlike the cargo registry nothing locks it. Two pipelines running
+      # concurrently both `git fetch --depth=1` the same shallow clone and one
+      # of them dies on "fatal: shallow file has changed since we read it"
+      # (pipeline #34 — the same merge result was green as #35 when re-run with
+      # an empty queue). The lock is per-host, which is the scope of the race:
+      # /ci-cache is a host mount and both containers see the same inode.
+      # sccache tolerates the same overlap because its entries are
+      # content-addressed; a shallow clone is not.
+      #
+      # --log-level error: on green this lane printed 2408 lines, 2340 of them
+      # inclusion-graph trees for 12 duplicate-crate WARNINGS that gate
+      # nothing. -s keeps the per-check tallies, so the warning COUNT still
+      # prints — the number survives, its 2340-line graph does not. Any real
+      # error still prints in full, and the exit code is untouched.
+      - flock /ci-cache/meridian-rs/advisory-db.lock cargo deny --log-level error check -s
 
   # Harness bit-rot catches, not perf gates: one iteration per bench target,
   # then render the live claims table into the CI log. Wall-time numbers are
