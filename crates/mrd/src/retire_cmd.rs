@@ -930,9 +930,19 @@ fn run(args: &[String], writing: bool) -> Result<(), Fail> {
     // `wire_serve::domain_snapshot`, not `fs::`: it folds the root into the wire's
     // `Root` — the same token `splice`'s world guard compares `--expect-root` against.
     let (files, fingerprint) = wire_serve::domain_snapshot(&root).map_err(|e| {
+        // Two defects lived in one line here. (1) The `--json` face owes `{workspace, error}` on
+        // EVERY leg that can refuse (`docs/status.md` § teaching rows) and this leg published
+        // none — `json_error_frame`, not `json_refusal`, because this is a TOOL failure like the
+        // workspace legs above it and keeps exit 2 rather than becoming a `retire` finding.
+        // (2) It read `message` ALONE, and `domain_snapshot`'s `io_error` arm sets `cause` and
+        // NEVER `message` (`wire-serve/src/lib.rs` § `domain_snapshot`) — so the one arm this
+        // leg actually reports rendered as "cannot read the corpus: " with nothing after the
+        // colon, throwing away the cause the engine had measured. `refusal_text` is the one
+        // owner of that sentence and inlines an `io_error` cause.
+        crate::engine::json_error_frame(parsed.format, &root.0, &e);
         Fail::tool(format!(
             "cannot read the corpus: {}",
-            e.message.unwrap_or_default()
+            crate::engine::refusal_text(&e)
         ))
     })?;
     let (_index, docs, unserved) = fs::build_corpus(files);
