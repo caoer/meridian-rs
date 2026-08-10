@@ -1068,11 +1068,15 @@ pub fn links(
         _ => query::links(index, docs, path.map(|p| p.0.as_str())),
     };
     let live = live_root()?;
+    let domain = fs::domain::Domain::load(root).unwrap_or_default();
     Ok(ResponseBody::Links {
         as_of_root,
         live_root: live,
         changes_seq,
-        files: map.into_iter().map(|(p, e)| (p, into_wire(e))).collect(),
+        files: map
+            .into_iter()
+            .map(|(p, e)| (p, into_wire_with_reasons(root, &domain, e)))
+            .collect(),
         excluded: excluded_members(root, docs, unserved, path),
     })
 }
@@ -1139,19 +1143,59 @@ pub fn links_rooted(
         _ => query::links_rooted(index, docs, corpus, mounts, path.map(|p| p.0.as_str())),
     };
     let live = live_root()?;
+    let domain = fs::domain::Domain::load(root).unwrap_or_default();
     Ok(ResponseBody::Links {
         as_of_root,
         live_root: live,
         changes_seq,
-        files: map.into_iter().map(|(p, e)| (p, into_wire(e))).collect(),
+        files: map
+            .into_iter()
+            .map(|(p, e)| (p, into_wire_with_reasons(root, &domain, e)))
+            .collect(),
         excluded: excluded_members(root, docs, unserved, path),
     })
 }
 
+/// This file's unresolved edges that name a real out-of-domain file, keyed as
+/// `unresolved` keys them (§4.6, session decision 0034).
+///
+/// The classification is `fs::domain::link_target_exclusion` — the one mint
+/// the `sql link` projection also asks through, so the two planes cannot name
+/// one rule differently. Nothing is decided here.
+fn unresolved_reasons(
+    root: &fs::WorkspaceRoot,
+    domain: &fs::domain::Domain,
+    edges: &query::FileLinks,
+) -> BTreeMap<String, String> {
+    edges
+        .unresolved
+        .keys()
+        .filter_map(|target| {
+            fs::domain::link_target_exclusion(root, domain, target)
+                .map(|why| (target.clone(), why.word().to_owned()))
+        })
+        .collect()
+}
+
 /// One file's edges, as the wire carries them. Shared by both arms so the
 /// answer's shape never depends on which of them served it.
+/// [`into_wire`] with the §4.6 exclusion reasons attached — the ONE mint both
+/// link doors use, so the ambient and the rooted answer can never disagree
+/// about why one edge is unresolved.
+fn into_wire_with_reasons(
+    root: &fs::WorkspaceRoot,
+    domain: &fs::domain::Domain,
+    edges: query::FileLinks,
+) -> wire::FileLinks {
+    let reasons = unresolved_reasons(root, domain, &edges);
+    let mut out = into_wire(edges);
+    out.unresolved_reason = reasons;
+    out
+}
+
 fn into_wire(edges: query::FileLinks) -> wire::FileLinks {
     wire::FileLinks {
+        unresolved_reason: BTreeMap::new(),
         resolved: edges.resolved,
         unresolved: edges.unresolved,
         resolved_rooted: edges
