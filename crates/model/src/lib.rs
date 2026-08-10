@@ -1119,6 +1119,15 @@ pub fn candidate_of_batch(
 /// batch. On success, mints the sealed [`ValidatedBatch`] — the only path to
 /// `fs`.
 #[must_use]
+// SUPPRESSION, NOT A FIX (9eca88f7, 2026-08-10, authorized by fix/board 5d8bce96).
+// This is 102 lines against a threshold of 100. Splitting corruption-detection
+// code is the wrong change to make while `cargo test --workspace` is dark — it
+// had not executed in CI since 2026-08-09T10:09:33Z, and this `-D warnings` lint
+// was the last step standing between the repo and its test lane.
+// REMOVE THIS ATTRIBUTE when whoever owns `crates/model` splits the §5.1 ordering
+// into named steps with a green suite in front of them. The lint is stylistic;
+// nothing here is suppressed for correctness.
+#[allow(clippy::too_many_lines)]
 pub fn validate_batch(
     doc: &Document,
     live_root: Option<&MerkleRoot>,
