@@ -1,0 +1,35 @@
+# CI image for the Woodpecker fleet runner (.woodpecker.yaml).
+#
+# Bakes every per-lane setup step into the image so pipelines start at the
+# verdict, not at apt/rustup/binstall:
+#   - rustfmt + clippy        (was: `rustup component add` in 3 lanes)
+#   - python3-yaml            (was: apt-get in the test lane; the frontmatter
+#                              tests cross-validate the engine YAML against PyYAML)
+#   - mold                    (linker for every compiling lane; RUSTFLAGS below)
+#   - cargo-deny + sccache    (was: binstall download+install in the deny lane)
+#
+# Built and rebuilt BY HAND on the runner (workstation-nyc-2); the steps
+# reference it with pull: false, so there is no registry round-trip:
+#
+#   docker build -f Dockerfile.ci -t meridian-ci:2026-08-10 .
+#
+# Recut = build a NEW tag and bump &rust_image in .woodpecker.yaml, so a
+# pipeline can only ever run against the recipe it names. rust:1-bookworm
+# keeps the toolchain on rolling stable — parity with the GH lane's
+# dtolnay/rust-toolchain@stable — but the move happens at image rebuild
+# time, not by floating pull mid-pipeline.
+FROM rust:1-bookworm
+
+RUN rustup component add rustfmt clippy
+
+# mold needs a driver that accepts -fuse-ld=mold: bookworm's gcc 12 does.
+# wget stays for the binstall bootstrap below.
+RUN apt-get -qq update \
+ && apt-get -qq install -y --no-install-recommends python3-yaml mold wget \
+ && rm -rf /var/lib/apt/lists/*
+
+# Prebuilt binaries, no compile. Installed to /usr/local/bin so the test
+# lane's non-root ci user can exec them (cargo subcommands resolve via PATH).
+RUN wget -q -O- "https://github.com/cargo-bins/cargo-binstall/releases/latest/download/cargo-binstall-$(uname -m)-unknown-linux-musl.tgz" \
+      | tar -xz -C /usr/local/bin \
+ && cargo binstall -y --install-path /usr/local/bin cargo-deny sccache

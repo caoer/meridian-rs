@@ -1,22 +1,278 @@
+# Correctness lane on the fleet runner. Steps are named so a red pipeline
+# names its own defect instead of saying "test failed".
+#
+# DAG, NOT SERIAL: every step declares `depends_on: []`, so all lanes start
+# together and each always produces its own verdict. The previous revision
+# ordered tests first because a serial pipeline aborts the remaining steps on
+# the first failure — a lint nit converted the test verdict into SKIPPED. The
+# DAG removes that coupling structurally: no verdict can mask another, and a
+# new lane cannot reintroduce the problem by being inserted in the wrong slot.
+#
+# What makes the parallelism safe:
+#   - CARGO_HOME shares ONLY the registry/git cache (host /var/cache/ci via
+#     the agent's WOODPECKER_BACKEND_DOCKER_VOLUMES) — cargo locks it
+#     correctly under concurrent pipelines. A shared target dir would race:
+#     a parallel build of another commit deletes test binaries between build
+#     and run, so target dirs stay inside the per-pipeline workspace.
+#   - sccache shards its disk cache PER LANE under the same host mount: a
+#     disk cache is single-server, and the lanes run concurrently. The shard
+#     survives pipelines — that cross-pipeline reuse is the point — and a
+#     rare same-lane overlap of two pipelines degrades to a cache miss,
+#     never a wrong artifact (entries are content-addressed and decoded on
+#     read). sccache wraps COMPILES only; linking is mold's job (RUSTFLAGS).
+#   - The workspace is SHARED: any lane that writes a TRACKED file races
+#     every lane that reads the tree (build_identity asserts tree state —
+#     pipeline #25). Lanes may write only untracked paths: target dirs,
+#     /tmp, the /ci-cache mount.
+#   - Root lanes share the workspace ./target; cargo's build-dir flock
+#     serializes their compiles (flock works across containers on one host).
+#   - The test lane runs as a non-root user in its own ./target-ci, so
+#     root-owned artifacts and the ci user's builds never collide.
+#
+# Event filter is workflow-level: every step inherits it, so a new step cannot
+# be added without one.
+when:
+  - event: [push, pull_request, manual]
+
 labels:
   hostname: workstation-nyc-2
 
+variables:
+  # Local image, built from Dockerfile.ci on the runner and referenced with
+  # pull: false on every step. It bakes the old per-lane setup (rustfmt/clippy
+  # components, python3-yaml, mold, cargo-deny, sccache) so pipelines start at
+  # the verdict. The toolchain still tracks stable — parity with the GH lane's
+  # dtolnay/rust-toolchain@stable — but moves by image rebuild + tag bump
+  # here, not by a floating pull at CI time.
+  - &rust_image "meridian-ci:2026-08-10"
+  - &cargo_home /ci-cache/meridian-rs/cargo
+  # Cap per-lane build parallelism. cargo's jobserver is shared with the cc
+  # crate, so this also bounds the parallel cc1plus instances compiling the
+  # bundled DuckDB amalgamation (~1.5 GB each). Unbounded on the 30-core /
+  # 58 GB runner, two lanes building DuckDB concurrently OOM-killed cc1plus
+  # (pipeline #20: "error: Killed signal terminated program cc1plus").
+  - &build_jobs "8"
+  # Cap per-lane sccache shard. The bundled-DuckDB objects dominate a warm
+  # shard; 30G is ~10x that. If --show-stats shows evictions, raise the test
+  # shard first — it holds the most profile variants.
+  - &sccache_size "30G"
+
 steps:
-  - name: test
-    image: rust:1
+  # The suite.
+  #
+  # The frontmatter tests cross-validate the engine's YAML against PyYAML
+  # (python3-yaml is in the image). The fs permission tests build
+  # "unreadable" fixtures with chmod, and root bypasses permission bits — so
+  # run cargo as a created non-root user. setpriv preserves PATH and CARGO_*
+  # (no PAM, no env reset). The mount tests also precondition an existing XDG
+  # base dir ($HOME/.config).
+  #
+  # CARGO_PROFILE_TEST_DEBUG=0: mrd and every mrd test binary statically
+  # embed bundled libduckdb; duplicated debug info is the bulk of the target
+  # dir (it SIGBUS'd rust-lld on the GH runners). Env var, NOT a Cargo.toml
+  # [profile] edit — local dev builds keep full debug.
+  - name: test (cargo test --workspace --locked)
+    depends_on: []
+    image: *rust_image
+    pull: false
     environment:
-      # Share only the registry/git cache — cargo locks it correctly under
-      # concurrent pipelines. A shared target dir races: a parallel build of
-      # another commit deletes test binaries between build and run.
-      CARGO_HOME: /ci-cache/meridian-rs/cargo
+      CARGO_HOME: *cargo_home
+      CARGO_TARGET_DIR: target-ci
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_BUILD_JOBS: *build_jobs
+      # Cargo strips color on a non-TTY unless told otherwise; Woodpecker's
+      # log viewer renders ANSI. Errors arrive already highlighted.
+      CARGO_TERM_COLOR: always
+      # Fresh target dir per pipeline: incremental state would be pure write
+      # overhead. sccache (below) is the cross-pipeline reuse mechanism.
+      CARGO_INCREMENTAL: "0"
+      # RUSTC_WRAPPER caches rustc; the CC/CXX wrappers cache the
+      # bundled-DuckDB cc1plus compiles (the cc crate splits wrapper+command).
+      # Per-lane SCCACHE_DIR shard — see the header.
+      RUSTC_WRAPPER: sccache
+      SCCACHE_DIR: /ci-cache/sccache/test
+      SCCACHE_CACHE_SIZE: *sccache_size
+      CC: "sccache cc"
+      CXX: "sccache c++"
+      # mold over GNU ld: this lane links many binaries that statically embed
+      # libduckdb. mold is in the image; bookworm's gcc 12 accepts
+      # -fuse-ld=mold.
+      RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
     commands:
-      # The frontmatter tests cross-validate the engine's YAML against PyYAML.
-      - apt-get -qq update && apt-get -qq install -y python3-yaml
-      # The fs permission tests build "unreadable" fixtures with chmod, and
-      # root bypasses permission bits — so run cargo as a created non-root
-      # user. setpriv preserves PATH and CARGO_HOME (no PAM, no env reset).
-      # The mount tests also precondition an existing XDG base dir ($HOME/.config).
       - useradd -m ci
-      - mkdir -p /home/ci/.config "$CARGO_HOME"
-      - chown -R ci:ci . "$CARGO_HOME" /home/ci
-      - setpriv --reuid=ci --regid=ci --init-groups env HOME=/home/ci cargo test --workspace --locked
+      - mkdir -p /home/ci/.config target-ci "$CARGO_HOME" "$SCCACHE_DIR"
+      # chown the sources but NOT ./target — the root lanes write it
+      # concurrently, and a recursive chown over a churning tree fails on
+      # paths that vanish mid-walk.
+      - find . -mindepth 1 -maxdepth 1 ! -name 'target*' -exec chown -R ci:ci {} +
+      - chown ci:ci . target-ci && chown -R ci:ci "$CARGO_HOME" "$SCCACHE_DIR" /home/ci
+      # Compile the test binaries in their OWN fold, so the suite's fold holds
+      # verdicts and nothing else. On green this fold is near-empty; on a
+      # compile error the diagnostics still print here, and the suite fold
+      # below is then obviously absent rather than buried.
+      - setpriv --reuid=ci --regid=ci --init-groups env HOME=/home/ci cargo test --workspace --locked --no-run -q
+      # --no-fail-fast: one failing test binary must not trade away the other
+      # binaries' verdicts (pipeline #25 lost ~80% of the suite's evidence to
+      # a single red binary). Inner bash for pipefail — tee must not mask
+      # cargo's exit code; the outer step shell stays POSIX.
+      #
+      # The evidence count runs in the SAME command as the suite: a failing
+      # command aborts a step's remaining commands, so a separate gate line
+      # can never fire on the zero-evidence red it exists for (OOM-killed
+      # compiler: red exit, no test output). The count prints on every path —
+      # a silently shrinking suite is the failure mode nobody watches for —
+      # and a green exit with zero evidence lines is a broken harness, so it
+      # fails the step.
+      #
+      # -q does BOTH jobs: it suppresses cargo's per-crate `Fresh`/`Running`
+      # restamp AND forwards --quiet to libtest (one character per test).
+      # Writing `-q -- --quiet` as well is what pipeline #30 died of —
+      # "error: Option 'quiet' given more than once", every binary red, zero
+      # evidence lines. Do not add it back. Neither flag touches the
+      # evidence: `^test result` lines print in both modes, so the gate below
+      # counts exactly what it counted before, and a FAILING test still prints
+      # its name, its panic, and its captured output in full. The trade
+      # accepted (ZT, 2026-08-10): suite.log keeps binary-level counts, not the
+      # name of every passing test.
+      - |
+        set +e
+        setpriv --reuid=ci --regid=ci --init-groups env HOME=/home/ci bash -o pipefail -c 'cargo test --workspace --locked --no-fail-fast -q 2>&1 | tee target-ci/suite.log'
+        rc=$?
+        set -e
+        lines=$(grep -c '^test result' target-ci/suite.log || true)
+        echo "evidence lines: $lines"
+        if [ "$rc" -ne 0 ]; then
+          [ "$lines" -gt 0 ] || echo "NO MEASUREMENT — this red is not a test verdict; the build died before any test ran"
+          exit "$rc"
+        fi
+        test "$lines" -gt 0
+      # Hit rates in the log make cache regressions diagnosable; the sccache
+      # server is ci's, so ask it as ci. Stats must not gate the suite's
+      # verdict, but their absence must be loud — a wedged shard degrades to
+      # silent 0% hits, not to an error.
+      - setpriv --reuid=ci --regid=ci --init-groups env HOME=/home/ci sccache --show-stats || echo "WARNING sccache stats unavailable — caching may be inoperative"
+
+  - name: fmt (cargo fmt --all --check)
+    depends_on: []
+    image: *rust_image
+    pull: false
+    commands:
+      - cargo fmt --all --check
+
+  - name: clippy (workspace lint policy, escalated)
+    depends_on: []
+    image: *rust_image
+    pull: false
+    environment:
+      CARGO_HOME: *cargo_home
+      CARGO_BUILD_JOBS: *build_jobs
+      CARGO_INCREMENTAL: "0"
+      RUSTC_WRAPPER: sccache
+      SCCACHE_DIR: /ci-cache/sccache/clippy
+      SCCACHE_CACHE_SIZE: *sccache_size
+      CC: "sccache cc"
+      CXX: "sccache c++"
+      RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+      CARGO_TERM_COLOR: always
+    commands:
+      # -q: a green lane prints NOTHING, so an empty fold is the verdict and
+      # costs no scan. A red lane still prints every diagnostic.
+      - cargo clippy -q --workspace --all-targets --locked -- -D warnings
+      - sccache --show-stats || echo "WARNING sccache stats unavailable — caching may be inoperative"
+
+  # The perf lane's targets are feature-gated, so --all-targets above skips
+  # them. Lint them here so they cannot bit-rot: this COMPILES the asserts, it
+  # never runs them. The list is DERIVED, not typed — a `required-features =
+  # ["perf-walltime"]` target added tomorrow is picked up automatically, which
+  # the hand-maintained list in .github/workflows/ci.yml was not (it had
+  # already drifted: links_multiroot_cpu and sql_multiroot_cpu were missing).
+  - name: clippy the perf-gated targets (compiled here, never run)
+    depends_on: []
+    image: *rust_image
+    pull: false
+    environment:
+      CARGO_HOME: *cargo_home
+      CARGO_BUILD_JOBS: *build_jobs
+      CARGO_INCREMENTAL: "0"
+      RUSTC_WRAPPER: sccache
+      SCCACHE_DIR: /ci-cache/sccache/clippy-perf
+      SCCACHE_CACHE_SIZE: *sccache_size
+      CC: "sccache cc"
+      CXX: "sccache c++"
+      RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+      CARGO_TERM_COLOR: always
+    commands:
+      - |
+        set -eu
+        found=0
+        for manifest in crates/*/Cargo.toml; do
+          pkg=$(basename "$(dirname "$manifest")")
+          grep -q '^perf-walltime = ' "$manifest" || continue
+          # every [[test]] block whose required-features names perf-walltime
+          targets=$(awk '
+            /^\[\[test\]\]/      { name=""; next }
+            /^name *= *"/        { gsub(/^name *= *"|"$/,""); name=$0 }
+            /perf-walltime/ && /required-features/ && name { print name; name="" }
+          ' "$manifest")
+          for t in $targets; do
+            echo "--- clippy $pkg --test $t"
+            cargo clippy -q -p "$pkg" --features perf-walltime --test "$t" --locked -- -D warnings
+            found=$((found + 1))
+          done
+        done
+        # A wrong path returns zero targets silently; refuse that.
+        test "$found" -gt 0 || { echo "no perf-gated targets discovered — the discovery is broken, not the repo"; exit 1; }
+        echo "linted $found perf-gated targets"
+      - sccache --show-stats || echo "WARNING sccache stats unavailable — caching may be inoperative"
+
+  # deny.toml enforces the fork one-copy law, licenses, and sources — parity
+  # with the GH lane's cargo-deny-action. cargo-deny is baked into the image
+  # (Dockerfile.ci), so the lane is one command; the advisory DB still caches
+  # in the shared CARGO_HOME.
+  - name: "deny (cargo-deny: bans, licenses, sources, advisories)"
+    depends_on: []
+    image: *rust_image
+    pull: false
+    environment:
+      CARGO_HOME: *cargo_home
+    commands:
+      # The advisory-db cache in shared CARGO_HOME ends up owned by the test
+      # lane's ci user (uid 1000); cargo-deny shells out to the git CLI as
+      # root, which refuses another user's repo ("dubious ownership"). The
+      # exception is root's global config inside this ephemeral container.
+      - git config --global --add safe.directory '*'
+      - cargo deny check
+
+  # Harness bit-rot catches, not perf gates: one iteration per bench target,
+  # then render the live claims table into the CI log. Wall-time numbers are
+  # NEVER gated in this lane — that stays perf.yml's job.
+  # bench-report runs --release so it reuses the bench-profile artifacts
+  # `cargo bench` just compiled (bench inherits release); a dev-profile run
+  # would rebuild the same dep tree a second time.
+  - name: bench smoke + claim verdicts (perfsuite harness)
+    depends_on: []
+    image: *rust_image
+    pull: false
+    environment:
+      CARGO_HOME: *cargo_home
+      CARGO_BUILD_JOBS: *build_jobs
+      CARGO_INCREMENTAL: "0"
+      RUSTC_WRAPPER: sccache
+      SCCACHE_DIR: /ci-cache/sccache/bench
+      SCCACHE_CACHE_SIZE: *sccache_size
+      CC: "sccache cc"
+      CXX: "sccache c++"
+      RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+      CARGO_TERM_COLOR: always
+    commands:
+      # -q on both invocations: the claims table is the output of this lane,
+      # and a compile scroll ahead of it is what buries it.
+      - cargo bench -q -p perfsuite --locked -- --test
+      # --results redirects the renderings into the ignored target dir. The
+      # default results/ dir is GIT-TRACKED, and lanes share one workspace:
+      # rewriting it mid-pipeline dirtied the tree under the test lane, whose
+      # build_identity test asserts binary identity == git state (pipeline
+      # #25 — a race the bench lane won only when its cache was warm). The
+      # table still prints to stdout for the CI log.
+      - cargo run -q --locked --release -p perfsuite --bin bench-report -- --results target/ci-results
+      - sccache --show-stats || echo "WARNING sccache stats unavailable — caching may be inoperative"
