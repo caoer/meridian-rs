@@ -383,6 +383,16 @@ pub(crate) fn refusal_text(error: &ErrorBody) -> String {
 /// tell an absent frame from success with no output, so every leg of a `--json` face that can
 /// refuse emits one. Human format prints nothing here and the exit triad is untouched.
 pub(crate) fn json_refusal(format: Format, workspace: &Path, error: &ErrorBody) -> Fail {
+    json_error_frame(format, workspace, error);
+    refusal_fail(error)
+}
+
+/// The envelope ALONE, with no exit code attached — the frame half of [`json_refusal`] for the
+/// legs whose triad is the verb's own judgement. `mrd repair`'s lock-door refusal is a TOOL
+/// failure (exit 2); routing it through [`json_refusal`] would publish the frame and
+/// simultaneously tell a scripted caller a pin was unrecoverable (exit 1). Frame and exit are
+/// two judgements: this emits one and leaves the other to the caller.
+pub(crate) fn json_error_frame(format: Format, workspace: &Path, error: &ErrorBody) {
     if matches!(format, Format::Json) {
         let mut frame = json!({
             "error": serde_json::to_value(error).expect("json"),
@@ -401,7 +411,6 @@ pub(crate) fn json_refusal(format: Format, workspace: &Path, error: &ErrorBody) 
             .expect("json")
         );
     }
-    refusal_fail(error)
 }
 
 /// A message-less refusal, spelled out: name the failure, say what did not happen, give the fix.

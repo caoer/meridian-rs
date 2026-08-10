@@ -109,7 +109,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
 
     let prefix = repo_prefix(&repo, &root)?;
     let outcomes = recover(&repo, &lost, &prefix)?;
-    let applied = apply(&root, &docs, &outcomes, parsed.dry)?;
+    let applied = apply(&root, &docs, &outcomes, parsed.dry, parsed.format, &canonical)?;
 
     let true_loss = outcomes.iter().filter(|o| o.recovered.is_none()).count();
     emit(
@@ -481,6 +481,8 @@ fn apply(
     docs: &BTreeMap<String, Document>,
     outcomes: &[Outcome],
     dry: bool,
+    format: Format,
+    workspace: &std::path::Path,
 ) -> Result<usize, Fail> {
     floor(root, outcomes)?;
     let mut by_page: BTreeMap<&str, Vec<&Outcome>> = BTreeMap::new();
@@ -526,6 +528,9 @@ fn apply(
             dry,
         };
         lock_write(root, None, &args).map_err(|e| {
+            // The `--json` face owes a frame on every leg that can refuse; the exit triad stays
+            // this verb's — a refused door is a TOOL failure, never the findings leg.
+            crate::engine::json_error_frame(format, workspace, &e);
             // The door's own words, verbatim — the CLI re-spells no refusal.
             let code = serde_json::to_value(e.code)
                 .ok()
