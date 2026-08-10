@@ -404,7 +404,7 @@ fn commit(door: &mut dyn Door, parsed: &Script, eval: &ScriptEval, entry: &str) 
         Err(e) => {
             return CommitLeg::Unknown(lost_answer(
                 parsed.dry,
-                format!("the daemon did not answer `splice`: {e}"),
+                &format!("the daemon did not answer `splice`: {e}"),
             ));
         }
     };
@@ -415,7 +415,7 @@ fn commit(door: &mut dyn Door, parsed: &Script, eval: &ScriptEval, entry: &str) 
         Err(e) => {
             return CommitLeg::Unknown(lost_answer(
                 parsed.dry,
-                format!("the daemon's answer to `splice` would not parse: {e}"),
+                &format!("the daemon's answer to `splice` would not parse: {e}"),
             ));
         }
     };
@@ -428,7 +428,7 @@ fn commit(door: &mut dyn Door, parsed: &Script, eval: &ScriptEval, entry: &str) 
         // gets. Re-read; the workspace, not this trace, is the authority now.
         (true, None, _) => CommitLeg::Unknown(lost_answer(
             parsed.dry,
-            "`splice` answered ok with no body, so there is no commit fact to carry".to_owned(),
+            "`splice` answered ok with no body, so there is no commit fact to carry",
         )),
         // A moved world is the conflict leg: the mismatch extras ride the
         // daemon's own bytes, so `{expected, actual, changed}` need no re-typing.
@@ -468,7 +468,7 @@ fn commit(door: &mut dyn Door, parsed: &Script, eval: &ScriptEval, entry: &str) 
 ///
 /// No `code`: no frame minted one, and inventing a §8 value no daemon can answer
 /// with is the thing the triple's own clause forbids.
-fn lost_answer(dry: bool, locus: String) -> Refusal {
+fn lost_answer(dry: bool, locus: &str) -> Refusal {
     if dry {
         return Refusal::minted(
             Recovery::Retry,
