@@ -10,6 +10,8 @@ steps:
       # another commit deletes test binaries between build and run.
       CARGO_HOME: /ci-cache/meridian-rs/cargo
     commands:
+      # The frontmatter tests cross-validate the engine's YAML against PyYAML.
+      - apt-get -qq update && apt-get -qq install -y python3-yaml
       # The fs permission tests build "unreadable" fixtures with chmod, and
       # root bypasses permission bits — so run cargo as a created non-root
       # user. setpriv preserves PATH and CARGO_HOME (no PAM, no env reset).
