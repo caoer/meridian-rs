@@ -672,7 +672,6 @@ fn error_body_key_set_is_frozen_plus_the_v3_ladder_extras() {
             "as_of_root",
             "candidates",
             "cause",
-            "changed",
             "code",
             "dest",
             "diff",
