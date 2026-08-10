@@ -342,9 +342,16 @@ fn board_rows(ws: &Path) -> Vec<BoardRow> {
 /// planes with three different kinds of visibility, which agree on any pin
 /// they all see.
 ///
-/// Builds the one corpus criterion 3 is read over, with both dangling
-/// flavours: `dangling-anchor` (the page resolves, the anchor does not) and
-/// `selector-unresolved` (the page does not exist).
+/// Builds the one corpus criterion 3 is read over, with all THREE address
+/// flavours: `dangling-anchor` (the page resolves, the anchor does not),
+/// `selector-unresolved` (the page resolves, the heading does not) and
+/// `file-not-found` (the page is not on disk at all).
+///
+/// **The third used to be spelled `selector-unresolved` here, and session
+/// decision 0054 ruled that word false over a page that is gone** — with no page
+/// there is no resolution to assert. The state did not disappear when the word
+/// moved, so the corpus gained a cell rather than trading one: `unresolved.md`
+/// now dangles a HEADING on a page that EXISTS, which is where the word is true.
 ///
 /// Returns the `(page, expected walk verdict)` table, so the states the corpus
 /// contains and the states the planes are checked against cannot drift apart.
@@ -403,10 +410,20 @@ fn build_every_state_corpus(sb: &Sandbox, ws: &Path) -> Vec<(&'static str, &'sta
         "dangling.md",
         &locked_page("dangling", "t_ok.md#^nosuchanchor", &control_token),
     );
+    // The page EXISTS and the heading does not — the world `selector-unresolved`
+    // describes truthfully, kept in the corpus so scoping the word did not
+    // silently retire the state it names.
     write(
         ws,
         "unresolved.md",
-        &locked_page("unresolved", "nosuch.md#T/Section", &control_token),
+        &locked_page("unresolved", "t_ok.md#T/Nosuchheading", &control_token),
+    );
+    // The page is NOT ON DISK — decision 0054's cell. Distinct from both
+    // resolution reds, because neither of them resolved anything.
+    write(
+        ws,
+        "notfound.md",
+        &locked_page("notfound", "nosuch.md#T/Section", &control_token),
     );
     write(
         ws,
@@ -436,15 +453,24 @@ fn build_every_state_corpus(sb: &Sandbox, ws: &Path) -> Vec<(&'static str, &'sta
         ("green.md", "green"),
         ("control.md", "green"),
         ("drifted.md", "red content-drifted"),
-        // The dangling pin's target page still carries `^section`, so the d1
-        // F6b nearest-candidate hint rides the detail slot; the unresolved
-        // pin's page VANISHED, so there is nothing to offer and the label
-        // stays bare — the two reds stay distinct in cause and in hint.
+        // The two resolution reds both have a live page to draw hints from, so
+        // the d1 F6b nearest-candidate hint rides the detail slot for each.
+        // `notfound.md` has no live page at all, so it offers a MEASURED
+        // ABSENCE instead of a hint — which is precisely why 0054 gave it its
+        // own word: the empty hint used to be the only signal, and it was
+        // rendered as a bare label indistinguishable from "no near match".
         (
             "dangling.md",
             "red dangling-anchor (nearest live anchors: ^section)",
         ),
-        ("unresolved.md", "red selector-unresolved"),
+        (
+            "unresolved.md",
+            "red selector-unresolved (nearest live headings: T/Section, T)",
+        ),
+        (
+            "notfound.md",
+            "red file-not-found (this workspace holds no 'nosuch.md')",
+        ),
         (
             "unverifiable.md",
             "grey unverifiable-fingerprint (unknown version)",
@@ -528,6 +554,10 @@ fn read_status_plane(sb: &Sandbox, ws: &Path) {
         "content-drifted",
         "dangling-anchor",
         "selector-unresolved",
+        // Decision 0054's word: the corpus now carries a cell that reds on a
+        // MEASURED ABSENCE, and leaving it off this list would let the rollup
+        // name it while the count read zero — a silent pass.
+        "file-not-found",
         "unverifiable-fingerprint",
         "malformed-fingerprint",
         "lock-refused",
@@ -567,6 +597,15 @@ fn criterion_3_one_corpus_every_state_three_kinds_of_visibility() {
         ("drifted.md", "red", "content-drifted"),
         ("green.md", "green", "attested"),
         ("malformed.md", "grey", "malformed-fingerprint"),
+        // ⛔ NOT `file-not-found`, and the divergence from plane 1 is DELIBERATE
+        // and re-asserted on its own below rather than absorbed here.
+        // `open_board` takes a docs map and NOTHING else — no root, no domain,
+        // no disk — so its corpus answers `on_ambient_disk` with `None`, which
+        // means CANNOT SAY. Decisions 0049 and 0054 both rest on a MEASURED
+        // absence, and a plane holding no filesystem has measured nothing. The
+        // pre-0049 verdict standing here is the `None` floor working exactly as
+        // `RootedCorpus::on_ambient_disk` documents, not the law failing.
+        ("notfound.md", "red", "selector-unresolved"),
         ("refused.md", "grey", "lock-refused"),
         ("unresolved.md", "red", "selector-unresolved"),
         ("unverifiable.md", "grey", "unverifiable-fingerprint"),
@@ -582,16 +621,32 @@ fn criterion_3_one_corpus_every_state_three_kinds_of_visibility() {
 
     // ── THE AGREEMENT ASSERT: walk vs board, value-for-value, per state ───────
     // `mrd status` is excluded on purpose — it has no per-pin grain (R26).
-    for (page, walk_label) in &walk_seen {
+    //
+    // ⛔ ONE STATE IS EXCLUDED, AND IT IS EXCLUDED BY NAME AND THEN ASSERTED
+    // SEPARATELY — never skipped. The planes agree on everything they BOTH CAN
+    // SEE, and `notfound.md` is the one state the board plane cannot see:
+    // `open_board` is handed a docs map with no root, no domain and no disk, so
+    // the existence question decisions 0049 and 0054 turn on is unanswerable
+    // there. Dropping it from the loop with no assert would let a future real
+    // disagreement hide in the same hole, so the divergence gets a gate of its
+    // own below and its exact expected pair is spelled out.
+    let board_label_of = |page: &str| {
         let row = board
             .iter()
-            .find(|r| &r.src_path == page)
+            .find(|r| r.src_path == page)
             .unwrap_or_else(|| panic!("board has no row for {page}"));
-        let board_label = if row.reason == "attested" {
+        if row.reason == "attested" {
             row.color.clone()
         } else {
             format!("{} {}", row.color, row.reason)
-        };
+        }
+    };
+    let disk_blind = "notfound.md";
+    for (page, walk_label) in &walk_seen {
+        if page == disk_blind {
+            continue;
+        }
+        let board_label = board_label_of(page);
         // walk's grey reasons carry a parenthesised detail the board's frozen
         // column list does not; compare on the stable reason word.
         let walk_word = walk_label.split(" (").next().unwrap_or(walk_label);
@@ -602,6 +657,26 @@ fn criterion_3_one_corpus_every_state_three_kinds_of_visibility() {
              both see"
         );
     }
+
+    // The excluded state, gated as the exact pair it is. This assert fails BOTH
+    // ways on purpose: if the board ever gains a disk it must be updated, and if
+    // `walk` ever loses the measured absence the fix regressed.
+    let walk_notfound = walk_seen
+        .iter()
+        .find(|(p, _)| p == disk_blind)
+        .map(|(_, l)| l.as_str())
+        .expect("walk has a row for the disk-blind state");
+    assert_eq!(
+        (walk_notfound, board_label_of(disk_blind).as_str()),
+        (
+            "red file-not-found (this workspace holds no 'nosuch.md')",
+            "red selector-unresolved"
+        ),
+        "THE ONE NAMED DIVERGENCE: `walk` holds a disk and MEASURES the absence \
+         (decisions 0049/0054); the board plane holds none, answers CANNOT SAY, \
+         and keeps the pre-0049 verdict rather than guessing. Two planes, one \
+         pin, and the difference is the EVIDENCE each was given — not the law."
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

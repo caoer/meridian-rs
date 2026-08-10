@@ -1326,6 +1326,23 @@ pub struct FileLinks {
     /// address. Omitted when empty.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub refused: BTreeMap<String, RefusedEdge>,
+    /// v2 §4.6 (session decision 0034) — WHY an `unresolved` edge is
+    /// unresolved, for the subset whose target IS a real file the hash domain
+    /// does not carry: the §12.1 rule word (`non-md`, `dot-segment`,
+    /// `custom-ignore`).
+    ///
+    /// ADDITIVE AND SUBSET, both deliberately. `unresolved` keeps every key it
+    /// had and `resolved` stays a bool, so the Obsidian mirror (§4.6) is
+    /// untouched — this map is read BESIDE the edge, never instead of it. And
+    /// a key is present here only when a file is really on disk under that
+    /// path: **a genuine typo carries no reason**, which is the whole
+    /// discriminator. Four facts collapsed to one word before this field
+    /// existed, leaving an excluded file indistinguishable from a broken link.
+    ///
+    /// Reason-beside-verdict is the engine's own idiom (`model::selector`'s
+    /// `Color` carries its reason for the same purpose), not an invention.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unresolved_reason: BTreeMap<String, String>,
 }
 
 /// One refused edge on the §4.6 map: the colour plane's own verdict,

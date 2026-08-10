@@ -6,9 +6,34 @@
 //! parsing agent, from success with no output.
 //!
 //! This suite gates the FAMILY, not those two doors: every door below is driven at a real
-//! exit-1 leg, and each one must serve the envelope. A door added later that mints a frameless
-//! engine refusal cannot compile (`engine::refusal_fail` is private), and a door that regresses
-//! its envelope fails here.
+//! refusal leg, and each one must serve the envelope.
+//!
+//! ⛔ THIS HEADER USED TO CLAIM: *"A door added later that mints a frameless engine refusal
+//! cannot compile (`engine::refusal_fail` is private)."* **THAT WAS FALSE WHEN IT WAS WRITTEN,
+//! and `mrd repair` was the standing counter-example** — a door reaches `wire_serve` directly,
+//! converts the `ErrorBody` to a `Fail` by hand, and never touches `engine` at all. Privacy
+//! gates the doors that ASK the helper; it cannot reach a door that never asks. The suite's real
+//! guarantee is the enumeration below, and the enumeration is only as good as its criterion:
+//! *every `--json`-accepting verb with an engine-refusal seam whose leg does not route the frame*
+//! — measured over the `wire_serve::` call sites in `crates/mrd/src`, not over a list of doors.
+//!
+//! ⚠️ And the frame does not imply the findings leg. `read`/`put`/`pin`/`retire mark` spell an
+//! engine refusal as exit 1; `repair` reserves exit 1 for a TRUE LOSS, `retire report`'s
+//! corpus leg is a tool failure at exit 2, and `links` reserves exit 1 for a REFUSED EDGE.
+//! Each case below states the exit it expects.
+//!
+//! 📌 THE ENUMERATION, per seam and at a NAMED TREE STATE, because "how many members" is not
+//! answerable without both (`413602e8`, 2026-08-09: the discriminating question is not how many
+//! but at which tree state, counted by VERB or by SEAM). At `b84ccf91`, counted by SEAM, the
+//! criterion held THREE frameless engine-refusal seams: `repair_cmd.rs:534` (`lock_write`),
+//! `retire_cmd.rs:932` (`domain_snapshot`) — both closed by the fix this suite was written
+//! beside — and `engine.rs` `in_process_links` (`links_rooted`), closed here. `retire` is the
+//! reason a per-VERB ledger cannot answer: it has TWO engine-refusal seams and routes one.
+//!
+//! ⚠️ `links` HAS EXACTLY ONE TERMINAL REFUSAL SEAM, and that is a property of its dispatch
+//! rather than an omission in this suite: `engine::try_daemon_links` answers `None` on ANY
+//! daemon-path failure and `answer_links` degrades, so the warm path never refuses. A
+//! two-face family table over `links` would look unswept and be complete.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -70,16 +95,30 @@ fn run_with_stdin(sb: &Sandbox, cwd: &Path, args: &[&str], stdin: &str) -> Outpu
     child.wait_with_output().expect("wait mrd")
 }
 
-/// The envelope assertion, one door at a time: exit 1, `{workspace, error{code}}` on stdout, the
-/// human sentence still on stderr. The stdout byte count is asserted non-zero explicitly because
-/// ZERO BYTES is the exact defect — a caller cannot tell it from success with no output.
+/// The envelope law at the findings leg — the common case, and every door wired by `440245b3`.
+/// `{workspace, error{code}}` on stdout, the human sentence still on stderr. The stdout byte
+/// count is asserted non-zero explicitly because ZERO BYTES is the exact defect — a caller
+/// cannot tell it from success with no output.
 fn assert_envelope(label: &str, out: &Output) -> serde_json::Value {
+    assert_envelope_at(label, out, 1)
+}
+
+/// The envelope law at a STATED exit code.
+///
+/// This helper used to hardcode exit 1 with the comment *"an engine refusal is the findings
+/// leg"*. **That is true of the doors it was written for and false as a general law**, and the
+/// assumption cost something: it makes routing every frameless door through
+/// `engine::json_refusal` look correct, and `mrd repair` reserves EXIT 1 FOR A TRUE LOSS. A door
+/// whose triad spells an engine refusal as a TOOL failure still owes the frame; the frame and
+/// the exit code are two judgements. Callers state which one they mean.
+fn assert_envelope_at(label: &str, out: &Output, exit: i32) -> serde_json::Value {
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     assert_eq!(
         out.status.code(),
-        Some(1),
-        "{label}: an engine refusal is the findings leg; stderr was {stderr}"
+        Some(exit),
+        "{label}: expected exit {exit} — the envelope never moves a verb's exit triad; \
+         stderr was {stderr}"
     );
     assert!(
         !stdout.is_empty(),
@@ -108,10 +147,14 @@ fn assert_envelope(label: &str, out: &Output) -> serde_json::Value {
 /// The other direction of every control pair: the HUMAN face prints nothing on stdout at the same
 /// leg. Without this, an envelope that leaked into the human face would pass the suite above.
 fn assert_human_face_is_silent(label: &str, out: &Output) {
+    assert_human_face_is_silent_at(label, out, 1);
+}
+
+fn assert_human_face_is_silent_at(label: &str, out: &Output, exit: i32) {
     assert_eq!(
         out.status.code(),
-        Some(1),
-        "{label}: still the findings leg"
+        Some(exit),
+        "{label}: expected exit {exit}"
     );
     assert!(
         out.stdout.is_empty(),
@@ -273,5 +316,172 @@ fn retire_mark_serves_the_envelope_on_its_splice_leg() {
     assert_human_face_is_silent(
         "retire mark world guard (human)",
         &run(&sb, &ws, &["retire", "mark", "--expect-root", BOGUS_ROOT]),
+    );
+}
+
+/// `retire report` — THE SECOND MEMBER, and the one a per-verb check scores CLEAN.
+///
+/// `retire` already calls `engine::json_refusal` at its `mark` splice leg (the test above), so
+/// any "does this verb route the frame" predicate reads it as done. **The corpus leg at
+/// `retire_cmd.rs` § `run` did not**: `wire_serve::domain_snapshot` returns a §8 `ErrorBody` and
+/// the leg converted it to prose with no frame. A file-level boolean is a list in disguise.
+///
+/// It carried a SECOND defect the envelope question hides. The leg rendered
+/// `e.message.unwrap_or_default()`, and `domain_snapshot`'s `io_error` arm sets `cause` and
+/// **never** `message` — so the one arm this leg actually reports printed
+/// `cannot read the corpus: ` with NOTHING after the colon, discarding a cause the engine had
+/// measured. Both halves are asserted here; fixing either alone leaves this red.
+///
+/// Exit 2, not 1: a corpus that cannot be read is a TOOL failure, the same as the workspace legs
+/// beside it. `retire`'s exit 1 means a refusal or an open retirement.
+#[test]
+fn retire_report_serves_the_envelope_on_its_corpus_leg() {
+    let (sb, ws) = sandbox();
+
+    // CONTROL, and it must pass in BOTH the fixed and the unfixed tree: the same verb, the same
+    // face, a readable corpus. Without it a zero below could mean `retire report` is broken
+    // outright rather than frameless at one leg.
+    let ok = run(&sb, &ws, &["retire", "report", "--json"]);
+    assert_eq!(
+        ok.status.code(),
+        Some(0),
+        "control: a readable corpus reports clean; stderr {}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    assert!(
+        !ok.stdout.is_empty(),
+        "control: the success face serves JSON, so an empty stdout below is the ABSENT FRAME \
+         and not a mute verb"
+    );
+
+    // Make one served file unreadable so `domain_snapshot` fails on it.
+    let victim = ws.join("claim.md");
+    let mut perms = std::fs::metadata(&victim).expect("stat").permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o000);
+    std::fs::set_permissions(&victim, perms).expect("chmod");
+
+    let out = run(&sb, &ws, &["retire", "report", "--json"]);
+
+    // Restore before asserting so a failure cannot leave an unreadable file behind.
+    let mut back = std::fs::metadata(&victim).expect("stat").permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut back, 0o644);
+    std::fs::set_permissions(&victim, back).expect("chmod back");
+
+    // PRECONDITION, asserted rather than assumed: running as root defeats the chmod, and a
+    // fixture that cannot build its condition must FAIL LOUD, never skip. A silent skip here
+    // would report a clean suite over a leg nobody exercised.
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "precondition: the unreadable file must break the corpus read — running as root, or on \
+         a filesystem ignoring mode bits, this fixture proves nothing and says so"
+    );
+
+    let frame = assert_envelope_at("retire report corpus leg", &out, 2);
+    assert_eq!(
+        frame.pointer("/error/code").unwrap(),
+        "io_error",
+        "the corpus leg's §8 code rides the frame: {frame}"
+    );
+
+    // The second half: the human line must NAME the cause, not trail off after its colon.
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let line = stderr
+        .lines()
+        .find(|l| l.contains("cannot read the corpus"))
+        .unwrap_or_else(|| panic!("the corpus refusal names itself: {stderr}"));
+    assert!(
+        !line.trim_end().ends_with(':'),
+        "the refusal trails off after its colon — `message` alone is empty on the `io_error` \
+         arm and the measured cause was dropped: {line:?}"
+    );
+    assert!(
+        line.contains("io_error"),
+        "the shared renderer inlines the engine's cause behind its code: {line:?}"
+    );
+
+    assert_human_face_is_silent_at(
+        "retire report corpus leg (human)",
+        &{
+            let mut p = std::fs::metadata(&victim).expect("stat").permissions();
+            std::os::unix::fs::PermissionsExt::set_mode(&mut p, 0o000);
+            std::fs::set_permissions(&victim, p).expect("chmod");
+            let human = run(&sb, &ws, &["retire", "report"]);
+            let mut b = std::fs::metadata(&victim).expect("stat").permissions();
+            std::os::unix::fs::PermissionsExt::set_mode(&mut b, 0o644);
+            std::fs::set_permissions(&victim, b).expect("chmod back");
+            human
+        },
+        2,
+    );
+}
+
+/// `links` — THE THIRD SEAM, and the one the fix beside this suite never reached.
+///
+/// `engine.rs`'s `in_process_links` hands `wire_serve::read::links_rooted`'s `ErrorBody` straight
+/// to `Fail::tool(render_wire_error(&e))`: the human sentence is fine and stdout is EMPTY, which
+/// is the whole defect — a parsing agent cannot tell it from success with no output.
+///
+/// ⚠️ EXIT 2 IS ASSERTED, NOT CORRECTED, AND THE DISTINCTION IS DELIBERATE. `links` spells its
+/// OWN finding — a refused edge — as `Fail::findings` at exit 1 (`engine.rs` `run_command`), so
+/// routing this engine refusal through `json_refusal` would tell a script the corpus holds a bad
+/// edge when the read never completed: the same trap `repair` fell into, one door over.
+/// ⛔ WHETHER THIS LEG SHOULD BE EXIT 1 IS A LAW QUESTION AND IS DELIBERATELY NOT SETTLED HERE.
+/// `docs/status.md:317` scopes the engine-refusal-is-exit-1 triad to *"read / put / pin"* BY
+/// NAME, and `links` declares no triad of its own anywhere in `crates/mrd/src` — so the claim
+/// that this leg is misclassified has no named law behind it yet. Charter 03 routes that to the
+/// advisor rather than to a fix directive. THE FRAME IS OWED EITHER WAY, which is why closing
+/// the envelope does not wait on the exit question.
+#[test]
+fn links_serves_the_envelope_when_the_corpus_read_refuses() {
+    let (sb, ws) = sandbox();
+
+    // CONTROL, and it must hold in the fixed AND the unfixed tree: this verb's `--json` SUCCESS
+    // face works here. Without it a zero below could mean a mute verb or an unreachable degrade
+    // rather than an absent frame — and this control exercises the SAME degrade path as the
+    // subject, not merely the same binary (the daemon is spawn-impossible in this harness, so
+    // both go in-process).
+    let ok = run(&sb, &ws, &["links", "--json"]);
+    assert_eq!(
+        ok.status.code(),
+        Some(0),
+        "control: the whole-corpus edge map answers at exit 0; stderr {}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    let ok_frame: serde_json::Value =
+        serde_json::from_slice(&ok.stdout).expect("control: the success face serves JSON");
+    assert!(
+        ok_frame.get("links").is_some(),
+        "control: the success face is the edge map, so an empty stdout below is the ABSENT \
+         FRAME and not a mute verb: {ok_frame}"
+    );
+
+    // The subject: a path the corpus does not hold. `links_rooted` refuses through
+    // `links_nonmember` → `load_doc`, so this is an ordinary `file_not_found` on the seam —
+    // a VALUE inside an invocation whose SHAPE is already legal, which is what makes it the
+    // engine's refusal and not the CLI's.
+    let out = run(&sb, &ws, &["links", "no-such.md", "--json"]);
+    let frame = assert_envelope_at("links file_not_found", &out, 2);
+    assert_eq!(
+        frame.pointer("/error/code").unwrap(),
+        "file_not_found",
+        "the seam's §8 code rides the frame: {frame}"
+    );
+
+    // The envelope names the workspace the CALLER passed, so a refusal and a success from the
+    // same invocation agree on that string. `in_process_links` canonicalises internally and the
+    // frame deliberately does not use that value.
+    assert_eq!(
+        frame.get("workspace").and_then(|v| v.as_str()),
+        ok_frame.get("workspace").and_then(|v| v.as_str()),
+        "refusal and success name the same workspace: {frame} vs {ok_frame}"
+    );
+
+    // The other direction: the human face stays silent on stdout at the same leg, or an envelope
+    // leaking into it would pass every assertion above.
+    assert_human_face_is_silent_at(
+        "links file_not_found (human)",
+        &run(&sb, &ws, &["links", "no-such.md"]),
+        2,
     );
 }
