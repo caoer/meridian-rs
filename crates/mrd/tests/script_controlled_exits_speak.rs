@@ -381,7 +381,10 @@ fn a_moved_world_speaks_as_a_conflict_carrying_the_daemons_own_body() {
         !trace.commit_unknown,
         "the daemon answered the guard, so the workspace is known: nothing landed"
     );
-    let commit = trace.commit.as_ref().expect("the mismatch body rides the leg");
+    let commit = trace
+        .commit
+        .as_ref()
+        .expect("the mismatch body rides the leg");
     let body: Value = serde_json::from_str(commit.get()).expect("the leg is the daemon's bytes");
     assert_eq!(body["code"], "fingerprint_mismatch");
     assert_eq!(
@@ -517,7 +520,11 @@ enum Coverage {
 /// satisfy nor break a claim about code — the same discipline the rules-CLI
 /// structural test uses.
 fn commit_arms() -> Vec<(usize, String)> {
-    let lines: Vec<(usize, &str)> = COMMIT_SOURCE.lines().enumerate().map(|(i, l)| (i + 1, l)).collect();
+    let lines: Vec<(usize, &str)> = COMMIT_SOURCE
+        .lines()
+        .enumerate()
+        .map(|(i, l)| (i + 1, l))
+        .collect();
     let start = lines
         .iter()
         .position(|(_, line)| line.starts_with("fn commit("))
@@ -609,8 +616,10 @@ fn every_commit_door_is_either_swept_or_recorded_unreachable() {
             .iter()
             .position(|candidate| *candidate == door)
             .unwrap_or_else(|| {
-                panic!("{door:?} is in the sweep but names no arm of `commit()` — it tests a \
-                        door the engine no longer has")
+                panic!(
+                    "{door:?} is in the sweep but names no arm of `commit()` — it tests a \
+                        door the engine no longer has"
+                )
             });
         swept.remove(at);
     }
