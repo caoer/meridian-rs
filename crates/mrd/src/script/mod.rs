@@ -18,6 +18,6 @@ pub mod wire_host;
 
 pub use digest::{ArmedRow, DOMAIN_TAG, armed_digest};
 pub use trace::{
-    ArmedEntry, CommitLeg, FaultClass, ScriptFault, ScriptOutcome, ScriptTrace, TraceEntry,
+    ArmedEntry, CommitLeg, FaultClass, Refusal, ScriptFault, ScriptOutcome, ScriptTrace, TraceEntry,
 };
 pub use wire_host::Door;

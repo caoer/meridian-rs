@@ -20,7 +20,7 @@
 use effects::{ArmedEdit, EvalError, ReadFace, ReadPosition, ScriptEval, ScriptTelemetry};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
-use wire::PlanEdit;
+use wire::{PlanEdit, Recovery};
 
 /// What the whole run amounted to. Read-class outcomes (`no_effect`) are
 /// first-class success — the `Ok(vec![])` precedent — and a refusal is
@@ -71,8 +71,28 @@ pub struct ScriptFault {
     pub line: Option<u32>,
     /// Which family of failure this is.
     pub class: FaultClass,
+    /// The §8 error code of a refusal that crossed the wire, verbatim. Absent
+    /// on every other class, and on a refusal the engine minted itself — no
+    /// frame minted a code for those, and inventing one would put a value on
+    /// the §8 surface no daemon can answer with. Carried as a string because an
+    /// unrecognized code must not fail the trace: §8 clients dispatch on
+    /// `recovery` alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    /// The refusal's recovery class — transient-vs-permanent, TYPED, from the
+    /// one source the wire field's vocabulary comes from ([`wire::Recovery`],
+    /// the closed six-class §8 enum).
+    ///
+    /// It is a field and not a fifth [`FaultClass`] on purpose: recovery is a
+    /// PROPERTY of a refusal, not a KIND of fault, and a fifth variant would
+    /// conflate the two axes and break every consumer matching `refused`.
+    /// Absent when nothing could name it honestly — a code this engine cannot
+    /// parse with no `recovery` beside it. Absence stays absence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<Recovery>,
     /// The kernel's own wording, carried verbatim — the face renders it after
-    /// its `SCRIPT:` opener.
+    /// its `SCRIPT:` opener. A RENDERING of the refusal, never the carrier of
+    /// its class: a consumer that needs the class reads `recovery`.
     pub reason: String,
 }
 
@@ -158,7 +178,36 @@ pub enum CommitLeg {
     /// `bad_request{overlap}`, `would_corrupt`. The engine's own message rides
     /// verbatim into [`ScriptFault::reason`] and the outcome is `refused`, so a
     /// refusal and a fault still grep apart.
-    Refused(String),
+    Refused(Refusal),
+}
+
+/// The wire's refusal triple, carried across the script boundary TYPED.
+///
+/// The daemon frame carries `recovery` first-class and the put door reads it;
+/// flattening it into prose here would destroy a class no host-side change can
+/// recover, leaving a face to match strings. One engine, one refusal vocabulary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refusal {
+    /// The §8 code, verbatim — absent on an engine-minted refusal.
+    pub code: Option<String>,
+    /// The §8 recovery class, from [`wire::Recovery`] and nowhere else.
+    pub recovery: Option<Recovery>,
+    /// The rendered wording, exactly as the face has always received it.
+    pub reason: String,
+}
+
+impl Refusal {
+    /// A refusal the ENGINE minted: no frame crossed the wire, so there is no
+    /// `code`, and the class is named at the site that mints it rather than
+    /// derived from a table that never saw this refusal.
+    #[must_use]
+    pub fn minted(recovery: Recovery, reason: impl Into<String>) -> Self {
+        Self {
+            code: None,
+            recovery: Some(recovery),
+            reason: reason.into(),
+        }
+    }
 }
 
 /// The entry's whole result: what the script did, what the commit answered, and
@@ -260,11 +309,13 @@ impl ScriptTrace {
             (None, CommitLeg::Response(body)) => (ScriptOutcome::Committed, Some(body)),
             (None, CommitLeg::Conflict(body)) => (ScriptOutcome::Conflict, Some(body)),
             (None, CommitLeg::Rehearsal(body)) => (ScriptOutcome::NoEffect, Some(body)),
-            (None, CommitLeg::Refused(reason)) => {
+            (None, CommitLeg::Refused(refusal)) => {
                 fault = Some(ScriptFault {
                     line: None,
                     class: FaultClass::Refused,
-                    reason,
+                    code: refusal.code,
+                    recovery: refusal.recovery,
+                    reason: refusal.reason,
                 });
                 (ScriptOutcome::Refused, None)
             }
@@ -373,6 +424,10 @@ fn fault_of(error: &EvalError) -> ScriptFault {
         return ScriptFault {
             line: *line,
             class: FaultClass::Runtime,
+            // A fault is not a refusal: the §8 triple belongs to the refused
+            // class alone, and a fault carries neither half of it.
+            code: None,
+            recovery: None,
             reason: match line {
                 Some(line) => format!("runtime fault at line {line} — {reason}"),
                 None => format!("runtime fault — {reason}"),
@@ -395,6 +450,14 @@ fn fault_of(error: &EvalError) -> ScriptFault {
     ScriptFault {
         line,
         class,
+        // No frame crossed the wire for an arm-time refusal, so there is no §8
+        // code to carry — but the class is knowable at the site: the script
+        // armed a set no splice may carry, and only the script can change that.
+        code: None,
+        recovery: match class {
+            FaultClass::Refused => Some(Recovery::Fix),
+            FaultClass::Parse | FaultClass::Runtime | FaultClass::Budget => None,
+        },
         reason: error.to_string(),
     }
 }
