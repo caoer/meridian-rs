@@ -64,7 +64,7 @@ use serde_json::json;
 use wire::{NodeRev, Path as WirePath};
 use wire_serve::write::{LockWriteArgs, lock_write};
 
-use crate::{EXIT_FINDINGS, Fail, Format, current_dir};
+use crate::{EXIT_FINDINGS, Fail, Format, current_dir, engine};
 
 /// Run `mrd repair [PAGE] [--dry] [--json]`. Errors [`Fail`] — exit 2 on a bad invocation or a
 /// tool failure (the workspace cannot be resolved, the corpus cannot be read, git cannot be
@@ -109,7 +109,14 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
 
     let prefix = repo_prefix(&repo, &root)?;
     let outcomes = recover(&repo, &lost, &prefix)?;
-    let applied = apply(&root, &docs, &outcomes, parsed.dry)?;
+    let applied = apply(
+        &root,
+        &docs,
+        &outcomes,
+        parsed.dry,
+        parsed.format,
+        &canonical,
+    )?;
 
     let true_loss = outcomes.iter().filter(|o| o.recovered.is_none()).count();
     emit(
@@ -481,6 +488,8 @@ fn apply(
     docs: &BTreeMap<String, Document>,
     outcomes: &[Outcome],
     dry: bool,
+    format: Format,
+    workspace: &std::path::Path,
 ) -> Result<usize, Fail> {
     floor(root, outcomes)?;
     let mut by_page: BTreeMap<&str, Vec<&Outcome>> = BTreeMap::new();
@@ -526,20 +535,18 @@ fn apply(
             dry,
         };
         lock_write(root, None, &args).map_err(|e| {
-            // The door's own words, verbatim — the CLI re-spells no refusal.
-            let code = serde_json::to_value(e.code)
-                .ok()
-                .and_then(|v| v.as_str().map(str::to_owned))
-                .unwrap_or_else(|| "error".to_owned());
+            // The `--json` face owes `{workspace, error}` on EVERY leg that can refuse
+            // (`docs/status.md` § teaching rows) — the law is the FACE's, not one verb's.
+            // `json_error_frame`, not `json_refusal`: THIS VERB'S EXIT 1 MEANS A TRUE LOSS, so
+            // spelling a lock-door refusal as the findings leg would tell a script the pin was
+            // unrecoverable when the door simply refused. Envelope from the one owner, exit 2
+            // kept, and the page named — this loop writes page by page, so WHICH page failed
+            // (and that the ones before it landed) is the operator's whole recovery.
+            engine::json_error_frame(format, workspace, &e);
             Fail::tool(format!(
-                "the lock door refused the repair of `{page}`: {code}{}{}. Nothing was written \
-                 for that page.",
-                e.message
-                    .as_ref()
-                    .map_or_else(String::new, |message| format!(": {message}")),
-                e.cause
-                    .as_ref()
-                    .map_or_else(String::new, |cause| format!(" ({cause})"))
+                "the lock door refused the repair of `{page}`: {}. Nothing was written for that \
+                 page.",
+                engine::refusal_text(&e)
             ))
         })?;
         written += repairs.len();
