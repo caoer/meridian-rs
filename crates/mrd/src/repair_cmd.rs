@@ -278,18 +278,8 @@ fn live_color(
     site: &PinSite,
 ) -> Color {
     let selector = view::walk::model_selector(&site.entry.object, &site.entry.selector);
-    match docs.get(&site.target) {
-        Some(doc) => {
-            model::selector::classify_pin(&selector, &site.entry.fingerprint, Some(doc))
-        }
-        None => {
-            // A miss here is "not in the hash domain" OR "no such file"; the door read tells them
-            // apart. A read failure leaves the answer exactly what it was before this clause —
-            // the pin is assessed against no document, never against a fabricated one.
-            let loaded = fs::load(root, std::path::Path::new(&site.target)).ok();
-            model::selector::classify_pin(&selector, &site.entry.fingerprint, loaded.as_ref())
-        }
-    }
+    let _ = root;
+    model::selector::classify_pin(&selector, &site.entry.fingerprint, docs.get(&site.target))
 }
 
 // the walk — one `git log`, one `cat-file --batch`
