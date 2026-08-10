@@ -22,3 +22,9 @@ test:
 # Clean build artifacts
 clean:
     cargo clean
+
+# Recut the CI image (run ON the fleet runner, workstation-nyc-2), then bump
+# &rust_image in .woodpecker.yaml to the new tag — a pipeline only ever runs
+# against the recipe it names.
+ci-image tag=`date +%F`:
+    docker build -f Dockerfile.ci -t meridian-ci:{{tag}} .
