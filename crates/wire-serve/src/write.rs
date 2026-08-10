@@ -3269,6 +3269,66 @@ fn overlap_refusal(offending: &[usize], edits: &[Edit]) -> ErrorBody {
     e
 }
 
+/// The `would_corrupt` containment-lost body, lifted verbatim out of
+/// [`verdict_to_wire`]'s arm so that function stays under the workspace line
+/// policy without losing an arm. Pure code motion: same fields, same order.
+fn containment_lost_refusal(lost: &[Vec<String>], cause: Option<model::CorruptCause>) -> ErrorBody {
+    let mut e = ErrorBody::new(ErrorCode::WouldCorrupt);
+    e.family = Some(WouldCorruptFamily::ContainmentLost);
+    e.cause = cause.map(|c| {
+        match c {
+            model::CorruptCause::HeadingDestroyed => "heading_destroyed",
+            model::CorruptCause::Reparented => "reparented",
+        }
+        .to_owned()
+    });
+    e.lost = Some(
+        lost.iter()
+            .map(|chain| {
+                chain
+                    .iter()
+                    .map(|h| HpathSeg {
+                        h: h.clone(),
+                        n: None,
+                    })
+                    .collect()
+            })
+            .collect(),
+    );
+    e
+}
+
+/// The `transition_unrepresentable` body, lifted verbatim out of
+/// [`verdict_to_wire`]'s arm. Pure code motion: same re-projection, same
+/// message, same fields.
+fn transition_unrepresentable_refusal(target: &model::Ref, edits: &[Edit]) -> ErrorBody {
+    // Name the offender in the CALLER's own spelling: find the request
+    // edit whose ref is the model ref the guard returned, the same
+    // re-projection `ref_not_found` and `ambiguous` use.
+    let sec = edits
+        .iter()
+        .map(|e| &e.target)
+        .find(|t| to_model_ref(t).is_ok_and(|r| r == *target))
+        .cloned()
+        .unwrap_or_else(|| SecRef::Anchor {
+            anchor: String::new(),
+        });
+    let mut e = ErrorBody::new(ErrorCode::WouldCorrupt);
+    e.family = Some(WouldCorruptFamily::TransitionUnrepresentable);
+    e.message = Some(format!(
+        "this edit writes past \"{}\" — some of its bytes land outside that node's own \
+                 span, so the node never receives them and its `node_rev` cannot move, leaving \
+                 `if_node_rev` guarding a value this write can never change. {} Fix: a leaf's \
+                 span EXCLUDES its line terminator, so its extent ends there — drop the \
+                 trailing separator from your text, or aim the write at the enclosing section, \
+                 whose span contains the bytes you meant to add.",
+        target_display(&sec),
+        crate::NO_PARTIAL_WRITE_CLAUSE
+    ));
+    e.target = Some(sec);
+    e
+}
+
 /// The §5.2 failure split, mapped: every refusal verdict to its wire frame
 /// (code + required recovery + the frozen extras). `edits` is the effective
 /// batch (post-lowering) — the request targets the extras echo.
@@ -3352,56 +3412,10 @@ fn verdict_to_wire(
             spans: _,
         } => overlap_refusal(offending, edits),
         model::SpliceVerdict::WouldCorrupt { lost, cause } => {
-            let mut e = ErrorBody::new(ErrorCode::WouldCorrupt);
-            e.family = Some(WouldCorruptFamily::ContainmentLost);
-            e.cause = cause.map(|c| {
-                match c {
-                    model::CorruptCause::HeadingDestroyed => "heading_destroyed",
-                    model::CorruptCause::Reparented => "reparented",
-                }
-                .to_owned()
-            });
-            e.lost = Some(
-                lost.iter()
-                    .map(|chain| {
-                        chain
-                            .iter()
-                            .map(|h| HpathSeg {
-                                h: h.clone(),
-                                n: None,
-                            })
-                            .collect()
-                    })
-                    .collect(),
-            );
-            e
+            containment_lost_refusal(lost, *cause)
         }
         model::SpliceVerdict::TransitionUnrepresentable { target } => {
-            // Name the offender in the CALLER's own spelling: find the request
-            // edit whose ref is the model ref the guard returned, the same
-            // re-projection `ref_not_found` and `ambiguous` use.
-            let sec = edits
-                .iter()
-                .map(|e| &e.target)
-                .find(|t| to_model_ref(t).is_ok_and(|r| r == *target))
-                .cloned()
-                .unwrap_or_else(|| SecRef::Anchor {
-                    anchor: String::new(),
-                });
-            let mut e = ErrorBody::new(ErrorCode::WouldCorrupt);
-            e.family = Some(WouldCorruptFamily::TransitionUnrepresentable);
-            e.message = Some(format!(
-                "this edit writes past \"{}\" — some of its bytes land outside that node's own \
-                 span, so the node never receives them and its `node_rev` cannot move, leaving \
-                 `if_node_rev` guarding a value this write can never change. {} Fix: a leaf's \
-                 span EXCLUDES its line terminator, so its extent ends there — drop the \
-                 trailing separator from your text, or aim the write at the enclosing section, \
-                 whose span contains the bytes you meant to add.",
-                target_display(&sec),
-                crate::NO_PARTIAL_WRITE_CLAUSE
-            ));
-            e.target = Some(sec);
-            e
+            transition_unrepresentable_refusal(target, edits)
         }
         model::SpliceVerdict::MultibyteSplit => {
             let mut e = ErrorBody::new(ErrorCode::BadRequest);
