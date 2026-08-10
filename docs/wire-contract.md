@@ -462,6 +462,23 @@ The mined record's biggest read pattern (`read`-as-oracle, 188×) becomes a fact
 
 Shape mirrors the app's `resolvedLinks`/`unresolvedLinks` — per-edge counts; dangling refs first-class. `path` absent → whole-corpus edge map. Opt-in `require_fingerprint` → `stale_view` refusal (§10.2).
 
+**An unresolved edge may carry `unresolved_reason` (session decision 0034).** Four distinct facts used to collapse to the single word `unresolved` — the three §12.1 exclusion classes and a plain broken link — which left a deliberately unhashed file INDISTINGUISHABLE FROM A TYPO at every face. The map keys a subset of `unresolved` by the same linkpath and carries the §12.1 rule word that decided it: `non-md`, `dot-segment`, or `custom-ignore`.
+
+```json
+ "files":{"notes/plan.md":{
+   "resolved":{"receipts/2026-07-18.md":1},
+   "unresolved":{"roadmap":1,".private/secret":1},
+   "unresolved_reason":{".private/secret":"dot-segment"}}}
+```
+
+Three properties are load-bearing, in the order they matter:
+
+1. **A GENUINE TYPO CARRIES NO REASON.** A key appears only when a real file sits under that path (the literal spelling plus the `.md` append rule) and the domain excludes it. `[[.private/typo]]` — an excluded directory holding no such file — is a plain miss and stays bare. The reason is a claim about a FILE; without a file there is nothing to claim, and a reason attached to every miss inside an excluded directory would restore the collapse in a new costume.
+2. **`resolved` and `unresolved` do not move.** The edge stays unresolved, `resolved` stays a bool, the human word is unchanged: **the app mirror above is preserved intact**. This map is read BESIDE the edge, never instead of it, and is omitted when empty.
+3. **The word is minted once** (`fs::domain::link_target_exclusion`) and the `sql link` projection's `exclusion` column asks through the same mint, so the two edge-map faces cannot name one rule differently.
+
+NOT covered, stated rather than left to be discovered: the probe does not run the ambient basename search for an out-of-domain target (an excluded file is absent from the corpus index by construction), so a link written as a bare basename to an excluded page resolves to no reason and reads as a plain miss.
+
 **`path` present is a DOOR; `path` absent is an ENUMERATION, and they answer under different rules (§12.1).** Named, the op serves the page even when the hash domain excludes it — a real file outside the domain comes back with its edges resolved against the corpus it is not in, and only a path with no file under the root is `file_not_found`. Absent, the op speaks for the whole corpus and carries **`excluded`**: the workspace-relative markdown under the root that the hash domain does not hold, absent from `files` and named here rather than left to be inferred (§12.1 enumerator clause). The key is omitted when the list is empty, so a workspace whose domain is its whole md tree is unchanged on the wire.
 
 ### §4.7 fingerprint and diff — the integrity rung
