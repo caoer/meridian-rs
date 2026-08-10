@@ -330,13 +330,46 @@ steps:
       FORGEJO_TOKEN:
         from_secret: forgejo_token
     commands:
+      # STAMP THE IDENTITY, MEASURED — never invented (crates/mrd/build.rs § the
+      # two rules). The script's own git probe answers `unknown` in this
+      # container (the workspace is not the probe's to trust: other lanes run as
+      # other uids in it), and a daemon that publishes `unknown` fails every
+      # consumer gate that asks WHICH build answered — measured downstream:
+      # ccc-mcp-server TestColdDaemonIsSpawnedAndVerified, "the tree build must
+      # publish a named identity, got unknown".
+      #
+      # So CI supplies the claim and OWNS it: the sha Woodpecker checked out,
+      # plus `-dirty` if this workspace actually diverges from it. Both halves
+      # are read here, so the stamp asserts exactly what was measured.
+      - |
+        set -eu
+        git config --global --add safe.directory "$CI_WORKSPACE"
+        if [ -n "$(git status --porcelain)" ]; then
+          echo "MRD_BUILD_SHA=$${CI_COMMIT_SHA}-dirty" > /tmp/stamp.env
+          echo "WARNING workspace diverges from $${CI_COMMIT_SHA} — stamping -dirty"
+          git status --porcelain
+        else
+          echo "MRD_BUILD_SHA=$${CI_COMMIT_SHA}" > /tmp/stamp.env
+        fi
+        cat /tmp/stamp.env
       # Shared ./target with the bench lane on purpose: bench inherits the
       # release profile, so the release dep tree is already compiled there and
       # cargo's build-dir flock serializes the two.
-      - cargo build -q --locked --release -p mrd
+      - env $(cat /tmp/stamp.env) cargo build -q --locked --release -p mrd
       # The artifact must be the thing consumers run, so ASK it — a build that
-      # produced an unrunnable binary must not reach the registry.
-      - ./target/release/mrd --version
+      # produced an unrunnable binary, or one that cannot say WHICH build it is,
+      # must not reach the registry. The identity check is structural on
+      # purpose: `unknown` is a legal stamp, so nothing but an assertion here
+      # keeps an unattributable engine out of a downstream pin.
+      - |
+        set -eu
+        ver="$(./target/release/mrd --version)"
+        echo "$${ver}"
+        case "$${ver}" in
+          *unknown*) echo "this build cannot name the tree it came from — refusing to publish it"; exit 1 ;;
+        esac
+        echo "$${ver}" | grep -q "$${CI_COMMIT_SHA}" || {
+          echo "the stamp does not name $${CI_COMMIT_SHA} — the pin would lie about what it is"; exit 1; }
       - |
         set -eu
         sha="$(sha256sum target/release/mrd | cut -d' ' -f1)"
