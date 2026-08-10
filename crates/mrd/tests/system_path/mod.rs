@@ -33,7 +33,7 @@ fn dirs() -> Vec<PathBuf> {
 /// Panics rather than returns an empty string when `git` is unreachable — a
 /// PATH without `git` produces the same `NotFound` this module exists to
 /// explain, and the panic should say so at the source.
-pub fn system_path() -> String {
+pub(crate) fn system_path() -> String {
     let dirs = dirs();
     assert!(
         dirs.iter().any(|d| is_executable(&d.join("git"))),
