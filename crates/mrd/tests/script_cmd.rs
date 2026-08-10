@@ -869,6 +869,15 @@ fn an_engine_minted_refusal_names_its_own_class_and_no_code() {
 #[test]
 fn the_typed_class_is_additive_to_every_consumer_that_reads_the_prose() {
     const REFUSAL: &str = r#"{"ok":false,"error":{"code":"would_corrupt","recovery":"fix","message":"the candidate loses containment of \"Goals\""}}"#;
+    // A trace serialized by the engine BEFORE the two fields existed.
+    const PRE_CHANGE: &str = r#"{
+      "entry_fingerprint": "b3:a90f13c7",
+      "outcome": "refused",
+      "trace": [],
+      "fault": {"class": "refused", "reason": "would_corrupt: an older engine\u0027s words"},
+      "telemetry": {"fuel_used": 0, "mem_used": 0, "reads_used": 0, "wall_ms": 0}
+    }"#;
+
     let mut door = Fake::new().answering_splice(REFUSAL);
     let trace = claim(&mut door, &["--actor", "8ab41c02"]);
 
@@ -879,14 +888,6 @@ fn the_typed_class_is_additive_to_every_consumer_that_reads_the_prose() {
          never inside it"
     );
 
-    // A trace serialized by the engine BEFORE the two fields existed.
-    const PRE_CHANGE: &str = r#"{
-      "entry_fingerprint": "b3:a90f13c7",
-      "outcome": "refused",
-      "trace": [],
-      "fault": {"class": "refused", "reason": "would_corrupt: an older engine's words"},
-      "telemetry": {"fuel_used": 0, "mem_used": 0, "reads_used": 0, "wall_ms": 0}
-    }"#;
     let old: mrd::script::ScriptTrace =
         serde_json::from_str(PRE_CHANGE).expect("a pre-change trace still deserializes");
     let fault = old.fault.expect("its fault survives the round trip");
