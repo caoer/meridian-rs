@@ -1,0 +1,8 @@
+steps:
+  - name: test
+    image: rust:1
+    environment:
+      CARGO_HOME: /ci-cache/meridian-rs/cargo
+      CARGO_TARGET_DIR: /ci-cache/meridian-rs/target
+    commands:
+      - cargo test --workspace --locked
