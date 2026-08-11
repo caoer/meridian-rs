@@ -480,6 +480,14 @@ pub(crate) fn admit_named_page(
 /// Map a [`WalkError`] to the exit-2 tool failure with a teaching diagnostic.
 fn walk_error(error: WalkError) -> Fail {
     match error {
+        // The refusal keeps its exact wording and gains its recovery only for
+        // the enumeration gesture (laws.md § the face-honesty law, clause 3):
+        // `mrd walk .` asks to see the corpus at a door that walks from one
+        // page. A genuine missing page gets no pointer, because none is right.
+        WalkError::RootNotFound(page) if crate::names_the_whole_corpus(&page) => Fail::tool(format!(
+            "walk root not in the corpus: {page} — to list the corpus instead of walking from one \
+             page, `mrd links --json` enumerates every file."
+        )),
         WalkError::RootNotFound(page) => Fail::tool(format!("walk root not in the corpus: {page}")),
         WalkError::Cycle(loop_pages) => {
             Fail::tool(format!("in-snapshot cycle: {}", loop_pages.join(" -> ")))
