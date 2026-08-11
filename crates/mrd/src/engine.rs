@@ -8,6 +8,7 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use config::mount::DECLARATION_FILENAME;
 use registry::Client;
 use serde_json::{Value, json};
 use wire::{ErrorBody, Path as WirePath, Root};
@@ -121,7 +122,7 @@ pub(crate) fn run_command(path_arg: Option<&str>, format: Format) -> Result<(), 
         Format::Human => {
             println!("workspace {}", resolved.workspace.display());
             println!("  source: {}", answer.source.label());
-            render_links_human(&answer.body);
+            render_links_human(&answer.body, path_arg.is_some());
         }
     }
     // A dangling ambient link stays non-refusing at exit 0 — ordinary authoring state. A REFUSED
@@ -179,11 +180,18 @@ fn refusal_messages(body: &Value) -> Vec<String> {
 
 /// Print the `links` edge map as an indented human list: each file with a
 /// non-empty edge set, its resolved destinations, then its unresolved linkpaths.
-fn render_links_human(body: &Value) {
+///
+/// `named` is true when the caller addressed ONE path. It decides whether the
+/// face owes a withheld-count line (laws.md § the face-honesty law, clause 1):
+/// the enumeration form filters and must say so, while a named path is served
+/// whole, so nothing was left out and a count line there would report a
+/// filtering that did not happen.
+fn render_links_human(body: &Value, named: bool) {
     let Some(files) = body.get("files").and_then(Value::as_object) else {
         return;
     };
     let mut any = false;
+    let mut shown = 0usize;
     for (file, edges) in files {
         let resolved = edges.get("resolved").and_then(Value::as_object);
         let unresolved = edges.get("unresolved").and_then(Value::as_object);
@@ -195,6 +203,7 @@ fn render_links_human(body: &Value) {
             continue;
         }
         any = true;
+        shown += 1;
         println!("  {file}");
         for (dest, count) in resolved.into_iter().flatten() {
             println!("    -> {dest} ({count})");
@@ -232,6 +241,50 @@ fn render_links_human(body: &Value) {
     }
     if !any {
         println!("  (no outgoing links)");
+    }
+    // A named path is served whole (§12.1), so this face filtered nothing and
+    // owes no bound. The enumeration form always does.
+    if !named {
+        voice_population(files, shown);
+    }
+}
+
+/// State the bound of the enumeration this face just printed: what it withheld,
+/// by what criterion, and which face carries the rows — plus the population
+/// split that keeps the engine's own bookkeeping out of a content count.
+///
+/// laws.md § the face-honesty law, clauses 1 and 4. The defect this closes:
+/// the loop above SKIPS every edgeless file, so a corpus of 112 with 2 linked
+/// files rendered as six lines and a reader concluded the corpus held 2.
+/// Enumeration deliberately stays machine-side — the pointer is the answer here,
+/// because flooding the human face is the same failure from the other side.
+fn voice_population(files: &serde_json::Map<String, Value>, shown: usize) {
+    let total = files.len();
+    // `mrd init` writes the declaration INTO the corpus it declares, so it lands
+    // in this map like any page. Counted and labeled, never silently either way:
+    // excluding it hides a filter, and counting it unlabeled lets the engine
+    // pollute the content denominator.
+    let engine_owned = files
+        .keys()
+        .filter(|path| {
+            Path::new(path)
+                .file_name()
+                .is_some_and(|name| name == DECLARATION_FILENAME)
+        })
+        .count();
+
+    let withheld = total.saturating_sub(shown);
+    if withheld > 0 {
+        println!(
+            "  shown {shown} of {total} — {withheld} with no outgoing links not listed; \
+             `mrd links --json` enumerates every file"
+        );
+    }
+    if engine_owned > 0 {
+        let content = total - engine_owned;
+        println!(
+            "  {total} files: {content} content + {engine_owned} engine-owned ({DECLARATION_FILENAME})"
+        );
     }
 }
 
