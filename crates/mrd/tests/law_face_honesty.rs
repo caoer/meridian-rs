@@ -91,11 +91,17 @@ fn stderr(out: &Output) -> String {
 
 /// Files that carry an outgoing link, so the human face lists them.
 const LINKED: usize = 2;
-/// Files with no edges at all — the population the old face dropped in silence.
-const EDGELESS: usize = 5;
+/// CONTENT files with no edges — the population the old face dropped in silence.
+const CONTENT_EDGELESS: usize = 5;
 /// `mrd init` writes exactly one declaration into the corpus it declares.
 /// Stated here independently of the implementation constant on purpose.
 const ENGINE_OWNED: usize = 1;
+/// Every file in the fixture.
+const TOTAL: usize = LINKED + CONTENT_EDGELESS + ENGINE_OWNED;
+/// What the human face withholds. The declaration `mrd init` wrote carries no
+/// edges either, so IT IS WITHHELD TOO — pinned here deliberately: the withheld
+/// count is a fact about the whole enumeration, never about content alone.
+const WITHHELD: usize = CONTENT_EDGELESS + ENGINE_OWNED;
 
 /// A corpus shaped like the dogfood one in miniature: a few linked files, many
 /// edgeless ones, and the engine's own declaration sitting among them.
@@ -111,8 +117,12 @@ fn corpus(sb: &Sandbox) -> PathBuf {
         );
     }
     // `target.md` is itself edgeless, so it counts in the withheld population.
-    for i in 0..(EDGELESS - 1) {
-        write(&ws, &format!("lonely{i}.md"), "# Lonely\n\nno links here.\n");
+    for i in 0..(CONTENT_EDGELESS - 1) {
+        write(
+            &ws,
+            &format!("lonely{i}.md"),
+            "# Lonely\n\nno links here.\n",
+        );
     }
     let init = sb.run(&ws, &["init"]);
     assert!(init.status.success(), "init: {}", stderr(&init));
@@ -131,7 +141,6 @@ fn the_links_enumeration_states_what_it_withheld() {
 
     let out = sb.run(&ws, &["links"]);
     let said = stdout(&out);
-    let total = LINKED + EDGELESS + ENGINE_OWNED;
 
     // Positive control FIRST: if the face listed nothing at all, every bound
     // below would pass vacuously — an absent line satisfies any claim about
@@ -144,13 +153,13 @@ fn the_links_enumeration_states_what_it_withheld() {
 
     // The COUNT of the withheld population, and the size it was drawn from.
     assert!(
-        said.contains(&format!("shown {LINKED} of {total}")),
+        said.contains(&format!("shown {LINKED} of {TOTAL}")),
         "a filtering face must state how many it showed OUT OF how many — the \
          bound is the whole finding, and a bare count of what was shown is the \
          defect this gate exists to prevent: {said}"
     );
     assert!(
-        said.contains(&format!("{EDGELESS} with no outgoing links not listed")),
+        said.contains(&format!("{WITHHELD} with no outgoing links not listed")),
         "the withheld COUNT and its CRITERION must both appear, or the reader \
          cannot tell a filtered corpus from a small one: {said}"
     );
@@ -181,12 +190,11 @@ fn the_population_line_separates_content_from_engine_owned() {
     let ws = corpus(&sb);
 
     let said = stdout(&sb.run(&ws, &["links"]));
-    let total = LINKED + EDGELESS + ENGINE_OWNED;
-    let content = total - ENGINE_OWNED;
+    let content = TOTAL - ENGINE_OWNED;
 
     assert!(
         said.contains(&format!(
-            "{total} files: {content} content + {ENGINE_OWNED} engine-owned"
+            "{TOTAL} files: {content} content + {ENGINE_OWNED} engine-owned"
         )),
         "the count that includes the engine's own bookkeeping must say so in \
          the same breath. EXCLUDING it hides a filter and COUNTING it unlabeled \
@@ -360,10 +368,9 @@ fn section_reads_count_against_the_budget_the_help_advertises() {
     let sb = sandbox();
     let ws = sb.tmp.path().join("sections");
     std::fs::create_dir_all(&ws).expect("mkdir");
-    let mut page = String::from("# F\n");
-    for i in 1..=(EXPECTED_BUDGET + 6) {
-        page.push_str(&format!("\n## S{i}\n\nbody {i}\n"));
-    }
+    let page: String = std::iter::once("# F\n".to_owned())
+        .chain((1..=(EXPECTED_BUDGET + 6)).map(|i| format!("\n## S{i}\n\nbody {i}\n")))
+        .collect();
     write(&ws, "f.md", &page);
     let init = sb.run(&ws, &["init"]);
     assert!(init.status.success(), "init: {}", stderr(&init));
@@ -377,7 +384,11 @@ fn section_reads_count_against_the_budget_the_help_advertises() {
 
     // POSITIVE CONTROL, and it differs from the test in exactly ONE variable:
     // the number of read() calls. Same file, same list, same addressing.
-    let under = sb.run_stdin(&ws, &["script", "--files", "f.md"], &script(EXPECTED_BUDGET - 4));
+    let under = sb.run_stdin(
+        &ws,
+        &["script", "--files", "f.md"],
+        &script(EXPECTED_BUDGET - 4),
+    );
     assert!(
         under.status.success(),
         "a run UNDER the budget must succeed, or the refusal below proves \
@@ -385,14 +396,20 @@ fn section_reads_count_against_the_budget_the_help_advertises() {
         stderr(&under)
     );
 
-    let over = sb.run_stdin(&ws, &["script", "--files", "f.md"], &script(EXPECTED_BUDGET + 6));
+    let over = sb.run_stdin(
+        &ws,
+        &["script", "--files", "f.md"],
+        &script(EXPECTED_BUDGET + 6),
+    );
     let said = stderr(&over);
     assert!(
         !over.status.success(),
         "the budget must refuse above its ceiling: {said}"
     );
     assert!(
-        said.contains(&format!("read budget of {EXPECTED_BUDGET} reads per attempt")),
+        said.contains(&format!(
+            "read budget of {EXPECTED_BUDGET} reads per attempt"
+        )),
         "the ENFORCED number must be the number the help advertises, or the \
          help is a claim about a different engine: {said}"
     );
