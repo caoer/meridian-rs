@@ -92,6 +92,66 @@ perform no I/O at call time. The law: **script eval is a pure function of
 read response, so re-evaluating against the recorded responses is
 deterministic and byte-identical. Decision #17 (no exec) stands unchanged.
 
+**The read budget states its own domain: 64 `read()` CALLS per attempt, NOT 64
+files.** The unit is the entire statement. `max_reads` counts calls to the read
+builtin — the kernel holds one counter over recorded reads with **no dedup by
+path**, and a section read (`read(p, section=…)`, the cat face) is pushed
+identically to a whole-file read (`read(p)`, the toc face). So a file taken as
+toc + N sections spends **1+N** of the budget, and **the effective FILE domain is
+strictly smaller than 64 the moment sections are used.**
+
+Measured, with its positive control beside it (published binary at `27cf2bca`,
+2026-08-11): a `--files` list of **3 files** with 30 sections each refuses at 70
+section reads — `outcome fault`, `reads_used 64` — while the identical corpus,
+list, and addressing at 60 section reads returns `outcome no_effect`,
+`reads_used 60`, exit 0. Three files exhausted a budget a reader would have
+called "64 files". The control differs from the test in exactly one variable,
+the call count, so the refusal is the budget and nothing else.
+
+This is why **RAISING the budget is refused**: it is cost policy wearing a fix,
+and since sections count, a raise is a treadmill that buys a different wrong
+number rather than a stated domain.
+
+**The snapshot guarantee is stated WITH its composition rule.** `script` pins one
+entry fingerprint and `commit` guards on it, so the single-snapshot guarantee
+holds **up to the budget above**. Above it the caller composes runs under a law
+the caller can CHECK: **equal entry fingerprints across runs = one snapshot;
+unequal = the world moved, re-run.** That converts the limitation into a
+protocol and keeps the guarantee composable **without daemon-held state**. An
+engine-HELD chunk-spanning snapshot is deliberately **not** ruled in — it is
+daemon state across attempts for a need the dogfood has not shown. Revisit
+trigger, named so it is not a matter of taste: **compose-retry livelock under
+real churn in the field.**
+
+A guarantee whose domain appears in no help text stops holding SILENTLY above a
+boundary the caller cannot learn exists until crossing it — a contract claim
+with an undocumented domain, not an inconvenient budget. That is why this
+paragraph exists and why `mrd script --help` carries the number. **It was never
+a missing help page; it was a missing sentence on a page that already existed.**
+
+**The trace IS the read-only script's output channel, and that makes it
+CONTRACT MATERIAL.** There is no `print()` — the builtin surface is closed, so a
+script that only reads arms nothing and exits `no_effect`. **That outcome
+reports that nothing was ARMED, never that nothing HAPPENED**, and the reads are
+returned as `trace[]` rows of `{kind, line, path, face}` under `--json`. The
+face-honesty law reaches this face from the opposite side of `links`: not a
+subset withheld, but **a capability withheld** — the help said `--json` "emits
+the trace" and never that the trace carries what you read, so the only
+documented reading of `script` was that it is write-only. Every measurement in
+the 2026-08-10 dogfood rode this echo; **an echo that load-bearing is contract
+material, not an implementation detail**, which is the argument for documenting
+it rather than a complaint about it.
+
+**Seam, named and NOT taken here: the guarantee's crossing (face-honesty clause
+5).** A face that hands content ACROSS the guarantee boundary owes a mark on the
+crossing — content leaving accompanied by the provenance it was read under, so
+the caller can RE-VERIFY rather than inherit a guarantee that silently
+evaporated. The crossing is legitimate and constant; the silence at handover is
+the defect. It is a separate card because it changes what the read face emits
+ALONGSIDE content and interacts with the composition protocol above. Recorded
+here as a seam so the next lane inherits a pointer rather than a gap; no part of
+it is implemented, stubbed, or designed around in this change.
+
 **`read(path)` IS the wire toc face, 1:1.** The recorded toc face is
 `{rev, fm, toc, words}`. `fm` values are DECODED scalars — the frontmatter
 scalar law (wire-contract § A.6) governs this plane exactly as it governs the

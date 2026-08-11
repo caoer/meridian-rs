@@ -519,3 +519,67 @@ undeclared bash block used to exit 1 with `capability denied` and now applies.
 That gate never bounded the block: a denied block writes with `sed -i` instead,
 where the bracket at most detects the change and never rolls it back. It only
 pushed the write off the attested path.
+
+## Amendment — the face-honesty law
+
+Law: architect ruling 2026-08-10 (`4f144f09`), on leader-engine `8697ff5e`'s
+routed dogfood case — worker `8cb84386` against the published binary at
+`27cf2bca`. **Gate: `crates/mrd/tests/law_face_honesty.rs`** — that file is what
+makes this hold, and this section is what it enforces.
+
+> **Every face states the bound of its own answer.**
+>
+> 1. **A subset answer is MARKED.** A face that filters states the count
+> withheld, the criterion, and the pointer to the full face. Enumeration stays
+> machine-side — flooding the human face is the walk-payload failure from the
+> other direction.
+> 2. **A limit that can refuse is DISCOVERABLE BEFORE IT REFUSES** — stated in
+> the verb's help, never learnable only by tripping it. A raise flag is *not*
+> ruled in: raisability is cost policy, not discoverability.
+> 3. **A refusal carries its RECOVERY** at the human face, as the wire already
+> rules it on frames: point at the verb that answers the question the caller was
+> evidently asking, when one clearly exists — **otherwise say nothing, because a
+> wrong pointer is worse than none.**
+> 4. **Engine-owned files are COUNTED AND LABELED**, never silently either way.
+
+**The defect that produced it, in the measured form.** `mrd links` printed 6
+lines naming 2 files while the corpus held 112, and said nothing about the 110
+it withheld: *a person stops there and concludes the corpus holds 2 files.* The
+information existed and only `--json` revealed it. This is the third instance of
+one shape inside one hour across three layers — a passive meter read as measured
+headroom, an uncredentialed 404 read as a dead API — and the shape is always the
+same: **a face answers a different question than it appears to, and it fails
+toward ABSENCE.** Absence is the dangerous direction because a filtered answer
+and an empty world render identically.
+
+**Why marking, not enumerating (clause 1).** The opposite failure is already
+named in this repo: a payload that floods the reader carries the same amount of
+truth and less of it arrives. So the human face states the bound and hands over
+a pointer; the machine face carries the rows. `links --json` already enumerated
+every file — clause 1 costs one line, not a new query path.
+
+**Why COUNT AND LABEL, never exclude (clause 4).** `mrd init` writes
+`MERIDIAN.md` (`config::CONFIG_FILENAME`) into the corpus it declares, so anyone
+who enumerates a workspace and counts gets the engine in their denominator.
+EXCLUDE was refused because a hidden filter is the exact disease this law
+kills; COUNT-without-label was refused because it lets the engine pollute the
+content count. The ruled form keeps both readings available and neither silent:
+*"4 files: 3 content + 1 engine-owned"*.
+
+**Clause 2 has a machine half this engine cannot yet serve, and that is named,
+not hidden.** "Readable by the machine face" means the `ack_bounds` grammar — a
+core-declared number a client reads — which belongs to **wire contract v1.2
+(PR #11, head `ef7895d`) and is NOT merged at `27cf2bca`**: `ack_bounds`,
+`protocol.limits`, and `"limits"` all return zero hits across this tree, with
+`exceeded the read budget` and `walk root not in the corpus` found by the same
+tooling in the same scope as the positive control beside that zero. So the help
+half lands here and **the machine half is an owed wire-lane dependency**,
+recorded so the next lane inherits a pointer rather than a gap.
+
+**What this law does NOT authorize.** It does not authorize raising a budget
+(cost policy, refused), it does not authorize a face inventing a recovery
+pointer it is not sure of (clause 3's second half is as binding as its first),
+and it does not authorize the human face growing an enumeration. **The `script`
+budget refusal is the law's positive example and does not change** — *"exceeded
+the read budget of 64 reads per attempt — refused, never truncated"* names the
+number, names the units, and gives absence exactly one meaning.
