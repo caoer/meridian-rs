@@ -129,6 +129,29 @@ with an undocumented domain, not an inconvenient budget. That is why this
 paragraph exists and why `mrd script --help` carries the number. **It was never
 a missing help page; it was a missing sentence on a page that already existed.**
 
+**The trace IS the read-only script's output channel, and that makes it
+CONTRACT MATERIAL.** There is no `print()` — the builtin surface is closed, so a
+script that only reads arms nothing and exits `no_effect`. **That outcome
+reports that nothing was ARMED, never that nothing HAPPENED**, and the reads are
+returned as `trace[]` rows of `{kind, line, path, face}` under `--json`. The
+face-honesty law reaches this face from the opposite side of `links`: not a
+subset withheld, but **a capability withheld** — the help said `--json` "emits
+the trace" and never that the trace carries what you read, so the only
+documented reading of `script` was that it is write-only. Every measurement in
+the 2026-08-10 dogfood rode this echo; **an echo that load-bearing is contract
+material, not an implementation detail**, which is the argument for documenting
+it rather than a complaint about it.
+
+**Seam, named and NOT taken here: the guarantee's crossing (face-honesty clause
+5).** A face that hands content ACROSS the guarantee boundary owes a mark on the
+crossing — content leaving accompanied by the provenance it was read under, so
+the caller can RE-VERIFY rather than inherit a guarantee that silently
+evaporated. The crossing is legitimate and constant; the silence at handover is
+the defect. It is a separate card because it changes what the read face emits
+ALONGSIDE content and interacts with the composition protocol above. Recorded
+here as a seam so the next lane inherits a pointer rather than a gap; no part of
+it is implemented, stubbed, or designed around in this change.
+
 **`read(path)` IS the wire toc face, 1:1.** The recorded toc face is
 `{rev, fm, toc, words}`. `fm` values are DECODED scalars — the frontmatter
 scalar law (wire-contract § A.6) governs this plane exactly as it governs the
