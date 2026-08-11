@@ -210,6 +210,18 @@ fn teach_bad_path(workspace: &Path, error: &mut ErrorBody) {
             );
         }
     }
+    // A refusal carries its recovery when one clearly exists (laws.md § the
+    // face-honesty law, clause 3). `mrd read .` is the caller asking to see the
+    // corpus at a door that serves one page; `links --json` is the door that
+    // answers it. Every other bad path keeps the respelling above and gains no
+    // pointer — a wrong pointer is worse than none.
+    if crate::names_the_whole_corpus(&path.0) {
+        use std::fmt::Write as _;
+        let _ = write!(
+            m,
+            " To list the corpus instead of one page, `mrd links --json` enumerates every file."
+        );
+    }
     error.message = Some(m);
 }
 

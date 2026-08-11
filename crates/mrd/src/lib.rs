@@ -175,7 +175,11 @@ usage:
                            fingerprint (the fp put --if-fingerprint takes).
                            --section (repeatable: heading path, dewey, or
                            ^anchor) serves bodies; each body opens with == n ==
-                           and the head declares its byte length. Human:
+                           and the head declares its byte length. WHOLE-FILE
+                           READ IS `--section 1`: the root selector serves its
+                           descendants too, so it is the one whole-document
+                           form. There is no --all/--full, and naming every
+                           section instead DUPLICATES the nested bodies. Human:
                            rendered text. --json toc: structured toc[] only, no
                            rendered_text. Exits: 0 served / 1 engine refused /
                            2 bad invocation.
@@ -339,8 +343,21 @@ usage:
                            props=|section=,append=) arms wire plan edits; ONE
                            guarded splice applies them. Entry pins one
                            fingerprint; commit guards on it — world moved ⇒
-                           refuse, nothing lands. Single attempt (retry is the
-                           caller's). --dry rehearses; --json emits the trace.
+                           refuse, nothing lands. READ BUDGET: 64 read() CALLS
+                           per attempt — NOT 64 files. A section read spends one
+                           like any other, so a file taken as toc+N sections
+                           spends 1+N and three files can exhaust it. Over the
+                           budget the run REFUSES, never truncates. The pinned
+                           fingerprint is guaranteed to that budget; above it,
+                           compose runs and check them: EQUAL entry fingerprints
+                           across runs = one snapshot, unequal = the world moved,
+                           re-run. Single attempt (retry is the
+                           caller's). --dry rehearses; --json emits the trace —
+                           and THE TRACE CARRIES WHAT YOU READ: each row is
+                           {kind, line, path, face}, so a read-only script is
+                           read THERE. There is no print(); a script that only
+                           reads exits `no_effect`, which reports that it armed
+                           nothing, NOT that it did nothing.
                            Exits: 0 committed|nothing-armed / 1
                            conflict|fault|refusal / 2 bad invocation.
 ! mrd new <KIND> <ID> [--dry] [--actor A] [--now T]
@@ -457,6 +474,19 @@ impl Fail {
 pub(crate) enum Format {
     Human,
     Json,
+}
+
+/// Did the caller spell "the whole corpus" at a door that admits one page?
+///
+/// The recovery half of the face-honesty law (laws.md § the face-honesty law,
+/// clause 3) turns on this and NOTHING WIDER. `mrd read .` and `mrd walk .`
+/// refuse correctly and point nowhere, while the verb the caller evidently
+/// wanted — `mrd links --json` — enumerates. That pointer is only ever right
+/// for the enumeration gesture: a caller who mistyped a real filename wants the
+/// respelling they already get, and clause 3 rules that **a wrong pointer is
+/// worse than none.** So this stays a closed set, never a heuristic.
+pub(crate) fn names_the_whole_corpus(path: &str) -> bool {
+    matches!(path.trim_end_matches('/'), "." | "" | "*" | "**")
 }
 
 /// The current working directory, as a tool failure when it cannot be read.
