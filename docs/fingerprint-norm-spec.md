@@ -93,6 +93,7 @@ composed tree node, or a receipt envelope"):
 | Codec | Status | Domain |
 |---|---|---|
 | `span2` | **live (M1)** | the node's span bytes (contract §1 span laws, selector axis §3), canonicalized by norm-v2 (§4) |
+| `props1` | **live** | frontmatter property bytes — the canonical keyed map (sorted keys, length-prefixed `len:key`, three-state values `=A` absent / `=N` null / `=S` scalar), domain-separated by the `props1\n` prefix (wire-contract §A.6.2) |
 | `node1` | reserved | composed dag-node encoding (own-hash + ordered child `(ref, fingerprint)` list) — the #4 §5 upgrade path, stage 2+ |
 | `rcpt1` | reserved | receipt envelope — stage 2+ |
 | `tree1` | reserved | workspace file-tree merkle domain — reserved for the future migration of the wire `fingerprint`/root spelling off `b3:` |
@@ -246,8 +247,9 @@ deterministically but claim no inverse-image guarantee.
 
 ## 6. Supersedes — the compose_rev scheme
 
-The `crates/model/src/compose.rs` scheme this spec replaces (the pre-marathon
-22-01 design): leaf = `blake3("L" ‖ node_rev-hex-string)` (a hash of a hash's
+The `compose_rev` scheme this spec replaces (the pre-marathon
+22-01 design; its `compose.rs` implementation was deleted from
+`crates/model/src/`): leaf = `blake3("L" ‖ node_rev-hex-string)` (a hash of a hash's
 hex spelling), hash-time `![[embed]]` expansion with cycle sentinel and
 dangling refusal, 16-hex truncated `ComposeRev`, bare un-prefixed spelling.
 Replaced by `fp1.span2.b3.<64hex>` over norm-v2 span bytes: no hash-of-hex

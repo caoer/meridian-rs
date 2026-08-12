@@ -13,7 +13,7 @@ owns: [node_rev, merkle encoding]
 
 **Scope note:** this document is **node_rev and workspace merkle (fingerprint) hash law**. It does not define section address grammar; mint-plane hpath remains segment form only. Worked-example generator assets stay under `node-rev-merkle-spec.assets/`.
 
-The hash scheme behind the wire nouns `node_rev` and **`fingerprint`** (workspace content hash — never “root” as a wire hash token; see `wire-contract.md`). Binds: what bytes are hashed, tree composition to the 32-byte workspace fingerprint, and incremental update on `splice`. Integrity surface on the wire is **`fingerprint` + `if_fingerprint` + `diff`** — there is no separate `guard` op (`wire-contract.md` §4.7). Under the three laws: no snapshot files, no second database, Rust memory disposable.
+The hash scheme behind the wire nouns `node_rev` and **`fingerprint`** (workspace content hash — design noun **`fingerprint`**; the wire's default v2 vocabulary spells the field `root`, re-keyed to `fingerprint` once a client negotiates `contract:"v3"` — `wire-contract.md` §1). Binds: what bytes are hashed, tree composition to the 32-byte workspace fingerprint, and incremental update on `splice`. Integrity surface on the wire is **`fingerprint` + `if_fingerprint` + `diff`** — there is no separate `guard` op (`wire-contract.md` §4.7). Under the three laws: no snapshot files, no second database, Rust memory disposable.
 
 ## 0. Design inheritance — the merkle-root-spike, absorbed
 
@@ -31,7 +31,7 @@ An earlier merkle-root prototype was folded into this spec. Its scheme is adopte
 - **Measured envelope** (M4 Max): session dir 4,141 nodes → root 74ms; whole corpus 9.5GB/50,319 nodes → 2.2s warm / 5.2s cold. These numbers justify §6's no-persistence stance.
 
 **Rejected (with reasons):**
-- **Snapshot persistence** (a `Save`/`Load` binary format, requiring the snapshot to live OUTSIDE the hashed dir). That design served an offline-subscriber demo. In meridian-rs it violates law 2 (Rust memory is disposable; disk = markdown only — "no snapshot files") — and the recovery numbers make it unnecessary: cold rebuild is 2.2s, "daemon death is a blip". The subscriber holds a 32-byte root, never a tree; the daemon holds trees in memory only (§6–7 re-derive the drift-naming capability the snapshot existed for).
+- **Snapshot persistence** (a `Save`/`Load` binary format, requiring the snapshot to live OUTSIDE the hashed dir). That design served an offline-subscriber demo. In meridian-rs it violates law 2 (Rust memory is disposable; disk = markdown only — "no snapshot files") — and the recovery numbers make it unnecessary: cold rebuild is 2.2s, "daemon death is a blip". The subscriber holds a 32-byte root, never a tree; the daemon holds no trees — the root re-derives on demand (§6–7 re-derive the drift-naming capability the snapshot existed for).
 - **xxhash64 width.** 64-bit is a race detector, not collision-resistant; the vision's cursor is 32 bytes (law 2) and the wire example is `b3:`-prefixed. §1 rules blake3-256.
 - **mtime+size leaf cache** — rejected for v1: its lie window (same mtime+size, different bytes) buys warm-rebuild speed we don't need once the tree is memory-resident and event-updated (§6). Cold start eats the 2–5s honestly.
 
@@ -48,7 +48,7 @@ Every hash in this spec — node_rev, file leaf, interior, workspace fingerprint
 `node_rev = hex(blake3(node_span_bytes))[:16]` where `node_span_bytes = raw_file_bytes[span.start : span.end)` — the node's **span bytes exactly as issued** under the wire span laws (`wire-contract.md` §1 span sub-laws: raw disk bytes, UTF-8-valid files only, leaf block spans exclude the final line terminator).
 
 - For a **section** (heading ref via `resolve`): the span is heading-inclusive (`wire-contract.md` §1 span sub-laws — heading line through end of subtree), so `node_rev` covers the heading too. Consequence, deliberate: a heading rename invalidates the section's CAS token — a writer composing against `#Alpha` must notice `#Alpha` became `#Alpha2`. The content-only span (`content_span`, `wire-contract.md` §1 rev sub-laws) is a write-target convenience and mints no separate rev.
-- For **frontmatter**: the whole-block span (`---`…`---` inclusive, `wire-contract.md` §18 row 3 — span-lawed with the section family). Per-key value spans (`wire-contract.md` §7.4 key-grain amendment path) mint their own node_rev over the value bytes once that amendment lands.
+- For **frontmatter**: the whole-block span (`---`…`---` inclusive, `wire-contract.md` §18 row 3 — span-lawed with the section family). Per-key spans mint their own node_rev today — the `fm_key` grain of the `wire-contract.md` §A.3 props plane: blake3 over the **full key grain span** (the key line plus its indented continuation lines, key name included, terminator-exclusive end), served as `prop_rev`. What remains future-only is the delta `keys:[{key, change, value_rev}]` sub-array (`wire-contract.md` §7.4).
 - For any other node kind (`toc`/`extract` nodes — `wire-contract.md` §4.1/§4.3): its `wire-contract.md` §1 span, verbatim.
 - **No normalization of content.** No newline canonicalization, no trailing-space trim, no NFC. The span law already guarantees disk bytes = string bytes (UTF-8 refusal); hashing anything but the raw bytes would let two "equal" revisions denote different disk states — the exact corruption CAS exists to prevent.
 
@@ -145,21 +145,21 @@ fingerprint : b3:807b… → b3:a1f7bb8e46227d0c44df8c993fa1ab066b299d275d01d81e
 leaf(notes.md) : unchanged (96c26935d00a1339…)
 ```
 
-(All values computed by a reference implementation of this spec, blake3-256, 2026-07-18; the generator is `node-rev-merkle-spec.assets/worked-example-gen.go` — 90 lines of Go, with `node-rev-merkle-spec.assets/go.mod` — and should land as the fixture seed for the rung-3 test suite.)
+(All values computed by a reference implementation of this spec, blake3-256, 2026-07-18; the generator is `node-rev-merkle-spec.assets/worked-example-gen.go` — 127 lines of Go, with `node-rev-merkle-spec.assets/go.mod` — and should land as the fixture seed for the rung-3 test suite.)
 
 ## 6. Incremental update on splice — memory-only, event-fed
 
-The daemon holds ONE current tree in Rust memory (the world model). On a successful `splice(path, …)`:
+The daemon holds no merkle tree in memory. The workspace root is derived on demand through `fs::DomainCache` — a `StatKey`-keyed leaf-digest memo plus remembered directory listings — by a full stat sweep and a full fold (`merkle_root_of_leaves`) on every currency pass. On a successful `splice(path, …)`:
 
-1. New file bytes are already in hand (the splice output) → new leaf = blake3(bytes). Cost: ~15µs for a 46KB file (blake3 ≥3GB/s).
-2. Walk parent chain to the workspace tree root re-hashing interiors: O(depth) hashes, each over ~30–40 bytes × fanout. Session trees are ≤6 deep; total incremental fingerprint update is well under 1ms.
+1. The splice writes the new bytes to disk under the write flock (`wire_serve::write::splice`); it hands no leaf to any tree.
+2. The next currency pass re-reads the moved file (identity changed → re-read → re-hash) and re-folds: one `stat` per domain member, O(changed) bytes read, then all entries re-encoded (uleb128‖name‖type‖hash) into one buffer and one blake3 — O(corpus) in stats, O(changed) in bytes.
 3. The splice response carries ambient **`fingerprint_before` / `fingerprint_after`** (and related fields per `wire-contract.md` §4.4) — the caller's next world cursor.
 
-Out-of-band changes (hand edits, git operations) arrive via the watch feed → same per-file update path (re-read, re-leaf, re-chain). Watch latency is a freshness window, not a correctness hole: recovery (§7 below / `wire-contract.md` §4.7 `diff`) catches anything missed, and splice re-reads under the write flock before writing, so CAS never trusts the tree alone — the tree serves integrity reads, never silent write authority.
+Out-of-band changes (hand edits, git operations) arrive via the watch feed → the next currency pass re-reads and re-hashes the moved members. Watch latency is a freshness window, not a correctness hole: recovery (§7 below / `wire-contract.md` §4.7 `diff`) catches anything missed, and splice re-reads under the write flock before writing, so CAS never trusts the memo alone — the memo serves integrity reads, never silent write authority.
 
-**No persistence.** The tree is never written to disk — no snapshot files, no cache. Daemon start = full rebuild (measured 2.2–5.2s corpus-wide, §0). The inherited snapshot format is dropped here (§0 rejected).
+**No persistence.** Nothing is persisted to disk — no snapshot files, no on-disk cache. Daemon start = full rebuild (measured 2.2–5.2s corpus-wide, §0). The inherited snapshot format is dropped here (§0 rejected).
 
-**Fingerprint history ring.** `diff(from_fingerprint, to_fingerprint)` needs trees behind old fingerprints; clients hold only the token. The daemon may keep a bounded in-memory ring of recent `(fingerprint, tree)` snapshots (structurally shared). A fingerprint not in the ring answers `fingerprint_unknown` → full resync — re-derive, never wrong data.
+**Fingerprint history ring.** `diff(from_fingerprint, to_fingerprint)` needs the frames behind old fingerprints; clients hold only the token. The daemon keeps a bounded in-memory ring of recent `DeltaFrame`s (`RootRing`, `wire-serve/src/ring.rs`), which `diff` replays between two roots. A fingerprint not in the ring answers `fingerprint_unknown` → full resync — re-derive, never wrong data.
 
 ## 7. Integrity surface + CAS (wire vocabulary)
 
@@ -168,7 +168,7 @@ Two grains, composable — **no separate `guard` op** (dropped; integrity = `fin
 | Guard / op | Grain | Question | Failure |
 |---|---|---|---|
 | `if_node_rev` (on `splice`) | one node | "is THIS section still what I read?" | `cas_mismatch` {expected, actual} — refresh: re-read, re-plan |
-| `if_fingerprint` (on `splice`, optional) | workspace | "is the WORLD still what I planned against?" | `fingerprint_mismatch` {expected, actual, changed?} — resync / re-plan |
+| `if_fingerprint` (on `splice`, optional) | workspace | "is the WORLD still what I planned against?" | `fingerprint_mismatch` {expected, actual} — resync / re-plan |
 | `fingerprint` op | workspace | read the current content-hash cursor | — |
 | `diff` | range of fingerprints | batches of Delta between two cursors | `fingerprint_unknown` if outside retained history |
 
@@ -183,7 +183,7 @@ Two grains, composable — **no separate `guard` op** (dropped; integrity = `fin
 
 **What each layer never does:** the engine never decides *when* a guard is **required** (host policy / geography — `wire-contract.md` §5.3); hosts never compute hashes (node_rev / fingerprint are opaque equality tokens). Multi-file all-or-nothing commit remains a named limit (`wire-contract.md` §6.5).
 
-**Consistency with the three laws:** disk stays the only durable truth (tree and ring are memory); recovery is re-derive; the engine answers “what changed”, policy decides what to do about it.
+**Consistency with the three laws:** disk stays the only durable truth (memo and ring are memory); recovery is re-derive; the engine answers “what changed”, policy decides what to do about it.
 
 ## 8. Interaction with the write plane
 
@@ -207,5 +207,5 @@ Two grains, composable — **no separate `guard` op** (dropped; integrity = `fin
 3. **Hash domain** — settled for design in `wire-contract.md` §12 (md-only + `meridian/domain.md`). This spec’s leaf rule must stay aligned with that domain filter.
 4. **Symlink retarget invisibility** (§9) — acceptable for now, or hash the target path as a pseudo-leaf?
 5. **Multi-file atomic batch** — limit stated in `wire-contract.md` §6.5; vocabulary is `if_fingerprint` + batch `splice`.
-6. **`diff` / mismatch `changed` payload cap** — a wildly stale fingerprint can name thousands of paths; cap + `truncated:true`, or force `fingerprint_unknown` past a threshold?
+6. **`diff` payload cap** — a wildly stale fingerprint can name thousands of paths; cap + `truncated:true`, or force `fingerprint_unknown` past a threshold? (The mismatch `changed` field was struck — `wire-contract.md` §18 row 2 — leaving only the `diff` half open.)
 
