@@ -205,6 +205,58 @@ fn a_daemon_publishing_no_identity_is_refused_on_the_local_socket() {
     );
 }
 
+/// The script CLI lane refuses on skew at connect (SocketDoor), before any
+/// entry work: no fingerprint, no eval, no splice. Pinned e2e beside the
+/// read/links lanes because the § A.7 in-process serve rides the same door —
+/// this lane's connect-time law must survive that change byte-for-byte.
+#[test]
+fn script_refuses_on_foreign_identity_before_any_entry_work() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let _daemon = sb.daemon(Some(FOREIGN_BUILD));
+
+    let out = Command::new(mrd_bin())
+        .env("XDG_CACHE_HOME", &sb.cache_home)
+        .env("HOME", &sb.home)
+        .env_remove("MERIDIAN_WORKSPACE")
+        .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
+        .args(["script", "--json"])
+        .current_dir(&ws)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write as _;
+            child
+                .stdin
+                .take()
+                .expect("piped stdin")
+                .write_all(b"t = read(\"doc.md\")\n")?;
+            child.wait_with_output()
+        })
+        .expect("spawn mrd script");
+    let err = stderr_of(&out);
+
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a build-skewed daemon refuses the script lane (exit 2), got {:?}\nstdout: {}\nstderr: {err}",
+        out.status.code(),
+        stdout_of(&out),
+    );
+    assert!(
+        stdout_of(&out).is_empty(),
+        "exit 2 + empty stdout is the pre-entry controlled exit: {}",
+        stdout_of(&out)
+    );
+    assert!(err.contains("SKEW"), "the one skew voice: {err}");
+    assert!(
+        err.contains(FOREIGN_BUILD) && err.contains(OWN_BUILD),
+        "both identities named: {err}"
+    );
+}
+
 /// The links lane degrades on daemon-path FAILURE; skew is not a failure of
 /// the path but a refusal of the serve — it must surface loud, never melt
 /// into the in-process degrade (which would hide the stale resident forever).
