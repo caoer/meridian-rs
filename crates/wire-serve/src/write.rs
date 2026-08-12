@@ -1615,8 +1615,8 @@ fn read_mint_gate(
             format!(
                 "pin of {}#{asked} refused: actor {actor} holds no read receipt for that \
                  selector — you cannot attest content that was never in your context. Cause: \
-                 {cause}. Fix, either way, in one round trip: re-read {}#{asked} (mode \
-                 sections, that exact selector) as {actor}, then pin again.",
+                 {cause}. Fix, either way, in one round trip: re-read {}#{asked} (a \
+                 sections read, that exact selector) as {actor}, then pin again.",
                 target.0, target.0
             ),
         ));

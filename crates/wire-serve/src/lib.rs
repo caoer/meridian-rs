@@ -86,13 +86,13 @@ pub fn section_recovery(selector: &str, display_path: Option<&str>) -> String {
             .to_owned(),
         (false, Some(p)) => format!(
             "Fix: list this document's section paths with a toc read of {p} (MCP read: \
-             mode:\"toc\"; CLI: `mrd read {p}` with no --section), then feed its row back \
-             in one of the two addressing forms: {SECTION_FORMS}"
+             sections[] omitted; CLI: `mrd read {p}` with no --section), then feed its \
+             row back in one of the two addressing forms: {SECTION_FORMS}"
         ),
         (false, None) => format!(
             "Fix: list the document's section paths with a toc read (MCP read: \
-             mode:\"toc\"; CLI: a read with no --section), then feed its row back in one \
-             of the two addressing forms: {SECTION_FORMS}"
+             sections[] omitted; CLI: a read with no --section), then feed its row back \
+             in one of the two addressing forms: {SECTION_FORMS}"
         ),
     }
 }
