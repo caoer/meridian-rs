@@ -1,11 +1,12 @@
 //! `mrd daemon` — run the registry+engine server, and the client-side auto-spawn that starts it
 //! detached on first use (decision 0002 §3, the watchman model). Two entry points share this
-//! module: - [`run`] is the daemon body: bind the socket, write a pidfile, and block on a
-//! signal loop until SIGINT/SIGTERM.
+//! module: - [`run`] is the daemon body: start the server (which binds the socket and writes
+//! the pidfile, in that contract's order — `registry::RunningServer`), and block on a signal
+//! loop until SIGINT/SIGTERM.
 
 use std::io;
 use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -17,11 +18,6 @@ use crate::Fail;
 
 /// Set by the signal handler; polled by the foreground loop.
 static SIGNALLED: AtomicBool = AtomicBool::new(false);
-
-/// The pidfile name, beside the socket in the registry directory. Written by the
-/// singleton-winning daemon so an operator (or a test) can signal the resident daemon without
-/// hunting the process table; removed on graceful shutdown.
-const PID_NAME: &str = "daemon.pid";
 
 /// Environment override for the binary [`spawn_detached`] launches as the daemon (default: the
 /// running executable). A packager points it at a dedicated daemon binary; a test points it at
@@ -44,8 +40,9 @@ fn install_signal_handlers() {
     }
 }
 
-/// Run `mrd daemon`: bind the socket, write the pidfile, and block until a
-/// signal, then shut down cleanly (flush state, remove the socket + pidfile).
+/// Run `mrd daemon`: start the server (socket bound, pidfile written before
+/// the first request is served — the server owns that order and its mirror on
+/// shutdown), and block until a signal.
 pub(crate) fn run() -> Result<(), Fail> {
     let mut config = Config::resolve()
         .map_err(|e| Fail::tool(format!("cannot resolve the daemon layout: {e}")))?;
@@ -57,15 +54,6 @@ pub(crate) fn run() -> Result<(), Fail> {
     install_signal_handlers();
     let server = RunningServer::start(config)
         .map_err(|e| Fail::tool(format!("cannot start the registry daemon: {e}")))?;
-    let pid_path = pid_path(server.socket_path());
-    // Advisory only — a failed pidfile write must not fail the daemon (the
-    // socket is the real liveness handle); log and carry on.
-    if let Err(e) = std::fs::write(&pid_path, format!("{}\n", std::process::id())) {
-        eprintln!(
-            "registry: cannot write pidfile {} ({e})",
-            pid_path.display()
-        );
-    }
     eprintln!(
         "meridian registry daemon listening on {}",
         server.socket_path().display()
@@ -78,15 +66,8 @@ pub(crate) fn run() -> Result<(), Fail> {
         thread::sleep(Duration::from_millis(200));
     }
     eprintln!("shutting down");
-    let _ = std::fs::remove_file(&pid_path);
     server.shutdown();
     Ok(())
-}
-
-/// The pidfile path for a daemon whose socket is `socket_path` (its sibling in
-/// the registry directory).
-fn pid_path(socket_path: &Path) -> PathBuf {
-    socket_path.with_file_name(PID_NAME)
 }
 
 /// Auto-spawn the resident daemon DETACHED (decision 0002 §3): launch `mrd daemon` in a new

@@ -60,6 +60,11 @@ const REGISTRY_DIR: &str = "registry";
 const SOCKET_NAME: &str = "daemon.sock";
 /// The state file name.
 const STATE_NAME: &str = "state.json";
+/// The pidfile name, beside the socket. The singleton-winning daemon writes it
+/// so an operator, the 0025 install pipeline (`pkill -TERM -F`), or a client's
+/// kill attestation can signal the resident daemon without hunting the process
+/// table; removed on graceful shutdown.
+const PID_NAME: &str = "daemon.pid";
 
 /// Where and how a daemon runs. Construct with [`Config::resolve`] for the
 /// production layout, or build the fields directly to place everything under a
@@ -214,6 +219,21 @@ impl RunningServer {
         let _ =
             std::fs::set_permissions(&config.socket_path, std::fs::Permissions::from_mode(0o600));
 
+        // Pidfile ORDER is the contract (tests/daemon_pidfile.rs): after the
+        // flock (only the winner claims the file — this also overwrites a
+        // SIGKILLed predecessor's stale pid), before the accept loop spawns
+        // (no pong can precede the write, so a client holding a pong always
+        // reads the serving daemon's pid). The write itself stays advisory —
+        // a daemon that cannot write its pidfile still serves (the socket is
+        // the real liveness handle); log and carry on.
+        let pid_file = config.socket_path.with_file_name(PID_NAME);
+        if let Err(e) = write_pidfile(&pid_file) {
+            eprintln!(
+                "registry: cannot write pidfile {} ({e})",
+                pid_file.display()
+            );
+        }
+
         let shutdown = Arc::new(AtomicBool::new(false));
         let exit_requested = Arc::new(AtomicBool::new(false));
         let accept = spawn_accept(
@@ -298,7 +318,11 @@ impl RunningServer {
         }
         // Capture in-memory last_use bumps that resolve made without persisting.
         self.registry.flush();
+        // Socket first, pidfile second — the kill handle outlives the last
+        // pong (the boot order's mirror), so no reader holding a fresh pong
+        // finds the file already gone.
         let _ = std::fs::remove_file(&self.socket_path);
+        let _ = std::fs::remove_file(self.socket_path.with_file_name(PID_NAME));
     }
 }
 
@@ -324,6 +348,17 @@ fn prepare_dir(dir: &Path) -> io::Result<()> {
         ));
     }
     Ok(())
+}
+
+/// Write this process's pid to `path` atomically (same-directory temp +
+/// rename), so no reader ever sees a half-written or empty file — `fs::write`
+/// creates-then-fills, and the empty instant is exactly what a concurrent
+/// pidfile reader would catch. The flock serializes writers, so the fixed
+/// temp name cannot race itself.
+fn write_pidfile(path: &Path) -> io::Result<()> {
+    let tmp = path.with_extension("pid.tmp");
+    std::fs::write(&tmp, format!("{}\n", std::process::id()))?;
+    std::fs::rename(&tmp, path)
 }
 
 /// The deadlines that keep a push subscription mortal — see [`push_loop`].
