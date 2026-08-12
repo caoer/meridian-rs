@@ -1,3 +1,11 @@
+---
+type: convention
+id: index
+status: standing
+description: Process, standing corrections, inventory, and reading order for this directory.
+owns: [process, standing corrections, inventory, reading order]
+---
+
 # meridian-rs `docs/`
 
 ## Docs define law; code follows
