@@ -42,7 +42,7 @@ pub const MOUNT_LANG: &str = "meridian-mount";
 pub const TOOL_LANG: &str = "meridian-tool";
 
 /// The mount block's fields, in canonical order (schema §5.1).
-pub const MOUNT_FIELDS: [&str; 5] = ["name", "path", "kind", "vault", "pin"];
+pub const MOUNT_FIELDS: [&str; 6] = ["name", "path", "kind", "primary", "vault", "pin"];
 
 /// The tool block's fields, in canonical order (schema §6).
 pub const TOOL_FIELDS: [&str; 3] = ["name", "kind", "config"];
@@ -61,7 +61,7 @@ pub const NO_PARTIAL_LOAD_CLAUSE: &str =
 /// exemplar of the shape schema §8.3 fixes.
 /// `refusal_exemplar_is_produced_not_asserted` reproduces it from a real
 /// parse, so drift in the wording fails a test.
-pub const UNKNOWN_FIELD_REFUSAL_EXEMPLAR: &str = "refused: ~/MERIDIAN.md line 14: unknown field `paths` in a meridian-mount block — legal fields are name, path, kind, vault, pin (in that order). No mount table was loaded; the config is not partially applied. Fix: remove the line or spell the field you meant.";
+pub const UNKNOWN_FIELD_REFUSAL_EXEMPLAR: &str = "refused: ~/MERIDIAN.md line 14: unknown field `paths` in a meridian-mount block — legal fields are name, path, kind, primary, vault, pin (in that order). No mount table was loaded; the config is not partially applied. Fix: remove the line or spell the field you meant.";
 
 /// Why a config refused — the closed reason set of schema §8.2. A reason word
 /// comes from [`Reason::word`], never free text.
@@ -104,11 +104,15 @@ pub enum Reason {
     DuplicateMountName,
     /// Two `meridian-tool` blocks declare the same `name`.
     DuplicateToolName,
+    /// Two `meridian-mount` blocks carry `primary: true` — the designation is
+    /// a role exactly one mount may hold, so a second one is a table-level
+    /// defect, not a tie to break.
+    DuplicatePrimaryDesignation,
 }
 
 impl Reason {
     /// Every reason word, in schema §8.2's table order.
-    pub const ALL: [Reason; 17] = [
+    pub const ALL: [Reason; 18] = [
         Reason::ConfigPathUnusable,
         Reason::HomeUnresolvable,
         Reason::NoFrontmatter,
@@ -126,6 +130,7 @@ impl Reason {
         Reason::UnterminatedBlock,
         Reason::DuplicateMountName,
         Reason::DuplicateToolName,
+        Reason::DuplicatePrimaryDesignation,
     ];
 
     /// The reason word — the closed-set spelling schema §8.2 fixes.
@@ -149,6 +154,7 @@ impl Reason {
             Reason::UnterminatedBlock => "unterminated-block",
             Reason::DuplicateMountName => "duplicate-mount-name",
             Reason::DuplicateToolName => "duplicate-tool-name",
+            Reason::DuplicatePrimaryDesignation => "duplicate-primary-designation",
         }
     }
 }
@@ -239,6 +245,12 @@ pub struct MountEntry {
     pub path: String,
     /// `vault` or `git-folder`.
     pub kind: MountKind,
+    /// The declared-primary designation (schema §5.1 field 4): `true` iff this
+    /// block carries `primary: true`. A binding ROLE for fleet hosts — the one
+    /// tree their single-root consumers anchor — parsed and reported here,
+    /// never acted on by the engine. Absence is the only "not primary"
+    /// spelling; at most one block per file may carry it.
+    pub primary: bool,
     /// The Obsidian vault name; `Some` iff `kind` is [`MountKind::Vault`].
     pub vault: Option<String>,
     /// The mount-as-claim pin (schema §5.3) — a well-formed fingerprint
@@ -553,11 +565,12 @@ pub fn parse(raw: &str, path: &Path) -> Result<Config, ConfigError> {
     let mut tools: Vec<ToolDecl> = Vec::new();
     let mut mount_name_lines: Vec<(String, usize)> = Vec::new();
     let mut tool_name_lines: Vec<(String, usize)> = Vec::new();
+    let mut primary_designation: Option<(String, usize)> = None;
 
     for block in engine_blocks(raw, &doc.root) {
         match block.lang.as_str() {
             MOUNT_LANG => {
-                let (entry, name_line) = parse_mount(&block, path)?;
+                let (entry, name_line, primary_line) = parse_mount(&block, path)?;
                 if let Some((_, first)) = mount_name_lines.iter().find(|(n, _)| *n == entry.name) {
                     return Err(duplicate_name(
                         Reason::DuplicateMountName,
@@ -567,6 +580,26 @@ pub fn parse(raw: &str, path: &Path) -> Result<Config, ConfigError> {
                         *first,
                         MOUNT_LANG,
                     ));
+                }
+                // Table-level like duplicate-mount-name: the designation is a
+                // role exactly one mount may hold (schema §5.1), and the
+                // parser never picks one — the whole table refuses.
+                if let Some(second) = primary_line {
+                    if let Some((first_name, first)) = &primary_designation {
+                        return Err(ConfigError::new(
+                            Reason::DuplicatePrimaryDesignation,
+                            path,
+                            Some(second),
+                            format!(
+                                "a second {MOUNT_LANG} block (`{}`) declares `primary: true`, already declared by `{first_name}` at line {first} — the primary designation is a role exactly one mount may hold, and nothing picks between two.",
+                                entry.name
+                            ),
+                            format!(
+                                "remove the `primary:` line here or the one at line {first}, leaving exactly one designated mount."
+                            ),
+                        ));
+                    }
+                    primary_designation = Some((entry.name.clone(), second));
                 }
                 mount_name_lines.push((entry.name.clone(), name_line));
                 mounts.push(entry);
@@ -976,7 +1009,10 @@ fn split_field<'a>(
 // meridian-mount (schema §5)
 // ---------------------------------------------------------------------------
 
-fn parse_mount(block: &Block, path: &Path) -> Result<(MountEntry, usize), ConfigError> {
+fn parse_mount(
+    block: &Block,
+    path: &Path,
+) -> Result<(MountEntry, usize, Option<usize>), ConfigError> {
     if block.unterminated {
         return Err(unterminated(block, path));
     }
@@ -1014,6 +1050,39 @@ fn parse_mount(block: &Block, path: &Path) -> Result<(MountEntry, usize), Config
                 "set `kind: vault` for an Obsidian vault, or `kind: git-folder` for a plain git folder.".to_string(),
             ));
         }
+    };
+
+    // The primary designation: optional, literal `true` only — absence is the
+    // one "not primary" spelling, so `primary: false` refuses rather than
+    // becoming a second spelling for the same fact. Kind-conditional like
+    // `vault:`: the primary root is where a fleet daemon writes, so a
+    // `git-folder` (source repo) designation states something that cannot be
+    // honoured.
+    let primary = match fields.get("primary") {
+        Some((primary_line, value)) => {
+            if kind == MountKind::GitFolder {
+                return Err(ConfigError::new(
+                    Reason::FieldNotPermittedForKind,
+                    path,
+                    Some(primary_line),
+                    "`primary:` is not permitted on a `kind: git-folder` mount — the primary root is where the fleet daemon writes, and a git-folder root binds a source repo.".to_string(),
+                    "remove the `primary:` line, or set `kind: vault` if this root really is one.".to_string(),
+                ));
+            }
+            if value != "true" {
+                return Err(ConfigError::new(
+                    Reason::BadValue,
+                    path,
+                    Some(primary_line),
+                    format!(
+                        "`primary: {value}` is not a designation — the only legal value is `true`; a mount that is not primary says so by carrying no `primary:` line."
+                    ),
+                    "write `primary: true`, or remove the line.".to_string(),
+                ));
+            }
+            Some(primary_line)
+        }
+        None => None,
     };
 
     // Kind-conditional: a vault root requires `vault:`; a git-folder root
@@ -1081,11 +1150,13 @@ fn parse_mount(block: &Block, path: &Path) -> Result<(MountEntry, usize), Config
             name: name.to_string(),
             path: mount_path.to_string(),
             kind,
+            primary: primary.is_some(),
             vault,
             pin,
             fence_line: block.fence_line,
         },
         name_line,
+        primary,
     ))
 }
 
