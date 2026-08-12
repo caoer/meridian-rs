@@ -3163,13 +3163,13 @@ fn simulate_armed_edits(
     after_doc: &model::Document,
     edits: &[Edit],
     before_facts: &[model::Target],
-    born: &[Option<String>],
+    born: &[Option<crate::plan::Born>],
     sealed: &model::ValidatedBatch,
 ) -> Result<Vec<ArmedEdit>, Box<ErrorBody>> {
     let mut armed_edits = Vec::with_capacity(edits.len());
     for (i, (edit, before)) in edits.iter().zip(before_facts).enumerate() {
-        if let Some(title) = born.get(i).and_then(Option::as_ref) {
-            armed_edits.push(born_armed_edit(after_doc, sealed, i, edit, title)?);
+        if let Some(birth) = born.get(i).and_then(Option::as_ref) {
+            armed_edits.push(born_armed_edit(after_doc, sealed, i, edit, birth)?);
             continue;
         }
         let target = to_model_ref(&edit.target)?;
@@ -3214,8 +3214,10 @@ fn simulate_armed_edits(
 /// applied back-to-front, so batch edit `i`'s text lands at its own region
 /// start plus the length shift of every sealed edit ordered before it —
 /// same-point inserts keep request order under the seal's stable sort. The
-/// lowered create text opens with one `\n`, so the born heading is the next
-/// byte. The FACTS still come from the real reparse; arithmetic only picks
+/// born heading's offset within the lowered text is STATED by the lowering
+/// ([`crate::plan::Born::heading_offset`]) — the § A.3 hygiene composition
+/// derives the separators from the document, so the reader no longer assumes
+/// them. The FACTS still come from the real reparse; arithmetic only picks
 /// which node to read.
 ///
 /// # Errors
@@ -3228,8 +3230,9 @@ fn born_armed_edit(
     sealed: &model::ValidatedBatch,
     batch_index: usize,
     edit: &Edit,
-    title: &str,
+    birth: &crate::plan::Born,
 ) -> Result<ArmedEdit, Box<ErrorBody>> {
+    let title = birth.title.as_str();
     let refuse = || birth_unrepresentable(edit, title);
     let pos = sealed
         .edits
@@ -3248,13 +3251,13 @@ fn born_armed_edit(
     let landed = (sealed.edits[pos].span.start + added)
         .checked_sub(removed)
         .ok_or_else(refuse)?;
-    // The lowered create text opens with exactly one `\n` (lower_create's
-    // skeleton); a sealed text that lost it means the payload was rewritten
-    // out of shape — refuse rather than misplace the birth.
-    if !sealed.edits[pos].text.starts_with('\n') {
+    // The stated offset must point at a heading opener in the sealed text; a
+    // sealed text rewritten out of shape refuses rather than misplacing the
+    // birth.
+    if sealed.edits[pos].text.as_bytes().get(birth.heading_offset) != Some(&b'#') {
         return Err(refuse());
     }
-    let heading_start = landed + 1;
+    let heading_start = landed + birth.heading_offset;
     let hpath = crate::plan::published_hpath_at(after_doc, heading_start).ok_or_else(refuse)?;
     let target = SecRef::Hpath { hpath };
     let model_ref = to_model_ref(&target)?;
@@ -3294,7 +3297,7 @@ fn receipt_input(
     edits: &[Edit],
     root_before: &Root,
     armed_edits: &[ArmedEdit],
-    born: &[Option<String>],
+    born: &[Option<crate::plan::Born>],
     addr: &ReceiptAddr,
 ) -> Result<(String, model::ReceiptAppend), Box<ErrorBody>> {
     let io_err = |e: std::io::Error| {

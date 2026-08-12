@@ -119,13 +119,16 @@ fn plan_batch_equals_the_host_built_native_batch() {
                     },
                     if_node_rev: None,
                 },
+                // The § A.3 hygiene composition: the appended list item joins
+                // the trailing list flush, so the section's trailing blank
+                // line must move — a content-span rewrite, not an end-insert.
                 Edit {
                     target: SecRef::Hpath {
                         hpath: vec![seg("Memo"), seg("Tasks")],
                     },
                     edit: EditShape::Put {
-                        at: PutAt::End,
-                        text: "- item three\n".into(),
+                        at: PutAt::Content,
+                        text: "\n- item one\n- item two\n- item three\n\n".into(),
                     },
                     if_node_rev: None,
                 },
@@ -249,7 +252,8 @@ fn replace_section_and_match_all_land_expected_bytes() {
     let after = std::fs::read_to_string(dir.path().join("card.md")).expect("read");
     assert_eq!(
         after,
-        "---\nstatus: open\nowner: d\n---\n# Memo\n\nbody line\n\n## Tasks\n- done\n# Archive\n\nold\n"
+        "---\nstatus: open\nowner: d\n---\n# Memo\n\nbody line\n\n## Tasks\n\n- done\n\n# Archive\n\nold\n",
+        "§ A.3 hygiene: one blank line under the heading, one before the next heading"
     );
 }
 
