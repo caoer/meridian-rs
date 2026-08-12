@@ -146,7 +146,9 @@ pub fn user_rule_pages(anchor: &Path) -> io::Result<DomainFiles> {
     let Some((rels, _declined)) = user_rules_traversal(anchor)? else {
         return Ok(Vec::new());
     };
-    let user_scope = anchor.parent().expect("the traversal resolved a parent");
+    let Some(user_scope) = anchor.parent() else {
+        return Ok(Vec::new());
+    };
     let mut pages = Vec::with_capacity(rels.len());
     for rel in rels {
         // A rule page whose name has no UTF-8 spelling must not register
