@@ -875,20 +875,11 @@ pub fn domain_snapshot(root: &WorkspaceRoot) -> io::Result<(DomainFiles, model::
     FOLD_COUNT.fetch_add(1, Ordering::Relaxed);
     let domain = domain::Domain::load(root)?;
     let rels = hash_domain(root, &domain)?;
+    let members = read_and_digest_members(root, &rels, PARALLEL_READ_FLOOR)?;
     let mut files = Vec::with_capacity(rels.len());
     let mut leaves: Vec<(Vec<u8>, [u8; 32])> = Vec::with_capacity(rels.len());
-    for rel in rels {
-        // A member that cannot be read refuses the whole snapshot — a
-        // corpus-scoped refusal, so it names the member (`CorpusMemberError`):
-        // the raw OS error carries no path at all.
-        let bytes = fs::read(root.0.join(&rel)).map_err(|e| {
-            corpus_member_refusal(
-                e.kind(),
-                &display_name(hash_name(&rel)),
-                format!("cannot be read ({e})"),
-            )
-        })?;
-        leaves.push((hash_name(&rel).to_vec(), model::leaf_digest(&bytes)));
+    for (rel, (bytes, digest)) in rels.iter().zip(members) {
+        leaves.push((hash_name(rel).to_vec(), digest));
         if let Some(rel_str) = rel.to_str() {
             files.push((rel_str.to_owned(), bytes));
         }
@@ -897,6 +888,78 @@ pub fn domain_snapshot(root: &WorkspaceRoot) -> io::Result<(DomainFiles, model::
         leaves.iter().map(|(n, d)| (n.as_slice(), *d)).collect();
     let folded = model::merkle_root_of_leaves(&leaf_refs, domain.version());
     Ok((files, folded))
+}
+
+/// Below this member count the read+digest sweep stays serial: a fold that
+/// small finishes before threads would pay for themselves. Reads move bytes
+/// (unlike [`PARALLEL_STAT_FLOOR`]'s stats), so the floor sits much lower.
+const PARALLEL_READ_FLOOR: usize = 64;
+
+/// One member's bytes + leaf digest, refusal-shaped exactly as the serial
+/// loop always was: a member that cannot be read refuses the whole snapshot,
+/// naming the member (`CorpusMemberError`) — the raw OS error carries no path.
+fn read_and_digest_member(root: &WorkspaceRoot, rel: &Path) -> io::Result<(Vec<u8>, [u8; 32])> {
+    let bytes = fs::read(root.0.join(rel)).map_err(|e| {
+        corpus_member_refusal(
+            e.kind(),
+            &display_name(hash_name(rel)),
+            format!("cannot be read ({e})"),
+        )
+    })?;
+    let digest = model::leaf_digest(&bytes);
+    Ok((bytes, digest))
+}
+
+/// The snapshot's read+digest sweep, parallel above `floor` — the byte half
+/// of the git-class pass (§ A.7 measurement companion; the stat half landed
+/// with [`DomainCache::walk_tree`] / [`member_identities`], this is the same
+/// discipline applied where the bytes are).
+///
+/// Order-preserving contiguous chunks on 2–8 scoped workers, merged in spawn
+/// order — so the returned rows AND the first refusal match the serial loop
+/// exactly: chunks are ordered slices, each chunk stops at its own first
+/// refusal, and the merge takes the earliest chunk's. A worker panic resumes
+/// on the caller (the [`member_identities`] posture).
+fn read_and_digest_members(
+    root: &WorkspaceRoot,
+    rels: &[PathBuf],
+    floor: usize,
+) -> io::Result<Vec<(Vec<u8>, [u8; 32])>> {
+    if rels.is_empty() || rels.len() < floor {
+        return rels
+            .iter()
+            .map(|rel| read_and_digest_member(root, rel))
+            .collect();
+    }
+    // Clamped LOWER than the stat sweep's (2, 8): reads move bytes through
+    // the kernel's per-file open/read path, which CONTENDS under wide
+    // fan-out — measured on the 24k/146MB corpus, an 8-way `cat` sweep is
+    // SLOWER than serial (0.77s vs 0.52s wall, 7x the system CPU) while
+    // 3-way is the knee (0.29s). Four threads keep digest work overlapped
+    // with reads without tipping into that contention.
+    let workers = std::thread::available_parallelism().map_or(2, |n| n.get().clamp(2, 4));
+    let chunk = rels.len().div_ceil(workers);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = rels
+            .chunks(chunk)
+            .map(|chunk| {
+                scope.spawn(move || {
+                    chunk
+                        .iter()
+                        .map(|rel| read_and_digest_member(root, rel))
+                        .collect::<io::Result<Vec<_>>>()
+                })
+            })
+            .collect();
+        let mut rows = Vec::with_capacity(rels.len());
+        for handle in handles {
+            match handle.join() {
+                Ok(chunk_rows) => rows.extend(chunk_rows?),
+                Err(panic) => std::panic::resume_unwind(panic),
+            }
+        }
+        Ok(rows)
+    })
 }
 
 /// [`domain_snapshot`] over a DIFFERENT INTERVAL: the worktree snapshot with an

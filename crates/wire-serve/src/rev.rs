@@ -362,7 +362,8 @@ mod tests {
                 "splice.create_rev",
                 "create",
                 "mounts",
-                "hello.identity"
+                "hello.identity",
+                "script"
             ])
         );
     }
