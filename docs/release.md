@@ -1,8 +1,10 @@
 ---
 type: contract
+id: release
 status: standing
 updated: 2026-08-09
 description: What a meridian-rs release promises, and the stamp + tag mechanics that make the promise cuttable.
+owns: [what a release promises, stamp and tag mechanics]
 ---
 
 # Release definition

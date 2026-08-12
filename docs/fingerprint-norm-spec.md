@@ -1,8 +1,10 @@
 ---
 type: result
+id: fp
 status: spec
 created: 2026-07-24
 tags: [type/result, domain/meridian-rs, topic/meridian-rs, topic/merkle]
+owns: [the fingerprint CID token, norm-v2]
 ---
 
 # Fingerprint CID-token + normalization spec

@@ -83,9 +83,9 @@ which laws it carries. In one line each:
 | `wire` | The serde-only wire vocabulary — the whole host-visible surface (Law 2) |
 | `wire-map` | The named model→wire projection seam, tested as a library function (Law 3) |
 | `git` | The git plumbing organ: shell-out content-addressing (blob object ids, the eager `-w` write) and object reachability against a `Repo` handle. git owns content-addressing — this crate asks git and reports what git said, and NEVER computes or guesses an oid. A `std`-only leaf: no production dependency, so `git`-invocation churn is a one-crate event |
-| `receipt` | The receipt family, at three planes: the persisted `^receipt` line renderer committed in the same batch as its edit (the shipped default template — facts normative, template replaceable); the append-only journal and its chain-continuity forgery detector; the origin-freshness anchor axis plus the three-state blob classification (`anchored` / `pending-anchor` / `never-anchored`); and the ephemeral in-memory read-mint ledger. Dependencies are `wire` only, by gate — so it CLASSIFIES facts it never gathers (the `git` crate does the I/O), and stage-3 unifies the ledger's representation with the persisted projection |
+| `receipt` | The receipt family, at three planes: the persisted `^receipt` line renderer committed in the same batch as its edit (the shipped default template — facts normative, template replaceable); the origin-freshness anchor axis plus the three-state blob classification (`anchored` / `pending-anchor` / `never-anchored`); and the ephemeral in-memory read-mint ledger. Dependencies are `wire` only, by gate — so it CLASSIFIES facts it never gathers (the `git` crate does the I/O), and stage-3 unifies the ledger's representation with the persisted projection |
 | `transport` | Untyped NDJSON envelope + codec seam; framing without meaning |
-| `policy` | Ruleset compile + assertion evaluation under budgets; edit-time verdicts; the blocking `gate` at the armed change plane (`policy::authorize`) — see § Amendment |
+| `policy` | Ruleset compile + assertion evaluation under budgets; edit-time verdicts; the blocking `gate` at the armed change plane (`policy::gate`) — see § Amendment |
 | `query` | Corpus reads over the model's borrowed index; applies nothing |
 | `wire-serve` | The shared typed edge (Law 3 choke-point): strict decode, read arms incl. the composed `read`, the `splice → commit` write choke-point, the standing projection — one implementation, one host (wire-contract §3.3). Agent/stored address seam: `put` translates cross-root `root:` into `obsidian://` stored form and `read` translates back, at the candidate document (see `address-grammar.md` §9). Reads `config` for the mount table lazily when a candidate can carry a cross-root position. |
 | `render` | The compiled-in render plane: `Renderer` + node-grain walker producing TOON-compact projection through its own encoder (`render::toon`), with block-elision and claim-link decoration hooks. Decorations arrive as data — no `render → lock → fingerprint` edge. |
@@ -115,15 +115,18 @@ Law: `wire-contract.md` § A.2 (armed plane) and § Refusal taxonomy.
 host could act on or ignore. This amendment extends the charter: `policy` now
 also owns the **blocking gate** at the armed change plane.
 
-- **The seam.** `gate(change, armed_set) → Ok(verdicts) | Refusal(violations)`
- fills `policy::authorize` and converts the advisory `evaluate_verdicts` seam
- to blocking — evaluated after CAS, before bytes land, in both writer paths.
+- **The seam.** `gate(change, law) → GateOutcome`
+ (`Ok(verdicts) | Refusal(violations)`) is `policy::gate`
+ (`crates/policy/src/gate.rs:108`), the blocking form of the advisory
+ `evaluate_verdicts` seam — evaluated after CAS, before bytes land, in both
+ writer paths.
  When a workspace is armed, a block-severity verdict or a door-law violation
  refuses the write; the refusal carries a `{code, recovery}` pair from the
  closed §8 taxonomy (`wire-contract.md` §8 and § A.2).
-- **Trusted-path armed set.** `gate` loads and verifies the attested INDEX
- from the workspace path inside the trusted write path; the caller-supplied
- ruleset parameter is removed from the gating decision. Absent INDEX on a
+- **Trusted-path armed set.** The armed law is loaded and verified from the
+ workspace path inside the trusted write path (`resolve_armed_law`,
+ `crates/policy/src/armed_law.rs:257`, fed by the write path's own disk seam);
+ the caller-supplied ruleset parameter is removed from the gating decision. Absent INDEX on a
  never-armed workspace is a no-op bit-for-bit; a missing INDEX on an
  once-armed workspace fails CLOSED (`convention-fault`).
 - **Additivity holds (Law § Additivity).** `policy` is still an additive
@@ -247,11 +250,11 @@ and it is pinned by a red test, mutation-proved one-edit, in
 
 ### R1.6-a — the stored→agent re-join, and why it stays
 
-`stored_occupants` (`crates/wire-serve/src/positions.rs:511`) decodes a stored
+`stored_occupants` (`crates/wire-serve/src/positions.rs:423`) decodes a stored
 URI into its parts, then **re-joins them into one string and re-parses it**:
 
 ```rust
-// crates/wire-serve/src/positions.rs:539-545
+// crates/wire-serve/src/positions.rs:451-457
 let address = match &parsed.selector {
  Some(sel) => format!("{name}:{}#{sel}", parsed.path),
  None => format!("{name}:{}", parsed.path),
@@ -276,8 +279,8 @@ capability blocking an ordered proof had to be finished, and this does not.
 **Why it waits.** The fix requires `Addr` to gain a parts constructor, and
 `Addr` has **no `from_parts` by deliberate invariant**:
 
-> *"there is no `from_parts` a caller can use to smuggle an unparsed root prefix
-> into the `Addr::path` field"* — `crates/addr/src/lib.rs:10-15`
+> *"there is no `Addr::from_parts` a caller can use to smuggle an unparsed
+> prefix into the `path` field"* — `address-grammar.md` §2.2
 
 That invariant is what makes every downstream guard checkable. Redesigning it is
 its own considered act with its own gate, not a rider slipped into another
@@ -290,7 +293,8 @@ The daemon's warm state is one workspace's corpus, keyed by that workspace's own
 canonical path and invalidated by its own fingerprint
 (`crates/registry/src/registry.rs:317-321`, `warm_or_build`). **It holds no
 mounted-root corpora**, so the link arm serves ambient state only
-(`crates/registry/src/server.rs:782-789`). U21 therefore resolves a cross-vault
+(`crates/registry/src/server.rs:1121-1135`, the `Op::Links` arm on the
+daemon's one-workspace warm engine). U21 therefore resolves a cross-vault
 link by DEGRADING that one op to in-process, where the mounted corpora can be
 loaded the way the walk plane already loads them
 (`crates/mrd/src/walk_cmd.rs:146`).
@@ -443,10 +447,9 @@ describes splitting on `/`: the two rows are two properties of one door.**
 was *dissolved* on the reasoning that a `_`-bearing anchor refusing loudly is
 conforming. That dissolution's premise is currently unmet in code.
 
-**The proposed face decision, for advisor ratification** (full argument, the
-measured fragments, and the blast-radius measurement:
-`results/anchor-charset-door-asymmetry-proposal.md`, session
-`08-06-triple-impl-wave1`): the §2.4 boundary is a DECODE-TIME boundary
+**The proposed face decision, for advisor ratification** (the full argument,
+the measured fragments, and the blast-radius measurement are this row's own
+body above and below): the §2.4 boundary is a DECODE-TIME boundary
 enforced at every ingress before any lookup, so an out-of-grammar id never
 becomes a selector and can never surface as a miss; the other two doors adopt
 the write door's existing refusal string verbatim, so one law gets one

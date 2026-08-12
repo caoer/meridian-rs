@@ -1,8 +1,10 @@
 ---
 type: result
+id: schema
 status: spec
 created: 2026-07-26
 tags: [type/result, domain/meridian-rs, topic/meridian-rs, topic/config]
+owns: ["MERIDIAN.md config parse"]
 ---
 
 # MERIDIAN.md in-file schema — the config plane's parse law
@@ -76,15 +78,16 @@ already ships once; this schema extends a proven pattern rather than introducing
 1. **Strictness is scoped to a machine surface; prose is prose.** The INDEX pins its title exactly and
  parses every row strictly, while leaving the preamble free. §3 states the same law for
  `MERIDIAN.md`, with an explicit marker for where the machine surface begins.
-2. **Malformed fails closed and names the damage.** `IndexCorrupt`'s *"attested INDEX is corrupt: …"*
+2. **Malformed fails closed and names the damage.** `ArtifactCorrupt`'s detail
+ (*"row is not a closed table row: …"*, `crates/policy/src/armed.rs:1039`, `parse_row`)
  is the shape of §8's refusal. Nothing half-loads.
-3. **The pinned rev is the node_rev family, not a fingerprint.** `armed_rev` is `blake3(bytes)[:16]`.
+3. **The pinned rev is the node_rev family, not a fingerprint.** `page_rev` is `blake3(bytes)[:16]`.
  §7 reuses that law verbatim for the config's own rev — **no new hash law is minted here.**
-4. **A drifted pin refuses; it never silently re-arms.** `ArmError::Drift`'s wording
- (*"arming requires report-rev == armed-rev"*) is the model for the mount-as-claim posture in §7.3.
-5. **The reserved-path constant is triplicated with a cross-crate drift test**
- (`crates/fs/src/domain.rs:66`, `crates/policy/src/binding.rs:42`, `crates/mrd/src/status_cmd.rs:94`,
- test at `crates/wire-serve/src/gate.rs:776-782`). §2.4 requires the same for `MERIDIAN.md`'s
+4. **A drifted pin refuses; it never silently re-arms.** `ArmedFault::Red(Redness::Drifted)`'s
+ door verdict (§1.1) is the model for the mount-as-claim posture in §7.3.
+5. **The reserved-path constant is mirrored in two crates with a cross-crate drift test**
+ (`crates/policy/src/armed.rs:26`, `crates/fs/src/domain.rs:50`;
+ test at `crates/wire-serve/tests/reserved_paths.rs:10`). §2.4 requires the same for `MERIDIAN.md`'s
  filename and env-var name.
 
 ### 1.3 Where this schema deliberately DIFFERS — and why
@@ -94,9 +97,9 @@ already ships once; this schema extends a proven pattern rather than introducing
 | D-a | **Engine is sole writer**; a hand edit is a refused `BindingBreak` | **Human is sole author**; the engine never writes it | The INDEX is a generated attestation artifact. `MERIDIAN.md` is *"a new user's first contact … one readable file"* (ruling §1). A binding-break guard on a file the engine does not write would refuse every legitimate edit |
 | D-b | **Middot-separated checklist rows** | **`key: value` lines inside a fenced block** | Row grammar is cheap to *generate* and hostile to *hand-write* — a missing ` · ` is invisible in an editor. `key: value` is the grammar the repo already hand-authors (`crates/lock`, lock/def frontmatter, `meridian/domain.md` domain frontmatter) |
 | D-c | **No frontmatter** | **Required frontmatter** (`type`, `version`) | The INDEX is found at one reserved path, so its identity is positional. `MERIDIAN.md` can be aimed anywhere by `MERIDIAN_CONFIG`, so it must be able to say *what it is* and *which schema it speaks* — otherwise a mis-set env var half-loads an unrelated page |
-| D-d | Malformed row names the row **text** (`{line:?}`), never its **number** (`crates/policy/src/index.rs:380-382`) | Every refusal carries a **1-based file line** | The ratified requirement is a refusal *"naming what is broken **and where**"*. The INDEX precedent cannot satisfy it. The in-repo model that can is `crates/lock` — `LockError::Malformed { line, reason: &'static str }` (`crates/lock/src/lib.rs:136-138`) — so §8 extends **lock's** error shape, not the INDEX's |
+| D-d | Malformed row names the row **text** (`{line:?}`), never its **number** (`crates/policy/src/armed.rs:1039`, `parse_row`) | Every refusal carries a **1-based file line** | The ratified requirement is a refusal *"naming what is broken **and where**"*. The INDEX precedent cannot satisfy it. The in-repo model that can is `crates/lock` — `LockError::Malformed { line, reason: &'static str }` (`crates/lock/src/lib.rs:390`) — so §8 extends **lock's** error shape, not the INDEX's |
 | D-e | Absent-vs-malformed pivots on a **separate marker file** | Absent and malformed are decided by **the file alone** | The once-armed marker exists because disarming must not be silent. `MERIDIAN.md` has no such asymmetry: there is nothing to disarm, and every machine legitimately starts with no file (D6) |
-| D-f | Round-trip is **lossy** — the scope column is rendered and never read back (`crates/policy/src/index.rs:308-334`) | Every declared field is **read**; an unread field is refused as unknown | A lossy round-trip is tolerable when the engine regenerates the file. Here the human's bytes are the only source, so a silently-ignored field is a silently-ignored intent |
+| D-f | Round-trip was **lossy** — the scope column was rendered and never read back (the retired INDEX; the successor's `parse_row` reads all five columns, `crates/policy/src/armed.rs:1039`) | Every declared field is **read**; an unread field is refused as unknown | A lossy round-trip is tolerable when the engine regenerates the file. Here the human's bytes are the only source, so a silently-ignored field is a silently-ignored intent |
 
 ## 2. Resolution — the bootstrap chain and the FOUR states
 
@@ -155,8 +158,9 @@ agree, as `the_armed_rules_artifact_has_one_spelling` does for `meridian/armed-r
  names an engine block-language (§3.1). The engine parses these strictly.
 - **Prose** — everything else. The engine **never parses it and never refuses because of it.**
 
-**This is the law that makes markdown-as-config safe**, and it is the INDEX's own law generalized: the
-INDEX pins its title and its rows and leaves its preamble free (`crates/policy/src/index.rs:361-387`).
+**This is the law that makes markdown-as-config safe**, and it is the INDEX's own law generalized,
+shipped today in its successor: the artifact pins its title and its rows and leaves its preamble free
+(`crates/policy/src/armed.rs:996`, `parse_artifact`).
 Without this scoping, adding a sentence of documentation to your own config could break your system —
 which would defeat the entire "one readable file that explains itself" purpose the ruling states.
 
@@ -169,12 +173,14 @@ three convincing decoys beside one real mount and must yield exactly one mount.
 
 The repo reserves the whole `meridian-*` fence-info prefix as the engine's block-language namespace,
 and the predicate is a **prefix test, deliberately not an enumerated list**
-(`crates/lock/src/lib.rs:39-56`):
+(`crates/lock/src/lib.rs:55-68`):
 
 ```rust
 pub const NAMESPACE_PREFIX: &str = "meridian-";
 pub fn is_meridian_lang(lang: &str) -> bool {
- lang.split_whitespace.next.is_some_and(|tok| tok.starts_with(NAMESPACE_PREFIX))
+    lang.split_whitespace()
+        .next()
+        .is_some_and(|tok| tok.starts_with(NAMESPACE_PREFIX))
 }
 ```
 
@@ -186,38 +192,40 @@ So this schema adds two languages inside a namespace that already admits them:
 | ` ```meridian-tool ` | exactly **one** tool declaration | zero or more per file |
 
 The **first whitespace token** of the info string decides the language, matching every existing reader
-(`crates/lock/src/lib.rs:53`, `crates/policy/src/pack.rs:415-420`, `crates/run/src/fence.rs:123`). A
+(`crates/lock/src/lib.rs:65`, `crates/policy/src/pack.rs:376`, `crates/run/src/fence.rs:131`). A
 trailing string (` ```meridian-mount the wiki `) is tolerated and ignored.
 
 **One entry per block, not one table block.** Rejected alternative and its reasons in §11.
 
 ### 3.2 The consequence of the namespace that MUST be named
 
-Blocks in the `meridian-*` namespace are already governed by two shipped behaviours:
+One shipped behaviour governs how the namespace renders, and U36 narrowed it from per-namespace to
+per-language:
 
-1. **The render face ELIDES them.** `TextRenderer::with_meridian_elision` drops every fenced block
- `is_meridian_lang` matches (`crates/render/src/lib.rs:194-209`). The raw `cat` face rides them
- verbatim.
-2. **The form-2 chain reader SKIPS them** — *"an engine block is form-3's (or a later engine reader's),
- never a form-2 chain block"* (`crates/view/src/read_face.rs:622-648`).
+1. **The render face elides ENGINE-EMITTED languages only.** `ToonRenderer::with_meridian_elision`
+ drops the blocks `lock::is_engine_emitted` names (`crates/render/src/lib.rs:194-209`): a
+ `meridian-lock` is machine-written and elides, while a `meridian-mount` or `meridian-tool` is
+ user-authored and **renders**. The raw `cat` face rides everything verbatim either way.
 
-Behaviour 2 is exactly right and is why the namespace is the correct home: a mount block must never be
-mis-read as an `inputs` chain block, and the namespace grants that for free.
+The former second behaviour — the form-2 chain reader skipping engine blocks — left the tree with
+the retired `^inputs` plane, so there is no chain reader left to mis-read a mount block. What still
+makes the namespace the correct home is §3.1 itself: it is the one predicate the strict parse scopes
+on, and per-language elision means a human-authored block in it is never hidden from its author.
 
-Behaviour 1 is a **trap for whoever verifies criterion 1**, so it is stated here rather than
-discovered: an agent running `mrd read ~/MERIDIAN.md` sees the prose and **not the mount blocks**, and
-would reasonably conclude the parse failed. It did not. The elision is the literate-config pattern
-working as designed — the prose beside each block is its human-readable statement. **The user-reachable
-verb that publishes the parsed mount table must therefore not be the rendered read face.** implementation owns
-which verb it is; this spec's requirement is only that criterion 1's evidence not be measured on a
-surface that elides the thing it is measuring.
+**The verification trap this section was written to name is therefore gone in its old form, and the
+requirement survives for the honest remainder.** An agent running `mrd read ~/MERIDIAN.md` today
+sees the prose **and** the mount blocks, so the old false conclusion — "no mount blocks visible, the
+parse failed" — cannot happen. What the rendered face still never shows is the parse **verdict**: a
+mount block's bytes render whether or not the config parser accepted them. **The user-reachable
+verb that publishes the parsed mount table must therefore still not be the rendered read face.**
+Implementation owns which verb it is; this spec's requirement is only that criterion 1's evidence
+not be measured on a surface that shows the block's bytes but never its acceptance.
 
 ## 4. Frontmatter keys
 
 The frontmatter is the first block of the file: bytes `0..3` are `---\n`, terminated by a closing
-`---` line. This is the shipped frontmatter shape (`crates/policy/src/pack.rs:149-167`,
-`in-tree testsuite ground-truth fixtures`: *"only when bytes 0..3 are `---\n` (BOM-prefixed
-`---` is NOT frontmatter)"*).
+`---` line. This is the shipped frontmatter shape (`crates/testsuite/data/gt/ground-truth/README.md:21`:
+*"only when bytes 0..3 are `---\n` (BOM-prefixed `---` is NOT frontmatter)"*).
 
 | Key | Type | Required | Refusal on violation |
 |---|---|---|---|
@@ -226,14 +234,13 @@ The frontmatter is the first block of the file: bytes `0..3` are `---\n`, termin
 
 **v1 is `version: 1`.** A future format bumps it; a reader refuses a version it does not implement and
 **never guesses a future format** — `LockError::UnsupportedVersion`'s own law
-(`crates/lock/src/lib.rs:132-134`). The same discipline appears on the hash-domain declaration
+(`crates/lock/src/lib.rs:382`). The same discipline appears on the hash-domain declaration
 page `meridian/domain.md` (`version` + ignore list): a domain-rule change bumps the fingerprint
 prefix so a `b3:` cursor can never silently match a `b3a:` world (`wire-contract.md` §12.3).
 
-**Unknown frontmatter keys are permitted and ignored.** This is the shipped posture for markdown-as-
-config frontmatter — *"Other keys are permitted (a convention may carry descriptive frontmatter) and
-ignored"* (`crates/policy/src/convention.rs:311-314`) — and it is what lets a user carry `title:`,
-`updated:`, or Obsidian properties on their own entry page.
+**Unknown frontmatter keys are permitted and ignored.** This is the shipped posture for this plane's
+own parse — *"Unknown keys are permitted and ignored"* (`crates/config/src/lib.rs:672`) — and it is
+what lets a user carry `title:`, `updated:`, or Obsidian properties on their own entry page.
 
 **And that tolerance is safe here only because of a deliberate design rule: v1 defines NO optional
 frontmatter key the engine reads.** Both keys are required, so a typo of either fails loud as
@@ -252,7 +259,7 @@ Malformed frontmatter itself:
 ## 5. The `meridian-mount` block grammar
 
 One block declares one mount entry. The grammar is **line-oriented `key: value`, one field per line,
-in canonical order** — modelled directly on `lock::parse` (`crates/lock/src/lib.rs:238-303`), which is
+in canonical order** — modelled directly on `lock::parse` (`crates/lock/src/lib.rs:543`), which is
 the repo's one strict hand-parsed block grammar with per-line refusals.
 
 ```meridian-mount
@@ -335,11 +342,11 @@ parser can test:
 
 > `pin:` carries a fingerprint CID-token: four `.`-separated non-empty fields,
 > `version.codec.hashfn.digest`. It is well-formed iff `model::fingerprint::parse_fingerprint`
-> returns `Some` (`crates/model/src/fingerprint.rs:191-194`).
+> returns `Some` (`crates/model/src/fingerprint.rs:137`).
 
-**Parse is codec-agnostic on purpose** — the shipped rule is *"tokens minted by newer codecs/hash-fns
-still parse — self-describing survives its implementations. Whether THIS build can verify it is
-`verify_content`'s question, not parse's"* (`crates/model/src/fingerprint.rs:99-103`). This schema
+**Parse is codec-agnostic on purpose** — the shipped rule is *"Parse is codec-agnostic, so tokens
+minted by newer codecs/hash-fns still parse; whether this build can verify one is
+`verify_content`'s question"* (`crates/model/src/fingerprint.rs:68-70`). This schema
 therefore constrains the **token shape only**. It does not constrain the codec, which matters because a
 `git-folder` root's pin grain is the file and a `vault` root's is a parsed span
 (cross-root-addressing §3) — those are different codecs, and pinning one here would forbid the other.
@@ -408,20 +415,20 @@ new mechanism**:
 > `config_rev` = the document root node's `node_rev` = `blake3(raw file bytes)[:16]`, 16 lowercase hex.
 
 Verified in the tree, not asserted: the root node's span is `0..raw.len`
-(`crates/model/src/lib.rs:238`) and its rev is `node_rev(raw.as_bytes, &root_span)`
-(`crates/model/src/lib.rs:243`), where `node_rev` is `blake3(span bytes)[:16]`
-(`crates/model/src/lib.rs:348-352`). This is byte-identically the law the armed
+(`crates/model/src/lib.rs:204`) and its rev is `node_rev(raw.as_bytes, &root_span)`
+(`crates/model/src/lib.rs:210`), where `node_rev` is `blake3(span bytes)[:16]`
+(`crates/model/src/lib.rs:310-311`). This is byte-identically the law the armed
 artifact's pinned `rev` already uses for a rule page (`crates/policy/src/registration.rs`,
 `page_rev`) — §1.2 rule 3.
 
 `config_rev` is spelled `file_rev` wherever the wire already spells a whole-page rev
-(`crates/wire/src/lib.rs:895`). **One name per thing: no new rev noun is minted for the config.**
+(`crates/wire/src/lib.rs:1199`). **One name per thing: no new rev noun is minted for the config.**
 
 ### 7.2 The rev is computable where the config lives — this is not accidental
 
-`model::build(raw: String, nodes: Vec<syntax::DialectNode>)` (`crates/model/src/lib.rs:194`) is a pure
+`model::build(raw: String, nodes: Vec<syntax::DialectNode>)` (`crates/model/src/lib.rs:165`) is a pure
 function: no workspace, no I/O, no git. So `config_rev` is computable for a file in `$HOME`, which is a
-**denied workspace path** (`DenyReason::HomeDir`, `crates/workspace/src/lib.rs:299-303`) and can never
+**denied workspace path** (`DenyReason::HomeDir`, `crates/workspace/src/lib.rs:305`) and can never
 be promoted into one. The rev exists there; the *attestation plane* does not. §9 states exactly how far
 that gets us.
 
@@ -453,7 +460,7 @@ Every state-B refusal names **what is broken** and **where**, and does so throug
 ### 8.1 The shape
 
 Extend `crates/lock`'s error type, which is the in-repo model that carries a structured location
-(`crates/lock/src/lib.rs:136-138`) — not the INDEX's, which carries none (§1.3 D-d):
+(`crates/lock/src/lib.rs:390`) — not the INDEX's, which carries none (§1.3 D-d):
 
 ```rust
 Malformed { line: usize, reason: &'static str } // the shape to extend
@@ -470,7 +477,7 @@ at a slice:
 2. **The refusal names the config path**, since `MERIDIAN_CONFIG` means the file may be anywhere.
 3. **`reason` stays `&'static str` — a closed set, never free text.** This is what makes the reason
  word testable and keeps a refusal's spelling from drifting (the same discipline as
- `D1_TEACHING_REFUSAL_EXEMPLAR`, `crates/model/src/selector.rs:465-472`).
+ `D1_TEACHING_REFUSAL_EXEMPLAR`, `crates/model/src/selector.rs:569`).
 
 ### 8.1a Which line a refusal points at
 
@@ -514,7 +521,7 @@ State C and `home-unresolvable` carry the config path and no line: there are no 
 
 A refusal carries: the reason word, the config path, the 1-based file line, what was found, and what
 is legal. The repo's strongest refusal templates are `crates/policy/src/binding.rs:148-156` (names the
-file, why it is off-limits, and the legal routes) and `crates/model/src/selector.rs:472` (names each
+file, why it is off-limits, and the legal routes) and `crates/model/src/selector.rs:569` (names each
 candidate by two independent addresses, then `Fix:`). The shape for this plane:
 
 ```
@@ -527,21 +534,21 @@ field you meant.
 **Three clauses are mandatory and each closes a specific failure:** naming the line (the ratified
 "and where"); stating **"no mount table was loaded"** (the ratified no-partial-load, made visible so a
 reader cannot assume a partial config took effect); and a `Fix:` naming the legal form (the shipped
-rule that a refusal cites the passing scenario — `crates/policy/src/check_eval.rs:517-541`, where
+rule that a refusal cites the passing scenario — `crates/policy/src/check_eval.rs:502-513`, where
 `refuse(message, passing)` makes it structurally impossible to refuse without it).
 
 ### 8.4 First refusal wins, and it is the only one
 
 A malformed config produces **exactly one** refusal — the first, in file order. Reasons: the file does
 not half-load, so there is no state in which a second fault is meaningful; and a cascade of derived
-faults buries the one the operator must fix. This matches `lock::parse` and `parse_index_strict`, both
-of which return on the first fault.
+faults buries the one the operator must fix. This matches `lock::parse` (`crates/lock/src/lib.rs:543`)
+and `parse_artifact` (`crates/policy/src/armed.rs:996`), both of which return on the first fault.
 
 ## 9. The stated limit — `~/MERIDIAN.md` cannot be attested (canonicalize-at-bind)
 
 Carried, not papered over. `$HOME` is not a git repo, has no receipt journal and no merkle hash
 domain, and is a **denied workspace path** (`DenyReason::HomeDir`,
-`crates/workspace/src/lib.rs:299-303`) so it can never be promoted into one to acquire a journal.
+`crates/workspace/src/lib.rs:305`) so it can never be promoted into one to acquire a journal.
 Therefore:
 
 - **The single authority for every cross-root ref is the one artifact the attestation plane cannot

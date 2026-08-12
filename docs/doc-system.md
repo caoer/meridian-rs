@@ -28,7 +28,7 @@ two properties were lost on the way.
 grep -hE '^#{1,6} +(§ ?)?[0-9]+' docs/*.md
 ```
 
-Four files answer to a heading numbered `4.4`. Eight answer to `1`. So a bare
+Four files answer to a heading numbered `4.4`. Nine answer to `1`. So a bare
 `§4.4` names a section only by convention, and a convention cannot be measured.
 
 **A law restated outside its home is invisible.** A citation index finds a law
