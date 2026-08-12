@@ -943,7 +943,7 @@ mod help {
         /// is a space, not that the line is long enough to slice.
         #[test]
         fn an_overflowing_synopsis_still_lexes() {
-            let overflowing = "  mrd pin <PAGE> <TARGET>#<SELECTOR> [--vibe] [--dry]";
+            let overflowing = "  mrd pin <PAGE> <TARGET>#<SELECTOR> [--vibe] [--dry] [--json]";
             assert_ne!(
                 overflowing.as_bytes()[DESC_COL - 1],
                 b' ',
