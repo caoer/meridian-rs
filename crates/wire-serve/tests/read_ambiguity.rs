@@ -173,7 +173,10 @@ fn single_miss_keeps_spelling_and_remedy_names_both_dialects() {
         msg.starts_with("read: no section addressed by \"Ghost\" in dup.md."),
         "{msg}"
     );
-    assert!(msg.contains("mode:\"toc\""), "MCP dialect named: {msg}");
+    assert!(
+        msg.contains("sections[] omitted"),
+        "MCP dialect named: {msg}"
+    );
     assert!(msg.contains("no --section"), "CLI dialect named: {msg}");
 }
 
