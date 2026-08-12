@@ -123,6 +123,7 @@ fn the_closed_reason_set_is_complete_and_reachable() {
             "unterminated-block",
             "duplicate-mount-name",
             "duplicate-tool-name",
+            "duplicate-primary-designation",
         ],
         "the reason set is schema §8.2's table, in its order"
     );
@@ -222,6 +223,12 @@ fn one_of_each_reason() -> Vec<(Reason, ConfigError)> {
                 "{}\n{}",
                 tool("name: t\nkind: skill\n").trim_end(),
                 "```meridian-tool\nname: t\nkind: mcp\n```\n"
+            )),
+        ),
+        (
+            Reason::DuplicatePrimaryDesignation,
+            refuse(&fm(
+                "```meridian-mount\nname: a\npath: /x\nkind: vault\nprimary: true\nvault: a\n```\n\n```meridian-mount\nname: b\npath: /y\nkind: vault\nprimary: true\nvault: b\n```\n",
             )),
         ),
     ]
