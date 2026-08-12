@@ -296,6 +296,7 @@ pub struct Mount {
     declared_path: String,
     canonical: Option<PathBuf>,
     kind: MountKind,
+    primary: bool,
     vault: Option<String>,
     pin: Option<String>,
     declared_name: Option<String>,
@@ -328,6 +329,14 @@ impl Mount {
     #[must_use]
     pub fn kind(&self) -> MountKind {
         self.kind
+    }
+
+    /// The declared-primary designation, verbatim from the config (schema
+    /// §5.1). A binding ROLE fleet hosts consume; the engine reports it and
+    /// never acts on it.
+    #[must_use]
+    pub fn primary(&self) -> bool {
+        self.primary
     }
 
     /// The Obsidian vault name — `Some` iff [`MountKind::Vault`]. This is the
@@ -704,6 +713,7 @@ fn mount_in_state(
         declared_path: entry.path.clone(),
         canonical,
         kind: entry.kind,
+        primary: entry.primary,
         vault: entry.vault.clone(),
         pin: entry.pin.clone(),
         declared_name,
