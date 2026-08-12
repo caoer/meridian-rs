@@ -39,6 +39,10 @@ fn config(tmp: &TempDir) -> Config {
     config.prewarm_interval = forever;
     config.prewarm_quiet_max = forever;
     config.idle_exit = None;
+    // The fixture daemon publishes THIS build's identity: the 0025 socket law
+    // refuses an identity-less local hello, and these tests measure poison
+    // handling, not the law.
+    config.build_sha = Some(env!("MRD_BUILD_SHA").to_owned());
     config
 }
 

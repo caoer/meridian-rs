@@ -512,8 +512,7 @@ fn meridian_rs_itself_is_clean_while_a_refusal_still_reddens_its_own_subtree() {
     // carries a rule tag CANNOT BE ANSWERED (`RegisterFault::FrontmatterUnparsed`).
     // It is named under its own verdict string and nowhere else.
     assert!(
-        stdout.contains("cannot be answered")
-            && stdout.contains("frontmatter-unparseable"),
+        stdout.contains("cannot be answered") && stdout.contains("frontmatter-unparseable"),
         "the excluded fixture is named under the undecidable verdict: {stdout}"
     );
     assert!(
@@ -1152,7 +1151,9 @@ fn sockets_under_cache(s: &Sandbox) -> Vec<String> {
             return;
         };
         for entry in entries.flatten() {
-            let Ok(kind) = entry.file_type() else { continue };
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
             if kind.is_dir() {
                 walk(&entry.path(), out);
             } else if std::os::unix::fs::FileTypeExt::is_socket(&kind) {
@@ -1425,13 +1426,12 @@ fn a_user_layer_winner_cannot_be_armed_and_the_act_says_why() {
             String::from_utf8(bytes).expect("utf-8"),
         ));
     }
-    let index = policy::RuleIndex::discover(text.iter().map(|(layer, page, bytes)| {
-        policy::PageRef {
+    let index =
+        policy::RuleIndex::discover(text.iter().map(|(layer, page, bytes)| policy::PageRef {
             layer: *layer,
             page,
             bytes,
-        }
-    }));
+        }));
     let armroot = policy::armed::ArmRoot::parse("").expect("a legal root");
     let resolved = index.narrowed_to("").resolve();
     let winner = resolved
