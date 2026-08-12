@@ -91,6 +91,10 @@ impl Sandbox {
         // No idle exit: this server's lifetime is the test's, and a daemon that
         // reaped itself mid-assertion would fail as a flake, not a finding.
         config.idle_exit = None;
+        // The fixture daemon publishes THIS build's identity: the 0025 socket
+        // law refuses an identity-less local hello, and these tests measure
+        // the token surfaces, not the law.
+        config.build_sha = Some(env!("MRD_BUILD_SHA").to_owned());
         registry::RunningServer::start(config).expect("the resident daemon starts")
     }
 

@@ -868,7 +868,11 @@ directory it just declared.
 An answered rung opens the hashed drawer directly. A `cwd-default` tree adopts a
 running daemon's registered ancestor if one answers, else degrades to an
 ephemeral, per-invocation store that writes nothing — it is never silently
-registered.
+registered. The adopted daemon may be a different build than the caller: the
+adoption itself exchanges only a registration record, and any content that
+follows rides a v3 connection where the socket law
+(`docs/wire-contract.md` §A.3, 0025) compares `hello.identity.build` at connect
+and refuses across builds.
 
 The CLI's word for a `cwd-default` answer is therefore the **refinement**, not
 the tier: `daemon-adopted` (the daemon supplied the root) or `ephemeral` (nothing

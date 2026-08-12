@@ -34,6 +34,47 @@ impl EngineSource {
     }
 }
 
+/// This client's own build identity, baked by `build.rs` (G10): a whole-commit
+/// sha, `<sha>-dirty`, or `unknown` (`docs/release.md` §5.1).
+const OWN_BUILD: &str = env!("MRD_BUILD_SHA");
+
+/// The socket law, client half (0025, 2026-08-12; `docs/wire-contract.md`
+/// §A.3): a LOCAL client on its own cache root compares `hello.identity.build`
+/// against its own baked identity, WHOLE token, and refuses on anything but
+/// equality. Zero extra round trips — `body` is the hello frame the single
+/// dial already received and parsed.
+///
+/// Absence refuses too, on this LOCAL socket only: a resident daemon that
+/// publishes no identity is a build predating the identity token — exactly the
+/// stale-resident shape the law exists for (receipt `839fdb38`: a foreign
+/// daemon served wording that does not exist in the caller's tree, no error).
+/// `hello.identity` stays optional ON THE WIRE; remote peers are not bound.
+///
+/// ONE voice for every lane (read, links, script host), minted here alone, in
+/// the fleet's skew grammar (`child:… daemon:… SKEW`): both identities, the
+/// verdict, the remedy.
+pub(crate) fn hello_identity_skew(body: Option<&Value>, socket: &Path) -> Result<(), String> {
+    let theirs = body
+        .and_then(|b| b.get("identity"))
+        .and_then(|i| i.get("build"))
+        .and_then(Value::as_str);
+    if theirs == Some(OWN_BUILD) {
+        return Ok(());
+    }
+    let daemon = theirs.map_or_else(
+        || "(no identity published — a build predating the identity token)".to_owned(),
+        ToOwned::to_owned,
+    );
+    let pidfile = socket.with_file_name("daemon.pid");
+    Err(format!(
+        "build  child:{OWN_BUILD}  daemon:{daemon}  SKEW — the resident daemon on this socket \
+         answers from a build that is not this client's; refusing to serve across builds \
+         (docs/wire-contract.md §A.3, the socket law). Restart the daemon and rerun: kill the \
+         pid in {}; the next call auto-starts the current build.",
+        pidfile.display()
+    ))
+}
+
 /// The `sockaddr_un.sun_path` capacity, NUL terminator included: 108 on Linux,
 /// 104 on the BSDs (macOS). A socket path that does not fit cannot be bound OR
 /// dialled, so the daemon is unreachable however healthy it is — and the
@@ -308,7 +349,7 @@ pub(crate) fn answer_links(
     path: Option<&str>,
     format: Format,
 ) -> Result<Answer, Fail> {
-    if let Some(body) = try_daemon_links(workspace, path)
+    if let Some(body) = try_daemon_links(workspace, path)?
         && !daemon_answer_needs_the_address_plane(&body)
     {
         return Ok(Answer {
@@ -338,14 +379,33 @@ fn daemon_answer_needs_the_address_plane(body: &Value) -> bool {
 }
 
 /// Try the whole daemon path: resolve the socket, ensure a daemon is up (auto-spawn if not),
-/// then dial `hello` + `links`. `None` on ANY failure — the caller degrades. `Some(body)` only
-/// when the daemon answered `ok:true`.
-fn try_daemon_links(workspace: &Path, path: Option<&str>) -> Option<Value> {
-    let client = Client::from_default().ok()?;
-    ensure_daemon(&client).ok()?;
-    dial_links(client.socket_path(), workspace, path)
-        .ok()
-        .flatten()
+/// then dial `hello` + `links`. `Ok(None)` on ANY daemon-path failure — the caller degrades.
+/// `Ok(Some(body))` only when the daemon answered `ok:true`. `Err` on ONE case that must not
+/// melt into the degrade: build skew (0025 socket law) — a stale resident answering in
+/// silence is the defect, and degrading past it would hide the stale daemon forever.
+fn try_daemon_links(workspace: &Path, path: Option<&str>) -> Result<Option<Value>, Fail> {
+    let Ok(client) = Client::from_default() else {
+        return Ok(None);
+    };
+    if ensure_daemon(&client).is_err() {
+        return Ok(None);
+    }
+    match dial_links(client.socket_path(), workspace, path) {
+        Ok(DialedLinks::Served(body)) => Ok(Some(body)),
+        Ok(DialedLinks::Unusable) | Err(_) => Ok(None),
+        Ok(DialedLinks::Skew(message)) => Err(Fail::tool(message)),
+    }
+}
+
+/// What one dialled `hello` + `links` exchange produced, for [`try_daemon_links`].
+enum DialedLinks {
+    /// `ok:true` — the wire success body.
+    Served(Value),
+    /// The daemon answered an op error — degrade to the authoritative
+    /// in-process answer.
+    Unusable,
+    /// The handshake succeeded from a foreign build — refuse, never degrade.
+    Skew(String),
 }
 
 /// Ensure a daemon answers on `client`'s socket: return early if one already pings, else
@@ -371,28 +431,29 @@ pub(crate) fn ensure_daemon(client: &Client) -> io::Result<()> {
 }
 
 /// Dial one connection: `hello` binds and warms `workspace` (one round trip), then `links`
-/// reads from that binding. `Ok(Some(body))` when the daemon answered `ok:true`; `Ok(None)`
-/// when it answered an op error (degrade to the authoritative in-process answer); `Err` on a
-/// transport failure.
-fn dial_links(socket: &Path, workspace: &Path, path: Option<&str>) -> io::Result<Option<Value>> {
+/// reads from that binding. `Err` on a transport failure; otherwise the [`DialedLinks`]
+/// split — a failed handshake is `Unusable` (the in-process answer is authoritative), a
+/// handshake from a foreign build is `Skew` (0025: refuse, never degrade).
+fn dial_links(socket: &Path, workspace: &Path, path: Option<&str>) -> io::Result<DialedLinks> {
     let stream = UnixStream::connect(socket)?;
     let mut writer = stream.try_clone()?;
     let mut reader = BufReader::new(stream);
 
     // `hello` with a `workspace` resolves, pins and warms the resident engine, binding this
-    // connection to it. A failed handshake degrades — the in-process answer is authoritative.
+    // connection to it.
     let hello = json!({
         "op": "hello",
         "proto": 1,
         "contract": "v3",
         "workspace": workspace.to_string_lossy(),
     });
-    if call(&mut writer, &mut reader, &hello)?
-        .get("ok")
-        .and_then(Value::as_bool)
-        != Some(true)
-    {
-        return Ok(None);
+    let greeted = call(&mut writer, &mut reader, &hello)?;
+    if greeted.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Ok(DialedLinks::Unusable);
+    }
+    // 0025 socket law: identity equality on the hello frame already in hand.
+    if let Err(message) = hello_identity_skew(greeted.get("body"), socket) {
+        return Ok(DialedLinks::Skew(message));
     }
 
     let mut links = json!({ "op": "links" });
@@ -401,9 +462,12 @@ fn dial_links(socket: &Path, workspace: &Path, path: Option<&str>) -> io::Result
     }
     let response = call(&mut writer, &mut reader, &links)?;
     if response.get("ok").and_then(Value::as_bool) == Some(true) {
-        Ok(response.get("body").cloned())
+        match response.get("body") {
+            Some(body) => Ok(DialedLinks::Served(body.clone())),
+            None => Ok(DialedLinks::Unusable),
+        }
     } else {
-        Ok(None)
+        Ok(DialedLinks::Unusable)
     }
 }
 

@@ -7,9 +7,13 @@ default:
 build:
     cargo build --release -p mrd
 
-# Build and install to ~/.local/bin/mrd (cargo-tracked, lockfile-pinned)
+# Build and install to ~/.local/bin/mrd (cargo-tracked, lockfile-pinned).
+# Whoever installs a build restarts the resident daemon (0025 pipeline duty —
+# the engine refuses across builds and never restarts anything itself): TERM
+# the pidfile's daemon; the next call auto-starts the new build.
 install:
     cargo install --path crates/mrd --root ~/.local --locked --force
+    -pkill -TERM -F "${XDG_CACHE_HOME:-$HOME/.cache}/meridian/registry/daemon.pid" mrd 2>/dev/null
 
 # Build only (no install)
 check:

@@ -153,6 +153,12 @@ enum DaemonRead {
     /// The daemon path itself failed: socket, spawn, handshake, or a frame
     /// that does not parse as the wire vocabulary.
     Unavailable,
+    /// The daemon answered the handshake from a build that is not this
+    /// client's (0025 socket law). A refusal, never a degrade: melting skew
+    /// into `Unavailable` would serve an in-process answer and hide the stale
+    /// resident forever. Carries the one-voice message
+    /// ([`engine::hello_identity_skew`]).
+    Skew(String),
 }
 
 /// Answer the composed read: dial the resident daemon (auto-spawning it) and serve its answer —
@@ -166,6 +172,7 @@ fn answer_read(workspace: &Path, r: &Read) -> Result<(EngineSource, Value), Fail
             Err(engine::json_refusal(r.format, workspace, &error))
         }
         DaemonRead::Unavailable => Ok((EngineSource::Ephemeral, in_process_read(workspace, r)?)),
+        DaemonRead::Skew(message) => Err(Fail::tool(message)),
     }
 }
 
@@ -267,13 +274,14 @@ fn daemon_read(workspace: &Path, r: &Read) -> Option<DaemonRead> {
         "contract": "v3",
         "workspace": workspace.to_string_lossy(),
     });
-    if engine::call(&mut writer, &mut reader, &hello)
-        .ok()?
-        .get("ok")
-        .and_then(Value::as_bool)
-        != Some(true)
-    {
+    let greeted = engine::call(&mut writer, &mut reader, &hello).ok()?;
+    if greeted.get("ok").and_then(Value::as_bool) != Some(true) {
         return None;
+    }
+    // 0025 socket law: identity equality on the hello frame already in hand —
+    // no extra round trip, and skew is a refusal, never a degrade.
+    if let Err(message) = engine::hello_identity_skew(greeted.get("body"), client.socket_path()) {
+        return Some(DaemonRead::Skew(message));
     }
 
     let response = engine::call(&mut writer, &mut reader, &r.request()).ok()?;
