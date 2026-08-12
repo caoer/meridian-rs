@@ -92,6 +92,13 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     crate::voice_unserved(&unserved);
     if let Some(page) = parsed.page.as_deref() {
         crate::walk_cmd::admit_named_page(&root, &mut docs, page);
+    } else {
+        // A pageless repair sweeps every lock in the corpus — an enumeration —
+        // so it owes the enumerator clause (§12.1): it may exclude what its
+        // attestation cannot reach, never SILENTLY. A named page takes the
+        // door branch above instead: the page is SERVED, and a door that
+        // voiced a census would name its own subject as an exclusion.
+        crate::voice_excluded(&root, &docs, &unserved);
     }
     let docs = docs;
 
