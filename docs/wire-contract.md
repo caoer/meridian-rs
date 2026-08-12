@@ -1159,6 +1159,53 @@ team-e multi-root contract, L3 end state):**
   `put:end` door is untouched: a native append addressed the parent, and its
   fact keeps naming the parent.
 
+**The `replace_section` containment law (docs-first, 2026-08-12; ZT-ratified
+spec `replace-section-containment`, session 12-04-f2-mrd-integration):**
+
+- **The invariant:** after `replace_section(target)`, every byte outside the
+  target's subtree is identical, and the target's subtree is exactly the
+  payload. A payload that would restructure the document refuses whole —
+  never demoted, never clamped: a level change changes meaning, so silent
+  rewriting costs trust where refusal costs one teaching round-trip.
+- **The gate:** a payload heading at or above the target's own level refuses
+  `bad_request` (fix class) with the `payload_escapes_section` grammar — the
+  refusal names the offending body line, the payload heading's level, the
+  target's level, and the honest alternative: restructuring is a write to the
+  PARENT, so target the parent section or use `create_section`. No
+  `allow_escape` flag; the capability lives where the ownership is.
+- **Judged on the PARSED payload, never line-regex:** the dialect parse's own
+  heading law applies (ATX only, ≤3 indent). `#`-lines inside a fenced code
+  block are code, never headings. A setext underline is not a dialect
+  heading: a setext-shaped payload splices contained as body text — the
+  engine/CommonMark divergence this leaves (Obsidian renders an h2) is
+  recorded in the ratified spec (case 9); the engine-side define is pending
+  and is NOT this law.
+- **The one normalization:** a payload whose FIRST line echoes the target's
+  own heading — same level, same title — is the caller repeating the address
+  ("replace the whole section including its heading" is the dominant mental
+  model). That line is stripped silently and the remainder splices under the
+  rules above. An echo-only payload normalizes to an empty section. The echo
+  law is first-line-only: the same heading at any later position refuses as
+  a duplicate sibling. A same-titled DEEPER heading is ordinary content and
+  is never normalized.
+- **One refusal carries both facts:** the gate runs at plan lowering, before
+  the §5.1 CAS comparison — structure is judged against the same flocked
+  pre-image CAS reads. When the payload escapes AND the passed `rev` is
+  stale, the one refusal states the containment teaching and the stale-rev
+  fact (the current rev inline, resend token included) — the caller fixes
+  the payload and resends with the current rev in one round trip, and a
+  stale CAS can no longer mask the structural refusal into a two-error
+  teaching loop.
+- **Receipt honesty by construction:** with containment enforced, a
+  `replace_section` armed fact / receipt line `wrote §target rev:a→b` can
+  never describe bytes that landed outside the target's subtree.
+- **Scope:** this law binds the plan door's `replace_section`. The native
+  `edits` face stays byte-exact Edit-model (§4.4 unchanged, including the
+  truthful-transition law for sibling-opening appends). The ratified spec
+  expects the same containment for the plan door's `append` and
+  `create_section` bodies (untested there today); until that lands, those
+  ops rely on the §4.4 post-reparse families alone.
+
 **Frontmatter-properties plane on the composed `read` (docs-first,
 2026-08-07, the mcp-face §3.3 wire demand — engine leg of the props
 deferral):**
