@@ -42,7 +42,7 @@ fn e3_receipt_line_byte_exact() {
         anchor: "r-000042",
         edits: vec![EditFact {
             target: &target,
-            shape: &shape,
+            op: receipt::OpFact::Edit(&shape),
             before: &before,
             after: &after,
         }],
@@ -77,7 +77,7 @@ fn e4_receipt_line_byte_exact() {
         anchor: "r-000043",
         edits: vec![EditFact {
             target: &target,
-            shape: &shape,
+            op: receipt::OpFact::Edit(&shape),
             before: &before,
             after: &after,
         }],
@@ -115,7 +115,7 @@ fn absent_inputs_render_absent_facts() {
         anchor: "r-000044",
         edits: vec![EditFact {
             target: &target,
-            shape: &shape,
+            op: receipt::OpFact::Edit(&shape),
             before: &before,
             after: &after,
         }],
@@ -169,7 +169,7 @@ fn rendered_line_carries_no_claim_link_token() {
         anchor: "r-000001",
         edits: vec![EditFact {
             target: &target,
-            shape: &shape,
+            op: receipt::OpFact::Edit(&shape),
             before: &before,
             after: &after,
         }],
@@ -225,7 +225,7 @@ fn quoted_heading_survives_the_emission_as_recoverable_json() {
         anchor: "r-000009",
         edits: vec![EditFact {
             target: &target,
-            shape: &shape,
+            op: receipt::OpFact::Edit(&shape),
             before: &before,
             after: &after,
         }],
