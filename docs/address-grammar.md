@@ -58,14 +58,24 @@ with a different owner. This document's error type is **`addr::AddrError`**; the
 
 ### 2.1 Neither D12 story as written
 
-- **Story B — RIDE** (`model/src/lib.rs:1626-1628`) says the prefix *"rides inside the spelling and
- resolves by the same three rules."* Its three rules are `docs.contains_key(s)`,
- `docs.contains_key(s + ".md")` and `resolve_linkpath(...)` — **all lookups into one
- `BTreeMap<String, Document>`.** example `root:page` address misses all three and renders
- `red selector-unresolved`. Unimplementable as written.
-- **Story A — PEEL** (`view/src/read_face.rs:833-844`) peels a leading root in `split_lock_ref` —
- and then **discards it**: `LockItem` (`view/src/read_face.rs:405`) has `declared_ref` / `to_path`
- / `to_sel` and no root field.
+- **Story B — RIDE** keeps the prefix inside the spelling and resolves it by the same
+ three rules. The rules are real — they live in `three_rules`
+ (`model/src/lib.rs:1856-1871`): `docs.contains_key(spelling)`,
+ `docs.contains_key(spelling + ".md")` and `resolve_linkpath(...)` — **all lookups into
+ one root's corpus, a `BTreeMap<String, Document>` whose keys carry no root.** A
+ `root:page` spelling misses all three and renders `red selector-unresolved`.
+ Unimplementable as written: the story has no mount lookup. (In the shipped design the
+ same three rules run only after the root is peeled and the corpus selected —
+ `resolve_ref`, `model/src/lib.rs:1767-1782`.)
+- **Story A — PEEL** strips a leading root textually at the lock face and then
+ **discards it**. No such splitter ever shipped — the story's named helper exists
+ nowhere in the tree, and a peel that discards has nowhere to put the root. The lock
+ face does the opposite: the root stays ON the spelling until resolution (pinned by test —
+ *"the root stays ON the spelling until the lookup is root-aware"*,
+ `view/src/read_face.rs:840-841`), is readable as a VALUE from the parsed address
+ (`declared_addr`, :847), and `LockItem` (`view/src/read_face.rs:294-334`) carries it
+ in `to_root: Option<addr::MountName>` (:326) — the peel happens at resolution time
+ (:398-400), into a field, not the void.
 
 **Ruled: the address becomes a fallible TYPE carrying an optional root, and the resolver takes a
 root-keyed corpus.** Construction is fallible, so the compiler produces the door list (R5): a
@@ -477,8 +487,8 @@ implementation and implementation write these; the sentences are supplied here s
 
 ### 8.2 The measured motive — a read-mint bypass, found before the code existed
 
-On this machine, verified (§ 11.2): `«local-path»` is a **symlink** to
-`«local-path»`, while `CCC_LLM_WIKI_PATH` carries `«local-path»`
+On this machine, verified (§ 11.2): `/Users/Shared/repos/field-notes` is a **symlink** to
+`/Users/Shared/projects/field-notes`, while `CCC_LLM_WIKI_PATH` carries `/Users/Shared/projects/field-notes/`
 — the real path, with a trailing slash.
 
 A literal env-var inversion (implementation) therefore mounts **one tree twice, under two names**. Two canonical
@@ -493,7 +503,7 @@ are two different ways to spell the same tree, and only canonicalization collaps
 |---|---|---|---|
 | M1 | a mount path at `$HOME` | **whole parse fails loud**, naming the reason | `DenyReason::HomeDir` |
 | M2 | a mount path at `/`, `/tmp`, an XDG base dir, or under the cache root | **whole parse fails loud** | the matching `DenyReason` |
-| M3 | `«local-path»` (symlink) **and** `«local-path»` bound under two names | **whole parse fails loud** — one tree, two names | `duplicate-mount-path` (INV-2, after B-1) |
+| M3 | `/Users/Shared/repos/field-notes` (symlink) **and** `/Users/Shared/projects/field-notes/` bound under two names | **whole parse fails loud** — one tree, two names | `duplicate-mount-path` (INV-2, after B-1) |
 | M4 | `/a/wiki` and `/a/wiki/sub` both bound | **whole parse fails loud** | `nested-mount` (INV-4) |
 | M5 | `/a/wiki` and `/a/wiki-two` both bound | **BOUND — this is legal** | — (`wiki-two` is not a segment-boundary descendant of `wiki`) |
 | M6 | a mount path that does not exist or is unreadable | **grey for that root**, the path named; the table stays loaded | `grey(unmounted)` family — **not** a parse failure |
@@ -636,6 +646,66 @@ Row 7 forced a grammar rule the plan names nowhere:
 
 ---
 
+## 11. The measurements the laws rest on, and when they were run
+
+Each measurement below was run on this machine, first-hand, and is dated. All
+three pre-date the implementation they motivated — § 5.1's peel-and-refuse is
+now the C-3 guard at `crates/model/src/lib.rs:1733-1734`, and the mount-aware
+resolver is `resolve_ref` (`crates/model/src/lib.rs:1776`) — so re-running the
+§ 11.1 reproducer today reaches the guard's refusal (asserted on the § 11.1
+input verbatim by `crates/model/tests/u11_c3_linkpath_peels_and_refuses.rs`).
+That is the ruling working, not the measurement being wrong: these record the
+defect the laws were written against.
+
+### 11.1 The cross-root misresolve, reproduced first-hand, with its control
+
+Measured 2026-07-25, installed binary `/Users/caoer115/.local/bin/mrd`, in a
+fresh git workspace at `/tmp/u3repro/ws`:
+
+```
+$ mrd links claim.md            # [[sessions:24-01-retro/notes.md#Design]]
+workspace /private/tmp/u3repro/ws
+  source: daemon
+  claim.md
+    -> notes.md (1)             ← RESOLVED, to the ambient root's file.  exit 0
+
+$ mrd links claim2.md           # [[sessions:notes.md#Design]]  (the control)
+workspace /private/tmp/u3repro/ws
+  source: daemon
+  claim2.md
+    -> sessions:notes.md (1, unresolved)                                  exit 0
+```
+
+The defect **needs the slash**, and one address grammar gave two different
+answers on the same plane. That divergence is what § 5.1 C-4 makes the assert.
+
+### 11.2 The symlink topology § 8 is written against
+
+```
+$ readlink /Users/Shared/repos/field-notes
+/Users/Shared/projects/field-notes
+$ echo $CCC_LLM_WIKI_PATH
+/Users/Shared/projects/field-notes/
+```
+
+A symlinked spelling and a real path with a trailing slash — one tree, two
+spellings. § 8's B-1/B-3 are written against this measurement. Re-verified
+unchanged on this machine 2026-08-12.
+
+### 11.3 A `:`-bearing filename is legal on this machine
+
+```
+$ printf 'x\n' > 'sessions:notes.md' && ls
+sessions:notes.md
+```
+
+Created successfully (re-verified 2026-08-12). Together with `wire::Path`'s
+own doc — *"this newtype does not validate, it names"* — and `path_confined`'s
+segment checks (citations in § 4), this confirms there is no `:`-before-path
+validation anywhere, and that § 4 rules a live ambiguity rather than a
+hypothetical one.
+
+---
 
 ## 12. Implementer self-check
 
