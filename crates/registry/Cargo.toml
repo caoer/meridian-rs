@@ -40,6 +40,12 @@ syntax = { workspace = true }
 # hosts ruling, wire-contract §3.3).
 wire = { workspace = true }
 wire-serve = { workspace = true }
+# The frame-layer seam (§3.1): `transport::scan_id` classifies and validates the
+# raw `id` lexeme at the daemon door BEFORE typed decode — the B2 law this host
+# owes (a non-conforming lexeme is refused `bad_request` with `id:null` +
+# `id_raw`, never served, never reclassified as a notification). Leaf crate, no
+# external edges; the daemon is the first serving host.
+transport = { workspace = true }
 # Stage-2 S6: the read-is-the-mint ledger type (`receipt::read_mint`). The daemon
 # HOLDS one per workspace — the in-memory session layer a composed read mints
 # into — deliberately outside the warm engine, whose rebuild would otherwise
