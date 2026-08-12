@@ -309,8 +309,19 @@ fn plan_demands(doc: &model::Document, plan_edits: &[PlanEdit], out: &mut Vec<De
             | PlanEdit::ReplaceSection { hpath, rev, .. }
             | PlanEdit::Append { hpath, rev, .. } => {
                 if rev.as_deref().is_none_or(str::is_empty) {
+                    // A `^id` row is a block, and the demand must say so — the
+                    // read face splits the two planes deliberately, and a
+                    // refusal calling a block a section sends the caller to
+                    // the wrong listing.
+                    let noun = if matches!(hpath.as_slice(),
+                        [only] if only.h.starts_with('^') || only.h.starts_with("#^"))
+                    {
+                        "block"
+                    } else {
+                        "section"
+                    };
                     out.push(Demand {
-                        subject: format!("section \"{}\"", crate::display_hpath(hpath)),
+                        subject: format!("{noun} \"{}\"", crate::display_hpath(hpath)),
                         unmet: Unmet::NoGuard {
                             grain: Grain::Node,
                             slot: Slot::PlanRowRev,

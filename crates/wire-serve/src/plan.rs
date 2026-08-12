@@ -6,8 +6,16 @@
 //! N-1, 2026-08-12): exactly one blank line at every block and section
 //! boundary the splice touches, and a list-item payload joins a trailing
 //! list flush. The hygiene law supersedes byte-faithfulness at those doors.
+//!
+//! Two target planes, one fact table (door symmetry, wire-contract A.3): a
+//! heading path resolves against the same `read_facts` rows the read face
+//! publishes, and a `^id` block ref resolves against that table's ANCHOR plane
+//! (W-2, D-B face gate a: every toc-listed anchor is readable AND writeable by
+//! its id). A host outside the face's anchor law (task-, paragraph-,
+//! heading-hosted) is unlisted on the read door and therefore unresolvable on
+//! this one — never a wider write door than the read door beside it.
 
-use wire::{Edit, EditShape, ErrorBody, HpathSeg, NodeRev, PutAt, SecRef};
+use wire::{Edit, EditShape, ErrorBody, ErrorCode, HpathSeg, NodeRev, PutAt, SecRef};
 
 use crate::bad_request;
 
@@ -28,6 +36,14 @@ struct HeadingFacts {
     sec_rev: String,
 }
 
+/// One face-addressable block anchor (the fact table's anchor plane).
+struct AnchorFacts {
+    /// The block id, without the `^` marker.
+    id: String,
+    /// The block-leaf span (terminator-excluded, §1 leaf span law).
+    span: (usize, usize),
+}
+
 /// Host-face put index: the read face's own address table + fm keys in order.
 ///
 /// The index is the same [`wire_map::facts::read_facts`] table the read plane
@@ -36,6 +52,7 @@ struct HeadingFacts {
 /// last-wins, so a write could land on the wrong section silently.)
 struct PlanIndex {
     headings: Vec<HeadingFacts>,
+    anchors: Vec<AnchorFacts>,
     fm_keys: Vec<String>,
 }
 
@@ -55,10 +72,20 @@ impl PlanIndex {
             .filter(|r| r.kind == "frontmatter")
             .flat_map(|r| r.keys.clone().unwrap_or_default())
             .collect();
-        let headings = wire_map::facts::read_facts(&rows, doc.raw.as_bytes())
-            .into_iter()
-            .filter(|f| f.anchor.is_none() && !f.hpath.is_empty())
-            .map(|f| HeadingFacts {
+        let mut headings = Vec::new();
+        let mut anchors = Vec::new();
+        for f in wire_map::facts::read_facts(&rows, doc.raw.as_bytes()) {
+            if let Some(id) = &f.anchor {
+                anchors.push(AnchorFacts {
+                    id: id.clone(),
+                    span: (span_usize(f.span.0), span_usize(f.span.1)),
+                });
+                continue;
+            }
+            if f.hpath.is_empty() {
+                continue;
+            }
+            headings.push(HeadingFacts {
                 raw_hpath: f.hpath,
                 level: f.depth,
                 span: (span_usize(f.span.0), span_usize(f.span.1)),
@@ -66,9 +93,27 @@ impl PlanIndex {
                     .content_span
                     .map(|cs| (span_usize(cs.0), span_usize(cs.1))),
                 sec_rev: f.sec_rev,
-            })
-            .collect();
-        PlanIndex { headings, fm_keys }
+            });
+        }
+        PlanIndex {
+            headings,
+            anchors,
+            fm_keys,
+        }
+    }
+
+    /// Resolve a block id against the anchor plane — the same rows
+    /// [`wire_map::facts::selector_matches`] answers the read door with, so
+    /// the two doors give one answer for one id (A.3): unlisted (absent, or a
+    /// host outside the anchor law) is a miss on both; duplicated is loud on
+    /// both.
+    fn anchor(&self, id: &str) -> Result<&AnchorFacts, Miss> {
+        let mut hits = self.anchors.iter().filter(|a| a.id == id);
+        match (hits.next(), hits.count()) {
+            (None, _) => Err(Miss::NotFound),
+            (Some(only), 0) => Ok(only),
+            (Some(_), rest) => Err(Miss::Ambiguous(rest + 1)),
+        }
     }
 
     /// Resolve an address to exactly one section, or say why not.
@@ -115,13 +160,60 @@ fn section_miss(addr: &[HpathSeg], miss: &Miss) -> Box<ErrorBody> {
             crate::NO_PARTIAL_WRITE_CLAUSE,
         ));
     }
-    let anchor_shaped = matches!(addr, [only] if only.h.starts_with('^'));
+    let anchor_shaped = block_ref(addr).is_some()
+        || matches!(addr, [only] if only.h.starts_with('^') || only.h.starts_with("#^"));
     bad_request(format!(
         "no section addressed by {}. {} {}",
         policy::defs::go_quote(&shown),
         crate::NO_PARTIAL_WRITE_CLAUSE,
         crate::section_recovery(if anchor_shaped { "^" } else { "" }, None)
     ))
+}
+
+/// The block-ref arm of a plan address: a `^id` / `#^id` block is a SINGLE
+/// segment by construction (a block id is `[A-Za-z0-9-]`, so it can carry no
+/// path) — a multi-segment address is never one. Both spellings are the
+/// pre-flight's (`check_write` `strip_fp_address`), so an address the
+/// pre-flight resolves is never one the committer reads as a heading. The
+/// `@fp` decoration peels here, the same `syntax::split_fp` the native door
+/// applies in `read::to_model_ref` — a decorated ref resolves in both entry
+/// points or neither.
+fn block_ref(addr: &[HpathSeg]) -> Option<&str> {
+    let [only] = addr else { return None };
+    let id = only.h.strip_prefix("#^").or_else(|| only.h.strip_prefix('^'))?;
+    Some(syntax::split_fp(id).0)
+}
+
+/// Resolve a block id for a write arm: the anchor-plane hit, or the arm's
+/// refusal — the miss keeps the standing `^` teaching (an unlisted id is a
+/// miss whether absent or host-excluded, exactly as on the read door), a
+/// duplicate speaks the anchor-plane ambiguity voice (A.3 door symmetry over
+/// duplicate block ids: count the carriers, teach the anchor remedy, name no
+/// candidates — nothing machine-addressable exists), and an id outside the one
+/// §2.4 charset refuses at the mint-guard exactly as the native decode door
+/// does.
+fn resolve_block<'a>(
+    idx: &'a PlanIndex,
+    addr: &[HpathSeg],
+    id: &str,
+) -> Result<&'a AnchorFacts, Box<ErrorBody>> {
+    if model::Ref::anchor(id.to_owned()).is_err() {
+        return Err(bad_request(format!(
+            "block id outside the one charset [A-Za-z0-9-] (§2.4): `{id}`"
+        )));
+    }
+    idx.anchor(id).map_err(|miss| match miss {
+        Miss::NotFound => section_miss(addr, &Miss::NotFound),
+        Miss::Ambiguous(n) => {
+            let mut e = ErrorBody::new(ErrorCode::AmbiguousRef);
+            e.candidates = Some(Vec::new());
+            e.message = Some(model::selector::render_anchor_ambiguity(
+                &format!("^{id}"),
+                n,
+            ));
+            Box::new(e)
+        }
+    })
 }
 
 /// Wire `u64` spans → `usize` checked (never lossy `as`; saturated miss hits Go bounds guards).
@@ -386,7 +478,10 @@ fn lower_append(
     body: &str,
     rev: Option<&str>,
 ) -> Result<Edit, Box<ErrorBody>> {
-    if matches!(hpath, [only] if only.h.starts_with('^')) {
+    // The op-class refusal outranks resolution: an append at a block refuses
+    // whether or not the id resolves — a line grows through `match` /
+    // `replace_section`, a NEW line belongs to the enclosing section.
+    if block_ref(hpath).is_some() || matches!(hpath, [only] if only.h.starts_with('^')) {
         return Err(bad_request(format!(
             "append to a block anchor {} is not supported — append targets a section (the containing heading path)",
             policy::defs::go_quote(&crate::display_hpath(hpath))
@@ -421,7 +516,11 @@ fn content_span_of(node: &HeadingFacts) -> (usize, usize) {
 }
 
 /// Replace arm: unique-anchor Match, or all:true RMW over heading-excluded
-/// content written back as `Put{content}`.
+/// content written back as `Put{content}`. At a `^id` block target the same
+/// two shapes land on the block-leaf bytes (W-2): all:false as a native
+/// anchor-target Match, all:true as an RMW written back `Put{all}` — the
+/// content span IS the full span at a leaf, and the kernel's span-escape and
+/// identity gates judge what the replacement did to the marker.
 fn lower_match(
     idx: &PlanIndex,
     raw: &[u8],
@@ -431,12 +530,43 @@ fn lower_match(
     all: bool,
     rev: Option<&str>,
 ) -> Result<Edit, Box<ErrorBody>> {
-    let node = idx.get(hpath).map_err(|m| section_miss(hpath, &m))?;
     // Peel `@fp` from `old` (needle in stored bytes) before search; `new` is payload.
-    let old = &*syntax::strip_fp(old);
+    let peeled = &*syntax::strip_fp(old);
     let if_node_rev = rev
         .filter(|r| !r.is_empty())
         .map(|r| NodeRev(r.to_string()));
+    if let Some(id) = block_ref(hpath) {
+        let blk = resolve_block(idx, hpath, id)?;
+        if !all {
+            return Ok(Edit {
+                target: SecRef::Anchor { anchor: id.into() },
+                edit: EditShape::Match {
+                    old: peeled.to_string(),
+                    new: new.to_string(),
+                },
+                if_node_rev,
+            });
+        }
+        let (s, e) = blk.span;
+        let content = String::from_utf8_lossy(&raw[s..e]);
+        if !content.contains(peeled) {
+            return Err(bad_request(format!(
+                "replace anchor {} not found in {}",
+                policy::defs::go_quote(peeled),
+                policy::defs::go_quote(&crate::display_hpath(hpath))
+            )));
+        }
+        return Ok(Edit {
+            target: SecRef::Anchor { anchor: id.into() },
+            edit: EditShape::Put {
+                at: PutAt::All,
+                text: content.replace(peeled, new),
+            },
+            if_node_rev,
+        });
+    }
+    let node = idx.get(hpath).map_err(|m| section_miss(hpath, &m))?;
+    let old = peeled;
     if all {
         // Go stripHeading: content-span offset; defensive full-span fallbacks.
         let (s, e) = node.span;
@@ -482,6 +612,18 @@ fn lower_match(
 /// blank line under the section's own heading, one before a following
 /// heading, a bare terminator at EOF (an empty body keeps the boundary blank
 /// alone). `Put{content}` + `if_node_rev`.
+///
+/// At a `^id` block target the op keeps its face meaning — the payload is the
+/// CONTENT, the address is preserved by construction (`lower_replace_block`):
+/// `Put{content}` preserves a section's heading because the content span
+/// excludes it; a block leaf has no such slot (its content span IS its full
+/// span), so the block arm composes the address back instead — trailing
+/// newlines trimmed (a leaf span excludes its terminator), the ` ^id` marker
+/// re-affixed line-final unless the payload already echoes it (the caller
+/// repeating the address — the same case-4 normalization family as the
+/// heading echo above). An empty body refuses: a bare marker hosting nothing
+/// has no clean meaning, and removing a block is the containing section's
+/// write.
 fn lower_replace_section(
     idx: &PlanIndex,
     doc: &model::Document,
@@ -489,6 +631,9 @@ fn lower_replace_section(
     body: &str,
     rev: Option<&str>,
 ) -> Result<Edit, Box<ErrorBody>> {
+    if let Some(id) = block_ref(hpath) {
+        return lower_replace_block(idx, hpath, id, body, rev);
+    }
     let node = idx.get(hpath).map_err(|m| section_miss(hpath, &m))?;
     let rev = rev.unwrap_or("");
     if rev.is_empty() {
@@ -647,6 +792,58 @@ fn escape_refusal(
         );
     }
     bad_request(msg)
+}
+
+/// The block arm of `replace_section` — see [`lower_replace_section`].
+fn lower_replace_block(
+    idx: &PlanIndex,
+    hpath: &[HpathSeg],
+    id: &str,
+    body: &str,
+    rev: Option<&str>,
+) -> Result<Edit, Box<ErrorBody>> {
+    let shown = crate::display_hpath(hpath);
+    let rev = rev.unwrap_or("");
+    if rev.is_empty() {
+        return Err(bad_request(format!(
+            "replace_section on {} requires a fresh rev (a whole-block rewrite is destructive) — read the block (sections:[{}]) and pass its rev",
+            policy::defs::go_quote(&shown),
+            policy::defs::go_quote(&shown),
+        )));
+    }
+    resolve_block(idx, hpath, id)?;
+    // Echo strip, then recompose: a payload ending with the target's own
+    // marker is the caller repeating the address — stripped first so the
+    // empty-body law sees the CONTENT ("marker only, nothing else" is the
+    // empty case), then the address is re-affixed exactly once.
+    let mut content = body.trim_end_matches('\n');
+    let marker = format!("^{id}");
+    if content.ends_with(&marker)
+        && content[..content.len() - marker.len()]
+            .chars()
+            .next_back()
+            .is_none_or(|c| c == ' ' || c == '\t' || c == '\n')
+    {
+        content = content[..content.len() - marker.len()].trim_end_matches([' ', '\t']);
+    }
+    if content.is_empty() {
+        return Err(bad_request(format!(
+            "replace_section on {} with an empty body would leave a bare `^` marker hosting \
+             nothing. {} To remove the block, write through the containing section (its \
+             heading path).",
+            policy::defs::go_quote(&shown),
+            crate::NO_PARTIAL_WRITE_CLAUSE,
+        )));
+    }
+    let text = format!("{content} {marker}");
+    Ok(Edit {
+        target: SecRef::Anchor { anchor: id.into() },
+        edit: EditShape::Put {
+            at: PutAt::All,
+            text,
+        },
+        if_node_rev: Some(NodeRev(rev.to_string())),
+    })
 }
 
 /// Create: parent-append with § A.3 hygiene boundaries (one blank line before
