@@ -23,10 +23,10 @@ See `README.md` for process.
 ## Build
 
 - Toolchain: Rust edition 2024, `rust-version = 1.96`.
-- `cargo build` builds the twenty-seven default members (the engine planes plus
+- `cargo build` builds the twenty-six default members (the engine planes plus
  the `workspace` / `cache` / `registry` / `mrd` CLI foundation, and attestation's
- `git` plumbing leaf); `perfsuite` is out of default-members and builds under
- `cargo build -p perfsuite`.
+ `git` plumbing leaf); `perfsuite` is out of default-members (27 is the total
+ member count) and builds under `cargo build -p perfsuite`.
 - Fork: `pulldown-cmark` is consumed via a `[patch.crates-io]` rev pin (the
  `obsidian` branch); see the workspace `Cargo.toml`.
 
@@ -40,7 +40,8 @@ write), `fingerprint`, `diff`, `sub`, plus standing additives (`plan_edits`,
 
 **As shipped (may lag design — treat gaps as debt, not law):**
 
-The daemon answers protocol 1 as `meridian-daemon/0.1`; the stdio sidecar
+The daemon answers protocol 1 as `meridian-daemon/1.0.0` (derived:
+`concat!("meridian-daemon/", env!("CARGO_PKG_VERSION"))`); the stdio sidecar
 host is DROPPED (wire-contract §3.3, 2026-08-06). Live binaries still
 carry a dual negotiation path and some legacy `root` / `if_root` spellings in
 code and caps tables; **standing emission and agent teaching use
@@ -116,18 +117,31 @@ mrd repair [PAGE] [--dry] [--json]
  and repoint each recovered pin's hash at the durable
  blob carrying it. No match anywhere in history is a TRUE
  LOSS, reported and never auto-fixed
+mrd retire <report|mark> [--id ID] [--dry-run] [--expect-root ROOT]
+ the type-2 retirement DSL: report labels measured vs
+ declared; mark sweeps the `~~term~~ replacer (retired: ID)`
+ markers over meridian-retire blocks (idempotent; REQUIRES
+ --expect-root unless --dry-run — quiesce the fleet and
+ commit the vault first)
 mrd walk <PAGE> [--down] [--depth N]
  the context-assembly listing over the pin graph;
  every answer cites the revs it read
-mrd rules [PATH] [--workspace | --user]
+mrd rules [PATH] [--workspace | --user] [--json]
  the effective-rules print verb: what governs at PATH
  after id-based override resolution — winner first, the
  pages it shadows beneath it, plus a separate armed
  column read from the attested armed set (read-only)
-mrd check [--core] the pure READ validity verb: receipt-chain continuity
- + the foreign_edit trace; writes nothing. Refuses
- grey(cannot-assess) when the journal cannot date the
- live tree (no rows, or a stale last receipt)
+mrd config the MERIDIAN.md config plane: resolve the bootstrap
+ (MERIDIAN_CONFIG, then $HOME/MERIDIAN.md) and print path,
+ state, origin, rev/fingerprint, the BOUND mount table, and
+ declared tools — this verb PUBLISHES the mount table
+mrd check [--core] [--staged] [--commit-gate [--require-pins]] [--json]
+ the pure READ validity verb: claim drift + the pin
+ plane (pin verdicts + blob anchoring); writes nothing,
+ mints no receipt. WRITE HISTORY is NOT assessed (NOT
+ CHECKED, never grey) — the engine keeps no memory;
+ green means the world still matches the pins, not how
+ it got there
 mrd status [--cwd PATH] the bare drift + freshness summary (pure-local,
  O(armed), fetch-less)
 mrd sql <QUERY> **operator face** — SQL over an ephemeral in-process
@@ -604,36 +618,40 @@ where enforcement lives.
  by the schema pack; it is simply no longer attested content that every
  discovery consumer sweeps.
 
-### `mrd check` — grey when it cannot date the tree
+### `mrd check` — does the world still match the pins
 
-Both layer-0 journal detectors rest on ONE assumption: that the last receipt's
-recorded `root_after` still accounts for the live tree. The assumption fails in
-two measured ways, and the same mechanism causes both — **a governed `splice`
-advances the tree root and writes no journal row**:
+Both layer-0 planes the core reads are memory-free: the claim plane (pinned
+content drift) and the pin plane (the pin verdicts and the anchoring state of
+every pinned blob) are observed against the CURRENT tree. `check` answers
+at-rest truth — does the world still match the pins — writing nothing and
+minting no receipt. `status = freshness, check = validity`: this verb answers
+"what lies?".
 
-| journal state | what it used to say | truth |
-|---|---|---|
-| **no rows** (a `pin`/`put`-only workspace) | `chain: green · foreign_edit: none`, exit 0 | nothing was assessed — an out-of-band edit is invisible |
-| **rows, then any governed splice** | `foreign_edit: RED`, exit 1 | it accused a fully governed workspace |
+**Write history is not assessed: the engine keeps no memory.** Every face
+carries the `write_history: not-assessed` disclosure with its reason — history
+is pinned to git at lock, and anything between locks is not history — so chain
+continuity and last-receipt-vs-live are **not checked here at all: not grey,
+NOT CHECKED**. Green means the world still matches the pins, never how it got
+there.
 
-So `mrd check` now renders **`grey(cannot-assess)`** on both detector lines
-whenever it cannot show its baseline is current, `--json` carries `core.chain` and
-`core.foreign_edit` as `null` plus a `cannot_assess` block (`reason:
-"grey(cannot-assess)"` — the same word, plus the `baseline` evidence when there is
-any), and the verb exits **1**. `red` stays `false` — grey is not red. Where the
-last receipt DOES account for the live tree, every byte of the render is what it
-always was.
-
-The `foreign_edit` **accusation** is withdrawn, not the evidence: the mismatch is
-still printed with both roots and the last receipt. What check no longer does is
-name a culprit it cannot identify — an out-of-writer edit and a governed splice
-leave the same trace.
+**The interval this verb spans.** The `worktree` interval — the bytes on disk
+— is always assessed. `--staged` adds the interval a commit records: git
+commits the INDEX while `domain_snapshot` reads the worktree, so whenever the
+index carries anything the worktree does not, the staged bytes are assessed as
+a second pass running the same reads over different bytes. The exit is
+worst-of across both intervals, and every refusal names the interval it came
+from. The interval line states which case ran:
+`coincides` (the index adds nothing, so one pass IS the interval a commit
+would record), `diverges` (N paths differ, assessed separately),
+`no-repository`, or — asked but unreadable — `grey(cannot-assess)`, which
+fails closed on exit 1 rather than silently degrading to the worktree answer.
 
 **The exit triad stays closed** (0 green / 1 finding / 2 bad invocation): grey
-refuses on leg 1 rather than inventing a fourth code, because the exit code
-answers exactly one question — *may this proceed?* — and red and grey both answer
-no. The *reason* is a different fact, and it lives in the output where a reader
-can read it: `grey(cannot-assess)` versus `red(…)`.
+rides leg 1 — a grey pin or an unaskable object store refuses
+`grey(cannot-assess)`, because unknown is not clean — rather than inventing a
+fourth code, because the exit code answers exactly one question — *may this
+proceed?* — and red and grey both answer no. The *reason* is a different fact,
+and it lives in the output where a reader can read it.
 
 #### The findings enumeration is COMPLETE, never worst-of
 
@@ -652,14 +670,9 @@ Unmasked at s14-40 the same grey WAS the one-finding list. One unverifiable pin
 may not hide inside a green fleet; it may not hide inside a red fleet's findings
 list either.)
 
-**This is honest degradation, not the missing capability.** A workspace that has
-ever been spliced still refuses — now truthfully. Making `check` able to answer
-(journaling the splice, or reading the pin plane, which it has no `lock`/`git`/
-`view` dep for) is a separate unit with its own gates.
-
 #### Two independent axes: WHICH BYTES, and WHICH QUESTION
 
-`mrd check [--core] [--staged] [--commit-gate] [--json]`.
+`mrd check [--core] [--staged] [--commit-gate [--require-pins]] [--json]`.
 
 **`--staged` picks the interval.** `domain_snapshot` reads the worktree; git
 commits the INDEX. Forge a pinned section, `git add` it, restore the governed
@@ -668,26 +681,31 @@ would record. `--staged` assesses the index whenever it carries anything the
 worktree does not, and the exit is worst-of across both intervals, each refusal
 naming which one it came from.
 
-**`--commit-gate` picks the question, and implies `--staged`.** Without it the
-verb asks *"is everything this corpus's record says true?"* — a claim about the
-whole write history, **permanent** once a row breaks. With it the verb asks the
-narrower, per-commit one: *were these bytes produced by a governed write?*
+**`--commit-gate` picks the question, and implies `--staged`.** It narrows the
+exit to ONE interval — the one a commit records — so a finding from the
+worktree cannot swamp a clean answer about the bytes being committed, and it
+gates on the pin plane alone: a pin is a claim about the bytes being
+committed, so it belongs to the interval, not to any history. The passing word
+is **`pins-hold`** — it names the plane that actually answered, and cannot be
+misread as a claim about write history. A fence whose verdict did not vary
+with what is staged would carry zero information about the commit it guards;
+this one re-reads the index's pin plane at every commit. **This is why the
+emitted fence body runs `mrd check --commit-gate` and not `mrd check
+--staged`.**
 
-Three distinct propositions rode the single exit `1`: a journal chain break
-(about the **past**, permanent by design), an out-of-band write in this index
-(about **this interval**, per-commit), and `grey(cannot-assess)` (about
-**evidence availability**, per-state). A commit fence branches on the code alone,
-so past the first break its verdict stopped varying with what was staged — a
-guard whose answer no longer depends on the thing it guards carries zero
-information about it, and the per-commit enforcement is destroyed with it. The
-fix is not a fourth code: it is asking the question whose answer is actually
-per-commit. **This is why the emitted fence body runs `mrd check --commit-gate`
-and not `mrd check --staged`.**
+**`--require-pins` tightens the gate, opt-in.** A corpus that declares no pin
+PASSES the gate by default — over zero pins "does the world still match the
+pins" is vacuously true; nothing is unknown because nothing was asked. A
+caller that wants no-coverage to mean refuse says so with `--require-pins` and
+gets it in the exit code, under its own word (`no-pin-coverage`, never
+grey's). A grey pin or an unaskable object store fails CLOSED either way. A
+fail-closed default would make the gate un-adoptable on every vault that has
+not started pinning.
 
 | | gates the exit | reads |
 |---|---|---|
-| unscoped | worst-of across every interval assessed | the whole write history |
-| `--commit-gate` | ONE interval — the one a commit records | whether the record accounts for it, and whether its pins hold |
+| unscoped | worst-of across every interval assessed | claim drift + the pin plane, per interval |
+| `--commit-gate` | ONE interval — the one a commit records | the pin plane alone over those bytes |
 
 **The pin population is the pins the workspace DECLARES, not the hash domain.**
 `mrd pin` admits a holder page the hash domain excludes — a dot-segment path, a
@@ -710,12 +728,31 @@ independent axes (session decision 0045). Widening the population of pin SOURCES
 does not widen the corpus that resolves pin TARGETS, and the excluded holder's
 bytes never enter the merkle root.
 
-**The permanence is untouched.** Unscoped `mrd check` stays red forever, citing
-the same row; under `--commit-gate` the standing break is **printed on stderr at
-every commit**, pass or refuse. The blocking is downgraded; the telling never is.
-And a gated pass over a broken record is never spelled green — it carries the
-weaker word `accounted(unvouched-record)`, because the record that accounts for
-the interval may itself hold a forged row.
+**There is no permanence, because there is no memory.** Nothing in the verb
+looks backward: no standing break is printed, no verdict is carried forward
+from an older run, and a gated pass is never spelled as a claim about a
+record — the word is `pins-hold`, full stop. How the bytes came to be staged
+is git's business; whether their pins hold is the gate's.
+
+**The declared blind spot is named, not assumed.** Pin rows held by
+domain-excluded pages are read at their WORKTREE bytes for both intervals, so
+a holder that is both domain-excluded AND staged-modified has a pin row added
+or removed in the index alone go unseen.
+
+**The `--json` face.** Each interval emits `{workspace, red, write_history,
+core: {drifted_claims}, pins}`; the top-level `red` is worst-of across
+intervals, and the `interval` block carries the `state`, `spans_the_commit`,
+the `diverged_paths`, and the nested staged answer. The `commit_gate` key is
+present ONLY when the scoped question was asked — `{gated_interval, permits,
+verdict, detail, gated_planes: ["pins"], write_history, pin_coverage,
+require_pins}` — under this face's own law: an absent field reads as "not
+checked", where a `null` would assert a read that never happened. A top-level
+`fence` block reports the checkout's fence coverage on every run.
+
+**The `fence:` line** is a proposition about the local checkout's
+configuration, not the corpus, and it never touches the exit code:
+`$GIT_DIR/hooks` is never a tracked path, so fence coverage is per-checkout
+and opt-in — a fresh clone being unfenced is a supported state.
 
 ### The composed status line
 
@@ -723,7 +760,7 @@ the interval may itself hold a forged row.
 and never across them:
 
 ```
-pin green · lock none · anchor at-tip (anchor as-known) · convention off · vibe-debt 0 blobs (0 bytes)
+pin green · lock none · anchor at-tip (anchor as-known) · armed off · vibe-debt 0 blobs (0 bytes)
 ```
 
 | axis | answers | values |
@@ -731,7 +768,7 @@ pin green · lock none · anchor at-tip (anchor as-known) · convention off · v
 | `pin` | the ARMED SET's evidence drift — each armed row's live PAGE rev against the `rev` its armed-rules row attested (PAGE rev uniformly, `armed-plane.md` §4; the pinned-`armed_rev` `CHECK.md` surface is retired) | `green` · `red content-drifted` |
 | `lock` | every `meridian-lock` pin's FINGERPRINT verdict, rolled up | `none` · `<color> [N pins]` · `unreadable (<why>)` |
 | `anchor` | how current the working copy is against origin's tip, plus the trust of that knowledge | `at-tip` / `behind`, qualified — see the colors amendment § The anchor axis |
-| `convention` | whether armed law refuses this change | `off` · `warn` · `block` |
+| `armed` | whether armed law refuses this change | `off` · `warn` · `block` · `armed` (hook mode) |
 | `vibe-debt` | how much of the retrieval plane is held by this machine alone | `N blobs (M bytes)` · `unknown (<why>)` |
 
 Two axes are new in stage 2, and both are read wrong by default:
@@ -994,10 +1031,10 @@ view organ vs real corpus).
 
 `perfsuite` carries a claims registry (`crates/perfsuite/claims.toml`) whose
 verdicts are computed, not asserted, and written to
-`crates/perfsuite/`. Current tally: **3 PASS, 1 MEASURED, 11
-UNTESTED** — the untested claims are perf rungs whose baselines land on the
-first fleet run; the passing ones cover cold ingest and codec bulk cost. Run
-the benches to refresh:
+`crates/perfsuite/`. Current tally: **2 PASS, 7 MEASURED, 14
+UNTESTED** over 23 claims — the untested claims are perf rungs whose baselines
+land on the first fleet run; the passing ones cover cold ingest and codec bulk
+cost. Run the benches to refresh:
 
 ```sh
 cargo bench -p perfsuite
@@ -1008,8 +1045,6 @@ cargo bench -p perfsuite
 - Perf rungs are largely UNTESTED pending baselines (see the tally above).
 - `policy` verdicts ride every splice response as `[]` until rule packs are
  loaded; where packs are sourced is the host's concern.
-- `transport-proto` is an opt-in typed path; the default transport is the
- untyped NDJSON codec.
 - **`require_fingerprint` has no CLI spelling.** `links.require_fingerprint`
  is a served wire cap (`wire-contract.md` §10.2; release §2.1), but
  `mrd links --require-fingerprint` answers `unknown flag`, exit 2. The §10.2

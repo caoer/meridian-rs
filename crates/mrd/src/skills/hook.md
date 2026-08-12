@@ -145,11 +145,13 @@ fi
 # reads the worktree answers a true question about the wrong bytes — stage a
 # forgery, restore the worktree, and an honest `mrd check` passes it into history.
 #
-# The QUESTION: it asks "were these bytes produced by a governed write?", which is
-# per-commit. The unscoped verb asks instead whether the whole write history is
-# true, and past the first chain break that answer is permanently 1 — a fence
-# whose verdict no longer varies with what is staged carries zero information
-# about it, and the only remaining ways past are the two escapes below.
+# The QUESTION: it asks "do the pins hold over the bytes this commit records?",
+# which is per-commit and pin-plane — the passing word is `pins-hold`. The
+# unscoped verb reads BOTH intervals worst-of, so a finding over bytes no commit
+# would record (the worktree) refuses a commit it says nothing about. Neither
+# form assesses write history — the engine keeps no memory — so this verdict
+# re-reads the index's pin plane at every commit, and the only ways past are the
+# two escapes below.
 mrd check --commit-gate
 mrd_status=$?
 

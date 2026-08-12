@@ -10,9 +10,10 @@
 //! `hook_plane_fence.rs` and `u15_hook_fence_e2e.rs`, which place this
 //! document's body and drive real commits through it).
 //!
-//! The retired fence ran `mrd check --staged`, whose answer is permanently 1
-//! past the first chain break; `--commit-gate` asks the per-commit question
-//! instead (S4-R19).
+//! The retired fence ran `mrd check --staged`, whose worst-of exit lets a
+//! worktree finding over bytes no commit would record refuse the commit;
+//! `--commit-gate` gates the one interval a commit records, on the pin plane
+//! alone (S4-R19).
 
 use std::process::{Command, Output};
 
@@ -202,19 +203,21 @@ fn exactly_one_fenced_block_so_the_extraction_is_unambiguous() {
 }
 
 /// The scoped question: the retired fence ran `mrd check --staged`, whose
-/// answer is permanently 1 past the first chain break; `--commit-gate`
-/// implies `--staged` and asks the per-commit question instead (S4-R19).
+/// worst-of exit lets a WORKTREE finding — over bytes no commit would record —
+/// refuse the commit; `--commit-gate` implies `--staged` and gates the one
+/// interval a commit records, on the pin plane alone, with `pins-hold` as the
+/// passing word (S4-R19).
 #[test]
-fn the_body_asks_the_scoped_question_and_not_the_permanent_one() {
+fn the_body_asks_the_commit_question_and_not_the_whole_tree_one() {
     let body = fence_body(&document());
     assert!(
         body.contains("mrd check --commit-gate"),
-        "the fence asks the per-commit question:\n{body}"
+        "the fence asks the commit-interval question:\n{body}"
     );
     assert!(
         !body.contains("mrd check --staged"),
-        "the superseded invocation is still in the body — it asks a permanent question \
-         and answers every commit with it"
+        "the superseded invocation is still in the body — its worst-of exit lets \
+         worktree bytes no commit would record refuse the commit"
     );
     // The exit-2 leg must name the flag it actually passes — a skew message
     // naming a different flag sends the operator to test the wrong thing.
