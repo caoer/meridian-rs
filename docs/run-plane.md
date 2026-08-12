@@ -17,6 +17,17 @@ governed effects. It is **consumer-plane, imperative, local** (plan decision
 engine cannot tell run exists."** The daemon, the wire, and the serve path
 carry no run-plane type and no run-plane state.
 
+> **Amendment (RULED 2026-08-12, phase-2 script plane): the sentence above
+> gains its ONE stated exception.** The script entry's SUBMISSION lane is now
+> a wire op (`script`, wire-contract § A.7) evaluated in-process inside the
+> daemon — so the daemon and the serve path DO carry the script entry's types
+> and its per-attempt state (the entry pin; nothing across attempts). The
+> exception is exactly that wide: the task entry (`mrd run`) and the change
+> plane stay invisible to the daemon, the wire carries no run-plane type for
+> them, and the script entry's CLI lane (`mrd script`) remains an ordinary
+> wire client. Supersedes the unqualified reading of this paragraph; the
+> paragraph itself stands for both other planes.
+
 Sources of truth: the ratified plan (session `21-23-meridian-rs-md-run`,
 `compound plan page (workspace content)`) and the round-1 verdict. This document states the
 surface **as shipped in S1**, including what it deliberately does not
@@ -31,7 +42,7 @@ immediately below):
 |---|---|---|
 | change | `on_change(event)` | a governed change event (the effect kernel) |
 | run | `def run(ctx)` | `mrd run` addressing a task block |
-| run | script — module top level | `mrd script` / MCP `script` carrying caller-supplied inline source |
+| run | script — module top level | `mrd script` (CLI lane) / the wire `script` op (in-process lane, wire-contract § A.7) carrying caller-supplied inline source |
 
 **Amendment to decision #3 (the script entry).** Decision #3 read: *exactly
 two entry points, one per plane, both hermetic.* It is amended in two places
@@ -275,6 +286,17 @@ Layers 1–3 refuse in the entry's own vocabulary and answer a trace; layer 4 is
 the backstop and answers a host refusal, never a face. A hung child that reached
 none of them would hang the tool with nothing bounding it.
 
+**The in-process lane's clock (amendment, 2026-08-12).** The table above is
+the CLI lane's. On the wire `script` op the socket between host and engine
+does not exist, so layers 1–2 collapse into one: the daemon checks the wall
+budget **at every host read** (in-process, so the check is the cost) and
+**again pre-commit** (layer 3, unchanged — an elapsed clock refuses with
+nothing sent). Layer 4's child bound has no child to bind; its analog is the
+kernel's own fuel/memory meters, which bound computation the way no wall
+clock can, plus `catch_unwind` at the eval boundary (wire-contract § A.7's
+containment table). A blocked read cannot park the attempt: there is nothing
+to block on.
+
 The host-side defaults are **§5.3 host policy** — their existence is contract,
 their values are tunable:
 
@@ -492,6 +514,23 @@ banned** here: the daemon has no MVCC and v1 must not grow one.
    fingerprint, and §5.1 checks that guard **first**.
 4. **Any interleaved write** ⇒ `fingerprint_mismatch` ⇒ nothing commits.
 
+**Amendment (RULED 2026-08-12): point 2 is the CLI lane's law, and the
+in-process lane replaces it with the entry world.** On the wire `script` op
+(wire-contract § A.7) the currency pass runs ONCE at entry, the proven engine
+is pinned for the attempt, and the program's reads serve from that pin —
+foreign mid-program changes are invisible to the program, its OWN armed edits
+are visible (read-your-own-writes via the armed overlay, honest armed revs),
+and the commit CAS is unchanged: the same `if_fingerprint` = entry, §5.1
+first, byte-derived under the flock, so a moved world still refuses and
+nothing lands. Points 1, 3 and 4 are shared by both lanes; the banned word
+stays banned — the pin is request-scoped, no version is retained across
+attempts, and the daemon holds no state between calls. Rev threading on the
+in-process lane is entry-grain by the same reading: §4.4 resolves guards
+against the pre-batch state, and the entry fingerprint pins pre-batch = entry
+world, so each armed row threads its target's ENTRY-world rev — an overlay
+read licenses the write (write-follows-read, unamended) while the token stays
+the entry rev the batch applies against.
+
 **Reads stay live, and stay corpus-scoped** *(amended 2026-08-08)*. The cost
 model above changes what a currency pass COSTS and never what it CHECKS. Every
 read op still proves the whole hash domain current before it answers, so a
@@ -544,6 +583,21 @@ commit lowers to ONE guarded `splice` carrying `actor`/`now`/`receipt`. §4.4
 is untouched — splice remains the only write op and the script executor is
 just another client — and the daemon still carries no run-plane type and no
 run-plane state. The whole wire cost of this entry is **zero schema delta**.
+
+**Amendment (RULED 2026-08-12): wire-client mode is now the CLI lane, and a
+second lane exists — the wire `script` op, evaluated in-process in the
+daemon.** Wire-contract § A.7 is that lane's law: submission is one op, the
+currency pass runs once at entry, reads are in-process against the pinned
+entry root (with the armed overlay for read-your-own-writes), and the commit
+is the same ONE guarded splice through the same §4.4 door — same guards, same
+receipt, same armed-fact law, driven as a function call instead of a socket
+frame. The "no run-plane state" sentence above survives with one stated
+exception (§ top of this page): the daemon holds the script entry's
+per-attempt state, never anything across attempts. The zero-schema-delta
+claim stays true of wire-client mode itself; the in-process lane is a
+declared, additive schema change (one op, one cap). The subprocess-per-call
+MCP hosting this lane supersedes stays functional until its removal is
+separately ruled.
 
 **The commit is guarded per row, by the read the script itself made.** A wire
 door demands a fingerprint for every edit that changes existing content, or an
@@ -1271,6 +1325,7 @@ S1 — ship the scoped claim, never the unqualified one."*
 | stdout record | `crates/run::record` |
 | CLI mount | `crates/mrd::run_cmd` — a client; the charter edge is `laws.md` §crates (`mrd` row) |
 | CLI mount — script entry | `crates/mrd::script::cmd` — the same client edge; its human-mode face is non-normative |
+| in-process lane — script entry | `wire-serve::script` (trace/digest/attempt — ONE implementation both lanes share) + the daemon's `Op::Script` arm and entry-world host in `crates/registry` |
 
 ---
 

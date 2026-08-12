@@ -213,7 +213,7 @@ Correlation: one response per request, id echoed by value; in-flight uniqueness 
   "fingerprint":"b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9"}}
 ```
 
-`caps` is the complete set — no version sniffing, ever. The example shows the sixteen-cap base set (the v2 spelling is byte-identical minus the fingerprint renames); a negotiated v3 session is pushed eight more on top — `read`, `check_write`, `splice.plan_edits`, `splice.pin`, `splice.create_rev`, `create`, `mounts`, `hello.identity` (§A.3/§A.5) — twenty-four caps in all. Field-only amendments ship as dotted `op.field` strings. `fingerprint` in the hello body is optional (the engine may not have walked yet); when present it is the first ambient fingerprint.
+`caps` is the complete set — no version sniffing, ever. The example shows the sixteen-cap base set (the v2 spelling is byte-identical minus the fingerprint renames); a negotiated v3 session is pushed nine more on top — `read`, `check_write`, `splice.plan_edits`, `splice.pin`, `splice.create_rev`, `create`, `mounts`, `hello.identity`, `script` (§A.3/§A.5/§A.7) — twenty-five caps in all. Field-only amendments ship as dotted `op.field` strings. `fingerprint` in the hello body is optional (the engine may not have walked yet); when present it is the first ambient fingerprint.
 
 **Rev-presence law:** `node_rev` is MUST on every `toc`/`cat`/`extract` node whenever `splice ∈ caps`.
 
@@ -234,7 +234,7 @@ Consequences are threaded at §3.1 (pipe debuggability restated at the socket), 
 
 ## §4 The op surface
 
-Eleven ops in this table (the § A.3 standing additions `read` and `create` land on top, not re-tabled here). The five-verb interface maps onto the original ten 1:1 (§4.8). Read ops are classified by the wire-op criterion: feeds-an-action → wire fact op; feeds-orientation → dashboard-only, NOT on this wire.
+Eleven ops in this table (the § A.3 standing additions `read` and `create`, and § A.7's `script`, land on top, not re-tabled here). The five-verb interface maps onto the original ten 1:1 (§4.8). Read ops are classified by the wire-op criterion: feeds-an-action → wire fact op; feeds-orientation → dashboard-only, NOT on this wire.
 
 | Op | Rung (panel ladder) | Class |
 |---|---|---|
@@ -1699,6 +1699,175 @@ what empty means; they may not disagree about which SPELLING of it is real.
 
 Deliberately not empty: whitespace, `0`, `false`, an empty list. Those are
 values a caller authored. This is a predicate about absence, never truthiness.
+
+### A.7 The `script` op — in-process eval at the daemon door, entry-world reads (RULED 2026-08-12)
+
+*Docs-first. ZT rulings, session `12-04-f2-mrd-integration` (MISSION § Amendments,
+"Phase-2 script plane RULED" + "Script-plane read cost RULED"): the script
+plane gains a wire submission op, evaluated **in-process inside the engine
+daemon** — verbatim, "yes to contract change." The F2 ruling had already
+refused subprocess-per-call as architecture; this section is the amendment
+that admits the op. The Buck2/Bazel precedent carried the containment
+argument: **the containment IS the language** — fuel, memory cap, closed
+builtins, no ambient authority — and a process boundary defends only against
+interpreter bugs, so it is trust-optimization, not the mechanism.*
+
+**The op is ADDITIVE, and the CLI lane is untouched.** Every §4 op and every
+§ A.3 addition is byte-unchanged; non-script clients are unaffected. The op is
+v3-only at dispatch (the `read` precedent): a v2 session answers `unknown_op`,
+and the v3 hello projection advertises the op-grain cap `script` (§3.2,
+twenty-five v3 caps). `mrd script` — the CLI lane, run-plane § The script
+entry — keeps wire-client mode, live reads, and its own wall-clock table;
+whether the subprocess path retires is a separately-ruled question, not this
+amendment. The 0025 socket law (§ A.3) is untouched: it binds local CLIENTS at
+connect, and this op is served by the daemon the client already refused or
+accepted.
+
+**Request.** `source` is mandatory; everything else optional. `actor`/`now`
+are §9 wire inputs (recorded, never minted); `args` is the inert dict and
+`files[]` the host-enumerated sorted path list of run-plane § The script entry
+— the engine still serves no corpus-enumeration op, so enumeration stays the
+caller's. `budgets` carries the run-plane budget overrides; absent fields take
+the engine defaults (fuel 1,000,000 · mem 64 MiB · call_depth 1000 ·
+source_bytes 65,536 · reads 64 · armed 64 · wall_ms 7,000).
+
+```json
+{"id":7,"op":"script",
+ "source":"card = read(\"notes/plan.md\")\nput(\"notes/plan.md\", props={\"status\":\"done\"})",
+ "args":{"page":"notes/plan.md"},
+ "files":["notes/plan.md"],
+ "actor":"agent:b0864fb2","now":"2026-08-12T20:31:04Z",
+ "receipt":{"path":"receipts/2026-08-12.md","anchor":"r-000101"},
+ "if_fingerprint":"b3:6e866e13b5e65ef9961c050f8a621cf1980b00ee293be650deef5f4dbc6823f0",
+ "dry":false,
+ "expect_armed":"armed-set-path-edit:sha256:37c4d09eb84d1e902b887a0b13cc90f67d5888e0bd5ebf9148ac0031ccdcde4a",
+ "budgets":{"fuel":1000000,"mem":67108864,"reads":64,"armed":64,"wall_ms":7000}}
+```
+
+**Response — the ScriptTrace, ONE shape with the CLI lane.** The body is the
+run-plane trace verbatim: `entry_fingerprint`, `outcome`
+(`committed | no_effect | conflict | fault | refused`), the decision `trace[]`
+(echo/read/armed rows), `armed_digest` (present exactly when something was
+armed, `armed-set-path-edit:` domain tag), the optional `commit` leg, the
+optional typed `fault`, `guard_expected` on a pre-eval guard refusal, and
+unconditional `telemetry`. Three trace laws carry over unamended: the commit
+leg **IS the §4.4 splice response embedded verbatim** (raw bytes, v3
+vocabulary, never re-typed — no second commit-fact shape exists); there is
+**no `attempts` field** (the retry loop is the caller's, so `attempts:N` is a
+host fact); telemetry is unconditional. `mrd script --json` and this body are
+one shape from one implementation — a drift between them is a defect, not a
+dialect.
+
+**Where the refusal rides — the premise split (run-plane § A controlled
+failure exit SPEAKS, applied to a wire door).** Failures BEFORE the entry
+fingerprint exists answer §8 error frames: a malformed request is
+`bad_request`, a v2 session gets `unknown_op`, no bound workspace is the
+ordinary binding refusal, and an entry pass that cannot prove the corpus
+answers the same error the read ops answer (Law A-3c unchanged). From the
+entry fingerprint onward the op answers `ok:true` with the trace — faults,
+budget refusals, `conflict`, and `refused` are trace outcomes, not wire
+errors, because the trace is the product and its premise exists. One
+exception: a panic caught at the eval boundary answers `internal` (§8,
+respawn) — a trace assembled over a panicked eval would be a fabrication, and
+the daemon survives to say so.
+
+**The entry world — the read law this op exists for (RULED, answers the
+08-06 QUEUED decision).** The word snapshot stays banned; what follows is the
+stand-still transaction made cheap, not MVCC.
+
+1. **The currency pass runs ONCE, at op entry.** The same corpus-grain proof
+   every read op runs (whole hash domain, poison anywhere refuses the op,
+   Law A-3c — the SCOPE is unchanged; what moved is WHEN). The proven engine
+   is **pinned for the attempt**: an immutable in-memory corpus at exactly the
+   entry fingerprint. The pin lives as long as the one request and is never
+   retained across attempts — no daemon-held state between calls, no version
+   history, nothing to reap later.
+2. **The program's reads serve from the pinned entry root at memory speed.**
+   `read(path)` and `read(path, section=…)` are in-process accesses against
+   the pin — zero round trips, zero per-read passes. The faces are the §4.1
+   toc face and §4.2 cat face byte-for-byte (fm values § A.6-decoded, `words`
+   the delivered `words_total`, rev = blake3 of exactly the served bytes).
+   The CLI lane's composed-read bracket (run-plane § A composed read is
+   BRACKETED) is not needed here and not emulated: one pin is one revision by
+   construction, which is the property the bracket existed to approximate.
+3. **Read-your-own-writes: the armed overlay.** A read of the one armed
+   content path serves the entry bytes WITH the program's own armed edits
+   applied, so a script that writes then reads acts on what it wrote (ZT,
+   verbatim: *"if the script changed a file, then read it, it needs to act on
+   the new file."*). The overlay's faces are honest: served bytes are the
+   armed candidate's, and served revs hash exactly those bytes — never an
+   entry rev over armed content. An armed set that cannot compose (an append
+   whose section the entry world lacks) surfaces as a read fault at the
+   read that needed it — earlier than the commit refusal it foreshadows,
+   never silently the entry content.
+4. **Foreign mid-program changes are invisible to the program's reads** —
+   a concurrent splice or an external edit lands on disk and on the next
+   attempt's entry, never inside this attempt's pin. The program computes
+   against one consistent world instead of a live-moving one.
+5. **The commit CAS is unchanged, and it is what makes 4 safe.** The commit
+   is ONE guarded splice through the §4.4 door: `if_fingerprint` = the entry
+   fingerprint, checked FIRST (§5.1), byte-derived under the write flock. A
+   world that moved mid-attempt refuses `fingerprint_mismatch` and nothing
+   lands. Disk changes only at commit. The guarantee is the run-plane's,
+   word for word: *a committed script is consistent with exactly one
+   workspace fingerprint — the world stood still, or the commit refused.*
+6. **The token plane is entry-grain.** §4.4 resolves every guard against the
+   pre-batch state, and the entry fingerprint pins pre-batch = entry world —
+   so each armed row's CAS token is its target's ENTRY-world rev. The
+   write-follows-read law binds unamended: a row whose target the attempt
+   never read (either face, entry or overlay) threads no token and meets the
+   engine's own `guard_required` refusal; the engine mints nothing to satisfy
+   its own guard. An overlay read licenses the write and serves armed bytes;
+   the token it licenses stays the entry rev, because that is the state the
+   batch applies against.
+7. **`dry` and `expect_armed` carry the arm/commit split onto the wire.** The
+   MCP host's two-leg sequencing law (run-plane § the execution-model seam)
+   is unchanged in shape: leg one is this op with `dry:true` (rehearsal —
+   splice carries `dry`, `fingerprint_after:null`, nothing lands), leg two is
+   this op with `if_fingerprint` = the arm's `entry_fingerprint` and
+   `expect_armed` = the arm's published `armed_digest`. The digest is § the
+   run-plane sub-amendment's, computed by the same engine function on both
+   legs; a mismatch refuses BEFORE the splice is issued — `refused`, fault
+   class `refused`, recovery `fix`, nothing sent.
+
+**What the entry world does NOT promise.** The entry pass itself is still
+`pass(C)` — O(corpus) in stats, O(changed) in bytes — plus `rebuild(C)` when
+the resident engine disagrees with disk; the pin makes the pass **per-entry
+instead of per-trip**, and in-process reads make trips free, but the pass's
+own cost still moves with the corpus (run-plane § What an entry costs, with
+this amendment's measured numbers). No lag bounds are promised (§10.1's
+posture). The watcher stays DECLINED as solution (ZT: *"watcher is not the
+solution, it's optimization"*) — admissible later only as an optimization atop
+this mechanism, never as the mechanism.
+
+**Containment — why in-process is admissible (the ruled argument, stated as
+law).** Four bounds, each load-bearing, none a child process:
+
+| Bound | Binds | Over it |
+|---|---|---|
+| fuel / memory / call depth / source bytes | in-kernel (`EvalLimits` — exact starlark tick and heap meters) | typed budget refusal in the trace |
+| reads / armed edits | in-kernel, at call/arm time | typed refusal, never truncation |
+| wall clock | the daemon host: checked at every host read and again pre-commit | typed refusal; pre-commit means nothing was sent |
+| panic | `catch_unwind` at the eval boundary | §8 `internal`; **the daemon survives and the next frame is served** |
+
+The eval runs on the kernel's own bounded-stack thread (the parse-recursion
+guard), on the connection that asked — one connection's script never blocks
+another connection's ops. The builtin surface stays closed (`read`, `put`,
+`me`; no exec, no os, no subprocess — decision #17 stands), and the sandbox
+gains no ambient authority from being resident: identity is still the §9
+`actor` field, time is still the caller's `now`, and the one write door is
+still the §4.4 splice with every guard this contract already states.
+
+**The QUEUED decision, answered (disposition line — the 08-06 file
+`wall-clock-a7-doc-grain-serve-QUEUED.md` points here).** The question was
+whether the corpus-scoped refusal at the non-script door should become
+amendable contract unlocking doc-grain O(1) serves. Ruled: **doc-grain
+per-read narrowing is DECLINED; the entry world is the ratified mechanism.**
+The corpus-grain proof is KEPT — moved to the attempt's entry — so the flat
+per-read curve the 08-06 battery measured (1.00x slope) arrives WITHOUT
+narrowing any refusal: a poison member still refuses the whole attempt, at
+entry, naming the poison. The refusal the race's arm-B dropped is not
+dropped here; the cost it paid per read is.
 
 ---
 
