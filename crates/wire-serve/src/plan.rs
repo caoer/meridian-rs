@@ -343,14 +343,13 @@ fn compose_at_subtree_end(
         }
         Some(i) => {
             let ink_end = i + content[i..].chars().next().map_or(1, char::len_utf8);
-            match content[ink_end..].find('\n') {
+            if let Some(nl) = content[ink_end..].find('\n') {
                 // Keep through the last non-blank line, terminator included.
-                Some(nl) => out.push_str(&content[..ink_end + nl + 1]),
+                out.push_str(&content[..=ink_end + nl]);
+            } else {
                 // Bare final line: keep its ink, terminate it ourselves.
-                None => {
-                    out.push_str(&content[..ink_end]);
-                    out.push('\n');
-                }
+                out.push_str(&content[..ink_end]);
+                out.push('\n');
             }
             let tail_line_start = content[..i].rfind('\n').map_or(0, |p| p + 1);
             let flush = opens_list_item(payload)
