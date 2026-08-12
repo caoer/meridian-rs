@@ -472,7 +472,7 @@ at a slice:
 1. **`line` is 1-based in the FILE**, not within the block. `lock::parse` numbers within the block
  slice because a lock block is machine-written and machine-read; a human editing `MERIDIAN.md` is
  looking at file lines. A block-relative number is convertible to a file line because the block node
- carries its byte span (`crates/lock/src/lib.rs:221-229` is the collection pattern), so this costs
+ carries its byte span (`crates/lock/src/lib.rs:527-534` is the collection pattern), so this costs
  an addition, not a mechanism.
 2. **The refusal names the config path**, since `MERIDIAN_CONFIG` means the file may be anywhere.
 3. **`reason` stays `&'static str` — a closed set, never free text.** This is what makes the reason
