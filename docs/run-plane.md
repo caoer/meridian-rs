@@ -505,6 +505,30 @@ returns to roughly ~7.8 s at 4× on the same slope — over the budget again.
 Capacity planning must read `ceiling = f(reads, corpus)` WITH that slope;
 a flattened impression is exactly what this section exists to prevent.
 
+**The in-process lane's formula, measured (amendment, 2026-08-12 — the § A.7
+entry world; everything above stays the CLI lane's law).** On the wire
+`script` op the pass runs per ENTRY instead of per trip and reads are
+in-process, so the lane's shape is
+
+```
+wall clock  ≥  pass(C)  +  reads × ε  +  commit(C)     ε ≈ memory speed
+```
+
+Measured on the vault-2026 generator corpora (6k files/36MB and 24k/146MB,
+medians of 5, this engine's release build, both lanes against one resident
+daemon): the 10-read read-only program runs **15.3ms @6k / 77.2ms @24k**
+end-to-end against the subprocess lane's 374ms / 2,239ms — the per-read
+marginal is **≤1ms at both sizes** (the 08-06 battery's flat curve, delivered
+with the corpus-grain refusal intact at entry), while the subprocess lane's
+~200ms per read @24k is `pass(C)` per trip, as the formula above prices it.
+The entry floor is the pass: ~13ms/56ms warm. `commit(C)` still dominates a
+write-bearing program (read+append run: 210ms @6k, 1,173ms @24k) — its three
+byte folds dropped 2.6–2.7× in the same change (`fs::domain_snapshot`'s
+read+digest sweep went parallel: 140→53ms @6k, 646→238ms @24k per fold,
+roots byte-identical), and the remaining shape is the standing `commit(C)`
+model, unamended. Making `pass(C)` itself constant still needs the watcher
+this contract still does not promise (declined as solution, § A.7).
+
 **The transaction — stand-still optimistic.** The word **snapshot is
 banned** here: the daemon has no MVCC and v1 must not grow one.
 
