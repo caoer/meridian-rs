@@ -143,19 +143,12 @@ pub const USER_RULES_DIR: &str = "rules";
 /// both present. An absent anchor and an absent `rules/` directory are answers,
 /// not failures.
 pub fn user_rule_pages(anchor: &Path) -> io::Result<DomainFiles> {
-    if !anchor.is_file() {
+    let Some((rels, _declined)) = user_rules_traversal(anchor)? else {
         return Ok(Vec::new());
-    }
+    };
     let Some(user_scope) = anchor.parent() else {
         return Ok(Vec::new());
     };
-    let rules_dir = user_scope.join(USER_RULES_DIR);
-    if !rules_dir.is_dir() {
-        return Ok(Vec::new());
-    }
-    let mut rels = Vec::new();
-    walk_user_rules_dir(&rules_dir, Path::new(USER_RULES_DIR), &mut rels)?;
-    rels.sort();
     let mut pages = Vec::with_capacity(rels.len());
     for rel in rels {
         // A rule page whose name has no UTF-8 spelling must not register
@@ -176,25 +169,129 @@ pub fn user_rule_pages(anchor: &Path) -> io::Result<DomainFiles> {
     Ok(pages)
 }
 
+/// The markdown under the user `rules/` tree that the rung DECLINED to offer —
+/// every page a dot-prefixed segment kept out, spelled `rules/…` exactly as
+/// [`user_rule_pages`] spells what it keeps.
+///
+/// This exists because the rung's exclusion is SILENT at every face that reads
+/// it: `mrd rules` printed `(no rules in effect)` at exit 0 with an empty stderr
+/// for a rule page whose only defect was a dot in its path. An enumerator MAY
+/// exclude what it cannot attest; it may never exclude SILENTLY (session
+/// decision 0017). A face that wants to voice the drop needs the dropped
+/// population, and it may not re-derive it — a second traversal beside this
+/// one is two answers to "what did the rung decline", which is the defect one
+/// level up.
+///
+/// ⛔ The dot test in [`walk_user_rules_dir`] sits BEFORE the `is_dir` branch,
+/// so a dot-prefixed FILE and a dot-prefixed DIRECTORY are declined by the same
+/// line and are ONE member of this population, not two.
+///
+/// # Errors
+/// As [`user_rule_pages`]: I/O failure once the anchor and the directory are
+/// both present. An absent anchor or `rules/` directory is an empty answer.
+pub fn user_rule_pages_declined(anchor: &Path) -> io::Result<Vec<String>> {
+    let Some(declined) = user_rules_traversal(anchor)?.map(|(_kept, declined)| declined) else {
+        return Ok(Vec::new());
+    };
+    let mut out: Vec<String> = declined
+        .iter()
+        .filter_map(|rel| rel.to_str().map(str::to_owned))
+        .collect();
+    out.sort();
+    Ok(out)
+}
+
+/// The ONE traversal of the user rung, returning both views: what registered
+/// and what a dot segment declined. `None` when there is no rung to walk at all
+/// (no anchor, or no `rules/` beside it) — which is an answer, not a failure,
+/// and is deliberately distinguishable from a rung that walked and found
+/// nothing.
+fn user_rules_traversal(anchor: &Path) -> io::Result<Option<(Vec<PathBuf>, Vec<PathBuf>)>> {
+    if !anchor.is_file() {
+        return Ok(None);
+    }
+    let Some(user_scope) = anchor.parent() else {
+        return Ok(None);
+    };
+    let rules_dir = user_scope.join(USER_RULES_DIR);
+    if !rules_dir.is_dir() {
+        return Ok(None);
+    }
+    let mut kept = Vec::new();
+    let mut declined = Vec::new();
+    walk_user_rules_dir(
+        &rules_dir,
+        Path::new(USER_RULES_DIR),
+        &mut kept,
+        &mut declined,
+    )?;
+    kept.sort();
+    declined.sort();
+    Ok(Some((kept, declined)))
+}
+
 /// The user rung's traversal: markdown files under `rules/`, dot-segments
 /// declined at any depth, symlinks not followed.
-fn walk_user_rules_dir(abs_dir: &Path, rel_dir: &Path, out: &mut Vec<PathBuf>) -> io::Result<()> {
+///
+/// `declined` collects the markdown a dot segment kept out, so the rung can be
+/// asked what it dropped without a second traversal disagreeing with this one.
+/// A dot-prefixed DIRECTORY is descended for this purpose only — its pages are
+/// still declined, and nothing beneath it can ever be re-included.
+fn walk_user_rules_dir(
+    abs_dir: &Path,
+    rel_dir: &Path,
+    out: &mut Vec<PathBuf>,
+    declined: &mut Vec<PathBuf>,
+) -> io::Result<()> {
     for entry in fs::read_dir(abs_dir)? {
         let entry = entry?;
         let file_type = entry.file_type()?;
         let name = entry.file_name();
+        let rel = rel_dir.join(&name);
+        let is_markdown = Path::new(&name)
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("md"));
         if name.to_string_lossy().starts_with('.') {
+            // The declining line, unchanged in effect: this page does not
+            // register. What is new is that it is RECORDED rather than dropped
+            // on the floor.
+            if file_type.is_dir() {
+                collect_declined_markdown(&entry.path(), &rel, declined)?;
+            } else if file_type.is_file() && is_markdown {
+                declined.push(rel);
+            }
             continue;
         }
+        if file_type.is_dir() {
+            walk_user_rules_dir(&entry.path(), &rel, out, declined)?;
+        } else if file_type.is_file() && is_markdown {
+            out.push(rel);
+        }
+    }
+    Ok(())
+}
+
+/// Every markdown page beneath a declined directory. Nothing here can register
+/// — the dot segment above it declines the whole subtree — so this walk only
+/// ever feeds the declined population.
+fn collect_declined_markdown(
+    abs_dir: &Path,
+    rel_dir: &Path,
+    declined: &mut Vec<PathBuf>,
+) -> io::Result<()> {
+    for entry in fs::read_dir(abs_dir)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let name = entry.file_name();
         let rel = rel_dir.join(&name);
         if file_type.is_dir() {
-            walk_user_rules_dir(&entry.path(), &rel, out)?;
+            collect_declined_markdown(&entry.path(), &rel, declined)?;
         } else if file_type.is_file()
             && Path::new(&name)
                 .extension()
                 .is_some_and(|e| e.eq_ignore_ascii_case("md"))
         {
-            out.push(rel);
+            declined.push(rel);
         }
     }
     Ok(())

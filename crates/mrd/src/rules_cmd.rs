@@ -302,6 +302,51 @@ enum ArmedSource {
     Unreadable { path: String, detail: String },
 }
 
+/// An armed row that the answer is still COUNTING and no longer SHOWING: the
+/// artifact pins this id, the selection law picks the row up at this path, and
+/// discovery no longer resolves the id at all — so no [`RuleRow`] carries it.
+///
+/// ⛔ Before this existed the row was dropped on the floor. The header kept
+/// printing `armed-set … (N row(s))` while the body printed `(no rules in
+/// effect)`, four lines apart, at exit 0 with an empty stderr — an answer
+/// contradicting itself with no error. Worse, the redness was COMPUTED and
+/// DISCARDED: `verify_at` reddens the row, `reddened` records it, and the
+/// armed cell is only ever reached for a row discovery still resolves.
+#[derive(Debug, PartialEq, Eq)]
+struct ArmedOrphan {
+    id: String,
+    /// The page the arm attested — a workspace spelling, from the artifact.
+    page: String,
+    /// The arm root the row was pinned at.
+    scope: String,
+    mode: String,
+    /// Why discovery no longer carries the page, ESTABLISHED rather than
+    /// assumed. See [`orphan_cause`].
+    cause: &'static str,
+}
+
+/// Why an armed row's pinned page is absent from the corpus — decided by
+/// looking, never by inheriting `verify_at`'s word.
+///
+/// ⛔ `policy` reddens this row `Missing`, because a [`PageSource`] that cannot
+/// serve a page reports exactly that and can report nothing else. **`missing`
+/// would be an HONEST STATE AND THE WRONG CAUSE** for the case that motivated
+/// this: the page is on disk, at its own path, byte-for-byte unchanged, and
+/// only the DECLARED DOMAIN moved. Sending a reader to look for a deleted file
+/// costs them the search before they find the ignore rule. The two cases are
+/// distinguished by one `stat`, so there is no excuse for minting a cause.
+fn orphan_cause(workspace: &Path, page: &str) -> &'static str {
+    if Path::new(page)
+        .components()
+        .all(|c| matches!(c, std::path::Component::Normal(_)))
+        && workspace.join(page).is_file()
+    {
+        "on disk, outside the hash domain — an ignore rule or a dot segment excludes it"
+    } else {
+        "not on disk"
+    }
+}
+
 /// Everything the verb prints.
 #[derive(Debug, PartialEq, Eq)]
 struct RulesReport {
@@ -316,6 +361,23 @@ struct RulesReport {
     refused: Vec<String>,
     /// Files whose bytes are not UTF-8, so their tags cannot be read.
     unreadable: Vec<String>,
+    /// Markdown under the workspace root that the hash domain does not carry,
+    /// so it was never offered to registration. Derived from the WORKSPACE
+    /// feed's own population — `fs::walk` minus what the snapshot returned —
+    /// never from another face's.
+    declined_workspace: Vec<String>,
+    /// Markdown under the user `rules/` tree that a dot segment declined. A
+    /// SECOND and INDEPENDENT exclusion: this feed never consults the residency
+    /// filter, so a workspace ignore rule does not reach it and its own skip
+    /// does not reach the workspace.
+    declined_user: Vec<String>,
+    /// Excluded markdown whose rule-ness CANNOT BE ANSWERED, because its
+    /// frontmatter does not parse. Neither a dropped rule page nor established
+    /// not to be one — so it carries its own verdict string rather than being
+    /// folded into either answer.
+    undecidable: Vec<String>,
+    /// Armed rows this answer counts in its header and shows nowhere.
+    armed_orphans: Vec<ArmedOrphan>,
 }
 
 impl RulesReport {
@@ -343,6 +405,17 @@ impl RulesReport {
         }
         if !self.unreadable.is_empty() {
             findings.push(format!("{} unreadable file(s)", self.unreadable.len()));
+        }
+        // The published exit contract already promises this leg — `mrd rules
+        // --help`: "1 finding (collision | refused rule page | RED ARMED ROW)".
+        // An orphan IS a red armed row: `verify_at` reddens it. Counting it here
+        // is not a new contract, it is the shipped one being honoured for the
+        // first time.
+        if !self.armed_orphans.is_empty() {
+            findings.push(format!(
+                "{} armed row(s) whose pinned page is not in the corpus",
+                self.armed_orphans.len()
+            ));
         }
         if let ArmedSource::Unreadable { .. } = self.armed {
             findings.push("an unreadable armed set".to_owned());
@@ -452,6 +525,26 @@ fn build(workspace: &Path, at: &str, view: View) -> Result<RulesReport, Fail> {
     let (armed, artifact) = load_armed(&corpus);
     let rows = rows(&effective, artifact.as_ref(), at, &CorpusPages(&corpus));
 
+    // ⛔ Only a view that admits the WORKSPACE layer can have orphans. The
+    // armed artifact's `page` column is a workspace spelling by construction
+    // (`policy::armed::ArmFault::UserLayerDeferred` refuses anything else), so
+    // under `--user` the resolved set holds no workspace id at all and EVERY
+    // armed row would look orphaned. That would be a manufactured finding in
+    // the direction that certifies a defect — the worst direction — so the
+    // view is asked first.
+    let (workspace_declined, workspace_undecidable) = declined_workspace(workspace, &corpus);
+    let (user_declined, user_undecidable) = declined_user();
+    let mut undecidable = workspace_undecidable;
+    undecidable.extend(user_undecidable);
+    undecidable.sort();
+    undecidable.dedup();
+
+    let armed_orphans = if view.admits(ScopeLayer::Workspace) {
+        orphans(artifact.as_ref(), at, &effective, workspace)
+    } else {
+        Vec::new()
+    };
+
     Ok(RulesReport {
         at: at.to_owned(),
         view,
@@ -461,7 +554,153 @@ fn build(workspace: &Path, at: &str, view: View) -> Result<RulesReport, Fail> {
         rows,
         refused: narrowed.refused().iter().map(ToString::to_string).collect(),
         unreadable,
+        declined_workspace: workspace_declined,
+        declined_user: user_declined,
+        undecidable,
+        armed_orphans,
     })
+}
+
+/// RULE PAGES the workspace hash domain does not carry — never "markdown the
+/// domain does not carry", which is a different and much larger population.
+///
+/// ⛔ THIS FUNCTION SHIPPED WRONG ONCE AND A PRE-EXISTING GATE CAUGHT IT. Its
+/// first form named every out-of-domain markdown file, which in this very repo
+/// is THIRTY-SIX test-data fixtures that carry no rule tag and never could.
+/// That is the wrong-population defect **this card exists to prevent, arriving
+/// one level up in the fix for it**: `rules` lists RULE PAGES, so a sentence it
+/// prints must be about rule pages. An operator told "36 files are outside the
+/// hash domain" learns nothing about their law and stops reading the line.
+///
+/// The population is still CONTENT-DEFINED — `fs::walk` minus the snapshot,
+/// which covers the custom-ignore class and the dot-segment class and a third
+/// nobody has invented yet — and is then narrowed by ASKING THE REGISTRAR,
+/// never by a path predicate: a page counts when it OFFERS ITSELF to
+/// registration, whether it then registers or is refused. Both are rule pages
+/// whose law is missing from this answer, and a refused one is arguably worse.
+fn declined_workspace(workspace: &Path, corpus: &BTreeMap<String, String>) -> (Vec<String>, Vec<String>) {
+    let root = fs::WorkspaceRoot(workspace.to_path_buf());
+    let Ok(all) = fs::walk(&root) else {
+        return (Vec::new(), Vec::new());
+    };
+    let outside: Vec<(String, String)> = all
+        .iter()
+        .filter_map(|rel| rel.to_str().map(str::to_owned))
+        .filter(|rel| !corpus.contains_key(rel))
+        .filter_map(|rel| {
+            // An unreadable or non-UTF-8 excluded file cannot be shown to carry
+            // a rule tag, so it is not claimed as one.
+            std::fs::read_to_string(workspace.join(&rel))
+                .ok()
+                .map(|bytes| (rel, bytes))
+        })
+        .collect();
+    rule_pages_among(&outside)
+}
+
+/// Split `candidates` into the pages that OFFER THEMSELVES to rule
+/// registration and the pages whose rule-ness CANNOT BE ANSWERED.
+///
+/// ⛔ THERE ARE THREE STATES HERE, NOT TWO, and collapsing them is how this
+/// function shipped wrong twice. `RegisterFault::FrontmatterUnparsed` says in
+/// its own words that whether the page carries a registration tag *cannot be
+/// answered*; EVERY OTHER fault variant presupposes the tag was there. So a
+/// page with a broken frontmatter block is neither a dropped rule page nor
+/// established not to be one.
+///
+/// Receipt: this repo's own `frontmatter-unparseable.md` is a `meridian-config`
+/// fixture with an unclosed flow sequence. Counting it as a dropped rule page
+/// was a FALSE SENTENCE about a page that is not one; dropping it silently
+/// would be the very defect this card exists to end. It gets its own verdict
+/// string instead — a state without one is not enumerated, it is mentioned.
+///
+/// The registrar decides, never a predicate here: a second reading of what
+/// makes a rule page would be a fork of `policy`'s law that could disagree
+/// with it.
+fn rule_pages_among(candidates: &[(String, String)]) -> (Vec<String>, Vec<String>) {
+    let index = RuleIndex::discover(candidates.iter().map(|(page, bytes)| PageRef {
+        layer: ScopeLayer::Workspace,
+        page,
+        bytes,
+    }));
+    let mut offered: Vec<String> = index
+        .registered()
+        .iter()
+        .map(|r| r.page().to_owned())
+        .collect();
+    let mut undecidable = Vec::new();
+    for refusal in index.refused() {
+        if matches!(
+            refusal.fault(),
+            policy::RegisterFault::FrontmatterUnparsed { .. }
+        ) {
+            undecidable.push(refusal.page().to_owned());
+        } else {
+            offered.push(refusal.page().to_owned());
+        }
+    }
+    offered.sort();
+    offered.dedup();
+    undecidable.sort();
+    undecidable.dedup();
+    (offered, undecidable)
+}
+
+/// RULE PAGES under the user `rules/` tree that a dot segment declined, from
+/// the rung's own traversal ([`fs::user_rule_pages_declined`]) rather than a
+/// second enumeration here that could disagree with the one that declined them.
+///
+/// Narrowed by the registrar for the same reason as [`declined_workspace`]: a
+/// stray `.notes/scratch.md` under `rules/` is not a dropped rule page and
+/// naming it as one would teach the operator to ignore the line.
+fn declined_user() -> (Vec<String>, Vec<String>) {
+    let Ok(anchor) = config::resolve_path(&config::Env::from_process()) else {
+        return (Vec::new(), Vec::new());
+    };
+    let Some(user_scope) = anchor.parent().map(Path::to_path_buf) else {
+        return (Vec::new(), Vec::new());
+    };
+    let Ok(declined) = fs::user_rule_pages_declined(&anchor) else {
+        return (Vec::new(), Vec::new());
+    };
+    let candidates: Vec<(String, String)> = declined
+        .into_iter()
+        .filter_map(|rel| {
+            std::fs::read_to_string(user_scope.join(&rel))
+                .ok()
+                .map(|bytes| (rel, bytes))
+        })
+        .collect();
+    rule_pages_among(&candidates)
+}
+
+/// The armed rows selected at `at` whose id discovery no longer resolves.
+///
+/// Keyed on the id's ABSENCE FROM THE RESOLVED SET, never on a path predicate:
+/// a consumer can inherit this defect without the spelling ever changing, and a
+/// predicate keyed on which path a door prints is structurally blind there
+/// (charter 09, consumer axis).
+fn orphans(
+    artifact: Option<&ArmedArtifact>,
+    at: &str,
+    effective: &EffectiveSet,
+    workspace: &Path,
+) -> Vec<ArmedOrphan> {
+    let Some(artifact) = artifact else {
+        return Vec::new();
+    };
+    artifact
+        .select_at(at)
+        .into_iter()
+        .filter(|row| effective.resolved().get(row.id().as_str()).is_none())
+        .map(|row| ArmedOrphan {
+            id: row.id().as_str().to_owned(),
+            page: row.page().to_owned(),
+            scope: row.scope().as_str().to_owned(),
+            mode: row.mode().as_str().to_owned(),
+            cause: orphan_cause(workspace, row.page()),
+        })
+        .collect()
 }
 
 /// Read the attested armed set out of the corpus bytes already in hand.
@@ -645,11 +884,54 @@ fn render_human(report: &RulesReport) -> String {
         }
     }
 
+    // Printed BEFORE `refused:`, because an armed row the header counts and the
+    // body never showed is the one thing a reader of this answer cannot
+    // reconstruct from anything else on the page.
+    if !report.armed_orphans.is_empty() {
+        let _ = writeln!(
+            out,
+            "armed rows counted above whose pinned page is NOT in this answer:"
+        );
+        for orphan in &report.armed_orphans {
+            let _ = writeln!(
+                out,
+                "  {}  armed={} at scope={} — pinned {} ({})",
+                orphan.id, orphan.mode, orphan.scope, orphan.page, orphan.cause
+            );
+        }
+    }
     if !report.refused.is_empty() {
         let _ = writeln!(out, "refused:");
         for refusal in &report.refused {
             let _ = writeln!(out, "  {refusal}");
         }
+    }
+    // The two declined populations are named SEPARATELY and never summed. They
+    // come from two different feeds through two different mechanisms, and one
+    // count over both would be a sentence about a population neither feed has.
+    if !report.declined_workspace.is_empty() {
+        let _ = writeln!(
+            out,
+            "not offered to registration — {} markdown file(s) under the workspace root are outside the hash domain, so no rule they carry is in this answer: {}",
+            report.declined_workspace.len(),
+            report.declined_workspace.join(", ")
+        );
+    }
+    if !report.undecidable.is_empty() {
+        let _ = writeln!(
+            out,
+            "cannot be answered — {} excluded markdown file(s) have frontmatter that does not parse, so whether they carry a rule is unknown, not decided: {}",
+            report.undecidable.len(),
+            report.undecidable.join(", ")
+        );
+    }
+    if !report.declined_user.is_empty() {
+        let _ = writeln!(
+            out,
+            "not offered to registration — {} markdown file(s) under the user rules/ tree are declined by a dot-prefixed segment, so no rule they carry is in this answer: {}",
+            report.declined_user.len(),
+            report.declined_user.join(", ")
+        );
     }
     if !report.unreadable.is_empty() {
         let _ = writeln!(out, "unreadable:");
@@ -722,6 +1004,18 @@ fn to_json(workspace: &Path, report: &RulesReport) -> Value {
             "rules": rows,
             "refused": report.refused,
             "unreadable": report.unreadable,
+            "armed_orphans": report.armed_orphans.iter().map(|orphan| json!({
+                "id": orphan.id,
+                "page": orphan.page,
+                "scope": orphan.scope,
+                "mode": orphan.mode,
+                "cause": orphan.cause,
+            })).collect::<Vec<_>>(),
+            "not_offered": {
+                "workspace": report.declined_workspace,
+                "user": report.declined_user,
+                "undecidable": report.undecidable,
+            },
         }
     })
 }
@@ -755,6 +1049,10 @@ mod tests {
             rows,
             refused: Vec::new(),
             unreadable: Vec::new(),
+            declined_workspace: Vec::new(),
+            declined_user: Vec::new(),
+            undecidable: Vec::new(),
+            armed_orphans: Vec::new(),
         }
     }
 
