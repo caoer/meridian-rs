@@ -65,7 +65,12 @@ pub enum PinOutcome {
 #[derive(Debug)]
 pub struct Registry {
     inner: RwLock<HashMap<PathBuf, WorkspaceEntry>>,
-    engines: RwLock<HashMap<PathBuf, WorkspaceEngine>>,
+    /// `Arc` per engine (§ A.7): the value was already immutable and
+    /// replace-on-rebuild; the Arc is what lets the script op PIN the entry
+    /// world for one attempt (`Self::pinned`) while rebuilds and the reaper
+    /// swap the map underneath — a reaped or replaced engine's memory is then
+    /// freed when the last pin drops (request-scoped, so bounded).
+    engines: RwLock<HashMap<PathBuf, Arc<WorkspaceEngine>>>,
     /// S6 read-is-the-mint ledger per workspace (D6/H1). Not on
     /// [`WorkspaceEngine`]: rebuilds replace the engine and would evaporate
     /// receipts. Session memory; dropped on idle-reap only.
@@ -351,7 +356,7 @@ impl Registry {
                     return Ok(WarmOutcome::Built { docs: docs_parsed });
                 }
                 if resident == witness {
-                    engines.insert(canonical.clone(), engine);
+                    engines.insert(canonical.clone(), Arc::new(engine));
                     return Ok(WarmOutcome::Built { docs: docs_parsed });
                 }
             }
@@ -370,7 +375,20 @@ impl Registry {
         f: impl FnOnce(Option<&WorkspaceEngine>) -> R,
     ) -> R {
         let engines = self.engines.read().unwrap_or_else(PoisonError::into_inner);
-        f(engines.get(canonical))
+        f(engines.get(canonical).map(Arc::as_ref))
+    }
+
+    /// PIN the warm engine for `canonical` — the § A.7 entry world: an
+    /// immutable corpus at exactly the entry fingerprint, held for one
+    /// attempt. The Arc clone drops the map lock immediately, so a
+    /// mid-attempt rebuild or reap swaps the map without touching the pin,
+    /// which is precisely the entry-world read law (foreign changes invisible
+    /// to the attempt; the commit CAS catches them). Callers warm first via
+    /// [`warm_or_build`](Self::warm_or_build).
+    #[must_use]
+    pub fn pinned(&self, canonical: &Path) -> Option<Arc<WorkspaceEngine>> {
+        let engines = self.engines.read().unwrap_or_else(PoisonError::into_inner);
+        engines.get(canonical).cloned()
     }
 
     /// Workspace delta ring, created on first use. `workspace` must be

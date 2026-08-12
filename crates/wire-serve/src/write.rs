@@ -3019,6 +3019,35 @@ fn lower_fm_value_scope(
     })
 }
 
+/// The script lane's read-your-own-writes overlay (wire-contract § A.7): the
+/// armed plan lowered and validated against the ENTRY document through the
+/// splice's own intake, answering the candidate the commit would land. No
+/// flock, no disk, no gate — a read preview, not a write path; the commit
+/// still runs every rung when it comes.
+///
+/// # Errors
+/// The intake's own refusal when the armed plan does not apply to the entry
+/// document — surfaced at the read that needed the overlay, earlier than the
+/// commit refusal it foreshadows.
+pub(crate) fn overlay_candidate(
+    doc: &model::Document,
+    path: &Path,
+    plan_edits: &[wire::PlanEdit],
+) -> Result<model::Document, Box<ErrorBody>> {
+    let lowered = crate::plan::lower(doc, plan_edits)?;
+    let (model_edits, _before_facts) = model_edits_and_before_facts(doc, &lowered.edits, path)?;
+    let batch = model::SpliceRequest {
+        if_root: None,
+        edits: model_edits,
+        engine: None,
+    };
+    let sealed = match model::validate_batch(doc, None, &batch, None) {
+        model::SpliceVerdict::Validated(sealed) => sealed,
+        refused => return Err(verdict_to_wire(&refused, &lowered.edits, doc, path)),
+    };
+    Ok(build_after_doc(doc, &sealed, path).document().clone())
+}
+
 fn model_edits_and_before_facts(
     doc: &model::Document,
     edits: &[Edit],

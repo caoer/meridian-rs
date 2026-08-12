@@ -112,6 +112,9 @@ pub fn project_response(frame: &mut Value) {
                 // precedent); the frozen v2 caps stay byte-identical.
                 caps.push(Value::String("mounts".to_string()));
                 caps.push(Value::String("hello.identity".to_string()));
+                // § A.7 in-process script lane, at op grain (the create/mounts
+                // precedent); the frozen v2 caps stay byte-identical.
+                caps.push(Value::String("script".to_string()));
             }
             body.insert("contract".to_string(), Value::String("v3".to_string()));
         }

@@ -12,6 +12,12 @@ workspace = true
 
 [dependencies]
 serde = { workspace = true }
+# § A.7: the ScriptTrace's commit leg is the §4.4 splice response embedded
+# VERBATIM (`RawValue`) — the one-shape law. serde_json is serde's own data
+# format, zero I/O; the crate stays serde-only in the charter's sense (no
+# engine dep, no I/O), and the alternative — a mirrored second commit-fact
+# shape — is the drift §4.4 forbids.
+serde_json = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

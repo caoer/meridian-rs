@@ -205,6 +205,60 @@ fn a_daemon_publishing_no_identity_is_refused_on_the_local_socket() {
     );
 }
 
+/// The script lane refuses on skew at its dial, like every other lane — the
+/// 0025 check runs in `SocketDoor::connect`, and the entry has no degrade leg
+/// to melt into. The check was code-present, test-absent until the § A.7 lane
+/// landed; the in-process op does not touch it (it is CLIENT law at connect),
+/// and this gate is what pins that.
+#[test]
+fn script_refuses_on_foreign_identity_at_the_dial() {
+    use std::io::Write as _;
+    use std::process::Stdio;
+
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let _daemon = sb.daemon(Some(FOREIGN_BUILD));
+
+    let mut child = Command::new(mrd_bin())
+        .env("XDG_CACHE_HOME", sb.cache_home.clone())
+        .env("HOME", sb.home.clone())
+        .env_remove("MERIDIAN_WORKSPACE")
+        .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
+        .args(["script"])
+        .current_dir(&ws)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn mrd script");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(b"t = read(\"doc.md\")\n")
+        .expect("write source");
+    let out = child.wait_with_output().expect("mrd script exits");
+    let err = stderr_of(&out);
+
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a build-skewed daemon refuses the script lane (exit 2), got {:?}\nstdout: {}\nstderr: {err}",
+        out.status.code(),
+        stdout_of(&out),
+    );
+    assert!(
+        stdout_of(&out).is_empty(),
+        "exit 2 + empty stdout is the controlled pre-premise exit: {}",
+        stdout_of(&out)
+    );
+    assert!(err.contains("SKEW"), "the one skew voice: {err}");
+    assert!(
+        err.contains(FOREIGN_BUILD) && err.contains(OWN_BUILD),
+        "the refusal names both builds: {err}"
+    );
+}
+
 /// The links lane degrades on daemon-path FAILURE; skew is not a failure of
 /// the path but a refusal of the serve — it must surface loud, never melt
 /// into the in-process degrade (which would hide the stale resident forever).

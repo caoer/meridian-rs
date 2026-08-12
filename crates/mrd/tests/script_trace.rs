@@ -10,6 +10,7 @@ use effects::{
     ArmedEdit, EvalError, ReadFace, ReadPosition, ReadRecord, ScriptEval, ScriptFacts,
     ScriptRecording, ScriptTelemetry, SecFacts, TocEntry, TocFacts,
 };
+use mrd::script::trace::assemble;
 use mrd::script::{CommitLeg, FaultClass, ScriptOutcome, ScriptTrace};
 use serde_json::value::RawValue;
 use wire::{HpathSeg, PlanEdit};
@@ -130,7 +131,7 @@ fn emitted_commit(json: &str) -> Option<String> {
 #[test]
 fn the_commit_leg_round_trips_byte_identical_to_the_splice_response() {
     let eval = ok_eval(vec![armed_props(3)], vec![toc_read(1, ReadPosition::Echo)]);
-    let trace = ScriptTrace::assemble("b3:a90f13c7", &eval, CommitLeg::Response(response()));
+    let trace = assemble("b3:a90f13c7", &eval, CommitLeg::Response(response()));
 
     let json = serde_json::to_string(&trace).expect("the trace serializes");
     let commit = emitted_commit(&json).expect("a committed trace carries its commit leg");
@@ -148,7 +149,7 @@ fn the_commit_leg_round_trips_byte_identical_to_the_splice_response() {
 #[test]
 fn a_zero_armed_script_is_no_effect_with_telemetry_and_no_commit() {
     let eval = ok_eval(Vec::new(), vec![toc_read(1, ReadPosition::Echo)]);
-    let trace = ScriptTrace::assemble("b3:b84e0d63", &eval, CommitLeg::NotIssued);
+    let trace = assemble("b3:b84e0d63", &eval, CommitLeg::NotIssued);
 
     assert_eq!(trace.outcome, ScriptOutcome::NoEffect);
     assert!(trace.commit.is_none());
@@ -176,7 +177,7 @@ fn a_fault_keeps_its_armed_entries_flagged_not_committed() {
         vec![armed_props(2)],
         vec![toc_read(1, ReadPosition::Echo)],
     );
-    let trace = ScriptTrace::assemble("b3:02be6d91", &eval, CommitLeg::NotIssued);
+    let trace = assemble("b3:02be6d91", &eval, CommitLeg::NotIssued);
 
     assert_eq!(trace.outcome, ScriptOutcome::Fault);
     assert!(trace.commit.is_none());
@@ -228,7 +229,7 @@ fn a_refusal_greps_apart_from_a_fault() {
         vec![armed_props(5)],
         Vec::new(),
     );
-    let trace = ScriptTrace::assemble("b3:77d20e19", &refused, CommitLeg::NotIssued);
+    let trace = assemble("b3:77d20e19", &refused, CommitLeg::NotIssued);
     assert_eq!(trace.outcome, ScriptOutcome::Refused);
     let fault = trace.fault.as_ref().expect("a refusal carries its reason");
     assert_eq!(fault.class, FaultClass::Refused);
@@ -243,7 +244,7 @@ fn a_refusal_greps_apart_from_a_fault() {
         Vec::new(),
         Vec::new(),
     );
-    let trace = ScriptTrace::assemble("b3:77d20e19", &budget, CommitLeg::NotIssued);
+    let trace = assemble("b3:77d20e19", &budget, CommitLeg::NotIssued);
     assert_eq!(trace.outcome, ScriptOutcome::Fault);
     assert_eq!(
         trace.fault.expect("a fault reason").class,
@@ -259,7 +260,7 @@ fn a_refusal_greps_apart_from_a_fault() {
         Vec::new(),
         Vec::new(),
     );
-    let trace = ScriptTrace::assemble("b3:77d20e19", &armed_budget, CommitLeg::NotIssued);
+    let trace = assemble("b3:77d20e19", &armed_budget, CommitLeg::NotIssued);
     let fault = trace.fault.expect("a ceiling names itself");
     assert_eq!(fault.class, FaultClass::Budget);
     assert_eq!(fault.line, Some(9));
@@ -286,7 +287,7 @@ fn the_trace_round_trips_and_never_says_attempts() {
             },
         ],
     );
-    let trace = ScriptTrace::assemble("b3:a90f13c7", &eval, CommitLeg::Response(response()));
+    let trace = assemble("b3:a90f13c7", &eval, CommitLeg::Response(response()));
 
     let json = serde_json::to_string(&trace).expect("the trace serializes");
     assert!(
@@ -316,7 +317,7 @@ fn echo_and_quiet_reads_carry_distinct_kinds_and_armed_follows_in_arm_order() {
             toc_read(2, ReadPosition::Quiet),
         ],
     );
-    let trace = ScriptTrace::assemble("b3:a90f13c7", &eval, CommitLeg::Response(response()));
+    let trace = assemble("b3:a90f13c7", &eval, CommitLeg::Response(response()));
 
     let json = serde_json::to_value(&trace).expect("the trace serializes");
     let kinds: Vec<&str> = json["trace"]
@@ -347,7 +348,7 @@ fn echo_and_quiet_reads_carry_distinct_kinds_and_armed_follows_in_arm_order() {
 #[test]
 fn the_serialized_toc_face_publishes_the_word_count_under_words() {
     let eval = ok_eval(Vec::new(), vec![toc_read(1, ReadPosition::Echo)]);
-    let trace = ScriptTrace::assemble("b3:a90f13c7", &eval, CommitLeg::NotIssued);
+    let trace = assemble("b3:a90f13c7", &eval, CommitLeg::NotIssued);
 
     let json = serde_json::to_value(&trace).expect("the trace serializes");
     assert_eq!(
@@ -363,7 +364,7 @@ fn the_serialized_toc_face_publishes_the_word_count_under_words() {
 fn a_conflict_embeds_the_mismatch_verbatim_and_commits_nothing() {
     const MISMATCH: &str = r#"{"error":"fingerprint_mismatch","expected":"b3:51e7c0d2","actual":"b3:88aa1f47","changed":["tasks/0011-token-audit.md"],"recovery":"resync"}"#;
     let eval = ok_eval(vec![armed_props(3)], vec![toc_read(1, ReadPosition::Echo)]);
-    let trace = ScriptTrace::assemble(
+    let trace = assemble(
         "b3:51e7c0d2",
         &eval,
         CommitLeg::Conflict(RawValue::from_string(MISMATCH.to_owned()).expect("valid JSON")),

@@ -1200,6 +1200,66 @@ fn dispatch_read(
             }
             Ok(out.body)
         }
+        // § A.7 the script op — v3-only; in-process eval against the pinned
+        // entry world. The `warm_or_build` below IS the entry pass (Law A-3c
+        // scope unchanged — a corpus that cannot be proven refuses the op
+        // here, before any evaluation), and the pin is what the attempt's
+        // reads serve from at memory speed.
+        Op::Script {
+            source,
+            args,
+            files,
+            actor,
+            now,
+            receipt,
+            if_root,
+            dry,
+            expect_armed,
+            budgets,
+        } if v3 => {
+            registry
+                .warm_or_build(ws)
+                .map_err(|e| warm_err_to_wire(&e))?;
+            let Some(pin) = registry.pinned(ws) else {
+                // The reaper won the warm→pin window — same transient the
+                // read path names; the same request re-warms it.
+                let mut e = ErrorBody::new(ErrorCode::CorpusRace);
+                e.message = Some(
+                    "the idle reaper reclaimed this workspace's warm engine between warm and \
+                     pin — transient; the same request re-warms it"
+                        .to_owned(),
+                );
+                return Err(Box::new(e));
+            };
+            let ws_root = fs::WorkspaceRoot(ws.to_path_buf());
+            let mints = registry.read_mints(ws);
+            let ring = registry.ring(ws);
+            let world = PinnedWorld { engine: pin };
+            let exec = wire_serve::script::exec::ScriptExec {
+                id,
+                source,
+                args,
+                files,
+                actor,
+                now,
+                receipt,
+                if_root,
+                dry: dry.unwrap_or(false),
+                expect_armed,
+                budgets,
+            };
+            let out = wire_serve::script::exec::serve_script(
+                &ws_root,
+                Some(&*ring),
+                Some(&mints),
+                &world,
+                &exec,
+            );
+            if let Some(frame) = out.committed {
+                ring.advance(frame);
+            }
+            Ok(ResponseBody::Script(Box::new(out.trace)))
+        }
         // Birth op — v3-only; the shared guarded door (`write::create`).
         // Bare commit, numbered on the same ring as `splice`.
         Op::Create {
@@ -1278,12 +1338,35 @@ fn dispatch_read(
             })
         }
         // `Op::Mounts` is unreachable here (routed before the binding guard);
-        // it rides this arm for exhaustiveness only.
+        // it rides this arm for exhaustiveness only. The v3-only ops land
+        // here on a v2 session: an op is in `caps` or answers `unknown_op`.
         Op::Hello { .. }
         | Op::Read { .. }
         | Op::CheckWrite { .. }
         | Op::Create { .. }
+        | Op::Script { .. }
         | Op::Mounts => Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp))),
+    }
+}
+
+/// The § A.7 entry world: one pinned warm engine, held for one attempt. The
+/// Arc is the pin — rebuilds and the reaper swap the registry map without
+/// touching it, which is the entry-world read law by construction.
+struct PinnedWorld {
+    engine: Arc<WorkspaceEngine>,
+}
+
+impl wire_serve::script::exec::EntryWorld for PinnedWorld {
+    fn doc(&self, path: &str) -> Option<&model::Document> {
+        self.engine.docs.get(path)
+    }
+
+    fn unserved(&self, path: &str) -> Option<&str> {
+        self.engine.unserved.get(path).map(String::as_str)
+    }
+
+    fn fingerprint(&self) -> Root {
+        engine_root(&self.engine)
     }
 }
 

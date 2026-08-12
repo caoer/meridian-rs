@@ -161,9 +161,134 @@ pub fn decode(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody>> 
         "check_write" => decode_check_write(obj),
         "splice" => decode_splice(obj, rev),
         "create" => decode_create(obj),
+        "script" => decode_script(obj),
         // §3.2: only genuinely unknown names land here.
         _ => Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp))),
     }
+}
+
+/// The § A.7 script op (v3-only at dispatch; decode is rev-agnostic, the
+/// `read` posture). The strict wall reaches every nested object (§3.2 grain
+/// law): `args` values must be strings, `files` entries must be strings, and
+/// `budgets` is field-checked like a request object of its own.
+fn decode_script(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
+    let op = "script";
+    check_fields(
+        obj,
+        op,
+        &[
+            "source",
+            "args",
+            "files",
+            "actor",
+            "now",
+            "receipt",
+            "if_root",
+            "dry",
+            "expect_armed",
+            "budgets",
+        ],
+    )?;
+    let now = opt_str(obj, op, "now")?;
+    if let Some(n) = &now
+        && !wire::now_is_rfc3339(n)
+    {
+        return Err(bad_request(format!(
+            "`now` must be RFC 3339 (§9, validated never generated): `{n}`"
+        )));
+    }
+    let mut args = std::collections::BTreeMap::new();
+    if let Some(v) = obj.get("args") {
+        let Some(map) = v.as_object() else {
+            return Err(bad_request(
+                "`args` on `script` must be an object of strings — the inert dict: callers \
+                 name their inputs, they do not count them",
+            ));
+        };
+        for (key, value) in map {
+            let Some(value) = value.as_str() else {
+                return Err(bad_request(format!(
+                    "`args.{key}` on `script` must be a string — the dict is inert: string \
+                     keys, string values, no callables and no host reach"
+                )));
+            };
+            args.insert(key.clone(), value.to_owned());
+        }
+    }
+    let mut files = Vec::new();
+    if let Some(v) = obj.get("files") {
+        let Some(list) = v.as_array() else {
+            return Err(bad_request(
+                "`files` on `script` must be an array of paths — paths only, never content: \
+                 all content enters through read() and is recorded",
+            ));
+        };
+        for entry in list {
+            let Some(path) = entry.as_str() else {
+                return Err(bad_request(
+                    "`files` on `script` carries strings only — one workspace-relative path \
+                     per entry",
+                ));
+            };
+            files.push(path.to_owned());
+        }
+    }
+    let budgets = match obj.get("budgets") {
+        None => None,
+        Some(v) => Some(decode_budgets(v)?),
+    };
+    Ok(Op::Script {
+        source: req_str(obj, op, "source")?,
+        args,
+        files,
+        actor: opt_str(obj, op, "actor")?,
+        now,
+        receipt: obj.get("receipt").map(decode_receipt).transpose()?,
+        if_root: opt_str(obj, op, "if_root")?.map(wire::Root),
+        dry: opt_bool(obj, op, "dry")?,
+        expect_armed: opt_str(obj, op, "expect_armed")?,
+        budgets,
+    })
+}
+
+/// The strict wall at the `budgets` grain: unknown fields refuse loud, and
+/// every present field is an unsigned integer.
+fn decode_budgets(v: &Value) -> Result<wire::ScriptBudgets, Box<ErrorBody>> {
+    let Some(map) = v.as_object() else {
+        return Err(bad_request("`budgets` on `script` must be an object"));
+    };
+    check_fields(
+        map,
+        "script.budgets",
+        &[
+            "fuel",
+            "mem",
+            "call_depth",
+            "source_bytes",
+            "reads",
+            "armed",
+            "wall_ms",
+        ],
+    )?;
+    let field = |name: &str| -> Result<Option<u64>, Box<ErrorBody>> {
+        match map.get(name) {
+            None => Ok(None),
+            Some(v) => v.as_u64().map(Some).ok_or_else(|| {
+                bad_request(format!(
+                    "`budgets.{name}` on `script` must be an unsigned integer"
+                ))
+            }),
+        }
+    };
+    Ok(wire::ScriptBudgets {
+        fuel: field("fuel")?,
+        mem: field("mem")?,
+        call_depth: field("call_depth")?,
+        source_bytes: field("source_bytes")?,
+        reads: field("reads")?,
+        armed: field("armed")?,
+        wall_ms: field("wall_ms")?,
+    })
 }
 
 /// Composed `read` (v3-only at dispatch; decode is rev-agnostic).

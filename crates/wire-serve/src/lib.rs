@@ -21,6 +21,7 @@ pub mod reaction;
 pub mod read;
 pub mod rev;
 pub mod ring;
+pub mod script;
 pub mod seq;
 pub mod watch;
 pub mod write;

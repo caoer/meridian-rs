@@ -697,6 +697,61 @@ pub enum Op {
     /// workspace, so no workspace binding is required: the caller discovery
     /// exists for is exactly the agent that does not know a root yet.
     Mounts,
+    /// The script-submission op (§ A.7, v3-only at dispatch): caller-supplied
+    /// inline Starlark evaluated IN-PROCESS in the daemon, against the pinned
+    /// entry world — the currency pass runs once at op entry, the program's
+    /// reads serve from that pin (with the armed overlay for
+    /// read-your-own-writes), and the commit is the same ONE guarded splice
+    /// through the §4.4 door, `if_fingerprint` = the entry fingerprint.
+    ///
+    /// `actor`/`now` are §9 wire inputs. `args` is the inert dict and `files`
+    /// the caller-enumerated path list of the script entry (run-plane § The
+    /// script entry) — the engine serves no corpus-enumeration op. `if_root`
+    /// (v3 spelling `if_fingerprint`) is the caller's own pre-eval guard;
+    /// `expect_armed` is the armed-set digest gate checked before the splice
+    /// is issued; `budgets` overrides the entry's defaults field-by-field.
+    Script {
+        source: String,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        args: BTreeMap<String, String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        files: Vec<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        actor: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        now: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        receipt: Option<ReceiptAddr>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        if_root: Option<Root>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dry: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        expect_armed: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        budgets: Option<ScriptBudgets>,
+    },
+}
+
+/// § A.7 budget overrides — every field optional; absence takes the engine
+/// default. `wall_ms` is the in-process lane's wall clock (checked at every
+/// host read and again pre-commit); the rest are the kernel's own ceilings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ScriptBudgets {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fuel: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mem: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_depth: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reads: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub armed: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wall_ms: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1089,6 +1144,11 @@ pub enum ResponsePayload {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ResponseBody {
+    /// The § A.7 script op's body (v3-only): the [`ScriptTrace`], one shape
+    /// with the CLI lane's `--json`. First in the untagged order and safe
+    /// there: its required `entry_fingerprint`/`outcome`/`telemetry` keys
+    /// appear on no other body, and it lacks every other body's required keys.
+    Script(Box<ScriptTrace>),
     /// The composed-read reply (v3-only): every fact at one engine snapshot —
     /// `file_rev` + ambient `root` (the atomicity witness), the host-face
     /// addressing table (`toc`, mode toc) or the selected sections
@@ -1958,5 +2018,267 @@ impl ErrorBody {
             new_content: None,
             new_fingerprint: None,
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// § A.7 the script plane — recorded faces + the ScriptTrace response body
+// ---------------------------------------------------------------------------
+//
+// The faces are the §4.1/§4.2 read faces AS A SCRIPT RECORDS THEM — moved here
+// from `effects` (which re-exports them) because `read(path)` IS the wire toc
+// face 1:1 (run-plane § The script entry) and the trace that embeds them is a
+// wire response body (§ A.7). The trace types are moved from `mrd::script`
+// verbatim: `mrd script --json` and the `script` op body are ONE shape from
+// one definition, so neither can drift.
+
+/// The toc face (§4.1): the page rev, its frontmatter, its section map, and the
+/// page's word count. A frontmatter key the page does not carry is **absent
+/// from `fm`** — never a synthesized empty value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TocFacts {
+    /// The page rev at read time.
+    pub rev: String,
+    /// Frontmatter as read; absence is absence.
+    pub fm: BTreeMap<String, String>,
+    /// The section map, in document order.
+    pub toc: Vec<TocEntry>,
+    /// The whole-file word count — the wire's own `words_total`, a delivered
+    /// fact the host carries; nothing on the consumer plane counts words.
+    pub words: usize,
+}
+
+/// One toc row: the section, its optional `^anchor`, and its node rev.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TocEntry {
+    /// The section heading.
+    pub section: String,
+    /// The block anchor, when the row carries one. Absence stays absence.
+    pub anchor: Option<String>,
+    /// The node rev of this section.
+    pub rev: String,
+}
+
+/// The cat face (§4.2): one section's text and its rev.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SecFacts {
+    /// The section text.
+    pub text: String,
+    /// The node rev of that section.
+    pub rev: String,
+}
+
+/// Which face a recorded read carries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReadFace {
+    /// `read(path)` — the toc face.
+    Toc(TocFacts),
+    /// `read(path, section=…)` — the cat face.
+    Section(SecFacts),
+}
+
+/// Measurement of one script attempt. Unconditional — reported even on
+/// failure (the rules-plane telemetry precedent).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScriptTelemetry {
+    /// Exact Starlark ticks spent.
+    pub fuel_used: u64,
+    /// Peak eval-heap bytes.
+    pub mem_used: u64,
+    /// Host reads performed.
+    pub reads_used: usize,
+    /// Elapsed monotonic milliseconds (a duration, not a clock reading).
+    pub wall_ms: u64,
+}
+
+/// What the whole run amounted to. Read-class outcomes (`no_effect`) are
+/// first-class success — the `Ok(vec![])` precedent — and a refusal is
+/// deliberately NOT a fault: the two must grep apart (r4/F7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScriptOutcome {
+    /// The one guarded splice landed.
+    Committed,
+    /// Nothing landed — no receipt, no fingerprint advance, the workspace
+    /// unchanged. Reached two ways: nothing was armed (no splice at all), or
+    /// the splice was a rehearsal (which carries the daemon's own `dry: true`).
+    NoEffect,
+    /// The commit met a moved world: `fingerprint_mismatch`, recovery `resync`.
+    Conflict,
+    /// Evaluation failed — parse, runtime, or a budget ceiling.
+    Fault,
+    /// An arm-time law refused the script. Nothing was applied.
+    Refused,
+}
+
+/// The fault taxonomy, CLOSED at four words (r4/F7). Never a §8 wire code — a
+/// script fault is not a frame-level error, so the wire's closed taxonomy
+/// stays closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FaultClass {
+    /// The source would not parse as Starlark.
+    Parse,
+    /// Parsed, then faulted at eval.
+    Runtime,
+    /// A ceiling was reached — fuel, memory, source bytes, reads, armed edits.
+    Budget,
+    /// An arm-time law refused (single-write-file). Semantically not a fault.
+    Refused,
+}
+
+/// Why the run produced nothing. `line` is present exactly when the kernel
+/// could attribute one — the arm-time refusals name their `put()` call, and a
+/// runtime fault carries the line of its Starlark span. Absence is absence,
+/// never a synthesized line 0.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScriptFault {
+    /// 1-based source line, when the kernel attributed one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+    /// Which family of failure this is.
+    pub class: FaultClass,
+    /// The §8 error code of a refusal that crossed the write door, verbatim.
+    /// Absent on every other class, and on a refusal the engine minted itself.
+    /// Carried as a string because an unrecognized code must not fail the
+    /// trace: §8 clients dispatch on `recovery` alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    /// The refusal's recovery class — transient-vs-permanent, TYPED, from the
+    /// one source the wire field's vocabulary comes from ([`Recovery`], the
+    /// closed six-class §8 enum). A field and not a fifth [`FaultClass`]:
+    /// recovery is a PROPERTY of a refusal, not a KIND of fault.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<Recovery>,
+    /// The kernel's own wording, carried verbatim — a RENDERING of the
+    /// refusal, never the carrier of its class.
+    pub reason: String,
+}
+
+/// One traced read: the recorded response, carried verbatim.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadEntry {
+    /// 1-based source line of the `read()` call.
+    pub line: u32,
+    /// The path read.
+    pub path: String,
+    /// The section, when the cat face was asked for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub section: Option<String>,
+    /// The host's response, exactly as recorded — this is what replay serves.
+    pub face: ReadFace,
+}
+
+/// One traced arm: the wire plan-edit shape plus whether the commit carried it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ArmedEntry {
+    /// 1-based source line of the `put()` call that armed it.
+    pub line: u32,
+    /// The content path this edit writes.
+    pub path: String,
+    /// The `splice.plan_edits[]` item, carried verbatim (ruling B′).
+    pub edit: PlanEdit,
+    /// Nesting depth at arm time; 0 at module top level. A trace fact only —
+    /// **depth never suppresses**: an applied effect renders at any depth.
+    pub depth: u32,
+    /// The post-commit zip: `true` only when the one guarded splice landed.
+    pub committed: bool,
+}
+
+/// One line of the decision trace, in the order the face renders it: reads in
+/// call order, then the armed block. The read/echo split IS the
+/// statement-position rule (run-plane § The statement-position rule).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TraceEntry {
+    /// A quiet read — comprehension, condition, loop body, function body.
+    Read(ReadEntry),
+    /// A top-level-statement read: `card = read(…)` binds and echoes.
+    Echo(ReadEntry),
+    /// An armed edit. Renders unsuppressably — the honesty law.
+    Armed(ArmedEntry),
+}
+
+/// The entry's whole result: what the script did, what the commit answered,
+/// and what it cost. `mrd script --json` and the § A.7 `script` op body are
+/// this ONE type.
+// `PartialEq` is hand-written below because `RawValue` does not derive it —
+// the commit leg is bytes carried verbatim, and byte equality IS the honest
+// comparison for a leg whose contract is its bytes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScriptTrace {
+    /// The fingerprint pinned at the door (§4.7) — the premise the whole run
+    /// is consistent with, and the value the commit's `if_fingerprint` carried.
+    pub entry_fingerprint: String,
+    /// What the run amounted to.
+    pub outcome: ScriptOutcome,
+    /// The decision trace: reads in call order, then the armed block.
+    pub trace: Vec<TraceEntry>,
+    /// The §4.4 splice response, embedded VERBATIM. Absent when no splice was
+    /// issued — absence, never a null.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<Box<serde_json::value::RawValue>>,
+    /// Why the run produced nothing. Absent on `committed` / `no_effect` /
+    /// `conflict` — a conflict is the world moving, not a fault.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fault: Option<ScriptFault>,
+    /// The caller's own guard, present EXACTLY when the pre-eval guard refused
+    /// the run — the `expected` half of the face's extras line, whose `actual`
+    /// IS [`ScriptTrace::entry_fingerprint`]. Also the discriminator:
+    /// `conflict` + no commit leg + this field is a guard refusal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guard_expected: Option<String>,
+    /// The digest of the armed set — present exactly when something was armed.
+    /// This field is what makes a host a courier instead of a second
+    /// implementation: it is taken from the arm's trace and handed back as
+    /// `expect_armed`, never re-derived. It carries the digest's domain tag,
+    /// so a host can assert capability by literal prefix with no parsing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub armed_digest: Option<String>,
+    /// Present and `true` EXACTLY when a splice was issued and its outcome is
+    /// not known. It exists because [`ScriptTrace::commit`]'s absence is
+    /// already spoken for (no splice was issued), and it is a FIELD and not a
+    /// sixth [`ScriptOutcome`]: committed-or-not-known is a PROPERTY of a run,
+    /// not a KIND of outcome. The actionable class rides `fault.recovery`.
+    #[serde(default, skip_serializing_if = "script_is_false")]
+    pub commit_unknown: bool,
+    /// Always present, whatever the outcome.
+    pub telemetry: ScriptTelemetry,
+}
+
+/// Omit `commit_unknown` unless it is true: the field is a marker, and a
+/// `false` on every ordinary trace would be noise a consumer has to read past.
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde predicate signature"
+)]
+fn script_is_false(value: &bool) -> bool {
+    !*value
+}
+
+impl PartialEq for ScriptTrace {
+    fn eq(&self, other: &Self) -> bool {
+        let leg = |c: &Option<Box<serde_json::value::RawValue>>| {
+            c.as_ref().map(|raw| raw.get().to_owned())
+        };
+        self.entry_fingerprint == other.entry_fingerprint
+            && self.outcome == other.outcome
+            && self.trace == other.trace
+            && leg(&self.commit) == leg(&other.commit)
+            && self.fault == other.fault
+            && self.guard_expected == other.guard_expected
+            && self.armed_digest == other.armed_digest
+            && self.commit_unknown == other.commit_unknown
+            && self.telemetry == other.telemetry
+    }
+}
+
+impl ScriptTrace {
+    /// The armed entries, in arm order — the face's armed block.
+    pub fn armed_entries(&self) -> impl Iterator<Item = &ArmedEntry> {
+        self.trace.iter().filter_map(|entry| match entry {
+            TraceEntry::Armed(armed) => Some(armed),
+            TraceEntry::Read(_) | TraceEntry::Echo(_) => None,
+        })
     }
 }

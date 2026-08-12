@@ -131,7 +131,7 @@ pub(crate) fn run(door: &mut dyn Door, parsed: &Script, source: &str) -> Result<
     if let Some(pinned) = &parsed.if_fingerprint
         && *pinned != entry
     {
-        return Ok(ScriptTrace::guard_refused(entry, pinned));
+        return Ok(super::trace::guard_refused(entry, pinned.clone()));
     }
 
     // 3. Evaluate. Reads lower to `toc`/`cat` through the same door.
@@ -149,7 +149,7 @@ pub(crate) fn run(door: &mut dyn Door, parsed: &Script, source: &str) -> Result<
     // 4. A failed evaluation never commits; zero armed is the read-class exit —
     //    no splice, no receipt, no fingerprint advance, nothing on disk.
     if eval.outcome.is_err() || eval.armed.is_empty() {
-        return Ok(ScriptTrace::assemble(entry, &eval, CommitLeg::NotIssued));
+        return Ok(super::trace::assemble(entry, &eval, CommitLeg::NotIssued));
     }
 
     // 5. Each armed row is guarded on the rev the script ITSELF read, then ONE
@@ -170,7 +170,7 @@ pub(crate) fn run(door: &mut dyn Door, parsed: &Script, source: &str) -> Result<
         // definition — so a tagged pin cannot false-refuse a tagged engine.
         let actual = super::digest::armed_digest(&super::digest::ArmedRow::of_all(&eval.armed));
         if *expected != actual {
-            return Ok(ScriptTrace::assemble(
+            return Ok(super::trace::assemble(
                 entry,
                 &eval,
                 // ENGINE-MINTED: no frame crossed the wire, so no §8 code — and
@@ -206,7 +206,7 @@ pub(crate) fn run(door: &mut dyn Door, parsed: &Script, source: &str) -> Result<
     } else {
         commit(door, parsed, &eval, &entry)
     };
-    Ok(ScriptTrace::assemble(entry, &eval, leg))
+    Ok(super::trace::assemble(entry, &eval, leg))
 }
 
 /// Thread each armed plan row's CAS token from the script's OWN recorded reads.

@@ -772,7 +772,7 @@ mod tests {
     /// truth about it.
     #[test]
     fn an_armed_run_that_meets_the_clock_answers_a_face_that_does_not_deny_the_arm() {
-        use super::super::trace::{CommitLeg, ScriptTrace};
+        use super::super::trace::CommitLeg;
 
         let mut door = Fake::still();
         let mut host = WireHost::new(
@@ -800,7 +800,7 @@ mod tests {
         );
         assert!(eval.outcome.is_err(), "the read met the clock and aborted");
 
-        let trace = ScriptTrace::assemble("b3:00", &eval, CommitLeg::NotIssued);
+        let trace = crate::script::trace::assemble("b3:00", &eval, CommitLeg::NotIssued);
         let armed: Vec<_> = trace.armed_entries().collect();
         assert_eq!(armed.len(), 1, "the armed row renders — the honesty law");
         assert!(!armed[0].committed, "and it renders `[not committed]`");
@@ -836,7 +836,7 @@ mod tests {
     /// after the label, with the same line on [`ScriptFault::line`].
     #[test]
     fn a_runtime_fault_face_is_labelled_and_names_its_line() {
-        use super::super::trace::{CommitLeg, FaultClass, ScriptTrace};
+        use super::super::trace::{CommitLeg, FaultClass};
 
         let mut door = Fake::still();
         let mut host = WireHost::new(
@@ -859,7 +859,7 @@ mod tests {
         );
         assert!(eval.outcome.is_err(), "the missing key aborts the attempt");
 
-        let trace = ScriptTrace::assemble("b3:00", &eval, CommitLeg::NotIssued);
+        let trace = crate::script::trace::assemble("b3:00", &eval, CommitLeg::NotIssued);
         let fault = trace.fault.as_ref().expect("the key error is the fault");
         assert_eq!(fault.class, FaultClass::Runtime);
         assert_eq!(

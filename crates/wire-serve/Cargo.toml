@@ -59,10 +59,20 @@ policy = { workspace = true }
 # Decode-time JSON: the strict-decode pass validates the raw request object by
 # hand (serde's `deny_unknown_fields` does not compose with `flatten`).
 serde_json = { workspace = true }
+# `script::digest`'s ArmedRow derives Serialize — the one canonicalization the
+# armed-set digest hashes (moved here from mrd with the § A.7 lane).
+serde = { workspace = true }
+# § A.7 the in-process script lane: the sealed Starlark kernel this crate's
+# `script` module drives against the pinned entry world. The kernel stays
+# pure (zero I/O); this crate is its entry-world HOST — the serve organ, so
+# the executor lives here and not in the daemon shell (laws.md Law 3).
+effects = { workspace = true }
+# The armed-set digest (`script::digest`, moved from mrd with the lane):
+# sha256 rather than blake3 because the other reader is the Go MCP host,
+# where sha256 is stdlib. Already a workspace dependency.
+sha2 = { workspace = true }
 
 [dev-dependencies]
-# canonical reaction receipt assertion
-effects = { workspace = true }
 # fixture addresses for the lock gate tests
 addr = { workspace = true }
 # test-only: create/remove birth/death gates need a real on-disk workspace

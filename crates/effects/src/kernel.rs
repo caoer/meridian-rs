@@ -582,9 +582,12 @@ impl<'h> ScriptEntry<'h> {
         }
     }
 
-    /// Arm one `put()` call's plan items — PURE: no host call, no I/O. The
-    /// arm-time law runs first and, when it refuses, arms NOTHING from this call
-    /// and aborts the script.
+    /// Arm one `put()` call's plan items — no I/O at call time. The arm-time
+    /// law runs first and, when it refuses, arms NOTHING from this call and
+    /// aborts the script. Each edit that JOINS the list is then announced to
+    /// the host's `armed()` observer (default no-op) — the § A.7 entry-world
+    /// host composes its read-your-own-writes overlay from those
+    /// announcements; the wire-client and replay hosts ignore them.
     fn arm(&self, path: &str, items: Vec<PlanEdit>, line: u32, depth: u32) -> anyhow::Result<()> {
         // One CONTENT path per commit (v1 law). The receipt companion is not a
         // content path — it rides the splice request's own `receipt` field in
@@ -624,12 +627,16 @@ impl<'h> ScriptEntry<'h> {
                 self.max_armed_edits
             ));
         }
-        armed.extend(items.into_iter().map(|edit| ArmedEdit {
-            path: path.to_owned(),
-            edit,
-            line,
-            depth,
-        }));
+        for edit in items {
+            let armed_edit = ArmedEdit {
+                path: path.to_owned(),
+                edit,
+                line,
+                depth,
+            };
+            self.host.borrow_mut().armed(&armed_edit);
+            armed.push(armed_edit);
+        }
         Ok(())
     }
 

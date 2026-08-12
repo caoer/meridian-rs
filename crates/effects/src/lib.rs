@@ -822,6 +822,19 @@ pub trait ScriptHost: Send {
 
     /// The caller's own identity, returned by the `me()` builtin.
     fn actor(&self) -> &str;
+
+    /// Observe one edit the instant `put()` arms it — default no-op.
+    ///
+    /// The entry-world host (wire-contract § A.7) composes its
+    /// read-your-own-writes overlay from these, so a read after the program's
+    /// own `put()` serves the ARMED content. It is an OBSERVER, not an
+    /// effect: `put()` still performs no I/O at call time, the armed list
+    /// still lives in the kernel, and the wire-client and replay hosts keep
+    /// the default. Fired only for edits that actually joined the armed list
+    /// (never for an arm the ceiling or the single-write-file law refused).
+    fn armed(&mut self, edit: &ArmedEdit) {
+        let _ = edit;
+    }
 }
 
 /// Why a host could not serve a read. Rendered by the consumer plane; the
@@ -849,51 +862,12 @@ impl std::fmt::Display for ReadFault {
     }
 }
 
-/// The toc face (§4.1): the page rev, its frontmatter, its section map, and the
-/// page's word count. A frontmatter key the page does not carry is **absent
-/// from `fm`** — never a synthesized empty value.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TocFacts {
-    /// The page rev at read time.
-    pub rev: String,
-    /// Frontmatter as read; absence is absence.
-    pub fm: BTreeMap<String, String>,
-    /// The section map, in document order.
-    pub toc: Vec<TocEntry>,
-    /// The whole-file word count — the toc response's own `words_total`.
-    /// `read(path)` IS the wire toc face 1:1, so this is a delivered fact the
-    /// host carries; nothing here counts words (ruling 2026-08-07).
-    pub words: usize,
-}
-
-/// One toc row: the section, its optional `^anchor`, and its node rev.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TocEntry {
-    /// The section heading.
-    pub section: String,
-    /// The block anchor, when the row carries one. Absence stays absence.
-    pub anchor: Option<String>,
-    /// The node rev of this section.
-    pub rev: String,
-}
-
-/// The cat face (§4.2): one section's text and its rev.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SecFacts {
-    /// The section text.
-    pub text: String,
-    /// The node rev of that section.
-    pub rev: String,
-}
-
-/// Which face a recorded read carries.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ReadFace {
-    /// `read(path)` — the toc face.
-    Toc(TocFacts),
-    /// `read(path, section=…)` — the cat face.
-    Section(SecFacts),
-}
+/// The recorded read faces and the script telemetry are WIRE vocabulary since
+/// § A.7 (`read(path)` IS the wire toc face 1:1, and the trace that embeds
+/// them is a wire response body). They moved to `crates/wire` and are
+/// re-exported here verbatim, so every existing `effects::TocFacts` path
+/// keeps compiling and the serialized bytes are unchanged.
+pub use wire::{ReadFace, ScriptTelemetry, SecFacts, TocEntry, TocFacts};
 
 /// Where a read call sat in the source. The face renders `Echo` reads and stays
 /// quiet about `Quiet` ones; both are recorded either way.
@@ -928,20 +902,6 @@ pub struct ScriptRecording {
     pub actor: String,
     /// Every read response, in call order.
     pub reads: Vec<ReadRecord>,
-}
-
-/// Measurement of one attempt. Unconditional — reported even on failure
-/// (the [`RuleTelemetry`] precedent).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ScriptTelemetry {
-    /// Exact Starlark ticks spent.
-    pub fuel_used: u64,
-    /// Peak eval-heap bytes.
-    pub mem_used: u64,
-    /// Host reads performed.
-    pub reads_used: usize,
-    /// Elapsed monotonic milliseconds (a duration, not a clock reading).
-    pub wall_ms: u64,
 }
 
 /// What one script evaluation produced: the module's top-level bindings, in
