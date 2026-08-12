@@ -1052,76 +1052,9 @@ fn parse_mount(
         }
     };
 
-    // The primary designation: optional, literal `true` only — absence is the
-    // one "not primary" spelling, so `primary: false` refuses rather than
-    // becoming a second spelling for the same fact. Kind-conditional like
-    // `vault:`: the primary root is where a fleet daemon writes, so a
-    // `git-folder` (source repo) designation states something that cannot be
-    // honoured.
-    let primary = match fields.get("primary") {
-        Some((primary_line, value)) => {
-            if kind == MountKind::GitFolder {
-                return Err(ConfigError::new(
-                    Reason::FieldNotPermittedForKind,
-                    path,
-                    Some(primary_line),
-                    "`primary:` is not permitted on a `kind: git-folder` mount — the primary root is where the fleet daemon writes, and a git-folder root binds a source repo.".to_string(),
-                    "remove the `primary:` line, or set `kind: vault` if this root really is one.".to_string(),
-                ));
-            }
-            if value != "true" {
-                return Err(ConfigError::new(
-                    Reason::BadValue,
-                    path,
-                    Some(primary_line),
-                    format!(
-                        "`primary: {value}` is not a designation — the only legal value is `true`; a mount that is not primary says so by carrying no `primary:` line."
-                    ),
-                    "write `primary: true`, or remove the line.".to_string(),
-                ));
-            }
-            Some(primary_line)
-        }
-        None => None,
-    };
+    let primary = parse_mount_primary(&fields, kind, path)?;
 
-    // Kind-conditional: a vault root requires `vault:`; a git-folder root
-    // forbids it.
-    let vault = match (kind, fields.get("vault")) {
-        (MountKind::Vault, Some((vault_line, vault_name))) => {
-            if vault_name.trim().is_empty() {
-                return Err(ConfigError::new(
-                    Reason::BadValue,
-                    path,
-                    Some(vault_line),
-                    "`vault:` is empty — a vault root must name its Obsidian vault.".to_string(),
-                    "write the Obsidian vault name after `vault: `.".to_string(),
-                ));
-            }
-            Some(vault_name.to_string())
-        }
-        (MountKind::Vault, None) => {
-            return Err(ConfigError::new(
-                Reason::MissingRequiredField,
-                path,
-                Some(block.fence_line),
-                format!(
-                    "the {MOUNT_LANG} block opened here declares `kind: vault` but no `vault:` — the mount table is a three-way map (canonical name, Obsidian vault name, local path), and without the vault name it has two legs."
-                ),
-                "add a `vault:` line naming the Obsidian vault.".to_string(),
-            ));
-        }
-        (MountKind::GitFolder, Some((vault_line, _))) => {
-            return Err(ConfigError::new(
-                Reason::FieldNotPermittedForKind,
-                path,
-                Some(vault_line),
-                "`vault:` is not permitted on a `kind: git-folder` mount — a git-folder root has no Obsidian vault, so the field states something that cannot be true.".to_string(),
-                "remove the `vault:` line, or set `kind: vault` if this root really is one.".to_string(),
-            ));
-        }
-        (MountKind::GitFolder, None) => None,
-    };
+    let vault = parse_mount_vault(&fields, kind, path, block.fence_line)?;
 
     // Parse checks only that the pin is a well-formed fingerprint token —
     // codec-agnostic, since the two kinds pin different grains. Checking the
@@ -1158,6 +1091,84 @@ fn parse_mount(
         name_line,
         primary,
     ))
+}
+
+// Kind-conditional (schema §5.1 field 5): a vault root requires `vault:`; a
+// git-folder root forbids it.
+fn parse_mount_vault(
+    fields: &Fields<'_>,
+    kind: MountKind,
+    path: &Path,
+    fence_line: usize,
+) -> Result<Option<String>, ConfigError> {
+    match (kind, fields.get("vault")) {
+        (MountKind::Vault, Some((vault_line, vault_name))) => {
+            if vault_name.trim().is_empty() {
+                return Err(ConfigError::new(
+                    Reason::BadValue,
+                    path,
+                    Some(vault_line),
+                    "`vault:` is empty — a vault root must name its Obsidian vault.".to_string(),
+                    "write the Obsidian vault name after `vault: `.".to_string(),
+                ));
+            }
+            Ok(Some(vault_name.to_string()))
+        }
+        (MountKind::Vault, None) => Err(ConfigError::new(
+            Reason::MissingRequiredField,
+            path,
+            Some(fence_line),
+            format!(
+                "the {MOUNT_LANG} block opened here declares `kind: vault` but no `vault:` — the mount table is a three-way map (canonical name, Obsidian vault name, local path), and without the vault name it has two legs."
+            ),
+            "add a `vault:` line naming the Obsidian vault.".to_string(),
+        )),
+        (MountKind::GitFolder, Some((vault_line, _))) => Err(ConfigError::new(
+            Reason::FieldNotPermittedForKind,
+            path,
+            Some(vault_line),
+            "`vault:` is not permitted on a `kind: git-folder` mount — a git-folder root has no Obsidian vault, so the field states something that cannot be true.".to_string(),
+            "remove the `vault:` line, or set `kind: vault` if this root really is one.".to_string(),
+        )),
+        (MountKind::GitFolder, None) => Ok(None),
+    }
+}
+
+// The primary designation (schema §5.1a): optional, literal `true` only —
+// absence is the one "not primary" spelling, so `primary: false` refuses
+// rather than becoming a second spelling for the same fact. Kind-conditional
+// like `vault:`: the primary root is where a fleet daemon writes, so a
+// `git-folder` (source repo) designation states something that cannot be
+// honoured. Returns the designation's FILE line when present and legal.
+fn parse_mount_primary(
+    fields: &Fields<'_>,
+    kind: MountKind,
+    path: &Path,
+) -> Result<Option<usize>, ConfigError> {
+    let Some((primary_line, value)) = fields.get("primary") else {
+        return Ok(None);
+    };
+    if kind == MountKind::GitFolder {
+        return Err(ConfigError::new(
+            Reason::FieldNotPermittedForKind,
+            path,
+            Some(primary_line),
+            "`primary:` is not permitted on a `kind: git-folder` mount — the primary root is where the fleet daemon writes, and a git-folder root binds a source repo.".to_string(),
+            "remove the `primary:` line, or set `kind: vault` if this root really is one.".to_string(),
+        ));
+    }
+    if value != "true" {
+        return Err(ConfigError::new(
+            Reason::BadValue,
+            path,
+            Some(primary_line),
+            format!(
+                "`primary: {value}` is not a designation — the only legal value is `true`; a mount that is not primary says so by carrying no `primary:` line."
+            ),
+            "write `primary: true`, or remove the line.".to_string(),
+        ));
+    }
+    Ok(Some(primary_line))
 }
 
 // ---------------------------------------------------------------------------
