@@ -618,7 +618,7 @@ mod tests {
             Some(
                 "no section addressed by \"Ghost\". No edit was applied; the batch is \
                  refused whole. Fix: list the document's section paths with a toc read \
-                 (MCP read: mode:\"toc\"; CLI: a read with no --section), then feed its \
+                 (MCP read: sections[] omitted; CLI: a read with no --section), then feed its \
                  row back in one of the two addressing forms: the row's raw heading \
                  segments as an hpath array (one entry per heading, no joining), or its \
                  dewey ordinal (CLI: `--section 1.2`). The joined selector string splits \
@@ -1084,7 +1084,7 @@ mod tests {
             Some(
                 "no section addressed by \"My-Section\". No edit was applied; the batch \
                  is refused whole. Fix: list the document's section paths with a toc \
-                 read (MCP read: mode:\"toc\"; CLI: a read with no --section), then feed \
+                 read (MCP read: sections[] omitted; CLI: a read with no --section), then feed \
                  its row back in one of the two addressing forms: the row's raw heading \
                  segments as an hpath array (one entry per heading, no joining), or its \
                  dewey ordinal (CLI: `--section 1.2`). The joined selector string splits \

@@ -213,7 +213,7 @@ Correlation: one response per request, id echoed by value; in-flight uniqueness 
   "fingerprint":"b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9"}}
 ```
 
-`caps` is the complete set — no version sniffing, ever. The example shows the sixteen-cap base set (the v2 spelling is byte-identical minus the fingerprint renames); a negotiated v3 session is pushed nine more on top — `read`, `check_write`, `splice.plan_edits`, `splice.pin`, `splice.create_rev`, `create`, `mounts`, `hello.identity`, `script` (§A.3/§A.5/§A.7) — twenty-five caps in all. Field-only amendments ship as dotted `op.field` strings. `fingerprint` in the hello body is optional (the engine may not have walked yet); when present it is the first ambient fingerprint.
+`caps` is the complete set — no version sniffing, ever. The example shows the sixteen-cap base set (the v2 spelling is byte-identical minus the fingerprint renames); a negotiated v3 session is pushed ten more on top — `read`, `check_write`, `splice.plan_edits`, `splice.pin`, `splice.create_rev`, `create`, `mounts`, `mounts.primary`, `hello.identity`, `script` (§A.3/§A.5/§A.7) — twenty-six caps in all. Field-only amendments ship as dotted `op.field` strings (`mounts.primary` is one: the mounts row's declared-primary designation, §A.5). `fingerprint` in the hello body is optional (the engine may not have walked yet); when present it is the first ambient fingerprint.
 
 **Rev-presence law:** `node_rev` is MUST on every `toc`/`cat`/`extract` node whenever `splice ∈ caps`.
 
@@ -1081,7 +1081,7 @@ When a workspace is **armed** (attested INDEX present), after CAS and before byt
 
 - A section selector matching **more than one** node refuses `ambiguous_ref` naming each candidate's machine address (its `n`-carrying segment array) — §2.1's "the strict plane never silently picks" applies to strict reads exactly as to `cat` and `splice`. Never a silent first match, never `ref_not_found`.
 - When **all** selectors fail, the refusal names **every** failed selector with its own reason (no match / ambiguous), symmetric with the partial-read `notice`, which names them the same way.
-- Refusal **remedies speak the operation, not one host's tool name**: the recovery clause names the toc read in each surface's own dialect (MCP `mode:"toc"`, CLI `--section`-less read) and never prescribes a binary the caller may not have. *(Ruled 2026-08-06, dogfood F5: dual-dialect IS this spec, not a partial fix — a remedy leads with the caller's surface (MCP `mode:"toc"` first) and MAY carry a labeled CLI alternative in the same sentence.)*
+- Refusal **remedies speak the operation, not one host's tool name**: the recovery clause names the toc read in each surface's own dialect (MCP: a read with `sections[]` omitted, CLI: `--section`-less read) and never prescribes a binary the caller may not have. *(Ruled 2026-08-06, dogfood F5: dual-dialect IS this spec, not a partial fix — a remedy leads with the caller's surface (the MCP spelling first) and MAY carry a labeled CLI alternative in the same sentence.)* *(2026-08-12: the MCP spelling was `mode:"toc"` until the `mode` parameter left the MCP read face (ZT ruling, executed daemon-side at ccc-statusd 3b68e37a); the MCP toc read is now a read with `sections[]` omitted.)*
 
 **Door symmetry over duplicate headings (2026-08-06, fix-write-dup-symmetry):**
 
@@ -1291,11 +1291,11 @@ call it.
   {"name":"field-notes","kind":"vault","state":"bound",
    "workspace":"/Users/Shared/repos/field-notes"},
   {"name":"sessions","kind":"vault","state":"bound",
-   "workspace":"/Users/Shared/projects/field-notes-sessions"},
+   "workspace":"/Users/Shared/projects/field-notes-sessions","primary":true},
   {"name":"assets","kind":"git-folder","state":"grey(path-unseeable)"}]}}
 ```
 
-Row shape `{name, kind, state, workspace?}`:
+Row shape `{name, kind, state, workspace?, primary?}`:
 
 | Field | Law |
 |---|---|
@@ -1303,6 +1303,7 @@ Row shape `{name, kind, state, workspace?}`:
 | `kind` | `vault` \| `git-folder` — the `MountKind` words verbatim |
 | `state` | the `MountState` reason word verbatim, ONE spelling across the human line, `--json`, and this wire: `bound` · `grey(path-unseeable)` · `grey(undeclared)` · `grey(declaration-unreadable)` · `grey(claim-unverifiable)` · `red(content-drifted)`. Every word but `bound` refuses: a client gates on `state == "bound"` and treats an unrecognized word as not-bound — the tolerant-client law applied to an open-for-amendment word set |
 | `workspace` | the canonical bound path, post-canonicalization — the same handle `hello` returns as `workspace`. Present exactly when the binding canonicalized; absent at least on `grey(path-unseeable)` |
+| `primary` | the declared-primary designation, verbatim from the binding file (`meridian-md-schema.md` §5.1a): literal `true` exactly on the designated row, ABSENT everywhere else — absence is the only "not primary" spelling, mirroring the config grammar. At most one row carries it (two designations refuse the whole table, `duplicate-primary-designation` inside `mount_table_invalid`). A binding ROLE for fleet hosts (the primary-root rule set: ccc-statusd `docs/mcp-face.md` §8.1); the engine reports it and never acts on it. Field-only amendment, cap `mounts.primary`; a client that has not read the cap sees an unread key — inert by the tolerant-client law |
 
 **Freshness — the config-hash rebind law.** Every `mounts` call fingerprints
 `~/MERIDIAN.md` (blake3 over the file bytes) before answering: unchanged hash
@@ -1767,8 +1768,8 @@ this op's clients unchanged.
 
 **Dispatch:** v3-only; op-grain cap `script` (the `create`/`mounts`
 precedent — no dotted fields at birth). A v2 session answers `unknown_op`;
-the frozen v2 caps stay byte-identical. §3.2's v3 push is nine caps,
-twenty-five in all.
+the frozen v2 caps stay byte-identical. §3.2's v3 push is ten caps,
+twenty-six in all.
 
 **The entry world (this op's read law, normative detail in
 `run-plane.md`).** The currency pass runs ONCE, at entry: the daemon proves

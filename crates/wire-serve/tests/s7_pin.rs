@@ -543,6 +543,16 @@ fn the_gate_refuses_an_unread_pin_and_admits_it_after_a_covering_read() {
         "the refusal teaches: {:?}",
         err.message
     );
+    // No surface carries a `mode` parameter (MCP: removed ZT 08-12; wire:
+    // `sections` presence IS the mode; CLI: `--section`) — the remedy must
+    // not teach one.
+    assert!(
+        err.message
+            .as_deref()
+            .is_some_and(|m| !m.contains("mode sections") && !m.contains("mode toc")),
+        "the remedy names a mode parameter no surface carries: {:?}",
+        err.message
+    );
     assert_eq!(read_page(&root, "guide.md"), TARGET, "target untouched");
     assert_eq!(read_page(&root, "plan.md"), PINNER, "pinner untouched");
 

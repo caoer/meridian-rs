@@ -240,7 +240,7 @@
       "fixture": "refusals/mount-vault-name-absent.md",
       "env": {},
       "expect": { "outcome": "refuse", "state": "B", "reason": "missing-required-field", "line": 13, "names": ["vault", "kind: vault"] },
-      "law": "spec §5.1 field 4 — `vault:` is required iff `kind: vault`, because the mount table is a THREE-way map",
+      "law": "spec §5.1 field 5 — `vault:` is required iff `kind: vault`, because the mount table is a THREE-way map",
       "kills": "a schema in which a vault mount can omit its Obsidian vault name, leaving the three-way map with two legs and criterion 2 unsatisfiable. The refusal must name the KIND that requires the field, not just the field"
     },
     {
@@ -272,7 +272,7 @@
       "fixture": "refusals/mount-vault-on-git-folder.md",
       "env": {},
       "expect": { "outcome": "refuse", "state": "B", "reason": "field-not-permitted-for-kind", "line": 17, "names": ["vault", "git-folder"] },
-      "law": "spec §5.1 field 4 — a git-folder root has no Obsidian vault, so `vault:` states something that cannot be true",
+      "law": "spec §5.1 field 5 — a git-folder root has no Obsidian vault, so `vault:` states something that cannot be true",
       "kills": "ignoring the field, which lets a config assert a vault name nothing checks — the three-way map silently growing a leg for a kind that has none"
     },
     {
@@ -346,6 +346,47 @@
       "expect": { "outcome": "refuse", "state": "B", "reason": "duplicate-tool-name", "line": 19, "names": ["llm-wiki", "12"] },
       "law": "spec §6 — names are keys for the same reason mount names are: a consumer resolving `llm-wiki` must get one answer",
       "kills": "uniqueness enforced on mounts but not on tools, which is the likely asymmetry once mount uniqueness is written first"
+    },
+    {
+      "id": "primary-designated",
+      "fixture": "corpus/primary-designated.md",
+      "env": {},
+      "expect": {
+        "outcome": "accept",
+        "state": "loaded",
+        "mounts": [
+          { "name": "field-notes", "path": "/Users/Shared/projects/field-notes", "kind": "vault", "vault": "field-notes", "pin": null, "primary": false },
+          { "name": "sessions", "path": "/Users/Shared/projects/field-notes-sessions", "kind": "vault", "vault": "field-notes-sessions", "pin": null, "primary": true },
+          { "name": "archive", "path": "/Users/Shared/repos/archive", "kind": "git-folder", "vault": null, "pin": null, "primary": false }
+        ],
+        "tools": []
+      },
+      "law": "spec §5.1 field 4 — the primary root is DECLARED, never derived: exactly one mount carries `primary: true`, and its position in the file means nothing",
+      "kills": "every derived-primary reader: mounts[0]-wins, first-vault-wins, last-wins. The designated mount is deliberately NOT the first block, so a mounts[0] fallback looks healthy on every other acceptance and fails only here"
+    },
+    {
+      "id": "mount-primary-on-git-folder",
+      "fixture": "refusals/mount-primary-on-git-folder.md",
+      "env": {},
+      "expect": { "outcome": "refuse", "state": "B", "reason": "field-not-permitted-for-kind", "line": 17, "names": ["primary", "git-folder"] },
+      "law": "spec §5.1 field 4 — the primary root is where the fleet daemon writes, and a git-folder root binds a source repo, so the designation states an intent that must never be honoured",
+      "kills": "ignoring the field on the kind it is meaningless for, which would let a source repo silently become the tree a daemon files its journal into once the jail widens"
+    },
+    {
+      "id": "mount-primary-bad-value",
+      "fixture": "refusals/mount-primary-bad-value.md",
+      "env": {},
+      "expect": { "outcome": "refuse", "state": "B", "reason": "bad-value", "line": 17, "names": ["primary: false", "true"] },
+      "law": "spec §5.1 field 4 — the only legal value is the literal `true`; a mount that is not primary says so by carrying no `primary:` line",
+      "kills": "admitting `primary: false` as a legal no-op, which mints a second spelling for one fact — and with it a reader that treats ANY present value as designation, so `primary: false` designates"
+    },
+    {
+      "id": "mount-duplicate-primary",
+      "fixture": "refusals/mount-duplicate-primary.md",
+      "env": {},
+      "expect": { "outcome": "refuse", "state": "B", "reason": "duplicate-primary-designation", "line": 25, "names": ["sessions", "field-notes", "17"] },
+      "law": "spec §5.1 — the designation is a role exactly one mount may hold; two designations is a table-level defect like duplicate-mount-name, refusing the whole table, never a tie the parser breaks",
+      "kills": "first-designation-wins and last-designation-wins readers — both blocks are otherwise legal vaults, so a build that picks either one loads a healthy-looking table anchored to a tree the operator did not choose"
     }
   ]
 }
