@@ -1206,6 +1206,44 @@ spec `replace-section-containment`, session 12-04-f2-mrd-integration):**
   `create_section` bodies (untested there today); until that lands, those
   ops rely on the §4.4 post-reparse families alone.
 
+**Splice hygiene at the plan doors (docs-first, 2026-08-12, N-1 — the
+ZT-ratified companion of the replace_section containment spec):**
+
+- The plan-level body verbs — `append`, `replace_section`, `create` — compose
+  their lowered bytes so every boundary the splice touches is canonical:
+  **exactly one blank line at block and section boundaries.** One blank line
+  between a section's heading line and its content, between adjacent blocks,
+  and before a following heading; a file ends on a single terminator. One
+  exception is itself a boundary rule: a payload whose first content line is
+  a list item, appended to a section whose last block is a list, joins that
+  list flush — a blank line there is a paragraph break splitting one list
+  into two (CommonMark loose-list), which is the measured N-1 defect, not a
+  boundary. The payload's interior bytes stay the caller's, verbatim;
+  hygiene governs boundaries only, so the payload's own leading and trailing
+  blank lines collapse into the canonical separators.
+- Mechanism selection is derived, never declared: the lowering composes the
+  canonical result and compares it against the section's current content
+  bytes. A pure extension (the canonical result starts with the existing
+  content) lowers to `put{at:"end"}` exactly as before; a boundary needing
+  surgery (a separator to remove or collapse — e.g. the trailing blank line
+  that must not sit inside a joined list) lowers to a content-span rewrite,
+  `put{at:"content"}`, that preserves every non-boundary byte. The armed
+  fact and the receipt keep naming the lowered shape — the mechanism is the
+  fact; target and rev transition are identical either way.
+- The native §4.4 ops are untouched: `at:"end"` stays raw byte concatenation
+  and a native caller owns its separators. Hygiene is plan-door composition
+  law only. Byte-faithfulness to the deleted Go host arms is superseded for
+  these three doors by this law; everywhere else the lowering stays
+  byte-faithful.
+- History (measured 2026-08-12, mrd-mcp probe N-1, fixture preserved at the
+  probe scratch page): an `append` after a trailing list minted a paragraph
+  break because the insert point sat past the section's trailing separator;
+  an `append` at a section boundary landed flush against the next heading;
+  `replace_section` consumed both the blank line under its own heading and
+  the separator before the next heading. Spec of record: session
+  `12-04-f2-mrd-integration` `results/replace-section-containment-spec.md`
+  § Splice hygiene companion.
+
 **Frontmatter-properties plane on the composed `read` (docs-first,
 2026-08-07, the mcp-face §3.3 wire demand — engine leg of the props
 deferral):**
