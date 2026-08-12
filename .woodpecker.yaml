@@ -24,6 +24,10 @@
 #     every lane that reads the tree (build_identity asserts tree state —
 #     pipeline #25). Lanes may write only untracked paths: target dirs,
 #     /tmp, the /ci-cache mount.
+#   - The deny lane keeps NO shared state: cargo-deny's advisory DB is a git
+#     working copy, which a killed run leaves half-written and unrepairable by
+#     any lock, so that lane runs on a container-local CARGO_HOME and clones
+#     the DB fresh from our forge mirror each run (see the lane).
 #   - Root lanes share the workspace ./target; cargo's build-dir flock
 #     serializes their compiles (flock works across containers on one host).
 #   - The test lane runs as a non-root user in its own ./target-ci, so
@@ -105,7 +109,18 @@ steps:
       # concurrently, and a recursive chown over a churning tree fails on
       # paths that vanish mid-walk.
       - find . -mindepth 1 -maxdepth 1 ! -name 'target*' -exec chown -R ci:ci {} +
-      - chown ci:ci . target-ci && chown -R ci:ci "$CARGO_HOME" "$SCCACHE_DIR" /home/ci
+      - chown ci:ci . target-ci
+      # The same race, one level down: the SHARED cargo/sccache caches are
+      # written by the other lanes while this walk runs, and cargo's transient
+      # .global-cache-journal is created and removed mid-walk — the walk then
+      # dies on ENOENT. Sha-independent flake: one immutable tree lost/won/lost
+      # across three runs. Owning a file that no longer exists is a no-op, so
+      # tolerate exactly ENOENT and keep failing on every other chown error.
+      - |
+        errs=$(chown -R ci:ci "$CARGO_HOME" "$SCCACHE_DIR" /home/ci 2>&1 >/dev/null || true)
+        real=$(printf '%s' "$errs" | grep -v 'No such file or directory' || true)
+        if [ -n "$real" ]; then printf '%s\n' "$real"; exit 1; fi
+        if [ -n "$errs" ]; then echo "chown: tolerated cache entries that vanished mid-walk"; fi
       # Compile the test binaries in their OWN fold, so the suite's fold holds
       # verdicts and nothing else. On green this fold is near-empty; on a
       # compile error the diagnostics still print here, and the suite fold
@@ -227,36 +242,43 @@ steps:
 
   # deny.toml enforces the fork one-copy law, licenses, and sources — parity
   # with the GH lane's cargo-deny-action. cargo-deny is baked into the image
-  # (Dockerfile.ci), so the lane is one command; the advisory DB still caches
-  # in the shared CARGO_HOME — under a flock, see below.
+  # (Dockerfile.ci), so the lane is one command.
   - name: "deny (cargo-deny: bans, licenses, sources, advisories)"
     depends_on: []
     image: *rust_image
     pull: false
     environment:
-      CARGO_HOME: *cargo_home
+      # NOT the shared *cargo_home: the advisory DB is a git working copy, and
+      # a SHARED one has no safe state after a killed run — pipelines 115/116
+      # were killed mid-fetch and wedged the clone for everyone
+      # ("fatal: shallow file has changed since we read it", still red at
+      # 118/119, fixed only by deleting the directory on the host). A flock
+      # serializes writers but cannot repair a dead writer's half-written
+      # tree. This CARGO_HOME lives inside the step container, so it cannot
+      # outlive the run and no run can inherit another's corruption; the
+      # advisory DB is cloned fresh each time from our forge mirror
+      # (deny.toml [advisories] db-urls — ~6 MB, seconds on the LAN).
+      CARGO_HOME: /tmp/deny-cargo
     commands:
-      # The advisory-db cache in shared CARGO_HOME ends up owned by the test
-      # lane's ci user (uid 1000); cargo-deny shells out to the git CLI as
-      # root, which refuses another user's repo ("dubious ownership"). The
-      # exception is root's global config inside this ephemeral container.
+      # The shared registry/git caches are owned by the test lane's ci user
+      # (uid 1000); cargo-deny shells out to the git CLI as root, which
+      # refuses another user's repo ("dubious ownership"). The exception is
+      # root's global config inside this ephemeral container.
       - git config --global --add safe.directory '*'
-      # flock, because the advisory DB is a GIT WORKING COPY in shared cache,
-      # and unlike the cargo registry nothing locks it. Two pipelines running
-      # concurrently both `git fetch --depth=1` the same shallow clone and one
-      # of them dies on "fatal: shallow file has changed since we read it"
-      # (pipeline #34 — the same merge result was green as #35 when re-run with
-      # an empty queue). The lock is per-host, which is the scope of the race:
-      # /ci-cache is a host mount and both containers see the same inode.
-      # sccache tolerates the same overlap because its entries are
-      # content-addressed; a shallow clone is not.
-      #
+      # Share only what cargo itself locks correctly — the registry/git
+      # download caches, plus the .package-cache lock FILE: a symlink resolves
+      # to the same inode, so cargo's flock still serializes this lane against
+      # every other lane on the host. advisory-dbs is deliberately absent from
+      # this list; it is the state we want per-run.
+      - mkdir -p /tmp/deny-cargo /ci-cache/meridian-rs/cargo/registry /ci-cache/meridian-rs/cargo/git
+      - touch /ci-cache/meridian-rs/cargo/.package-cache /ci-cache/meridian-rs/cargo/.package-cache-mutate
+      - ln -s /ci-cache/meridian-rs/cargo/registry /ci-cache/meridian-rs/cargo/git /ci-cache/meridian-rs/cargo/.package-cache /ci-cache/meridian-rs/cargo/.package-cache-mutate /tmp/deny-cargo/
       # --log-level error: on green this lane printed 2408 lines, 2340 of them
       # inclusion-graph trees for 12 duplicate-crate WARNINGS that gate
       # nothing. -s keeps the per-check tallies, so the warning COUNT still
       # prints — the number survives, its 2340-line graph does not. Any real
       # error still prints in full, and the exit code is untouched.
-      - flock /ci-cache/meridian-rs/advisory-db.lock cargo deny --log-level error check -s
+      - cargo deny --log-level error check -s
 
   # Harness bit-rot catches, not perf gates: one iteration per bench target,
   # then render the live claims table into the CI log. Wall-time numbers are
