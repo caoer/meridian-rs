@@ -413,10 +413,12 @@ pub struct PinFact {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanEdit {
-    /// Append to a section's content end — `ensureTrailingNL` + the
-    /// leading-`\n` discipline applied engine-side. `rev` is the node-grain
-    /// guard token, threaded to `if_node_rev`: an append changes existing
-    /// content and is guarded like every other change.
+    /// Append to a section's subtree end — the § A.3 splice-hygiene
+    /// composition applied engine-side (exactly one blank line at the block
+    /// and section boundaries the splice touches; a list-item payload joins
+    /// a trailing list flush). `rev` is the node-grain guard token, threaded
+    /// to `if_node_rev`: an append changes existing content and is guarded
+    /// like every other change.
     Append {
         hpath: Vec<HpathSeg>,
         body: String,
@@ -435,7 +437,9 @@ pub enum PlanEdit {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rev: Option<String>,
     },
-    /// Whole-section rewrite (destructive — requires `rev`).
+    /// Whole-section rewrite (destructive — requires `rev`). The composed
+    /// content carries the § A.3 hygiene boundaries: one blank line under
+    /// the section's own heading and one before a following heading.
     ReplaceSection {
         hpath: Vec<HpathSeg>,
         body: String,

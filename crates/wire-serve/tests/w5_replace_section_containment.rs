@@ -160,7 +160,7 @@ fn case_01_plain_body_lands_in_section() {
     assert_armed_names_target(&out);
     assert_eq!(
         page_bytes(&dir),
-        "# Page\n\n## Level tests\nplain new body\n## Next section\n"
+        "# Page\n\n## Level tests\n\nplain new body\n\n## Next section\n"
     );
 }
 
@@ -171,7 +171,7 @@ fn case_02_deeper_h3_nests_inside_target() {
     replace(&root, "intro\n\n### Sub\n\nnested\n", &target_rev(&root)).expect("commits");
     assert_eq!(
         page_bytes(&dir),
-        "# Page\n\n## Level tests\nintro\n\n### Sub\n\nnested\n## Next section\n"
+        "# Page\n\n## Level tests\n\nintro\n\n### Sub\n\nnested\n\n## Next section\n"
     );
     // The h3 resolves INSIDE the target's chain.
     let doc = fs::load(&root, std::path::Path::new("page.md")).expect("load");
@@ -194,7 +194,7 @@ fn case_03_skip_level_h4_nests_inside_target() {
     replace(&root, "#### Deep\n\nskip-level\n", &target_rev(&root)).expect("commits");
     assert_eq!(
         page_bytes(&dir),
-        "# Page\n\n## Level tests\n#### Deep\n\nskip-level\n## Next section\n"
+        "# Page\n\n## Level tests\n\n#### Deep\n\nskip-level\n\n## Next section\n"
     );
 }
 
@@ -214,7 +214,7 @@ fn case_04_echo_first_line_normalizes_away() {
     assert_armed_names_target(&out);
     assert_eq!(
         page_bytes(&dir),
-        "# Page\n\n## Level tests\n\nnew body written including the address echo\n## Next section\n",
+        "# Page\n\n## Level tests\n\nnew body written including the address echo\n\n## Next section\n",
         "heading stripped, remainder spliced, Next section untouched"
     );
 }
@@ -285,7 +285,7 @@ fn case_08_fenced_hash_lines_are_contained() {
     .expect("fence content is code — commits");
     assert_eq!(
         page_bytes(&dir),
-        "# Page\n\n## Level tests\n```\n## not a heading\n# nor this\n```\n## Next section\n"
+        "# Page\n\n## Level tests\n\n```\n## not a heading\n# nor this\n```\n\n## Next section\n"
     );
 }
 
@@ -307,7 +307,7 @@ fn case_09_setext_pins_atx_only_dialect_pending_engine_define() {
     .expect("setext is not a dialect heading — splices contained");
     assert_eq!(
         page_bytes(&dir),
-        "# Page\n\n## Level tests\nSetext title\n------------\n\nbody under it\n## Next section\n"
+        "# Page\n\n## Level tests\n\nSetext title\n------------\n\nbody under it\n\n## Next section\n"
     );
     // The engine tree holds NO section named by the setext line.
     let doc = fs::load(&root, std::path::Path::new("page.md")).expect("load");
@@ -328,7 +328,7 @@ fn case_10_empty_body_empties_the_section() {
     replace(&root, "", &target_rev(&root)).expect("commits");
     assert_eq!(
         page_bytes(&dir),
-        "# Page\n\n## Level tests\n## Next section\n"
+        "# Page\n\n## Level tests\n\n## Next section\n"
     );
 }
 
@@ -341,7 +341,7 @@ fn case_11_echo_only_normalizes_to_empty_section() {
         replace(&root, echo_only, &target_rev(&root)).expect("commits");
         assert_eq!(
             page_bytes(&dir),
-            "# Page\n\n## Level tests\n## Next section\n",
+            "# Page\n\n## Level tests\n\n## Next section\n",
             "echo-only payload {echo_only:?} empties the section"
         );
     }
@@ -360,7 +360,7 @@ fn case_12_same_title_deeper_nests_without_normalization() {
     .expect("commits");
     assert_eq!(
         page_bytes(&dir),
-        "# Page\n\n## Level tests\n### Level tests\n\ndeeper same title\n## Next section\n"
+        "# Page\n\n## Level tests\n\n### Level tests\n\ndeeper same title\n\n## Next section\n"
     );
     // Resolves as the target's own child.
     let doc = fs::load(&root, std::path::Path::new("page.md")).expect("load");
