@@ -876,6 +876,12 @@ pub struct ReadAnchor {
     pub anchor: String,
     /// The block-leaf span.
     pub span: Span,
+    /// The block's CAS token (`node_rev` over the leaf span) — §4.2's "toc is
+    /// the complete write kit: … anchors WITH THEIR REVS"; the write kit is
+    /// complete only if a host can thread this to `if_node_rev` without a
+    /// second read (the daemon's under-flock autofill for rev-less block
+    /// writes, W-2).
+    pub rev: NodeRev,
 }
 
 /// One composed-read frontmatter key fact — the map tense of the frontmatter
