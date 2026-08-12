@@ -37,6 +37,11 @@ exceptions = [
 ]
 
 [advisories]
+# Fetch the RustSec DB from our own forge mirror (pull-mirrored from
+# github.com/rustsec/advisory-db, synced hourly), not from GitHub directly:
+# CI clones it fresh per run, so the fetch must be LAN-cheap and must not
+# depend on GitHub rate limits. The mirror is public — no credentials.
+db-urls = ["https://git.0xdao.app/caoer115/advisory-db"]
 # Unmaintained-only advisories, all transitive via policy → starlark 0.14.2
 # (the pinned reference interpreter). Revisit at any starlark bump.
 ignore = [
