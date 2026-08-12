@@ -14,9 +14,13 @@
 //! Laws held here, each pinned by a test in this module or in
 //! `tests/script_op.rs`:
 //!
-//! - **Entry world**: reads serve the pinned entry state — foreign mid-program
-//!   disk changes are invisible; the commit's §5.1 guard runs against the
-//!   LIVE world unchanged, so a moved world refuses and nothing lands.
+//! - **Entry world**: reads of hash-domain members serve the pinned entry
+//!   state — foreign mid-program changes to the domain are invisible; the
+//!   commit's §5.1 guard runs against the LIVE world unchanged, so a moved
+//!   world refuses and nothing lands. An out-of-domain path stays addressable
+//!   (§12.1: hash domain ⊂ addressable domain) and serves from a live
+//!   single-file disk load, outside the pin exactly as the fingerprint never
+//!   covered its bytes — the wire lane serves what the CLI lane serves.
 //! - **Read-your-own-writes**: a read of a target the program itself armed
 //!   serves the ARMED content and that content's own rev.
 //! - **Entry-rev threading**: the license is the recording's, the value is
@@ -186,10 +190,12 @@ fn serve(
         args: request.args.clone(),
         files: request.files.clone(),
     };
+    let ws_root = fs::WorkspaceRoot(ws.to_path_buf());
     let mut eval = {
         let mut host = EntryWorldHost {
             world: Arc::clone(&world),
             root: wire::Root(entry.clone()),
+            ws: fs::WorkspaceRoot(ws.to_path_buf()),
             deadline,
             actor: request.actor.clone().unwrap_or_default(),
             overlay: None,
@@ -208,6 +214,7 @@ fn serve(
         &eval.armed,
         &eval.recording,
         &world,
+        &ws_root,
         &wire::Root(entry.clone()),
     );
 
@@ -290,7 +297,17 @@ fn commit(
     let mints = registry.read_mints(ws);
     let ring = registry.ring(ws);
     let ws_root = fs::WorkspaceRoot(ws.to_path_buf());
-    match wire_serve::write::splice(&ws_root, Some(&*ring), &args, &[], Some(&mints)) {
+    // The splice is a function call here, so a lost answer cannot happen —
+    // except as a panic mid-splice, which is the same indeterminacy: caught,
+    // spoken as `commit_unknown`, never an unwind through the connection
+    // thread (`docs/run-plane.md` § A controlled failure exit SPEAKS).
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        wire_serve::write::splice(&ws_root, Some(&*ring), &args, &[], Some(&mints))
+    }));
+    let Ok(outcome) = caught else {
+        return CommitLeg::Unknown(lost_commit(request.dry));
+    };
+    match outcome {
         Ok(out) => {
             if let Some(frame) = out.committed {
                 ring.advance(frame);
@@ -311,6 +328,26 @@ fn commit(
             }
         }
     }
+}
+
+/// The engine-minted refusal for a commit whose outcome is NOT KNOWN — the
+/// in-process analog of a lost answer (the splice panicked mid-flight). The
+/// class splits on `dry` exactly as the CLI lane's `lost_answer` does.
+fn lost_commit(dry: bool) -> Refusal {
+    if dry {
+        return Refusal::minted(
+            Recovery::Retry,
+            "the commit leg panicked mid-splice. This was a DRY run — it rehearses everything \
+             except disk, so nothing could have been committed and the workspace is unchanged. \
+             retry: re-run the same script, a rehearsal writes nothing",
+        );
+    }
+    Refusal::minted(
+        Recovery::Resync,
+        "the commit leg panicked mid-splice. The splice was ISSUED, so whether the workspace \
+         carries this run is UNKNOWN. resync: re-read and re-plan, never resend, because a \
+         resend writes twice",
+    )
 }
 
 /// The §4.4 splice response body, serialized in the v3 vocabulary — the SAME
@@ -379,6 +416,7 @@ fn thread_entry(
     armed: &[ArmedEdit],
     recording: &ScriptRecording,
     world: &WorkspaceEngine,
+    ws: &fs::WorkspaceRoot,
     root: &wire::Root,
 ) -> Vec<ArmedEdit> {
     armed
@@ -394,7 +432,7 @@ fn thread_entry(
                         .iter()
                         .any(|r| r.path == arm.path && r.section.is_none());
                     if licensed {
-                        *rev = entry_toc(world, root, &arm.path).map(|facts| facts.rev);
+                        *rev = entry_toc(world, ws, root, &arm.path).map(|facts| facts.rev);
                     }
                 }
                 PlanEdit::Append {
@@ -418,7 +456,7 @@ fn thread_entry(
                         }
                     });
                     if licensed {
-                        *rev = entry_toc(world, root, &arm.path).and_then(|facts| {
+                        *rev = entry_toc(world, ws, root, &arm.path).and_then(|facts| {
                             facts
                                 .toc
                                 .iter()
@@ -436,12 +474,23 @@ fn thread_entry(
 
 /// The §4.1 toc face of `path` at the ENTRY state — the one builder threading
 /// and the host share, so a threaded token equals what an entry read served,
-/// by construction.
-fn entry_toc(world: &WorkspaceEngine, root: &wire::Root, path: &str) -> Option<TocFacts> {
-    world
-        .docs
-        .get(path)
-        .map(|doc| toc_facts_of(doc, path, root))
+/// by construction. An out-of-domain target values from the live disk file
+/// (§12.1: a guarded write's CAS token for an out-of-domain page is mintable
+/// at the read door like any other) — the same single-file load `doc_for`
+/// serves its reads from, and the same file the commit's own guards resolve
+/// against.
+fn entry_toc(
+    world: &WorkspaceEngine,
+    ws: &fs::WorkspaceRoot,
+    root: &wire::Root,
+    path: &str,
+) -> Option<TocFacts> {
+    if let Some(doc) = world.docs.get(path) {
+        return Some(toc_facts_of(doc, path, root));
+    }
+    wire_serve::load_doc(ws, &wire::Path(path.to_owned()))
+        .ok()
+        .map(|doc| toc_facts_of(&doc, path, root))
 }
 
 /// Build the script-face [`TocFacts`] from one document — the daemon-side twin
@@ -490,10 +539,14 @@ fn toc_facts_of(doc: &model::Document, path: &str, root: &wire::Root) -> TocFact
 }
 
 /// The entry world plus the program's own armed overlay — the § A.7 read
-/// seam. Serves at memory speed: no locks, no passes, no disk.
+/// seam. Domain members serve at memory speed: no locks, no passes, no disk.
+/// An out-of-domain path serves from a live single-file disk load (§12.1),
+/// the one read that leaves memory.
 struct EntryWorldHost {
     world: Arc<WorkspaceEngine>,
     root: wire::Root,
+    /// The workspace directory — the §12.1 fallback loads from it.
+    ws: fs::WorkspaceRoot,
     deadline: Instant,
     actor: String,
     /// The overlay document for the ONE armed content path, cached by armed
@@ -516,16 +569,42 @@ impl EntryWorldHost {
         Ok(())
     }
 
-    /// The document a read of `path` serves: the entry doc, or — when the
-    /// program itself armed edits on `path` — the entry doc with those edits
-    /// applied, in arm order (read-your-own-writes). What you read is what is
-    /// hashed: the overlay document's revs are minted from the overlay bytes.
+    /// Resolve the ENTRY document for `path`: the pinned corpus first, the
+    /// unserved condition as a fault, then the §12.1 addressability fallback —
+    /// a real file under the root but outside the hash domain serves from a
+    /// single-file LIVE disk load (the same `load_doc` the daemon's read doors
+    /// and the write path run, so all lanes agree on what a path serves).
+    /// Out-of-domain reads sit outside the pin and outside the stand-still
+    /// guarantee exactly as the fingerprint never covered them.
+    fn entry_doc(
+        &self,
+        path: &str,
+        fault: &dyn Fn(String) -> ReadFault,
+    ) -> Result<std::borrow::Cow<'_, model::Document>, ReadFault> {
+        if let Some(doc) = self.world.docs.get(path) {
+            return Ok(std::borrow::Cow::Borrowed(doc));
+        }
+        if let Some(condition) = self.world.unserved.get(path) {
+            return Err(fault(format!(
+                "the corpus cannot serve this member: {condition}"
+            )));
+        }
+        wire_serve::load_doc(&self.ws, &wire::Path(path.to_owned()))
+            .map(std::borrow::Cow::Owned)
+            .map_err(|e| fault(error_text(&e)))
+    }
+
+    /// The document a read of `path` serves: the entry doc (or its §12.1
+    /// disk-load fallback), or — when the program itself armed edits on
+    /// `path` — that base with those edits applied, in arm order
+    /// (read-your-own-writes). What you read is what is hashed: the overlay
+    /// document's revs are minted from the overlay bytes.
     fn doc_for(
         &mut self,
         path: &str,
         section: Option<&str>,
         armed: &[ArmedEdit],
-    ) -> Result<&model::Document, ReadFault> {
+    ) -> Result<std::borrow::Cow<'_, model::Document>, ReadFault> {
         let fault = |reason: String| ReadFault {
             path: path.to_owned(),
             section: section.map(ToOwned::to_owned),
@@ -533,28 +612,37 @@ impl EntryWorldHost {
         };
         let rows: Vec<&ArmedEdit> = armed.iter().filter(|a| a.path == path).collect();
         if rows.is_empty() {
-            return self.world.docs.get(path).ok_or_else(|| {
-                fault(format!(
-                    "no such file in the entry world: {path} — absent at entry, or outside \
-                     the hash domain the entry pass proved"
-                ))
-            });
+            return self.entry_doc(path, &fault);
         }
         let cached = self
             .overlay
             .as_ref()
             .is_some_and(|(p, count, _)| p == path && *count == rows.len());
         if !cached {
-            let base = self.world.docs.get(path).ok_or_else(|| {
-                fault(format!(
-                    "put() armed edits on {path}, but the entry world holds no such file — \
-                     the commit would refuse file_not_found"
-                ))
-            })?;
-            let doc = overlay_doc(base, path, &rows).map_err(fault)?;
+            let base = self.entry_doc(path, &fault)?;
+            let doc = overlay_doc(&base, path, &rows).map_err(fault)?;
             self.overlay = Some((path.to_owned(), rows.len(), doc));
         }
-        Ok(&self.overlay.as_ref().expect("just cached").2)
+        Ok(std::borrow::Cow::Borrowed(
+            &self.overlay.as_ref().expect("just cached").2,
+        ))
+    }
+}
+
+/// Render a §8 error body the way this lane's read faults read: the message
+/// when the frame carries one (load refusals open with their own code), else
+/// the code token with the cause when one exists.
+fn error_text(error: &ErrorBody) -> String {
+    if let Some(message) = &error.message {
+        return message.clone();
+    }
+    let code = serde_json::to_value(error.code)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_else(|| format!("{:?}", error.code));
+    match &error.cause {
+        Some(cause) => format!("{code}: {cause}"),
+        None => code,
     }
 }
 
@@ -587,7 +675,7 @@ impl ScriptHost for EntryWorldHost {
         self.within_deadline(path, None)?;
         let root = self.root.clone();
         let doc = self.doc_for(path, None, armed)?;
-        Ok(toc_facts_of(doc, path, &root))
+        Ok(toc_facts_of(&doc, path, &root))
     }
 
     fn cat(
@@ -616,7 +704,7 @@ impl ScriptHost for EntryWorldHost {
             }
         };
         let doc = self.doc_for(path, Some(section), armed)?;
-        match wire_serve::read::cat(doc, Some(sec)) {
+        match wire_serve::read::cat(&doc, Some(sec)) {
             Ok(ResponseBody::Cat {
                 content, node_rev, ..
             }) => Ok(SecFacts {
@@ -681,11 +769,13 @@ mod tests {
     fn host_of(
         world: &Arc<WorkspaceEngine>,
         root: &wire::Root,
+        ws: &Path,
         deadline: Instant,
     ) -> EntryWorldHost {
         EntryWorldHost {
             world: Arc::clone(world),
             root: root.clone(),
+            ws: fs::WorkspaceRoot(ws.to_path_buf()),
             deadline,
             actor: String::new(),
             overlay: None,
@@ -707,7 +797,7 @@ mod tests {
         write(ws.join("doc.md"), DOC.replace("open", "parked")).unwrap();
 
         // Read half: the entry world serves the ENTRY bytes.
-        let mut host = host_of(&world, &root, Instant::now() + Duration::from_secs(7));
+        let mut host = host_of(&world, &root, &ws, Instant::now() + Duration::from_secs(7));
         let face = host.toc("doc.md", &[]).expect("entry world serves");
         assert_eq!(
             face.fm.get("status").map(String::as_str),
@@ -759,7 +849,7 @@ mod tests {
         let registry = registry_in(tmp.path());
         let ws = seeded_ws(tmp.path());
         let (world, root) = pinned_world(&registry, &ws);
-        let entry_rev = entry_toc(&world, &root, "doc.md")
+        let entry_rev = entry_toc(&world, &fs::WorkspaceRoot(ws.clone()), &root, "doc.md")
             .expect("doc in world")
             .rev;
 
@@ -789,7 +879,13 @@ mod tests {
             }],
         };
 
-        let threaded = thread_entry(&armed, &overlay_read, &world, &root);
+        let threaded = thread_entry(
+            &armed,
+            &overlay_read,
+            &world,
+            &fs::WorkspaceRoot(ws.clone()),
+            &root,
+        );
         let PlanEdit::SetProperty { rev, .. } = &threaded[0].edit else {
             panic!("shape preserved");
         };
@@ -807,6 +903,7 @@ mod tests {
                 reads: Vec::new(),
             },
             &world,
+            &fs::WorkspaceRoot(ws.clone()),
             &root,
         );
         let PlanEdit::SetProperty { rev, .. } = &unlicensed[0].edit else {
@@ -831,12 +928,126 @@ mod tests {
         let lapsed = Instant::now()
             .checked_sub(Duration::from_millis(1))
             .expect("the clock is past its first millisecond");
-        let mut host = host_of(&world, &root, lapsed);
+        let mut host = host_of(&world, &root, &ws, lapsed);
         let fault = host.toc("doc.md", &[]).expect_err("lapsed clock refuses");
         assert!(
             fault.reason.contains("wall clock elapsed"),
             "the refusal names the budget: {}",
             fault.reason
+        );
+    }
+
+    /// The commit leg's panic wall (review B1): a panicked splice is the
+    /// in-process analog of a lost answer — the leg is [`CommitLeg::Unknown`],
+    /// and the assembled trace SPEAKS: `commit_unknown: true` beside a
+    /// refusal-shaped fault whose class splits on `dry` (resync live — the
+    /// splice was ISSUED, so never resend; retry under dry — a rehearsal
+    /// writes nothing). Never a plain refusal claiming nothing was applied:
+    /// that is the one fabrication the marker exists to prevent. The panic
+    /// itself has no honest trigger through the public op (the splice is
+    /// refusal-shaped on every input), so the gate pins the leg the
+    /// `catch_unwind` in `commit` feeds and the trace it assembles to.
+    #[test]
+    fn a_panicked_splice_speaks_commit_unknown_never_a_plain_refusal() {
+        let eval = effects::ScriptEval {
+            outcome: Ok(effects::ScriptFacts {
+                bindings: std::collections::BTreeMap::new(),
+            }),
+            armed: vec![ArmedEdit {
+                path: "doc.md".to_owned(),
+                edit: PlanEdit::SetProperty {
+                    key: "status".to_owned(),
+                    value: "done".to_owned(),
+                    rev: None,
+                },
+                line: 2,
+                depth: 0,
+            }],
+            recording: ScriptRecording {
+                actor: String::new(),
+                reads: Vec::new(),
+            },
+            telemetry: effects::ScriptTelemetry {
+                fuel_used: 0,
+                mem_used: 0,
+                reads_used: 0,
+                wall_ms: 0,
+            },
+        };
+
+        let live = ScriptTrace::assemble("entry-fp", &eval, CommitLeg::Unknown(lost_commit(false)));
+        assert!(live.commit_unknown, "the marker is the whole point");
+        assert_eq!(live.outcome, effects::trace::ScriptOutcome::Refused);
+        assert!(live.commit.is_none(), "no answer exists to embed");
+        let json = serde_json::to_value(&live).expect("a trace serializes");
+        assert_eq!(
+            json["commit_unknown"],
+            Value::Bool(true),
+            "the marker crosses the wire, never elided as a default"
+        );
+        let fault = live.fault.expect("refusal-shaped fault");
+        assert_eq!(
+            fault.recovery,
+            Some(Recovery::Resync),
+            "issued ⇒ resync, never resend"
+        );
+        assert!(
+            fault.reason.contains("UNKNOWN"),
+            "the reason states the indeterminacy: {}",
+            fault.reason
+        );
+
+        let dry = ScriptTrace::assemble("entry-fp", &eval, CommitLeg::Unknown(lost_commit(true)));
+        assert!(dry.commit_unknown);
+        assert_eq!(
+            dry.fault.expect("refusal-shaped fault").recovery,
+            Some(Recovery::Retry),
+            "a rehearsal writes nothing, so re-running is safe"
+        );
+    }
+
+    /// The §12.1 seam of the entry-world law: an out-of-domain path (here a
+    /// dot-directory page the default ignore excludes) is ADDRESSABLE and
+    /// LIVE — it serves from a single-file disk load on every read, so a
+    /// foreign mid-program change to it IS visible, exactly as the entry
+    /// fingerprint never covered its bytes. The wire lane serves what the
+    /// CLI lane serves (ruled 2026-08-12: "mrd mcp should be same as cli").
+    #[test]
+    fn an_out_of_domain_path_serves_live_from_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = registry_in(tmp.path());
+        let ws = seeded_ws(tmp.path());
+        create_dir_all(ws.join(".obsidian")).unwrap();
+        write(
+            ws.join(".obsidian/hidden.md"),
+            "---\nstatus: open\n---\n# Hidden\n",
+        )
+        .unwrap();
+        let (world, root) = pinned_world(&registry, &ws);
+        assert!(
+            !world.docs.contains_key(".obsidian/hidden.md"),
+            "premise: the dot-directory page is outside the hash domain"
+        );
+
+        let mut host = host_of(&world, &root, &ws, Instant::now() + Duration::from_secs(7));
+        let face = host
+            .toc(".obsidian/hidden.md", &[])
+            .expect("§12.1: addressable by explicit path");
+        assert_eq!(face.fm.get("status").map(String::as_str), Some("open"));
+
+        // The stand-still guarantee does not extend outside the domain: a
+        // foreign edit BETWEEN reads is visible, because each read is a live
+        // single-file load the pin never covered.
+        write(
+            ws.join(".obsidian/hidden.md"),
+            "---\nstatus: parked\n---\n# Hidden\n",
+        )
+        .unwrap();
+        let moved = host.toc(".obsidian/hidden.md", &[]).expect("still serves");
+        assert_eq!(
+            moved.fm.get("status").map(String::as_str),
+            Some("parked"),
+            "out-of-domain reads are LIVE — the pin never covered this file"
         );
     }
 }
