@@ -812,6 +812,17 @@ fn handle_line(
         // `hello` negotiates rev; response shaped for it. No U7 duration
         // (measure point is `dispatch_read` alone).
         Some("hello") => wire_line(&hello(registry, attached, rev, &obj, build_sha), *rev, None),
+        // § A.7 in-process script submission: routed here, not through
+        // `serve_wire`, because its SUCCESS body is the run-plane ScriptTrace
+        // (which embeds the §4.4 splice response verbatim) — not a
+        // `ResponseBody` variant. Error frames leave through the ordinary
+        // renderer inside. The v3 re-key runs first, as on every other op.
+        Some("script") => {
+            if *rev == Rev::V3 {
+                wire_serve::rev::rename_request(&mut obj);
+            }
+            crate::script_op::serve_line(registry, attached.as_deref(), &obj, *rev)
+        }
         _ => {
             // v3: re-key to v2 form for the strict decoder. v2 spelling / v2
             // connection pass through untouched.
@@ -828,7 +839,7 @@ fn handle_line(
 /// Render one wire response line, shaped per negotiated rev.
 /// v2: typed `wire::Response` (frozen). v3: project `root` → `fingerprint`,
 /// attach `meta: {duration_us}` for dispatched ops (U7, engine work only).
-fn wire_line(response: &wire::Response, rev: Rev, duration_us: Option<u64>) -> String {
+pub(crate) fn wire_line(response: &wire::Response, rev: Rev, duration_us: Option<u64>) -> String {
     let mut out = if rev == Rev::V3 {
         let mut v = serde_json::to_value(response).expect("wire response serializes");
         wire_serve::rev::project_response(&mut v);
@@ -1280,6 +1291,10 @@ fn dispatch_read(
         // `Op::Mounts` is unreachable here (routed before the binding guard);
         // it rides this arm for exhaustiveness only.
         Op::Hello { .. }
+        // § A.7 `script` is served by `script_op::serve_line`, routed at
+        // `handle_line`; an op that reaches THIS dispatch is a v2 session's —
+        // or a future mis-route's — and answers the discovery-honesty word.
+        | Op::Script { .. }
         | Op::Read { .. }
         | Op::CheckWrite { .. }
         | Op::Create { .. }

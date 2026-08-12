@@ -43,7 +43,7 @@
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use effects::ArmedEdit;
+use crate::ArmedEdit;
 use wire::PlanEdit;
 
 /// The digest's domain tag — the literal prefix every value this function

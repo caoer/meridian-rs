@@ -963,6 +963,95 @@ fn the_pin_primitive_rejects_a_superset() {
 }
 
 // ---------------------------------------------------------------------------
+// script (§ A.7) — the trace body, its row classes, and the embedded leg
+// ---------------------------------------------------------------------------
+
+/// The committed script body: the `ScriptTrace` as served, with the §4.4 splice
+/// response EMBEDDED verbatim — so the embedded leg's key set is the splice
+/// body's own (minus `receipt`: none was named), and the fingerprint keys
+/// inside it ride the v3 vocabulary.
+#[test]
+fn the_script_body_trace_rows_and_embedded_leg_key_sets_are_pinned() {
+    let (fx, mut conn) = Fixture::start();
+    // An append rather than a props write: the fixture's plan.md carries no
+    // frontmatter, and the plan lowering refuses a property with nothing to
+    // anchor it — the section append is the corpus's own committed shape.
+    let got = conn.call(&json!({
+        "id": 41, "op": "script",
+        "source": "t = read(\"plan.md\")\nput(\"plan.md\", section=\"Goals/Q4\", append=\"- pinned item\\n\")\n",
+        "actor": "agent:pin", "now": "2026-08-12T00:00:00Z",
+    }));
+    assert_eq!(got["ok"], json!(true), "the script commits: {got}");
+    let body = &got["body"];
+    assert_eq!(body["outcome"], json!("committed"), "{body}");
+    pin_keys(
+        body,
+        &[
+            "armed_digest",
+            "commit",
+            "entry_fingerprint",
+            "outcome",
+            "telemetry",
+            "trace",
+        ],
+        "script body (committed)",
+    );
+    pin_keys(
+        &body["telemetry"],
+        &["fuel_used", "mem_used", "reads_used", "wall_ms"],
+        "script telemetry",
+    );
+    let rows = body["trace"].as_array().expect("trace rows");
+    let echo = rows
+        .iter()
+        .find(|r| r["kind"] == json!("echo"))
+        .expect("the top-level read echoes");
+    pin_keys(echo, &["face", "kind", "line", "path"], "script echo row");
+    let armed = rows
+        .iter()
+        .find(|r| r["kind"] == json!("armed"))
+        .expect("the put arms");
+    pin_keys(
+        armed,
+        &["committed", "depth", "edit", "kind", "line", "path"],
+        "script armed row",
+    );
+    // The embedded commit leg IS the §4.4 splice response: same key set as
+    // the splice pin above (no `receipt` — none was named), v3 fingerprint
+    // spelling inside the embedded bytes.
+    pin_keys(
+        &body["commit"],
+        &[
+            "armed",
+            "fingerprint_after",
+            "fingerprint_before",
+            "seq",
+            "verdicts",
+        ],
+        "script embedded commit leg",
+    );
+    fx.shutdown();
+}
+
+/// The read-class script body: no commit leg, no armed digest, no fault — the
+/// key set is exactly the premise triple plus the trace.
+#[test]
+fn the_script_read_class_body_key_set_is_pinned() {
+    let (fx, mut conn) = Fixture::start();
+    let got = conn.call(&json!({
+        "id": 42, "op": "script", "source": "t = read(\"plan.md\")\n",
+    }));
+    assert_eq!(got["ok"], json!(true), "{got}");
+    assert_eq!(got["body"]["outcome"], json!("no_effect"));
+    pin_keys(
+        &got["body"],
+        &["entry_fingerprint", "outcome", "telemetry", "trace"],
+        "script body (read-class)",
+    );
+    fx.shutdown();
+}
+
+// ---------------------------------------------------------------------------
 // § Deliberate gaps
 // ---------------------------------------------------------------------------
 //

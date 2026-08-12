@@ -213,7 +213,7 @@ Correlation: one response per request, id echoed by value; in-flight uniqueness 
   "fingerprint":"b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9"}}
 ```
 
-`caps` is the complete set — no version sniffing, ever. The example shows the sixteen-cap base set (the v2 spelling is byte-identical minus the fingerprint renames); a negotiated v3 session is pushed nine more on top — `read`, `check_write`, `splice.plan_edits`, `splice.pin`, `splice.create_rev`, `create`, `mounts`, `mounts.primary`, `hello.identity` (§A.3/§A.5) — twenty-five caps in all. Field-only amendments ship as dotted `op.field` strings (`mounts.primary` is one: the mounts row's declared-primary designation, §A.5). `fingerprint` in the hello body is optional (the engine may not have walked yet); when present it is the first ambient fingerprint.
+`caps` is the complete set — no version sniffing, ever. The example shows the sixteen-cap base set (the v2 spelling is byte-identical minus the fingerprint renames); a negotiated v3 session is pushed ten more on top — `read`, `check_write`, `splice.plan_edits`, `splice.pin`, `splice.create_rev`, `create`, `mounts`, `mounts.primary`, `hello.identity`, `script` (§A.3/§A.5/§A.7) — twenty-six caps in all. Field-only amendments ship as dotted `op.field` strings (`mounts.primary` is one: the mounts row's declared-primary designation, §A.5). `fingerprint` in the hello body is optional (the engine may not have walked yet); when present it is the first ambient fingerprint.
 
 **Rev-presence law:** `node_rev` is MUST on every `toc`/`cat`/`extract` node whenever `splice ∈ caps`.
 
@@ -234,7 +234,7 @@ Consequences are threaded at §3.1 (pipe debuggability restated at the socket), 
 
 ## §4 The op surface
 
-Eleven ops in this table (the § A.3 standing additions `read` and `create` land on top, not re-tabled here). The five-verb interface maps onto the original ten 1:1 (§4.8). Read ops are classified by the wire-op criterion: feeds-an-action → wire fact op; feeds-orientation → dashboard-only, NOT on this wire.
+Eleven ops in this table (the § A.3 standing additions `read` and `create`, and the § A.7 `script` op, land on top, not re-tabled here). The five-verb interface maps onto the original ten 1:1 (§4.8). Read ops are classified by the wire-op criterion: feeds-an-action → wire fact op; feeds-orientation → dashboard-only, NOT on this wire.
 
 | Op | Rung (panel ladder) | Class |
 |---|---|---|
@@ -1747,6 +1747,138 @@ what empty means; they may not disagree about which SPELLING of it is real.
 
 Deliberately not empty: whitespace, `0`, `false`, an empty list. Those are
 values a caller authored. This is a predicate about absence, never truthiness.
+
+### A.7 `script` — in-process script submission (docs-first, 2026-08-12, phase-2 script-plane ruling)
+
+*The run plane's script entry (`run-plane.md` § The script entry) becomes
+submittable over the wire: one request carries the whole program, the daemon
+evaluates it in-process, and the response body is the trace. Ruled 2026-08-12
+(phase-2 script plane): in-process Starlark evaluation in the engine daemon
+plus a wire script-submission verb, superseding subprocess-per-call as
+architecture. This section is the op's contract. The entry's own semantics —
+budgets, the trace shape, echo/quiet, the armed law, the entry-world read
+law — stay normative in `run-plane.md` and are not restated here. Like § A.5,
+this section lands before its code: strict decode, dispatch, caps push, and
+tests are the implementation card's.*
+
+**Request** — the entry's own inputs, as one frame on the bound workspace
+(the §3.2 binding guard applies exactly as at every other op):
+
+```json
+{"id":7,"op":"script",
+ "source":"card = read(\"notes/plan.md\")\n",
+ "args":{"page":"notes/plan.md"},
+ "files":["notes/plan.md"],
+ "actor":"agent:b0864fb2","now":"2026-07-18T20:31:04Z",
+ "receipt":{"path":"receipts/2026-07-18.md","anchor":"r-000099"},
+ "dry":false,
+ "if_fingerprint":"b3:…",
+ "expect_armed":"armed-set-path-edit:sha256:…"}
+```
+
+- `source` is required; every other field is optional, exactly as at the CLI
+  entry. Strict decode at every grain (§3.2's wall).
+- `args` is the inert dict (string keys, string values); `files[]` is paths
+  only — the wire still serves no corpus-enumeration op, so enumeration stays
+  the host's. The daemon sorts `files[]` after decode; order on the wire is
+  not meaning.
+- `actor`/`now` ride per §9 and thread to the commit splice verbatim; absent
+  stays absent.
+- `dry`, `if_fingerprint`, `expect_armed`, and `receipt` carry the CLI
+  entry's own semantics unchanged: rehearsal; pre-eval fast-fail plus §5.1
+  commit authority; the pre-splice armed-set gate; the §6 receipt address.
+  The host's arm→commit two-call sequencing (`run-plane.md` § the
+  execution-model seam) rides this op as two ordinary calls — arm = `dry`,
+  commit = `if_fingerprint` + `expect_armed` — with zero new mechanism.
+- There is no budgets field. The CLI entry exposes none either; the entry's
+  limits are the daemon's own (`EvalLimits` + the wall clock). If a lane ever
+  needs an override, it arrives as a dotted `script.<field>` cap through the
+  §3.2 evolution law, not by loosening this shape now.
+
+**Response** — `ok:true` with the run-plane `ScriptTrace` as the body,
+verbatim, whenever the entry RAN. A fault, a refusal, and a conflict are
+TRACES — the trace's own closed vocabulary
+(`committed | no_effect | conflict | fault | refused`) — never §8 error
+frames. §8 frames answer only what never reached the entry:
+
+| Frame | When |
+|---|---|
+| `bad_request` | strict-decode failure, no workspace bound |
+| `unknown_op` | a v2 session — the op is v3-only at dispatch |
+| `io_error` / env class | the entry pass itself failed before an entry fingerprint existed |
+
+That last row is the wire tense of the run plane's absence contract: an
+`ok:false` frame from this op means the entry never began — nothing was
+armed, no splice was issued, the workspace is unchanged. Once a trace
+answers, every claim in it is the engine's own. §8.1 (transport loss) binds
+this op's clients unchanged.
+
+**Dispatch:** v3-only; op-grain cap `script` (the `create`/`mounts`
+precedent — no dotted fields at birth). A v2 session answers `unknown_op`;
+the frozen v2 caps stay byte-identical. §3.2's v3 push is ten caps,
+twenty-six in all.
+
+**The entry world (this op's read law, normative detail in
+`run-plane.md`).** The currency pass runs ONCE, at entry: the daemon proves
+the corpus current — the same corpus-grain proof every read op runs, Law
+A-3c's scope unchanged, moved in time — and pins the entry fingerprint. The
+program's reads serve from that pinned entry state at memory speed: zero
+wire trips, zero re-walks, no doc-grain narrowing. Read-your-own-writes: a
+read of a target the program itself armed serves the ARMED content (the
+entry bytes with the program's own armed edits applied, in arm order) and
+that content's own rev — what you read is exactly what is hashed (§4.2), on
+the overlay too. Foreign mid-program changes are INVISIBLE to reads **within
+the hash domain — the surface the entry fingerprint covers**: disk moves
+only at commit, and the commit's §5.1 guards run against the LIVE world
+unchanged — `if_fingerprint` = the entry fingerprint refuses
+`fingerprint_mismatch` when anything foreign landed. Every read of a domain
+member in one attempt is therefore consistent with exactly one fingerprint
+BY CONSTRUCTION, which is what the wire-client lane's composed-read bracket
+exists to approximate across trips. **Out-of-domain paths stay addressable
+and stay LIVE (§12.1: hash domain ⊂ addressable domain, one answer at every
+door):** a real file under the root that the domain does not hold serves
+from a single-file disk load on this lane exactly as on the wire-client
+lane, so a script moving lanes does not regress — and the stand-still
+guarantee does not extend to it, exactly as the entry fingerprint never
+covered its bytes.
+
+**Not the banned snapshot.** The entry world is attempt-scoped: born at
+entry, dropped when the attempt answers, never retained across attempts,
+never shared across connections, no version history, no as-of parameter.
+The daemon still holds no MVCC. What `run-plane.md` bans is daemon-held
+state ACROSS attempts; this is one attempt reading the one picture its own
+entry pass took, with the commit CAS as the only write authority.
+
+**Containment (the eval boundary).** The kernel runs inside the daemon
+under the entry's own limits — fuel, memory cap, call depth, source bytes,
+the read and armed-edit ceilings — and a daemon-enforced wall clock checked
+at entry, at every read builtin, and pre-commit. `catch_unwind` seals the
+eval boundary: a panic inside evaluation answers a `fault` trace and the
+daemon serves its next frame. The daemon holds no workspace lock during
+evaluation — the entry pass and the commit each take the serve path's own
+locking — so a long evaluation never parks another connection's op.
+
+**Zero delta everywhere else.** Every §4 op, every § A.3/§ A.5 addition,
+every v2 byte: unchanged. The CLI subprocess entry (`mrd script`,
+wire-client mode) stays functional and byte-compatible — its removal is a
+separate ruling this section does not make. The 0025 socket law (§ A.3) is
+untouched: this op rides the same one door behind the same connect-time
+identity comparison, and the CLI lanes' skew refusals are unaffected.
+Because this lane's commit is issued daemon-side, its landed change advances
+the delta ring like any wire splice — §18 row 12's CLI-lane delta gap does
+not extend to this op.
+
+**The 08-06 QUEUED question, answered.** The queued decision
+`wall-clock-a7-doc-grain-serve-QUEUED.md` (session `08-06-triple-impl-wave1`)
+asked whether the corpus-scoped refusal at the non-script door should become
+amendable contract, unlocking doc-grain O(1) serves. Disposition:
+**SUPERSEDED** by this section plus the entry-world ruling. The flat-curve
+mechanism enters as corpus-grain-at-entry — the pass runs once, the
+program's reads serve O(1) from the pinned root — NOT as doc-grain per-read
+narrowing; the corpus-grain proof is kept and moved to entry; the non-script
+doors' refusal scope is untouched. It enters via the authorized amendment
+route as its own change with its own gates, inheriting nothing from the
+race — exactly the port plan that file names.
 
 ---
 

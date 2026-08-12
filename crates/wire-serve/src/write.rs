@@ -3019,6 +3019,40 @@ fn lower_fm_value_scope(
     })
 }
 
+/// The § A.7 overlay candidate: apply plan-level edits to `doc` IN MEMORY —
+/// lower → convert → validate → candidate, one reparse, no flock, no disk, no
+/// receipt, no gate. The read-your-own-writes serve of the in-process script
+/// lane builds its overlay document here so the overlay applies edits with
+/// exactly the machinery the commit will apply them with: a set that cannot
+/// apply refuses here in the same laws the commit would refuse in.
+///
+/// Deliberately NOT the write path: no guard demand (the overlay is a read
+/// serve of the program's own arms; the commit's `guard_batch` still runs at
+/// the real splice), no armed-plane gate, no verdicts — those bind writes,
+/// and nothing here lands.
+///
+/// # Errors
+/// The first refusing law, as its ordinary wire error body.
+pub fn overlay_candidate(
+    doc: &model::Document,
+    path: &Path,
+    plan_edits: &[wire::PlanEdit],
+) -> Result<model::Document, Box<ErrorBody>> {
+    let lowered = crate::plan::lower(doc, plan_edits)?;
+    let (model_edits, _before) = model_edits_and_before_facts(doc, &lowered.edits, path)?;
+    let batch = model::SpliceRequest {
+        if_root: None,
+        edits: model_edits,
+        engine: None,
+    };
+    match model::validate_batch(doc, None, &batch, None) {
+        model::SpliceVerdict::Validated(sealed) => {
+            Ok(model::candidate_of_batch(&path.0, &doc.raw, &sealed).into_document())
+        }
+        refused => Err(verdict_to_wire(&refused, &lowered.edits, doc, path)),
+    }
+}
+
 fn model_edits_and_before_facts(
     doc: &model::Document,
     edits: &[Edit],

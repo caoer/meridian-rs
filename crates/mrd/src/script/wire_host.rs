@@ -241,7 +241,10 @@ impl<'d> WireHost<'d> {
 }
 
 impl ScriptHost for WireHost<'_> {
-    fn toc(&mut self, path: &str) -> Result<TocFacts, ReadFault> {
+    // `_armed` ignored on purpose: this lane's reads are LIVE (run-plane § the
+    // entry world names the lane split) — the wire client serves disk truth,
+    // and read-your-own-writes belongs to the in-process entry world only.
+    fn toc(&mut self, path: &str, _armed: &[effects::ArmedEdit]) -> Result<TocFacts, ReadFault> {
         let fault = |reason: String| ReadFault {
             path: path.to_owned(),
             section: None,
@@ -326,7 +329,12 @@ impl ScriptHost for WireHost<'_> {
         })
     }
 
-    fn cat(&mut self, path: &str, section: &str) -> Result<SecFacts, ReadFault> {
+    fn cat(
+        &mut self,
+        path: &str,
+        section: &str,
+        _armed: &[effects::ArmedEdit],
+    ) -> Result<SecFacts, ReadFault> {
         let fault = |reason: String| ReadFault {
             path: path.to_owned(),
             section: Some(section.to_owned()),
@@ -520,8 +528,10 @@ mod tests {
                 "zt".to_owned(),
                 Instant::now() + Duration::from_secs(30),
             );
-            host.toc(PAGE).expect("the control's first read answers");
-            host.toc(PAGE).expect("the control's second read answers")
+            host.toc(PAGE, &[])
+                .expect("the control's first read answers");
+            host.toc(PAGE, &[])
+                .expect("the control's second read answers")
         };
         assert_eq!(facts.rev, REV);
         assert_eq!(
@@ -538,8 +548,9 @@ mod tests {
                 "zt".to_owned(),
                 Instant::now() + Duration::from_millis(100),
             );
-            host.toc(PAGE).expect("the first read is inside the bound");
-            host.toc(PAGE)
+            host.toc(PAGE, &[])
+                .expect("the first read is inside the bound");
+            host.toc(PAGE, &[])
                 .expect_err("the second read crosses it mid-composition")
         };
         assert!(
@@ -571,7 +582,7 @@ mod tests {
                 "zt".to_owned(),
                 Instant::now() + Duration::from_secs(30),
             );
-            host.toc(PAGE).expect("the composition answers")
+            host.toc(PAGE, &[]).expect("the composition answers")
         };
         assert_eq!(
             door.ops,
@@ -604,7 +615,7 @@ mod tests {
                 "zt".to_owned(),
                 Instant::now() + Duration::from_secs(30),
             );
-            host.toc(PAGE).expect("a still world composes")
+            host.toc(PAGE, &[]).expect("a still world composes")
         };
         assert_eq!(facts.rev, REV);
         assert_eq!(facts.words, 41, "the count is the closing read's own");
@@ -616,7 +627,7 @@ mod tests {
                 "zt".to_owned(),
                 Instant::now() + Duration::from_secs(30),
             );
-            host.toc(PAGE)
+            host.toc(PAGE, &[])
                 .expect_err("a world that moved mid-composition refuses")
         };
         assert!(
@@ -752,7 +763,7 @@ mod tests {
                     .checked_sub(Duration::from_millis(1))
                     .unwrap(),
             );
-            host.toc(PAGE)
+            host.toc(PAGE, &[])
                 .expect_err("an elapsed clock refuses the read")
         };
         assert_eq!(
