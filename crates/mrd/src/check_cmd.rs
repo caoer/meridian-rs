@@ -679,9 +679,7 @@ fn excluded_holders(
 /// read. Split out of [`assess`], which needs the corpus in hand before the mount
 /// table exists. The unserved map rides along so the caller can voice the
 /// domain-excluded census, which needs both maps to subtract.
-fn build_corpus(
-    files: fs::DomainFiles,
-) -> (BTreeMap<String, Document>, BTreeMap<String, String>) {
+fn build_corpus(files: fs::DomainFiles) -> (BTreeMap<String, Document>, BTreeMap<String, String>) {
     let (_index, docs, unserved) = fs::build_corpus(files);
     crate::voice_unserved(&unserved);
     (docs, unserved)
