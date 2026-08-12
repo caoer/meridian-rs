@@ -205,7 +205,7 @@ fn a_daemon_publishing_no_identity_is_refused_on_the_local_socket() {
     );
 }
 
-/// The script CLI lane refuses on skew at connect (SocketDoor), before any
+/// The script CLI lane refuses on skew at connect (`SocketDoor`), before any
 /// entry work: no fingerprint, no eval, no splice. Pinned e2e beside the
 /// read/links lanes because the § A.7 in-process serve rides the same door —
 /// this lane's connect-time law must survive that change byte-for-byte.

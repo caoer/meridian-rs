@@ -515,8 +515,10 @@ fn the_arithmetic_closes_and_no_class_is_empty() {
          own pins when it lands; the journal owes none, because nothing replaces it",
     );
     assert_eq!(
-        read_only, 1,
-        "the reaction feeder's path-carrying read — it mints, and it lands nothing",
+        read_only, 2,
+        "the two lands-nothing mints: the reaction feeder's path-carrying read, \
+         and the § A.7 overlay serve (read-your-own-writes) — each mints, and \
+         each lands nothing",
     );
     assert_eq!(
         translated + guarded + outside + read_only,
@@ -524,13 +526,21 @@ fn the_arithmetic_closes_and_no_class_is_empty() {
         "every door falls in exactly one class",
     );
 
-    // The guard covers every door in U12's own file, and nothing else claims to.
+    // The guard covers every DOOR in U12's own file, and nothing else claims
+    // to. The § A.7 overlay mint shares the file without being a door (it
+    // lands no bytes), so the file census counts it beside the guarded set
+    // rather than inside it.
     let in_write_rs = DOORS.iter().filter(|d| d.file == WRITE_RS).count();
+    let read_only_in_write_rs = DOORS
+        .iter()
+        .filter(|d| d.file == WRITE_RS && d.class == Door::ReadOnly)
+        .count();
     assert_eq!(
         in_write_rs,
-        translated + guarded,
+        translated + guarded + read_only_in_write_rs,
         "U12 guards exactly the doors in its named file — the arithmetic that \
-         says what this unit did and did not close",
+         says what this unit did and did not close; the overlay mint is in the \
+         file and is not a door",
     );
 }
 
@@ -544,7 +554,15 @@ fn the_arithmetic_closes_and_no_class_is_empty() {
 #[test]
 fn every_door_in_this_units_file_binds_its_own_guard() {
     let mut expected: BTreeMap<String, usize> = BTreeMap::new();
-    for door in DOORS.iter().filter(|d| d.file == WRITE_RS) {
+    // `ReadOnly` is exempt BY ITS DEFINITION, not by grace: the class means
+    // "not a door — the mint lands no bytes", and what such a site owes is
+    // the reason its value cannot land (stated at its pin), never a guard
+    // over bytes that do not exist. Every DOOR class in this file still
+    // refuses without a discharge site.
+    for door in DOORS
+        .iter()
+        .filter(|d| d.file == WRITE_RS && d.class != Door::ReadOnly)
+    {
         let site = door.guard_fn.unwrap_or_else(|| {
             panic!(
                 "the door '{}' is in U12's own file and names no guard discharge site — \

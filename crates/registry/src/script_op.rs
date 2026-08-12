@@ -33,8 +33,8 @@ use std::time::Instant;
 
 use effects::trace::{CommitLeg, Refusal, ScriptTrace};
 use effects::{
-    ArmedEdit, ReadFault, ScriptCtx, ScriptHost, ScriptLimits, ScriptRecording, SecFacts,
-    TocEntry, TocFacts, hpath_addresses,
+    ArmedEdit, ReadFault, ScriptCtx, ScriptHost, ScriptLimits, ScriptRecording, SecFacts, TocEntry,
+    TocFacts, hpath_addresses,
 };
 use serde_json::value::RawValue;
 use serde_json::{Map, Value, json};
@@ -103,7 +103,7 @@ pub(crate) fn serve_line(
         dry: dry.unwrap_or(false),
         expect_armed,
     };
-    match serve(registry, ws, request) {
+    match serve(registry, ws, &request) {
         Ok(trace) => {
             let body = serde_json::to_value(&trace).expect("a ScriptTrace serializes");
             let mut frame = json!({"id": id, "ok": true, "body": body});
@@ -153,7 +153,7 @@ struct ScriptArgs {
 fn serve(
     registry: &Registry,
     ws: &Path,
-    request: ScriptArgs,
+    request: &ScriptArgs,
 ) -> Result<ScriptTrace, Box<ErrorBody>> {
     // ONE currency pass, at entry (Law A-3c scope unchanged, moved in time).
     registry.warm_or_build(ws).map_err(|e| {
@@ -204,7 +204,12 @@ fn serve(
 
     // Entry-rev threading: the license is the recording's, the value is the
     // entry world's (run-plane § the entry-rev law).
-    eval.armed = thread_entry(&eval.armed, &eval.recording, &world, &wire::Root(entry.clone()));
+    eval.armed = thread_entry(
+        &eval.armed,
+        &eval.recording,
+        &world,
+        &wire::Root(entry.clone()),
+    );
 
     // The pre-splice armed-set gate — after threading, before anything is
     // issued; same wording as the CLI lane, one law two doors.
@@ -236,7 +241,7 @@ fn serve(
              reads that ran cost the budget",
         ))
     } else {
-        commit(registry, ws, &request, &eval, &entry)
+        commit(registry, ws, request, &eval, &entry)
     };
     Ok(ScriptTrace::assemble(entry, &eval, leg))
 }
@@ -381,7 +386,9 @@ fn thread_entry(
         .map(|arm| {
             let mut arm = arm.clone();
             match &mut arm.edit {
-                PlanEdit::SetProperty { rev: rev @ None, .. } => {
+                PlanEdit::SetProperty {
+                    rev: rev @ None, ..
+                } => {
                     let licensed = recording
                         .reads
                         .iter()
@@ -544,7 +551,7 @@ impl EntryWorldHost {
                      the commit would refuse file_not_found"
                 ))
             })?;
-            let doc = overlay_doc(base, path, &rows).map_err(|reason| fault(reason))?;
+            let doc = overlay_doc(base, path, &rows).map_err(fault)?;
             self.overlay = Some((path.to_owned(), rows.len(), doc));
         }
         Ok(&self.overlay.as_ref().expect("just cached").2)
@@ -664,17 +671,18 @@ mod tests {
         std::fs::canonicalize(&ws).unwrap()
     }
 
-    fn pinned_world(
-        registry: &Registry,
-        ws: &Path,
-    ) -> (Arc<WorkspaceEngine>, wire::Root) {
+    fn pinned_world(registry: &Registry, ws: &Path) -> (Arc<WorkspaceEngine>, wire::Root) {
         registry.warm_or_build(ws).expect("entry pass");
         let world = registry.engine_snapshot(ws).expect("pinned world");
         let root = wire::Root(world.at_fingerprint.0.clone());
         (world, root)
     }
 
-    fn host_of(world: &Arc<WorkspaceEngine>, root: &wire::Root, deadline: Instant) -> EntryWorldHost {
+    fn host_of(
+        world: &Arc<WorkspaceEngine>,
+        root: &wire::Root,
+        deadline: Instant,
+    ) -> EntryWorldHost {
         EntryWorldHost {
             world: Arc::clone(world),
             root: root.clone(),
@@ -751,7 +759,9 @@ mod tests {
         let registry = registry_in(tmp.path());
         let ws = seeded_ws(tmp.path());
         let (world, root) = pinned_world(&registry, &ws);
-        let entry_rev = entry_toc(&world, &root, "doc.md").expect("doc in world").rev;
+        let entry_rev = entry_toc(&world, &root, "doc.md")
+            .expect("doc in world")
+            .rev;
 
         let armed = vec![ArmedEdit {
             path: "doc.md".to_owned(),
@@ -818,7 +828,9 @@ mod tests {
         let ws = seeded_ws(tmp.path());
         let (world, root) = pinned_world(&registry, &ws);
 
-        let lapsed = Instant::now() - Duration::from_millis(1);
+        let lapsed = Instant::now()
+            .checked_sub(Duration::from_millis(1))
+            .expect("the clock is past its first millisecond");
         let mut host = host_of(&world, &root, lapsed);
         let fault = host.toc("doc.md", &[]).expect_err("lapsed clock refuses");
         assert!(

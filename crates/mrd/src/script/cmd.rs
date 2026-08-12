@@ -55,7 +55,7 @@ use effects::{
 use registry::Client;
 use serde_json::value::RawValue;
 use serde_json::{Value, json};
-use wire::{ErrorCode, PlanEdit, ReadSel, Recovery};
+use wire::{ErrorCode, PlanEdit, Recovery};
 
 use super::trace::{CommitLeg, Refusal, ScriptOutcome, ScriptTrace};
 use super::wire_host::{Door, Frame, SocketDoor, WireHost};
