@@ -140,9 +140,9 @@ fn payload_edge_blank_lines_collapse_into_canonical_separators() {
 }
 
 /// Measured defect 3 (probe fixture: `## Level tests` flush against its own
-/// body): replace_section consumed the blank line under its own heading and
-/// the separator before the next heading. The composed content must carry
-/// both boundaries.
+/// body): `replace_section` consumed the blank line under its own heading
+/// and the separator before the next heading. The composed content must
+/// carry both boundaries.
 #[test]
 fn replace_section_keeps_the_blank_under_its_heading_and_before_the_next() {
     let seed = "# Page\n\n## Level tests\n\nold body\n\n## Next section\n\nx\n";
@@ -186,7 +186,7 @@ fn replace_section_keeps_the_blank_under_its_heading_and_before_the_next() {
     );
 }
 
-/// replace_section with an empty body mid-file: the emptied section keeps one
+/// `replace_section` with an empty body mid-file: the emptied section keeps one
 /// blank line between its heading and the next (words:0 is legal — spec case
 /// 10).
 #[test]
