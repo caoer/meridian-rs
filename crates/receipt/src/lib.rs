@@ -160,14 +160,28 @@ pub struct ArmedFacts<'a> {
     pub edits: Vec<EditFact<'a>>,
 }
 
-/// One edit's facts: the request-side target + shape and the armed rev
-/// transition (request and armed edits align 1:1, same order — §4.4).
+/// One edit's facts: the armed target, the op, and the armed rev transition
+/// (request and armed edits align 1:1, same order — §4.4; the armed target
+/// echoes the request target on every edit except a birth, whose fact names
+/// the born section — § A.3 create door).
 #[derive(Debug, Clone)]
 pub struct EditFact<'a> {
     pub target: &'a wire::SecRef,
-    pub shape: &'a wire::EditShape,
+    pub op: OpFact<'a>,
     pub before: &'a wire::NodeRev,
     pub after: &'a wire::NodeRev,
+}
+
+/// The op token one receipt row renders (§6.1: armed facts carry the op).
+#[derive(Debug, Clone)]
+pub enum OpFact<'a> {
+    /// A native or lowered edit shape, rendered by its own door name.
+    Edit(&'a wire::EditShape),
+    /// A section birth (plan `create`): the parent-append is engine-internal
+    /// mechanism, so the op the caller asked is the fact — beside the
+    /// born-from-nothing before-token, `create` is what makes a birth row
+    /// readable as one (A.6.3a′'s "read the op, not the token").
+    Create,
 }
 
 /// Render the default receipt line — the block-leaf bytes, no line terminator
@@ -205,7 +219,7 @@ pub fn render_line(facts: &ArmedFacts<'_>) -> String {
             out,
             " {} {} {}->{}",
             target_token(edit.target),
-            shape_display(edit.shape),
+            op_display(&edit.op),
             render_field(&edit.before.0),
             render_field(&edit.after.0)
         );
@@ -247,6 +261,13 @@ pub(crate) fn target_display(target: &wire::SecRef) -> String {
         wire::SecRef::Hpath { hpath } => render_hpath_json(hpath),
         wire::SecRef::Anchor { anchor } => format!("^{anchor}"),
         wire::SecRef::FmKey { fm_key } => fm_key.clone(),
+    }
+}
+
+pub(crate) fn op_display(op: &OpFact<'_>) -> &'static str {
+    match op {
+        OpFact::Edit(shape) => shape_display(shape),
+        OpFact::Create => "create",
     }
 }
 

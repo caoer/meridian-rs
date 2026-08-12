@@ -1131,6 +1131,26 @@ team-e multi-root contract, L3 end state):**
   honored (CAS) wherever it is present; whether it is *demanded* beyond the
   occurrence class is the §5.3 ratchet — a named future-amendment candidate,
   not this law. Do not widen the demand here.
+- **The armed fact names the BIRTH (2026-08-12, create-armed-fact fix;
+  A.6.3a′ is the precedent and the law is plan.rs's own §6.1/§7.1 citation):**
+  a `create` row's armed edit carries the **born section** — `target` = the
+  address the read face publishes for it (`n` exactly where the document is
+  ambiguous, so read-back lands), `node_rev_before` = the empty-input hash
+  (`af1349b9f5f9a1a6`, A.6.3a′'s born-from-nothing token — not a claim that
+  an empty section existed; the op says birth), `node_rev_after`/`span_after`
+  = the born node's own facts from the one post-batch reparse. The
+  parent-append stays the lowering's mechanism: the parent's rev guards the
+  CAS (`create.rev` above), and the parent's own transition stays implicit —
+  re-readable via `toc` like every ancestor rev (§7.1). The receipt renders
+  the same facts with op `create` (§6.4). The born node is identified by the
+  POSITION the sealed batch placed it, never by counting siblings — an
+  earlier same-batch edit whose text opens a same-title heading shifts
+  occurrences, and a count would misattribute the birth. A composition whose
+  reparse leaves no section heading at that position (destroyed or absorbed
+  by a neighbouring edit's bytes) refuses `would_corrupt{target_identity}` —
+  the §4.4 family for armed facts that cannot be represented. The native
+  `put:end` door is untouched: a native append addressed the parent, and its
+  fact keeps naming the parent.
 
 **Frontmatter-properties plane on the composed `read` (docs-first,
 2026-08-07, the mcp-face §3.3 wire demand — engine leg of the props
