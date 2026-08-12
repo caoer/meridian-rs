@@ -17,6 +17,10 @@ struct HeadingFacts {
     span: (usize, usize),
     /// Heading-excluded content span, when present.
     content_span: Option<(usize, usize)>,
+    /// The node's live CAS token, same mint the read face publishes — the
+    /// containment refusal folds it in when the caller's rev is also stale
+    /// (one refusal, both facts; wire-contract §A.3 containment law).
+    sec_rev: String,
 }
 
 /// Host-face put index: the read face's own address table + fm keys in order.
@@ -56,6 +60,7 @@ impl PlanIndex {
                 content_span: f
                     .content_span
                     .map(|cs| (span_usize(cs.0), span_usize(cs.1))),
+                sec_rev: f.sec_rev,
             })
             .collect();
         PlanIndex { headings, fm_keys }
@@ -311,8 +316,9 @@ fn lower_match(
     })
 }
 
-/// `replace_section`: rev required; ensureTrailingNL (empty stays empty);
-/// `Put{content}` + `if_node_rev`.
+/// `replace_section`: rev required; payload containment (wire-contract §A.3
+/// containment law) with the first-line address-echo normalization;
+/// ensureTrailingNL (empty stays empty); `Put{content}` + `if_node_rev`.
 fn lower_replace_section(
     idx: &PlanIndex,
     hpath: &[HpathSeg],
@@ -327,6 +333,7 @@ fn lower_replace_section(
             policy::defs::go_quote(&crate::display_hpath(hpath))
         )));
     }
+    let body = contain_replace_payload(node, hpath, body, rev)?;
     let text = if body.is_empty() {
         String::new()
     } else {
@@ -342,6 +349,126 @@ fn lower_replace_section(
         },
         if_node_rev: Some(NodeRev(rev.to_string())),
     })
+}
+
+/// One payload heading as the dialect parse sees it (ATX only; `#`-lines
+/// inside fences are Fence content and never reach here — the containment
+/// law's "judged on the PARSED payload, never line-regex").
+struct PayloadHeading {
+    /// 1-based line in the caller's own payload — refusals must speak the
+    /// caller's coordinates, so this is computed on the ORIGINAL body.
+    line: usize,
+    level: u32,
+    text: String,
+}
+
+/// The §A.3 containment gate + echo normalization for a `replace_section`
+/// payload. Returns the body to splice — the original, or its remainder after
+/// the first-line address echo is stripped.
+///
+/// The invariant: the target's subtree is exactly the payload, so a payload
+/// heading at or above the target's own level cannot nest and refuses whole.
+/// The ONE normalization: a first line echoing the target's own heading (same
+/// level, same title) is the caller repeating the address — stripped
+/// silently. Judged before any strip, so refusal line numbers are the
+/// caller's own.
+///
+/// # Errors
+/// `bad_request` in the `payload_escapes_section` grammar: offending line,
+/// both levels, honest alternative — folding in the stale-rev fact when
+/// `rev_given` no longer matches the target (one refusal, both facts; W-4).
+fn contain_replace_payload<'b>(
+    node: &HeadingFacts,
+    hpath: &[HpathSeg],
+    body: &'b str,
+    rev_given: &str,
+) -> Result<&'b str, Box<ErrorBody>> {
+    let title = node
+        .raw_hpath
+        .last()
+        .map(|s| s.h.as_str())
+        .unwrap_or_default();
+    let headings = syntax::parse(body).into_iter().filter_map(|n| {
+        if let syntax::DialectKind::Heading { level, text } = n.kind {
+            Some(PayloadHeading {
+                line: 1 + body[..n.span.start].matches('\n').count(),
+                level: u32::from(level),
+                text,
+            })
+        } else {
+            None
+        }
+    });
+
+    let mut echo = false;
+    for h in headings {
+        let own_name = h.level == node.level && h.text == title;
+        if own_name && h.line == 1 {
+            // The address echo — normalized away below, never an escape.
+            echo = true;
+            continue;
+        }
+        if h.level <= node.level {
+            return Err(escape_refusal(node, hpath, &h, own_name, rev_given));
+        }
+    }
+
+    Ok(if echo {
+        body.split_once('\n').map_or("", |(_, rest)| rest)
+    } else {
+        body
+    })
+}
+
+/// The `payload_escapes_section` refusal (wire-contract §A.3 containment law;
+/// grammar from the ratified spec): names the offending body line, both
+/// levels, and the honest alternative — restructuring is a write to the
+/// parent. When the caller's rev is ALSO stale, the same refusal carries the
+/// CAS fact with the current rev as the resend token, so a stale CAS can
+/// never mask the structural refusal into a two-error teaching loop (W-4).
+fn escape_refusal(
+    node: &HeadingFacts,
+    hpath: &[HpathSeg],
+    h: &PayloadHeading,
+    duplicate_name: bool,
+    rev_given: &str,
+) -> Box<ErrorBody> {
+    let mut msg = format!(
+        "payload_escapes_section — body line {} is a level-{} heading ({}{}); target {} is \
+         level {}, so payload headings must be level {}+. replace_section replaces the \
+         target's subtree only. To create a sibling, target the parent section or use \
+         create_section.",
+        h.line,
+        h.level,
+        policy::defs::go_quote(&h.text),
+        if duplicate_name {
+            " — the target's own name, so it would mint a duplicate sibling"
+        } else {
+            ""
+        },
+        policy::defs::go_quote(&crate::display_hpath(hpath)),
+        node.level,
+        node.level + 1,
+    );
+    if duplicate_name {
+        msg.push_str(
+            " An echo of the target's heading is normalized away only as the payload's \
+             FIRST line.",
+        );
+    }
+    if rev_given != node.sec_rev {
+        use std::fmt::Write as _;
+        // Infallible on String; the write! form is the workspace's
+        // format-push convention (clippy::format_push_string).
+        let _ = write!(
+            msg,
+            " Separately, the rev you passed is stale: you sent {} but the section is now \
+             {} — fix the payload and resend with the current rev.",
+            policy::defs::go_quote(rev_given),
+            policy::defs::go_quote(&node.sec_rev),
+        );
+    }
+    bad_request(msg)
 }
 
 /// Create: parent-append as `Put{end}` on parent; top-level / parent-miss refuse.
@@ -771,6 +898,39 @@ mod tests {
             e.if_node_rev.as_ref().map(|r| r.0.as_str()),
             Some("cafebabecafebabe")
         );
+    }
+
+    /// The address echo strips to a suffix slice: the lowered `Put{content}`
+    /// carries the remainder verbatim (blank separator kept), and an
+    /// echo-only payload lowers to the empty content write.
+    #[test]
+    fn replace_section_echo_strip_lowers_the_remainder() {
+        let raw = "# Notes\n\nold\n";
+        let lowered = |body: &str| {
+            lower1(
+                raw,
+                PlanEdit::ReplaceSection {
+                    hpath: vec![HpathSeg {
+                        h: "Notes".into(),
+                        n: None,
+                    }],
+                    body: body.into(),
+                    rev: Some("cafebabecafebabe".into()),
+                },
+            )
+            .expect("lowers")
+        };
+        let e = lowered("# Notes\n\nnew body\n");
+        let (at, text) = put_text(&e);
+        assert_eq!(*at, PutAt::Content);
+        assert_eq!(
+            text, "\nnew body\n",
+            "echo line stripped, remainder verbatim"
+        );
+
+        let e = lowered("# Notes\n");
+        let (_, text) = put_text(&e);
+        assert_eq!(text, "", "echo-only payload lowers to the empty write");
     }
 
     /// Property dance: ONE edit per key, each on its OWN `fm_key` — existing as
