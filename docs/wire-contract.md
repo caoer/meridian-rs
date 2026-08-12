@@ -213,7 +213,7 @@ Correlation: one response per request, id echoed by value; in-flight uniqueness 
   "fingerprint":"b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9"}}
 ```
 
-`caps` is the complete set — no version sniffing, ever. The example shows the sixteen-cap base set (the v2 spelling is byte-identical minus the fingerprint renames); a negotiated v3 session is pushed eight more on top — `read`, `check_write`, `splice.plan_edits`, `splice.pin`, `splice.create_rev`, `create`, `mounts`, `hello.identity` (§A.3/§A.5) — twenty-four caps in all. Field-only amendments ship as dotted `op.field` strings. `fingerprint` in the hello body is optional (the engine may not have walked yet); when present it is the first ambient fingerprint.
+`caps` is the complete set — no version sniffing, ever. The example shows the sixteen-cap base set (the v2 spelling is byte-identical minus the fingerprint renames); a negotiated v3 session is pushed nine more on top — `read`, `check_write`, `splice.plan_edits`, `splice.pin`, `splice.create_rev`, `create`, `mounts`, `mounts.primary`, `hello.identity` (§A.3/§A.5) — twenty-five caps in all. Field-only amendments ship as dotted `op.field` strings (`mounts.primary` is one: the mounts row's declared-primary designation, §A.5). `fingerprint` in the hello body is optional (the engine may not have walked yet); when present it is the first ambient fingerprint.
 
 **Rev-presence law:** `node_rev` is MUST on every `toc`/`cat`/`extract` node whenever `splice ∈ caps`.
 
@@ -1291,11 +1291,11 @@ call it.
   {"name":"field-notes","kind":"vault","state":"bound",
    "workspace":"/Users/Shared/repos/field-notes"},
   {"name":"sessions","kind":"vault","state":"bound",
-   "workspace":"/Users/Shared/projects/field-notes-sessions"},
+   "workspace":"/Users/Shared/projects/field-notes-sessions","primary":true},
   {"name":"assets","kind":"git-folder","state":"grey(path-unseeable)"}]}}
 ```
 
-Row shape `{name, kind, state, workspace?}`:
+Row shape `{name, kind, state, workspace?, primary?}`:
 
 | Field | Law |
 |---|---|
@@ -1303,6 +1303,7 @@ Row shape `{name, kind, state, workspace?}`:
 | `kind` | `vault` \| `git-folder` — the `MountKind` words verbatim |
 | `state` | the `MountState` reason word verbatim, ONE spelling across the human line, `--json`, and this wire: `bound` · `grey(path-unseeable)` · `grey(undeclared)` · `grey(declaration-unreadable)` · `grey(claim-unverifiable)` · `red(content-drifted)`. Every word but `bound` refuses: a client gates on `state == "bound"` and treats an unrecognized word as not-bound — the tolerant-client law applied to an open-for-amendment word set |
 | `workspace` | the canonical bound path, post-canonicalization — the same handle `hello` returns as `workspace`. Present exactly when the binding canonicalized; absent at least on `grey(path-unseeable)` |
+| `primary` | the declared-primary designation, verbatim from the binding file (`meridian-md-schema.md` §5.1a): literal `true` exactly on the designated row, ABSENT everywhere else — absence is the only "not primary" spelling, mirroring the config grammar. At most one row carries it (two designations refuse the whole table, `duplicate-primary-designation` inside `mount_table_invalid`). A binding ROLE for fleet hosts (the primary-root rule set: ccc-statusd `docs/mcp-face.md` §8.1); the engine reports it and never acts on it. Field-only amendment, cap `mounts.primary`; a client that has not read the cap sees an unread key — inert by the tolerant-client law |
 
 **Freshness — the config-hash rebind law.** Every `mounts` call fingerprints
 `~/MERIDIAN.md` (blake3 over the file bytes) before answering: unchanged hash

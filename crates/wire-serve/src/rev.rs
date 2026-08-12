@@ -111,6 +111,9 @@ pub fn project_response(frame: &mut Value) {
                 // Mount-table discovery at op grain (§ A.5, the create
                 // precedent); the frozen v2 caps stay byte-identical.
                 caps.push(Value::String("mounts".to_string()));
+                // Field-only amendment, dotted per § A.2: the mounts row
+                // carries the declared-primary designation (§ A.5).
+                caps.push(Value::String("mounts.primary".to_string()));
                 caps.push(Value::String("hello.identity".to_string()));
             }
             body.insert("contract".to_string(), Value::String("v3".to_string()));
@@ -359,6 +362,7 @@ mod tests {
                 "splice.create_rev",
                 "create",
                 "mounts",
+                "mounts.primary",
                 "hello.identity"
             ])
         );

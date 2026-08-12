@@ -134,6 +134,7 @@ fn hello_resolves_pins_negotiates_and_lists_caps_in_one_round_trip() {
         // Discovery honesty at field grain: dotted `op.field` caps.
         "splice.plan_edits",
         "splice.pin",
+        "mounts.primary",
         "sub",
     ] {
         assert!(

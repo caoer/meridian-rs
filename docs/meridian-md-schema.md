@@ -280,8 +280,9 @@ the rest of the line with trailing whitespace trimmed.
 | 1 | `name` | canonical root name (§5.2) | **yes** | absent → `missing-required-field`. Charset violation, empty, or leading/trailing `-` → `bad-value`, naming the offending character and the legal charset |
 | 2 | `path` | non-empty string, a filesystem path | **yes** | absent → `missing-required-field`. Empty or whitespace-only → `bad-value` |
 | 3 | `kind` | exactly `vault` or `git-folder` | **yes** | absent → `missing-required-field`. Any other value → `bad-value`, naming the value found and the two legal values |
-| 4 | `vault` | Obsidian vault name, non-empty string | **iff `kind: vault`** | required and absent → `missing-required-field`, naming the kind that requires it. Present when `kind: git-folder` → `field-not-permitted-for-kind` |
-| 5 | `pin` | fingerprint CID-token (§5.3) | no | present and not a well-formed token → `bad-value` |
+| 4 | `primary` | literal `true` (§5.1a) | no | present and not `true` → `bad-value`, naming the one legal value — absence is the only "not primary" spelling. Present when `kind: git-folder` → `field-not-permitted-for-kind` |
+| 5 | `vault` | Obsidian vault name, non-empty string | **iff `kind: vault`** | required and absent → `missing-required-field`, naming the kind that requires it. Present when `kind: git-folder` → `field-not-permitted-for-kind` |
+| 6 | `pin` | fingerprint CID-token (§5.3) | no | present and not a well-formed token → `bad-value` |
 
 Structural refusals over the block as a whole:
 
@@ -294,6 +295,7 @@ Structural refusals over the block as a whole:
 | The fence never closes | `unterminated-block` |
 | The block body is empty | `missing-required-field` naming `name` |
 | Two blocks in the file declaring the same `name` | `duplicate-mount-name`, naming both blocks' lines |
+| Two blocks in the file carrying `primary: true` | `duplicate-primary-designation`, naming both blocks' lines — the designation is a role exactly one mount may hold, and the parser never picks between two (§5.1a) |
 
 **Blank lines and comment lines are refused** as `malformed-line`. Prose about a mount belongs beside
 the block, not inside it — that is what §3's scoping law buys, and it keeps the block grammar with one
@@ -305,6 +307,27 @@ canonicalization (symlinks, trailing slashes, `..`), and **Implementation owns t
 at bind, inherit `workspace::deny_reason`, refuse equal-or-nested mounts (canonicalize-at-bind). One owner per fact:
 this schema does not also test paths lexically, because two owners disagreeing about "same path" is a
 worse failure than one owner deciding late.
+
+### 5.1a `primary:` — the declared-primary designation (v1-additive, 2026-08-12)
+
+An optional `primary: true` line designates its mount as the **primary root** — a binding ROLE
+consumed by fleet hosts (the one tree their single-root consumers anchor: change feed, watch loop,
+journal placement — the rule set lives with the host, ccc-statusd `docs/mcp-face.md` §8.1). The
+engine's own duty is mechanism only: parse the designation, refuse its illegal shapes (the §5.1
+rows above), and report it verbatim on the `mounts` wire row (`wire-contract.md` §A.5) and both
+config faces. **The engine never acts on the designation** — no engine behavior branches on it.
+
+Grammar consequences, each a §5.1 row: the value is the literal `true` and nothing else, because
+absence is the only "not primary" spelling — admitting `primary: false` would mint a second
+spelling for one fact. A `git-folder` mount may not carry it — the primary root is where a fleet
+daemon writes, and a git-folder root binds a source repo. Two designations refuse the whole table
+(`duplicate-primary-designation`, the `duplicate-mount-name` class): the designation is DECLARED,
+never derived, so the parser never picks between two claimants — and no consumer may fall back to
+`mounts[0]`, the only vault, or any other derivation when it is absent.
+
+This is the v1-additive amendment §12 boundary 2 anticipates ("the field would be optional and
+new"): mount blocks are closed-schema, so `primry: true` refuses as `unknown-field` at parse — the
+silent-typo hazard §4 names is closed by construction.
 
 ### 5.2 The canonical root-name charset
 
@@ -487,7 +510,7 @@ A refusal about *nothing* has no line unless the rule says which one. Three case
 |---|---|---|
 | Something **present** | its own line | `wrong-type-value`, `unsupported-version`, `bad-value`, `unknown-field`, `field-out-of-order`, `field-not-permitted-for-kind`, `malformed-line`, `frontmatter-unparseable` |
 | Something **absent** | the opening line of the construct that should have carried it — the block's opening fence for a block field, **line 1** for a frontmatter key or a frontmatter fence fault | `missing-required-field`, `missing-required-key`, `no-frontmatter`, `unterminated-block` |
-| A **duplicate** | the **second** occurrence, and the message names the first | `duplicate-field`, `duplicate-mount-name`, `duplicate-tool-name` |
+| A **duplicate** | the **second** occurrence, and the message names the first | `duplicate-field`, `duplicate-mount-name`, `duplicate-tool-name`, `duplicate-primary-designation` |
 
 The absent case points at the construct's opening rather than at "where it should have gone" because
 canonical order makes the latter computable but not obvious to a reader — the opening fence is a line
@@ -516,6 +539,7 @@ State C and `home-unresolvable` carry the config path and no line: there are no 
 | `unterminated-block` | an engine block's fence never closes |
 | `duplicate-mount-name` | two `meridian-mount` blocks declare the same `name` |
 | `duplicate-tool-name` | two `meridian-tool` blocks declare the same `name` |
+| `duplicate-primary-designation` | two `meridian-mount` blocks carry `primary: true` (§5.1a) |
 
 ### 8.3 The teaching content
 
@@ -526,9 +550,9 @@ candidate by two independent addresses, then `Fix:`). The shape for this plane:
 
 ```
 refused: ~/MERIDIAN.md line 14: unknown field `paths` in a meridian-mount block —
-legal fields are name, path, kind, vault, pin (in that order). No mount table was
-loaded; the config is not partially applied. Fix: remove the line or spell the
-field you meant.
+legal fields are name, path, kind, primary, vault, pin (in that order). No mount
+table was loaded; the config is not partially applied. Fix: remove the line or
+spell the field you meant.
 ```
 
 **Three clauses are mandatory and each closes a specific failure:** naming the line (the ratified
