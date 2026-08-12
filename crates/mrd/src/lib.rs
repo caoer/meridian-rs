@@ -208,7 +208,7 @@ usage:
                            {workspace,error} on stdout. Exits: 0
                            committed|rehearsal-ok / 1 refused / 2 bad
                            invocation.
-! mrd pin <PAGE> <TARGET>#<SELECTOR> [--vibe] [--dry]
+! mrd pin <PAGE> <TARGET>#<SELECTOR> [--vibe] [--dry] [--json]
                            attest: record in PAGE's meridian-lock that it draws
                            from TARGET#SELECTOR at that section's content
                            fingerprint, and mint a stable ^block-id on the
@@ -220,7 +220,7 @@ usage:
                            the pin is retrievable before any commit references
                            it. Exits: 0 pinned|dry / 1 refused / 2 bad
                            invocation.
-! mrd repair [PAGE] [--dry]
+! mrd repair [PAGE] [--dry] [--json]
                            lost-pin repair via git history. LOST = live target
                            no longer verifies the fingerprint AND git no longer
                            holds the recorded blob (red pin with blob still
@@ -255,7 +255,7 @@ usage:
                            (--depth 1 = direct). Every answer cites the revs it
                            read. Exits: 0 clean / 1 red edge / 2 bad invocation
                            or in-snapshot cycle.
-  mrd rules [PATH] [--workspace | --user]
+  mrd rules [PATH] [--workspace | --user] [--json]
                            effective rules at PATH (default cwd) after id-based
                            override. Per id: winning page (rev + scope), then
                            pages it SHADOWS (winner first; never collapsed).
@@ -281,7 +281,7 @@ usage:
                            (render face elides meridian-* blocks, so mrd read
                            shows prose only). Exits: 0 every root bound / 1
                            config or root refused / 2 bad invocation.
-  mrd check [--core] [--commit-gate [--require-pins]]
+  mrd check [--core] [--staged] [--commit-gate [--require-pins]] [--json]
                            pure READ validity (what lies?). Layer-0 core: claim
                            plane (pinned content drift) + retrieval plane
                            (pinned blob
@@ -310,11 +310,12 @@ usage:
                            every drawer).
   mrd sql <query>          SQL over an ephemeral in-memory corpus projection
                            (honest-tense freshness frame).
-  mrd status [--cwd PATH]  pure-local drift + freshness: armed INDEX line,
-                           three-axis line (pin · anchor · convention), tip
-                           axis,
-                           one row per forced write. O(armed), fetch-less. Exits: 0
-                           clean / 1 finding / 2 bad invocation.
+  mrd status [--cwd PATH]  pure-local drift + freshness: armed-rules line (N
+                           armed · M drifted · forced-since-realise:
+                           not-tracked — the engine keeps no memory), then the
+                           five-axis line (pin · lock · anchor · armed ·
+                           vibe-debt). O(armed), fetch-less. Exits: 0 clean /
+                           1 finding / 2 bad invocation.
 ! mrd daemon               run the registry daemon in the foreground.
   mrd test --corpus <SPEC> tier-2 corpus runner: drive CHECK/HOOK rules over
                            SYNTHETIC changes; report fire-where-expected, zero
