@@ -829,8 +829,12 @@ pub trait ScriptHost: Send {
     ///
     /// # Errors
     /// A [`ReadFault`] when the host cannot serve the section; the script aborts.
-    fn cat(&mut self, path: &str, section: &str, armed: &[ArmedEdit])
-    -> Result<SecFacts, ReadFault>;
+    fn cat(
+        &mut self,
+        path: &str,
+        section: &str,
+        armed: &[ArmedEdit],
+    ) -> Result<SecFacts, ReadFault>;
 
     /// The caller's own identity, returned by the `me()` builtin.
     fn actor(&self) -> &str;
@@ -1089,7 +1093,12 @@ impl ScriptHost for RecordedHost<'_> {
         }
     }
 
-    fn cat(&mut self, path: &str, section: &str, _armed: &[ArmedEdit]) -> Result<SecFacts, ReadFault> {
+    fn cat(
+        &mut self,
+        path: &str,
+        section: &str,
+        _armed: &[ArmedEdit],
+    ) -> Result<SecFacts, ReadFault> {
         match self.next_face(path, Some(section))? {
             ReadFace::Section(facts) => Ok(facts.clone()),
             ReadFace::Toc(_) => Err(ReadFault {

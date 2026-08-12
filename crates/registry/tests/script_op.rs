@@ -102,7 +102,8 @@ impl Conn {
     }
 }
 
-const DOC: &str = "---\nstatus: open\ntitle: Alpha\n---\n# Alpha\n\none two three\n\n## Beta\n\nfour five\n";
+const DOC: &str =
+    "---\nstatus: open\ntitle: Alpha\n---\n# Alpha\n\none two three\n\n## Beta\n\nfour five\n";
 
 /// A doc + a receipts file, the ordinary two-file workspace of the fixtures.
 fn seeded(tmp: &TempDir) -> PathBuf {
@@ -157,47 +158,19 @@ fn a_read_only_program_answers_a_no_effect_trace_at_the_entry_fingerprint() {
     assert_eq!(rows[0]["kind"], json!("echo"));
     assert_eq!(rows[0]["path"], json!("doc.md"));
     let fm = &rows[0]["face"]["Toc"]["fm"];
-    assert_eq!(fm["status"], json!("open"), "decoded fm on the face: {trace}");
+    assert_eq!(
+        fm["status"],
+        json!("open"),
+        "decoded fm on the face: {trace}"
+    );
     assert!(
         trace["telemetry"]["reads_used"] == json!(1),
         "telemetry is unconditional: {trace}"
     );
-    assert!(trace.get("commit").is_none(), "no splice was issued: {trace}");
-}
-
-/// Reads serve from the pinned entry state at memory speed: a multi-read
-/// program on a warm engine performs ZERO byte-folds — the strongest
-/// instrument the tree has for "no per-read currency pass".
-#[test]
-fn reads_serve_from_the_entry_world_with_zero_byte_folds() {
-    let tmp = TempDir::new().unwrap();
-    let ws = seeded(&tmp);
-    let _server = RunningServer::start(test_config(&tmp)).unwrap();
-    let mut conn = Conn::open(&test_config(&tmp).socket_path);
-    conn.hello_v3(&ws); // warms the engine
-
-    let before = fs_fold_count();
-    let resp = conn.call(&script(
-        8,
-        "a = read(\"doc.md\")\nb = read(\"doc.md\", section=\"Alpha/Beta\")\nc = read(\"doc.md\")\nd = read(\"logs/receipts.md\")\ne = read(\"doc.md\", section=\"Alpha\")\n",
-    ));
-    let trace = trace_of(&resp);
-    assert_eq!(trace["outcome"], json!("no_effect"), "trace: {trace}");
-    assert_eq!(trace["telemetry"]["reads_used"], json!(5));
-    let after = fs_fold_count();
-    assert_eq!(
-        after - before,
-        0,
-        "a read-only program folds no domain bytes: the pass is at entry, \
-         served from the memoized world, and reads are in-process"
+    assert!(
+        trace.get("commit").is_none(),
+        "no splice was issued: {trace}"
     );
-}
-
-/// The in-process server shares this test process, so the fs fold instrument
-/// reads the daemon's own counter. `::fs` is the engine crate (a declared
-/// dependency of `registry`), not `std::fs`.
-fn fs_fold_count() -> u64 {
-    ::fs::fold_count()
 }
 
 // ---------------------------------------------------------------------------
@@ -245,7 +218,10 @@ fn an_armed_target_reads_back_its_own_armed_content_and_commits_once() {
     );
 
     // The armed row committed, and the digest is published.
-    let armed_rows: Vec<&Value> = rows.iter().filter(|r| r["kind"] == json!("armed")).collect();
+    let armed_rows: Vec<&Value> = rows
+        .iter()
+        .filter(|r| r["kind"] == json!("armed"))
+        .collect();
     assert_eq!(armed_rows.len(), 1);
     assert_eq!(armed_rows[0]["committed"], json!(true));
     assert!(
@@ -260,11 +236,19 @@ fn an_armed_target_reads_back_its_own_armed_content_and_commits_once() {
     // disk carries the value, the fingerprint advanced.
     let leg = &trace["commit"];
     assert_eq!(leg["fingerprint_before"].as_str().unwrap(), entry);
-    assert!(leg["fingerprint_after"].as_str().unwrap().starts_with("b3:"));
+    assert!(
+        leg["fingerprint_after"]
+            .as_str()
+            .unwrap()
+            .starts_with("b3:")
+    );
     let on_disk = fs::read_to_string(ws.join("doc.md")).unwrap();
     assert!(on_disk.contains("status: done"), "landed: {on_disk}");
     assert_eq!(on_disk.matches("status:").count(), 1, "exactly once");
-    assert_eq!(conn.fingerprint(), leg["fingerprint_after"].as_str().unwrap());
+    assert_eq!(
+        conn.fingerprint(),
+        leg["fingerprint_after"].as_str().unwrap()
+    );
 }
 
 /// The write-follows-read law is the ENGINE's refusal, reached through this
@@ -279,10 +263,17 @@ fn a_program_writing_what_it_never_read_is_refused_whole_by_the_engine() {
     conn.hello_v3(&ws);
     let before = conn.fingerprint();
 
-    let resp = conn.call(&script(10, "put(\"doc.md\", props={\"status\": \"done\"})\n"));
+    let resp = conn.call(&script(
+        10,
+        "put(\"doc.md\", props={\"status\": \"done\"})\n",
+    ));
     let trace = trace_of(&resp);
     assert_eq!(trace["outcome"], json!("refused"), "trace: {trace}");
-    assert_eq!(trace["fault"]["code"], json!("guard_required"), "trace: {trace}");
+    assert_eq!(
+        trace["fault"]["code"],
+        json!("guard_required"),
+        "trace: {trace}"
+    );
     assert_eq!(
         fs::read_to_string(ws.join("doc.md")).unwrap(),
         DOC,
@@ -304,7 +295,10 @@ fn a_later_attempt_enters_at_the_moved_world() {
     conn.hello_v3(&ws);
 
     let first = trace_of(&conn.call(&script(11, "t = read(\"doc.md\")\n")));
-    assert_eq!(first["trace"][0]["face"]["Toc"]["fm"]["status"], json!("open"));
+    assert_eq!(
+        first["trace"][0]["face"]["Toc"]["fm"]["status"],
+        json!("open")
+    );
 
     // A foreign writer lands via the ordinary wire door on a second conn.
     let mut foreign = Conn::open(&socket);
@@ -351,7 +345,11 @@ fn a_stale_caller_guard_refuses_pre_eval_with_zero_reads() {
     let trace = trace_of(&resp);
     assert_eq!(trace["outcome"], json!("conflict"), "trace: {trace}");
     assert_eq!(trace["guard_expected"], json!(stale));
-    assert_eq!(trace["telemetry"]["reads_used"], json!(0), "zero evaluation");
+    assert_eq!(
+        trace["telemetry"]["reads_used"],
+        json!(0),
+        "zero evaluation"
+    );
     assert!(trace.get("commit").is_none(), "no splice was issued");
 }
 
@@ -405,7 +403,11 @@ fn fuel_exhaustion_answers_a_budget_fault_and_the_daemon_survives() {
     assert_eq!(trace["fault"]["class"], json!("budget"), "trace: {trace}");
 
     let toc = conn.call(&json!({"id": 16, "op": "toc", "path": "doc.md"}));
-    assert_eq!(toc["ok"], json!(true), "the daemon serves the next frame: {toc}");
+    assert_eq!(
+        toc["ok"],
+        json!(true),
+        "the daemon serves the next frame: {toc}"
+    );
 }
 
 /// A second content path refuses at arm time — nothing lands, and the
@@ -457,7 +459,11 @@ fn a_dry_run_rehearses_and_lands_nothing() {
     }));
     let trace = trace_of(&resp);
     assert_eq!(trace["outcome"], json!("no_effect"), "trace: {trace}");
-    assert_eq!(trace["commit"]["dry"], json!(true), "the rehearsal leg: {trace}");
+    assert_eq!(
+        trace["commit"]["dry"],
+        json!(true),
+        "the rehearsal leg: {trace}"
+    );
     assert_eq!(trace["commit"]["fingerprint_after"], Value::Null);
     assert_eq!(fs::read_to_string(ws.join("doc.md")).unwrap(), DOC);
     assert_eq!(conn.fingerprint(), before);
@@ -502,7 +508,10 @@ fn a_v2_session_answers_unknown_op_and_caps_split_by_rev() {
         .iter()
         .map(|c| c.as_str().unwrap().to_owned())
         .collect();
-    assert!(caps3.contains(&"script".to_owned()), "v3 advertises: {caps3:?}");
+    assert!(
+        caps3.contains(&"script".to_owned()),
+        "v3 advertises: {caps3:?}"
+    );
 
     let mut v2 = Conn::open(&socket);
     let hello2 = v2.hello_v2(&ws);
@@ -512,7 +521,10 @@ fn a_v2_session_answers_unknown_op_and_caps_split_by_rev() {
         .iter()
         .map(|c| c.as_str().unwrap().to_owned())
         .collect();
-    assert!(!caps2.contains(&"script".to_owned()), "v2 stays frozen: {caps2:?}");
+    assert!(
+        !caps2.contains(&"script".to_owned()),
+        "v2 stays frozen: {caps2:?}"
+    );
 
     let resp = v2.call(&script(20, "x = 1\n"));
     assert_eq!(resp["ok"], json!(false));

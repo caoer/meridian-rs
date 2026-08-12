@@ -10,8 +10,10 @@
 
 use std::collections::BTreeMap;
 
-use effects::{ArmedEdit, EvalError, ReadFault, ScriptCtx, ScriptHost, ScriptLimits, SecFacts, TocEntry, TocFacts,
-    eval_script,};
+use effects::{
+    ArmedEdit, EvalError, ReadFault, ScriptCtx, ScriptHost, ScriptLimits, SecFacts, TocEntry,
+    TocFacts, eval_script,
+};
 use wire::{HpathSeg, PlanEdit};
 
 /// A host that serves two pages and counts its calls — enough to prove `put()`
@@ -44,7 +46,12 @@ impl ScriptHost for ArmHost {
         })
     }
 
-    fn cat(&mut self, path: &str, section: &str, _armed: &[ArmedEdit]) -> Result<SecFacts, ReadFault> {
+    fn cat(
+        &mut self,
+        path: &str,
+        section: &str,
+        _armed: &[ArmedEdit],
+    ) -> Result<SecFacts, ReadFault> {
         self.calls += 1;
         Ok(SecFacts {
             text: format!("{path}#{section}\n"),
@@ -66,7 +73,12 @@ impl ScriptHost for PanicHost {
         panic!("put() must perform zero I/O — the host was consulted");
     }
 
-    fn cat(&mut self, _path: &str, _section: &str, _armed: &[ArmedEdit]) -> Result<SecFacts, ReadFault> {
+    fn cat(
+        &mut self,
+        _path: &str,
+        _section: &str,
+        _armed: &[ArmedEdit],
+    ) -> Result<SecFacts, ReadFault> {
         panic!("put() must perform zero I/O — the host was consulted");
     }
 

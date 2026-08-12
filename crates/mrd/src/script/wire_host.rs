@@ -528,8 +528,10 @@ mod tests {
                 "zt".to_owned(),
                 Instant::now() + Duration::from_secs(30),
             );
-            host.toc(PAGE, &[]).expect("the control's first read answers");
-            host.toc(PAGE, &[]).expect("the control's second read answers")
+            host.toc(PAGE, &[])
+                .expect("the control's first read answers");
+            host.toc(PAGE, &[])
+                .expect("the control's second read answers")
         };
         assert_eq!(facts.rev, REV);
         assert_eq!(
@@ -546,7 +548,8 @@ mod tests {
                 "zt".to_owned(),
                 Instant::now() + Duration::from_millis(100),
             );
-            host.toc(PAGE, &[]).expect("the first read is inside the bound");
+            host.toc(PAGE, &[])
+                .expect("the first read is inside the bound");
             host.toc(PAGE, &[])
                 .expect_err("the second read crosses it mid-composition")
         };

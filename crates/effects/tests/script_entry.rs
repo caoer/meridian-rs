@@ -7,8 +7,10 @@
 
 use std::collections::BTreeMap;
 
-use effects::{ArmedEdit, EvalError, ReadFace, ReadFault, ReadPosition, ScriptCtx, ScriptHost, ScriptLimits, SecFacts,
-    TocEntry, TocFacts, eval_script, replay_script,};
+use effects::{
+    ArmedEdit, EvalError, ReadFace, ReadFault, ReadPosition, ScriptCtx, ScriptHost, ScriptLimits,
+    SecFacts, TocEntry, TocFacts, eval_script, replay_script,
+};
 
 /// A fixture workspace: paths → toc facts, `(path, section)` → section facts.
 /// Counts its calls so a test can prove a host was (or was not) consulted.
@@ -78,7 +80,12 @@ impl ScriptHost for FixtureHost {
         })
     }
 
-    fn cat(&mut self, path: &str, section: &str, _armed: &[ArmedEdit]) -> Result<SecFacts, ReadFault> {
+    fn cat(
+        &mut self,
+        path: &str,
+        section: &str,
+        _armed: &[ArmedEdit],
+    ) -> Result<SecFacts, ReadFault> {
         self.calls += 1;
         self.sections
             .get(&(path.to_owned(), section.to_owned()))
@@ -113,7 +120,12 @@ impl ScriptHost for NoReadHost {
         unreachable!("the host was consulted for toc({path})");
     }
 
-    fn cat(&mut self, path: &str, section: &str, _armed: &[ArmedEdit]) -> Result<SecFacts, ReadFault> {
+    fn cat(
+        &mut self,
+        path: &str,
+        section: &str,
+        _armed: &[ArmedEdit],
+    ) -> Result<SecFacts, ReadFault> {
         unreachable!("the host was consulted for cat({path}, {section})");
     }
 

@@ -1211,11 +1211,6 @@ fn dispatch_read(
             }
             Ok(out.body)
         }
-        // § A.7 script: served by `script_op::serve_line`, routed at
-        // `handle_line` — this arm is defense in depth for a future caller
-        // that reaches dispatch with the decoded op. Answered as absent, the
-        // discovery-honesty word for an op this path does not serve.
-        Op::Script { .. } => Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp))),
         // Birth op — v3-only; the shared guarded door (`write::create`).
         // Bare commit, numbered on the same ring as `splice`.
         Op::Create {
@@ -1296,6 +1291,10 @@ fn dispatch_read(
         // `Op::Mounts` is unreachable here (routed before the binding guard);
         // it rides this arm for exhaustiveness only.
         Op::Hello { .. }
+        // § A.7 `script` is served by `script_op::serve_line`, routed at
+        // `handle_line`; an op that reaches THIS dispatch is a v2 session's —
+        // or a future mis-route's — and answers the discovery-honesty word.
+        | Op::Script { .. }
         | Op::Read { .. }
         | Op::CheckWrite { .. }
         | Op::Create { .. }
