@@ -152,6 +152,23 @@ const DOORS: &[DoorPin] = &[
         label: "the reaction feeder's path-carrying read (lands no bytes)",
         class: Door::ReadOnly,
     },
+    // ---- wire-serve/write.rs — the § A.7 overlay builder, a mint that is NOT
+    // a door. `overlay_candidate` applies a script's OWN armed edits to the
+    // entry document IN MEMORY so the in-process read serve can answer
+    // read-your-own-writes; the candidate is returned as a served `Document`
+    // and dropped with the attempt — no `fs` primitive ever sees it, and the
+    // real commit re-validates and re-mints through `splice`'s own
+    // translated-and-guarded door. The reason its value cannot land: it
+    // leaves as `into_document()` to a read face; nothing on that path takes
+    // a `CandidateDocument` or calls a byte-landing primitive.
+    DoorPin {
+        file: WRITE_RS,
+        door_fn: "overlay_candidate",
+        mint_fn: "overlay_candidate",
+        guard_fn: None,
+        label: "the § A.7 overlay serve (read-your-own-writes; lands no bytes)",
+        class: Door::ReadOnly,
+    },
 ];
 
 fn workspace_root() -> PathBuf {
