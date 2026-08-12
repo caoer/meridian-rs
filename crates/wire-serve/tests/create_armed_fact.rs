@@ -354,6 +354,56 @@ fn a_same_batch_smuggled_heading_does_not_misattribute_the_birth() {
     );
 }
 
+/// The refusal door, pinned (review P13): an earlier append in the same batch
+/// opens a code fence at the parent's end, so the reparse swallows the born
+/// heading as fence content — no section stands at the placed position, the
+/// birth's armed facts are unrepresentable, and the batch refuses whole
+/// (`would_corrupt{target_identity}`), bytes unmoved.
+///
+/// The parent is the LAST section on purpose: a following pre-batch section
+/// would be swallowed too and `would_corrupt{containment_lost}` would answer
+/// first — this pin is about the birth's own door.
+#[test]
+fn a_fence_swallowed_birth_refuses_would_corrupt_target_identity() {
+    let seeded = "---\ntitle: Plan\n---\n# Memo\n\nintro\n\n## Notes\n\n- a line\n";
+    let (dir, root) = ws(&[("card.md", seeded)]);
+    let before = std::fs::read(dir.path().join("card.md")).expect("seed");
+
+    let err = splice(
+        &root,
+        None,
+        &args(
+            vec![
+                PlanEdit::Append {
+                    hpath: parent(),
+                    body: "```text".into(),
+                    rev: None,
+                },
+                create("Fresh", "born body"),
+            ],
+            false,
+        ),
+        &[],
+        None,
+    )
+    .expect_err("a swallowed birth refuses");
+
+    assert_eq!(err.code, wire::ErrorCode::WouldCorrupt);
+    assert_eq!(
+        err.family,
+        Some(wire::WouldCorruptFamily::TargetIdentity),
+        "the birth door's own family: {err:?}"
+    );
+    let msg = err.message.as_deref().unwrap_or_default();
+    assert!(
+        msg.contains("unrepresentable") && msg.contains("Memo/Notes/Fresh"),
+        "the teaching names the address the caller asked to bear: {msg}"
+    );
+
+    let after = std::fs::read(dir.path().join("card.md")).expect("read back");
+    assert_eq!(before, after, "the batch refused whole — no byte moved");
+}
+
 /// The native door is not this fix's: a native `put:end` whose text happens to
 /// open a heading addressed the PARENT, and its fact keeps naming the parent
 /// with the parent's own transition.
