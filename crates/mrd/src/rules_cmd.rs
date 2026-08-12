@@ -578,7 +578,10 @@ fn build(workspace: &Path, at: &str, view: View) -> Result<RulesReport, Fail> {
 /// never by a path predicate: a page counts when it OFFERS ITSELF to
 /// registration, whether it then registers or is refused. Both are rule pages
 /// whose law is missing from this answer, and a refused one is arguably worse.
-fn declined_workspace(workspace: &Path, corpus: &BTreeMap<String, String>) -> (Vec<String>, Vec<String>) {
+fn declined_workspace(
+    workspace: &Path,
+    corpus: &BTreeMap<String, String>,
+) -> (Vec<String>, Vec<String>) {
     let root = fs::WorkspaceRoot(workspace.to_path_buf());
     let Ok(all) = fs::walk(&root) else {
         return (Vec::new(), Vec::new());
@@ -826,6 +829,7 @@ fn chain_of(resolution: &Effective) -> Vec<ChainEntry> {
 // ── rendering ─────────────────────────────────────────────────────────────────
 
 /// The human render: a header naming what was read, then one block per id.
+#[allow(clippy::too_many_lines)] // one sequential render pass by design
 fn render_human(report: &RulesReport) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
