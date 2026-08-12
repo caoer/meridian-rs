@@ -489,3 +489,126 @@ fn plan_match_at_anchor_equals_the_native_anchor_edit() {
     };
     assert_eq!(aa.edits, ab.edits, "armed rows 1:1");
 }
+
+// --- ZT-directed fixtures (card fix-w2-block-write § ZT-directed test fixtures) ---
+
+/// Fixture A — the probe scratch's own shape (`inbox/_unstaged/
+/// mrd-mcp-probe-scratch.md` `^probe-anchor`): a toc-listed plain-list anchor
+/// that read served and put refused in both caller lanes. Post-fix the plan
+/// lane writes it — match inside the block, and whole-block replace with the
+/// marker preserved. (The two DAEMON lanes — `at:"^id"` and `ref#^id` —
+/// converge to this one plan form; their convergence is pinned daemon-side.)
+#[test]
+fn fixture_a_probe_anchor_writes_and_survives() {
+    const PROBE: &str = "# mrd MCP probe scratch\n\n## Anchors\n\n- anchored list item for block-id addressing ^probe-anchor\n\n## Level tests\n\nold body\n";
+    let (dir, root) = ws(&[("probe.md", PROBE)]);
+    let rev = anchor_rev(PROBE, "probe-anchor");
+    splice(
+        &root,
+        None,
+        &plan_args(
+            "probe.md",
+            vec![PlanEdit::Match {
+                hpath: vec![seg("^probe-anchor")],
+                old: "anchored list item".into(),
+                new: "REWRITTEN list item".into(),
+                all: false,
+                rev: Some(rev),
+            }],
+        ),
+        &[],
+        None,
+    )
+    .expect("Fixture A: the toc-listed probe anchor accepts a match write");
+    let after_match = read_back(&dir, "probe.md");
+    assert!(
+        after_match.contains("- REWRITTEN list item for block-id addressing ^probe-anchor\n"),
+        "match landed inside the block, marker intact:\n{after_match}"
+    );
+
+    let rev2 = anchor_rev(&after_match, "probe-anchor");
+    splice(
+        &root,
+        None,
+        &plan_args(
+            "probe.md",
+            vec![PlanEdit::ReplaceSection {
+                hpath: vec![seg("^probe-anchor")],
+                body: "- fresh probe row".into(),
+                rev: Some(rev2),
+            }],
+        ),
+        &[],
+        None,
+    )
+    .expect("Fixture A: whole-block replace lands");
+    assert_eq!(
+        read_back(&dir, "probe.md"),
+        "# mrd MCP probe scratch\n\n## Anchors\n\n- fresh probe row ^probe-anchor\n\n## Level tests\n\nold body\n",
+        "content replaced, address preserved, neighbors untouched"
+    );
+}
+
+/// Fixture B — `health/runtime.md` `^check`: a code-fence-hosted anchor (the
+/// `^check` line trails the closing fence), NOT toc-listed — outside the read
+/// face's anchor law, so the write door must not resolve it either (a write
+/// door wider than the read door is W-2's own asymmetry, inverted). Its
+/// STABLE address through the face is the documented section+find lane: the
+/// containing section's heading path plus a content needle — pinned here
+/// landing a version-pin edit INSIDE the fence, fence and marker untouched.
+/// (The anchor itself stays a walk/run-plane address — `[[page#^check]]`,
+/// `md run` — which this face law does not touch. Pin refresh itself is
+/// ZT-deferred; only addressability rides this card.)
+#[test]
+fn fixture_b_fence_hosted_check_anchor_has_the_section_find_lane() {
+    const RUNTIME: &str = "# Wiki Runtime\n\n## Tasks\n\n```bash\nchk md \"md version\" \"build: 0099f641\" \"build meridian\"\nchk node \"node --version\" \"v24.16.0\" \"osf rebuild\"\nexit $fail\n```\n\n^check\n";
+    let (dir, root) = ws(&[("runtime.md", RUNTIME)]);
+
+    // Half 1 — door symmetry: the fence-hosted id is unlisted on the read
+    // face, so the write door misses with the standing teaching.
+    let err = splice(
+        &root,
+        None,
+        &plan_args(
+            "runtime.md",
+            vec![PlanEdit::Match {
+                hpath: vec![seg("^check")],
+                old: "0099f641".into(),
+                new: "aaaaaaaa".into(),
+                all: false,
+                rev: None,
+            }],
+        ),
+        &[],
+        None,
+    )
+    .expect_err("Fixture B: a host-excluded anchor does not resolve on the write door");
+    assert_eq!(err.message.as_deref(), Some(miss_message("check").as_str()));
+    assert_eq!(read_back(&dir, "runtime.md"), RUNTIME, "refusal moved no bytes");
+
+    // Half 2 — the stable lane: containing section + content find. The pin
+    // edit lands inside the fence; the fence, its other lines, and the
+    // trailing ^check marker are byte-untouched.
+    splice(
+        &root,
+        None,
+        &plan_args(
+            "runtime.md",
+            vec![PlanEdit::Match {
+                hpath: vec![seg("Wiki Runtime"), seg("Tasks")],
+                old: "build: 0099f641".into(),
+                new: "build: feedc0de".into(),
+                all: false,
+                rev: None,
+            }],
+        ),
+        &[],
+        None,
+    )
+    .expect("Fixture B: section+find is the stable write lane for a fence-hosted anchor");
+    assert_eq!(
+        read_back(&dir, "runtime.md"),
+        "# Wiki Runtime\n\n## Tasks\n\n```bash\nchk md \"md version\" \"build: feedc0de\" \"build meridian\"\nchk node \"node --version\" \"v24.16.0\" \"osf rebuild\"\nexit $fail\n```\n\n^check\n",
+        "one pin moved; fence and ^check marker byte-identical"
+    );
+}
