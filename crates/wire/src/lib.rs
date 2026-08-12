@@ -998,6 +998,13 @@ pub struct MountRow {
     /// canonicalized; absent at least on `grey(path-unseeable)`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
+    /// The declared-primary designation (`meridian-md-schema.md` §5.1):
+    /// serialized as literal `true` exactly on the designated row, absent
+    /// everywhere else — absence is the only "not primary" spelling on the
+    /// wire, mirroring the config grammar. A binding ROLE for fleet hosts;
+    /// the engine reports it verbatim and never acts on it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub primary: bool,
 }
 
 /// The answering binary's build identity, carried by a v3 `hello` body.

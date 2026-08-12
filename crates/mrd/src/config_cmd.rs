@@ -100,6 +100,7 @@ fn to_json(
             "path": m.declared_path(),
             "canonical": m.canonical_path().map(|p| p.display().to_string()),
             "kind": m.kind().as_str(),
+            "primary": m.primary(),
             "vault": m.vault(),
             "pin": m.pin(),
             "declared_name": m.declared_name(),
@@ -170,9 +171,12 @@ fn render_human(
         // collapses.
         let _ = write!(
             out,
-            "  {}  {}  {}",
+            "  {}  {}{}  {}",
             m.name(),
             m.kind().as_str(),
+            // The same spelling the wire carries (`primary`), printed beside
+            // the kind — the designation is a role, not a fourth map leg.
+            if m.primary() { " primary" } else { "" },
             m.declared_path()
         );
         if let Some(canonical) = m

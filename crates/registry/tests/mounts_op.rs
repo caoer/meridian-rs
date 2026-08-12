@@ -115,9 +115,12 @@ fn mounts_lifecycle_freshness_and_changed_invalid_refusal() {
     let ghost = tmp.path().join("nowhere");
 
     let config_path = tmp.path().join("conf").join("MERIDIAN.md");
+    // The wiki mount carries the declared-primary designation, so the row
+    // projection is pinned on both sides: literal `true` on the designated
+    // row, NO key anywhere else.
     let base = format!(
-        "{}```meridian-mount\nname: ghost\npath: {}\nkind: git-folder\n```\n",
-        vault_block("wiki", &wiki),
+        "```meridian-mount\nname: wiki\npath: {}\nkind: vault\nprimary: true\nvault: wiki\n```\n\n```meridian-mount\nname: ghost\npath: {}\nkind: git-folder\n```\n",
+        wiki.display(),
         ghost.display()
     );
     write_config(&config_path, &base);
@@ -161,10 +164,16 @@ fn mounts_lifecycle_freshness_and_changed_invalid_refusal() {
         2,
         "both declared mounts served, document order: {first}"
     );
-    // Row d-15c: {name, kind, state, workspace?} in the engine's own words.
+    // Row d-15c: {name, kind, state, workspace?, primary?} in the engine's
+    // own words.
     assert_eq!(table[0]["name"], json!("wiki"));
     assert_eq!(table[0]["kind"], json!("vault"));
     assert_eq!(table[0]["state"], json!("bound"));
+    assert_eq!(
+        table[0]["primary"],
+        json!(true),
+        "the designated row carries literal true (§ A.5): {first}"
+    );
     let canonical_wiki = fs::canonicalize(&wiki).unwrap();
     assert_eq!(
         table[0]["workspace"],
@@ -181,6 +190,10 @@ fn mounts_lifecycle_freshness_and_changed_invalid_refusal() {
     assert!(
         table[1].get("workspace").is_none(),
         "workspace is absent where the binding did not canonicalize: {first}"
+    );
+    assert!(
+        table[1].get("primary").is_none(),
+        "an undesignated row carries NO primary key — absence is the only not-primary spelling on the wire: {first}"
     );
 
     // Unchanged bytes ⇒ the derived table serves again under the same token.
@@ -264,8 +277,10 @@ fn mounts_lifecycle_freshness_and_changed_invalid_refusal() {
 }
 
 /// v3 advertises `mounts` at op grain (the `create` precedent — no dotted
-/// `mounts.<field>`); the frozen v2 caps stay byte-identical, and a v2
-/// session's `mounts` answers `unknown_op`.
+/// `mounts.<field>` at birth) plus exactly the field-only amendments § A.2
+/// ships as dotted caps — today `mounts.primary` and nothing else; the frozen
+/// v2 caps stay byte-identical, and a v2 session's `mounts` answers
+/// `unknown_op`.
 #[test]
 fn v3_advertises_mounts_and_v2_answers_unknown_op() {
     let tmp = TempDir::new().unwrap();
@@ -280,9 +295,11 @@ fn v3_advertises_mounts_and_v2_answers_unknown_op() {
         .map(|c| c.as_str().unwrap())
         .collect();
     assert!(caps.contains(&"mounts"), "v3 caps advertise the op: {hi}");
-    assert!(
-        !caps.iter().any(|c| c.starts_with("mounts.")),
-        "op grain only — no dotted mounts.<field> cap: {hi}"
+    let dotted: Vec<&&str> = caps.iter().filter(|c| c.starts_with("mounts.")).collect();
+    assert_eq!(
+        dotted,
+        vec![&"mounts.primary"],
+        "dotted mounts.<field> caps are exactly the § A.2 field-only amendments — today the declared-primary designation, nothing else: {hi}"
     );
 
     let mut v2 = Conn::open(server.socket_path());

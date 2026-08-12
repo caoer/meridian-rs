@@ -14,15 +14,15 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-/// Fixtures on disk, per the pack README: 7 acceptances + 23 refusals.
-const FIXTURES_ON_DISK: usize = 30;
-/// Cases in the manifest: the 30 fixtures plus 7 that cannot have a file.
-const CASE_COUNT: usize = 37;
+/// Fixtures on disk, per the pack README: 8 acceptances + 26 refusals.
+const FIXTURES_ON_DISK: usize = 34;
+/// Cases in the manifest: the 34 fixtures plus 7 that cannot have a file.
+const CASE_COUNT: usize = 41;
 /// The acceptance / refusal split the pack states.
-const ACCEPTANCES: usize = 11;
-const REFUSALS: usize = 26;
-/// Acceptance fixtures under `corpus/`; the remaining 23 on disk are refusals.
-const ACCEPTANCE_FIXTURES: usize = 7;
+const ACCEPTANCES: usize = 12;
+const REFUSALS: usize = 29;
+/// Acceptance fixtures under `corpus/`; the remaining 26 on disk are refusals.
+const ACCEPTANCE_FIXTURES: usize = 8;
 /// Cases carrying `expect_not` — the ones where the wrong behaviour still looks
 /// healthy, so the refusal alone is not evidence: `env-path-missing` (a silent
 /// fallback LOADS the default file), `no-frontmatter` and `unsupported-version`
@@ -294,6 +294,11 @@ fn check_accept(
                         got.pin.as_deref(),
                         want["pin"].as_str(),
                         "{id}: mount {i} pin — carried VERBATIM, never normalized or re-minted"
+                    );
+                    assert_eq!(
+                        got.primary,
+                        want["primary"].as_bool().unwrap_or(false),
+                        "{id}: mount {i} primary — the designation is DECLARED, never derived, and absence means not-primary"
                     );
                 }
                 other => {
