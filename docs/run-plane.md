@@ -17,6 +17,17 @@ governed effects. It is **consumer-plane, imperative, local** (plan decision
 engine cannot tell run exists."** The daemon, the wire, and the serve path
 carry no run-plane type and no run-plane state.
 
+**Amendment (2026-08-12, phase-2 script-plane ruling): the sentence above is
+narrowed to the TASK entry.** The SCRIPT entry's executor moves into the
+engine daemon — in-process Starlark evaluation behind the wire `script` op
+(wire-contract § A.7) — so the daemon now carries the script entry's
+evaluator and its per-attempt state, for exactly the attempt's duration and
+no longer. The task entry (`mrd run`), the change kernel, and everything
+else in this document stay consumer-plane as written, and the daemon still
+holds no run-plane state ACROSS attempts of any kind. The subprocess script
+lane (`mrd script`, wire-client mode below) stays functional; its removal is
+a separate ruling this amendment does not make.
+
 Sources of truth: the ratified plan (session `21-23-meridian-rs-md-run`,
 `compound plan page (workspace content)`) and the round-1 verdict. This document states the
 surface **as shipped in S1**, including what it deliberately does not
@@ -31,7 +42,7 @@ immediately below):
 |---|---|---|
 | change | `on_change(event)` | a governed change event (the effect kernel) |
 | run | `def run(ctx)` | `mrd run` addressing a task block |
-| run | script — module top level | `mrd script` / MCP `script` carrying caller-supplied inline source |
+| run | script — module top level | `mrd script` / the wire `script` op (wire-contract § A.7) / MCP `script` carrying caller-supplied inline source |
 
 **Amendment to decision #3 (the script entry).** Decision #3 read: *exactly
 two entry points, one per plane, both hermetic.* It is amended in two places
@@ -275,6 +286,16 @@ Layers 1–3 refuse in the entry's own vocabulary and answer a trace; layer 4 is
 the backstop and answers a host refusal, never a face. A hung child that reached
 none of them would hang the tool with nothing bounding it.
 
+*(Amended 2026-08-12, the in-process lane.)* The four layers above price a
+lane whose reads are round trips. On the in-process lane (wire `script`,
+wire-contract § A.7) there are no round trips and no child, so the wall
+clock binds at three sites, all daemon-enforced: at entry before the pass,
+at every read builtin, and pre-commit. Fuel bounds computation between wall
+checks; `catch_unwind` at the eval boundary bounds everything else — a
+panic answers a `fault` trace and the daemon serves its next frame. The
+socket timeouts and the MCP child bound stay on the lanes that have sockets
+and children.
+
 The host-side defaults are **§5.3 host policy** — their existence is contract,
 their values are tunable:
 
@@ -483,6 +504,25 @@ returns to roughly ~7.8 s at 4× on the same slope — over the budget again.
 Capacity planning must read `ceiling = f(reads, corpus)` WITH that slope;
 a flattened impression is exactly what this section exists to prevent.
 
+**The in-process lane's cost shape** *(added 2026-08-12, the entry-world
+ruling)*. Every formula above prices the wire-client lane, where each trip
+pays `pass(C)`. On the in-process lane (wire `script`, § A.7) the pass runs
+once, at entry, and reads serve from the pinned entry state:
+
+```
+wall clock  ≥  entry_pass(C)  +  Σ reads × O(1)  +  commit(C)
+               one pass, at entry   memory-speed     unchanged
+```
+
+`entry_pass(C)` keeps `pass(C)`'s shape — O(corpus) in `stat`s, O(changed)
+in bytes — and the linear term is paid ONCE per attempt instead of once per
+trip, so a program's per-read cost no longer moves with corpus size at all.
+The slope above still governs the entry term and the commit term; what the
+lane removes is the multiplication by `trips(R)`. A stale engine still pays
+`rebuild(C)` at entry in place of `entry_pass(C)`, exactly as above.
+Measured figures for this lane ride the change that lands it, in its
+delivery record — this section states the shape.
+
 **The transaction — stand-still optimistic.** The word **snapshot is
 banned** here: the daemon has no MVCC and v1 must not grow one.
 
@@ -511,6 +551,67 @@ underneath: the commit's §5.1 guard folds **from bytes** under the write flock,
 so a memo that ever disagreed with disk makes the commit refuse
 `fingerprint_mismatch` rather than land. It fails closed, in the vocabulary the
 transaction already speaks.
+
+**Amendment to § The script entry (the entry world — the in-process lane,
+ruled 2026-08-12).** The transaction above states, point 2: *"Reads are
+LIVE. If the world moves mid-script, reads may span states."* That point is
+SUPERSEDED on the in-process lane — the wire `script` op
+(wire-contract § A.7), where the daemon itself evaluates the program. The
+subprocess lane (`mrd script`, wire-client mode) keeps the live-reads law
+above unchanged. Four laws replace point 2 on the in-process lane, and only
+these four:
+
+1. **One pass, at entry.** The currency pass keeps its corpus-grain scope —
+   the whole hash domain proves current, and a poison member anywhere
+   refuses the ENTRY naming the poison (Law A-3c unchanged in scope, moved
+   in time). What changed is WHEN, never WHAT: no doc-grain narrowing, no
+   staleness window at entry, and no watcher — the pass is re-derived per
+   attempt, never maintained incrementally.
+2. **Reads serve the entry world, plus your own arms.** A read of a target
+   the program has not armed serves the entry bytes and the entry rev. A
+   read of a target the program ITSELF armed serves the ARMED content — the
+   entry bytes with the program's own armed edits applied, in arm order —
+   and that content's own rev: what you read is exactly what is hashed
+   (wire-contract §4.2), on the overlay too. Foreign mid-program changes
+   are invisible; the reads of one attempt span ONE state by construction.
+   Recorded-read purity is unmoved — every read, entry-served or
+   overlay-served, is recorded, and eval stays a pure function of
+   (script, args, files, read-response sequence).
+3. **Disk changes only at commit, and the commit guards the LIVE world.**
+   §5.1 is untouched: ONE splice carrying `if_fingerprint` = the entry
+   fingerprint, checked first, against the world as it is NOW. Any
+   interleaved foreign write ⇒ `fingerprint_mismatch` ⇒ nothing commits.
+   The guarantee strengthens: *a committed script read and wrote exactly
+   one workspace fingerprint — and an uncommitted one still read exactly
+   one.*
+4. **This is not the banned snapshot.** The ban above is on daemon-held
+   MVCC — versions retained across attempts. The entry world is
+   attempt-scoped: born at entry, dropped at the answer, never retained,
+   never shared across connections, no as-of parameter. Zero daemon state
+   survives the attempt.
+
+**Rev threading under the entry world (the entry-rev law).** The
+write-follows-read mechanism below says tokens thread from the recording,
+*"using the LAST read of that target, since reads are live."* The rationale
+clause dies on this lane — no read is live — and the mechanism resolves to
+this: **the license is the recording's, the value is the entry world's.** A
+row whose grain the recording holds a read for (any read, overlay-served
+included — the law binds per attempt, and an overlay read is a read of this
+attempt) threads the target's ENTRY rev: the file rev for a `props=` row,
+the section's node rev for an `append`, read off the pinned entry state. A
+row whose target the attempt never read threads nothing and meets the
+engine's own `guard_required`, unchanged. An overlay rev is never a CAS
+token — the pre-batch state the §4.4 guards resolve against is the entry
+state, and a token minted from overlay bytes would name a state no disk
+ever carried. Behavioural parity with the wire-client lane holds for every
+program: read-then-arm and arm-then-read both commit on an unmoved world;
+an unread target refuses whole on both lanes.
+
+**The bracket is structurally satisfied on this lane.** A composed read is
+bracketed by `file_rev` because its 2+N trips could span states; in-process
+there are no trips and one state, so the bracket's purpose is met by
+construction and the A→B→A limit disappears with the window that created
+it. The bracket law itself stays, for the lane that has trips.
 
 A caller may also pin its own `if_fingerprint?` guard. It is checked against
 the minted entry fingerprint **pre-eval** — mismatch refuses immediately with
@@ -544,6 +645,18 @@ commit lowers to ONE guarded `splice` carrying `actor`/`now`/`receipt`. §4.4
 is untouched — splice remains the only write op and the script executor is
 just another client — and the daemon still carries no run-plane type and no
 run-plane state. The whole wire cost of this entry is **zero schema delta**.
+
+*(Amended 2026-08-12.)* The paragraph above is the CLI lane (`mrd script`),
+unchanged. The entry's SECOND lane is the wire `script` op
+(wire-contract § A.7): the caller submits the program in one frame, the
+daemon evaluates it in-process against the entry world, and the commit is
+the SAME one guarded splice, issued daemon-side through the same write
+choke-point with `actor`/`now`/`receipt` threaded verbatim. §4.4 stays
+untouched on this lane too — splice remains the only write op; the `script`
+op ARMS one and embeds its response in the trace. One schema delta exists
+and it is the § A.7 op itself, additive. A daemon-side commit advances the
+delta ring like any wire splice — the CLI lane's missing-delta gap
+(wire-contract §18 row 12) does not extend to this lane.
 
 **The commit is guarded per row, by the read the script itself made.** A wire
 door demands a fingerprint for every edit that changes existing content, or an
@@ -674,8 +787,10 @@ where `CANON` is compact JSON with **object keys sorted lexicographically by
 UTF-8 byte order**, no whitespace between tokens, and RFC 8259-minimal string
 escaping — only `"`, `\`, and the control characters below `U+0020` are escaped;
 every other code point is emitted as raw UTF-8. There is no second spelling of
-this anywhere in the tree: `script::digest::armed_digest` is the only function
-that computes it, and both the arm and the commit reach it through that one call.
+this anywhere in the tree: `effects::digest::armed_digest` is the only function
+that computes it *(module home moved from `mrd::script::digest` on 2026-08-12 so
+the in-process lane reaches the same call — one function, now three callers)*,
+and the arm, the commit, and the § A.7 op all reach it through that one call.
 
 **Why the path is in the domain, and not only the payload.** A `PlanEdit`
 carries no path — the target rides `splice.path` — so a digest over
@@ -977,7 +1092,7 @@ write path. Everything that differs is at the entry.
 | Entry point | `def run(ctx)` (decision: one entry per plane) | module top level — the script IS the body (kernel entry #3) |
 | Languages | starlark + bash (fence dispatch, decision #13) | starlark only; no exec, ever (decision #17 stands) |
 | Hermeticity | hermetic by construction: sealed kernel, zero I/O, `RunCtx` inert | recorded-read purity: eval is a pure function of (script, args, files, read-response sequence); trace records every read; replay against recorded reads is byte-identical (decision #3 amendment) |
-| Reads | none — inputs arrive as inert `RunCtx` data | `read()` lowering to `toc`/`cat` — live, as a wire client through the one door when a daemon is resident |
+| Reads | none — inputs arrive as inert `RunCtx` data | CLI lane: `read()` lowering to `toc`/`cat` — live, as a wire client through the one door. In-process lane (§ A.7): `read()` serving from the entry world plus the program's own armed overlay |
 | Enumeration | page names its own targets | none in-kernel: host resolves selector → inert **sorted** `files[]`, paths only |
 | Commit | one atomic `if_fingerprint`-pinned batch via the local executor | ONE guarded splice as the caller (`actor`/`now`/`receipt` on the request); **write set = one file (v1 law)**; `multi_file_write_set` refuses pre-commit |
 | Concurrency | workspace flock, `LOCK_NB` (decision #9) | stand-still optimistic: entry fingerprint pinned, commit `if_fingerprint` = entry; conflict ⇒ host re-resolves selector and retries (budget 2, `attempts` on the face) |
@@ -1257,7 +1372,7 @@ S1 — ship the scoped claim, never the unqualified one."*
 | Ungoverned writes are never rolled back | law, not gap (decision #14) | they persist as actor-absent external change (§7.1) and the run exits 1 with the delta named |
 | Multi-file crash window (content committed, receipt lost) | accepted (decision #10) | recovery is re-derive; lint finds the missing receipt |
 | Local run beside a resident daemon (§7.1) | accepted | a local run's writes reach the daemon as external change — the same class as any out-of-band edit |
-| The script entry runs in **wire-client mode**, not pure-local | law, not gap | a script must execute AS the caller, and the row above disqualifies the pure-local leg by this plane's own table: its writes reach a resident daemon actor-absent. Through the daemon, a script's writes arrive as governed, actor-carrying change, Delta-minted like any splice |
+| The script entry runs in **wire-client mode**, not pure-local | law, not gap | a script must execute AS the caller, and the row above disqualifies the pure-local leg by this plane's own table: its writes reach a resident daemon actor-absent. Through the daemon, a script's writes arrive as governed, actor-carrying change, Delta-minted like any splice. *(Amended 2026-08-12: the in-process lane — wire `script`, § A.7 — satisfies this row's reason by a shorter path: eval runs inside the daemon and its commit IS the governed write path, actor-carrying and Delta-minted. The law stands; it gains a second conforming lane.)* |
 
 ## Seam map (for reviewers)
 
@@ -1271,6 +1386,7 @@ S1 — ship the scoped claim, never the unqualified one."*
 | stdout record | `crates/run::record` |
 | CLI mount | `crates/mrd::run_cmd` — a client; the charter edge is `laws.md` §crates (`mrd` row) |
 | CLI mount — script entry | `crates/mrd::script::cmd` — the same client edge; its human-mode face is non-normative |
+| in-process script serve (§ A.7) | `crates/registry` (the op arm: entry world, host, threading, commit) over `crates/effects` (kernel, trace, digest) — added 2026-08-12 |
 
 ---
 
