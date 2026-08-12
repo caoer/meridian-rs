@@ -37,6 +37,15 @@ wire = { workspace = true }
 # Version "1" matches `model`'s and `policy`'s pins — one graph copy. Pure compute,
 # no I/O; the crate stays advisory and side-effect free.
 blake3 = "1"
+# The ScriptTrace commit leg is the §4.4 splice response carried VERBATIM as
+# `RawValue` bytes (one commit-fact shape); the trace module moved here
+# 2026-08-12 so the § A.7 in-process serve assembles the same shape the CLI
+# lane does. `raw_value` rides the workspace pin.
+serde_json = { workspace = true }
+# The armed-set digest (one definition, three callers: CLI arm, CLI commit,
+# the § A.7 in-process serve). sha256 for the same MCP-host reason the digest
+# doc states; moved here 2026-08-12 so the daemon reaches the ONE function.
+sha2 = { workspace = true }
 
 [dev-dependencies]
 # Golden descriptor snapshots (rule + event → exact effect set).
@@ -44,5 +53,3 @@ insta = { workspace = true }
 # Invariants: determinism across runs/threads, fuel bounds, no panic on any event,
 # idempotency-key stability. proptest is the stable-runnable fuzz layer.
 proptest = { workspace = true }
-# Golden fixtures + property assertions render effects to canonical JSON.
-serde_json = { workspace = true }

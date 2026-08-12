@@ -65,7 +65,7 @@ pub enum PinOutcome {
 #[derive(Debug)]
 pub struct Registry {
     inner: RwLock<HashMap<PathBuf, WorkspaceEntry>>,
-    engines: RwLock<HashMap<PathBuf, WorkspaceEngine>>,
+    engines: RwLock<HashMap<PathBuf, Arc<WorkspaceEngine>>>,
     /// S6 read-is-the-mint ledger per workspace (D6/H1). Not on
     /// [`WorkspaceEngine`]: rebuilds replace the engine and would evaporate
     /// receipts. Session memory; dropped on idle-reap only.
@@ -351,7 +351,7 @@ impl Registry {
                     return Ok(WarmOutcome::Built { docs: docs_parsed });
                 }
                 if resident == witness {
-                    engines.insert(canonical.clone(), engine);
+                    engines.insert(canonical.clone(), Arc::new(engine));
                     return Ok(WarmOutcome::Built { docs: docs_parsed });
                 }
             }
@@ -370,7 +370,22 @@ impl Registry {
         f: impl FnOnce(Option<&WorkspaceEngine>) -> R,
     ) -> R {
         let engines = self.engines.read().unwrap_or_else(PoisonError::into_inner);
-        f(engines.get(canonical))
+        f(engines.get(canonical).map(|arc| &**arc))
+    }
+
+    /// Clone the warm engine's [`Arc`] for `canonical` — the § A.7 entry
+    /// world's pin. Callers warm first via [`warm_or_build`](Self::warm_or_build).
+    ///
+    /// The clone is O(1) and the read lock drops at return, so a holder never
+    /// blocks a rebuild: a foreign write swaps the MAP entry to a NEW `Arc`
+    /// while the held one keeps the entry generation alive for exactly the
+    /// attempt that pinned it. Attempt-scoped by construction — nothing here
+    /// retains versions (the engines map still holds ONE generation), so this
+    /// is not MVCC and must not grow into one.
+    #[must_use]
+    pub fn engine_snapshot(&self, canonical: &Path) -> Option<Arc<WorkspaceEngine>> {
+        let engines = self.engines.read().unwrap_or_else(PoisonError::into_inner);
+        engines.get(canonical).cloned()
     }
 
     /// Workspace delta ring, created on first use. `workspace` must be

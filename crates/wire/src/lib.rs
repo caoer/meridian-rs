@@ -697,6 +697,47 @@ pub enum Op {
     /// workspace, so no workspace binding is required: the caller discovery
     /// exists for is exactly the agent that does not know a root yet.
     Mounts,
+    /// In-process script submission (§ A.7, v3-only at dispatch): one frame
+    /// carries the run plane's script entry — the daemon evaluates the
+    /// program in-process against the entry world and answers the
+    /// `ScriptTrace` as the body (a run-plane shape, deliberately NOT a
+    /// [`ResponseBody`] variant: the trace embeds the §4.4 splice response
+    /// verbatim, and one commit-fact shape means no wire re-typing).
+    ///
+    /// Every field but `source` is optional, exactly as at the CLI entry.
+    /// `if_root` is the caller's own pre-eval fast-fail pin (the commit's
+    /// §5.1 guard is the ENTRY fingerprint always, engine-supplied);
+    /// `expect_armed` is the pre-splice armed-set gate (run-plane
+    /// § Sub-amendment); `actor`/`now` thread to the commit splice per §9.
+    Script {
+        /// The program: the module top level IS the body.
+        source: String,
+        /// The caller's arguments — an inert dict, string keys and values.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        args: BTreeMap<String, String>,
+        /// Host-enumerated paths only, no content; sorted at decode.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        files: Vec<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        actor: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        now: Option<String>,
+        /// The §6 receipt address, threaded to the commit splice verbatim.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        receipt: Option<ReceiptAddr>,
+        /// The caller's own pre-eval world pin: mismatch against the entry
+        /// fingerprint refuses with zero evaluation (`conflict` trace).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        if_root: Option<Root>,
+        /// Rehearsal: the commit splice carries `dry:true`; nothing lands.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dry: Option<bool>,
+        /// The armed-set expectation: a digest that does not match the rows
+        /// this attempt armed (after rev threading) refuses BEFORE the
+        /// splice is issued.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        expect_armed: Option<String>,
+    },
 }
 
 // ---------------------------------------------------------------------------

@@ -115,6 +115,9 @@ pub fn project_response(frame: &mut Value) {
                 // carries the declared-primary designation (§ A.5).
                 caps.push(Value::String("mounts.primary".to_string()));
                 caps.push(Value::String("hello.identity".to_string()));
+                // In-process script submission at op grain (§ A.7, the same
+                // precedent — no dotted script.<field> at birth).
+                caps.push(Value::String("script".to_string()));
             }
             body.insert("contract".to_string(), Value::String("v3".to_string()));
         }
@@ -363,7 +366,8 @@ mod tests {
                 "create",
                 "mounts",
                 "mounts.primary",
-                "hello.identity"
+                "hello.identity",
+                "script"
             ])
         );
     }

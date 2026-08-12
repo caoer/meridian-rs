@@ -27,6 +27,11 @@ cache = { workspace = true }
 # `model` carries the resident types (CorpusIndex, Document, MerkleRoot fingerprint).
 fs = { workspace = true }
 model = { workspace = true }
+# § A.7 in-process script serve (2026-08-12): the daemon evaluates the script
+# entry against the entry world — the kernel, the trace shape, and the armed
+# digest all live in `effects` so this crate and the CLI lane reach ONE
+# implementation of each.
+effects = { workspace = true }
 # The spine's read surface (U2): `query` serves toc/links over the resident
 # index; `syntax` is the parser the resident build folds in (via `fs`). Declared
 # here as the U1 engine's read/parse edges; the U1 gate exercises `query` over a

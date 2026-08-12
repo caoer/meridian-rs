@@ -8,8 +8,8 @@
 use std::collections::BTreeMap;
 
 use effects::{
-    EvalError, ReadFace, ReadFault, ReadPosition, ScriptCtx, ScriptHost, ScriptLimits, SecFacts,
-    TocEntry, TocFacts, eval_script, replay_script,
+    ArmedEdit, EvalError, ReadFace, ReadFault, ReadPosition, ScriptCtx, ScriptHost, ScriptLimits,
+    SecFacts, TocEntry, TocFacts, eval_script, replay_script,
 };
 
 /// A fixture workspace: paths → toc facts, `(path, section)` → section facts.
@@ -71,7 +71,7 @@ impl FixtureHost {
 }
 
 impl ScriptHost for FixtureHost {
-    fn toc(&mut self, path: &str) -> Result<TocFacts, ReadFault> {
+    fn toc(&mut self, path: &str, _armed: &[ArmedEdit]) -> Result<TocFacts, ReadFault> {
         self.calls += 1;
         self.pages.get(path).cloned().ok_or_else(|| ReadFault {
             path: path.to_owned(),
@@ -80,7 +80,12 @@ impl ScriptHost for FixtureHost {
         })
     }
 
-    fn cat(&mut self, path: &str, section: &str) -> Result<SecFacts, ReadFault> {
+    fn cat(
+        &mut self,
+        path: &str,
+        section: &str,
+        _armed: &[ArmedEdit],
+    ) -> Result<SecFacts, ReadFault> {
         self.calls += 1;
         self.sections
             .get(&(path.to_owned(), section.to_owned()))
@@ -111,11 +116,16 @@ impl NoReadHost {
 }
 
 impl ScriptHost for NoReadHost {
-    fn toc(&mut self, path: &str) -> Result<TocFacts, ReadFault> {
+    fn toc(&mut self, path: &str, _armed: &[ArmedEdit]) -> Result<TocFacts, ReadFault> {
         unreachable!("the host was consulted for toc({path})");
     }
 
-    fn cat(&mut self, path: &str, section: &str) -> Result<SecFacts, ReadFault> {
+    fn cat(
+        &mut self,
+        path: &str,
+        section: &str,
+        _armed: &[ArmedEdit],
+    ) -> Result<SecFacts, ReadFault> {
         unreachable!("the host was consulted for cat({path}, {section})");
     }
 
