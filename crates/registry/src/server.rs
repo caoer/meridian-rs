@@ -767,6 +767,24 @@ fn handle_line(
     line: &str,
     build_sha: Option<&str>,
 ) -> String {
+    // §3.1 raw-lexeme id law: classification and id validation happen on the
+    // RAW `id` lexeme, BEFORE typed decode. A non-conforming lexeme is refused
+    // `bad_request` with `id:null` plus the verbatim lexeme in `id_raw` —
+    // never served, never reclassified as a notification. An unparseable line
+    // is framing, not id law: it falls through to the malformed-request answer.
+    if let Ok(transport::IdScan::BadId(lexeme)) = transport::scan_id(line) {
+        let mut error = ErrorBody::new(ErrorCode::BadRequest);
+        error.id_raw = Some(lexeme);
+        return wire_line(
+            &wire::Response {
+                id: None,
+                ok: false,
+                payload: ResponsePayload::Error { error },
+            },
+            *rev,
+            None,
+        );
+    }
     let value: Value = match serde_json::from_str(line) {
         Ok(value) => value,
         Err(e) => {

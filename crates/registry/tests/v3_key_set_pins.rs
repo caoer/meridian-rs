@@ -71,6 +71,13 @@ impl Conn {
     fn call(&mut self, request: &Value) -> Value {
         let mut line = serde_json::to_string(request).unwrap();
         line.push('\n');
+        self.call_line(&line)
+    }
+
+    /// One raw frame in, one frame out — for lexemes no `Value` can carry
+    /// (a `2^64` id overflows `u64`, and re-serializing it as f64 would
+    /// change the lexeme under test).
+    fn call_line(&mut self, line: &str) -> Value {
         self.writer.write_all(line.as_bytes()).unwrap();
         self.writer.flush().unwrap();
         let mut response = String::new();
@@ -843,40 +850,62 @@ fn the_guard_required_error_key_set_is_pinned() {
 }
 
 // ---------------------------------------------------------------------------
-// §3.1 id discipline — a divergence, recorded rather than papered over
+// §3.1 id discipline — the raw-lexeme law, served at the daemon door
 // ---------------------------------------------------------------------------
 
-/// §3.1 says a non-integer `id` lexeme is `bad_request` echoing `id_raw`. The
-/// daemon does not serve it: a string `id` is accepted, the request executes,
-/// and the response carries `id: null` with `ok: true` — an answer the caller
-/// cannot correlate. This test pins what is served; the contract shape gets the
-/// `#[ignore]`d twin below.
+/// §3.1: a non-integer `id` lexeme is refused `bad_request` echoing `id_raw` —
+/// the daemon answers the law at frame classification, BEFORE decode/dispatch
+/// (`transport::scan_id` at the door), and never serves the request. The error
+/// frame carries `id:null`; a single-shot client reads `id_raw` for the
+/// offending lexeme verbatim.
 #[test]
-fn a_non_integer_id_is_accepted_as_served_on_the_daemon() {
+fn a_non_integer_id_is_refused_with_id_raw_at_the_daemon_door() {
     let (fx, mut conn) = Fixture::start();
     let raw_id = conn.call(&json!({"id": "7", "op": "fingerprint"}));
     assert_eq!(
         raw_id["ok"],
-        json!(true),
-        "as served: the daemon executes the request rather than refusing it: {raw_id}"
+        json!(false),
+        "the daemon refuses the frame rather than serving it: {raw_id}"
     );
     assert_eq!(
         raw_id["id"],
         Value::Null,
-        "the un-parseable lexeme becomes a null id — the correlation is lost \
-         silently, which is the half of §3.1 the daemon does implement: {raw_id}"
+        "the non-conforming lexeme is never echoed as a valid id: {raw_id}"
+    );
+    assert_eq!(
+        raw_id["error"]["code"],
+        json!("bad_request"),
+        "one malformed-envelope code (§8 W4: bad_id folded into bad_request): {raw_id}"
+    );
+    assert_eq!(
+        raw_id["error"]["id_raw"],
+        json!("\"7\""),
+        "the offending lexeme, verbatim — quotes kept: {raw_id}"
+    );
+    assert_eq!(
+        raw_id["error"]["recovery"],
+        json!("fix"),
+        "the §8 binding: the envelope is the caller's to fix (the respawn \
+         consequence is the client-side null-id corruption law, §3.1, keyed \
+         off the frame header — not this field): {raw_id}"
     );
     pin_keys(
         &raw_id,
-        &["body", "id", "meta", "ok"],
-        "non-integer-id response frame (as served)",
+        &["error", "id", "ok"],
+        "non-integer-id refusal frame",
+    );
+    pin_keys(
+        &raw_id["error"],
+        &["code", "id_raw", "recovery"],
+        "bad_request{id_raw} error",
     );
     fx.shutdown();
 }
 
 /// Contract §3.1: the same request is a `bad_request` echoing `id_raw`.
+/// Served since the door scan landed (2026-08-12) — the R3a gap this test was
+/// ignored for is closed; row 9's disposition is this refusal.
 #[test]
-#[ignore = "R3a finding — §3.1 id_raw is never served by the daemon, and the sidecar host that did serve it is DROPPED (§3.3, 2026-08-06), so no host serves it; still needs a disposition card"]
 fn contract_3_1_a_non_integer_id_is_refused_with_id_raw() {
     let (fx, mut conn) = Fixture::start();
     let raw_id = conn.call(&json!({"id": "7", "op": "fingerprint"}));
@@ -885,6 +914,27 @@ fn contract_3_1_a_non_integer_id_is_refused_with_id_raw() {
         &raw_id["error"],
         &["code", "id_raw", "recovery"],
         "bad_request{id_raw} error",
+    );
+    fx.shutdown();
+}
+
+/// Contract §3.1: an oversized numeric id (`2^64`, overflowing `u64`) is the
+/// same refusal — a bad request, never silently reclassified as a notification.
+#[test]
+fn an_out_of_range_id_is_refused_never_reclassified_as_notification() {
+    let (fx, mut conn) = Fixture::start();
+    let raw_id = conn.call_line("{\"id\":18446744073709551616,\"op\":\"fingerprint\"}\n");
+    assert_eq!(raw_id["ok"], json!(false), "{raw_id}");
+    assert_eq!(raw_id["id"], Value::Null, "{raw_id}");
+    assert_eq!(
+        raw_id["error"]["id_raw"],
+        json!("18446744073709551616"),
+        "2^64 refuses as itself: {raw_id}"
+    );
+    pin_keys(
+        &raw_id["error"],
+        &["code", "id_raw", "recovery"],
+        "bad_request{id_raw} error (2^64)",
     );
     fx.shutdown();
 }
