@@ -104,7 +104,9 @@ fn assert_escape_refusal(
         "grammar token leads: {msg}"
     );
     assert!(
-        msg.contains(&format!("body line {line} is a level-{payload_level} heading")),
+        msg.contains(&format!(
+            "body line {line} is a level-{payload_level} heading"
+        )),
         "names the offending line + its level: {msg}"
     );
     assert!(
@@ -112,7 +114,9 @@ fn assert_escape_refusal(
         "names the offending heading text: {msg}"
     );
     assert!(
-        msg.contains("target \"Page/Level tests\" is level 2, so payload headings must be level 3+"),
+        msg.contains(
+            "target \"Page/Level tests\" is level 2, so payload headings must be level 3+"
+        ),
         "names the target's level and the floor: {msg}"
     );
     assert!(
@@ -164,12 +168,7 @@ fn case_01_plain_body_lands_in_section() {
 #[test]
 fn case_02_deeper_h3_nests_inside_target() {
     let (dir, root) = ws();
-    replace(
-        &root,
-        "intro\n\n### Sub\n\nnested\n",
-        &target_rev(&root),
-    )
-    .expect("commits");
+    replace(&root, "intro\n\n### Sub\n\nnested\n", &target_rev(&root)).expect("commits");
     assert_eq!(
         page_bytes(&dir),
         "# Page\n\n## Level tests\nintro\n\n### Sub\n\nnested\n## Next section\n"
@@ -294,7 +293,7 @@ fn case_08_fenced_hash_lines_are_contained() {
 /// dialect behavior pending a slated engine-side define (leader ruling
 /// 2026-08-12): the engine's dialect parse does not mint setext headings, so
 /// the payload splices CONTAINED as body text and no new section exists in
-/// the engine's tree. The engine/Obsidian divergence (CommonMark renders an
+/// the engine's tree. The engine/Obsidian divergence (`CommonMark` renders an
 /// h2) stays recorded in the ratified spec, case 9 — a future define should
 /// flip exactly this test.
 #[test]
