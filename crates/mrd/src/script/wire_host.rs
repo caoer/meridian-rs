@@ -94,6 +94,15 @@ impl SocketDoor {
                     .map_or_else(|| "(no error body)".to_owned(), |e| e.get().to_owned()),
             )));
         }
+        // 0025 socket law: identity equality on the hello frame already in
+        // hand (one voice with the read/links lanes). Parsed once, at connect.
+        let body: Option<Value> = match frame.body.as_deref() {
+            Some(raw) => Some(serde_json::from_str(raw.get()).map_err(io::Error::other)?),
+            None => None,
+        };
+        if let Err(message) = crate::engine::hello_identity_skew(body.as_ref(), socket) {
+            return Err(io::Error::other(message));
+        }
         Ok(door)
     }
 }
@@ -644,8 +653,15 @@ mod tests {
             let mut line = String::new();
             reader.read_line(&mut line).expect("read the hello");
             let mut w = stream;
-            w.write_all(b"{\"ok\":true,\"body\":{\"proto\":1,\"server\":\"fake\",\"caps\":[]}}\n")
-                .expect("answer");
+            // The control publishes THIS build's identity: the 0025 socket law
+            // refuses an identity-less local hello, and this test measures the
+            // deadline, not the law.
+            let frame = format!(
+                "{{\"ok\":true,\"body\":{{\"proto\":1,\"server\":\"fake\",\"caps\":[],\
+                 \"identity\":{{\"build\":\"{}\"}}}}}}\n",
+                env!("MRD_BUILD_SHA")
+            );
+            w.write_all(frame.as_bytes()).expect("answer");
             w.flush().expect("flush");
         });
         SocketDoor::connect(&sock, dir.path()).expect("an answering daemon binds the connection");
@@ -679,6 +695,44 @@ mod tests {
             "the socket's own deadline is what fired, not something faster: {elapsed:?}"
         );
         held.join().expect("the mute listener finishes");
+    }
+
+    /// **The script host refuses a foreign-build daemon at connect** (0025
+    /// socket law): the handshake succeeds, the identity does not match, and
+    /// the door never opens. One voice with the read/links lanes — both
+    /// builds named, the verdict, the remedy.
+    #[test]
+    fn a_foreign_build_daemon_is_refused_at_connect_and_both_builds_are_named() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sock = dir.path().join("daemon.sock");
+        let foreign = "feedfacefeedfacefeedfacefeedfacefeedface";
+
+        let listener = UnixListener::bind(&sock).expect("bind");
+        let served = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept");
+            let mut reader = io::BufReader::new(stream.try_clone().expect("clone"));
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("read the hello");
+            let mut w = stream;
+            let frame = format!(
+                "{{\"ok\":true,\"body\":{{\"proto\":1,\"server\":\"fake\",\"caps\":[],\
+                 \"identity\":{{\"build\":\"{foreign}\"}}}}}}\n"
+            );
+            w.write_all(frame.as_bytes()).expect("answer");
+            w.flush().expect("flush");
+        });
+
+        let Err(refusal) = SocketDoor::connect(&sock, dir.path()) else {
+            panic!("a foreign-build daemon must not bind the connection")
+        };
+        served.join().expect("the listener finishes");
+
+        let message = refusal.to_string();
+        assert!(
+            message.contains(foreign) && message.contains(env!("MRD_BUILD_SHA")),
+            "the refusal names BOTH builds: {message}"
+        );
+        assert!(message.contains("SKEW"), "the one skew voice: {message}");
     }
 
     /// **The deadline refusal is pinned, and it claims nothing the host cannot
