@@ -26,11 +26,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+pub mod digest;
 mod kernel;
 mod script_edit;
+pub mod trace;
 
 pub use kernel::validate;
-pub use script_edit::ArmedEdit;
+pub use script_edit::{ArmedEdit, hpath_addresses};
 
 /// One rule's metered outcome: typed result plus exact fuel (Starlark ticks)
 /// and peak-heap bytes. Never-reached eval → `0`/`0` + authoring fault; bomb
@@ -797,9 +799,11 @@ impl Default for ScriptLimits {
     }
 }
 
-/// The one effectful seam of the script entry. Its only production implementor
-/// is the wire client (reads lower to `toc`/`cat` through the one door); tests
-/// and replay implement it too, which is what makes the replay law testable.
+/// The one effectful seam of the script entry. Two production implementors —
+/// the wire client (reads lower to `toc`/`cat` through the one door, live) and
+/// the § A.7 in-process entry-world host (reads serve from the pinned entry
+/// state plus the program's own armed overlay); tests and replay implement it
+/// too, which is what makes the replay law testable.
 ///
 /// The kernel calls `actor` once per attempt, before eval — identity is
 /// threaded (§9), never minted.
@@ -809,20 +813,33 @@ impl Default for ScriptLimits {
 pub trait ScriptHost: Send {
     /// The §4.1 toc face for `path`.
     ///
+    /// `armed` is the program's OWN armed list so far, in arm order — the
+    /// read-your-own-writes seam (run-plane § the entry world, 2026-08-12).
+    /// It rides the READ call, never the arm, so `put()` stays pure. A host
+    /// serving live reads (the wire client) ignores it; the entry-world host
+    /// composes the overlay from it; replay ignores it too, because the
+    /// recording already carries the served face.
+    ///
     /// # Errors
     /// A [`ReadFault`] when the host cannot serve the page; the script aborts.
-    fn toc(&mut self, path: &str) -> Result<TocFacts, ReadFault>;
+    fn toc(&mut self, path: &str, armed: &[ArmedEdit]) -> Result<TocFacts, ReadFault>;
 
     /// The §4.2 cat face for one `section` of `path`. There is no whole-file
-    /// body: read one section, not the disk.
+    /// body: read one section, not the disk. `armed` as on [`ScriptHost::toc`].
     ///
     /// # Errors
     /// A [`ReadFault`] when the host cannot serve the section; the script aborts.
-    fn cat(&mut self, path: &str, section: &str) -> Result<SecFacts, ReadFault>;
+    fn cat(&mut self, path: &str, section: &str, armed: &[ArmedEdit])
+    -> Result<SecFacts, ReadFault>;
 
     /// The caller's own identity, returned by the `me()` builtin.
     fn actor(&self) -> &str;
 }
+
+/// The script entry's default wall clock — §5.3-class host policy with ONE
+/// spelling: the CLI lane and the § A.7 in-process serve both derive their
+/// deadline from here, so "7 seconds" cannot drift into two values.
+pub const DEFAULT_WALL_CLOCK: std::time::Duration = std::time::Duration::from_secs(7);
 
 /// Why a host could not serve a read. Rendered by the consumer plane; the
 /// script aborts whole (nothing partial ever lands).
@@ -1061,7 +1078,7 @@ impl<'r> RecordedHost<'r> {
 }
 
 impl ScriptHost for RecordedHost<'_> {
-    fn toc(&mut self, path: &str) -> Result<TocFacts, ReadFault> {
+    fn toc(&mut self, path: &str, _armed: &[ArmedEdit]) -> Result<TocFacts, ReadFault> {
         match self.next_face(path, None)? {
             ReadFace::Toc(facts) => Ok(facts.clone()),
             ReadFace::Section(_) => Err(ReadFault {
@@ -1072,7 +1089,7 @@ impl ScriptHost for RecordedHost<'_> {
         }
     }
 
-    fn cat(&mut self, path: &str, section: &str) -> Result<SecFacts, ReadFault> {
+    fn cat(&mut self, path: &str, section: &str, _armed: &[ArmedEdit]) -> Result<SecFacts, ReadFault> {
         match self.next_face(path, Some(section))? {
             ReadFace::Section(facts) => Ok(facts.clone()),
             ReadFace::Toc(_) => Err(ReadFault {

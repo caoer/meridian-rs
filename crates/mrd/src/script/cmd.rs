@@ -308,27 +308,9 @@ fn section_rev_of(
 /// `^anchor` row and a dewey ordinal are real addresses that an `append` (which
 /// carries an hpath) cannot be pointed at, so they match no armed row.
 fn addresses(recorded: &str, hpath: &[wire::HpathSeg]) -> bool {
-    let ReadSel::Hpath { hpath: parsed } = ReadSel::parse(recorded) else {
-        return false;
-    };
-    // Empty segments carry no address — `ReadSel::parse("/A")` yields `["", "A"]`
-    // and the arm filters them, so the comparison filters them on both sides or
-    // one leading slash decides a CAS token.
-    let mut recorded = parsed
-        .iter()
-        .map(|seg| seg.h.as_str())
-        .filter(|h| !h.is_empty());
-    let mut armed = hpath
-        .iter()
-        .map(|seg| seg.h.as_str())
-        .filter(|h| !h.is_empty());
-    loop {
-        match (recorded.next(), armed.next()) {
-            (None, None) => return true,
-            (a, b) if a != b => return false,
-            _ => {}
-        }
-    }
+    // The ONE matcher, shared with the § A.7 entry-rev threading — a licensed
+    // row must not depend on which lane evaluated it (moved 2026-08-12).
+    effects::hpath_addresses(recorded, hpath)
 }
 
 /// The §4.7 integrity rung: mint the entry fingerprint.

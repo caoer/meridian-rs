@@ -352,6 +352,24 @@ fn read_anchor(f: &wire_map::facts::ReadFact) -> Option<wire::ReadAnchor> {
 ///
 /// `value` is the § A.6.1 DECODED scalar, not the stored bytes: this plane is
 /// typed `string`, and a reader comparing `owner` against an id must not be
+/// The § A.3 props plane of one document — `read_props` published for the
+/// § A.7 in-process serve, which builds the script toc face from the same
+/// arms the composed read serves (one § A.6 decode, one spelling per lane).
+#[must_use]
+pub fn props_of(doc: &model::Document) -> Vec<wire::ReadProp> {
+    read_props(doc)
+}
+
+/// The composed read's own whole-file word count, published for the § A.7
+/// in-process serve — the same `words_total` sum `composed_read` serves, so
+/// the script face's `words` agrees across lanes.
+#[must_use]
+pub fn words_of(doc: &model::Document) -> usize {
+    let facts = wire_map::facts::read_facts(&wire_map::project_toc(doc), doc.raw.as_bytes());
+    let total: u64 = facts.iter().map(|f| f.words).sum();
+    usize::try_from(total).unwrap_or(usize::MAX)
+}
+
 /// handed quote bytes it never asked about. `span`/`prop_rev` stay over the
 /// stored form (§ A.6.2) — they answer a guard question, not a value one.
 fn read_props(doc: &model::Document) -> Vec<wire::ReadProp> {

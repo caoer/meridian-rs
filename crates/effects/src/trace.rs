@@ -17,7 +17,7 @@
 //! Telemetry is unconditional — present on faults and refusals too, the
 //! `RuleTelemetry` precedent.
 
-use effects::{ArmedEdit, EvalError, ReadFace, ReadPosition, ScriptEval, ScriptTelemetry};
+use crate::{ArmedEdit, EvalError, ReadFace, ReadPosition, ScriptEval, ScriptTelemetry};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use wire::{PlanEdit, Recovery};
@@ -257,7 +257,7 @@ pub struct ScriptTrace {
     /// a guard refusal, which is sharper than an absent leg alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guard_expected: Option<String>,
-    /// The digest of the armed set — `super::digest::armed_digest` over the rows
+    /// The digest of the armed set — `crate::digest::armed_digest` over the rows
     /// the armed block publishes. Present exactly when something was armed.
     ///
     /// **This field is what makes the host a courier instead of a second
@@ -273,7 +273,7 @@ pub struct ScriptTrace {
     /// `request.receipt`, never `plan_edits[]`, so it is outside this value by
     /// construction and gated on its own pre-spawn path.
     ///
-    /// It carries the digest's domain tag (`super::digest::DOMAIN_TAG`), so a
+    /// It carries the digest's domain tag (`crate::digest::DOMAIN_TAG`), so a
     /// host reading this field can tell an engine that hashes `(path, edit)`
     /// pairs from one that hashed payloads alone — by literal prefix, with no
     /// parsing. That is a capability assertion, not a canonicalization, so the
@@ -424,7 +424,7 @@ impl ScriptTrace {
             // sends as `plan_edits[]`. Hashing the pre-threading rows would
             // publish a digest for a set that never goes on any wire.
             armed_digest: (!eval.armed.is_empty()).then(|| {
-                super::digest::armed_digest(&super::digest::ArmedRow::of_all(&eval.armed))
+                crate::digest::armed_digest(&crate::digest::ArmedRow::of_all(&eval.armed))
             }),
             commit_unknown,
             telemetry: eval.telemetry,
