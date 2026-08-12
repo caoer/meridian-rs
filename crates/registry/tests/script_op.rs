@@ -14,7 +14,10 @@
 //! - fuel exhaustion answers a `budget` fault and the daemon SURVIVES;
 //! - a second content path refuses at arm time (nothing lands);
 //! - `dry` rehearses without disk effect;
-//! - strict decode refuses unknown fields; v2 sessions answer `unknown_op`.
+//! - strict decode refuses unknown fields; v2 sessions answer `unknown_op`;
+//! - §12.1 addressability: an out-of-domain path serves on this lane as on
+//!   the CLI lane (live single-file load), and writes without moving the
+//!   fingerprint.
 //!
 //! Mid-eval foreign-edit invisibility, entry-rev-vs-overlay-rev threading,
 //! wall-clock sites, and panic containment need in-process seams and are
@@ -320,6 +323,93 @@ fn a_later_attempt_enters_at_the_moved_world() {
         first["entry_fingerprint"], second["entry_fingerprint"],
         "two attempts, two entry fingerprints"
     );
+}
+
+// ---------------------------------------------------------------------------
+// §12.1 addressability: out-of-domain paths serve on this lane as on the CLI
+// lane (ruled 2026-08-12: "mrd mcp should be same as cli").
+// ---------------------------------------------------------------------------
+
+/// A real file under the root but outside the hash domain — a dot-directory
+/// page, a non-md file — serves by explicit path exactly as it does on the
+/// wire-client lane: hash domain ⊂ addressable domain, one answer at every
+/// door. Before this fold the same script answered `no_effect` on the
+/// subprocess lane and a fault here (review B2, live-confirmed).
+#[test]
+fn an_out_of_domain_path_serves_on_this_lane_as_on_the_cli_lane() {
+    let tmp = TempDir::new().unwrap();
+    let ws = seeded(&tmp);
+    fs::create_dir_all(ws.join(".obsidian")).unwrap();
+    fs::write(
+        ws.join(".obsidian/hidden.md"),
+        "---\nstatus: open\n---\n# Hidden\n",
+    )
+    .unwrap();
+    fs::write(ws.join("notes.txt"), "# Notes\n\nplain text\n").unwrap();
+    let _server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(&test_config(&tmp).socket_path);
+    conn.hello_v3(&ws);
+
+    let resp = conn.call(&script(
+        14,
+        "a = read(\".obsidian/hidden.md\")\nb = read(\"notes.txt\")\n",
+    ));
+    let trace = trace_of(&resp);
+    assert_eq!(
+        trace["outcome"],
+        json!("no_effect"),
+        "both reads serve — the CLI lane's own answer: {trace}"
+    );
+    assert!(trace.get("fault").is_none(), "no fault: {trace}");
+    let rows = trace["trace"].as_array().unwrap();
+    assert_eq!(rows.len(), 2, "two recorded reads: {trace}");
+    assert_eq!(
+        rows[0]["face"]["Toc"]["fm"]["status"],
+        json!("open"),
+        "the dot-directory page serves its real face: {trace}"
+    );
+    assert!(
+        rows[1]["face"]["Toc"]["rev"].as_str().is_some(),
+        "the non-md file serves spans and mints a rev like any member: {trace}"
+    );
+}
+
+/// The read-then-write flow on an out-of-domain target: the read licenses the
+/// row, the CAS token values from the live disk file (§12.1: mintable at the
+/// read door like any other), and the commit lands WITHOUT moving the
+/// fingerprint — `fingerprint_before == fingerprint_after` across such a
+/// write, the domain filter gating hashing, never load.
+#[test]
+fn an_out_of_domain_write_commits_without_moving_the_fingerprint() {
+    let tmp = TempDir::new().unwrap();
+    let ws = seeded(&tmp);
+    fs::create_dir_all(ws.join(".obsidian")).unwrap();
+    fs::write(
+        ws.join(".obsidian/hidden.md"),
+        "---\nstatus: open\n---\n# Hidden\n",
+    )
+    .unwrap();
+    let _server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(&test_config(&tmp).socket_path);
+    conn.hello_v3(&ws);
+    let entry = conn.fingerprint();
+
+    let resp = conn.call(&script(
+        15,
+        "t = read(\".obsidian/hidden.md\")\nput(\".obsidian/hidden.md\", props={\"status\": \"done\"})\n",
+    ));
+    let trace = trace_of(&resp);
+    assert_eq!(trace["outcome"], json!("committed"), "trace: {trace}");
+    let leg = &trace["commit"];
+    assert_eq!(leg["fingerprint_before"].as_str().unwrap(), entry);
+    assert_eq!(
+        leg["fingerprint_after"].as_str().unwrap(),
+        entry,
+        "out-of-domain bytes never move the fingerprint: {trace}"
+    );
+    let on_disk = fs::read_to_string(ws.join(".obsidian/hidden.md")).unwrap();
+    assert!(on_disk.contains("status: done"), "landed: {on_disk}");
+    assert_eq!(conn.fingerprint(), entry, "the ambient world stands still");
 }
 
 // ---------------------------------------------------------------------------

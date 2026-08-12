@@ -1779,13 +1779,20 @@ wire trips, zero re-walks, no doc-grain narrowing. Read-your-own-writes: a
 read of a target the program itself armed serves the ARMED content (the
 entry bytes with the program's own armed edits applied, in arm order) and
 that content's own rev — what you read is exactly what is hashed (§4.2), on
-the overlay too. Foreign mid-program changes are INVISIBLE to reads: disk
-moves only at commit, and the commit's §5.1 guards run against the LIVE
-world unchanged — `if_fingerprint` = the entry fingerprint refuses
-`fingerprint_mismatch` when anything foreign landed. Every read of one
-attempt is therefore consistent with exactly one fingerprint BY
-CONSTRUCTION, which is what the wire-client lane's composed-read bracket
-exists to approximate across trips.
+the overlay too. Foreign mid-program changes are INVISIBLE to reads **within
+the hash domain — the surface the entry fingerprint covers**: disk moves
+only at commit, and the commit's §5.1 guards run against the LIVE world
+unchanged — `if_fingerprint` = the entry fingerprint refuses
+`fingerprint_mismatch` when anything foreign landed. Every read of a domain
+member in one attempt is therefore consistent with exactly one fingerprint
+BY CONSTRUCTION, which is what the wire-client lane's composed-read bracket
+exists to approximate across trips. **Out-of-domain paths stay addressable
+and stay LIVE (§12.1: hash domain ⊂ addressable domain, one answer at every
+door):** a real file under the root that the domain does not hold serves
+from a single-file disk load on this lane exactly as on the wire-client
+lane, so a script moving lanes does not regress — and the stand-still
+guarantee does not extend to it, exactly as the entry fingerprint never
+covered its bytes.
 
 **Not the banned snapshot.** The entry world is attempt-scoped: born at
 entry, dropped when the attempt answers, never retained across attempts,

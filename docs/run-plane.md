@@ -574,6 +574,11 @@ these four:
    and that content's own rev: what you read is exactly what is hashed
    (wire-contract §4.2), on the overlay too. Foreign mid-program changes
    are invisible; the reads of one attempt span ONE state by construction.
+   The ONE state is the hash domain's: an out-of-domain path
+   (wire-contract §12.1) stays addressable on this lane too and serves
+   from a live single-file disk load — the stand-still guarantee is the
+   fingerprint's surface and nothing wider, exactly as the entry
+   fingerprint never covered those bytes.
    Recorded-read purity is unmoved — every read, entry-served or
    overlay-served, is recorded, and eval stays a pure function of
    (script, args, files, read-response sequence).
