@@ -82,10 +82,7 @@ fn hseq(target: &SecRef) -> Vec<(String, Option<u32>)> {
 }
 
 fn owned(chain: &[(&str, Option<u32>)]) -> Vec<(String, Option<u32>)> {
-    chain
-        .iter()
-        .map(|(h, n)| ((*h).to_string(), *n))
-        .collect()
+    chain.iter().map(|(h, n)| ((*h).to_string(), *n)).collect()
 }
 
 /// blake3("")[:16] through the engine's own A.6.3a′ door (`fm_upsert_before`
@@ -137,7 +134,10 @@ fn a_create_arms_the_born_section_not_the_parent() {
         None,
     )
     .expect("the rehearsal answers");
-    let ResponseBody::Splice { armed: dry_armed, .. } = &dry.body else {
+    let ResponseBody::Splice {
+        armed: dry_armed, ..
+    } = &dry.body
+    else {
         panic!("a splice returns a Splice body");
     };
     assert_eq!(dry_armed.edits.len(), 1);
@@ -147,8 +147,14 @@ fn a_create_arms_the_born_section_not_the_parent() {
         "the dry row names the born section"
     );
 
-    let outcome = splice(&root, None, &args(vec![create("Fresh", "born body")], true), &[], None)
-        .expect("the birth commits");
+    let outcome = splice(
+        &root,
+        None,
+        &args(vec![create("Fresh", "born body")], true),
+        &[],
+        None,
+    )
+    .expect("the birth commits");
     let ResponseBody::Splice { armed, .. } = &outcome.body else {
         panic!("a splice returns a Splice body");
     };
@@ -253,7 +259,10 @@ fn two_births_of_one_title_in_one_batch_take_request_order() {
         &root,
         None,
         &args(
-            vec![create("Fresh", "first born"), create("Fresh", "second born")],
+            vec![
+                create("Fresh", "first born"),
+                create("Fresh", "second born"),
+            ],
             false,
         ),
         &[],
@@ -403,8 +412,7 @@ fn a_native_end_append_still_arms_the_parent() {
         wire::NodeRev(parent_rev_before.0),
         "the parent's own before rev — never the born-from-nothing token"
     );
-    let (parent_rev_after, parent_span, _) =
-        read_back(&root, &[("Memo", None), ("Notes", None)]);
+    let (parent_rev_after, parent_span, _) = read_back(&root, &[("Memo", None), ("Notes", None)]);
     assert_eq!(fact.node_rev_after, parent_rev_after);
     assert_eq!(fact.span_after, parent_span);
 }

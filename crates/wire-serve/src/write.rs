@@ -3236,14 +3236,17 @@ fn born_armed_edit(
         .iter()
         .position(|e| e.index == batch_index)
         .ok_or_else(refuse)?;
-    let shift: i64 = sealed.edits[..pos]
+    // The length shift of every sealed edit ordered before this one, kept as
+    // unsigned added/removed totals — the difference can be negative, and the
+    // final position cannot (a landed offset below zero is an impossibility
+    // the checked_sub turns into the loud refusal).
+    let (added, removed) = sealed.edits[..pos]
         .iter()
-        .map(|e| e.text.len() as i64 - e.span.len() as i64)
-        .sum();
-    let landed = i64::try_from(sealed.edits[pos].span.start)
-        .ok()
-        .map(|s| s + shift)
-        .and_then(|v| usize::try_from(v).ok())
+        .fold((0usize, 0usize), |(a, r), e| {
+            (a + e.text.len(), r + e.span.len())
+        });
+    let landed = (sealed.edits[pos].span.start + added)
+        .checked_sub(removed)
         .ok_or_else(refuse)?;
     // The lowered create text opens with exactly one `\n` (lower_create's
     // skeleton); a sealed text that lost it means the payload was rewritten
