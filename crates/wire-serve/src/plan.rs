@@ -1,6 +1,11 @@
 //! Lower `splice.plan_edits` to native wire edits (Go `buildSpliceEdit` /
 //! `buildPropertyEdits` emulation). Byte-faithful to the deleted host arms so
-//! downstream validate/CAS/armed/reparse behave identically by construction.
+//! downstream validate/CAS/armed/reparse behave identically by construction —
+//! EXCEPT the three body doors (`append`, `replace_section`, `create`), whose
+//! composition follows the splice-hygiene law instead (wire-contract § A.3,
+//! N-1, 2026-08-12): exactly one blank line at every block and section
+//! boundary the splice touches, and a list-item payload joins a trailing
+//! list flush. The hygiene law supersedes byte-faithfulness at those doors.
 
 use wire::{Edit, EditShape, ErrorBody, HpathSeg, NodeRev, PutAt, SecRef};
 
@@ -125,14 +130,28 @@ fn span_usize(v: u64) -> usize {
 }
 
 /// One lowered plan batch: native edits + index-aligned birth annotations.
-/// `born[i]` is `Some(title)` exactly when edit `i` lowered from a `create`
+/// `born[i]` is `Some(Born)` exactly when edit `i` lowered from a `create`
 /// row — the armed-fact builder reports the BORN section for those (the
 /// engine's armed-fact law, wire-contract § A.3 create door); every other
 /// edit arms its own target.
 #[derive(Debug)]
 pub struct Lowered {
     pub edits: Vec<Edit>,
-    pub born: Vec<Option<String>>,
+    pub born: Vec<Option<Born>>,
+}
+
+/// A `create` row's birth annotation: the born title plus where its heading
+/// line starts INSIDE the lowered edit's text. The hygiene composition makes
+/// the leading bytes variable (separators are derived from the document, and
+/// a boundary needing surgery lowers to a content rewrite), so the armed-fact
+/// builder can no longer assume "one `\n`, then the heading" — the lowering
+/// states the offset instead of the reader guessing it.
+#[derive(Debug, Clone)]
+pub struct Born {
+    pub title: String,
+    /// Byte offset of the `#` opening the born heading, within the lowered
+    /// edit's `text`.
+    pub heading_offset: usize,
 }
 
 /// Lower one plan-level batch to native edits: properties first as one group,
@@ -159,13 +178,13 @@ pub fn lower(
     } else {
         lower_property_group(doc, &idx, &props)?
     };
-    let mut born: Vec<Option<String>> = vec![None; edits.len()];
+    let mut born: Vec<Option<Born>> = vec![None; edits.len()];
 
     for e in plan_edits {
         match e {
             wire::PlanEdit::SetProperty { .. } => {}
             wire::PlanEdit::Append { hpath, body, rev } => {
-                edits.push(lower_append(&idx, raw, hpath, body, rev.as_deref())?);
+                edits.push(lower_append(&idx, doc, hpath, body, rev.as_deref())?);
                 born.push(None);
             }
             wire::PlanEdit::Match {
@@ -187,7 +206,13 @@ pub fn lower(
                 born.push(None);
             }
             wire::PlanEdit::ReplaceSection { hpath, body, rev } => {
-                edits.push(lower_replace_section(&idx, hpath, body, rev.as_deref())?);
+                edits.push(lower_replace_section(
+                    &idx,
+                    doc,
+                    hpath,
+                    body,
+                    rev.as_deref(),
+                )?);
                 born.push(None);
             }
             wire::PlanEdit::Create {
@@ -196,14 +221,13 @@ pub fn lower(
                 body,
                 rev,
             } => {
-                edits.push(lower_create(
-                    &idx,
-                    parent_hpath,
-                    title,
-                    body,
-                    rev.as_deref(),
-                )?);
-                born.push(Some(title.clone()));
+                let (edit, heading_offset) =
+                    lower_create(&idx, doc, parent_hpath, title, body, rev.as_deref())?;
+                edits.push(edit);
+                born.push(Some(Born {
+                    title: title.clone(),
+                    heading_offset,
+                }));
             }
         }
     }
@@ -225,11 +249,140 @@ pub(crate) fn published_hpath_at(
         .map(|f| f.raw_hpath.clone())
 }
 
-/// Append arm: block targets refuse; ensureTrailingNL + leading `\n` when the
-/// pre-batch byte before insert is not one. Lowered to `Put{end}` on raw hpath.
+// --- splice hygiene (wire-contract § A.3, N-1) ------------------------------
+
+/// Whether byte `off` sits inside a fenced code block anywhere on its
+/// containment chain. Plain list items are not a dialect fact (the model
+/// materializes tasks and fences, not bullets), so the flush-join rule reads
+/// the tail LINE's shape — but a fence interior can LOOK like a list item,
+/// and the parsed tree is what says so (the containment spec's case-8
+/// principle: fence interiors never drive structure decisions).
+fn offset_inside_fence(node: &model::Node, off: usize) -> bool {
+    if !node.span.contains(&off) {
+        return false;
+    }
+    if matches!(node.kind, model::NodeKind::CodeBlock { .. }) {
+        return true;
+    }
+    node.children.iter().any(|c| offset_inside_fence(c, off))
+}
+
+/// Whether the payload's first non-blank line opens a list item — bullet
+/// (`-`/`*`/`+`) or ordered (`1.`/`1)`), marker then space or end of line.
+fn opens_list_item(payload: &str) -> bool {
+    let Some(line) = payload.lines().find(|l| !l.trim().is_empty()) else {
+        return false;
+    };
+    let t = line.trim_start_matches([' ', '\t']);
+    if let Some(rest) = t.strip_prefix(['-', '*', '+']) {
+        return rest.is_empty() || rest.starts_with(' ');
+    }
+    let digits = t.bytes().take_while(u8::is_ascii_digit).count();
+    if digits == 0 || digits > 9 {
+        return false;
+    }
+    match t[digits..].strip_prefix(['.', ')']) {
+        Some(rest) => rest.is_empty() || rest.starts_with(' '),
+        None => false,
+    }
+}
+
+/// Payload edge normalization (§ A.3 hygiene: boundaries are the engine's,
+/// interior bytes the caller's): leading blank lines dropped, trailing
+/// whitespace collapsed to one terminator. Empty in, empty out.
+fn normalize_payload(body: &str) -> String {
+    let mut s = body;
+    while let Some(nl) = s.find('\n') {
+        if s[..nl].trim().is_empty() {
+            s = &s[nl + 1..];
+        } else {
+            break;
+        }
+    }
+    let s = s.trim_end();
+    if s.is_empty() {
+        String::new()
+    } else {
+        format!("{s}\n")
+    }
+}
+
+/// Compose the canonical content-span bytes for `payload` landing at a
+/// section's subtree end, and pick the mechanism (§ A.3 splice hygiene).
+///
+/// The composition keeps the existing content through its last non-blank
+/// line, joins the payload across one canonical boundary — a blank line for
+/// a block boundary, flush when a list-item payload continues a trailing
+/// list — and ends with exactly one blank line before a following heading
+/// (a single terminator at EOF).
+///
+/// Mechanism is derived, never declared: a composition that purely extends
+/// the existing content bytes lowers to `Put{end}` (zero-width insert, the
+/// pre-hygiene shape); one that must move a boundary byte (a separator to
+/// remove or collapse) lowers to `Put{content}`. Returns `(at, text,
+/// payload_offset_in_text)`.
+fn compose_at_subtree_end(
+    doc: &model::Document,
+    content_span: (usize, usize),
+    payload: &str,
+) -> (PutAt, String, usize) {
+    let (cs, e) = content_span;
+    let raw = doc.raw.as_bytes();
+    let content = &doc.raw[cs..e];
+    let followed = e < raw.len();
+
+    let mut out = String::with_capacity(content.len() + payload.len() + 4);
+    match content.rfind(|c: char| !c.is_whitespace()) {
+        None => {
+            // No content. A bare, unterminated heading line needs its own
+            // terminator before the blank line under the heading.
+            if cs > 0 && raw[cs - 1] != b'\n' {
+                out.push('\n');
+            }
+            out.push('\n');
+        }
+        Some(i) => {
+            let ink_end = i + content[i..].chars().next().map_or(1, char::len_utf8);
+            match content[ink_end..].find('\n') {
+                // Keep through the last non-blank line, terminator included.
+                Some(nl) => out.push_str(&content[..ink_end + nl + 1]),
+                // Bare final line: keep its ink, terminate it ourselves.
+                None => {
+                    out.push_str(&content[..ink_end]);
+                    out.push('\n');
+                }
+            }
+            let tail_line_start = content[..i].rfind('\n').map_or(0, |p| p + 1);
+            let flush = opens_list_item(payload)
+                && opens_list_item(&content[tail_line_start..ink_end])
+                && !offset_inside_fence(&doc.root, cs + i);
+            if !flush {
+                out.push('\n');
+            }
+        }
+    }
+    let payload_offset = out.len();
+    out.push_str(payload);
+    if followed {
+        out.push('\n');
+    }
+
+    if out.as_bytes().starts_with(content.as_bytes()) {
+        let text = out[content.len()..].to_string();
+        (PutAt::End, text, payload_offset - content.len())
+    } else {
+        (PutAt::Content, out, payload_offset)
+    }
+}
+
+/// Append arm: block targets refuse; payload lands at the section's subtree
+/// end across canonical boundaries (§ A.3 splice hygiene). Lowered to
+/// `Put{end}` when the composition purely extends the content, `Put{content}`
+/// when a boundary needs surgery. An empty payload appends nothing (a no-op
+/// edit — never a stray blank line).
 fn lower_append(
     idx: &PlanIndex,
-    raw: &[u8],
+    doc: &model::Document,
     hpath: &[HpathSeg],
     body: &str,
     rev: Option<&str>,
@@ -241,23 +394,31 @@ fn lower_append(
         )));
     }
     let node = idx.get(hpath).map_err(|m| section_miss(hpath, &m))?;
-    let at = node.span.1;
-    let mut payload = policy::defs::ensure_trailing_nl(body);
-    if at > 0 && at <= raw.len() && raw[at - 1] != b'\n' {
-        payload.insert(0, b'\n');
-    }
+    let payload = normalize_payload(body);
+    let (at, text) = if payload.is_empty() {
+        (PutAt::End, String::new())
+    } else {
+        let (at, text, _) = compose_at_subtree_end(doc, content_span_of(node), &payload);
+        (at, text)
+    };
     Ok(Edit {
         target: SecRef::Hpath {
             hpath: node.raw_hpath.clone(),
         },
-        edit: EditShape::Put {
-            at: PutAt::End,
-            text: String::from_utf8_lossy(&payload).into_owned(),
-        },
+        edit: EditShape::Put { at, text },
         if_node_rev: rev
             .filter(|r| !r.is_empty())
             .map(|r| NodeRev(r.to_string())),
     })
+}
+
+/// A node's content span with the defensive full-span fallback (a headingless
+/// fact has no separate content span).
+fn content_span_of(node: &HeadingFacts) -> (usize, usize) {
+    match node.content_span {
+        Some((cs, ce)) if cs >= node.span.0 && ce <= node.span.1 => (cs, ce),
+        _ => node.span,
+    }
 }
 
 /// Replace arm: unique-anchor Match, or all:true RMW over heading-excluded
@@ -317,10 +478,14 @@ fn lower_match(
 }
 
 /// `replace_section`: rev required; payload containment (wire-contract §A.3
-/// containment law) with the first-line address-echo normalization;
-/// ensureTrailingNL (empty stays empty); `Put{content}` + `if_node_rev`.
+/// containment law) with the first-line address-echo normalization; the
+/// contained body then composes with the § A.3 hygiene boundaries — one
+/// blank line under the section's own heading, one before a following
+/// heading, a bare terminator at EOF (an empty body keeps the boundary blank
+/// alone). `Put{content}` + `if_node_rev`.
 fn lower_replace_section(
     idx: &PlanIndex,
+    doc: &model::Document,
     hpath: &[HpathSeg],
     body: &str,
     rev: Option<&str>,
@@ -333,12 +498,26 @@ fn lower_replace_section(
             policy::defs::go_quote(&crate::display_hpath(hpath))
         )));
     }
+    // Containment first (the gate speaks the caller's own payload
+    // coordinates), then hygiene composes the contained remainder — the echo
+    // strip leaves a leading blank line and normalize_payload collapses it.
     let body = contain_replace_payload(node, hpath, body, rev)?;
-    let text = if body.is_empty() {
-        String::new()
-    } else {
-        String::from_utf8_lossy(&policy::defs::ensure_trailing_nl(body)).into_owned()
-    };
+    let (cs, e) = content_span_of(node);
+    let raw = doc.raw.as_bytes();
+    let followed = e < raw.len();
+    let payload = normalize_payload(body);
+    let mut text = String::with_capacity(payload.len() + 3);
+    // A bare, unterminated heading line needs its own terminator first.
+    if cs == e && cs > 0 && raw[cs - 1] != b'\n' {
+        text.push('\n');
+    }
+    if !payload.is_empty() {
+        text.push('\n');
+        text.push_str(&payload);
+    }
+    if followed {
+        text.push('\n');
+    }
     Ok(Edit {
         target: SecRef::Hpath {
             hpath: node.raw_hpath.clone(),
@@ -471,9 +650,12 @@ fn escape_refusal(
     bad_request(msg)
 }
 
-/// Create: parent-append as `Put{end}` on parent; top-level / parent-miss refuse.
-/// `rev` is the PARENT's node-grain token, threaded to the lowered append's
-/// `if_node_rev` — one rev derivation, no second comparison rule (§ A.3).
+/// Create: parent-append with § A.3 hygiene boundaries (one blank line before
+/// the born heading, one between it and its body, one before whatever
+/// follows); top-level / parent-miss refuse. `rev` is the PARENT's node-grain
+/// token, threaded to the lowered edit's `if_node_rev` — one rev derivation,
+/// no second comparison rule (§ A.3). Returns the edit plus the born
+/// heading's byte offset within its text (see [`Born`]).
 ///
 /// The parent target is the LOWERING's mechanism only: the armed fact for
 /// this row names the BORN section (the § A.3 create-door law; A.6.3a′ is
@@ -481,11 +663,12 @@ fn escape_refusal(
 /// what the caller addressed, and the caller addressed the birth.
 fn lower_create(
     idx: &PlanIndex,
+    doc: &model::Document,
     parent_hpath: &[HpathSeg],
     title: &str,
     body: &str,
     rev: Option<&str>,
-) -> Result<Edit, Box<ErrorBody>> {
+) -> Result<(Edit, usize), Box<ErrorBody>> {
     let full = if parent_hpath.is_empty() {
         title.to_string()
     } else {
@@ -507,19 +690,25 @@ fn lower_create(
         m @ Miss::Ambiguous(_) => section_miss(parent_hpath, &m),
     })?;
     let level = (parent.level + 1) as usize;
-    let heading = format!("\n{} {title}\n\n{body}\n", "#".repeat(level));
-    Ok(Edit {
-        target: SecRef::Hpath {
-            hpath: parent.raw_hpath.clone(),
+    let body = normalize_payload(body);
+    let payload = if body.is_empty() {
+        format!("{} {title}\n", "#".repeat(level))
+    } else {
+        format!("{} {title}\n\n{body}", "#".repeat(level))
+    };
+    let (at, text, heading_offset) = compose_at_subtree_end(doc, content_span_of(parent), &payload);
+    Ok((
+        Edit {
+            target: SecRef::Hpath {
+                hpath: parent.raw_hpath.clone(),
+            },
+            edit: EditShape::Put { at, text },
+            if_node_rev: rev
+                .filter(|r| !r.is_empty())
+                .map(|r| NodeRev(r.to_string())),
         },
-        edit: EditShape::Put {
-            at: PutAt::End,
-            text: heading,
-        },
-        if_node_rev: rev
-            .filter(|r| !r.is_empty())
-            .map(|r| NodeRev(r.to_string())),
-    })
+        heading_offset,
+    ))
 }
 
 /// Property group: ONE edit per key, each targeting its OWN `fm_key` — an
@@ -637,9 +826,11 @@ mod tests {
         }
     }
 
-    /// Append newline discipline (trailing ensured; leading when pre-batch byte not `\n`).
+    /// Append hygiene discipline (§ A.3): a new block lands across one blank
+    /// line; a bare final line is terminated first. Both stay pure `Put{end}`
+    /// extensions.
     #[test]
-    fn append_newline_discipline() {
+    fn append_hygiene_discipline() {
         let e = lower1(
             "# Memo\n\nline\n",
             PlanEdit::Append {
@@ -654,7 +845,10 @@ mod tests {
         .expect("lowers");
         let (at, text) = put_text(&e);
         assert_eq!(*at, PutAt::End);
-        assert_eq!(text, "added\n", "trailing NL ensured, no leading NL");
+        assert_eq!(
+            text, "\nadded\n",
+            "a new block gets its blank-line boundary, trailing NL ensured"
+        );
 
         let e = lower1(
             "# Memo\n\nline",
@@ -669,7 +863,10 @@ mod tests {
         )
         .expect("lowers");
         let (_, text) = put_text(&e);
-        assert_eq!(text, "\nadded\n", "leading NL against a bare final line");
+        assert_eq!(
+            text, "\n\nadded\n",
+            "a bare final line is terminated, then the blank-line boundary"
+        );
     }
 
     /// Block replace refuses; no `put: ` prefix.
@@ -893,7 +1090,10 @@ mod tests {
         .expect("lowers");
         let (at, text) = put_text(&e);
         assert_eq!(*at, PutAt::Content);
-        assert_eq!(text, "new\n");
+        assert_eq!(
+            text, "\nnew\n",
+            "the blank line under the section's own heading rides the composition (§ A.3)"
+        );
         assert_eq!(
             e.if_node_rev.as_ref().map(|r| r.0.as_str()),
             Some("cafebabecafebabe")
