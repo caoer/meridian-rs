@@ -691,10 +691,15 @@ impl<'h> ScriptEntry<'h> {
             ));
         }
         let answered = {
+            // The program's own armed list rides every read — the
+            // read-your-own-writes seam. A live-read host ignores it; the
+            // entry-world host overlays it. Separate RefCells, so the host
+            // borrow and the armed borrow never conflict.
+            let armed = self.armed.borrow();
             let mut host = self.host.borrow_mut();
             match section {
-                Some(section) => host.cat(path, section).map(ReadFace::Section),
-                None => host.toc(path).map(ReadFace::Toc),
+                Some(section) => host.cat(path, section, &armed).map(ReadFace::Section),
+                None => host.toc(path, &armed).map(ReadFace::Toc),
             }
         };
         let face = match answered {

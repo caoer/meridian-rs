@@ -161,9 +161,98 @@ pub fn decode(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody>> 
         "check_write" => decode_check_write(obj),
         "splice" => decode_splice(obj, rev),
         "create" => decode_create(obj),
+        "script" => decode_script(obj),
         // §3.2: only genuinely unknown names land here.
         _ => Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp))),
     }
+}
+
+/// § A.7 `script` field set — the entry's own inputs and nothing else. No
+/// budgets field at birth: the CLI entry exposes none either, and a future
+/// override arrives as a dotted `script.<field>` cap, never by loosening this
+/// wall.
+pub(crate) const SCRIPT_FIELDS: [&str; 9] = [
+    "source",
+    "args",
+    "files",
+    "actor",
+    "now",
+    "receipt",
+    "if_root",
+    "dry",
+    "expect_armed",
+];
+
+/// § A.7 in-process script submission (v3-only at dispatch; decode is
+/// rev-agnostic, the `read` precedent).
+fn decode_script(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
+    let op = "script";
+    check_fields(obj, op, &SCRIPT_FIELDS)?;
+    let now = opt_str(obj, op, "now")?;
+    if let Some(n) = &now
+        && !wire::now_is_rfc3339(n)
+    {
+        return Err(bad_request(format!(
+            "`now` must be RFC 3339 (§9, validated never generated): `{n}`"
+        )));
+    }
+    // The inert dict: string keys, string values, no callables, no host reach.
+    let args = match obj.get("args") {
+        None => std::collections::BTreeMap::new(),
+        Some(Value::Object(map)) => {
+            let mut out = std::collections::BTreeMap::new();
+            for (k, v) in map {
+                let Some(v) = v.as_str() else {
+                    return Err(bad_request(format!(
+                        "`args` values must be strings on `script` (the inert dict, \
+                         run-plane § The script entry): `{k}` is not"
+                    )));
+                };
+                out.insert(k.clone(), v.to_owned());
+            }
+            out
+        }
+        Some(_) => {
+            return Err(bad_request(
+                "`args` must be an object of string values on `script`",
+            ));
+        }
+    };
+    // Paths only, never content; sorted here so order on the wire is not
+    // meaning (the CLI lane sorts client-side — one law, two doors).
+    let files = match obj.get("files") {
+        None => Vec::new(),
+        Some(Value::Array(items)) => {
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                let Some(path) = item.as_str() else {
+                    return Err(bad_request(
+                        "`files` must be an array of path strings on `script` — paths \
+                         only, never content (all content enters through `read()`)",
+                    ));
+                };
+                out.push(path.to_owned());
+            }
+            out.sort();
+            out
+        }
+        Some(_) => {
+            return Err(bad_request(
+                "`files` must be an array of path strings on `script`",
+            ));
+        }
+    };
+    Ok(Op::Script {
+        source: req_str(obj, op, "source")?,
+        args,
+        files,
+        actor: opt_str(obj, op, "actor")?,
+        now,
+        receipt: obj.get("receipt").map(decode_receipt).transpose()?,
+        if_root: opt_str(obj, op, "if_root")?.map(wire::Root),
+        dry: opt_bool(obj, op, "dry")?,
+        expect_armed: opt_str(obj, op, "expect_armed")?,
+    })
 }
 
 /// Composed `read` (v3-only at dispatch; decode is rev-agnostic).

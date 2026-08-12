@@ -127,3 +127,36 @@ pub(crate) fn plan_items(
     }
     Ok(items)
 }
+
+/// Does a RECORDED section spelling address the same node as an armed row's
+/// `hpath`? The one matcher both threading lanes use (the CLI lane's
+/// last-read threading and the § A.7 entry-rev threading), so a licensed row
+/// cannot depend on which lane evaluated it.
+///
+/// **Both sides go through [`wire::ReadSel::parse`]** — the one
+/// human-string→selector door. The non-heading spellings answer `false`: an
+/// `^anchor` row and a dewey ordinal are real addresses that an `append`
+/// (which carries an hpath) cannot be pointed at, so they match no armed row.
+/// Empty segments are filtered on both sides — `ReadSel::parse("/A")` yields
+/// `["", "A"]`, and one leading slash must not decide a CAS token.
+#[must_use]
+pub fn hpath_addresses(recorded: &str, hpath: &[HpathSeg]) -> bool {
+    let ReadSel::Hpath { hpath: parsed } = ReadSel::parse(recorded) else {
+        return false;
+    };
+    let mut recorded = parsed
+        .iter()
+        .map(|seg| seg.h.as_str())
+        .filter(|h| !h.is_empty());
+    let mut armed = hpath
+        .iter()
+        .map(|seg| seg.h.as_str())
+        .filter(|h| !h.is_empty());
+    loop {
+        match (recorded.next(), armed.next()) {
+            (None, None) => return true,
+            (a, b) if a != b => return false,
+            _ => {}
+        }
+    }
+}

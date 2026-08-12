@@ -112,6 +112,9 @@ pub fn project_response(frame: &mut Value) {
                 // precedent); the frozen v2 caps stay byte-identical.
                 caps.push(Value::String("mounts".to_string()));
                 caps.push(Value::String("hello.identity".to_string()));
+                // In-process script submission at op grain (§ A.7, the same
+                // precedent — no dotted script.<field> at birth).
+                caps.push(Value::String("script".to_string()));
             }
             body.insert("contract".to_string(), Value::String("v3".to_string()));
         }
@@ -359,7 +362,8 @@ mod tests {
                 "splice.create_rev",
                 "create",
                 "mounts",
-                "hello.identity"
+                "hello.identity",
+                "script"
             ])
         );
     }
