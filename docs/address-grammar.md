@@ -40,9 +40,9 @@ disambiguation here rather than leaving a reader to infer it.
 | Name | What it is | Where it lives | Shape |
 |---|---|---|---|
 | `wire::Root` (type name) / **fingerprint** (design noun) | A **Merkle content-hash cursor** — the whole-domain content hash the world-guard compares. **Standing design name is `fingerprint`** (`wire-contract.md`); the Rust type may still be spelled `Root` (code lag) | `crates/wire` | `"b3:" + 64 hex`, opaque, equality only |
-| `fs::WorkspaceRoot` | **One on-disk directory** — the single workspace every path is joined onto today | `crates/fs/src/lib.rs:38` | `PathBuf` |
+| `fs::WorkspaceRoot` | **One on-disk directory** — the single workspace every path is joined onto today | `crates/fs/src/lib.rs:33` | `PathBuf` |
 | **`addr::MountName`** | **A canonical root NAME** — the mount-table key a cross-root address carries (`sessions`, `assets`) | `crates/addr` (NEW, § 7) | a lowercase name, never a path and never a hash |
-| `root:` the frontmatter key | A **preset-def property** naming the root RECORD a session preset instantiates | `crates/preset/src/lib.rs:217`, fixtures at `crates/preset/tests/gates.rs:26` and `:368` | an ordinary YAML scalar (`root: SESSION.md`) |
+| `root:` the frontmatter key | A **preset-def property** naming the root RECORD a session preset instantiates | `crates/preset/src/lib.rs:232`, fixtures at `crates/preset/tests/gates.rs:15`, `:321` and `:524` | an ordinary YAML scalar (`root: SESSION.md`) |
 
 **`addr::MountName` collides with none of them**, and the collision it avoids is deliberate: it is
 neither a hash (`wire::Root`) nor a directory (`fs::WorkspaceRoot`) nor a document property
@@ -151,7 +151,7 @@ name have" each have exactly one answer. **A silent pick would make stored links
 
 `sessions:notes.md` is a **legal filename on this machine today** (verified: § 11.3), and
 `wire::Path` does not validate — its own doc says *"this newtype does not validate, it names"*
-(`crates/wire/src/lib.rs:66`). `path_confined` (`crates/wire-serve/src/write.rs:1833`) rejects only
+(`crates/wire/src/lib.rs:29-31`). `path_confined` (`crates/wire-serve/src/write.rs:1984`) rejects only
 empty / leading-`/` / `.` / `..` segments. So there is no `:`-before-path validation anywhere, and
 one string has two readings. **This document states which reading wins.**
 
@@ -226,7 +226,7 @@ finds one). One taught round trip on that ingress, never a silent resolution.
 No stored surface carries an in-band `@fp` for this to break: the engine
 refuses an fp reaching stored bytes (S10 — *"a render-face decoration the
 engine mints on read, never storable content"*,
-`crates/wire-serve/src/write.rs:2211`), and the lock's pin is already its own
+`crates/wire-serve/src/write.rs:2356`), and the lock's pin is already its own
 field. The old recognition served ingress only, and ingress now teaches.
 
 **What this widens.** `#Deploy @ prod` resolves byte-exact to the real heading
@@ -261,7 +261,7 @@ are the ones that keep this law from swallowing the ordinary corpus.
 
 ## 5. The basename fallback — (c), the cross-root misresolve defect, and no unit owned it
 
-`crates/model/src/lib.rs:1569-1571`, inside `resolve_linkpath`:
+`crates/model/src/lib.rs:1736-1737`, inside `resolve_linkpath`:
 
 ```rust
 let key = linkpath.trim().trim_end_matches(".md").to_lowercase();
@@ -318,8 +318,8 @@ change. A build that renders everything grey satisfies F1, F2 and F4 and ships n
 Refusal text is specified nowhere in the plan: the rule is named five times and one string is
 produced. The house pattern is a **pinned `const` exemplar asserted verbatim** — the shipped
 instance is `model::selector::D1_TEACHING_REFUSAL_EXEMPLAR`
-(`crates/model/src/selector.rs:472`), rendered by `render_ambiguity` and pinned by
-`render_ambiguity_carries_d1_teaching_verbatim` (`crates/model/src/selector.rs:679-691`), which
+(`crates/model/src/selector.rs:569`), rendered by `render_ambiguity` and pinned by
+`render_ambiguity_carries_d1_teaching_verbatim` (`crates/model/src/selector.rs:929-961`), which
 asserts the rendered text carries the exemplar's teaching tail verbatim.
 
 **This document produces the unmounted-root exemplar in that shape.** Placement follows the
@@ -422,7 +422,7 @@ Neither is `crates/workspace` — its charter is *"a leaf, `std` + `cache` only"
 **Why `addr` must be upstream of `syntax`.** `model`'s dependencies are `syntax` + `blake3`
 (`crates/model/Cargo.toml`), so any type living in a crate that depends on `model` is
 **architecturally unreachable from `syntax`** — and `syntax::split_wikilink_target`
-(`crates/syntax/src/lib.rs:435`) is the wikilink ingress where a cross-root address actually
+(`crates/syntax/src/lib.rs:424`) is the wikilink ingress where a cross-root address actually
 arrives. A single address crate placed beside the markdown parsing would make implementation's ingress part
 impossible.
 
@@ -472,13 +472,13 @@ implementation and implementation write these; the sentences are supplied here s
 
 > **B-1 — canonicalize at bind.** Every mount path is canonicalized (symlinks resolved, trailing
 > separators normalized) **before** it is bound. `workspace::deny_reason` canonicalizes both sides
-> of its comparison (`resolve_ref`, `crates/workspace/src/lib.rs:337`), so an uncanonicalized bind
+> of its comparison (`resolve_ref`, `crates/workspace/src/lib.rs:384`), so an uncanonicalized bind
 > would be checked against a path that is not the one it binds.
 >
 > **B-2 — inherit the deny ceiling.** Every canonicalized mount path passes `workspace::deny_reason`
 > before binding. A refused mount **fails the whole parse** — no partial mount table, no
 > default-root fallback. The reasons are `workspace::DenyReason`'s existing six
-> (`crates/workspace/src/lib.rs:253-266`): `FilesystemRoot`, `HomeDir`, `TempDir`, `XdgBaseDir`,
+> (`crates/workspace/src/lib.rs:301-314`): `FilesystemRoot`, `HomeDir`, `TempDir`, `XdgBaseDir`,
 > `CacheRoot`, `MountPoint`. **The ceiling is reused, never re-implemented.**
 >
 > **B-3 — refuse equal-or-nested mounts, including through symlinks.** After canonicalization, no
@@ -526,7 +526,7 @@ all six roots.
 An agent-plane address occupies exactly these positions and no others:
 
 1. **a wikilink target** — the `dest` of `[[…]]`, owned by `syntax::split_wikilink_target`
- (`crates/syntax/src/lib.rs:435`);
+ (`crates/syntax/src/lib.rs:424`);
 2. **a markdown link URL** — the URL of `[label](url)`;
 3. **`meridian-lock` `ref:` values**;
 4. **`meridian-lock` `objects:` keys**.
@@ -538,17 +538,17 @@ An agent-plane address occupies exactly these positions and no others:
 > byte transform over the token `root:` is forbidden.**
 
 **Because `root:` is already a live YAML frontmatter key in the shipped preset/def grammar.**
-`crates/preset/src/lib.rs:217` reads it — `fm_scalar(&doc, "root")` — and fixtures carry
-`root: SESSION.md` verbatim at `crates/preset/tests/gates.rs:26` and `:368`. A blanket transform
+`crates/preset/src/lib.rs:232` reads it — `fm_scalar(&doc, "root")` — and fixtures carry
+`root: SESSION.md` verbatim at `crates/preset/tests/gates.rs:15`, `:321` and `:524`. A blanket transform
 would rewrite that line, corrupt the def, and — because it changes bytes inside a span — **silently
 invalidate every pin whose fingerprint covers it.** Frontmatter is not an address position, and the
 shipped code already says so in a neighbouring refusal: *"frontmatter is not a claim-link position
-(S10/R22)"* (`crates/wire-serve/src/write.rs:2389`).
+(S10/R22)"* (`crates/wire-serve/src/write.rs:2521`).
 
 > **A-2 — the precedent is `strip_fp_candidate`, copied structurally rather than by analogy.**
-> `strip_fp_candidate` (`crates/wire-serve/src/write.rs:2345`) identifies each token **in the
+> `strip_fp_candidate` (`crates/wire-serve/src/write.rs:2476`) identifies each token **in the
 > candidate**, attributes it to the payload that supplied it via `classify_fp`
-> (`crates/wire-serve/src/write.rs:2190`), and **refuses what it cannot place** — it never
+> (`crates/wire-serve/src/write.rs:2311`), and **refuses what it cannot place** — it never
 > blanket-strips. implementation does the same for addresses: identify by position, translate the owned ones,
 > and **refuse** an address it cannot attribute to one payload rather than transforming it blind.
 >
