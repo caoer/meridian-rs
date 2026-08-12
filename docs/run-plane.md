@@ -1270,7 +1270,7 @@ S1 — ship the scoped claim, never the unqualified one."*
 | the one write path | `crates/run::executor` → `model::validate_batch` → `fs::apply_batch` |
 | stdout record | `crates/run::record` |
 | CLI mount | `crates/mrd::run_cmd` — a client; the charter edge is `laws.md` §crates (`mrd` row) |
-| CLI mount — script entry | `crates/mrd::script_cmd` — the same client edge; its human-mode face is non-normative |
+| CLI mount — script entry | `crates/mrd::script::cmd` — the same client edge; its human-mode face is non-normative |
 
 ---
 

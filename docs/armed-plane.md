@@ -204,11 +204,11 @@ grey, exactly as above.
 
 ### 5. Steady state
 
-Once the marker exists and the INDEX carries `[x]` rows, the door enforces:
+Once the marker exists and the armed-rules artifact carries `[x]` rows, the door enforces:
 `block` rows refuse a violating write (the bytes never land) with a `{code,
 recovery}` pair from the closed §8 taxonomy; `warn` rows render an advisory
-finding and land; `off` rows are ignored. A missing or corrupt INDEX on a
-once-armed workspace fails CLOSED (`convention_fault`). An armed convention whose
+finding and land; `off` rows are ignored. A missing or corrupt armed-rules
+artifact on a once-armed workspace fails CLOSED (`convention_fault`). An armed convention whose
 attested page drifts off its pinned `armed-rev` fails CLOSED (`armed_drift`) —
 re-arm at the live rev, or revert the law. `--force` is the only escape, and it
 is loud: journaled AND rendered.
@@ -227,7 +227,7 @@ it is a named residual — it is never rendered green by refusal.
 
 Status: enforcement doc for the U4.2 `gate()` seam. Law: U4.2; `wire-contract.md` § A.2; `laws.md` § the policy gate.
 
-**Measured at `b7c92d5a`, 2026-07-26.** This page states a law and describes an
+**Measured at `7a22e00a`, 2026-08-12.** This page states a law and describes an
 instrument. It contains no census — see § Why the census is gone.
 
 ## The law
@@ -236,9 +236,13 @@ instrument. It contains no census — see § Why the census is gone.
 (`wire-contract.md` § A.2). Every gated site evaluates the SAME
 `policy::gate(change, armed_set)` over a `rulepack-api@2` change surface built
 from the before/after states. The armed set is loaded and verified from the
-workspace's OWN attested INDEX + once-armed marker inside the trusted write
-path (`wire_serve::gate::load_armed_set` / `run::gate::load_armed_set`), never
-a caller-supplied set — so no caller can weaken the decision at any gated site.
+workspace's OWN attested `meridian/armed-rules.md` artifact + once-armed marker
+inside the trusted write path (the wire host loads it through
+`armed_disk::resolve_at` at `crates/wire-serve/src/armed_disk.rs:78` — called
+from the write gate at `crates/wire-serve/src/gate.rs:91` and the reaction
+feeder at `crates/wire-serve/src/reaction.rs:49` — and the run plane resolves
+it through its own `DiskPages` page-source at `crates/run/src/gate.rs:73`),
+never a caller-supplied set — so no caller can weaken the decision at any gated site.
 
 ## What is derived from source
 
@@ -251,11 +255,11 @@ constructor names — `candidate_of_body(` and `candidate_of_batch(`. A file
 carrying at least one such call is recorded **once**. The test then asserts that
 this **set of FILES** equals the set its pinned table names.
 
-At `b7c92d5a` that derived set is **three files**:
+At `7a22e00a` that derived set is **three files**:
 
 - `crates/wire-serve/src/write.rs`
-- `crates/mrd/src/realise_cmd.rs`
 - `crates/run/src/fp.rs`
+- `crates/wire-serve/src/watch.rs`
 
 **That is the entire source-derived claim: three file names.** It fails when a
 candidate is minted in a file not on that list — which is a real and useful
@@ -263,7 +267,7 @@ guarantee, and is the whole of it.
 
 ## What is NOT derived — do not read it as checked
 
-The same test carries a hand-written table classifying eight doors by
+The same test carries a hand-written table classifying seven doors by
 `file::function`, and two further assertions. None of the following is measured
 against the tree:
 
@@ -273,7 +277,7 @@ against the tree:
 - **A new mint inside a file already on the list.** The scan records a file once
   and stops reading it. A ninth mint added to `write.rs` changes the derived set
   not at all.
-- **The door count.** The assertion that the table holds eight rows measures the
+- **The door count.** The assertion that the table holds seven rows measures the
   hand-written array against itself.
 - **Whether any door calls the policy gate.** A guard is a call, not a type, and
   no assertion attributes a call to a function. The test that counts guard calls
