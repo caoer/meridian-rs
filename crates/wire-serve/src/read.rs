@@ -807,8 +807,8 @@ fn unaddressable_fix(host: &str, display: &str) -> String {
     } else {
         format!(
             "Fix: find the enclosing section's heading path with a toc read of {display} \
-             (MCP read: mode:\"toc\"; CLI: `mrd read {display}` with no --section), then \
-             read that section."
+             (MCP read: sections[] omitted; CLI: `mrd read {display}` with no --section), \
+             then read that section."
         )
     }
 }
@@ -839,7 +839,7 @@ fn composed_sections(
              and no rev was minted. Fix: pass one or more section selectors (a heading \
              path, a dewey ordinal, or a ^anchor), or scope the whole read with a \
              `#Fragment` on the ref — or list this document's section paths with a toc \
-             read of {display} (MCP read: mode:\"toc\"; CLI: no --section)."
+             read of {display} (MCP read: sections[] omitted; CLI: no --section)."
         )));
     }
     let mut rows: Vec<render::SectionRow<'_>> = Vec::new();
