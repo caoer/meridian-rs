@@ -92,7 +92,7 @@ fn empty_rev(root: &fs::WorkspaceRoot) -> wire::NodeRev {
     wire::NodeRev(model::fm_upsert_before(&doc, "no-such-key").node_rev.0)
 }
 
-/// Resolve a section in the on-disk state: (node_rev, span).
+/// Resolve a section in the on-disk state: (`node_rev`, span).
 fn read_back(
     root: &fs::WorkspaceRoot,
     chain: &[(&str, Option<u32>)],
