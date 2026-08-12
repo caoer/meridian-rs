@@ -799,8 +799,9 @@ fn plan_fm_upsert(doc: &Document, key: &str, value: &str) -> FmUpsertPlan {
             before_rev: existing.node_rev,
         };
     }
-    // A create has no prior node: the honest before-rev is the empty span's rev.
-    let empty_rev = node_rev(doc.raw.as_bytes(), &(0..0));
+    // A create has no prior node: the honest before-rev is the born-from-nothing
+    // token, minted once for every plane's birth.
+    let empty_rev = born_before_rev();
     match find_frontmatter(&doc.root) {
         Some(fm) => {
             let at = fm_insert_offset(doc.raw.as_bytes(), &fm.span);
@@ -843,6 +844,16 @@ pub fn fm_upsert_before(doc: &Document, key: &str) -> Target {
         span: plan.target_span,
         node_rev: plan.before_rev,
     }
+}
+
+/// The born-from-nothing before-token — blake3("")[:16]
+/// (`af1349b9f5f9a1a6`). Every birth's armed `node_rev_before`
+/// (wire-contract A.6.3a′ teaching row and the create-door law): not a claim
+/// that an empty node existed — the op says birth, the token says
+/// born-from-nothing.
+#[must_use]
+pub fn born_before_rev() -> NodeRev {
+    node_rev(&[], &(0..0))
 }
 
 // CAS-splice validation — here; execution in `fs`
@@ -938,6 +949,11 @@ pub struct ReceiptAppend {
 pub struct ValidatedEdit {
     pub span: ByteSpan,
     pub text: String,
+    /// Batch-order origin: which request edit this sealed edit came from
+    /// (§4.4 armed↔request alignment — the armed-fact builder reads it back
+    /// to locate a birth's landed bytes). The engine-minted pin edit, when
+    /// present, indexes one past the caller's edits.
+    pub index: usize,
 }
 
 /// The validation verdict for a batch (contract §5.2 failure split + §4.4 batch
@@ -1265,12 +1281,16 @@ pub fn validate_batch(
         return SpliceVerdict::TransitionUnrepresentable { target };
     }
 
-    // Mint the sealed batch — edits in pre-batch offset order.
+    // Mint the sealed batch — edits in pre-batch offset order, each stamped
+    // with its batch-order origin (the sort is stable, so same-point inserts
+    // keep request order and the stamp survives it).
     let mut edits: Vec<ValidatedEdit> = planned
         .into_iter()
-        .map(|p| ValidatedEdit {
+        .enumerate()
+        .map(|(index, p)| ValidatedEdit {
             span: p.region,
             text: p.text,
+            index,
         })
         .collect();
     edits.sort_by_key(|e| e.span.start);

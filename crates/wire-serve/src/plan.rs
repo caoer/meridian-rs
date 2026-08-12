@@ -119,6 +119,16 @@ fn span_usize(v: u64) -> usize {
     usize::try_from(v).unwrap_or(usize::MAX)
 }
 
+/// One lowered plan batch: native edits + index-aligned birth annotations.
+/// `born[i]` is `Some(title)` exactly when edit `i` lowered from a `create`
+/// row — the armed-fact builder reports the BORN section for those (the
+/// engine's armed-fact law, wire-contract § A.3 create door); every other
+/// edit arms its own target.
+pub struct Lowered {
+    pub edits: Vec<Edit>,
+    pub born: Vec<Option<String>>,
+}
+
 /// Lower one plan-level batch to native edits: properties first as one group,
 /// then body ops in request order. Returned batch feeds the native splice path.
 ///
@@ -127,7 +137,7 @@ fn span_usize(v: u64) -> usize {
 pub fn lower(
     doc: &model::Document,
     plan_edits: &[wire::PlanEdit],
-) -> Result<Vec<Edit>, Box<ErrorBody>> {
+) -> Result<Lowered, Box<ErrorBody>> {
     let idx = PlanIndex::new(doc);
     let raw = doc.raw.as_bytes();
 
@@ -143,12 +153,14 @@ pub fn lower(
     } else {
         lower_property_group(doc, &idx, &props)?
     };
+    let mut born: Vec<Option<String>> = vec![None; edits.len()];
 
     for e in plan_edits {
         match e {
             wire::PlanEdit::SetProperty { .. } => {}
             wire::PlanEdit::Append { hpath, body, rev } => {
                 edits.push(lower_append(&idx, raw, hpath, body, rev.as_deref())?);
+                born.push(None);
             }
             wire::PlanEdit::Match {
                 hpath,
@@ -166,9 +178,11 @@ pub fn lower(
                     *all,
                     rev.as_deref(),
                 )?);
+                born.push(None);
             }
             wire::PlanEdit::ReplaceSection { hpath, body, rev } => {
                 edits.push(lower_replace_section(&idx, hpath, body, rev.as_deref())?);
+                born.push(None);
             }
             wire::PlanEdit::Create {
                 parent_hpath,
@@ -183,10 +197,26 @@ pub fn lower(
                     body,
                     rev.as_deref(),
                 )?);
+                born.push(Some(title.clone()));
             }
         }
     }
-    Ok(edits)
+    Ok(Lowered { edits, born })
+}
+
+/// The read-face published address of the section whose node span starts at
+/// `heading_start` — the same `read_facts` table every plane resolves
+/// against, so the returned segments carry `n` exactly where the document is
+/// ambiguous and a read-back lands. `None` when no section starts there.
+pub(crate) fn published_hpath_at(
+    doc: &model::Document,
+    heading_start: usize,
+) -> Option<Vec<HpathSeg>> {
+    PlanIndex::new(doc)
+        .headings
+        .iter()
+        .find(|f| f.span.0 == heading_start)
+        .map(|f| f.raw_hpath.clone())
 }
 
 /// Append arm: block targets refuse; ensureTrailingNL + leading `\n` when the
@@ -316,6 +346,11 @@ fn lower_replace_section(
 /// Create: parent-append as `Put{end}` on parent; top-level / parent-miss refuse.
 /// `rev` is the PARENT's node-grain token, threaded to the lowered append's
 /// `if_node_rev` — one rev derivation, no second comparison rule (§ A.3).
+///
+/// The parent target is the LOWERING's mechanism only: the armed fact for
+/// this row names the BORN section (the § A.3 create-door law; A.6.3a′ is
+/// the precedent), carried there by [`Lowered::born`] — the fact must name
+/// what the caller addressed, and the caller addressed the birth.
 fn lower_create(
     idx: &PlanIndex,
     parent_hpath: &[HpathSeg],
@@ -464,7 +499,7 @@ mod tests {
     }
 
     fn lower1(raw: &str, e: PlanEdit) -> Result<wire::Edit, Box<wire::ErrorBody>> {
-        super::lower(&doc(raw), &[e]).map(|mut v| v.remove(0))
+        super::lower(&doc(raw), &[e]).map(|mut l| l.edits.remove(0))
     }
 
     fn put_text(e: &wire::Edit) -> (&PutAt, &str) {
@@ -753,7 +788,8 @@ mod tests {
                 rev: None,
             }],
         )
-        .expect("lowers");
+        .expect("lowers")
+        .edits;
         assert_eq!(edits.len(), 1);
         let (at, text) = put_text(&edits[0]);
         assert_eq!((*at, text), (PutAt::All, "status: closed"));
@@ -767,7 +803,8 @@ mod tests {
                 rev: None,
             }],
         )
-        .expect("lowers");
+        .expect("lowers")
+        .edits;
         assert_eq!(edits.len(), 1);
         let (at, text) = put_text(&edits[0]);
         assert_eq!(
@@ -800,7 +837,8 @@ mod tests {
                 },
             ],
         )
-        .expect("lowers");
+        .expect("lowers")
+        .edits;
         // Three keys, three edits — key-sorted, each naming what it wrote.
         assert_eq!(edits.len(), 3, "one armed edit per key the caller set");
         let named = |e: &wire::Edit| match &e.target {
@@ -848,7 +886,8 @@ mod tests {
                 rev: None,
             }],
         )
-        .expect("lowers");
+        .expect("lowers")
+        .edits;
         let (_, text) = put_text(&edits[0]);
         assert_eq!(text, "note: \"a: b\"");
     }
@@ -866,7 +905,8 @@ mod tests {
                 rev: None,
             }],
         )
-        .expect("lowers");
+        .expect("lowers")
+        .edits;
         let (_, text) = put_text(&edits[0]);
         assert_eq!(text, "note: \"\"");
     }

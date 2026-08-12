@@ -69,8 +69,9 @@ pub struct SpliceArgs {
     pub edits: Vec<Edit>,
     /// `splice.plan_edits`: the plan-level batch (mutually exclusive with
     /// `edits`, decode-enforced). Lowered to native edits at the intake below
-    /// (`crate::plan::lower`); armed facts align 1:1 with the lowered edits.
-    /// Empty = the native form.
+    /// (`crate::plan::lower`); armed facts align 1:1 with the lowered edits,
+    /// and a `create` row's fact names the BORN section, not the parent the
+    /// lowering appends under (§ A.3 create door). Empty = the native form.
     pub plan_edits: Vec<wire::PlanEdit>,
     /// `splice.pin`: the pin riding this splice. `args.path` is the pinning
     /// page — the page whose `meridian-lock` block records the claim, so the
@@ -212,11 +213,16 @@ pub fn splice(
     // flock, against the just-loaded pre-batch doc; the path below runs
     // unchanged on the lowered batch. Payloads ride through verbatim: the `@fp`
     // strip runs once, at document grain, over the candidate
-    // ([`strip_fp_candidate`] below).
-    let mut effective_edits = if args.plan_edits.is_empty() {
-        args.edits.clone()
+    // ([`strip_fp_candidate`] below). `born` rides index-aligned with the
+    // lowered edits: `Some(title)` exactly on `create` rows, whose armed fact
+    // names the BORN section (§ A.3 create door); the native face has no
+    // birth shape, so its annotations are all `None`.
+    let (mut effective_edits, born) = if args.plan_edits.is_empty() {
+        let n = args.edits.len();
+        (args.edits.clone(), vec![None; n])
     } else {
-        crate::plan::lower(&doc, &args.plan_edits)?
+        let lowered = crate::plan::lower(&doc, &args.plan_edits)?;
+        (lowered.edits, lowered.born)
     };
 
     // Fingerprint-or-force, mounted here and nowhere else — post-lowering is
@@ -309,7 +315,13 @@ pub fn splice(
     // short-circuit, so a rehearsal refuses exactly where the real write does.
     lock_artifact_guard(&doc, after_doc.document(), pin_block.as_deref(), &args.path)?;
 
-    let armed_edits = simulate_armed_edits(after_doc.document(), effective_edits, &before_facts)?;
+    let armed_edits = simulate_armed_edits(
+        after_doc.document(),
+        effective_edits,
+        &before_facts,
+        &born,
+        &sealed,
+    )?;
 
     // The I4 def-conformance verdict that AUTHORIZES bytes: inside the flock,
     // over the `after_doc` this splice is about to write, against the `doc` the
@@ -429,6 +441,7 @@ pub fn splice(
             effective_edits,
             &root_before,
             &armed_edits,
+            &born,
             addr,
         )?),
         None => None,
@@ -3137,13 +3150,28 @@ fn build_after_doc(
 /// The armed AFTER facts, resolved against the shared post-batch state
 /// [`build_after_doc`] built — request order (§4.4: armed edits align 1:1 with
 /// request edits).
+///
+/// A `create` row (`born[i]` carries its title) arms the BORN section, not
+/// the parent the lowering appends under (§ A.3 create door; A.6.3a′ is the
+/// precedent): target = the read face's published address for the born node,
+/// `node_rev_before` = the born-from-nothing token, after facts = the born
+/// node's own, from the same one reparse. The born node is identified by the
+/// POSITION the sealed batch placed it ([`born_section_target`]) — never by
+/// counting siblings, which an earlier same-batch edit's smuggled heading
+/// would shift.
 fn simulate_armed_edits(
     after_doc: &model::Document,
     edits: &[Edit],
     before_facts: &[model::Target],
+    born: &[Option<String>],
+    sealed: &model::ValidatedBatch,
 ) -> Result<Vec<ArmedEdit>, Box<ErrorBody>> {
     let mut armed_edits = Vec::with_capacity(edits.len());
-    for (edit, before) in edits.iter().zip(before_facts) {
+    for (i, (edit, before)) in edits.iter().zip(before_facts).enumerate() {
+        if let Some(title) = born.get(i).and_then(Option::as_ref) {
+            armed_edits.push(born_armed_edit(after_doc, sealed, i, edit, title)?);
+            continue;
+        }
         let target = to_model_ref(&edit.target)?;
         let after = model::resolve(after_doc, &target).map_err(|_| {
             // A target whose identity does not survive its own edit (e.g. a
@@ -3178,6 +3206,82 @@ fn simulate_armed_edits(
     Ok(armed_edits)
 }
 
+/// The armed fact of one birth: locate the born heading by the position the
+/// sealed batch placed it, read its published address off the after-doc's own
+/// read-facts table, and resolve that address for the after facts.
+///
+/// The position is exact, not a heuristic: the sealed edits are disjoint and
+/// applied back-to-front, so batch edit `i`'s text lands at its own region
+/// start plus the length shift of every sealed edit ordered before it —
+/// same-point inserts keep request order under the seal's stable sort. The
+/// lowered create text opens with one `\n`, so the born heading is the next
+/// byte. The FACTS still come from the real reparse; arithmetic only picks
+/// which node to read.
+///
+/// # Errors
+/// `would_corrupt{target_identity}` when the reparse leaves no section
+/// heading at the placed position, or the published address does not resolve
+/// — a neighbouring edit's bytes destroyed or absorbed the birth, so its
+/// armed facts are unrepresentable.
+fn born_armed_edit(
+    after_doc: &model::Document,
+    sealed: &model::ValidatedBatch,
+    batch_index: usize,
+    edit: &Edit,
+    title: &str,
+) -> Result<ArmedEdit, Box<ErrorBody>> {
+    let refuse = || birth_unrepresentable(edit, title);
+    let pos = sealed
+        .edits
+        .iter()
+        .position(|e| e.index == batch_index)
+        .ok_or_else(refuse)?;
+    let shift: i64 = sealed.edits[..pos]
+        .iter()
+        .map(|e| e.text.len() as i64 - e.span.len() as i64)
+        .sum();
+    let landed = i64::try_from(sealed.edits[pos].span.start)
+        .ok()
+        .map(|s| s + shift)
+        .and_then(|v| usize::try_from(v).ok())
+        .ok_or_else(refuse)?;
+    // The lowered create text opens with exactly one `\n` (lower_create's
+    // skeleton); a sealed text that lost it means the payload was rewritten
+    // out of shape — refuse rather than misplace the birth.
+    if !sealed.edits[pos].text.starts_with('\n') {
+        return Err(refuse());
+    }
+    let heading_start = landed + 1;
+    let hpath = crate::plan::published_hpath_at(after_doc, heading_start).ok_or_else(refuse)?;
+    let target = SecRef::Hpath { hpath };
+    let model_ref = to_model_ref(&target)?;
+    let after = model::resolve(after_doc, &model_ref).map_err(|_| refuse())?;
+    Ok(ArmedEdit {
+        target,
+        node_rev_before: NodeRev(model::born_before_rev().0),
+        node_rev_after: NodeRev(after.node_rev.0.clone()),
+        span_after: Span(after.span.start as u64, after.span.end as u64),
+    })
+}
+
+/// The birth's own `target_identity` refusal: the batch commits nothing, and
+/// the message names the address the caller asked to bear.
+fn birth_unrepresentable(edit: &Edit, title: &str) -> Box<ErrorBody> {
+    let mut e = ErrorBody::new(ErrorCode::WouldCorrupt);
+    e.family = Some(WouldCorruptFamily::TargetIdentity);
+    e.target = Some(edit.target.clone());
+    e.message = Some(format!(
+        "the born section's armed facts are unrepresentable — after this batch no section \
+         heading stands where \"{}/{}\" was placed, so another edit's bytes destroyed or \
+         absorbed the birth. {} Fix: land the create in its own batch, or repair the edit \
+         whose text swallows the new heading.",
+        target_display(&edit.target),
+        title,
+        crate::NO_PARTIAL_WRITE_CLAUSE
+    ));
+    Box::new(e)
+}
+
 /// The receipt append for a real commit: render the line (§6.1), honor the
 /// parent-dir obligation (fs does not mkdir — the production caller does, real
 /// commits only), and fold the append at the receipt file's EOF.
@@ -3187,6 +3291,7 @@ fn receipt_input(
     edits: &[Edit],
     root_before: &Root,
     armed_edits: &[ArmedEdit],
+    born: &[Option<String>],
     addr: &ReceiptAddr,
 ) -> Result<(String, model::ReceiptAppend), Box<ErrorBody>> {
     let io_err = |e: std::io::Error| {
@@ -3201,12 +3306,22 @@ fn receipt_input(
         now: args.now.as_deref(),
         root_before,
         anchor: &addr.anchor,
+        // The armed target — identical to the request target on every edit
+        // except a birth, whose fact names the born section. The receipt
+        // renders the armed facts (§6.4/§6.1: same facts, one set), so the
+        // two surfaces cannot split; a birth's op token is `create`, the op
+        // the caller asked, not the lowering's parent-append mechanism.
         edits: edits
             .iter()
             .zip(armed_edits)
-            .map(|(req, armed)| receipt::EditFact {
-                target: &req.target,
-                shape: &req.edit,
+            .enumerate()
+            .map(|(i, (req, armed))| receipt::EditFact {
+                target: &armed.target,
+                op: if born.get(i).is_some_and(Option::is_some) {
+                    receipt::OpFact::Create
+                } else {
+                    receipt::OpFact::Edit(&req.edit)
+                },
                 before: &armed.node_rev_before,
                 after: &armed.node_rev_after,
             })
