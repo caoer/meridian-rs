@@ -124,6 +124,7 @@ fn span_usize(v: u64) -> usize {
 /// row — the armed-fact builder reports the BORN section for those (the
 /// engine's armed-fact law, wire-contract § A.3 create door); every other
 /// edit arms its own target.
+#[derive(Debug)]
 pub struct Lowered {
     pub edits: Vec<Edit>,
     pub born: Vec<Option<String>>,
