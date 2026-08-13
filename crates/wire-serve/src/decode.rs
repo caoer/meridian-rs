@@ -427,10 +427,7 @@ fn decode_run(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
 /// `args` is POSITIONAL here (the run plane's contract shape), unlike the
 /// script entry's inert dict — two entries, each speaking its own plane's
 /// grammar verbatim.
-fn decode_run_target(
-    t: &Map<String, Value>,
-    i: usize,
-) -> Result<wire::RunTarget, Box<ErrorBody>> {
+fn decode_run_target(t: &Map<String, Value>, i: usize) -> Result<wire::RunTarget, Box<ErrorBody>> {
     const TARGET_FIELDS: [&str; 5] = ["page", "task", "args", "env", "dry"];
     for key in t.keys() {
         if !TARGET_FIELDS.contains(&key.as_str()) {

@@ -343,10 +343,7 @@ pub fn selector_to_secref(
                 &[fact] => Ok(wire::SecRef::Hpath {
                     hpath: fact.hpath.clone(),
                 }),
-                [] => Err(format!(
-                    "no section addressed by \"{}\"",
-                    sel.display()
-                )),
+                [] => Err(format!("no section addressed by \"{}\"", sel.display())),
                 many => Err(format!(
                     "\"{}\" is ambiguous ({} matches)",
                     sel.display(),

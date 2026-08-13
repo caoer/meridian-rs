@@ -32,7 +32,7 @@ use std::time::Instant;
 use effects::EvalLimits;
 use run::address::{self, AddressError};
 use run::caps::{self, CapsError};
-use run::executor::{ReceiptAddr, RECEIPT_FILE};
+use run::executor::{RECEIPT_FILE, ReceiptAddr};
 use run::fence::TaskLanguage;
 use run::runner::{self, RunSpec, RunnerError};
 use serde_json::{Map, Value, json};
@@ -131,11 +131,7 @@ struct RunArgs {
 /// # Errors
 /// A §8 frame ONLY for what never reached the plane — decode already
 /// answered the frame-shape family; nothing here refuses whole calls.
-fn serve(
-    _registry: &Registry,
-    ws: &Path,
-    request: &RunArgs,
-) -> Result<Vec<Value>, Box<ErrorBody>> {
+fn serve(_registry: &Registry, ws: &Path, request: &RunArgs) -> Result<Vec<Value>, Box<ErrorBody>> {
     let root = fs::WorkspaceRoot(ws.to_path_buf());
     let mut rows = Vec::with_capacity(request.targets.len());
     for (index, target) in request.targets.iter().enumerate() {
@@ -186,7 +182,13 @@ fn execute_row(
     };
     let scratch = root.0.join(".meridian/scratch").join(invocation);
     if let Err(e) = std::fs::create_dir_all(&scratch) {
-        return refusal_row(target, invocation, "run", &format!("scratch dir: {e}"), None);
+        return refusal_row(
+            target,
+            invocation,
+            "run",
+            &format!("scratch dir: {e}"),
+            None,
+        );
     }
     let spec = RunSpec {
         page: &target.page,
@@ -259,11 +261,10 @@ fn dry_row(
         Ok(c) => c,
         Err(e) => return refusal_row(target, invocation, "invocation", &e.to_string(), None),
     };
-    let authority =
-        match caps::resolve_authority(&doc, &task, resolved.block.lang, &conventions) {
-            Ok(a) => a,
-            Err(e) => return caps_refusal_row(target, invocation, &e),
-        };
+    let authority = match caps::resolve_authority(&doc, &task, resolved.block.lang, &conventions) {
+        Ok(a) => a,
+        Err(e) => return caps_refusal_row(target, invocation, &e),
+    };
     match resolved.block.lang {
         TaskLanguage::Starlark => {
             let root_at_eval = match fs::domain_snapshot(root) {
@@ -357,7 +358,13 @@ fn address_refusal_row(target: &wire::RunTarget, invocation: &str, error: &Addre
         AddressError::ManyTasks { available } => Some(available.clone()),
         _ => None,
     };
-    refusal_row(target, invocation, "invocation", &error.to_string(), declared)
+    refusal_row(
+        target,
+        invocation,
+        "invocation",
+        &error.to_string(),
+        declared,
+    )
 }
 
 /// Cap faults split by leg exactly as at the CLI: a bash fence under a

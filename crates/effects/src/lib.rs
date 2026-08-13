@@ -855,12 +855,7 @@ pub trait ScriptHost: Send {
     ///
     /// # Errors
     /// [`EffectFault`] — the host's typed reason; the script aborts.
-    fn put_live(
-        &mut self,
-        path: &str,
-        items: Vec<PlanEdit>,
-        line: u32,
-    ) -> Result<(), EffectFault> {
+    fn put_live(&mut self, path: &str, items: Vec<PlanEdit>, line: u32) -> Result<(), EffectFault> {
         let _ = (path, items, line);
         Err(EffectFault {
             reason: "live effects are not supported on this lane".to_owned(),

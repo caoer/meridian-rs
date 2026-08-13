@@ -278,12 +278,7 @@ fn serve(
 /// time through the § A.8 seam and its row is the program's value. No commit
 /// leg, no armed set, no rollback; the trace records the acts in call order
 /// and the outcome word is `effects`.
-fn live_serve(
-    registry: &Registry,
-    ws: &Path,
-    request: &ScriptArgs,
-    entry: &str,
-) -> ScriptTrace {
+fn live_serve(registry: &Registry, ws: &Path, request: &ScriptArgs, entry: &str) -> ScriptTrace {
     let deadline = Instant::now() + effects::DEFAULT_WALL_CLOCK;
     let ctx = ScriptCtx {
         id: "script".to_owned(),
@@ -409,8 +404,8 @@ impl effects::ScriptHost for LiveHost<'_> {
             return Err(fault("the script entry's wall clock elapsed".to_owned()));
         }
         let doc = self.load_live(path).map_err(&fault)?;
-        let sec = wire_serve::read::selector_to_secref(&doc, &ReadSel::parse(section))
-            .map_err(&fault)?;
+        let sec =
+            wire_serve::read::selector_to_secref(&doc, &ReadSel::parse(section)).map_err(&fault)?;
         let facts = match wire_serve::read::cat(&doc, Some(sec)) {
             Ok(ResponseBody::Cat {
                 content, node_rev, ..
@@ -455,9 +450,8 @@ impl effects::ScriptHost for LiveHost<'_> {
         };
         let mints = self.registry.read_mints(&self.ws_path);
         let ring = self.registry.ring(&self.ws_path);
-        let outcome =
-            wire_serve::write::splice(&self.ws, Some(&*ring), &args, &[], Some(&mints))
-                .map_err(|e| refuse(format!("put: {}", error_text(&e))))?;
+        let outcome = wire_serve::write::splice(&self.ws, Some(&*ring), &args, &[], Some(&mints))
+            .map_err(|e| refuse(format!("put: {}", error_text(&e))))?;
         let fingerprint_after = outcome.committed.as_ref().map(|frame| {
             let after = frame.delta.root_after.0.clone();
             ring.advance(frame.clone());
