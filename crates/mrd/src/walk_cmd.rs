@@ -122,7 +122,6 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
 /// One mounted root's corpus, owned — the backing store `RootedCorpus` borrows.
 struct MountedCorpus {
     name: addr::MountName,
-    kind: model::RootKind,
     docs: BTreeMap<String, Document>,
 }
 
@@ -245,11 +244,7 @@ fn load_mounts_where(wanted: &dyn Fn(&addr::MountName) -> bool) -> Mounts {
         match build_docs_at(path) {
             Ok(docs) => {
                 bound.push(name.clone());
-                corpora.push(MountedCorpus {
-                    name,
-                    kind: mount_kind(mount.kind()),
-                    docs,
-                });
+                corpora.push(MountedCorpus { name, docs });
             }
             // Bound per the table, but its corpus will not build — unreadable from here, and
             // just as much a declared root as any other.
@@ -294,7 +289,7 @@ impl Mounts {
             .with_hash_domain(domain)
             .with_ambient_disk(root);
         for mount in &self.corpora {
-            corpus = corpus.with_root(mount.name.clone(), mount.kind.clone(), &mount.docs);
+            corpus = corpus.with_root(mount.name.clone(), &mount.docs);
         }
         corpus
     }
@@ -303,16 +298,6 @@ impl Mounts {
     /// table resolution is a lookup in.
     pub(crate) fn set(&self) -> &addr::MountSet {
         &self.set
-    }
-}
-
-/// The mount plane's kind, as the resolver's kind.
-fn mount_kind(kind: config::MountKind) -> model::RootKind {
-    match kind {
-        config::MountKind::Vault => model::RootKind::Vault,
-        config::MountKind::GitFolder => {
-            model::RootKind::Opaque(config::MountKind::GitFolder.as_str().to_owned())
-        }
     }
 }
 

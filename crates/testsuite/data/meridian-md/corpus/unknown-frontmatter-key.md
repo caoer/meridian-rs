@@ -22,6 +22,5 @@ key fails loud as `missing-required-key` instead of being silently dropped.
 ```meridian-mount
 name: home-wiki
 path: /Users/Shared/projects/home-wiki
-kind: vault
 vault: home-wiki
 ```

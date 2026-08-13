@@ -1028,16 +1028,16 @@ pub struct CheckWriteRepair {
 }
 
 /// One `mounts` row (§ A.5): what this machine can say about one declared
-/// root. All three word fields are open strings on the wire — the tolerant-
-/// client law covers each; the engine's own closed types (`MountKind`,
-/// `MountState`) live in `config` and are projected here verbatim.
+/// root. Word fields are open strings on the wire — the tolerant-client law
+/// covers each; the engine's own closed type (`MountState`) lives in
+/// `config` and is projected here verbatim. The `kind` field is retired
+/// (kind-sweep, ZT 2026-08-13): the taxonomy left the schema, and a row
+/// field nobody can act on is a field the wire does not carry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MountRow {
     /// The canonical `MountName` — the bindable layer's spelling, lowercase
     /// `[a-z0-9-]` (`address-grammar.md` § 4.3).
     pub name: String,
-    /// `vault` | `git-folder` — the `MountKind` words verbatim.
-    pub kind: String,
     /// The `MountState` reason word verbatim, ONE spelling across the human
     /// line, `--json`, and this wire (`bound`, `grey(…)`, `red(…)`). Every
     /// word but `bound` refuses: a client gates on `state == "bound"` and

@@ -57,6 +57,5 @@ git-folder in an ordinary sentence.
 ```meridian-mount
 name: home-wiki
 path: /Users/Shared/projects/home-wiki
-kind: vault
 vault: home-wiki
 ```

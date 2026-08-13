@@ -702,7 +702,7 @@ fn render_ambient_file_not_found(missing: &str, selector: Option<&str>) -> Strin
 // Unmounted-root teaching refusal (D8 — verbatim anchor)
 
 /// Unmounted-root teaching refusal, verbatim. Names the mount and the fix (D8).
-pub const GREY_UNMOUNTED_REFUSAL_EXEMPLAR: &str = "grey(unmounted): root 'assets' is not mounted — the address 'assets:domains/media/logo.md#Design' names a root this machine does not bind. Not red: nothing drifted, you just cannot see from here. Refs to mounted roots remain served. Fix: declare 'assets' in ~/MERIDIAN.md as a mount entry (name / path / kind); see [[address-grammar]].";
+pub const GREY_UNMOUNTED_REFUSAL_EXEMPLAR: &str = "grey(unmounted): root 'assets' is not mounted — the address 'assets:domains/media/logo.md#Design' names a root this machine does not bind. Not red: nothing drifted, you just cannot see from here. Refs to mounted roots remain served. Fix: declare 'assets' in ~/MERIDIAN.md as a mount entry (name / path); see [[address-grammar]].";
 
 /// `grey(outside-hash-domain)` — the target is real and readable, and the hash
 /// domain excludes it (`wire-contract.md` §12.1, verdict-plane clause).
@@ -733,7 +733,7 @@ pub fn render_unmounted(root: &addr::MountName, address: &str) -> String {
          names a root this machine does not bind. Not red: nothing drifted, you \
          just cannot see from here. Refs to mounted roots remain served. \
          Fix: declare '{root}' in ~/MERIDIAN.md as a mount entry \
-         (name / path / kind); see [[address-grammar]]."
+         (name / path); see [[address-grammar]]."
     )
 }
 
@@ -990,7 +990,7 @@ mod tests {
     fn render_unmounted_carries_d8_teaching_verbatim() {
         const TEACH_TAIL: &str = ". Not red: nothing drifted, you just cannot see from here. \
              Refs to mounted roots remain served. Fix: declare 'assets' in ~/MERIDIAN.md \
-             as a mount entry (name / path / kind); see [[address-grammar]].";
+             as a mount entry (name / path); see [[address-grammar]].";
         assert!(
             GREY_UNMOUNTED_REFUSAL_EXEMPLAR.ends_with(TEACH_TAIL),
             "the D8 exemplar const must carry the verbatim teaching tail",
@@ -1299,11 +1299,7 @@ mod u21_file_not_found {
         // string address (R1.6).
         let sessions = addr::MountName::parse("sessions").expect("a name");
         let empty: BTreeMap<String, Document> = BTreeMap::new();
-        let corpus = crate::RootedCorpus::ambient(&docs).with_root(
-            sessions.clone(),
-            crate::RootKind::Vault,
-            &empty,
-        );
+        let corpus = crate::RootedCorpus::ambient(&docs).with_root(sessions.clone(), &empty);
         let mounts = addr::MountSet::new([sessions.clone()]);
         assert_eq!(
             index.resolve_ref("sessions:notes.md#Design", "from.md", &corpus, &mounts),

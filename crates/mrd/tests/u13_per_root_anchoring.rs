@@ -94,17 +94,17 @@ fn declare_root(dir: &Path, name: &str) {
     .expect("root declaration");
 }
 
-/// One `meridian-mount` block. `kind` is deliberately a parameter: the anchoring law is ONE
-/// law, so a `git-folder` root and a `vault` root are asked the same question of their own
-/// object stores.
-fn mount_block(name: &str, path: &Path, kind: &str) -> String {
-    let vault = if kind == "vault" {
+/// One `meridian-mount` block. `vaulted` is deliberately a parameter: the anchoring law is
+/// ONE law, so a mount with a `vault:` leg and one without are asked the same question of
+/// their own object stores. (`kind` left the schema — kind-sweep 2026-08-13.)
+fn mount_block(name: &str, path: &Path, vaulted: &str) -> String {
+    let vault = if vaulted == "vault" {
         format!("vault: {name}\n")
     } else {
         String::new()
     };
     format!(
-        "```meridian-mount\nname: {name}\npath: {}\nkind: {kind}\n{vault}```\n",
+        "```meridian-mount\nname: {name}\npath: {}\n{vault}```\n",
         path.display()
     )
 }

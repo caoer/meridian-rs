@@ -18,7 +18,6 @@ config becomes invalid by removing a tool.
 ```meridian-mount
 name: home-wiki
 path: /Users/Shared/projects/home-wiki
-kind: vault
 vault: home-wiki
 ```
 

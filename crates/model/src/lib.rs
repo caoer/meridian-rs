@@ -1841,17 +1841,6 @@ impl CorpusIndex {
             };
         };
 
-        // Opaque root: no sections; `#selector` is resolution-time refuse (§ 10.1 G-1).
-        if let RootKind::Opaque(kind) = &mounted.kind
-            && addr.has_selector()
-        {
-            return RefResolution::Malformed(AddrError::SelectorOnOpaqueRoot {
-                root,
-                kind: kind.clone(),
-                selector: addr.selector().to_owned(),
-            });
-        }
-
         // Re-confine path to the resolved mount (multi-root has no ambient join).
         if !addr::confined(addr.path()) {
             return RefResolution::Malformed(AddrError::AmbiguousColon {
@@ -1890,26 +1879,14 @@ impl CorpusIndex {
     }
 }
 
-/// What kind of tree a mounted root is — decides whether a `#selector` into it
-/// can address anything.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RootKind {
-    /// A parsed vault: sections are addressable, selectors are legal.
-    Vault,
-    /// An opaque root — no parse, no sections (`git-folder`). Pin grain is the
-    /// file and the fingerprint is a raw CID of the bytes, so an address into
-    /// one must not carry a `#selector` (§ 10.1, G-1). Carries the kind word as
-    /// the mount table spells it so the refusal can name it.
-    Opaque(String),
-}
-
-/// One mounted root's corpus, as the resolver sees it: its documents, its own
-/// name index, and its kind.
+/// One mounted root's corpus, as the resolver sees it: its documents and its
+/// own name index. Every mounted root is the same shape — the kind taxonomy
+/// left the schema (ZT 2026-08-13), and a mounted tree's documents are parsed
+/// wherever they came from.
 #[derive(Debug)]
 pub struct MountedRoot<'a> {
     index: CorpusIndex,
     docs: &'a BTreeMap<String, Document>,
-    kind: RootKind,
 }
 
 impl MountedRoot<'_> {
@@ -1917,12 +1894,6 @@ impl MountedRoot<'_> {
     #[must_use]
     pub fn docs(&self) -> &BTreeMap<String, Document> {
         self.docs
-    }
-
-    /// This root's kind.
-    #[must_use]
-    pub fn kind(&self) -> &RootKind {
-        &self.kind
     }
 }
 
@@ -2071,17 +2042,12 @@ impl<'a> RootedCorpus<'a> {
     /// Bind one mounted root's corpus under its canonical name, building that
     /// root's own name index. Chainable.
     #[must_use]
-    pub fn with_root(
-        mut self,
-        name: MountName,
-        kind: RootKind,
-        docs: &'a BTreeMap<String, Document>,
-    ) -> Self {
+    pub fn with_root(mut self, name: MountName, docs: &'a BTreeMap<String, Document>) -> Self {
         let mut index = CorpusIndex::new();
         for (path, doc) in docs {
             index.insert(path, doc);
         }
-        self.mounted.insert(name, MountedRoot { index, docs, kind });
+        self.mounted.insert(name, MountedRoot { index, docs });
         self
     }
 
