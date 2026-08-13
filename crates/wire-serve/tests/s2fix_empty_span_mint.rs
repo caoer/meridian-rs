@@ -123,13 +123,15 @@ fn every_empty_normalizing_form_is_refused_at_the_pin_door() {
             probe.name
         );
 
-        // Which rung refused, recorded: today the read-face resolve — an
-        // own-line anchor projects no fact, so the owner never sees it.
+        // Which rung refused, recorded. Since F-R4 an own-line orphan still
+        // PROJECTS a fact (its own line, paragraph-kinded), so the pin
+        // resolves and the refusal comes from the fingerprint OWNER — the
+        // exact belt this family exists to prove reaches its owner.
         assert!(
             err.message
                 .as_deref()
-                .is_some_and(|m| m.contains("no section addressed")),
-            "{}: expected the read-face resolve rung, got {:?}",
+                .is_some_and(|m| m.contains("addresses no content to fingerprint")),
+            "{}: expected the fingerprint owner's empty-span rung, got {:?}",
             probe.name,
             err.message
         );

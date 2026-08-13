@@ -375,8 +375,8 @@ fn read_row(f: &wire_map::facts::ReadFact) -> wire::ReadRow {
 /// §4.2 "anchors with their revs" half of the complete write kit (W-2: a host
 /// autofills a rev-less block write from this, the same way it does from a
 /// heading row's `sec_rev`). `None` is unreachable (`read_facts` mints an
-/// anchor fact only from an anchor-bearing `list_item`) and is dropped rather
-/// than serialized as an empty id.
+/// anchor fact only from an anchor-bearing row) and is dropped rather than
+/// serialized as an empty id.
 fn read_anchor(f: &wire_map::facts::ReadFact) -> Option<wire::ReadAnchor> {
     f.anchor.as_ref().map(|id| wire::ReadAnchor {
         anchor: id.clone(),
@@ -736,8 +736,8 @@ fn candidate_addrs(candidates: &[Vec<wire::HpathSeg>]) -> Vec<String> {
 
 /// One `^id` miss teaching: the parenthetical clause the refusal carries,
 /// plus the unaddressable HOST kind when the id exists on the page — the
-/// all-fail Fix branches on it, because `anchors[]` carries list-item hosts
-/// only and cannot list such an id (dogfood P2-c: a Fix must be servable).
+/// all-fail Fix branches on it, because `anchors[]` excludes frontmatter
+/// hosts and cannot list such an id (dogfood P2-c: a Fix must be servable).
 struct AnchorTeach {
     clause: String,
     /// `Some(kind)` = the id exists but its host is outside the face's anchor
@@ -751,17 +751,17 @@ struct AnchorTeach {
 
 /// Face-scoped `^id` miss teaching (Law A-3: a miss teaches before it
 /// refuses). The composed read resolves anchors against the face's anchor
-/// plane, which carries list-item hosts only (Go parity, golden-pinned), so a
-/// miss has two honest shapes and each gets its own clause:
+/// plane, which since F-R4 carries every body-hosted block id Obsidian
+/// addresses (paragraph, list item, task, callout, table, fence, heading) —
+/// the one exclusion is a frontmatter caret, which is literal YAML, not a
+/// block. A miss has two honest shapes and each gets its own clause:
 ///
-/// - the id exists in the parse tree but its host block kind is outside the
-///   face's coverage — name the limit truthfully (the real host kind, never a
-///   paragraph fallback) and the servable way in: the enclosing section for a
-///   block host, the `props` plane for a frontmatter caret-tail (there is no
-///   enclosing section to offer). Never imply absence (the md-only-limit
-///   pattern);
-/// - the id is absent — name the nearest face-addressable ids, or say plainly
-///   that the page carries none.
+/// - the id exists in the parse tree but its host is the frontmatter — name
+///   the limit truthfully and the servable way in: the `props` plane, which
+///   any composed read already serves (there is no enclosing section to
+///   offer). Never imply absence (the md-only-limit pattern);
+/// - the id is absent — name the nearest live ids, or say plainly that the
+///   page carries none.
 ///
 /// `None` for non-anchor selectors. The host-kind probe re-projects the toc
 /// only on this error path, never on a served read.
@@ -775,16 +775,17 @@ fn anchor_sel_teach(doc: &model::Document, sel: &wire::ReadSel) -> Option<Anchor
         .find(|r| r.anchor.as_deref() == Some(anchor.as_str()))
     {
         let clause = if row.kind == "frontmatter" {
-            "the anchor exists on this page, but its host is the frontmatter — outside \
-             the kinds this read face addresses (plain list items only); the caret tail \
-             is literal YAML there, and any composed read already serves the frontmatter \
-             keys on its `props` plane"
+            "the anchor exists on this page, but its host is the frontmatter — a caret \
+             tail is literal YAML there, not a block, and any composed read already \
+             serves the frontmatter keys on its `props` plane"
                 .to_owned()
         } else {
+            // Unreachable while every body host is face-addressable — kept
+            // truthful in case a kind ever leaves the plane again.
             format!(
-                "the anchor exists on this page, but its host block is a {} — outside the \
-                 kinds this read face addresses (plain list items only); read its enclosing \
-                 section by heading path instead",
+                "the anchor exists on this page, but its host block is a {} — outside \
+                 this read face's anchor plane; read its enclosing section by heading \
+                 path instead",
                 row.kind
             )
         };
@@ -835,29 +836,25 @@ fn anchor_sel_teach(doc: &model::Document, sel: &wire::ReadSel) -> Option<Anchor
 }
 
 /// One nearest candidate's prose spelling. A face-addressable id is offered
-/// bare; a non-addressable one carries the host-kind gate and the servable
-/// way in (§ A.3: teach the gate, never imply absence).
+/// bare — since F-R4 that is every body host; a frontmatter caret carries
+/// the gate and the servable way in (§ A.3: teach the gate, never imply
+/// absence).
 fn nearest_teach(row: &wire::ReadNearestAnchor) -> String {
     match row.kind.as_str() {
-        "list_item" => format!("^{}", row.anchor),
         "frontmatter" => format!(
             "^{} (frontmatter-hosted — its keys are on the `props` plane)",
             row.anchor
         ),
-        kind => format!(
-            "^{} ({kind}-hosted — outside this read face; read its enclosing section by \
-             heading path)",
-            row.anchor
-        ),
+        _ => format!("^{}", row.anchor),
     }
 }
 
 /// The servable Fix for an anchor whose host is outside the face's anchor
-/// plane. The standing `^` recovery points at `anchors[]` — which carries
-/// list-item hosts only, so the very id this refusal reports is absent there
-/// by construction (dogfood P2-c). A frontmatter caret-tail gets the `props`
-/// plane (it has no enclosing section); every other host gets the section
-/// map, where its enclosing section's path lives.
+/// plane — since F-R4, the frontmatter caret alone. The standing `^`
+/// recovery points at `anchors[]`, where the very id this refusal reports is
+/// absent by construction (dogfood P2-c): a frontmatter caret-tail gets the
+/// `props` plane (it has no enclosing section); the defensive non-frontmatter
+/// arm keeps the section-map lane should a kind ever leave the plane again.
 fn unaddressable_fix(host: &str, display: &str) -> String {
     if host == "frontmatter" {
         format!(
