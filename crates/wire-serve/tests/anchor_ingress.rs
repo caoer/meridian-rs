@@ -9,8 +9,8 @@ use wire::{ErrorCode, Path as WPath, ReadSel, ResponseBody, SecRef};
 use wire_serve::read::{NO_DECORATIONS, ReadParams, cat, composed_read};
 
 /// Two list-item anchors (`^goal`, `^gate`) and one task-hosted anchor
-/// (`^t1`) — the face addresses the first two; the task host is outside the
-/// face's coverage (Go parity) while the parse tree still carries it.
+/// (`^t1`) — since F-R4 the face addresses all three (every body host
+/// Obsidian's block references cover is in the anchor plane).
 const DOC: &str = "# Tasks\n\n- ship the gate ^goal\n- prove the gate ^gate\n- [ ] boxed ^t1\n\n# Notes\n\nbody\n";
 
 fn doc() -> model::Document {
@@ -39,8 +39,8 @@ fn read(sections: Option<Vec<ReadSel>>) -> Result<ResponseBody, Box<wire::ErrorB
 
 /// The composed read publishes the anchor plane in its own array, in document
 /// order, and the heading plane stays anchor-free — the plane split a `toc`
-/// consumer relies on. The face's coverage boundary rides along: the
-/// task-hosted `^t1` is absent (list-item hosts only, Go parity).
+/// consumer relies on. Since F-R4 the task-hosted `^t1` is listed beside the
+/// list-item ids (every body host projects).
 #[test]
 fn toc_mode_publishes_the_anchor_plane_in_its_own_array() {
     let ResponseBody::Read { toc, anchors, .. } = read(None).expect("toc mode serves") else {
@@ -49,8 +49,8 @@ fn toc_mode_publishes_the_anchor_plane_in_its_own_array() {
     let ids: Vec<&str> = anchors.iter().map(|a| a.anchor.as_str()).collect();
     assert_eq!(
         ids,
-        vec!["goal", "gate"],
-        "list-item anchors, document order"
+        vec!["goal", "gate", "t1"],
+        "every body-hosted anchor, document order (F-R4)"
     );
     for a in &anchors {
         let (start, end) = (
@@ -98,7 +98,7 @@ fn cat_resolves_an_anchor_to_its_host_block() {
             })
         )
         .is_ok(),
-        "the strict plane resolves a task-hosted anchor the read face does not list"
+        "the strict plane resolves the task-hosted anchor too"
     );
 }
 
@@ -186,8 +186,8 @@ fn cat_heading_miss_teaches_instead_of_failing_bare() {
 /// A composed-read anchor miss names the nearest live ids inside the
 /// standing miss spelling — appended, never reshaped, so every consumer of
 /// the standing prefix still matches. The pool spans every `^id` on the page
-/// (wire-contract § A.3, season-1b addendum): the task-hosted `^t1` is
-/// offered WITH its host-kind gate instead of being silently excluded.
+/// (wire-contract § A.3, season-1b addendum); since F-R4 every body-hosted
+/// candidate is face-addressable and offered bare.
 #[test]
 fn composed_read_anchor_miss_teaches_nearest() {
     let err = *read(Some(vec![ReadSel::parse("^gaol")])).expect_err("^gaol is absent");
@@ -196,36 +196,30 @@ fn composed_read_anchor_miss_teaches_nearest() {
     assert!(
         msg.contains(
             "no section addressed by \"^gaol\" (nearest live block anchors: ^gate, ^goal, \
-             ^t1 (task-hosted"
+             ^t1)"
         ),
-        "every live id is offered, bigram-ranked, non-addressable hosts \
-         carrying their gate, inside the standing miss spelling: {msg}"
+        "every live id is offered bare, bigram-ranked, inside the standing \
+         miss spelling: {msg}"
     );
     assert!(
-        msg.contains("read its enclosing section by heading path"),
-        "the non-addressable candidate teaches the servable way in: {msg}"
+        msg.contains("block anchors ride the toc's `anchors[]` plane"),
+        "the Fix names the discovery lane where every listed id lives: {msg}"
     );
 }
 
-/// The coverage-limit clause: a task-hosted anchor EXISTS on the page, so the
-/// refusal names the host kind and the limit — and must not offer nearest
-/// candidates, which would imply the id is absent (the md-only-limit
-/// pattern: name the limit, never imply absence).
+/// The old coverage-limit case, flipped by F-R4: a task-hosted anchor is
+/// face-addressable, and the composed read serves its block bytes.
 #[test]
-fn composed_read_task_hosted_anchor_names_the_coverage_limit() {
-    let err = *read(Some(vec![ReadSel::parse("^t1")])).expect_err("outside face coverage");
-    let msg = err.message.as_deref().expect("message");
-    assert!(
-        msg.contains("the anchor exists on this page"),
-        "absence is the wrong claim — the anchor is real: {msg}"
-    );
-    assert!(
-        msg.contains("host block is a task"),
-        "the limit names the host kind: {msg}"
-    );
-    assert!(
-        !msg.contains("nearest live block anchors"),
-        "a limit refusal must not imply absence with candidates: {msg}"
+fn composed_read_serves_a_task_hosted_anchor() {
+    let body = read(Some(vec![ReadSel::parse("^t1")])).expect("a task-hosted id serves (F-R4)");
+    let ResponseBody::Read { sections, .. } = body else {
+        panic!("composed read answers a Read body");
+    };
+    let sections = sections.expect("sections lane");
+    assert_eq!(sections.len(), 1, "one selector, one served section");
+    assert_eq!(
+        sections[0].content, "- [ ] boxed",
+        "the task line's own bytes, marker stripped"
     );
 }
 
@@ -247,36 +241,20 @@ fn read_raw(raw: &str, sel: &str) -> Result<ResponseBody, Box<wire::ErrorBody>> 
     )
 }
 
-/// The heading-host probe (dogfood P2-c): the coverage-limit refusal names
-/// the REAL host kind — a heading, never "a paragraph" — and its Fix teaches
-/// a servable path (find the enclosing section in the section map). It must
-/// never point at `anchors[]`: that array carries list-item hosts only, so
-/// the very id the refusal reports is absent there by construction.
+/// The heading-host probe, flipped by F-R4: a heading-line id is standard
+/// Obsidian (`## H ^id` — the id keys the heading line), so the composed
+/// read serves the heading line's bytes.
 #[test]
-fn heading_hosted_anchor_refusal_names_heading_and_serves_a_path() {
-    let err = *read_raw("## Has anchor ^anch-head\n\nbody\n", "^anch-head")
-        .expect_err("outside face coverage");
-    assert_eq!(err.code, ErrorCode::RefNotFound, "refusal code unchanged");
-    let msg = err.message.as_deref().expect("message");
-    assert!(
-        msg.contains("the anchor exists on this page"),
-        "absence is the wrong claim — the anchor is real: {msg}"
-    );
-    assert!(
-        msg.contains("host block is a heading"),
-        "the limit names the TRUE host kind: {msg}"
-    );
-    assert!(
-        !msg.contains("paragraph"),
-        "the paragraph lie is retired: {msg}"
-    );
-    assert!(
-        !msg.contains("anchors[]"),
-        "the Fix must not point at an array that cannot list this id: {msg}"
-    );
-    assert!(
-        msg.contains("toc read"),
-        "the Fix teaches the servable path — the section map: {msg}"
+fn composed_read_serves_a_heading_hosted_anchor() {
+    let body = read_raw("## Has anchor ^anch-head\n\nbody\n", "^anch-head")
+        .expect("a heading-hosted id serves (F-R4)");
+    let ResponseBody::Read { sections, .. } = body else {
+        panic!("composed read answers a Read body");
+    };
+    let sections = sections.expect("sections lane");
+    assert_eq!(
+        sections[0].content, "## Has anchor",
+        "the heading line's own bytes, marker stripped"
     );
 }
 
@@ -323,7 +301,7 @@ fn partial_read_notice_carries_the_anchor_teaching() {
     };
     let notice = notice.expect("a partial read carries its notice");
     assert!(
-        notice.contains("^gaol (nearest live block anchors: ^gate, ^goal, ^t1 (task-hosted"),
+        notice.contains("^gaol (nearest live block anchors: ^gate, ^goal, ^t1)"),
         "{notice}"
     );
 }
