@@ -497,9 +497,13 @@ fn a_well_formed_fp_address_strips_and_resolves() {
     args.edits[0].target = SecRef::Anchor {
         anchor: "leaders-guideline@green.b3af12cd".into(),
     };
+    // The promoted pin marker sits on its own line directly below the
+    // heading, so the anchor keys the HEADING LINE (F-R4 attachment). The
+    // lawful `at:"all"` therefore re-supplies the heading bytes — the marker
+    // line lies outside the replaced region and survives by construction.
     args.edits[0].edit = EditShape::Put {
         at: PutAt::All,
-        text: "^leaders-guideline".into(),
+        text: "## Leader's Guideline".into(),
     };
     splice(&root, None, &args, &[], None).expect("the decorated address resolves");
 
