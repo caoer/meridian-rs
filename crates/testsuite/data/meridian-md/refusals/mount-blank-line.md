@@ -13,6 +13,5 @@ it keeps the block grammar at one spelling per fact.
 name: home-wiki
 path: /Users/Shared/projects/home-wiki
 
-kind: vault
 vault: home-wiki
 ```

@@ -14,6 +14,5 @@ is regenerated from state that still exists. Your bytes are the only copy.
 name: home-wiki
 path: /Users/Shared/projects/home-wiki
 paths: /Users/Shared/projects/home-wiki-sessions
-kind: vault
 vault: home-wiki
 ```

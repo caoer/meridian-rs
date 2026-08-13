@@ -13,7 +13,6 @@ fact instead.
 ```meridian-mount
 name: home-wiki
 path: /Users/Shared/projects/home-wiki
-kind: vault
 primary: false
 vault: home-wiki
 ```

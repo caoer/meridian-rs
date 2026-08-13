@@ -99,7 +99,6 @@ fn to_json(
             "name": m.name(),
             "path": m.declared_path(),
             "canonical": m.canonical_path().map(|p| p.display().to_string()),
-            "kind": m.kind().as_str(),
             "primary": m.primary(),
             "vault": m.vault(),
             "pin": m.pin(),
@@ -171,11 +170,10 @@ fn render_human(
         // collapses.
         let _ = write!(
             out,
-            "  {}  {}{}  {}",
+            "  {}{}  {}",
             m.name(),
-            m.kind().as_str(),
-            // The same spelling the wire carries (`primary`), printed beside
-            // the kind — the designation is a role, not a fourth map leg.
+            // The same spelling the wire carries (`primary`) — the
+            // designation is a role, not a fourth map leg.
             if m.primary() { " primary" } else { "" },
             m.declared_path()
         );
@@ -186,9 +184,9 @@ fn render_human(
             let _ = write!(out, "  -> {}", canonical.display());
         }
         // The vault leg always prints, with the marker when absent: `Mount::vault` is `Some` iff
-        // `kind: vault` (the parser refuses a `vault:` line on a `git-folder` entry), so a
-        // git-folder root's vault name cannot exist rather than merely being missing. Dropping
-        // the cell would be byte-identical to a build that lost the name after the parser.
+        // the block declared `vault:` — presence IS vault-ness since the kind sweep
+        // (ZT 2026-08-13). Dropping the cell would be byte-identical to a build that lost
+        // the name after the parser.
         let _ = write!(out, "  vault:{}", m.vault().unwrap_or(ABSENT_LEG));
         if let Some(pin) = m.pin() {
             let _ = write!(out, "  pin:{pin}");

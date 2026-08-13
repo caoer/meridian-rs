@@ -30,7 +30,7 @@ fn config_raw(sessions: Option<&Path>) -> String {
     if let Some(dir) = sessions {
         let _ = write!(
             raw,
-            "```meridian-mount\nname: sessions\npath: {}\nkind: vault\nvault: home-wiki-sessions\n```\n",
+            "```meridian-mount\nname: sessions\npath: {}\nvault: home-wiki-sessions\n```\n",
             dir.display()
         );
     }

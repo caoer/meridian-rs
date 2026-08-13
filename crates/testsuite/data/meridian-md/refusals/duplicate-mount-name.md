@@ -16,12 +16,10 @@ and is U7's, not this schema's. Name uniqueness is decidable from the bytes.
 ```meridian-mount
 name: home-wiki
 path: /Users/Shared/projects/home-wiki
-kind: vault
 vault: home-wiki
 ```
 
 ```meridian-mount
 name: home-wiki
 path: /Users/Shared/repos/archive
-kind: git-folder
 ```

@@ -42,7 +42,7 @@ pub const MOUNT_LANG: &str = "meridian-mount";
 pub const TOOL_LANG: &str = "meridian-tool";
 
 /// The mount block's fields, in canonical order (schema §5.1).
-pub const MOUNT_FIELDS: [&str; 6] = ["name", "path", "kind", "primary", "vault", "pin"];
+pub const MOUNT_FIELDS: [&str; 5] = ["name", "path", "primary", "vault", "pin"];
 
 /// The tool block's fields, in canonical order (schema §6).
 pub const TOOL_FIELDS: [&str; 3] = ["name", "kind", "config"];
@@ -61,7 +61,7 @@ pub const NO_PARTIAL_LOAD_CLAUSE: &str =
 /// exemplar of the shape schema §8.3 fixes.
 /// `refusal_exemplar_is_produced_not_asserted` reproduces it from a real
 /// parse, so drift in the wording fails a test.
-pub const UNKNOWN_FIELD_REFUSAL_EXEMPLAR: &str = "refused: ~/MERIDIAN.md line 14: unknown field `paths` in a meridian-mount block — legal fields are name, path, kind, primary, vault, pin (in that order). No mount table was loaded; the config is not partially applied. Fix: remove the line or spell the field you meant.";
+pub const UNKNOWN_FIELD_REFUSAL_EXEMPLAR: &str = "refused: ~/MERIDIAN.md line 14: unknown field `paths` in a meridian-mount block — legal fields are name, path, primary, vault, pin (in that order). No mount table was loaded; the config is not partially applied. Fix: remove the line or spell the field you meant.";
 
 /// Why a config refused — the closed reason set of schema §8.2. A reason word
 /// comes from [`Reason::word`], never free text.
@@ -83,7 +83,7 @@ pub enum Reason {
     WrongTypeValue,
     /// `version:` is an integer this build does not implement.
     UnsupportedVersion,
-    /// A required *block* field is absent, including a kind-conditional one.
+    /// A required *block* field is absent.
     MissingRequiredField,
     /// A block line's key is not in that block's legal set.
     UnknownField,
@@ -91,8 +91,6 @@ pub enum Reason {
     DuplicateField,
     /// A block's fields are not in canonical order.
     FieldOutOfOrder,
-    /// A field is present that its block's `kind` forbids.
-    FieldNotPermittedForKind,
     /// A value violates its field's type or charset.
     BadValue,
     /// A block body line is not `key: value`, or a `config:` payload line is
@@ -112,7 +110,7 @@ pub enum Reason {
 
 impl Reason {
     /// Every reason word, in schema §8.2's table order.
-    pub const ALL: [Reason; 18] = [
+    pub const ALL: [Reason; 17] = [
         Reason::ConfigPathUnusable,
         Reason::HomeUnresolvable,
         Reason::NoFrontmatter,
@@ -124,7 +122,6 @@ impl Reason {
         Reason::UnknownField,
         Reason::DuplicateField,
         Reason::FieldOutOfOrder,
-        Reason::FieldNotPermittedForKind,
         Reason::BadValue,
         Reason::MalformedLine,
         Reason::UnterminatedBlock,
@@ -148,7 +145,6 @@ impl Reason {
             Reason::UnknownField => "unknown-field",
             Reason::DuplicateField => "duplicate-field",
             Reason::FieldOutOfOrder => "field-out-of-order",
-            Reason::FieldNotPermittedForKind => "field-not-permitted-for-kind",
             Reason::BadValue => "bad-value",
             Reason::MalformedLine => "malformed-line",
             Reason::UnterminatedBlock => "unterminated-block",
@@ -212,46 +208,30 @@ impl std::fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
-/// A root's kind (schema §5.1 field 3). Closed: kind selects the pin grain
-/// and whether `vault:` is required, so an unknown kind has no fallback.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MountKind {
-    /// An Obsidian vault: parsed, section-grain pins, carries a vault name.
-    Vault,
-    /// A plain git folder: no parse, no sections, file-grain pins.
-    GitFolder,
-}
-
-impl MountKind {
-    /// The kind's spelling in the file.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            MountKind::Vault => "vault",
-            MountKind::GitFolder => "git-folder",
-        }
-    }
-}
-
 /// One declared mount entry — the bytes of one `meridian-mount` block, parsed.
 ///
 /// `path` is carried verbatim: canonicalization happens once, at bind, in the
 /// mount table.
+///
+/// There is no `kind` field: the taxonomy left the schema (ZT 2026-08-13).
+/// Vault-ness is carried by `vault:` presence alone — present names the
+/// Obsidian vault, absent means the mount is not one — and nothing else ever
+/// branched on it at serve time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MountEntry {
     /// The canonical root name — the mount-table key.
     pub name: String,
     /// The local path, verbatim as written.
     pub path: String,
-    /// `vault` or `git-folder`.
-    pub kind: MountKind,
-    /// The declared-primary designation (schema §5.1 field 4): `true` iff this
+    /// The declared-primary designation (schema §5.1 field 3): `true` iff this
     /// block carries `primary: true`. A binding ROLE for fleet hosts — the one
     /// tree their single-root consumers anchor — parsed and reported here,
     /// never acted on by the engine. Absence is the only "not primary"
-    /// spelling; at most one block per file may carry it.
+    /// spelling; at most one block per file may carry it. Legal on any mount:
+    /// the primary root is where the fleet daemon writes, which does not
+    /// require an Obsidian vault registration.
     pub primary: bool,
-    /// The Obsidian vault name; `Some` iff `kind` is [`MountKind::Vault`].
+    /// The Obsidian vault name; `Some` iff the block carries `vault:`.
     pub vault: Option<String>,
     /// The mount-as-claim pin (schema §5.3) — a well-formed fingerprint
     /// CID-token, carried verbatim.
@@ -1026,7 +1006,6 @@ fn parse_mount(
     // file order than any value fault inside the block (schema §8.4).
     let (name_line, name) = fields.require(path, block.fence_line, "name")?;
     let (path_line, mount_path) = fields.require(path, block.fence_line, "path")?;
-    let (kind_line, kind_text) = fields.require(path, block.fence_line, "kind")?;
 
     check_name(name, path, name_line, "a canonical root name")?;
     if mount_path.trim().is_empty() {
@@ -1038,27 +1017,13 @@ fn parse_mount(
             "write the root's local path after `path: `.".to_string(),
         ));
     }
-    let kind = match kind_text {
-        "vault" => MountKind::Vault,
-        "git-folder" => MountKind::GitFolder,
-        other => {
-            return Err(ConfigError::new(
-                Reason::BadValue,
-                path,
-                Some(kind_line),
-                format!("`kind: {other}` is not a root kind — the two legal kinds are vault and git-folder."),
-                "set `kind: vault` for an Obsidian vault, or `kind: git-folder` for a plain git folder.".to_string(),
-            ));
-        }
-    };
 
-    let primary = parse_mount_primary(&fields, kind, path)?;
+    let primary = parse_mount_primary(&fields, path)?;
 
-    let vault = parse_mount_vault(&fields, kind, path, block.fence_line)?;
+    let vault = parse_mount_vault(&fields, path)?;
 
     // Parse checks only that the pin is a well-formed fingerprint token —
-    // codec-agnostic, since the two kinds pin different grains. Checking the
-    // claim is bind's.
+    // codec-agnostic. Checking the claim is bind's.
     let pin = match fields.get("pin") {
         Some((pin_line, token)) => {
             if model::fingerprint::parse_fingerprint(token).is_none() {
@@ -1082,7 +1047,6 @@ fn parse_mount(
         MountEntry {
             name: name.to_string(),
             path: mount_path.to_string(),
-            kind,
             primary: primary.is_some(),
             vault,
             pin,
@@ -1093,70 +1057,40 @@ fn parse_mount(
     ))
 }
 
-// Kind-conditional (schema §5.1 field 5): a vault root requires `vault:`; a
-// git-folder root forbids it.
-fn parse_mount_vault(
-    fields: &Fields<'_>,
-    kind: MountKind,
-    path: &Path,
-    fence_line: usize,
-) -> Result<Option<String>, ConfigError> {
-    match (kind, fields.get("vault")) {
-        (MountKind::Vault, Some((vault_line, vault_name))) => {
+// The vault name (schema §5.1 field 4): optional — presence IS vault-ness.
+// A block that carries `vault:` names its Obsidian vault (the mount table's
+// three-way map: canonical name, Obsidian vault name, local path); a block
+// without one is not a vault, and no second field restates that fact
+// (kind-sweep, ZT 2026-08-13).
+fn parse_mount_vault(fields: &Fields<'_>, path: &Path) -> Result<Option<String>, ConfigError> {
+    match fields.get("vault") {
+        Some((vault_line, vault_name)) => {
             if vault_name.trim().is_empty() {
                 return Err(ConfigError::new(
                     Reason::BadValue,
                     path,
                     Some(vault_line),
-                    "`vault:` is empty — a vault root must name its Obsidian vault.".to_string(),
-                    "write the Obsidian vault name after `vault: `.".to_string(),
+                    "`vault:` is empty — a vault mount must name its Obsidian vault.".to_string(),
+                    "write the Obsidian vault name after `vault: `, or remove the line."
+                        .to_string(),
                 ));
             }
             Ok(Some(vault_name.to_string()))
         }
-        (MountKind::Vault, None) => Err(ConfigError::new(
-            Reason::MissingRequiredField,
-            path,
-            Some(fence_line),
-            format!(
-                "the {MOUNT_LANG} block opened here declares `kind: vault` but no `vault:` — the mount table is a three-way map (canonical name, Obsidian vault name, local path), and without the vault name it has two legs."
-            ),
-            "add a `vault:` line naming the Obsidian vault.".to_string(),
-        )),
-        (MountKind::GitFolder, Some((vault_line, _))) => Err(ConfigError::new(
-            Reason::FieldNotPermittedForKind,
-            path,
-            Some(vault_line),
-            "`vault:` is not permitted on a `kind: git-folder` mount — a git-folder root has no Obsidian vault, so the field states something that cannot be true.".to_string(),
-            "remove the `vault:` line, or set `kind: vault` if this root really is one.".to_string(),
-        )),
-        (MountKind::GitFolder, None) => Ok(None),
+        None => Ok(None),
     }
 }
 
 // The primary designation (schema §5.1a): optional, literal `true` only —
 // absence is the one "not primary" spelling, so `primary: false` refuses
-// rather than becoming a second spelling for the same fact. Kind-conditional
-// like `vault:`: the primary root is where a fleet daemon writes, so a
-// `git-folder` (source repo) designation states something that cannot be
-// honoured. Returns the designation's FILE line when present and legal.
-fn parse_mount_primary(
-    fields: &Fields<'_>,
-    kind: MountKind,
-    path: &Path,
-) -> Result<Option<usize>, ConfigError> {
+// rather than becoming a second spelling for the same fact. Legal on any
+// mount: the primary root is where a fleet daemon writes, which does not
+// require an Obsidian vault registration (kind-sweep, ZT 2026-08-13).
+// Returns the designation's FILE line when present and legal.
+fn parse_mount_primary(fields: &Fields<'_>, path: &Path) -> Result<Option<usize>, ConfigError> {
     let Some((primary_line, value)) = fields.get("primary") else {
         return Ok(None);
     };
-    if kind == MountKind::GitFolder {
-        return Err(ConfigError::new(
-            Reason::FieldNotPermittedForKind,
-            path,
-            Some(primary_line),
-            "`primary:` is not permitted on a `kind: git-folder` mount — the primary root is where the fleet daemon writes, and a git-folder root binds a source repo.".to_string(),
-            "remove the `primary:` line, or set `kind: vault` if this root really is one.".to_string(),
-        ));
-    }
     if value != "true" {
         return Err(ConfigError::new(
             Reason::BadValue,

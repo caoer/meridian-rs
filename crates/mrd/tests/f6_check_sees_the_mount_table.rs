@@ -64,7 +64,7 @@ fn sandbox() -> Sandbox {
         &config,
         format!(
             "---\ntype: meridian-config\nversion: 1\n---\n\n# Test roots\n\n\
-             ```meridian-mount\nname: other\npath: {}\nkind: vault\nvault: othervault\n```\n",
+             ```meridian-mount\nname: other\npath: {}\nvault: othervault\n```\n",
             other.display()
         ),
     )

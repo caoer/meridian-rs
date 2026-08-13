@@ -7,7 +7,7 @@
 //! "declare it" teaching on an already-declared root.
 
 use addr::{MountName, MountSet};
-use model::{CorpusIndex, Document, RefResolution, RootKind, RootedCorpus};
+use model::{CorpusIndex, Document, RefResolution, RootedCorpus};
 use std::collections::BTreeMap;
 
 fn name(n: &str) -> MountName {
@@ -119,7 +119,7 @@ fn a_declared_and_readable_root_still_resolves_into_its_own_corpus() {
     let ambient = corpus_with(&["notes.md"]);
     let sessions = corpus_with(&["notes.md", "deep/plan.md"]);
     let corpus =
-        RootedCorpus::ambient(&ambient).with_root(name("sessions"), RootKind::Vault, &sessions);
+        RootedCorpus::ambient(&ambient).with_root(name("sessions"), &sessions);
     let mounts = MountSet::new([name("sessions")]);
 
     let got = CorpusIndex::new().resolve_ref("sessions:deep/plan.md", "claim.md", &corpus, &mounts);

@@ -13,7 +13,6 @@ either choice would silently retarget when the file is next edited.
 ```meridian-mount
 name: home-wiki
 path: /Users/Shared/projects/home-wiki
-kind: vault
 primary: true
 vault: home-wiki
 ```
@@ -21,7 +20,6 @@ vault: home-wiki
 ```meridian-mount
 name: sessions
 path: /Users/Shared/projects/home-wiki-sessions
-kind: vault
 primary: true
 vault: home-wiki-sessions
 ```

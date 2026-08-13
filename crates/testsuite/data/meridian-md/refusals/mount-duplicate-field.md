@@ -13,6 +13,5 @@ both lines.
 name: home-wiki
 path: /Users/Shared/projects/home-wiki
 path: /Users/Shared/repos/home-wiki
-kind: vault
 vault: home-wiki
 ```

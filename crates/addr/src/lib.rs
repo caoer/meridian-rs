@@ -68,10 +68,6 @@ impl fmt::Display for MountName {
 ///
 /// Every variant carries the offending text, so a refusal can name what it
 /// refused.
-///
-/// [`AddrError::SelectorOnOpaqueRoot`] is not reachable from [`Addr::parse`]:
-/// a root's kind is a mount-table fact and `parse` does not read the mount
-/// table (§ 2.2). Its constructor lives with the resolver.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AddrError {
     /// The head carried a root separator but the name before it is outside the
@@ -91,20 +87,6 @@ pub enum AddrError {
     AmbiguousColon {
         /// The offending head, verbatim.
         found: String,
-    },
-    /// A `#selector` on an address naming an OPAQUE root — one whose kind has no
-    /// parse and no sections (`git-folder`) (§ 10.1, G-1).
-    ///
-    /// Resolution-time, never parse-time: the root's kind is a mount-table
-    /// fact. Pin grain for such a root is the file, and the fingerprint is a
-    /// raw CID of the bytes.
-    SelectorOnOpaqueRoot {
-        /// The opaque root the address named.
-        root: MountName,
-        /// That root's kind word, as the mount table spells it (`git-folder`).
-        kind: String,
-        /// The refused selector, verbatim.
-        selector: String,
     },
 }
 
@@ -129,17 +111,6 @@ impl fmt::Display for AddrError {
                 "refused: '{found}' carries more than one `:` before the first `/` — \
                  exactly one colon may separate a root from its path. \
                  Fix: rename the root or move the path under a directory; see [[address-grammar]]."
-            ),
-            AddrError::SelectorOnOpaqueRoot {
-                root,
-                kind,
-                selector,
-            } => write!(
-                f,
-                "refused: root '{root}' is a {kind} root — it has no parse and no sections, \
-                 so the selector '{selector}' addresses nothing. \
-                 Fix: address the file itself (`{root}:path`) — pin grain for a {kind} root is \
-                 the file; see [[address-grammar]]."
             ),
         }
     }
@@ -363,7 +334,7 @@ pub fn confined(path: &str) -> bool {
 /// distinct fact, or its refusal would prescribe a fix that is already done.
 ///
 /// The vault axis maps name ↔ vault name ↔ path; the stored plane is spelled
-/// in vault names. Partial by construction: a `git-folder` root has no
+/// in vault names. Partial by construction: a mount without a `vault:` leg has no
 /// Obsidian vault, so [`MountSet::vault_of`] is `None` there and the stored
 /// form refuses rather than inventing one.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -417,7 +388,7 @@ impl MountSet {
 
     /// The Obsidian vault name bound to `name`, for the STORED spelling.
     ///
-    /// `None` when the root carries no vault — a `git-folder` root has none —
+    /// `None` when the root carries no vault name —
     /// and the stored form then refuses rather than inventing one.
     #[must_use]
     pub fn vault_of(&self, name: &MountName) -> Option<&str> {
@@ -770,7 +741,7 @@ mod tests {
         assert_eq!(
             set.vault_of(&assets),
             None,
-            "a git-folder root has no vault name, and the axis says so",
+            "a plain-folder root has no vault name, and the axis says so",
         );
         assert_eq!(
             set.name_of_vault("someone-elses-vault"),
@@ -861,24 +832,6 @@ mod tests {
             "sessions:",
         ] {
             assert!(!confined(bad), "{bad} must not be admitted as a path");
-        }
-    }
-
-    /// The resolution-time refusal (§ 10.1, G-1): a `#selector` on an address
-    /// into an OPAQUE root.
-    #[test]
-    fn the_opaque_root_refusal_names_the_root_its_kind_and_the_selector() {
-        let err = AddrError::SelectorOnOpaqueRoot {
-            root: MountName::parse("assets").expect("a name"),
-            kind: "git-folder".to_string(),
-            selector: "Design".to_string(),
-        };
-        let text = err.to_string();
-        for needle in ["assets", "git-folder", "Design", "[[address-grammar]]"] {
-            assert!(
-                text.contains(needle),
-                "the refusal must name {needle}: {text}"
-            );
         }
     }
 
