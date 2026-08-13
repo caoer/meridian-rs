@@ -190,7 +190,10 @@ fn section_miss(addr: &[HpathSeg], miss: &Miss) -> Box<ErrorBody> {
 /// points or neither.
 fn block_ref(addr: &[HpathSeg]) -> Option<&str> {
     let [only] = addr else { return None };
-    let id = only.h.strip_prefix("#^").or_else(|| only.h.strip_prefix('^'))?;
+    let id = only
+        .h
+        .strip_prefix("#^")
+        .or_else(|| only.h.strip_prefix('^'))?;
     Some(syntax::split_fp(id).0)
 }
 
@@ -229,16 +232,14 @@ fn resolve_block<'a>(
         )));
     }
     idx.anchor(id).map_err(|miss| match miss {
-        Miss::NotFound if idx.doc_anchor_ids.iter().any(|a| a == id) => {
-            bad_request(format!(
-                "no section addressed by {shown}. {clause} Fix: `^{id}` exists in this \
+        Miss::NotFound if idx.doc_anchor_ids.iter().any(|a| a == id) => bad_request(format!(
+            "no section addressed by {shown}. {clause} Fix: `^{id}` exists in this \
                  document, but its host block is outside the face's anchor plane \
                  (`anchors[]` carries list-item hosts only) — write it through its \
                  containing section: the section's heading path with a `find` needle.",
-                shown = policy::defs::go_quote(&crate::display_hpath(addr)),
-                clause = crate::NO_PARTIAL_WRITE_CLAUSE,
-            ))
-        }
+            shown = policy::defs::go_quote(&crate::display_hpath(addr)),
+            clause = crate::NO_PARTIAL_WRITE_CLAUSE,
+        )),
         Miss::NotFound => section_miss(addr, &Miss::NotFound),
         Miss::Ambiguous(n) => {
             let mut e = ErrorBody::new(ErrorCode::AmbiguousRef);

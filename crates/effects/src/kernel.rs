@@ -664,7 +664,10 @@ impl<'h> ScriptEntry<'h> {
         }
 
         /// Every plain name a target binds, at any nesting inside tuples.
-        fn target_names<'s>(target: &'s starlark_syntax::syntax::ast::AstAssignTarget, out: &mut Vec<&'s str>) {
+        fn target_names<'s>(
+            target: &'s starlark_syntax::syntax::ast::AstAssignTarget,
+            out: &mut Vec<&'s str>,
+        ) {
             match &**target {
                 AssignTarget::Identifier(ident) => out.push(&ident.node.ident),
                 AssignTarget::Tuple(items) => {
@@ -678,7 +681,10 @@ impl<'h> ScriptEntry<'h> {
             }
         }
 
-        fn unbind(target: &starlark_syntax::syntax::ast::AstAssignTarget, read_bound: &mut BTreeSet<String>) {
+        fn unbind(
+            target: &starlark_syntax::syntax::ast::AstAssignTarget,
+            read_bound: &mut BTreeSet<String>,
+        ) {
             let mut names = Vec::new();
             target_names(target, &mut names);
             for name in names {
