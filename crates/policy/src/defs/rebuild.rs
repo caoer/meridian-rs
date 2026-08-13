@@ -543,6 +543,30 @@ fn plan_replace_section(
 ) -> Result<Vec<SpliceOp>, BodyError> {
     let sec = sec.expect("replace_section resolved a section");
     if e.rev.is_empty() {
+        // A BLOCK target (`sec.n` is its `^id`) speaks the block voice: the
+        // subject is the block the caller addressed, and the remedy names the
+        // read that mints the BLOCK's own token — the section's rev can never
+        // unlock a block rewrite, and a pre-flight that fires before the
+        // committer (putregistry 4b before 4c) is the message the caller
+        // actually sees (W-2 acceptance: a refusal must not send its reader
+        // to a token no door accepts).
+        if sec.n.starts_with('^') {
+            return Err(BodyError {
+                code: "ECAS".to_string(),
+                message: format!(
+                    "replace_section on {} requires a fresh rev (a whole-block rewrite is destructive)",
+                    go_quote(&sec.n)
+                ),
+                remedy: format!(
+                    "read the block (sections:[{}]) and pass its rev",
+                    go_quote(&sec.n)
+                ),
+                context: vec![
+                    ("block".to_string(), sec.n.clone()),
+                    ("current_rev".to_string(), sec.rev.clone()),
+                ],
+            });
+        }
         return Err(BodyError {
             code: "ECAS".to_string(),
             message: format!(
