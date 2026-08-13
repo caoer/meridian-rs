@@ -333,6 +333,51 @@ fn a_top_level_read_echoes_and_nested_reads_stay_quiet() {
     );
 }
 
+/// The capture law's read half (result-echo ruling 2026-08-13): a name whose
+/// LAST top-level assignment is a bare `read()` call stays OUT of the
+/// bindings — that value already rides the trace as the read's own `echo`
+/// entry, and one fact gets one carrier. A name recomputed after the read
+/// returns: its final value is no longer the face the echo carries.
+#[test]
+fn a_read_bound_name_is_left_to_its_echo_and_a_recomputed_name_returns() {
+    let src = "card = read(\"tasks/0011.md\")\n\
+               sec = read(\"tasks/0011.md\", section = \"Goals\")\n\
+               status = card.fm[\"status\"]\n\
+               card = card.words\n";
+    let (eval, _) = run(src);
+    let facts = eval.outcome.expect("the script evaluates");
+    println!("POPULATION bindings = {:?}", facts.bindings);
+    assert!(
+        !facts.bindings.contains_key("sec"),
+        "a read-bound name is the echo entry's fact, not a binding's"
+    );
+    assert_eq!(
+        facts.bindings.get("status").map(String::as_str),
+        Some("\"todo\""),
+        "a computed value is a binding — that is what the echo cannot carry"
+    );
+    assert_eq!(
+        facts.bindings.get("card").map(String::as_str),
+        Some("41"),
+        "the LAST top-level assignment decides: recomputed after the read, the name returns"
+    );
+}
+
+/// The capture law's function half: a `def` is not a value the run computed,
+/// so function bindings stay out of the result. The values beside them stay
+/// in.
+#[test]
+fn function_bindings_are_not_results() {
+    let (eval, _) = run("def helper(n):\n    return n + 1\nx = helper(2)\n");
+    let facts = eval.outcome.expect("the script evaluates");
+    println!("POPULATION bindings = {:?}", facts.bindings);
+    assert!(
+        !facts.bindings.contains_key("helper"),
+        "a def is not a computed value"
+    );
+    assert_eq!(facts.bindings.get("x").map(String::as_str), Some("3"));
+}
+
 /// The two read faces: `read(path)` is toc `{rev, fm, toc}`, `read(path,
 /// section=…)` is cat `{text, rev}`. There is no whole-file body.
 #[test]

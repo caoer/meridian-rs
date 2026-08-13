@@ -541,6 +541,12 @@ pub(crate) struct ScriptEntry<'h> {
     /// Resolved 0-based `(line, column)` of every `read(…)` call sitting in
     /// echo position — a top-level statement, not nested.
     echo_at: RefCell<BTreeSet<(usize, usize)>>,
+    /// Names whose LAST assignment is a top-level `name = read(…)` — the
+    /// capture law's read half: their value already rides the trace as the
+    /// read's own `echo` entry, so [`ScriptEntry::capture_bindings`] leaves
+    /// them out (one fact, one carrier). Maintained in source order by the
+    /// same walk that notes echo positions.
+    read_bound: RefCell<BTreeSet<String>>,
     reads: RefCell<Vec<ReadRecord>>,
     /// The host's own refusal, kept typed for the consumer plane.
     fault: RefCell<Option<ReadFault>>,
@@ -572,6 +578,7 @@ impl<'h> ScriptEntry<'h> {
             files: ctx.files.clone(),
             max_reads: limits.max_reads,
             echo_at: RefCell::new(BTreeSet::new()),
+            read_bound: RefCell::new(BTreeSet::new()),
             reads: RefCell::new(Vec::new()),
             fault: RefCell::new(None),
             over_read_budget: Cell::new(false),
@@ -637,34 +644,111 @@ impl<'h> ScriptEntry<'h> {
     /// echo exactly when it is the whole right-hand side of a top-level
     /// assignment, or a top-level expression statement. Everything else —
     /// comprehensions, conditions, loop bodies, function bodies — is quiet.
+    ///
+    /// The same source-order walk maintains [`ScriptEntry::read_bound`]: a
+    /// top-level `name = read(…)` marks the name read-bound, and ANY later
+    /// rebinding of that name — a top-level reassignment, an `x += …`, a loop
+    /// target, an assignment inside an `if` or `for` body — unmarks it,
+    /// because the name no longer holds the face the echo entry carries. A
+    /// `def` body is a local scope, so nothing inside one touches the set.
     fn note_echo_positions(&self, ast: &AstModule) {
-        fn top_level<'s>(stmt: &'s AstStmt, out: &mut Vec<&'s AstExpr>) {
+        /// Is this expression a bare `read(…)` call?
+        fn is_read_call(expr: &AstExpr) -> bool {
+            let Expr::Call(callee, _) = &**expr else {
+                return false;
+            };
+            let Expr::Identifier(ident) = &**callee.as_ref() else {
+                return false;
+            };
+            ident.node.ident == "read"
+        }
+
+        /// Every plain name a target binds, at any nesting inside tuples.
+        fn target_names<'s>(target: &'s starlark_syntax::syntax::ast::AstAssignTarget, out: &mut Vec<&'s str>) {
+            match &**target {
+                AssignTarget::Identifier(ident) => out.push(&ident.node.ident),
+                AssignTarget::Tuple(items) => {
+                    for item in items {
+                        target_names(item, out);
+                    }
+                }
+                // `d["k"] = …` and `s.f = …` mutate a value; the NAME keeps
+                // its binding, so the read-bound mark is untouched.
+                AssignTarget::Index(_) | AssignTarget::Dot(_, _) => {}
+            }
+        }
+
+        fn unbind(target: &starlark_syntax::syntax::ast::AstAssignTarget, read_bound: &mut BTreeSet<String>) {
+            let mut names = Vec::new();
+            target_names(target, &mut names);
+            for name in names {
+                read_bound.remove(name);
+            }
+        }
+
+        fn walk<'s>(
+            stmt: &'s AstStmt,
+            top: bool,
+            echo_candidates: &mut Vec<&'s AstExpr>,
+            read_bound: &mut BTreeSet<String>,
+        ) {
             match &**stmt {
                 Stmt::Statements(stmts) => {
                     for s in stmts {
-                        top_level(s, out);
+                        walk(s, top, echo_candidates, read_bound);
                     }
                 }
-                Stmt::Assign(assign) => out.push(&assign.rhs),
-                Stmt::AssignModify(_, _, rhs) => out.push(rhs),
-                Stmt::Expression(expr) => out.push(expr),
+                Stmt::Assign(assign) => {
+                    if top {
+                        echo_candidates.push(&assign.rhs);
+                        if let AssignTarget::Identifier(ident) = &*assign.lhs
+                            && is_read_call(&assign.rhs)
+                        {
+                            read_bound.insert(ident.node.ident.clone());
+                            return;
+                        }
+                    }
+                    unbind(&assign.lhs, read_bound);
+                }
+                Stmt::AssignModify(target, _, rhs) => {
+                    if top {
+                        echo_candidates.push(rhs);
+                    }
+                    // `x += read(…)` binds the SUM, not the face — the echo
+                    // (position rule) still renders the read; the name is no
+                    // longer its carrier.
+                    unbind(target, read_bound);
+                }
+                Stmt::Expression(expr) => {
+                    if top {
+                        echo_candidates.push(expr);
+                    }
+                }
+                Stmt::For(for_) => {
+                    unbind(&for_.var, read_bound);
+                    walk(&for_.body, false, echo_candidates, read_bound);
+                }
+                Stmt::If(_, body) => walk(body, false, echo_candidates, read_bound),
+                Stmt::IfElse(_, arms) => {
+                    walk(&arms.0, false, echo_candidates, read_bound);
+                    walk(&arms.1, false, echo_candidates, read_bound);
+                }
+                // A `def` body binds locals; module names are untouched.
                 _ => {}
             }
         }
 
         let mut candidates = Vec::new();
-        top_level(ast.statement(), &mut candidates);
+        let mut read_bound = self.read_bound.borrow_mut();
+        walk(ast.statement(), true, &mut candidates, &mut read_bound);
         let mut echo = self.echo_at.borrow_mut();
         for expr in candidates {
-            let Expr::Call(callee, _) = &**expr else {
-                continue;
-            };
-            let Expr::Identifier(ident) = &**callee.as_ref() else {
-                continue;
-            };
-            if ident.node.ident != "read" {
+            if !is_read_call(expr) {
                 continue;
             }
+            let Expr::Call(callee, _) = &**expr else {
+                unreachable!("is_read_call admitted a non-call");
+            };
             // The evaluator reports a call site as one of these two spans
             // depending on how the frame was pushed; both name the same call,
             // so matching either is exact, never approximate.
@@ -725,16 +809,24 @@ impl<'h> ScriptEntry<'h> {
         Ok(face)
     }
 
-    /// Snapshot the module's top-level bindings as Starlark reprs, minus the
-    /// inert inputs.
+    /// Snapshot the module's top-level bindings as Starlark reprs — the
+    /// capture law. Three names stay out: the inert inputs (inputs are not
+    /// results), function bindings (a `def` is not a value the run computed),
+    /// and read-bound names ([`ScriptEntry::read_bound`] — the read's own
+    /// `echo` entry already carries that value, and one fact gets one
+    /// carrier).
     fn capture_bindings(&self, module: &Module<'_>) {
         let mut bindings = self.bindings.borrow_mut();
+        let read_bound = self.read_bound.borrow();
         for name in module.names() {
             let name = name.as_str();
-            if SCRIPT_INPUTS.contains(&name) {
+            if SCRIPT_INPUTS.contains(&name) || read_bound.contains(name) {
                 continue;
             }
             if let Some(value) = module.get(name) {
+                if value.get_type() == "function" {
+                    continue;
+                }
                 bindings.insert(name.to_owned(), value.to_repr());
             }
         }
