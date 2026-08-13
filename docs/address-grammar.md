@@ -338,13 +338,13 @@ Unmounted { root: addr::MountName },
 /// anchor (cross-root-addressing §1a). `render_unmounted` reproduces this
 /// wording with the real root and address interpolated; this const pins the
 /// exemplar so a drift in the wording is a visible test failure.
-pub const GREY_UNMOUNTED_REFUSAL_EXEMPLAR: &str = "grey(unmounted): root 'assets' is not mounted — the address 'assets:domains/media/logo.md#Design' names a root this machine does not bind. Not red: nothing drifted, you just cannot see from here. Refs to mounted roots remain served. Fix: declare 'assets' in ~/MERIDIAN.md as a mount entry (name / path / kind); see [[address-grammar]].";
+pub const GREY_UNMOUNTED_REFUSAL_EXEMPLAR: &str = "grey(unmounted): root 'assets' is not mounted — the address 'assets:domains/media/logo.md#Design' names a root this machine does not bind. Not red: nothing drifted, you just cannot see from here. Refs to mounted roots remain served. Fix: declare 'assets' in ~/MERIDIAN.md as a mount entry (name / path); see [[address-grammar]].";
 ```
 
 **The teaching tail the pinning test asserts verbatim**, exactly as `TEACH_TAIL` does for D1:
 
 ```
-. Not red: nothing drifted, you just cannot see from here. Refs to mounted roots remain served. Fix: declare '<root>' in ~/MERIDIAN.md as a mount entry (name / path / kind); see [[address-grammar]].
+. Not red: nothing drifted, you just cannot see from here. Refs to mounted roots remain served. Fix: declare '<root>' in ~/MERIDIAN.md as a mount entry (name / path); see [[address-grammar]].
 ```
 
 It **names the missing mount** and **teaches the fix**, per D8, and it carries §1a's ratified
@@ -414,7 +414,7 @@ cannot itself be attested (canonicalize-at-bind ③).
 | Crate | Position | Owns |
 |---|---|---|
 | **`crates/addr`** (NEW) | a **`std`-only leaf, zero dependencies, UPSTREAM of `syntax`** | `Addr`, `MountName`, `MountSet`, `AddrError`; the colon law (§ 4); the parse. **This is where an address becomes a value.** |
-| **`crates/config`** (NEW) | **downstream of `model`** | the `MERIDIAN.md` parse; the mount TABLE (name ↔ vault name ↔ path + kind); canonicalize-at-bind; the deny-ceiling inheritance; the equal-or-nested refusal; the declared-vs-bound check |
+| **`crates/config`** (NEW) | **downstream of `model`** | the `MERIDIAN.md` parse; the mount TABLE (name ↔ vault name ↔ path); canonicalize-at-bind; the deny-ceiling inheritance; the equal-or-nested refusal; the declared-vs-bound check |
 
 Neither is `crates/workspace` — its charter is *"a leaf, `std` + `cache` only"* (`laws.md`
 § Crate charters), and it is **read, not moved**: `config` calls `workspace::deny_reason`.
@@ -462,7 +462,7 @@ implementation and implementation write these; the sentences are supplied here s
 | Crate | Charter |
 |---|---|
 | `addr` | The agent-plane address: `[root:]path[#selector]` parsed into a fallible type carrying an optional canonical root name, plus the resolution-facing bound-name projection every plane resolves through. A `std`-only leaf upstream of `syntax` — it is where an address becomes a value, so nothing downstream re-splits a string |
-| `config` | The `MERIDIAN.md` plane: the one entry point parsed as content (a rev and a fingerprint like any page), and the mount table binding canonical root name ↔ Obsidian vault name ↔ local path (+ kind) — canonicalized at bind, passed through the `workspace` deny ceiling, refusing equal-or-nested mounts, failing loud with no partial table. Downstream of `model`; it projects the bound names into `addr::MountSet` so resolution stays `model`'s |
+| `config` | The `MERIDIAN.md` plane: the one entry point parsed as content (a rev and a fingerprint like any page), and the mount table binding canonical root name ↔ Obsidian vault name ↔ local path — canonicalized at bind, passed through the `workspace` deny ceiling, refusing equal-or-nested mounts, failing loud with no partial table. Downstream of `model`; it projects the bound names into `addr::MountSet` so resolution stays `model`'s |
 
 ---
 
@@ -507,7 +507,7 @@ are two different ways to spell the same tree, and only canonicalization collaps
 | M4 | `/a/wiki` and `/a/wiki/sub` both bound | **whole parse fails loud** | `nested-mount` (INV-4) |
 | M5 | `/a/wiki` and `/a/wiki-two` both bound | **BOUND — this is legal** | — (`wiki-two` is not a segment-boundary descendant of `wiki`) |
 | M6 | a mount path that does not exist or is unreadable | **grey for that root**, the path named; the table stays loaded | `grey(unmounted)` family — **not** a parse failure |
-| M7 | a mount path that is a `git-folder`, not a vault | **bound**, kind `git-folder` | — (§ 9, row 7) |
+| M7 | a mount path without a `vault:` leg (a plain folder) | **bound** | — (§ 9, row 7; the kind taxonomy is retired — see § 10.1) |
 
 **M5 is the acceptance half of M4** and it is why the prefix test is segment-boundary rather than
 string-prefix: a naive `starts_with` refuses M5, and a mount law that refuses legitimate sibling
@@ -619,7 +619,7 @@ charitable reading, and rows this document does not own say who does.**
 | 4 | **A path that literally contains `:`** — *"must be ruled in implementation"* | **§ 4 in full** | root-wins on the single head colon, no fallback; ≥2 head colons refuse; a first-segment colon on disk is `grey(unaddressable-path)`; a write door targeting one refuses `bad_path`. Rows D1–D11 |
 | 5 | Two roots declaring the same canonical name | § 3 INV-1, row T1 | parse fails loud, no partial mount table |
 | 6 | One root mounted at two paths | § 3 INV-2 + § 8 B-1/B-3, rows T2/M3 | parse fails loud **after canonicalization**, so a symlink cannot smuggle it past |
-| 7 | `git-folder` root — no parse, no sections | § 10.1 below | **an address into a `git-folder` root MUST NOT carry a `#selector`** — refused `AddrError::SelectorOnOpaqueRoot`. Pin grain is the file; the fingerprint is a raw CID of the bytes |
+| 7 | a root without a `vault:` leg (formerly `git-folder`) | § 10.1 below | **selectors are legal on every mounted root** — G-1 is RETIRED with the kind taxonomy (kind-sweep, ZT 2026-08-13); see § 10.1 |
 | 8 | Cross-root pin whose target root is later unmounted | § 6.2 R-3 | **grey, never red** — nothing drifted, the ledger stopped being able to measure |
 | 9 | A stored `obsidian://` URI hand-edited by a human | § 9.4 row P9 | read-back translation **fails loudly**, never guesses |
 | 10 | `MERIDIAN.md` pins a root it declares, and that root drifts | **not this document's** | **Implementation owns it** (mount-as-claim, canonicalize-at-bind ③ — load-bearing, since the fence's only bypass is an edit to `~/MERIDIAN.md`). The address grammar has no part in it |
@@ -631,18 +631,18 @@ charitable reading, and rows this document does not own say who does.**
 owner rather than by this document inventing an address-plane answer they do not have — which is the
 honest reading of Quality Gate 2, not an evasion of it.
 
-### 10.1 The one rule row 7 required that no document stated
+### 10.1 G-1 is RETIRED (kind-sweep, ZT 2026-08-13) — kept as the record
 
-Row 7 forced a grammar rule the plan names nowhere:
+G-1 read: *a `git-folder` root has no parse and no sections, so an address into one must not carry
+a `#selector`* — refused `AddrError::SelectorOnOpaqueRoot` at resolution time.
 
-> **G-1.** A `git-folder` root has **no parse and no sections**. An address naming such a root
-> therefore **MUST NOT carry a `#selector`** — one is refused with `AddrError::SelectorOnOpaqueRoot`,
-> naming the root and its kind. `assets:media/logo.png` is legal; `assets:media/logo.png#Design` is
-> refused.
->
-> **The refusal is a RESOLUTION-time refusal, not a parse-time one**, because `Addr::parse` does not
-> read the mount table (§ 2.2) and the root's *kind* is a mount-table fact. This keeps the parse/
-> resolve split of § 2.2 intact.
+Retired WITH the kind taxonomy, and not merely because its discriminator left the schema: the
+rule's premise was false at the data level. The corpus loader built the same parsed index for both
+kinds (`model::RootedCorpus::with_root` never branched on kind), so the refusal refused work the
+corpus could do. With `kind` gone from `meridian-md-schema.md` §5.1, every mounted root is the same
+shape to the resolver, selectors resolve on any of them, and `SelectorOnOpaqueRoot` is deleted from
+the closed error set. The extinction pin is `crates/model/tests/kind_gate_extinction.rs` — a
+re-added kind gate fails there first, mirroring the daemon's mountgate pin.
 
 ---
 
@@ -719,7 +719,7 @@ hypothetical one.
 | how the prefix is separated from the path | § 4.1 — the colon law, three arms, no fallback |
 | the root-name charset and its case rule | § 4.3 — `[a-z0-9-]`, non-empty; uppercase refuses, never normalizes |
 | what happens to `@` in a fragment | § 4.4 — selector bytes to the end; fingerprint pinning is its own field, never in-band (Law A-2) |
-| the closed error set | § 4.5 + § 10.1 — `BadMountName`, `EmptyMountName`, `EmptyPath`, `AmbiguousColon`, `SelectorOnOpaqueRoot` |
+| the closed error set | § 4.5 — `BadMountName`, `EmptyMountName`, `EmptyPath`, `AmbiguousColon` (`SelectorOnOpaqueRoot` retired with G-1, § 10.1) |
 | the parse/resolve split | § 2.2 — parse never reads the mount table; unmounted is grey, not a parse error |
 | what `resolve_ref` receives | § 7.2 — `&addr::MountSet`, defined upstream so D4 and D4a both hold |
 | the three ingress classes the compiler cannot reach | § 9.1's four positions |
@@ -729,7 +729,7 @@ hypothetical one.
 **Decisions deliberately left open, and who owns each:**
 
 1. **The `MERIDIAN.md` in-file syntax of a mount entry** — the block grammar and key names for
- name / path / vault name / kind. **`meridian-md-schema.md` owns it**; this document constrains only
+ name / path / vault name. **`meridian-md-schema.md` owns it**; this document constrains only
  the *invariants* the entries must satisfy (§ 3, § 8), never their spelling.
 2. **The `obsidian://` URI's exact construction and percent-encoding**, and the round-trip identity
  gate over it. **the wire-serve stored-form seam owns it** (see § 9); § 9 rules only which positions it may touch and where the guard

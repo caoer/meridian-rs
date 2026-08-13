@@ -11,13 +11,12 @@ returning `Some`: four non-empty `.`-separated fields,
 `version.codec.hashfn.digest`.
 
 Parse is codec-agnostic on purpose, so this case must NOT be satisfied by
-checking for the literal `fp1.span2.b3.` prefix — a git-folder root's pin uses a
+checking for the literal `fp1.span2.b3.` prefix — another mount's pin may use a
 different codec and must still parse.
 
 ```meridian-mount
 name: field-notes
 path: /Users/Shared/projects/field-notes
-kind: vault
 vault: field-notes
 pin: fp1.span2.b3
 ```

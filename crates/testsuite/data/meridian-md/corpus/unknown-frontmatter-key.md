@@ -22,6 +22,5 @@ key fails loud as `missing-required-key` instead of being silently dropped.
 ```meridian-mount
 name: field-notes
 path: /Users/Shared/projects/field-notes
-kind: vault
 vault: field-notes
 ```

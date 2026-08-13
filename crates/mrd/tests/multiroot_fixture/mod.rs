@@ -104,7 +104,7 @@ pub fn plant_declared_roots(sb: &Sandbox) -> Vec<String> {
         plant_root(&dir, name);
         writeln!(
             table,
-            "```meridian-mount\nname: {name}\npath: {}\nkind: vault\nvault: {name}vault\n```\n",
+            "```meridian-mount\nname: {name}\npath: {}\nvault: {name}vault\n```\n",
             dir.display()
         )
         .expect("writing into a String cannot fail");

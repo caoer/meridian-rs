@@ -107,7 +107,7 @@ fn mixed_page() -> String {
     let new_engine_block = lock::EngineEmitted::emit_canonical(&TestJournal { ts: "2026-07-26" });
     format!(
         "# Roots\n\nprose the reader keeps\n\n{lock_block}\n\n{new_engine_block}\n\n\
-         ```{mount}\nname: field-notes\npath: /Users/Shared/projects/field-notes\nkind: vault\nvault: field-notes\n```\n\n\
+         ```{mount}\nname: field-notes\npath: /Users/Shared/projects/field-notes\nvault: field-notes\n```\n\n\
          ```{tool}\nname: t\nkind: mcp\n```\n\n\
          ```{unclaimed}\nwhatever: 1\n```\n\n\
          ```rust\nfn main() {{}}\n```\n",
@@ -174,7 +174,7 @@ fn a_parsed_only_language_is_not_elided_however_it_is_named() {
         "the declared root's own bytes reach the reader: {out}"
     );
     assert!(
-        out.contains("kind: vault"),
+        out.contains("vault: field-notes"),
         "the whole authored block reaches the reader, not just its fence: {out}"
     );
 }
@@ -207,7 +207,7 @@ fn an_unclaimed_reserved_language_renders_and_config_skips_it() {
     // is now visible on the render face rather than compounding into a silence.
     let page = format!(
         "---\ntype: {ty}\nversion: 1\n---\n\n\
-         ```{mount}\nname: a\npath: /x\nkind: git-folder\n```\n\n\
+         ```{mount}\nname: a\npath: /x\n```\n\n\
          ```{unclaimed}\nwhatever: 1\n```\n",
         ty = config::CONFIG_TYPE,
         mount = config::MOUNT_LANG,

@@ -27,7 +27,7 @@ struct Sandbox {
 fn config_raw(path: &Path) -> String {
     format!(
         "---\ntype: meridian-config\nversion: 1\n---\n\n# Roots\n\n\
-         ```meridian-mount\nname: sessions\npath: {}\nkind: vault\nvault: sessions\n```\n",
+         ```meridian-mount\nname: sessions\npath: {}\nvault: sessions\n```\n",
         path.display()
     )
 }
@@ -330,7 +330,7 @@ fn the_emitted_teaching_is_pinned_verbatim_on_the_surface_that_renders_it() {
          'assets:logo.md' names a root this machine does not bind. Not red: \
          nothing drifted, you just cannot see from here. Refs to mounted roots \
          remain served. Fix: declare 'assets' in ~/MERIDIAN.md as a mount entry \
-         (name / path / kind); see [[address-grammar]].",
+         (name / path); see [[address-grammar]].",
         "the teaching a user READS is pinned verbatim — not a const nothing renders",
     );
 }

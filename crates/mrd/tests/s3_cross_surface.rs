@@ -70,13 +70,13 @@ fn table(notes: &Path, archive: Option<&Path>, vault_name: &str) -> String {
     let mut raw = "---\ntype: meridian-config\nversion: 1\n---\n\n# The U30 corpus\n\n".to_string();
     let _ = write!(
         raw,
-        "```meridian-mount\nname: {VAULT_ROOT}\npath: {}\nkind: vault\nvault: {vault_name}\n```\n",
+        "```meridian-mount\nname: {VAULT_ROOT}\npath: {}\nvault: {vault_name}\n```\n",
         notes.display()
     );
     if let Some(dir) = archive {
         let _ = write!(
             raw,
-            "```meridian-mount\nname: {FOLDER_ROOT}\npath: {}\nkind: git-folder\n```\n",
+            "```meridian-mount\nname: {FOLDER_ROOT}\npath: {}\n```\n",
             dir.display()
         );
     }
@@ -455,10 +455,10 @@ fn criterion_2_the_three_way_translation_is_recoverable_where_it_exists() {
         "the machine face states the same fact as `null` at a PRESENT key — an absent \
          key would be the silent omission the criterion rejects: {folder}",
     );
-    assert_eq!(
-        folder["kind"].as_str(),
-        Some("git-folder"),
-        "and it names the kind that makes the cell partial BY DESIGN: {folder}",
+    assert!(
+        folder.get("kind").is_none(),
+        "kind left the schema (kind-sweep 2026-08-13) — the cell is partial because \
+         the block declares no `vault:`, and no taxonomy field restates that: {folder}",
     );
 
     // ── (d) DECLARED-VS-BOUND MISMATCH FAILS LOUD ───────────────────────────

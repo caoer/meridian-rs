@@ -265,7 +265,6 @@ the repo's one strict hand-parsed block grammar with per-line refusals.
 ```meridian-mount
 name: field-notes
 path: «local-path»
-kind: vault
 vault: field-notes
 pin: fp1.span2.b3.40b167ed9b42a2beadb7c441b214efdc93069ef443a1cc2b5ae2ccda4cf03152
 ```
@@ -279,10 +278,20 @@ the rest of the line with trailing whitespace trimmed.
 |---|---|---|---|---|
 | 1 | `name` | canonical root name (§5.2) | **yes** | absent → `missing-required-field`. Charset violation, empty, or leading/trailing `-` → `bad-value`, naming the offending character and the legal charset |
 | 2 | `path` | non-empty string, a filesystem path | **yes** | absent → `missing-required-field`. Empty or whitespace-only → `bad-value` |
-| 3 | `kind` | exactly `vault` or `git-folder` | **yes** | absent → `missing-required-field`. Any other value → `bad-value`, naming the value found and the two legal values |
-| 4 | `primary` | literal `true` (§5.1a) | no | present and not `true` → `bad-value`, naming the one legal value — absence is the only "not primary" spelling. Present when `kind: git-folder` → `field-not-permitted-for-kind` |
-| 5 | `vault` | Obsidian vault name, non-empty string | **iff `kind: vault`** | required and absent → `missing-required-field`, naming the kind that requires it. Present when `kind: git-folder` → `field-not-permitted-for-kind` |
-| 6 | `pin` | fingerprint CID-token (§5.3) | no | present and not a well-formed token → `bad-value` |
+| 3 | `primary` | literal `true` (§5.1a) | no | present and not `true` → `bad-value`, naming the one legal value — absence is the only "not primary" spelling |
+| 4 | `vault` | Obsidian vault name, non-empty string | no | present and empty → `bad-value`. Presence IS vault-ness: a block carrying `vault:` names its Obsidian vault; a block without one is not a vault, and no second field restates that fact |
+| 5 | `pin` | fingerprint CID-token (§5.3) | no | present and not a well-formed token → `bad-value` |
+
+> **`kind` is RETIRED (kind-sweep, ZT 2026-08-13).** The field paired with
+> `vault:` (`kind: vault` required it, `git-folder` forbade it), gated
+> `primary:` off git-folder mounts, and got printed — nothing on any serve
+> path ever branched on it. Both pairing rules died WITH the field: vault-ness
+> is `vault:` presence alone, and `primary: true` is legal on any mount (the
+> primary root is where the fleet daemon writes, which does not require an
+> Obsidian vault registration). A `kind:` line on an engine at or past the
+> sweep refuses through the ordinary `unknown-field` door — no compatibility
+> window; the remedy is the door's own: remove the line. The
+> `field-not-permitted-for-kind` reason word is retired with its two rules.
 
 Structural refusals over the block as a whole:
 
@@ -508,7 +517,7 @@ A refusal about *nothing* has no line unless the rule says which one. Three case
 
 | The fault is about | The line is | Cases |
 |---|---|---|
-| Something **present** | its own line | `wrong-type-value`, `unsupported-version`, `bad-value`, `unknown-field`, `field-out-of-order`, `field-not-permitted-for-kind`, `malformed-line`, `frontmatter-unparseable` |
+| Something **present** | its own line | `wrong-type-value`, `unsupported-version`, `bad-value`, `unknown-field`, `field-out-of-order`, `malformed-line`, `frontmatter-unparseable` |
 | Something **absent** | the opening line of the construct that should have carried it — the block's opening fence for a block field, **line 1** for a frontmatter key or a frontmatter fence fault | `missing-required-field`, `missing-required-key`, `no-frontmatter`, `unterminated-block` |
 | A **duplicate** | the **second** occurrence, and the message names the first | `duplicate-field`, `duplicate-mount-name`, `duplicate-tool-name`, `duplicate-primary-designation` |
 
@@ -529,11 +538,10 @@ State C and `home-unresolvable` carry the config path and no line: there are no 
 | `missing-required-key` | a required **frontmatter** key is absent |
 | `wrong-type-value` | `type:` is present and is not `meridian-config` |
 | `unsupported-version` | `version:` is an integer this build does not implement |
-| `missing-required-field` | a required **block** field is absent (including a kind-conditional one) |
+| `missing-required-field` | a required **block** field is absent |
 | `unknown-field` | a block line's key is not in that block's legal set |
 | `duplicate-field` | a key appears twice in one block |
 | `field-out-of-order` | a block's fields are not in canonical order |
-| `field-not-permitted-for-kind` | a field is present that its block's `kind` forbids |
 | `bad-value` | a value violates its field's type or charset |
 | `malformed-line` | a block body line is not `key: value`, or a `config:` payload line is not indented |
 | `unterminated-block` | an engine block's fence never closes |
@@ -550,7 +558,7 @@ candidate by two independent addresses, then `Fix:`). The shape for this plane:
 
 ```
 refused: ~/MERIDIAN.md line 14: unknown field `paths` in a meridian-mount block —
-legal fields are name, path, kind, primary, vault, pin (in that order). No mount
+legal fields are name, path, primary, vault, pin (in that order). No mount
 table was loaded; the config is not partially applied. Fix: remove the line or
 spell the field you meant.
 ```

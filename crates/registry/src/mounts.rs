@@ -98,7 +98,6 @@ fn project(table: &config::mount::MountTable) -> Vec<MountRow> {
         .iter()
         .map(|m| MountRow {
             name: m.name().to_owned(),
-            kind: m.kind().as_str().to_owned(),
             state: m.state().word().to_owned(),
             workspace: m.canonical_path().map(|p| p.to_string_lossy().into_owned()),
             primary: m.primary(),

@@ -90,7 +90,7 @@ fn write_config(path: &Path, blocks: &str) {
 
 fn vault_block(name: &str, path: &Path) -> String {
     format!(
-        "```meridian-mount\nname: {name}\npath: {}\nkind: vault\nvault: {name}\n```\n\n",
+        "```meridian-mount\nname: {name}\npath: {}\nvault: {name}\n```\n\n",
         path.display()
     )
 }
@@ -119,7 +119,7 @@ fn mounts_lifecycle_freshness_and_changed_invalid_refusal() {
     // projection is pinned on both sides: literal `true` on the designated
     // row, NO key anywhere else.
     let base = format!(
-        "```meridian-mount\nname: wiki\npath: {}\nkind: vault\nprimary: true\nvault: wiki\n```\n\n```meridian-mount\nname: ghost\npath: {}\nkind: git-folder\n```\n",
+        "```meridian-mount\nname: wiki\npath: {}\nprimary: true\nvault: wiki\n```\n\n```meridian-mount\nname: ghost\npath: {}\n```\n",
         wiki.display(),
         ghost.display()
     );
@@ -164,10 +164,13 @@ fn mounts_lifecycle_freshness_and_changed_invalid_refusal() {
         2,
         "both declared mounts served, document order: {first}"
     );
-    // Row d-15c: {name, kind, state, workspace?, primary?} in the engine's
+    // Row §A.5: {name, state, workspace?, primary?} in the engine's
     // own words.
     assert_eq!(table[0]["name"], json!("wiki"));
-    assert_eq!(table[0]["kind"], json!("vault"));
+    assert!(
+        table[0].get("kind").is_none(),
+        "kind left the wire row (kind-sweep 2026-08-13)"
+    );
     assert_eq!(table[0]["state"], json!("bound"));
     assert_eq!(
         table[0]["primary"],
@@ -181,7 +184,6 @@ fn mounts_lifecycle_freshness_and_changed_invalid_refusal() {
         "workspace is the canonical bound path — the same handle hello returns: {first}"
     );
     assert_eq!(table[1]["name"], json!("ghost"));
-    assert_eq!(table[1]["kind"], json!("git-folder"));
     assert_eq!(
         table[1]["state"],
         json!("grey(path-unseeable)"),

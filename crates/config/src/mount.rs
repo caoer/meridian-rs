@@ -12,7 +12,7 @@
 //! The table is the single authority for the three-way translation — canonical
 //! root name ↔ Obsidian vault name ↔ local path. Each representation is a key
 //! (INV-1 name, INV-2/INV-4 path, INV-3 vault); name ↔ path is total, the
-//! vault axis is partial because a `git-folder` root carries no vault name.
+//! vault axis is partial because a mount without `vault:` carries no vault name.
 //!
 //! Every mount path is canonicalized and then passed through
 //! [`workspace::deny_reason`] — the same predicate the workspace ladder uses,
@@ -39,7 +39,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::{
-    CONFIG_FILENAME, Config, MountEntry, MountKind, NO_PARTIAL_LOAD_CLAUSE, Resolution, VERSION,
+    CONFIG_FILENAME, Config, MountEntry, NO_PARTIAL_LOAD_CLAUSE, Resolution, VERSION,
     check_name, find_frontmatter, frontmatter_inner, key_line, scalar_text,
 };
 
@@ -295,7 +295,6 @@ pub struct Mount {
     name: String,
     declared_path: String,
     canonical: Option<PathBuf>,
-    kind: MountKind,
     primary: bool,
     vault: Option<String>,
     pin: Option<String>,
@@ -325,12 +324,6 @@ impl Mount {
         self.canonical.as_deref()
     }
 
-    /// The root's kind.
-    #[must_use]
-    pub fn kind(&self) -> MountKind {
-        self.kind
-    }
-
     /// The declared-primary designation, verbatim from the config (schema
     /// §5.1). A binding ROLE fleet hosts consume; the engine reports it and
     /// never acts on it.
@@ -339,7 +332,7 @@ impl Mount {
         self.primary
     }
 
-    /// The Obsidian vault name — `Some` iff [`MountKind::Vault`]. This is the
+    /// The Obsidian vault name — `Some` iff the block declared `vault:`. This is the
     /// partial leg of the three-way map.
     #[must_use]
     pub fn vault(&self) -> Option<&str> {
@@ -408,7 +401,7 @@ impl MountTable {
     }
 
     /// vault → (name, path). The mount naming an Obsidian vault. Partial by
-    /// construction: a `git-folder` root has no vault name and is never found
+    /// construction: a mount without `vault:` has no vault name and is never found
     /// here.
     #[must_use]
     pub fn by_vault(&self, vault: &str) -> Option<&Mount> {
@@ -712,7 +705,6 @@ fn mount_in_state(
         name: entry.name.clone(),
         declared_path: entry.path.clone(),
         canonical,
-        kind: entry.kind,
         primary: entry.primary,
         vault: entry.vault.clone(),
         pin: entry.pin.clone(),

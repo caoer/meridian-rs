@@ -33,7 +33,7 @@ fn write_config(home: &Path, body: &str) {
 
 fn vault_mount(name: &str, path: &Path, pin: Option<&str>) -> String {
     let mut block = format!(
-        "```meridian-mount\nname: {name}\npath: {}\nkind: vault\nvault: {name}\n",
+        "```meridian-mount\nname: {name}\npath: {}\nvault: {name}\n",
         path.display()
     );
     if let Some(pin) = pin {

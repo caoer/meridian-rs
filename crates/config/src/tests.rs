@@ -18,7 +18,6 @@ version: 1
 ```meridian-mount
 name: field-notes
 path: /Users/Shared/projects/field-notes
-kind: vault
 vault: field-notes
 ```
 ";
@@ -29,6 +28,36 @@ fn at(raw: &str) -> Result<Config, ConfigError> {
 
 fn refuse(raw: &str) -> ConfigError {
     at(raw).expect_err("this input must refuse")
+}
+
+/// The kind sweep (ZT 2026-08-13): `kind:` left the mount schema — vault-ness
+/// is carried by `vault:` presence alone, and the primary designation is
+/// legal on any mount. A config still carrying the field refuses through the
+/// unknown-field door, naming the line and the removal — no silent tolerance,
+/// no compatibility window, exactly as `primary:` refused on an engine too
+/// old to know it. The deploy order this creates is not optional: install the
+/// engine, remove the `kind:` lines from ~/MERIDIAN.md, then switch anything
+/// that dials it.
+#[test]
+fn a_stale_kind_line_refuses_loud_with_the_removal_remedy() {
+    let raw = "\
+---
+type: meridian-config
+version: 1
+---
+
+```meridian-mount
+name: field-notes
+path: /w
+kind: vault
+vault: field-notes
+```
+";
+    let err = refuse(raw);
+    assert_eq!(err.reason, Reason::UnknownField);
+    let text = err.to_string();
+    assert!(text.contains("unknown field `kind`"), "{text}");
+    assert!(text.contains("remove the line"), "{text}");
 }
 
 /// The exemplar is produced by a real parse, not merely contained in one: a
@@ -51,7 +80,6 @@ The mount below carries a field the engine does not read.
 name: field-notes
 paths: /Users/Shared/projects/field-notes-sessions
 path: /Users/Shared/projects/field-notes
-kind: vault
 vault: field-notes
 ```
 ";
@@ -117,7 +145,6 @@ fn the_closed_reason_set_is_complete_and_reachable() {
             "unknown-field",
             "duplicate-field",
             "field-out-of-order",
-            "field-not-permitted-for-kind",
             "bad-value",
             "malformed-line",
             "unterminated-block",
@@ -182,7 +209,7 @@ fn one_of_each_reason() -> Vec<(Reason, ConfigError)> {
         ),
         (
             Reason::MissingRequiredField,
-            refuse(&mount("path: /x\nkind: git-folder\n")),
+            refuse(&mount("path: /x\n")),
         ),
         (Reason::UnknownField, refuse(&mount("name: a\npaths: /x\n"))),
         (
@@ -191,15 +218,11 @@ fn one_of_each_reason() -> Vec<(Reason, ConfigError)> {
         ),
         (
             Reason::FieldOutOfOrder,
-            refuse(&mount("name: a\nkind: git-folder\npath: /x\n")),
-        ),
-        (
-            Reason::FieldNotPermittedForKind,
-            refuse(&mount("name: a\npath: /x\nkind: git-folder\nvault: a\n")),
+            refuse(&mount("path: /x\nname: a\n")),
         ),
         (
             Reason::BadValue,
-            refuse(&mount("name: a\npath: /x\nkind: obsidian\n")),
+            refuse(&mount("name: a\npath: /x\nprimary: maybe\n")),
         ),
         (
             Reason::MalformedLine,
@@ -208,13 +231,13 @@ fn one_of_each_reason() -> Vec<(Reason, ConfigError)> {
         (
             Reason::UnterminatedBlock,
             refuse(&fm(
-                "```meridian-mount\nname: a\npath: /x\nkind: git-folder\n",
+                "```meridian-mount\nname: a\npath: /x\n",
             )),
         ),
         (
             Reason::DuplicateMountName,
             refuse(&fm(
-                "```meridian-mount\nname: a\npath: /x\nkind: git-folder\n```\n\n```meridian-mount\nname: a\npath: /y\nkind: git-folder\n```\n",
+                "```meridian-mount\nname: a\npath: /x\n```\n\n```meridian-mount\nname: a\npath: /y\n```\n",
             )),
         ),
         (
@@ -228,7 +251,7 @@ fn one_of_each_reason() -> Vec<(Reason, ConfigError)> {
         (
             Reason::DuplicatePrimaryDesignation,
             refuse(&fm(
-                "```meridian-mount\nname: a\npath: /x\nkind: vault\nprimary: true\nvault: a\n```\n\n```meridian-mount\nname: b\npath: /y\nkind: vault\nprimary: true\nvault: b\n```\n",
+                "```meridian-mount\nname: a\npath: /x\nprimary: true\nvault: a\n```\n\n```meridian-mount\nname: b\npath: /y\nprimary: true\nvault: b\n```\n",
             )),
         ),
     ]
@@ -460,7 +483,6 @@ kind: git-folder in a sentence.
 ```meridian-mount
 name: field-notes
 path: /Users/Shared/projects/field-notes
-kind: vault
 vault: field-notes
 ```
 ";
@@ -474,7 +496,7 @@ vault: field-notes
 /// block, so a build that half-loads looks healthy.
 #[test]
 fn a_refused_config_publishes_nothing() {
-    let valid_block = "```meridian-mount\nname: field-notes\npath: /Users/Shared/projects/field-notes\nkind: vault\nvault: field-notes\n```\n";
+    let valid_block = "```meridian-mount\nname: field-notes\npath: /Users/Shared/projects/field-notes\nvault: field-notes\n```\n";
     for (label, raw) in [
         (
             "no frontmatter",
@@ -504,10 +526,10 @@ fn a_refused_config_publishes_nothing() {
 #[test]
 fn a_pin_is_carried_verbatim_and_codec_agnostically() {
     let span = "fp1.span2.b3.40b167ed9b42a2beadb7c441b214efdc93069ef443a1cc2b5ae2ccda4cf03152";
-    // A git-folder root's pin grain is the file, so its codec differs.
+    // A plain-folder mount may pin a different codec.
     let file_codec = format!("fp1.raw.b3.{}", "ab".repeat(32));
     let raw = format!(
-        "---\ntype: meridian-config\nversion: 1\n---\n\n```meridian-mount\nname: a\npath: /x\nkind: vault\nvault: a\npin: {span}\n```\n\n```meridian-mount\nname: b\npath: /y\nkind: git-folder\npin: {file_codec}\n```\n"
+        "---\ntype: meridian-config\nversion: 1\n---\n\n```meridian-mount\nname: a\npath: /x\nvault: a\npin: {span}\n```\n\n```meridian-mount\nname: b\npath: /y\npin: {file_codec}\n```\n"
     );
     let config = at(&raw).expect("both codecs are well-formed tokens");
     assert_eq!(config.mounts()[0].pin.as_deref(), Some(span));
@@ -517,7 +539,7 @@ fn a_pin_is_carried_verbatim_and_codec_agnostically() {
     // verifies is `verify_content`'s question, never parse's.
     let future = "fp2.tree.sha256.00ff";
     let raw = format!(
-        "---\ntype: meridian-config\nversion: 1\n---\n\n```meridian-mount\nname: a\npath: /x\nkind: git-folder\npin: {future}\n```\n"
+        "---\ntype: meridian-config\nversion: 1\n---\n\n```meridian-mount\nname: a\npath: /x\npin: {future}\n```\n"
     );
     assert_eq!(
         at(&raw).expect("a future codec is well-formed").mounts()[0]

@@ -13,6 +13,5 @@ it keeps the block grammar at one spelling per fact.
 name: field-notes
 path: /Users/Shared/projects/field-notes
 
-kind: vault
 vault: field-notes
 ```

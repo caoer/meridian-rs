@@ -12,7 +12,6 @@ block looks healthy on every other acceptance and fails only here.
 ```meridian-mount
 name: field-notes
 path: /Users/Shared/projects/field-notes
-kind: vault
 vault: field-notes
 ```
 
@@ -22,16 +21,14 @@ single-root consumers (change feed, watch loop, journal) anchor.
 ```meridian-mount
 name: sessions
 path: /Users/Shared/projects/field-notes-sessions
-kind: vault
 primary: true
 vault: field-notes-sessions
 ```
 
-Archived assets, a plain git folder — a kind that may never carry the
-designation, present so the accept proves coexistence.
+Archived assets, a plain folder without a `vault:` leg — present so the
+accept proves coexistence.
 
 ```meridian-mount
 name: archive
 path: /Users/Shared/repos/archive
-kind: git-folder
 ```

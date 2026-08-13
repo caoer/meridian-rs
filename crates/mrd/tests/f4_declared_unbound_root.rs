@@ -32,8 +32,8 @@ struct Sandbox {
 fn config_raw(sessions: &Path, absent: &Path) -> String {
     format!(
         "---\ntype: meridian-config\nversion: 1\n---\n\n# Test roots\n\n\
-         ```meridian-mount\nname: sessions\npath: {}\nkind: vault\nvault: field-notes-sessions\n```\n\n\
-         ```meridian-mount\nname: notes\npath: {}\nkind: vault\nvault: field-notes-notes\n```\n",
+         ```meridian-mount\nname: sessions\npath: {}\nvault: field-notes-sessions\n```\n\n\
+         ```meridian-mount\nname: notes\npath: {}\nvault: field-notes-notes\n```\n",
         sessions.display(),
         absent.display(),
     )
