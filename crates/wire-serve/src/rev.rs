@@ -118,6 +118,9 @@ pub fn project_response(frame: &mut Value) {
                 // In-process script submission at op grain (§ A.7, the same
                 // precedent — no dotted script.<field> at birth).
                 caps.push(Value::String("script".to_string()));
+                // Page-task execution at op grain (§ A.8, the same
+                // precedent — no dotted run.<field> at birth).
+                caps.push(Value::String("run".to_string()));
             }
             body.insert("contract".to_string(), Value::String("v3".to_string()));
         }
@@ -367,7 +370,8 @@ mod tests {
                 "mounts",
                 "mounts.primary",
                 "hello.identity",
-                "script"
+                "script",
+                "run"
             ])
         );
     }

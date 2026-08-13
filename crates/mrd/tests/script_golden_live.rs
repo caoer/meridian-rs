@@ -86,7 +86,7 @@ fn corpus() -> Vec<(&'static str, String)> {
 
 const S1_CLAIM: &str = r#"
 card = read("tasks/0011-token-audit.md")
-if card.fm["owner"] == "":
+if card["fm"]["owner"] == "":
     put("tasks/0011-token-audit.md", props={"owner": me(), "status": "doing"})
 "#;
 
@@ -94,13 +94,13 @@ const S2A_NAIVE: &str = r#"
 dead = "3f9a1c07"
 for path in files:
     card = read(path)
-    if card.fm["owner"] == dead:
+    if card["fm"]["owner"] == dead:
         put(path, props={"owner": "", "status": "todo"})
 "#;
 
 const S2B_FANOUT: &str = r#"
 card = read(files[0])
-if card.fm["owner"] == "3f9a1c07":
+if card["fm"]["owner"] == "3f9a1c07":
     put(files[0], props={"owner": "", "status": "todo"})
 "#;
 
@@ -129,7 +129,7 @@ open_cards = [p for p in files
               if read(p).fm["owner"] == me()
               and read(p).fm["status"] != "done"]
 board = read("BROADCAST.md")
-if len(open_cards) == 0 and board.fm["round_7"] == "":
+if len(open_cards) == 0 and board["fm"]["round_7"] == "":
     put("BROADCAST.md", section="Log",
         props={"round_7": "closed by 8ab41c02"},
         append="- round 7 closed: all cards done (8ab41c02)\n")
@@ -139,7 +139,7 @@ const S4_FAULT: &str = r#"
 card = read("tasks/0011-token-audit.md")
 put("tasks/0011-token-audit.md",
     props={"owner": me(), "status": "doing"})
-report = read(card.fm["report_path"])
+report = read(card["fm"]["report_path"])
 "#;
 
 const S5_ECHO: &str = r#"
@@ -459,7 +459,7 @@ fn an_append_to_a_target_the_script_never_read_is_refused_whole() {
 /// **The season-1 canary, closed.** Dogfood season-1 finding 1: the golden
 /// page's motivating scenario — a claim keyed on frontmatter — could not fire
 /// against a card whose frontmatter follows fleet convention
-/// (`owner: "3f9a1c07"` — QUOTED), because `card.fm[k]` served the quote bytes
+/// (`owner: "3f9a1c07"` — QUOTED), because `card["fm"][k]` served the quote bytes
 /// and the comparison silently evaluated false. Zero armed, and the face
 /// rendered a legitimate-looking "no effects".
 ///
@@ -471,7 +471,7 @@ fn a_condition_keyed_on_a_quoted_scalar_arms_and_commits() {
     const QUOTED_CARD: &str = "tasks/0001-quoted-owner.md";
     const CANARY: &str = r#"
 card = read("tasks/0001-quoted-owner.md")
-if card.fm["owner"] == "3f9a1c07":
+if card["fm"]["owner"] == "3f9a1c07":
     put("tasks/0001-quoted-owner.md", props={"owner": "", "status": "todo"})
 "#;
     let fixture = Fixture::start_with(vec![(
@@ -525,6 +525,9 @@ fn ends_of(trace: &ScriptTrace, door: &LiveDoor) -> Ends {
         (ScriptOutcome::NoEffect, false) => Ends::ZeroArmed,
         (ScriptOutcome::Refused, _) => Ends::ArmRefused,
         (ScriptOutcome::Fault | ScriptOutcome::Conflict, _) => Ends::Faulted,
+        // Effects is the wire lane's word; this pure CLI lane never produces
+        // it — spelled for exhaustiveness only.
+        (ScriptOutcome::Effects, _) => Ends::ZeroArmed,
     }
 }
 
@@ -535,7 +538,7 @@ fn read_paths(trace: &ScriptTrace) -> Vec<&str> {
         .iter()
         .filter_map(|entry| match entry {
             TraceEntry::Read(read) | TraceEntry::Echo(read) => Some(read.path.as_str()),
-            TraceEntry::Armed(_) => None,
+            TraceEntry::Armed(_) | TraceEntry::Wrote(_) | TraceEntry::Ran(_) => None,
         })
         .collect()
 }
@@ -571,7 +574,7 @@ fn revs_read(trace: &ScriptTrace) -> Vec<String> {
     for entry in &trace.trace {
         let read = match entry {
             TraceEntry::Read(read) | TraceEntry::Echo(read) => read,
-            TraceEntry::Armed(_) => continue,
+            TraceEntry::Armed(_) | TraceEntry::Wrote(_) | TraceEntry::Ran(_) => continue,
         };
         match &read.face {
             ReadFace::Toc(facts) => {
@@ -772,7 +775,7 @@ impl Door for MidReadWriter {
 #[test]
 fn a_live_writer_between_the_toc_and_the_closing_read_is_caught_by_the_bracket() {
     let fixture = Fixture::start();
-    let claim = "\ncard = read(\"tasks/0011-token-audit.md\")\nif card.fm[\"owner\"] == \"\":\n    put(\"tasks/0011-token-audit.md\", props={\"owner\": me(), \"status\": \"doing\"})\n";
+    let claim = "\ncard = read(\"tasks/0011-token-audit.md\")\nif card[\"fm\"][\"owner\"] == \"\":\n    put(\"tasks/0011-token-audit.md\", props={\"owner\": me(), \"status\": \"doing\"})\n";
 
     let mut door = MidReadWriter {
         inner: LiveDoor::open(fixture.server.socket_path(), &fixture.ws),

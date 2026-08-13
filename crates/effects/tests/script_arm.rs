@@ -92,6 +92,7 @@ fn run(script: &str) -> effects::ScriptEval {
         id: "s1".to_owned(),
         args: BTreeMap::new(),
         files: vec!["tasks/0011.md".to_owned(), "tasks/0012.md".to_owned()],
+        effects: Vec::new(),
     };
     eval_script(script, &ctx, ScriptLimits::default(), &mut ArmHost::new())
 }
@@ -113,6 +114,7 @@ fn put_performs_no_host_call() {
         id: "s1".to_owned(),
         args: BTreeMap::new(),
         files: vec!["tasks/0011.md".to_owned()],
+        effects: Vec::new(),
     };
     let eval = eval_script(
         r#"
@@ -397,7 +399,7 @@ claim("tasks/0011.md")
 fn a_read_and_an_arm_interleave_in_one_script() {
     let eval = run(r#"
 card = read("tasks/0011.md")
-if card.fm["owner"] == "":
+if card["fm"]["owner"] == "":
     put("tasks/0011.md", props={"owner": me(), "status": "doing"})
 "#);
     assert!(eval.outcome.is_ok(), "{:?}", eval.outcome);

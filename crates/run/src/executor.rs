@@ -34,6 +34,11 @@ use serde::{Deserialize, Serialize};
 use crate::caps::Authority;
 use crate::record::{ExecRecord, ExecRecordSink};
 
+/// The run plane's receipt file — ONE convention, whichever door invoked the
+/// plane (the CLI entry and the § A.8 wire arm both append here). Promoted
+/// from the CLI (2026-08-13, § A.8) so the convention has one home.
+pub const RECEIPT_FILE: &str = "receipts/run.md";
+
 /// Where the run receipt lands: a workspace-relative file (appended) and the
 /// pre-minted block anchor for the line. Address policy is the CALLER's (U5
 /// convention); the executor renders and folds.
@@ -87,6 +92,10 @@ pub struct ApplyRequest<'a> {
     /// and on cascade generations. The receipt field stays skip-if-none
     /// (#27 freeze clock — no new required wire field).
     pub exec: Option<&'a ExecRecord>,
+    /// Caller-supplied identity (§9, § A.8): threads into the receipt's
+    /// `actor` fact. `None` keeps the plane's `run:<task>` self-label, so
+    /// every CLI receipt byte stands unchanged.
+    pub actor: Option<&'a str>,
     /// The cascade generation of the effects being applied (`0` for the run
     /// itself); the synthesized event carries `depth + 1`.
     pub depth: u32,
@@ -231,6 +240,7 @@ impl IntentApply {
             receipt: Some(self.receipt.clone()),
             takeover: base.takeover,
             exec: base.exec,
+            actor: base.actor,
             depth: base.depth,
         }
     }
@@ -1058,7 +1068,11 @@ fn render_receipt(
         page: receipt::render_field(req.page).into_owned(),
         task: req.task.to_owned(),
         invocation: req.invocation_id.to_owned(),
-        actor: format!("run:{}", req.task),
+        // §9 / § A.8: a supplied actor is the caller's identity; absent
+        // keeps the plane's self-label and the CLI's receipt bytes.
+        actor: req
+            .actor
+            .map_or_else(|| format!("run:{}", req.task), str::to_owned),
         now: req.now.map(str::to_owned),
         root_pin: req.pin_root.0.clone(),
         task_rev: req.task_rev.to_owned(),

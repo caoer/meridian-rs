@@ -85,6 +85,7 @@ fn apply(root: &fs::WorkspaceRoot, effects: &[Effect]) -> Result<executor::Appli
             receipt: None,
             takeover: false,
             exec: None,
+            actor: None,
             depth: 0,
         },
     )

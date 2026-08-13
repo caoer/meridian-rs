@@ -213,7 +213,7 @@ Correlation: one response per request, id echoed by value; in-flight uniqueness 
   "fingerprint":"b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9"}}
 ```
 
-`caps` is the complete set — no version sniffing, ever. The example shows the sixteen-cap base set (the v2 spelling is byte-identical minus the fingerprint renames); a negotiated v3 session is pushed ten more on top — `read`, `check_write`, `splice.plan_edits`, `splice.pin`, `splice.create_rev`, `create`, `mounts`, `mounts.primary`, `hello.identity`, `script` (§A.3/§A.5/§A.7) — twenty-six caps in all. Field-only amendments ship as dotted `op.field` strings (`mounts.primary` is one: the mounts row's declared-primary designation, §A.5). `fingerprint` in the hello body is optional (the engine may not have walked yet); when present it is the first ambient fingerprint.
+`caps` is the complete set — no version sniffing, ever. The example shows the sixteen-cap base set (the v2 spelling is byte-identical minus the fingerprint renames); a negotiated v3 session is pushed eleven more on top — `read`, `check_write`, `splice.plan_edits`, `splice.pin`, `splice.create_rev`, `create`, `mounts`, `mounts.primary`, `hello.identity`, `script`, `run` (§A.3/§A.5/§A.7/§A.8) — twenty-seven caps in all. Field-only amendments ship as dotted `op.field` strings (`mounts.primary` is one: the mounts row's declared-primary designation, §A.5). `fingerprint` in the hello body is optional (the engine may not have walked yet); when present it is the first ambient fingerprint.
 
 **Rev-presence law:** `node_rev` is MUST on every `toc`/`cat`/`extract` node whenever `splice ∈ caps`.
 
@@ -1857,8 +1857,8 @@ this op's clients unchanged.
 
 **Dispatch:** v3-only; op-grain cap `script` (the `create`/`mounts`
 precedent — no dotted fields at birth). A v2 session answers `unknown_op`;
-the frozen v2 caps stay byte-identical. §3.2's v3 push is ten caps,
-twenty-six in all.
+the frozen v2 caps stay byte-identical. §3.2's v3 push was ten caps at this
+section's landing, eleven with § A.8 — twenty-seven in all.
 
 **The entry world (this op's read law, normative detail in
 `run-plane.md`).** The currency pass runs ONCE, at entry: the daemon proves
@@ -1921,6 +1921,167 @@ narrowing; the corpus-grain proof is kept and moved to entry; the non-script
 doors' refusal scope is untouched. It enters via the authorized amendment
 route as its own change with its own gates, inheriting nothing from the
 race — exactly the port plan that file names.
+
+**Effects mode (added 2026-08-13, script-effects ruling — supersedes the
+same-day armed-run design, under which no code shipped).** The op gains two
+request fields (the field wall grows 9 → 11): `effects:[…]` and
+`invocation`. Absent `effects` = the pure script above, byte-identical —
+provably pure by default. Present = the LIVE PROGRAM model (`run-plane.md`
+§ Effects mode is normative): `read()` serves the live disk at call time;
+`put()` applies immediately through the wire splice door — write flock held,
+structural validation intact, the guard's own `force` bypass — no rev, no
+snapshot, no CAS; `run()` (admitted by naming it in the list) executes the
+§ A.8 lane at call time and returns its row as a value — run-then-decide.
+The ruled principle, verbatim: *"the rev is a leash for the agent stale
+context, not a property of writes. A script reads at execution time — its
+own read is the freshest possible; guarding a millisecond gap means nothing.
+Effects cannot be refused (out-of-world), so the transaction promise is
+unkeepable there — no half-promises, no chimera."* Accepted tradeoff ON
+RECORD: two effect-scripts can last-writer-wins each other on one section,
+same as two shell scripts; the flock keeps files structurally intact;
+exclusivity belongs to the coordination layer (a `mutex()` builtin mirroring
+fleet make-mutex is recorded DO-NOT-BUILD).
+
+Combination walls, all `bad_request` at decode: `effects` beside `dry`,
+`if_fingerprint`, or `expect_armed` (a live program cannot rehearse and
+holds no premise and no armed set); `effects: []` (name an effect builtin or
+omit the field); an unknown effect name (the closed set today is `run`);
+`effects` without `invocation` (§9 — run identity derives host-minted:
+per-call ids are `<invocation>-r<K>`, K the 0-based `run()` call ordinal).
+
+Response on this model: a trace whose `outcome` is the NEW word `effects`
+when eval completed; `trace[]` records the program's acts in call order —
+read entries as today, `wrote` entries (a live `put()`: path, group facts,
+the splice's own after-facts), `ran` entries (the § A.8 row, verbatim). A
+mid-program fault answers `fault` with every prior act already landed and
+still recorded — a live program has no rollback, and the trace says how far
+it got. The outcome vocabulary grows exactly this one word; the pure path's
+five words and their meanings are untouched; v2 unchanged. Delta honesty:
+live `put()`s ride the wire choke-point and advance the ring like any
+splice; `run()`s stay under §18 row 12 exactly as at § A.8.
+
+### A.8 `run` — page-task execution over the wire (docs-first, 2026-08-13, run-crossing ruling)
+
+*The run plane's task entry (`mrd run`, `run-plane.md`) becomes invocable
+over the wire. Ruled 2026-08-13 (ZT: KEY FEATURE — a list of targets, and
+callable from inside `script()`); this op is also the transport of the ruled
+production ARMING door (2026-08-12: "use mrd run to run it") — arming gets
+NO surface of its own here: a rule page's activation task is a task like any
+other, and the receipt is the arming record. The run plane's own semantics —
+addressing, contracts, capability resolution, fence languages, the exit
+triad's meaning, receipts — stay normative in `run-plane.md` and are not
+restated. Like § A.7, this section lands before its code.*
+
+**Request** — a LIST of targets on the bound workspace (the §3.2 binding
+guard applies exactly as at every other op):
+
+```json
+{"id":9,"op":"run",
+ "targets":[
+  {"page":"rules/escalate.md","task":"arm","args":["--scope","team"],
+   "env":{"HOME_WIKI":"/w"},"dry":false},
+  {"page":"notes/plan.md"}],
+ "actor":"agent:b0864fb2","now":"2026-08-13T16:02:11Z",
+ "invocation":"run-1755100931421-4417-3"}
+```
+
+- `targets[]` is required, 1..=64 entries (the fan-out ceiling every face
+  list carries). Per target: `page` required, workspace-relative;
+  `task` optional (the run plane's own single-task default and
+  several-tasks listing apply); `args[]` strings and `env{}` string→string
+  optional, contract-validated by the plane; `dry` optional. Strict decode
+  at every grain (§3.2's wall).
+- `invocation` is required: the host-minted, path-safe identity base.
+  Per-target invocation ids derive as `<invocation>-t<index>` (zero-based
+  list position), so receipts correlate to the caller's journal. The engine
+  mints no identity (§9) — a daemon cannot be the author of the id its
+  receipts carry.
+- `actor`/`now` ride per §9, optional, absent stays absent. The supplied
+  actor threads into the run receipt's `actor` fact; the CLI entry, its own
+  host, keeps minting its `run:<task>` self-label when no actor exists.
+- **Named absences.** No `receipt` field: run receipts are the plane's own,
+  engine-appended to the run receipt file under the per-target invocation
+  anchor on BOTH doors — nothing exists for a caller to aim. No capability,
+  timeout, or code field: authority resolves from the page + declaring-root
+  conventions, the timeout from the declaring root's config, and only
+  corpus-declared task blocks run — the wire carries names, never code.
+
+**Execution.** Targets run SEQUENTIALLY in list order, each an independent
+run-plane invocation: its own `run.lock` window, its own receipt, its own
+row. **Each target answers for itself; no target's outcome halts, gates, or
+colors another's.** There is no multi-run transaction and this op does not
+invent one — a caller needing dependent sequencing composes runs inside
+`script()`, where the transaction plane already owns the decide-then-act
+shape.
+
+**Response** — `ok:true` with per-target rows in request order, whenever the
+op reached the plane. No aggregate boolean exists anywhere in the body:
+
+```json
+{"id":9,"ok":true,"body":{"targets":[
+ {"page":"rules/escalate.md","invocation":"run-1755100931421-4417-3-t0",
+  "receipt":"receipts/run.md#r-run-1755100931421-4417-3-t0",
+  "dry":false, "task":"arm", "task_rev":"…", "guarantee":"hermetic",
+  "state":"applied", "applied":[{"kind":"md.patch","domain":"…"}],
+  "unexecuted":[], "caps":{"effective":["md.patch:rules/*"],
+  "source":"explicit","narrowed":[]}, "cap_reached":false,
+  "out_of_band_delta":false},
+ {"page":"notes/plan.md","invocation":"run-1755100931421-4417-3-t1",
+  "refusal":{"class":"invocation","reason":"several tasks declared — name one",
+   "declared_tasks":["check-links","fix-drift"]}}]}}
+```
+
+- A target the plane CARRIED to a report answers the run plane's own report
+  object verbatim (`run-plane.md` § the report; `caps` absent on an
+  unsandboxed row, `exec` facts carried as the plane states them, bash
+  stdout as the report's own bounded record — this op streams nothing),
+  plus addressing (`page`, `invocation`, `receipt`, `dry`).
+- A target the plane REFUSED pre-report answers a `refusal` row:
+  `class:"invocation"` for the CLI's exit-2 family (addressing, contract
+  violation, authoring faults — `declared_tasks[]` rides the several-tasks
+  listing), `class:"run"` for the exit-1 family that refused before a
+  report existed (workspace busy, foreign edit, root mismatch, timeout),
+  `reason` verbatim from the plane's typed error.
+- `dry` rows carry the plane's dry legs unchanged: a starlark dry answers
+  the full effect set with `applied:false`; a bash dry answers the block
+  source with `executed:false` and `effects:"undeclared"` — bash effects
+  only exist by running it, and a dry that invented them would be fiction.
+- §8 `ok:false` frames answer only what never reached the plane:
+  `bad_request` (strict-decode failure, empty or oversize `targets[]`, no
+  workspace bound), `unknown_op` (v2 session). Once rows answer, every
+  claim in them is the engine's own.
+
+**Dispatch:** v3-only; op-grain cap `run` (the `create`/`mounts`/`script`
+precedent — no dotted fields at birth). A v2 session answers `unknown_op`;
+the frozen v2 caps stay byte-identical. §3.2's v3 push is eleven caps,
+twenty-seven in all.
+
+**Containment (what this door inherits, all of it the plane's own).** The
+wire arm drives the same runner seam as the CLI: capability resolution
+deny-by-default on starlark, the bash-fence convention refusals, the
+declaring root's configured timeout with process-group kill past deadline,
+the scrubbed task environment (`env_clear` + exactly the declared contract
+pairs and the plane's own variables). One stated amendment to U16: the CLI's
+"the step runs where `mrd` runs" was written for a local entry whose cwd is
+the caller's context; a daemon has no meaningful cwd, so ON THIS OP the task
+step's working directory IS the bound workspace root — deterministic, and
+narrower than the CLI. A long-running target parks only its own connection
+(§ A.7's containment posture); the plane's `run.lock` refusals answer as
+`class:"run"` rows, never hangs.
+
+**Delta honesty (§18 row 12 extends here).** Run applies land through the
+plane's own executor, not the wire choke-point: they advance the fingerprint
+and mint no Delta — the row-12 declared gap covers this op's writes exactly
+as it covers CLI-lane commits. A `sub` consumer sees them as detector-cadence
+external change; cross-lane catchup remains diff-by-root (§4.7). Minting the
+delta for run applies is owed with the same row-12 debt, and this section
+does not silently discharge or widen it.
+
+**Zero delta everywhere else.** Every §4 op, § A.3/§ A.5/§ A.7, every v2
+byte: unchanged. The CLI entry (`mrd run`) stays functional and
+byte-compatible — same runner, same receipts, its own host-minted identity.
+The 0025 socket law (§ A.3) is untouched: this op rides the same one door
+behind the same connect-time identity comparison.
 
 ---
 

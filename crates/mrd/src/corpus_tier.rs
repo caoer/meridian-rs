@@ -1195,6 +1195,7 @@ fn apply_generation(
         receipt: None,
         takeover: false,
         exec: None,
+        actor: None,
         depth: pending.depth,
     });
     let applied = run::executor::apply(&root, &request).map_err(|error| {

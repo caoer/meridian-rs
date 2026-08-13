@@ -48,6 +48,7 @@ fn dispatch_of<'a>(
         }),
         takeover: false,
         limits: EvalLimits::default(),
+        actor: None,
     }
 }
 

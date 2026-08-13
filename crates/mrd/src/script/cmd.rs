@@ -139,6 +139,7 @@ pub(crate) fn run(door: &mut dyn Door, parsed: &Script, source: &str) -> Result<
         id: "script".to_owned(),
         args: parsed.args.clone(),
         files: parsed.files.clone(),
+        effects: Vec::new(),
     };
     let deadline = Instant::now() + WALL_CLOCK;
     let mut eval = {
@@ -589,6 +590,9 @@ fn outcome_word(outcome: ScriptOutcome) -> &'static str {
         ScriptOutcome::Conflict => "conflict",
         ScriptOutcome::Fault => "fault",
         ScriptOutcome::Refused => "refused",
+        // The CLI lane is pure-only (no --effects surface); the word exists
+        // for the § A.7 wire lane and is spelled here for exhaustiveness.
+        ScriptOutcome::Effects => "effects",
     }
 }
 
@@ -596,7 +600,9 @@ fn outcome_word(outcome: ScriptOutcome) -> &'static str {
 /// through a non-zero exit or the caller cannot tell it from a commit.
 fn exit_of(trace: &ScriptTrace) -> Result<(), Fail> {
     match trace.outcome {
-        ScriptOutcome::Committed | ScriptOutcome::NoEffect => Ok(()),
+        // `Effects` is the § A.7 wire lane's clean-exit word; this pure-only
+        // lane cannot produce it, and a trace carrying it still exits clean.
+        ScriptOutcome::Committed | ScriptOutcome::NoEffect | ScriptOutcome::Effects => Ok(()),
         ScriptOutcome::Conflict => Err(Fail::findings(
             "fingerprint_mismatch — the world moved; nothing committed. resync: re-read and \
              re-plan, never resend"

@@ -1,9 +1,9 @@
 //! § A.6.1 — the read half of the frontmatter scalar law, measured where the
-//! dogfood receipts measured it: the script plane's `card.fm[k]`.
+//! dogfood receipts measured it: the script plane's `card["fm"][k]`.
 //!
 //! **The defect this pins (dogfood season 1, finding 1, fail-INERT).** The
 //! script face served the key line's SOURCE BYTES, quotes included, so
-//! `card.fm["owner"] == "3f9a1c07"` was false against a file carrying
+//! `card["fm"]["owner"] == "3f9a1c07"` was false against a file carrying
 //! `owner: "3f9a1c07"`. Nothing armed, and "no effects armed" is a legitimate
 //! face — the failure had no signal at all. The fleet quotes by convention, so
 //! the surface degraded on production data and passed on its own fixtures.
@@ -143,7 +143,7 @@ fn claim_if_owner_is(expected: &str) -> String {
     format!(
         r#"
 card = read("{CARD}")
-if card.fm["owner"] == "{expected}":
+if card["fm"]["owner"] == "{expected}":
     put("{CARD}", props={{"status": "doing"}})
 "#
     )
@@ -198,7 +198,7 @@ fn the_length_a_script_measures_is_the_values_own() {
     let src = format!(
         r#"
 card = read("{CARD}")
-if len(card.fm["owner"]) == 8:
+if len(card["fm"]["owner"]) == 8:
     put("{CARD}", props={{"status": "doing"}})
 "#
     );

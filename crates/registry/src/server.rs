@@ -858,6 +858,15 @@ fn handle_line(
             }
             crate::script_op::serve_line(registry, attached.as_deref(), &obj, *rev)
         }
+        // § A.8 page-task execution: routed here for the same reason as
+        // `script` — its SUCCESS body embeds the run plane's own report
+        // objects verbatim, not a `ResponseBody` variant.
+        Some("run") => {
+            if *rev == Rev::V3 {
+                wire_serve::rev::rename_request(&mut obj);
+            }
+            crate::run_op::serve_line(registry, attached.as_deref(), &obj, *rev)
+        }
         _ => {
             // v3: re-key to v2 form for the strict decoder. v2 spelling / v2
             // connection pass through untouched.
@@ -1326,10 +1335,12 @@ fn dispatch_read(
         // `Op::Mounts` is unreachable here (routed before the binding guard);
         // it rides this arm for exhaustiveness only.
         Op::Hello { .. }
-        // § A.7 `script` is served by `script_op::serve_line`, routed at
-        // `handle_line`; an op that reaches THIS dispatch is a v2 session's —
-        // or a future mis-route's — and answers the discovery-honesty word.
+        // § A.7 `script` and § A.8 `run` are served by their own
+        // `serve_line`s, routed at `handle_line`; an op that reaches THIS
+        // dispatch is a v2 session's — or a future mis-route's — and answers
+        // the discovery-honesty word.
         | Op::Script { .. }
+        | Op::Run { .. }
         | Op::Read { .. }
         | Op::CheckWrite { .. }
         | Op::Create { .. }

@@ -97,6 +97,7 @@ fn apply(root: &fs::WorkspaceRoot, r: &Req<'_>) -> Result<executor::Applied, Exe
             receipt: r.receipt.clone(),
             takeover: r.takeover,
             exec: None,
+            actor: None,
             depth: 0,
         },
     )
@@ -632,6 +633,7 @@ fn receipt_commits_the_threaded_exec_facts() {
             receipt: Some(receipt_addr(9)),
             takeover: false,
             exec: Some(&exec),
+            actor: None,
             depth: 0,
         },
     )
@@ -802,6 +804,7 @@ fn the_adapter_maps_canonical_intents_onto_the_production_batch() {
             receipt: None,
             takeover: false,
             exec: None,
+            actor: None,
             depth: 0,
         }),
     )
