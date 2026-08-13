@@ -247,6 +247,21 @@ rule is syntactic and stable, never a call-depth heuristic. Suppression syntax
 does not exist in v1 (`_ = read(…)` is rejected permanently; `quiet()` waits on
 elision-count evidence).
 
+**The bindings echo — "bind it to a name to echo it", made true** (result-echo
+ruling 2026-08-13, F-S1+F-S3). A successful evaluation's module top-level
+bindings ride the trace as `bindings` — name → Starlark repr, name-ordered —
+so every value the script computes is observable by binding it, Mathematica
+style, and learning a face's fields costs a `dry` run instead of a committed
+write. The capture law keeps one carrier per fact: the inert inputs stay out
+(inputs are not results), function bindings stay out (a `def` is not a value
+the run computed), and a name whose LAST assignment is a top-level
+`name = read(…)` stays out — that value is the read's own `echo` entry. Any
+later rebinding of such a name — reassignment, `+=`, a loop target, an
+assignment inside an `if` or `for` body — returns it to the bindings, because
+the name no longer holds what the echo carries. A failed or refused
+evaluation carries no bindings: its namespace is not a result. Absence stays
+absence — a run that bound nothing emits no `bindings` member at all.
+
 **The grammar.** The script entry parses under the rule dialect plus top-level
 statements — its module top level IS the program, so `if` and `for` at the top
 level are the ordinary case there. A rule or a task must define a hook, so the
@@ -925,8 +940,8 @@ law or becomes a regression.
 **The trace — one commit-fact shape, and no `attempts`.** The entry returns a
 `ScriptTrace`: the entry fingerprint, the outcome
 (`committed | no_effect | conflict | fault | refused`), the decision trace, an
-optional commit leg, an optional fault, and telemetry. Three laws hold it
-together:
+optional commit leg, an optional fault, the top-level `bindings`, and
+telemetry. Three laws hold it together:
 
 - **The commit leg IS the §4.4 splice response, embedded verbatim** — carried as
   raw bytes, never re-typed. The rev transitions, the receipt fact,
