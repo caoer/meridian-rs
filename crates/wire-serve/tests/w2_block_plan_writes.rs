@@ -94,15 +94,32 @@ const DOC: &str = "# Tasks\n\n- plain item ^blk-1\n- second row\n\n# Notes\n\npa
 const DOC_WITH_TASK: &str =
     "# Tasks\n\n- plain item ^blk-1\n- [ ] task item ^tsk-1\n\n# Notes\n\npara\n";
 
-/// The exact miss teaching the plan lane serves today for an anchor-shaped
-/// target it cannot resolve — KEPT verbatim by the fix: for an id the fact
-/// table does not carry, this is still the honest answer, and the daemon's
-/// absent-anchor control pins the class.
-fn miss_message(id: &str) -> String {
+/// The miss teaching for an id the DOCUMENT does not carry — discovery: the
+/// anchors[] plane is where listed ids live (W-2 acceptance killed the
+/// circular "the section map does not list `^` anchors" wording; the class
+/// opener and the no-partial clause stay, which is all the daemon's
+/// absent-anchor control pins).
+fn absent_message(id: &str) -> String {
     format!(
         "no section addressed by \"^{id}\". No edit was applied; the batch is refused \
-         whole. Fix: the section map does not list `^` anchors — find the id inline in \
-         the section's content, or via CLI `--json` in its `anchors[]`."
+         whole. Fix: block anchors ride the toc's `anchors[]` plane — list this \
+         document's with a toc read (MCP read: sections[] omitted; CLI: `--json`) and \
+         write through a listed `^id`. An id hosted outside that plane (a task, table, \
+         callout or paragraph line) is written through its containing section instead: \
+         the section's heading path with a `find` needle."
+    )
+}
+
+/// The miss teaching for an id the document CARRIES but the anchor plane
+/// excludes (task-, fence-, table-, callout-, paragraph-hosted) — the
+/// containing-section lane, the read door's own unaddressable-host answer.
+fn excluded_message(id: &str) -> String {
+    format!(
+        "no section addressed by \"^{id}\". No edit was applied; the batch is refused \
+         whole. Fix: `^{id}` exists in this document, but its host block is outside the \
+         face's anchor plane (`anchors[]` carries list-item hosts only) — write it \
+         through its containing section: the section's heading path with a `find` \
+         needle."
     )
 }
 
@@ -343,7 +360,7 @@ fn plan_match_at_missing_anchor_keeps_the_miss_teaching() {
         None,
     )
     .expect_err("an absent id refuses");
-    assert_eq!(err.message.as_deref(), Some(miss_message("missing").as_str()));
+    assert_eq!(err.message.as_deref(), Some(absent_message("missing").as_str()));
 }
 
 /// A task-hosted id is outside the face's anchor law on BOTH doors: the read
@@ -371,7 +388,7 @@ fn plan_match_at_task_hosted_anchor_stays_outside_the_face_law() {
         None,
     )
     .expect_err("a host outside the anchor law does not resolve on the write door");
-    assert_eq!(err.message.as_deref(), Some(miss_message("tsk-1").as_str()));
+    assert_eq!(err.message.as_deref(), Some(excluded_message("tsk-1").as_str()));
     assert_eq!(read_back(&dir, "card.md"), seed);
 }
 
@@ -583,7 +600,7 @@ fn fixture_b_fence_hosted_check_anchor_has_the_section_find_lane() {
         None,
     )
     .expect_err("Fixture B: a host-excluded anchor does not resolve on the write door");
-    assert_eq!(err.message.as_deref(), Some(miss_message("check").as_str()));
+    assert_eq!(err.message.as_deref(), Some(excluded_message("check").as_str()));
     assert_eq!(read_back(&dir, "runtime.md"), RUNTIME, "refusal moved no bytes");
 
     // Half 2 — the stable lane: containing section + content find. The pin
