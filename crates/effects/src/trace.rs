@@ -17,6 +17,8 @@
 //! Telemetry is unconditional — present on faults and refusals too, the
 //! `RuleTelemetry` precedent.
 
+use std::collections::BTreeMap;
+
 use crate::{ArmedEdit, EvalError, ReadFace, ReadPosition, ScriptEval, ScriptTelemetry};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
@@ -318,6 +320,24 @@ pub struct ScriptTrace {
     /// courier property above survives it intact.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub armed_digest: Option<String>,
+    /// The module's top-level bindings after a SUCCESSFUL evaluation — name →
+    /// Starlark repr, in name order (the map's own order, not statement
+    /// order). This is the result-echo half the ruling restored (2026-08-13,
+    /// F-S1+F-S3): the face renders values from here, which is what makes the
+    /// kernel's own teaching — "bind it to a name to echo it" — true.
+    ///
+    /// Three names never appear (the kernel's capture law,
+    /// `kernel::ScriptEntry::capture_bindings`): the inert inputs
+    /// (`args`, `files`), function bindings (a `def` is not a value the run
+    /// computed), and a name whose LAST top-level assignment is a bare
+    /// `read()` call — that value already rides the trace as the read's own
+    /// `echo` entry, and one fact gets one carrier.
+    ///
+    /// Absent exactly when there is nothing to carry: a script that bound
+    /// nothing, a failed or refused evaluation (its namespace is not a
+    /// result), or the guard refusal (zero evaluation). Absence, never `{}`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bindings: BTreeMap<String, String>,
     /// Present and `true` EXACTLY when a splice was issued and its outcome is
     /// not known: the answer never arrived, or arrived unreadable
     /// (`docs/run-plane.md` § A controlled failure exit SPEAKS).
@@ -457,6 +477,14 @@ impl ScriptTrace {
             commit,
             fault,
             guard_expected: None,
+            // Only a SUCCESSFUL evaluation's namespace is a result; a failed
+            // one carries no facts to begin with (`ScriptFacts` exists on `Ok`
+            // alone).
+            bindings: eval
+                .outcome
+                .as_ref()
+                .map(|facts| facts.bindings.clone())
+                .unwrap_or_default(),
             // Over the armed rows as they stand here — after the consumer plane
             // threaded each row's CAS token, which is the same list the commit
             // sends as `plan_edits[]`. Hashing the pre-threading rows would
@@ -486,6 +514,8 @@ impl ScriptTrace {
             commit: None,
             fault: None,
             guard_expected: Some(pinned.into()),
+            // Zero evaluation bound zero names.
+            bindings: BTreeMap::new(),
             // Nothing was armed — the guard refused before evaluation — so there
             // is no armed set to describe. Absence, never a digest of `[]`.
             armed_digest: None,
