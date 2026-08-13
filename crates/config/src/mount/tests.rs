@@ -18,18 +18,9 @@ fn config_of(blocks: &[String]) -> String {
 }
 
 /// One `meridian-mount` block, in canonical field order.
-fn mount_block(
-    name: &str,
-    path: &Path,
-    kind: &str,
-    vault: Option<&str>,
-    pin: Option<&str>,
-) -> String {
+fn mount_block(name: &str, path: &Path, vault: Option<&str>, pin: Option<&str>) -> String {
     use std::fmt::Write as _;
-    let mut block = format!(
-        "```meridian-mount\nname: {name}\npath: {}\nkind: {kind}\n",
-        path.display()
-    );
+    let mut block = format!("```meridian-mount\nname: {name}\npath: {}\n", path.display());
     if let Some(vault) = vault {
         let _ = writeln!(block, "vault: {vault}");
     }
@@ -40,9 +31,9 @@ fn mount_block(
     block
 }
 
-/// A `vault`-kind block whose vault name equals its canonical name.
+/// A vault block whose vault name equals its canonical name.
 fn vault_block(name: &str, path: &Path) -> String {
-    mount_block(name, path, "vault", Some(name), None)
+    mount_block(name, path, Some(name), None)
 }
 
 fn parse_config(raw: &str) -> Config {
@@ -212,7 +203,7 @@ fn a_symlink_cannot_smuggle_one_tree_in_twice() {
 
     let err = refuse(&config_of(&[
         vault_block("field-notes", &real),
-        mount_block("repos", &link, "vault", Some("repos"), None),
+        mount_block("repos", &link, Some("repos"), None),
     ]));
     assert_eq!(err.reason, MountReason::DuplicateMountPath);
     assert!(
@@ -233,7 +224,7 @@ fn a_trailing_slash_is_the_same_tree() {
 
     let err = refuse(&config_of(&[
         vault_block("field-notes", &real),
-        mount_block("env", &slashed, "vault", Some("env"), None),
+        mount_block("env", &slashed, Some("env"), None),
     ]));
     assert_eq!(err.reason, MountReason::DuplicateMountPath);
 }
@@ -398,7 +389,6 @@ fn a_mount_pins_the_root_it_declares_and_drift_reddens_it() {
     let raw = config_of(&[mount_block(
         "field-notes",
         &dir,
-        "vault",
         Some("field-notes"),
         Some(&pin),
     )]);
@@ -449,7 +439,6 @@ fn an_undecidable_claim_is_grey_and_never_green() {
     let bound = table(&config_of(&[mount_block(
         "archive",
         &dir,
-        "git-folder",
         None,
         Some(future),
     )]))
@@ -485,7 +474,7 @@ fn two_mounts_with_one_canonical_name_fail_loud() {
     let (_keep_b, b) = root("b");
     let raw = config_of(&[
         vault_block("wiki", &a),
-        mount_block("wiki", &b, "vault", Some("other"), None),
+        mount_block("wiki", &b, Some("other"), None),
     ]);
 
     let err = crate::parse(&raw, Path::new("~/MERIDIAN.md"))
@@ -502,7 +491,7 @@ fn one_tree_under_two_names_fails_loud() {
 
     let err = refuse(&config_of(&[
         vault_block("wiki", &dir),
-        mount_block("wiki-again", &dir, "vault", Some("wiki-again"), None),
+        mount_block("wiki-again", &dir, Some("wiki-again"), None),
     ]));
     assert_eq!(err.reason, MountReason::DuplicateMountPath);
 }
@@ -515,8 +504,8 @@ fn two_mounts_naming_one_obsidian_vault_fail_loud() {
     let (_keep_b, b) = root("b");
 
     let err = refuse(&config_of(&[
-        mount_block("wiki", &a, "vault", Some("shared"), None),
-        mount_block("sessions", &b, "vault", Some("shared"), None),
+        mount_block("wiki", &a, Some("shared"), None),
+        mount_block("sessions", &b, Some("shared"), None),
     ]));
     assert_eq!(err.reason, MountReason::DuplicateVaultName);
     assert!(
@@ -541,7 +530,7 @@ fn an_unseeable_mount_path_greys_only_that_root() {
 
     let bound = table(&config_of(&[
         vault_block("field-notes", &present),
-        mount_block("archive", &missing, "git-folder", None, None),
+        mount_block("archive", &missing, None, None),
     ]))
     .expect("an unseeable root is not a parse failure — the table stays loaded");
 
@@ -572,8 +561,8 @@ fn the_three_way_map_answers_in_all_six_directions() {
     declare(&archive, "archive");
 
     let bound = table(&config_of(&[
-        mount_block("field-notes", &wiki, "vault", Some("ZT wiki"), None),
-        mount_block("archive", &archive, "git-folder", None, None),
+        mount_block("field-notes", &wiki, Some("ZT wiki"), None),
+        mount_block("archive", &archive, None, None),
     ]))
     .expect("bind");
     let canonical = std::fs::canonicalize(&wiki).expect("canonicalize");
@@ -648,17 +637,17 @@ fn the_bind_reason_set_is_closed_and_every_word_is_reachable() {
         refuse(&config_of(&[vault_block("poison", &home())])).reason,
         refuse(&config_of(&[
             vault_block("a", &a),
-            mount_block("a-again", &a, "vault", Some("a-again"), None),
+            mount_block("a-again", &a, Some("a-again"), None),
         ]))
         .reason,
         refuse(&config_of(&[
             vault_block("a", &a),
-            mount_block("inner", &nested, "vault", Some("inner"), None),
+            mount_block("inner", &nested, Some("inner"), None),
         ]))
         .reason,
         refuse(&config_of(&[
-            mount_block("a", &a, "vault", Some("same"), None),
-            mount_block("b", &b, "vault", Some("same"), None),
+            mount_block("a", &a, Some("same"), None),
+            mount_block("b", &b, Some("same"), None),
         ]))
         .reason,
         refuse(&config_of(&[vault_block("c", &c)])).reason,
@@ -749,10 +738,10 @@ fn the_state_vocabulary_is_closed_and_distinct() {
 fn a_bind_refusal_renders_in_the_parse_refusal_shape() {
     let bind_refusal = refuse(&config_of(&[vault_block("poison", &home())])).to_string();
     let parse_refusal = crate::parse(
-        "---\ntype: meridian-config\nversion: 1\n---\n\n```meridian-mount\nname: x\npath: /x\nkind: nope\n```\n",
+        "---\ntype: meridian-config\nversion: 1\n---\n\n```meridian-mount\nname: x\npath: /x\nprimary: nope\n```\n",
         Path::new("~/MERIDIAN.md"),
     )
-    .expect_err("kind: nope refuses")
+    .expect_err("primary: nope refuses")
     .to_string();
 
     for text in [&bind_refusal, &parse_refusal] {

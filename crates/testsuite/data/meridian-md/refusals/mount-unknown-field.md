@@ -14,6 +14,5 @@ is regenerated from state that still exists. Your bytes are the only copy.
 name: field-notes
 path: /Users/Shared/projects/field-notes
 paths: /Users/Shared/projects/field-notes-sessions
-kind: vault
 vault: field-notes
 ```

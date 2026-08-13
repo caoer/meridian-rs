@@ -1373,19 +1373,23 @@ call it.
 {"id":7,"ok":true,"body":{
  "config_rev":"9f27a2814b517681",
  "mounts":[
-  {"name":"field-notes","kind":"vault","state":"bound",
+  {"name":"field-notes","state":"bound",
    "workspace":"/Users/Shared/repos/field-notes"},
-  {"name":"sessions","kind":"vault","state":"bound",
+  {"name":"sessions","state":"bound",
    "workspace":"/Users/Shared/projects/field-notes-sessions","primary":true},
-  {"name":"assets","kind":"git-folder","state":"grey(path-unseeable)"}]}}
+  {"name":"assets","state":"grey(path-unseeable)"}]}}
 ```
 
-Row shape `{name, kind, state, workspace?, primary?}`:
+Row shape `{name, state, workspace?, primary?}` — the `kind` field is RETIRED
+(kind-sweep, ZT 2026-08-13): the taxonomy left the config schema
+(`meridian-md-schema.md` §5.1), nothing on the serve path ever branched on it,
+and a row field nobody can act on is a field the wire does not carry. A client
+that still decodes `kind` sees an absent key — inert by the tolerant-client
+law.
 
 | Field | Law |
 |---|---|
 | `name` | the canonical `MountName` — the bindable layer's spelling, lowercase `[a-z0-9-]` (`address-grammar.md` § 4.3) |
-| `kind` | `vault` \| `git-folder` — the `MountKind` words verbatim |
 | `state` | the `MountState` reason word verbatim, ONE spelling across the human line, `--json`, and this wire: `bound` · `grey(path-unseeable)` · `grey(undeclared)` · `grey(declaration-unreadable)` · `grey(claim-unverifiable)` · `red(content-drifted)`. Every word but `bound` refuses: a client gates on `state == "bound"` and treats an unrecognized word as not-bound — the tolerant-client law applied to an open-for-amendment word set |
 | `workspace` | the canonical bound path, post-canonicalization — the same handle `hello` returns as `workspace`. Present exactly when the binding canonicalized; absent at least on `grey(path-unseeable)` |
 | `primary` | the declared-primary designation, verbatim from the binding file (`meridian-md-schema.md` §5.1a): literal `true` exactly on the designated row, ABSENT everywhere else — absence is the only "not primary" spelling, mirroring the config grammar. At most one row carries it (two designations refuse the whole table, `duplicate-primary-designation` inside `mount_table_invalid`). A binding ROLE for fleet hosts (the primary-root rule set: ccc-statusd `docs/mcp-face.md` §8.1); the engine reports it and never acts on it. Field-only amendment, cap `mounts.primary`; a client that has not read the cap sees an unread key — inert by the tolerant-client law |

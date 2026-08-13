@@ -1,392 +1,703 @@
 {
-  "pack": "meridian-md",
-  "authored_by": "U2 (stage 3, 26-01-meridian-rs-stage-3-config-cross-root)",
-  "authored_at": "2026-07-26",
-  "spec": "docs/meridian-md-schema.md",
-  "rule": "Every case pairs a fixture (or an absent one) with its REQUIRED outcome. A fixture with no case here is not testable and is a defect in the pack; a case whose `fixture` is null has no file by construction and states its resolution in `env`.",
-  "placeholders": {
-    "$SANDBOX": "a temp directory the harness owns; nothing outside it is read or written",
-    "$HOME": "the harness's sandboxed home — never the real one; ~/MERIDIAN.md is $HOME/MERIDIAN.md"
+ "pack": "meridian-md",
+ "authored_by": "U2 (stage 3, 26-01-meridian-rs-stage-3-config-cross-root)",
+ "authored_at": "2026-07-26",
+ "spec": "docs/meridian-md-schema.md",
+ "rule": "Every case pairs a fixture (or an absent one) with its REQUIRED outcome. A fixture with no case here is not testable and is a defect in the pack; a case whose `fixture` is null has no file by construction and states its resolution in `env`.",
+ "placeholders": {
+  "$SANDBOX": "a temp directory the harness owns; nothing outside it is read or written",
+  "$HOME": "the harness's sandboxed home — never the real one; ~/MERIDIAN.md is $HOME/MERIDIAN.md"
+ },
+ "env_convention": "A key absent from `env` is UNSET. A key present with a null value is explicitly unset. `default_file` names the fixture copied to $HOME/MERIDIAN.md, or null for none.",
+ "cases": [
+  {
+   "id": "absent-no-file",
+   "fixture": null,
+   "env": {
+    "MERIDIAN_CONFIG": null,
+    "default_file": null
+   },
+   "expect": {
+    "outcome": "accept",
+    "state": "A",
+    "mounts": [],
+    "tools": []
+   },
+   "law": "spec §2.2 state A — absent leaves current single-root behaviour unchanged, and it is not an error",
+   "kills": "a build that fails loud on a missing config, which would brick the CLI on every machine's first run"
   },
-  "env_convention": "A key absent from `env` is UNSET. A key present with a null value is explicitly unset. `default_file` names the fixture copied to $HOME/MERIDIAN.md, or null for none.",
-  "cases": [
-
-    {
-      "id": "absent-no-file",
-      "fixture": null,
-      "env": { "MERIDIAN_CONFIG": null, "default_file": null },
-      "expect": { "outcome": "accept", "state": "A", "mounts": [], "tools": [] },
-      "law": "spec §2.2 state A — absent leaves current single-root behaviour unchanged, and it is not an error",
-      "kills": "a build that fails loud on a missing config, which would brick the CLI on every machine's first run"
-    },
-    {
-      "id": "env-path-missing",
-      "fixture": null,
-      "env": { "MERIDIAN_CONFIG": "$SANDBOX/nowhere/MERIDIAN.md", "default_file": "corpus/single-vault.md" },
-      "expect": { "outcome": "refuse", "state": "C", "reason": "config-path-unusable", "line": null, "names": ["$SANDBOX/nowhere/MERIDIAN.md"] },
-      "expect_not": { "mounts": ["field-notes"] },
-      "law": "spec §2.2 state C — the operator stated an intent that cannot be honoured",
-      "kills": "the silent fallback to ~/MERIDIAN.md. `expect_not` is load-bearing: a build that falls back LOADS the default file's mount and looks perfectly healthy"
-    },
-    {
-      "id": "env-path-directory",
-      "fixture": null,
-      "env": { "MERIDIAN_CONFIG": "$SANDBOX/a-directory", "default_file": null },
-      "expect": { "outcome": "refuse", "state": "C", "reason": "config-path-unusable", "line": null, "names": ["$SANDBOX/a-directory"] },
-      "law": "spec §2.3 — a directory is not a readable regular file; the operator's next action is identical to the missing-path case, so the reason word is the same",
-      "kills": "a build that tests only `exists()` and then fails deep inside the parser with an io error instead of a teaching refusal"
-    },
-    {
-      "id": "env-empty-falls-to-default",
-      "fixture": null,
-      "env": { "MERIDIAN_CONFIG": "", "default_file": "corpus/single-vault.md" },
-      "expect": { "outcome": "accept", "state": "loaded", "mounts": ["field-notes"], "tools": [] },
-      "law": "spec §2.1 — an empty value states no path, so rung 1 does not fire and the chain falls to rung 2",
-      "kills": "treating an exported-but-empty var as a stated path, which turns the commonest shell accident into a hard refusal"
-    },
-    {
-      "id": "env-whitespace-falls-to-default",
-      "fixture": null,
-      "env": { "MERIDIAN_CONFIG": "   ", "default_file": "corpus/single-vault.md" },
-      "expect": { "outcome": "accept", "state": "loaded", "mounts": ["field-notes"], "tools": [] },
-      "law": "spec §2.1 — whitespace-only is empty",
-      "kills": "an is_empty() check that a trailing space defeats"
-    },
-    {
-      "id": "env-overrides-default",
-      "fixture": null,
-      "env": { "MERIDIAN_CONFIG": "$SANDBOX/override/MERIDIAN.md", "override_file": "corpus/multi-root.md", "default_file": "corpus/single-vault.md" },
-      "expect": { "outcome": "accept", "state": "loaded", "mounts": ["field-notes", "sessions", "archive"], "tools": [] },
-      "law": "spec §2.1 — rung 1 wins over rung 2",
-      "kills": "reading the default whenever it exists. Both files declare a `field-notes` mount, so asserting only that field-notes loaded passes on the WRONG file; the three-mount assertion is what discriminates"
-    },
-    {
-      "id": "home-unresolvable",
-      "fixture": null,
-      "env": { "MERIDIAN_CONFIG": null, "HOME": null, "default_file": null },
-      "expect": { "outcome": "refuse", "state": null, "reason": "home-unresolvable", "line": null },
-      "law": "spec §2.1 — rung 2 cannot be built, which is not the same as rung 2 resolving to nothing",
-      "kills": "collapsing an unresolvable default path into state A, which would silently disable the config plane in any environment that does not export HOME"
-    },
-
-    {
-      "id": "zero-mounts",
-      "fixture": "corpus/zero-mounts.md",
-      "env": {},
-      "expect": { "outcome": "accept", "state": "D", "mounts": [], "tools": [] },
-      "law": "spec §2.2 state D — a clean parse declaring zero mounts is treated as the absent case, not as an error",
-      "kills": "a build that refuses an empty mount table, and a build that reaches state D through a different code path than state A (the nil-vs-empty bug)"
-    },
-    {
-      "id": "single-vault",
-      "fixture": "corpus/single-vault.md",
-      "env": {},
-      "expect": {
-        "outcome": "accept",
-        "state": "loaded",
-        "mounts": [
-          { "name": "field-notes", "path": "/Users/Shared/projects/field-notes", "kind": "vault", "vault": "field-notes", "pin": null }
-        ],
-        "tools": []
-      },
-      "law": "spec §5 — the minimal well-formed mount block",
-      "kills": "nothing on its own; it is the floor the other acceptances build on"
-    },
-    {
-      "id": "multi-root",
-      "fixture": "corpus/multi-root.md",
-      "env": {},
-      "expect": {
-        "outcome": "accept",
-        "state": "loaded",
-        "mounts": [
-          { "name": "field-notes", "path": "/Users/Shared/projects/field-notes", "kind": "vault", "vault": "field-notes", "pin": null },
-          { "name": "sessions", "path": "/Users/Shared/projects/field-notes-sessions", "kind": "vault", "vault": "field-notes-sessions", "pin": null },
-          { "name": "archive", "path": "/Users/Shared/repos/archive", "kind": "git-folder", "vault": null, "pin": null }
-        ],
-        "tools": [],
-        "order": "document order, and it is asserted"
-      },
-      "law": "spec §3.1, §5.1 — many blocks, mixed kinds, prose between them",
-      "kills": "THE load-bearing acceptance (S3-R8(c)). A build that refuses every config, or loads only the first block, or drops the git-folder because it has no `vault:`, satisfies every refusal case in this pack and fails only here. Also kills a reader that requires `vault:` unconditionally"
-    },
-    {
-      "id": "mount-as-claim",
-      "fixture": "corpus/mount-as-claim.md",
-      "env": {},
-      "expect": {
-        "outcome": "accept",
-        "state": "loaded",
-        "mounts": [
-          { "name": "field-notes", "path": "/Users/Shared/projects/field-notes", "kind": "vault", "vault": "field-notes", "pin": "fp1.span2.b3.40b167ed9b42a2beadb7c441b214efdc93069ef443a1cc2b5ae2ccda4cf03152" },
-          { "name": "archive", "path": "/Users/Shared/repos/archive", "kind": "git-folder", "vault": null, "pin": null }
-        ],
-        "tools": []
-      },
-      "law": "spec §5.3 — S3-R7's ratified mitigation must be EXPRESSIBLE, because ~/MERIDIAN.md cannot itself be attested",
-      "kills": "a schema in which the mount table's own integrity cannot be claimed at all. The pin must survive parse VERBATIM — a reader that normalizes, truncates to the @fp display form, or re-mints the token breaks the claim it exists to carry"
-    },
-    {
-      "id": "tool-declared",
-      "fixture": "corpus/tool-declared.md",
-      "env": {},
-      "expect": {
-        "outcome": "accept",
-        "state": "loaded",
-        "mounts": [
-          { "name": "field-notes", "path": "/Users/Shared/projects/field-notes", "kind": "vault", "vault": "field-notes", "pin": null }
-        ],
-        "tools": [
-          { "name": "llm-wiki", "kind": "skill", "config": "  entry: LLM_WIKI.md\n  vault: field-notes\n  nested:\n    deeper: true\n" }
-        ]
-      },
-      "law": "spec §6, §6.1 — the declaration is parsed strictly; the payload is carried verbatim and never interpreted",
-      "kills": "a build that refuses an unknown tool `kind`, which would make a config invalid by REMOVING a tool. Also kills a build that parses the payload as YAML: the assertion is byte-verbatim carriage, indentation included"
-    },
-    {
-      "id": "unknown-frontmatter-key",
-      "fixture": "corpus/unknown-frontmatter-key.md",
-      "env": {},
-      "expect": { "outcome": "accept", "state": "loaded", "mounts": ["field-notes"], "tools": [] },
-      "law": "spec §4 — unknown frontmatter keys are permitted and ignored, the shipped posture at crates/policy/src/convention.rs:311-314",
-      "kills": "a deny_unknown_fields frontmatter decode, which would refuse every config carrying Obsidian properties on the user's own entry page"
-    },
-    {
-      "id": "prose-decoys",
-      "fixture": "corpus/prose-decoys.md",
-      "env": {},
-      "expect": { "outcome": "accept", "state": "loaded", "mounts": ["field-notes"], "mount_count": 1, "tools": [] },
-      "law": "spec §3 — the machine surface is the frontmatter plus engine-language fenced blocks; everything else is prose the engine never parses and never refuses because of",
-      "kills": "THE anti-vacuity case. Four decoys: a ```yaml block with mount-shaped keys, a ```meridian-mount nested inside a four-backtick fence, an indented snippet, and inline code. A line-scanning reader loads two or more mounts here and passes every other acceptance in the pack. `mount_count` is asserted, not just membership"
-    },
-
-    {
-      "id": "no-frontmatter",
-      "fixture": "refusals/no-frontmatter.md",
-      "env": {},
-      "expect": { "outcome": "refuse", "state": "B", "reason": "no-frontmatter", "line": 1 },
-      "expect_not": { "mounts": ["field-notes"] },
-      "law": "spec §4, §8.1a — an absent construct points at line 1",
-      "kills": "a reader that treats frontmatter as optional. The file carries a perfectly well-formed mount block, so `expect_not` is what proves no partial mount table was loaded"
-    },
-    {
-      "id": "frontmatter-unterminated",
-      "fixture": "refusals/frontmatter-unterminated.md",
-      "env": {},
-      "expect": { "outcome": "refuse", "state": "B", "reason": "no-frontmatter", "line": 1 },
-      "law": "spec §4 — an unterminated frontmatter fence yields the same reason word as no frontmatter, because the outcome is identical: there is nothing to read",
-      "kills": "a reader that scans for a closing `---` and, failing, silently treats the whole file as frontmatter"
-    },
-    {
-      "id": "frontmatter-unparseable",
-      "fixture": "refusals/frontmatter-unparseable.md",
-      "env": {},
-      "expect": { "outcome": "refuse", "state": "B", "reason": "frontmatter-unparseable", "line": 4 },
-      "law": "spec §4 — the refusal carries the parser's own message",
-      "kills": "a hand-rolled key:value frontmatter scanner, which reads `tags: [config, meridian` as a valid string value and never notices"
-    },
-    {
-      "id": "missing-type-key",
-      "fixture": "refusals/missing-type-key.md",
-      "env": {},
-      "expect": { "outcome": "refuse", "state": "B", "reason": "missing-required-key", "line": 1, "names": ["type"] },
-      "law": "spec §4 — both engine-read keys are required, and that is what makes unknown-key tolerance safe",
-      "kills": "an Option<String> type field defaulting to `meridian-config`, which would make a typo of `type` invisible"
-    },
-    {
-      "id": "missing-version-key",
-      "fixture": "refusals/missing-version-key.md",
-      "env": {},
-      "expect": { "outcome": "refuse", "state": "B", "reason": "missing-required-key", "line": 1, "names": ["version"] },
-      "law": "spec §4 — the engine must not guess which schema the bytes speak",
-      "kills": "defaulting an absent version to 1, which silently reinterprets a future-format file as v1"
-    },
-    {
-      "id": "wrong-type-value",
-      "fixture": "refusals/wrong-type-value.md",
-      "env": {},
-      "expect": { "outcome": "refuse", "state": "B", "reason": "wrong-type-value", "line": 2, "names": ["note", "meridian-config"] },
-      "law": "spec §4 — the discriminator exists because MERIDIAN_CONFIG can aim the engine at any path",
-      "kills": "a reader that ignores `type:` and half-loads an ordinary page a mis-set env var pointed at"
-    },
-    {
-      "id": "unsupported-version",
-      "fixture": "refusals/unsupported-version.md",
-      "env": {},
-      "expect": { "outcome": "refuse", "state": "B", "reason": "unsupported-version", "line": 3, "names": ["2"] },
-      "expect_not": { "mounts": ["field-notes"] },
-      "law": "spec §4 — refuse loudly, never guess a future format (LockError::UnsupportedVersion, crates/lock/src/lib.rs:132-134)",
-      "kills": "a reader that parses the v2 file with v1 rules because the blocks happen to look familiar. The file carries a valid-under-v1 mount block precisely so this is the trap it is"
-    },
-    {
-      "id": "bad-version-value",
-      "fixture": "refusals/bad-version-value.md",
-      "env": {},
-      "expect": { "outcome": "refuse", "state": "B", "reason": "bad-value", "line": 3 },
-      "law": "spec §4 — a non-integer version is a type violation, not an unsupported version; the operator's fix differs",
-      "kills": "collapsing the two into one reason word, which tells a user with a typo to go upgrade"
-    },
-
-    {
-      "id": "mount-missing-name",
-      "fixture": "refusals/mount-missing-name.md",
-      "env": {},
-      "expect": { "outcome": "refuse", "state": "B", "reason": "missing-required-field", "line": 12, "names": ["name"] },
-      "law": "spec §5.1, §8.1a — an absent block field points at the block's opening fence",
-      "kills": "reporting `field-out-of-order` because `path` arrived where `name` was expected — a refusal that sends the operator to reorder fields they did not write"
-    },
-    {
-      "id": "mount-vault-name-absent",
-      "fixture": "refusals/mount-vault-name-absent.md",
-      "env": {},
-      "expect": { "outcome": "refuse", "state": "B", "reason": "missing-required-field", "line": 13, "names": ["vault", "kind: vault"] },
-      "law": "spec §5.1 field 5 — `vault:` is required iff `kind: vault`, because the mount table is a THREE-way map",
-      "kills": "a schema in which a vault mount can omit its Obsidian vault name, leaving the three-way map with two legs and criterion 2 unsatisfiable. The refusal must name the KIND that requires the field, not just the field"
-    },
-    {
-      "id": "mount-unknown-field",
-      "fixture": "refusals/mount-unknown-field.md",
-      "env": {},
-      "expect": { "outcome": "refuse", "state": "B", "reason": "unknown-field", "line": 16, "names": ["paths", "name", "path", "kind", "vault", "pin"] },
-      "law": "spec §5.1 — every declared field is READ; §1.3 D-f, the deliberate difference from the INDEX's lossy round-trip",
-      "kills": "an ignore-what-you-do-not-know reader. The human's bytes are the only source here, so a silently-ignored field is a silently-ignored intent"
-    },
-    {
-      "id": "mount-duplicate-field",
-      "fixture": "refusals/mount-duplicate-field.md",
-      "env": {},
-      "expect": { "outcome": "refuse", "state": "B", "reason": "duplicate-field", "line": 15, "names": ["path", "14"] },
-      "law": "spec §5.1, §8.1a — a duplicate points at the SECOND occurrence and names the first",
-      "kills": "last-wins and first-wins alike; both are silent choices about which of two stated intents the operator meant"
-    },
-    {
-      "id": "mount-fields-out-of-order",
-      "fixture": "refusals/mount-fields-out-of-order.md",
-      "env": {},
-      "expect": { "outcome": "refuse", "state": "B", "reason": "field-out-of-order", "line": 15, "names": ["name", "path", "kind", "vault", "pin"] },
-      "law": "spec §5.1 — canonical order, one spelling per fact; the refusal teaches the order",
-      "kills": "an order-free HashMap decode. It is not a correctness bug on its own, which is why it is stated: two configs that differ only in field order would otherwise diff as different"
-    },
-    {
-      "id": "mount-vault-on-git-folder",
-      "fixture": "refusals/mount-vault-on-git-folder.md",
-      "env": {},
-      "expect": { "outcome": "refuse", "state": "B", "reason": "field-not-permitted-for-kind", "line": 17, "names": ["vault", "git-folder"] },
-      "law": "spec §5.1 field 5 — a git-folder root has no Obsidian vault, so `vault:` states something that cannot be true",
-      "kills": "ignoring the field, which lets a config assert a vault name nothing checks — the three-way map silently growing a leg for a kind that has none"
-    },
-    {
-      "id": "mount-bad-name-charset",
-      "fixture": "refusals/mount-bad-name-charset.md",
-      "env": {},
-      "expect": { "outcome": "refuse", "state": "B", "reason": "bad-value", "line": 17, "names": ["_", "[a-z0-9-]"] },
-      "law": "spec §5.2 — the charset is the complement of the address grammar's operator set, so no legal name can collide with an address operator",
-      "kills": "accepting any non-empty string as a name. A name containing `:` `#` `@` `/` or `.` would be bindable but unaddressable, and U3 would inherit a name it cannot parse"
-    },
-    {
-      "id": "mount-unknown-kind",
-      "fixture": "refusals/mount-unknown-kind.md",
-      "env": {},
-      "expect": { "outcome": "refuse", "state": "B", "reason": "bad-value", "line": 15, "names": ["obsidian", "vault", "git-folder"] },
-      "law": "spec §5.1 field 3 — root kinds are `vault` and `git-folder` (cross-root-addressing §1); a third needs a ruling, not a config line",
-      "kills": "an open kind field. Kind selects the pin grain (span vs whole file) and whether `vault:` is required, so an unknown kind has no defined behaviour to fall back to"
-    },
-    {
-      "id": "mount-bad-pin-token",
-      "fixture": "refusals/mount-bad-pin-token.md",
-      "env": {},
-      "expect": { "outcome": "refuse", "state": "B", "reason": "bad-value", "line": 22 },
-      "law": "spec §5.3 — well-formed is exactly `model::fingerprint::parse_fingerprint` returning Some: four non-empty dot-separated fields",
-      "kills": "BOTH failure directions. A reader that accepts any string lets an unverifiable claim into the one mechanism that checks the mount table's integrity; a reader that checks for the literal `fp1.span2.b3.` prefix refuses a git-folder root's file-grain pin, which uses a different codec. Parse is codec-agnostic on purpose (crates/model/src/fingerprint.rs:99-103)"
-    },
-    {
-      "id": "mount-blank-line",
-      "fixture": "refusals/mount-blank-line.md",
-      "env": {},
-      "expect": { "outcome": "refuse", "state": "B", "reason": "malformed-line", "line": 15 },
-      "law": "spec §5.1 — a body line that is not `key: value` is refused; prose about a mount belongs beside the block, not inside it",
-      "kills": "a skip-blank-lines parser. It looks harmless and it is what erodes one-spelling-per-fact: once blanks are skipped, comments follow, then indentation, and the block grammar is a dialect"
-    },
-    {
-      "id": "mount-unterminated",
-      "fixture": "refusals/mount-unterminated.md",
-      "env": {},
-      "expect": { "outcome": "refuse", "state": "B", "reason": "unterminated-block", "line": 13 },
-      "law": "spec §5.1, §8.1a — the fault is an absent closing fence, so the line is the block's opening",
-      "kills": "parsing to end-of-file. An unterminated engine block means the author's intent about where the machine surface ENDS is unknown, and guessing it silently extends the strict grammar over prose"
-    },
-    {
-      "id": "duplicate-mount-name",
-      "fixture": "refusals/duplicate-mount-name.md",
-      "env": {},
-      "expect": { "outcome": "refuse", "state": "B", "reason": "duplicate-mount-name", "line": 24, "names": ["field-notes", "17"] },
-      "law": "spec §5.1 — the mount table is the single authority for the three-way translation, and a map with two values for one key is not a map",
-      "kills": "a Vec<Mount> with no uniqueness check. The two blocks declare DIFFERENT paths and kinds, so a last-wins reader resolves `field-notes` to the archive — a cross-root ref silently reading the wrong tree"
-    },
-    {
-      "id": "tool-missing-kind",
-      "fixture": "refusals/tool-missing-kind.md",
-      "env": {},
-      "expect": { "outcome": "refuse", "state": "B", "reason": "missing-required-field", "line": 12, "names": ["kind"] },
-      "law": "spec §6.1 — the payload is engine-opaque; the DECLARATION is not",
-      "kills": "extending payload opacity to the block's shape, which would make `meridian-tool` an unparsed region rather than a declaration"
-    },
-    {
-      "id": "tool-payload-not-indented",
-      "fixture": "refusals/tool-payload-not-indented.md",
-      "env": {},
-      "expect": { "outcome": "refuse", "state": "B", "reason": "malformed-line", "line": 18 },
-      "law": "spec §6 — indentation is the only structural fact the engine needs from the payload: it is what makes the payload's extent unambiguous",
-      "kills": "a reader that swallows everything after `config:` to the closing fence. `vault: field-notes` at column 0 is exactly the shape of a field the engine WOULD read, so the ambiguity is real and not hypothetical"
-    },
-    {
-      "id": "duplicate-tool-name",
-      "fixture": "refusals/duplicate-tool-name.md",
-      "env": {},
-      "expect": { "outcome": "refuse", "state": "B", "reason": "duplicate-tool-name", "line": 19, "names": ["llm-wiki", "12"] },
-      "law": "spec §6 — names are keys for the same reason mount names are: a consumer resolving `llm-wiki` must get one answer",
-      "kills": "uniqueness enforced on mounts but not on tools, which is the likely asymmetry once mount uniqueness is written first"
-    },
-    {
-      "id": "primary-designated",
-      "fixture": "corpus/primary-designated.md",
-      "env": {},
-      "expect": {
-        "outcome": "accept",
-        "state": "loaded",
-        "mounts": [
-          { "name": "field-notes", "path": "/Users/Shared/projects/field-notes", "kind": "vault", "vault": "field-notes", "pin": null, "primary": false },
-          { "name": "sessions", "path": "/Users/Shared/projects/field-notes-sessions", "kind": "vault", "vault": "field-notes-sessions", "pin": null, "primary": true },
-          { "name": "archive", "path": "/Users/Shared/repos/archive", "kind": "git-folder", "vault": null, "pin": null, "primary": false }
-        ],
-        "tools": []
-      },
-      "law": "spec §5.1 field 4 — the primary root is DECLARED, never derived: exactly one mount carries `primary: true`, and its position in the file means nothing",
-      "kills": "every derived-primary reader: mounts[0]-wins, first-vault-wins, last-wins. The designated mount is deliberately NOT the first block, so a mounts[0] fallback looks healthy on every other acceptance and fails only here"
-    },
-    {
-      "id": "mount-primary-on-git-folder",
-      "fixture": "refusals/mount-primary-on-git-folder.md",
-      "env": {},
-      "expect": { "outcome": "refuse", "state": "B", "reason": "field-not-permitted-for-kind", "line": 17, "names": ["primary", "git-folder"] },
-      "law": "spec §5.1 field 4 — the primary root is where the fleet daemon writes, and a git-folder root binds a source repo, so the designation states an intent that must never be honoured",
-      "kills": "ignoring the field on the kind it is meaningless for, which would let a source repo silently become the tree a daemon files its journal into once the jail widens"
-    },
-    {
-      "id": "mount-primary-bad-value",
-      "fixture": "refusals/mount-primary-bad-value.md",
-      "env": {},
-      "expect": { "outcome": "refuse", "state": "B", "reason": "bad-value", "line": 17, "names": ["primary: false", "true"] },
-      "law": "spec §5.1 field 4 — the only legal value is the literal `true`; a mount that is not primary says so by carrying no `primary:` line",
-      "kills": "admitting `primary: false` as a legal no-op, which mints a second spelling for one fact — and with it a reader that treats ANY present value as designation, so `primary: false` designates"
-    },
-    {
-      "id": "mount-duplicate-primary",
-      "fixture": "refusals/mount-duplicate-primary.md",
-      "env": {},
-      "expect": { "outcome": "refuse", "state": "B", "reason": "duplicate-primary-designation", "line": 25, "names": ["sessions", "field-notes", "17"] },
-      "law": "spec §5.1 — the designation is a role exactly one mount may hold; two designations is a table-level defect like duplicate-mount-name, refusing the whole table, never a tie the parser breaks",
-      "kills": "first-designation-wins and last-designation-wins readers — both blocks are otherwise legal vaults, so a build that picks either one loads a healthy-looking table anchored to a tree the operator did not choose"
-    }
-  ]
+  {
+   "id": "env-path-missing",
+   "fixture": null,
+   "env": {
+    "MERIDIAN_CONFIG": "$SANDBOX/nowhere/MERIDIAN.md",
+    "default_file": "corpus/single-vault.md"
+   },
+   "expect": {
+    "outcome": "refuse",
+    "state": "C",
+    "reason": "config-path-unusable",
+    "line": null,
+    "names": [
+     "$SANDBOX/nowhere/MERIDIAN.md"
+    ]
+   },
+   "expect_not": {
+    "mounts": [
+     "field-notes"
+    ]
+   },
+   "law": "spec §2.2 state C — the operator stated an intent that cannot be honoured",
+   "kills": "the silent fallback to ~/MERIDIAN.md. `expect_not` is load-bearing: a build that falls back LOADS the default file's mount and looks perfectly healthy"
+  },
+  {
+   "id": "env-path-directory",
+   "fixture": null,
+   "env": {
+    "MERIDIAN_CONFIG": "$SANDBOX/a-directory",
+    "default_file": null
+   },
+   "expect": {
+    "outcome": "refuse",
+    "state": "C",
+    "reason": "config-path-unusable",
+    "line": null,
+    "names": [
+     "$SANDBOX/a-directory"
+    ]
+   },
+   "law": "spec §2.3 — a directory is not a readable regular file; the operator's next action is identical to the missing-path case, so the reason word is the same",
+   "kills": "a build that tests only `exists()` and then fails deep inside the parser with an io error instead of a teaching refusal"
+  },
+  {
+   "id": "env-empty-falls-to-default",
+   "fixture": null,
+   "env": {
+    "MERIDIAN_CONFIG": "",
+    "default_file": "corpus/single-vault.md"
+   },
+   "expect": {
+    "outcome": "accept",
+    "state": "loaded",
+    "mounts": [
+     "field-notes"
+    ],
+    "tools": []
+   },
+   "law": "spec §2.1 — an empty value states no path, so rung 1 does not fire and the chain falls to rung 2",
+   "kills": "treating an exported-but-empty var as a stated path, which turns the commonest shell accident into a hard refusal"
+  },
+  {
+   "id": "env-whitespace-falls-to-default",
+   "fixture": null,
+   "env": {
+    "MERIDIAN_CONFIG": "   ",
+    "default_file": "corpus/single-vault.md"
+   },
+   "expect": {
+    "outcome": "accept",
+    "state": "loaded",
+    "mounts": [
+     "field-notes"
+    ],
+    "tools": []
+   },
+   "law": "spec §2.1 — whitespace-only is empty",
+   "kills": "an is_empty() check that a trailing space defeats"
+  },
+  {
+   "id": "env-overrides-default",
+   "fixture": null,
+   "env": {
+    "MERIDIAN_CONFIG": "$SANDBOX/override/MERIDIAN.md",
+    "override_file": "corpus/multi-root.md",
+    "default_file": "corpus/single-vault.md"
+   },
+   "expect": {
+    "outcome": "accept",
+    "state": "loaded",
+    "mounts": [
+     "field-notes",
+     "sessions",
+     "archive"
+    ],
+    "tools": []
+   },
+   "law": "spec §2.1 — rung 1 wins over rung 2",
+   "kills": "reading the default whenever it exists. Both files declare a `field-notes` mount, so asserting only that field-notes loaded passes on the WRONG file; the three-mount assertion is what discriminates"
+  },
+  {
+   "id": "home-unresolvable",
+   "fixture": null,
+   "env": {
+    "MERIDIAN_CONFIG": null,
+    "HOME": null,
+    "default_file": null
+   },
+   "expect": {
+    "outcome": "refuse",
+    "state": null,
+    "reason": "home-unresolvable",
+    "line": null
+   },
+   "law": "spec §2.1 — rung 2 cannot be built, which is not the same as rung 2 resolving to nothing",
+   "kills": "collapsing an unresolvable default path into state A, which would silently disable the config plane in any environment that does not export HOME"
+  },
+  {
+   "id": "zero-mounts",
+   "fixture": "corpus/zero-mounts.md",
+   "env": {},
+   "expect": {
+    "outcome": "accept",
+    "state": "D",
+    "mounts": [],
+    "tools": []
+   },
+   "law": "spec §2.2 state D — a clean parse declaring zero mounts is treated as the absent case, not as an error",
+   "kills": "a build that refuses an empty mount table, and a build that reaches state D through a different code path than state A (the nil-vs-empty bug)"
+  },
+  {
+   "id": "single-vault",
+   "fixture": "corpus/single-vault.md",
+   "env": {},
+   "expect": {
+    "outcome": "accept",
+    "state": "loaded",
+    "mounts": [
+     {
+      "name": "field-notes",
+      "path": "/Users/Shared/projects/field-notes",
+      "vault": "field-notes",
+      "pin": null
+     }
+    ],
+    "tools": []
+   },
+   "law": "spec §5 — the minimal well-formed mount block",
+   "kills": "nothing on its own; it is the floor the other acceptances build on"
+  },
+  {
+   "id": "multi-root",
+   "fixture": "corpus/multi-root.md",
+   "env": {},
+   "expect": {
+    "outcome": "accept",
+    "state": "loaded",
+    "mounts": [
+     {
+      "name": "field-notes",
+      "path": "/Users/Shared/projects/field-notes",
+      "vault": "field-notes",
+      "pin": null
+     },
+     {
+      "name": "sessions",
+      "path": "/Users/Shared/projects/field-notes-sessions",
+      "vault": "field-notes-sessions",
+      "pin": null
+     },
+     {
+      "name": "archive",
+      "path": "/Users/Shared/repos/archive",
+      "vault": null,
+      "pin": null
+     }
+    ],
+    "tools": [],
+    "order": "document order, and it is asserted"
+   },
+   "law": "spec §3.1, §5.1 — many blocks, mixed kinds, prose between them",
+   "kills": "THE load-bearing acceptance (S3-R8(c)). A build that refuses every config, or loads only the first block, or drops the git-folder because it has no `vault:`, satisfies every refusal case in this pack and fails only here. Also kills a reader that requires `vault:` unconditionally"
+  },
+  {
+   "id": "mount-as-claim",
+   "fixture": "corpus/mount-as-claim.md",
+   "env": {},
+   "expect": {
+    "outcome": "accept",
+    "state": "loaded",
+    "mounts": [
+     {
+      "name": "field-notes",
+      "path": "/Users/Shared/projects/field-notes",
+      "vault": "field-notes",
+      "pin": "fp1.span2.b3.40b167ed9b42a2beadb7c441b214efdc93069ef443a1cc2b5ae2ccda4cf03152"
+     },
+     {
+      "name": "archive",
+      "path": "/Users/Shared/repos/archive",
+      "vault": null,
+      "pin": null
+     }
+    ],
+    "tools": []
+   },
+   "law": "spec §5.3 — S3-R7's ratified mitigation must be EXPRESSIBLE, because ~/MERIDIAN.md cannot itself be attested",
+   "kills": "a schema in which the mount table's own integrity cannot be claimed at all. The pin must survive parse VERBATIM — a reader that normalizes, truncates to the @fp display form, or re-mints the token breaks the claim it exists to carry"
+  },
+  {
+   "id": "tool-declared",
+   "fixture": "corpus/tool-declared.md",
+   "env": {},
+   "expect": {
+    "outcome": "accept",
+    "state": "loaded",
+    "mounts": [
+     {
+      "name": "field-notes",
+      "path": "/Users/Shared/projects/field-notes",
+      "vault": "field-notes",
+      "pin": null
+     }
+    ],
+    "tools": [
+     {
+      "name": "llm-wiki",
+      "kind": "skill",
+      "config": "  entry: LLM_WIKI.md\n  vault: field-notes\n  nested:\n    deeper: true\n"
+     }
+    ]
+   },
+   "law": "spec §6, §6.1 — the declaration is parsed strictly; the payload is carried verbatim and never interpreted",
+   "kills": "a build that refuses an unknown tool `kind`, which would make a config invalid by REMOVING a tool. Also kills a build that parses the payload as YAML: the assertion is byte-verbatim carriage, indentation included"
+  },
+  {
+   "id": "unknown-frontmatter-key",
+   "fixture": "corpus/unknown-frontmatter-key.md",
+   "env": {},
+   "expect": {
+    "outcome": "accept",
+    "state": "loaded",
+    "mounts": [
+     "field-notes"
+    ],
+    "tools": []
+   },
+   "law": "spec §4 — unknown frontmatter keys are permitted and ignored, the shipped posture at crates/policy/src/convention.rs:311-314",
+   "kills": "a deny_unknown_fields frontmatter decode, which would refuse every config carrying Obsidian properties on the user's own entry page"
+  },
+  {
+   "id": "prose-decoys",
+   "fixture": "corpus/prose-decoys.md",
+   "env": {},
+   "expect": {
+    "outcome": "accept",
+    "state": "loaded",
+    "mounts": [
+     "field-notes"
+    ],
+    "mount_count": 1,
+    "tools": []
+   },
+   "law": "spec §3 — the machine surface is the frontmatter plus engine-language fenced blocks; everything else is prose the engine never parses and never refuses because of",
+   "kills": "THE anti-vacuity case. Four decoys: a ```yaml block with mount-shaped keys, a ```meridian-mount nested inside a four-backtick fence, an indented snippet, and inline code. A line-scanning reader loads two or more mounts here and passes every other acceptance in the pack. `mount_count` is asserted, not just membership"
+  },
+  {
+   "id": "no-frontmatter",
+   "fixture": "refusals/no-frontmatter.md",
+   "env": {},
+   "expect": {
+    "outcome": "refuse",
+    "state": "B",
+    "reason": "no-frontmatter",
+    "line": 1
+   },
+   "expect_not": {
+    "mounts": [
+     "field-notes"
+    ]
+   },
+   "law": "spec §4, §8.1a — an absent construct points at line 1",
+   "kills": "a reader that treats frontmatter as optional. The file carries a perfectly well-formed mount block, so `expect_not` is what proves no partial mount table was loaded"
+  },
+  {
+   "id": "frontmatter-unterminated",
+   "fixture": "refusals/frontmatter-unterminated.md",
+   "env": {},
+   "expect": {
+    "outcome": "refuse",
+    "state": "B",
+    "reason": "no-frontmatter",
+    "line": 1
+   },
+   "law": "spec §4 — an unterminated frontmatter fence yields the same reason word as no frontmatter, because the outcome is identical: there is nothing to read",
+   "kills": "a reader that scans for a closing `---` and, failing, silently treats the whole file as frontmatter"
+  },
+  {
+   "id": "frontmatter-unparseable",
+   "fixture": "refusals/frontmatter-unparseable.md",
+   "env": {},
+   "expect": {
+    "outcome": "refuse",
+    "state": "B",
+    "reason": "frontmatter-unparseable",
+    "line": 4
+   },
+   "law": "spec §4 — the refusal carries the parser's own message",
+   "kills": "a hand-rolled key:value frontmatter scanner, which reads `tags: [config, meridian` as a valid string value and never notices"
+  },
+  {
+   "id": "missing-type-key",
+   "fixture": "refusals/missing-type-key.md",
+   "env": {},
+   "expect": {
+    "outcome": "refuse",
+    "state": "B",
+    "reason": "missing-required-key",
+    "line": 1,
+    "names": [
+     "type"
+    ]
+   },
+   "law": "spec §4 — both engine-read keys are required, and that is what makes unknown-key tolerance safe",
+   "kills": "an Option<String> type field defaulting to `meridian-config`, which would make a typo of `type` invisible"
+  },
+  {
+   "id": "missing-version-key",
+   "fixture": "refusals/missing-version-key.md",
+   "env": {},
+   "expect": {
+    "outcome": "refuse",
+    "state": "B",
+    "reason": "missing-required-key",
+    "line": 1,
+    "names": [
+     "version"
+    ]
+   },
+   "law": "spec §4 — the engine must not guess which schema the bytes speak",
+   "kills": "defaulting an absent version to 1, which silently reinterprets a future-format file as v1"
+  },
+  {
+   "id": "wrong-type-value",
+   "fixture": "refusals/wrong-type-value.md",
+   "env": {},
+   "expect": {
+    "outcome": "refuse",
+    "state": "B",
+    "reason": "wrong-type-value",
+    "line": 2,
+    "names": [
+     "note",
+     "meridian-config"
+    ]
+   },
+   "law": "spec §4 — the discriminator exists because MERIDIAN_CONFIG can aim the engine at any path",
+   "kills": "a reader that ignores `type:` and half-loads an ordinary page a mis-set env var pointed at"
+  },
+  {
+   "id": "unsupported-version",
+   "fixture": "refusals/unsupported-version.md",
+   "env": {},
+   "expect": {
+    "outcome": "refuse",
+    "state": "B",
+    "reason": "unsupported-version",
+    "line": 3,
+    "names": [
+     "2"
+    ]
+   },
+   "expect_not": {
+    "mounts": [
+     "field-notes"
+    ]
+   },
+   "law": "spec §4 — refuse loudly, never guess a future format (LockError::UnsupportedVersion, crates/lock/src/lib.rs:132-134)",
+   "kills": "a reader that parses the v2 file with v1 rules because the blocks happen to look familiar. The file carries a valid-under-v1 mount block precisely so this is the trap it is"
+  },
+  {
+   "id": "bad-version-value",
+   "fixture": "refusals/bad-version-value.md",
+   "env": {},
+   "expect": {
+    "outcome": "refuse",
+    "state": "B",
+    "reason": "bad-value",
+    "line": 3
+   },
+   "law": "spec §4 — a non-integer version is a type violation, not an unsupported version; the operator's fix differs",
+   "kills": "collapsing the two into one reason word, which tells a user with a typo to go upgrade"
+  },
+  {
+   "id": "mount-missing-name",
+   "fixture": "refusals/mount-missing-name.md",
+   "env": {},
+   "expect": {
+    "outcome": "refuse",
+    "state": "B",
+    "reason": "missing-required-field",
+    "line": 12,
+    "names": [
+     "name"
+    ]
+   },
+   "law": "spec §5.1, §8.1a — an absent block field points at the block's opening fence",
+   "kills": "reporting `field-out-of-order` because `path` arrived where `name` was expected — a refusal that sends the operator to reorder fields they did not write"
+  },
+  {
+   "id": "mount-unknown-field",
+   "fixture": "refusals/mount-unknown-field.md",
+   "env": {},
+   "expect": {
+    "outcome": "refuse",
+    "state": "B",
+    "reason": "unknown-field",
+    "line": 16,
+    "names": [
+     "paths",
+     "name",
+     "path",
+     "primary",
+     "vault",
+     "pin"
+    ]
+   },
+   "law": "spec §5.1 — every declared field is READ; §1.3 D-f, the deliberate difference from the INDEX's lossy round-trip",
+   "kills": "an ignore-what-you-do-not-know reader. The human's bytes are the only source here, so a silently-ignored field is a silently-ignored intent"
+  },
+  {
+   "id": "mount-duplicate-field",
+   "fixture": "refusals/mount-duplicate-field.md",
+   "env": {},
+   "expect": {
+    "outcome": "refuse",
+    "state": "B",
+    "reason": "duplicate-field",
+    "line": 15,
+    "names": [
+     "path",
+     "14"
+    ]
+   },
+   "law": "spec §5.1, §8.1a — a duplicate points at the SECOND occurrence and names the first",
+   "kills": "last-wins and first-wins alike; both are silent choices about which of two stated intents the operator meant"
+  },
+  {
+   "id": "mount-fields-out-of-order",
+   "fixture": "refusals/mount-fields-out-of-order.md",
+   "env": {},
+   "expect": {
+    "outcome": "refuse",
+    "state": "B",
+    "reason": "field-out-of-order",
+    "line": 15,
+    "names": [
+     "name",
+     "path",
+     "primary",
+     "vault",
+     "pin"
+    ]
+   },
+   "law": "spec §5.1 — canonical order, one spelling per fact; the refusal teaches the order",
+   "kills": "an order-free HashMap decode. It is not a correctness bug on its own, which is why it is stated: two configs that differ only in field order would otherwise diff as different"
+  },
+  {
+   "id": "mount-bad-name-charset",
+   "fixture": "refusals/mount-bad-name-charset.md",
+   "env": {},
+   "expect": {
+    "outcome": "refuse",
+    "state": "B",
+    "reason": "bad-value",
+    "line": 17,
+    "names": [
+     "_",
+     "[a-z0-9-]"
+    ]
+   },
+   "law": "spec §5.2 — the charset is the complement of the address grammar's operator set, so no legal name can collide with an address operator",
+   "kills": "accepting any non-empty string as a name. A name containing `:` `#` `@` `/` or `.` would be bindable but unaddressable, and U3 would inherit a name it cannot parse"
+  },
+  {
+   "id": "mount-stale-kind",
+   "fixture": "refusals/mount-stale-kind.md",
+   "env": {},
+   "expect": {
+    "outcome": "refuse",
+    "state": "B",
+    "reason": "unknown-field",
+    "line": 17,
+    "names": [
+     "kind",
+     "remove the line"
+    ]
+   },
+   "law": "kind-sweep 2026-08-13 — `kind:` left the schema; a stale line refuses through the unknown-field door with the removal remedy, exactly as `primary:` refused on an engine too old to know it",
+   "kills": "a build that silently tolerates the retired field, minting a compatibility window nobody ruled"
+  },
+  {
+   "id": "mount-bad-pin-token",
+   "fixture": "refusals/mount-bad-pin-token.md",
+   "env": {},
+   "expect": {
+    "outcome": "refuse",
+    "state": "B",
+    "reason": "bad-value",
+    "line": 21
+   },
+   "law": "spec §5.3 — well-formed is exactly `model::fingerprint::parse_fingerprint` returning Some: four non-empty dot-separated fields",
+   "kills": "BOTH failure directions. A reader that accepts any string lets an unverifiable claim into the one mechanism that checks the mount table's integrity; a reader that checks for the literal `fp1.span2.b3.` prefix refuses a git-folder root's file-grain pin, which uses a different codec. Parse is codec-agnostic on purpose (crates/model/src/fingerprint.rs:99-103)"
+  },
+  {
+   "id": "mount-blank-line",
+   "fixture": "refusals/mount-blank-line.md",
+   "env": {},
+   "expect": {
+    "outcome": "refuse",
+    "state": "B",
+    "reason": "malformed-line",
+    "line": 15
+   },
+   "law": "spec §5.1 — a body line that is not `key: value` is refused; prose about a mount belongs beside the block, not inside it",
+   "kills": "a skip-blank-lines parser. It looks harmless and it is what erodes one-spelling-per-fact: once blanks are skipped, comments follow, then indentation, and the block grammar is a dialect"
+  },
+  {
+   "id": "mount-unterminated",
+   "fixture": "refusals/mount-unterminated.md",
+   "env": {},
+   "expect": {
+    "outcome": "refuse",
+    "state": "B",
+    "reason": "unterminated-block",
+    "line": 13
+   },
+   "law": "spec §5.1, §8.1a — the fault is an absent closing fence, so the line is the block's opening",
+   "kills": "parsing to end-of-file. An unterminated engine block means the author's intent about where the machine surface ENDS is unknown, and guessing it silently extends the strict grammar over prose"
+  },
+  {
+   "id": "duplicate-mount-name",
+   "fixture": "refusals/duplicate-mount-name.md",
+   "env": {},
+   "expect": {
+    "outcome": "refuse",
+    "state": "B",
+    "reason": "duplicate-mount-name",
+    "line": 23,
+    "names": [
+     "field-notes",
+     "17"
+    ]
+   },
+   "law": "spec §5.1 — the mount table is the single authority for the three-way translation, and a map with two values for one key is not a map",
+   "kills": "a Vec<Mount> with no uniqueness check. The two blocks declare DIFFERENT paths and kinds, so a last-wins reader resolves `field-notes` to the archive — a cross-root ref silently reading the wrong tree"
+  },
+  {
+   "id": "tool-missing-kind",
+   "fixture": "refusals/tool-missing-kind.md",
+   "env": {},
+   "expect": {
+    "outcome": "refuse",
+    "state": "B",
+    "reason": "missing-required-field",
+    "line": 12,
+    "names": [
+     "kind"
+    ]
+   },
+   "law": "spec §6.1 — the payload is engine-opaque; the DECLARATION is not",
+   "kills": "extending payload opacity to the block's shape, which would make `meridian-tool` an unparsed region rather than a declaration"
+  },
+  {
+   "id": "tool-payload-not-indented",
+   "fixture": "refusals/tool-payload-not-indented.md",
+   "env": {},
+   "expect": {
+    "outcome": "refuse",
+    "state": "B",
+    "reason": "malformed-line",
+    "line": 18
+   },
+   "law": "spec §6 — indentation is the only structural fact the engine needs from the payload: it is what makes the payload's extent unambiguous",
+   "kills": "a reader that swallows everything after `config:` to the closing fence. `vault: field-notes` at column 0 is exactly the shape of a field the engine WOULD read, so the ambiguity is real and not hypothetical"
+  },
+  {
+   "id": "duplicate-tool-name",
+   "fixture": "refusals/duplicate-tool-name.md",
+   "env": {},
+   "expect": {
+    "outcome": "refuse",
+    "state": "B",
+    "reason": "duplicate-tool-name",
+    "line": 19,
+    "names": [
+     "llm-wiki",
+     "12"
+    ]
+   },
+   "law": "spec §6 — names are keys for the same reason mount names are: a consumer resolving `llm-wiki` must get one answer",
+   "kills": "uniqueness enforced on mounts but not on tools, which is the likely asymmetry once mount uniqueness is written first"
+  },
+  {
+   "id": "primary-designated",
+   "fixture": "corpus/primary-designated.md",
+   "env": {},
+   "expect": {
+    "outcome": "accept",
+    "state": "loaded",
+    "mounts": [
+     {
+      "name": "field-notes",
+      "path": "/Users/Shared/projects/field-notes",
+      "vault": "field-notes",
+      "pin": null,
+      "primary": false
+     },
+     {
+      "name": "sessions",
+      "path": "/Users/Shared/projects/field-notes-sessions",
+      "vault": "field-notes-sessions",
+      "pin": null,
+      "primary": true
+     },
+     {
+      "name": "archive",
+      "path": "/Users/Shared/repos/archive",
+      "vault": null,
+      "pin": null,
+      "primary": false
+     }
+    ],
+    "tools": []
+   },
+   "law": "spec §5.1 field 4 — the primary root is DECLARED, never derived: exactly one mount carries `primary: true`, and its position in the file means nothing",
+   "kills": "every derived-primary reader: mounts[0]-wins, first-vault-wins, last-wins. The designated mount is deliberately NOT the first block, so a mounts[0] fallback looks healthy on every other acceptance and fails only here"
+  },
+  {
+   "id": "mount-primary-bad-value",
+   "fixture": "refusals/mount-primary-bad-value.md",
+   "env": {},
+   "expect": {
+    "outcome": "refuse",
+    "state": "B",
+    "reason": "bad-value",
+    "line": 16,
+    "names": [
+     "primary: false",
+     "true"
+    ]
+   },
+   "law": "spec §5.1 field 4 — the only legal value is the literal `true`; a mount that is not primary says so by carrying no `primary:` line",
+   "kills": "admitting `primary: false` as a legal no-op, which mints a second spelling for one fact — and with it a reader that treats ANY present value as designation, so `primary: false` designates"
+  },
+  {
+   "id": "mount-duplicate-primary",
+   "fixture": "refusals/mount-duplicate-primary.md",
+   "env": {},
+   "expect": {
+    "outcome": "refuse",
+    "state": "B",
+    "reason": "duplicate-primary-designation",
+    "line": 23,
+    "names": [
+     "sessions",
+     "field-notes",
+     "16"
+    ]
+   },
+   "law": "spec §5.1 — the designation is a role exactly one mount may hold; two designations is a table-level defect like duplicate-mount-name, refusing the whole table, never a tie the parser breaks",
+   "kills": "first-designation-wins and last-designation-wins readers — both blocks are otherwise legal vaults, so a build that picks either one loads a healthy-looking table anchored to a tree the operator did not choose"
+  }
+ ]
 }

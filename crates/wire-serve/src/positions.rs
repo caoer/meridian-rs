@@ -93,7 +93,7 @@ pub(crate) enum TranslateError {
         path: String,
         detail: String,
     },
-    /// The root is bound but carries no Obsidian vault name — a `git-folder`
+    /// The root is bound but carries no Obsidian vault name — a plain-folder
     /// root. It has no `obsidian://` spelling at all.
     NoVault { address: String, root: String },
     /// The stored grammar refused ([`stored::StoredError`]).
@@ -114,7 +114,7 @@ impl std::fmt::Display for TranslateError {
                 "refused: '{address}' names root '{root}', which this machine does not bind — \
                  there is no vault name to store, so the link would land as bytes no reader can \
                  follow. Not a drift: nothing changed, you just cannot see from here. \
-                 Fix: declare '{root}' in ~/MERIDIAN.md as a mount entry (name / path / kind); \
+                 Fix: declare '{root}' in ~/MERIDIAN.md as a mount entry (name / path); \
                  see [[address-grammar]]."
             ),
             TranslateError::PathUnseeable {
@@ -578,7 +578,7 @@ mod tests {
         let sessions = addr::MountName::parse("sessions").expect("a name");
         let assets = addr::MountName::parse("assets").expect("a name");
         MountSet::new([sessions.clone(), assets.clone()]).with_vault(sessions, "field-notes-sessions")
-        // `assets` is bound WITHOUT a vault name — the git-folder row.
+        // `assets` is bound WITHOUT a vault name — the plain-folder row.
     }
 
     /// § 9.4 — frontmatter and code are not address positions, asserted with

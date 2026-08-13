@@ -16,6 +16,5 @@ The refusal names the offending character and the legal charset.
 ```meridian-mount
 name: home_wiki
 path: /Users/Shared/projects/field-notes
-kind: vault
 vault: field-notes
 ```

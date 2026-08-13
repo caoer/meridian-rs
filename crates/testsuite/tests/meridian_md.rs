@@ -14,14 +14,15 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-/// Fixtures on disk, per the pack README: 8 acceptances + 26 refusals.
-const FIXTURES_ON_DISK: usize = 34;
-/// Cases in the manifest: the 34 fixtures plus 7 that cannot have a file.
-const CASE_COUNT: usize = 41;
+/// Fixtures on disk, per the pack README: 8 acceptances + 23 refusals
+/// (the kind-sweep retired three kind-rule refusal cases, 2026-08-13).
+const FIXTURES_ON_DISK: usize = 31;
+/// Cases in the manifest: the 31 fixtures plus 7 that cannot have a file.
+const CASE_COUNT: usize = 38;
 /// The acceptance / refusal split the pack states.
 const ACCEPTANCES: usize = 12;
-const REFUSALS: usize = 29;
-/// Acceptance fixtures under `corpus/`; the remaining 26 on disk are refusals.
+const REFUSALS: usize = 26;
+/// Acceptance fixtures under `corpus/`; the remaining 23 on disk are refusals.
 const ACCEPTANCE_FIXTURES: usize = 8;
 /// Cases carrying `expect_not` — the ones where the wrong behaviour still looks
 /// healthy, so the refusal alone is not evidence: `env-path-missing` (a silent
@@ -59,7 +60,7 @@ fn case_count_is_pinned() {
     assert_eq!(
         cases.len(),
         CASE_COUNT,
-        "the pack is 37 cases; a case was added or dropped without this gate moving"
+        "the pack is 38 cases; a case was added or dropped without this gate moving"
     );
 
     let accepts = cases
@@ -131,7 +132,7 @@ fn every_fixture_is_paired_and_every_reference_resolves() {
     assert_eq!(
         on_disk.len(),
         FIXTURES_ON_DISK,
-        "the pack ships 30 fixture files"
+        "the pack ships 31 fixture files"
     );
     for path in &on_disk {
         assert!(
@@ -142,7 +143,7 @@ fn every_fixture_is_paired_and_every_reference_resolves() {
     }
 }
 
-/// The replay: all 37 cases, each asserting its REQUIRED OUTCOME — the parsed
+/// The replay: all 38 cases, each asserting its REQUIRED OUTCOME — the parsed
 /// mounts and tools for an acceptance, the reason word, the file line and what
 /// the message must name for a refusal, and `expect_not` where the wrong
 /// behaviour still looks healthy.
@@ -280,11 +281,6 @@ fn check_accept(
                 Value::Object(_) => {
                     assert_eq!(got.name, text(&want["name"]), "{id}: mount {i} name");
                     assert_eq!(got.path, text(&want["path"]), "{id}: mount {i} path");
-                    assert_eq!(
-                        got.kind.as_str(),
-                        text(&want["kind"]),
-                        "{id}: mount {i} kind"
-                    );
                     assert_eq!(
                         got.vault.as_deref(),
                         want["vault"].as_str(),

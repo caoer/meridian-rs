@@ -13,6 +13,5 @@ both lines.
 name: field-notes
 path: /Users/Shared/projects/field-notes
 path: /Users/Shared/repos/field-notes
-kind: vault
 vault: field-notes
 ```

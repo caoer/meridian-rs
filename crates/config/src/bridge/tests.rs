@@ -22,12 +22,9 @@ fn config_of(blocks: &[String]) -> String {
     )
 }
 
-fn mount_block(name: &str, path: &Path, kind: &str, vault: Option<&str>) -> String {
+fn mount_block(name: &str, path: &Path, vault: Option<&str>) -> String {
     use std::fmt::Write as _;
-    let mut block = format!(
-        "```meridian-mount\nname: {name}\npath: {}\nkind: {kind}\n",
-        path.display()
-    );
+    let mut block = format!("```meridian-mount\nname: {name}\npath: {}\n", path.display());
     if let Some(vault) = vault {
         let _ = writeln!(block, "vault: {vault}");
     }
@@ -36,11 +33,11 @@ fn mount_block(name: &str, path: &Path, kind: &str, vault: Option<&str>) -> Stri
 }
 
 fn vault_block(name: &str, path: &Path) -> String {
-    mount_block(name, path, "vault", Some(name))
+    mount_block(name, path, Some(name))
 }
 
 fn folder_block(name: &str, path: &Path) -> String {
-    mount_block(name, path, "git-folder", None)
+    mount_block(name, path, None)
 }
 
 /// Write a root's self-declaration so the mount reaches [`MountState::Bound`] —
@@ -192,12 +189,7 @@ fn the_literal_inversion_is_the_bypass_and_the_mount_law_refuses_it() {
     let t = the_measured_topology();
     let err = refuse(&config_of(&[
         vault_block("field-notes", &t.linked_wiki),
-        mount_block(
-            "wiki-env",
-            Path::new(&t.slashed_wiki),
-            "vault",
-            Some("wiki-env"),
-        ),
+        mount_block("wiki-env", Path::new(&t.slashed_wiki), Some("wiki-env")),
     ]));
     assert_eq!(
         err.reason,

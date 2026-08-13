@@ -16,12 +16,10 @@ and is U7's, not this schema's. Name uniqueness is decidable from the bytes.
 ```meridian-mount
 name: field-notes
 path: /Users/Shared/projects/field-notes
-kind: vault
 vault: field-notes
 ```
 
 ```meridian-mount
 name: field-notes
 path: /Users/Shared/repos/archive
-kind: git-folder
 ```

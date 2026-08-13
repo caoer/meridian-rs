@@ -9,6 +9,5 @@ identify itself must not be half-loaded as one.
 ```meridian-mount
 name: field-notes
 path: /Users/Shared/projects/field-notes
-kind: vault
 vault: field-notes
 ```

@@ -30,14 +30,12 @@ The wiki I write in.
 ```meridian-mount
 name: {vault_name}
 path: {}
-kind: vault
 vault: {vault_name}
 ```
 
 ```meridian-mount
 name: {folder_name}
 path: {}
-kind: git-folder
 ```
 ",
         vault.display(),
@@ -122,18 +120,13 @@ fn the_verb_publishes_the_parsed_mount_table_and_the_config_rev() {
     assert!(text.contains("mounts (2):"), "{text}");
     let roots = home.path().join("roots");
     assert!(
-        text.contains(&format!(
-            "field-notes  vault  {}",
-            roots.join("field-notes").display()
-        )) && text.contains("vault:field-notes  bound"),
+        text.contains(&format!("field-notes  {}", roots.join("field-notes").display()))
+            && text.contains("vault:field-notes  bound"),
         "the vault root, with its Obsidian vault name and its bound state: {text}"
     );
     assert!(
-        text.contains(&format!(
-            "archive  git-folder  {}",
-            roots.join("archive").display()
-        )),
-        "the git-folder root, which carries no vault name: {text}"
+        text.contains(&format!("archive  {}", roots.join("archive").display())),
+        "the plain root, which carries no vault name: {text}"
     );
     assert!(
         mount_row(&text, "archive").ends_with("  vault:(none)  bound"),
@@ -168,10 +161,7 @@ fn the_verb_publishes_the_parsed_mount_table_and_the_config_rev() {
     let after = stdout(&after_out);
     assert_eq!(after_out.status.code(), Some(0));
     assert_ne!(before, rev_line(&after), "the edit moved the reported rev");
-    assert!(
-        after.contains("assets  git-folder"),
-        "and the parsed name: {after}"
-    );
+    assert!(after.contains("assets  "), "and the parsed name: {after}");
 }
 
 fn rev_line(text: &str) -> String {
@@ -291,10 +281,7 @@ fn a_malformed_config_refuses_on_exit_one_and_publishes_nothing() {
     let home = tempfile::tempdir().expect("tempdir");
     std::fs::write(
         home.path().join("MERIDIAN.md"),
-        single(home.path()).replace(
-            "kind: vault\nvault: field-notes",
-            "kind: obsidian\nvault: field-notes",
-        ),
+        single(home.path()).replace("vault: field-notes", "primary: false\nvault: field-notes"),
     )
     .expect("write");
 
@@ -305,7 +292,10 @@ fn a_malformed_config_refuses_on_exit_one_and_publishes_nothing() {
         "a refusal is a finding, not a tool failure"
     );
     let err = stderr(&out);
-    assert!(err.contains("`kind: obsidian` is not a root kind"), "{err}");
+    assert!(
+        err.contains("`primary: false` is not a designation"),
+        "{err}"
+    );
     assert!(err.contains(" line 13:"), "the refusal names WHERE: {err}");
     assert!(
         err.contains("No mount table was loaded; the config is not partially applied."),
@@ -373,14 +363,16 @@ fn the_json_face_carries_the_same_facts() {
     let mounts = value["mounts"].as_array().expect("mounts");
     assert_eq!(mounts.len(), 2);
     assert_eq!(mounts[0]["name"], "field-notes");
-    assert_eq!(mounts[0]["kind"], "vault");
+    assert!(
+        mounts[0].get("kind").is_none(),
+        "kind left the schema (kind-sweep 2026-08-13) and the face with it"
+    );
     assert_eq!(mounts[0]["vault"], "field-notes");
     assert!(mounts[0]["pin"].is_null());
     assert_eq!(mounts[1]["name"], "archive");
-    assert_eq!(mounts[1]["kind"], "git-folder");
     assert!(
         mounts[1]["vault"].is_null(),
-        "a git-folder root has no Obsidian vault leg"
+        "a mount without `vault:` has no Obsidian vault leg"
     );
 }
 

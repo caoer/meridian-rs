@@ -57,6 +57,5 @@ git-folder in an ordinary sentence.
 ```meridian-mount
 name: field-notes
 path: /Users/Shared/projects/field-notes
-kind: vault
 vault: field-notes
 ```
