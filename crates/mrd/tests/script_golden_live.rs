@@ -106,8 +106,8 @@ if card["fm"]["owner"] == "3f9a1c07":
 
 const S3A_ROUND_CLOSE: &str = r#"
 open_cards = [p for p in files
-              if read(p).fm["owner"] == me()
-              and read(p).fm["status"] != "done"]
+              if read(p)["fm"]["owner"] == me()
+              and read(p)["fm"]["status"] != "done"]
 close = read("status/round-7.md", section="Close")
 put("status/round-7.md", section="Close",
     append="- 8ab41c02: " + str(len(open_cards)) + " open at close\n")
@@ -118,16 +118,16 @@ put("status/round-7.md", section="Close",
 /// and it exists so the ENGINE's refusal of an unread target stays pinned.
 const S3A_WITHOUT_ITS_READ: &str = r#"
 open_cards = [p for p in files
-              if read(p).fm["owner"] == me()
-              and read(p).fm["status"] != "done"]
+              if read(p)["fm"]["owner"] == me()
+              and read(p)["fm"]["status"] != "done"]
 put("status/round-7.md", section="Close",
     append="- 8ab41c02: " + str(len(open_cards)) + " open at close\n")
 "#;
 
 const S3B_BROADCAST: &str = r#"
 open_cards = [p for p in files
-              if read(p).fm["owner"] == me()
-              and read(p).fm["status"] != "done"]
+              if read(p)["fm"]["owner"] == me()
+              and read(p)["fm"]["status"] != "done"]
 board = read("BROADCAST.md")
 if len(open_cards) == 0 and board["fm"]["round_7"] == "":
     put("BROADCAST.md", section="Log",
@@ -144,8 +144,8 @@ report = read(card["fm"]["report_path"])
 
 const S5_ECHO: &str = r#"
 card = read("tasks/0011-token-audit.md")
-owners = [read(t).fm["owner"] for t in files]
-if read("tasks/0012-cache-sweep.md").fm["status"] == "todo":
+owners = [read(t)["fm"]["owner"] for t in files]
+if read("tasks/0012-cache-sweep.md")["fm"]["status"] == "todo":
     put("tasks/0011-token-audit.md", props={"status": "doing"})
 "#;
 
@@ -153,8 +153,8 @@ if read("tasks/0012-cache-sweep.md").fm["status"] == "todo":
 /// that is false against this corpus (`0012` is `todo`, never `done`).
 const S5Z_ZERO_ARMED: &str = r#"
 card = read("tasks/0011-token-audit.md")
-owners = [read(t).fm["owner"] for t in files]
-if read("tasks/0012-cache-sweep.md").fm["status"] == "done":
+owners = [read(t)["fm"]["owner"] for t in files]
+if read("tasks/0012-cache-sweep.md")["fm"]["status"] == "done":
     put("tasks/0011-token-audit.md", props={"status": "doing"})
 "#;
 
