@@ -534,9 +534,10 @@ fn golden_target_class_refusals_fire_engine_side() {
         err.message.as_deref(),
         Some(
             "no section addressed by \"^task1\". No edit was applied; the batch is \
-             refused whole. Fix: the section map does not list `^` anchors — find \
-             the id inline in the section's content, or via CLI `--json` in its \
-             `anchors[]`."
+             refused whole. Fix: `^task1` exists in this document, but its host \
+             block is outside the face's anchor plane (`anchors[]` carries \
+             list-item hosts only) — write it through its containing section: the \
+             section's heading path with a `find` needle."
         )
     );
 

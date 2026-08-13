@@ -53,6 +53,13 @@ struct AnchorFacts {
 struct PlanIndex {
     headings: Vec<HeadingFacts>,
     anchors: Vec<AnchorFacts>,
+    /// Every `^id` the DOCUMENT carries, whatever its host — the kernel's
+    /// anchor plane, wider than `anchors` (the face's). The difference is the
+    /// host-excluded set, and a miss splits its teaching on it: an id that
+    /// exists but is host-excluded is taught the containing-section lane, an
+    /// absent id is taught discovery (W-2 acceptance: one message for both
+    /// sent callers in a circle).
+    doc_anchor_ids: Vec<String>,
     fm_keys: Vec<String>,
 }
 
@@ -95,9 +102,12 @@ impl PlanIndex {
                 sec_rev: f.sec_rev,
             });
         }
+        let mut doc_anchor_ids = Vec::new();
+        collect_anchor_ids(&doc.root, &mut doc_anchor_ids);
         PlanIndex {
             headings,
             anchors,
+            doc_anchor_ids,
             fm_keys,
         }
     }
@@ -184,14 +194,30 @@ fn block_ref(addr: &[HpathSeg]) -> Option<&str> {
     Some(syntax::split_fp(id).0)
 }
 
+/// Every anchor id the document carries, whatever the host kind — the walk
+/// behind [`PlanIndex::doc_anchor_ids`].
+fn collect_anchor_ids(node: &model::Node, out: &mut Vec<String>) {
+    if let model::NodeKind::Anchor { name } = &node.kind {
+        out.push(name.clone());
+    }
+    for child in &node.children {
+        collect_anchor_ids(child, out);
+    }
+}
+
 /// Resolve a block id for a write arm: the anchor-plane hit, or the arm's
-/// refusal — the miss keeps the standing `^` teaching (an unlisted id is a
-/// miss whether absent or host-excluded, exactly as on the read door), a
+/// refusal. A miss splits its teaching honestly (W-2 acceptance — one message
+/// for both cases sent callers in a circle): an id the DOCUMENT carries but
+/// the anchor plane excludes (task-, table-, callout-, paragraph-, fence-
+/// hosted) is taught the containing-section lane — the same answer the read
+/// door's unaddressable-host teaching gives; an id the document does not
+/// carry at all keeps the discovery miss (`section_miss`, whose `^` arm now
+/// points at the `anchors[]` plane where listed ids actually live). A
 /// duplicate speaks the anchor-plane ambiguity voice (A.3 door symmetry over
 /// duplicate block ids: count the carriers, teach the anchor remedy, name no
-/// candidates — nothing machine-addressable exists), and an id outside the one
-/// §2.4 charset refuses at the mint-guard exactly as the native decode door
-/// does.
+/// candidates — nothing machine-addressable exists), and an id outside the
+/// one §2.4 charset refuses at the mint-guard exactly as the native decode
+/// door does.
 fn resolve_block<'a>(
     idx: &'a PlanIndex,
     addr: &[HpathSeg],
@@ -203,6 +229,16 @@ fn resolve_block<'a>(
         )));
     }
     idx.anchor(id).map_err(|miss| match miss {
+        Miss::NotFound if idx.doc_anchor_ids.iter().any(|a| a == id) => {
+            bad_request(format!(
+                "no section addressed by {shown}. {clause} Fix: `^{id}` exists in this \
+                 document, but its host block is outside the face's anchor plane \
+                 (`anchors[]` carries list-item hosts only) — write it through its \
+                 containing section: the section's heading path with a `find` needle.",
+                shown = policy::defs::go_quote(&crate::display_hpath(addr)),
+                clause = crate::NO_PARTIAL_WRITE_CLAUSE,
+            ))
+        }
         Miss::NotFound => section_miss(addr, &Miss::NotFound),
         Miss::Ambiguous(n) => {
             let mut e = ErrorBody::new(ErrorCode::AmbiguousRef);
@@ -1082,15 +1118,16 @@ mod tests {
             },
         )
         .expect_err("block replace target refuses");
-        // `toc` carries no `^` anchors, so this miss must not send the reader
-        // to the section listing.
+        // The task-hosted id EXISTS but is outside the anchor plane — the
+        // teaching names the containing-section lane (W-2 acceptance).
         assert_eq!(
             err.message.as_deref(),
             Some(
                 "no section addressed by \"^task1\". No edit was applied; the batch is \
-                 refused whole. Fix: the section map does not list `^` anchors — find \
-                 the id inline in the section's content, or via CLI `--json` in its \
-                 `anchors[]`."
+                 refused whole. Fix: `^task1` exists in this document, but its host \
+                 block is outside the face's anchor plane (`anchors[]` carries \
+                 list-item hosts only) — write it through its containing section: the \
+                 section's heading path with a `find` needle."
             )
         );
     }
