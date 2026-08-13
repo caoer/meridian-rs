@@ -741,7 +741,65 @@ pub enum Op {
         /// splice is issued.
         #[serde(skip_serializing_if = "Option::is_none")]
         expect_armed: Option<String>,
+        /// Effects mode (§ A.7 effects paragraph, script-effects ruling
+        /// 2026-08-13): the effect builtins the program may use. Absent =
+        /// pure script; present switches the execution model to the LIVE
+        /// program. Closed set today: `run`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        effects: Vec<String>,
+        /// The host-minted identity base for live `run()` calls
+        /// (`<invocation>-r<K>`); required exactly when `effects` is
+        /// present (§9 — the engine mints no identity).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        invocation: Option<String>,
     },
+    /// Page-task execution over the wire (§ A.8, v3-only at dispatch): a
+    /// LIST of targets on the bound workspace, run sequentially in list
+    /// order through the run plane's own seam. Each target answers for
+    /// itself in a per-target row; no aggregate boolean exists in the body
+    /// (a run-plane shape, deliberately NOT a [`ResponseBody`] variant —
+    /// the rows embed the plane's own report object verbatim).
+    ///
+    /// `invocation` is the host-minted identity base (§9: the engine mints
+    /// none); per-target ids derive as `<invocation>-t<index>`. There is no
+    /// receipt, capability, timeout, or code field by design — receipts are
+    /// engine-appended under the plane's own convention, authority and
+    /// deadline resolve from the corpus, and the wire carries names, never
+    /// code.
+    Run {
+        /// The targets, 1..=64, run sequentially in list order.
+        targets: Vec<RunTarget>,
+        /// The host-minted, path-safe identity base for this call.
+        invocation: String,
+        /// The caller's identity, threaded into the run receipt's actor
+        /// fact per §9. Absent stays absent (the CLI's self-label rules).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        actor: Option<String>,
+        /// Caller-supplied time fact per §9; the engine reads no clock.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        now: Option<String>,
+    },
+}
+
+/// One § A.8 run target: an addressed task block plus its contract inputs.
+/// Names only — no code rides the wire.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunTarget {
+    /// Workspace-relative page path.
+    pub page: String,
+    /// Task name; absent means the plane's single-task default applies
+    /// (several declared tasks answer the listing refusal row).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
+    /// Positional task args, contract-validated by the plane.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    /// Declared env pairs, contract-validated by the plane.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+    /// The plane's dry leg: effects listed / bash shown, nothing applied.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dry: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------

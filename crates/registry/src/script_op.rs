@@ -89,6 +89,8 @@ pub(crate) fn serve_line(
         if_root,
         dry,
         expect_armed,
+        effects,
+        invocation,
     } = op
     else {
         // decode() maps the "script" tag to Op::Script only; any other arm
@@ -106,6 +108,8 @@ pub(crate) fn serve_line(
         if_root,
         dry: dry.unwrap_or(false),
         expect_armed,
+        effects,
+        invocation,
     };
     match serve(registry, ws, &request) {
         Ok(trace) => {
@@ -146,6 +150,11 @@ struct ScriptArgs {
     if_root: Option<wire::Root>,
     dry: bool,
     expect_armed: Option<String>,
+    /// Effects mode (script-effects ruling): non-empty switches to the LIVE
+    /// program model. The decode wall owns the combination laws.
+    effects: Vec<String>,
+    /// The host-minted run-identity base, present exactly with `effects`.
+    invocation: Option<String>,
 }
 
 /// The attempt: entry pass → pin → eval → thread → gate → commit → trace.
@@ -184,11 +193,20 @@ fn serve(
         return Ok(ScriptTrace::guard_refused(entry, pinned.0.clone()));
     }
 
+    // Effects mode: the LIVE program model (script-effects ruling, § A.7
+    // effects paragraph). Forked here — after the entry fingerprint is known
+    // (it rides the trace as the world-at-start fact) and before the pure
+    // lane's pinned-world machinery, none of which this model uses.
+    if !request.effects.is_empty() {
+        return Ok(live_serve(registry, ws, request, &entry));
+    }
+
     let deadline = Instant::now() + effects::DEFAULT_WALL_CLOCK;
     let ctx = ScriptCtx {
         id: "script".to_owned(),
         args: request.args.clone(),
         files: request.files.clone(),
+        effects: Vec::new(),
     };
     let ws_root = fs::WorkspaceRoot(ws.to_path_buf());
     let mut eval = {
@@ -251,6 +269,250 @@ fn serve(
         commit(registry, ws, request, &eval, &entry)
     };
     Ok(ScriptTrace::assemble(entry, &eval, leg))
+}
+
+/// Effects mode: the LIVE program (script-effects ruling, 2026-08-13;
+/// `docs/run-plane.md` § Effects mode). `read()` serves the live disk NOW;
+/// `put()` applies NOW through the wire splice door with the guard's own
+/// `force` bypass — no rev, no snapshot, no CAS; `run()` executes at call
+/// time through the § A.8 seam and its row is the program's value. No commit
+/// leg, no armed set, no rollback; the trace records the acts in call order
+/// and the outcome word is `effects`.
+fn live_serve(
+    registry: &Registry,
+    ws: &Path,
+    request: &ScriptArgs,
+    entry: &str,
+) -> ScriptTrace {
+    let deadline = Instant::now() + effects::DEFAULT_WALL_CLOCK;
+    let ctx = ScriptCtx {
+        id: "script".to_owned(),
+        args: request.args.clone(),
+        files: request.files.clone(),
+        effects: request.effects.clone(),
+    };
+    let (eval, acts) = {
+        let mut host = LiveHost {
+            registry,
+            ws: fs::WorkspaceRoot(ws.to_path_buf()),
+            ws_path: ws.to_path_buf(),
+            root: wire::Root(entry.to_owned()),
+            deadline,
+            actor: request.actor.clone().unwrap_or_default(),
+            now: request.now.clone(),
+            // Decode wall: effects ⇒ invocation present.
+            invocation: request.invocation.clone().unwrap_or_default(),
+            run_seq: std::cell::Cell::new(0),
+            reads_seen: std::cell::Cell::new(0),
+            acts: std::cell::RefCell::new(Vec::new()),
+        };
+        let eval = effects::eval_script(&request.source, &ctx, ScriptLimits::default(), &mut host);
+        let acts = host.acts.into_inner();
+        (eval, acts)
+    };
+    // The base trace: reads in call order (the recording's), outcome by the
+    // pure assembler — then this model's own words: interleave the live acts
+    // at their recorded positions and rename a clean exit `effects`.
+    let outcome_ok = eval.outcome.is_ok();
+    let mut trace = ScriptTrace::assemble(entry.to_owned(), &eval, CommitLeg::NotIssued);
+    let mut inserted = 0usize;
+    for (after_reads, act) in acts {
+        let mut index = 0usize;
+        let mut reads_passed = 0usize;
+        for (i, e) in trace.trace.iter().enumerate() {
+            index = i + 1;
+            if matches!(
+                e,
+                effects::trace::TraceEntry::Read(_) | effects::trace::TraceEntry::Echo(_)
+            ) {
+                reads_passed += 1;
+            }
+            if reads_passed >= after_reads {
+                break;
+            }
+        }
+        if after_reads == 0 {
+            index = 0;
+        }
+        let at = (index + inserted).min(trace.trace.len());
+        trace.trace.insert(at, act);
+        inserted += 1;
+    }
+    if outcome_ok {
+        trace.outcome = effects::trace::ScriptOutcome::Effects;
+    }
+    trace
+}
+
+/// The effects-mode host: live disk reads, immediate splices, call-time runs.
+/// Every act is journaled with the read count at act time, so the trace can
+/// interleave acts and reads in true call order.
+struct LiveHost<'a> {
+    registry: &'a Registry,
+    ws: fs::WorkspaceRoot,
+    ws_path: std::path::PathBuf,
+    root: wire::Root,
+    deadline: Instant,
+    actor: String,
+    now: Option<String>,
+    invocation: String,
+    run_seq: std::cell::Cell<u32>,
+    reads_seen: std::cell::Cell<usize>,
+    acts: std::cell::RefCell<Vec<(usize, effects::trace::TraceEntry)>>,
+}
+
+impl LiveHost<'_> {
+    fn within_deadline(&self, what: &str) -> Result<(), effects::EffectFault> {
+        if Instant::now() > self.deadline {
+            return Err(effects::EffectFault {
+                reason: format!(
+                    "the script entry's wall clock elapsed before {what} — budgets bind \
+                     unchanged in effects mode"
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    fn load_live(&self, path: &str) -> Result<model::Document, String> {
+        wire_serve::load_doc(&self.ws, &wire::Path(path.to_owned())).map_err(|e| error_text(&e))
+    }
+}
+
+impl effects::ScriptHost for LiveHost<'_> {
+    fn toc(&mut self, path: &str, _armed: &[ArmedEdit]) -> Result<TocFacts, ReadFault> {
+        let fault = |reason: String| ReadFault {
+            path: path.to_owned(),
+            section: None,
+            reason,
+        };
+        if Instant::now() > self.deadline {
+            return Err(fault("the script entry's wall clock elapsed".to_owned()));
+        }
+        let doc = self.load_live(path).map_err(&fault)?;
+        self.reads_seen.set(self.reads_seen.get() + 1);
+        Ok(toc_facts_of(&doc, path, &self.root))
+    }
+
+    fn cat(
+        &mut self,
+        path: &str,
+        section: &str,
+        _armed: &[ArmedEdit],
+    ) -> Result<SecFacts, ReadFault> {
+        let fault = |reason: String| ReadFault {
+            path: path.to_owned(),
+            section: Some(section.to_owned()),
+            reason,
+        };
+        if Instant::now() > self.deadline {
+            return Err(fault("the script entry's wall clock elapsed".to_owned()));
+        }
+        let doc = self.load_live(path).map_err(&fault)?;
+        let sec = wire_serve::read::selector_to_secref(&doc, &ReadSel::parse(section))
+            .map_err(&fault)?;
+        let facts = match wire_serve::read::cat(&doc, Some(sec)) {
+            Ok(ResponseBody::Cat {
+                content, node_rev, ..
+            }) => SecFacts {
+                text: content,
+                rev: node_rev.0,
+            },
+            Ok(_) => unreachable!("wire_serve::read::cat answers a Cat body"),
+            Err(error) => return Err(fault(error_text(&error))),
+        };
+        self.reads_seen.set(self.reads_seen.get() + 1);
+        Ok(facts)
+    }
+
+    fn actor(&self) -> &str {
+        &self.actor
+    }
+
+    fn put_live(
+        &mut self,
+        path: &str,
+        items: Vec<PlanEdit>,
+        line: u32,
+    ) -> Result<(), effects::EffectFault> {
+        self.within_deadline("a live put")?;
+        let refuse = |reason: String| effects::EffectFault { reason };
+        let args = wire_serve::write::SpliceArgs {
+            id: None,
+            path: wire::Path(path.to_owned()),
+            origin: wire_serve::guard::Origin::Wire,
+            actor: (!self.actor.is_empty()).then(|| self.actor.clone()),
+            now: self.now.clone(),
+            receipt: None,
+            // The ruled model: no rev, no snapshot, no CAS — the guard's own
+            // `force` bypass, under the same write flock as every splice.
+            if_root: None,
+            dry: false,
+            force: true,
+            edits: Vec::new(),
+            plan_edits: items.clone(),
+            pin: None,
+        };
+        let mints = self.registry.read_mints(&self.ws_path);
+        let ring = self.registry.ring(&self.ws_path);
+        let outcome =
+            wire_serve::write::splice(&self.ws, Some(&*ring), &args, &[], Some(&mints))
+                .map_err(|e| refuse(format!("put: {}", error_text(&e))))?;
+        let fingerprint_after = outcome.committed.as_ref().map(|frame| {
+            let after = frame.delta.root_after.0.clone();
+            ring.advance(frame.clone());
+            after
+        });
+        self.acts.borrow_mut().push((
+            self.reads_seen.get(),
+            effects::trace::TraceEntry::Wrote(effects::trace::WroteEntry {
+                path: path.to_owned(),
+                line,
+                edits: items.len(),
+                fingerprint_after,
+            }),
+        ));
+        Ok(())
+    }
+
+    fn run_live(
+        &mut self,
+        page: &str,
+        task: Option<&str>,
+        args: Vec<String>,
+        env: std::collections::BTreeMap<String, String>,
+        dry: bool,
+        line: u32,
+    ) -> Result<serde_json::Value, effects::EffectFault> {
+        self.within_deadline("a live run")?;
+        let seq = self.run_seq.get();
+        self.run_seq.set(seq + 1);
+        let invocation = format!("{}-r{seq}", self.invocation);
+        let target = wire::RunTarget {
+            page: page.to_owned(),
+            task: task.map(str::to_owned),
+            args,
+            env,
+            dry: Some(dry),
+        };
+        let row = crate::run_op::row_for_target(
+            &self.ws,
+            &self.ws_path,
+            &target,
+            &invocation,
+            (!self.actor.is_empty()).then_some(self.actor.as_str()),
+            self.now.as_deref(),
+        );
+        self.acts.borrow_mut().push((
+            self.reads_seen.get(),
+            effects::trace::TraceEntry::Ran(effects::trace::RanEntry {
+                page: page.to_owned(),
+                line,
+                row: row.clone(),
+            }),
+        ));
+        Ok(row)
+    }
 }
 
 /// The one guarded splice, issued daemon-side through the same choke-point
@@ -690,20 +952,12 @@ impl ScriptHost for EntryWorldHost {
             section: Some(section.to_owned()),
             reason,
         };
-        // The one human-string→selector door, the CLI lane's own words for the
-        // dewey arm.
-        let sec = match ReadSel::parse(section) {
-            ReadSel::Hpath { hpath } => wire::SecRef::Hpath { hpath },
-            ReadSel::Anchor { anchor } => wire::SecRef::Anchor { anchor },
-            ReadSel::Dewey { .. } => {
-                return Err(fault(
-                    "a dewey ordinal addresses a row of a table you are holding, not a \
-                     document — pass the heading path or a ^anchor"
-                        .to_owned(),
-                ));
-            }
-        };
+        // The one human-string→selector door, then the shared resolver — the
+        // dewey lane is served here since the read-alignment ruling
+        // (2026-08-13): one `selector_matches` resolution, every door.
         let doc = self.doc_for(path, Some(section), armed)?;
+        let sec = wire_serve::read::selector_to_secref(&doc, &ReadSel::parse(section))
+            .map_err(|reason| fault(reason))?;
         match wire_serve::read::cat(&doc, Some(sec)) {
             Ok(ResponseBody::Cat {
                 content, node_rev, ..

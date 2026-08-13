@@ -293,6 +293,7 @@ mod scenario {
                     anchor: "r-000001".to_owned(),
                 }),
                 takeover: false,
+                actor: None,
                 exec: None,
                 depth: 0,
             },

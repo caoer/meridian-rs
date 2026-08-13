@@ -24,6 +24,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use wire::PlanEdit;
+
 use serde::{Deserialize, Serialize};
 
 pub mod digest;
@@ -770,6 +772,13 @@ pub struct ScriptCtx {
     pub args: BTreeMap<String, String>,
     /// Host-enumerated paths, injected as the inert `files` binding.
     pub files: Vec<String>,
+    /// Effects mode (script-effects ruling, 2026-08-13): the effect builtins
+    /// the program may use. Empty = the pure model, today's law word for
+    /// word. Non-empty = the LIVE program model — `put()` dispatches to the
+    /// host and applies NOW; the named builtins (closed set: `run`) join the
+    /// globals. The kernel validates nothing here beyond membership — the
+    /// decode wall upstream owns the combination laws.
+    pub effects: Vec<String>,
 }
 
 /// Script-plane budgets: [`EvalLimits`] verbatim plus the read ceiling — the
@@ -838,6 +847,55 @@ pub trait ScriptHost: Send {
 
     /// The caller's own identity, returned by the `me()` builtin.
     fn actor(&self) -> &str;
+
+    /// Effects mode only: apply one `put()` NOW — no rev, no snapshot, no CAS
+    /// (script-effects ruling; the write flock and structural validation are
+    /// the host's own). The default refuses: a lane that has not built the
+    /// live model cannot half-serve it.
+    ///
+    /// # Errors
+    /// [`EffectFault`] — the host's typed reason; the script aborts.
+    fn put_live(
+        &mut self,
+        path: &str,
+        items: Vec<PlanEdit>,
+        line: u32,
+    ) -> Result<(), EffectFault> {
+        let _ = (path, items, line);
+        Err(EffectFault {
+            reason: "live effects are not supported on this lane".to_owned(),
+        })
+    }
+
+    /// Effects mode only: execute one `run()` NOW through the run plane and
+    /// answer its § A.8 row as a JSON value — observable results,
+    /// run-then-decide. Plane refusals RETURN as rows (branchable); only a
+    /// host that cannot run at all errors here. The default refuses.
+    ///
+    /// # Errors
+    /// [`EffectFault`] — the host's typed reason; the script aborts.
+    fn run_live(
+        &mut self,
+        page: &str,
+        task: Option<&str>,
+        args: Vec<String>,
+        env: BTreeMap<String, String>,
+        dry: bool,
+        line: u32,
+    ) -> Result<serde_json::Value, EffectFault> {
+        let _ = (page, task, args, env, dry, line);
+        Err(EffectFault {
+            reason: "live effects are not supported on this lane".to_owned(),
+        })
+    }
+}
+
+/// A live-effect refusal from the host — the effects-mode sibling of
+/// [`ReadFault`]. Aborts the script as a runtime fault naming the reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectFault {
+    /// The host's own words.
+    pub reason: String,
 }
 
 /// The script entry's default wall clock — §5.3-class host policy with ONE
@@ -1038,6 +1096,28 @@ pub fn replay_script(
     limits: ScriptLimits,
     recording: &ScriptRecording,
 ) -> ScriptEval {
+    // A live program is not a pure function of recorded inputs — its writes
+    // and runs happened in the world. Refusing here keeps the replay law's
+    // word exact instead of forging a world that was live (§ Effects mode).
+    if !ctx.effects.is_empty() {
+        return ScriptEval {
+            outcome: Err(EvalError::Runtime {
+                rule_id: ctx.id.clone(),
+                reason: "replay refuses an effects-mode context — a live program \
+                         is not a pure function of its recording"
+                    .to_owned(),
+                line: None,
+            }),
+            armed: Vec::new(),
+            recording: recording.clone(),
+            telemetry: ScriptTelemetry {
+                fuel_used: 0,
+                mem_used: 0,
+                reads_used: 0,
+                wall_ms: 0,
+            },
+        };
+    }
     let mut host = RecordedHost::new(recording);
     kernel::run_script(script, ctx, limits, &mut host)
 }

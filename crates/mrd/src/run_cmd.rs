@@ -52,9 +52,9 @@ const DRY_INVOCATION: &str = "dry";
 /// stop on an empty ruleset is that short-circuit.
 const S1_RULES: &[effects::Rule] = &[];
 
-/// The workspace-relative receipt file `mrd run` appends to. Address policy is the caller's; the
-/// executor scans every `.md` beside it for foreign-edit anchors.
-const RECEIPT_FILE: &str = "receipts/run.md";
+/// The workspace-relative receipt file `mrd run` appends to — the plane's own
+/// [`run::executor::RECEIPT_FILE`] (one convention, both doors — § A.8).
+const RECEIPT_FILE: &str = run::executor::RECEIPT_FILE;
 
 /// A run-plane refusal (exit 1) — distinct from [`Fail::tool`]'s exit 2.
 fn fail_run(message: String) -> Fail {
@@ -283,6 +283,11 @@ fn execute(
         timeout,
         declaring_root,
         limits: EvalLimits::default(),
+        // The CLI is its own host: the receipt keeps the plane's `run:<task>`
+        // self-label, and U16 stands as written — the step runs where `mrd`
+        // runs (§ A.8 amends the WIRE arm only).
+        actor: None,
+        step_cwd: None,
     };
 
     // Bash stdout streams live to our stdout while the record tees it out-of-tree; starlark
@@ -534,6 +539,7 @@ fn dry_starlark(
         receipt: None,
         takeover: false,
         limits: EvalLimits::default(),
+        actor: None,
     };
     let effects =
         run::dispatch_starlark::evaluate(&dispatch).map_err(|e| fail_run(format!("eval: {e}")))?;

@@ -41,6 +41,12 @@ pub enum ScriptOutcome {
     Fault,
     /// An arm-time law refused the script. Nothing was applied.
     Refused,
+    /// A LIVE program (effects mode, script-effects ruling 2026-08-13) ran to
+    /// completion. Its acts already landed as they happened — the trace's
+    /// `wrote`/`ran` entries are the record; there is no commit leg and no
+    /// rollback. The vocabulary's one addition; the pure five keep their
+    /// meanings.
+    Effects,
 }
 
 /// The fault taxonomy, CLOSED at four words (r4/F7). Never a §8 wire code — a
@@ -145,6 +151,38 @@ pub enum TraceEntry {
     Echo(ReadEntry),
     /// An armed edit. Renders unsuppressably — the honesty law.
     Armed(ArmedEntry),
+    /// Effects mode: a live `put()` that ALREADY applied (no rev, no CAS —
+    /// the ruling's model). Renders unsuppressably — same honesty law.
+    Wrote(WroteEntry),
+    /// Effects mode: a live `run()` that ALREADY executed; the § A.8 row is
+    /// the record and was the program's own return value.
+    Ran(RanEntry),
+}
+
+/// One live `put()`'s record: where, how many edits, and the world the splice
+/// answered (informational — nothing guards on it).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WroteEntry {
+    /// The content path written.
+    pub path: String,
+    /// 1-based source line of the `put()` call.
+    pub line: u32,
+    /// How many plan edits the call carried.
+    pub edits: usize,
+    /// The splice's own after-fingerprint, when the door answered one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint_after: Option<String>,
+}
+
+/// One live `run()`'s record: the § A.8 per-target row, verbatim.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RanEntry {
+    /// The page the task lives on.
+    pub page: String,
+    /// 1-based source line of the `run()` call.
+    pub line: u32,
+    /// The § A.8 row — report or refusal — exactly as returned in-program.
+    pub row: serde_json::Value,
 }
 
 /// The commit leg the consumer plane hands the assembler: the daemon's own
@@ -463,11 +501,15 @@ impl ScriptTrace {
         }
     }
 
-    /// The armed entries, in arm order — the face's armed block.
+    /// The armed entries, in arm order — the face's armed block. Live-mode
+    /// `wrote`/`ran` entries are acts, not arms — never here.
     pub fn armed_entries(&self) -> impl Iterator<Item = &ArmedEntry> {
         self.trace.iter().filter_map(|entry| match entry {
             TraceEntry::Armed(armed) => Some(armed),
-            TraceEntry::Read(_) | TraceEntry::Echo(_) => None,
+            TraceEntry::Read(_)
+            | TraceEntry::Echo(_)
+            | TraceEntry::Wrote(_)
+            | TraceEntry::Ran(_) => None,
         })
     }
 }

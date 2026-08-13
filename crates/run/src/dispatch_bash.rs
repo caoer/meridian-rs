@@ -93,6 +93,11 @@ pub struct BashDispatch<'a> {
     pub scratch: &'a Path,
     /// The wall-clock ceiling (#21; resolve via [`exec::configured_timeout`]).
     pub timeout: Duration,
+    /// Caller-supplied identity (§9, § A.8): threads into the receipt actor.
+    pub actor: Option<&'a str>,
+    /// The step's working directory (§ A.8's U16 amendment): `None` is the
+    /// CLI's invocation cwd; the wire arm passes the bound workspace root.
+    pub step_cwd: Option<&'a Path>,
 }
 
 /// What one bash dispatch produced. The exec facts are ALWAYS present —
@@ -266,6 +271,7 @@ pub fn run(
                         receipt: Some(addr.clone()),
                         takeover: false,
                         exec: None, // pre-exec: no child has run yet
+                        actor: d.actor,
                         depth: 0,
                     },
                 )
@@ -294,6 +300,7 @@ pub fn run(
         scratch: d.scratch,
         project_root: &root.0,
         timeout: d.timeout,
+        step_cwd: d.step_cwd,
     };
     let (result, stdout) = exec::exec_streaming(&spec, move |mut out| {
         let mut streamed = record::stream(&mut out, &mut log, live);
@@ -422,6 +429,7 @@ fn completion_receipt(
             receipt: d.receipt.clone(),
             takeover: d.takeover,
             exec,
+            actor: d.actor,
             depth: 0,
         },
     ) {
@@ -459,6 +467,7 @@ fn apply_phase2(
             receipt: d.receipt.clone(),
             takeover: d.takeover,
             exec,
+            actor: d.actor,
             depth: 0,
         },
     ) {

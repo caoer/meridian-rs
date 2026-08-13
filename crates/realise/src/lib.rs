@@ -494,6 +494,8 @@ fn run_apply(
         timeout: spec.timeout,
         declaring_root: spec.declaring_root.as_deref(),
         limits: spec.limits,
+        actor: None,
+        step_cwd: None,
     };
     let mut sink = io::sink();
     let report = runner::run(root, &run_spec, &[], &mut sink).map_err(|e| RealiseError::Apply {
