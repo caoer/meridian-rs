@@ -77,12 +77,24 @@ pub const SECTION_FORMS: &str = "the row's raw heading segments as an hpath arra
 #[must_use]
 pub fn section_recovery(selector: &str, display_path: Option<&str>) -> String {
     match (selector.starts_with('^'), display_path) {
+        // The anchor arm answers an id the anchor plane does not carry. It
+        // must send the caller somewhere the id IS listed — the toc's
+        // `anchors[]` plane — never claim anchors are unlisted (W-2
+        // acceptance: the pre-fix wording "the section map does not list `^`
+        // anchors" read as a dead end while the map's anchors plane listed
+        // them; a toc-listed id resolves and never reaches this message).
         (true, Some(p)) => format!(
-            "Fix: the section map does not list `^` anchors — find the id inline in the \
-             section's content, or via CLI `mrd read {p} --json` in its `anchors[]`."
+            "Fix: block anchors ride the toc's `anchors[]` plane — list this document's \
+             with a toc read of {p} (MCP read: sections[] omitted; CLI: `mrd read {p} \
+             --json`) and write through a listed `^id`. An id hosted outside that plane \
+             (a task, table, callout or paragraph line) is written through its containing \
+             section instead: the section's heading path with a `find` needle."
         ),
-        (true, None) => "Fix: the section map does not list `^` anchors — find the id \
-             inline in the section's content, or via CLI `--json` in its `anchors[]`."
+        (true, None) => "Fix: block anchors ride the toc's `anchors[]` plane — list this \
+             document's with a toc read (MCP read: sections[] omitted; CLI: `--json`) and \
+             write through a listed `^id`. An id hosted outside that plane (a task, \
+             table, callout or paragraph line) is written through its containing section \
+             instead: the section's heading path with a `find` needle."
             .to_owned(),
         (false, Some(p)) => format!(
             "Fix: list this document's section paths with a toc read of {p} (MCP read: \

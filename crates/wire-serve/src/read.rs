@@ -331,15 +331,18 @@ fn read_row(f: &wire_map::facts::ReadFact) -> wire::ReadRow {
     }
 }
 
-/// One anchor fact → one wire `anchors[]` entry: the block id and the
-/// block-leaf span, which is everything the host's containment join consumes.
-/// `None` is unreachable (`read_facts` mints an anchor fact only from an
-/// anchor-bearing `list_item`) and is dropped rather than serialized as an
-/// empty id.
+/// One anchor fact → one wire `anchors[]` entry: the block id, the block-leaf
+/// span the host's containment join consumes, and the leaf's CAS token — the
+/// §4.2 "anchors with their revs" half of the complete write kit (W-2: a host
+/// autofills a rev-less block write from this, the same way it does from a
+/// heading row's `sec_rev`). `None` is unreachable (`read_facts` mints an
+/// anchor fact only from an anchor-bearing `list_item`) and is dropped rather
+/// than serialized as an empty id.
 fn read_anchor(f: &wire_map::facts::ReadFact) -> Option<wire::ReadAnchor> {
     f.anchor.as_ref().map(|id| wire::ReadAnchor {
         anchor: id.clone(),
         span: f.span,
+        rev: NodeRev(f.sec_rev.clone()),
     })
 }
 
