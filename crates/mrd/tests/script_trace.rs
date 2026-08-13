@@ -340,6 +340,65 @@ fn echo_and_quiet_reads_carry_distinct_kinds_and_armed_follows_in_arm_order() {
     );
 }
 
+/// The result-echo ruling (2026-08-13, F-S1+F-S3): a successful evaluation's
+/// top-level bindings ride the trace as `bindings` — name → Starlark repr —
+/// so the face can render the values the run computed. The kernel captured
+/// them all along (`ScriptFacts::bindings`); the assembler used to drop them,
+/// which is what made learning a value cost a committed write.
+#[test]
+fn a_successful_evals_bindings_ride_the_trace_and_round_trip() {
+    let eval = ok_eval(Vec::new(), vec![toc_read(1, ReadPosition::Echo)]);
+    let trace = ScriptTrace::assemble("b3:a90f13c7", &eval, CommitLeg::NotIssued);
+
+    let json = serde_json::to_value(&trace).expect("the trace serializes");
+    assert_eq!(
+        json["bindings"]["card"], "<toc>",
+        "the bindings the eval produced ride the trace: {json}"
+    );
+
+    let text = serde_json::to_string(&trace).expect("the trace serializes");
+    let back: ScriptTrace = serde_json::from_str(&text).expect("the trace round-trips");
+    let again = serde_json::to_string(&back).expect("the trace re-serializes");
+    assert_eq!(text, again, "bindings survive the round-trip byte-stable");
+}
+
+/// Absence stays absence: a run with nothing to carry emits no `bindings`
+/// member at all — never `{}`. Three shapes owe that silence: a script that
+/// bound nothing, a FAILED evaluation (its namespace is not a result), and
+/// the guard refusal (zero evaluation).
+#[test]
+fn empty_or_failed_bindings_are_absent_never_an_empty_object() {
+    let mut nothing_bound = ok_eval(Vec::new(), Vec::new());
+    nothing_bound.outcome = Ok(ScriptFacts {
+        bindings: BTreeMap::new(),
+    });
+    let trace = ScriptTrace::assemble("b3:a90f13c7", &nothing_bound, CommitLeg::NotIssued);
+    let json = serde_json::to_string(&trace).expect("the trace serializes");
+    assert!(
+        !json.contains("\"bindings\""),
+        "nothing bound is absence: {json}"
+    );
+
+    let failed = failed_eval(
+        EvalError::Budget { fuel: 1, mem: 1 },
+        Vec::new(),
+        Vec::new(),
+    );
+    let trace = ScriptTrace::assemble("b3:a90f13c7", &failed, CommitLeg::NotIssued);
+    let json = serde_json::to_string(&trace).expect("the trace serializes");
+    assert!(
+        !json.contains("\"bindings\""),
+        "a failed eval's namespace is not a result: {json}"
+    );
+
+    let refused = ScriptTrace::guard_refused("b3:a90f13c7", "b3:51e7c0d2");
+    let json = serde_json::to_string(&refused).expect("the trace serializes");
+    assert!(
+        !json.contains("\"bindings\""),
+        "the guard refusal evaluated nothing: {json}"
+    );
+}
+
 /// The serialized toc face carries `words` under exactly that key: the face
 /// renderer lives in another repo and decodes this JSON, so the key IS the
 /// cross-repo seam. A renamed or dropped key renders `words:0` on a live face
