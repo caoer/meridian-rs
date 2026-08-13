@@ -1614,7 +1614,7 @@ mod props_scalar_tests {
     //! The read half of the frontmatter scalar law was gated end-to-end at the
     //! script plane (`mrd/tests/a6_read_seam.rs`) because that is where the
     //! dogfood-season-1 incident was observed — a script comparing
-    //! `card.fm["owner"]` against an id saw the stored quote bytes and silently
+    //! `card["fm"]["owner"]` against an id saw the stored quote bytes and silently
     //! matched nothing. It was never gated HERE, at [`read_props`], which is
     //! where the decode actually happens: `model::scalar` had unit tests for the
     //! codec, and nothing asserted the composed read applies it.
