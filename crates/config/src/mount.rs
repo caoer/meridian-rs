@@ -39,8 +39,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::{
-    CONFIG_FILENAME, Config, MountEntry, NO_PARTIAL_LOAD_CLAUSE, Resolution, VERSION,
-    check_name, find_frontmatter, frontmatter_inner, key_line, scalar_text,
+    CONFIG_FILENAME, Config, MountEntry, NO_PARTIAL_LOAD_CLAUSE, Resolution, VERSION, check_name,
+    find_frontmatter, frontmatter_inner, key_line, scalar_text,
 };
 
 /// The reserved filename of a root's own self-declaration, at the root's top

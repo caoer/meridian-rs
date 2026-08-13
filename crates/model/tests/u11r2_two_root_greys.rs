@@ -118,8 +118,7 @@ fn the_two_root_greys_never_share_a_reason_word() {
 fn a_declared_and_readable_root_still_resolves_into_its_own_corpus() {
     let ambient = corpus_with(&["notes.md"]);
     let sessions = corpus_with(&["notes.md", "deep/plan.md"]);
-    let corpus =
-        RootedCorpus::ambient(&ambient).with_root(name("sessions"), &sessions);
+    let corpus = RootedCorpus::ambient(&ambient).with_root(name("sessions"), &sessions);
     let mounts = MountSet::new([name("sessions")]);
 
     let got = CorpusIndex::new().resolve_ref("sessions:deep/plan.md", "claim.md", &corpus, &mounts);

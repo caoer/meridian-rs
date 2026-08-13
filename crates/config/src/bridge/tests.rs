@@ -24,7 +24,10 @@ fn config_of(blocks: &[String]) -> String {
 
 fn mount_block(name: &str, path: &Path, vault: Option<&str>) -> String {
     use std::fmt::Write as _;
-    let mut block = format!("```meridian-mount\nname: {name}\npath: {}\n", path.display());
+    let mut block = format!(
+        "```meridian-mount\nname: {name}\npath: {}\n",
+        path.display()
+    );
     if let Some(vault) = vault {
         let _ = writeln!(block, "vault: {vault}");
     }
