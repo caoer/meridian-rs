@@ -74,7 +74,7 @@ fn seg(h: &str) -> HpathSeg {
 }
 
 /// The anchor's CAS token, exactly as a sections read of `^id` serves it: the
-/// node_rev over the block-leaf span.
+/// `node_rev` over the block-leaf span.
 fn anchor_rev(raw: &str, id: &str) -> String {
     let doc = model::build(raw.to_string(), syntax::parse(raw));
     model::resolve(&doc, &model::Ref::anchor(id.to_owned()).expect("id"))
@@ -197,7 +197,7 @@ fn plan_match_all_at_anchor_rmws_the_block() {
     );
 }
 
-/// replace_section at a block: the payload is the CONTENT, the marker is the
+/// `replace_section` at a block: the payload is the CONTENT, the marker is the
 /// ADDRESS — preserved by construction, exactly as the section arm preserves
 /// the heading.
 #[test]
@@ -360,7 +360,10 @@ fn plan_match_at_missing_anchor_keeps_the_miss_teaching() {
         None,
     )
     .expect_err("an absent id refuses");
-    assert_eq!(err.message.as_deref(), Some(absent_message("missing").as_str()));
+    assert_eq!(
+        err.message.as_deref(),
+        Some(absent_message("missing").as_str())
+    );
 }
 
 /// A task-hosted id is outside the face's anchor law on BOTH doors: the read
@@ -388,7 +391,10 @@ fn plan_match_at_task_hosted_anchor_stays_outside_the_face_law() {
         None,
     )
     .expect_err("a host outside the anchor law does not resolve on the write door");
-    assert_eq!(err.message.as_deref(), Some(excluded_message("tsk-1").as_str()));
+    assert_eq!(
+        err.message.as_deref(),
+        Some(excluded_message("tsk-1").as_str())
+    );
     assert_eq!(read_back(&dir, "card.md"), seed);
 }
 
@@ -600,8 +606,15 @@ fn fixture_b_fence_hosted_check_anchor_has_the_section_find_lane() {
         None,
     )
     .expect_err("Fixture B: a host-excluded anchor does not resolve on the write door");
-    assert_eq!(err.message.as_deref(), Some(excluded_message("check").as_str()));
-    assert_eq!(read_back(&dir, "runtime.md"), RUNTIME, "refusal moved no bytes");
+    assert_eq!(
+        err.message.as_deref(),
+        Some(excluded_message("check").as_str())
+    );
+    assert_eq!(
+        read_back(&dir, "runtime.md"),
+        RUNTIME,
+        "refusal moved no bytes"
+    );
 
     // Half 2 — the stable lane: containing section + content find. The pin
     // edit lands inside the fence; the fence, its other lines, and the

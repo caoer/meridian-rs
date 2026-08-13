@@ -207,10 +207,7 @@ fn one_of_each_reason() -> Vec<(Reason, ConfigError)> {
             Reason::UnsupportedVersion,
             refuse("---\ntype: meridian-config\nversion: 2\n---\n\n# from the future\n"),
         ),
-        (
-            Reason::MissingRequiredField,
-            refuse(&mount("path: /x\n")),
-        ),
+        (Reason::MissingRequiredField, refuse(&mount("path: /x\n"))),
         (Reason::UnknownField, refuse(&mount("name: a\npaths: /x\n"))),
         (
             Reason::DuplicateField,
@@ -230,9 +227,7 @@ fn one_of_each_reason() -> Vec<(Reason, ConfigError)> {
         ),
         (
             Reason::UnterminatedBlock,
-            refuse(&fm(
-                "```meridian-mount\nname: a\npath: /x\n",
-            )),
+            refuse(&fm("```meridian-mount\nname: a\npath: /x\n")),
         ),
         (
             Reason::DuplicateMountName,
