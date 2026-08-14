@@ -59,6 +59,7 @@ use duckdb::types::Value;
 use model::Document;
 use serde_json::Value as Json;
 
+use crate::sqltext;
 use crate::{ExclusionProbe, Rows, ViewError, collect_doc, corpus_index, fill_exclusions};
 
 /// The cache file's own payload schema version, recorded in every pin row.
@@ -309,29 +310,40 @@ pub fn run_query(conn: &Connection, query: &str) -> Result<(Vec<ColMeta>, Vec<Ve
     let mut rows = stmt.query([]).map_err(|e| teach(&e.to_string()))?;
 
     // Column metadata is available once the query has executed (`query` binds +
-    // executes); collect owned copies before stepping the rows.
-    let columns: Vec<ColMeta> = {
+    // executes); collect owned copies before stepping the rows. The tz flags
+    // ride beside the names: `ValueRef` drops the arrow timestamp's timezone,
+    // and a tz-aware column renders with the `+00` marker (§ S1).
+    let (columns, tz_cols): (Vec<ColMeta>, Vec<bool>) = {
         let stmt_ref = rows
             .as_ref()
             .ok_or_else(|| "no result statement".to_owned())?;
         let n = stmt_ref.column_count();
         let mut cols = Vec::with_capacity(n);
+        let mut tz = Vec::with_capacity(n);
         for i in 0..n {
             let name = stmt_ref
                 .column_name(i)
                 .map_or_else(|_| format!("col{i}"), String::clone);
-            let ty = arrow_type_name(&stmt_ref.column_type(i));
-            cols.push(ColMeta { name, ty });
+            let dt = stmt_ref.column_type(i);
+            tz.push(matches!(
+                dt,
+                duckdb::arrow::datatypes::DataType::Timestamp(_, Some(_))
+            ));
+            cols.push(ColMeta {
+                name,
+                ty: arrow_type_name(&dt),
+            });
         }
-        cols
+        (cols, tz)
     };
 
-    let ncol = columns.len();
     let mut out = Vec::new();
     while let Some(row) = rows.next().map_err(|e| e.to_string())? {
-        let mut r = Vec::with_capacity(ncol);
-        for i in 0..ncol {
-            let v = row.get_ref(i).map_or(Json::Null, value_ref_to_json);
+        let mut r = Vec::with_capacity(tz_cols.len());
+        for (i, tz_col) in tz_cols.iter().enumerate() {
+            let v = row
+                .get_ref(i)
+                .map_or(Json::Null, |v| value_ref_to_json(v, *tz_col));
             r.push(v);
         }
         out.push(r);
@@ -909,9 +921,12 @@ fn i64_len(n: u64) -> i64 {
     i64::try_from(n).unwrap_or(i64::MAX)
 }
 
-/// A friendly type name for an arrow result column (best effort).
+/// A friendly type name for an arrow result column (best effort). The card
+/// sql-scalar-type-render families name themselves in `DuckDB`'s own words —
+/// the `Debug` fallback survives only for shapes `DuckDB`'s arrow export
+/// cannot produce.
 fn arrow_type_name(dt: &duckdb::arrow::datatypes::DataType) -> String {
-    use duckdb::arrow::datatypes::DataType as D;
+    use duckdb::arrow::datatypes::{DataType as D, TimeUnit as U};
     match dt {
         D::Boolean => "BOOLEAN".to_owned(),
         D::Int8 => "TINYINT".to_owned(),
@@ -927,14 +942,36 @@ fn arrow_type_name(dt: &duckdb::arrow::datatypes::DataType) -> String {
         D::Utf8 | D::LargeUtf8 => "VARCHAR".to_owned(),
         D::Binary | D::LargeBinary => "BLOB".to_owned(),
         D::List(_) | D::LargeList(_) => "LIST".to_owned(),
+        D::Timestamp(_, Some(_)) => "TIMESTAMP WITH TIME ZONE".to_owned(),
+        D::Timestamp(U::Second, None) => "TIMESTAMP_S".to_owned(),
+        D::Timestamp(U::Millisecond, None) => "TIMESTAMP_MS".to_owned(),
+        D::Timestamp(U::Microsecond, None) => "TIMESTAMP".to_owned(),
+        D::Timestamp(U::Nanosecond, None) => "TIMESTAMP_NS".to_owned(),
+        D::Date32 => "DATE".to_owned(),
+        D::Time64(_) => "TIME".to_owned(),
+        D::Interval(_) => "INTERVAL".to_owned(),
+        // HUGEINT crosses arrow as exactly Decimal128(38, 0).
+        D::Decimal128(38, 0) => "HUGEINT".to_owned(),
+        D::Decimal128(w, s) | D::Decimal256(w, s) => format!("DECIMAL({w},{s})"),
+        D::Struct(_) => "STRUCT".to_owned(),
+        D::Map(..) => "MAP".to_owned(),
+        D::Dictionary(..) => "ENUM".to_owned(),
+        D::Union(..) => "UNION".to_owned(),
+        D::FixedSizeList(..) => "ARRAY".to_owned(),
         other => format!("{other:?}"),
     }
 }
 
-/// Render one result cell into JSON. Scalars are exact; list/array cells
-/// slice out their own row's elements (F1); unhandled shapes fall back to a
-/// debug string.
-fn value_ref_to_json(v: duckdb::types::ValueRef<'_>) -> Json {
+/// Render one result cell into JSON. Scalars are exact; the temporal,
+/// decimal, and container families speak `DuckDB`'s own SQL text
+/// ([`crate::sqltext`], card sql-scalar-type-render — no `Debug` fallback
+/// survives: the match is exhaustive so a new `ValueRef` variant fails the
+/// build instead of leaking a repr); list/array cells slice out their own
+/// row's elements (F1) and stay JSON arrays for the face's ruled ` / ` join.
+/// `tz_col` marks a `TIMESTAMP WITH TIME ZONE` column ([`run_query`] reads
+/// it off the arrow schema): the value is UTC and renders with the `+00`
+/// marker, exactly as this ICU-less engine's own `::VARCHAR` cast would.
+fn value_ref_to_json(v: duckdb::types::ValueRef<'_>, tz_col: bool) -> Json {
     use duckdb::types::ValueRef;
     match v {
         ValueRef::Null => Json::Null,
@@ -952,18 +989,35 @@ fn value_ref_to_json(v: duckdb::types::ValueRef<'_>) -> Json {
         ValueRef::UBigInt(n) => Json::from(n),
         ValueRef::Float(f) => json_f64(f64::from(f)),
         ValueRef::Double(f) => json_f64(f),
+        ValueRef::Decimal(d) => Json::String(d.to_string()),
+        ValueRef::Timestamp(unit, t) => Json::String(sqltext::timestamp_text(unit, t, tz_col)),
+        ValueRef::Date32(d) => Json::String(sqltext::date_text(d)),
+        ValueRef::Time64(unit, t) => Json::String(sqltext::time_text(unit, t)),
+        ValueRef::Interval {
+            months,
+            days,
+            nanos,
+        } => Json::String(sqltext::interval_text(months, days, nanos)),
         ValueRef::Text(bytes) => Json::String(String::from_utf8_lossy(bytes).into_owned()),
         ValueRef::Blob(bytes) => Json::String(hex(bytes)),
         // A list cell's ValueRef carries the WHOLE column array + a row index;
-        // the debug fallback below would dump every row's values into every
-        // cell (F1). The owned conversion slices out this row's elements.
-        ValueRef::List(..) | ValueRef::Array(..) => duck_value_to_json(&Value::from(v)),
-        other => Json::String(format!("{other:?}")),
+        // converting per-cell would dump every row's values into every cell
+        // (F1). The owned conversion slices out this row's elements — and the
+        // enum/struct/map/union families ride the same owned lane.
+        ValueRef::List(..)
+        | ValueRef::Array(..)
+        | ValueRef::Enum(..)
+        | ValueRef::Struct(..)
+        | ValueRef::Map(..)
+        | ValueRef::Union(..) => duck_value_to_json(&Value::from(v)),
     }
 }
 
-/// An owned duckdb value into JSON — the recursion arm for list/array cells,
-/// whose elements arrive owned after the row slice.
+/// An owned duckdb value into JSON — list/array elements and union members
+/// after the row slice. Scalars render in `DuckDB`'s RAW form (a nested
+/// timestamptz has lost its column's tz flag, so it renders unmarked — the
+/// one documented divergence); struct/map cells become their `DuckDB` text.
+/// Exhaustive for the same reason as [`value_ref_to_json`].
 fn duck_value_to_json(v: &Value) -> Json {
     match v {
         Value::Null => Json::Null,
@@ -981,12 +1035,22 @@ fn duck_value_to_json(v: &Value) -> Json {
         Value::UBigInt(n) => Json::from(*n),
         Value::Float(f) => json_f64(f64::from(*f)),
         Value::Double(f) => json_f64(*f),
-        Value::Text(s) => Json::String(s.clone()),
+        Value::Decimal(d) => Json::String(d.to_string()),
+        Value::Timestamp(unit, t) => Json::String(sqltext::timestamp_text(*unit, *t, false)),
+        Value::Date32(d) => Json::String(sqltext::date_text(*d)),
+        Value::Time64(unit, t) => Json::String(sqltext::time_text(*unit, *t)),
+        Value::Interval {
+            months,
+            days,
+            nanos,
+        } => Json::String(sqltext::interval_text(*months, *days, *nanos)),
+        Value::Text(s) | Value::Enum(s) => Json::String(s.clone()),
         Value::Blob(bytes) => Json::String(hex(bytes)),
         Value::List(items) | Value::Array(items) => {
             Json::Array(items.iter().map(duck_value_to_json).collect())
         }
-        other => Json::String(format!("{other:?}")),
+        Value::Struct(_) | Value::Map(_) => Json::String(sqltext::raw_text(v)),
+        Value::Union(member) => duck_value_to_json(member),
     }
 }
 
@@ -1347,6 +1411,151 @@ pub(crate) mod tests {
     }
 
     // ---- Query lane (card 3) ---------------------------------------------
+
+    // Card sql-scalar-type-render (dogfood r6 § S1): every scalar family
+    // renders as its SQL text, never a Rust-Arrow Debug repr. Expected
+    // strings are pinned against raw DuckDB v1.5.4 (`SET TimeZone='UTC'`
+    // for the tz families) — the round's second instrument.
+    #[test]
+    fn scalar_families_render_as_duckdb_text_never_debug_reprs() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+
+        let (cols, rows) = store
+            .query(
+                ExecProfile::Local,
+                "SELECT TIMESTAMP '2026-08-14 12:00:00' AS ts, \
+                        TIMESTAMP '2026-08-14 12:00:00.120000' AS ts_frac, \
+                        TIMESTAMPTZ '2026-08-14 12:00:00+00' AS tstz, \
+                        DATE '2026-08-14' AS d, \
+                        TIME '13:02:03.500000' AS t, \
+                        INTERVAL 3 DAY AS iv, \
+                        1.5::DECIMAL(4,2) AS dec, \
+                        {'k': 1} AS strct, \
+                        'small'::ENUM('small','big') AS e, \
+                        union_value(num := 2) AS u, \
+                        [TIMESTAMP '2026-08-14 12:00:00', NULL] AS arr",
+            )
+            .expect("lane")
+            .expect("select");
+        let row = &rows[0];
+
+        // The column register speaks DuckDB's names for the same families —
+        // never an arrow Debug repr like `Timestamp(Microsecond, None)`.
+        let tys: Vec<&str> = cols.iter().map(|c| c.ty.as_str()).collect();
+        assert_eq!(
+            tys,
+            [
+                "TIMESTAMP",
+                "TIMESTAMP",
+                "TIMESTAMP WITH TIME ZONE",
+                "DATE",
+                "TIME",
+                "INTERVAL",
+                "DECIMAL(4,2)",
+                "STRUCT",
+                "ENUM",
+                "UNION",
+                "LIST",
+            ],
+        );
+
+        assert_eq!(
+            row[0],
+            Json::String("2026-08-14 12:00:00".into()),
+            "TIMESTAMP"
+        );
+        assert_eq!(
+            row[1],
+            Json::String("2026-08-14 12:00:00.12".into()),
+            "fractional seconds trim trailing zeros"
+        );
+        assert_eq!(
+            row[2],
+            Json::String("2026-08-14 12:00:00+00".into()),
+            "TIMESTAMPTZ carries the UTC marker (the engine has no ICU; values are UTC)"
+        );
+        assert_eq!(row[3], Json::String("2026-08-14".into()), "DATE");
+        assert_eq!(row[4], Json::String("13:02:03.5".into()), "TIME");
+        assert_eq!(row[5], Json::String("3 days".into()), "INTERVAL");
+        assert_eq!(
+            row[6],
+            Json::String("1.50".into()),
+            "DECIMAL keeps its declared scale"
+        );
+        assert_eq!(row[7], Json::String("{'k': 1}".into()), "STRUCT");
+        assert_eq!(row[8], Json::String("small".into()), "ENUM");
+        assert_eq!(row[9], Json::from(2_i64), "UNION renders its member");
+        assert_eq!(
+            row[10],
+            Json::Array(vec![Json::String("2026-08-14 12:00:00".into()), Json::Null]),
+            "list elements are SQL text; the ruled ` / ` join stays with the face"
+        );
+    }
+
+    // The nested-context quoting is DuckDB's own nested-to-varchar rule
+    // (LOOKUP_TABLE specials + empty/leading-trailing-space/ci-NULL; struct
+    // keys always quoted; union members never) — pinned against v1.5.4.
+    #[test]
+    fn nested_values_quote_exactly_as_duckdb_would() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+
+        let (_, rows) = store
+            .query(
+                ExecProfile::Local,
+                "SELECT {'k': 'abc'} AS plain, \
+                        {'s': 'it''s'} AS esc, \
+                        {'k': NULL} AS n, \
+                        {'k': TIMESTAMP '2026-08-14 12:00:00'} AS ts, \
+                        {'a': [1,2], 'b': {'x': 'y y'}} AS deep, \
+                        MAP([1,2],['a','b']) AS m, \
+                        MAP([TIMESTAMP '2026-08-14 12:00:00'],[1]) AS mts, \
+                        [union_value(s := 'a,b')] AS uraw",
+            )
+            .expect("lane")
+            .expect("select");
+        let row = &rows[0];
+
+        assert_eq!(
+            row[0],
+            Json::String("{'k': abc}".into()),
+            "plain strings stay bare"
+        );
+        assert_eq!(
+            row[1],
+            Json::String(r"{'s': 'it\'s'}".into()),
+            "a quote forces quoting; escape is backslash"
+        );
+        assert_eq!(
+            row[2],
+            Json::String("{'k': NULL}".into()),
+            "NULL is the bare word"
+        );
+        assert_eq!(
+            row[3],
+            Json::String("{'k': '2026-08-14 12:00:00'}".into()),
+            "a nested timestamp quotes (its text carries `:`)"
+        );
+        assert_eq!(
+            row[4],
+            Json::String("{'a': [1, 2], 'b': {'x': y y}}".into()),
+            "containers nest with `, ` joins; inner space alone never quotes"
+        );
+        assert_eq!(row[5], Json::String("{1=a, 2=b}".into()), "MAP is `k=v`");
+        assert_eq!(
+            row[6],
+            Json::String("{'2026-08-14 12:00:00'=1}".into()),
+            "map keys follow the same quoting rule"
+        );
+        assert_eq!(
+            row[7],
+            Json::Array(vec![Json::String("a,b".into())]),
+            "a union member never quotes, even where the rule would"
+        );
+    }
 
     #[test]
     fn query_lane_rolls_back_dml_and_the_file_stays_durable_free() {
