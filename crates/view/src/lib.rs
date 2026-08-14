@@ -572,82 +572,94 @@ fn parse_fm_tags(value: &str) -> Vec<String> {
 }
 
 impl Rows {
-    /// Bulk-insert staged rows in FK order.
+    /// Bulk-insert staged rows in FK order through the `DuckDB` Appender API.
+    ///
+    /// The row-at-a-time statement lane this replaced executed one INSERT per
+    /// staged row (134k executes on a 6.7k-doc corpus — ~98% of the sql build
+    /// wall); the appender loads the same rows ~500x faster. The statement
+    /// lane survives as the equivalence reference in
+    /// `tests::statement_lane_insert`, gated bit-identical per table.
     fn insert(&self, conn: &Connection) -> duckdb::Result<()> {
-        insert_rows(
-            conn,
-            "INSERT INTO doc (path, file_rev, line_count, bytes) VALUES (?, ?, ?, ?)",
-            &self.doc,
+        append_rows(conn, "doc", &self.doc)?;
+        append_rows(conn, "frontmatter", &self.frontmatter)?;
+        self.append_section(conn)?;
+        append_rows(conn, "link", &self.link)?;
+        append_rows(conn, "tag", &self.tag)?;
+        append_rows(conn, "frontmatter_tag", &self.frontmatter_tag)?;
+        self.append_task(conn)
+    }
+
+    /// `section` — the `hpath` list column rides the stage-table workaround
+    /// ([`hpath_join`]).
+    fn append_section(&self, conn: &Connection) -> duckdb::Result<()> {
+        conn.execute_batch(
+            "CREATE TABLE _stage_section (path TEXT, node_seq UBIGINT, hpath_j TEXT, heading TEXT, level UTINYINT, node_rev TEXT, span_start UBIGINT, span_end UBIGINT);",
         )?;
-        insert_rows(
-            conn,
-            "INSERT INTO frontmatter (path, ord, key, value, span_start, span_end, node_rev) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            &self.frontmatter,
-        )?;
-        for row in &self.section {
-            let hpath_expr = list_expr(row.hpath.len());
-            let sql = format!(
-                "INSERT INTO section (path, node_seq, hpath, heading, level, node_rev, span_start, span_end) VALUES (?, ?, {hpath_expr}, ?, ?, ?, ?, ?)"
-            );
-            let params = chain_list(&row.scalars_before, &row.hpath, &row.scalars_after);
-            conn.execute(&sql, duckdb::params_from_iter(params.iter()))?;
+        {
+            let mut app = conn.appender("_stage_section")?;
+            for row in &self.section {
+                let mut params = row.scalars_before.clone();
+                params.push(hpath_join(&row.hpath));
+                params.extend(row.scalars_after.iter().cloned());
+                app.append_row(duckdb::appender_params_from_iter(params.iter()))?;
+            }
+            app.flush()?;
         }
-        insert_rows(
-            conn,
-            "INSERT INTO link (src_path, seq, kind, target_raw, heading, block, alias, dest_path, dest_root, dest_root_path, exclusion, span_start, span_end, node_rev) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            &self.link,
+        conn.execute_batch(
+            "INSERT INTO section SELECT path, node_seq, CASE WHEN hpath_j = '' THEN []::TEXT[] ELSE string_split(hpath_j, chr(31))[2:] END, heading, level, node_rev, span_start, span_end FROM _stage_section; \
+             DROP TABLE _stage_section;",
+        )
+    }
+
+    /// `task` — as `section`, with NULL `hpath` (document-level task) kept NULL.
+    fn append_task(&self, conn: &Connection) -> duckdb::Result<()> {
+        conn.execute_batch(
+            "CREATE TABLE _stage_task (path TEXT, seq UBIGINT, checked BOOLEAN, depth UINTEGER, section_seq UBIGINT, hpath_j TEXT, text TEXT, span_start UBIGINT, span_end UBIGINT, node_rev TEXT);",
         )?;
-        insert_rows(
-            conn,
-            "INSERT INTO tag (path, seq, tag, span_start, span_end, node_rev) VALUES (?, ?, ?, ?, ?, ?)",
-            &self.tag,
-        )?;
-        insert_rows(
-            conn,
-            "INSERT INTO frontmatter_tag (path, seq, tag, key, span_start, span_end, node_rev) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            &self.frontmatter_tag,
-        )?;
-        for row in &self.task {
-            let hpath_expr = match &row.hpath {
-                Some(h) => list_expr(h.len()),
-                None => "NULL".to_string(),
-            };
-            let sql = format!(
-                "INSERT INTO task (path, seq, checked, depth, section_seq, hpath, text, span_start, span_end, node_rev) VALUES (?, ?, ?, ?, ?, {hpath_expr}, ?, ?, ?, ?)"
-            );
-            let empty: Vec<String> = Vec::new();
-            let hpath = row.hpath.as_ref().unwrap_or(&empty);
-            let params = chain_list(&row.scalars_before, hpath, &row.scalars_after);
-            conn.execute(&sql, duckdb::params_from_iter(params.iter()))?;
+        {
+            let mut app = conn.appender("_stage_task")?;
+            for row in &self.task {
+                let mut params = row.scalars_before.clone();
+                params.push(row.hpath.as_deref().map_or(Value::Null, hpath_join));
+                params.extend(row.scalars_after.iter().cloned());
+                app.append_row(duckdb::appender_params_from_iter(params.iter()))?;
+            }
+            app.flush()?;
         }
-        Ok(())
+        conn.execute_batch(
+            "INSERT INTO task SELECT path, seq, checked, depth, section_seq, CASE WHEN hpath_j IS NULL THEN NULL WHEN hpath_j = '' THEN []::TEXT[] ELSE string_split(hpath_j, chr(31))[2:] END, text, span_start, span_end, node_rev FROM _stage_task; \
+             DROP TABLE _stage_task;",
+        )
     }
 }
 
-/// `list_value(?, …)` with `n` placeholders, or empty `VARCHAR[]` when `n == 0`.
-fn list_expr(n: usize) -> String {
-    if n == 0 {
-        return "[]::VARCHAR[]".to_string();
-    }
-    let marks = std::iter::repeat_n("?", n).collect::<Vec<_>>().join(", ");
-    format!("list_value({marks})")
-}
-
-/// Scalar-before + list elements + scalar-after for a `list_value` INSERT.
-fn chain_list(before: &[Value], list: &[String], after: &[Value]) -> Vec<Value> {
-    let mut params = before.to_vec();
-    params.extend(list.iter().map(|s| Value::Text(s.clone())));
-    params.extend(after.iter().cloned());
-    params
-}
-
-/// Prepare `sql` once; execute per staged row.
-fn insert_rows(conn: &Connection, sql: &str, rows: &[Vec<Value>]) -> duckdb::Result<()> {
-    let mut stmt = conn.prepare(sql)?;
+/// Appender load of one all-scalar table. Value order = DDL column order.
+fn append_rows(conn: &Connection, table: &str, rows: &[Vec<Value>]) -> duckdb::Result<()> {
+    let mut app = conn.appender(table)?;
     for row in rows {
-        stmt.execute(duckdb::params_from_iter(row.iter()))?;
+        app.append_row(duckdb::appender_params_from_iter(row.iter()))?;
     }
-    Ok(())
+    app.flush()
+}
+
+/// TEXT encoding of an `hpath` list for the stage tables. The `TEXT[]`
+/// columns cannot go through the appender — duckdb-rs does not support
+/// binding List values in `append_row` yet ("binding List parameters is not
+/// yet supported"; retire the stage tables when upstream adds it) — so the
+/// list rides an appender-loaded stage TEXT column, decoded set-based by one
+/// `INSERT..SELECT string_split(...)[2:]`.
+///
+/// Every element is PREFIXED with the unit separator (chr(31)), not joined by
+/// it: a plain join encodes both `[]` and `['']` as `''`, and a real `['']`
+/// hpath exists in live corpora. Prefixed, `[]` → `''` and `['']` → `"\u{1f}"`
+/// stay distinct; the decode drops the leading empty split element via `[2:]`.
+fn hpath_join(hpath: &[String]) -> Value {
+    let mut joined = String::new();
+    for element in hpath {
+        joined.push('\u{1f}');
+        joined.push_str(element);
+    }
+    Value::Text(joined)
 }
 
 /// Insert singleton `_meridian_view` stamp. epoch/seq both set or both NULL
@@ -729,6 +741,304 @@ mod tests {
             .query_row("SELECT doc_count FROM _meridian_view", [], |r| r.get(0))
             .expect("stamp");
         assert_eq!(n, 0);
+    }
+
+    // ---- Appender-lane equivalence gate ----------------------------------
+    //
+    // `Rows::insert` loads through the DuckDB Appender; this gate holds it
+    // bit-identical, per table over every column of every row, to the
+    // row-at-a-time statement lane it replaced. The hazard the gate exists
+    // for: the stage-table TEXT encoding of `hpath` must keep `[]` and `['']`
+    // distinct — a real `['']` hpath exists in live corpora.
+
+    /// The retired row-at-a-time statement lane, kept verbatim as the
+    /// equivalence reference the appender lane is gated against.
+    fn statement_lane_insert(rows: &Rows, conn: &Connection) -> duckdb::Result<()> {
+        /// `list_value(?, …)` with `n` placeholders, or empty `VARCHAR[]` when `n == 0`.
+        fn list_expr(n: usize) -> String {
+            if n == 0 {
+                return "[]::VARCHAR[]".to_string();
+            }
+            let marks = std::iter::repeat_n("?", n).collect::<Vec<_>>().join(", ");
+            format!("list_value({marks})")
+        }
+        /// Scalar-before + list elements + scalar-after for a `list_value` INSERT.
+        fn chain_list(before: &[Value], list: &[String], after: &[Value]) -> Vec<Value> {
+            let mut params = before.to_vec();
+            params.extend(list.iter().map(|s| Value::Text(s.clone())));
+            params.extend(after.iter().cloned());
+            params
+        }
+        /// Prepare `sql` once; execute per staged row.
+        fn insert_rows(conn: &Connection, sql: &str, rows: &[Vec<Value>]) -> duckdb::Result<()> {
+            let mut stmt = conn.prepare(sql)?;
+            for row in rows {
+                stmt.execute(duckdb::params_from_iter(row.iter()))?;
+            }
+            Ok(())
+        }
+        insert_rows(
+            conn,
+            "INSERT INTO doc (path, file_rev, line_count, bytes) VALUES (?, ?, ?, ?)",
+            &rows.doc,
+        )?;
+        insert_rows(
+            conn,
+            "INSERT INTO frontmatter (path, ord, key, value, span_start, span_end, node_rev) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            &rows.frontmatter,
+        )?;
+        for row in &rows.section {
+            let hpath_expr = list_expr(row.hpath.len());
+            let sql = format!(
+                "INSERT INTO section (path, node_seq, hpath, heading, level, node_rev, span_start, span_end) VALUES (?, ?, {hpath_expr}, ?, ?, ?, ?, ?)"
+            );
+            let params = chain_list(&row.scalars_before, &row.hpath, &row.scalars_after);
+            conn.execute(&sql, duckdb::params_from_iter(params.iter()))?;
+        }
+        insert_rows(
+            conn,
+            "INSERT INTO link (src_path, seq, kind, target_raw, heading, block, alias, dest_path, dest_root, dest_root_path, exclusion, span_start, span_end, node_rev) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            &rows.link,
+        )?;
+        insert_rows(
+            conn,
+            "INSERT INTO tag (path, seq, tag, span_start, span_end, node_rev) VALUES (?, ?, ?, ?, ?, ?)",
+            &rows.tag,
+        )?;
+        insert_rows(
+            conn,
+            "INSERT INTO frontmatter_tag (path, seq, tag, key, span_start, span_end, node_rev) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            &rows.frontmatter_tag,
+        )?;
+        for row in &rows.task {
+            let hpath_expr = match &row.hpath {
+                Some(h) => list_expr(h.len()),
+                None => "NULL".to_string(),
+            };
+            let sql = format!(
+                "INSERT INTO task (path, seq, checked, depth, section_seq, hpath, text, span_start, span_end, node_rev) VALUES (?, ?, ?, ?, ?, {hpath_expr}, ?, ?, ?, ?)"
+            );
+            let empty: Vec<String> = Vec::new();
+            let hpath = row.hpath.as_ref().unwrap_or(&empty);
+            let params = chain_list(&row.scalars_before, hpath, &row.scalars_after);
+            conn.execute(&sql, duckdb::params_from_iter(params.iter()))?;
+        }
+        Ok(())
+    }
+
+    /// Per-table digest over every column of every row (`resolved` is
+    /// generated, never stored, so it is derived equal by construction). The
+    /// section/task hpath term is length-prefixed (`len#join`) so `[]` and
+    /// `['']` digest differently.
+    const LANE_DIGESTS: [(&str, &str); 7] = [
+        (
+            "doc",
+            "SELECT coalesce(md5(string_agg(path || '|' || file_rev || '|' || line_count::VARCHAR || '|' || bytes::VARCHAR, chr(10) ORDER BY path)), 'EMPTY') FROM doc",
+        ),
+        (
+            "frontmatter",
+            "SELECT coalesce(md5(string_agg(path || '|' || ord::VARCHAR || '|' || key || '|' || value || '|' || span_start::VARCHAR || '|' || span_end::VARCHAR || '|' || node_rev, chr(10) ORDER BY path, key)), 'EMPTY') FROM frontmatter",
+        ),
+        (
+            "section",
+            "SELECT coalesce(md5(string_agg(path || '|' || node_seq::VARCHAR || '|' || len(hpath)::VARCHAR || '#' || array_to_string(hpath, chr(31)) || '|' || heading || '|' || level::VARCHAR || '|' || node_rev || '|' || span_start::VARCHAR || '|' || span_end::VARCHAR, chr(10) ORDER BY path, node_seq)), 'EMPTY') FROM section",
+        ),
+        (
+            "link",
+            "SELECT coalesce(md5(string_agg(src_path || '|' || seq::VARCHAR || '|' || kind || '|' || target_raw || '|' || coalesce(heading,'~N~') || '|' || coalesce(block,'~N~') || '|' || coalesce(alias,'~N~') || '|' || coalesce(dest_path,'~N~') || '|' || coalesce(dest_root,'~N~') || '|' || coalesce(dest_root_path,'~N~') || '|' || coalesce(exclusion,'~N~') || '|' || span_start::VARCHAR || '|' || span_end::VARCHAR || '|' || node_rev, chr(10) ORDER BY src_path, seq)), 'EMPTY') FROM link",
+        ),
+        (
+            "tag",
+            "SELECT coalesce(md5(string_agg(path || '|' || seq::VARCHAR || '|' || tag || '|' || span_start::VARCHAR || '|' || span_end::VARCHAR || '|' || node_rev, chr(10) ORDER BY path, seq)), 'EMPTY') FROM tag",
+        ),
+        (
+            "frontmatter_tag",
+            "SELECT coalesce(md5(string_agg(path || '|' || seq::VARCHAR || '|' || tag || '|' || key || '|' || span_start::VARCHAR || '|' || span_end::VARCHAR || '|' || node_rev, chr(10) ORDER BY path, key, seq)), 'EMPTY') FROM frontmatter_tag",
+        ),
+        (
+            "task",
+            "SELECT coalesce(md5(string_agg(path || '|' || seq::VARCHAR || '|' || checked::VARCHAR || '|' || depth::VARCHAR || '|' || coalesce(section_seq::VARCHAR,'~N~') || '|' || CASE WHEN hpath IS NULL THEN '~N~' ELSE len(hpath)::VARCHAR || '#' || array_to_string(hpath, chr(31)) END || '|' || text || '|' || span_start::VARCHAR || '|' || span_end::VARCHAR || '|' || node_rev, chr(10) ORDER BY path, seq)), 'EMPTY') FROM task",
+        ),
+    ];
+
+    /// Load `rows` into a fresh schema through `lane`; return the 7 digests.
+    fn lane_digests(
+        rows: &Rows,
+        lane: impl Fn(&Rows, &Connection) -> duckdb::Result<()>,
+    ) -> Vec<(&'static str, String)> {
+        let conn = Connection::open_in_memory().expect("open");
+        create_schema(&conn).expect("schema");
+        lane(rows, &conn).expect("lane insert");
+        LANE_DIGESTS
+            .iter()
+            .map(|(table, sql)| {
+                let d: String = conn.query_row(sql, [], |r| r.get(0)).expect("digest");
+                (*table, d)
+            })
+            .collect()
+    }
+
+    fn assert_lanes_match(rows: &Rows) {
+        assert_eq!(
+            lane_digests(rows, Rows::insert),
+            lane_digests(rows, statement_lane_insert),
+            "appender lane must project bit-identically to the statement lane"
+        );
+    }
+
+    /// Stage `docs` the way [`project`] does (ambient corpus, no mounts).
+    fn stage(docs: &BTreeMap<String, Document>) -> Rows {
+        let index = corpus_index(docs);
+        let mut rows = Rows::default();
+        let corpus = model::RootedCorpus::ambient(docs);
+        for (path, doc) in docs {
+            collect_doc(path, doc, &index, &mut rows, &corpus, None);
+        }
+        rows
+    }
+
+    /// The encoding edges, hand-staged so the gate cannot silently lose them
+    /// to parser drift: section hpath `[]` vs `['']` vs a list holding an
+    /// empty element; task hpath NULL vs `[]` vs `['']`.
+    #[test]
+    fn appender_lane_encoding_edges_match_statement_lane() {
+        let mut rows = Rows::default();
+        rows.doc.push(vec![
+            Value::Text("d.md".to_string()),
+            Value::Text("rev0".to_string()),
+            Value::UInt(1),
+            Value::UBigInt(2),
+        ]);
+        let shapes = [
+            vec![],
+            vec![String::new()],
+            vec!["a".to_string(), String::new(), "b".to_string()],
+        ];
+        for (seq, hpath) in shapes.into_iter().enumerate() {
+            rows.section.push(SectionRow {
+                scalars_before: vec![Value::Text("d.md".to_string()), Value::UBigInt(seq as u64)],
+                hpath,
+                scalars_after: vec![
+                    Value::Text("h".to_string()),
+                    Value::UTinyInt(1),
+                    Value::Text("rev".to_string()),
+                    Value::UBigInt(0),
+                    Value::UBigInt(1),
+                ],
+            });
+        }
+        rows.frontmatter.push(vec![
+            Value::Text("d.md".to_string()),
+            Value::UBigInt(0),
+            Value::Text("tags".to_string()),
+            Value::Text("[x]".to_string()),
+            Value::UBigInt(0),
+            Value::UBigInt(1),
+            Value::Text("rev".to_string()),
+        ]);
+        rows.frontmatter_tag.push(vec![
+            Value::Text("d.md".to_string()),
+            Value::UBigInt(0),
+            Value::Text("x".to_string()),
+            Value::Text("tags".to_string()),
+            Value::UBigInt(0),
+            Value::UBigInt(1),
+            Value::Text("rev".to_string()),
+        ]);
+        rows.tag.push(vec![
+            Value::Text("d.md".to_string()),
+            Value::UBigInt(0),
+            Value::Text("x".to_string()),
+            Value::UBigInt(0),
+            Value::UBigInt(1),
+            Value::Text("rev".to_string()),
+        ]);
+        rows.link.push(vec![
+            Value::Text("d.md".to_string()),
+            Value::UBigInt(0),
+            Value::Text("wikilink".to_string()),
+            Value::Text("d".to_string()),
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            Value::Text("d.md".to_string()),
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            Value::UBigInt(0),
+            Value::UBigInt(1),
+            Value::Text("rev".to_string()),
+        ]);
+        let task_shapes = [
+            (Value::Null, None),
+            (Value::UBigInt(0), Some(vec![])),
+            (Value::UBigInt(1), Some(vec![String::new()])),
+        ];
+        for (seq, (section_seq, hpath)) in task_shapes.into_iter().enumerate() {
+            rows.task.push(TaskRow {
+                scalars_before: vec![
+                    Value::Text("d.md".to_string()),
+                    Value::UBigInt(seq as u64),
+                    Value::Boolean(false),
+                    Value::UInt(0),
+                    section_seq,
+                ],
+                hpath,
+                scalars_after: vec![
+                    Value::Text("t".to_string()),
+                    Value::UBigInt(0),
+                    Value::UBigInt(1),
+                    Value::Text("rev".to_string()),
+                ],
+            });
+        }
+        assert_lanes_match(&rows);
+    }
+
+    /// Full-walk equivalence on a parsed fixture corpus that populates all 7
+    /// tables and carries the live-corpus `['']` hazard (a bare `#` heading).
+    #[test]
+    fn appender_lane_matches_statement_lane_on_parsed_corpus() {
+        let a = "---\ntitle: Alpha\ntags: [x/one, x/two]\n---\n- [ ] doc-level task\n\n# Top\nintro #inline\n## Sub\n- [x] task under Sub\n\nsee [[b]] and [[missing]] and ![[b]]\n";
+        let b = "#\n- [ ] task under the empty heading\n## Sub\nbody\n";
+        let mut docs = BTreeMap::new();
+        docs.insert(
+            "a.md".to_string(),
+            model::build(a.to_string(), syntax::parse(a)),
+        );
+        docs.insert(
+            "b.md".to_string(),
+            model::build(b.to_string(), syntax::parse(b)),
+        );
+        let rows = stage(&docs);
+
+        // The fixture must be non-degenerate: every parser-reachable table
+        // populated, and the hazard shapes actually staged. `tag` stays empty
+        // — the parser emits no inline `NodeKind::Tag` nodes today (the live
+        // corpus stages tag=0 too); its lane is covered by the hand-staged
+        // gate above.
+        assert!(!rows.doc.is_empty(), "doc rows");
+        assert!(!rows.frontmatter.is_empty(), "frontmatter rows");
+        assert!(!rows.section.is_empty(), "section rows");
+        assert!(!rows.link.is_empty(), "link rows");
+        assert!(!rows.frontmatter_tag.is_empty(), "frontmatter_tag rows");
+        assert!(!rows.task.is_empty(), "task rows");
+        assert!(
+            rows.section.iter().any(|s| s.hpath == vec![String::new()]),
+            "a bare `#` heading must stage hpath [''] — the encoding hazard"
+        );
+        assert!(
+            rows.task
+                .iter()
+                .any(|t| t.hpath.as_deref() == Some(&[String::new()][..])),
+            "the task under the empty heading must stage hpath ['']"
+        );
+        assert!(
+            rows.task.iter().any(|t| t.hpath.is_none()),
+            "the doc-level task must stage hpath NULL"
+        );
+
+        assert_lanes_match(&rows);
     }
 
     /// Stamp is the caller's fold verbatim — not a refold (G14 / §12.3).
