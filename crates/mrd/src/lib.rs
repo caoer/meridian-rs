@@ -317,8 +317,11 @@ usage:
   mrd cache ls             list registered drawers.
 ! mrd cache clean [--all]  reap stale / orphaned / retired drawers (--all:
                            every drawer).
-  mrd sql <query>          SQL over an ephemeral in-memory corpus projection
-                           (honest-tense freshness frame).
+  mrd sql <query>          SQL over the corpus projection (honest-tense
+                           freshness frame), served from the drawer's
+                           append-only sql.duckdb cache when a cache root
+                           resolves, else an ephemeral in-memory build.
+                           --rebuild recreates the cache file (repair verb).
   mrd status [--cwd PATH]  pure-local drift + freshness: armed-rules line (N
                            armed · M drifted · forced-since-realise:
                            not-tracked — the engine keeps no memory), then the
