@@ -150,7 +150,11 @@ fn walk_lifecycle_up_down_rooted_and_refusals() {
         "meridian/domain.md",
         "---\nversion: 1\nignore:\n  - \"bulk/**\"\n---\n",
     );
-    write(&ws, "bulk/vendored.md", "# bulk\n\nexcluded but walkable.\n");
+    write(
+        &ws,
+        "bulk/vendored.md",
+        "# bulk\n\nexcluded but walkable.\n",
+    );
 
     // The machine's mount table binds exactly `other`. One env-dependent
     // test fn by design (see module docs).
@@ -185,7 +189,10 @@ fn walk_lifecycle_up_down_rooted_and_refusals() {
     assert_eq!(rows[0]["selector"], json!("b.md"), "{up}");
     assert_eq!(rows[0]["depth"], json!(1), "{up}");
     assert_eq!(rows[0]["color"], json!("green"), "{up}");
-    assert!(rows[0]["rev"].is_string(), "a green row cites its rev: {up}");
+    assert!(
+        rows[0]["rev"].is_string(),
+        "a green row cites its rev: {up}"
+    );
     assert!(
         rows[0].get("reason").is_none() || rows[0]["reason"].is_null(),
         "green carries no reason: {up}"

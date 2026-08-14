@@ -74,16 +74,17 @@ pub(crate) fn serve(
     let corpus = mounts.rooted(docs, &domain, &root);
 
     let direction = if down { Direction::Down } else { Direction::Up };
-    let report = walk::walk_rooted(&corpus, mounts.set(), page, direction, depth).map_err(
-        |error| match error {
-            WalkError::RootNotFound(_) => file_not_found(path),
-            WalkError::Cycle(loop_pages) => {
-                let mut e = ErrorBody::new(ErrorCode::WalkCycle);
-                e.message = Some(format!("in-snapshot cycle: {}", loop_pages.join(" -> ")));
-                Box::new(e)
+    let report =
+        walk::walk_rooted(&corpus, mounts.set(), page, direction, depth).map_err(|error| {
+            match error {
+                WalkError::RootNotFound(_) => file_not_found(path),
+                WalkError::Cycle(loop_pages) => {
+                    let mut e = ErrorBody::new(ErrorCode::WalkCycle);
+                    e.message = Some(format!("in-snapshot cycle: {}", loop_pages.join(" -> ")));
+                    Box::new(e)
+                }
             }
-        },
-    )?;
+        })?;
 
     // §12.1 enumerator clause, down only: the blast-radius census names the
     // markdown the hash domain left out. Up drops nothing — it names an
