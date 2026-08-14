@@ -561,6 +561,11 @@ pub(crate) struct ScriptEntry<'h> {
     /// Set when the read ceiling refused, so the abort is classified as a
     /// budget refusal rather than a script fault.
     over_read_budget: Cell<bool>,
+    /// Live `run()` calls admitted so far (effects mode), against `max_runs`.
+    runs_seen: Cell<usize>,
+    max_runs: usize,
+    /// Set when the run ceiling refused — classified like the read ceiling.
+    over_run_budget: Cell<bool>,
     bindings: RefCell<BTreeMap<String, String>>,
     /// Wire plan-edit items armed by `put()`, in execution order. Inert: no I/O
     /// happens at arm time and nothing here is applied until the consumer plane
@@ -595,6 +600,9 @@ impl<'h> ScriptEntry<'h> {
             reads: RefCell::new(Vec::new()),
             fault: RefCell::new(None),
             over_read_budget: Cell::new(false),
+            runs_seen: Cell::new(0),
+            max_runs: limits.max_runs,
+            over_run_budget: Cell::new(false),
             bindings: RefCell::new(BTreeMap::new()),
             armed: RefCell::new(Vec::new()),
             max_armed_edits: limits.max_armed_edits,
@@ -613,6 +621,11 @@ impl<'h> ScriptEntry<'h> {
 
     /// Effects mode: execute one `run()` NOW through the host; the row comes
     /// back as JSON for the caller to shape into a Starlark value.
+    ///
+    /// The run ceiling binds HERE, at admission: a run's own execution is
+    /// metered on the run plane's budget rather than the script clock, so the
+    /// COUNT is what the kernel bounds. The refusal is typed
+    /// ([`EvalError::RunBudget`]); the runs already executed stand.
     fn run_live(
         &self,
         page: &str,
@@ -622,6 +635,11 @@ impl<'h> ScriptEntry<'h> {
         dry: bool,
         line: u32,
     ) -> anyhow::Result<serde_json::Value> {
+        if self.runs_seen.get() >= self.max_runs {
+            self.over_run_budget.set(true);
+            anyhow::bail!("run budget of {} runs per attempt reached", self.max_runs);
+        }
+        self.runs_seen.set(self.runs_seen.get() + 1);
         self.host
             .borrow_mut()
             .run_live(page, task, args, env, dry, line)
@@ -1231,22 +1249,24 @@ pub(crate) fn run_script(
     let started = std::time::Instant::now();
     // The entry lives entirely on the eval stack (its cells are single-threaded
     // by construction); only its harvested facts cross back.
-    let (run, recording, bindings, over_read_budget, armed, arm_refusal) = on_eval_stack(|| {
-        let entry = ScriptEntry::new(ctx, limits, host);
-        let globals = script_globals(&ctx.effects);
-        let run = metered_eval(&globals, &rule, &EvalEntry::Script(&entry), limits.eval);
-        let bindings = entry.bindings.borrow().clone();
-        let armed = entry.armed.borrow().clone();
-        let arm_refusal = entry.arm_refusal.borrow().clone();
-        (
-            run,
-            entry.recording(),
-            bindings,
-            entry.over_read_budget.get(),
-            armed,
-            arm_refusal,
-        )
-    });
+    let (run, recording, bindings, over_read_budget, over_run_budget, armed, arm_refusal) =
+        on_eval_stack(|| {
+            let entry = ScriptEntry::new(ctx, limits, host);
+            let globals = script_globals(&ctx.effects);
+            let run = metered_eval(&globals, &rule, &EvalEntry::Script(&entry), limits.eval);
+            let bindings = entry.bindings.borrow().clone();
+            let armed = entry.armed.borrow().clone();
+            let arm_refusal = entry.arm_refusal.borrow().clone();
+            (
+                run,
+                entry.recording(),
+                bindings,
+                entry.over_read_budget.get(),
+                entry.over_run_budget.get(),
+                armed,
+                arm_refusal,
+            )
+        });
     let wall_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
 
     let outcome = match run.outcome {
@@ -1256,6 +1276,12 @@ pub(crate) fn run_script(
         Err(_) if over_read_budget => Err(EvalError::ReadBudget {
             rule_id: rule.id.clone(),
             limit: limits.max_reads,
+        }),
+        // The run ceiling, same posture: typed, naming itself; the runs
+        // already executed stand (a live program has no rollback).
+        Err(_) if over_run_budget => Err(EvalError::RunBudget {
+            rule_id: rule.id.clone(),
+            limit: limits.max_runs,
         }),
         // The arm-time law refuses consumer-plane typed — never a §8 code, and
         // never a partial apply: the armed list below is evidence for the face,

@@ -43,11 +43,14 @@
 //! - Non-md / `.meridian/` / dot-path writes are undetected: the §12 hash domain
 //!   is md-only and dot-excluded.
 //! - Dot-path symlinks sit in the same gap: not walked, not refused.
-//! - Ignored directories are not walked and their links are not refused. Two
-//!   things bound this: the ignore list is itself bracketed, and an ignored file
-//!   never enters the hash domain, so nothing it points at can reach a hash,
-//!   attest or receipt surface. Without the carve-out, one link anywhere in a
-//!   vendored subtree would refuse the whole walk.
+//! - Ignored directories are not walked and their links are not refused, and a
+//!   symlink AT a custom-ignored path is skipped the same way
+//!   ([`Domain::skips_symlink`] — the sessions-root shape, where the venv `bin`
+//!   dir IS the link). Two things bound this: the ignore list is itself
+//!   bracketed, and an ignored file never enters the hash domain, so nothing it
+//!   points at can reach a hash, attest or receipt surface. Without the
+//!   carve-out, one link anywhere in a vendored subtree would refuse the whole
+//!   walk. Reserved paths never skip.
 //! - Residual escape window: background children are process-group killed at
 //!   step end; a write landing between that kill and the close-snapshot read —
 //!   or after close — is outside the bracket.
@@ -148,11 +151,17 @@ impl fmt::Display for ResidualDelta {
 pub enum GuardError {
     /// Underlying I/O failure taking a snapshot — not a detection verdict.
     Io(io::Error),
-    /// A symlinked path component in the guarded walk: refused at open
-    /// (untrusted baseline) and at close (laundering during the window).
+    /// Symlinked paths in the guarded walk: refused at open (untrusted
+    /// baseline) and at close (laundering during the window). The walk
+    /// completes before refusing, so the refusal is a COUNT plus the first
+    /// offender (sorted) — a claim a caller can size a cleanup or a missing
+    /// domain shape by, never one mine per attempt.
     Symlink {
-        /// Workspace-relative forward-slash path of the refused link.
-        path: String,
+        /// How many symlinked paths the walk met (≥ 1).
+        count: usize,
+        /// Workspace-relative forward-slash path of the first offender, in
+        /// sorted order — deterministic whatever order the walk visits.
+        first: String,
     },
     /// The domain config changed inside the bracket: the detection domain
     /// itself moved, so no residual verdict is possible.
@@ -166,9 +175,15 @@ impl fmt::Display for GuardError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             GuardError::Io(e) => write!(f, "exec-window snapshot I/O failure: {e}"),
-            GuardError::Symlink { path } => {
-                write!(f, "symlinked path refused in exec-window snapshot: {path}")
+            // One link keeps the established wording byte-identical; more
+            // become a count plus the first offender.
+            GuardError::Symlink { count: 1, first } => {
+                write!(f, "symlinked path refused in exec-window snapshot: {first}")
             }
+            GuardError::Symlink { count, first } => write!(
+                f,
+                "{count} symlinked paths refused in exec-window snapshot, first: {first}"
+            ),
             GuardError::ConfigChanged => write!(
                 f,
                 "the domain config ({DOMAIN_CONFIG_PATH} or {CONFIG_FILE_NAME}) changed during exec window — the detection domain itself moved; refusing",
@@ -398,7 +413,17 @@ fn strict_domain_files(
 /// false-positive on `.git` internals.
 fn walk_strict(root: &WorkspaceRoot, domain: &Domain) -> Result<Vec<PathBuf>, GuardError> {
     let mut out = Vec::new();
-    walk_strict_dir(&root.0, &PathBuf::new(), domain, &mut out)?;
+    let mut links = Vec::new();
+    walk_strict_dir(&root.0, &PathBuf::new(), domain, &mut out, &mut links)?;
+    // The walk COMPLETES before refusing, so the refusal is a count plus the
+    // first offender (sorted — deterministic whatever order read_dir served).
+    if !links.is_empty() {
+        links.sort();
+        return Err(GuardError::Symlink {
+            count: links.len(),
+            first: links.remove(0),
+        });
+    }
     out.sort();
     Ok(out)
 }
@@ -408,6 +433,7 @@ fn walk_strict_dir(
     rel_dir: &Path,
     domain: &Domain,
     out: &mut Vec<PathBuf>,
+    links: &mut Vec<String>,
 ) -> Result<(), GuardError> {
     for entry in std::fs::read_dir(abs_dir)? {
         let entry = entry?;
@@ -425,12 +451,17 @@ fn walk_strict_dir(
             continue;
         }
         if file_type.is_symlink() {
-            return Err(GuardError::Symlink {
-                path: crate::display_name(crate::hash_name(&rel)),
-            });
+            // The same carve-out for the link ITSELF: a symlink at a path the
+            // domain ignores (a venv `bin` dir, a scratch-named entry) is
+            // outside detection — skipped, never descended, never refused.
+            if domain.skips_symlink(&rel) {
+                continue;
+            }
+            links.push(crate::display_name(crate::hash_name(&rel)));
+            continue; // keep walking: the refusal is a count, not one mine
         }
         if file_type.is_dir() {
-            walk_strict_dir(&entry.path(), &rel, domain, out)?;
+            walk_strict_dir(&entry.path(), &rel, domain, out, links)?;
         } else if file_type.is_file()
             && Path::new(&name)
                 .extension()
@@ -455,8 +486,10 @@ fn read_nofollow(abs: &Path, rel: &str) -> Result<Vec<u8>, GuardError> {
         }
         Err(e) => {
             if std::fs::symlink_metadata(abs).is_ok_and(|m| m.file_type().is_symlink()) {
+                // The walk→read race mints for the ONE path it caught.
                 Err(GuardError::Symlink {
-                    path: rel.to_string(),
+                    count: 1,
+                    first: rel.to_string(),
                 })
             } else {
                 Err(GuardError::Io(e))

@@ -179,9 +179,18 @@ DO-NOT-BUILD, for later. **The flag switches the execution model:**
 - **Replay refuses a live program.** Eval-as-pure-function holds for the
   pure model only; `replay_script` refuses an effects-mode context rather
   than forging a world that was live.
-- **Budgets:** eval limits and the wall clock bind unchanged; the read
-  ceiling counts live reads identically; `put()`/`run()` are not
-  fuel-metered — each run is bounded by the plane's own timeout.
+- **Budgets, and where a run's cost is charged (amended, dogfood r2 F8):**
+  eval limits and the wall clock bind unchanged over the program's OWN acts;
+  the read ceiling counts live reads identically; `put()`/`run()` are not
+  fuel-metered. A live `run()` is ADMITTED under the script clock (the
+  pre-dispatch check), and then **the clock stops while the run plane
+  executes**: the plane's walks and its child are bounded by the plane's own
+  budget — `run.timeout_secs` on the root's declaration, default 5m — and
+  the run's elapsed is never charged to the caller's script clock. What the
+  script clock prices is the program: its reads, its puts, its compute. The
+  COUNT of runs is bounded by the kernel's run ceiling (`max_runs`,
+  64/attempt): the 65th run refuses typed, naming the ceiling, and the runs
+  already executed stand — a live program has no rollback.
 - **Identity (§9):** `actor`/`now` thread as everywhere; run identity
   derives from the submission's host-minted `invocation` base
   (`<invocation>-r<K>`, K the 0-based call ordinal).
@@ -399,6 +408,7 @@ their values are tunable:
 | child bound | 30s | MCP host (process group kill) | host refusal, no face |
 | retries | 2 attempts | host | exhaustion → resync face |
 | armed edits | 64 | kernel (arm time) | typed refusal |
+| live runs / attempt | 64 | kernel (run admission, effects mode) | typed refusal; executed runs stand |
 | reads / attempt | 64 | kernel | typed refusal, no result |
 | selector width | 256 paths | host | typed refusal, **never truncation** |
 
@@ -1471,7 +1481,7 @@ S1 — ship the scoped claim, never the unqualified one."*
 | Bash enforcement is detection, not prevention | intended scope | upgrade path is U11 (OS sandbox), phase-2 |
 | Out-of-tree writes / secret reads by bash | **honor-system** (accepted, ZT) | outside the hash domain by definition; the claim is scoped |
 | Non-md / `.meridian/` / dot-path writes | **accepted gap, distinct from the honor-system** (decision #20) | outside the snapshot hash domain — silently undetected, named here rather than hidden |
-| Symlink laundering (`ln -s secret notes/x.md`) | refused or named (decision #25) | `O_NOFOLLOW` / refuse symlinked path components in walk + snapshot; where not refusable it is a **distinct named gap** (it defeats in-domain detection, unlike plain out-of-tree) |
+| Symlink laundering (`ln -s secret notes/x.md`) | refused or named (decision #25) | `O_NOFOLLOW` / refuse symlinked path components in walk + snapshot; where not refusable it is a **distinct named gap** (it defeats in-domain detection, unlike plain out-of-tree). *(Amended, dogfood r2 F2: the walk COMPLETES before refusing and the refusal is a COUNT plus the first offender, sorted — `N symlinked paths refused in exec-window snapshot, first: …`; one link keeps the established single-path wording. A symlink AT a path the domain's own ignore rules exclude — a stranger's venv `bin` dir, a `scratch*` entry — is outside detection like the ignored directories always were: skipped, not refused, reserved paths excepted. A sessions-shaped root declares the exclusion in `meridian/domain.md` frontmatter, e.g. `ignore: ["scratch*/", "bin/"]` — scratch is ungoverned by definition.)* |
 | Ungoverned writes are never rolled back | law, not gap (decision #14) | they persist as actor-absent external change (§7.1) and the run exits 1 with the delta named |
 | Multi-file crash window (content committed, receipt lost) | accepted (decision #10) | recovery is re-derive; lint finds the missing receipt |
 | Local run beside a resident daemon (§7.1) | accepted | a local run's writes reach the daemon as external change — the same class as any out-of-band edit |

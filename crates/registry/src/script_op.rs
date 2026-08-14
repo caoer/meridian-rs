@@ -292,7 +292,7 @@ fn live_serve(registry: &Registry, ws: &Path, request: &ScriptArgs, entry: &str)
             ws: fs::WorkspaceRoot(ws.to_path_buf()),
             ws_path: ws.to_path_buf(),
             root: wire::Root(entry.to_owned()),
-            deadline,
+            deadline: std::cell::Cell::new(deadline),
             actor: request.actor.clone().unwrap_or_default(),
             now: request.now.clone(),
             // Decode wall: effects ⇒ invocation present.
@@ -347,7 +347,11 @@ struct LiveHost<'a> {
     ws: fs::WorkspaceRoot,
     ws_path: std::path::PathBuf,
     root: wire::Root,
-    deadline: Instant,
+    /// The script clock's deadline. A cell because a live `run()` pushes it
+    /// forward by the run's own elapsed — the run plane's walks and child are
+    /// metered on the run plane's own budget (`run.timeout_secs`), never the
+    /// caller's script clock (dogfood r2 D-USER F8).
+    deadline: std::cell::Cell<Instant>,
     actor: String,
     now: Option<String>,
     invocation: String,
@@ -358,7 +362,7 @@ struct LiveHost<'a> {
 
 impl LiveHost<'_> {
     fn within_deadline(&self, what: &str) -> Result<(), effects::EffectFault> {
-        if Instant::now() > self.deadline {
+        if Instant::now() > self.deadline.get() {
             return Err(effects::EffectFault {
                 reason: format!(
                     "the script entry's wall clock elapsed before {what} — budgets bind \
@@ -381,7 +385,7 @@ impl effects::ScriptHost for LiveHost<'_> {
             section: None,
             reason,
         };
-        if Instant::now() > self.deadline {
+        if Instant::now() > self.deadline.get() {
             return Err(fault("the script entry's wall clock elapsed".to_owned()));
         }
         let doc = self.load_live(path).map_err(&fault)?;
@@ -400,7 +404,7 @@ impl effects::ScriptHost for LiveHost<'_> {
             section: Some(section.to_owned()),
             reason,
         };
-        if Instant::now() > self.deadline {
+        if Instant::now() > self.deadline.get() {
             return Err(fault("the script entry's wall clock elapsed".to_owned()));
         }
         let doc = self.load_live(path).map_err(&fault)?;
@@ -489,6 +493,12 @@ impl effects::ScriptHost for LiveHost<'_> {
             env,
             dry: Some(dry),
         };
+        // The clock stops while the run plane executes: admission was checked
+        // above; the dispatch below — its walks, its child — is bounded by the
+        // run plane's own `run.timeout_secs`, and its elapsed pushes the
+        // script deadline forward so it never costs the caller's clock. The
+        // run COUNT stays bounded by the kernel's run ceiling.
+        let started = Instant::now();
         let row = crate::run_op::row_for_target(
             &self.ws,
             &self.ws_path,
@@ -497,6 +507,7 @@ impl effects::ScriptHost for LiveHost<'_> {
             (!self.actor.is_empty()).then_some(self.actor.as_str()),
             self.now.as_deref(),
         );
+        self.deadline.set(self.deadline.get() + started.elapsed());
         self.acts.borrow_mut().push((
             self.reads_seen.get(),
             effects::trace::TraceEntry::Ran(effects::trace::RanEntry {
@@ -1356,7 +1367,7 @@ sleep 0.5
             ws: fs::WorkspaceRoot(ws.clone()),
             ws_path: ws.clone(),
             root: wire::Root(entry),
-            deadline: Instant::now() + Duration::from_millis(250),
+            deadline: std::cell::Cell::new(Instant::now() + Duration::from_millis(250)),
             actor: String::new(),
             now: None,
             invocation: "scr-t1".to_owned(),
