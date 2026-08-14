@@ -629,7 +629,7 @@ fn token_count_endpoint_decode_walls() {
 
 const PUSH_WAIT: Duration = Duration::from_secs(10);
 
-/// A live run() inside a script pushes the run plane's attributed frames to a
+/// A live `run()` inside a script pushes the run plane's attributed frames to a
 /// subscriber: the script's actor threads through the shared row seam into
 /// the frames the bash task's two commits mint.
 ///
