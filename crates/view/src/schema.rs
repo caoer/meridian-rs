@@ -156,7 +156,7 @@ CREATE VIEW dangling AS                            -- broken VAULT refs with NO 
     SELECT src_path, target_raw FROM link
      WHERE kind IN ('wikilink','embed') AND dest_path IS NULL AND dest_root IS NULL
        AND exclusion IS NULL;
-CREATE VIEW card AS                                -- session tree as a board: pivot frontmatter
+CREATE VIEW record AS                              -- one row per frontmatter-carrying record, corpus-wide: pivot frontmatter
     SELECT d.path,
         max(fm.value) FILTER (fm.key = 'type')    AS type,
         max(fm.value) FILTER (fm.key = 'status')  AS status,
@@ -178,7 +178,12 @@ CREATE VIEW tag_all AS                             -- B2: the union — inline +
 ///
 /// `3`: `frontmatter` gained `prop_rev`, the per-key CAS token
 /// (`node-rev-merkle-spec.md` §2.1).
-pub const SCHEMA_VERSION: i32 = 3;
+///
+/// `4`: the `card` view became `record` — one row per frontmatter-carrying
+/// record, corpus-wide; the old noun promised a board (dogfood r6 U-S1) —
+/// and `task.text` dropped its list-marker + checkbox prefix (`checked`
+/// already carries the bit; dogfood r6 S11).
+pub const SCHEMA_VERSION: i32 = 4;
 
 /// Run the full round-1 DDL against `conn` (8 tables + 4 views).
 ///

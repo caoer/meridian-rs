@@ -1537,7 +1537,7 @@ drift into two dialects. The enumerated set, audited 2026-08-08:
 | the run plane's frontmatter binding values | published value |
 | `preset`'s `^properties` rule check and its `type`/`defines`/`root`/`births` reads | compared value |
 | `realise`'s `FieldEquals` — BOTH halves: the page's declared `realise.expected` and the observed field | compared value |
-| the view projection's `frontmatter.value` column — and the `card` pivot and B2 tag parse riding it | published value |
+| the view projection's `frontmatter.value` column — and the `record` pivot and B2 tag parse riding it | published value |
 
 **Why the last two rows joined (2026-08-08).** They read a value and compare it
 against a caller-supplied string, which is exactly the shape § A.6's read-half
@@ -1552,8 +1552,9 @@ This paragraph formerly named "the `view` index rows" in the stays-raw list
 below; superseded wording, verbatim: *"`lock` (guard tokens), the `view` index
 rows, and `policy::change`'s `diff_fields` all answer questions ABOUT THE
 STORED BYTES."* The reasoning was right for `lock` and `diff_fields` and wrong
-for this column: the view's `frontmatter.value` consumers — the `card` board
-pivot over `type`/`status`/`owner`/`session`, `mrd sql` operator and agent
+for this column: the view's `frontmatter.value` consumers — the `record` board
+pivot over `type`/`status`/`owner`/`session` (named `card` until the s4
+rename), `mrd sql` operator and agent
 queries, the B2 tag parse — all ask VALUE questions, and a board predicate
 `owner = '3f9a1c07'` compared against raw `"3f9a1c07"` is the read-half
 silent false wearing a WHERE clause. The stored-bytes questions the view DOES
