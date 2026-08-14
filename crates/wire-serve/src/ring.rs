@@ -213,6 +213,8 @@ pub fn write_frame(output: &mut impl Write, frame: &DeltaFrame, v3: bool) -> io:
         let demoted = DeltaFrame {
             delta: frame.delta.clone(),
             effects: Vec::new(),
+            rescope: None,
+            overflow: None,
         };
         serde_json::to_writer(&mut *output, &demoted)?;
     } else {
@@ -241,6 +243,8 @@ mod tests {
                 files: vec![],
             },
             effects: vec![],
+            rescope: None,
+            overflow: None,
         }
     }
 
@@ -360,6 +364,8 @@ mod tests {
                 files: vec![],
             },
             effects: vec![],
+            rescope: None,
+            overflow: None,
         });
 
         // The writer's flock drops and its frame lands last.
@@ -373,6 +379,8 @@ mod tests {
                 files: vec![],
             },
             effects: vec![],
+            rescope: None,
+            overflow: None,
         });
 
         assert_ne!(

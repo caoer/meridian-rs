@@ -68,7 +68,7 @@ pub const ATTESTED_MARKER_PATH: &str = "meridian/attested";
 /// `version` rides the domain config so an ignore-list change can advance the
 /// merkle prefix (`b3:` → `b3a:`, §12.3); the prefix *token* is minted by
 /// `model::merkle_root`, which reads [`Domain::version`].
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Domain {
     version: u32,
     rules: Vec<Rule>,
@@ -213,19 +213,7 @@ impl Domain {
     /// perfectly. It rides the residual kind, so the wire face is
     /// `io_error{cause}` — env class either way, and the remedy still travels.
     pub fn load(root: &WorkspaceRoot) -> io::Result<Domain> {
-        let md = read_optional(&root.0.join(DOMAIN_CONFIG_PATH))?;
-        let yaml = read_optional(&root.0.join(CONFIG_FILE_NAME))?;
-        match (md, yaml) {
-            (Some(_), Some(_)) => Err(io::Error::other(format!(
-                "two domain configs are present: {DOMAIN_CONFIG_PATH} and {CONFIG_FILE_NAME}. \
-                     They may declare different ignore lists, so which files are attested would \
-                     depend on a precedence rule no reader of either file can see. \
-                     Remedy: keep {DOMAIN_CONFIG_PATH} and delete {CONFIG_FILE_NAME}."
-            ))),
-            (Some(text), None) => Ok(Domain::from_markdown(&text)),
-            (None, Some(text)) => Ok(Domain::from_config(&text)),
-            (None, None) => Ok(Domain::new()),
-        }
+        Ok(Scope::load(root)?.domain)
     }
 
     /// The domain `version` (§12.3) — 0 unless `mdfs_config.yaml` declares one.
@@ -450,8 +438,54 @@ fn normalized(rel: &Path) -> String {
         .join("/")
 }
 
+/// The effective scope: which config file governs the attested set, and the
+/// parsed rules. The watcher's re-scope detection (§ A.9) compares two of
+/// these SEMANTICALLY — a prose-only edit to `meridian/domain.md` parses to
+/// the same `Domain` and re-scopes nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Scope {
+    /// The config file in effect: [`DOMAIN_CONFIG_PATH`], [`CONFIG_FILE_NAME`],
+    /// or `None` (built-in defaults only).
+    pub config: Option<&'static str>,
+    /// The parsed rules that file (or the default) defines.
+    pub domain: Domain,
+}
+
+impl Scope {
+    /// The effective scope of `root` — [`Domain::load`]'s dispatch with the
+    /// governing config file kept beside the rules.
+    ///
+    /// # Errors
+    /// I/O failure reading an existing config file, or both configs present
+    /// (the dual-config ambiguity [`Domain::load`] documents).
+    pub fn load(root: &WorkspaceRoot) -> io::Result<Scope> {
+        let md = read_optional(&root.0.join(DOMAIN_CONFIG_PATH))?;
+        let yaml = read_optional(&root.0.join(CONFIG_FILE_NAME))?;
+        match (md, yaml) {
+            (Some(_), Some(_)) => Err(io::Error::other(format!(
+                "two domain configs are present: {DOMAIN_CONFIG_PATH} and {CONFIG_FILE_NAME}. \
+                     They may declare different ignore lists, so which files are attested would \
+                     depend on a precedence rule no reader of either file can see. \
+                     Remedy: keep {DOMAIN_CONFIG_PATH} and delete {CONFIG_FILE_NAME}."
+            ))),
+            (Some(text), None) => Ok(Scope {
+                config: Some(DOMAIN_CONFIG_PATH),
+                domain: Domain::from_markdown(&text),
+            }),
+            (None, Some(text)) => Ok(Scope {
+                config: Some(CONFIG_FILE_NAME),
+                domain: Domain::from_config(&text),
+            }),
+            (None, None) => Ok(Scope {
+                config: None,
+                domain: Domain::new(),
+            }),
+        }
+    }
+}
+
 /// One parsed gitignore-style rule. Matching operates on path *segments*.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Rule {
     /// A `!`-prefixed re-include: when it matches it clears the ignore.
     negate: bool,
