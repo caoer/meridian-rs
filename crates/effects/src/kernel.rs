@@ -699,7 +699,11 @@ impl<'h> ScriptEntry<'h> {
             let Expr::Identifier(ident) = &**callee.as_ref() else {
                 return false;
             };
-            ident.node.ident == "read"
+            // The bindings skip-list (script-result-echo § Border edge): a
+            // name whose last top-level RHS is a bare `read()` is carried by
+            // its echo entry; a bare `run()` (effects mode) is carried by its
+            // `ran` entry's row — neither repeats in the bindings block.
+            ident.node.ident == "read" || ident.node.ident == "run"
         }
 
         /// Every plain name a target binds, at any nesting inside tuples.
