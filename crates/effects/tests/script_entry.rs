@@ -344,7 +344,7 @@ fn a_read_bound_name_is_left_to_its_echo_and_a_recomputed_name_returns() {
     let src = "card = read(\"tasks/0011.md\")\n\
                sec = read(\"tasks/0011.md\", section = \"Goals\")\n\
                status = card[\"fm\"][\"status\"]\n\
-               card = card.words\n";
+               card = card[\"words\"]\n";
     let (eval, _) = run(src);
     let facts = eval.outcome.expect("the script evaluates");
     println!("POPULATION bindings = {:?}", facts.bindings);
