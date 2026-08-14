@@ -1212,6 +1212,11 @@ fn dispatch_read(
             r#ref,
             content,
         } => resolve_cold(ws, &from, &r#ref, content.unwrap_or(false)),
+        // § A.10 pin-graph context assembly — v3-only, read-only, served from
+        // the warm engine's projection through the shared walk computer.
+        Op::Walk { path, down, depth } if v3 => warm_engine_read(registry, ws, |engine| {
+            crate::walk_op::serve(engine, ws, &path, down.unwrap_or(false), depth)
+        }),
         // Write path: bare meridian-fs commit via shared choke-point.
         // No rule packs (`&[]` ⇒ `verdicts: []`). Writes disk; warm engine
         // rebuilds on next read (fingerprint moved). Numbered on the workspace ring.
@@ -1344,6 +1349,7 @@ fn dispatch_read(
         | Op::Read { .. }
         | Op::CheckWrite { .. }
         | Op::Create { .. }
+        | Op::Walk { .. }
         | Op::Mounts => Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp))),
     }
 }
@@ -1465,7 +1471,7 @@ fn resolve_cold(
 /// never a second reading of this miss — offering it taught the caller that an
 /// out-of-domain file is unservable, the opposite of the law (dogfood
 /// 2026-08-09, s10).
-fn file_not_found(path: &wire::Path) -> Box<ErrorBody> {
+pub(crate) fn file_not_found(path: &wire::Path) -> Box<ErrorBody> {
     let mut e = ErrorBody::new(ErrorCode::FileNotFound);
     e.path = Some(path.clone());
     e.message = Some(format!(
