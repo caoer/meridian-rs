@@ -1356,7 +1356,6 @@ pub(crate) mod tests {
 
         let (cols, rows) = store
             .query(
-                ExecProfile::Local,
                 "SELECT TIMESTAMP '2026-08-14 12:00:00' AS ts, \
                         TIMESTAMP '2026-08-14 12:00:00.120000' AS ts_frac, \
                         TIMESTAMPTZ '2026-08-14 12:00:00+00' AS tstz, \
@@ -1437,7 +1436,6 @@ pub(crate) mod tests {
 
         let (_, rows) = store
             .query(
-                ExecProfile::Local,
                 "SELECT {'k': 'abc'} AS plain, \
                         {'s': 'it''s'} AS esc, \
                         {'k': NULL} AS n, \
