@@ -52,7 +52,14 @@ const OWN_BUILD: &str = env!("MRD_BUILD_SHA");
 ///
 /// ONE voice for every lane (read, links, script host), minted here alone, in
 /// the fleet's skew grammar (`child:… daemon:… SKEW`): both identities, the
-/// verdict, the remedy.
+/// verdict, the reason, and fitted suggestions.
+///
+/// The teaching register (ZT ruling 2026-08-14): explain WHY, then suggest
+/// fixes each under its applicability condition — never demand one command,
+/// because no single command applies to every caller (a caller who does not
+/// own the resident must not kill it; a managed install owns its own restart).
+/// Teachings address users, so conditions are applicability ("when you own…"),
+/// never authority ("only the owner may…").
 pub(crate) fn hello_identity_skew(body: Option<&Value>, socket: &Path) -> Result<(), String> {
     let theirs = body
         .and_then(|b| b.get("identity"))
@@ -69,8 +76,18 @@ pub(crate) fn hello_identity_skew(body: Option<&Value>, socket: &Path) -> Result
     Err(format!(
         "build  child:{OWN_BUILD}  daemon:{daemon}  SKEW — the resident daemon on this socket \
          answers from a build that is not this client's; refusing to serve across builds \
-         (docs/wire-contract.md §A.3, the socket law). Restart the daemon and rerun: kill the \
-         pid in {}; the next call auto-starts the current build.",
+         (docs/wire-contract.md §A.3, the socket law).\n\
+         Why: the socket is keyed on the cache root — one root, one socket, one resident \
+         daemon — and a resident survives upgrades until something restarts it. An answer \
+         served across the skew is computed by a build this client did not make: wrong words, \
+         no error — the measured defect the law closes.\n\
+         Fixes — run whichever fits your case:\n\
+           - when you own the resident (you started it, or it serves your own cache root): \
+         restart it — kill the pid in {}; the next call auto-starts the current build.\n\
+           - when an install or deploy pipeline manages this daemon: rerun its install step — \
+         that step owns the restart duty, and one rerun converges every caller on this socket.\n\
+           - when neither is yours: report this skew to whoever operates the daemon, quoting \
+         the two builds above.",
         pidfile.display()
     ))
 }
