@@ -272,6 +272,55 @@ fn dry_is_explained_under_every_verb_that_takes_it() {
     }
 }
 
+/// An accepted flag that no help page names is an invisible flag: a caller can
+/// only find it by reading the source, and a reader who never finds it cannot
+/// know which lane their query ran in. Every flag `mrd sql` accepts is asserted
+/// twice — the parser takes it (so this list cannot rot into fiction), and the
+/// page names it. `--execution-profile` additionally owes its values and its
+/// DEFAULT, because omitting it silently selects the trusted `local` lane.
+#[test]
+fn sql_names_every_flag_it_accepts_and_its_default_profile() {
+    let page = stdout(&mrd(&["sql", "--help"]));
+    for flag in [
+        "--fresh",
+        "--json",
+        "--rebuild",
+        "--execution-profile=agent",
+        "--cwd=.",
+    ] {
+        // Accepted: the parser refuses for the MISSING QUERY, never as unknown.
+        // No query means no workspace is resolved and no DuckDB is opened.
+        let probe = mrd(&["sql", flag]);
+        let err = stderr(&probe);
+        assert!(
+            !err.contains("unknown flag"),
+            "`mrd sql {flag}` is not an accepted flag any more — fix this list:\n{err}"
+        );
+        // Named: the flag as spelled, without its value.
+        let name = flag.split('=').next().unwrap_or(flag);
+        assert!(
+            page.contains(name),
+            "`mrd sql` accepts {name} and its help never names it:\n{page}"
+        );
+    }
+
+    // Positive control for the acceptance probe above.
+    assert!(
+        stderr(&mrd(&["sql", "--bogus"])).contains("unknown flag"),
+        "the acceptance probe must be able to see a rejection"
+    );
+
+    assert!(
+        page.contains("local|agent"),
+        "the profile's accepted values belong on the page:\n{page}"
+    );
+    let options = page.split("options:").nth(1).unwrap_or_default();
+    assert!(
+        options.contains("DEFAULT") && options.contains("`local`"),
+        "the page must state which profile an omitted flag selects:\n{page}"
+    );
+}
+
 /// Help is a page, not a fragment: it opens with the title, explains the gutter
 /// mark it uses, and closes by naming where the rest of the verbs are.
 #[test]
