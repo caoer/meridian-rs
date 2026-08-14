@@ -457,8 +457,8 @@ fn read_frag_with_sections_still_refuses_whole() {
             stderr(&out)
         );
         assert!(
-            stderr(&out).contains("not both"),
-            "the either/or teaching ({frag}): {}",
+            stderr(&out).contains("pass one"),
+            "the pass-one teaching ({frag}): {}",
             stderr(&out)
         );
     }
