@@ -1582,6 +1582,26 @@ defect touches them. A newline in a value is still REFUSED, never sanitized: a
 single-line frontmatter value cannot carry one, and an escaped-scalar workaround
 leaks.
 
+**A.6.3′ The KEY half of the composed line (2026-08-14, dogfood r3 f6).** The
+emitted line is `{key}: {encoded}`, so an unvalidated KEY forges frontmatter
+exactly as an unvalidated value does. **A property key is dotted segments of
+`[A-Za-z0-9_-]+`** — the flat dotted spelling run-plane.md mandates for the
+task grammar (`task.index.caps`) and the birth door already writes. A dot
+SEPARATES and is never a segment byte, so `.`, a leading or trailing dot, and
+`..` are refused; so is any byte outside the segment charset. The owner is
+`policy::defs::yaml_safe_key`, whose `SafeKey` has no other constructor — a
+call site that composes a key without discharging the `Result` does not
+compile.
+
+Both write doors (the rebuild committer and the wire splice face) speak ONE
+refusal, minted at `policy::defs::invalid_property_key_refusal` — it was two
+literals until 2026-08-14, which made a caller's recovery quality a function of
+which door they entered. **Why this widened:** the patch face refused
+`task.index` while the SAME page's birth landed `task.index.caps` and this
+contract's run plane mandated the dotted spelling — three surfaces, two laws,
+and every task-contract iteration paid for it with an out-of-band disk edit.
+The forgery surface is unchanged: a dot carries no `: `, no newline, no `---`.
+
 **A.6.3a The write doors this encoder owns (2026-08-08; the birth door and the
 two caller-facing `fm_key` value scopes added 2026-08-09).** FIVE doors write a
 frontmatter VALUE, and all five encode:
