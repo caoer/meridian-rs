@@ -392,3 +392,214 @@ fn frame_faults_answer_section_8_frames_and_nothing_reaches_the_plane() {
         "nothing reached the plane"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Delta honesty (§ A.8, run-delta ruling 2026-08-14): run applies mint
+// attributed Deltas on the workspace ring — a `sub` consumer sees a governed
+// run as a governed run, never as detector-cadence external change.
+// ---------------------------------------------------------------------------
+
+/// A push subscriber on a second connection. After `sub` acks, the
+/// connection is push-only; frames arrive within `PUSH_WAIT` or not at all.
+const PUSH_WAIT: Duration = Duration::from_secs(10);
+
+impl Conn {
+    fn sub(&mut self, from_seq: u64) -> Value {
+        self.writer
+            .try_clone()
+            .unwrap()
+            .set_read_timeout(Some(PUSH_WAIT))
+            .unwrap();
+        self.call(&json!({"op": "sub", "from_seq": from_seq}))
+    }
+
+    /// Next Notification, or `None` within [`PUSH_WAIT`].
+    fn next_frame(&mut self) -> Option<Value> {
+        let mut line = String::new();
+        match self.reader.read_line(&mut line) {
+            Ok(n) if n > 0 => Some(serde_json::from_str(&line).expect("notification is JSON")),
+            _ => None,
+        }
+    }
+}
+
+/// The core red/green of the run-delta ruling: one starlark apply through the
+/// § A.8 op mints exactly ONE frame — attributed with the caller's actor and
+/// now, the content page and the receipt file as two entries of one `files`,
+/// chained onto the subscriber's ack root — and the detector emits NO
+/// duplicate: the next frame after an external edit is contiguous.
+///
+/// RED before the ruling's code: the apply advances the fingerprint through
+/// the plane's own executor, no frame is minted, and the subscriber sees the
+/// change only as actorless detector-cadence external change.
+#[test]
+fn a_run_apply_pushes_one_attributed_delta_frame() {
+    let tmp = TempDir::new().unwrap();
+    let ws = seeded(&tmp);
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+
+    let mut sub = Conn::open(server.socket_path());
+    assert_eq!(sub.hello_v2(&ws)["ok"], json!(true));
+    let ack = sub.sub(0);
+    assert_eq!(ack["ok"], json!(true), "sub is served: {ack}");
+    let ack_root = ack["body"]["root"].as_str().unwrap().to_owned();
+
+    let mut conn = Conn::open(server.socket_path());
+    conn.hello_v3(&ws);
+    let resp = conn.call(&json!({
+        "id": 31, "op": "run", "invocation": "run-d1", "actor": "seat-77",
+        "now": "2026-08-14T00:00:00Z",
+        "targets": [{"page": "tasks.md", "task": "fix-note", "args": ["done"]}],
+    }));
+    let rows = rows_of(&resp);
+    assert!(rows[0].get("refusal").is_none(), "the apply landed: {resp}");
+
+    let frame = sub.next_frame().expect("a run apply pushes a Delta frame");
+    let delta = &frame["delta"];
+    assert_eq!(delta["seq"], json!(1), "first frame of the epoch: {frame}");
+    assert_eq!(
+        delta["actor"],
+        json!("seat-77"),
+        "§9: the supplied actor threads into the frame: {frame}"
+    );
+    assert_eq!(
+        delta["now"],
+        json!("2026-08-14T00:00:00Z"),
+        "§9: the caller's time fact rides the frame: {frame}"
+    );
+    assert_eq!(
+        delta["root_before"].as_str().unwrap(),
+        ack_root,
+        "the frame chains onto the subscriber's ack root: {frame}"
+    );
+    let paths: Vec<&str> = delta["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        paths,
+        vec!["tasks.md", "receipts/run.md"],
+        "one committed batch = one frame; content first, then receipt: {frame}"
+    );
+
+    // No duplicate follows: the detector's next real cycle sees the ring tip
+    // already carrying the moved root and rebases silently (the
+    // internal-commit arm), so the next frame is the external edit,
+    // contiguous with the run frame. The wait clears the detect-cadence
+    // coalesce window first — an edit landing INSIDE the window diffs from
+    // the pre-commit baseline, the splice lane's own pre-existing posture.
+    std::thread::sleep(Duration::from_millis(1000));
+    external_edit_note(&ws);
+    let next = sub.next_frame().expect("the external edit is detected");
+    assert_eq!(
+        next["delta"]["seq"],
+        json!(2),
+        "no duplicate frame for the run apply in between: {next}"
+    );
+    assert_eq!(
+        next["delta"]["root_before"], frame["delta"]["root_after"],
+        "the chain is contiguous across both producers: {next}"
+    );
+    assert!(
+        next["delta"].get("actor").is_none(),
+        "the external edit stays unattributed — §7.1: {next}"
+    );
+    server.shutdown();
+}
+
+/// An out-of-band note write — the external door, for chain-contiguity gates.
+fn external_edit_note(ws: &Path) {
+    fs::write(ws.join("note.md"), "# Note\n\nout of band\n").unwrap();
+}
+
+/// §9 on the frame, absent-actor arm: a run without a supplied actor is still
+/// a GOVERNED effect — the frame carries the plane's own `run:<task>`
+/// self-label, the same fact the receipt's actor field attests. Actor-absent
+/// on the feed keeps meaning exactly "edited outside the face".
+#[test]
+fn a_run_apply_without_actor_carries_the_planes_self_label() {
+    let tmp = TempDir::new().unwrap();
+    let ws = seeded(&tmp);
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+
+    let mut sub = Conn::open(server.socket_path());
+    assert_eq!(sub.hello_v2(&ws)["ok"], json!(true));
+    assert_eq!(sub.sub(0)["ok"], json!(true));
+
+    let mut conn = Conn::open(server.socket_path());
+    conn.hello_v3(&ws);
+    let resp = conn.call(&run_frame(
+        32,
+        "run-d2",
+        json!([{"page": "tasks.md", "task": "fix-note", "args": ["later"]}]),
+    ));
+    assert!(
+        rows_of(&resp)[0].get("refusal").is_none(),
+        "the apply landed: {resp}"
+    );
+
+    let frame = sub.next_frame().expect("the run apply pushes its frame");
+    assert_eq!(
+        frame["delta"]["actor"],
+        json!("run:fix-note"),
+        "absent caller actor keeps the plane's self-label: {frame}"
+    );
+    server.shutdown();
+}
+
+/// The bash path commits twice — the phase-1 pre-exec receipt and the phase-2
+/// completion — and each committed batch mints its own contiguous frame
+/// (§7.1: one batch, one root advance, one Delta). `echo nope` emits no
+/// descriptor, so both frames name only the receipt file.
+#[test]
+fn a_bash_run_mints_one_frame_per_committed_batch() {
+    let tmp = TempDir::new().unwrap();
+    let ws = seeded(&tmp);
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+
+    let mut sub = Conn::open(server.socket_path());
+    assert_eq!(sub.hello_v2(&ws)["ok"], json!(true));
+    assert_eq!(sub.sub(0)["ok"], json!(true));
+
+    let mut conn = Conn::open(server.socket_path());
+    conn.hello_v3(&ws);
+    let resp = conn.call(&json!({
+        "id": 33, "op": "run", "invocation": "run-d3", "actor": "seat-78",
+        "targets": [{"page": "tasks.md", "task": "sh-note"}],
+    }));
+    let rows = rows_of(&resp);
+    assert!(
+        rows[0].get("refusal").is_none(),
+        "the bash run landed: {resp}"
+    );
+
+    let first = sub.next_frame().expect("phase 1 mints a frame");
+    let second = sub.next_frame().expect("phase 2 mints a frame");
+    for (name, frame) in [("phase 1", &first), ("phase 2", &second)] {
+        assert_eq!(
+            frame["delta"]["actor"],
+            json!("seat-78"),
+            "{name} frame is attributed: {frame}"
+        );
+        let paths: Vec<&str> = frame["delta"]["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["path"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            paths,
+            vec!["receipts/run.md"],
+            "{name}: a receipt-only batch names the receipt file: {frame}"
+        );
+    }
+    assert_eq!(first["delta"]["seq"], json!(1));
+    assert_eq!(second["delta"]["seq"], json!(2));
+    assert_eq!(
+        second["delta"]["root_before"], first["delta"]["root_after"],
+        "the two commits chain: {second}"
+    );
+    server.shutdown();
+}

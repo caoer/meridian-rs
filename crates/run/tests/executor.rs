@@ -99,6 +99,7 @@ fn apply(root: &fs::WorkspaceRoot, r: &Req<'_>) -> Result<executor::Applied, Exe
             exec: None,
             actor: None,
             depth: 0,
+            delta: None,
         },
     )
 }
@@ -635,6 +636,7 @@ fn receipt_commits_the_threaded_exec_facts() {
             exec: Some(&exec),
             actor: None,
             depth: 0,
+            delta: None,
         },
     )
     .unwrap();
@@ -806,6 +808,7 @@ fn the_adapter_maps_canonical_intents_onto_the_production_batch() {
             exec: None,
             actor: None,
             depth: 0,
+            delta: None,
         }),
     )
     .expect("the production executor applies the adapted batch");

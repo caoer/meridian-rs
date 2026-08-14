@@ -48,6 +48,9 @@ pub struct StarlarkDispatch<'a> {
     pub limits: EvalLimits,
     /// Caller-supplied identity (§9, § A.8): threads into the receipt actor.
     pub actor: Option<&'a str>,
+    /// The host's frame mint for committed batches (§ A.8 Delta honesty);
+    /// `None` on the CLI entry and on evaluate-only callers.
+    pub delta: Option<&'a dyn executor::DeltaSink>,
 }
 
 /// What one block dispatch produced: the FULL deterministic effect set (the
@@ -152,6 +155,7 @@ pub fn dispatch(
                     exec: None, // hermetic: no child process
                     actor: d.actor,
                     depth: 0,
+                    delta: d.delta,
                 },
             )
             .map_err(DispatchError::Exec)?,
