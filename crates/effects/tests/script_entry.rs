@@ -562,3 +562,86 @@ fn telemetry_is_unconditional() {
     assert!(bad.outcome.is_err());
     println!("POPULATION parse-fault telemetry = {:?}", bad.telemetry);
 }
+
+// ---- run-walk-real-roots (dogfood r2 D-USER F8): the run ceiling ----
+
+/// A live host whose `run()` is instant: counts calls, answers a canned row.
+struct CountingRunHost {
+    actor: String,
+    run_calls: usize,
+}
+
+impl ScriptHost for CountingRunHost {
+    fn toc(&mut self, path: &str, _armed: &[ArmedEdit]) -> Result<TocFacts, ReadFault> {
+        Err(ReadFault {
+            path: path.to_owned(),
+            section: None,
+            reason: "no pages on this host".to_owned(),
+        })
+    }
+
+    fn cat(
+        &mut self,
+        path: &str,
+        section: &str,
+        _armed: &[ArmedEdit],
+    ) -> Result<SecFacts, ReadFault> {
+        Err(ReadFault {
+            path: path.to_owned(),
+            section: Some(section.to_owned()),
+            reason: "no pages on this host".to_owned(),
+        })
+    }
+
+    fn actor(&self) -> &str {
+        &self.actor
+    }
+
+    fn run_live(
+        &mut self,
+        _page: &str,
+        _task: Option<&str>,
+        _args: Vec<String>,
+        _env: BTreeMap<String, String>,
+        _dry: bool,
+        _line: u32,
+    ) -> Result<serde_json::Value, effects::EffectFault> {
+        self.run_calls += 1;
+        Ok(serde_json::json!({"state": "completed"}))
+    }
+}
+
+/// The run ceiling binds like the read ceiling: a runaway `run()` loop meets a
+/// typed refusal naming the ceiling, and the runs already executed stand —
+/// a live program has no rollback. Without a ceiling, stopping the script
+/// clock during a run's execution would leave a run loop bounded by nothing.
+#[test]
+fn the_run_ceiling_refuses_typed_and_the_executed_runs_stand() {
+    let mut host = CountingRunHost {
+        actor: "8ab41c02".to_owned(),
+        run_calls: 0,
+    };
+    let ctx = ScriptCtx {
+        id: "script".to_owned(),
+        args: BTreeMap::new(),
+        files: vec![],
+        effects: vec!["run".to_owned()],
+    };
+    let src = "\
+for i in range(100):
+    run(\"tasks.md\", task=\"nap\")
+";
+    let eval = eval_script(src, &ctx, ScriptLimits::default(), &mut host);
+    let err = eval
+        .outcome
+        .expect_err("the 65th run must refuse — a live run loop is bounded");
+    let text = err.to_string();
+    assert!(
+        text.contains("run budget of 64 runs per attempt"),
+        "the ceiling names itself; got: {text}"
+    );
+    assert_eq!(
+        host.run_calls, 64,
+        "the runs up to the ceiling executed and stand — never truncated below it"
+    );
+}

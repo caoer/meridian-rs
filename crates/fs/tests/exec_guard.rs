@@ -532,3 +532,138 @@ fn symlinked_config_refused() {
         Err(GuardError::Symlink { .. })
     ));
 }
+
+// ---- run-walk-real-roots (dogfood r2 D-USER F2): symlinks at DECLARED- ----
+// ---- ignored paths are outside detection; a refusal is a count, not  ----
+// ---- one mine per attempt.                                            ----
+
+/// A symlink AT a custom-ignored path — not merely under an ignored real
+/// directory — is outside the detection domain: skipped, never refused. All
+/// three sessions-root forms on one workspace: a link under a real
+/// scratch-named dir (the pruned-parent case that already held), a symlinked
+/// DIRECTORY at an ignored name (the venv `bin` shape), and a FILE link whose
+/// own path the ignore covers.
+#[cfg(unix)]
+#[test]
+fn a_symlink_at_an_ignored_path_is_outside_detection() {
+    let (tmp, root) = workspace();
+    write(
+        &root.0,
+        "meridian/domain.md",
+        "---\nversion: 1\nignore:\n  - \"scratch*/\"\n  - \"bin/\"\n---\n\n# Domain\n",
+    );
+    // The sessions shape: a stranger's venv under a real scratch-named dir…
+    let secret = tmp.path().join("secret.md");
+    std::fs::write(&secret, "out-of-tree\n").unwrap();
+    std::fs::create_dir_all(root.0.join("s1/scratch-r2-verify/venv")).unwrap();
+    std::os::unix::fs::symlink(&secret, root.0.join("s1/scratch-r2-verify/venv/link.md")).unwrap();
+    // …a symlinked DIRECTORY named bin at a non-scratch path…
+    let elsewhere = tmp.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::create_dir_all(root.0.join("results/run-e1")).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, root.0.join("results/run-e1/bin")).unwrap();
+    // …and a FILE link whose own path matches the scratch shape directly.
+    std::fs::create_dir_all(root.0.join("s2")).unwrap();
+    std::os::unix::fs::symlink(&secret, root.0.join("s2/scratch-notes.md")).unwrap();
+
+    let guard = StepGuard::open(&root)
+        .expect("a symlink at a domain-ignored path is outside detection — open must not refuse");
+    assert!(
+        guard.close(&[]).is_ok(),
+        "and close must not refuse it either"
+    );
+}
+
+/// The veto refusal is a count and a first offender — a claim a caller can
+/// size a cleanup by — never one mine per attempt.
+#[cfg(unix)]
+#[test]
+fn the_refusal_names_the_count_and_the_first_offender() {
+    let (tmp, root) = workspace();
+    let secret = tmp.path().join("secret.md");
+    std::fs::write(&secret, "s\n").unwrap();
+    for rel in [
+        "year=2026/venv/x.md",
+        "results/run-1/bin.md",
+        "zeta/late.md",
+    ] {
+        std::fs::create_dir_all(root.0.join(rel).parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&secret, root.0.join(rel)).unwrap();
+    }
+    // A dot-path link stays in the dot gap: walked around, never counted.
+    std::fs::create_dir_all(root.0.join(".obsidian")).unwrap();
+    std::os::unix::fs::symlink(&secret, root.0.join(".obsidian/link.md")).unwrap();
+
+    let err = StepGuard::open(&root).expect_err("three stranger links must refuse");
+    let text = err.to_string();
+    assert!(
+        text.contains("3 symlinked paths refused in exec-window snapshot"),
+        "the count is the claim; got: {text}"
+    );
+    assert!(
+        text.contains("first: results/run-1/bin.md"),
+        "the first offender (sorted) is named; got: {text}"
+    );
+}
+
+/// One link keeps the established single-path wording byte-identical — no
+/// face, golden, or conformance churn for the common case.
+#[cfg(unix)]
+#[test]
+fn a_single_symlink_keeps_the_established_wording() {
+    let (tmp, root) = workspace();
+    let secret = tmp.path().join("secret.md");
+    std::fs::write(&secret, "s\n").unwrap();
+    std::os::unix::fs::symlink(&secret, root.0.join("notes/x.md")).unwrap();
+
+    let err = StepGuard::open(&root).expect_err("one link still refuses");
+    assert_eq!(
+        err.to_string(),
+        "symlinked path refused in exec-window snapshot: notes/x.md",
+    );
+}
+
+/// A `!` re-include lifts the ignore for the path it names, so a symlink AT a
+/// re-included path is back inside the domain — refused, exactly as if the
+/// ignore never covered it. The exclusion narrows detection; it cannot be
+/// aimed to disarm the refusal for an attested file.
+#[cfg(unix)]
+#[test]
+fn a_symlink_at_a_reincluded_path_still_refuses() {
+    let (tmp, root) = workspace();
+    write(
+        &root.0,
+        "meridian/domain.md",
+        "---\nignore:\n  - \"scratch/**\"\n  - \"!scratch/keep.md\"\n---\n\n# Domain\n",
+    );
+    let secret = tmp.path().join("secret.md");
+    std::fs::write(&secret, "s\n").unwrap();
+    std::fs::create_dir_all(root.0.join("scratch")).unwrap();
+    std::os::unix::fs::symlink(&secret, root.0.join("scratch/keep.md")).unwrap();
+
+    assert!(
+        matches!(StepGuard::open(&root), Err(GuardError::Symlink { .. })),
+        "a re-included path is attested — its symlink must refuse"
+    );
+}
+
+/// Reserved paths are engine substrate: an ignore list covering `meridian/**`
+/// never turns a symlinked armed-rules artifact into a skippable stranger.
+#[cfg(unix)]
+#[test]
+fn a_symlinked_reserved_path_never_skips() {
+    let (tmp, root) = workspace();
+    write(
+        &root.0,
+        "meridian/domain.md",
+        "---\nignore:\n  - \"meridian/**\"\n---\n\n# Domain\n",
+    );
+    let evil = tmp.path().join("evil-rules.md");
+    std::fs::write(&evil, "# armed\n").unwrap();
+    std::os::unix::fs::symlink(&evil, root.0.join("meridian/armed-rules.md")).unwrap();
+
+    assert!(
+        matches!(StepGuard::open(&root), Err(GuardError::Symlink { .. })),
+        "the armed-rules artifact stays refused whatever the ignore list says"
+    );
+}
