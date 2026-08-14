@@ -165,6 +165,22 @@ pub struct Document {
 pub fn build(raw: String, nodes: Vec<syntax::DialectNode>) -> Document {
     use syntax::DialectKind as D;
 
+    // Host-candidate blocks for anchor attachment (F-R4 Obsidian parity):
+    // heading lines plus the leaf dialect blocks, collected before the node
+    // walk so every anchor sees the whole block inventory.
+    let hosts: Vec<ByteSpan> = nodes
+        .iter()
+        .filter_map(|n| match n.kind {
+            D::Heading { .. } | D::Fence { .. } | D::Callout { .. } | D::Table | D::Task { .. } => {
+                Some(n.span.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    let fm_span: Option<ByteSpan> = nodes
+        .iter()
+        .find_map(|n| matches!(n.kind, D::Frontmatter { .. }).then(|| n.span.clone()));
+
     let mut frontmatter: Option<Node> = None;
     let mut headings: Vec<(usize, u8, String)> = Vec::new();
     let mut leaves: Vec<Node> = Vec::new();
@@ -188,7 +204,9 @@ pub fn build(raw: String, nodes: Vec<syntax::DialectNode>) -> Document {
                     // not the inline `^id` marker span `syntax` emits (§2.1 /
                     // §4.1 / §6.3). Every other leaf keeps its span.
                     let span = match kind {
-                        NodeKind::Anchor { .. } => anchor_host_span(raw.as_bytes(), &span),
+                        NodeKind::Anchor { .. } => {
+                            anchor_host_span(raw.as_bytes(), &span, &hosts, fm_span.as_ref())
+                        }
                         _ => span,
                     };
                     leaves.push(leaf_node(&raw, kind, span));
@@ -219,26 +237,248 @@ pub fn build(raw: String, nodes: Vec<syntax::DialectNode>) -> Document {
 }
 
 /// The host block-leaf span for an anchor whose inline `^id` marker occupies
-/// `marker`: the marker's own line, start-of-line → line end with the final
-/// terminator excluded (contract §1 leaf-block law; §2.1 write-target; §4.1 /
-/// §6.3 worked `^r-000042` → `[26,286]`). The write-target is the host block the
-/// anchor keys, not the marker span `syntax` emits.
+/// `marker` — standard Obsidian block-reference attachment (F-R4 ruling,
+/// 2026-08-13; ground truth: Obsidian 1.13.6's own block cache, pinned in
+/// `tests/obsidian_block_parity.rs`). Spans are terminator-excluded
+/// (contract §1 leaf-block law; the write-target is this host block).
 ///
-/// A heading-line anchor keys the heading line leaf (terminator excluded),
-/// distinct from the newline-inclusive heading section span.
-fn anchor_host_span(bytes: &[u8], marker: &ByteSpan) -> ByteSpan {
-    let start = bytes[..marker.start]
+/// - **Tail id** (content precedes the marker on its line): the enclosing
+///   leaf block — a `hosts` block containing the line (whole callout/table;
+///   a heading or task line), a list ITEM line (item grain, never the list),
+///   else the whole contiguous paragraph run.
+/// - **Own-line id**: attaches to the nearest preceding block, skipping
+///   blank lines and other marker-only lines, marker line excluded — except
+///   directly below a paragraph or list-item line (no blank), where it JOINS
+///   that block, marker line included (lazy continuation). A blank-separated
+///   id below a list hosts the whole contiguous list.
+/// - **No preceding block** (document start / only frontmatter above) or a
+///   caret inside the frontmatter (literal YAML): the marker's own line —
+///   the anchor stays resolvable at line grain; the face planes exclude the
+///   frontmatter case.
+fn anchor_host_span(
+    bytes: &[u8],
+    marker: &ByteSpan,
+    hosts: &[ByteSpan],
+    fm: Option<&ByteSpan>,
+) -> ByteSpan {
+    let line = line_around(bytes, marker.start);
+    let in_fm = |l: &ByteSpan| fm.is_some_and(|f| f.start <= l.start && l.end <= f.end);
+    if in_fm(&line) {
+        return line;
+    }
+    let own_line = bytes[line.start..marker.start]
+        .iter()
+        .all(u8::is_ascii_whitespace);
+    if !own_line {
+        // Tail id: the enclosing leaf block.
+        if let Some(h) = smallest_host(hosts, line.start) {
+            return h;
+        }
+        if is_list_line(bytes, &line) {
+            return line;
+        }
+        return paragraph_run(bytes, hosts, fm, &line, &line);
+    }
+    // Own-line id: scan upward to the nearest content line; blank lines and
+    // other marker-only lines are transparent to attachment.
+    let mut gap = false;
+    let mut probe = line.clone();
+    loop {
+        let Some(prev) = prev_line(bytes, &probe) else {
+            return line; // document start: the marker keeps its own line
+        };
+        if in_fm(&prev) {
+            return line; // only frontmatter above: the marker keeps its line
+        }
+        if is_blank(bytes, &prev) {
+            gap = true;
+            probe = prev;
+            continue;
+        }
+        if is_marker_only_line(bytes, &prev) {
+            probe = prev;
+            continue;
+        }
+        if let Some(h) = smallest_host(hosts, prev.start) {
+            return h;
+        }
+        if is_list_line(bytes, &prev) {
+            // Direct-below joins the ITEM (item + marker line); a blank gap
+            // attaches to the whole contiguous list.
+            return if gap {
+                list_run(bytes, &prev)
+            } else {
+                prev.start..line.end
+            };
+        }
+        // Paragraph target: a direct-below marker joins the run (lazy
+        // continuation, marker line included); a gap keeps it outside.
+        let last = if gap { prev.clone() } else { line };
+        return paragraph_run(bytes, hosts, fm, &prev, &last);
+    }
+}
+
+/// The line containing byte `pos`: start-of-line → line end, terminator
+/// excluded (`\n` and a preceding `\r`).
+fn line_around(bytes: &[u8], pos: usize) -> ByteSpan {
+    let start = bytes[..pos]
         .iter()
         .rposition(|&b| b == b'\n')
         .map_or(0, |p| p + 1);
-    let mut end = bytes[marker.end..]
+    let mut end = bytes[pos..]
         .iter()
         .position(|&b| b == b'\n')
-        .map_or(bytes.len(), |p| marker.end + p);
+        .map_or(bytes.len(), |p| pos + p);
     if end > start && bytes[end - 1] == b'\r' {
         end -= 1;
     }
     start..end
+}
+
+/// The line before the one starting at `cur.start`, terminator-excluded.
+fn prev_line(bytes: &[u8], cur: &ByteSpan) -> Option<ByteSpan> {
+    if cur.start == 0 {
+        return None;
+    }
+    Some(line_around(bytes, cur.start - 1))
+}
+
+fn is_blank(bytes: &[u8], line: &ByteSpan) -> bool {
+    bytes[line.clone()].iter().all(u8::is_ascii_whitespace)
+}
+
+/// A line that is exactly one block-id marker (the scanner's own-line shape):
+/// optional whitespace, `^` + `[A-Za-z0-9-]+`, optional trailing whitespace.
+fn is_marker_only_line(bytes: &[u8], line: &ByteSpan) -> bool {
+    let s = &bytes[line.clone()];
+    let s = trim_ascii(s);
+    let Some(rest) = s.strip_prefix(b"^") else {
+        return false;
+    };
+    !rest.is_empty() && rest.iter().all(|b| b.is_ascii_alphanumeric() || *b == b'-')
+}
+
+fn trim_ascii(mut s: &[u8]) -> &[u8] {
+    while let [b, rest @ ..] = s
+        && b.is_ascii_whitespace()
+    {
+        s = rest;
+    }
+    while let [rest @ .., b] = s
+        && b.is_ascii_whitespace()
+    {
+        s = rest;
+    }
+    s
+}
+
+/// A list-item line: optional indent, then a `-`/`*`/`+` bullet or an
+/// ordered `1.`/`1)` marker followed by a space or line end.
+fn is_list_line(bytes: &[u8], line: &ByteSpan) -> bool {
+    let s = trim_ascii(&bytes[line.clone()]);
+    if s.starts_with(b"- ") || s.starts_with(b"* ") || s.starts_with(b"+ ") {
+        return true;
+    }
+    if s == b"-" || s == b"*" || s == b"+" {
+        return true;
+    }
+    let digits = s.iter().take_while(|b| b.is_ascii_digit()).count();
+    digits > 0
+        && s.get(digits).is_some_and(|b| *b == b'.' || *b == b')')
+        && s.get(digits + 1).is_none_or(|b| *b == b' ')
+}
+
+/// The innermost host block containing byte `pos` (largest start; shortest
+/// span on a tie).
+fn smallest_host(hosts: &[ByteSpan], pos: usize) -> Option<ByteSpan> {
+    hosts
+        .iter()
+        .filter(|h| h.start <= pos && pos < h.end)
+        .max_by(|a, b| {
+            a.start
+                .cmp(&b.start)
+                .then((b.end - b.start).cmp(&(a.end - a.start)))
+        })
+        .cloned()
+}
+
+/// The maximal contiguous paragraph run through `first`..`last`: extended
+/// over adjacent lines that are non-blank, outside every host block and the
+/// frontmatter, and not list-item lines. Returns `run_start..run_end`
+/// terminator-excluded.
+fn paragraph_run(
+    bytes: &[u8],
+    hosts: &[ByteSpan],
+    fm: Option<&ByteSpan>,
+    first: &ByteSpan,
+    last: &ByteSpan,
+) -> ByteSpan {
+    let in_run = |l: &ByteSpan| {
+        !is_blank(bytes, l)
+            && smallest_host(hosts, l.start).is_none()
+            && !fm.is_some_and(|f| f.start <= l.start && l.end <= f.end)
+            && !is_list_line(bytes, l)
+    };
+    let mut start = first.clone();
+    while let Some(prev) = prev_line(bytes, &start) {
+        if !in_run(&prev) {
+            break;
+        }
+        start = prev;
+    }
+    let mut end = last.clone();
+    while let Some(next) = next_line(bytes, &end) {
+        if !in_run(&next) {
+            break;
+        }
+        end = next;
+    }
+    start.start..end.end
+}
+
+/// The line after the one ending at `cur.end`, terminator-excluded; `None`
+/// at end of input.
+fn next_line(bytes: &[u8], cur: &ByteSpan) -> Option<ByteSpan> {
+    let mut pos = cur.end;
+    if pos < bytes.len() && bytes[pos] == b'\r' {
+        pos += 1;
+    }
+    if pos < bytes.len() && bytes[pos] == b'\n' {
+        pos += 1;
+    } else {
+        return None; // unterminated last line
+    }
+    if pos >= bytes.len() {
+        return None;
+    }
+    Some(line_around(bytes, pos))
+}
+
+/// The whole contiguous list around item line `item`: adjacent non-blank
+/// lines that are list-item lines or indented continuations.
+fn list_run(bytes: &[u8], item: &ByteSpan) -> ByteSpan {
+    let in_list = |l: &ByteSpan| {
+        !is_blank(bytes, l)
+            && (is_list_line(bytes, l)
+                || bytes[l.clone()]
+                    .first()
+                    .is_some_and(|b| *b == b' ' || *b == b'\t'))
+    };
+    let mut start = item.clone();
+    while let Some(prev) = prev_line(bytes, &start) {
+        if !in_list(&prev) {
+            break;
+        }
+        start = prev;
+    }
+    let mut end = item.clone();
+    while let Some(next) = next_line(bytes, &end) {
+        if !in_list(&next) {
+            break;
+        }
+        end = next;
+    }
+    start.start..end.end
 }
 
 /// A leaf/standalone node with its span-derived `node_rev` and no children yet.
@@ -2962,23 +3202,19 @@ mod tests {
     }
 
     /// The rev-on-change guard (node-rev-merkle-spec §2), on the host kinds
-    /// that carry a terminator-excluding leaf span. `at:"end"` puts its
-    /// insertion point ON the terminator, so a `text` opening with a newline
-    /// lands in a fresh line the node never covers: the file changes, the
-    /// node does not, and the armed transition would be a lie.
+    /// that carry a terminator-excluding LINE-grain leaf span. `at:"end"`
+    /// puts its insertion point ON the terminator, so a `text` opening with
+    /// a newline lands in a fresh line the node never covers: the file
+    /// changes, the node does not, and the armed transition would be a lie.
     ///
-    /// HOST KIND IS NOT THE DISCRIMINATOR — paragraph, list-item and heading
-    /// hosts all refuse identically once `text` is held fixed. The v1.0.0
-    /// finding read the divergence as paragraph-vs-list because its two cells
-    /// varied the host AND the text together.
+    /// Since the F-R4 host widening, host kind discriminates by GRAIN:
+    /// list-item and heading hosts stay line-grain and refuse; a paragraph
+    /// host is the whole run, so the same `"\nX"` EXTENDS the paragraph —
+    /// the node's bytes change, the rev moves, and the write is accepted
+    /// with a true transition (see the paragraph case below).
     #[test]
     fn end_append_escaping_its_node_refuses_on_every_anchor_host() {
         for (name, raw, id) in [
-            (
-                "paragraph",
-                "# Top\n\ncompletely different paragraph text here ^zzz-9\n\n## Alpha\n\nbody\n",
-                "zzz-9",
-            ),
             ("list item", "- item one ^li-1\n- item two\n", "li-1"),
             ("heading line", "# Top ^h-1\n\nbody text\n", "h-1"),
         ] {
@@ -2995,6 +3231,33 @@ mod tests {
                 "{name}: names the offender"
             );
         }
+    }
+
+    /// The F-R4 counterpart: a paragraph host is run-grain, so the end-append
+    /// that used to escape the marker's line now lands INSIDE the block — the
+    /// appended line becomes paragraph continuation, the node's bytes change,
+    /// and the guard sees a true rev transition instead of a constant.
+    #[test]
+    fn end_append_on_a_paragraph_host_extends_the_run() {
+        let raw = "# Top\n\ncompletely different paragraph text here ^zzz-9\n\n## Alpha\n\nbody\n";
+        let doc = build(raw.to_string(), syntax::parse(raw));
+        let b = batch(vec![put_edit(
+            Ref::anchor("zzz-9").unwrap(),
+            PutAt::End,
+            "\nX",
+        )]);
+        let SpliceVerdict::Validated(vb) = validate_batch(&doc, None, &b, None) else {
+            panic!("a run-grain host accepts the append that extends it");
+        };
+        let applied = apply_validated(&doc.raw, &vb);
+        let new_doc = build(applied.clone(), syntax::parse(&applied));
+        let after = resolve(&new_doc, &Ref::anchor("zzz-9").unwrap())
+            .expect("anchor still resolves post-append");
+        assert_eq!(
+            &new_doc.raw[after.span.clone()],
+            "completely different paragraph text here ^zzz-9\nX",
+            "the appended line joined the host run"
+        );
     }
 
     /// EVERY scope that can reach the escape, measured at v1.0.0 and held here

@@ -270,7 +270,10 @@ composed read's `props[].value`, so `owner: "[[x]]"` reaches a script as
 `[[x]]` and a comparison against the unquoted form arms
 *(amended 2026-08-07, dogfood-season-1 finding 1)*. `words` is the wire's own
 `words_total` — a
-delivered fact the host carries, never a count the consumer plane computes. A
+delivered fact the host carries, never a count the consumer plane computes.
+It names the FILE (fields over the whole document, `wc -w` parity), never the
+sum of the section rows *(amended 2026-08-13, the counting law: wire-contract
+§ A.3)*. A
 script sees `t.words` for the same reason it sees `t.rev`: the wire answered
 it. **Which op answers it:** the composed `read` (§4.1, toc mode) carries
 `words_total`; the `toc` op's body is `{path, file_rev, root, nodes}` and

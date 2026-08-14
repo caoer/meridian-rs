@@ -11,9 +11,10 @@
 //! heading path resolves against the same `read_facts` rows the read face
 //! publishes, and a `^id` block ref resolves against that table's ANCHOR plane
 //! (W-2, D-B face gate a: every toc-listed anchor is readable AND writeable by
-//! its id). A host outside the face's anchor law (task-, paragraph-,
-//! heading-hosted) is unlisted on the read door and therefore unresolvable on
-//! this one — never a wider write door than the read door beside it.
+//! its id; F-R4 widened the plane to every body host Obsidian addresses). The
+//! one host outside the face's anchor law — a frontmatter caret, literal YAML
+//! — is unlisted on the read door and therefore unresolvable on this one:
+//! never a wider write door than the read door beside it.
 
 use wire::{Edit, EditShape, ErrorBody, ErrorCode, HpathSeg, NodeRev, PutAt, SecRef};
 
@@ -55,10 +56,10 @@ struct PlanIndex {
     anchors: Vec<AnchorFacts>,
     /// Every `^id` the DOCUMENT carries, whatever its host — the kernel's
     /// anchor plane, wider than `anchors` (the face's). The difference is the
-    /// host-excluded set, and a miss splits its teaching on it: an id that
-    /// exists but is host-excluded is taught the containing-section lane, an
-    /// absent id is taught discovery (W-2 acceptance: one message for both
-    /// sent callers in a circle).
+    /// host-excluded set — since F-R4, frontmatter carets alone — and a miss
+    /// splits its teaching on it: an id that exists but is host-excluded is
+    /// taught the `props` plane, an absent id is taught discovery (W-2
+    /// acceptance: one message for both sent callers in a circle).
     doc_anchor_ids: Vec<String>,
     fm_keys: Vec<String>,
 }
@@ -211,10 +212,10 @@ fn collect_anchor_ids(node: &model::Node, out: &mut Vec<String>) {
 /// Resolve a block id for a write arm: the anchor-plane hit, or the arm's
 /// refusal. A miss splits its teaching honestly (W-2 acceptance — one message
 /// for both cases sent callers in a circle): an id the DOCUMENT carries but
-/// the anchor plane excludes (task-, table-, callout-, paragraph-, fence-
-/// hosted) is taught the containing-section lane — the same answer the read
-/// door's unaddressable-host teaching gives; an id the document does not
-/// carry at all keeps the discovery miss (`section_miss`, whose `^` arm now
+/// the anchor plane excludes — since F-R4, a frontmatter caret alone (every
+/// body host resolves) — is taught the `props` plane, the same answer the
+/// read door's unaddressable-host teaching gives; an id the document does
+/// not carry at all keeps the discovery miss (`section_miss`, whose `^` arm
 /// points at the `anchors[]` plane where listed ids actually live). A
 /// duplicate speaks the anchor-plane ambiguity voice (A.3 door symmetry over
 /// duplicate block ids: count the carriers, teach the anchor remedy, name no
@@ -234,9 +235,9 @@ fn resolve_block<'a>(
     idx.anchor(id).map_err(|miss| match miss {
         Miss::NotFound if idx.doc_anchor_ids.iter().any(|a| a == id) => bad_request(format!(
             "no section addressed by {shown}. {clause} Fix: `^{id}` exists in this \
-                 document, but its host block is outside the face's anchor plane \
-                 (`anchors[]` carries list-item hosts only) — write it through its \
-                 containing section: the section's heading path with a `find` needle.",
+                 document, but its host is the frontmatter — a caret there is literal \
+                 YAML, not a block; frontmatter keys are written through the `props` \
+                 plane, not a block ref.",
             shown = policy::defs::go_quote(&crate::display_hpath(addr)),
             clause = crate::NO_PARTIAL_WRITE_CLAUSE,
         )),
@@ -1102,10 +1103,12 @@ mod tests {
         );
     }
 
-    /// Block replace refuses; no `put: ` prefix.
+    /// A task-hosted id lowers since F-R4 (every body host is in the anchor
+    /// plane); the one host-excluded refusal left is the frontmatter caret,
+    /// whose teaching names the `props` plane.
     #[test]
-    fn replace_on_block_refuses_no_section_addressed() {
-        let err = lower1(
+    fn task_hosted_block_lowers_fm_caret_refuses_toward_props() {
+        let lowered = lower1(
             "# Tasks\n\n- [ ] one ^task1\n",
             PlanEdit::Match {
                 hpath: vec![HpathSeg {
@@ -1118,17 +1121,37 @@ mod tests {
                 rev: None,
             },
         )
-        .expect_err("block replace target refuses");
-        // The task-hosted id EXISTS but is outside the anchor plane — the
-        // teaching names the containing-section lane (W-2 acceptance).
+        .expect("a task-hosted id lowers (F-R4)");
+        assert_eq!(
+            lowered.target,
+            SecRef::Anchor {
+                anchor: "task1".into()
+            },
+            "the lowered edit targets the block by its id"
+        );
+
+        let err = lower1(
+            "---\ntitle: x ^fm-c\n---\n# Tasks\n\n- item ^t1\n",
+            PlanEdit::Match {
+                hpath: vec![HpathSeg {
+                    h: "^fm-c".into(),
+                    n: None,
+                }],
+                old: "x".into(),
+                new: "y".into(),
+                all: false,
+                rev: None,
+            },
+        )
+        .expect_err("a frontmatter caret does not resolve");
         assert_eq!(
             err.message.as_deref(),
             Some(
-                "no section addressed by \"^task1\". No edit was applied; the batch is \
-                 refused whole. Fix: `^task1` exists in this document, but its host \
-                 block is outside the face's anchor plane (`anchors[]` carries \
-                 list-item hosts only) — write it through its containing section: the \
-                 section's heading path with a `find` needle."
+                "no section addressed by \"^fm-c\". No edit was applied; the batch is \
+                 refused whole. Fix: `^fm-c` exists in this document, but its host is \
+                 the frontmatter — a caret there is literal YAML, not a block; \
+                 frontmatter keys are written through the `props` plane, not a block \
+                 ref."
             )
         );
     }

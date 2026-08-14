@@ -131,29 +131,32 @@ fn duplicate_anchor_row_counts_carriers_with_no_candidates() {
 /// An id that exists on a host outside the face's anchor plane is
 /// `unaddressable_host` with the TRUE host kind — distinct from `no_match`,
 /// and never carrying nearest candidates (a limit must not imply absence).
+/// Since F-R4 the one such host is a frontmatter caret (the task-hosted DOC
+/// id `^t1` serves now, so the probe uses a frontmatter fixture).
 #[test]
 fn unaddressable_host_row_names_the_true_kind() {
+    let raw = "---\ntitle: x ^fm-c\n---\n# Tasks\n\n- item ^li\n";
     let (rows, _) = unresolved_of(
         read_doc(
-            DOC,
-            Some(vec![ReadSel::parse("Tasks"), ReadSel::parse("^t1")]),
+            raw,
+            Some(vec![ReadSel::parse("Tasks"), ReadSel::parse("^fm-c")]),
         )
         .expect("partial read serves"),
     );
     assert_eq!(rows.len(), 1);
     let row = &rows[0];
     assert_eq!(row.reason, UnresolvedReason::UnaddressableHost);
-    assert_eq!(row.host.as_deref(), Some("task"));
+    assert_eq!(row.host.as_deref(), Some("frontmatter"));
     assert!(row.nearest.is_empty(), "a limit refusal implies no absence");
 }
 
 /// The season-1b addendum law: the nearest-candidate pool spans every `^id`
-/// on the page, non-addressable hosts included — a typo one character short
-/// of a paragraph-hosted id gets its candidate WITH the host kind, so the
-/// render teaches the host-kind gate instead of refusing bare.
+/// on the page, non-addressable hosts included. A frontmatter-hosted near
+/// miss still gets its candidate WITH the host-kind gate; a paragraph-hosted
+/// one (addressable since F-R4) is offered bare.
 #[test]
 fn nearest_pool_includes_non_addressable_ids() {
-    let raw = "# H\n\nprose ^dogfood-anchor\n\n# K\n\nbody\n";
+    let raw = "---\ntitle: x ^dogfood-anchor\n---\n# K\n\nbody\n";
     let (rows, notice) = unresolved_of(
         read_doc(
             raw,
@@ -167,14 +170,30 @@ fn nearest_pool_includes_non_addressable_ids() {
     assert_eq!(
         row.nearest.len(),
         1,
-        "the paragraph-hosted id IS the candidate"
+        "the frontmatter-hosted id IS the candidate"
     );
     assert_eq!(row.nearest[0].anchor, "dogfood-anchor");
-    assert_eq!(row.nearest[0].kind, "paragraph");
+    assert_eq!(row.nearest[0].kind, "frontmatter");
     let notice = notice.expect("notice");
     assert!(
-        notice.contains("^dogfood-anchor (paragraph-hosted"),
+        notice.contains("^dogfood-anchor (frontmatter-hosted"),
         "the prose tense teaches the host-kind gate on the candidate: {notice}"
+    );
+
+    // The addressable twin: a paragraph-hosted near miss is offered bare.
+    let raw = "# H\n\nprose ^dogfood-anchor\n\n# K\n\nbody\n";
+    let (rows, notice) = unresolved_of(
+        read_doc(
+            raw,
+            Some(vec![ReadSel::parse("K"), ReadSel::parse("^dogfood-anchr")]),
+        )
+        .expect("partial read serves"),
+    );
+    assert_eq!(rows[0].nearest[0].kind, "paragraph");
+    let notice = notice.expect("notice");
+    assert!(
+        notice.contains("^dogfood-anchor") && !notice.contains("^dogfood-anchor (paragraph-hosted"),
+        "an addressable candidate is offered bare (F-R4): {notice}"
     );
 }
 
