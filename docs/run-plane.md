@@ -144,7 +144,8 @@ the call count, so the refusal is the budget and nothing else.
 **Effects mode (added 2026-08-13, script-effects ruling; supersedes the
 same-day armed-run design, under which no code shipped).** A submission may
 carry `effects: […]` beside `dry`/`files`/`args`: the list declares which
-effect builtins the program may use. The closed set today is `run`; a
+effect builtins the program may use. The closed set's one home is the wire
+contract's § A.7 effects paragraph (today: `run`, `token_count`); a
 `mutex()` builtin mirroring fleet make-mutex semantics is recorded
 DO-NOT-BUILD, for later. **The flag switches the execution model:**
 
@@ -172,6 +173,17 @@ DO-NOT-BUILD, for later. **The flag switches the execution model:**
   last-writer-wins each other on one section, same as two shell scripts;
   the engine write flock keeps files structurally intact; exclusivity
   belongs to the coordination layer.
+- **`token_count(text)` (token_count ruling leg B, 2026-08-13)** answers
+  the text's real token cost as an int, measured at call time through the
+  harness endpoint the § A.7 frame binds (`token_count_endpoint`) — a
+  socket call wearing a function; the engine never counts tokens. ONE
+  measurement law: the string is measured verbatim (the tool face's
+  `{text}` arm) — no ref resolution, so the tool face's stored-vs-served
+  split cannot enter; compose with `read()` to measure served content. A
+  lane with no endpoint faults "unbound"; the endpoint's refusal faults
+  the program with its words carried whole; the dial deadline caps at the
+  remaining wall clock. A measurement, not an act: no trace entry — a
+  top-level binding echoes like any computed name.
 - **No rollback.** A mid-program fault leaves every prior act landed; the
   trace records how far the program got. The outcome word for a completed
   live program is `effects` (the vocabulary's one addition); `fault` keeps
@@ -699,22 +711,20 @@ these four:
    never shared across connections, no as-of parameter. Zero daemon state
    survives the attempt.
 
-**Rev threading under the entry world (the entry-rev law).** The
-write-follows-read mechanism below says tokens thread from the recording,
-*"using the LAST read of that target, since reads are live."* The rationale
-clause dies on this lane — no read is live — and the mechanism resolves to
-this: **the license is the recording's, the value is the entry world's.** A
-row whose grain the recording holds a read for (any read, overlay-served
-included — the law binds per attempt, and an overlay read is a read of this
-attempt) threads the target's ENTRY rev: the file rev for a `props=` row,
-the section's node rev for an `append`, read off the pinned entry state. A
-row whose target the attempt never read threads nothing and meets the
-engine's own `guard_required`, unchanged. An overlay rev is never a CAS
-token — the pre-batch state the §4.4 guards resolve against is the entry
-state, and a token minted from overlay bytes would name a state no disk
-ever carried. Behavioural parity with the wire-client lane holds for every
-program: read-then-arm and arm-then-read both commit on an unmoved world;
-an unread target refuses whole on both lanes.
+**Rev threading under the entry world (the entry-rev law).** *(Amended
+2026-08-13, the CAS relaxation — the license clause is dissolved.)* Every
+rev-less row threads the target's ENTRY rev, unconditionally: the file rev
+for a `props=` row, the section's node rev for an `append`, read off the
+pinned entry state. No recording gates it — the read ritual is gone, and
+the recording is a trace fact only. An overlay rev is never a CAS token —
+the pre-batch state the §4.4 guards resolve against is the entry state,
+and threading consults only the entry toc, so a token naming bytes no disk
+ever carried cannot be minted. A target the entry state cannot name (an
+absent section) threads nothing and meets the engine's own target-class
+refusal. Behavioural parity with the wire-client lane holds for every
+program: read-then-arm, arm-then-read, and never-read all commit on an
+unmoved world, and a moved world refuses whole on both lanes — at the
+commit's own guard, which is where consistency enforcement lives.
 
 **The bracket is structurally satisfied on this lane.** A composed read is
 bracketed by `file_rev` because its 2+N trips could span states; in-process
@@ -748,6 +758,24 @@ window. A script arming a second content path refuses `multi_file_write_set`
 closed taxonomy stays closed. Multi-file atomicity remains the §6.5 rung-3
 candidate.
 
+*(Justified, 2026-08-13 — ZT's justify-or-remove investigation.)* The rule's
+concrete advantage, stated exactly: **it is what makes the script's
+all-or-nothing promise true with the machinery that exists.** The transaction
+is ONE splice, and a splice addresses one content path by schema; a two-file
+write set would need two splices, and the promise then tears on LIVE paths,
+not just crashes — a refusal (validation, guard, foreign interleave) at the
+second splice leaves the first already landed, a partial commit the face
+swore never happens, and the single-fingerprint guarantee dies with it (the
+second splice commits against a world the first moved). The receipt
+companion is not a counter-example: it rides the SAME sealed batch, and its
+§6.5 crash window is tolerable precisely because a missing receipt is
+lintable and re-derivable — a missing second CONTENT file is user data no
+lint can name and nothing can re-derive. So single-file atomicity is not the
+constraint (two files do ride one batch); **single-splice transactionality
+is**. Removing the rule honestly is the §6.5 rung-3 amendment — an intent
+journal and an N-file sealed batch, engine + wire schema + crash story in
+one change — never a rule deletion.
+
 **Wire-client mode.** When a daemon is resident the script entry does its I/O
 **as a wire client through the one door**: reads lower to `toc`/`cat`, and the
 commit lowers to ONE guarded `splice` carrying `actor`/`now`/`receipt`. §4.4
@@ -767,46 +795,47 @@ and it is the § A.7 op itself, additive. A daemon-side commit advances the
 delta ring like any wire splice — the CLI lane's missing-delta gap
 (wire-contract §18 row 12) does not extend to this lane.
 
-**The commit is guarded per row, by the read the script itself made.** A wire
-door demands a fingerprint for every edit that changes existing content, or an
-explicit `force` (`wire-serve::guard`), and the two grains differ: a
+**The commit is guarded per row, and the consumer plane supplies the tokens.**
+A wire door demands a fingerprint for every edit that changes existing content,
+or an explicit `force` (`wire-serve::guard`), and the two grains differ: a
 `set_property` row takes the **file** rev, because frontmatter semantics are
 file-scoped, and an `append` row takes the **node** rev of the section it lands
-in. A script already holds both — `read(path)` recorded the file rev and the
-section map, `read(path, section=…)` recorded that section's rev — so the
-consumer plane threads each row's token out of the recording, using the LAST
-read of that target, since reads are live. This is the read-then-write CAS the
-wire exists for, not a token minted to satisfy a check: **a row whose target the
-script never read carries no token and meets the engine's own refusal**, which
-is the honest answer to writing what you did not read. The two guards compose —
-`if_fingerprint` says the world stood still, each row's `rev` says the thing it
-edits is still what the script saw.
+in. The consumer plane threads each row's token itself — out of the recording
+when the script's own reads cover the target (the LAST read of that target,
+since this lane's reads are live), and from ONE bare `toc` trip per armed path
+when they do not: the same host autofill the `put` face performs, spoken by
+this lane at commit time. A mint the daemon refuses leaves the row untokened
+and the engine's own guard answers — degrade is loud, never a guessed token.
+The two guards still compose, but they are not peers: `if_fingerprint` says
+the world stood still since entry, and it is the enforcement point — on an
+unmoved world every threaded token matches by construction, and on a moved
+world the §5.1 guard refuses first, whatever any row's rev says.
 
-**Amendment to § The script entry (the write-follows-read law).** The paragraph
-above records a mechanism — where each row's token comes from. It is amended to
-also state the **behavioural law** that mechanism creates, because a face built
-on the mechanism without the law would promise writes the engine refuses:
-
-> **A `put()` row's target must have been READ this attempt, or the row carries
-> no token and the wire door refuses the whole batch.**
-
-Three things follow, and only these three. First, the law binds **per attempt**,
-not per session: the recording is the run's own, so a retry that re-reads is
-guarded on what it re-read, and a run that reads nothing writes nothing. Second,
-it binds **at the row's grain** — a `props={…}` write needs the file read
-(`read(path)`), an `append` needs its section read (`read(path)` for the section
-map, or `read(path, section=…)`), so reading a file's toc licenses both and
-reading one section licenses only that section. Third, the refusal is the
-**engine's**, not the client's: the consumer plane mints nothing to satisfy the
-guard, it declines to, and `guard_required` comes back with the engine's own
-teaching text. `force` is not a script-plane door.
+**Amendment to § The script entry (the write-follows-read law — DISSOLVED,
+2026-08-13).** The paragraph above originally created a behavioural law: *a
+`put()` row's target must have been READ this attempt, or the row carries no
+token and the wire door refuses the whole batch* — the consumer plane declined
+to mint, and an unread target met `guard_required` (the Advisor's 2026-08-07
+golden-v8 ruling pointed the same way). ZT's CAS-relaxation ruling
+(2026-08-13, dogfood F-S2) supersedes both: **appends go rev-free for the
+author** (put parity — append cannot clobber), **destructive rows are
+auto-guarded by the entry-fingerprint snapshot the engine already holds**, and
+**consistency enforcement lives at COMMIT** — the world-moved refusal — never
+as a read-the-section-first ritual on the author. What remains of the old law
+is its per-attempt consistency guarantee, which the entry fingerprint carries
+alone: a committed script is consistent with exactly one workspace
+fingerprint, or the commit refused. `force` is still not a script-plane door,
+and the wire guard itself is unchanged — one token law for every door; the
+lanes satisfy it for the author.
 
 Evidence, and where it is held: `crates/mrd/tests/script_golden_live.rs` runs
 every golden scenario (`inbox/run-golden.html` v9) through the real entry against
 a **live daemon** and asserts that every `plan_edits[]` row on the socket carries
-a token its own reads published. All of them conform. The same suite pins the
-law's other direction with a counter-example — an append to a target the attempt
-never read must be refused whole by the engine, not silently accepted.
+a token its own reads published — the conforming half. The relaxation's half is
+pinned by the same suite's unread-target scenario (the lane mints the token, the
+engine accepts the batch) and, engine-side, by `crates/registry/tests/script_op.rs`
+(props and append with zero reads commit on an unmoved world) beside the
+module-grain moved-world pin (a foreign edit after entry refuses the commit).
 
 **`--dry` is a rehearsal, not a commit.** The splice carries `dry: true`, so the
 daemon builds the whole effect set and applies none of it; the response — with

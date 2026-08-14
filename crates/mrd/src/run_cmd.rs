@@ -288,6 +288,9 @@ fn execute(
         // runs (§ A.8 amends the WIRE arm only).
         actor: None,
         step_cwd: None,
+        // A separate process with no ring in reach: CLI commits stay
+        // external change (§18 row 12; § A.8 Delta honesty, CLI arm).
+        delta: None,
     };
 
     // Bash stdout streams live to our stdout while the record tees it out-of-tree; starlark
@@ -540,6 +543,7 @@ fn dry_starlark(
         takeover: false,
         limits: EvalLimits::default(),
         actor: None,
+        delta: None, // dry: evaluate-only, nothing commits
     };
     let effects =
         run::dispatch_starlark::evaluate(&dispatch).map_err(|e| fail_run(format!("eval: {e}")))?;

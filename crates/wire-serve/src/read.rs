@@ -324,15 +324,12 @@ fn frag_miss_message(asked: &str, display: &str) -> String {
 ///
 /// # Errors
 /// The refusal phrase, ready for a host's typed fault.
-pub fn selector_to_secref(
-    doc: &model::Document,
-    sel: &wire::ReadSel,
-) -> Result<wire::SecRef, String> {
+pub fn selector_to_secref(doc: &model::Document, sel: &wire::ReadSel) -> Result<SecRef, String> {
     match sel {
-        wire::ReadSel::Hpath { hpath } => Ok(wire::SecRef::Hpath {
+        wire::ReadSel::Hpath { hpath } => Ok(SecRef::Hpath {
             hpath: hpath.clone(),
         }),
-        wire::ReadSel::Anchor { anchor } => Ok(wire::SecRef::Anchor {
+        wire::ReadSel::Anchor { anchor } => Ok(SecRef::Anchor {
             anchor: anchor.clone(),
         }),
         wire::ReadSel::Dewey { .. } => {
@@ -340,7 +337,7 @@ pub fn selector_to_secref(
                 wire_map::facts::read_facts(&wire_map::project_toc(doc), doc.raw.as_bytes());
             let matches = wire_map::facts::selector_matches(&facts, sel);
             match matches.as_slice() {
-                &[fact] => Ok(wire::SecRef::Hpath {
+                &[fact] => Ok(SecRef::Hpath {
                     hpath: fact.hpath.clone(),
                 }),
                 [] => Err(format!("no section addressed by \"{}\"", sel.display())),

@@ -1197,6 +1197,7 @@ fn apply_generation(
         exec: None,
         actor: None,
         depth: pending.depth,
+        delta: None, // CLI host: no ring in reach (§18 row 12)
     });
     let applied = run::executor::apply(&root, &request).map_err(|error| {
         ProofFault::Refused(format!(
