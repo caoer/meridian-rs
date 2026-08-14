@@ -136,6 +136,18 @@ const DOORS: &[DoorPin] = &[
         label: "commit_batch (the public commit seam)",
         class: Door::Guarded,
     },
+    // The §4.4 SET commit seam: `commit_batch`'s N-file twin. One candidate
+    // per member (read#2 + re-validate per entry), each passed through
+    // `stored_form_guard_lazy` before any byte lands — the guard discharges
+    // inside the same function that mints, exactly like `commit_batch`.
+    DoorPin {
+        file: WRITE_RS,
+        door_fn: "commit_set",
+        mint_fn: "commit_set",
+        guard_fn: Some("commit_set"),
+        label: "commit_set (the §4.4 set-form commit seam)",
+        class: Door::Guarded,
+    },
     // ---- outside U12's named files ----
     // Retired doors are deleted, not tombstoned: every pin is verified to
     // exist at its file and function, so a pin naming a deleted function is
@@ -506,9 +518,13 @@ fn the_arithmetic_closes_and_no_class_is_empty() {
 
     assert_eq!(translated, 2, "splice and create carry user-supplied bytes");
     assert_eq!(
-        guarded, 3,
-        "lock_write, the promotion and commit_batch land engine-composed bytes. \
-         WAS 4: U9b's v1→v2 lock migration door lived here too, until DECISION 26 \
+        guarded, 4,
+        "lock_write, the promotion, commit_batch and commit_set land \
+         engine-composed bytes (commit_set joined 2026-08-14 — the §4.4 \
+         set-form commit seam, commit_batch's N-file twin, guard discharged \
+         per member inside the same function). \
+         Before commit_set this was 3; and WAS 4 once before: \
+         U9b's v1→v2 lock migration door lived here too, until DECISION 26 \
          (ZT 2026-08-04) deleted it with its crate — the two field locks were \
          hand-migrated, so the door had nothing left to migrate. It was a SECOND \
          door only because it had to locate a block the live reader refuses to \
