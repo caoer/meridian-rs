@@ -5,7 +5,7 @@
 //! with the value DECODED through § A.6.1; `prop_rev`/`span` agree with the
 //! `cat` `fm_key` grain (one rev per node — no second derivation) and stay over
 //! the STORED bytes (§ A.6.2); always emitted, empty without frontmatter;
-//! document-grain — neither `frag` nor sections mode scopes it away.
+//! document-grain — neither a `toc` scope nor sections mode scopes it away.
 
 use serde_json::{Value, json};
 
@@ -84,7 +84,7 @@ fn props_are_always_emitted_empty_without_frontmatter() {
     );
 }
 
-/// Document-grain: a `frag`-scoped toc read and a sections-mode read both
+/// Document-grain: a `toc`-scoped read and a sections-mode read both
 /// serve the full plane — frontmatter belongs to the document, not to any
 /// subtree, so no scope removes it.
 #[test]
@@ -93,7 +93,7 @@ fn props_are_document_grain_in_both_modes() {
     let frames = serve(
         &dir,
         &[
-            json!({"id":1,"op":"read","path":"corpus/basic.md","frag":[{"h":"Notes"}]}),
+            json!({"id":1,"op":"read","path":"corpus/basic.md","toc":{"hpath":[{"h":"Notes"}]}}),
             json!({"id":2,"op":"read","path":"corpus/basic.md",
                    "sections":[{"hpath":[{"h":"Todo"}]}]}),
         ],
@@ -109,7 +109,7 @@ fn props_are_document_grain_in_both_modes() {
         assert_eq!(
             keys,
             vec!["type", "status"],
-            "document-grain: no mode and no frag scopes the plane ({frame})"
+            "document-grain: no mode and no toc scope removes the plane ({frame})"
         );
     }
 }

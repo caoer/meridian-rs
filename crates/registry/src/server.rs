@@ -1158,7 +1158,7 @@ fn dispatch_read(
         // Composed read — v3-only (§3.2); one warm-engine snapshot (D6).
         Op::Read {
             path,
-            frag,
+            toc,
             sections,
             display_path,
             actor,
@@ -1167,7 +1167,7 @@ fn dispatch_read(
             ws,
             &path,
             &wire_serve::read::ReadParams {
-                frag,
+                toc,
                 sections,
                 display_path,
                 actor,

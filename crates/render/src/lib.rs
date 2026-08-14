@@ -145,7 +145,7 @@ pub struct RenderedSection {
 #[derive(Debug, Clone)]
 pub enum RenderJob<'a> {
     /// The shape table over already-filtered rows (`wire_map::facts::
-    /// toc_rows` applies the frag scope; refusals are the op layer's).
+    /// toc_rows` applies the resolved toc scope; refusals are the op layer's).
     Toc {
         header: Header<'a>,
         rows: &'a [&'a ReadFact],
@@ -403,7 +403,7 @@ mod tests {
     #[test]
     fn the_toc_face_is_one_toon_document() {
         let (doc, facts) = doc_and_facts(RAW);
-        let rows = toc_rows(&facts, &[]);
+        let rows = toc_rows(&facts, None);
         let words_total: u64 = facts.iter().map(|f| f.words).sum();
         let header = Header {
             display_path: "$S/x.md",
@@ -439,7 +439,7 @@ mod tests {
     #[test]
     fn an_empty_toc_renders_as_an_empty_array() {
         let (doc, facts) = doc_and_facts("just prose, no headings\n");
-        let rows = toc_rows(&facts, &[]);
+        let rows = toc_rows(&facts, None);
         let header = Header {
             display_path: "p",
             file_rev: &doc.root.node_rev.0,
