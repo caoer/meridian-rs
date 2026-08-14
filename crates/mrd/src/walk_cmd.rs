@@ -159,41 +159,15 @@ pub(crate) fn lock_addressed_roots(docs: &BTreeMap<String, Document>) -> BTreeSe
     walk::lock_addressed_roots(docs)
 }
 
-/// Every mount root the corpus's wikilink/embed targets name — the set of roots whose pages the
-/// link plane (and the SQL projection of it) can resolve into. Mounted root corpora exist so
-/// `resolve_ref` can answer a rooted spelling, so a workspace carrying none needs zero.
-///
-/// `path` mirrors `query::links_rooted`: `None` scans the whole ambient corpus; `Some` scans
-/// that one file. The root name is read from [`addr::Addr::parse`] of each target — the same
-/// grammar the resolver peels. A target outside the grammar contributes no root.
+/// Every mount root the corpus's wikilink/embed targets name — moved to the
+/// walk plane ([`view::walk::link_addressed_roots`]) beside its lock-address
+/// sibling, so the CLI verbs and the § A.11 wire serve path read ONE owner;
+/// this spelling stays for the in-crate callers.
 pub(crate) fn link_addressed_roots(
     docs: &BTreeMap<String, Document>,
     path: Option<&str>,
 ) -> BTreeSet<addr::MountName> {
-    let mut roots = BTreeSet::new();
-    for (source, doc) in docs {
-        if path.is_some_and(|p| p != source.as_str()) {
-            continue;
-        }
-        collect_link_roots(&doc.root, &mut roots);
-    }
-    roots
-}
-
-fn collect_link_roots(node: &model::Node, roots: &mut BTreeSet<addr::MountName>) {
-    match &node.kind {
-        model::NodeKind::Wikilink { target, .. } | model::NodeKind::Embed { target, .. } => {
-            if let Ok(addr) = addr::Addr::parse(target)
-                && let Some(root) = addr.root()
-            {
-                roots.insert(root.clone());
-            }
-        }
-        _ => {}
-    }
-    for child in &node.children {
-        collect_link_roots(child, roots);
-    }
+    walk::link_addressed_roots(docs, path)
 }
 
 /// The parsed `walk` invocation: the root page, direction, optional depth bound, output format.

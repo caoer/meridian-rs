@@ -29,6 +29,7 @@ pub mod ring;
 mod run_op;
 mod script_op;
 mod server;
+mod sql_op;
 mod state;
 mod walk_op;
 

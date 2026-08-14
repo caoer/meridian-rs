@@ -1,24 +1,33 @@
-//! `mrd sql <query>` — operator SQL over an ephemeral in-process `:memory:`
-//! projection of the corpus, under the honest-tense freshness frame. Writes
-//! nothing to disk; carries no wire vocabulary (the published-view organ and
-//! its `view_path` wire op were DROPPED by ruling — `wire-contract.md` §10.4,
-//! 2026-08-06).
+//! `mrd sql <query>` — operator SQL over the corpus projection, under the
+//! honest-tense freshness frame.
+//!
+//! # Lanes (ruling OQ5 — the ladder, in order)
+//! 1. *(daemon route — lifecycle-B wire residency; the daemon holds the file)*
+//! 2. **direct file**: the fingerprint-pinned append-only `sql.duckdb` cache
+//!    in the workspace cache drawer ([`view::store`]) — open read-write when
+//!    unheld, append the corpus delta, query through the always-rollback
+//!    lane;
+//! 3. **`:memory:`**: the ephemeral build, when no cache root resolves or the
+//!    file is held/unusable.
+//!
+//! The old `wire-contract.md` §10.4 file-organ drop is knowingly superseded
+//! for sql by the 2026-08-14 lifecycle-B ruling (`view::store` module docs).
 //!
 //! # DML contract
-//! The contract is **writes nothing durable**, not read-only SQL: DML against
-//! the ephemeral projection is accepted and dies with the process. A
-//! statement-kind guard would add a SQL classifier to prevent self-harm with
-//! no durability behind it — under `agent` the sandbox already blocks every
-//! durable exit (`enable_external_access=false`, `lock_configuration=true`).
-//! `dml_against_the_ephemeral_view_is_accepted_and_writes_nothing` pins this.
+//! The contract is **writes nothing durable**, not read-only SQL. On the
+//! cache lane every query runs `BEGIN → statement → ROLLBACK`: DML against
+//! the `hist.*` tables executes and dies at call end; DML against a latest
+//! view refuses through `DuckDB`'s own error, extended with the remedy
+//! (ruling OQ1 — a deliberate parity change vs the ephemeral lane, where the
+//! projection tables are base tables and DML dies with the process instead).
 //!
 //! # Order of operations (§Q3, buffered)
-//! 1. fold `F0` + build the `:memory:` view from the corpus;
-//! 2. apply the `--execution-profile` sandbox (B5 order), execute the query to
-//!    completion, materialise all rows;
+//! 1. fold `F0` + bring the projection to `F0` (cache append, or `:memory:`
+//!    build);
+//! 2. execute the query to completion under the `--execution-profile`
+//!    sandbox (B5 order), materialise all rows;
 //! 3. sample `live` = a full-corpus disk fold ([`fs::domain_snapshot`]) last,
-//!    so it post-dates the result — an ephemeral build MUST fold post-result
-//!    to be correct;
+//!    so it post-dates the result;
 //! 4. `FRESH_AT_SAMPLE` iff `as_of == live`, else `STALE` (or `RACED` under a
 //!    bounded `--fresh` that could not converge).
 //!
@@ -27,11 +36,13 @@
 //! post-result fold sets `stale = true|false`; a SQL error yields no rows to
 //! certify, so it reports `live_source=none, stale=null` (`state=UNVERIFIED`).
 
+use std::collections::BTreeMap;
+use std::io::{BufRead as _, BufReader, Write as _};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
-use duckdb::Connection;
-use duckdb::types::ValueRef;
 use serde_json::{Value, json};
+use view::store::{ColMeta, ExecProfile, SqlStore};
 
 use crate::resolve::resolve_runtime;
 use crate::{Fail, current_dir};
@@ -39,55 +50,29 @@ use crate::{Fail, current_dir};
 /// The buffered top-level JSON document's schema version (OD9).
 const JSON_SCHEMA_VERSION: u32 = 1;
 
-/// The `local` (trusted) profile RAM cap — generous, only to avoid exhausting
-/// host RAM; the user already has a shell (B5).
-const LOCAL_MEMORY_LIMIT: &str = "4GB";
-/// The `agent` (untrusted) profile RAM cap (B5).
-const AGENT_MEMORY_LIMIT: &str = "512MB";
-/// The `agent` profile CPU fan-out bound (B5).
-const AGENT_THREADS: i64 = 1;
-/// The `agent` profile deep-parse-bomb bound (B5; `DuckDB` default is 1000).
-const AGENT_MAX_EXPRESSION_DEPTH: u32 = 1000;
-
 // ---------------------------------------------------------------------------
 // arguments
 // ---------------------------------------------------------------------------
 
-/// The `--execution-profile` selector (B5/OD9). A missing flag defaults to
-/// `local`, so untrusted agent SQL can never silently fall into the trusted
+/// Parse the `--execution-profile` selector (B5/OD9). A missing flag defaults
+/// to `local`, so untrusted agent SQL can never silently fall into the trusted
 /// profile — the agent caller MUST pass `--execution-profile=agent`.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ExecProfile {
-    /// Trusted local CLI: `memory_limit` only, no sandbox.
-    Local,
-    /// Untrusted agent / proxy: the locked `DuckDB` sandbox (B5 order).
-    Agent,
-}
-
-impl ExecProfile {
-    fn label(self) -> &'static str {
-        match self {
-            ExecProfile::Local => "local",
-            ExecProfile::Agent => "agent",
-        }
-    }
-
-    fn parse(value: &str) -> Result<Self, Fail> {
-        match value {
-            "local" => Ok(ExecProfile::Local),
-            "agent" => Ok(ExecProfile::Agent),
-            other => Err(Fail::tool(format!(
-                "unknown --execution-profile `{other}` (expected `local` or `agent`)"
-            ))),
-        }
+fn parse_profile(value: &str) -> Result<ExecProfile, Fail> {
+    match value {
+        "local" => Ok(ExecProfile::Local),
+        "agent" => Ok(ExecProfile::Agent),
+        other => Err(Fail::tool(format!(
+            "unknown --execution-profile `{other}` (expected `local` or `agent`)"
+        ))),
     }
 }
 
 /// The parsed `mrd sql` invocation.
 struct SqlArgs {
-    query: String,
+    query: Option<String>,
     fresh: bool,
     json: bool,
+    rebuild: bool,
     profile: ExecProfile,
     cwd: Option<PathBuf>,
 }
@@ -97,6 +82,7 @@ impl SqlArgs {
         let mut query: Option<String> = None;
         let mut fresh = false;
         let mut json = false;
+        let mut rebuild = false;
         let mut profile = ExecProfile::Local;
         let mut cwd: Option<PathBuf> = None;
 
@@ -114,9 +100,12 @@ impl SqlArgs {
                 // path; the ephemeral build always folds, so accept-and-ignore
                 // would lie. Refused as unknown below.
                 "--json" => json = true,
+                // The explicit rebuild verb (ruling OQ3) — delete the cache
+                // file and cold-build at the live corpus; doubles as repair.
+                "--rebuild" => rebuild = true,
                 "--execution-profile" => {
                     let v = take_value(flag, inline, tail, &mut i)?;
-                    profile = ExecProfile::parse(&v)?;
+                    profile = parse_profile(&v)?;
                 }
                 "--cwd" => {
                     let v = take_value(flag, inline, tail, &mut i)?;
@@ -135,12 +124,14 @@ impl SqlArgs {
             i += 1;
         }
 
-        let query =
-            query.ok_or_else(|| Fail::tool("mrd sql needs a <query> argument".to_owned()))?;
+        if query.is_none() && !rebuild {
+            return Err(Fail::tool("mrd sql needs a <query> argument".to_owned()));
+        }
         Ok(SqlArgs {
             query,
             fresh,
             json,
+            rebuild,
             profile,
             cwd,
         })
@@ -206,12 +197,6 @@ impl LiveSource {
     }
 }
 
-/// One result column (OD9 JSON `columns` element).
-struct ColMeta {
-    name: String,
-    ty: String,
-}
-
 /// The buffered result + its freshness frame — the OD9 document, rendered to
 /// human or JSON.
 struct Frame {
@@ -248,7 +233,7 @@ impl Frame {
 // entry point
 // ---------------------------------------------------------------------------
 
-/// Run `mrd sql <query> [--fresh] [--json]
+/// Run `mrd sql <query> [--fresh] [--json] [--rebuild]
 /// [--execution-profile local|agent] [--cwd PATH]`.
 ///
 /// # Errors
@@ -257,13 +242,6 @@ impl Frame {
 /// an error — the frame is the honest report.
 pub(crate) fn run(tail: &[String]) -> Result<(), Fail> {
     let args = SqlArgs::parse(tail)?;
-    let frame = execute(&args)?;
-    emit(&args, &frame)
-}
-
-/// The §Q3 order-of-operations: resolve the workspace, build the ephemeral
-/// `:memory:` view, query it under the post-result fold.
-fn execute(args: &SqlArgs) -> Result<Frame, Fail> {
     let cwd = match &args.cwd {
         Some(p) => p.clone(),
         None => current_dir()?,
@@ -274,25 +252,345 @@ fn execute(args: &SqlArgs) -> Result<Frame, Fail> {
             cwd.display()
         ))
     })?;
-    ephemeral_query(&resolved.workspace, args)
+    let workspace = resolved.workspace;
+
+    // Ladder rung 1 (ruling OQ5): under the agent profile, the resident
+    // daemon answers first — lifecycle B makes it the cache file's single
+    // owner, so a held file is served warm instead of degraded around.
+    // Local-profile queries skip the daemon deliberately: the wire lane is
+    // always the agent sandbox, and silently downgrading an operator's
+    // local query would change its semantics.
+    if args.profile == ExecProfile::Agent
+        && !args.rebuild
+        && let Some(frame) = daemon_route(&workspace, &args)
+    {
+        return emit(&args, &frame);
+    }
+
+    let loaded = match load_corpus(&workspace) {
+        Ok(loaded) => loaded,
+        Err(msg) => return emit(&args, &Frame::no_view(args.profile, msg)),
+    };
+    let mut lane = open_lane(&loaded.root.0, args.rebuild);
+
+    let Some(_) = &args.query else {
+        // `--rebuild` alone: cold-build the cache and report; no query to run.
+        return rebuild_only(&mut lane, &loaded);
+    };
+
+    let frame = query_frame(&args, &loaded, &mut lane)?;
+    emit(&args, &frame)
+}
+
+/// One `--rebuild`-without-query invocation: sync the fresh file cold, speak
+/// the receipt. On the `:memory:` lane there is no file to rebuild — refuse
+/// loud instead of pretending.
+fn rebuild_only(lane: &mut Lane, loaded: &Loaded) -> Result<(), Fail> {
+    match lane {
+        Lane::Cache(store) => {
+            let counts = sync_store(store, loaded)?;
+            let (generation, docs) = counts.map_or((0, 0), |c| (c.generation, c.added));
+            println!(
+                "rebuilt {} at {} (gen {generation}, {docs} docs)",
+                store.file().display(),
+                loaded.f0
+            );
+            Ok(())
+        }
+        Lane::Memory => Err(Fail::tool(
+            "no cache file to rebuild (no cache root resolves here — the :memory: lane has nothing on disk)"
+                .to_owned(),
+        )),
+    }
 }
 
 // ---------------------------------------------------------------------------
-// the ephemeral `:memory:` build path
+// ladder rung 1: the resident daemon (§ A.11)
 // ---------------------------------------------------------------------------
 
-/// Build an ephemeral `:memory:` view over the workspace corpus and query it
-/// under the post-result fold. Writes nothing to disk. An ephemeral build
-/// MUST fold post-result to be correct — it is never unconditionally fresh.
-fn ephemeral_query(workspace: &Path, args: &SqlArgs) -> Result<Frame, Fail> {
-    let built = match build_and_run_ephemeral(workspace, args) {
-        Ok(b) => b,
-        // No buildable corpus ⇒ NO_VIEW loud, never empty-as-if-fresh.
-        Err(EphemeralError::NoCorpus(msg)) => return Ok(Frame::no_view(args.profile, msg)),
-        Err(EphemeralError::Fail(f)) => return Err(f),
-    };
+/// One NDJSON exchange on an open daemon stream.
+fn daemon_call(
+    writer: &mut UnixStream,
+    reader: &mut BufReader<UnixStream>,
+    request: &Value,
+) -> Option<Value> {
+    let mut line = request.to_string();
+    line.push('\n');
+    writer.write_all(line.as_bytes()).ok()?;
+    writer.flush().ok()?;
+    let mut response = String::new();
+    reader.read_line(&mut response).ok()?;
+    serde_json::from_str(&response).ok()
+}
 
-    let EphemeralRun {
+/// Ask the resident daemon (§ A.11). `None` = no daemon answered — no
+/// socket, a refused handshake, or an engine predating the `sql` cap — and
+/// the caller falls down the ladder. A `--fresh` STALE answer re-asks once
+/// (the daemon re-warms + appends per call), mirroring the local bound.
+fn daemon_route(workspace: &Path, args: &SqlArgs) -> Option<Frame> {
+    let query = args.query.as_deref()?;
+    let client = registry::Client::from_default().ok()?;
+    let stream = UnixStream::connect(client.socket_path()).ok()?;
+    let mut writer = stream.try_clone().ok()?;
+    let mut reader = BufReader::new(stream);
+
+    let hello = daemon_call(
+        &mut writer,
+        &mut reader,
+        &serde_json::json!({
+            "op": "hello", "proto": 1, "contract": "v3",
+            "workspace": workspace.to_str()?,
+        }),
+    )?;
+    if hello.get("ok") != Some(&Value::Bool(true)) {
+        return None;
+    }
+    let caps = hello.get("body")?.get("caps")?.as_array()?;
+    if !caps.iter().any(|c| c.as_str() == Some("sql")) {
+        // The resident engine predates § A.11 — fall down the ladder (the
+        // file is then also unheld by a sql owner, so direct-open can win).
+        return None;
+    }
+
+    let ask = serde_json::json!({"id": 1, "op": "sql", "query": query});
+    let mut frame = daemon_sql_frame(&daemon_call(&mut writer, &mut reader, &ask)?, args.profile)?;
+    if args.fresh && frame.state == QueryState::Stale {
+        frame = daemon_sql_frame(&daemon_call(&mut writer, &mut reader, &ask)?, args.profile)?;
+        if frame.state == QueryState::Stale {
+            frame.state = QueryState::Raced;
+        }
+    }
+    Some(frame)
+}
+
+/// Project one § A.11 response onto the OD9 frame. A daemon-side fault
+/// (`ok:false`) answers `None` — the ladder degrades rather than guessing.
+fn daemon_sql_frame(response: &Value, profile: ExecProfile) -> Option<Frame> {
+    if response.get("ok") != Some(&Value::Bool(true)) {
+        return None;
+    }
+    let body = response.get("body")?;
+    let as_of = body.get("as_of_fingerprint")?.as_str()?.to_owned();
+    let live = body.get("live").and_then(Value::as_str).map(str::to_owned);
+    let error = body.get("error").and_then(Value::as_str).map(str::to_owned);
+    let state = match body.get("state")?.as_str()? {
+        "FRESH_AT_SAMPLE" => QueryState::FreshAtSample,
+        "STALE" => QueryState::Stale,
+        _ => QueryState::Unverified,
+    };
+    let columns = body
+        .get("columns")?
+        .as_array()?
+        .iter()
+        .filter_map(|c| {
+            Some(ColMeta {
+                name: c.get("name")?.as_str()?.to_owned(),
+                ty: c.get("type")?.as_str()?.to_owned(),
+            })
+        })
+        .collect();
+    let rows = body
+        .get("rows")?
+        .as_array()?
+        .iter()
+        .filter_map(|r| r.as_array().cloned())
+        .collect();
+    Some(Frame {
+        as_of: Some(as_of),
+        live,
+        profile,
+        live_source: if state == QueryState::Unverified {
+            LiveSource::None
+        } else {
+            LiveSource::Fold
+        },
+        stale: match state {
+            QueryState::FreshAtSample => Some(false),
+            QueryState::Stale | QueryState::Raced => Some(true),
+            _ => None,
+        },
+        state,
+        columns,
+        rows,
+        error,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// corpus load — shared by both lanes
+// ---------------------------------------------------------------------------
+
+/// The parsed corpus + everything a projection needs, loaded once per attempt.
+struct Loaded {
+    root: fs::WorkspaceRoot,
+    f0: String,
+    docs: BTreeMap<String, model::Document>,
+    mounts: crate::walk_cmd::Mounts,
+    domain: fs::domain::Domain,
+}
+
+/// Load the corpus for one attempt; an `Err` is the `NO_VIEW` message (a
+/// genuinely absent/unreadable corpus — loud, never empty-as-if-fresh).
+fn load_corpus(workspace: &Path) -> Result<Loaded, String> {
+    let canonical = workspace::canonicalize(workspace)
+        .map_err(|e| format!("cannot resolve workspace {}: {e}", workspace.display()))?;
+    let root = fs::WorkspaceRoot(canonical);
+    // F0 is the stamp: `fold_live` folds the same way, so F0 vs F_now can only
+    // differ when the corpus moved.
+    let (files, f0) =
+        fs::domain_snapshot(&root).map_err(|e| format!("cannot read the corpus: {e}"))?;
+    let (_index, docs, unserved) = fs::build_corpus(files);
+    crate::voice_unserved(&unserved);
+    crate::voice_excluded(&root, &docs, &unserved);
+    // The projection is built with mount authority, from the same loader the
+    // pin and link planes use; without it a cross-vault link projects as
+    // dangling. Corpora narrow to the roots ambient wikilink/embed targets
+    // name; the MountSet stays whole.
+    let mounts =
+        crate::walk_cmd::load_mounts_for(&crate::walk_cmd::link_addressed_roots(&docs, None));
+    // The same filter this snapshot was taken under, so any face reading the
+    // corpus tells an excluded path from a missing one (§12.1 verdict plane).
+    let domain =
+        fs::domain::Domain::load(&root).map_err(|e| format!("cannot read the hash domain: {e}"))?;
+    Ok(Loaded {
+        root,
+        f0: f0.0,
+        docs,
+        mounts,
+        domain,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// the two lanes
+// ---------------------------------------------------------------------------
+
+/// Which projection answers this invocation (module docs § Lanes).
+enum Lane {
+    /// The drawer's `sql.duckdb`, open read-write — this process appends.
+    Cache(SqlStore),
+    /// The ephemeral `:memory:` build.
+    Memory,
+}
+
+/// Resolve the lane for `canonical`: the drawer file when a cache root
+/// resolves and the file opens (held/unusable degrades, voiced), else
+/// `:memory:`.
+fn open_lane(canonical: &Path, rebuild: bool) -> Lane {
+    let drawer = cache::CacheDrawer::open(canonical);
+    let Some(dir) = drawer.dir() else {
+        return Lane::Memory;
+    };
+    // The sentinel is gc bookkeeping; its failure must not cost the answer.
+    let _ = drawer.register();
+    let file = dir.join(view::store::SQL_CACHE_FILENAME);
+    let opened = if rebuild {
+        SqlStore::rebuild(&file)
+    } else {
+        SqlStore::open(&file)
+    };
+    match opened {
+        Ok(store) => Lane::Cache(store),
+        Err(e) => {
+            eprintln!("mrd sql: cache file unavailable ({e}); answering from :memory:");
+            Lane::Memory
+        }
+    }
+}
+
+/// Bring `store` to the loaded corpus state (one append transaction, or a
+/// no-op at the pinned fingerprint).
+fn sync_store(
+    store: &mut SqlStore,
+    loaded: &Loaded,
+) -> Result<Option<view::store::AppendCounts>, Fail> {
+    let corpus = loaded
+        .mounts
+        .rooted(&loaded.docs, &loaded.domain, &loaded.root);
+    let exclusion = |target: &str| {
+        fs::domain::link_target_exclusion(&loaded.root, &loaded.domain, target)
+            .map(|why| why.word().to_owned())
+    };
+    store
+        .sync(
+            &loaded.docs,
+            &corpus,
+            Some(loaded.mounts.set()),
+            Some(&exclusion),
+            &loaded.f0,
+        )
+        .map_err(|e| Fail::tool(format!("cannot append to the sql cache: {e}")))
+}
+
+/// One projection + query at the loaded corpus state, on whichever lane.
+struct Attempt {
+    as_of: String,
+    columns: Vec<ColMeta>,
+    rows: Vec<Vec<Value>>,
+    error: Option<String>,
+}
+
+fn attempt(args: &SqlArgs, loaded: &Loaded, lane: &mut Lane) -> Result<Attempt, Fail> {
+    let query = args.query.as_deref().unwrap_or_default();
+    match lane {
+        Lane::Cache(store) => {
+            sync_store(store, loaded)?;
+            let result = store
+                .query(args.profile, query)
+                .map_err(|e| Fail::tool(format!("cannot query the sql cache: {e}")))?;
+            let (columns, rows, error) = match result {
+                Ok((c, r)) => (c, r, None),
+                Err(msg) => (Vec::new(), Vec::new(), Some(msg)),
+            };
+            Ok(Attempt {
+                as_of: loaded.f0.clone(),
+                columns,
+                rows,
+                error,
+            })
+        }
+        Lane::Memory => {
+            let corpus = loaded
+                .mounts
+                .rooted(&loaded.docs, &loaded.domain, &loaded.root);
+            let exclusion = |target: &str| {
+                fs::domain::link_target_exclusion(&loaded.root, &loaded.domain, target)
+                    .map(|why| why.word().to_owned())
+            };
+            let conn = view::build_memory_rooted(
+                &loaded.docs,
+                &corpus,
+                loaded.mounts.set(),
+                &loaded.f0,
+                Some(&exclusion),
+            )
+            .map_err(|e| Fail::tool(format!("cannot build the view: {e}")))?;
+            let as_of = read_as_of(&conn)?;
+            view::store::apply_profile(&conn, args.profile).map_err(|e| {
+                Fail::tool(format!(
+                    "cannot apply the {} sandbox: {e}",
+                    args.profile.label()
+                ))
+            })?;
+            let (columns, rows, error) = match view::store::run_query(&conn, query) {
+                Ok((c, r)) => (c, r, None),
+                Err(msg) => (Vec::new(), Vec::new(), Some(msg)),
+            };
+            Ok(Attempt {
+                as_of,
+                columns,
+                rows,
+                error,
+            })
+        }
+    }
+}
+
+/// The §Q3 order-of-operations over the chosen lane, with the `--fresh`
+/// bounded retry.
+fn query_frame(args: &SqlArgs, loaded: &Loaded, lane: &mut Lane) -> Result<Frame, Fail> {
+    let built = attempt(args, loaded, lane)?;
+    let Attempt {
         as_of,
         columns,
         rows,
@@ -315,9 +613,9 @@ fn ephemeral_query(workspace: &Path, args: &SqlArgs) -> Result<Frame, Fail> {
     }
 
     test_fold_race_hook();
-    let f_now = fold_live(workspace)?;
+    let f_now = fold_live(&loaded.root.0)?;
     if as_of == f_now {
-        return Ok(ephemeral_frame(
+        return Ok(frame(
             as_of,
             f_now,
             columns,
@@ -330,33 +628,31 @@ fn ephemeral_query(workspace: &Path, args: &SqlArgs) -> Result<Frame, Fail> {
     // A mid-build change: `--fresh` gets one bounded retry; the default
     // reports STALE at the F0 build.
     if args.fresh {
-        let retry = build_and_run_ephemeral(workspace, args);
-        if let Ok(EphemeralRun {
-            as_of: as_of2,
-            columns: columns2,
-            rows: rows2,
-            error: None,
-        }) = retry
-        {
+        let reloaded = match load_corpus(&loaded.root.0) {
+            Ok(l) => l,
+            Err(msg) => return Ok(Frame::no_view(args.profile, msg)),
+        };
+        let retry = attempt(args, &reloaded, lane)?;
+        if retry.error.is_none() {
             test_fold_race_hook();
-            let f_now2 = fold_live(workspace)?;
-            let state = if as_of2 == f_now2 {
+            let f_now2 = fold_live(&reloaded.root.0)?;
+            let state = if retry.as_of == f_now2 {
                 QueryState::FreshAtSample
             } else {
                 QueryState::Raced
             };
-            return Ok(ephemeral_frame(
-                as_of2,
+            return Ok(frame(
+                retry.as_of,
                 f_now2,
-                columns2,
-                rows2,
+                retry.columns,
+                retry.rows,
                 args.profile,
                 state,
             ));
         }
     }
 
-    Ok(ephemeral_frame(
+    Ok(frame(
         as_of,
         f_now,
         columns,
@@ -366,9 +662,9 @@ fn ephemeral_query(workspace: &Path, args: &SqlArgs) -> Result<Frame, Fail> {
     ))
 }
 
-/// Assemble an ephemeral-build frame (always `live_source=fold`).
+/// Assemble a folded frame (always `live_source=fold`).
 #[allow(clippy::similar_names)] // `stale` and `state` are both design vocabulary
-fn ephemeral_frame(
+fn frame(
     as_of: String,
     live: String,
     columns: Vec<ColMeta>,
@@ -390,146 +686,17 @@ fn ephemeral_frame(
     }
 }
 
-/// One ephemeral build + query: fold `F0`, build `:memory:`, read the stamp's
-/// `as_of` (`== F0`), apply the profile, run the query.
-struct EphemeralRun {
-    as_of: String,
-    columns: Vec<ColMeta>,
-    rows: Vec<Vec<Value>>,
-    error: Option<String>,
-}
-
-/// An ephemeral-build failure: a genuinely absent corpus (`NO_VIEW`) vs a real
-/// tool failure.
-enum EphemeralError {
-    NoCorpus(String),
-    Fail(Fail),
-}
-
-fn build_and_run_ephemeral(
-    workspace: &Path,
-    args: &SqlArgs,
-) -> Result<EphemeralRun, EphemeralError> {
-    let canonical = workspace::canonicalize(workspace).map_err(|e| {
-        EphemeralError::NoCorpus(format!(
-            "cannot resolve workspace {}: {e}",
-            workspace.display()
-        ))
-    })?;
-    let root = fs::WorkspaceRoot(canonical);
-    // F0 is the stamp: `fold_live` folds the same way, so F0 vs F_now can only
-    // differ when the corpus moved.
-    let (files, f0) = fs::domain_snapshot(&root)
-        .map_err(|e| EphemeralError::NoCorpus(format!("cannot read the corpus: {e}")))?;
-    let (_index, docs, unserved) = fs::build_corpus(files);
-    crate::voice_unserved(&unserved);
-    crate::voice_excluded(&root, &docs, &unserved);
-    // The ephemeral view is built with mount authority, from the same loader the
-    // pin and link planes use; without it a cross-vault link projects as dangling.
-    // Corpora narrow to the roots ambient wikilink/embed targets name; the
-    // MountSet stays whole.
-    let mounts =
-        crate::walk_cmd::load_mounts_for(&crate::walk_cmd::link_addressed_roots(&docs, None));
-    // The same filter this snapshot was taken under, so any face reading the
-    // corpus tells an excluded path from a missing one (§12.1 verdict plane).
-    let domain = fs::domain::Domain::load(&root)
-        .map_err(|e| EphemeralError::NoCorpus(format!("cannot read the hash domain: {e}")))?;
-    let corpus = mounts.rooted(&docs, &domain, &root);
-    // `link.exclusion` — the same mint the link doors ask through, injected as
-    // data so `view` stays disk-free (session decision 0034). It reads the same
-    // `domain` the corpus was rooted under, so the column and the rows cannot
-    // disagree about which filter was in force.
-    let exclusion = |target: &str| {
-        fs::domain::link_target_exclusion(&root, &domain, target).map(|why| why.word().to_owned())
-    };
-    let conn = view::build_memory_rooted(&docs, &corpus, mounts.set(), &f0.0, Some(&exclusion))
-        .map_err(|e| EphemeralError::Fail(Fail::tool(format!("cannot build the view: {e}"))))?;
-
-    let as_of = read_as_of(&conn).map_err(EphemeralError::Fail)?;
-    apply_profile(&conn, args.profile).map_err(EphemeralError::Fail)?;
-    let (columns, rows, error) = match run_user_query(&conn, &args.query) {
-        Ok((c, r)) => (c, r, None),
-        Err(msg) => (Vec::new(), Vec::new(), Some(msg)),
-    };
-    Ok(EphemeralRun {
-        as_of,
-        columns,
-        rows,
-        error,
-    })
-}
-
 // ---------------------------------------------------------------------------
-// shared: read the stamp, apply the sandbox, run the query, fold live
+// shared: read the stamp, fold live, the race hook
 // ---------------------------------------------------------------------------
 
 /// Read the authoritative `as_of` from the built view's `_meridian_view` stamp
 /// (§Q3).
-fn read_as_of(conn: &Connection) -> Result<String, Fail> {
+fn read_as_of(conn: &duckdb::Connection) -> Result<String, Fail> {
     conn.query_row("SELECT as_of_fingerprint FROM _meridian_view", [], |r| {
         r.get::<_, String>(0)
     })
     .map_err(|e| Fail::tool(format!("cannot read the view's _meridian_view stamp: {e}")))
-}
-
-/// Apply the `--execution-profile` resource limits (B5). Order is load-bearing
-/// for `agent`: set the caps, disable external access, then lock the
-/// configuration so untrusted SQL cannot re-raise any of it. There is no
-/// `statement_timeout` pragma — a wall-clock cap is the parent's process kill.
-fn apply_profile(conn: &Connection, profile: ExecProfile) -> Result<(), Fail> {
-    let sql = match profile {
-        ExecProfile::Local => format!("SET memory_limit='{LOCAL_MEMORY_LIMIT}';"),
-        ExecProfile::Agent => format!(
-            "SET memory_limit='{AGENT_MEMORY_LIMIT}';\n\
-             SET threads={AGENT_THREADS};\n\
-             SET max_expression_depth={AGENT_MAX_EXPRESSION_DEPTH};\n\
-             SET enable_external_access=false;\n\
-             SET lock_configuration=true;"
-        ),
-    };
-    conn.execute_batch(&sql)
-        .map_err(|e| Fail::tool(format!("cannot apply the {} sandbox: {e}", profile.label())))
-}
-
-/// Execute the user's query and materialise all rows + column metadata. Returns
-/// the SQL error string (never a `Fail`) so the caller can buffer it into the
-/// OD9 document.
-fn run_user_query(
-    conn: &Connection,
-    query: &str,
-) -> Result<(Vec<ColMeta>, Vec<Vec<Value>>), String> {
-    let mut stmt = conn.prepare(query).map_err(|e| e.to_string())?;
-    let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
-
-    // Column metadata is available once the query has executed (`query` binds +
-    // executes); collect owned copies before stepping the rows.
-    let columns: Vec<ColMeta> = {
-        let stmt_ref = rows
-            .as_ref()
-            .ok_or_else(|| "no result statement".to_owned())?;
-        let n = stmt_ref.column_count();
-        let mut cols = Vec::with_capacity(n);
-        for i in 0..n {
-            let name = stmt_ref
-                .column_name(i)
-                .map_or_else(|_| format!("col{i}"), String::clone);
-            let ty = arrow_type_name(&stmt_ref.column_type(i));
-            cols.push(ColMeta { name, ty });
-        }
-        cols
-    };
-
-    let ncol = columns.len();
-    let mut out = Vec::new();
-    while let Some(row) = rows.next().map_err(|e| e.to_string())? {
-        let mut r = Vec::with_capacity(ncol);
-        for i in 0..ncol {
-            let v = row.get_ref(i).map_or(Value::Null, value_ref_to_json);
-            r.push(v);
-        }
-        out.push(r);
-    }
-    Ok((columns, out))
 }
 
 /// Determinism hook for the STALE/RACED e2e gates: the §Q3 window (build →
@@ -564,106 +731,6 @@ fn fold_live(workspace: &Path) -> Result<String, Fail> {
     let (_files, fingerprint) = fs::domain_snapshot(&root)
         .map_err(|e| Fail::tool(format!("cannot fold the corpus for live: {e}")))?;
     Ok(fingerprint.0)
-}
-
-/// A friendly type name for an arrow result column (best effort — the JSON
-/// `type` field, OD9).
-fn arrow_type_name(dt: &duckdb::arrow::datatypes::DataType) -> String {
-    use duckdb::arrow::datatypes::DataType as D;
-    match dt {
-        D::Boolean => "BOOLEAN".to_owned(),
-        D::Int8 => "TINYINT".to_owned(),
-        D::Int16 => "SMALLINT".to_owned(),
-        D::Int32 => "INTEGER".to_owned(),
-        D::Int64 => "BIGINT".to_owned(),
-        D::UInt8 => "UTINYINT".to_owned(),
-        D::UInt16 => "USMALLINT".to_owned(),
-        D::UInt32 => "UINTEGER".to_owned(),
-        D::UInt64 => "UBIGINT".to_owned(),
-        D::Float32 => "FLOAT".to_owned(),
-        D::Float64 => "DOUBLE".to_owned(),
-        D::Utf8 | D::LargeUtf8 => "VARCHAR".to_owned(),
-        D::Binary | D::LargeBinary => "BLOB".to_owned(),
-        D::List(_) | D::LargeList(_) => "LIST".to_owned(),
-        other => format!("{other:?}"),
-    }
-}
-
-/// Render one result cell into JSON. Scalars are exact; complex cells
-/// (list/struct/decimal/timestamp) fall back to a debug string.
-fn value_ref_to_json(v: ValueRef<'_>) -> Value {
-    match v {
-        ValueRef::Null => Value::Null,
-        ValueRef::Boolean(b) => Value::Bool(b),
-        ValueRef::TinyInt(n) => Value::from(i64::from(n)),
-        ValueRef::SmallInt(n) => Value::from(i64::from(n)),
-        ValueRef::Int(n) => Value::from(i64::from(n)),
-        ValueRef::BigInt(n) => Value::from(n),
-        ValueRef::HugeInt(n) => {
-            i64::try_from(n).map_or_else(|_| Value::String(n.to_string()), Value::from)
-        }
-        ValueRef::UTinyInt(n) => Value::from(u64::from(n)),
-        ValueRef::USmallInt(n) => Value::from(u64::from(n)),
-        ValueRef::UInt(n) => Value::from(u64::from(n)),
-        ValueRef::UBigInt(n) => Value::from(n),
-        ValueRef::Float(f) => json_f64(f64::from(f)),
-        ValueRef::Double(f) => json_f64(f),
-        ValueRef::Text(bytes) => Value::String(String::from_utf8_lossy(bytes).into_owned()),
-        ValueRef::Blob(bytes) => Value::String(hex(bytes)),
-        // A list cell's ValueRef carries the WHOLE column array + a row index;
-        // the debug fallback below would dump every row's values into every
-        // cell (F1). The owned conversion slices out this row's elements.
-        ValueRef::List(..) | ValueRef::Array(..) => {
-            duck_value_to_json(&duckdb::types::Value::from(v))
-        }
-        other => Value::String(format!("{other:?}")),
-    }
-}
-
-/// An owned duckdb value into JSON — the recursion arm for list/array cells,
-/// whose elements arrive owned after the row slice. Scalars mirror
-/// `value_ref_to_json`; unhandled shapes fall back to a debug string.
-fn duck_value_to_json(v: &duckdb::types::Value) -> Value {
-    use duckdb::types::Value as D;
-    match v {
-        D::Null => Value::Null,
-        D::Boolean(b) => Value::Bool(*b),
-        D::TinyInt(n) => Value::from(i64::from(*n)),
-        D::SmallInt(n) => Value::from(i64::from(*n)),
-        D::Int(n) => Value::from(i64::from(*n)),
-        D::BigInt(n) => Value::from(*n),
-        D::HugeInt(n) => {
-            i64::try_from(*n).map_or_else(|_| Value::String(n.to_string()), Value::from)
-        }
-        D::UTinyInt(n) => Value::from(u64::from(*n)),
-        D::USmallInt(n) => Value::from(u64::from(*n)),
-        D::UInt(n) => Value::from(u64::from(*n)),
-        D::UBigInt(n) => Value::from(*n),
-        D::Float(f) => json_f64(f64::from(*f)),
-        D::Double(f) => json_f64(*f),
-        D::Text(s) => Value::String(s.clone()),
-        D::Blob(bytes) => Value::String(hex(bytes)),
-        D::List(items) | D::Array(items) => {
-            Value::Array(items.iter().map(duck_value_to_json).collect())
-        }
-        other => Value::String(format!("{other:?}")),
-    }
-}
-
-/// A finite `f64` as a JSON number; NaN/±Inf render as `null` (JSON has no
-/// representation).
-fn json_f64(f: f64) -> Value {
-    serde_json::Number::from_f64(f).map_or(Value::Null, Value::Number)
-}
-
-/// Lowercase hex of a byte slice (BLOB rendering).
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        let _ = write!(s, "{b:02x}");
-    }
-    s
 }
 
 // ---------------------------------------------------------------------------
@@ -772,13 +839,14 @@ fn plural(n: usize) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use duckdb::Connection;
 
     #[test]
     fn parse_defaults_to_local_profile() {
         let args = SqlArgs::parse(&["SELECT 1".to_owned()]).expect("parse");
         assert_eq!(args.profile.label(), "local");
-        assert!(!args.fresh && !args.json);
-        assert_eq!(args.query, "SELECT 1");
+        assert!(!args.fresh && !args.json && !args.rebuild);
+        assert_eq!(args.query.as_deref(), Some("SELECT 1"));
     }
 
     #[test]
@@ -813,19 +881,22 @@ mod tests {
     }
 
     #[test]
-    fn parse_missing_query_is_error() {
+    fn parse_missing_query_is_error_unless_rebuilding() {
         assert!(SqlArgs::parse(&["--json".to_owned()]).is_err());
+        // `--rebuild` alone is a complete invocation (ruling OQ3).
+        let args = SqlArgs::parse(&["--rebuild".to_owned()]).expect("rebuild alone");
+        assert!(args.rebuild && args.query.is_none());
     }
 
     #[test]
     fn list_cells_render_per_row_values_not_column_debug_dumps() {
         // F1: a list cell (e.g. `section.hpath` VARCHAR[]) used to fall through
-        // `value_ref_to_json`'s debug arm, which prints the ENTIRE column's
+        // the JSON conversion's debug arm, which prints the ENTIRE column's
         // Arrow dump plus a row index for every cell. Each cell must carry its
         // own row's values only, as a real JSON array — the `--json` face gets
         // the array, the human face renders it as a compact JSON field.
         let conn = Connection::open_in_memory().unwrap();
-        let (cols, rows) = run_user_query(
+        let (cols, rows) = view::store::run_query(
             &conn,
             "SELECT * FROM (VALUES (['a','b']), (['c'])) t(hpath)",
         )
@@ -877,7 +948,7 @@ mod tests {
     #[test]
     fn agent_sandbox_blocks_external_access_locks_config_no_statement_timeout() {
         let conn = Connection::open_in_memory().unwrap();
-        apply_profile(&conn, ExecProfile::Agent).expect("apply agent sandbox");
+        view::store::apply_profile(&conn, ExecProfile::Agent).expect("apply agent sandbox");
 
         assert!(
             conn.execute_batch("SELECT * FROM read_csv('/etc/hosts')")
@@ -901,7 +972,7 @@ mod tests {
     #[test]
     fn local_sandbox_does_not_lock_configuration() {
         let conn = Connection::open_in_memory().unwrap();
-        apply_profile(&conn, ExecProfile::Local).expect("apply local sandbox");
+        view::store::apply_profile(&conn, ExecProfile::Local).expect("apply local sandbox");
         assert!(
             conn.execute_batch("SET memory_limit='2GB'").is_ok(),
             "local does not lock configuration"
