@@ -484,8 +484,13 @@ fn a_run_apply_pushes_one_attributed_delta_frame() {
         "one committed batch = one frame; content first, then receipt: {frame}"
     );
 
-    // No duplicate follows: the detector synced silently, so the next frame
-    // is the external edit, contiguous with the run frame.
+    // No duplicate follows: the detector's next real cycle sees the ring tip
+    // already carrying the moved root and rebases silently (the
+    // internal-commit arm), so the next frame is the external edit,
+    // contiguous with the run frame. The wait clears the detect-cadence
+    // coalesce window first — an edit landing INSIDE the window diffs from
+    // the pre-commit baseline, the splice lane's own pre-existing posture.
+    std::thread::sleep(Duration::from_millis(1000));
     external_edit_note(&ws);
     let next = sub.next_frame().expect("the external edit is detected");
     assert_eq!(
@@ -565,7 +570,10 @@ fn a_bash_run_mints_one_frame_per_committed_batch() {
         "targets": [{"page": "tasks.md", "task": "sh-note"}],
     }));
     let rows = rows_of(&resp);
-    assert!(rows[0].get("refusal").is_none(), "the bash run landed: {resp}");
+    assert!(
+        rows[0].get("refusal").is_none(),
+        "the bash run landed: {resp}"
+    );
 
     let first = sub.next_frame().expect("phase 1 mints a frame");
     let second = sub.next_frame().expect("phase 2 mints a frame");
