@@ -1,10 +1,12 @@
-//! U4b final validation: the elision law against a lock the ENGINE actually
-//! wrote — B's U11 `lock_write` (engine-sole-writer, EOF placement, CAS +
-//! flock) — not a static fixture. The engine-written `meridian-lock` block
-//! renders ELIDED on the render/readText face
+//! U4b final validation: the render/raw split against a lock the ENGINE
+//! actually wrote — B's U11 `lock_write` (engine-sole-writer, preamble
+//! placement, CAS + flock) — not a static fixture. The engine-written
+//! `meridian-lock` block rides the raw file bytes VERBATIM (byte pin #4: the
+//! raw face never routes through render) and, living in the file preamble,
+//! reaches NO section face at all — the elision hook
 //! ([`ToonRenderer::with_meridian_elision`], predicate =
-//! `lock::is_meridian_lang`) and rides the raw read/cat face VERBATIM
-//! (byte pin #4: the raw face never routes through render).
+//! `lock::is_meridian_lang`) remains the backstop for legacy in-section
+//! blocks (its law is pinned on fixtures in `render`'s `u4b_elision`).
 
 use render::{Header, RenderJob, Renderer, SectionRow, ToonRenderer};
 use wire::{NodeRev, Path as WPath};
@@ -14,7 +16,7 @@ use wire_serve::write::{LockWriteArgs, lock_write};
 const PAGE: &str = "---\ntitle: Pinning\n---\n# Claims\n\nthe claim body ^c1\n";
 
 #[test]
-fn engine_written_lock_elided_on_render_face_verbatim_on_raw() {
+fn engine_written_lock_rides_raw_bytes_and_reaches_no_section_face() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("page.md"), PAGE).expect("fixture");
     let root = fs::WorkspaceRoot(dir.path().to_path_buf());
@@ -48,7 +50,7 @@ fn engine_written_lock_elided_on_render_face_verbatim_on_raw() {
         },
     )
     .expect("the engine writes the lock");
-    assert!(out.created, "birth at EOF");
+    assert!(out.created, "birth as file preamble");
 
     // Re-load the engine-written page from disk.
     let doc = fs::load(&root, std::path::Path::new("page.md")).expect("re-load");
@@ -61,14 +63,15 @@ fn engine_written_lock_elided_on_render_face_verbatim_on_raw() {
     let facts = read_facts(&wire_map::project_toc(&doc), doc.raw.as_bytes());
     let fact = resolve_selector(&facts, &wire::ReadSel::parse("Claims")).expect("Claims resolves");
 
-    // RAW read/cat face (the content-span bytes): VERBATIM — pin #4. The
-    // EOF-placed lock sits inside the last section's subtree-inclusive span.
+    // RAW file bytes: VERBATIM — pin #4 (the raw face never routes through
+    // render). The preamble-placed lock sits inside NO section's span, so a
+    // section's raw face serves the author's prose alone (dogfood r3 F3).
     let cs = fact.content_span.as_ref().expect("content span");
     let raw_face = &doc.raw
         [usize::try_from(cs.0).expect("start fits")..usize::try_from(cs.1).expect("end fits")];
     assert!(
-        raw_face.contains(&block),
-        "raw face carries the engine-written lock verbatim: {raw_face}"
+        !raw_face.contains("```meridian-lock"),
+        "no section face carries the preamble-placed lock: {raw_face}"
     );
 
     // RENDER face, production configuration: the lock is gone, the claim

@@ -917,9 +917,10 @@ pub struct LockWriteOutcome {
 /// runs everything except disk.
 ///
 /// # Placement law (fresh lock)
-/// A birthed block appends at EOF, separated from existing content by exactly
-/// one blank line, and the file ends with one terminator. A replaced block
-/// keeps its exact span (fence-to-fence).
+/// A birthed block lands as file preamble — after the frontmatter, before the
+/// first heading, where no section claims its bytes — separated from the body
+/// by exactly one blank line. A replaced block keeps its exact span
+/// (fence-to-fence), wherever it sits ([`lock_block_splice`]).
 ///
 /// # Errors
 /// `bad_path`, `bad_request` (a malformed/duplicated existing lock block —
@@ -1888,21 +1889,30 @@ fn lock_engine_edit(
     ));
     let edit = lock_block_splice(doc, found.map(|f| f.span), &lock).0;
     // Lock-is-content (#8 §5): the block sits inside the page's own span, so a
-    // page pinning a section of itself that would contain the block pins bytes
+    // page pinning a span of itself that CONTAINS the lock edit pins bytes
     // this write is about to change — the claim could never be green. Refuse
-    // rather than mint a permanently-red pin. Touching counts, not just
-    // overlap: a fresh block is an EOF insert and a section running to EOF
-    // absorbs it (`edit.span.start == pin.span.end`).
+    // rather than mint a permanently-red pin. Strict overlap only: a preamble
+    // birth is a HEAD-side insert, which shifts a following span without
+    // absorbing into it (the old EOF birth needed touching-counts because a
+    // section running to EOF absorbed a tail insert). The rung still bites on
+    // a legacy-placed block — replaced in place inside the very section being
+    // pinned.
     if pin.fact.target.0 == pinning_path.0
         && !pin.span.is_empty()
-        && edit.span.start <= pin.span.end
-        && edit.span.end >= pin.span.start
+        && edit.span.start < pin.span.end
+        && edit.span.end > pin.span.start
     {
         return Err(bad_request(format!(
-            "refused: the meridian-lock block lands INSIDE \"{}\", the very section \
-             being pinned, so the pin could never verify green (lock-is-content, #8 §5) \
-             — pin a section that does not extend to the page's end, or pin from \
-             another page",
+            "refused: this page's meridian-lock block sits INSIDE \"{}\", the very \
+             section being pinned, so the pin would fingerprint bytes its own lock \
+             write is about to change — the claim could never verify green \
+             (lock-is-content, #8 §5). A fresh block births in the file preamble \
+             (before the first heading), but an existing block is replaced in place, \
+             so this one still sits where an older engine left it. By case: when \
+             another page can hold the claim, pin from there; when this page should \
+             carry it, move the meridian-lock block by hand to the file preamble \
+             (after the frontmatter, before the first heading) and re-issue the pin. \
+             Nothing was written",
             pin.fact.selector.display()
         )));
     }
@@ -1912,9 +1922,19 @@ fn lock_engine_edit(
 /// The `meridian-lock` block's byte form and its placement law, in one place —
 /// shared by the pin path and [`lock_write`] so the two cannot drift.
 ///
-/// An existing block is replaced across its exact fence-to-fence span. A fresh
-/// block is birthed at EOF, separated from existing content by exactly one blank
-/// line, and the file ends with one terminator — `lock::render` emits no
+/// A fresh block is birthed as FILE PREAMBLE — immediately after the
+/// frontmatter (terminator-inclusive span; byte zero without one), before the
+/// first heading — separated from following content by exactly one blank line.
+/// The preamble belongs to no section (dogfood r3 F3): an EOF birth landed
+/// inside the page's LAST section, inflating its word count with machinery,
+/// serving YAML plumbing on its read face, and firing a `edited §Last` feed
+/// row for a write the receipt never aimed there. Machinery also sits beside
+/// machinery: frontmatter, then lock, then prose.
+///
+/// An existing block is replaced across its exact fence-to-fence span,
+/// WHEREVER it sits — a legacy EOF block is not relocated, because relocation
+/// would rewrite a region the caller never aimed at and would stale a self-pin
+/// fingerprint minted before this edit composes. `lock::render` emits no
 /// trailing newline, so terminators are this caller's. Returns the edit plus
 /// whether it birthed.
 fn lock_block_splice(
@@ -1927,17 +1947,31 @@ fn lock_block_splice(
     if let Some(span) = existing {
         return (model::EngineEdit { span, text: block }, false);
     }
-    let sep = if raw.is_empty() || raw.ends_with("\n\n") {
-        ""
-    } else if raw.ends_with('\n') {
+    let at = doc
+        .root
+        .children
+        .iter()
+        .find(|c| matches!(c.kind, model::NodeKind::Frontmatter { .. }))
+        .map_or(0, |fm| fm.span.end);
+    // A frontmatter whose closing fence lacks its terminator gets one, so the
+    // block always opens on its own line; the tail keeps (or gains) exactly
+    // one blank line between the block and the body, and a tail-less file
+    // ends with the block's one terminator.
+    let lead = if at > 0 && !raw[..at].ends_with('\n') {
         "\n"
     } else {
-        "\n\n"
+        ""
+    };
+    let tail = &raw[at..];
+    let sep = if tail.is_empty() || tail.starts_with('\n') {
+        ""
+    } else {
+        "\n"
     };
     (
         model::EngineEdit {
-            span: raw.len()..raw.len(),
-            text: format!("{sep}{block}\n"),
+            span: at..at,
+            text: format!("{lead}{block}\n{sep}"),
         },
         true,
     )
@@ -2894,11 +2928,14 @@ fn lock_artifact_guard(
          by `splice.pin` (mrd pin), which fingerprints the target's real bytes behind the \
          read-mint gate. Lock bytes reaching disk as ordinary page text would be a claim nobody \
          computed. WHAT THIS WOULD DESTROY: the {} attestation claim(s) already minted on this \
-         page. WHAT TO DO INSTEAD: the block is birthed at the page's END, so a whole-section \
-         rewrite of the LAST section deletes it — write that section with `put at:end` or an \
-         append, or rewrite a section that does not hold the block, and the claims survive \
-         untouched. Retiring a claim on purpose needs an unpin verb, which does not exist yet \
-         (stage 3) — until it does, remove the block by hand and re-mint",
+         page. WHAT TO DO INSTEAD: fresh blocks live in the file preamble, which no section \
+         write reaches — this refusal usually means the page carries a legacy-placed block \
+         inside the section being written. When you meant to keep the claims, append with `put \
+         at:end` or write a section that does not hold the block; when the legacy block is in \
+         the way, move it by hand to the file preamble (after the frontmatter, before the first \
+         heading) and re-issue the write. Retiring a claim on purpose needs an unpin verb, \
+         which does not exist yet (stage 3) — until it does, remove the block by hand and \
+         re-mint",
         path.0,
         before_blocks.len()
     )))
