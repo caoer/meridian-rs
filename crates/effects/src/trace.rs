@@ -452,17 +452,17 @@ impl ScriptTrace {
             .map(TraceEntry::Expanded)
             .collect();
         trace.extend(eval.recording.reads.iter().map(|read| {
-                let entry = ReadEntry {
-                    line: read.line,
-                    path: read.path.clone(),
-                    section: read.section.clone(),
-                    face: read.face.clone(),
-                };
-                match read.position {
-                    ReadPosition::Echo => TraceEntry::Echo(entry),
-                    ReadPosition::Quiet => TraceEntry::Read(entry),
-                }
-            }));
+            let entry = ReadEntry {
+                line: read.line,
+                path: read.path.clone(),
+                section: read.section.clone(),
+                face: read.face.clone(),
+            };
+            match read.position {
+                ReadPosition::Echo => TraceEntry::Echo(entry),
+                ReadPosition::Quiet => TraceEntry::Read(entry),
+            }
+        }));
         trace.extend(eval.armed.iter().map(|armed| {
             let ArmedEdit {
                 path,

@@ -7,7 +7,9 @@
 use std::path::PathBuf;
 
 use serde_json::{Map, Value, json};
-use wire::{Edit, EditShape, ErrorCode, HpathSeg, Path as WPath, ReceiptAddr, ResponseBody, SecRef};
+use wire::{
+    Edit, EditShape, ErrorCode, HpathSeg, Path as WPath, ReceiptAddr, ResponseBody, SecRef,
+};
 use wire_serve::decode::decode;
 use wire_serve::guard::Origin;
 use wire_serve::rev::Rev;
@@ -73,7 +75,7 @@ fn set_args(files: Vec<wire::SpliceFile>, receipt: Option<ReceiptAddr>) -> Splic
         // The gates below exercise commit mechanics, not the
         // fingerprint-or-force ratchet (guard-family suites own that law).
         force: true,
-        }
+    }
 }
 
 /// GATE: an N-file set plus receipt lands whole — every member's new bytes,
@@ -92,13 +94,16 @@ fn set_lands_whole_one_frame_one_receipt() {
         .map(|(i, rel)| member(rel, i + 1))
         .collect();
 
-    let out = splice_set(&root, None, &set_args(files, Some(receipt)), &[])
-        .expect("the set lands whole");
+    let out =
+        splice_set(&root, None, &set_args(files, Some(receipt)), &[]).expect("the set lands whole");
 
     for (i, rel) in rels.iter().enumerate() {
         assert_eq!(
             std::fs::read_to_string(dir.path().join(rel)).unwrap(),
-            body(i + 1).replace(&format!("alpha {} old", i + 1), &format!("alpha {} new", i + 1)),
+            body(i + 1).replace(
+                &format!("alpha {} old", i + 1),
+                &format!("alpha {} new", i + 1)
+            ),
             "member {} holds its new bytes",
             i + 1
         );
@@ -270,6 +275,7 @@ fn set_door_walls_refuse() {
 /// cooperating writers refuse `workspace_busy` immediately while it is held.
 #[test]
 #[ignore = "measurement receipt, not a gate — run with --ignored"]
+#[allow(clippy::cast_precision_loss)] // ms/file display arithmetic
 fn bench_set_commit_scaling() {
     for n in [103usize, 653, 1024, 4096] {
         let (_dir, root, rels) = ws(n);
@@ -343,7 +349,10 @@ fn decode_set_form_excludes_single_form_fields() {
         ("path", json!("a.md")),
         ("edits", json!([])),
         ("plan_edits", json!([])),
-        ("pin", json!({"target": "a.md", "selector": {"anchor": "x"}})),
+        (
+            "pin",
+            json!({"target": "a.md", "selector": {"anchor": "x"}}),
+        ),
     ] {
         let mut frame = set_frame();
         frame[key] = value;
@@ -363,7 +372,9 @@ fn decode_set_member_walls() {
     let mut frame = set_frame();
     frame["files"] = json!([{"path": "a.md", "edits": [{"target": {"anchor": "x1"}, "edit": {"put": {"at": "end", "text": "s"}}}]}]);
     assert_eq!(
-        decode(&obj(frame), Rev::V3).expect_err("one member refuses").code,
+        decode(&obj(frame), Rev::V3)
+            .expect_err("one member refuses")
+            .code,
         ErrorCode::BadRequest
     );
 
@@ -371,7 +382,10 @@ fn decode_set_member_walls() {
     frame["files"][1]["path"] = json!("a.md");
     let err = decode(&obj(frame), Rev::V3).expect_err("duplicate path refuses");
     assert!(
-        err.message.as_deref().unwrap_or_default().contains("pairwise distinct"),
+        err.message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("pairwise distinct"),
         "duplicate-path teaching: {:?}",
         err.message
     );
@@ -379,14 +393,18 @@ fn decode_set_member_walls() {
     let mut frame = set_frame();
     frame["files"][0]["plan_edits"] = json!([{"append": {"hpath": [{"h": "Log"}], "body": "row"}}]);
     assert_eq!(
-        decode(&obj(frame), Rev::V3).expect_err("both batches refuse").code,
+        decode(&obj(frame), Rev::V3)
+            .expect_err("both batches refuse")
+            .code,
         ErrorCode::BadRequest
     );
 
     let mut frame = set_frame();
     frame["files"][0] = json!({"path": "a.md"});
     assert_eq!(
-        decode(&obj(frame), Rev::V3).expect_err("batch-less member refuses").code,
+        decode(&obj(frame), Rev::V3)
+            .expect_err("batch-less member refuses")
+            .code,
         ErrorCode::BadRequest
     );
 }

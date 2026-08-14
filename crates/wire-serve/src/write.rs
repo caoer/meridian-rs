@@ -808,6 +808,7 @@ pub fn splice_set(
 /// one reparse → `@fp` strip → stored-form translation → lock artifact guard
 /// → I4 def-conformance → advisory verdicts → the armed gate. Pushes this
 /// member's verdicts; returns its carried state.
+#[allow(clippy::too_many_lines)] // the single-form pipeline, per member — splitting adds indirection
 fn validate_set_member(
     root: &fs::WorkspaceRoot,
     args: &SpliceSetArgs,
@@ -832,7 +833,8 @@ fn validate_set_member(
         &file.plan_edits,
         &mut effective_edits,
     )?;
-    let (model_edits, before_facts) = model_edits_and_before_facts(&doc, &effective_edits, &file.path)?;
+    let (model_edits, before_facts) =
+        model_edits_and_before_facts(&doc, &effective_edits, &file.path)?;
     let mut batch = model::SpliceRequest {
         if_root: args
             .if_root
@@ -849,7 +851,12 @@ fn validate_set_member(
     ) {
         model::SpliceVerdict::Validated(b) => b,
         refused => {
-            return Err(verdict_to_wire(&refused, &effective_edits, &doc, &file.path));
+            return Err(verdict_to_wire(
+                &refused,
+                &effective_edits,
+                &doc,
+                &file.path,
+            ));
         }
     };
     let mut after_doc = build_after_doc(&doc, &sealed, &file.path);
@@ -1058,7 +1065,8 @@ pub fn commit_set(
     let mut owned: Vec<(model::ValidatedBatch, model::CandidateDocument)> =
         Vec::with_capacity(req.entries.len());
     for (index, entry) in req.entries.iter().enumerate() {
-        let before = fs::load(root, FsPath::new(&entry.content_path)).map_err(CommitSetError::Io)?;
+        let before =
+            fs::load(root, FsPath::new(&entry.content_path)).map_err(CommitSetError::Io)?;
         let sealed = match model::validate_batch(
             &before,
             Some(&model::MerkleRoot(root_before.0.clone())),
@@ -1074,12 +1082,8 @@ pub fn commit_set(
             }
         };
         let candidate = model::candidate_of_batch(&entry.content_path, &before.raw, &sealed);
-        stored_form_guard_lazy(
-            Some(&before),
-            &candidate,
-            &Path(entry.content_path.clone()),
-        )
-        .map_err(CommitSetError::Env)?;
+        stored_form_guard_lazy(Some(&before), &candidate, &Path(entry.content_path.clone()))
+            .map_err(CommitSetError::Env)?;
         befores.push(before);
         owned.push((sealed, candidate));
     }

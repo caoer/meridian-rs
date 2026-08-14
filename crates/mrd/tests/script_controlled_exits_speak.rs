@@ -608,7 +608,7 @@ fn every_commit_door_is_either_swept_or_recorded_unreachable() {
         .iter()
         .filter_map(|(_, coverage)| match coverage {
             Coverage::Swept(door) => Some(*door),
-            _ => None,
+            Coverage::Success => None,
         })
         .collect();
     for door in OnSplice::ALL {
