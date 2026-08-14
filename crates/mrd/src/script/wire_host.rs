@@ -797,6 +797,7 @@ mod tests {
             id: "script".to_owned(),
             args: std::collections::BTreeMap::new(),
             files: vec![PAGE.to_owned()],
+            effects: Vec::new(),
         };
         let eval = effects::eval_script(
             &format!("put({PAGE:?}, props={{\"status\": \"done\"}})\ncard = read({PAGE:?})\n"),
@@ -859,11 +860,12 @@ mod tests {
             id: "script".to_owned(),
             args: std::collections::BTreeMap::new(),
             files: vec![PAGE.to_owned()],
+            effects: Vec::new(),
         };
         // Line 1 reads; line 2 indexes a frontmatter key the page does not
         // carry — the G7 shape.
         let eval = effects::eval_script(
-            &format!("card = read({PAGE:?})\nx = card.fm[\"report_path\"]\n"),
+            &format!("card = read({PAGE:?})\nx = card[\"fm\"][\"report_path\"]\n"),
             &ctx,
             effects::ScriptLimits::default(),
             &mut host,

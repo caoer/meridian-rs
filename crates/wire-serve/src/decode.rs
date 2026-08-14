@@ -162,6 +162,7 @@ pub fn decode(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody>> 
         "splice" => decode_splice(obj, rev),
         "create" => decode_create(obj),
         "script" => decode_script(obj),
+        "run" => decode_run(obj),
         // §3.2: only genuinely unknown names land here.
         _ => Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp))),
     }
@@ -170,8 +171,9 @@ pub fn decode(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody>> 
 /// § A.7 `script` field set — the entry's own inputs and nothing else. No
 /// budgets field at birth: the CLI entry exposes none either, and a future
 /// override arrives as a dotted `script.<field>` cap, never by loosening this
-/// wall.
-pub(crate) const SCRIPT_FIELDS: [&str; 9] = [
+/// wall. `effects`/`invocation` are the script-effects ruling's two fields
+/// (2026-08-13).
+pub(crate) const SCRIPT_FIELDS: [&str; 11] = [
     "source",
     "args",
     "files",
@@ -181,7 +183,13 @@ pub(crate) const SCRIPT_FIELDS: [&str; 9] = [
     "if_root",
     "dry",
     "expect_armed",
+    "effects",
+    "invocation",
 ];
+
+/// The closed effect-builtin set (§ A.7 effects paragraph). `mutex` is
+/// recorded DO-NOT-BUILD and deliberately not here.
+const KNOWN_EFFECTS: [&str; 1] = ["run"];
 
 /// § A.7 in-process script submission (v3-only at dispatch; decode is
 /// rev-agnostic, the `read` precedent).
@@ -242,6 +250,94 @@ fn decode_script(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
             ));
         }
     };
+    // Effects mode (§ A.7 effects paragraph): the combination walls live at
+    // decode so a malformed submission teaches its wall before any entry.
+    let effects = match obj.get("effects") {
+        None => Vec::new(),
+        Some(Value::Array(items)) => {
+            if items.is_empty() {
+                return Err(bad_request(
+                    "`effects: []` names no effect builtin — name one (`run`) or \
+                     omit the field for a pure script",
+                ));
+            }
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                let Some(name) = item.as_str() else {
+                    return Err(bad_request(
+                        "`effects` must be an array of effect-builtin names on `script`",
+                    ));
+                };
+                if !KNOWN_EFFECTS.contains(&name) {
+                    return Err(bad_request(format!(
+                        "unknown effect `{name}` on `script` — the closed set is: {}",
+                        KNOWN_EFFECTS.join(", ")
+                    )));
+                }
+                if out.contains(&name.to_owned()) {
+                    return Err(bad_request(format!(
+                        "effect `{name}` named twice on `script`"
+                    )));
+                }
+                out.push(name.to_owned());
+            }
+            out
+        }
+        Some(_) => {
+            return Err(bad_request(
+                "`effects` must be an array of effect-builtin names on `script`",
+            ));
+        }
+    };
+    let invocation = opt_str(obj, op, "invocation")?;
+    let dry = opt_bool(obj, op, "dry")?;
+    let if_root = opt_str(obj, op, "if_root")?.map(wire::Root);
+    let expect_armed = opt_str(obj, op, "expect_armed")?;
+    if !effects.is_empty() {
+        if dry == Some(true) {
+            return Err(bad_request(
+                "`dry` has no meaning in effects mode — a live program cannot \
+                 rehearse; `run(dry=True)` inspects one task",
+            ));
+        }
+        if if_root.is_some() {
+            return Err(bad_request(
+                "`if_fingerprint` has no meaning in effects mode — a live \
+                 program reads its own present; there is no premise to guard",
+            ));
+        }
+        if expect_armed.is_some() {
+            return Err(bad_request(
+                "`expect_armed` has no meaning in effects mode — a live \
+                 program holds no armed set",
+            ));
+        }
+        match &invocation {
+            None => {
+                return Err(bad_request(
+                    "effects mode requires `invocation` — run identity derives \
+                     host-minted (`<invocation>-r<K>`, §9)",
+                ));
+            }
+            Some(inv) => {
+                if inv.is_empty()
+                    || !inv
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+                {
+                    return Err(bad_request(format!(
+                        "`invocation` must be a non-empty path-safe token \
+                         ([A-Za-z0-9._-]) on `script`: `{inv}`"
+                    )));
+                }
+            }
+        }
+    } else if invocation.is_some() {
+        return Err(bad_request(
+            "`invocation` rides effects mode only — a pure script mints no \
+             run identity",
+        ));
+    }
     Ok(Op::Script {
         source: req_str(obj, op, "source")?,
         args,
@@ -249,9 +345,172 @@ fn decode_script(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
         actor: opt_str(obj, op, "actor")?,
         now,
         receipt: obj.get("receipt").map(decode_receipt).transpose()?,
-        if_root: opt_str(obj, op, "if_root")?.map(wire::Root),
-        dry: opt_bool(obj, op, "dry")?,
-        expect_armed: opt_str(obj, op, "expect_armed")?,
+        if_root,
+        dry,
+        expect_armed,
+        effects,
+        invocation,
+    })
+}
+
+/// § A.8 `run` field set — targets plus §9 identity, and nothing else. No
+/// receipt / capability / timeout / code field by design: receipts are the
+/// plane's own, authority and deadline resolve from the corpus, and the wire
+/// carries names, never code.
+pub(crate) const RUN_FIELDS: [&str; 4] = ["targets", "invocation", "actor", "now"];
+
+/// The § A.8 fan-out ceiling: every face list carries one.
+const RUN_MAX_TARGETS: usize = 64;
+
+/// § A.8 page-task execution (v3-only at dispatch; decode is rev-agnostic).
+fn decode_run(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
+    let op = "run";
+    check_fields(obj, op, &RUN_FIELDS)?;
+    let now = opt_str(obj, op, "now")?;
+    if let Some(n) = &now
+        && !wire::now_is_rfc3339(n)
+    {
+        return Err(bad_request(format!(
+            "`now` must be RFC 3339 (§9, validated never generated): `{n}`"
+        )));
+    }
+    // The host-minted identity base (§9): per-target ids derive from it and
+    // land in receipt anchors and scratch paths, so it must be path-safe.
+    let invocation = req_str(obj, op, "invocation")?;
+    if invocation.is_empty()
+        || !invocation
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        return Err(bad_request(format!(
+            "`invocation` must be a non-empty path-safe token \
+             ([A-Za-z0-9._-]) on `run`: `{invocation}`"
+        )));
+    }
+    let targets = match obj.get("targets") {
+        Some(Value::Array(items)) => {
+            if items.is_empty() {
+                return Err(bad_request("`targets` must not be empty on `run`"));
+            }
+            if items.len() > RUN_MAX_TARGETS {
+                return Err(bad_request(format!(
+                    "`targets` carries {} entries on `run` — the ceiling is \
+                     {RUN_MAX_TARGETS} (§ A.8); split the call",
+                    items.len()
+                )));
+            }
+            let mut out = Vec::with_capacity(items.len());
+            for (i, item) in items.iter().enumerate() {
+                let Value::Object(t) = item else {
+                    return Err(bad_request(format!(
+                        "`targets[{i}]` must be an object on `run`"
+                    )));
+                };
+                out.push(decode_run_target(t, i)?);
+            }
+            out
+        }
+        Some(_) => {
+            return Err(bad_request("`targets` must be an array on `run`"));
+        }
+        None => return Err(bad_request("missing `targets` on `run`")),
+    };
+    Ok(Op::Run {
+        targets,
+        invocation,
+        actor: opt_str(obj, op, "actor")?,
+        now,
+    })
+}
+
+/// One § A.8 target: `page` required; `task`/`args`/`env`/`dry` optional.
+/// `args` is POSITIONAL here (the run plane's contract shape), unlike the
+/// script entry's inert dict — two entries, each speaking its own plane's
+/// grammar verbatim.
+fn decode_run_target(t: &Map<String, Value>, i: usize) -> Result<wire::RunTarget, Box<ErrorBody>> {
+    const TARGET_FIELDS: [&str; 5] = ["page", "task", "args", "env", "dry"];
+    for key in t.keys() {
+        if !TARGET_FIELDS.contains(&key.as_str()) {
+            return Err(bad_request(format!(
+                "unknown field `{key}` on `targets[{i}]` of `run`"
+            )));
+        }
+    }
+    let Some(Value::String(page)) = t.get("page") else {
+        return Err(bad_request(format!(
+            "`targets[{i}].page` must be a non-empty string on `run`"
+        )));
+    };
+    if page.is_empty() {
+        return Err(bad_request(format!(
+            "`targets[{i}].page` must be a non-empty string on `run`"
+        )));
+    }
+    let task = match t.get("task") {
+        None => None,
+        Some(Value::String(s)) => Some(s.clone()),
+        Some(_) => {
+            return Err(bad_request(format!(
+                "`targets[{i}].task` must be a string on `run`"
+            )));
+        }
+    };
+    let args = match t.get("args") {
+        None => Vec::new(),
+        Some(Value::Array(items)) => {
+            let mut out = Vec::with_capacity(items.len());
+            for a in items {
+                let Some(s) = a.as_str() else {
+                    return Err(bad_request(format!(
+                        "`targets[{i}].args` must be an array of strings on `run` — \
+                         positional, contract-validated by the plane"
+                    )));
+                };
+                out.push(s.to_owned());
+            }
+            out
+        }
+        Some(_) => {
+            return Err(bad_request(format!(
+                "`targets[{i}].args` must be an array of strings on `run`"
+            )));
+        }
+    };
+    let env = match t.get("env") {
+        None => std::collections::BTreeMap::new(),
+        Some(Value::Object(map)) => {
+            let mut out = std::collections::BTreeMap::new();
+            for (k, v) in map {
+                let Some(v) = v.as_str() else {
+                    return Err(bad_request(format!(
+                        "`targets[{i}].env` values must be strings on `run`: `{k}` is not"
+                    )));
+                };
+                out.insert(k.clone(), v.to_owned());
+            }
+            out
+        }
+        Some(_) => {
+            return Err(bad_request(format!(
+                "`targets[{i}].env` must be an object of string values on `run`"
+            )));
+        }
+    };
+    let dry = match t.get("dry") {
+        None => None,
+        Some(Value::Bool(b)) => Some(*b),
+        Some(_) => {
+            return Err(bad_request(format!(
+                "`targets[{i}].dry` must be a boolean on `run`"
+            )));
+        }
+    };
+    Ok(wire::RunTarget {
+        page: page.clone(),
+        task,
+        args,
+        env,
+        dry,
     })
 }
 

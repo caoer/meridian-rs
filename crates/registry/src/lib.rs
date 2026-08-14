@@ -25,6 +25,7 @@ mod mounts;
 mod protocol;
 mod registry;
 pub mod ring;
+mod run_op;
 mod script_op;
 mod server;
 mod state;

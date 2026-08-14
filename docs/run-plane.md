@@ -28,6 +28,18 @@ holds no run-plane state ACROSS attempts of any kind. The subprocess script
 lane (`mrd script`, wire-client mode below) stays functional; its removal is
 a separate ruling this amendment does not make.
 
+**Amendment (2026-08-13, run-crossing ruling): the task entry becomes
+wire-invocable too (wire-contract § A.8).** ZT ruled `run` crossing a KEY
+FEATURE — a list of targets through the face, and `run()` callable inside
+the script entry (live, under § Effects mode). The daemon now carries the
+§ A.8 op arm (per-target loop over the unchanged `crates/run` seam, §9
+identity threading) and the effects-mode live host, still per-invocation and
+never ACROSS invocations. "The engine cannot tell run exists" retires as the
+charter sentence; its successor is narrower and still load-bearing: **the
+serve path consumes the run plane, it never re-implements it** — one runner,
+one executor, one receipt convention, whichever door invoked it. The CLI
+entry stays a client as written.
+
 Sources of truth: the ratified plan (session `21-23-meridian-rs-md-run`,
 `compound plan page (workspace content)`) and the round-1 verdict. This document states the
 surface **as shipped in S1**, including what it deliberately does not
@@ -63,6 +75,16 @@ Identity and time are **caller-supplied** (§9) — the kernel never reads a
 clock and never mints an id. Starlark-invokes-bash is a **permanent no**
 (decision #17, test-gated): the sandbox exposes no `exec` / `subprocess` /
 `os` name. The composition layer IS bash.
+
+*Amendment (2026-08-13, script-effects ruling): #17 is OVERTURNED on the
+effects path only. A submission carrying `effects:["run"]` holds a live
+`run()` that executes the addressed task at call time — a sanctioned exec
+surface, chosen deliberately over an armed/deferred chimera (ZT, verbatim:
+"Effects cannot be refused (out-of-world), so the transaction promise is
+unkeepable there — no half-promises, no chimera"). The PURE path keeps #17
+word for word: no exec surface, eval a pure function of its recorded
+inputs. The surface test asserts both: pure globals stay `{read, me, put}`;
+effects globals add exactly the admitted list.*
 
 ## The script entry
 
@@ -118,6 +140,63 @@ list, and addressing at 60 section reads returns `outcome no_effect`,
 `reads_used 60`, exit 0. Three files exhausted a budget a reader would have
 called "64 files". The control differs from the test in exactly one variable,
 the call count, so the refusal is the budget and nothing else.
+
+**Effects mode (added 2026-08-13, script-effects ruling; supersedes the
+same-day armed-run design, under which no code shipped).** A submission may
+carry `effects: […]` beside `dry`/`files`/`args`: the list declares which
+effect builtins the program may use. The closed set today is `run`; a
+`mutex()` builtin mirroring fleet make-mutex semantics is recorded
+DO-NOT-BUILD, for later. **The flag switches the execution model:**
+
+- **Absent → pure script.** Everything above, word for word: entry world,
+  armed set, one-content-file law, commit CAS, replay. A script is provably
+  pure by default.
+- **Present → LIVE PROGRAM.** `read()` serves the live disk at call time —
+  no pin, no overlay, its own read is the world. `put()` applies
+  IMMEDIATELY through the wire splice door: write flock held, structural
+  validation intact, the guard's `force` bypass — no rev, no snapshot, no
+  CAS; the one-content-file law does not apply (it is the pure
+  TRANSACTION's law, and there is no transaction here). `run(page,
+  task=None, args=[], env={}, dry=False)` executes the addressed task at
+  call time through the plane's own seam and RETURNS its § A.8 row as a
+  value — state, exit code, stdout observable in-program; run-then-decide
+  works. Refusal rows return as values too (branchable); only shape errors
+  (wrong argument types) fault the program.
+- **Principle (ZT, ruled verbatim):** *"the rev is a leash for the agent
+  stale context, not a property of writes. A script reads at execution
+  time — its own read is the freshest possible; guarding a millisecond gap
+  means nothing. Effects cannot be refused (out-of-world), so the
+  transaction promise is unkeepable there — no half-promises, no
+  chimera."*
+- **Accepted tradeoff ON RECORD, not a warning:** two effect-scripts can
+  last-writer-wins each other on one section, same as two shell scripts;
+  the engine write flock keeps files structurally intact; exclusivity
+  belongs to the coordination layer.
+- **No rollback.** A mid-program fault leaves every prior act landed; the
+  trace records how far the program got. The outcome word for a completed
+  live program is `effects` (the vocabulary's one addition); `fault` keeps
+  its meaning on both models.
+- **Replay refuses a live program.** Eval-as-pure-function holds for the
+  pure model only; `replay_script` refuses an effects-mode context rather
+  than forging a world that was live.
+- **Budgets:** eval limits and the wall clock bind unchanged; the read
+  ceiling counts live reads identically; `put()`/`run()` are not
+  fuel-metered — each run is bounded by the plane's own timeout.
+- **Identity (§9):** `actor`/`now` thread as everywhere; run identity
+  derives from the submission's host-minted `invocation` base
+  (`<invocation>-r<K>`, K the 0-based call ordinal).
+
+**Read alignment (2026-08-13, same ruling — BOTH models).** In-script
+`read()` mirrors the read TOOL interface, and its results are VALUES, not
+opaque structs (the Mathematica principle: *"read() returns actual VALUES
+the agent computes with"*; resolves dogfood F-SC1/F-S1 by interface
+alignment): `read(path)` answers the toc face as a DICT — `{"fm": {…},
+"toc": […], "rev": "…", "words": N}` — and `read(path, section=…)` answers
+the section TEXT as a plain string (`"x" in read(p, section=s)` is a
+legal program; the section's rev still rides the recording, where the
+threading law reads it). The `section` string speaks the read tool's own
+selector grammar — heading path, dewey ordinal, `^anchor` — and the dewey
+arm is now served (the prior in-script refusal is retired).
 
 This is why **RAISING the budget is refused**: it is cost policy wearing a fix,
 and since sections count, a raise is a treadmill that buys a different wrong
@@ -1242,7 +1321,11 @@ A bash step runs where `mrd` runs (U16, requirements row E1 — *"DO NOT CHANGE
 THE RUNNING PATH"*). The supervisor does not relocate the process; the
 caller-minted out-of-tree scratch directory stays, as the artifact location
 only. The project root reaches the step as `$MERIDIAN_PROJECT_ROOT`
-(convenience, decision P6).
+(convenience, decision P6). *Amendment (2026-08-13, § A.8): U16's sentence
+was written for a local entry whose cwd is the caller's context. A daemon
+has no meaningful cwd, so on the WIRE arm the step's working directory is
+the bound workspace root — stated in § A.8, deterministic, narrower than
+the CLI. The CLI entry is unchanged.*
 
 Say the consequence plainly: a step CAN write into the tree, and such a write is
 neither tolerated nor merely reported. The U6b exec bracket detects it as
@@ -1407,6 +1490,7 @@ S1 — ship the scoped claim, never the unqualified one."*
 | CLI mount | `crates/mrd::run_cmd` — a client; the charter edge is `laws.md` §crates (`mrd` row) |
 | CLI mount — script entry | `crates/mrd::script::cmd` — the same client edge; its human-mode face is non-normative |
 | in-process script serve (§ A.7) | `crates/registry` (the op arm: entry world, host, threading, commit) over `crates/effects` (kernel, trace, digest) — added 2026-08-12 |
+| wire run serve (§ A.8) + script effects mode | `crates/registry` (`run_op`: per-target loop, §9 threading; `script_op`: the live host) over `crates/run` (the plane, unchanged) — added 2026-08-13 |
 
 ---
 

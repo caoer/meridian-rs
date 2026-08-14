@@ -54,6 +54,10 @@ pub struct ExecSpec<'a> {
     pub project_root: &'a Path,
     /// The wall-clock ceiling (#21).
     pub timeout: Duration,
+    /// The step's working directory. `None` is U16 as written — the step
+    /// inherits the invocation cwd (the CLI entry). The § A.8 wire arm
+    /// passes the bound workspace root: a daemon has no meaningful cwd.
+    pub step_cwd: Option<&'a Path>,
 }
 
 /// How the step ended.
@@ -138,7 +142,6 @@ where
         .arg(spec.source)
         .arg("mrd-task")
         .args(spec.args)
-        // No `current_dir`: U16 — the step runs where `mrd` runs.
         .env_clear()
         .env(
             "PATH",
@@ -152,6 +155,12 @@ where
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // U16 as written when `None` (the step runs where the process runs); the
+    // § A.8 wire arm names the bound workspace root — a daemon's own cwd is
+    // not a fact any caller chose.
+    if let Some(cwd) = spec.step_cwd {
+        cmd.current_dir(cwd);
+    }
 
     let write_fd = shim_write.as_raw_fd();
     // SAFETY: pre_exec runs post-fork pre-exec in the child; setsid and dup2

@@ -81,6 +81,8 @@ fn spec_for(scratch: &tempfile::TempDir, args: Vec<String>) -> RunSpec<'_> {
         // reach the executor exactly as written.
         declaring_root: None,
         limits: EvalLimits::default(),
+        actor: None,
+        step_cwd: None,
     }
 }
 

@@ -30,7 +30,7 @@ const WORDS: usize = 41;
 /// nobody holds it.
 const CLAIM: &str = r#"
 card = read("tasks/0011-token-audit.md")
-if card.fm["owner"] == "":
+if card["fm"]["owner"] == "":
     put("tasks/0011-token-audit.md", props={"owner": me(), "status": "doing"})
 "#;
 
