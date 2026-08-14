@@ -1589,10 +1589,10 @@ fn read_mint_gate(
         return Err(read_mint_required(
             target,
             format!(
-                "pin of {}#{asked} refused: this host holds no read-receipt ledger, so it \
-                 cannot know that actor {actor} read the content (a ledgerless in-process \
-                 caller has no session — pin through the resident daemon, or from the \
-                 local CLI)",
+                "pin of \"{asked}\" in {} refused: this host holds no read-receipt ledger, \
+                 so it cannot know that actor {actor} read the content (a ledgerless \
+                 in-process caller has no session — pin through the resident daemon, or \
+                 from the local CLI)",
                 target.0
             ),
         ));
@@ -1614,10 +1614,10 @@ fn read_mint_gate(
         return Err(read_mint_required(
             target,
             format!(
-                "pin of {}#{asked} refused: actor {actor} holds no read receipt for that \
-                 selector — you cannot attest content that was never in your context. Cause: \
-                 {cause}. Fix, either way, in one round trip: re-read {}#{asked} (a \
-                 sections read, that exact selector) as {actor}, then pin again.",
+                "pin of \"{asked}\" in {} refused: actor {actor} holds no read receipt for \
+                 that selector — you cannot attest content that was never in your context. \
+                 Cause: {cause}. Fix, either way, in one round trip: re-read \"{asked}\" in \
+                 {} (a sections read, that exact selector) as {actor}, then pin again.",
                 target.0, target.0
             ),
         ));
@@ -1628,8 +1628,8 @@ fn read_mint_gate(
         e.expected = Some(NodeRev(receipt.sec_rev.clone()));
         e.actual = Some(NodeRev(live_sec_rev.to_owned()));
         e.message = Some(format!(
-            "pin of {}#{asked} refused: the receipt covers rev {} but the section now carries \
-             {live_sec_rev} — re-read the selector (that re-mints) and pin again",
+            "pin of \"{asked}\" in {} refused: the receipt covers rev {} but the section now \
+             carries {live_sec_rev} — re-read the selector (that re-mints) and pin again",
             target.0, receipt.sec_rev
         ));
         return Err(Box::new(e));
