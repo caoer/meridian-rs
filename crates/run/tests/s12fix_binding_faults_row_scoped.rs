@@ -118,7 +118,10 @@ fn the_poisoned_page_still_enumerates_every_row() {
 /// every declared name — including the ones whose own bindings are broken.
 #[test]
 fn no_such_task_still_answers_and_lists_the_broken_siblings() {
-    let AddressError::NoTask { name, available } = err_for("nope") else {
+    let AddressError::NoTask {
+        name, available, ..
+    } = err_for("nope")
+    else {
         panic!("expected NoTask");
     };
     assert_eq!(name, "nope");

@@ -194,7 +194,9 @@ fn file_not_found_on_the_load_plane_names_the_miss_and_a_fix() {
         .expect("the refusal is a sentence, not a bare code");
     assert!(m.contains("missing.md"), "names the missing file: {m}");
     assert!(m.contains("workspace root"), "names where it looked: {m}");
-    assert!(m.contains("Fix:"), "carries a fix clause: {m}");
+    // The register moved (r5 F2): one demanded Fix became fitted suggestions
+    // by entry — the fix clause now rides as "Fixes — whichever fits".
+    assert!(m.contains("Fixes —"), "carries a fix clause: {m}");
     // The write half of the trap: a write to a missing path never births it —
     // birth is its own door.
     assert!(m.contains("birth"), "points writes at the birth door: {m}");

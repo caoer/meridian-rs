@@ -30,7 +30,10 @@ fn starlark_task_classifies_hermetic_language() {
 fn missing_task_is_no_task_with_the_declared_list() {
     let d = doc(PAGE);
     let err = address::resolve_task(&d, Some("nope")).unwrap_err();
-    let AddressError::NoTask { name, available } = err else {
+    let AddressError::NoTask {
+        name, available, ..
+    } = err
+    else {
         panic!("expected NoTask, got {err:?}");
     };
     assert_eq!(name, "nope");
@@ -80,7 +83,12 @@ true
 #[test]
 fn task_omitted_with_no_bindings_is_no_tasks() {
     let err = address::resolve_task(&doc("# empty\n"), None).unwrap_err();
-    assert_eq!(err, AddressError::NoTasks);
+    assert_eq!(
+        err,
+        AddressError::NoTasks {
+            declaration_keys: Vec::new(),
+        }
+    );
 }
 
 #[test]

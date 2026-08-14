@@ -239,9 +239,11 @@ fn choke_point_denies_undeclared_kind_before_any_io() {
         ExecError::CapDenied {
             kind: "md.set_field".to_owned(),
             target: "status".to_owned(),
-            // No ceiling narrowed here: the grant simply never held the cap,
-            // so the refusal names the cause and teaches no fix.
+            // No ceiling narrowed here: the grant simply never held the cap —
+            // the refusal names the measured grants (none) and the
+            // `task.<name>.caps` declaration (r3 gap 6b).
             ceiling: None,
+            declared: Vec::new(),
         }
     );
     assert_eq!(page_text(&root), PAGE, "nothing applied");
@@ -896,5 +898,69 @@ fn the_adapter_refuses_an_incomplete_or_over_specified_intent() {
         ])
         .is_ok(),
         "the corrected baseline adapts"
+    );
+}
+
+/// r3 gap 6b (card `refusal-teaching-gaps-r3`): a deny-by-default refusal
+/// names WHY (only declared caps are granted), the declared grants the
+/// resolution measured, and `task.<name>.caps` as the declaration that
+/// grants — never a bare denial the caller must source-dive to repair.
+#[test]
+fn cap_denial_without_a_ceiling_teaches_the_caps_declaration() {
+    let (_tmp, root) = workspace();
+    let now = current_root(&root);
+    let err = apply(
+        &root,
+        &Req {
+            effects: &[append("Log", "- x", 0)],
+            caps: CapSet::parse("md.set_field:status").unwrap(),
+            pin: now.clone(),
+            live: now,
+            receipt: None,
+            takeover: false,
+        },
+    )
+    .unwrap_err();
+    let m = err.to_string();
+    assert!(
+        m.contains("only declared capabilities are granted"),
+        "names the deny-by-default reason: {m}"
+    );
+    assert!(
+        m.contains("md.set_field:status"),
+        "lists the grants the resolution measured: {m}"
+    );
+    assert!(
+        m.contains("task.<name>.caps"),
+        "names the declaration that grants: {m}"
+    );
+}
+
+/// Gap 6b control — a task declaring NO caps says so, instead of listing an
+/// empty set.
+#[test]
+fn cap_denial_on_an_empty_grant_says_the_task_declares_none() {
+    let (_tmp, root) = workspace();
+    let now = current_root(&root);
+    let err = apply(
+        &root,
+        &Req {
+            effects: &[append("Log", "- x", 0)],
+            caps: CapSet::none(),
+            pin: now.clone(),
+            live: now,
+            receipt: None,
+            takeover: false,
+        },
+    )
+    .unwrap_err();
+    let m = err.to_string();
+    assert!(
+        m.contains("declares no md.* capabilities"),
+        "states the empty grant plainly: {m}"
+    );
+    assert!(
+        m.contains("task.<name>.caps"),
+        "names the declaration that grants: {m}"
     );
 }

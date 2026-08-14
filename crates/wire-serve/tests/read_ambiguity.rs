@@ -169,10 +169,14 @@ fn single_miss_keeps_spelling_and_remedy_names_both_dialects() {
     let err = *read(vec![ReadSel::parse("Ghost")]).expect_err("miss refuses");
     assert_eq!(err.code, ErrorCode::RefNotFound);
     let msg = err.message.as_deref().expect("message");
+    // The standing spelling stays the prefix; since gap 6a the heading lane
+    // appends its measured teaching in the parenthetical, like the anchor
+    // lane always did.
     assert!(
-        msg.starts_with("read: no section addressed by \"Ghost\" in dup.md."),
+        msg.starts_with("read: no section addressed by \"Ghost\" ("),
         "{msg}"
     );
+    assert!(msg.contains(") in dup.md."), "{msg}");
     assert!(
         msg.contains("sections[] omitted"),
         "MCP dialect named: {msg}"

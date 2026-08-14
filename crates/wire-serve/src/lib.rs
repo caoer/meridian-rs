@@ -143,10 +143,12 @@ pub fn load_doc(root: &fs::WorkspaceRoot, path: &Path) -> Result<model::Document
                 err.path = Some(path.clone());
                 err.message = Some(format!(
                     "file_not_found: no file at {} under the workspace root — nothing was served and \
-                     nothing was written. Fix: check the workspace-relative spelling \
-                     (`results/f.md`, never absolute); a write to a missing path never \
-                     births it — birth is its own door (wire `create`; `mrd new` for \
-                     records).",
+                     nothing was written. A write to a missing path never births it: birth is \
+                     its own door, so a typo cannot create a stray file. Fixes — whichever fits \
+                     your entry: check the workspace-relative spelling first (`results/f.md`, \
+                     never absolute); to birth the page from a serving face, use its put door \
+                     with the ref and the full body; on the raw wire, the `create` op; on the \
+                     CLI, `mrd new` for records.",
                     path.0
                 ));
                 err
