@@ -610,6 +610,42 @@ fn value_ref_to_json(v: ValueRef<'_>) -> Value {
         ValueRef::Double(f) => json_f64(f),
         ValueRef::Text(bytes) => Value::String(String::from_utf8_lossy(bytes).into_owned()),
         ValueRef::Blob(bytes) => Value::String(hex(bytes)),
+        // A list cell's ValueRef carries the WHOLE column array + a row index;
+        // the debug fallback below would dump every row's values into every
+        // cell (F1). The owned conversion slices out this row's elements.
+        ValueRef::List(..) | ValueRef::Array(..) => {
+            duck_value_to_json(&duckdb::types::Value::from(v))
+        }
+        other => Value::String(format!("{other:?}")),
+    }
+}
+
+/// An owned duckdb value into JSON — the recursion arm for list/array cells,
+/// whose elements arrive owned after the row slice. Scalars mirror
+/// `value_ref_to_json`; unhandled shapes fall back to a debug string.
+fn duck_value_to_json(v: &duckdb::types::Value) -> Value {
+    use duckdb::types::Value as D;
+    match v {
+        D::Null => Value::Null,
+        D::Boolean(b) => Value::Bool(*b),
+        D::TinyInt(n) => Value::from(i64::from(*n)),
+        D::SmallInt(n) => Value::from(i64::from(*n)),
+        D::Int(n) => Value::from(i64::from(*n)),
+        D::BigInt(n) => Value::from(*n),
+        D::HugeInt(n) => {
+            i64::try_from(*n).map_or_else(|_| Value::String(n.to_string()), Value::from)
+        }
+        D::UTinyInt(n) => Value::from(u64::from(*n)),
+        D::USmallInt(n) => Value::from(u64::from(*n)),
+        D::UInt(n) => Value::from(u64::from(*n)),
+        D::UBigInt(n) => Value::from(*n),
+        D::Float(f) => json_f64(f64::from(*f)),
+        D::Double(f) => json_f64(*f),
+        D::Text(s) => Value::String(s.clone()),
+        D::Blob(bytes) => Value::String(hex(bytes)),
+        D::List(items) | D::Array(items) => {
+            Value::Array(items.iter().map(duck_value_to_json).collect())
+        }
         other => Value::String(format!("{other:?}")),
     }
 }
@@ -779,6 +815,63 @@ mod tests {
     #[test]
     fn parse_missing_query_is_error() {
         assert!(SqlArgs::parse(&["--json".to_owned()]).is_err());
+    }
+
+    #[test]
+    fn list_cells_render_per_row_values_not_column_debug_dumps() {
+        // F1: a list cell (e.g. `section.hpath` VARCHAR[]) used to fall through
+        // `value_ref_to_json`'s debug arm, which prints the ENTIRE column's
+        // Arrow dump plus a row index for every cell. Each cell must carry its
+        // own row's values only, as a real JSON array — the `--json` face gets
+        // the array, the human face renders it as a compact JSON field.
+        let conn = Connection::open_in_memory().unwrap();
+        let (cols, rows) = run_user_query(
+            &conn,
+            "SELECT * FROM (VALUES (['a','b']), (['c'])) t(hpath)",
+        )
+        .expect("query");
+        assert_eq!(cols[0].ty, "LIST");
+        assert_eq!(rows[0][0], json!(["a", "b"]));
+        assert_eq!(rows[1][0], json!(["c"]));
+        assert_eq!(cell_text(&rows[0][0]), r#"["a","b"]"#);
+    }
+
+    #[test]
+    fn excluded_note_promise_matches_the_machine_answer() {
+        // F3: the stderr note used to promise the complete list on "the
+        // `excluded` key of the machine answer (`--json`)" — but sql's
+        // frame_json emits NO such key, and never should (4807 paths in every
+        // answer is a token bomb; the anti-silence law wants count + sample +
+        // a TRUE pointer, §12.1). The two halves are asserted together so a
+        // change to either drags the other into the same commit: the frame
+        // stays excluded-free, and the note points at the one carrier that
+        // really serves the list — the bare `mrd links --json` enumeration.
+        let frame = Frame {
+            as_of: Some("f0".to_owned()),
+            live: Some("f0".to_owned()),
+            profile: ExecProfile::Local,
+            live_source: LiveSource::Fold,
+            stale: Some(false),
+            state: QueryState::FreshAtSample,
+            columns: vec![],
+            rows: vec![],
+            error: None,
+        };
+        let doc: Value = serde_json::from_str(&frame_json(&frame)).expect("frame json");
+        assert!(
+            doc.get("excluded").is_none(),
+            "sql's machine answer must not carry the excluded list"
+        );
+
+        let note = crate::excluded_note(4807, "a, b, c and 4804 more");
+        assert!(
+            note.contains("`mrd links --json`"),
+            "the note must point at the carrier that serves the complete list: {note}"
+        );
+        assert!(
+            !note.contains("the machine answer (`--json`"),
+            "the self-referential promise is the F3 lie — sql's own --json has no `excluded` key: {note}"
+        );
     }
 
     #[test]
