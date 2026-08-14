@@ -239,6 +239,11 @@ const AGENT_MEMORY_LIMIT: &str = "512MB";
 const AGENT_THREADS: i64 = 1;
 /// The `agent` profile deep-parse-bomb bound (B5; `DuckDB` default is 1000).
 const AGENT_MAX_EXPRESSION_DEPTH: u32 = 1000;
+/// Both profiles' spill budget (card sql-spill-config-lockout): the `DuckDB`
+/// default is 90% of available disk — effectively unbounded, and it `ENOSPC`ed
+/// a host (one query spilled >9 GiB into the seat's cwd). Bounded for local
+/// too: the operator's shell is trusted, the disk is shared.
+const SPILL_BUDGET: &str = "8GiB";
 
 /// Apply the profile's resource limits to `conn` (B5). Order is load-bearing
 /// for `agent`: set the caps, disable external access, then lock the
@@ -247,13 +252,32 @@ const AGENT_MAX_EXPRESSION_DEPTH: u32 = 1000;
 /// blocks opening new files, never the database already attached. There is no
 /// `statement_timeout` pragma — a wall-clock cap is the parent's process kill.
 ///
+/// `spill_dir` (card sql-spill-config-lockout) becomes the ABSOLUTE
+/// `temp_directory`, with [`SPILL_BUDGET`] as `max_temp_directory_size`, on
+/// BOTH profiles and BEFORE any lock: the locked defaults were a small
+/// memory cap (spills early), a 90%-of-disk budget, and a `.tmp` path
+/// RELATIVE to the shell cwd — no flag changes the process cwd, so spills
+/// landed wherever the seat happened to be, and the agent lock froze it all.
+///
 /// # Errors
 /// Propagates the `DuckDB` error from the pragma batch.
-pub fn apply_profile(conn: &Connection, profile: ExecProfile) -> duckdb::Result<()> {
+pub fn apply_profile(
+    conn: &Connection,
+    profile: ExecProfile,
+    spill_dir: &Path,
+) -> duckdb::Result<()> {
+    // Best-effort: DuckDB creates the directory on first spill too.
+    let _ = std::fs::create_dir_all(spill_dir);
+    let spill = spill_dir.display().to_string().replace('\'', "''");
+    let containment = format!(
+        "SET temp_directory='{spill}';\n\
+         SET max_temp_directory_size='{SPILL_BUDGET}';\n"
+    );
     let sql = match profile {
-        ExecProfile::Local => format!("SET memory_limit='{LOCAL_MEMORY_LIMIT}';"),
+        ExecProfile::Local => format!("{containment}SET memory_limit='{LOCAL_MEMORY_LIMIT}';"),
         ExecProfile::Agent => format!(
-            "SET memory_limit='{AGENT_MEMORY_LIMIT}';\n\
+            "{containment}\
+             SET memory_limit='{AGENT_MEMORY_LIMIT}';\n\
              SET threads={AGENT_THREADS};\n\
              SET max_expression_depth={AGENT_MAX_EXPRESSION_DEPTH};\n\
              SET enable_external_access=false;\n\
@@ -804,7 +828,9 @@ impl SqlStore {
                 )));
             }
             _ => {
-                apply_profile(&conn, profile)?;
+                // The drawer-derived spill home: absolute, beside the cache
+                // file, reaped with the drawer — never the shell cwd.
+                apply_profile(&conn, profile, &self.spill_dir())?;
                 self.sandbox.set(Some(profile));
             }
         }
@@ -837,6 +863,15 @@ impl SqlStore {
     #[must_use]
     pub fn file(&self) -> &Path {
         &self.file
+    }
+
+    /// The drawer-derived spill directory query connections are pointed at
+    /// (card sql-spill-config-lockout).
+    #[must_use]
+    pub fn spill_dir(&self) -> PathBuf {
+        self.file
+            .parent()
+            .map_or_else(|| PathBuf::from("sql-spill"), |p| p.join("sql-spill"))
     }
 
     /// The base (unsandboxed) connection — appends, pin reads, tests.
@@ -971,12 +1006,12 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use model::RootedCorpus;
 
     /// Parse a fixture corpus.
-    fn corpus(files: &[(&str, &str)]) -> BTreeMap<String, Document> {
+    pub(crate) fn corpus(files: &[(&str, &str)]) -> BTreeMap<String, Document> {
         files
             .iter()
             .map(|(p, raw)| {
@@ -990,7 +1025,7 @@ mod tests {
 
     /// Sync `docs` into `store` at `fingerprint` (ambient corpus, no mounts —
     /// mirrors the [`crate::build_memory`] reference build).
-    fn sync_ambient(
+    pub(crate) fn sync_ambient(
         store: &mut SqlStore,
         docs: &BTreeMap<String, Document>,
         fingerprint: &str,
@@ -1074,14 +1109,14 @@ mod tests {
         );
     }
 
-    fn tmp_store(dir: &tempfile::TempDir) -> PathBuf {
+    pub(crate) fn tmp_store(dir: &tempfile::TempDir) -> PathBuf {
         dir.path().join(SQL_CACHE_FILENAME)
     }
 
     /// The dogfood-shaped fixture: frontmatter tags + alias, links (resolved,
     /// dangling, embed), tasks (document-level and governed), the `['']`
     /// heading hazard, and a card-shaped doc.
-    fn fixture_v1() -> BTreeMap<String, Document> {
+    pub(crate) fn fixture_v1() -> BTreeMap<String, Document> {
         corpus(&[
             (
                 "a.md",
@@ -1404,5 +1439,82 @@ mod tests {
         );
         let _ = c1.execute_batch("ROLLBACK");
         let _ = c2.execute_batch("ROLLBACK");
+    }
+}
+
+#[cfg(test)]
+mod spill_tests {
+    use super::tests::{fixture_v1, sync_ambient, tmp_store};
+    use super::*;
+
+    /// The spill-config lockout (card sql-spill-config-lockout): both
+    /// profiles hold an ABSOLUTE drawer-derived `temp_directory` and a
+    /// bounded `max_temp_directory_size` BEFORE the lock — the locked
+    /// DEFAULTS were a loaded gun (488 MiB memory spills early; budget 90%
+    /// of disk; path `.tmp` RELATIVE to the shell cwd; caller locked out).
+    /// It `ENOSPC`ed a host: one query spilled >9 GiB into the seat's cwd.
+    #[test]
+    fn spill_config_is_absolute_and_bounded_before_the_lock() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+
+        let (_, rows) = store
+            .query(
+                ExecProfile::Agent,
+                "SELECT name, value FROM duckdb_settings() \
+                 WHERE name IN ('temp_directory','max_temp_directory_size','lock_configuration') \
+                 ORDER BY name",
+            )
+            .expect("lane")
+            .expect("readback");
+        let value = |name: &str| -> String {
+            rows.iter()
+                .find(|r| r[0].as_str() == Some(name))
+                .unwrap_or_else(|| panic!("setting {name} missing"))[1]
+                .as_str()
+                .expect("value")
+                .to_owned()
+        };
+        assert_eq!(value("lock_configuration"), "true");
+        let temp = value("temp_directory");
+        assert!(
+            temp.starts_with('/'),
+            "temp_directory must be ABSOLUTE — a relative path spills into the shell cwd: {temp}"
+        );
+        assert!(
+            temp.starts_with(dir.path().to_str().expect("utf8 dir")),
+            "the spill dir derives from the drawer, never the cwd: {temp}"
+        );
+        let budget = value("max_temp_directory_size");
+        assert!(
+            !budget.contains('%'),
+            "the spill budget must be a bounded size, never a %%-of-disk default: {budget}"
+        );
+
+        // And the lock still refuses caller overrides (T1/T2 stay true).
+        let refused = store
+            .query(ExecProfile::Agent, "SET temp_directory='/tmp/elsewhere'")
+            .expect("lane")
+            .expect_err("locked");
+        assert!(refused.contains("locked"), "{refused}");
+    }
+
+    /// BOTH profiles get the containment — local is unlocked but must not
+    /// default to the loaded gun either.
+    #[test]
+    fn local_profile_carries_the_same_spill_containment() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+        let (_, rows) = store
+            .query(
+                ExecProfile::Local,
+                "SELECT value FROM duckdb_settings() WHERE name = 'max_temp_directory_size'",
+            )
+            .expect("lane")
+            .expect("readback");
+        let budget = rows[0][0].as_str().expect("value");
+        assert!(!budget.contains('%'), "local is bounded too: {budget}");
     }
 }
