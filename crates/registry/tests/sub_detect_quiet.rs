@@ -127,7 +127,10 @@ fn concurrent_detects_on_one_change_fold_once_and_emit_one_frame() {
         handles.into_iter().map(|h| h.join().unwrap()).sum()
     });
 
-    assert_eq!(emitted, 1, "exactly one thread's cycle classifies the change");
+    assert_eq!(
+        emitted, 1,
+        "exactly one thread's cycle classifies the change"
+    );
     assert_eq!(
         ring.frames_after(0).len(),
         1,
