@@ -7,7 +7,7 @@
 //! corpus). One deliberate departure from the Go switch (F-R4 ruling,
 //! 2026-08-13 — the old face under-implemented the format it speaks):
 //!
-//! - Heading rows and EVERY body-hosted anchor row become facts — list_item,
+//! - Heading rows and EVERY body-hosted anchor row become facts — `list_item`,
 //!   task, callout, fence, table, paragraph and heading hosts alike, the
 //!   full set Obsidian's own block references address. The one exclusion is
 //!   a `frontmatter`-hosted anchor (truth-told since dogfood P2-c): a caret
