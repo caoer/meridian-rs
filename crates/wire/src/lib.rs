@@ -636,6 +636,18 @@ pub enum Op {
         #[serde(skip_serializing_if = "Option::is_none")]
         depth: Option<u32>,
     },
+    /// § A.11 corpus SQL (v3-only, cap `sql`): one SQL statement over the
+    /// workspace's fingerprint-pinned projection cache, served by the
+    /// resident engine (sql lifecycle-B ruling, 2026-08-14 — which knowingly
+    /// supersedes §10.4's no-view-organ close for sql; the daemon is the
+    /// file's single owner and the wire carries results, never a file path).
+    /// Always the `agent` execution profile: the wire IS the untrusted lane.
+    Sql {
+        /// The SQL statement, verbatim. One statement — multi-statement
+        /// input silently drops all result sets but the last, so faces
+        /// refuse it before the wire.
+        query: String,
+    },
     /// v2 §4.7 integrity read: the current workspace root cursor + `seq`.
     /// No parameters — the root is world-grain (the only root guard is
     /// `splice.if_root`, §5.1; the v1 scoped/`path` variant is gone with
@@ -1146,6 +1158,15 @@ pub struct MountRow {
 
 /// One reached walk edge (§ A.10): depth-tagged, color-computed per query.
 /// The color splits into a stable `color`/`reason` pair plus the reason's
+/// One `sql` result column (§ A.11): the name `DuckDB` reports and a
+/// friendly type word — the same pair the CLI's `--json` frame carries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SqlCol {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub ty: String,
+}
+
 /// free-text `detail` — the same projection the CLI's `--json` face renders
 /// (`view::walk::color_tone` / `color_reason` / `color_detail`), ONE spelling
 /// across the human line, `--json`, and this wire.
@@ -1273,6 +1294,26 @@ pub enum ResponsePayload {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ResponseBody {
+    /// § A.11 `sql` reply: the buffered result under the honest-tense
+    /// freshness frame. `as_of_fingerprint` is the projection's pin (the
+    /// corpus state the rows were computed at); `live` is a post-result
+    /// currency pass; `state` ∈ {`FRESH_AT_SAMPLE`, `STALE`, `UNVERIFIED`} —
+    /// UNVERIFIED iff `error` is set (a failed query certifies nothing, and
+    /// the engine's message rides verbatim for the face's `SQL:` register).
+    Sql {
+        as_of_fingerprint: String,
+        /// The post-result currency fingerprint; absent on UNVERIFIED.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        live: Option<String>,
+        state: String,
+        columns: Vec<SqlCol>,
+        rows: Vec<Vec<serde_json::Value>>,
+        row_count: u64,
+        /// The engine's SQL error, verbatim (plus the OQ1 teaching on
+        /// view-DML refusals). `None` = the rows are the answer.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     /// The composed-read reply (v3-only): every fact at one engine snapshot —
     /// `file_rev` + ambient `root` (the atomicity witness), the host-face
     /// addressing table (`toc`, mode toc) or the selected sections

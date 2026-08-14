@@ -1301,6 +1301,12 @@ fn dispatch_read(
                 &doc, &target, &actor, &now, &edits,
             ))
         }),
+        // § A.11 corpus SQL — v3-only; the resident engine owns the cache
+        // file and this daemon is its one append actor.
+        Op::Sql { query } if v3 => {
+            registry.warm_or_build(ws).map_err(|e| warm_err_to_wire(&e))?;
+            crate::sql_op::serve(registry, ws, &query)
+        }
         // U20b §4.7 push channel. Arm here; convert after ack (`serve_conn`).
         // S2: stands behind the same bind + deny ceiling as composed reads.
         // No actor: delta stream is not actor-scoped (identities/revs/spans only).
@@ -1350,6 +1356,7 @@ fn dispatch_read(
         | Op::CheckWrite { .. }
         | Op::Create { .. }
         | Op::Walk { .. }
+        | Op::Sql { .. }
         | Op::Mounts => Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp))),
     }
 }

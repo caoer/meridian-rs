@@ -44,6 +44,9 @@ lock = { workspace = true }
 # (generated columns, UNION ALL BY NAME, no statement_timeout, READ_ONLY INSERT
 # refusal) is pinned to one DuckDB version, never the host's libduckdb.
 duckdb = { workspace = true }
+# result cells of the shared query lane ([`store::run_query`]) — the one JSON
+# shape both the CLI frame and the wire body consume.
+serde_json = { workspace = true }
 
 [dev-dependencies]
 # fixture addresses for the gate tests

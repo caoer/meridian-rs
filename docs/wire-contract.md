@@ -2278,6 +2278,61 @@ engine's projection at one borrow — current-tense by construction, and the
 per-row `rev` plus `revs_read` already carry the falsifiability a caller
 needs. Do not bolt the triple on.
 
+### A.11 `sql` — corpus SQL over the resident projection cache (2026-08-14, lifecycle-B ruling)
+
+One SQL statement over the workspace's fingerprint-pinned, append-only
+`sql.duckdb` projection cache (`view::store`; session design
+`results/sql-duckdb-append-cache-design.md`), served by the resident engine.
+This KNOWINGLY supersedes §10.4's close for sql, and only for sql: the
+daemon is the cache file's single owner and its one append actor, and the
+wire carries **results, never a file path** — §10.4's "never as a wire op"
+close was about publishing a view file's path; no path crosses here.
+Workspace-bound; v3-only at dispatch, advertised at op grain as cap `sql`
+(the `create` precedent). A v2 session answers `unknown_op`; the frozen v2
+caps stay byte-identical.
+
+Request `{query}` and nothing else (strict field wall): execution profile,
+cwd, and row bounds are host concerns — the wire lane is ALWAYS the `agent`
+sandbox (caps set, external access off, configuration locked; the wire IS
+the untrusted lane), and result bounding belongs to faces (the MCP face's
+`max_rows` + output-file law).
+
+Serve shape per call: warm engine snapshot → pre-query pin check + delta
+append (O(changed files), the cache-as-manifest protocol) → always-rollback
+query (`BEGIN → statement → collect → ROLLBACK`) → post-result currency
+fold through the workspace leaf memo, so `state` post-dates the rows (§Q3
+honest tense).
+
+```json
+{"id":13,"op":"sql","query":"SELECT path FROM doc ORDER BY path"}
+{"id":13,"ok":true,"body":{
+ "as_of_fingerprint":"b3b:…","live":"b3b:…","state":"FRESH_AT_SAMPLE",
+ "columns":[{"name":"path","type":"VARCHAR"}],
+ "rows":[["a.md"],["b.md"]],"row_count":2}}
+```
+
+| Field | Law |
+|---|---|
+| `as_of_fingerprint` | the projection pin the rows were computed at — the engine's warm corpus fold, verbatim |
+| `live` | the post-result currency fingerprint; absent exactly on UNVERIFIED |
+| `state` | `FRESH_AT_SAMPLE` \| `STALE` \| `UNVERIFIED` — UNVERIFIED iff `error` is set (a failed query certifies nothing) |
+| `columns[]` | `{name, type}` as `DuckDB` reports them — the same pair the CLI `--json` frame carries |
+| `rows[]` | row-major JSON cells; list cells are real arrays per row (the F1 fix), never column dumps |
+| `error` | the caller's own SQL failing is a SUCCESS body with the engine's words verbatim (faces render their `SQL:` register from it) — plus the OQ1 teaching on view-DML refusals. Never a wire error: `ok:false` frames are the door's own faults (`io_error`, `bad_request`, `unknown_op`) |
+
+**DML law (ruled).** The latest-layer names (`doc`, `section`, …) are VIEWS
+over append-only history: DML against them refuses through `DuckDB`'s own
+error plus the remedy naming the `hist.*` lane. DML against `hist.*`
+executes, is visible to its own statement, and dies at ROLLBACK — the
+"writes nothing durable" contract on a persistent file. Nothing else is
+guarded: trust posture, no statement classifier, no auth.
+
+**The CLI ladder (ruling OQ5).** `mrd sql` under the agent profile asks the
+resident daemon FIRST (this op), opens the drawer file directly when unheld,
+and answers from `:memory:` last. Local-profile CLI queries skip the daemon
+deliberately — the wire lane's agent sandbox would silently change an
+operator query's semantics.
+
 ---
 
 ## § B. Process

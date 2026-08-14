@@ -1,16 +1,21 @@
-//! Gates for `mrd sql` — the ephemeral `:memory:` operator face. The real
-//! binary (`CARGO_BIN_EXE_mrd`) is driven over its process boundary with an
-//! isolated cache root (`XDG_CACHE_HOME`) + `HOME`;
-//! `MERIDIAN_DAEMON_BIN=/nonexistent` keeps any daemon out of the frame — the
-//! build is in-process by design, never a degrade.
+//! Gates for `mrd sql` — the operator face over the drawer's append-only
+//! `sql.duckdb` cache (direct-file lane), degrading to `:memory:` when no
+//! cache root resolves. The real binary (`CARGO_BIN_EXE_mrd`) is driven over
+//! its process boundary with an isolated cache root (`XDG_CACHE_HOME`) +
+//! `HOME`; `MERIDIAN_DAEMON_BIN=/nonexistent` keeps any daemon out of the
+//! frame.
 //!
 //! Covered:
-//! - the ephemeral build folds post-result and reports an honest frame;
-//! - it writes NOTHING on disk;
+//! - the cache lane folds post-result and reports an honest frame, creating
+//!   `sql.duckdb` in the drawer on first use and appending delta-grain on
+//!   corpus movement (pin ledger observable through the face itself);
 //! - STALE and RACED surface when the corpus moves inside the §Q3 window
 //!   (driven deterministically via the `MRD_SQL_TEST_MUTATE` hook);
-//! - DML is accepted and dies with the process (writes-nothing-durable
-//!   contract);
+//! - the ruled DML contract (OQ1): a latest VIEW refuses with the teaching;
+//!   hist DML is accepted and never durable (always-rollback lane);
+//! - `--rebuild` recreates the file at gen 1 (ruling OQ3);
+//! - no cache root ⇒ the `:memory:` lane still answers (writes nothing, base
+//!   tables accept DML that dies with the process);
 //! - `--verify` refuses at the process boundary (dropped published-view flag);
 //! - G14 versioned hash domain: the stamp is the workspace's own fold, prefix
 //!   included.
@@ -47,6 +52,21 @@ impl Sandbox {
     /// Run `mrd <args>` from `cwd` with NO reachable daemon.
     fn run(&self, cwd: &Path, args: &[&str]) -> Output {
         self.run_env(cwd, args, &[])
+    }
+
+    /// [`run`](Self::run) with NO resolvable cache root: both `XDG_CACHE_HOME`
+    /// and `HOME` empty, so the drawer degrades ephemeral and the `:memory:`
+    /// lane answers.
+    #[allow(clippy::unused_self)] // rides the Sandbox for call-site symmetry with run/run_env
+    fn run_no_cache_root(&self, cwd: &Path, args: &[&str]) -> Output {
+        let mut cmd = Command::new(mrd_bin());
+        cmd.env("XDG_CACHE_HOME", "")
+            .env("HOME", "")
+            .env_remove("MERIDIAN_WORKSPACE")
+            .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
+            .args(args)
+            .current_dir(cwd);
+        cmd.output().expect("spawn mrd")
     }
 
     /// [`run`](Self::run) with extra environment variables.
@@ -91,11 +111,11 @@ fn stderr(out: &Output) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// the ephemeral build: FRESH, writes nothing on disk
+// the cache lane: FRESH, creates the drawer file, appends delta-grain
 // ---------------------------------------------------------------------------
 
 #[test]
-fn ephemeral_query_is_fresh_and_writes_nothing() {
+fn sql_answers_fresh_and_creates_the_drawer_cache() {
     let sb = sandbox();
     let ws = write_bare_ws(
         &sb,
@@ -115,16 +135,102 @@ fn ephemeral_query_is_fresh_and_writes_nothing() {
 
     assert_eq!(
         doc["state"], "FRESH_AT_SAMPLE",
-        "ephemeral folds post-result"
+        "the cache lane folds post-result"
     );
     assert_eq!(doc["live_source"], "fold");
     assert_eq!(doc["stale"], Value::Bool(false));
     assert_eq!(doc["rows"], serde_json::json!([["a.md"], ["b.md"]]));
 
-    // The ephemeral build writes NOTHING: no database file anywhere under the
-    // cache root.
-    let stray = walk_count_suffix(&sb.cache_home, ".duckdb");
-    assert_eq!(stray, 0, "the ephemeral build must write no database file");
+    // The drawer now holds the one cache file (ruling OQ4: `sql.duckdb`).
+    let files = walk_count_suffix(&sb.cache_home, "sql.duckdb");
+    assert_eq!(files, 1, "the direct-file lane creates the drawer cache");
+}
+
+#[test]
+fn cache_appends_are_delta_grain_across_invocations() {
+    let sb = sandbox();
+    let ws = write_bare_ws(&sb, "delta", &[("a.md", "# A\n"), ("b.md", "# B\n")]);
+
+    let first = sb.run(&ws, &["sql", "--json", "SELECT count(*) FROM hist.pin"]);
+    assert!(first.status.success(), "{}", stderr(&first));
+    assert_eq!(
+        json(&first)["rows"],
+        serde_json::json!([[1]]),
+        "cold build = gen 1"
+    );
+
+    // Unmoved corpus: no new append.
+    let warm = sb.run(&ws, &["sql", "--json", "SELECT count(*) FROM hist.pin"]);
+    assert_eq!(
+        json(&warm)["rows"],
+        serde_json::json!([[1]]),
+        "an unmoved corpus appends nothing"
+    );
+
+    // Move ONE file: exactly one gen-2 doc row rides the append.
+    std::fs::write(ws.join("a.md"), "# A moved\n").expect("edit");
+    let after = sb.run(
+        &ws,
+        &[
+            "sql",
+            "--json",
+            "SELECT (SELECT count(*) FROM hist.pin), (SELECT count(*) FROM hist.doc WHERE gen = 2)",
+        ],
+    );
+    assert!(after.status.success(), "{}", stderr(&after));
+    assert_eq!(
+        json(&after)["rows"],
+        serde_json::json!([[2, 1]]),
+        "one moved file = one appended doc version (O(k), never O(corpus))"
+    );
+}
+
+#[test]
+fn rebuild_recreates_the_file_at_gen_one() {
+    let sb = sandbox();
+    let ws = write_bare_ws(&sb, "rebuild", &[("a.md", "# A\n")]);
+
+    sb.run(&ws, &["sql", "--json", "SELECT 1"]);
+    std::fs::write(ws.join("a.md"), "# A moved\n").expect("edit");
+    let grown = sb.run(&ws, &["sql", "--json", "SELECT max(gen) FROM hist.pin"]);
+    assert_eq!(json(&grown)["rows"], serde_json::json!([[2]]));
+
+    // The explicit rebuild verb (OQ3): the file restarts at gen 1.
+    let rebuilt = sb.run(
+        &ws,
+        &[
+            "sql",
+            "--rebuild",
+            "--json",
+            "SELECT max(gen) FROM hist.pin",
+        ],
+    );
+    assert!(rebuilt.status.success(), "{}", stderr(&rebuilt));
+    assert_eq!(
+        json(&rebuilt)["rows"],
+        serde_json::json!([[1]]),
+        "rebuild-and-swap restarts history"
+    );
+}
+
+#[test]
+fn no_cache_root_degrades_to_the_memory_lane() {
+    let sb = sandbox();
+    let ws = write_bare_ws(&sb, "nocache", &[("a.md", "# A\n")]);
+
+    let out = sb.run_no_cache_root(&ws, &["sql", "--json", "SELECT path FROM doc"]);
+    assert!(
+        out.status.success(),
+        "memory lane answers: {}",
+        stderr(&out)
+    );
+    let doc = json(&out);
+    assert_eq!(doc["state"], "FRESH_AT_SAMPLE");
+    assert_eq!(doc["rows"], serde_json::json!([["a.md"]]));
+
+    // And it wrote nothing anywhere under the sandbox.
+    let stray = walk_count_suffix(sb.tmp.path(), ".duckdb");
+    assert_eq!(stray, 0, "the :memory: lane writes no database file");
 }
 
 /// Count files whose name ends in `suffix` anywhere under `dir` (missing dir ⇒ 0).
@@ -221,19 +327,90 @@ fn raced_surfaces_when_a_bounded_fresh_cannot_converge() {
 }
 
 // ---------------------------------------------------------------------------
-// the DML contract: accepted, dies with the process, nothing durable
+// the ruled DML contract (OQ1): views refuse with teaching, hist is
+// ephemeral, the :memory: lane keeps the old base-table acceptance
 // ---------------------------------------------------------------------------
 
-/// The contract is writes-nothing-durable, not read-only SQL (sql.rs module
-/// doc § DML contract): an INSERT against the ephemeral projection is
-/// accepted, the post-result fold still matches (nothing reached disk), and a
-/// second invocation does not see the row.
+/// On the cache lane the projection names are VIEWS over append-only history:
+/// DML against them refuses through `DuckDB`'s own error, extended with the
+/// hist-lane remedy (ruling OQ1 — the refusal teaches).
 #[test]
-fn dml_against_the_ephemeral_view_is_accepted_and_writes_nothing() {
+fn dml_against_a_latest_view_refuses_with_the_teaching() {
     let sb = sandbox();
-    let ws = write_bare_ws(&sb, "dml", &[("a.md", "# A\n")]);
+    let ws = write_bare_ws(&sb, "dmlview", &[("a.md", "# A\n")]);
 
     let out = sb.run(
+        &ws,
+        &[
+            "sql",
+            "--json",
+            "--execution-profile=agent",
+            "INSERT INTO doc VALUES ('ghost.md', '0000000000000000', 1, 1)",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "--json buffers the refusal: {}",
+        stderr(&out)
+    );
+    let doc = json(&out);
+    assert_eq!(doc["state"], "UNVERIFIED", "no rows to certify: {doc}");
+    let error = doc["error"].as_str().expect("the refusal rides the doc");
+    assert!(
+        error.contains("hist"),
+        "the refusal teaches the hist lane (OQ1): {error}"
+    );
+}
+
+/// DML against the hist tables is accepted and never durable: the
+/// always-rollback query lane keeps the writes-nothing-durable contract on a
+/// persistent file.
+#[test]
+fn dml_against_hist_is_accepted_and_never_durable() {
+    let sb = sandbox();
+    let ws = write_bare_ws(&sb, "dmlhist", &[("a.md", "# A\n")]);
+
+    let out = sb.run(
+        &ws,
+        &[
+            "sql",
+            "--json",
+            "--execution-profile=agent",
+            "INSERT INTO hist.doc (path, gen, tombstone) VALUES ('ghost.md', 999, false)",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "hist DML is accepted: {}",
+        stderr(&out)
+    );
+    let doc = json(&out);
+    assert_eq!(doc["error"], Value::Null, "no refusal: {doc}");
+
+    // The write died at ROLLBACK: the next invocation sees no ghost.
+    let after = sb.run(
+        &ws,
+        &[
+            "sql",
+            "--json",
+            "SELECT count(*) FROM hist.doc WHERE path = 'ghost.md'",
+        ],
+    );
+    assert_eq!(
+        json(&after)["rows"],
+        serde_json::json!([[0]]),
+        "the rollback lane keeps hist DML ephemeral"
+    );
+}
+
+/// The `:memory:` lane keeps the pinned pre-cache contract: the projection
+/// tables are base tables, DML is accepted and dies with the process.
+#[test]
+fn memory_lane_dml_is_accepted_and_dies_with_the_process() {
+    let sb = sandbox();
+    let ws = write_bare_ws(&sb, "dmlmem", &[("a.md", "# A\n")]);
+
+    let out = sb.run_no_cache_root(
         &ws,
         &[
             "sql",
@@ -248,23 +425,6 @@ fn dml_against_the_ephemeral_view_is_accepted_and_writes_nothing() {
     assert_eq!(
         doc["state"], "FRESH_AT_SAMPLE",
         "the post-result fold still matches — the INSERT reached no disk: {doc}"
-    );
-
-    // Nothing durable anywhere under the sandbox (cache root AND workspace).
-    let stray = walk_count_suffix(sb.tmp.path(), ".duckdb");
-    assert_eq!(stray, 0, "DML must write no database file");
-
-    // The write died with the process: a fresh invocation rebuilds from the
-    // corpus and the ghost row is gone.
-    let after = sb.run(
-        &ws,
-        &["sql", "--json", "SELECT path FROM doc ORDER BY path"],
-    );
-    assert!(after.status.success(), "{}", stderr(&after));
-    assert_eq!(
-        json(&after)["rows"],
-        serde_json::json!([["a.md"]]),
-        "the ephemeral write is invisible to the next invocation"
     );
 }
 
@@ -353,4 +513,85 @@ fn g14_versioned_domain_ephemeral_stamp_carries_the_domain_prefix() {
         serde_json::json!([["plan.md"]]),
         "the answer itself is correct"
     );
+}
+
+// ---------------------------------------------------------------------------
+// ladder rung 1: a resident daemon holding the root serves agent-profile
+// queries over the wire (§ A.11)
+// ---------------------------------------------------------------------------
+
+/// A daemon lives at the sandbox's DEFAULT socket (the one the CLI derives
+/// from `XDG_CACHE_HOME`), holding the workspace's cache file. An
+/// agent-profile `mrd sql` routes through it — observable because the wire
+/// lane appends through the DAEMON's open handle while the file stays held
+/// (a direct open would refuse, and a `:memory:` degrade would answer
+/// without touching hist at all). A local-profile query skips the daemon by
+/// design and degrades to `:memory:` under the held lock.
+#[test]
+fn agent_profile_routes_through_a_resident_daemon() {
+    use std::time::Duration;
+    let sb = sandbox();
+    let ws = write_bare_ws(&sb, "daemonized", &[("a.md", "# A\n")]);
+
+    // The daemon at the default socket for this XDG_CACHE_HOME.
+    let cache_root = sb.cache_home.join("meridian");
+    let registry_dir = cache_root.join("registry");
+    std::fs::create_dir_all(&registry_dir).expect("registry dir");
+    #[allow(clippy::duration_suboptimal_units)]
+    let forever = Duration::from_secs(365 * 24 * 60 * 60);
+    let mut config = registry::Config::for_cache_root(cache_root);
+    config.socket_path = registry_dir.join("daemon.sock");
+    config.state_path = registry_dir.join("state.json");
+    config.idle_threshold = forever;
+    config.reap_interval = forever;
+    config.prewarm_interval = forever;
+    config.prewarm_quiet_max = forever;
+    config.idle_exit = None;
+    let server = registry::RunningServer::start(config).expect("daemon");
+
+    // Warm the daemon's ownership of the file: one wire sql through it.
+    let out = sb.run(
+        &ws,
+        &[
+            "sql",
+            "--json",
+            "--execution-profile=agent",
+            "SELECT path FROM doc",
+        ],
+    );
+    assert!(out.status.success(), "daemon route: {}", stderr(&out));
+    let doc = json(&out);
+    assert_eq!(doc["state"], "FRESH_AT_SAMPLE", "{doc}");
+    assert_eq!(doc["rows"], serde_json::json!([["a.md"]]));
+
+    // The daemon holds the file now: a second agent call still answers, and
+    // hist is reachable — proof the answer came through the held file, not a
+    // :memory: degrade (which has no hist schema).
+    let pins = sb.run(
+        &ws,
+        &[
+            "sql",
+            "--json",
+            "--execution-profile=agent",
+            "SELECT count(*) FROM hist.pin",
+        ],
+    );
+    assert!(pins.status.success(), "{}", stderr(&pins));
+    assert_eq!(
+        json(&pins)["rows"],
+        serde_json::json!([[1]]),
+        "one cold build, warm since"
+    );
+
+    // Local profile skips the daemon; the held file degrades it to :memory:
+    // — hist does not exist there, so the honest answer is the SQL error.
+    let local = sb.run(&ws, &["sql", "--json", "SELECT count(*) FROM hist.pin"]);
+    assert!(local.status.success(), "{}", stderr(&local));
+    assert!(
+        json(&local)["error"].is_string(),
+        "local under a held lock answers from :memory:, where hist is absent: {}",
+        json(&local)
+    );
+
+    server.shutdown();
 }
