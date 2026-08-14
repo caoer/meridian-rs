@@ -136,7 +136,7 @@ impl Frame {
 
     /// The success body as a parsed value, or a transport error naming what the
     /// daemon answered instead.
-    fn body_value(self, op: &str) -> io::Result<Value> {
+    pub(crate) fn body_value(self, op: &str) -> io::Result<Value> {
         if !self.ok {
             // `self.error`, NOT `self.body`: the original match bound its
             // refusal arm to the body slot — always absent on a refusal — so
@@ -387,7 +387,7 @@ fn sec_ref(section: &str) -> Option<Value> {
 /// hpath joined by `/` (what [`ReadSel::parse`] splits again), and an
 /// anchor-bearing block row publishes its `^id`. The frontmatter row is not a
 /// section — it reaches the face as `fm`.
-fn toc_entry(node: &Value) -> Option<TocEntry> {
+pub(crate) fn toc_entry(node: &Value) -> Option<TocEntry> {
     let rev = node.get("node_rev").and_then(Value::as_str)?.to_owned();
     let anchor = node
         .get("anchor")

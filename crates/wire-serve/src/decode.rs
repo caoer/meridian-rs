@@ -172,8 +172,10 @@ pub fn decode(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody>> 
 /// budgets field at birth: the CLI entry exposes none either, and a future
 /// override arrives as a dotted `script.<field>` cap, never by loosening this
 /// wall. `effects`/`invocation` are the script-effects ruling's two fields
-/// (2026-08-13).
-pub(crate) const SCRIPT_FIELDS: [&str; 11] = [
+/// (2026-08-13); `token_count_endpoint` is the `token_count` ruling's leg-B
+/// field (same day) — the harness measuring endpoint, riding exactly when
+/// the `token_count` effect is declared.
+pub(crate) const SCRIPT_FIELDS: [&str; 12] = [
     "source",
     "args",
     "files",
@@ -185,14 +187,16 @@ pub(crate) const SCRIPT_FIELDS: [&str; 11] = [
     "expect_armed",
     "effects",
     "invocation",
+    "token_count_endpoint",
 ];
 
 /// The closed effect-builtin set (§ A.7 effects paragraph). `mutex` is
 /// recorded DO-NOT-BUILD and deliberately not here.
-const KNOWN_EFFECTS: [&str; 1] = ["run"];
+const KNOWN_EFFECTS: [&str; 2] = ["run", "token_count"];
 
 /// § A.7 in-process script submission (v3-only at dispatch; decode is
 /// rev-agnostic, the `read` precedent).
+#[allow(clippy::too_many_lines)] // the § A.7 field wall is one sequential decode pass by design
 fn decode_script(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
     let op = "script";
     check_fields(obj, op, &SCRIPT_FIELDS)?;
@@ -256,10 +260,11 @@ fn decode_script(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
         None => Vec::new(),
         Some(Value::Array(items)) => {
             if items.is_empty() {
-                return Err(bad_request(
-                    "`effects: []` names no effect builtin — name one (`run`) or \
+                return Err(bad_request(format!(
+                    "`effects: []` names no effect builtin — name one ({}) or \
                      omit the field for a pure script",
-                ));
+                    KNOWN_EFFECTS.join(", ")
+                )));
             }
             let mut out = Vec::with_capacity(items.len());
             for item in items {
@@ -338,6 +343,24 @@ fn decode_script(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
              run identity",
         ));
     }
+    // The measuring endpoint rides the `token_count` effect EXACTLY: orphan
+    // on a pure script, orphan beside other effects, and an explicit empty
+    // value are all claims the wall refuses (absent stays absent).
+    let token_count_endpoint = opt_str(obj, op, "token_count_endpoint")?;
+    if let Some(endpoint) = &token_count_endpoint {
+        if !effects.iter().any(|e| e == "token_count") {
+            return Err(bad_request(
+                "`token_count_endpoint` rides the `token_count` effect only — \
+                 declare `effects: [\"token_count\"]` or drop the field",
+            ));
+        }
+        if endpoint.is_empty() {
+            return Err(bad_request(
+                "`token_count_endpoint` must be a non-empty unix-socket path \
+                 on `script` — an explicit empty endpoint binds nothing",
+            ));
+        }
+    }
     Ok(Op::Script {
         source: req_str(obj, op, "source")?,
         args,
@@ -350,6 +373,7 @@ fn decode_script(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
         expect_armed,
         effects,
         invocation,
+        token_count_endpoint,
     })
 }
 

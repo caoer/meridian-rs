@@ -23,8 +23,10 @@
 //!   covered its bytes — the wire lane serves what the CLI lane serves.
 //! - **Read-your-own-writes**: a read of a target the program itself armed
 //!   serves the ARMED content and that content's own rev.
-//! - **Entry-rev threading**: the license is the recording's, the value is
-//!   the entry world's — an overlay rev is never a CAS token.
+//! - **Entry-rev threading**: license-free since the CAS relaxation (ruling
+//!   2026-08-13) — every rev-less row values from the entry world; an overlay
+//!   rev is never a CAS token. Consistency lives at the commit's §5.1 world
+//!   guard, not in a read ritual.
 //! - **Containment**: the kernel's fuel/mem/depth/source ceilings and
 //!   `catch_unwind` (both inside `effects::eval_script`); the wall clock
 //!   binds at entry, at every read builtin, and pre-commit.
@@ -37,8 +39,8 @@ use std::time::Instant;
 
 use effects::trace::{CommitLeg, Refusal, ScriptTrace};
 use effects::{
-    ArmedEdit, ReadFault, ScriptCtx, ScriptHost, ScriptLimits, ScriptRecording, SecFacts, TocEntry,
-    TocFacts, hpath_addresses,
+    ArmedEdit, ReadFault, ScriptCtx, ScriptHost, ScriptLimits, SecFacts, TocEntry, TocFacts,
+    hpath_addresses,
 };
 use serde_json::value::RawValue;
 use serde_json::{Map, Value, json};
@@ -91,6 +93,7 @@ pub(crate) fn serve_line(
         expect_armed,
         effects,
         invocation,
+        token_count_endpoint,
     } = op
     else {
         // decode() maps the "script" tag to Op::Script only; any other arm
@@ -110,6 +113,7 @@ pub(crate) fn serve_line(
         expect_armed,
         effects,
         invocation,
+        token_count_endpoint,
     };
     match serve(registry, ws, &request) {
         Ok(trace) => {
@@ -155,6 +159,11 @@ struct ScriptArgs {
     effects: Vec<String>,
     /// The host-minted run-identity base, present exactly with `effects`.
     invocation: Option<String>,
+    /// The harness measuring endpoint for the `token_count` effect (leg B):
+    /// present exactly when the effect is declared AND the consumer bound
+    /// one. The decode wall refuses it without the effect; absent with the
+    /// effect declared is legal — the builtin then refuses "unbound".
+    token_count_endpoint: Option<String>,
 }
 
 /// The attempt: entry pass → pin → eval → thread → gate → commit → trace.
@@ -226,15 +235,9 @@ fn serve(
         return Ok(ScriptTrace::assemble(entry, &eval, CommitLeg::NotIssued));
     }
 
-    // Entry-rev threading: the license is the recording's, the value is the
-    // entry world's (run-plane § the entry-rev law).
-    eval.armed = thread_entry(
-        &eval.armed,
-        &eval.recording,
-        &world,
-        &ws_root,
-        &wire::Root(entry.clone()),
-    );
+    // Entry-rev threading, license-free: the value is the entry world's
+    // (run-plane § the entry-rev law, as amended by the CAS relaxation).
+    eval.armed = thread_entry(&eval.armed, &world, &ws_root, &wire::Root(entry.clone()));
 
     // The pre-splice armed-set gate — after threading, before anything is
     // issued; same wording as the CLI lane, one law two doors.
@@ -297,6 +300,7 @@ fn live_serve(registry: &Registry, ws: &Path, request: &ScriptArgs, entry: &str)
             now: request.now.clone(),
             // Decode wall: effects ⇒ invocation present.
             invocation: request.invocation.clone().unwrap_or_default(),
+            token_count_endpoint: request.token_count_endpoint.clone(),
             run_seq: std::cell::Cell::new(0),
             reads_seen: std::cell::Cell::new(0),
             acts: std::cell::RefCell::new(Vec::new()),
@@ -310,8 +314,7 @@ fn live_serve(registry: &Registry, ws: &Path, request: &ScriptArgs, entry: &str)
     // at their recorded positions and rename a clean exit `effects`.
     let outcome_ok = eval.outcome.is_ok();
     let mut trace = ScriptTrace::assemble(entry.to_owned(), &eval, CommitLeg::NotIssued);
-    let mut inserted = 0usize;
-    for (after_reads, act) in acts {
+    for (inserted, (after_reads, act)) in acts.into_iter().enumerate() {
         let mut index = 0usize;
         let mut reads_passed = 0usize;
         for (i, e) in trace.trace.iter().enumerate() {
@@ -331,7 +334,6 @@ fn live_serve(registry: &Registry, ws: &Path, request: &ScriptArgs, entry: &str)
         }
         let at = (index + inserted).min(trace.trace.len());
         trace.trace.insert(at, act);
-        inserted += 1;
     }
     if outcome_ok {
         trace.outcome = effects::trace::ScriptOutcome::Effects;
@@ -351,6 +353,9 @@ struct LiveHost<'a> {
     actor: String,
     now: Option<String>,
     invocation: String,
+    /// The harness measuring endpoint (leg B) — the consumer daemon's own
+    /// socket, dialed per `token_count()` call. None refuses "unbound".
+    token_count_endpoint: Option<String>,
     run_seq: std::cell::Cell<u32>,
     reads_seen: std::cell::Cell<usize>,
     acts: std::cell::RefCell<Vec<(usize, effects::trace::TraceEntry)>>,
@@ -374,7 +379,7 @@ impl LiveHost<'_> {
     }
 }
 
-impl effects::ScriptHost for LiveHost<'_> {
+impl ScriptHost for LiveHost<'_> {
     fn toc(&mut self, path: &str, _armed: &[ArmedEdit]) -> Result<TocFacts, ReadFault> {
         let fault = |reason: String| ReadFault {
             path: path.to_owned(),
@@ -477,7 +482,7 @@ impl effects::ScriptHost for LiveHost<'_> {
         env: std::collections::BTreeMap<String, String>,
         dry: bool,
         line: u32,
-    ) -> Result<serde_json::Value, effects::EffectFault> {
+    ) -> Result<Value, effects::EffectFault> {
         self.within_deadline("a live run")?;
         let seq = self.run_seq.get();
         self.run_seq.set(seq + 1);
@@ -489,6 +494,9 @@ impl effects::ScriptHost for LiveHost<'_> {
             env,
             dry: Some(dry),
         };
+        // Delta honesty (§ A.7 effects paragraph): a live run() mints per
+        // committed batch through the same sink seam as the § A.8 op arm.
+        let sink = crate::delta_sink::RingSink::new(self.registry.ring(&self.ws_path));
         let row = crate::run_op::row_for_target(
             &self.ws,
             &self.ws_path,
@@ -496,6 +504,7 @@ impl effects::ScriptHost for LiveHost<'_> {
             &invocation,
             (!self.actor.is_empty()).then_some(self.actor.as_str()),
             self.now.as_deref(),
+            &sink,
         );
         self.acts.borrow_mut().push((
             self.reads_seen.get(),
@@ -507,6 +516,89 @@ impl effects::ScriptHost for LiveHost<'_> {
         ));
         Ok(row)
     }
+
+    fn token_count_live(&mut self, text: &str) -> Result<i64, effects::EffectFault> {
+        self.within_deadline("a live token_count")?;
+        let refuse = |reason: String| effects::EffectFault { reason };
+        let Some(endpoint) = &self.token_count_endpoint else {
+            return Err(refuse(
+                "token_count is unbound — this frame carried no `token_count_endpoint`, and \
+                 the engine never counts tokens itself (the count is a harness API call)"
+                    .to_owned(),
+            ));
+        };
+        // The dial deadline caps at the REMAINING wall clock: the harness
+        // verb may park up to its own waiter bound, and this call never
+        // outlives the entry's budget.
+        let remaining = self.deadline.saturating_duration_since(Instant::now());
+        token_count_dial(endpoint, text, remaining)
+            .map_err(|reason| refuse(format!("token_count: {reason}")))
+    }
+}
+
+/// One measurement over the harness endpoint's NDJSON wire: write the
+/// consumer daemon's `token_count` verb frame — identityless, so the daemon
+/// applies its optional-session default and picks the measuring instrument —
+/// read the one `response` line, and answer `data.tokens`. Every failure is
+/// a reason string for the effect fault; a lapsed read deadline names the
+/// wall clock, because that is what bound it.
+fn token_count_dial(
+    endpoint: &str,
+    text: &str,
+    remaining: std::time::Duration,
+) -> Result<i64, String> {
+    use std::io::{BufRead, BufReader, Write};
+    if remaining.is_zero() {
+        return Err(
+            "the script entry's wall clock elapsed before the measurement was sent".to_owned(),
+        );
+    }
+    let stream = std::os::unix::net::UnixStream::connect(endpoint).map_err(|e| {
+        format!("the measuring endpoint at {endpoint} did not answer the dial: {e}")
+    })?;
+    stream
+        .set_read_timeout(Some(remaining))
+        .and_then(|()| stream.set_write_timeout(Some(remaining)))
+        .map_err(|e| format!("could not bound the endpoint call: {e}"))?;
+    let mut frame = serde_json::json!({"type": "token_count", "text": text}).to_string();
+    frame.push('\n');
+    let mut writer = &stream;
+    writer
+        .write_all(frame.as_bytes())
+        .map_err(|e| format!("sending the measurement to {endpoint} failed: {e}"))?;
+    let mut line = String::new();
+    BufReader::new(&stream).read_line(&mut line).map_err(|e| {
+        if matches!(
+            e.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ) {
+            "the script entry's wall clock elapsed while waiting for the endpoint's answer"
+                .to_owned()
+        } else {
+            format!("reading the endpoint's answer failed: {e}")
+        }
+    })?;
+    if line.is_empty() {
+        return Err(format!(
+            "the measuring endpoint at {endpoint} closed without answering"
+        ));
+    }
+    let answer: Value = serde_json::from_str(&line).map_err(|e| {
+        format!(
+            "the endpoint's answer is not a JSON line ({e}): {}",
+            line.trim()
+        )
+    })?;
+    if let Some(error) = answer.get("error").and_then(Value::as_str)
+        && !error.is_empty()
+    {
+        return Err(error.to_owned());
+    }
+    answer
+        .get("data")
+        .and_then(|d| d.get("tokens"))
+        .and_then(Value::as_i64)
+        .ok_or_else(|| format!("the endpoint's answer carries no count: {}", line.trim()))
 }
 
 /// The one guarded splice, issued daemon-side through the same choke-point
@@ -661,16 +753,26 @@ fn refusal_of(error: &RawValue) -> Refusal {
     }
 }
 
-/// Thread each armed row's CAS token: LICENSE from the recording (any read of
-/// the row's grain this attempt, overlay-served included — the
-/// write-follows-read law binds per attempt), VALUE from the entry world (the
-/// pre-batch state the §4.4 guards resolve against; an overlay rev names a
-/// state no disk ever carried and is never a token). An unlicensed row keeps
-/// `rev: None` and meets the engine's own `guard_required` — the same refusal
-/// the CLI lane's unread target meets.
+/// Thread each armed row's CAS token from the ENTRY world, unconditionally —
+/// the CAS relaxation (ruling 2026-08-13, dissolves the write-follows-read
+/// license): no read ritual gates a row, the value is the entry state's own
+/// (file rev for `set_property`, the section's node rev for `append`), and an
+/// overlay rev is never a token by construction — this function consults only
+/// the entry toc, so a rev naming bytes no disk carried cannot be minted.
+///
+/// Consistency does not ride these tokens: the commit carries `if_root` = the
+/// entry fingerprint, and a world that moved since entry refuses there (§5.1,
+/// checked first) before any row's rev is compared. On an unmoved world every
+/// threaded token matches by construction — the tokens exist to satisfy the
+/// unchanged wire guard, one law for every door, while the author writes
+/// rev-free (put parity: append cannot clobber; a destructive row is guarded
+/// by the entry-fingerprint snapshot the engine already holds).
+///
+/// A target the entry state cannot name (an absent section, an unloadable
+/// path) threads nothing and meets the engine's own target-class refusal at
+/// the splice.
 fn thread_entry(
     armed: &[ArmedEdit],
-    recording: &ScriptRecording,
     world: &WorkspaceEngine,
     ws: &fs::WorkspaceRoot,
     root: &wire::Root,
@@ -683,43 +785,20 @@ fn thread_entry(
                 PlanEdit::SetProperty {
                     rev: rev @ None, ..
                 } => {
-                    let licensed = recording
-                        .reads
-                        .iter()
-                        .any(|r| r.path == arm.path && r.section.is_none());
-                    if licensed {
-                        *rev = entry_toc(world, ws, root, &arm.path).map(|facts| facts.rev);
-                    }
+                    *rev = entry_toc(world, ws, root, &arm.path).map(|facts| facts.rev);
                 }
                 PlanEdit::Append {
                     hpath,
                     rev: rev @ None,
                     ..
                 } => {
-                    let licensed = recording.reads.iter().any(|r| {
-                        if r.path != arm.path {
-                            return false;
-                        }
-                        match (&r.section, &r.face) {
-                            (Some(recorded), effects::ReadFace::Section(_)) => {
-                                hpath_addresses(recorded, hpath)
-                            }
-                            (None, effects::ReadFace::Toc(facts)) => facts
-                                .toc
-                                .iter()
-                                .any(|entry| hpath_addresses(&entry.section, hpath)),
-                            _ => false,
-                        }
+                    *rev = entry_toc(world, ws, root, &arm.path).and_then(|facts| {
+                        facts
+                            .toc
+                            .iter()
+                            .find(|entry| hpath_addresses(&entry.section, hpath))
+                            .map(|entry| entry.rev.clone())
                     });
-                    if licensed {
-                        *rev = entry_toc(world, ws, root, &arm.path).and_then(|facts| {
-                            facts
-                                .toc
-                                .iter()
-                                .find(|entry| hpath_addresses(&entry.section, hpath))
-                                .map(|entry| entry.rev.clone())
-                        });
-                    }
                 }
                 _ => {}
             }
@@ -950,8 +1029,8 @@ impl ScriptHost for EntryWorldHost {
         // dewey lane is served here since the read-alignment ruling
         // (2026-08-13): one `selector_matches` resolution, every door.
         let doc = self.doc_for(path, Some(section), armed)?;
-        let sec = wire_serve::read::selector_to_secref(&doc, &ReadSel::parse(section))
-            .map_err(|reason| fault(reason))?;
+        let sec =
+            wire_serve::read::selector_to_secref(&doc, &ReadSel::parse(section)).map_err(&fault)?;
         match wire_serve::read::cat(&doc, Some(sec)) {
             Ok(ResponseBody::Cat {
                 content, node_rev, ..
@@ -983,7 +1062,7 @@ mod tests {
 
     use super::*;
     use crate::state::StateStore;
-    use effects::{ReadFace, ReadPosition, ReadRecord, ScriptRecording};
+    use effects::ScriptRecording;
     use std::fs::{create_dir_all, write};
     use std::path::PathBuf;
     use std::time::Duration;
@@ -1086,82 +1165,78 @@ mod tests {
         );
     }
 
-    /// The entry-rev law: the license is the recording's, the value is the
-    /// entry world's. A recording whose only read of the target served the
-    /// OVERLAY (its rev names bytes no disk carried) still licenses the row —
-    /// and the threaded token is the ENTRY rev, never the overlay rev. An
-    /// empty recording licenses nothing.
+    /// The entry-rev law under the CAS relaxation (ruling 2026-08-13): the
+    /// value is the entry world's, and no license gates it — a row whose
+    /// target the attempt never read threads the ENTRY rev all the same, at
+    /// its own grain (file rev for `set_property`, node rev for `append`).
+    /// An overlay rev is never a CAS token by construction: threading consults
+    /// only the entry toc, so a token naming bytes no disk carried cannot be
+    /// minted here.
     #[test]
-    fn threading_licenses_from_the_recording_and_values_from_the_entry_world() {
+    fn threading_values_from_the_entry_world_without_a_license() {
         let tmp = tempfile::tempdir().unwrap();
         let registry = registry_in(tmp.path());
         let ws = seeded_ws(tmp.path());
         let (world, root) = pinned_world(&registry, &ws);
-        let entry_rev = entry_toc(&world, &fs::WorkspaceRoot(ws.clone()), &root, "doc.md")
-            .expect("doc in world")
-            .rev;
+        let entry = entry_toc(&world, &fs::WorkspaceRoot(ws.clone()), &root, "doc.md")
+            .expect("doc in world");
+        let alpha_rev = entry
+            .toc
+            .iter()
+            .find(|row| row.section == "Alpha")
+            .expect("the seeded section")
+            .rev
+            .clone();
 
-        let armed = vec![ArmedEdit {
-            path: "doc.md".to_owned(),
-            edit: PlanEdit::SetProperty {
-                key: "status".to_owned(),
-                value: "done".to_owned(),
-                rev: None,
-            },
-            line: 2,
-            depth: 0,
-        }];
-        let overlay_read = ScriptRecording {
-            actor: String::new(),
-            reads: vec![ReadRecord {
+        let armed = vec![
+            ArmedEdit {
                 path: "doc.md".to_owned(),
-                section: None,
+                edit: PlanEdit::SetProperty {
+                    key: "status".to_owned(),
+                    value: "done".to_owned(),
+                    rev: None,
+                },
+                line: 2,
+                depth: 0,
+            },
+            ArmedEdit {
+                path: "doc.md".to_owned(),
+                edit: PlanEdit::Append {
+                    hpath: vec![wire::HpathSeg {
+                        h: "Alpha".to_owned(),
+                        n: None,
+                    }],
+                    body: "four\n".to_owned(),
+                    rev: None,
+                },
                 line: 3,
-                position: ReadPosition::Echo,
-                face: ReadFace::Toc(TocFacts {
-                    rev: "feedfacefeedface".to_owned(), // an overlay rev: no disk state carries it
-                    fm: std::collections::BTreeMap::new(),
-                    toc: Vec::new(),
-                    words: 0,
-                }),
-            }],
-        };
+                depth: 0,
+            },
+        ];
 
-        let threaded = thread_entry(
-            &armed,
-            &overlay_read,
-            &world,
-            &fs::WorkspaceRoot(ws.clone()),
-            &root,
-        );
+        let threaded = thread_entry(&armed, &world, &ws_root_of(&ws), &root);
         let PlanEdit::SetProperty { rev, .. } = &threaded[0].edit else {
             panic!("shape preserved");
         };
         assert_eq!(
             rev.as_deref(),
-            Some(entry_rev.as_str()),
-            "the token is the ENTRY rev — the pre-batch state the §4.4 guards \
-             resolve against — never the overlay rev the read served"
+            Some(entry.rev.as_str()),
+            "an unread target threads the ENTRY file rev — the read ritual is \
+             dissolved; the §5.1 world guard is the enforcement point"
         );
-
-        let unlicensed = thread_entry(
-            &armed,
-            &ScriptRecording {
-                actor: String::new(),
-                reads: Vec::new(),
-            },
-            &world,
-            &fs::WorkspaceRoot(ws.clone()),
-            &root,
-        );
-        let PlanEdit::SetProperty { rev, .. } = &unlicensed[0].edit else {
+        let PlanEdit::Append { rev, .. } = &threaded[1].edit else {
             panic!("shape preserved");
         };
-        assert!(
-            rev.is_none(),
-            "a row whose target the attempt never read threads nothing and \
-             meets the engine's own guard_required"
+        assert_eq!(
+            rev.as_deref(),
+            Some(alpha_rev.as_str()),
+            "an append threads its section's ENTRY node rev, rev-free for the \
+             author (put parity)"
         );
+    }
+
+    fn ws_root_of(ws: &Path) -> fs::WorkspaceRoot {
+        fs::WorkspaceRoot(ws.to_path_buf())
     }
 
     /// Wall site 2: the read builtin refuses on a lapsed clock — typed, in

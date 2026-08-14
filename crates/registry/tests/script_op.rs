@@ -8,7 +8,9 @@
 //! - the trace is the response body (`ok:true` even for faults/refusals);
 //! - the entry world: reads serve at the entry fingerprint, zero byte-folds;
 //! - read-your-own-writes: an armed target reads back armed content;
-//! - the engine's own guard refuses a write whose target was never read;
+//! - CAS relaxation (ruling 2026-08-13): a write whose target was never read
+//!   commits on an unmoved world — tokens thread from the entry state, and
+//!   consistency lives at the commit's world guard, not in a read ritual;
 //! - the caller guard fast-fails pre-eval (zero reads, `conflict`);
 //! - `expect_armed` mismatch refuses pre-splice (nothing lands);
 //! - fuel exhaustion answers a `budget` fault and the daemon SURVIVES;
@@ -254,11 +256,15 @@ fn an_armed_target_reads_back_its_own_armed_content_and_commits_once() {
     );
 }
 
-/// The write-follows-read law is the ENGINE's refusal, reached through this
-/// lane unchanged: a row whose target the attempt never read carries no token
-/// and the wire door refuses the whole batch.
+/// The CAS relaxation (ZT ruling 2026-08-13, dissolves F-S2): a destructive
+/// row whose target the attempt never read is auto-guarded by the entry
+/// fingerprint the commit already carries — its token threads from the ENTRY
+/// world, no read ritual licenses it, and it commits on an unmoved world.
+/// Consistency enforcement lives at COMMIT (§5.1 world guard, checked first),
+/// pinned by the module test
+/// `a_foreign_edit_after_entry_is_invisible_to_reads_and_refuses_the_commit`.
 #[test]
-fn a_program_writing_what_it_never_read_is_refused_whole_by_the_engine() {
+fn a_props_write_with_no_read_commits_on_an_unmoved_world() {
     let tmp = TempDir::new().unwrap();
     let ws = seeded(&tmp);
     let _server = RunningServer::start(test_config(&tmp)).unwrap();
@@ -271,18 +277,44 @@ fn a_program_writing_what_it_never_read_is_refused_whole_by_the_engine() {
         "put(\"doc.md\", props={\"status\": \"done\"})\n",
     ));
     let trace = trace_of(&resp);
-    assert_eq!(trace["outcome"], json!("refused"), "trace: {trace}");
+    assert_eq!(trace["outcome"], json!("committed"), "trace: {trace}");
+    let leg = &trace["commit"];
+    assert_eq!(leg["fingerprint_before"].as_str().unwrap(), before);
+    let on_disk = fs::read_to_string(ws.join("doc.md")).unwrap();
+    assert!(on_disk.contains("status: done"), "landed: {on_disk}");
     assert_eq!(
-        trace["fault"]["code"],
-        json!("guard_required"),
-        "trace: {trace}"
+        conn.fingerprint(),
+        leg["fingerprint_after"].as_str().unwrap()
     );
+}
+
+/// Put parity (same ruling): an append inside script goes rev-free — the
+/// author reads nothing, the engine threads the entry section's own token,
+/// and the append lands. Append cannot clobber; a moved world still refuses
+/// the whole commit at §5.1.
+#[test]
+fn an_append_with_no_read_commits_on_an_unmoved_world() {
+    let tmp = TempDir::new().unwrap();
+    let ws = seeded(&tmp);
+    let _server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(&test_config(&tmp).socket_path);
+    conn.hello_v3(&ws);
+    let before = conn.fingerprint();
+
+    let resp = conn.call(&script(
+        16,
+        "put(\"doc.md\", section=\"Alpha/Beta\", append=\"six seven\\n\")\n",
+    ));
+    let trace = trace_of(&resp);
+    assert_eq!(trace["outcome"], json!("committed"), "trace: {trace}");
+    let leg = &trace["commit"];
+    assert_eq!(leg["fingerprint_before"].as_str().unwrap(), before);
+    let on_disk = fs::read_to_string(ws.join("doc.md")).unwrap();
+    assert!(on_disk.contains("six seven"), "landed: {on_disk}");
     assert_eq!(
-        fs::read_to_string(ws.join("doc.md")).unwrap(),
-        DOC,
-        "nothing landed"
+        conn.fingerprint(),
+        leg["fingerprint_after"].as_str().unwrap()
     );
-    assert_eq!(conn.fingerprint(), before, "the fingerprint did not move");
 }
 
 /// Entry currency across calls: a foreign write between two attempts is

@@ -35,6 +35,7 @@ fn a_background_child_is_reaped_within_the_wall_budget() {
         scratch: tmp.path(),
         project_root: tmp.path(),
         timeout: Duration::from_secs(30),
+        step_cwd: None,
     })
     .unwrap();
     assert!(r.status.success());

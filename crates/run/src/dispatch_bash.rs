@@ -98,6 +98,10 @@ pub struct BashDispatch<'a> {
     /// The step's working directory (§ A.8's U16 amendment): `None` is the
     /// CLI's invocation cwd; the wire arm passes the bound workspace root.
     pub step_cwd: Option<&'a Path>,
+    /// The host's frame mint for committed batches (§ A.8 Delta honesty):
+    /// the phase-1 pre-exec receipt commit and every phase-2 commit each
+    /// offer their facts. `None` on the CLI entry.
+    pub delta: Option<&'a dyn executor::DeltaSink>,
 }
 
 /// What one bash dispatch produced. The exec facts are ALWAYS present —
@@ -273,6 +277,7 @@ pub fn run(
                         exec: None, // pre-exec: no child has run yet
                         actor: d.actor,
                         depth: 0,
+                        delta: d.delta,
                     },
                 )
                 .map_err(BashError::Phase1)?;
@@ -431,6 +436,7 @@ fn completion_receipt(
             exec,
             actor: d.actor,
             depth: 0,
+            delta: d.delta,
         },
     ) {
         Ok(applied) => Phase2::RefusedExecFailed { applied },
@@ -469,6 +475,7 @@ fn apply_phase2(
             exec,
             actor: d.actor,
             depth: 0,
+            delta: d.delta,
         },
     ) {
         Ok(applied) => Phase2::Applied {
