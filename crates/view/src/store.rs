@@ -318,9 +318,13 @@ pub fn run_query(conn: &Connection, query: &str) -> Result<(Vec<ColMeta>, Vec<Ve
 /// Extend a view-DML refusal with its remedy (ruling OQ1: the refusal
 /// teaches). `DuckDB`'s words stay verbatim and first; the teaching follows.
 fn teach(error: &str) -> String {
+    // DuckDB's three view-DML spellings: UPDATE/DELETE answer a Binder
+    // Error naming base tables; INSERT answers a Catalog Error ("doc is not
+    // an table" — a name that exists but is not a base table).
     if error.contains("Can only update base table")
-        || error.contains("Cannot insert into a view")
         || error.contains("Can only delete from base table")
+        || error.contains("is not an table")
+        || error.contains("is not a table")
     {
         return format!(
             "{error}\nThe latest layer is views over append-only history; \
@@ -348,6 +352,15 @@ pub struct SqlStore {
     /// recorded here; an `agent` lock can never be relaxed for the file's
     /// lifetime.
     sandbox: std::cell::Cell<Option<ExecProfile>>,
+}
+
+impl std::fmt::Debug for SqlStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SqlStore")
+            .field("file", &self.file)
+            .field("sandbox", &self.sandbox.get().map(ExecProfile::label))
+            .finish_non_exhaustive()
+    }
 }
 
 impl SqlStore {
@@ -800,6 +813,30 @@ impl SqlStore {
         // Always roll back — reads are unaffected; DML dies here (P3/P6).
         conn.execute_batch("ROLLBACK")?;
         Ok(result)
+    }
+
+    /// The explicit rebuild verb (ruling OQ3), which doubles as the repair
+    /// path: delete the file and open a fresh, initialised one. The next
+    /// [`SqlStore::sync`] is the cold build. Rebuild-and-swap is the ONLY
+    /// compaction — in-place vacuum would violate never-edit.
+    ///
+    /// # Errors
+    /// As [`SqlStore::open`] — and a file HELD by another process (the
+    /// resident daemon) refuses instead of unlinking under it: unlink would
+    /// succeed on unix, forking the holder onto a dead inode while a new
+    /// file grows beside it.
+    pub fn rebuild(file: &Path) -> Result<SqlStore, ViewError> {
+        if file.exists() {
+            // Prove the file is unheld before deleting it.
+            drop(Connection::open(file)?);
+        }
+        Self::recreate(file)
+    }
+
+    /// The cache file this store holds open.
+    #[must_use]
+    pub fn file(&self) -> &Path {
+        &self.file
     }
 
     /// The base (unsandboxed) connection — appends, pin reads, tests.
