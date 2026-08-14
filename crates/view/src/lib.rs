@@ -20,6 +20,7 @@
 pub mod facts;
 pub mod read_face;
 pub mod schema;
+mod sqltext;
 pub mod store;
 pub mod walk;
 

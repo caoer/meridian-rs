@@ -2317,7 +2317,7 @@ honest tense).
 | `live` | the post-result currency fingerprint; absent exactly on UNVERIFIED |
 | `state` | `FRESH_AT_SAMPLE` \| `STALE` \| `UNVERIFIED` — UNVERIFIED iff `error` is set (a failed query certifies nothing) |
 | `columns[]` | `{name, type}` as `DuckDB` reports them — the same pair the CLI `--json` frame carries |
-| `rows[]` | row-major JSON cells; list cells are real arrays per row (the F1 fix), never column dumps |
+| `rows[]` | row-major JSON cells; list cells are real arrays per row (the F1 fix), never column dumps. Booleans and numerics ride as JSON numbers/bools; every other scalar family — timestamp (tz-aware columns marked `+00`), date, time, interval, decimal, enum, struct, map — is a string speaking `DuckDB`'s own `::VARCHAR` text, never a `Debug` repr (r6 S1); a union cell is its member's cell |
 | `error` | the caller's own SQL failing is a SUCCESS body with the engine's words verbatim (faces render their `SQL:` register from it) — plus the OQ1 teaching on view-DML refusals. Never a wire error: `ok:false` frames are the door's own faults (`io_error`, `bad_request`, `unknown_op`) |
 
 **DML law (ruled).** The latest-layer names (`doc`, `section`, …) are VIEWS
