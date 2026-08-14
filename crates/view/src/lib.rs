@@ -515,18 +515,17 @@ fn emit_tag(node: &Node, path: &str, name: &str, counters: &mut Counters, rows: 
 /// sql-task-text-marker). A line that does not match the marker shape serves
 /// unchanged rather than guessed at.
 fn strip_task_marker(line: &str) -> &str {
-    let after_bullet = match line.strip_prefix(['-', '*', '+']) {
-        Some(rest) => rest,
-        None => {
-            let after_digits = line.trim_start_matches(|c: char| c.is_ascii_digit());
-            if after_digits.len() == line.len() {
-                return line;
-            }
-            match after_digits.strip_prefix(['.', ')']) {
-                Some(rest) => rest,
-                None => return line,
-            }
+    let after_bullet = if let Some(rest) = line.strip_prefix(['-', '*', '+']) {
+        rest
+    } else {
+        let after_digits = line.trim_start_matches(|c: char| c.is_ascii_digit());
+        if after_digits.len() == line.len() {
+            return line;
         }
+        let Some(rest) = after_digits.strip_prefix(['.', ')']) else {
+            return line;
+        };
+        rest
     };
     let Some(after_open) = after_bullet.trim_start().strip_prefix('[') else {
         return line;
