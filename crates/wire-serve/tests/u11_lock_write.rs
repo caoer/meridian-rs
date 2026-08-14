@@ -1,5 +1,6 @@
-//! U11: guarded `lock_write` path (locate/create, EOF placement, CAS, flock,
-//! atomic replace, corrupt fail-loud). Format law lives in `crates/lock`.
+//! U11: guarded `lock_write` path (locate/create, preamble placement, CAS,
+//! flock, atomic replace, corrupt fail-loud). Format law lives in
+//! `crates/lock`; placement law in `lock_block_splice` (dogfood r3 F3).
 
 use wire::{ErrorCode, NodeRev, Path as WPath, Recovery};
 use wire_serve::write::{LockWriteArgs, lock_write};
@@ -65,9 +66,9 @@ fn fence_count(raw: &str) -> usize {
     raw.matches("```meridian-lock").count()
 }
 
-/// Birth: one lock at EOF (placement law), round-trip, root advances.
+/// Birth: one lock as file preamble (placement law), round-trip, root advances.
 #[test]
-fn birth_lands_at_eof_and_round_trips() {
+fn birth_lands_as_file_preamble_and_round_trips() {
     let (_d, root) = ws(&[("page.md", PAGE)]);
     let l = sample_lock(&root);
 
@@ -82,16 +83,16 @@ fn birth_lands_at_eof_and_round_trips() {
     );
 
     let after = read(&root, "page.md");
-    // Placement law: original content intact at the head, exactly one blank
-    // line separator, block at EOF, file ends with one terminator.
-    assert!(after.starts_with(PAGE), "original page bytes untouched");
-    assert!(
-        after[PAGE.len()..].starts_with('\n'),
-        "one blank line separates content from the lock block"
-    );
-    assert!(
-        after.ends_with("```\n"),
-        "block closes the file with one terminator"
+    // Placement law: the block opens immediately after the frontmatter's
+    // closing fence, one blank line separates it from the body, and the
+    // body's own bytes are untouched.
+    assert_eq!(
+        after,
+        format!(
+            "---\ntitle: Pinning\n---\n{}\n\n# Claims\n\nthe claim body ^c1\n",
+            lock::render(&l)
+        ),
+        "the block is file preamble — after the frontmatter, before the first heading"
     );
     assert_eq!(fence_count(&after), 1, "exactly one meridian-lock block");
 
@@ -130,9 +131,13 @@ fn update_replaces_in_place_exactly_one_block() {
 
     let after = read(&root, "page.md");
     assert_eq!(fence_count(&after), 1, "still exactly one block");
-    assert!(
-        after.starts_with(PAGE),
-        "content around the block untouched"
+    assert_eq!(
+        after,
+        format!(
+            "---\ntitle: Pinning\n---\n{}\n\n# Claims\n\nthe claim body ^c1\n",
+            lock::render(&l)
+        ),
+        "in-place replace: the block keeps its preamble span, content around it untouched"
     );
     let doc = fs::load(&root, std::path::Path::new("page.md")).expect("re-load");
     let found = lock::find(&doc).expect("clean").expect("found");

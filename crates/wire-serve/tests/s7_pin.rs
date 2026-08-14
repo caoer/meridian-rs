@@ -6,7 +6,7 @@
 use wire::{Edit, EditShape, ErrorCode, Path as WPath, PinSpec, PutAt, Recovery, ResponseBody};
 use wire_serve::write::{SpliceArgs, splice};
 
-/// Pinning page (no lock yet — first pin births one at EOF).
+/// Pinning page (no lock yet — first pin births one as file preamble).
 const PINNER: &str = "---\ntitle: Plan\n---\n\n# Plan\n\ndraws from the guide.\n";
 
 /// Pinned page; `Leader's Guideline` → D15 slug `leaders-guideline`.
@@ -150,15 +150,12 @@ fn a_bare_cli_pin_mints_a_real_lock_block_and_promotes_the_slug() {
          ```\n",
         fact.fingerprint
     );
-    assert!(
-        pinner.ends_with(&expected_block),
-        "the lock births at EOF in canonical bytes.\n--- got ---\n{pinner}\n--- want tail ---\n{expected_block}"
-    );
     assert_eq!(
         pinner,
-        format!("{PINNER}\n{expected_block}"),
-        "placement law: one blank line before the block, one terminator after, \
-         and the page's own bytes untouched"
+        format!("---\ntitle: Plan\n---\n{expected_block}\n# Plan\n\ndraws from the guide.\n"),
+        "placement law: the block births as file preamble in canonical bytes — \
+         after the frontmatter, one blank line before the body, the page's own \
+         bytes untouched"
     );
 
     assert_eq!(
@@ -891,17 +888,19 @@ fn a_pin_rides_alongside_caller_edits_in_one_batch() {
     assert_eq!(frame.delta.files[0].path, WPath("plan.md".into()));
 }
 
-/// Self-pin of a non-lock-holding section: re-read pre-image between promotion and lock.
+/// Self-pin of any own section: the preamble-placed lock sits outside every
+/// section span, so even the LAST section — the one the old EOF birth landed
+/// inside — pins green.
 #[test]
 fn a_page_can_pin_its_own_section() {
     let (_dir, root) = workspace();
-    // Pin first of two sections so EOF lock does not land inside the pin.
     std::fs::write(
         root.0.join("plan.md"),
         "---\ntitle: Plan\n---\n\n# Premise\n\nthe premise.\n\n# Plan\n\ndraws from it.\n",
     )
     .expect("two-section pinner");
-    let mut args = pin_args("Premise");
+    // The LAST section, deliberately — the placement the EOF law refused.
+    let mut args = pin_args("Plan");
     args.pin.as_mut().expect("pin").target = WPath("plan.md".into());
 
     let fact = pin_fact(
@@ -913,31 +912,46 @@ fn a_page_can_pin_its_own_section() {
         fact.selector,
         wire::ReadSel::Hpath {
             hpath: vec![wire::HpathSeg {
-                h: "Premise".into(),
+                h: "Plan".into(),
                 n: None
             }]
         }
     );
-    assert_eq!(fact.anchor, "premise");
+    assert_eq!(fact.anchor, "plan");
 
     let page = read_page(&root, "plan.md");
     assert!(
-        page.contains("# Premise\n^premise\n"),
+        page.contains("# Plan\n^plan\n"),
         "the promotion landed on its own line: {page}"
     );
-    assert!(page.ends_with("```\n"), "and the lock block at EOF: {page}");
+    assert!(
+        page.starts_with("---\ntitle: Plan\n---\n```meridian-lock\n"),
+        "and the lock block sits in the file preamble: {page}"
+    );
     // Lock sits in the page but outside the pinned section — green immediately.
     assert_eq!(
         fact.fingerprint,
-        live_fingerprint(&root, "plan.md#Premise"),
-        "a self-pin of a non-containing section verifies green immediately"
+        live_fingerprint(&root, "plan.md#Plan"),
+        "a self-pin verifies green immediately under preamble placement"
     );
 }
 
-/// Self-pin of the section the lock lands in refuses (permanently red otherwise).
+/// Self-pin of the section a LEGACY block still sits in refuses (permanently
+/// red otherwise) — fresh births land in the preamble, but an existing block
+/// is replaced in place, so a page carrying its block inside a section keeps
+/// the hazard until re-homed.
 #[test]
 fn a_self_pin_of_the_section_holding_the_lock_refuses() {
     let (_dir, root) = workspace();
+    std::fs::write(
+        root.0.join("plan.md"),
+        format!(
+            "{PINNER}\n```meridian-lock\nversion: 2\npins:\n  - object: \"[[guide]]\"\n    \
+             hash: \"9ae3f1c0deadbeef9ae3f1c0deadbeef9ae3f1c0\"\n    path: [\"Guide\", \"Steps\"]\n    \
+             fingerprint: \"fp1.span2.b3.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"\n```\n"
+        ),
+    )
+    .expect("legacy pinner: the block sits at EOF, inside # Plan");
     let mut args = pin_args("Plan");
     args.pin.as_mut().expect("pin").target = WPath("plan.md".into());
 
@@ -950,9 +964,12 @@ fn a_self_pin_of_the_section_holding_the_lock_refuses() {
         "the refusal names the reason: {:?}",
         err.message
     );
-    assert!(
-        !read_page(&root, "plan.md").contains("```meridian-lock"),
-        "and no lock was written"
+    assert_eq!(
+        read_page(&root, "plan.md")
+            .matches("```meridian-lock")
+            .count(),
+        1,
+        "and no second block was written"
     );
 }
 
