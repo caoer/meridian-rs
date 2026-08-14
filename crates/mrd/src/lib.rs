@@ -127,10 +127,19 @@ pub(crate) fn voice_excluded(
     } else {
         format!("{} and {rest} more", shown.join(", "))
     };
-    eprintln!(
-        "mrd: note: {} markdown file(s) under this root are outside the hash domain and are NOT in this listing — {sample}. The complete list is the `excluded` key of the machine answer (`--json`, §12.1). They are addressable by explicit path (`mrd read`, `mrd links <PATH>`); their bytes do not move the fingerprint this answer is stamped with.",
-        excluded.len(),
-    );
+    eprintln!("{}", excluded_note(excluded.len(), &sample));
+}
+
+/// The one-line domain-excluded note [`voice_excluded`] prints. Extracted so a
+/// test can hold the note's promise against the machine answers it speaks for:
+/// none of the in-process faces that voice it (sql, walk, check, repair) carry
+/// an `excluded` key in their own `--json` output, so the pointer names the one
+/// carrier that really serves the complete list — the bare `mrd links --json`
+/// enumeration (§4.6, §12.1) — never "the machine answer" of the calling verb.
+pub(crate) fn excluded_note(count: usize, sample: &str) -> String {
+    format!(
+        "mrd: note: {count} markdown file(s) under this root are outside the hash domain and are NOT in this listing — {sample}. The complete list is the `excluded` key of `mrd links --json` (§12.1). They are addressable by explicit path (`mrd read`, `mrd links <PATH>`); their bytes do not move the fingerprint this answer is stamped with."
+    )
 }
 
 /// How many excluded paths the PROSE note names before it defers to the wire.
