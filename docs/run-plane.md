@@ -1441,7 +1441,11 @@ prints the **full** effect set, applying nothing; `--dry` on bash shows the
 block and its resolved caps and **refuses to exec** — running it is the only
 way its effects exist, and inventing descriptors would be fiction
 (decision #18). The `--dry` caps display is byte-identical to the choke-point
-caps (S14).
+caps (S14). `--dry` rehearses every pre-apply gate the real run enforces —
+address → contract → caps, then the choke-point admission over the evaluated
+md.* set (`runner::rehearse`) — and refuses exactly as the real run would,
+same words, same exit leg (dogfood r2 F2: a rehearsal that passes what live
+refuses predicts nothing).
 
 Exit triad: **0** clean · **1** the run plane refused or failed (eval fault,
 cap refusal, foreign edit, workspace busy, root mismatch, timeout, bash
