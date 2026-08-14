@@ -193,6 +193,7 @@ const KNOWN_EFFECTS: [&str; 1] = ["run"];
 
 /// § A.7 in-process script submission (v3-only at dispatch; decode is
 /// rev-agnostic, the `read` precedent).
+#[allow(clippy::too_many_lines)] // the § A.7 field wall is one sequential decode pass by design
 fn decode_script(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
     let op = "script";
     check_fields(obj, op, &SCRIPT_FIELDS)?;
