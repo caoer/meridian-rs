@@ -2292,11 +2292,11 @@ Workspace-bound; v3-only at dispatch, advertised at op grain as cap `sql`
 (the `create` precedent). A v2 session answers `unknown_op`; the frozen v2
 caps stay byte-identical.
 
-Request `{query}` and nothing else (strict field wall): execution profile,
-cwd, and row bounds are host concerns — the wire lane is ALWAYS the `agent`
-sandbox (caps set, external access off, configuration locked; the wire IS
-the untrusted lane), and result bounding belongs to faces (the MCP face's
-`max_rows` + output-file law).
+Request `{query}` and nothing else (strict field wall): cwd and row bounds
+are host concerns — result bounding belongs to faces (the MCP face's
+`max_rows` + output-file law). One execution path, no profile split (the
+NO-SANDBOX ruling, 2026-08-14): the query runs exactly as the CLI lane runs
+it, spill-bounded and always rolled back, nothing locked or disabled.
 
 Serve shape per call: warm engine snapshot → pre-query pin check + delta
 append (O(changed files), the cache-as-manifest protocol) → always-rollback
@@ -2328,11 +2328,11 @@ executes, is visible to its own statement, and dies at ROLLBACK — the
 "writes nothing durable" contract on a persistent file. Nothing else is
 guarded: trust posture, no statement classifier, no auth.
 
-**The CLI ladder (ruling OQ5).** `mrd sql` under the agent profile asks the
-resident daemon FIRST (this op), opens the drawer file directly when unheld,
-and answers from `:memory:` last. Local-profile CLI queries skip the daemon
-deliberately — the wire lane's agent sandbox would silently change an
-operator query's semantics.
+**The CLI ladder.** `mrd sql` asks the resident daemon FIRST (this op),
+opens the drawer file directly when unheld, and answers from `:memory:`
+last. ONE ladder for every caller (the NO-SANDBOX ruling, 2026-08-14,
+which retired OQ5's profile distinction); only `--rebuild` goes direct,
+because repair needs the file itself.
 
 ---
 

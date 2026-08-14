@@ -344,7 +344,6 @@ fn dml_against_a_latest_view_refuses_with_the_teaching() {
         &[
             "sql",
             "--json",
-            "--execution-profile=agent",
             "INSERT INTO doc VALUES ('ghost.md', '0000000000000000', 1, 1)",
         ],
     );
@@ -375,7 +374,6 @@ fn dml_against_hist_is_accepted_and_never_durable() {
         &[
             "sql",
             "--json",
-            "--execution-profile=agent",
             "INSERT INTO hist.doc (path, gen, tombstone) VALUES ('ghost.md', 999, false)",
         ],
     );
@@ -415,7 +413,6 @@ fn memory_lane_dml_is_accepted_and_dies_with_the_process() {
         &[
             "sql",
             "--json",
-            "--execution-profile=agent",
             "INSERT INTO doc VALUES ('ghost.md', '0000000000000000', 1, 1)",
         ],
     );
@@ -516,19 +513,18 @@ fn g14_versioned_domain_ephemeral_stamp_carries_the_domain_prefix() {
 }
 
 // ---------------------------------------------------------------------------
-// ladder rung 1: a resident daemon holding the root serves agent-profile
-// queries over the wire (§ A.11)
+// ladder rung 1: a resident daemon holding the root serves EVERY caller's
+// queries over the wire (§ A.11 — one ladder, NO-SANDBOX ruling 2026-08-14)
 // ---------------------------------------------------------------------------
 
 /// A daemon lives at the sandbox's DEFAULT socket (the one the CLI derives
-/// from `XDG_CACHE_HOME`), holding the workspace's cache file. An
-/// agent-profile `mrd sql` routes through it — observable because the wire
-/// lane appends through the DAEMON's open handle while the file stays held
-/// (a direct open would refuse, and a `:memory:` degrade would answer
-/// without touching hist at all). A local-profile query skips the daemon by
-/// design and degrades to `:memory:` under the held lock.
+/// from `XDG_CACHE_HOME`), holding the workspace's cache file. A plain
+/// `mrd sql` routes through it — observable because the wire lane appends
+/// through the DAEMON's open handle while the file stays held (a direct
+/// open would refuse, and a `:memory:` degrade would answer without
+/// touching hist at all).
 #[test]
-fn agent_profile_routes_through_a_resident_daemon() {
+fn sql_routes_through_a_resident_daemon() {
     use std::time::Duration;
     let sb = sandbox();
     let ws = write_bare_ws(&sb, "daemonized", &[("a.md", "# A\n")]);
@@ -555,7 +551,6 @@ fn agent_profile_routes_through_a_resident_daemon() {
         &[
             "sql",
             "--json",
-            "--execution-profile=agent",
             "SELECT path FROM doc",
         ],
     );
@@ -564,7 +559,7 @@ fn agent_profile_routes_through_a_resident_daemon() {
     assert_eq!(doc["state"], "FRESH_AT_SAMPLE", "{doc}");
     assert_eq!(doc["rows"], serde_json::json!([["a.md"]]));
 
-    // The daemon holds the file now: a second agent call still answers, and
+    // The daemon holds the file now: a second call still answers, and
     // hist is reachable — proof the answer came through the held file, not a
     // :memory: degrade (which has no hist schema).
     let pins = sb.run(
@@ -572,7 +567,6 @@ fn agent_profile_routes_through_a_resident_daemon() {
         &[
             "sql",
             "--json",
-            "--execution-profile=agent",
             "SELECT count(*) FROM hist.pin",
         ],
     );
@@ -581,16 +575,6 @@ fn agent_profile_routes_through_a_resident_daemon() {
         json(&pins)["rows"],
         serde_json::json!([[1]]),
         "one cold build, warm since"
-    );
-
-    // Local profile skips the daemon; the held file degrades it to :memory:
-    // — hist does not exist there, so the honest answer is the SQL error.
-    let local = sb.run(&ws, &["sql", "--json", "SELECT count(*) FROM hist.pin"]);
-    assert!(local.status.success(), "{}", stderr(&local));
-    assert!(
-        json(&local)["error"].is_string(),
-        "local under a held lock answers from :memory:, where hist is absent: {}",
-        json(&local)
     );
 
     server.shutdown();

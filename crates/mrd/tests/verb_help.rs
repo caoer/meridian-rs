@@ -273,21 +273,13 @@ fn dry_is_explained_under_every_verb_that_takes_it() {
 }
 
 /// An accepted flag that no help page names is an invisible flag: a caller can
-/// only find it by reading the source, and a reader who never finds it cannot
-/// know which lane their query ran in. Every flag `mrd sql` accepts is asserted
+/// only find it by reading the source. Every flag `mrd sql` accepts is asserted
 /// twice — the parser takes it (so this list cannot rot into fiction), and the
-/// page names it. `--execution-profile` additionally owes its values and its
-/// DEFAULT, because omitting it silently selects the trusted `local` lane.
+/// page names it.
 #[test]
-fn sql_names_every_flag_it_accepts_and_its_default_profile() {
+fn sql_names_every_flag_it_accepts() {
     let page = stdout(&mrd(&["sql", "--help"]));
-    for flag in [
-        "--fresh",
-        "--json",
-        "--rebuild",
-        "--execution-profile=agent",
-        "--cwd=.",
-    ] {
+    for flag in ["--fresh", "--json", "--rebuild", "--cwd=."] {
         // Accepted: the parser refuses for the MISSING QUERY, never as unknown.
         // No query means no workspace is resolved and no DuckDB is opened.
         let probe = mrd(&["sql", flag]);
@@ -308,16 +300,6 @@ fn sql_names_every_flag_it_accepts_and_its_default_profile() {
     assert!(
         stderr(&mrd(&["sql", "--bogus"])).contains("unknown flag"),
         "the acceptance probe must be able to see a rejection"
-    );
-
-    assert!(
-        page.contains("local|agent"),
-        "the profile's accepted values belong on the page:\n{page}"
-    );
-    let options = page.split("options:").nth(1).unwrap_or_default();
-    assert!(
-        options.contains("DEFAULT") && options.contains("`local`"),
-        "the page must state which profile an omitted flag selects:\n{page}"
     );
 }
 

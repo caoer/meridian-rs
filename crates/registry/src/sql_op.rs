@@ -8,15 +8,14 @@
 //!
 //! Serve shape per call: warm engine snapshot → pre-query pin check + delta
 //! append ([`view::store::SqlStore::sync`] — O(changed files), the watcher
-//! grain rides the same path later) → always-rollback query under the
-//! `agent` sandbox (the wire IS the untrusted lane) → post-result currency
-//! pass through the workspace's leaf memo, so the answer's freshness state
+//! grain rides the same path later) → always-rollback query (one execution
+//! path, the NO-SANDBOX ruling 2026-08-14) → post-result currency pass
+//! through the workspace's leaf memo, so the answer's freshness state
 //! post-dates its rows (§Q3 honest tense).
 
 use std::path::Path;
 use std::sync::PoisonError;
 
-use view::store::ExecProfile;
 use wire::{ErrorBody, ErrorCode, ResponseBody, SqlCol};
 
 use crate::Registry;
@@ -70,7 +69,7 @@ pub(crate) fn serve(
         .map_err(|e| io_error(format!("cannot append to the sql cache: {e}")))?;
 
     let result = store
-        .query(ExecProfile::Agent, query)
+        .query(query)
         .map_err(|e| io_error(format!("cannot query the sql cache: {e}")))?;
     let as_of = engine.at_fingerprint.0.clone();
 

@@ -38,9 +38,7 @@ use model::{CorpusIndex, Document, Node, NodeKind};
 /// answer"* — is what a reader needs at each of them.
 pub type ExclusionProbe<'a> = &'a dyn Fn(&str) -> Option<String>;
 
-pub use read_face::{
-    READ_FACE_SCHEMA_SQL, create_read_face_schema, lock_read_face, open_board, stale_paths,
-};
+pub use read_face::{READ_FACE_SCHEMA_SQL, create_read_face_schema, open_board, stale_paths};
 pub use schema::{SCHEMA_SQL, SCHEMA_VERSION, create_schema};
 
 /// View-projection failure.

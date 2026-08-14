@@ -317,7 +317,7 @@ usage:
   mrd cache ls             list registered drawers.
 ! mrd cache clean [--all]  reap stale / orphaned / retired drawers (--all:
                            every drawer).
-  mrd sql <query> [--fresh] [--json] [--rebuild] [--execution-profile local|agent] [--cwd PATH]
+  mrd sql <query> [--fresh] [--json] [--rebuild] [--cwd PATH]
                            SQL over the corpus projection (honest-tense
                            freshness frame), served from the drawer's
                            append-only sql.duckdb cache when a cache root
@@ -426,13 +426,6 @@ options:
   --spec PAGE              (test --history) workspace-relative SPEC page whose
                            ```golden fence declares exceptions; its rule: must
                            resolve to --rule's PAGE. Omitted: nothing declared.
-  --execution-profile P    (sql) the sandbox the query executes under.
-                           `local` is the DEFAULT — the trusted operator lane,
-                           a memory cap only. `agent` is the untrusted lane
-                           (tighter caps, external access off, configuration
-                           locked) that the wire and MCP faces always take.
-                           Omitting the flag selects `local`: an untrusted
-                           caller MUST pass --execution-profile=agent.
   --fresh                  (sql) re-ask a STALE answer once, bounded; a run
                            that still cannot reach as_of == live reports RACED
                            rather than a fresh-looking result.

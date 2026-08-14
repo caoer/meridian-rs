@@ -1,8 +1,9 @@
 //! E2E gates for `sql` — corpus SQL over the wire (`docs/wire-contract.md`
 //! § A.11): one statement over the workspace's fingerprint-pinned projection
-//! cache, served by the resident engine under the `agent` sandbox, freshness
-//! folded post-result. v3-only, advertised as cap `sql` (v3 projection);
-//! the daemon is the cache file's single owner and its one append actor.
+//! cache, served by the resident engine on the one execution path (the
+//! NO-SANDBOX ruling, 2026-08-14), freshness folded post-result. v3-only,
+//! advertised as cap `sql` (v3 projection); the daemon is the cache file's
+//! single owner and its one append actor.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -78,7 +79,8 @@ fn write(ws: &Path, rel: &str, body: &str) {
 /// FRESH with rows at the engine's pin; a corpus move appends delta-grain
 /// (pin ledger observable through the op itself); a failed query answers a
 /// SUCCESS body with `state: UNVERIFIED` + the engine's words; view-DML
-/// refuses with the OQ1 teaching; the agent sandbox blocks external access.
+/// refuses with the OQ1 teaching; the wire runs the same one path as the
+/// CLI — nothing locked, nothing disabled.
 #[test]
 fn sql_lifecycle_over_the_wire() {
     let tmp = TempDir::new().unwrap();
@@ -157,13 +159,17 @@ fn sql_lifecycle_over_the_wire() {
         "the refusal teaches: {dml}"
     );
 
-    // The wire is the untrusted lane: agent sandbox, external access off.
-    let escape = conn.sql(6, "SELECT * FROM read_csv('/etc/hosts')");
-    assert_eq!(escape["ok"], true);
+    // One execution path (NO-SANDBOX ruling): the wire serves exactly what
+    // the CLI lane serves — an external file read answers rows, not a
+    // refusal (the accepted trust posture; every caller already holds a
+    // shell).
+    let external = conn.sql(6, "SELECT count(*) FROM read_csv('/etc/hosts')");
+    assert_eq!(external["ok"], true);
     assert!(
-        escape["body"]["error"].is_string(),
-        "external access refused under the agent profile: {escape}"
+        external["body"]["error"].is_null(),
+        "no lane-level refusal survives the ruling: {external}"
     );
+    assert_eq!(external["body"]["row_count"], 1, "{external}");
 }
 
 /// v2 sessions never see the op (§3.2 discovery honesty): not in v2 caps,
@@ -198,7 +204,7 @@ fn v2_session_answers_unknown_op_and_never_advertises_sql() {
 }
 
 /// The strict field wall: a `sql` frame carrying any field beyond `query`
-/// refuses `bad_request` — profile, cwd, and row bounds are host concerns.
+/// refuses `bad_request` — cwd and row bounds are host concerns.
 #[test]
 fn sql_strict_field_wall_refuses_extras() {
     let tmp = TempDir::new().unwrap();
@@ -210,7 +216,7 @@ fn sql_strict_field_wall_refuses_extras() {
     conn.hello_v3(&ws);
 
     let refused = conn.call(&json!({
-        "id": 1, "op": "sql", "query": "SELECT 1", "execution_profile": "local",
+        "id": 1, "op": "sql", "query": "SELECT 1", "max_rows": 5,
     }));
     assert_eq!(refused["ok"], false, "{refused}");
     assert_eq!(refused["error"]["code"], "bad_request");

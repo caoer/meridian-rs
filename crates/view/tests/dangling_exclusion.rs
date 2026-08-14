@@ -103,10 +103,7 @@ fn an_excluded_target_is_not_dangling_cache_lane() {
         .expect("sync");
 
     let (_, rows) = store
-        .query(
-            view::store::ExecProfile::Agent,
-            "SELECT target_raw FROM dangling ORDER BY target_raw",
-        )
+        .query("SELECT target_raw FROM dangling ORDER BY target_raw")
         .expect("query lane")
         .expect("caller sql");
     let targets: Vec<String> = rows
