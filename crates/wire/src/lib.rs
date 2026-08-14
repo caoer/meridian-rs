@@ -744,7 +744,7 @@ pub enum Op {
         /// Effects mode (§ A.7 effects paragraph, script-effects ruling
         /// 2026-08-13): the effect builtins the program may use. Absent =
         /// pure script; present switches the execution model to the LIVE
-        /// program. Closed set today: `run`.
+        /// program. Closed set today: `run`, `token_count`.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         effects: Vec<String>,
         /// The host-minted identity base for live `run()` calls
@@ -752,6 +752,14 @@ pub enum Op {
         /// present (§9 — the engine mints no identity).
         #[serde(skip_serializing_if = "Option::is_none")]
         invocation: Option<String>,
+        /// The harness measuring endpoint for the `token_count` effect
+        /// (`token_count` ruling leg B, 2026-08-13): a unix-socket path the
+        /// live host dials per call, speaking the consumer daemon's NDJSON
+        /// `token_count` verb. Rides EXACTLY when `effects` names
+        /// `token_count` — the consumer sends it only then, and the engine
+        /// holds no default (no endpoint = the builtin refuses "unbound").
+        #[serde(skip_serializing_if = "Option::is_none")]
+        token_count_endpoint: Option<String>,
     },
     /// Page-task execution over the wire (§ A.8, v3-only at dispatch): a
     /// LIST of targets on the bound workspace, run sequentially in list
