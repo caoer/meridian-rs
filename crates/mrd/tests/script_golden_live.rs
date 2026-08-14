@@ -1,19 +1,21 @@
 //! The six golden scenarios (`inbox/run-golden.html` v9) run through `mrd
-//! script` against a LIVE daemon, held to ONE law:
+//! script` against a LIVE daemon, held to ONE law (CAS relaxation, ruling
+//! 2026-08-13):
 //!
-//! > **write-follows-read** — a `put()` row's target must have been READ this
-//! > attempt, or the row carries no CAS token and the wire door refuses it.
+//! > **Every write row reaches the wire door carrying a CAS token** — threaded
+//! > from the script's own reads when they cover the target, minted by the
+//! > lane's own commit-time `toc` trip when they do not. The author performs
+//! > no read ritual; the commit's entry fingerprint is the enforcement point.
 //!
 //! Why a live daemon and not the `Door` fake (`script_cmd.rs`). The guard that
-//! mints this law is scoped by ORIGIN (`wire-serve::guard`): `Origin::Wire` — the
-//! daemon socket — demands a per-row fingerprint, and `Origin::InProcess` is
+//! demands the token is scoped by ORIGIN (`wire-serve::guard`): `Origin::Wire` —
+//! the daemon socket — demands a per-row fingerprint, and `Origin::InProcess` is
 //! exempt. A fake door can assert what the client SAID; only a real socket can
 //! assert that the engine ACCEPTED it. Both halves are needed, so this suite
 //! records the requests on their way through a real `RunningServer`.
 //!
 //! The table below is the whole point: every golden scenario, its write rows, and
-//! where each row's token came from. A scenario that writes a target it never
-//! read fails here rather than in a face.
+//! where each row's token came from.
 
 use std::fmt::Write as _;
 use std::io::{self, BufRead, BufReader, Write};
@@ -114,8 +116,8 @@ put("status/round-7.md", section="Close",
 "#;
 
 /// 3A as golden v8 wrote it — the same append with its line-4 `read` removed.
-/// Not a golden scenario: it is the counter-example the law is stated against,
-/// and it exists so the ENGINE's refusal of an unread target stays pinned.
+/// Not a golden scenario: it is the unread-target shape the CAS relaxation is
+/// pinned against — the lane mints the token and the engine accepts the batch.
 const S3A_WITHOUT_ITS_READ: &str = r#"
 open_cards = [p for p in files
               if read(p)["fm"]["owner"] == me()
@@ -193,9 +195,9 @@ struct Scenario {
 
 /// Every golden scenario, 3A included: golden v9 gives it the one
 /// `read("status/round-7.md", section="Close")` its append's node rev comes from,
-/// so it conforms to the law like the rest. The refusal that reading buys off is
-/// pinned separately, against the ENGINE, by
-/// [`an_append_to_a_target_the_script_never_read_is_refused_whole`].
+/// so its token is its own read's. The unread-target direction — the lane mints
+/// the token itself — is pinned separately, against the ENGINE, by
+/// [`an_append_to_a_target_the_script_never_read_mints_and_commits`].
 const TABLE: &[Scenario] = &[
     Scenario {
         id: "1 · claim-if-unowned",
@@ -283,9 +285,10 @@ const TABLE: &[Scenario] = &[
 // ── the law ───────────────────────────────────────────────────────────────────
 
 /// **Rider 1.** Every golden scenario, over a live daemon, with every write row
-/// showing where its CAS token came from. A scenario that writes a target it
-/// never read has no token to carry and the engine refuses it — so this one test
-/// is both the law and its evidence.
+/// showing where its CAS token came from. Every golden reads what it writes, so
+/// each token must be one the script's own reads published — the conforming
+/// half of the law; the unread-target half (the lane mints the token itself) is
+/// pinned by [`an_append_to_a_target_the_script_never_read_mints_and_commits`].
 #[test]
 fn every_golden_write_row_finds_its_token_in_the_scripts_own_reads() {
     let mut report = String::new();
@@ -404,29 +407,29 @@ fn scenario_3b_reads_the_board_before_it_claims_the_round() {
     assert_eq!(trace.outcome, ScriptOutcome::Committed);
 }
 
-/// **The law's other direction — the ENGINE must never let an unread target
-/// commit.**
+/// **The law's other direction — an unread target commits, on the lane's own
+/// minted token.**
 ///
-/// The divergence this test was born for is closed: golden v8's 3A appended to
-/// `status/round-7.md` having read only `files[]`, so the append row went out
-/// `rev: null` and the live daemon refused the batch. The Advisor (`d1f489b5`,
-/// 2026-08-07) ruled that the engine was right and the page was one `read()`
-/// short — a GOLDEN TOUCH — and v9 gives 3A that read, which is why 3A now sits
-/// in [`TABLE`] as a conforming row.
-///
-/// What stays is the guard pointing the other way. The v8 shape runs on here as
-/// a deliberate counter-example: a `put()` whose target this attempt never read
-/// carries no token, and the wire door must refuse the WHOLE batch with its own
-/// teaching wording. This test fails the moment the engine starts accepting one.
+/// History, both rulings. Golden v8's 3A appended to `status/round-7.md`
+/// having read only `files[]`; the append row went out `rev: null` and the
+/// live daemon refused the batch. The Advisor (`d1f489b5`, 2026-08-07) ruled
+/// the engine right and gave v9's 3A its read. ZT's CAS-relaxation ruling
+/// (2026-08-13, dissolves F-S2) supersedes that direction: appends go
+/// rev-free for the AUTHOR (put parity — append cannot clobber), the lane
+/// mints the token itself at commit time, and consistency enforcement lives
+/// at the commit's entry fingerprint — never as a read-the-section-first
+/// ritual. The v8 shape runs on here to pin the relaxation against the real
+/// engine: the batch lands, and the row that reached the socket carried the
+/// minted token.
 #[test]
-fn an_append_to_a_target_the_script_never_read_is_refused_whole() {
+fn an_append_to_a_target_the_script_never_read_mints_and_commits() {
     const UNREAD_APPEND: Scenario = Scenario {
-        id: "3A without its read — the counter-example",
+        id: "3A without its read — the relaxation pin",
         source: S3A_WITHOUT_ITS_READ,
         files: true,
         dry: false,
         pin_entry: false,
-        ends: Ends::ArmRefused,
+        ends: Ends::Committed,
         writes: &[ROUND],
     };
     let fixture = Fixture::start();
@@ -434,25 +437,22 @@ fn an_append_to_a_target_the_script_never_read_is_refused_whole() {
 
     assert!(
         !read_paths(&trace).contains(&ROUND),
-        "the counter-example must not read {ROUND} — that is the whole premise"
+        "the script itself must not read {ROUND} — that is the whole premise"
     );
     let append = plan_rows(&door)
         .into_iter()
         .find(|row| row.get("append").is_some())
-        .expect("the counter-example arms the append");
+        .expect("the scenario arms the append");
     assert!(
-        append["append"]["rev"].is_null(),
-        "a target the script never read has no token to carry: {append}"
+        !append["append"]["rev"].is_null(),
+        "the lane minted the node-grain token the wire door demands: {append}"
     );
     assert_eq!(
         trace.outcome,
-        ScriptOutcome::Refused,
-        "the wire door refuses the whole batch"
-    );
-    let reason = &trace.fault.as_ref().expect("the engine names it").reason;
-    assert!(
-        reason.contains("guard_required") && reason.contains("NODE grain"),
-        "the engine's own teaching refusal, verbatim: {reason}"
+        ScriptOutcome::Committed,
+        "rev-free for the author is not tokenless on the wire — the batch \
+         lands: {:?}",
+        trace.fault
     );
 }
 
@@ -517,6 +517,7 @@ if card["fm"]["owner"] == "3f9a1c07":
 /// What this run actually amounted to, at the grain the golden page depicts —
 /// the outcome word plus whether a splice was issued at all, which is what
 /// separates a zero-armed run from a rehearsal.
+#[allow(clippy::match_same_arms)] // the Effects arm is spelled for exhaustiveness, not merged away
 fn ends_of(trace: &ScriptTrace, door: &LiveDoor) -> Ends {
     let spliced = door.ops().iter().any(|op| op == "splice");
     match (trace.outcome, spliced) {

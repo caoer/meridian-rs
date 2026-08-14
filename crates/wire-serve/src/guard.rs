@@ -408,23 +408,26 @@ fn refusal(path: &Path, demand: &Demand) -> Box<ErrorBody> {
             };
             // The fix names the LAW first and a runnable command second, because
             // the callers of this door do not share one surface. A raw wire
-            // client sends the token itself and `mrd read` is how it mints one;
-            // a SCRIPT never sees a rev at all — its tokens are threaded from
-            // its own recorded reads (`run-plane.md` § the write-follows-read
-            // law), so "send `if_node_rev`" is an unreachable remedy on that
-            // face and reading the target in the same script IS the reachable
-            // one. One message, both spellings: a face re-phrasing this text for
-            // its own callers would fork the refusal across two repos.
+            // client sends the token itself and `mrd read` is how it mints one.
+            // A SCRIPT never sees a rev at all — since the CAS relaxation
+            // (ruling 2026-08-13, `run-plane.md` § entry-rev threading) its
+            // tokens thread from the entry state with no read ritual, so a
+            // script row meeting this refusal means the entry state could not
+            // name its target (or the CLI lane's mint trip failed): the
+            // reachable remedy there is re-run against the current world, and
+            // the message says so instead of teaching a dissolved ritual. One
+            // message, both spellings: a face re-phrasing this text for its own
+            // callers would fork the refusal across two repos.
             let fix = match slot {
                 Slot::NativeNodeRev => format!(
                     "Fix: the token is the read you already did — send that node's `sec_rev` as \
-                     `if_node_rev` on the edit (`mrd read {file} --json` mints one; in a script, \
-                     read the section before the put() that writes it)."
+                     `if_node_rev` on the edit (`mrd read {file} --json` mints one; a script \
+                     threads its tokens from its entry state itself — from one, re-run)."
                 ),
                 Slot::PlanRowRev => format!(
                     "Fix: the token is the read you already did — send that section's `sec_rev` \
-                     as `rev` on the plan edit (`mrd read {file} --json` mints one; in a script, \
-                     read(\"{file}\", section=…) before the put() and the token threads itself)."
+                     as `rev` on the plan edit (`mrd read {file} --json` mints one; a script \
+                     threads its tokens from its entry state itself — from one, re-run)."
                 ),
                 Slot::PlanCreateRev => format!(
                     "Fix: run `mrd read {file} --json` and send the PARENT section's `sec_rev` as \
@@ -433,8 +436,8 @@ fn refusal(path: &Path, demand: &Demand) -> Box<ErrorBody> {
                 ),
                 Slot::PlanFileRev => format!(
                     "Fix: the token is the read you already did — send its `file_rev` as `rev` on \
-                     each `set_property` (`mrd read {file} --json` mints one; in a script, \
-                     read(\"{file}\") before the put() and the token threads itself)."
+                     each `set_property` (`mrd read {file} --json` mints one; a script threads \
+                     its tokens from its entry state itself — from one, re-run)."
                 ),
             };
             let mut e = ErrorBody::new(ErrorCode::GuardRequired);
