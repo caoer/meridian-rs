@@ -426,7 +426,7 @@ fn plan_set_property_refuses_forged_keys_at_both_doors_and_writes_nothing() {
     .expect_err("the pre-flight refuses a forged key");
     assert_eq!(
         err.render(),
-        "E_FAIL_LOUD: invalid frontmatter key \"ti tle: forged\\nevil\" — a property key is [A-Za-z0-9_-]+ (single line, no spaces or ':')"
+        "E_FAIL_LOUD: invalid frontmatter key \"ti tle: forged\\nevil\" — a property key is dotted segments of [A-Za-z0-9_-]+ (single line, no spaces or ':')"
     );
 
     // Door 2 — the committer, reached with NO pre-flight in front of it.
@@ -450,7 +450,7 @@ fn plan_set_property_refuses_forged_keys_at_both_doors_and_writes_nothing() {
     assert_eq!(
         err.message.as_deref(),
         Some(
-            "invalid frontmatter key \"ti tle: forged\\nevil\" — a property key is [A-Za-z0-9_-]+ (single line, no spaces or ':')"
+            "invalid frontmatter key \"ti tle: forged\\nevil\" — a property key is dotted segments of [A-Za-z0-9_-]+ (single line, no spaces or ':')"
         )
     );
 
@@ -503,6 +503,69 @@ fn plan_set_property_refuses_forged_keys_at_both_doors_and_writes_nothing() {
     )
     .expect("a legal key still commits");
     assert_legal_create_landed(&std::fs::read_to_string(dir.path().join("plan.md")).expect("read"));
+}
+
+/// dogfood r3 f6: the task grammar's flat dotted keys write through the PATCH
+/// face. Birth landed `task.index.caps` and `docs/run-plane.md` mandates the
+/// dotted spelling, while this face refused it — one key law, three surfaces.
+#[test]
+fn plan_set_property_writes_the_task_grammars_dotted_keys() {
+    const SEED: &str = "---\ntitle: Card\n---\n\n# Tasks\n\nbody\n";
+    let (dir, root) = ws(&[("card.md", SEED)]);
+
+    splice(
+        &root,
+        None,
+        &plan_args(
+            "card.md",
+            vec![
+                PlanEdit::SetProperty {
+                    key: "task.index".into(),
+                    value: "1".into(),
+                    rev: None,
+                },
+                PlanEdit::SetProperty {
+                    key: "task.index.caps".into(),
+                    value: "md.set_field".into(),
+                    rev: None,
+                },
+            ],
+        ),
+        &[],
+        None,
+    )
+    .expect("the dotted task keys commit");
+
+    let after = std::fs::read_to_string(dir.path().join("card.md")).expect("read");
+    assert!(
+        after.contains("task.index: 1\n") && after.contains("task.index.caps: md.set_field\n"),
+        "both dotted keys land as their own lines: {after}"
+    );
+
+    // A dot is a separator, not a charset member — an empty segment still
+    // refuses, and the refusal teaches the dotted law it broke.
+    let err = splice(
+        &root,
+        None,
+        &plan_args(
+            "card.md",
+            vec![PlanEdit::SetProperty {
+                key: "task..index".into(),
+                value: "x".into(),
+                rev: None,
+            }],
+        ),
+        &[],
+        None,
+    )
+    .expect_err("an empty segment names no property");
+    assert_eq!(err.code, wire::ErrorCode::BadRequest);
+    assert_eq!(
+        err.message.as_deref(),
+        Some(
+            "invalid frontmatter key \"task..index\" — a property key is dotted segments of [A-Za-z0-9_-]+ (single line, no spaces or ':')"
+        )
+    );
 }
 
 /// Golden MUST-CARRY refusals: p-replace-on-block (now the frontmatter twin

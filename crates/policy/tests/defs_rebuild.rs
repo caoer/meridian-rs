@@ -113,7 +113,7 @@ fn rebuild_refusals_match_the_u0_goldens() {
                 ..edit("set_property", "bad key")
             }],
         ),
-        "E_FAIL_LOUD: invalid frontmatter key \"bad key\" — a property key is [A-Za-z0-9_-]+ (single line, no spaces or ':')",
+        "E_FAIL_LOUD: invalid frontmatter key \"bad key\" — a property key is dotted segments of [A-Za-z0-9_-]+ (single line, no spaces or ':')",
         "prop-bad-key",
     );
 
@@ -275,8 +275,55 @@ fn set_property_keys_pass_a_fallible_owner_that_refuses_the_forged_spelling() {
                 ..edit("set_property", "ti tle: forged\nevil")
             }],
         ),
-        "E_FAIL_LOUD: invalid frontmatter key \"ti tle: forged\\nevil\" — a property key is [A-Za-z0-9_-]+ (single line, no spaces or ':')",
+        "E_FAIL_LOUD: invalid frontmatter key \"ti tle: forged\\nevil\" — a property key is dotted segments of [A-Za-z0-9_-]+ (single line, no spaces or ':')",
         "prop-forged-key",
+    );
+}
+
+/// The task grammar's keys are FLAT DOTTED (`docs/run-plane.md` § convention
+/// table: *"flat dotted frontmatter keys"*), and the birth path already lands
+/// them. The patch plane refusing what birth writes made one key law into two,
+/// so `.` is an interior segment separator here. Nothing widens: a dot carries
+/// no `: `, no newline and no `---`, so the forgery surface is unchanged.
+#[test]
+fn set_property_keys_accept_the_task_grammar_dotted_spelling() {
+    for key in [
+        "task.index",
+        "task.index.caps",
+        "task.stamp.args",
+        "run.caps.check-x",
+        "task.index.timeout",
+    ] {
+        assert_eq!(
+            policy::defs::yaml_safe_key(key).map(|k| k.as_str().to_string()),
+            Ok(key.to_string()),
+            "the task grammar's own key {key} must write through the patch face"
+        );
+    }
+
+    // A dot is a SEPARATOR, not a charset member: a key that is all separator,
+    // or one with an empty segment, names no property and stays refused.
+    for key in [".", "task.", ".task", "task..index"] {
+        assert_eq!(
+            policy::defs::yaml_safe_key(key),
+            Err(policy::defs::InvalidPropertyKey),
+            "{key} carries an empty segment"
+        );
+    }
+
+    // And a dotted key lands through the rebuild door, byte-for-byte.
+    let cand = run(
+        DOC,
+        &[PlanEdit {
+            body: "md.set_field".into(),
+            ..edit("set_property", "task.index.caps")
+        }],
+    )
+    .expect("a dotted task key writes through the patch plane");
+    assert!(
+        cand.raw.contains("task.index.caps: md.set_field\n"),
+        "the dotted key composes its own line: {}",
+        cand.raw
     );
 }
 
