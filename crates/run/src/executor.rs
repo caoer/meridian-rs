@@ -674,6 +674,34 @@ pub fn apply(root: &fs::WorkspaceRoot, req: &ApplyRequest<'_>) -> Result<Applied
     apply_under(&lock, root, req)
 }
 
+/// THE CHOKE POINT, one owner for both tenses: md.* only, each effect
+/// admitted by the block's authority (kind + target, so target-scoped caps
+/// bind for real). The apply path runs it before any I/O; the dry rehearsal
+/// (`runner::rehearse`) runs the SAME admission over the same md.* partition,
+/// so a rehearsal cannot pass what the apply would refuse (dogfood r2 F2).
+/// An unsandboxed shell passes every descriptor: gating it would only move
+/// the same write to `sed -i`, off the attested path.
+///
+/// # Errors
+/// [`ExecError`] — the first denied or malformed descriptor, in effect order.
+pub fn admit(effects: &[Effect], authority: &Authority) -> Result<(), ExecError> {
+    for effect in effects {
+        let (kind, target) = descriptor_surface(effect)?;
+        if !authority.admits(kind, Some(&target)) {
+            let ceiling = authority
+                .capabilities()
+                .and_then(|caps| caps.ceiling_denying(kind, Some(&target)))
+                .map(ToString::to_string);
+            return Err(ExecError::CapDenied {
+                kind: kind.to_owned(),
+                target,
+                ceiling,
+            });
+        }
+    }
+    Ok(())
+}
+
 /// [`apply`] under a CALLER-held [`WorkspaceLock`] — the U6a two-phase seam
 /// (u4-gate addendum on #19): the bash dispatcher must commit phase 1 and
 /// compute `root_after_phase1` inside ONE locked window, so it holds the lock
@@ -688,25 +716,8 @@ pub fn apply_under(
     root: &fs::WorkspaceRoot,
     req: &ApplyRequest<'_>,
 ) -> Result<Applied, ExecError> {
-    // 1. THE CHOKE POINT — before any I/O: md.* only, each admitted by the
-    // block's authority (kind + target, so target-scoped caps bind for real).
-    // An unsandboxed shell passes every descriptor: gating it would only move
-    // the same write to `sed -i`, off the attested path.
-    for effect in req.effects {
-        let (kind, target) = descriptor_surface(effect)?;
-        if !req.authority.admits(kind, Some(&target)) {
-            let ceiling = req
-                .authority
-                .capabilities()
-                .and_then(|caps| caps.ceiling_denying(kind, Some(&target)))
-                .map(ToString::to_string);
-            return Err(ExecError::CapDenied {
-                kind: kind.to_owned(),
-                target,
-                ceiling,
-            });
-        }
-    }
+    // 1. THE CHOKE POINT — before any I/O.
+    admit(req.effects, req.authority)?;
 
     // 2. Load under the lock.
     let doc = fs::load(root, Path::new(req.page)).map_err(|e| ExecError::Page {
