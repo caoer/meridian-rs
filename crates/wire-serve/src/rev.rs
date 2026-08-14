@@ -510,6 +510,21 @@ pub const V2_RESERVED_FIELDS: &[ReservedField] = &[
               response body, so one field leaked at two exits; absent from the \
               frozen §4.4/§5.2 armed key set {path, edits}",
     },
+    ReservedField {
+        key: "rescope",
+        position: Position::NotificationRoot,
+        author: "§ A.9 re-scope honesty",
+        why: "the re-scope batch summary (cause + membership counts); frozen \
+              v2 enumerated a re-scope as per-file rows and never carried a \
+              summary",
+    },
+    ReservedField {
+        key: "overflow",
+        position: Position::NotificationRoot,
+        author: "§ A.9 re-scope honesty",
+        why: "the assembly-bound overflow marker; no frozen v2 frame bounded \
+              its own enumeration",
+    },
     // The ladder's four post-v2 slots; `message`/`path` are deliberately absent.
     ReservedField {
         key: "rung",
