@@ -65,7 +65,11 @@ use crate::{ExclusionProbe, Rows, ViewError, collect_doc, corpus_index, fill_exc
 /// Bump it — together with the drawer path's `SCHEMA_SALT` — whenever the
 /// hist DDL changes; a mismatched file is deleted and cold-rebuilt, never
 /// migrated (the cache is a pure function of the corpus).
-pub const CACHE_SCHEMA_VERSION: i64 = 1;
+///
+/// `2`: `main.dangling` gained `AND exclusion IS NULL`, and the exclusion
+/// mint's bare-name fallback changed stamped content for identical corpora —
+/// a v1 file would serve pre-ruling rows at the same fingerprint.
+pub const CACHE_SCHEMA_VERSION: i64 = 2;
 
 /// The cache file's basename inside the workspace cache drawer (ruling OQ4).
 pub const SQL_CACHE_FILENAME: &str = "sql.duckdb";
@@ -164,7 +168,8 @@ CREATE VIEW main.backlink AS
     WHERE dest_path IS NOT NULL;
 CREATE VIEW main.dangling AS
     SELECT src_path, target_raw FROM main.link
-    WHERE kind IN ('wikilink','embed') AND dest_path IS NULL AND dest_root IS NULL;
+    WHERE kind IN ('wikilink','embed') AND dest_path IS NULL AND dest_root IS NULL
+      AND exclusion IS NULL;
 CREATE VIEW main.card AS
     SELECT d.path,
         max(fm.value) FILTER (fm.key = 'type')    AS type,

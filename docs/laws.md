@@ -243,10 +243,13 @@ sometimes.**
 The third column widens the error space, so the illegal states are closed
 STRUCTURALLY — `CHECK ((dest_root IS NULL) = (dest_root_path IS NULL))` and
 `CHECK (dest_path IS NULL OR dest_root IS NULL)` — rather than by the
-projector's discipline. `dangling`'s two-place clause (`dest_path IS NULL AND
-dest_root IS NULL`) is what stops a resolved cross-vault link reading as broken,
-and it is pinned by a red test, mutation-proved one-edit, in
-`crates/view/tests/u21_cross_root_link_rows.rs`.
+projector's discipline. `dangling`'s two destination clauses (`dest_path IS
+NULL AND dest_root IS NULL`) are what stops a resolved cross-vault link reading
+as broken, pinned by a red test, mutation-proved one-edit, in
+`crates/view/tests/u21_cross_root_link_rows.rs`; the third clause (`AND
+exclusion IS NULL`, ruling 2026-08-14) is what stops a deliberately-unhashed
+target reading as broken, pinned the same way in
+`crates/view/tests/dangling_exclusion.rs`.
 
 ### R1.6-a — the stored→agent re-join, and why it stays
 

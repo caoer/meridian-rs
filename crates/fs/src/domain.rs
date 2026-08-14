@@ -16,6 +16,8 @@
 //! ⊂ addressable). See [`Domain`] for the predicate and [`crate::hash_domain`] for
 //! the walk that consumes it.
 
+use std::cell::OnceCell;
+use std::collections::BTreeMap;
 use std::io;
 use std::path::{Component, Path};
 
@@ -115,7 +117,7 @@ impl std::fmt::Display for ExclusionReason {
 /// `sql link` projection both ask through here, so a `dot-segment` in one face
 /// can never be a `custom-ignore` in the other (session decision 0034).
 ///
-/// TWO CONDITIONS, and the first is the discriminator the card exists for:
+/// TWO CONDITIONS, and the first is the discriminator the column exists for:
 ///
 /// 1. **A file must really be there.** Without the disk probe a reason would
 ///    attach to `[[.private/typo]]` — a path with no file behind it — and a
@@ -123,27 +125,125 @@ impl std::fmt::Display for ExclusionReason {
 ///    link is broken" apart from "this file is deliberately unhashed".
 /// 2. The domain must exclude it, per [`Domain::exclusion`].
 ///
-/// The probe is the literal target plus the `.md` append rule — the spelling a
-/// caller writes for a page. An excluded file is absent from the corpus index
-/// by construction, so the ambient basename search cannot answer for it; a
-/// shortest-path basename fallback over out-of-domain files is deliberately
-/// NOT implemented here and is named as NOT MEASURED on the card.
-#[must_use]
-pub fn link_target_exclusion(
-    root: &WorkspaceRoot,
-    domain: &Domain,
-    target: &str,
-) -> Option<ExclusionReason> {
-    let rel = Path::new(target);
-    let candidate = if rel.extension().is_some() {
-        rel.to_path_buf()
-    } else {
-        rel.with_extension("md")
-    };
-    if !root.0.join(&candidate).is_file() {
-        return None;
+/// TWO ARMS answer, in order (ruling 2026-08-14, design (a-1)):
+///
+/// - **Literal**: the target as written plus the `.md` append rule — the
+///   spelling a caller writes for a page.
+/// - **Bare-name fallback**: a target with no `/` resolves by basename over
+///   the out-of-domain files (an excluded file is absent from the corpus
+///   index by construction, so the ambient basename search cannot answer).
+///   Two guards are ratified scope, not advice: the match is **case-EXACT**
+///   (an APFS case-folding probe would stamp `abc.BASE` — a genuine typo —
+///   as deliberate), and an ambiguous basename takes the **deterministic
+///   tie-break** shortest path then lexicographic, so nothing downstream is
+///   walk-order-sensitive.
+///
+/// A PATHED spelling never falls back, deliberately: `git/GIT.base` written
+/// where only `sources/git/GIT.base` exists is genuine rot, and a suffix walk
+/// would stamp it as deliberate — erasing exactly the typo-vs-deliberate
+/// discriminator. Stated limit, not a bug: a pathed spelling only a suffix
+/// walk could find (e.g. `attachments/….xlsx` on the measuring corpus) stays
+/// bare; the raw `link` rows remain the escape hatch for censusing those.
+///
+/// The out-of-domain index walks once, lazily, on the first bare-name miss —
+/// dot-segment names are never walked (invisible to the vault the way the
+/// app's own index treats them, and the rule that keeps `.git` unwalked), and
+/// walk I/O errors read as absence, the same posture as the literal arm's
+/// `is_file`.
+pub struct LinkTargetProbe<'a> {
+    root: &'a WorkspaceRoot,
+    domain: &'a Domain,
+    /// Exact basename → out-of-domain rel paths, each list sorted by the
+    /// ratified tie-break (byte length, then lexicographic) so the pick is
+    /// `first()` and determinism holds by construction.
+    index: OnceCell<BTreeMap<String, Vec<String>>>,
+}
+
+impl<'a> LinkTargetProbe<'a> {
+    /// A probe over `root` under `domain`. Cheap: the fallback index is not
+    /// built until a bare name misses the literal arm.
+    #[must_use]
+    pub fn new(root: &'a WorkspaceRoot, domain: &'a Domain) -> Self {
+        LinkTargetProbe {
+            root,
+            domain,
+            index: OnceCell::new(),
+        }
     }
-    domain.exclusion(&candidate)
+
+    /// The §12.1 word for `target`, or `None` — [`resolution`](Self::resolution)
+    /// without the path, the shape the edge-map faces render.
+    #[must_use]
+    pub fn exclusion(&self, target: &str) -> Option<ExclusionReason> {
+        self.resolution(target).map(|(_, why)| why)
+    }
+
+    /// The full finding: the workspace-relative file `target` resolved to and
+    /// WHY the domain excludes it, or `None` when no arm answers.
+    #[must_use]
+    pub fn resolution(&self, target: &str) -> Option<(String, ExclusionReason)> {
+        let rel = Path::new(target);
+        let candidate = if rel.extension().is_some() {
+            rel.to_path_buf()
+        } else {
+            rel.with_extension("md")
+        };
+        if self.root.0.join(&candidate).is_file() {
+            let why = self.domain.exclusion(&candidate)?;
+            return Some((candidate.to_string_lossy().into_owned(), why));
+        }
+        // Bare names only: a pathed spelling never falls back (see above).
+        if target.contains('/') {
+            return None;
+        }
+        let name = candidate.file_name()?.to_str()?.to_owned();
+        let index = self
+            .index
+            .get_or_init(|| build_fallback_index(self.root, self.domain));
+        let path = index.get(&name)?.first()?;
+        let why = self.domain.exclusion(Path::new(path))?;
+        Some((path.clone(), why))
+    }
+}
+
+/// Walk `root` for the fallback index: every non-dot-segment file the domain
+/// excludes, keyed by exact basename, candidate lists in tie-break order.
+/// Per-entry I/O errors skip the entry (absence posture, as `is_file`).
+fn build_fallback_index(root: &WorkspaceRoot, domain: &Domain) -> BTreeMap<String, Vec<String>> {
+    fn walk(abs: &Path, rel_dir: &str, domain: &Domain, map: &mut BTreeMap<String, Vec<String>>) {
+        let Ok(entries) = std::fs::read_dir(abs) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            let name = entry.file_name();
+            // A non-UTF-8 name can never match a UTF-8 target.
+            let Some(name) = name.to_str() else { continue };
+            if name.starts_with('.') {
+                continue;
+            }
+            let rel = if rel_dir.is_empty() {
+                name.to_owned()
+            } else {
+                format!("{rel_dir}/{name}")
+            };
+            if file_type.is_dir() {
+                // No pruning of custom-ignored directories: their files are
+                // exactly what this index exists to find.
+                walk(&entry.path(), &rel, domain, map);
+            } else if file_type.is_file() && domain.exclusion(Path::new(&rel)).is_some() {
+                map.entry(name.to_owned()).or_default().push(rel);
+            }
+        }
+    }
+    let mut map = BTreeMap::new();
+    walk(&root.0, "", domain, &mut map);
+    for paths in map.values_mut() {
+        paths.sort_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
+    }
+    map
 }
 
 impl Domain {
