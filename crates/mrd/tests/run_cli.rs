@@ -298,3 +298,27 @@ fn unknown_flag_exits_2() {
     assert_eq!(code(&out), 2);
     assert!(stderr(&out).contains("unknown flag"), "{}", stderr(&out));
 }
+
+/// `--dry` rehearses the capability gate (dogfood r2 F2): a task that emits
+/// an effect its authority denies refuses on the RUN leg exactly as the live
+/// call would — a rehearsal that passes what live refuses predicts nothing.
+#[test]
+fn dry_rehearses_the_capability_gate() {
+    let ws = Ws::new();
+    std::fs::write(
+        ws.file("nocaps.md"),
+        "---\ntask.nocaps: \"[[#^n-1]]\"\n---\n\n# Tasks\n\n```starlark\ndef run(ctx):\n    set_field(field = \"status\", value = \"x\")\n```\n^n-1\n",
+    )
+    .expect("nocaps page");
+    let before = std::fs::read_to_string(ws.file("nocaps.md")).expect("page");
+    let out = ws.run(&["nocaps.md", "--dry"]);
+    assert_eq!(code(&out), 1, "the choke point refuses the rehearsal too");
+    assert!(
+        stderr(&out).contains("capability denied: md.set_field on 'status'"),
+        "the executor's own words, both tenses: {}",
+        stderr(&out)
+    );
+    // Still a rehearsal: nothing landed.
+    let after = std::fs::read_to_string(ws.file("nocaps.md")).expect("page");
+    assert_eq!(before, after);
+}
