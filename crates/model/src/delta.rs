@@ -11,11 +11,19 @@
 //! **Node-grain (decision 012, §7.4):** grain is exactly [`NodeDelta`] —
 //! §2.1 identity, rev transition, span after. No key-grain sub-entries.
 //!
-//! Bound: changed ranges are common-prefix/common-suffix over raw bytes — one
-//! contiguous range per file revision. Classifies `created`/`modified`/
-//! `deleted`; `renamed` needs cross-file correlation only callers have.
+//! **Regions (sub-node-grain ruling, 2026-08-14 — dogfood r1 prober F1):**
+//! changed ranges are LINE-GRAIN regions (unique-line anchored diff), one
+//! entry set per region — a multi-edit batch reports each touched node
+//! instead of rolling up to the ancestor that contains the whole byte range,
+//! and a batch spanning frontmatter and body loses neither half. Section
+//! identities carry the §2.1 occurrence disambiguator wherever siblings
+//! duplicate, and a `removed` entry is minted only on a PROVEN absence
+//! ([`crate::ResolveError::NotFound`]) — an ambiguous identity is never
+//! fabricated into a removal; honest omission degrades to the file-grain
+//! fact. Classifies `created`/`modified`/`deleted`; `renamed` needs
+//! cross-file correlation only callers have.
 
-use crate::{ByteSpan, Document, Node, NodeKind, NodeRev, Ref, resolve};
+use crate::{ByteSpan, Document, Node, NodeKind, NodeRev, Ref, ResolveError, resolve};
 
 /// File-level change class this module can derive from two states of one
 /// path. `renamed` is the caller's (cross-file knowledge).
@@ -90,54 +98,135 @@ pub fn file_delta(before: Option<&Document>, after: Option<&Document>) -> Option
     }
 }
 
-/// The node entries for one modified file (D-C7). Two passes, one per tense:
+/// The node entries for one modified file (D-C7, region-grain). Per changed
+/// region, two passes, one per tense:
 ///
 /// - **After-side** (`added`/`edited`): the deepest addressable node
-///   containing the after-range. A range ending in a line terminator is
-///   matched with that final terminator trimmed — block-leaf spans exclude
-///   their terminator by the §1 span law, so an appended anchor block matches
-///   the block, not its host section.
+///   containing the region — leading blank lines (structural glue) and the
+///   final line terminator trimmed first, so an appended block or section
+///   matches itself, never its host. A region inside the frontmatter block
+///   reports EACH changed key line.
 /// - **Before-side** (`removed`): the shallowest before-nodes intersecting
-///   the before-range whose identity no longer resolves; a removed subtree's
-///   descendants stay implicit.
+///   the region whose identity PROVABLY no longer resolves (`NotFound`); a
+///   removed subtree's descendants stay implicit, and an ambiguous identity
+///   is never reported — a feed must not fabricate a removal.
 ///
-/// A pure append has an empty before-range (no removed scan); a pure
-/// deletion has an empty after-range (no added/edited entry).
+/// A pure append has an empty before-region (no removed scan); a pure
+/// deletion has an empty after-region (no added/edited entry). Entries
+/// dedupe by identity across regions.
 #[must_use]
 pub fn node_deltas(before: &Document, after: &Document) -> Vec<NodeDelta> {
-    let Some((b_range, a_range)) = changed_ranges(&before.raw, &after.raw) else {
-        return Vec::new();
-    };
     let mut out = Vec::new();
+    for (b_range, a_range) in changed_regions(&before.raw, &after.raw) {
+        if !a_range.is_empty() {
+            let probe = trim_final_terminator(&after.raw, a_range);
+            if !probe.is_empty() {
+                collect_touched(before, after, &after.root, &probe, &mut out);
+            }
+        }
+        if !b_range.is_empty() {
+            let probe = trim_final_terminator(&before.raw, b_range);
+            collect_removed(before, after, &before.root, &probe, &mut out);
+        }
+    }
+    out
+}
 
-    if !a_range.is_empty() {
-        let probe = trim_final_terminator(&after.raw, a_range);
-        if let Some((target, node)) = deepest_addressable(after, &probe) {
-            match resolve(before, &target) {
-                Ok(prior) => out.push(NodeDelta {
+/// After-side DFS: the DEEPEST addressable nodes intersecting the region —
+/// a node with an intersecting addressable descendant recurses instead of
+/// reporting itself (ancestor revs stay implicit, D-C7), a frontmatter node
+/// reports each key line the region intersects, and structural glue between
+/// children (blank lines, a heading's trailing terminator) names nobody. A
+/// region spanning several siblings therefore reports EACH of them; `added`
+/// vs `edited` is the identity's own tense in `before`.
+fn collect_touched(
+    before: &Document,
+    after: &Document,
+    node: &Node,
+    range: &ByteSpan,
+    out: &mut Vec<NodeDelta>,
+) {
+    // The root's span covers the whole file, so a non-empty probe always
+    // intersects it; children gate themselves here.
+    let intersects = node.span.start < range.end && range.start < node.span.end;
+    if !intersects {
+        return;
+    }
+    if let NodeKind::Frontmatter { map } = &node.kind {
+        for key in map.keys() {
+            let target = Ref::FmKey(key.to_string());
+            let Ok(t) = resolve(after, &target) else {
+                continue;
+            };
+            if t.span.start < range.end && range.start < t.span.end {
+                push_touched(before, target, &t.node_rev, &t.span, out);
+            }
+        }
+        return;
+    }
+    let addressable_children: Vec<&Node> = node
+        .children
+        .iter()
+        .filter(|c| c.span.start < range.end && range.start < c.span.end && addressable_subtree(c))
+        .collect();
+    if addressable_children.is_empty() {
+        // Deepest intersecting addressable node — report it, if it is one.
+        if let Some(target) = identity_of(after, node, range) {
+            push_touched(before, target, &node.node_rev, &node.span, out);
+        }
+        return;
+    }
+    for child in addressable_children {
+        collect_touched(before, after, child, range, out);
+    }
+}
+
+/// Does this subtree hold ANY addressable node (section, anchor,
+/// frontmatter)? Non-addressable wrappers recurse so an anchor nested in
+/// plain blocks still counts.
+fn addressable_subtree(node: &Node) -> bool {
+    matches!(
+        node.kind,
+        NodeKind::Section { .. } | NodeKind::Anchor { .. } | NodeKind::Frontmatter { .. }
+    ) || node.children.iter().any(addressable_subtree)
+}
+
+/// One after-side entry, tense resolved in `before`: `edited` on a surviving
+/// identity whose rev moved, `added` on a proven absence. An `Ambiguous`
+/// before-identity stays silent — with occurrence-qualified section
+/// identities the arm is vestigial, and a feed that cannot name the prior
+/// node truthfully says nothing rather than guessing (file-grain honesty).
+fn push_touched(
+    before: &Document,
+    target: Ref,
+    rev_after: &NodeRev,
+    span_after: &ByteSpan,
+    out: &mut Vec<NodeDelta>,
+) {
+    if out.iter().any(|d| d.target == target) {
+        return;
+    }
+    match resolve(before, &target) {
+        Ok(prior) => {
+            if prior.node_rev != *rev_after {
+                out.push(NodeDelta {
                     target,
                     change: NodeChangeKind::Edited,
                     node_rev_before: Some(prior.node_rev),
-                    node_rev_after: Some(node.node_rev.clone()),
-                    span_after: Some(node.span.clone()),
-                }),
-                Err(_) => out.push(NodeDelta {
-                    target,
-                    change: NodeChangeKind::Added,
-                    node_rev_before: None,
-                    node_rev_after: Some(node.node_rev.clone()),
-                    span_after: Some(node.span.clone()),
-                }),
+                    node_rev_after: Some(rev_after.clone()),
+                    span_after: Some(span_after.clone()),
+                });
             }
         }
+        Err(ResolveError::NotFound) => out.push(NodeDelta {
+            target,
+            change: NodeChangeKind::Added,
+            node_rev_before: None,
+            node_rev_after: Some(rev_after.clone()),
+            span_after: Some(span_after.clone()),
+        }),
+        Err(ResolveError::Ambiguous(_)) => {}
     }
-
-    if !b_range.is_empty() {
-        let probe = trim_final_terminator(&before.raw, b_range);
-        collect_removed(before, after, &before.root, &probe, &mut out);
-    }
-
-    out
 }
 
 /// Block-leaf spans exclude their final line terminator (§1 span law); a
@@ -151,9 +240,13 @@ fn trim_final_terminator(raw: &str, r: ByteSpan) -> ByteSpan {
 }
 
 /// DFS for removed identities: a node intersecting the changed range whose
-/// identity fails to resolve in `after` is a `removed` entry, and its subtree
-/// stays implicit. A resolving ancestor recurses — a removed child may hide
-/// under a surviving parent.
+/// identity PROVABLY no longer resolves (`NotFound`) is a `removed` entry,
+/// and its subtree stays implicit. A resolving ancestor recurses — a removed
+/// child may hide under a surviving parent. An `Ambiguous` answer is NOT
+/// absence: nothing is reported for it (a feed must never fabricate a
+/// removal), and with occurrence-qualified section identities the arm is
+/// vestigial anyway. A frontmatter node reports each removed key the range
+/// intersects.
 fn collect_removed(
     before: &Document,
     after: &Document,
@@ -165,8 +258,30 @@ fn collect_removed(
     if !intersects && !range.is_empty() {
         return;
     }
+    if let NodeKind::Frontmatter { map } = &node.kind {
+        for key in map.keys() {
+            let target = Ref::FmKey(key.to_string());
+            let Ok(t) = resolve(before, &target) else {
+                continue;
+            };
+            if t.span.start < range.end
+                && range.start < t.span.end
+                && matches!(resolve(after, &target), Err(ResolveError::NotFound))
+                && !out.iter().any(|d| d.target == target)
+            {
+                out.push(NodeDelta {
+                    target,
+                    change: NodeChangeKind::Removed,
+                    node_rev_before: Some(t.node_rev),
+                    node_rev_after: None,
+                    span_after: None,
+                });
+            }
+        }
+        return;
+    }
     if let Some(target) = identity_of(before, node, range)
-        && resolve(after, &target).is_err()
+        && matches!(resolve(after, &target), Err(ResolveError::NotFound))
     {
         if !out.iter().any(|d| d.target == target) {
             out.push(NodeDelta {
@@ -184,73 +299,177 @@ fn collect_removed(
     }
 }
 
-/// Common-prefix/common-suffix changed ranges; `None` when byte-identical.
-/// Suffix is clamped so the ranges never overlap the prefix.
-fn changed_ranges(before: &str, after: &str) -> Option<(ByteSpan, ByteSpan)> {
-    let (b, a) = (before.as_bytes(), after.as_bytes());
-    if b == a {
-        return None;
+/// Line-grain changed regions, in order, non-overlapping — unique-line
+/// anchored (patience-style): common lines unique in both texts partition
+/// them, and each unanchored stretch emits one region pair. Either side of a
+/// pair may be empty (pure insertion/deletion). Empty when byte-identical.
+fn changed_regions(before: &str, after: &str) -> Vec<(ByteSpan, ByteSpan)> {
+    if before == after {
+        return Vec::new();
     }
-    let prefix = b.iter().zip(a).take_while(|(x, y)| x == y).count();
-    let max_suffix = b.len().min(a.len()) - prefix;
-    let suffix = b
-        .iter()
-        .rev()
-        .zip(a.iter().rev())
-        .take_while(|(x, y)| x == y)
-        .count()
-        .min(max_suffix);
-    Some((prefix..b.len() - suffix, prefix..a.len() - suffix))
+    let b_lines = line_spans(before);
+    let a_lines = line_spans(after);
+    let mut out = Vec::new();
+    partition(
+        before,
+        after,
+        &b_lines,
+        &a_lines,
+        0..b_lines.len(),
+        0..a_lines.len(),
+        &mut out,
+    );
+    out
 }
 
-/// The deepest mint-addressable node containing `range`, with its §2.1
-/// identity: anchor-bearing blocks and sections (smallest containing span
-/// wins — an anchor block inside its section is deeper); a range inside the
-/// frontmatter block refines to the changed key line (`fm_key`).
-fn deepest_addressable<'d>(doc: &'d Document, range: &ByteSpan) -> Option<(Ref, &'d Node)> {
-    let mut best: Option<(Ref, &Node)> = None;
-    walk_candidates(doc, &doc.root, range, &mut best);
-    best
+/// Per-line byte spans, terminator included.
+fn line_spans(raw: &str) -> Vec<ByteSpan> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    for (i, b) in raw.bytes().enumerate() {
+        if b == b'\n' {
+            out.push(start..i + 1);
+            start = i + 1;
+        }
+    }
+    if start < raw.len() {
+        out.push(start..raw.len());
+    }
+    out
+}
+
+/// One partition step over line index ranges: trim common edge lines, anchor
+/// on lines unique to both slices (longest increasing anchor chain), recurse
+/// between anchors; an unanchorable stretch is one region pair.
+fn partition(
+    b_raw: &str,
+    a_raw: &str,
+    b_lines: &[ByteSpan],
+    a_lines: &[ByteSpan],
+    mut b: std::ops::Range<usize>,
+    mut a: std::ops::Range<usize>,
+    out: &mut Vec<(ByteSpan, ByteSpan)>,
+) {
+    // Trim common prefix/suffix lines.
+    while !b.is_empty()
+        && !a.is_empty()
+        && line_eq(b_raw, a_raw, &b_lines[b.start], &a_lines[a.start])
+    {
+        b.start += 1;
+        a.start += 1;
+    }
+    while !b.is_empty()
+        && !a.is_empty()
+        && line_eq(b_raw, a_raw, &b_lines[b.end - 1], &a_lines[a.end - 1])
+    {
+        b.end -= 1;
+        a.end -= 1;
+    }
+    if b.is_empty() && a.is_empty() {
+        return;
+    }
+    if b.is_empty() || a.is_empty() {
+        out.push((bytes_of(b_raw, b_lines, &b), bytes_of(a_raw, a_lines, &a)));
+        return;
+    }
+    // Patience anchors: line contents unique in BOTH slices.
+    let anchors = anchor_chain(b_raw, a_raw, b_lines, a_lines, &b, &a);
+    if anchors.is_empty() {
+        out.push((bytes_of(b_raw, b_lines, &b), bytes_of(a_raw, a_lines, &a)));
+        return;
+    }
+    let (mut pb, mut pa) = (b.start, a.start);
+    for (bi, ai) in anchors {
+        partition(b_raw, a_raw, b_lines, a_lines, pb..bi, pa..ai, out);
+        (pb, pa) = (bi + 1, ai + 1);
+    }
+    partition(b_raw, a_raw, b_lines, a_lines, pb..b.end, pa..a.end, out);
+}
+
+fn line_eq(b_raw: &str, a_raw: &str, b: &ByteSpan, a: &ByteSpan) -> bool {
+    b_raw[b.clone()] == a_raw[a.clone()]
+}
+
+/// The byte span a line index range covers (empty ranges collapse to their
+/// boundary offset — position only, never content).
+fn bytes_of(raw: &str, lines: &[ByteSpan], r: &std::ops::Range<usize>) -> ByteSpan {
+    if r.is_empty() {
+        let at = lines.get(r.start).map_or(raw.len(), |l| l.start);
+        return at..at;
+    }
+    lines[r.start].start..lines[r.end - 1].end
+}
+
+/// Lines unique in both slices, paired by content, kept as a longest
+/// strictly-increasing chain on the `after` side — the patience anchor set.
+fn anchor_chain(
+    b_raw: &str,
+    a_raw: &str,
+    b_lines: &[ByteSpan],
+    a_lines: &[ByteSpan],
+    b: &std::ops::Range<usize>,
+    a: &std::ops::Range<usize>,
+) -> Vec<(usize, usize)> {
+    use std::collections::HashMap;
+    let mut b_seen: HashMap<&str, Option<usize>> = HashMap::new();
+    for i in b.clone() {
+        b_seen
+            .entry(&b_raw[b_lines[i].clone()])
+            .and_modify(|e| *e = None)
+            .or_insert(Some(i));
+    }
+    let mut a_seen: HashMap<&str, Option<usize>> = HashMap::new();
+    for i in a.clone() {
+        a_seen
+            .entry(&a_raw[a_lines[i].clone()])
+            .and_modify(|e| *e = None)
+            .or_insert(Some(i));
+    }
+    // Pairs in b-order with both sides unique.
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    for i in b.clone() {
+        let text = &b_raw[b_lines[i].clone()];
+        if let (Some(Some(bi)), Some(Some(ai))) = (b_seen.get(text), a_seen.get(text))
+            && *bi == i
+        {
+            pairs.push((i, *ai));
+        }
+    }
+    // Longest strictly-increasing subsequence on the after index.
+    let mut tails: Vec<usize> = Vec::new(); // indices into pairs
+    let mut back: Vec<Option<usize>> = vec![None; pairs.len()];
+    for (idx, &(_, ai)) in pairs.iter().enumerate() {
+        let pos = tails.partition_point(|&t| pairs[t].1 < ai);
+        back[idx] = pos.checked_sub(1).map(|p| tails[p]);
+        if pos == tails.len() {
+            tails.push(idx);
+        } else {
+            tails[pos] = idx;
+        }
+    }
+    let mut chain = Vec::new();
+    let mut cur = tails.last().copied();
+    while let Some(i) = cur {
+        chain.push(pairs[i]);
+        cur = back[i];
+    }
+    chain.reverse();
+    chain
 }
 
 fn contains(span: &ByteSpan, range: &ByteSpan) -> bool {
     span.start <= range.start && range.end <= span.end
 }
 
-fn walk_candidates<'d>(
-    doc: &'d Document,
-    node: &'d Node,
-    range: &ByteSpan,
-    best: &mut Option<(Ref, &'d Node)>,
-) {
-    if contains(&node.span, range)
-        && let Some(target) = identity_of(doc, node, range)
-    {
-        let better = best
-            .as_ref()
-            .is_none_or(|(_, b)| node.span.len() <= b.span.len());
-        // Resolve the identity to its own node — for fm_key the entry node is
-        // the key line, not the frontmatter block.
-        if better && let Ok(t) = resolve(doc, &target) {
-            let entry = find_by_span(&doc.root, &t.span).unwrap_or(node);
-            *best = Some((target, entry));
-        }
-    }
-    for child in &node.children {
-        walk_candidates(doc, child, range, best);
-    }
-}
-
 /// The §2.1 identity of an addressable candidate node, if it is one.
+/// Section identities are occurrence-qualified (sub-node-grain ruling): a
+/// path segment whose heading text repeats among its siblings carries the
+/// 1-based `n`, so the identity resolves to exactly this node — without it,
+/// a duplicate resolves `Ambiguous` and every consumer of the entry (and the
+/// removal scan above) would be reasoning about the wrong node.
 fn identity_of(doc: &Document, node: &Node, range: &ByteSpan) -> Option<Ref> {
     match &node.kind {
-        NodeKind::Section { .. } => Some(Ref::Hpath(
-            node.hpath
-                .clone()?
-                .into_iter()
-                .map(|h| crate::HpathSeg { h, n: None })
-                .collect(),
-        )),
+        NodeKind::Section { .. } => section_ref_of(doc, node),
         NodeKind::Anchor { name } => Ref::anchor(name.clone()).ok(),
         NodeKind::Frontmatter { map } => {
             // refine to the changed key line
@@ -264,12 +483,48 @@ fn identity_of(doc: &Document, node: &Node, range: &ByteSpan) -> Option<Ref> {
     }
 }
 
-/// The tree node whose span equals `span` (the resolved entry node).
-fn find_by_span<'d>(node: &'d Node, span: &ByteSpan) -> Option<&'d Node> {
-    if node.span == *span {
-        return Some(node);
+/// The occurrence-qualified hpath of a section node: walk the section chain
+/// root→node by span containment; at each level, `n` is the node's 1-based
+/// position among same-heading siblings — set only where the heading
+/// duplicates, so unique paths keep their bare §2.1 form byte-for-byte.
+fn section_ref_of(doc: &Document, node: &Node) -> Option<Ref> {
+    let mut segs = Vec::new();
+    let mut scope = &doc.root;
+    loop {
+        let next = section_children(scope)
+            .find(|c| contains(&c.span, &node.span) || c.span == node.span)?;
+        let h = heading_of(next)?.to_owned();
+        let same: Vec<&Node> = section_children(scope)
+            .filter(|c| heading_of(c) == Some(h.as_str()))
+            .collect();
+        let n = (same.len() > 1)
+            .then(|| {
+                same.iter()
+                    .position(|c| std::ptr::eq(*c, next))
+                    .and_then(|p| u32::try_from(p + 1).ok())
+            })
+            .flatten();
+        segs.push(crate::HpathSeg { h, n });
+        if std::ptr::eq(next, node) {
+            return Some(Ref::Hpath(segs));
+        }
+        scope = next;
     }
-    node.children.iter().find_map(|c| find_by_span(c, span))
+}
+
+/// A node's section children, in document order.
+fn section_children(node: &Node) -> impl Iterator<Item = &Node> {
+    node.children
+        .iter()
+        .filter(|c| matches!(c.kind, NodeKind::Section { .. }))
+}
+
+/// A section node's heading text.
+fn heading_of(node: &Node) -> Option<&str> {
+    match &node.kind {
+        NodeKind::Section { heading_text, .. } => Some(heading_text.as_str()),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -461,8 +716,20 @@ mod tests {
                      # Task: widget-rollout\n\n## Objective\n\nShip the widget.\n\n\
                      ## Verdict\n\npassed - gates green\n");
 
-        // The appended section alone names ITSELF (added), not the parent —
-        // the leading blank line is structural glue, not content.
+        // The appended section names ITSELF (added), never a bare parent
+        // roll-up. The separator blank line lives inside §Objective's span
+        // (§1 span law), so Objective's rev moved and its edited entry is
+        // byte-truth — a CAS holder on it must see the invalidation.
+        let objective = Ref::Hpath(vec![
+            crate::HpathSeg {
+                h: "Task: widget-rollout".into(),
+                n: None,
+            },
+            crate::HpathSeg {
+                h: "Objective".into(),
+                n: None,
+            },
+        ]);
         let alone = node_deltas(
             &doc(
                 "---\ntype: task\nstatus: in-progress\nowner: e4201e72\n---\n\n\
@@ -475,13 +742,23 @@ mod tests {
             ),
         );
         println!("C0 case 3b control (append alone) population = {alone:#?}");
-        assert_eq!(alone.len(), 1, "append alone is one entry: {alone:?}");
-        assert_eq!(alone[0].target, verdict_hpath());
-        assert_eq!(alone[0].change, NodeChangeKind::Added);
+        assert_eq!(alone.len(), 2, "no parent roll-up, no removal: {alone:?}");
+        assert!(
+            alone
+                .iter()
+                .any(|d| d.target == verdict_hpath() && d.change == NodeChangeKind::Added),
+            "{alone:?}"
+        );
+        assert!(
+            alone
+                .iter()
+                .any(|d| d.target == objective && d.change == NodeChangeKind::Edited),
+            "the sibling whose span gained the separator line reports: {alone:?}"
+        );
 
         let got = node_deltas(&b, &a);
         println!("C0 case 3b (append verdict + flip status) population = {got:#?}");
-        assert_eq!(got.len(), 2, "both touched nodes reported: {got:?}");
+        assert_eq!(got.len(), 3, "every touched node reported: {got:?}");
         assert!(
             got.iter()
                 .any(|d| d.target == Ref::FmKey("status".into())
@@ -491,6 +768,11 @@ mod tests {
         assert!(
             got.iter()
                 .any(|d| d.target == verdict_hpath() && d.change == NodeChangeKind::Added),
+            "{got:?}"
+        );
+        assert!(
+            got.iter()
+                .any(|d| d.target == objective && d.change == NodeChangeKind::Edited),
             "{got:?}"
         );
     }
@@ -545,15 +827,17 @@ mod tests {
             n: None,
         };
         assert!(
-            got.iter().any(|d| d.target
-                == Ref::Hpath(vec![seg("Pin Target"), seg("Beta")])
-                && d.change == NodeChangeKind::Edited),
+            got.iter().any(
+                |d| d.target == Ref::Hpath(vec![seg("Pin Target"), seg("Beta")])
+                    && d.change == NodeChangeKind::Edited
+            ),
             "the Beta edit is reported: {got:?}"
         );
         assert!(
-            got.iter().any(|d| d.target
-                == Ref::Hpath(vec![seg("Pin Target"), seg("Gamma")])
-                && d.change == NodeChangeKind::Added),
+            got.iter().any(
+                |d| d.target == Ref::Hpath(vec![seg("Pin Target"), seg("Gamma")])
+                    && d.change == NodeChangeKind::Added
+            ),
             "the born Gamma is reported: {got:?}"
         );
     }
@@ -600,7 +884,7 @@ mod tests {
         assert_eq!(segs.last().unwrap().n, Some(2), "{:?}", got[0].target);
         assert_eq!(got[0].change, NodeChangeKind::Edited);
         assert!(
-            crate::resolve(&a, &got[0].target).is_ok(),
+            resolve(&a, &got[0].target).is_ok(),
             "the served identity resolves at the mint plane"
         );
     }
@@ -616,8 +900,9 @@ mod tests {
         assert_eq!(got.len(), 2, "{got:?}");
         for key in ["title", "owner"] {
             assert!(
-                got.iter().any(|d| d.target == Ref::FmKey(key.into())
-                    && d.change == NodeChangeKind::Edited),
+                got.iter()
+                    .any(|d| d.target == Ref::FmKey(key.into())
+                        && d.change == NodeChangeKind::Edited),
                 "fm key {key} is reported: {got:?}"
             );
         }
