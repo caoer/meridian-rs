@@ -58,6 +58,15 @@ fn sandbox() -> Sandbox {
     )
     .expect("root declaration");
     std::fs::write(other.join("doc.md"), DOC).expect("target");
+    // A pin-target root is a git REPOSITORY (the ruled D-D constraint: drift
+    // diffs from the target's history), and D-F asks its store for form-3
+    // blob durability — a repo-less mounted root would grey the plane, and
+    // every commit-gate reading below would measure that instead.
+    git_ok(&other, &["init", "-q"]);
+    git_ok(&other, &["config", "user.email", "f6@example.invalid"]);
+    git_ok(&other, &["config", "user.name", "f6"]);
+    git_ok(&other, &["add", "-A"]);
+    git_ok(&other, &["commit", "-q", "-m", "seed the target root"]);
 
     let config = home.join("MERIDIAN.md");
     std::fs::write(
