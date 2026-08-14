@@ -508,7 +508,37 @@ fn emit_tag(node: &Node, path: &str, name: &str, counters: &mut Counters, rows: 
     ]);
 }
 
-/// Emit one `task` row. `section_seq` NULL = document-level; `text` is trimmed.
+/// `- [x] text` → `text`: drop the list marker (bullet or ordered) and the
+/// checkbox the parser recognised — `checked` already carries the bit, so the
+/// marker in `text` only duplicated it into every GROUP BY key (card
+/// sql-task-text-marker). A line that does not match the marker shape serves
+/// unchanged rather than guessed at.
+fn strip_task_marker(line: &str) -> &str {
+    let after_bullet = match line.strip_prefix(['-', '*', '+']) {
+        Some(rest) => rest,
+        None => {
+            let after_digits = line.trim_start_matches(|c: char| c.is_ascii_digit());
+            if after_digits.len() == line.len() {
+                return line;
+            }
+            match after_digits.strip_prefix(['.', ')']) {
+                Some(rest) => rest,
+                None => return line,
+            }
+        }
+    };
+    let Some(after_open) = after_bullet.trim_start().strip_prefix('[') else {
+        return line;
+    };
+    let mut chars = after_open.chars();
+    let (Some(_state), Some(']')) = (chars.next(), chars.next()) else {
+        return line;
+    };
+    chars.as_str().trim_start()
+}
+
+/// Emit one `task` row. `section_seq` NULL = document-level; `text` is the
+/// trimmed task text with the marker stripped ([`strip_task_marker`]).
 #[allow(clippy::too_many_arguments)]
 fn emit_task(
     node: &Node,
@@ -522,12 +552,8 @@ fn emit_task(
 ) {
     let seq = counters.task;
     counters.task += 1;
-    let text = doc
-        .raw
-        .get(node.span.clone())
-        .unwrap_or_default()
-        .trim()
-        .to_string();
+    let text =
+        strip_task_marker(doc.raw.get(node.span.clone()).unwrap_or_default().trim()).to_string();
     rows.task.push(TaskRow {
         scalars_before: vec![
             Value::Text(path.to_string()),

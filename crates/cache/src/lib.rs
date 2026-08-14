@@ -61,7 +61,11 @@ pub use sweep::{DrawerInfo, GcReport, gc, list_drawers, remove_drawer};
 /// `s3`: `frontmatter.prop_rev` — the per-key CAS token
 /// (`node-rev-merkle-spec.md` §2.1) landed as a column on both the ephemeral
 /// projection and `hist.frontmatter`.
-pub const SCHEMA_SALT: &str = "s3";
+///
+/// `s4`: the `card` view became `record` (cards sql-record-rename +
+/// sql-task-text-marker, one bump), and `task.text` dropped its list-marker +
+/// checkbox prefix — every task row's payload bytes moved.
+pub const SCHEMA_SALT: &str = "s4";
 
 /// Default GC threshold: a drawer whose last-use is older than this is reapable.
 /// 30 days, mirroring Cargo's registry auto-GC horizon. A path-keyed drawer store

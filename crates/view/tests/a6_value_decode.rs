@@ -76,10 +76,10 @@ fn fleet_canonical_spellings_serve_decoded_values() {
     assert_eq!(value("malformed"), "'a' and 'b'");
 }
 
-/// The outcome the defect silenced: a board predicate over the `card` pivot
+/// The outcome the defect silenced: a board predicate over the `record` pivot
 /// matches fleet-canonical quoted data.
 #[test]
-fn card_pivot_predicate_matches_quoted_corpus() {
+fn record_pivot_predicate_matches_quoted_corpus() {
     let mut docs = BTreeMap::new();
     docs.insert(
         "t.md".to_string(),
@@ -88,12 +88,12 @@ fn card_pivot_predicate_matches_quoted_corpus() {
     let conn = build(&docs);
     let hits = scalar_i64(
         &conn,
-        "SELECT count(*) FROM card WHERE owner = '3f9a1c07' AND status = 'doing'",
+        "SELECT count(*) FROM record WHERE owner = '3f9a1c07' AND status = 'doing'",
     );
     assert_eq!(hits, 1, "the board predicate must see the decoded value");
     let raw_hits = scalar_i64(
         &conn,
-        "SELECT count(*) FROM card WHERE owner = '\"3f9a1c07\"'",
+        "SELECT count(*) FROM record WHERE owner = '\"3f9a1c07\"'",
     );
     assert_eq!(
         raw_hits, 0,

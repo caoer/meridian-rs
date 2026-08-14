@@ -13,7 +13,7 @@
 //!   covers, so the file is always at exactly one fingerprint.
 //! - **`main.*`** — the caller-facing latest views, keeping the ephemeral
 //!   projection's exact names and column shapes (`doc`, `section`, `link`,
-//!   `backlink`, `dangling`, `card`, `tag_all`, `task`, `frontmatter`,
+//!   `backlink`, `dangling`, `record`, `tag_all`, `task`, `frontmatter`,
 //!   `frontmatter_tag`, `tag`, `_meridian_view`): one `QUALIFY` window over
 //!   `hist.doc` picks each path's newest version and drops tombstones; child
 //!   views follow by `(path, gen)` semi join.
@@ -72,7 +72,11 @@ use crate::{ExclusionProbe, Rows, ViewError, collect_doc, corpus_index, fill_exc
 ///
 /// `3`: `hist.frontmatter` gained `prop_rev`; a v2 file's rows cannot answer
 /// a key-grain guard question at all.
-pub const CACHE_SCHEMA_VERSION: i64 = 3;
+///
+/// `4`: the `card` view became `record`, and `task.text` dropped its
+/// list-marker + checkbox prefix — a v3 file's `hist.task` rows carry the
+/// marker bytes and would digest differently from a fresh build.
+pub const CACHE_SCHEMA_VERSION: i64 = 4;
 
 /// The cache file's basename inside the workspace cache drawer (ruling OQ4).
 pub const SQL_CACHE_FILENAME: &str = "sql.duckdb";
@@ -174,7 +178,7 @@ CREATE VIEW main.dangling AS
     SELECT src_path, target_raw FROM main.link
     WHERE kind IN ('wikilink','embed') AND dest_path IS NULL AND dest_root IS NULL
       AND exclusion IS NULL;
-CREATE VIEW main.card AS
+CREATE VIEW main.record AS
     SELECT d.path,
         max(fm.value) FILTER (fm.key = 'type')    AS type,
         max(fm.value) FILTER (fm.key = 'status')  AS status,
@@ -1009,8 +1013,8 @@ pub(crate) mod tests {
             "SELECT coalesce(md5(string_agg(src_path || '|' || target_raw, chr(10) ORDER BY src_path, target_raw)), 'EMPTY') FROM dangling",
         ),
         (
-            "card",
-            "SELECT coalesce(md5(string_agg(path || '|' || coalesce(type,'~N~') || '|' || coalesce(status,'~N~') || '|' || coalesce(owner,'~N~') || '|' || coalesce(session,'~N~'), chr(10) ORDER BY path)), 'EMPTY') FROM card",
+            "record",
+            "SELECT coalesce(md5(string_agg(path || '|' || coalesce(type,'~N~') || '|' || coalesce(status,'~N~') || '|' || coalesce(owner,'~N~') || '|' || coalesce(session,'~N~'), chr(10) ORDER BY path)), 'EMPTY') FROM record",
         ),
         (
             "tag_all",
