@@ -3692,15 +3692,14 @@ pub fn commit_batch(
 
     // Change facts → wire projection, in §7.1 print order: content file first,
     // then the receipt file.
-    let mut files = Vec::new();
-    if let Some(fd) = model::delta::file_delta(Some(&before_content), Some(&after_content)) {
-        files.push(wire_map::project_file_delta(&req.content_path, &fd));
-    }
-    if let Some((rp, _)) = &req.receipt
-        && let Some(fd) = model::delta::file_delta(before_receipt.as_ref(), after_receipt.as_ref())
-    {
-        files.push(wire_map::project_file_delta(rp, &fd));
-    }
+    let files = commit_delta_files(
+        &req.content_path,
+        &before_content,
+        &after_content,
+        req.receipt
+            .as_ref()
+            .map(|(rp, _)| (rp.as_str(), before_receipt.as_ref(), after_receipt.as_ref())),
+    );
 
     // Assemble at the one production site and return the frame — the caller
     // advances its ring (or, on the resident daemon, discards it).
@@ -3713,6 +3712,29 @@ pub fn commit_batch(
         req.now.clone(),
         files,
     ))
+}
+
+/// One two-file commit's change facts → wire Delta file entries, §7.1 print
+/// order: content file first, then the receipt file. Shared by
+/// [`commit_batch`] and the run plane's registry sink (§ A.8 Delta honesty),
+/// so a run frame's file grain cannot drift from a splice frame's.
+#[must_use]
+pub fn commit_delta_files(
+    content_path: &str,
+    before_content: &model::Document,
+    after_content: &model::Document,
+    receipt: Option<(&str, Option<&model::Document>, Option<&model::Document>)>,
+) -> Vec<DeltaFile> {
+    let mut files = Vec::new();
+    if let Some(fd) = model::delta::file_delta(Some(before_content), Some(after_content)) {
+        files.push(wire_map::project_file_delta(content_path, &fd));
+    }
+    if let Some((rp, before, after)) = receipt
+        && let Some(fd) = model::delta::file_delta(before, after)
+    {
+        files.push(wire_map::project_file_delta(rp, &fd));
+    }
+    files
 }
 
 /// The one production `DeltaFrame` construction site (§7.3 single-constructor

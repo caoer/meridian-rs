@@ -126,8 +126,11 @@ struct RunArgs {
 ///
 /// Never refuses: decode already answered the frame-shape family, and plane
 /// refusals ride the rows themselves (§ A.8).
-fn serve(_registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
+fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
     let root = fs::WorkspaceRoot(ws.to_path_buf());
+    // Delta honesty (§ A.8): every committed batch of every target mints its
+    // frame on the bound workspace's ring, inside the executor's flock.
+    let sink = crate::delta_sink::RingSink::new(registry.ring(ws));
     let mut rows = Vec::with_capacity(request.targets.len());
     for (index, target) in request.targets.iter().enumerate() {
         let invocation = format!("{}-t{index}", request.invocation);
@@ -138,6 +141,7 @@ fn serve(_registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
             &invocation,
             request.actor.as_deref(),
             request.now.as_deref(),
+            &sink,
         ));
     }
     rows
@@ -145,7 +149,9 @@ fn serve(_registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
 
 /// One target → one row, whichever door invoked it — the § A.8 op arm's loop
 /// body and the effects-mode `run()` builtin (§ A.7) share this seam, so the
-/// two doors cannot drift.
+/// two doors cannot drift. `sink` is the workspace ring's frame mint: both
+/// doors are daemon-side, so both mint (Delta honesty); a dry target commits
+/// nothing and therefore mints nothing.
 pub(crate) fn row_for_target(
     root: &fs::WorkspaceRoot,
     ws: &Path,
@@ -153,11 +159,12 @@ pub(crate) fn row_for_target(
     invocation: &str,
     actor: Option<&str>,
     now: Option<&str>,
+    sink: &crate::delta_sink::RingSink,
 ) -> Value {
     if target.dry.unwrap_or(false) {
         dry_row(root, target, invocation, actor, now)
     } else {
-        execute_row(root, ws, target, invocation, actor, now)
+        execute_row(root, ws, target, invocation, actor, now, sink)
     }
 }
 
@@ -170,6 +177,7 @@ fn execute_row(
     invocation: &str,
     actor: Option<&str>,
     now: Option<&str>,
+    sink: &crate::delta_sink::RingSink,
 ) -> Value {
     let timeout = match run::exec::configured_timeout(Some(ws)) {
         Ok(t) => t,
@@ -209,6 +217,7 @@ fn execute_row(
         // § A.8's U16 amendment: a daemon has no meaningful cwd — the step
         // runs at the bound workspace root.
         step_cwd: Some(ws),
+        delta: Some(sink),
     };
     // No live stream on the wire: the report's own sealed stdout record is
     // the exec-facts surface (§ A.8 — "this op streams nothing").
@@ -289,6 +298,7 @@ fn dry_row(
                 takeover: false,
                 limits: EvalLimits::default(),
                 actor,
+                delta: None, // dry: evaluate-only, nothing commits
             };
             match run::dispatch_starlark::evaluate(&dispatch) {
                 Ok(effects) => json!({

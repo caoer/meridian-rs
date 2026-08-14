@@ -620,3 +620,62 @@ fn token_count_endpoint_decode_walls() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Delta honesty (§ A.7 effects paragraph, run-delta ruling 2026-08-14):
+// a live run() mints per committed batch through the run plane's delta sink,
+// exactly as at § A.8 — the script door and the op door share the seam.
+// ---------------------------------------------------------------------------
+
+const PUSH_WAIT: Duration = Duration::from_secs(10);
+
+/// A live run() inside a script pushes the run plane's attributed frames to a
+/// subscriber: the script's actor threads through the shared row seam into
+/// the frames the bash task's two commits mint.
+///
+/// RED before the ruling's code: the run lands, the fingerprint advances, and
+/// the subscriber sees only actorless detector-cadence external change.
+#[test]
+fn a_live_run_pushes_attributed_frames() {
+    let tmp = TempDir::new().unwrap();
+    let ws = seeded(&tmp);
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+
+    let mut sub = Conn::open(&test_config(&tmp).socket_path);
+    assert_eq!(
+        sub.call(&json!({
+            "op": "hello", "proto": 1,
+            "workspace": ws.to_str().unwrap(),
+        }))["ok"],
+        json!(true)
+    );
+    sub.writer.set_read_timeout(Some(PUSH_WAIT)).unwrap();
+    assert_eq!(
+        sub.call(&json!({"op": "sub", "from_seq": 0}))["ok"],
+        json!(true)
+    );
+
+    let mut conn = Conn::open(&test_config(&tmp).socket_path);
+    conn.hello_v3(&ws);
+    let resp = conn.call(&json!({
+        "id": 41, "op": "script", "effects": ["run"], "invocation": "scr-d1",
+        "actor": "seat-79",
+        "source": "r = run(\"tasks.md\", task=\"sh-note\")\n",
+    }));
+    assert_eq!(trace_of(&resp)["outcome"], json!("effects"), "{resp}");
+
+    // The bash task commits twice (pre-exec receipt, completion receipt);
+    // both frames arrive attributed with the script's actor.
+    for phase in ["phase 1", "phase 2"] {
+        let mut line = String::new();
+        let n = sub.reader.read_line(&mut line).unwrap_or(0);
+        assert!(n > 0, "{phase}: a frame arrives");
+        let frame: Value = serde_json::from_str(&line).expect("notification is JSON");
+        assert_eq!(
+            frame["delta"]["actor"],
+            json!("seat-79"),
+            "{phase}: the script's actor threads into the run frame: {frame}"
+        );
+    }
+    server.shutdown();
+}

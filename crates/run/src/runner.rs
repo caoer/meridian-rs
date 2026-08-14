@@ -69,6 +69,11 @@ pub struct RunSpec<'a> {
     /// (§ A.8 amendment to U16) passes the bound workspace root: a daemon
     /// has no meaningful cwd. Unused on the starlark path.
     pub step_cwd: Option<&'a Path>,
+    /// The host's frame mint for committed batches (§ A.8 Delta honesty):
+    /// threaded through both dispatch paths and the cascade, so every commit
+    /// of the run mints its Delta on the host's ring. `None` on the CLI
+    /// entry — a separate process with no ring in reach.
+    pub delta: Option<&'a dyn executor::DeltaSink>,
 }
 
 /// What one full run produced — the report's (U9) single input.
@@ -313,6 +318,7 @@ fn dispatch(
                         takeover: spec.takeover,
                         limits: spec.limits,
                         actor: spec.actor,
+                        delta: spec.delta,
                     },
                 )
                 .map_err(RunnerError::Starlark)?,
@@ -337,6 +343,7 @@ fn dispatch(
                     timeout: spec.timeout,
                     actor: spec.actor,
                     step_cwd: spec.step_cwd,
+                    delta: spec.delta,
                 },
                 live,
             )
@@ -411,6 +418,7 @@ fn cascade(
                         exec: None, // cascade generation: no child exec
                         actor: spec.actor,
                         depth: ev.depth,
+                        delta: spec.delta,
                     },
                 )
                 .map_err(|error| CascadeError::Apply {

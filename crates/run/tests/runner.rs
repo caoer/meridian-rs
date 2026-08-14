@@ -83,6 +83,7 @@ fn spec_for(scratch: &tempfile::TempDir, args: Vec<String>) -> RunSpec<'_> {
         limits: EvalLimits::default(),
         actor: None,
         step_cwd: None,
+        delta: None,
     }
 }
 

@@ -99,6 +99,54 @@ pub struct ApplyRequest<'a> {
     /// The cascade generation of the effects being applied (`0` for the run
     /// itself); the synthesized event carries `depth + 1`.
     pub depth: u32,
+    /// Delta honesty (§ A.8 run-delta ruling): the host's frame mint,
+    /// offered the facts of each committed batch UNDER the workspace flock.
+    /// `None` is the CLI entry — a separate process with no ring in reach —
+    /// whose commits stay external change by the flock ruling.
+    pub delta: Option<&'a dyn DeltaSink>,
+}
+
+/// The host seam of the run-delta ruling (§ A.8 Delta honesty): the daemon
+/// hands one of these down the dispatch chain, and the executor offers it the
+/// facts of every committed batch so the host can mint the batch's Delta
+/// frame and advance its ring — inside the same flock as the commit, which is
+/// what closes the detector-misattribution window.
+///
+/// The trait lives in the plane (model-grain facts only, no wire types) so
+/// the plane stays free of the wire graph; the one production implementor is
+/// the registry's ring sink.
+pub trait DeltaSink: std::fmt::Debug {
+    /// One committed batch's facts. Called after `fs::apply_batch` returned,
+    /// with the caller's workspace flock still held. Infallible by contract:
+    /// a mint failure is the host's to degrade (its detector will still
+    /// reconcile), never a reason to misreport a landed commit.
+    fn committed(&self, root: &fs::WorkspaceRoot, facts: &CommitFacts<'_>);
+}
+
+/// What one committed batch changed — the before tense held in memory by the
+/// executor, the after tense as the exact candidate `fs` landed (D8/U31: the
+/// dry bytes ARE the committed bytes), and the workspace root the batch
+/// advanced from, folded under the flock immediately before the commit.
+#[derive(Debug)]
+pub struct CommitFacts<'a> {
+    /// The content page the batch spliced (workspace-relative).
+    pub page: &'a str,
+    /// The page before the batch (the step-2 load under the lock).
+    pub before: &'a Document,
+    /// The page after the batch — the committed candidate, no re-read.
+    pub after: &'a Document,
+    /// The receipt file the batch appended to (`None`: receipt-less apply).
+    pub receipt_path: Option<&'a str>,
+    /// The receipt file before the batch (`None`: first append creates it).
+    pub receipt_before: Option<&'a Document>,
+    /// The workspace root before the commit, folded under the flock.
+    pub root_before: &'a MerkleRoot,
+    /// The frame's identity fact, resolved by the receipt's own law (§9):
+    /// the supplied actor verbatim, else the plane's `run:<task>` self-label
+    /// — a governed run is never unattributable.
+    pub actor: &'a str,
+    /// The caller's time fact; absent stays absent, never invented.
+    pub now: Option<&'a str>,
 }
 
 /// Why the canonical intent → executor adapter refused (R13 ruling § normative
@@ -242,6 +290,7 @@ impl IntentApply {
             exec: base.exec,
             actor: base.actor,
             depth: base.depth,
+            delta: base.delta,
         }
     }
 }
@@ -727,6 +776,11 @@ pub fn apply_under(
         }
     };
 
+    // 7b. Delta-mint pre-facts (§ A.8 run-delta ruling), only when the host
+    // armed a sink: taken under the flock BEFORE the commit — nothing has
+    // landed yet, so a failure here refuses cleanly.
+    let delta_pre = delta_pre_facts(root, req)?;
+
     // 8. THE commit — the only write, atomic, two files (§6.5 crash window
     // accepted: content-without-receipt recovers by re-derive + lint).
     fs::apply_batch(
@@ -748,6 +802,11 @@ pub fn apply_under(
         reason: e.to_string(),
     })?;
 
+    // 8b. Offer the committed batch to the host's frame mint — still under
+    // the flock, so the ring advances before any detect cycle can observe
+    // the moved root as unaccounted external change.
+    offer_committed(root, req, &doc, after_doc.document(), delta_pre.as_ref());
+
     let file_rev_after = after_doc.document().root.node_rev.0.clone();
 
     // 9. Apply→event synthesis with REAL post-apply fingerprints (the dry
@@ -759,6 +818,72 @@ pub fn apply_under(
         receipt_line,
         file_rev_after,
     })
+}
+
+/// The frame mint's pre-commit facts (step 7b): the receipt file's before
+/// tense and the workspace root the batch advances from, both under the
+/// flock. `None` when no sink is armed — the CLI pays no fold.
+fn delta_pre_facts(
+    root: &fs::WorkspaceRoot,
+    req: &ApplyRequest<'_>,
+) -> Result<Option<(Option<Document>, MerkleRoot)>, ExecError> {
+    if req.delta.is_none() {
+        return Ok(None);
+    }
+    let receipt_before = match &req.receipt {
+        Some(addr) => load_receipt_before(root, &addr.path)?,
+        None => None,
+    };
+    let root_before = fs::domain_snapshot(root)
+        .map(|(_, r)| r)
+        .map_err(|e| ExecError::Io {
+            reason: format!("pre-commit root fold: {e}"),
+        })?;
+    Ok(Some((receipt_before, root_before)))
+}
+
+/// Step 8b: hand the committed batch's facts to the armed sink, actor
+/// resolved by the receipt's own §9 law (supplied verbatim, else the plane's
+/// `run:<task>` self-label). A no-op without a sink.
+fn offer_committed(
+    root: &fs::WorkspaceRoot,
+    req: &ApplyRequest<'_>,
+    before: &Document,
+    after: &Document,
+    pre: Option<&(Option<Document>, MerkleRoot)>,
+) {
+    let (Some(sink), Some((receipt_before, root_before))) = (req.delta, pre) else {
+        return;
+    };
+    let actor = req
+        .actor
+        .map_or_else(|| format!("run:{}", req.task), str::to_owned);
+    sink.committed(
+        root,
+        &CommitFacts {
+            page: req.page,
+            before,
+            after,
+            receipt_path: req.receipt.as_ref().map(|a| a.path.as_str()),
+            receipt_before: receipt_before.as_ref(),
+            root_before,
+            actor: &actor,
+            now: req.now,
+        },
+    );
+}
+
+/// The receipt file's before tense for the frame mint — absence is a legal
+/// state (the first append creates the file); any other read fault refuses
+/// the apply before anything lands.
+fn load_receipt_before(root: &fs::WorkspaceRoot, rel: &str) -> Result<Option<Document>, ExecError> {
+    match fs::load(root, Path::new(rel)) {
+        Ok(doc) => Ok(Some(doc)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(ExecError::Io {
+            reason: format!("receipt before tense: {e}"),
+        }),
+    }
 }
 
 /// Steps 5-6: mint the sealed batch and the candidate document it will write,

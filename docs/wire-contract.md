@@ -1983,7 +1983,8 @@ still recorded — a live program has no rollback, and the trace says how far
 it got. The outcome vocabulary grows exactly this one word; the pure path's
 five words and their meanings are untouched; v2 unchanged. Delta honesty:
 live `put()`s ride the wire choke-point and advance the ring like any
-splice; `run()`s stay under §18 row 12 exactly as at § A.8.
+splice; `run()`s mint per committed batch through the run plane's delta
+sink, exactly as at § A.8 (run-delta ruling, 2026-08-14).
 
 ### A.8 `run` — page-task execution over the wire (docs-first, 2026-08-13, run-crossing ruling)
 
@@ -2094,13 +2095,25 @@ narrower than the CLI. A long-running target parks only its own connection
 (§ A.7's containment posture); the plane's `run.lock` refusals answer as
 `class:"run"` rows, never hangs.
 
-**Delta honesty (§18 row 12 extends here).** Run applies land through the
-plane's own executor, not the wire choke-point: they advance the fingerprint
-and mint no Delta — the row-12 declared gap covers this op's writes exactly
-as it covers CLI-lane commits. A `sub` consumer sees them as detector-cadence
-external change; cross-lane catchup remains diff-by-root (§4.7). Minting the
-delta for run applies is owed with the same row-12 debt, and this section
-does not silently discharge or widen it.
+**Delta honesty (amended 2026-08-14, run-delta ruling — the § A.8 half of
+the row-12 debt is DISCHARGED).** Run applies on THIS op mint Deltas like
+every other daemon-side write: the plane's executor commits through its own
+seam (`fs::apply_batch`, unchanged), and at each committed batch the serve
+arm's delta sink assembles one frame at the §7.3 single constructor and
+advances the workspace ring **under the same write flock as the commit** —
+one committed batch = one root advance = one Delta (§7.1), the content page
+and the receipt file as two entries of ONE frame's `files`. Because the
+advance happens inside the flock, a detect cycle can never observe a run
+commit as unaccounted external change — no detector-cadence window exists.
+Identity on the frame is §9's: a supplied `actor` threads verbatim; absent,
+the frame carries the plane's own `run:<task>` self-label, the same fact the
+receipt's actor field attests — a governed run is never unattributable, so
+`actor`-absent still means exactly "edited outside the face". `now` is the
+caller's or absent, never invented. A mid-run fault mints frames for the
+batches that committed and none for what refused (no rollback, ruling 2).
+The CLI entry (`mrd run`) is a separate process with no ring in reach: its
+commits stay under §18 row 12 exactly as CLI-lane `put` commits do — that
+half of the debt stands, and this section does not silently discharge it.
 
 **Zero delta everywhere else.** Every §4 op, § A.3/§ A.5/§ A.7, every v2
 byte: unchanged. The CLI entry (`mrd run`) stays functional and
