@@ -307,13 +307,38 @@ fn resolve_toc_scope<'a>(
     sel: &wire::ReadSel,
     display: &str,
 ) -> Result<&'a wire_map::facts::ReadFact, Box<ErrorBody>> {
-    // RED skeleton: first match, miss-only refusal. The ruled arms — anchor
-    // no-subtree, duplicate candidates — land with the GREEN commit.
-    match wire_map::facts::selector_matches(facts, sel).first() {
-        Some(f) => Ok(f),
-        None => {
+    if let wire::ReadSel::Anchor { .. } = sel {
+        let asked = sel.display();
+        return Err(bad_request(format!(
+            "read: toc:\"{asked}\" cannot scope the shape table — a block has no \
+             subtree, so there is no map under it. Nothing was read and no rev was \
+             minted. Fix: read the block's content with sections:[\"{asked}\"], or \
+             scope the toc with a heading path or a dewey ordinal from a bare read \
+             of {display}."
+        )));
+    }
+    match wire_map::facts::selector_matches(facts, sel).as_slice() {
+        &[fact] => Ok(fact),
+        [] => {
             let mut e = ErrorBody::new(ErrorCode::RefNotFound);
             e.message = Some(toc_miss_message(sel, display));
+            Err(Box::new(e))
+        }
+        many => {
+            // The sections plane's own ambiguity spelling and its published
+            // remedy (§2.1 never-silently-picks; AMBIGUITY_FIX byte-shared
+            // with the write door) — one voice for one failure across faces.
+            let candidates: Vec<Vec<wire::HpathSeg>> =
+                many.iter().map(|f| f.hpath.clone()).collect();
+            let mut e = ErrorBody::new(ErrorCode::AmbiguousRef);
+            e.message = Some(format!(
+                "read: toc \"{}\" is ambiguous ({} matches: {}) in {display}. Nothing \
+                 was read and no rev was minted. {}",
+                sel.display(),
+                candidates.len(),
+                candidate_addrs(&candidates).join(" or "),
+                model::selector::AMBIGUITY_FIX
+            ));
             Err(Box::new(e))
         }
     }
