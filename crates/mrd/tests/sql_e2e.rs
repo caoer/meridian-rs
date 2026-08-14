@@ -546,14 +546,7 @@ fn sql_routes_through_a_resident_daemon() {
     let server = registry::RunningServer::start(config).expect("daemon");
 
     // Warm the daemon's ownership of the file: one wire sql through it.
-    let out = sb.run(
-        &ws,
-        &[
-            "sql",
-            "--json",
-            "SELECT path FROM doc",
-        ],
-    );
+    let out = sb.run(&ws, &["sql", "--json", "SELECT path FROM doc"]);
     assert!(out.status.success(), "daemon route: {}", stderr(&out));
     let doc = json(&out);
     assert_eq!(doc["state"], "FRESH_AT_SAMPLE", "{doc}");
@@ -562,14 +555,7 @@ fn sql_routes_through_a_resident_daemon() {
     // The daemon holds the file now: a second call still answers, and
     // hist is reachable — proof the answer came through the held file, not a
     // :memory: degrade (which has no hist schema).
-    let pins = sb.run(
-        &ws,
-        &[
-            "sql",
-            "--json",
-            "SELECT count(*) FROM hist.pin",
-        ],
-    );
+    let pins = sb.run(&ws, &["sql", "--json", "SELECT count(*) FROM hist.pin"]);
     assert!(pins.status.success(), "{}", stderr(&pins));
     assert_eq!(
         json(&pins)["rows"],
