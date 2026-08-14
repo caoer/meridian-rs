@@ -151,6 +151,7 @@ pub(crate) fn path_in_scope(scope: &[String], path: &str) -> bool {
 /// grammar `paths:` declares (rulings § scoping — the Claude-rules pattern), and
 /// the ONE glob grammar in the system — `files[]` pattern expansion (§ A.7)
 /// reuses it rather than minting a second.
+#[must_use]
 pub fn glob_match(pattern: &str, path: &str) -> bool {
     let pat: Vec<&str> = pattern.split('/').collect();
     let txt: Vec<&str> = path.split('/').collect();
@@ -348,7 +349,7 @@ mod tests {
     #[test]
     fn expansion_merges_literals_and_matches_dedup_sorted() {
         let members = ["tasks/*.md", "top.md", "tasks/a.md"].map(String::from);
-        let (expanded, rows) = super::expand_globs(&members, &corpus());
+        let (expanded, rows) = expand_globs(&members, &corpus());
         // `tasks/a.md` matched AND named literally — once in the result.
         assert_eq!(expanded, ["tasks/a.md", "tasks/b.md", "top.md"]);
         assert_eq!(rows.len(), 1, "one row per PATTERN member only");
@@ -359,7 +360,7 @@ mod tests {
     #[test]
     fn zero_matches_is_a_recorded_row_not_a_refusal() {
         let members = ["gone/*.md".to_string()];
-        let (expanded, rows) = super::expand_globs(&members, &corpus());
+        let (expanded, rows) = expand_globs(&members, &corpus());
         assert!(expanded.is_empty(), "zero contributes zero paths");
         assert_eq!(rows, vec![("gone/*.md".to_string(), Vec::new())]);
     }
@@ -369,7 +370,7 @@ mod tests {
         // A literal outside the corpus passes through verbatim — out-of-domain
         // literals keep §12.1's law; only patterns consult membership.
         let members = ["not/in/corpus.md".to_string()];
-        let (expanded, rows) = super::expand_globs(&members, &corpus());
+        let (expanded, rows) = expand_globs(&members, &corpus());
         assert_eq!(expanded, ["not/in/corpus.md"]);
         assert!(rows.is_empty());
     }

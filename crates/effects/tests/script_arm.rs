@@ -263,9 +263,9 @@ fn a_put_with_no_edit_kwarg_refuses() {
 /// patterns included.
 #[test]
 fn replay_substitutes_recorded_expansions() {
-    let live_ctx = effects::ScriptCtx {
+    let live_ctx = ScriptCtx {
         id: "script".to_owned(),
-        args: std::collections::BTreeMap::new(),
+        args: BTreeMap::new(),
         // The EXPANDED list, as the host bound it live.
         files: vec!["tasks/a.md".to_owned(), "tasks/b.md".to_owned()],
         effects: Vec::new(),
@@ -273,10 +273,10 @@ fn replay_substitutes_recorded_expansions() {
     // No reads in the script, so an empty recording serves as the live host.
     let empty = effects::ScriptRecording::default();
     let mut host = effects::RecordedHost::new(&empty);
-    let mut eval = effects::eval_script(
+    let mut eval = eval_script(
         "n = len(files)\nfirst = files[0]\n",
         &live_ctx,
-        effects::ScriptLimits::default(),
+        ScriptLimits::default(),
         &mut host,
     );
     assert!(eval.outcome.is_ok(), "{:?}", eval.outcome);
@@ -287,16 +287,16 @@ fn replay_substitutes_recorded_expansions() {
     }];
 
     // Replay with the ORIGINAL member list — the pattern, unexpanded.
-    let replay_ctx = effects::ScriptCtx {
+    let replay_ctx = ScriptCtx {
         id: "script".to_owned(),
-        args: std::collections::BTreeMap::new(),
+        args: BTreeMap::new(),
         files: vec!["tasks/*.md".to_owned()],
         effects: Vec::new(),
     };
     let replayed = effects::replay_script(
         "n = len(files)\nfirst = files[0]\n",
         &replay_ctx,
-        effects::ScriptLimits::default(),
+        ScriptLimits::default(),
         &eval.recording,
     );
     let live = eval.outcome.expect("live ok");

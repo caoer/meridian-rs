@@ -1833,7 +1833,10 @@ fn stage_set(
                  set-level (one receipt entry names every file)",
             ));
         }
-        if members[..i].iter().any(|p| p.content_path == m.content_path) {
+        if members[..i]
+            .iter()
+            .any(|p| p.content_path == m.content_path)
+        {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(
@@ -1917,7 +1920,7 @@ impl StagedSet {
                     &e,
                     &self.contents[i].0.dst,
                     "content rename",
-                    restore,
+                    &restore,
                 ));
             }
         }
@@ -1929,7 +1932,7 @@ impl StagedSet {
         {
             let restore = self.restore_renamed(self.contents.len());
             self.discard();
-            return Err(rollback_error(&e, &staged.dst, "receipt rename", restore));
+            return Err(rollback_error(&e, &staged.dst, "receipt rename", &restore));
         }
         Ok(())
     }
@@ -2001,8 +2004,9 @@ fn rollback_error(
     cause: &io::Error,
     dst: &Path,
     step: &str,
-    restore: RestoreOutcome,
+    restore: &RestoreOutcome,
 ) -> io::Error {
+    use std::fmt::Write as _;
     let mut msg = format!(
         "set commit failed at the {step} for `{}`: {cause}. ",
         dst.display()
@@ -2011,18 +2015,20 @@ fn rollback_error(
         msg.push_str("No member had renamed yet — nothing landed.");
     } else {
         if !restore.restored.is_empty() {
-            msg.push_str(&format!(
+            let _ = write!(
+                msg,
                 "Rolled back to pre-images: {}. ",
                 restore.restored.join(", ")
-            ));
+            );
         }
         if !restore.failed.is_empty() {
-            msg.push_str(&format!(
+            let _ = write!(
+                msg,
                 "ROLLBACK INCOMPLETE — these files hold the NEW bytes and their restore \
                  failed: {}. Restore them from the receipt-less new state or re-run the \
                  set once the cause clears.",
                 restore.failed.join(", ")
-            ));
+            );
         }
     }
     io::Error::new(cause.kind(), msg)
@@ -2277,8 +2283,7 @@ mod tests {
             .enumerate()
             .map(|(i, rel)| {
                 let vb = set_validated(&format!("ship by September-{}", i + 1));
-                let cand =
-                    model::candidate_of_batch(&rel.to_string_lossy(), SET_S0, &vb);
+                let cand = model::candidate_of_batch(&rel.to_string_lossy(), SET_S0, &vb);
                 (vb, cand)
             })
             .collect()

@@ -1007,7 +1007,11 @@ mod tests {
             .expect("the forwarded attempt answers");
         assert_eq!(door.script_frames.len(), 1, "exactly one wire trip");
         let sent = &door.script_frames[0];
-        assert_eq!(sent["files"], json!(["notes/*.md"]), "the pattern rides verbatim");
+        assert_eq!(
+            sent["files"],
+            json!(["notes/*.md"]),
+            "the pattern rides verbatim"
+        );
         assert_eq!(sent["actor"], json!("8ab41c02"));
         assert_eq!(sent["source"], json!("n = len(files)\n"));
         assert_eq!(trace.entry_fingerprint, "b3:feedface");
