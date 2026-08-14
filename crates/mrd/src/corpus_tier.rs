@@ -1857,11 +1857,14 @@ mod tests {
         );
     }
 
-    /// One emitted generation is one atomic batch synthesizing one event. A mixed
-    /// frontmatter+section batch has no addressable Delta container, so the event names no field
-    /// and no section, and a downstream HOOK cannot fire on it.
+    /// One emitted generation is one atomic batch synthesizing one event.
+    /// RATIFIED (sub-node-grain ruling, 2026-08-14 — supersedes the
+    /// no-addressable-identities pin): region-grain node deltas give a mixed
+    /// frontmatter+section batch BOTH its identities, so the event names the
+    /// changed field and the changed section, and a downstream HOOK can fire
+    /// on exactly what changed.
     #[test]
-    fn proof_mixed_generation_is_one_batch_with_no_addressable_identities() {
+    fn proof_mixed_generation_names_both_addressable_identities() {
         let before = "---\nstatus: open\n---\n\n# Card\n\n## Log\n\nfirst\n";
         let (after, event) = apply_control(
             before,
@@ -1880,10 +1883,15 @@ mod tests {
             "POPULATION mixed event fields={:?} sections={:?}",
             event.fields_changed, event.sections_changed
         );
-        assert!(
-            event.fields_changed.is_empty() && event.sections_changed.is_empty(),
-            "a mixed batch has no addressable identities — the proof observes exactly \
-             what production emits: {event:?}"
+        assert_eq!(
+            event.fields_changed,
+            vec!["status".to_owned()],
+            "the flipped field is named: {event:?}"
+        );
+        assert_eq!(
+            event.sections_changed,
+            vec!["Card#Log".to_owned()],
+            "the appended section is named: {event:?}"
         );
         assert!(
             event.changes.is_empty(),
