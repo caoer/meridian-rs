@@ -417,46 +417,42 @@ mod tests {
         assert_eq!(got[0].change, NodeChangeKind::Edited);
     }
 
-    /// C0 case 3 — one-put gated close: `status:` and `## Verdict` in one splice
-    /// yields no node entries. The joint edit is one contiguous range only the
-    /// Document root contains, and `identity_of` has no `NodeKind::Document`
-    /// arm; the file-level fact survives.
-    ///
-    /// Pins observed behaviour, not a ratified §7.1 answer for "no addressable
-    /// node contains the range".
+    /// C0 case 3, RATIFIED (sub-node-grain ruling, 2026-08-14 — supersedes the
+    /// 2026-07-30 observed pin): a one-put gated close (`status:` +
+    /// `## Verdict`) reports BOTH touched nodes. The joint edit is two
+    /// line-grain regions, each attributed at its own deepest node — the
+    /// dogfood r1 "zero node rows on a batch" misreport is the red this
+    /// ratifies away.
     #[test]
-    fn c0_gated_close_one_put_emits_no_node_entries() {
+    fn c0_gated_close_one_put_reports_both_touched_nodes() {
         let b = doc(&task_card("in-progress", "pending"));
         let a = doc(&task_card("review", "passed - gates green"));
 
-        // Precondition: one range spanning frontmatter → body, without which
-        // the emptiness below could pass vacuously.
-        let (_, ar) = changed_ranges(&b.raw, &a.raw).expect("bytes differ");
-        let changed = &a.raw[ar.clone()];
-        assert!(
-            changed.starts_with("review") && changed.ends_with("passed - gates green"),
-            "one range must span the status line through the Verdict body: {changed:?}"
-        );
-
         let got = node_deltas(&b, &a);
         println!("C0 case 3 (gated close, one put) population = {got:#?}");
-        assert!(
-            got.is_empty(),
-            "observed 2026-07-30: no node entries for the joint edit; got {got:?}"
-        );
+        assert_eq!(got.len(), 2, "both halves are reported: {got:?}");
+        let status = got
+            .iter()
+            .find(|d| d.target == Ref::FmKey("status".into()))
+            .expect("the status flip is reported");
+        assert_eq!(status.change, NodeChangeKind::Edited);
+        let verdict = got
+            .iter()
+            .find(|d| d.target == verdict_hpath())
+            .expect("the Verdict body edit is reported");
+        assert_eq!(verdict.change, NodeChangeKind::Edited);
 
-        // The file-level fact is unaffected — only the node inventory is empty.
         let fd = file_delta(Some(&b), Some(&a)).expect("file changed");
         assert_eq!(fd.change, FileChangeKind::Modified);
-        assert!(fd.file_rev_before.is_some() && fd.file_rev_after.is_some());
-        assert!(fd.nodes.is_empty(), "{:?}", fd.nodes);
+        assert_eq!(fd.nodes.len(), 2, "{:?}", fd.nodes);
     }
 
-    /// C0 case 3b — appending `## Verdict` while flipping `status:` in one
-    /// splice is still empty: the after-range opens inside frontmatter, so a
-    /// truly-added section yields no `added` entry either.
+    /// C0 case 3b, RATIFIED: appending `## Verdict` while flipping `status:`
+    /// in one splice reports the fm key edited AND the section added — a
+    /// truly-added section never vanishes behind a frontmatter touch, and an
+    /// append alone names the appended section, not its parent.
     #[test]
-    fn c0_gated_close_appending_verdict_also_emits_nothing() {
+    fn c0_gated_close_appending_verdict_reports_key_and_added_section() {
         let b = doc(
             "---\ntype: task\nstatus: in-progress\nowner: e4201e72\n---\n\n\
                      # Task: widget-rollout\n\n## Objective\n\nShip the widget.\n",
@@ -465,10 +461,8 @@ mod tests {
                      # Task: widget-rollout\n\n## Objective\n\nShip the widget.\n\n\
                      ## Verdict\n\npassed - gates green\n");
 
-        // Control: append without the status flip is visible, so the emptiness
-        // below comes from the joint edit. Append alone names the parent
-        // `# Task: …` as `Edited` — the changed range opens with the blank line
-        // ending `## Objective`, which `## Verdict` does not contain.
+        // The appended section alone names ITSELF (added), not the parent —
+        // the leading blank line is structural glue, not content.
         let alone = node_deltas(
             &doc(
                 "---\ntype: task\nstatus: in-progress\nowner: e4201e72\n---\n\n\
@@ -481,25 +475,152 @@ mod tests {
             ),
         );
         println!("C0 case 3b control (append alone) population = {alone:#?}");
-        assert_eq!(alone.len(), 1, "append alone must be visible: {alone:?}");
-        assert_eq!(
-            alone[0].target,
-            Ref::Hpath(vec![crate::HpathSeg {
-                h: "Task: widget-rollout".into(),
-                n: None
-            }]),
-            "observed: the parent section, not {:?}",
-            verdict_hpath()
-        );
-        assert_eq!(alone[0].change, NodeChangeKind::Edited);
+        assert_eq!(alone.len(), 1, "append alone is one entry: {alone:?}");
+        assert_eq!(alone[0].target, verdict_hpath());
+        assert_eq!(alone[0].change, NodeChangeKind::Added);
 
         let got = node_deltas(&b, &a);
         println!("C0 case 3b (append verdict + flip status) population = {got:#?}");
+        assert_eq!(got.len(), 2, "both touched nodes reported: {got:?}");
         assert!(
-            got.is_empty(),
-            "observed 2026-07-30: the added section vanishes when the same \
-             splice touches frontmatter; got {got:?}"
+            got.iter()
+                .any(|d| d.target == Ref::FmKey("status".into())
+                    && d.change == NodeChangeKind::Edited),
+            "{got:?}"
         );
+        assert!(
+            got.iter()
+                .any(|d| d.target == verdict_hpath() && d.change == NodeChangeKind::Added),
+            "{got:?}"
+        );
+    }
+
+    // sub-node-grain (dogfood r1 prober F1): the batch and duplicate shapes.
+
+    /// Two appends to two sibling sections report EACH child edited — never a
+    /// roll-up to the shared parent, never a lost child (F1 row 2).
+    #[test]
+    fn two_appends_report_each_touched_child() {
+        let b = doc("# Pinner\n\n## Claims\n\nc1\n\n## Delta\n\nd1\n");
+        let a = doc("# Pinner\n\n## Claims\n\nc1\nc2\n\n## Delta\n\nd1\nd2\n");
+        let got = node_deltas(&b, &a);
+        println!("two appends population = {got:#?}");
+        let seg = |h: &str| crate::HpathSeg {
+            h: h.into(),
+            n: None,
+        };
+        assert_eq!(got.len(), 2, "one entry per touched child: {got:?}");
+        for child in ["Claims", "Delta"] {
+            let d = got
+                .iter()
+                .find(|d| d.target == Ref::Hpath(vec![seg("Pinner"), seg(child)]))
+                .unwrap_or_else(|| panic!("§Pinner/{child} is reported: {got:?}"));
+            assert_eq!(d.change, NodeChangeKind::Edited);
+        }
+    }
+
+    /// The F1 false-removal repro: on a file with duplicate `### Dup`
+    /// siblings, an append into `## Beta` plus a born `## Gamma` reports
+    /// exactly those two changes — and NEVER a removal that did not happen.
+    /// (Deployed pair served `removed §Pin Target/Dup` with the real changes
+    /// absent; the file was verified intact.)
+    #[test]
+    fn duplicate_headings_never_fabricate_a_removal() {
+        let b = doc(
+            "# Pin Target\n\n## Alpha\n\na\n\n### Dup\n\nfirst\n\n### Dup\n\nsecond\n\n\
+             ## Beta\n\nb\n",
+        );
+        let a = doc(
+            "# Pin Target\n\n## Alpha\n\na\n\n### Dup\n\nfirst\n\n### Dup\n\nsecond\n\n\
+             ## Beta\n\nb\nBeta touched for sub probe.\n\n## Gamma\n\nGamma born for sub probe.\n",
+        );
+        let got = node_deltas(&b, &a);
+        println!("duplicate-heading population = {got:#?}");
+        assert!(
+            got.iter().all(|d| d.change != NodeChangeKind::Removed),
+            "nothing was removed — a delta feed must never fabricate one: {got:?}"
+        );
+        let seg = |h: &str| crate::HpathSeg {
+            h: h.into(),
+            n: None,
+        };
+        assert!(
+            got.iter().any(|d| d.target
+                == Ref::Hpath(vec![seg("Pin Target"), seg("Beta")])
+                && d.change == NodeChangeKind::Edited),
+            "the Beta edit is reported: {got:?}"
+        );
+        assert!(
+            got.iter().any(|d| d.target
+                == Ref::Hpath(vec![seg("Pin Target"), seg("Gamma")])
+                && d.change == NodeChangeKind::Added),
+            "the born Gamma is reported: {got:?}"
+        );
+    }
+
+    /// A REAL removal among duplicate siblings stays truthful: the removed
+    /// occurrence is named with its §2.1 occurrence disambiguator, and the
+    /// surviving twin is not misreported.
+    #[test]
+    fn a_real_removal_among_duplicates_names_the_occurrence() {
+        let b = doc("# R\n\n## Dup\n\nfirst\n\n## Dup\n\nsecond\n\n## Tail\n\nt\n");
+        let a = doc("# R\n\n## Dup\n\nfirst\n\n## Tail\n\nt\n");
+        let got = node_deltas(&b, &a);
+        println!("real removal among duplicates population = {got:#?}");
+        let removed: Vec<_> = got
+            .iter()
+            .filter(|d| d.change == NodeChangeKind::Removed)
+            .collect();
+        assert_eq!(removed.len(), 1, "exactly one removal: {got:?}");
+        let Ref::Hpath(segs) = &removed[0].target else {
+            panic!("a section identity: {:?}", removed[0].target);
+        };
+        assert_eq!(segs.last().unwrap().h, "Dup");
+        assert_eq!(
+            segs.last().unwrap().n,
+            Some(2),
+            "the removed occurrence is disambiguated: {:?}",
+            removed[0].target
+        );
+    }
+
+    /// An edit INSIDE one of two duplicate siblings names that occurrence —
+    /// the identity a consumer can resolve back through the mint plane.
+    #[test]
+    fn an_edit_in_a_duplicate_sibling_carries_its_occurrence() {
+        let b = doc("# R\n\n## Dup\n\nfirst\n\n## Dup\n\nsecond\n");
+        let a = doc("# R\n\n## Dup\n\nfirst\n\n## Dup\n\nsecond touched\n");
+        let got = node_deltas(&b, &a);
+        println!("edited duplicate population = {got:#?}");
+        assert_eq!(got.len(), 1, "{got:?}");
+        let Ref::Hpath(segs) = &got[0].target else {
+            panic!("a section identity: {:?}", got[0].target);
+        };
+        assert_eq!(segs.last().unwrap().h, "Dup");
+        assert_eq!(segs.last().unwrap().n, Some(2), "{:?}", got[0].target);
+        assert_eq!(got[0].change, NodeChangeKind::Edited);
+        assert!(
+            crate::resolve(&a, &got[0].target).is_ok(),
+            "the served identity resolves at the mint plane"
+        );
+    }
+
+    /// A multi-key frontmatter edit in one region reports EACH changed key —
+    /// per-key grain survives adjacency.
+    #[test]
+    fn adjacent_frontmatter_keys_each_get_an_entry() {
+        let b = doc("---\ntitle: Plan\nowner: zt\n---\n# H\n");
+        let a = doc("---\ntitle: Plan v2\nowner: e4\n---\n# H\n");
+        let got = node_deltas(&b, &a);
+        println!("adjacent fm keys population = {got:#?}");
+        assert_eq!(got.len(), 2, "{got:?}");
+        for key in ["title", "owner"] {
+            assert!(
+                got.iter().any(|d| d.target == Ref::FmKey(key.into())
+                    && d.change == NodeChangeKind::Edited),
+                "fm key {key} is reported: {got:?}"
+            );
+        }
     }
 
     /// File-level tenses (§7.1): created carries after-rev only, deleted
