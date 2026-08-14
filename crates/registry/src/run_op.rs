@@ -30,7 +30,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use effects::EvalLimits;
-use run::address::{self, AddressError};
+use run::address::AddressError;
 use run::caps::{self, CapsError};
 use run::executor::{RECEIPT_FILE, ReceiptAddr};
 use run::fence::TaskLanguage;
@@ -162,7 +162,7 @@ pub(crate) fn row_for_target(
     sink: &crate::delta_sink::RingSink,
 ) -> Value {
     if target.dry.unwrap_or(false) {
-        dry_row(root, target, invocation, actor, now)
+        dry_row(root, ws, target, invocation, actor, now)
     } else {
         execute_row(root, ws, target, invocation, actor, now, sink)
     }
@@ -242,89 +242,56 @@ fn execute_row(
     }
 }
 
-/// The plane's dry legs, row tense (`run_cmd`'s dry split, same seams): a
-/// starlark dry evaluates through the U5 seam and lists the full effect set;
-/// a bash dry shows the block and refuses to exec.
+/// The plane's dry leg, row tense: the rehearsal seam ([`runner::rehearse`])
+/// runs EVERY gate the live run enforces — address → contract → caps → eval →
+/// the executor's own choke-point admission — and applies nothing. Refusals
+/// arrive as the live run's own [`RunnerError`] values and ride the SAME
+/// mapping ([`runner_refusal_row`]), so a rehearsed refusal is byte-identical
+/// to the live one (dogfood r2 F2: dry-green must predict live-green).
 fn dry_row(
     root: &fs::WorkspaceRoot,
+    ws: &Path,
     target: &wire::RunTarget,
     invocation: &str,
     actor: Option<&str>,
     now: Option<&str>,
 ) -> Value {
-    let doc = match address::load_page(root, Path::new(&target.page)) {
-        Ok(doc) => doc,
-        Err(e) => return refusal_row(target, invocation, "invocation", &e.to_string(), None),
+    let spec = runner::RehearseSpec {
+        page: &target.page,
+        task: target.task.as_deref(),
+        args: target.args.clone(),
+        env: target.env.clone(),
+        invocation_id: invocation,
+        now,
+        declaring_root: Some(ws),
+        limits: EvalLimits::default(),
+        actor,
     };
-    let resolved = match address::resolve_task(&doc, target.task.as_deref()) {
-        Ok(r) => r,
-        Err(e) => return address_refusal_row(target, invocation, &e),
-    };
-    let task = resolved.binding.name.clone();
-    let (conventions, _source) = match caps::load_conventions(Some(&root.0)) {
-        Ok(c) => c,
-        Err(e) => return refusal_row(target, invocation, "invocation", &e.to_string(), None),
-    };
-    let authority = match caps::resolve_authority(&doc, &task, resolved.block.lang, &conventions) {
-        Ok(a) => a,
-        Err(e) => return caps_refusal_row(target, invocation, &e),
-    };
-    match resolved.block.lang {
-        TaskLanguage::Starlark => {
-            let root_at_eval = match fs::domain_snapshot(root) {
-                Ok((_, r)) => r,
-                Err(e) => {
-                    return refusal_row(
-                        target,
-                        invocation,
-                        "run",
-                        &format!("corpus snapshot failed: {e}"),
-                        None,
-                    );
-                }
-            };
-            let dispatch = run::dispatch_starlark::StarlarkDispatch {
-                page: &target.page,
-                task: &task,
-                task_rev: &resolved.task_rev,
-                source: &resolved.block.source,
-                args: target.args.clone(),
-                env: target.env.clone(),
-                invocation_id: invocation,
-                now,
-                root_at_eval: &root_at_eval,
-                authority: &authority,
-                receipt: None,
-                takeover: false,
-                limits: EvalLimits::default(),
-                actor,
-                delta: None, // dry: evaluate-only, nothing commits
-            };
-            match run::dispatch_starlark::evaluate(&dispatch) {
-                Ok(effects) => json!({
-                    "page": target.page,
-                    "invocation": invocation,
-                    "task": task,
-                    "lang": "starlark",
-                    "guarantee": "hermetic",
-                    "dry": true,
-                    "applied": false,
-                    "effects": effects,
-                }),
-                Err(e) => refusal_row(target, invocation, "run", &format!("eval: {e}"), None),
-            }
-        }
-        TaskLanguage::Bash => json!({
-            "page": target.page,
-            "invocation": invocation,
-            "task": task,
-            "lang": "bash",
-            "guarantee": TaskLanguage::Bash.guarantee_class().as_str(),
-            "dry": true,
-            "executed": false,
-            "effects": caps::UNDECLARED_EFFECTS,
-            "source": resolved.block.source,
-        }),
+    match runner::rehearse(root, &spec) {
+        Ok(rehearsal) => match rehearsal.outcome {
+            runner::Rehearsed::Starlark { effects } => json!({
+                "page": target.page,
+                "invocation": invocation,
+                "task": rehearsal.task,
+                "lang": "starlark",
+                "guarantee": "hermetic",
+                "dry": true,
+                "applied": false,
+                "effects": effects,
+            }),
+            runner::Rehearsed::Bash { source } => json!({
+                "page": target.page,
+                "invocation": invocation,
+                "task": rehearsal.task,
+                "lang": "bash",
+                "guarantee": TaskLanguage::Bash.guarantee_class().as_str(),
+                "dry": true,
+                "executed": false,
+                "effects": caps::UNDECLARED_EFFECTS,
+                "source": source,
+            }),
+        },
+        Err(e) => runner_refusal_row(root, target, invocation, &e),
     }
 }
 

@@ -2072,6 +2072,13 @@ op reached the plane. No aggregate boolean exists anywhere in the body:
   the full effect set with `applied:false`; a bash dry answers the block
   source with `executed:false` and `effects:"undeclared"` — bash effects
   only exist by running it, and a dry that invented them would be fiction.
+  A dry target rehearses EVERY pre-apply gate the live target enforces —
+  addressing, contract (arity, env declarations), capability admission
+  through the executor's own choke point — so a gate-refused rehearsal
+  answers the refusal row the live call would answer, byte-identical
+  (`runner::rehearse`, one seam both doors consume; dogfood r2 F2:
+  dry-green predicts live-green, and a contract fault never reaches eval,
+  so no interpreter traceback can stand in for the typed refusal).
 - §8 `ok:false` frames answer only what never reached the plane:
   `bad_request` (strict-decode failure, empty or oversize `targets[]`, no
   workspace bound), `unknown_op` (v2 session). Once rows answer, every
