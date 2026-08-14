@@ -124,6 +124,9 @@ pub fn project_response(frame: &mut Value) {
                 // Pin-graph context assembly at op grain (§ A.10, the same
                 // precedent — no dotted walk.<field> at birth).
                 caps.push(Value::String("walk".to_string()));
+                // Corpus SQL at op grain (§ A.11, the same precedent — no
+                // dotted sql.<field> at birth).
+                caps.push(Value::String("sql".to_string()));
             }
             body.insert("contract".to_string(), Value::String("v3".to_string()));
         }
@@ -375,7 +378,8 @@ mod tests {
                 "hello.identity",
                 "script",
                 "run",
-                "walk"
+                "walk",
+                "sql"
             ])
         );
     }

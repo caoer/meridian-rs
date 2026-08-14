@@ -60,6 +60,10 @@ pub enum Laws {
 ///
 /// # Errors
 /// `bad_request` / `bad_path` / `unsupported_proto` / `unknown_op` as appropriate.
+#[expect(
+    clippy::too_many_lines,
+    reason = "exhaustive op decode table — one arm per wire op; splitting adds indirection, not insight"
+)]
 pub fn decode(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody>> {
     let Some(op) = obj.get("op").and_then(Value::as_str) else {
         return Err(bad_request("`op` must be a string"));
@@ -158,6 +162,14 @@ pub fn decode(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody>> 
             Ok(Op::Mounts)
         }
         "walk" => decode_walk(obj),
+        "sql" => {
+            // § A.11: the statement and nothing else — profile, cwd, and row
+            // bounds are host concerns, never wire fields.
+            check_fields(obj, "sql", &["query"])?;
+            Ok(Op::Sql {
+                query: req_str(obj, "sql", "query")?,
+            })
+        }
         "read" => decode_read(obj),
         "check_write" => decode_check_write(obj),
         "splice" => decode_splice(obj, rev),

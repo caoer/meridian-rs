@@ -12,6 +12,8 @@ workspace = true
 
 [dependencies]
 serde = { workspace = true }
+# § A.11 sql result cells are arbitrary JSON scalars/arrays — the one wire
+# body whose cell type is not a fixed struct.
+serde_json = { workspace = true }
 
 [dev-dependencies]
-serde_json = { workspace = true }

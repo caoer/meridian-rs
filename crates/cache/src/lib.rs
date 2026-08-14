@@ -49,7 +49,12 @@ pub use sweep::{DrawerInfo, GcReport, gc, list_drawers, remove_drawer};
 /// `gc`/`clean` to reap — never a decode-into-the-wrong-struct. A bare version
 /// segment corrupts on downgrade and dev builds; the salt is the real
 /// discriminator.
-pub const SCHEMA_SALT: &str = "s0";
+///
+/// `s1`: the drawer gained its first payload — `view::store`'s `sql.duckdb`
+/// cache. Bump this together with `view::SCHEMA_VERSION` /
+/// `view::store::CACHE_SCHEMA_VERSION` on any projection or hist DDL change:
+/// the old drawer path simply stops resolving and `gc` reaps it.
+pub const SCHEMA_SALT: &str = "s1";
 
 /// Default GC threshold: a drawer whose last-use is older than this is reapable.
 /// 30 days, mirroring Cargo's registry auto-GC horizon. A path-keyed drawer store
