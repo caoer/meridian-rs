@@ -209,13 +209,18 @@ const TABLE: &[Scenario] = &[
         writes: &[CARD],
     },
     Scenario {
-        id: "2a · the naive arming — refused",
+        // Golden v9 depicted this arming REFUSED (`multi_file_write_set`).
+        // That arm-time law retired with the §4.4 set form (ruling
+        // 2026-08-14): the same script now arms every dead-owned card and
+        // commits them as ONE sealed set — one splice, one fingerprint
+        // advance. 2b's host fan-out remains legal, no longer required.
+        id: "2a · the naive arming — one set commit",
         source: S2A_NAIVE,
         files: true,
         dry: false,
         pin_entry: false,
-        ends: Ends::ArmRefused,
-        writes: &[],
+        ends: Ends::Committed,
+        writes: &[FILES[0], FILES[1], FILES[4]],
     },
     Scenario {
         id: "2b · the host fan-out",

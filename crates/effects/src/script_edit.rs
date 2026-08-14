@@ -34,12 +34,6 @@ pub struct ArmedEdit {
 /// so the closed refusal taxonomy stays closed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ArmRefusal {
-    /// A second CONTENT path was armed (v1 law: one content path per commit).
-    MultiFileWriteSet {
-        line: u32,
-        first: String,
-        second: String,
-    },
     /// The armed-edit ceiling was reached — refused, never truncated.
     ArmedBudget { line: u32, limit: usize },
 }

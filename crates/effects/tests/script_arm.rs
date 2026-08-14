@@ -253,45 +253,28 @@ fn a_put_with_no_edit_kwarg_refuses() {
 }
 
 // ---------------------------------------------------------------------------
-// The single-CONTENT-path law — acceptance 1 and 2
+// The armed set spans files — the §4.4 set form's input (run-plane.md
+// § One COMMIT per attempt; the arm-time multi_file_write_set law is retired)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn a_second_content_path_refuses_multi_file_write_set() {
+fn a_second_content_path_arms_a_set() {
     let eval = run(r#"
 put("tasks/0011.md", props={"owner": ""})
 put("tasks/0012.md", props={"owner": ""})
 "#);
-    let Err(EvalError::MultiFileWriteSet {
-        line,
-        first,
-        second,
-        ..
-    }) = &eval.outcome
-    else {
-        panic!("expected multi_file_write_set, got {:?}", eval.outcome);
-    };
-    assert_eq!(*line, 3, "the refusal names the source line of the 2nd arm");
-    assert_eq!(first, "tasks/0011.md");
-    assert_eq!(second, "tasks/0012.md");
-    let rendered = eval.outcome.as_ref().unwrap_err().to_string();
     assert!(
-        rendered.contains("multi_file_write_set") && rendered.contains("tasks/0012.md"),
-        "golden scenario 2a's face line names the second path: {rendered}"
+        eval.outcome.is_ok(),
+        "two content paths arm one set — the commit is the §4.4 set form, \
+         not an arm-time refusal: {:?}",
+        eval.outcome
     );
-}
-
-#[test]
-fn the_first_arm_survives_the_refusal_for_the_face() {
-    // Golden scenario 2a renders `armed … [not committed]` for the arms that
-    // landed before the refusal — the armed list is evidence, not truncated.
-    let eval = run(r#"
-put("tasks/0011.md", props={"owner": ""})
-put("tasks/0012.md", props={"owner": ""})
-"#);
-    assert!(eval.outcome.is_err());
-    assert_eq!(eval.armed.len(), 1);
-    assert_eq!(eval.armed[0].path, "tasks/0011.md");
+    assert_eq!(eval.armed.len(), 2, "both arms stand");
+    assert_eq!(
+        eval.content_paths(),
+        vec!["tasks/0011.md".to_string(), "tasks/0012.md".to_string()],
+        "content_paths lists the members in first-arm order"
+    );
 }
 
 #[test]

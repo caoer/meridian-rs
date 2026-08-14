@@ -660,36 +660,15 @@ impl<'h> ScriptEntry<'h> {
     /// Arm one `put()` call's plan items — PURE: no host call, no I/O. The
     /// arm-time law runs first and, when it refuses, arms NOTHING from this call
     /// and aborts the script.
+    ///
+    /// The armed list may span N content paths: the commit is the §4.4 SET
+    /// form (`splice.set`), sealed across the set (run-plane.md § One COMMIT
+    /// per attempt — the arm-time `multi_file_write_set` refusal is retired
+    /// with the set-commit machinery that replaced it). The receipt companion
+    /// is not a content path — it rides the splice request's own `receipt`
+    /// field in the same batch (§6.1), never this list.
     fn arm(&self, path: &str, items: Vec<PlanEdit>, line: u32, depth: u32) -> anyhow::Result<()> {
-        // One CONTENT path per commit (v1 law — JUSTIFIED 2026-08-13: the
-        // commit is one §4.4 splice and a splice addresses one content path,
-        // so this law is what keeps all-or-nothing true; see run-plane.md
-        // § One CONTENT path per commit). The receipt companion is not a
-        // content path — it rides the splice request's own `receipt` field in
-        // the same batch (§6.1), never this list.
         let mut armed = self.armed.borrow_mut();
-        // ⚠️ MOVING OR RELAXING THIS LAW MAKES AN UNTESTED DOOR REACHABLE. The
-        // script entry's `commit()` refuses an armed set that writes more than one
-        // content path (`crates/mrd/src/script/cmd.rs`, the `let [path] = …` arm);
-        // that refusal has no test because THIS check refuses first, so no splice
-        // is ever issued for a two-file set. The unreachability is pinned by
-        // `crates/mrd/tests/script_controlled_exits_speak.rs`
-        // § `door_367_is_unreachable_only_because_the_arm_time_law_refuses_first`,
-        // which goes red here rather than there.
-        if let Some(first) = armed.first().map(|a| a.path.clone())
-            && first != path
-        {
-            let refusal = ArmRefusal::MultiFileWriteSet {
-                line,
-                first: first.clone(),
-                second: path.to_owned(),
-            };
-            *self.arm_refusal.borrow_mut() = Some(refusal);
-            return Err(anyhow::anyhow!(
-                "multi_file_write_set: one script commits to ONE file \
-                 (armed {first}; {path} would be the second)"
-            ));
-        }
         // The ceiling refuses the edit that would cross it; the list already
         // armed stays whole — never truncated.
         if armed.len() + items.len() > self.max_armed_edits {
@@ -1325,16 +1304,6 @@ pub(crate) fn run_script(
         // never a partial apply: the armed list below is evidence for the face,
         // and a refused attempt commits nothing.
         Err(e) => match arm_refusal {
-            Some(ArmRefusal::MultiFileWriteSet {
-                line,
-                first,
-                second,
-            }) => Err(EvalError::MultiFileWriteSet {
-                rule_id: rule.id.clone(),
-                line,
-                first,
-                second,
-            }),
             Some(ArmRefusal::ArmedBudget { line, limit }) => Err(EvalError::ArmedBudget {
                 rule_id: rule.id.clone(),
                 line,

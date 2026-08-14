@@ -215,25 +215,24 @@ fn a_fault_keeps_its_armed_entries_flagged_not_committed() {
 }
 
 /// A refusal is not a fault — the two must grep apart (r4/F7). The class enum
-/// is CLOSED at parse|runtime|budget|refused.
+/// is CLOSED at parse|runtime|budget|refused. The refusal exemplar is a
+/// commit-leg refusal (the arm-time `multi_file_write_set` refusal is retired
+/// — an armed set spanning files commits as the §4.4 set form).
 #[test]
 fn a_refusal_greps_apart_from_a_fault() {
-    let refused = failed_eval(
-        EvalError::MultiFileWriteSet {
-            rule_id: "script".to_owned(),
-            line: 5,
-            first: "tasks/0004-index-rebuild.md".to_owned(),
-            second: "tasks/0009-peer-gossip.md".to_owned(),
-        },
-        vec![armed_props(5)],
-        Vec::new(),
+    let refused = ok_eval(vec![armed_props(5)], Vec::new());
+    let trace = ScriptTrace::assemble(
+        "b3:77d20e19",
+        &refused,
+        CommitLeg::Refused(mrd::script::Refusal::minted(
+            wire::Recovery::Fix,
+            "expect_armed_mismatch: this run armed a set the caller never pinned",
+        )),
     );
-    let trace = ScriptTrace::assemble("b3:77d20e19", &refused, CommitLeg::NotIssued);
     assert_eq!(trace.outcome, ScriptOutcome::Refused);
     let fault = trace.fault.as_ref().expect("a refusal carries its reason");
     assert_eq!(fault.class, FaultClass::Refused);
-    assert_eq!(fault.line, Some(5), "the offending put() line is named");
-    assert!(fault.reason.contains("multi_file_write_set"));
+    assert!(fault.reason.contains("expect_armed_mismatch"));
 
     let budget = failed_eval(
         EvalError::Budget {

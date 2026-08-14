@@ -532,10 +532,14 @@ fn fuel_exhaustion_answers_a_budget_fault_and_the_daemon_survives() {
     );
 }
 
-/// A second content path refuses at arm time — nothing lands, and the
-/// refusal is the kernel's own single-write-file law.
+/// A second content path arms a §4.4 SET — and a member that cannot validate
+/// (`logs/receipts.md` has no frontmatter for `set_property`) refuses the set
+/// WHOLE: the refusal names the measuring member, both armed rows stay traced
+/// not-committed, and the fingerprint does not move (validate-all-then-apply;
+/// the arm-time single-write-file law is retired — run-plane.md § One COMMIT
+/// per attempt).
 #[test]
-fn a_second_content_path_refuses_at_arm_time() {
+fn a_set_member_that_cannot_validate_refuses_the_whole_set() {
     let tmp = TempDir::new().unwrap();
     let ws = seeded(&tmp);
     let _server = RunningServer::start(test_config(&tmp)).unwrap();
@@ -548,17 +552,24 @@ fn a_second_content_path_refuses_at_arm_time() {
         "a = read(\"doc.md\")\nb = read(\"logs/receipts.md\")\nput(\"doc.md\", props={\"status\": \"done\"})\nput(\"logs/receipts.md\", props={\"status\": \"done\"})\n",
     ));
     let trace = trace_of(&resp);
+    assert_eq!(trace["outcome"], json!("refused"), "trace: {trace}");
+    let reason = trace["fault"]["reason"].as_str().unwrap();
     assert!(
-        trace["outcome"] == json!("refused") || trace["outcome"] == json!("fault"),
-        "the arm refuses (CLI-lane parity pins the exact word in the goldens): {trace}"
+        reason.contains("files[1]")
+            && reason.contains("logs/receipts.md")
+            && reason.contains("nothing landed"),
+        "the whole-set refusal names the measuring member: {trace}"
     );
+    let armed: Vec<_> = trace["trace"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["kind"] == json!("armed"))
+        .collect();
+    assert_eq!(armed.len(), 2, "both arms stay traced: {trace}");
     assert!(
-        trace["fault"]["reason"]
-            .as_str()
-            .unwrap()
-            .to_lowercase()
-            .contains("one file"),
-        "the refusal speaks the single-write-file law: {trace}"
+        armed.iter().all(|e| e["committed"] == json!(false)),
+        "no armed row claims a commit: {trace}"
     );
     assert_eq!(conn.fingerprint(), before, "nothing landed");
 }
