@@ -374,7 +374,8 @@ mod tests {
                 "mounts.primary",
                 "hello.identity",
                 "script",
-                "run"
+                "run",
+                "walk"
             ])
         );
     }
