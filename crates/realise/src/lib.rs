@@ -496,6 +496,7 @@ fn run_apply(
         limits: spec.limits,
         actor: None,
         step_cwd: None,
+        delta: None, // realise lane: delta status unchanged by the § A.8 ruling
     };
     let mut sink = io::sink();
     let report = runner::run(root, &run_spec, &[], &mut sink).map_err(|e| RealiseError::Apply {

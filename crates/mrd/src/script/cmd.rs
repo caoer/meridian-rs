@@ -50,7 +50,8 @@ use std::io::Read as _;
 use std::time::{Duration, Instant};
 
 use effects::{
-    ArmedEdit, ReadFace, ScriptCtx, ScriptEval, ScriptLimits, ScriptRecording, eval_script,
+    ArmedEdit, ReadFace, ScriptCtx, ScriptEval, ScriptLimits, ScriptRecording, TocFacts,
+    eval_script,
 };
 use registry::Client;
 use serde_json::value::RawValue;
@@ -153,10 +154,11 @@ pub(crate) fn run(door: &mut dyn Door, parsed: &Script, source: &str) -> Result<
         return Ok(ScriptTrace::assemble(entry, &eval, CommitLeg::NotIssued));
     }
 
-    // 5. Each armed row is guarded on the rev the script ITSELF read, then ONE
-    //    splice. The trace is assembled from the guarded list, so what it shows
-    //    is what went on the wire.
-    eval.armed = guarded(&eval.armed, &eval.recording);
+    // 5. Each armed row is tokened — from the rev the script ITSELF read, or
+    //    the lane's own commit-time mint — then ONE splice. The trace is
+    //    assembled from the guarded list, so what it shows is what went on the
+    //    wire.
+    eval.armed = guarded(door, &eval.armed, &eval.recording);
     // 5a. The caller's armed-set expectation, checked HERE — after rev threading,
     // because the threaded token is part of what was armed, and before anything
     // is issued. A mismatch means this child armed a set the host never gated, so
@@ -210,23 +212,34 @@ pub(crate) fn run(door: &mut dyn Door, parsed: &Script, source: &str) -> Result<
     Ok(ScriptTrace::assemble(entry, &eval, leg))
 }
 
-/// Thread each armed plan row's CAS token from the script's OWN recorded reads.
+/// Thread each armed plan row's CAS token — from the script's OWN recorded
+/// reads when they cover the target, and from the lane's own commit-time mint
+/// when they do not (CAS relaxation, ruling 2026-08-13 — dissolves the
+/// read-the-section-first ritual).
 ///
 /// Every wire door demands a fingerprint for an edit that changes existing
 /// content, or an explicit `force` (`wire-serve::guard`) — and the two grains
 /// differ: `set_property` takes the **file** rev, because frontmatter semantics
 /// are file-scoped, and `append` takes the **node** rev of the section it lands
-/// in. A script holds both already: `read(path)` recorded the file rev and the
-/// section map, `read(path, section=…)` recorded that section's rev.
+/// in. A recorded read of the target supplies its grain directly; a row whose
+/// target the script never read is tokened by ONE bare `toc` trip (§4.1) per
+/// armed path — the same host autofill the `put` face performs, spoken by this
+/// lane. Consistency does not ride these tokens: the commit carries
+/// `if_fingerprint` = the entry fingerprint, and a world that moved since
+/// entry refuses there (§5.1, checked first), whatever any row's rev says.
 ///
-/// So the guard is the read the decision was made against — the read-then-write
-/// CAS the wire exists for, not a token minted to satisfy a check. A row whose
-/// target the script never read keeps `rev: None` and meets the engine's own
-/// teaching refusal, which is the honest answer to writing what you did not read.
+/// A mint the daemon refuses (or a transport failure on the trip) leaves
+/// `rev: None`, and the engine's own guard answers — degrade is loud, never a
+/// guessed token.
 ///
 /// Reads are LIVE, so the LAST recorded read of a target is the freshest picture
 /// the script had; an already-set `rev` is never overwritten.
-fn guarded(armed: &[ArmedEdit], recording: &ScriptRecording) -> Vec<ArmedEdit> {
+fn guarded(
+    door: &mut dyn Door,
+    armed: &[ArmedEdit],
+    recording: &ScriptRecording,
+) -> Vec<ArmedEdit> {
+    let mut mints: BTreeMap<String, Option<TocFacts>> = BTreeMap::new();
     armed
         .iter()
         .map(|arm| {
@@ -235,20 +248,72 @@ fn guarded(armed: &[ArmedEdit], recording: &ScriptRecording) -> Vec<ArmedEdit> {
                 PlanEdit::SetProperty {
                     rev: rev @ None, ..
                 } => {
-                    *rev = file_rev_of(recording, &arm.path);
+                    *rev = file_rev_of(recording, &arm.path).or_else(|| {
+                        mint_for(door, &mut mints, &arm.path).map(|facts| facts.rev.clone())
+                    });
                 }
                 PlanEdit::Append {
                     hpath,
                     rev: rev @ None,
                     ..
                 } => {
-                    *rev = section_rev_of(recording, &arm.path, hpath);
+                    *rev = section_rev_of(recording, &arm.path, hpath).or_else(|| {
+                        mint_for(door, &mut mints, &arm.path).and_then(|facts| {
+                            facts
+                                .toc
+                                .iter()
+                                .find(|entry| addresses(&entry.section, hpath))
+                                .map(|entry| entry.rev.clone())
+                        })
+                    });
                 }
                 _ => {}
             }
             arm
         })
         .collect()
+}
+
+/// The commit-time mint for one armed path, at most one trip per path per
+/// attempt: a bare `toc` (§4.1) — file rev plus the section map, both grains
+/// in one op. NOT a script read: nothing is recorded, no composed-read
+/// bracket is sent (the entry fingerprint on the commit is the coherence
+/// guard), and the trace never shows it.
+fn mint_for<'m>(
+    door: &mut dyn Door,
+    mints: &'m mut BTreeMap<String, Option<TocFacts>>,
+    path: &str,
+) -> Option<&'m TocFacts> {
+    if !mints.contains_key(path) {
+        let minted = mint_toc(door, path);
+        mints.insert(path.to_owned(), minted);
+    }
+    mints.get(path).and_then(Option::as_ref)
+}
+
+/// One bare `toc` trip, parsed by the same row parser the read face uses
+/// ([`super::wire_host::toc_entry`]) — one parser, so a minted token and a
+/// read-published token cannot spell one section two ways. `None` on any
+/// refusal or transport failure: the row stays untokened and the engine
+/// answers.
+fn mint_toc(door: &mut dyn Door, path: &str) -> Option<TocFacts> {
+    let line = door.call(&json!({"op": "toc", "path": path})).ok()?;
+    let body = Frame::parse(&line)
+        .and_then(|frame| frame.body_value("toc"))
+        .ok()?;
+    let rev = body.get("file_rev")?.as_str()?.to_owned();
+    let toc = body
+        .get("nodes")?
+        .as_array()?
+        .iter()
+        .filter_map(super::wire_host::toc_entry)
+        .collect();
+    Some(TocFacts {
+        rev,
+        fm: BTreeMap::new(),
+        toc,
+        words: 0,
+    })
 }
 
 /// The file rev the script last read for `path` — the doc-root token
@@ -745,14 +810,77 @@ fn read_stdin_source() -> Result<String, Fail> {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::io;
 
     use effects::{ReadPosition, ReadRecord, ScriptRecording, SecFacts, TocEntry, TocFacts};
+    use serde_json::{Value, json};
     use wire::HpathSeg;
 
-    use super::{ArmedEdit, PlanEdit, ReadFace, guarded};
+    use super::{ArmedEdit, Door, PlanEdit, ReadFace, guarded};
 
     const HERE: &str = "cards/one.md";
     const THERE: &str = "cards/two.md";
+
+    /// A door for the threading tests: answers a bare `toc` for any path with
+    /// a path-derived file rev and one `Notes` row, and counts its trips. The
+    /// recording-covered tests hand in [`NO_TRIPS`] — a covered row must not
+    /// spend a wire call.
+    struct MintDoor {
+        trips: Vec<String>,
+        refuse: bool,
+    }
+
+    impl MintDoor {
+        fn new() -> Self {
+            Self {
+                trips: Vec::new(),
+                refuse: false,
+            }
+        }
+
+        fn refusing() -> Self {
+            Self {
+                trips: Vec::new(),
+                refuse: true,
+            }
+        }
+    }
+
+    impl Door for MintDoor {
+        fn call(&mut self, request: &Value) -> io::Result<String> {
+            assert_eq!(
+                request["op"],
+                json!("toc"),
+                "the mint speaks one op: {request}"
+            );
+            let path = request["path"].as_str().expect("a path").to_owned();
+            self.trips.push(path.clone());
+            if self.refuse {
+                return Ok(r#"{"ok":false,"error":{"code":"io_error"}}"#.to_owned());
+            }
+            let stem = path.trim_end_matches(".md").replace('/', "-");
+            Ok(json!({"ok": true, "body": {
+                "path": path,
+                "file_rev": format!("{stem}-minted-file"),
+                "nodes": [
+                    {"kind": "heading", "level": 1, "hpath": [{"h": "Notes"}],
+                     "span": [0, 9], "node_rev": format!("{stem}-minted-note"),
+                     "text_prefix_16b": "# Notes\n"},
+                ],
+            }})
+            .to_string())
+        }
+    }
+
+    /// The door the covered tests hand in: any trip is a failure, because a
+    /// row the recording covers must never cost a wire call.
+    struct NoTrips;
+
+    impl Door for NoTrips {
+        fn call(&mut self, request: &Value) -> io::Result<String> {
+            panic!("a recording-covered row spent a wire trip: {request}")
+        }
+    }
 
     /// A toc read of `path`, publishing `file_rev` for the file and `note_rev`
     /// for its `Notes` section.
@@ -854,6 +982,7 @@ mod tests {
             section_read(HERE, "here-section"),
         ]);
         let rows = guarded(
+            &mut NoTrips,
             &[
                 arm(THERE, set_owner()),
                 arm(THERE, append_notes()),
@@ -881,24 +1010,60 @@ mod tests {
         assert_eq!(threaded(&rows[3]), Some("here-section"));
     }
 
-    /// The same law from the other side: a row whose target the script never
-    /// read threads NOTHING, even when some other file was read and its rev sits
-    /// right there in the recording. `rev: None` meets the engine's own teaching
-    /// refusal, which is the honest answer to writing what you did not read — a
-    /// path-blind lookup would instead hand it a stranger's token and satisfy
-    /// the wire's CAS check with a guard nobody's read backs.
+    /// The same lookup law under the CAS relaxation (ruling 2026-08-13): a row
+    /// whose target the script never read is tokened by the lane's OWN mint —
+    /// one bare `toc` trip, keyed by the row's path, never a stranger's token
+    /// from the recording. Another file's revs sitting right there must not
+    /// leak onto it; the mint is what keeps the lookup keyed while the read
+    /// ritual is gone.
     #[test]
-    fn a_row_targeting_an_unread_path_threads_no_rev() {
+    fn a_row_targeting_an_unread_path_mints_its_own_token() {
         let recording = recording(vec![
             toc_read(HERE, "here-file", "here-note"),
             section_read(HERE, "here-section"),
         ]);
+        let mut door = MintDoor::new();
         let rows = guarded(
+            &mut door,
             &[arm(THERE, set_owner()), arm(THERE, append_notes())],
             &recording,
         );
 
-        assert_eq!(threaded(&rows[0]), None, "set_property on an unread file");
-        assert_eq!(threaded(&rows[1]), None, "append into an unread file");
+        assert_eq!(
+            threaded(&rows[0]),
+            Some("cards-two-minted-file"),
+            "set_property on an unread file threads the MINTED doc-root token"
+        );
+        assert_eq!(
+            threaded(&rows[1]),
+            Some("cards-two-minted-note"),
+            "append into an unread file threads the MINTED node token"
+        );
+        assert_eq!(
+            door.trips,
+            vec![THERE.to_owned()],
+            "both grains ride ONE trip, and it names the row's own path"
+        );
+    }
+
+    /// Degrade is loud, never guessed: a mint the daemon refuses leaves the
+    /// row untokened, and the engine's own guard answers at the splice. No
+    /// retry, no second trip, no invented rev.
+    #[test]
+    fn a_refused_mint_leaves_the_row_untokened() {
+        let mut door = MintDoor::refusing();
+        let rows = guarded(
+            &mut door,
+            &[arm(THERE, set_owner()), arm(THERE, append_notes())],
+            &recording(Vec::new()),
+        );
+
+        assert_eq!(threaded(&rows[0]), None, "no guessed token");
+        assert_eq!(threaded(&rows[1]), None, "no guessed token");
+        assert_eq!(
+            door.trips,
+            vec![THERE.to_owned()],
+            "one refusal is the answer for every row on that path — no re-ask"
+        );
     }
 }

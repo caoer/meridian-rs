@@ -59,6 +59,7 @@ fn dispatch_of<'a>(source: &'a str, scratch: &'a tempfile::TempDir) -> BashDispa
         timeout: Duration::from_secs(30),
         actor: None,
         step_cwd: None,
+        delta: None,
     }
 }
 

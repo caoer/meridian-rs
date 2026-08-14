@@ -792,9 +792,9 @@ pub struct ScriptCtx {
     /// Effects mode (script-effects ruling, 2026-08-13): the effect builtins
     /// the program may use. Empty = the pure model, today's law word for
     /// word. Non-empty = the LIVE program model — `put()` dispatches to the
-    /// host and applies NOW; the named builtins (closed set: `run`) join the
-    /// globals. The kernel validates nothing here beyond membership — the
-    /// decode wall upstream owns the combination laws.
+    /// host and applies NOW; the named builtins (closed set: `run`,
+    /// `token_count`) join the globals. The kernel validates nothing here
+    /// beyond membership — the decode wall upstream owns the combination laws.
     pub effects: Vec<String>,
 }
 
@@ -904,6 +904,23 @@ pub trait ScriptHost: Send {
         let _ = (page, task, args, env, dry, line);
         Err(EffectFault {
             reason: "live effects are not supported on this lane".to_owned(),
+        })
+    }
+
+    /// Effects mode only: measure one `token_count()` NOW and answer the
+    /// count. The engine holds no tokenizer and no credentials — counting is
+    /// a harness `count_tokens` call, so only the lane handed a measuring
+    /// endpoint (§ A.7 `token_count_endpoint`) can serve it. The default
+    /// refuses "unbound": that covers the pure/entry-world host and the CLI
+    /// wire client, neither of which carries an endpoint.
+    ///
+    /// # Errors
+    /// [`EffectFault`] — the host's typed reason; the script aborts.
+    fn token_count_live(&mut self, text: &str) -> Result<i64, EffectFault> {
+        let _ = text;
+        Err(EffectFault {
+            reason: "token_count is unbound on this lane — no measuring endpoint was carried to it"
+                .to_owned(),
         })
     }
 }

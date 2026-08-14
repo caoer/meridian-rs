@@ -296,6 +296,7 @@ mod scenario {
                 actor: None,
                 exec: None,
                 depth: 0,
+                delta: None,
             },
         )
     }

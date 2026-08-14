@@ -1,0 +1,908 @@
+engine under test: /Users/Shared/worktrees/e7a794cc-mrs/target/release/mrd
+  sha256: 8d7f76415922c43b0cdf1073ab42cad53491230601a555c0872db5ab4d8e742f
+  TMPDIR: /Users/Shared/worktrees/e7a794cc/tmp
+
+cumulative-apply e2e: NOT IN THIS VERDICT — CCC_E2E_CLI is unset.
+  Cross-patch anchor interference over a REAL cli.js is therefore
+  UNTESTED by this run. The per-cell matrix is structurally blind to
+  it, so nothing else below covers it.
+  To include it:  CCC_E2E_CLI=<…>/cli.js just test
+  Or run it alone: CCC_E2E_CLI=<…>/cli.js just test-e2e
+
+Starting transcript unit tests...
+=== RUN   TestAnnotateInjections
+--- PASS: TestAnnotateInjections (0.00s)
+=== RUN   TestAnnotateInjections_EmptyMap
+--- PASS: TestAnnotateInjections_EmptyMap (0.00s)
+=== RUN   TestAnnotateInjections_NilMessage
+--- PASS: TestAnnotateInjections_NilMessage (0.00s)
+=== RUN   TestBuildMarksRewoundBranches
+--- PASS: TestBuildMarksRewoundBranches (0.00s)
+=== RUN   TestBuildLinearChainNoRewound
+--- PASS: TestBuildLinearChainNoRewound (0.00s)
+=== RUN   TestBuildActiveLeafSkipsSidechains
+--- PASS: TestBuildActiveLeafSkipsSidechains (0.00s)
+=== RUN   TestBuildAssignsBranchIDs
+--- PASS: TestBuildAssignsBranchIDs (0.00s)
+=== RUN   TestOutlineShowsBranchIdentity
+--- PASS: TestOutlineShowsBranchIdentity (0.00s)
+=== RUN   TestOutlineShowsRewoundTag
+--- PASS: TestOutlineShowsRewoundTag (0.00s)
+=== RUN   TestChainBuilderBasic
+--- PASS: TestChainBuilderBasic (0.00s)
+=== RUN   TestChainBuilderWithOrphans
+--- PASS: TestChainBuilderWithOrphans (0.00s)
+=== RUN   TestChainBuilderNoHead
+--- PASS: TestChainBuilderNoHead (0.00s)
+=== RUN   TestChainBuilderWithSummary
+--- PASS: TestChainBuilderWithSummary (0.00s)
+=== RUN   TestFilterLastNMessages
+=== RUN   TestFilterLastNMessages/Last_2_user_messages
+=== RUN   TestFilterLastNMessages/Last_1_assistant_message
+--- PASS: TestFilterLastNMessages (0.00s)
+    --- PASS: TestFilterLastNMessages/Last_2_user_messages (0.00s)
+    --- PASS: TestFilterLastNMessages/Last_1_assistant_message (0.00s)
+=== RUN   TestFilterBySidechain
+--- PASS: TestFilterBySidechain (0.00s)
+=== RUN   TestFilterByToolName
+--- PASS: TestFilterByToolName (0.00s)
+=== RUN   TestE2E_RealTranscriptParsing
+    e2e_test.go:18: Skipping E2E test in short mode
+--- SKIP: TestE2E_RealTranscriptParsing (0.00s)
+=== RUN   TestE2E_SpecificSessionParsing
+    e2e_test.go:217: Skipping E2E test in short mode
+--- SKIP: TestE2E_SpecificSessionParsing (0.00s)
+=== RUN   TestE2E_LargeTranscriptPerformance
+    e2e_test.go:285: Skipping performance test in short mode
+--- SKIP: TestE2E_LargeTranscriptPerformance (0.00s)
+=== RUN   TestParseSubagentFilename
+=== RUN   TestParseSubagentFilename/agent-accc_memory_extract-cf02c219722522b1.jsonl
+=== RUN   TestParseSubagentFilename/agent-asession_memory-ed9c3b0098757036.jsonl
+=== RUN   TestParseSubagentFilename/agent-some_agent-deadbeef12345678.jsonl
+=== RUN   TestParseSubagentFilename/agent-simple.jsonl
+--- PASS: TestParseSubagentFilename (0.00s)
+    --- PASS: TestParseSubagentFilename/agent-accc_memory_extract-cf02c219722522b1.jsonl (0.00s)
+    --- PASS: TestParseSubagentFilename/agent-asession_memory-ed9c3b0098757036.jsonl (0.00s)
+    --- PASS: TestParseSubagentFilename/agent-some_agent-deadbeef12345678.jsonl (0.00s)
+    --- PASS: TestParseSubagentFilename/agent-simple.jsonl (0.00s)
+=== RUN   TestIsHex
+=== RUN   TestIsHex/cf02c219722522b1
+=== RUN   TestIsHex/DEADBEEF
+=== RUN   TestIsHex/0123456789abcdef
+=== RUN   TestIsHex/not-hex
+=== RUN   TestIsHex/#00
+=== RUN   TestIsHex/12345xyz
+--- PASS: TestIsHex (0.00s)
+    --- PASS: TestIsHex/cf02c219722522b1 (0.00s)
+    --- PASS: TestIsHex/DEADBEEF (0.00s)
+    --- PASS: TestIsHex/0123456789abcdef (0.00s)
+    --- PASS: TestIsHex/not-hex (0.00s)
+    --- PASS: TestIsHex/#00 (0.00s)
+    --- PASS: TestIsHex/12345xyz (0.00s)
+=== RUN   TestDiscoverForkTranscripts
+=== RUN   TestDiscoverForkTranscripts/No_subagents_directory
+=== RUN   TestDiscoverForkTranscripts/With_subagent_transcripts
+=== RUN   TestDiscoverForkTranscripts/Empty_subagents_directory
+--- PASS: TestDiscoverForkTranscripts (0.00s)
+    --- PASS: TestDiscoverForkTranscripts/No_subagents_directory (0.00s)
+    --- PASS: TestDiscoverForkTranscripts/With_subagent_transcripts (0.00s)
+    --- PASS: TestDiscoverForkTranscripts/Empty_subagents_directory (0.00s)
+=== RUN   TestReadForkChain
+--- PASS: TestReadForkChain (0.00s)
+=== RUN   TestReadAllForkChains
+--- PASS: TestReadAllForkChains (0.00s)
+=== RUN   TestForkFlagFiltering
+--- PASS: TestForkFlagFiltering (0.00s)
+=== RUN   TestForkFormatting
+=== RUN   TestForkFormatting/Pretty_format
+=== RUN   TestForkFormatting/Markdown_format
+=== RUN   TestForkFormatting/Compact_format
+--- PASS: TestForkFormatting (0.00s)
+    --- PASS: TestForkFormatting/Pretty_format (0.00s)
+    --- PASS: TestForkFormatting/Markdown_format (0.00s)
+    --- PASS: TestForkFormatting/Compact_format (0.00s)
+=== RUN   TestExtractInjectedCollectsAttachmentEntries
+--- PASS: TestExtractInjectedCollectsAttachmentEntries (0.00s)
+=== RUN   TestExtractInjectedHookRecords
+--- PASS: TestExtractInjectedHookRecords (0.00s)
+=== RUN   TestExtractInjectedStructuredTypes
+--- PASS: TestExtractInjectedStructuredTypes (0.00s)
+=== RUN   TestFormatInjected
+--- PASS: TestFormatInjected (0.00s)
+=== RUN   TestParseXrayJSONL
+--- PASS: TestParseXrayJSONL (0.00s)
+=== RUN   TestParseXrayJSONLFlagsDuplicateSends
+--- PASS: TestParseXrayJSONLFlagsDuplicateSends (0.00s)
+=== RUN   TestParseXrayJSONLLegacyFormat
+--- PASS: TestParseXrayJSONLLegacyFormat (0.00s)
+=== RUN   TestFormatInjectedShowsOccurrences
+--- PASS: TestFormatInjectedShowsOccurrences (0.00s)
+=== RUN   TestMergeInjectedSortsByTimestamp
+--- PASS: TestMergeInjectedSortsByTimestamp (0.00s)
+=== RUN   TestOutlineSemanticLabels
+--- PASS: TestOutlineSemanticLabels (0.00s)
+=== RUN   TestOutlineOriginLabels
+--- PASS: TestOutlineOriginLabels (0.00s)
+=== RUN   TestOutlineWorkRunAnnotation
+--- PASS: TestOutlineWorkRunAnnotation (0.00s)
+=== RUN   TestOutlineRunAttribution
+--- PASS: TestOutlineRunAttribution (0.00s)
+=== RUN   TestOutlineTaskAndAuqLines
+--- PASS: TestOutlineTaskAndAuqLines (0.00s)
+=== RUN   TestOutlineHeaderTurnsHiddenErrors
+--- PASS: TestOutlineHeaderTurnsHiddenErrors (0.00s)
+=== RUN   TestOutlineKNotationSizes
+--- PASS: TestOutlineKNotationSizes (0.00s)
+=== RUN   TestMarkdownSkipHeader
+--- PASS: TestMarkdownSkipHeader (0.00s)
+=== RUN   TestParseIndexSpec
+--- PASS: TestParseIndexSpec (0.00s)
+=== RUN   TestSelectByIndex
+--- PASS: TestSelectByIndex (0.00s)
+=== RUN   TestFormatOutlineFooterPrintsTheLaneItWasGiven
+--- PASS: TestFormatOutlineFooterPrintsTheLaneItWasGiven (0.00s)
+=== RUN   TestFormatOutlineFoldsRuns
+--- PASS: TestFormatOutlineFoldsRuns (0.00s)
+=== RUN   TestFormatOutlineShowsHiddenCount
+--- PASS: TestFormatOutlineShowsHiddenCount (0.00s)
+=== RUN   TestMakePreviewUTF8Safe
+--- PASS: TestMakePreviewUTF8Safe (0.00s)
+=== RUN   TestOutlineUTF8ValidOnCJKChain
+--- PASS: TestOutlineUTF8ValidOnCJKChain (0.00s)
+=== RUN   TestOutlineIndexConsistencyUnderFilter
+--- PASS: TestOutlineIndexConsistencyUnderFilter (0.00s)
+=== RUN   TestFormatOutlineEndsWithRun
+--- PASS: TestFormatOutlineEndsWithRun (0.00s)
+=== RUN   TestFormatUsageSummary
+--- PASS: TestFormatUsageSummary (0.00s)
+=== RUN   TestFormatterDisplayIndices
+--- PASS: TestFormatterDisplayIndices (0.00s)
+=== RUN   TestExtractSessionIDFromPath
+=== RUN   TestExtractSessionIDFromPath/Standard_UUID_format
+=== RUN   TestExtractSessionIDFromPath/Session_prefix_format
+=== RUN   TestExtractSessionIDFromPath/Complex_path
+--- PASS: TestExtractSessionIDFromPath (0.00s)
+    --- PASS: TestExtractSessionIDFromPath/Standard_UUID_format (0.00s)
+    --- PASS: TestExtractSessionIDFromPath/Session_prefix_format (0.00s)
+    --- PASS: TestExtractSessionIDFromPath/Complex_path (0.00s)
+=== RUN   TestParseTimestamp
+=== RUN   TestParseTimestamp/Valid_ISO_8601
+=== RUN   TestParseTimestamp/Empty_string
+=== RUN   TestParseTimestamp/Invalid_format
+--- PASS: TestParseTimestamp (0.00s)
+    --- PASS: TestParseTimestamp/Valid_ISO_8601 (0.00s)
+    --- PASS: TestParseTimestamp/Empty_string (0.00s)
+    --- PASS: TestParseTimestamp/Invalid_format (0.00s)
+=== RUN   TestNewReaderFromPath
+--- PASS: TestNewReaderFromPath (0.00s)
+=== RUN   TestReaderReadAll
+--- PASS: TestReaderReadAll (0.00s)
+=== RUN   TestReaderReadAllWithInvalidLines
+Warning: failed to parse line 2: invalid character 'i' looking for beginning of value
+Warning: failed to parse line 4: invalid character 'a' looking for beginning of value
+--- PASS: TestReaderReadAllWithInvalidLines (0.00s)
+=== RUN   TestFilterRawEntries
+=== RUN   TestFilterRawEntries/Exclude_system_messages
+=== RUN   TestFilterRawEntries/Exclude_sidechains
+=== RUN   TestFilterRawEntries/Filter_by_tool_name
+--- PASS: TestFilterRawEntries (0.00s)
+    --- PASS: TestFilterRawEntries/Exclude_system_messages (0.00s)
+    --- PASS: TestFilterRawEntries/Exclude_sidechains (0.00s)
+    --- PASS: TestFilterRawEntries/Filter_by_tool_name (0.00s)
+=== RUN   TestStripANSI_LeavesBracketTextIntact
+--- PASS: TestStripANSI_LeavesBracketTextIntact (0.00s)
+=== RUN   TestStripANSI_StillStripsRealSequences
+--- PASS: TestStripANSI_StillStripsRealSequences (0.00s)
+PASS
+ok  	github.com/caoer/ccc-statusd/transcript	0.433s
+Starting patchkit + patch-folder tests...
+=== RUN   TestApplySplicesAndReports
+--- PASS: TestApplySplicesAndReports (0.00s)
+=== RUN   TestApplyIdempotencyShortCircuit
+--- PASS: TestApplyIdempotencyShortCircuit (0.00s)
+=== RUN   TestApplyNoMatchIsLoud
+--- PASS: TestApplyNoMatchIsLoud (0.00s)
+=== RUN   TestApplyAmbiguousSpliceTargetRefuses
+--- PASS: TestApplyAmbiguousSpliceTargetRefuses (0.00s)
+=== RUN   TestApplyWithDepsSequence
+--- PASS: TestApplyWithDepsSequence (0.00s)
+=== RUN   TestApplyWithDepsAbortsOnDepFailure
+--- PASS: TestApplyWithDepsAbortsOnDepFailure (0.00s)
+=== RUN   TestFindRegexHoles
+--- PASS: TestFindRegexHoles (0.00s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patchkit	(cached)
+?   	github.com/caoer/ccc-statusd/patchkit/cmd/matrix	[no test files]
+?   	github.com/caoer/ccc-statusd/patchkit/patches	[no test files]
+=== RUN   TestFindDerivesSymbolsFromLiveContent
+--- PASS: TestFindDerivesSymbolsFromLiveContent (0.00s)
+=== RUN   TestApplyRemovesGuardAndForcesVerbose
+--- PASS: TestApplyRemovesGuardAndForcesVerbose (0.00s)
+=== RUN   TestFindFailsLoud
+--- PASS: TestFindFailsLoud (0.00s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patches/always-show-thinking	(cached)
+=== RUN   TestFindDerivesSymbolsFromLiveContent
+--- PASS: TestFindDerivesSymbolsFromLiveContent (0.00s)
+=== RUN   TestApplySuppressesRegistration
+--- PASS: TestApplySuppressesRegistration (0.00s)
+=== RUN   TestFindFailsLoud
+--- PASS: TestFindFailsLoud (0.00s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patches/artifact-design-off	(cached)
+=== RUN   TestCoApplySlugOrderNoSkip
+--- PASS: TestCoApplySlugOrderNoSkip (0.00s)
+=== RUN   TestFindDerivesIdentifiersFromLiveContent
+--- PASS: TestFindDerivesIdentifiersFromLiveContent (0.00s)
+=== RUN   TestApplyGatesTheCountdownOnTheKillSwitch
+--- PASS: TestApplyGatesTheCountdownOnTheKillSwitch (0.00s)
+=== RUN   TestFindFailsLoud
+--- PASS: TestFindFailsLoud (0.00s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patches/auq-afk-off	(cached)
+=== RUN   TestFindDerivesSymbolsFromLiveContent
+--- PASS: TestFindDerivesSymbolsFromLiveContent (0.00s)
+=== RUN   TestApplyAppendsNotifierAfterHookCall
+--- PASS: TestApplyAppendsNotifierAfterHookCall (0.00s)
+=== RUN   TestFindFailsLoud
+--- PASS: TestFindFailsLoud (0.00s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patches/auq-open-notify	(cached)
+=== RUN   TestFindDerivesSymbolsFromLiveContent
+--- PASS: TestFindDerivesSymbolsFromLiveContent (0.00s)
+=== RUN   TestApplyWrapsAnswerCallback
+--- PASS: TestApplyWrapsAnswerCallback (0.00s)
+=== RUN   TestFindFailsLoud
+--- PASS: TestFindFailsLoud (0.00s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patches/auq-resolve-hook	(cached)
+=== RUN   TestFindDerivesSymbolsFromLiveContent
+--- PASS: TestFindDerivesSymbolsFromLiveContent (0.00s)
+=== RUN   TestApplyInjectsBothBlocksAndStaysValidJS
+--- PASS: TestApplyInjectsBothBlocksAndStaysValidJS (0.04s)
+=== RUN   TestSpliceEmitsNoForeignMarker
+--- PASS: TestSpliceEmitsNoForeignMarker (0.00s)
+=== RUN   TestFindFailsLoud
+--- PASS: TestFindFailsLoud (0.00s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patches/bash-env-export	0.382s
+=== RUN   TestFindLocatesTupleWithZeroSymbols
+--- PASS: TestFindLocatesTupleWithZeroSymbols (0.00s)
+=== RUN   TestApplyChainsReplaceAndEmitsMarker
+--- PASS: TestApplyChainsReplaceAndEmitsMarker (0.00s)
+=== RUN   TestApplyParsesUnderNode
+--- PASS: TestApplyParsesUnderNode (0.04s)
+=== RUN   TestFindFailsLoud
+--- PASS: TestFindFailsLoud (0.00s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patches/bfs-flex	0.707s
+=== RUN   TestFindDerivesGateSymbols
+--- PASS: TestFindDerivesGateSymbols (0.05s)
+=== RUN   TestApplyRewritesGateToEnabled
+--- PASS: TestApplyRewritesGateToEnabled (0.04s)
+=== RUN   TestPatchedGateParses
+--- PASS: TestPatchedGateParses (0.09s)
+=== RUN   TestFindFailsLoud
+--- PASS: TestFindFailsLoud (0.14s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patches/computer-use-unlock	1.266s
+=== RUN   TestFindLocatesBothSites
+--- PASS: TestFindLocatesBothSites (0.00s)
+=== RUN   TestApplyNeutralizesBothSites
+--- PASS: TestApplyNeutralizesBothSites (0.00s)
+=== RUN   TestFindFailsLoud
+--- PASS: TestFindFailsLoud (0.00s)
+=== RUN   TestWindowGrowsPastSharedLeftContext
+--- PASS: TestWindowGrowsPastSharedLeftContext (0.00s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patches/disable-root-check	(cached)
+=== RUN   TestFindDerivesBothRenderersFromLiveContent
+--- PASS: TestFindDerivesBothRenderersFromLiveContent (0.00s)
+=== RUN   TestApplyRoutesBothContextObjectsThroughThePolicy
+--- PASS: TestApplyRoutesBothContextObjectsThroughThePolicy (0.00s)
+=== RUN   TestFindFailsLoud
+--- PASS: TestFindFailsLoud (0.00s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patches/dynamic-section-control	(cached)
+=== RUN   TestFindDerivesGuardsFromLiveContent
+--- PASS: TestFindDerivesGuardsFromLiveContent (0.00s)
+=== RUN   TestApplyInjectsBothResolvers
+--- PASS: TestApplyInjectsBothResolvers (0.00s)
+=== RUN   TestFindFailsLoud
+--- PASS: TestFindFailsLoud (0.00s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patches/feature-flag-local-override	(cached)
+=== RUN   TestApplyEveryPlatform_216
+=== RUN   TestApplyEveryPlatform_216/darwin-arm64
+=== RUN   TestApplyEveryPlatform_216/darwin-x64
+=== RUN   TestApplyEveryPlatform_216/linux-arm64
+=== RUN   TestApplyEveryPlatform_216/linux-x64
+--- PASS: TestApplyEveryPlatform_216 (11.61s)
+    --- PASS: TestApplyEveryPlatform_216/darwin-arm64 (2.90s)
+    --- PASS: TestApplyEveryPlatform_216/darwin-x64 (2.95s)
+    --- PASS: TestApplyEveryPlatform_216/linux-arm64 (2.90s)
+    --- PASS: TestApplyEveryPlatform_216/linux-x64 (2.87s)
+=== RUN   TestApplyEveryPlatform_218
+=== RUN   TestApplyEveryPlatform_218/darwin-arm64
+=== RUN   TestApplyEveryPlatform_218/darwin-x64
+=== RUN   TestApplyEveryPlatform_218/linux-arm64
+=== RUN   TestApplyEveryPlatform_218/linux-x64
+--- PASS: TestApplyEveryPlatform_218 (12.03s)
+    --- PASS: TestApplyEveryPlatform_218/darwin-arm64 (3.02s)
+    --- PASS: TestApplyEveryPlatform_218/darwin-x64 (3.06s)
+    --- PASS: TestApplyEveryPlatform_218/linux-arm64 (3.01s)
+    --- PASS: TestApplyEveryPlatform_218/linux-x64 (2.95s)
+=== RUN   TestApplyEveryPlatform_220
+=== RUN   TestApplyEveryPlatform_220/darwin-arm64
+=== RUN   TestApplyEveryPlatform_220/darwin-x64
+=== RUN   TestApplyEveryPlatform_220/linux-arm64
+=== RUN   TestApplyEveryPlatform_220/linux-x64
+--- PASS: TestApplyEveryPlatform_220 (16.83s)
+    --- PASS: TestApplyEveryPlatform_220/darwin-arm64 (3.05s)
+    --- PASS: TestApplyEveryPlatform_220/darwin-x64 (3.01s)
+    --- PASS: TestApplyEveryPlatform_220/linux-arm64 (4.89s)
+    --- PASS: TestApplyEveryPlatform_220/linux-x64 (5.89s)
+=== RUN   TestForkIsMarkedToTripRecursionGuard
+=== RUN   TestForkIsMarkedToTripRecursionGuard/2.1.216
+=== RUN   TestForkIsMarkedToTripRecursionGuard/2.1.218
+=== RUN   TestForkIsMarkedToTripRecursionGuard/2.1.220
+--- PASS: TestForkIsMarkedToTripRecursionGuard (11.68s)
+    --- PASS: TestForkIsMarkedToTripRecursionGuard/2.1.216 (6.94s)
+    --- PASS: TestForkIsMarkedToTripRecursionGuard/2.1.218 (2.38s)
+    --- PASS: TestForkIsMarkedToTripRecursionGuard/2.1.220 (2.37s)
+=== RUN   TestForkInheritsParentConversation
+=== RUN   TestForkInheritsParentConversation/2.1.216
+=== RUN   TestForkInheritsParentConversation/2.1.218
+=== RUN   TestForkInheritsParentConversation/2.1.220
+--- PASS: TestForkInheritsParentConversation (7.20s)
+    --- PASS: TestForkInheritsParentConversation/2.1.216 (2.30s)
+    --- PASS: TestForkInheritsParentConversation/2.1.218 (2.38s)
+    --- PASS: TestForkInheritsParentConversation/2.1.220 (2.52s)
+=== RUN   TestForkDoesNotUseLiveMessages
+--- PASS: TestForkDoesNotUseLiveMessages (2.45s)
+=== RUN   TestRecursionGuardKnowsBothContexts
+=== RUN   TestRecursionGuardKnowsBothContexts/2.1.216
+=== RUN   TestRecursionGuardKnowsBothContexts/2.1.218
+=== RUN   TestRecursionGuardKnowsBothContexts/2.1.220
+--- PASS: TestRecursionGuardKnowsBothContexts (7.90s)
+    --- PASS: TestRecursionGuardKnowsBothContexts/2.1.216 (2.56s)
+    --- PASS: TestRecursionGuardKnowsBothContexts/2.1.218 (2.68s)
+    --- PASS: TestRecursionGuardKnowsBothContexts/2.1.220 (2.66s)
+=== RUN   TestFindFailsLoudOnDrift
+--- PASS: TestFindFailsLoudOnDrift (0.00s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patches/fork-with-history	73.825s
+=== RUN   TestFindDerivesHeadersVarFromLiveContent
+--- PASS: TestFindDerivesHeadersVarFromLiveContent (0.00s)
+=== RUN   TestApplyInjectsHeaderAfterSessionId
+--- PASS: TestApplyInjectsHeaderAfterSessionId (0.00s)
+=== RUN   TestFindFailsLoud
+--- PASS: TestFindFailsLoud (0.00s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patches/mcp-http-cwd-header	(cached)
+=== RUN   TestFindDerivesSymbolsFromLiveContent
+--- PASS: TestFindDerivesSymbolsFromLiveContent (0.00s)
+=== RUN   TestApplyRebindsCallerArgsWithMeta
+--- PASS: TestApplyRebindsCallerArgsWithMeta (0.00s)
+=== RUN   TestFindFailsLoud
+--- PASS: TestFindFailsLoud (0.00s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patches/mcp-session-id-in-request	(cached)
+=== RUN   TestFindDerivesSymbolsFromLiveContent
+--- PASS: TestFindDerivesSymbolsFromLiveContent (0.00s)
+=== RUN   TestApplyNeutralizesPredicateKeepsPush
+--- PASS: TestApplyNeutralizesPredicateKeepsPush (0.00s)
+=== RUN   TestFindFailsLoud
+--- PASS: TestFindFailsLoud (0.00s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patches/no-redacted-thinking	(cached)
+=== RUN   TestDarwinMemoizedSwap
+--- PASS: TestDarwinMemoizedSwap (0.12s)
+=== RUN   TestDarwinNonMemoizedSwap
+--- PASS: TestDarwinNonMemoizedSwap (0.09s)
+=== RUN   TestLinuxIsMarkerOnlyNoOp
+=== RUN   TestLinuxIsMarkerOnlyNoOp/memoized
+=== RUN   TestLinuxIsMarkerOnlyNoOp/non-memoized
+--- PASS: TestLinuxIsMarkerOnlyNoOp (0.26s)
+    --- PASS: TestLinuxIsMarkerOnlyNoOp/memoized (0.13s)
+    --- PASS: TestLinuxIsMarkerOnlyNoOp/non-memoized (0.13s)
+=== RUN   TestFindFailsLoud
+--- PASS: TestFindFailsLoud (0.19s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patches/profile-local-storage	4.477s
+=== RUN   TestFindDerivesEightSplices
+--- PASS: TestFindDerivesEightSplices (0.00s)
+=== RUN   TestApplyRebalancesAndStaysValidJS
+--- PASS: TestApplyRebalancesAndStaysValidJS (0.04s)
+=== RUN   TestFindFailsLoudOnDrift
+--- PASS: TestFindFailsLoudOnDrift (0.00s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patches/prompt-rebalance	1.280s
+=== RUN   TestFindDerivesHolesAsSymbols
+--- PASS: TestFindDerivesHolesAsSymbols (0.12s)
+=== RUN   TestApplyWrapsNextAndStaysValidJS
+--- PASS: TestApplyWrapsNextAndStaysValidJS (0.11s)
+=== RUN   TestFindFailsLoudOnDrift
+--- PASS: TestFindFailsLoudOnDrift (0.19s)
+=== RUN   TestCoApplySlugOrderNoSkip
+--- PASS: TestCoApplySlugOrderNoSkip (0.07s)
+=== RUN   TestApplyAllSlugOrder
+--- PASS: TestApplyAllSlugOrder (0.06s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patches/queued-commands-expose	3.722s
+=== RUN   TestFindDerivesAllThreePatchPoints
+--- PASS: TestFindDerivesAllThreePatchPoints (0.00s)
+=== RUN   TestApplyAllSplicesAndStaysValidJS
+--- PASS: TestApplyAllSplicesAndStaysValidJS (0.04s)
+=== RUN   TestFindFailsLoudOnDrift
+--- PASS: TestFindFailsLoudOnDrift (0.00s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patches/raw-mode-loop-fix	1.596s
+=== RUN   TestFindDerivesSymbolsFromLiveContent
+--- PASS: TestFindDerivesSymbolsFromLiveContent (0.00s)
+=== RUN   TestApplyInjectsBetweenDepsCloseAndNextVar
+--- PASS: TestApplyInjectsBetweenDepsCloseAndNextVar (0.00s)
+=== RUN   TestFindFailsLoud
+--- PASS: TestFindFailsLoud (0.00s)
+=== RUN   TestDoesNotMatchRewindSite
+--- PASS: TestDoesNotMatchRewindSite (0.00s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patches/resume-expose	(cached)
+=== RUN   TestFindDerivesSymbolsFromLiveContent
+--- PASS: TestFindDerivesSymbolsFromLiveContent (0.00s)
+=== RUN   TestApplyInjectsBetweenDepsCloseAndNextVar
+--- PASS: TestApplyInjectsBetweenDepsCloseAndNextVar (0.00s)
+=== RUN   TestFindFailsLoud
+--- PASS: TestFindFailsLoud (0.00s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patches/rewind-expose	(cached)
+=== RUN   TestFindDerivesWrapperFromLiveContent
+--- PASS: TestFindDerivesWrapperFromLiveContent (0.00s)
+=== RUN   TestApplyWrapsStdinAndExposes
+--- PASS: TestApplyWrapsStdinAndExposes (0.00s)
+=== RUN   TestFindFailsLoud
+--- PASS: TestFindFailsLoud (0.00s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patches/sdk-input-exposure	(cached)
+=== RUN   TestFindLocatesTheSensitiveFileBranch
+--- PASS: TestFindLocatesTheSensitiveFileBranch (0.00s)
+=== RUN   TestApplyDeadsTheBranch
+--- PASS: TestApplyDeadsTheBranch (0.00s)
+=== RUN   TestNoMatchIsLoud
+--- PASS: TestNoMatchIsLoud (0.00s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patches/sensitive-file-gate-off	(cached)
+=== RUN   TestFindDerivesAllThreeSites
+--- PASS: TestFindDerivesAllThreeSites (0.04s)
+=== RUN   TestApplyAllSplicesAndStaysValidJS
+--- PASS: TestApplyAllSplicesAndStaysValidJS (0.08s)
+=== RUN   TestFindFailsLoudOnDrift
+--- PASS: TestFindFailsLoudOnDrift (0.13s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patches/session-id-sync	3.119s
+=== RUN   TestFindDerivesGuardFromLiveContent
+--- PASS: TestFindDerivesGuardFromLiveContent (0.00s)
+=== RUN   TestApplyInjectsConcurrencyProperty
+--- PASS: TestApplyInjectsConcurrencyProperty (0.00s)
+=== RUN   TestFindFailsLoud
+--- PASS: TestFindFailsLoud (0.00s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patches/skill-concurrency	(cached)
+=== RUN   TestCoApplySlugOrderNoSkip
+--- PASS: TestCoApplySlugOrderNoSkip (0.13s)
+=== RUN   TestApplyAllSlugOrder
+--- PASS: TestApplyAllSlugOrder (0.06s)
+=== RUN   TestFindDerivesEverySite
+--- PASS: TestFindDerivesEverySite (0.06s)
+=== RUN   TestApplyBothCapabilitiesAtSharedSites
+--- PASS: TestApplyBothCapabilitiesAtSharedSites (0.09s)
+=== RUN   TestFindFailsLoudOnDrift
+--- PASS: TestFindFailsLoudOnDrift (0.09s)
+=== RUN   TestPatchesEverySkillLoaderPath
+--- PASS: TestPatchesEverySkillLoaderPath (0.11s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patches/skill-deps-xml-safe	4.041s
+=== RUN   TestFindDerivesSymbolsFromLiveContent
+--- PASS: TestFindDerivesSymbolsFromLiveContent (0.00s)
+=== RUN   TestApplyDeletesPermissionBlock
+--- PASS: TestApplyDeletesPermissionBlock (0.00s)
+=== RUN   TestSubscriptRawOperandTolerated
+--- PASS: TestSubscriptRawOperandTolerated (0.00s)
+=== RUN   TestFindFailsLoud
+--- PASS: TestFindFailsLoud (0.00s)
+=== RUN   TestCoApplySlugOrderNoSkip
+--- PASS: TestCoApplySlugOrderNoSkip (0.00s)
+=== RUN   TestSentinelFailsLoudNotSilentAlready
+--- PASS: TestSentinelFailsLoudNotSilentAlready (0.00s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patches/skill-shell-permission-skip	(cached)
+=== RUN   TestFindDerivesSymbolsFromLiveContent
+--- PASS: TestFindDerivesSymbolsFromLiveContent (0.00s)
+=== RUN   TestApplyNeutralisesAllFiveSites
+--- PASS: TestApplyNeutralisesAllFiveSites (0.00s)
+=== RUN   TestFindFailsLoud
+--- PASS: TestFindFailsLoud (0.00s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patches/skip-must-read-check	(cached)
+=== RUN   TestFindDerivesSymbolsFromLiveContent
+--- PASS: TestFindDerivesSymbolsFromLiveContent (0.00s)
+=== RUN   TestApplyInjectsBetweenHelperCloseAndNextVar
+--- PASS: TestApplyInjectsBetweenHelperCloseAndNextVar (0.00s)
+=== RUN   TestFindFailsLoud
+--- PASS: TestFindFailsLoud (0.00s)
+=== RUN   TestCoApplySlugOrderNoSkip
+--- PASS: TestCoApplySlugOrderNoSkip (0.00s)
+=== RUN   TestSentinelIdempotencyPayloadIndependent
+--- PASS: TestSentinelIdempotencyPayloadIndependent (0.00s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patches/socket-injection	(cached)
+=== RUN   TestFindDerivesSymbolsFromLiveContent
+--- PASS: TestFindDerivesSymbolsFromLiveContent (0.00s)
+=== RUN   TestApplyInjectsAtUseEffectBodyOpen
+--- PASS: TestApplyInjectsAtUseEffectBodyOpen (0.00s)
+=== RUN   TestFindFailsLoud
+--- PASS: TestFindFailsLoud (0.00s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patches/statusline-refresh	(cached)
+=== RUN   TestFindDerivesSchemaFnFromLiveContent
+--- PASS: TestFindDerivesSchemaFnFromLiveContent (0.00s)
+=== RUN   TestApplyExposesToolInInputSchemaGetter
+--- PASS: TestApplyExposesToolInInputSchemaGetter (0.00s)
+=== RUN   TestFindFailsLoud
+--- PASS: TestFindFailsLoud (0.00s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patches/subagent-expose	(cached)
+=== RUN   TestFindDerivesCounterSymbols
+--- PASS: TestFindDerivesCounterSymbols (0.04s)
+=== RUN   TestApplyAliasesCounterAndStaysValidJS
+--- PASS: TestApplyAliasesCounterAndStaysValidJS (0.08s)
+=== RUN   TestFindFailsLoudOnDrift
+--- PASS: TestFindFailsLoudOnDrift (0.09s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patches/token-counter-expose	2.749s
+=== RUN   TestFindDerivesSymbolsFromLiveContent
+--- PASS: TestFindDerivesSymbolsFromLiveContent (0.00s)
+=== RUN   TestApplyWrapsUnconditionalAndGatesOnMemGate
+--- PASS: TestApplyWrapsUnconditionalAndGatesOnMemGate (0.00s)
+=== RUN   TestFindFailsLoud
+--- PASS: TestFindFailsLoud (0.00s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patches/turn-end-always	(cached)
+=== RUN   TestFindDerivesSymbolsFromLiveContent
+--- PASS: TestFindDerivesSymbolsFromLiveContent (0.00s)
+=== RUN   TestApplyWrapsGuardAndAppendsHook
+--- PASS: TestApplyWrapsGuardAndAppendsHook (0.00s)
+=== RUN   TestFindFailsLoud
+--- PASS: TestFindFailsLoud (0.00s)
+=== RUN   TestCoApplySlugOrderNoSkip
+--- PASS: TestCoApplySlugOrderNoSkip (0.00s)
+=== RUN   TestApplyAllSlugOrder
+--- PASS: TestApplyAllSlugOrder (0.00s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patches/turn-end-hook	(cached)
+=== RUN   TestFindDerivesSymbolsFromLiveContent
+--- PASS: TestFindDerivesSymbolsFromLiveContent (0.00s)
+=== RUN   TestFindDerivesLegacyTextShape
+--- PASS: TestFindDerivesLegacyTextShape (0.00s)
+=== RUN   TestApplyIsValidAndIdempotent
+=== RUN   TestApplyIsValidAndIdempotent/modern
+=== RUN   TestApplyIsValidAndIdempotent/legacy
+--- PASS: TestApplyIsValidAndIdempotent (0.08s)
+    --- PASS: TestApplyIsValidAndIdempotent/modern (0.05s)
+    --- PASS: TestApplyIsValidAndIdempotent/legacy (0.03s)
+=== RUN   TestFindFailsLoud
+--- PASS: TestFindFailsLoud (0.00s)
+=== RUN   TestPatchedResultCarriesProvenance
+=== RUN   TestPatchedResultCarriesProvenance/modern
+    patch_test.go:173: patched tool_result:
+        Web search results for query: "q"
+        
+        Links: [{"n":1,"title":"T1","url":"https://a.example/1","page_age":"1 day ago"},{"n":2,"title":"T2","url":"https://b.example/2","page_age":null,"cited":false},{"n":3,"title":"T3","url":"https://c.example/3","page_age":null}]
+        
+        Sonnet 5 shipped. [1] It is fast. Also cheap. [3,1]
+        
+        
+        REMINDER: cite the sources you actually used, as markdown hyperlinks. The [n] markers show which result supports which claim; do not cite a result you did not use.
+=== RUN   TestPatchedResultCarriesProvenance/legacy
+    patch_test.go:173: patched tool_result:
+        Web search results for query: "q"
+        
+        Links: [{"n":1,"title":"T1","url":"https://a.example/1","page_age":"1 day ago"},{"n":2,"title":"T2","url":"https://b.example/2","page_age":null,"cited":false},{"n":3,"title":"T3","url":"https://c.example/3","page_age":null}]
+        
+        Sonnet 5 shipped. [1] It is fast. Also cheap. [3,1]
+        
+        
+        REMINDER: cite the sources you actually used, as markdown hyperlinks. The [n] markers show which result supports which claim; do not cite a result you did not use.
+--- PASS: TestPatchedResultCarriesProvenance (0.07s)
+    --- PASS: TestPatchedResultCarriesProvenance/modern (0.04s)
+    --- PASS: TestPatchedResultCarriesProvenance/legacy (0.04s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patches/websearch-provenance	2.385s
+=== RUN   TestFindDerivesGateAndReturn
+--- PASS: TestFindDerivesGateAndReturn (0.00s)
+=== RUN   TestApplyReplacesDescAndStaysValidJS
+--- PASS: TestApplyReplacesDescAndStaysValidJS (0.05s)
+=== RUN   TestFindFailsLoudOnDrift
+--- PASS: TestFindFailsLoudOnDrift (0.00s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patches/workflow-desc-slim	1.941s
+=== RUN   TestFindLocatesTheGrantGateLoop
+--- PASS: TestFindLocatesTheGrantGateLoop (0.00s)
+=== RUN   TestApplyDeadsBothBranches
+--- PASS: TestApplyDeadsBothBranches (0.00s)
+=== RUN   TestNoMatchIsLoud
+--- PASS: TestNoMatchIsLoud (0.00s)
+=== RUN   TestInconsistentHolesRefuse
+--- PASS: TestInconsistentHolesRefuse (0.00s)
+=== RUN   TestCoApplySlugOrderBothLand
+--- PASS: TestCoApplySlugOrderBothLand (0.00s)
+PASS
+ok  	github.com/caoer/ccc-statusd/patches/write-grant-gate-off	(cached)
+Starting command tests...
+=== RUN   TestRootListCmdFlagSurface
+--- PASS: TestRootListCmdFlagSurface (0.00s)
+=== RUN   TestValidatePatchArgs
+=== RUN   TestValidatePatchArgs/no_args
+=== RUN   TestValidatePatchArgs/unexpected_positional
+=== RUN   TestValidatePatchArgs/extra_positional
+--- PASS: TestValidatePatchArgs (0.00s)
+    --- PASS: TestValidatePatchArgs/no_args (0.00s)
+    --- PASS: TestValidatePatchArgs/unexpected_positional (0.00s)
+    --- PASS: TestValidatePatchArgs/extra_positional (0.00s)
+=== RUN   TestReadMaxCharsDefaultIsEngineConstant
+--- PASS: TestReadMaxCharsDefaultIsEngineConstant (0.00s)
+=== RUN   TestResolveLauncher
+=== RUN   TestResolveLauncher/profile_flag_wins_over_everything
+=== RUN   TestResolveLauncher/UCC_PROFILE_beats_CCC_TMUX_DEFAULT_LAUNCHER
+=== RUN   TestResolveLauncher/default_launcher_when_no_profile_env
+=== RUN   TestResolveLauncher/cached_launcher_as_last_resort
+=== RUN   TestResolveLauncher/nothing_resolvable
+--- PASS: TestResolveLauncher (0.00s)
+    --- PASS: TestResolveLauncher/profile_flag_wins_over_everything (0.00s)
+    --- PASS: TestResolveLauncher/UCC_PROFILE_beats_CCC_TMUX_DEFAULT_LAUNCHER (0.00s)
+    --- PASS: TestResolveLauncher/default_launcher_when_no_profile_env (0.00s)
+    --- PASS: TestResolveLauncher/cached_launcher_as_last_resort (0.00s)
+    --- PASS: TestResolveLauncher/nothing_resolvable (0.00s)
+=== RUN   TestBuildLaunchArgv
+--- PASS: TestBuildLaunchArgv (0.00s)
+=== RUN   TestParseShellArgs
+=== RUN   TestParseShellArgs/simple_arguments
+=== RUN   TestParseShellArgs/arguments_with_double_quotes
+=== RUN   TestParseShellArgs/arguments_with_single_quotes
+=== RUN   TestParseShellArgs/mixed_quotes
+=== RUN   TestParseShellArgs/escaped_quotes
+=== RUN   TestParseShellArgs/escaped_backslash
+=== RUN   TestParseShellArgs/empty_string
+=== RUN   TestParseShellArgs/only_spaces
+=== RUN   TestParseShellArgs/single_argument
+=== RUN   TestParseShellArgs/unclosed_double_quote
+=== RUN   TestParseShellArgs/unclosed_single_quote
+=== RUN   TestParseShellArgs/trailing_backslash
+=== RUN   TestParseShellArgs/quotes_inside_different_quotes
+=== RUN   TestParseShellArgs/tabs_as_separators
+--- PASS: TestParseShellArgs (0.00s)
+    --- PASS: TestParseShellArgs/simple_arguments (0.00s)
+    --- PASS: TestParseShellArgs/arguments_with_double_quotes (0.00s)
+    --- PASS: TestParseShellArgs/arguments_with_single_quotes (0.00s)
+    --- PASS: TestParseShellArgs/mixed_quotes (0.00s)
+    --- PASS: TestParseShellArgs/escaped_quotes (0.00s)
+    --- PASS: TestParseShellArgs/escaped_backslash (0.00s)
+    --- PASS: TestParseShellArgs/empty_string (0.00s)
+    --- PASS: TestParseShellArgs/only_spaces (0.00s)
+    --- PASS: TestParseShellArgs/single_argument (0.00s)
+    --- PASS: TestParseShellArgs/unclosed_double_quote (0.00s)
+    --- PASS: TestParseShellArgs/unclosed_single_quote (0.00s)
+    --- PASS: TestParseShellArgs/trailing_backslash (0.00s)
+    --- PASS: TestParseShellArgs/quotes_inside_different_quotes (0.00s)
+    --- PASS: TestParseShellArgs/tabs_as_separators (0.00s)
+=== RUN   TestShellQuote
+=== RUN   TestShellQuote/simple_string
+=== RUN   TestShellQuote/string_with_spaces
+=== RUN   TestShellQuote/string_with_single_quote
+=== RUN   TestShellQuote/string_with_double_quote
+=== RUN   TestShellQuote/flag
+=== RUN   TestShellQuote/uuid
+=== RUN   TestShellQuote/path
+=== RUN   TestShellQuote/argument_with_equals
+=== RUN   TestShellQuote/complex_string
+=== RUN   TestShellQuote/empty_string
+--- PASS: TestShellQuote (0.00s)
+    --- PASS: TestShellQuote/simple_string (0.00s)
+    --- PASS: TestShellQuote/string_with_spaces (0.00s)
+    --- PASS: TestShellQuote/string_with_single_quote (0.00s)
+    --- PASS: TestShellQuote/string_with_double_quote (0.00s)
+    --- PASS: TestShellQuote/flag (0.00s)
+    --- PASS: TestShellQuote/uuid (0.00s)
+    --- PASS: TestShellQuote/path (0.00s)
+    --- PASS: TestShellQuote/argument_with_equals (0.00s)
+    --- PASS: TestShellQuote/complex_string (0.00s)
+    --- PASS: TestShellQuote/empty_string (0.00s)
+=== RUN   TestExtractProjectFolder
+=== RUN   TestExtractProjectFolder/standard_path
+=== RUN   TestExtractProjectFolder/different_project_folder
+=== RUN   TestExtractProjectFolder/path_with_session_prefix
+=== RUN   TestExtractProjectFolder/invalid_path_-_not_in_projects
+=== RUN   TestExtractProjectFolder/file_directly_in_projects_folder
+=== RUN   TestExtractProjectFolder/relative_path
+--- PASS: TestExtractProjectFolder (0.00s)
+    --- PASS: TestExtractProjectFolder/standard_path (0.00s)
+    --- PASS: TestExtractProjectFolder/different_project_folder (0.00s)
+    --- PASS: TestExtractProjectFolder/path_with_session_prefix (0.00s)
+    --- PASS: TestExtractProjectFolder/invalid_path_-_not_in_projects (0.00s)
+    --- PASS: TestExtractProjectFolder/file_directly_in_projects_folder (0.00s)
+    --- PASS: TestExtractProjectFolder/relative_path (0.00s)
+=== RUN   TestDecodeProjectFolder
+=== RUN   TestDecodeProjectFolder/empty_string
+=== RUN   TestDecodeProjectFolder/no_leading_dash
+--- PASS: TestDecodeProjectFolder (0.00s)
+    --- PASS: TestDecodeProjectFolder/empty_string (0.00s)
+    --- PASS: TestDecodeProjectFolder/no_leading_dash (0.00s)
+PASS
+ok  	github.com/caoer/ccc-statusd/cmd	(cached)
+?   	github.com/caoer/ccc-statusd/cmd/agent	[no test files]
+=== RUN   TestHelpStopsBeforePlacement
+=== RUN   TestHelpStopsBeforePlacement/--help
+=== RUN   TestHelpStopsBeforePlacement/-h
+--- PASS: TestHelpStopsBeforePlacement (0.00s)
+    --- PASS: TestHelpStopsBeforePlacement/--help (0.00s)
+    --- PASS: TestHelpStopsBeforePlacement/-h (0.00s)
+=== RUN   TestDashDashMakesLeadingFlagThePrompt
+--- PASS: TestDashDashMakesLeadingFlagThePrompt (0.00s)
+=== RUN   TestUnknownFlagFailsLoudWithoutPlacement
+--- PASS: TestUnknownFlagFailsLoudWithoutPlacement (0.00s)
+=== RUN   TestAllVerbArgumentsReachTheSharedEngine
+--- PASS: TestAllVerbArgumentsReachTheSharedEngine (0.00s)
+=== RUN   TestPromptAcceptsAnyAndPassesItThrough
+--- PASS: TestPromptAcceptsAnyAndPassesItThrough (0.00s)
+=== RUN   TestPromptSignatureNamesAny
+--- PASS: TestPromptSignatureNamesAny (0.00s)
+=== RUN   TestListPrintsTheHerdrEnvelopeOnCleanStdout
+--- PASS: TestListPrintsTheHerdrEnvelopeOnCleanStdout (0.00s)
+=== RUN   TestListTableFlagRestoresTheHumanTable
+--- PASS: TestListTableFlagRestoresTheHumanTable (0.00s)
+=== RUN   TestJSONSerializesTheSharedResultVerbatim
+--- PASS: TestJSONSerializesTheSharedResultVerbatim (0.00s)
+=== RUN   TestProgressRequiresTTYAndNonJSON
+=== RUN   TestProgressRequiresTTYAndNonJSON/tty
+=== RUN   TestProgressRequiresTTYAndNonJSON/non-tty
+=== RUN   TestProgressRequiresTTYAndNonJSON/json
+--- PASS: TestProgressRequiresTTYAndNonJSON (0.00s)
+    --- PASS: TestProgressRequiresTTYAndNonJSON/tty (0.00s)
+    --- PASS: TestProgressRequiresTTYAndNonJSON/non-tty (0.00s)
+    --- PASS: TestProgressRequiresTTYAndNonJSON/json (0.00s)
+=== RUN   TestSpawnIsIndifferentToTheCallersTTY
+=== RUN   TestSpawnIsIndifferentToTheCallersTTY/tty
+=== RUN   TestSpawnIsIndifferentToTheCallersTTY/non-tty
+--- PASS: TestSpawnIsIndifferentToTheCallersTTY (0.00s)
+    --- PASS: TestSpawnIsIndifferentToTheCallersTTY/tty (0.00s)
+    --- PASS: TestSpawnIsIndifferentToTheCallersTTY/non-tty (0.00s)
+=== RUN   TestResultExitCodeIsNotReDerived
+--- PASS: TestResultExitCodeIsNotReDerived (0.00s)
+=== RUN   TestWorkedExampleCarriesTheWholeLoop
+--- PASS: TestWorkedExampleCarriesTheWholeLoop (0.00s)
+=== RUN   TestTranscriptHelpStatesTheWakeFreeProperty
+--- PASS: TestTranscriptHelpStatesTheWakeFreeProperty (0.00s)
+=== RUN   TestTranscriptArgumentsReachTheSharedEngine
+--- PASS: TestTranscriptArgumentsReachTheSharedEngine (0.00s)
+=== RUN   TestTranscriptMaxCharsDefaultsToTheRendererBudget
+--- PASS: TestTranscriptMaxCharsDefaultsToTheRendererBudget (0.00s)
+=== RUN   TestTranscriptPrintsTheBodyOnCleanStdout
+--- PASS: TestTranscriptPrintsTheBodyOnCleanStdout (0.00s)
+=== RUN   TestTranscriptJSONIsOneDocument
+--- PASS: TestTranscriptJSONIsOneDocument (0.00s)
+=== RUN   TestOutlineFooterAdvertisesOnlyFlagsThisVerbAccepts
+--- PASS: TestOutlineFooterAdvertisesOnlyFlagsThisVerbAccepts (0.00s)
+=== RUN   TestTranscriptHasNoProvenanceEscapeHatch
+--- PASS: TestTranscriptHasNoProvenanceEscapeHatch (0.00s)
+=== RUN   TestBareInvocationPrintsTheWholeSurface
+--- PASS: TestBareInvocationPrintsTheWholeSurface (0.00s)
+=== RUN   TestArglessVerbPrintsItsOwnSignatureAndExample
+=== RUN   TestArglessVerbPrintsItsOwnSignatureAndExample/spawn
+=== RUN   TestArglessVerbPrintsItsOwnSignatureAndExample/prompt
+=== RUN   TestArglessVerbPrintsItsOwnSignatureAndExample/prompt_0ce0f050
+=== RUN   TestArglessVerbPrintsItsOwnSignatureAndExample/screen
+=== RUN   TestArglessVerbPrintsItsOwnSignatureAndExample/transcript
+=== RUN   TestArglessVerbPrintsItsOwnSignatureAndExample/wait
+=== RUN   TestArglessVerbPrintsItsOwnSignatureAndExample/kill
+--- PASS: TestArglessVerbPrintsItsOwnSignatureAndExample (0.00s)
+    --- PASS: TestArglessVerbPrintsItsOwnSignatureAndExample/spawn (0.00s)
+    --- PASS: TestArglessVerbPrintsItsOwnSignatureAndExample/prompt (0.00s)
+    --- PASS: TestArglessVerbPrintsItsOwnSignatureAndExample/prompt_0ce0f050 (0.00s)
+    --- PASS: TestArglessVerbPrintsItsOwnSignatureAndExample/screen (0.00s)
+    --- PASS: TestArglessVerbPrintsItsOwnSignatureAndExample/transcript (0.00s)
+    --- PASS: TestArglessVerbPrintsItsOwnSignatureAndExample/wait (0.00s)
+    --- PASS: TestArglessVerbPrintsItsOwnSignatureAndExample/kill (0.00s)
+=== RUN   TestIDTakingVerbsNameTheirIDSource
+=== RUN   TestIDTakingVerbsNameTheirIDSource/prompt
+=== RUN   TestIDTakingVerbsNameTheirIDSource/screen
+=== RUN   TestIDTakingVerbsNameTheirIDSource/transcript
+=== RUN   TestIDTakingVerbsNameTheirIDSource/wait
+=== RUN   TestIDTakingVerbsNameTheirIDSource/kill
+--- PASS: TestIDTakingVerbsNameTheirIDSource (0.00s)
+    --- PASS: TestIDTakingVerbsNameTheirIDSource/prompt (0.00s)
+    --- PASS: TestIDTakingVerbsNameTheirIDSource/screen (0.00s)
+    --- PASS: TestIDTakingVerbsNameTheirIDSource/transcript (0.00s)
+    --- PASS: TestIDTakingVerbsNameTheirIDSource/wait (0.00s)
+    --- PASS: TestIDTakingVerbsNameTheirIDSource/kill (0.00s)
+=== RUN   TestUnknownVerbNamesItThenPrintsTheSurface
+--- PASS: TestUnknownVerbNamesItThenPrintsTheSurface (0.00s)
+=== RUN   TestRequestedHelpIsTheSameSurfaceOnStdout
+=== RUN   TestRequestedHelpIsTheSameSurfaceOnStdout/--help
+=== RUN   TestRequestedHelpIsTheSameSurfaceOnStdout/-h
+=== RUN   TestRequestedHelpIsTheSameSurfaceOnStdout/help
+--- PASS: TestRequestedHelpIsTheSameSurfaceOnStdout (0.00s)
+    --- PASS: TestRequestedHelpIsTheSameSurfaceOnStdout/--help (0.00s)
+    --- PASS: TestRequestedHelpIsTheSameSurfaceOnStdout/-h (0.00s)
+    --- PASS: TestRequestedHelpIsTheSameSurfaceOnStdout/help (0.00s)
+=== RUN   TestVerbHelpPrintsSignatureAndExampleOnStdout
+=== RUN   TestVerbHelpPrintsSignatureAndExampleOnStdout/spawn
+=== RUN   TestVerbHelpPrintsSignatureAndExampleOnStdout/prompt
+=== RUN   TestVerbHelpPrintsSignatureAndExampleOnStdout/screen
+=== RUN   TestVerbHelpPrintsSignatureAndExampleOnStdout/transcript
+=== RUN   TestVerbHelpPrintsSignatureAndExampleOnStdout/wait
+=== RUN   TestVerbHelpPrintsSignatureAndExampleOnStdout/list
+=== RUN   TestVerbHelpPrintsSignatureAndExampleOnStdout/kill
+--- PASS: TestVerbHelpPrintsSignatureAndExampleOnStdout (0.00s)
+    --- PASS: TestVerbHelpPrintsSignatureAndExampleOnStdout/spawn (0.00s)
+    --- PASS: TestVerbHelpPrintsSignatureAndExampleOnStdout/prompt (0.00s)
+    --- PASS: TestVerbHelpPrintsSignatureAndExampleOnStdout/screen (0.00s)
+    --- PASS: TestVerbHelpPrintsSignatureAndExampleOnStdout/transcript (0.00s)
+    --- PASS: TestVerbHelpPrintsSignatureAndExampleOnStdout/wait (0.00s)
+    --- PASS: TestVerbHelpPrintsSignatureAndExampleOnStdout/list (0.00s)
+    --- PASS: TestVerbHelpPrintsSignatureAndExampleOnStdout/kill (0.00s)
+=== RUN   TestUnknownFlagPrintsTheVerbSignature
+--- PASS: TestUnknownFlagPrintsTheVerbSignature (0.00s)
+=== RUN   TestEverySignatureMatchesTheRegisteredCommand
+--- PASS: TestEverySignatureMatchesTheRegisteredCommand (0.00s)
+=== RUN   TestSignatureEnumsAreDerivedFromTheEngine
+--- PASS: TestSignatureEnumsAreDerivedFromTheEngine (0.00s)
+PASS
+ok  	github.com/caoer/ccc-statusd/cmd/ccagent	(cached)
+=== RUN   TestGenerateSettingsPreservesForeignHooks
+--- PASS: TestGenerateSettingsPreservesForeignHooks (0.00s)
+=== RUN   TestGenerateSettingsBashTimeoutPolicy
+--- PASS: TestGenerateSettingsBashTimeoutPolicy (0.00s)
+=== RUN   TestGenerateSettingsBashTimeoutsAreForced
+--- PASS: TestGenerateSettingsBashTimeoutsAreForced (0.00s)
+=== RUN   TestGenerateSettingsDoesNotPinAskUserQuestionTimeout
+--- PASS: TestGenerateSettingsDoesNotPinAskUserQuestionTimeout (0.00s)
+=== RUN   TestGenerateSettingsAskUserQuestionTimeoutPreservesUserValue
+--- PASS: TestGenerateSettingsAskUserQuestionTimeoutPreservesUserValue (0.00s)
+=== RUN   TestGenerateSettingsDeniesTaskOutput
+--- PASS: TestGenerateSettingsDeniesTaskOutput (0.00s)
+=== RUN   TestGenerateSettingsDenyPreservesExistingEntries
+--- PASS: TestGenerateSettingsDenyPreservesExistingEntries (0.00s)
+PASS
+ok  	github.com/caoer/ccc-statusd/cmd/config	1.553s
+?   	github.com/caoer/ccc-statusd/cmd/daemon	[no test files]
+=== RUN   TestRegisterCcCliHook_AppendsSecondEntry
+--- PASS: TestRegisterCcCliHook_AppendsSecondEntry (0.00s)
+=== RUN   TestRegisterCcCliHook_Idempotent
+--- PASS: TestRegisterCcCliHook_Idempotent (0.00s)
+=== RUN   TestRegisterCcCliHook_ReplacesStalePath
+--- PASS: TestRegisterCcCliHook_ReplacesStalePath (0.00s)
+=== RUN   TestRegisterCcCliHook_SelfHealsAfterDaemonOverwrite
+--- PASS: TestRegisterCcCliHook_SelfHealsAfterDaemonOverwrite (0.00s)
+=== RUN   TestResolveCcCliBin_Precedence
+--- PASS: TestResolveCcCliBin_Precedence (0.00s)
+=== RUN   TestClaudeSettingsPath_ConfigDir
+--- PASS: TestClaudeSettingsPath_ConfigDir (0.00s)
+=== RUN   TestInstallWorktreeHooks_RegistersBothEvents
+✓ Registered WorktreeCreate hook: /u/bin/skills-bin/ccc-tmux worktree-hook create
+✓ Registered WorktreeRemove hook: /u/bin/skills-bin/ccc-tmux worktree-hook remove
+--- PASS: TestInstallWorktreeHooks_RegistersBothEvents (0.00s)
+=== RUN   TestInstallWorktreeHooks_IdempotentAndReplacesStalePath
+✓ Registered WorktreeCreate hook: /old/ccc-tmux worktree-hook create
+✓ Registered WorktreeRemove hook: /old/ccc-tmux worktree-hook remove
+✓ WorktreeCreate hook already registered: /old/ccc-tmux worktree-hook create
+✓ WorktreeRemove hook already registered: /old/ccc-tmux worktree-hook remove
+✓ Registered WorktreeCreate hook: /new/ccc-tmux worktree-hook create
+✓ Registered WorktreeRemove hook: /new/ccc-tmux worktree-hook remove
+--- PASS: TestInstallWorktreeHooks_IdempotentAndReplacesStalePath (0.00s)
+=== RUN   TestResolveCcTmuxBin_Precedence
+--- PASS: TestResolveCcTmuxBin_Precedence (0.00s)
+PASS
+ok  	github.com/caoer/ccc-statusd/cmd/hook	1.228s
+?   	github.com/caoer/ccc-statusd/cmd/moshi-rl	[no test files]
+?   	github.com/caoer/ccc-statusd/cmd/pages	[no test files]
+error: recipe `test` was terminated by signal 15
