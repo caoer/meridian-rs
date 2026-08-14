@@ -32,6 +32,11 @@ model = { workspace = true }
 # digest all live in `effects` so this crate and the CLI lane reach ONE
 # implementation of each.
 effects = { workspace = true }
+# § A.8 wire run serve (2026-08-13, run-crossing ruling): the op arm drives
+# the run plane's own seam (`run::runner::run`) per target — the serve path
+# consumes the plane, it never re-implements it (run-plane.md charter
+# amendment). `run` sits strictly below the serve path: no cycle.
+run = { workspace = true }
 # The spine's read surface (U2): `query` serves toc/links over the resident
 # index; `syntax` is the parser the resident build folds in (via `fs`). Declared
 # here as the U1 engine's read/parse edges; the U1 gate exercises `query` over a

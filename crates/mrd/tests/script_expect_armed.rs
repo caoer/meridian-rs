@@ -37,7 +37,7 @@ const OTHER_CARD: &str = "tasks/0012-token-audit.md";
 /// Read the card, claim it if nobody holds it — golden scenario 1's shape.
 const CLAIM: &str = r#"
 card = read("tasks/0011-token-audit.md")
-if card.fm["owner"] == "":
+if card["fm"]["owner"] == "":
     put("tasks/0011-token-audit.md", props={"owner": me(), "status": "doing"})
 "#;
 

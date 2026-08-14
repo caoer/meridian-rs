@@ -60,6 +60,15 @@ pub struct RunSpec<'a> {
     pub declaring_root: Option<&'a Path>,
     /// Kernel eval limits — `max_depth` is ALSO the cascade depth cap.
     pub limits: EvalLimits,
+    /// Caller-supplied identity (§9, § A.8): threads into the receipt's
+    /// `actor` fact. `None` keeps the plane's `run:<task>` self-label — the
+    /// CLI entry, its own host, passes `None` and its receipt bytes stand.
+    pub actor: Option<&'a str>,
+    /// The bash step's working directory. `None` is U16 as written — the
+    /// step runs where the process runs (the CLI entry). The wire arm
+    /// (§ A.8 amendment to U16) passes the bound workspace root: a daemon
+    /// has no meaningful cwd. Unused on the starlark path.
+    pub step_cwd: Option<&'a Path>,
 }
 
 /// What one full run produced — the report's (U9) single input.
@@ -303,6 +312,7 @@ fn dispatch(
                         receipt: spec.receipt.clone(),
                         takeover: spec.takeover,
                         limits: spec.limits,
+                        actor: spec.actor,
                     },
                 )
                 .map_err(RunnerError::Starlark)?,
@@ -325,6 +335,8 @@ fn dispatch(
                     takeover: spec.takeover,
                     scratch: spec.scratch,
                     timeout: spec.timeout,
+                    actor: spec.actor,
+                    step_cwd: spec.step_cwd,
                 },
                 live,
             )
@@ -397,6 +409,7 @@ fn cascade(
                         receipt: None,
                         takeover: false,
                         exec: None, // cascade generation: no child exec
+                        actor: spec.actor,
                         depth: ev.depth,
                     },
                 )

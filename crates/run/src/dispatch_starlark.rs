@@ -46,6 +46,8 @@ pub struct StarlarkDispatch<'a> {
     pub takeover: bool,
     /// Kernel eval limits.
     pub limits: EvalLimits,
+    /// Caller-supplied identity (§9, § A.8): threads into the receipt actor.
+    pub actor: Option<&'a str>,
 }
 
 /// What one block dispatch produced: the FULL deterministic effect set (the
@@ -148,6 +150,7 @@ pub fn dispatch(
                     receipt: d.receipt.clone(),
                     takeover: d.takeover,
                     exec: None, // hermetic: no child process
+                    actor: d.actor,
                     depth: 0,
                 },
             )

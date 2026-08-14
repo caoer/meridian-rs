@@ -56,6 +56,7 @@ fn receipt_after_apply(page_name: &str, seed: &str, effects: &[Effect]) -> Strin
             }),
             takeover: false,
             exec: None,
+            actor: None,
             depth: 0,
         },
     )

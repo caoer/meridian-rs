@@ -2794,6 +2794,7 @@ dependencies = [
  "model",
  "query",
  "receipt",
+ "run",
  "serde",
  "serde_json",
  "syntax",

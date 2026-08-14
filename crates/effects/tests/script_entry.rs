@@ -143,6 +143,7 @@ fn ctx() -> ScriptCtx {
             "tasks/0012.md".to_owned(),
             "tasks/0013.md".to_owned(),
         ],
+        effects: Vec::new(),
     }
 }
 
@@ -283,9 +284,9 @@ fn the_suppression_spelling_is_refused_at_any_depth_and_only_for_read() {
 #[test]
 fn a_top_level_read_echoes_and_nested_reads_stay_quiet() {
     let src = "card = read(\"tasks/0011.md\")\n\
-               owners = [read(t).fm[\"owner\"] for t in files]\n\
-               if read(\"tasks/0012.md\").fm[\"status\"] == \"todo\":\n\
-               \x20   picked = card.rev\n";
+               owners = [read(t)[\"fm\"][\"owner\"] for t in files]\n\
+               if read(\"tasks/0012.md\")[\"fm\"][\"status\"] == \"todo\":\n\
+               \x20   picked = card[\"rev\"]\n";
     let (eval, _) = run(src);
     eval.outcome.expect("the script evaluates");
     let seen: Vec<(u32, &ReadPosition, &str)> = eval
@@ -342,8 +343,8 @@ fn a_top_level_read_echoes_and_nested_reads_stay_quiet() {
 fn a_read_bound_name_is_left_to_its_echo_and_a_recomputed_name_returns() {
     let src = "card = read(\"tasks/0011.md\")\n\
                sec = read(\"tasks/0011.md\", section = \"Goals\")\n\
-               status = card.fm[\"status\"]\n\
-               card = card.words\n";
+               status = card[\"fm\"][\"status\"]\n\
+               card = card[\"words\"]\n";
     let (eval, _) = run(src);
     let facts = eval.outcome.expect("the script evaluates");
     println!("POPULATION bindings = {:?}", facts.bindings);
@@ -383,12 +384,12 @@ fn function_bindings_are_not_results() {
 #[test]
 fn read_serves_the_toc_face_and_the_cat_face() {
     let src = "page = read(\"tasks/0011.md\")\n\
-               rev = page.rev\n\
-               first = page.toc[0].section\n\
-               anchor0 = page.toc[0].anchor\n\
-               anchor1 = page.toc[1].anchor\n\
+               rev = page[\"rev\"]\n\
+               first = page[\"toc\"][0][\"section\"]\n\
+               anchor0 = page[\"toc\"][0][\"anchor\"]\n\
+               anchor1 = page[\"toc\"][1][\"anchor\"]\n\
                sec = read(\"tasks/0011.md\", section = \"Goals\")\n\
-               body = sec.text\n";
+               body = sec\n";
     let (eval, _) = run(src);
     let facts = eval.outcome.expect("both faces resolve");
     assert_eq!(
@@ -423,7 +424,7 @@ fn read_serves_the_toc_face_and_the_cat_face() {
 #[test]
 fn replay_against_the_recorded_reads_is_byte_identical() {
     let src = "card = read(\"tasks/0011.md\")\n\
-               owners = [read(t).fm[\"owner\"] for t in files]\n\
+               owners = [read(t)[\"fm\"][\"owner\"] for t in files]\n\
                sec = read(\"tasks/0011.md\", section = \"Goals\")\n\
                who = me()\n";
     let (live, _) = run(src);

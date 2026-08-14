@@ -521,12 +521,20 @@ fn banned_suppression(ast: &AstModule) -> Option<u32> {
     })
 }
 
-/// Script-plane globals: Starlark stdlib + `read` / `me`. A SEPARATE surface —
-/// `effect_api` is deliberately absent, and these builtins never join
-/// [`effect_globals`]: sharing one surface would give `on_change` rules live
-/// reads and end the change plane's hermeticity-by-construction.
-pub(crate) fn script_globals() -> Globals {
-    GlobalsBuilder::standard().with(script_api).build()
+/// Script-plane globals: Starlark stdlib + `read` / `put` / `me`. A SEPARATE
+/// surface — `effect_api` is deliberately absent, and these builtins never
+/// join [`effect_globals`]: sharing one surface would give `on_change` rules
+/// live reads and end the change plane's hermeticity-by-construction.
+///
+/// Effects mode (script-effects ruling, 2026-08-13): the admitted effect
+/// builtins join the surface EXACTLY when named — a pure submission never
+/// holds `run` at all, which is what "provably pure by default" means.
+pub(crate) fn script_globals(effects: &[String]) -> Globals {
+    let mut builder = GlobalsBuilder::standard().with(script_api);
+    if effects.iter().any(|e| e == "run") {
+        builder = builder.with(script_run_api);
+    }
+    builder.build()
 }
 
 /// The script entry's per-attempt state: the one effectful seam (`host`), the
@@ -562,6 +570,11 @@ pub(crate) struct ScriptEntry<'h> {
     /// The arm-time law's refusal, kept typed so the abort is classified as a
     /// consumer-plane refusal rather than a script fault.
     arm_refusal: RefCell<Option<ArmRefusal>>,
+    /// Effects mode (script-effects ruling): `true` switches `put()` from
+    /// arming to the host's live apply, and marks the attempt as the LIVE
+    /// model. The `run` builtin's availability is the globals' (it joins only
+    /// when admitted), not this flag's.
+    live: bool,
 }
 
 /// The inert input names the script plane binds before eval. They are inputs,
@@ -586,7 +599,33 @@ impl<'h> ScriptEntry<'h> {
             armed: RefCell::new(Vec::new()),
             max_armed_edits: limits.max_armed_edits,
             arm_refusal: RefCell::new(None),
+            live: !ctx.effects.is_empty(),
         }
+    }
+
+    /// Effects mode: apply one `put()` NOW through the host — no arm, no CAS.
+    fn put_live(&self, path: &str, items: Vec<PlanEdit>, line: u32) -> anyhow::Result<()> {
+        self.host
+            .borrow_mut()
+            .put_live(path, items, line)
+            .map_err(|e| anyhow::anyhow!("put: {}", e.reason))
+    }
+
+    /// Effects mode: execute one `run()` NOW through the host; the row comes
+    /// back as JSON for the caller to shape into a Starlark value.
+    fn run_live(
+        &self,
+        page: &str,
+        task: Option<&str>,
+        args: Vec<String>,
+        env: BTreeMap<String, String>,
+        dry: bool,
+        line: u32,
+    ) -> anyhow::Result<serde_json::Value> {
+        self.host
+            .borrow_mut()
+            .run_live(page, task, args, env, dry, line)
+            .map_err(|e| anyhow::anyhow!("run: {}", e.reason))
     }
 
     /// Arm one `put()` call's plan items — PURE: no host call, no I/O. The
@@ -660,7 +699,11 @@ impl<'h> ScriptEntry<'h> {
             let Expr::Identifier(ident) = &**callee.as_ref() else {
                 return false;
             };
-            ident.node.ident == "read"
+            // The bindings skip-list (script-result-echo § Border edge): a
+            // name whose last top-level RHS is a bare `read()` is carried by
+            // its echo entry; a bare `run()` (effects mode) is carried by its
+            // `ran` entry's row — neither repeats in the bindings block.
+            ident.node.ident == "read" || ident.node.ident == "run"
         }
 
         /// Every plain name a target binds, at any nesting inside tuples.
@@ -897,12 +940,20 @@ fn script_api(builder: &mut GlobalsBuilder) {
             .map_err(|reason| anyhow::anyhow!("{reason}"))?;
         let line =
             call_site(eval).map_or(0, |(line, _)| u32::try_from(line + 1).unwrap_or(u32::MAX));
+        let entry = script(eval)?;
+        // Effects mode: the same grammar applies NOW through the host — no
+        // arm, no CAS (script-effects ruling; the arm-time laws are the pure
+        // TRANSACTION's and do not reach this model).
+        if entry.live {
+            entry.put_live(&path, items, line)?;
+            return Ok(NoneType);
+        }
         // Two frames are always on the stack at a top-level arm — the module's
         // own and this builtin's — so a top-level arm reports depth 0 and each
         // enclosing `def` adds one. Recorded for the trace only: an applied
         // effect renders at ANY depth (there is no suppression in v1).
         let depth = u32::try_from(eval.call_stack_count().saturating_sub(2)).unwrap_or(u32::MAX);
-        script(eval)?.arm(&path, items, line, depth)?;
+        entry.arm(&path, items, line, depth)?;
         Ok(NoneType)
     }
 
@@ -910,6 +961,65 @@ fn script_api(builder: &mut GlobalsBuilder) {
     /// engine mints no identity.
     fn me(eval: &mut Evaluator<'_, '_, '_>) -> anyhow::Result<String> {
         Ok(script(eval)?.actor.clone())
+    }
+}
+
+/// The effects-mode surface (script-effects ruling, 2026-08-13): joins the
+/// globals EXACTLY when the submission admits the builtin by name — a pure
+/// script never holds it, which is what keeps #17 standing on the pure path.
+#[starlark_module]
+fn script_run_api(builder: &mut GlobalsBuilder) {
+    /// `run(page, task=None, args=[], env={}, dry=False)` → executes the
+    /// addressed task NOW through the run plane and returns its § A.8 row as
+    /// a value — state, exit code, stdout observable in-program;
+    /// run-then-decide works. Plane refusals RETURN as rows (branchable);
+    /// only shape errors fault the program.
+    fn run<'v>(
+        #[starlark(require = pos)] page: String,
+        #[starlark(require = named)] task: Option<String>,
+        #[starlark(require = named)] args: Option<UnpackList<String>>,
+        #[starlark(require = named)] env: Option<BTreeMap<String, String>>,
+        #[starlark(require = named)] dry: Option<bool>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let line =
+            call_site(eval).map_or(0, |(line, _)| u32::try_from(line + 1).unwrap_or(u32::MAX));
+        let row = script(eval)?.run_live(
+            &page,
+            task.as_deref(),
+            args.map(|l| l.items).unwrap_or_default(),
+            env.unwrap_or_default(),
+            dry.unwrap_or(false),
+            line,
+        )?;
+        let heap = eval.heap();
+        Ok(alloc_json(heap, &row))
+    }
+}
+
+/// Allocate a JSON value as its natural Starlark value — dicts, lists,
+/// strings, ints, bools, None. Numbers outside `i64` fall back to their
+/// string form rather than inventing a float the row never carried.
+fn alloc_json<'v>(heap: Heap<'v>, value: &serde_json::Value) -> Value<'v> {
+    match value {
+        serde_json::Value::Null => Value::new_none(),
+        serde_json::Value::Bool(b) => Value::new_bool(*b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                heap.alloc(i)
+            } else {
+                heap.alloc(n.to_string())
+            }
+        }
+        serde_json::Value::String(s) => heap.alloc(s.as_str()),
+        serde_json::Value::Array(items) => {
+            let values: Vec<Value<'v>> = items.iter().map(|v| alloc_json(heap, v)).collect();
+            heap.alloc(values)
+        }
+        serde_json::Value::Object(map) => heap.alloc(AllocDict(
+            map.iter()
+                .map(|(k, v)| (heap.alloc(k.as_str()), alloc_json(heap, v))),
+        )),
     }
 }
 
@@ -936,30 +1046,30 @@ fn alloc_toc<'v>(heap: Heap<'v>, facts: &TocFacts) -> Value<'v> {
         .toc
         .iter()
         .map(|entry| {
-            heap.alloc(AllocStruct([
-                ("section", heap.alloc(entry.section.as_str())),
-                ("anchor", opt_str(heap, entry.anchor.as_deref())),
-                ("rev", heap.alloc(entry.rev.as_str())),
+            heap.alloc(AllocDict([
+                (heap.alloc("section"), heap.alloc(entry.section.as_str())),
+                (heap.alloc("anchor"), opt_str(heap, entry.anchor.as_deref())),
+                (heap.alloc("rev"), heap.alloc(entry.rev.as_str())),
             ]))
         })
         .collect();
-    heap.alloc(AllocStruct([
-        ("rev", heap.alloc(facts.rev.as_str())),
-        ("fm", fm),
-        ("toc", heap.alloc(toc)),
+    heap.alloc(AllocDict([
+        (heap.alloc("rev"), heap.alloc(facts.rev.as_str())),
+        (heap.alloc("fm"), fm),
+        (heap.alloc("toc"), heap.alloc(toc)),
         (
-            "words",
+            heap.alloc("words"),
             heap.alloc(i32::try_from(facts.words).unwrap_or(i32::MAX)),
         ),
     ]))
 }
 
-/// The cat face: `{text, rev}` for one section.
+/// The cat face: the section TEXT itself, a plain string (read alignment,
+/// script-effects ruling — *"read() returns actual VALUES the agent computes
+/// with"*; `"x" in read(p, section=s)` is a legal program). The section's rev
+/// still rides the recording, where the threading law reads it.
 fn alloc_section<'v>(heap: Heap<'v>, facts: &SecFacts) -> Value<'v> {
-    heap.alloc(AllocStruct([
-        ("text", heap.alloc(facts.text.as_str())),
-        ("rev", heap.alloc(facts.rev.as_str())),
-    ]))
+    heap.alloc(facts.text.as_str())
 }
 
 /// Peak eval-heap bytes as `u64` (saturating). Peak matches `set_max_heap_size`;
@@ -1123,7 +1233,7 @@ pub(crate) fn run_script(
     // by construction); only its harvested facts cross back.
     let (run, recording, bindings, over_read_budget, armed, arm_refusal) = on_eval_stack(|| {
         let entry = ScriptEntry::new(ctx, limits, host);
-        let globals = script_globals();
+        let globals = script_globals(&ctx.effects);
         let run = metered_eval(&globals, &rule, &EvalEntry::Script(&entry), limits.eval);
         let bindings = entry.bindings.borrow().clone();
         let armed = entry.armed.borrow().clone();
@@ -1528,7 +1638,7 @@ mod tests {
     #[test]
     fn the_three_entries_have_separate_global_surfaces() {
         let hooked = plane_surface(&effect_globals());
-        let script = plane_surface(&script_globals());
+        let script = plane_surface(&script_globals(&[]));
         println!("POPULATION hooked-plane surface = {hooked:?}");
         println!("POPULATION script-plane surface = {script:?}");
 
@@ -1547,7 +1657,20 @@ mod tests {
             .collect();
         assert_eq!(
             script, expected_script,
-            "the script plane adds read/me/put only"
+            "the PURE script plane adds read/me/put only — provably pure by \
+             default (script-effects ruling: #17 stands on this path)"
+        );
+
+        // Effects mode: the admitted builtin joins EXACTLY when named — the
+        // sanctioned exec surface (#17 overturned on the flagged path only).
+        let live = plane_surface(&script_globals(&["run".to_owned()]));
+        let expected_live: HashSet<String> = ["read", "me", "put", "run"]
+            .into_iter()
+            .map(ToOwned::to_owned)
+            .collect();
+        assert_eq!(
+            live, expected_live,
+            "effects:[\"run\"] adds exactly the admitted builtin"
         );
         assert!(
             !hooked.contains("put"),

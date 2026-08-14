@@ -315,6 +315,45 @@ fn frag_miss_message(asked: &str, display: &str) -> String {
     )
 }
 
+/// One section selector → the cat door's `SecRef`, resolving the dewey lane
+/// through the SAME `selector_matches` the composed read uses (one
+/// resolution, every door — read alignment, script-effects ruling
+/// 2026-08-13). Hpath and anchor pass through; a dewey ordinal resolves to
+/// its row's hpath, refusing on a miss or an ambiguity in the composed
+/// read's own words.
+///
+/// # Errors
+/// The refusal phrase, ready for a host's typed fault.
+pub fn selector_to_secref(
+    doc: &model::Document,
+    sel: &wire::ReadSel,
+) -> Result<wire::SecRef, String> {
+    match sel {
+        wire::ReadSel::Hpath { hpath } => Ok(wire::SecRef::Hpath {
+            hpath: hpath.clone(),
+        }),
+        wire::ReadSel::Anchor { anchor } => Ok(wire::SecRef::Anchor {
+            anchor: anchor.clone(),
+        }),
+        wire::ReadSel::Dewey { .. } => {
+            let facts =
+                wire_map::facts::read_facts(&wire_map::project_toc(doc), doc.raw.as_bytes());
+            let matches = wire_map::facts::selector_matches(&facts, sel);
+            match matches.as_slice() {
+                &[fact] => Ok(wire::SecRef::Hpath {
+                    hpath: fact.hpath.clone(),
+                }),
+                [] => Err(format!("no section addressed by \"{}\"", sel.display())),
+                many => Err(format!(
+                    "\"{}\" is ambiguous ({} matches)",
+                    sel.display(),
+                    many.len()
+                )),
+            }
+        }
+    }
+}
+
 /// One heading fact → one wire composed-read row: the addressing facts plus
 /// the authz facts (`span`, `content_span`), carried verbatim off the fact —
 /// this seam never re-derives an address.
@@ -1575,7 +1614,7 @@ mod props_scalar_tests {
     //! The read half of the frontmatter scalar law was gated end-to-end at the
     //! script plane (`mrd/tests/a6_read_seam.rs`) because that is where the
     //! dogfood-season-1 incident was observed — a script comparing
-    //! `card.fm["owner"]` against an id saw the stored quote bytes and silently
+    //! `card["fm"]["owner"]` against an id saw the stored quote bytes and silently
     //! matched nothing. It was never gated HERE, at [`read_props`], which is
     //! where the decode actually happens: `model::scalar` had unit tests for the
     //! codec, and nothing asserted the composed read applies it.

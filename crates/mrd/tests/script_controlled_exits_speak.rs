@@ -42,7 +42,7 @@ const CARD: &str = "tasks/0011-token-audit.md";
 /// script would never issue a splice and could not exercise a commit door.
 const CLAIM: &str = r#"
 card = read("tasks/0011-token-audit.md")
-if card.fm["owner"] == "":
+if card["fm"]["owner"] == "":
     put("tasks/0011-token-audit.md", props={"owner": me(), "status": "doing"})
 "#;
 
