@@ -24,6 +24,7 @@
 use std::fmt::Write as _;
 use std::io::ErrorKind;
 use std::path::Path as FsPath;
+use std::sync::Arc;
 
 // The uniform § A.6.3a refusal sentence — one owner beside the `MultiLineValue`
 // it renders, so this door, `set_property` and the preset birth door cannot
@@ -81,6 +82,34 @@ pub struct SpliceArgs {
     pub pin: Option<wire::PinSpec>,
 }
 
+/// The read-mint ledgers a splice may consult (D16, and D-C of the
+/// cross-root pin design).
+///
+/// `ambient` is the pinning workspace's own ledger — the store [`splice`] has
+/// always taken. `foreign` answers for ANOTHER bound workspace, keyed by its
+/// canonical path: the registry's per-workspace ledger map behind a closure.
+///
+/// A receipt lives in the ledger of the workspace that SERVED the read, so a
+/// cross-root pin gate asks the TARGET root's ledger. Peeling the root and
+/// looking up the bare path in the ambient ledger would let a receipt minted
+/// on one file gate a pin on another — the read-mint bypass shape
+/// (`docs/address-grammar.md` §8.2), arrived at through the ledger instead of
+/// the mount table.
+#[derive(Default, Clone, Copy)]
+pub struct Mints<'a> {
+    /// The pinning workspace's own ledger.
+    pub ambient: Option<&'a receipt::read_mint::ReadMintStore>,
+    /// Another bound workspace's ledger, by canonical workspace path. `None`
+    /// on hosts with no per-workspace session layer — a session actor's
+    /// cross-root pin then refuses exactly as a ledgerless host refuses a
+    /// same-root one.
+    pub foreign: Option<ForeignMints<'a>>,
+}
+
+/// The per-workspace ledger resolver behind [`Mints::foreign`] — the
+/// registry's `read_mints` map as a closure.
+pub type ForeignMints<'a> = &'a dyn Fn(&std::path::Path) -> Arc<receipt::read_mint::ReadMintStore>;
+
 /// The outcome of the write choke-point: the wire `Splice` response body plus,
 /// on a real commit, the one emitted `DeltaFrame`. `committed` is `None` on a
 /// dry run.
@@ -122,13 +151,39 @@ pub struct SpliceOutcome {
 /// I/O failure in the commit after that rename lands can leave the marker
 /// behind. It is fingerprint-neutral and idempotently reused by the next pin.
 /// Every refusal rung, including all of the pin's, runs before that rename.
-#[allow(clippy::too_many_lines)]
 pub fn splice(
     root: &fs::WorkspaceRoot,
     seq: Option<&dyn crate::seq::SeqSink>,
     args: &SpliceArgs,
     rulesets: &[policy::CompiledRuleset],
     mints: Option<&receipt::read_mint::ReadMintStore>,
+) -> Result<SpliceOutcome, Box<ErrorBody>> {
+    splice_with_mints(
+        root,
+        seq,
+        args,
+        rulesets,
+        Mints {
+            ambient: mints,
+            foreign: None,
+        },
+    )
+}
+
+/// [`splice`] with the full ledger surface: the ambient store plus the
+/// per-workspace foreign resolver a cross-root pin gate needs (D-C). The
+/// resident registry calls this; [`splice`] wraps it for every caller whose
+/// host has one ledger or none.
+///
+/// # Errors
+/// As [`splice`].
+#[allow(clippy::too_many_lines)]
+pub fn splice_with_mints(
+    root: &fs::WorkspaceRoot,
+    seq: Option<&dyn crate::seq::SeqSink>,
+    args: &SpliceArgs,
+    rulesets: &[policy::CompiledRuleset],
+    mints: Mints<'_>,
 ) -> Result<SpliceOutcome, Box<ErrorBody>> {
     // Workspace-root confinement: `Path::join` with an absolute path discards
     // the root, so an absolute or `..`-bearing splice path would read and write
@@ -167,7 +222,7 @@ pub fn splice(
             spec,
             args.actor.as_deref(),
             args.force,
-            mints,
+            &mints,
         )?),
         None => None,
     };
@@ -189,7 +244,7 @@ pub fn splice(
     // composed against, because they are what disk carries when `commit_batch`
     // reads it back.
     if let Some(p) = pin.as_ref().and_then(|p| p.promotion.as_ref())
-        && same_file(root, &p.target, &args.path)
+        && same_physical_file(&p.root, &p.target, root, &args.path)
     {
         doc = build_doc(&args.path, p.candidate.raw());
     }
@@ -408,15 +463,19 @@ pub fn splice(
     if let Some(minted) = pin.as_ref()
         && let Some(p) = minted.promotion.as_ref()
     {
-        fs::replace_file(root, FsPath::new(&p.target.0), &p.candidate)
+        fs::replace_file(&p.root, FsPath::new(&p.target.0), &p.candidate)
             .map_err(|e| io_to_wire(&e))?;
         // D16: refresh the actor's receipt to the rev this engine write
         // created. The promotion moved the section's `sec_rev` (a rev is over
         // raw bytes) without moving one byte of what the actor read, so leaving
         // the old rev would fail the actor's own gate on its next pin. Only for
         // a receipt that already passed the gate at mint time; a foreign
-        // content change still refuses.
-        if let (Some(store), Some(actor)) = (mints, crate::read::mint_actor(args.actor.as_deref()))
+        // content change still refuses. The refresh lands in the ledger the
+        // gate consulted — the TARGET workspace's for a cross-root pin, keyed
+        // by the same root-relative path the read minted under.
+        let refresh = minted.foreign_ledger.as_deref().or(mints.ambient);
+        if let (Some(store), Some(actor)) =
+            (refresh, crate::read::mint_actor(args.actor.as_deref()))
         {
             store.mint(actor, &p.target.0, &minted.fact.selector, &p.sec_rev);
         }
@@ -425,11 +484,20 @@ pub fn splice(
         // re-guard the batch on the current value: re-comparing the client's
         // pre-promotion token would self-refuse `root_mismatch` on our own
         // write. The client's guard was already honored above.
-        root_before = ambient_root(root)?;
-        batch.if_root = args
-            .if_root
-            .as_ref()
-            .map(|_| model::MerkleRoot(root_before.0.clone()));
+        //
+        // Only when the marker landed under the PINNING workspace: a
+        // cross-root promotion moves the TARGET root's cursor, and this
+        // workspace's `if_root` world stays exactly what the client guarded
+        // (cross-root design D-B point 6 — the re-guard dance is not needed
+        // there). The predicate is physical containment, so a target root
+        // nested inside the pinning workspace still re-guards correctly.
+        if promotion_under(root, p) {
+            root_before = ambient_root(root)?;
+            batch.if_root = args
+                .if_root
+                .as_ref()
+                .map(|_| model::MerkleRoot(root_before.0.clone()));
+        }
     }
 
     // Real commit: render the receipt line (§6.1), fold the append, honor the
@@ -1051,7 +1119,6 @@ struct PinRow {
 
 /// What a pin minted, plus what it still owes to disk. Nothing here has been
 /// written: the prologue computes, the caller lands (see [`PendingPromotion`]).
-#[derive(Debug)]
 struct PinMint {
     /// The wire fact returned to the client.
     fact: wire::PinFact,
@@ -1069,18 +1136,33 @@ struct PinMint {
     /// caller merges into its own (the gate itself already ran; a refusal never
     /// reached here).
     gate: crate::gate::GatePass,
+    /// Cross-root only: the TARGET root's write flock. Taken before the
+    /// target's bytes were read and held until this mint's splice returns, so
+    /// the read, the gate's rev-recheck, the promotion landing and the commit
+    /// form one critical section against target-root writers — the same span
+    /// the pinning flock covers same-root. `LOCK_NB` is the deadlock
+    /// discipline: the acquire never blocks while the pinning flock is held,
+    /// so no hold-and-wait cycle can form.
+    #[allow(dead_code)] // held for Drop — the lock IS the use
+    target_flock: Option<fs::WriteLock>,
+    /// Cross-root only: the TARGET workspace's read-mint ledger — the store
+    /// the gate consulted, and the one the D16 refresh must land in.
+    foreign_ledger: Option<Arc<receipt::read_mint::ReadMintStore>>,
 }
 
 /// An anchor promotion that has been decided and not written: the exact bytes,
-/// the page they belong to, and the receipt refresh the write owes.
+/// the root and page they belong to, and the receipt refresh the write owes.
 ///
 /// The promotion touches a different file from the one the request names, so a
 /// rung refusing after it would leave bytes in a page the caller never asked to
 /// change. Held here, it lands after the last such rung.
 #[derive(Debug)]
 struct PendingPromotion {
-    /// The page the marker lands in — the pin's target, which may be the pinning
-    /// page itself.
+    /// The workspace the marker lands in — the TARGET root's for a cross-root
+    /// pin, the pinning root otherwise.
+    root: fs::WorkspaceRoot,
+    /// The page the marker lands in, relative to `root` — the pin's target,
+    /// which may be the pinning page itself.
     target: Path,
     /// The sealed candidate to write — its bytes are the exact bytes that land,
     /// and also the pinning page's pre-image when the target IS the pinning
@@ -1120,21 +1202,63 @@ fn mint_pin(
     spec: &wire::PinSpec,
     actor: Option<&str>,
     force: bool,
-    mints: Option<&receipt::read_mint::ReadMintStore>,
+    mints: &Mints<'_>,
 ) -> Result<PinMint, Box<ErrorBody>> {
-    path_confined(root, &spec.target)?;
+    let target = resolve_pin_target(root, &spec.target)?;
+    // The spelling every fact, lock row and refusal names: the ruled
+    // `name:rel` form for a genuinely foreign target (D-A — carried verbatim
+    // into the lock's `object`, minus `.md`), the bare rel otherwise. A rooted
+    // spelling that names the pinning root itself has already normalized to
+    // its bare form in the resolver — one name per thing.
+    let spelled: Path = match &target.mount {
+        Some(name) => Path(format!("{name}:{}", target.rel.0)),
+        None => target.rel.clone(),
+    };
 
-    let mut target_doc = load_doc(root, &spec.target).map_err(|e| {
+    // D-B (round 2, one-call): the TARGET root's write flock, taken BEFORE its
+    // bytes are read, so the read, the receipt rev-recheck and the promotion
+    // landing are serialized against target-root writers by construction. The
+    // acquire is LOCK_NB — it never blocks while the pinning flock is held, so
+    // no hold-and-wait cycle can form; a busy target refuses `workspace_busy`
+    // naming which root is busy.
+    let target_flock = match &target.mount {
+        Some(name) => Some(acquire_write_lock(&target.root).map_err(|mut e| {
+            if e.code == ErrorCode::WorkspaceBusy {
+                e.message = Some(format!(
+                    "another meridian writer holds the target root {name}'s \
+                     .meridian/write.lock — transient; retry"
+                ));
+            }
+            e
+        })?),
+        None => None,
+    };
+    // D-C: the gate consults the ledger of the workspace that SERVED the read
+    // — for a cross-root target, the TARGET workspace's (resolved through the
+    // same canonicalize-at-bind path the mount table keys by). The ambient
+    // ledger holding a receipt for a same-named file is a different fact and
+    // must not gate this pin (the §8.2 read-mint bypass shape).
+    let foreign_ledger = match &target.mount {
+        Some(_) => mints.foreign.map(|ledger_for| ledger_for(&target.root.0)),
+        None => None,
+    };
+    let gate_store = match &target.mount {
+        Some(_) => foreign_ledger.as_deref(),
+        None => mints.ambient,
+    };
+
+    let mut target_doc = load_doc(&target.root, &target.rel).map_err(|e| {
         if e.code == ErrorCode::FileNotFound {
-            pin_target_missing(&spec.target, format!("no page at {} to pin", spec.target.0))
+            pin_target_missing(&spelled, format!("no page at {} to pin", spelled.0))
         } else {
             e
         }
     })?;
     // The armed gate scopes its rules by the document's path, and `fs::load`
     // leaves that empty — an unstamped pre-image is a page no path-scoped
-    // convention can see.
-    stamp_path(&mut target_doc, &spec.target);
+    // convention can see. The stamp is the ROOT-RELATIVE path: the gate runs
+    // under the target root's own convention scope (D-B point 3).
+    stamp_path(&mut target_doc, &target.rel);
 
     // `spec.selector` arrives tagged — the conversion from a human string
     // happens in the caller's own coat (`mrd pin`), never here, so this door
@@ -1148,13 +1272,13 @@ fn mint_pin(
         &[fact] => fact,
         [] => {
             return Err(pin_target_missing(
-                &spec.target,
+                &spelled,
                 format!(
                     "no section addressed by \"{}\" in {}. Nothing was written — the pin's \
                      page is byte-untouched. {}",
                     asked.display(),
-                    spec.target.0,
-                    crate::section_recovery(&asked.display(), Some(spec.target.0.as_str()))
+                    spelled.0,
+                    crate::section_recovery(&asked.display(), Some(spelled.0.as_str()))
                 ),
             ));
         }
@@ -1192,7 +1316,7 @@ fn mint_pin(
                     unreachable!("a dewey selector matches at most one row")
                 }
             };
-            e.path = Some(spec.target.clone());
+            e.path = Some(spelled.clone());
             return Err(Box::new(e));
         }
     };
@@ -1212,14 +1336,23 @@ fn mint_pin(
     let fact_segments = fact.hpath.clone();
 
     // D16: the gate, and its rev-recheck against the bytes on disk right now —
-    // a receipt answers "was it read", never "is it current".
-    read_mint_gate(mints, actor, &spec.target, &selector, &fact.sec_rev)?;
+    // a receipt answers "was it read", never "is it current". The ledger key
+    // is the target's ROOT-RELATIVE path — the spelling the serving
+    // workspace's reads minted under — while refusals name the caller's own.
+    read_mint_gate(
+        gate_store,
+        actor,
+        &spelled,
+        &target.rel,
+        &selector,
+        &fact.sec_rev,
+    )?;
 
     let fact_span = span_range(fact.span);
     let slot = promotion_slot(&target_doc.raw, fact_span.start);
     let (anchor, promote) = decide_anchor(
         &target_doc,
-        &spec.target,
+        &spelled,
         fact_anchor.as_deref(),
         slot,
         &title,
@@ -1233,8 +1366,18 @@ fn mint_pin(
     // The fingerprint agrees either way, because the promotion is rev-neutral.
     let mut gate = crate::gate::GatePass::default();
     let promoted = if promote {
-        let (candidate, pass) =
-            plan_promotion(root, &spec.target, &target_doc, slot, &anchor, actor, force)?;
+        // The promotion is a write to the TARGET's root: its artifact guard,
+        // stored-form guard and armed gate all run under THAT root's own law
+        // (D-B point 3 — `gate_write` reads the workspace it is handed).
+        let (candidate, pass) = plan_promotion(
+            &target.root,
+            &target.rel,
+            &target_doc,
+            slot,
+            &anchor,
+            actor,
+            force,
+        )?;
         gate = pass;
         Some(candidate)
     } else {
@@ -1243,29 +1386,27 @@ fn mint_pin(
     let pinned_doc: &model::Document = promoted.as_ref().map_or(&target_doc, |c| c.document());
 
     let (span, promoted_sec_rev, segments) = if promote {
-        post_promotion_facts(pinned_doc, &spec.target, &selector)?
+        post_promotion_facts(pinned_doc, &spelled, &selector)?
     } else {
         (fact_span, String::new(), fact_segments)
     };
 
-    let fingerprint = mint_fingerprint(pinned_doc, &span, &spec.target, &selector_text)?;
+    let fingerprint = mint_fingerprint(pinned_doc, &span, &spelled, &selector_text)?;
+    // D-D: the blob is asked of — and, under `--vibe`, written into — the
+    // TARGET root's object store: drift/repair diff from the target's git
+    // history, so the blob must live where that history lives.
     let blob = blob_oid(
-        root,
-        &spec.target,
+        &target.root,
+        &target.rel,
         promoted.as_ref().map(model::CandidateDocument::raw),
         spec.vibe.unwrap_or(false),
     )?;
     refuse_unrepresentable_heading(pinned_doc, &span, fact_anchor.as_deref(), &selector_text)?;
-    let row = pin_row(
-        &spec.target,
-        fact_anchor.as_deref(),
-        &segments,
-        blob.as_deref(),
-    )?;
+    let row = pin_row(&spelled, fact_anchor.as_deref(), &segments, blob.as_deref())?;
 
     Ok(PinMint {
         fact: wire::PinFact {
-            target: spec.target.clone(),
+            target: spelled,
             selector,
             fingerprint,
             blob,
@@ -1275,11 +1416,14 @@ fn mint_pin(
         row,
         span,
         promotion: promoted.map(|candidate| PendingPromotion {
-            target: spec.target.clone(),
+            root: target.root.clone(),
+            target: target.rel.clone(),
             candidate,
             sec_rev: promoted_sec_rev,
         }),
         gate,
+        target_flock,
+        foreign_ledger,
     })
 }
 
@@ -1574,10 +1718,16 @@ fn section_hpath_at(node: &model::Node, start: usize) -> Option<Vec<String>> {
 /// # Errors
 /// `read_mint_required` (no covering receipt, or a host with no session layer),
 /// `write_conflict` (the receipt covers a rev the target no longer carries).
+///
+/// `target` is the spelling refusals name back at the caller; `ledger_rel` is
+/// the target's ROOT-RELATIVE path — the key the serving workspace's reads
+/// minted under. Same-root the two coincide; cross-root the store is the
+/// TARGET workspace's ledger and the key stays bare (D-C).
 fn read_mint_gate(
     store: Option<&receipt::read_mint::ReadMintStore>,
     actor: Option<&str>,
     target: &Path,
+    ledger_rel: &Path,
     selector: &wire::ReadSel,
     live_sec_rev: &str,
 ) -> Result<(), Box<ErrorBody>> {
@@ -1597,12 +1747,12 @@ fn read_mint_gate(
             ),
         ));
     };
-    let Some(receipt) = store.lookup(actor, &target.0, selector) else {
+    let Some(receipt) = store.lookup(actor, &ledger_rel.0, selector) else {
         // Name the cause the gate can tell apart: a receipt held under another
         // identity means the caller's session id rotated; no receipt at all
         // means the selector was never read, or the mint evaporated. Both end
         // at the same one-round-trip fix.
-        let rotated = store.any_actor_read(&target.0, selector);
+        let rotated = store.any_actor_read(&ledger_rel.0, selector);
         let cause = if rotated {
             "this session holds a receipt for that selector under a DIFFERENT identity, so \
              yours rotated (a fork, a resume, a /clear mints under a new id)"
@@ -2054,6 +2204,175 @@ fn path_confined(root: &fs::WorkspaceRoot, path: &Path) -> Result<(), Box<ErrorB
         return Err(Box::new(e));
     }
     Ok(())
+}
+
+/// A pin target resolved to the root that serves it (cross-root design D-A):
+/// a bare spelling stays in the pinning root; a `name:rel` spelling resolves
+/// through the machine's mount table to that root's bound workspace.
+struct PinTarget {
+    /// The workspace the target lives in — the pinning root itself unless the
+    /// spelling named another mounted root.
+    root: fs::WorkspaceRoot,
+    /// The target's path INSIDE `root` — the load path, the ledger key, and
+    /// the promotion's landing path.
+    rel: Path,
+    /// The canonical mount name for a genuinely foreign target. `None` for a
+    /// bare spelling AND for a rooted spelling that resolves to the pinning
+    /// root itself (normalized to the bare form — one name per thing).
+    mount: Option<addr::MountName>,
+}
+
+/// Resolve `pin.target` against the pinning root and the machine's mount
+/// table. The ONE place the pin door reads the `[root:]path` grammar — the
+/// same §4.1 head-colon law `addr::Addr::parse` holds, minus the fragment
+/// arm (the target is a path position; `#` is an ordinary path byte there,
+/// and the selector rides its own field).
+///
+/// Order is parse → confinement → table, so a malformed spelling refuses
+/// without the mount table ever being read.
+///
+/// # Errors
+/// `bad_path` — a malformed head (bad name, two colons, empty rel), an
+/// escaping rel, an unreadable mount table, or a root the table does not
+/// bind. Each refusal teaches its own remedy.
+fn resolve_pin_target(
+    root: &fs::WorkspaceRoot,
+    target: &Path,
+) -> Result<PinTarget, Box<ErrorBody>> {
+    if !addr::head_carries_root_separator(&target.0) {
+        path_confined(root, target)?;
+        return Ok(PinTarget {
+            root: root.clone(),
+            rel: target.clone(),
+            mount: None,
+        });
+    }
+    let head = target.0.split('/').next().unwrap_or(&target.0);
+    let refuse = |message: String| -> Box<ErrorBody> {
+        let mut e = ErrorBody::new(ErrorCode::BadPath);
+        e.path = Some(target.clone());
+        e.message = Some(message);
+        Box::new(e)
+    };
+    if head.match_indices(':').count() > 1 {
+        return Err(refuse(format!(
+            "{} carries more than one `:` before the first `/` — exactly one colon may \
+             separate a root from its path (§4.1). Nothing was written.",
+            target.0
+        )));
+    }
+    let colon = head.find(':').unwrap_or(0);
+    let name = addr::MountName::parse(&head[..colon]).map_err(|e| refuse(format!("{e}")))?;
+    let rel = &target.0[colon + 1..];
+    if rel.is_empty() {
+        return Err(refuse(format!(
+            "{} names a root and no path — a root alone addresses nothing. Nothing was written.",
+            target.0
+        )));
+    }
+    if !addr::confined(rel) {
+        return Err(refuse(format!(
+            "{rel} is not a root-relative path — the rel half of a rooted pin target obeys \
+             the same §1 path law as any write path (no absolute path, no `.`/`..`/empty \
+             segment, no second `root:` prefix). Nothing was written.",
+        )));
+    }
+    // The table, read fresh per mint (the same currency law the resolver
+    // holds): a missing or invalid ~/MERIDIAN.md means the name cannot be
+    // resolved HERE, which is a loud refusal at a write door — never a grey.
+    let Some(table) = machine_mount_table() else {
+        return Err(refuse(format!(
+            "the pin target {} names root `{name}`, but this machine's mount table \
+             (~/MERIDIAN.md) cannot be read, so the name resolves to no workspace. Declare \
+             the root's mount there and retry. Nothing was written.",
+            target.0
+        )));
+    };
+    let bound = table
+        .by_name(name.as_str())
+        .filter(|m| !m.state().refuses())
+        .and_then(config::mount::Mount::canonical_path);
+    let Some(target_root) = bound else {
+        let names: Vec<&str> = table
+            .mounts()
+            .iter()
+            .filter(|m| !m.state().refuses())
+            .map(config::mount::Mount::name)
+            .collect();
+        return Err(refuse(format!(
+            "the pin target {} names root `{name}`, which this machine does not bind \
+             (bound roots: {}). A claim on an unbound root could never be walked or \
+             checked from here. Declare the name in the target root's own MERIDIAN.md and \
+             bind it in ~/MERIDIAN.md, then retry. Nothing was written.",
+            target.0,
+            if names.is_empty() {
+                "none".to_string()
+            } else {
+                names.join(", ")
+            }
+        )));
+    };
+    // A rooted spelling of the PINNING root itself is the same-root pin under
+    // one of its names: normalize to the bare form. This also keeps the flock
+    // plane single — a second LOCK_NB acquire on the already-held pinning
+    // flock would refuse `workspace_busy` against ourselves.
+    let pinning = std::fs::canonicalize(&root.0).unwrap_or_else(|_| root.0.clone());
+    if target_root == pinning {
+        let rel = Path(rel.to_string());
+        return Ok(PinTarget {
+            root: root.clone(),
+            rel,
+            mount: None,
+        });
+    }
+    Ok(PinTarget {
+        root: fs::WorkspaceRoot(target_root.to_path_buf()),
+        rel: Path(rel.to_string()),
+        mount: Some(name),
+    })
+}
+
+/// The machine's bound mount table, or `None` when no config resolves or the
+/// table refuses to bind — the pin door's refusal texts own what that means.
+fn machine_mount_table() -> Option<config::mount::MountTable> {
+    let resolution = config::resolve(&config::Env::from_process()).ok()?;
+    resolution.bind().ok()
+}
+
+/// Same physical file across two (root, rel) spellings — the cross-root
+/// generalization of [`same_file`]: a promotion landing in another root can
+/// still be the pinning page when roots nest, and composing the batch against
+/// the pre-promotion bytes would then splice at offsets the file no longer
+/// has.
+fn same_physical_file(
+    root_a: &fs::WorkspaceRoot,
+    a: &Path,
+    root_b: &fs::WorkspaceRoot,
+    b: &Path,
+) -> bool {
+    if root_a.0 == root_b.0 {
+        return same_file(root_a, a, b);
+    }
+    match (
+        std::fs::canonicalize(root_a.0.join(&a.0)),
+        std::fs::canonicalize(root_b.0.join(&b.0)),
+    ) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => false,
+    }
+}
+
+/// Did this promotion land under the PINNING workspace? Physical containment,
+/// so a same-root promotion answers yes, a disjoint cross-root one no, and a
+/// target root nested inside the pinning workspace yes — exactly the set of
+/// landings that move the pinning root's corpus cursor.
+fn promotion_under(root: &fs::WorkspaceRoot, p: &PendingPromotion) -> bool {
+    if p.root.0 == root.0 {
+        return true;
+    }
+    let landed = std::fs::canonicalize(p.root.0.join(&p.target.0));
+    let pinning = std::fs::canonicalize(&root.0).unwrap_or_else(|_| root.0.clone());
+    matches!(landed, Ok(path) if path.starts_with(&pinning))
 }
 
 /// The workspace-relative respelling of an ABSOLUTE spelling that lies inside

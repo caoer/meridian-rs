@@ -1343,19 +1343,21 @@ pub fn links_rooted(
 /// This file's unresolved edges that name a real out-of-domain file, keyed as
 /// `unresolved` keys them (§4.6, session decision 0034).
 ///
-/// The classification is `fs::domain::link_target_exclusion` — the one mint
-/// the `sql link` projection also asks through, so the two planes cannot name
+/// The classification is `fs::domain::LinkTargetProbe` — the one mint the
+/// `sql link` projection also asks through, so the two planes cannot name
 /// one rule differently. Nothing is decided here.
 fn unresolved_reasons(
     root: &fs::WorkspaceRoot,
     domain: &fs::domain::Domain,
     edges: &query::FileLinks,
 ) -> BTreeMap<String, String> {
+    let probe = fs::domain::LinkTargetProbe::new(root, domain);
     edges
         .unresolved
         .keys()
         .filter_map(|target| {
-            fs::domain::link_target_exclusion(root, domain, target)
+            probe
+                .exclusion(target)
                 .map(|why| (target.clone(), why.word().to_owned()))
         })
         .collect()

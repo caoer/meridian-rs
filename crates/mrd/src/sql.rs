@@ -507,10 +507,8 @@ fn sync_store(
     let corpus = loaded
         .mounts
         .rooted(&loaded.docs, &loaded.domain, &loaded.root);
-    let exclusion = |target: &str| {
-        fs::domain::link_target_exclusion(&loaded.root, &loaded.domain, target)
-            .map(|why| why.word().to_owned())
-    };
+    let probe = fs::domain::LinkTargetProbe::new(&loaded.root, &loaded.domain);
+    let exclusion = |target: &str| probe.exclusion(target).map(|why| why.word().to_owned());
     store
         .sync(
             &loaded.docs,
@@ -553,10 +551,8 @@ fn attempt(args: &SqlArgs, loaded: &Loaded, lane: &mut Lane) -> Result<Attempt, 
             let corpus = loaded
                 .mounts
                 .rooted(&loaded.docs, &loaded.domain, &loaded.root);
-            let exclusion = |target: &str| {
-                fs::domain::link_target_exclusion(&loaded.root, &loaded.domain, target)
-                    .map(|why| why.word().to_owned())
-            };
+            let probe = fs::domain::LinkTargetProbe::new(&loaded.root, &loaded.domain);
+            let exclusion = |target: &str| probe.exclusion(target).map(|why| why.word().to_owned());
             let conn = view::build_memory_rooted(
                 &loaded.docs,
                 &corpus,
