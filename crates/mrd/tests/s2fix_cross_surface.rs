@@ -1470,9 +1470,15 @@ fn r31_every_empty_span_form_refuses_at_the_pin_door() {
     git(&ws, &["commit", "-qm", "init"]);
 
     for (form, refr) in [
-        ("1 own-line anchor, document start", "ownline_mid.md#^midline"),
+        (
+            "1 own-line anchor, document start",
+            "ownline_mid.md#^midline",
+        ),
         ("2 own-line anchor, orphan at EOF", "ownline_eof.md#^ateof"),
-        ("3 own-line anchor, indented orphan", "ownline_ind.md#^indented"),
+        (
+            "3 own-line anchor, indented orphan",
+            "ownline_ind.md#^indented",
+        ),
         ("4 whole-page ref over an empty file", "empty.md"),
         (
             "5 whole-page ref over an anchors-only file",

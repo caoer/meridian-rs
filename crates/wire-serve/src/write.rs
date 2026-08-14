@@ -1710,11 +1710,8 @@ fn anchor_on_line(doc: &model::Document, line_start: usize) -> Option<String> {
         .map_or(bytes.len(), |p| line_start + p);
     let line = doc.raw[line_start..end].trim();
     let rest = line.strip_prefix('^')?;
-    (!rest.is_empty()
-        && rest
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-'))
-    .then(|| rest.to_string())
+    (!rest.is_empty() && rest.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+        .then(|| rest.to_string())
 }
 
 /// The D15 slug: a deterministic block id derived from the target's own heading

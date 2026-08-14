@@ -384,8 +384,7 @@ fn is_list_line(bytes: &[u8], line: &ByteSpan) -> bool {
     }
     let digits = s.iter().take_while(|b| b.is_ascii_digit()).count();
     digits > 0
-        && s.get(digits)
-            .is_some_and(|b| *b == b'.' || *b == b')')
+        && s.get(digits).is_some_and(|b| *b == b'.' || *b == b')')
         && s.get(digits + 1).is_none_or(|b| *b == b' ')
 }
 

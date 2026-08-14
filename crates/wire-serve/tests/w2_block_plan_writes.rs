@@ -425,7 +425,10 @@ fn plan_match_at_frontmatter_caret_refuses_toward_the_props_plane() {
         None,
     )
     .expect_err("a frontmatter caret does not resolve on the write door");
-    assert_eq!(err.message.as_deref(), Some(excluded_message("fm-1").as_str()));
+    assert_eq!(
+        err.message.as_deref(),
+        Some(excluded_message("fm-1").as_str())
+    );
     assert_eq!(read_back(&dir, "card.md"), seed);
 }
 

@@ -114,7 +114,10 @@ fn tail_on_last_callout_line_hosts_the_whole_callout() {
 #[test]
 fn tail_in_last_table_row_hosts_the_whole_table() {
     let raw = "# T\n\n| x |\n|---|\n| 1 | ^rowtail\n\nafter\n";
-    assert_eq!(host(raw, "rowtail"), span_of(raw, "| x |\n|---|\n| 1 | ^rowtail"));
+    assert_eq!(
+        host(raw, "rowtail"),
+        span_of(raw, "| x |\n|---|\n| 1 | ^rowtail")
+    );
 }
 
 /// Heading-line tail: the heading line (Obsidian `hh` probe).
@@ -146,7 +149,10 @@ fn own_line_below_table_hosts_the_table() {
 #[test]
 fn own_line_after_table_blank_separated_hosts_the_table() {
     let raw = "# T\n\n| c | d |\n|---|---|\n| 3 | 4 |\n\n^tbl2\n\nafter\n";
-    assert_eq!(host(raw, "tbl2"), span_of(raw, "| c | d |\n|---|---|\n| 3 | 4 |"));
+    assert_eq!(
+        host(raw, "tbl2"),
+        span_of(raw, "| c | d |\n|---|---|\n| 3 | 4 |")
+    );
 }
 
 /// Own-line after a fence with a blank between: the FENCE (Obsidian
@@ -163,7 +169,10 @@ fn own_line_after_fence_hosts_the_fence() {
 #[test]
 fn own_line_directly_below_paragraph_joins_it() {
     let raw = "# T\n\npara one\n^directbelow\n\npara two\n";
-    assert_eq!(host(raw, "directbelow"), span_of(raw, "para one\n^directbelow"));
+    assert_eq!(
+        host(raw, "directbelow"),
+        span_of(raw, "para one\n^directbelow")
+    );
 }
 
 /// Own-line after a paragraph with a blank between: the paragraph, marker
