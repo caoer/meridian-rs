@@ -566,7 +566,15 @@ fn attempt(args: &SqlArgs, loaded: &Loaded, lane: &mut Lane) -> Result<Attempt, 
             )
             .map_err(|e| Fail::tool(format!("cannot build the view: {e}")))?;
             let as_of = read_as_of(&conn)?;
-            view::store::apply_profile(&conn, args.profile).map_err(|e| {
+            // No drawer on this lane: the env temp root is the absolute
+            // spill home (card sql-spill-config-lockout — the default was
+            // `.tmp` RELATIVE to the shell cwd).
+            view::store::apply_profile(
+                &conn,
+                args.profile,
+                &std::env::temp_dir().join("mrd-sql-spill"),
+            )
+            .map_err(|e| {
                 Fail::tool(format!(
                     "cannot apply the {} sandbox: {e}",
                     args.profile.label()
@@ -948,7 +956,12 @@ mod tests {
     #[test]
     fn agent_sandbox_blocks_external_access_locks_config_no_statement_timeout() {
         let conn = Connection::open_in_memory().unwrap();
-        view::store::apply_profile(&conn, ExecProfile::Agent).expect("apply agent sandbox");
+        view::store::apply_profile(
+            &conn,
+            ExecProfile::Agent,
+            &std::env::temp_dir().join("mrd-sql-spill"),
+        )
+        .expect("apply agent sandbox");
 
         assert!(
             conn.execute_batch("SELECT * FROM read_csv('/etc/hosts')")
@@ -972,7 +985,12 @@ mod tests {
     #[test]
     fn local_sandbox_does_not_lock_configuration() {
         let conn = Connection::open_in_memory().unwrap();
-        view::store::apply_profile(&conn, ExecProfile::Local).expect("apply local sandbox");
+        view::store::apply_profile(
+            &conn,
+            ExecProfile::Local,
+            &std::env::temp_dir().join("mrd-sql-spill"),
+        )
+        .expect("apply local sandbox");
         assert!(
             conn.execute_batch("SET memory_limit='2GB'").is_ok(),
             "local does not lock configuration"
