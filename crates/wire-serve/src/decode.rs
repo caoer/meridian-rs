@@ -179,7 +179,9 @@ fn decode_walk(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
         .transpose()?
         .map(|d| {
             u32::try_from(d).map_err(|_| {
-                bad_request(format!("`depth` on `{op}` exceeds the supported bound: {d}"))
+                bad_request(format!(
+                    "`depth` on `{op}` exceeds the supported bound: {d}"
+                ))
             })
         })
         .transpose()?;
