@@ -1597,6 +1597,37 @@ pub struct DeltaFrame {
     pub delta: Delta,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub effects: Vec<EffectEnvelope>,
+    /// § A.9 re-scope summary: present exactly when the effective domain
+    /// configuration changed in this batch. v3-additive
+    /// (`V2_RESERVED_FIELDS`), skip-on-`None` so v2 bytes stay identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rescope: Option<Rescope>,
+    /// § A.9 overflow marker: file rows past the assembly bound were dropped
+    /// and counted. v3-additive, skip-on-`None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overflow: Option<Overflow>,
+}
+
+/// § A.9: one batch's re-scope summary. Membership-only changes collapse
+/// into these counts instead of enumerating per file; the consumer's
+/// disposition is `resync`'s — re-derive what you watch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Rescope {
+    /// The domain-config file whose change re-scoped the attested set.
+    pub cause: Path,
+    /// Paths that LEFT the attested set while remaining on disk.
+    pub unattested: u64,
+    /// Paths that ENTERED the attested set (new-on-disk unknowable at the
+    /// set grain during a re-scope — re-read, never guess).
+    pub attested: u64,
+}
+
+/// § A.9: the frame bounded its own file enumeration before any transport
+/// cap could. The enumeration is a sample; this count is complete.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Overflow {
+    /// File rows dropped at assembly (past `MAX_DELTA_FILES`).
+    pub dropped: u64,
 }
 
 /// One reaction evaluation's wire envelope: the complete hook outcome;
@@ -1696,7 +1727,11 @@ pub struct DeltaFile {
     pub nodes: Vec<DeltaNode>,
 }
 
-/// v2 §7.1: `change ∈ {created, modified, deleted, renamed}`.
+/// §7.1: `change ∈ {created, modified, deleted, renamed, unattested}`.
+/// `unattested` (§ A.9, v3-only) says the file LEFT THE ATTESTED SET while
+/// its bytes remain on disk — `deleted` claims the path is gone from disk,
+/// nothing else. A frozen v2 session receives `unattested` demoted to
+/// `deleted` (v2 keeps its birth vocabulary).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FileChange {
@@ -1704,6 +1739,7 @@ pub enum FileChange {
     Modified,
     Deleted,
     Renamed,
+    Unattested,
 }
 
 /// One node-grain change entry (v2 §7.1/§7.2): identity echoed in the §2.1

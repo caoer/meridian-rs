@@ -3769,6 +3769,8 @@ pub fn assemble_delta(
             files,
         },
         effects: Vec::new(),
+        rescope: None,
+        overflow: None,
     }
 }
 
