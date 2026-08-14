@@ -214,10 +214,11 @@ fn composed_read_rows_carry_authz_facts_over_the_drift_guard_corpus() {
                 headings_checked += 1;
             }
 
-            // --- the anchor plane: surfaced, with the Go switch's drops intact
+            // --- the anchor plane: every body host projects (F-R4); the one
+            // exclusion is a frontmatter caret
             let v2_anchors: Vec<&Value> = nodes
                 .iter()
-                .filter(|n| n["kind"] == "list_item" && n["anchor"].is_string())
+                .filter(|n| n["kind"] != "frontmatter" && n["anchor"].is_string())
                 .collect();
             assert_eq!(
                 v2_anchors.len(),
@@ -237,12 +238,12 @@ fn composed_read_rows_carry_authz_facts_over_the_drift_guard_corpus() {
                 );
                 anchor_rows_checked += 1;
             }
-            // A task/paragraph-hosted anchor is NOT addressable on this face
-            // (the Go switch default) — surfacing the anchor plane must not
-            // smuggle one in, on EITHER array.
+            // A frontmatter caret is NOT addressable on this face (literal
+            // YAML, no block — F-R4's one exclusion): surfacing the anchor
+            // plane must not smuggle one in, on EITHER array.
             for n in nodes
                 .iter()
-                .filter(|n| n["anchor"].is_string() && n["kind"] != "list_item")
+                .filter(|n| n["anchor"].is_string() && n["kind"] == "frontmatter")
             {
                 let id = n["anchor"].as_str().expect("anchor id");
                 assert!(
@@ -311,10 +312,31 @@ fn composed_read_rows_carry_authz_facts_over_the_drift_guard_corpus() {
         anchor_rows_checked >= 2,
         "anchor rows checked: {anchor_rows_checked}"
     );
-    assert!(
-        dropped_anchors >= 2,
-        "non-list_item anchors verified dropped: {dropped_anchors}"
+    // The corpus carries no frontmatter caret (its captured files predate
+    // the F-R4 widening, under which every BODY host projects), so the one
+    // remaining exclusion is proven against a dedicated workspace instead.
+    let fm_dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        fm_dir.path().join("fm.md"),
+        "---\ntitle: x ^fm-caret\n---\n# T\n\n- item ^body-1\n",
+    )
+    .expect("seed fm fixture");
+    let frames = serve(
+        fm_dir.path(),
+        &[json!({"id": 1, "op": "read", "path": "fm.md"})],
     );
+    let fm_anchors: Vec<&str> = frames[1]["body"]["anchors"]
+        .as_array()
+        .expect("anchors ride the composed read")
+        .iter()
+        .map(|a| a["anchor"].as_str().expect("anchor id"))
+        .collect();
+    assert_eq!(
+        fm_anchors,
+        vec!["body-1"],
+        "the body-hosted id projects; the frontmatter caret stays unaddressable"
+    );
+    dropped_anchors += 1;
     println!(
         "S1 authz facts: {files_checked} files, {headings_checked} heading rows, \
          {anchor_rows_checked} anchor rows, {dropped_anchors} anchors verified unaddressable"
@@ -408,8 +430,9 @@ fn frag_scoped_read_carries_only_the_subtree_anchors() {
     );
     assert_eq!(
         anchors(&frames[1]),
-        vec!["anc1", "anc2"],
-        "the anchors byte-contained in the scoped subtree"
+        vec!["anc1", "anc2", "anc3"],
+        "the anchors byte-contained in the scoped subtree (paragraph-hosted \
+         ^anc3 included — F-R4)"
     );
     assert_eq!(
         headings(&frames[2]),
@@ -450,7 +473,8 @@ fn section_read_carries_the_anchor_plane_too() {
     };
     assert_eq!(
         anchors(&frames[1]),
-        vec!["anc1", "anc2"],
-        "unscoped (no frag): the whole document's anchor plane"
+        vec!["anc1", "anc2", "anc3"],
+        "unscoped (no frag): the whole document's anchor plane, every body \
+         host included (F-R4)"
     );
 }

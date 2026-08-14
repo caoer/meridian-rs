@@ -4,16 +4,17 @@
 //! raw file bytes.
 //!
 //! Mirrored, not repaired (the authoritative target is the captured golden
-//! corpus). One deliberate Go behavior rides along:
+//! corpus). One deliberate departure from the Go switch (F-R4 ruling,
+//! 2026-08-13 — the old face under-implemented the format it speaks):
 //!
-//! - Only heading rows and `list_item` anchor rows become facts. An anchor
-//!   whose HOST block is anything else — task/callout/fence/table/paragraph,
-//!   or a heading/frontmatter host (truth-told since dogfood P2-c) — projects
-//!   under that kind and is DROPPED — exactly as the Go `switch` drops it, so
-//!   e.g. a `- [ ] item ^t1` task anchor is NOT addressable on the read face
-//!   (the `basic` golden pins `^task1` unresolved). An anchor row is an
-//!   anchor-plane row whatever host kind it echoes: it never enters the
-//!   heading plane, so a `heading`-kinded ANCHOR row is not a section fact.
+//! - Heading rows and EVERY body-hosted anchor row become facts — list_item,
+//!   task, callout, fence, table, paragraph and heading hosts alike, the
+//!   full set Obsidian's own block references address. The one exclusion is
+//!   a `frontmatter`-hosted anchor (truth-told since dogfood P2-c): a caret
+//!   there is literal YAML, no block exists, and the keys are already served
+//!   on the `props` plane. An anchor row is an anchor-plane row whatever
+//!   host kind it echoes: it never enters the heading plane, so a
+//!   `heading`-kinded ANCHOR row is not a section fact.
 //!
 //! One deliberate departure from the Go face:
 //!
@@ -58,19 +59,21 @@ pub struct ReadFact {
 }
 
 /// Lift the toc row projection into host-face read facts — `buildTocEntries`
-/// verbatim: dewey from the heading level sequence, sanitized hpath, raw
+/// lineage: dewey from the heading level sequence, sanitized hpath, raw
 /// title, `strings.Fields` word count over each heading's content span;
-/// `list_item` anchor rows as `^id` facts; every other row kind dropped.
+/// every body-hosted anchor row as a `^id` fact (F-R4 — the set Obsidian
+/// addresses); `frontmatter`-hosted anchors dropped (literal YAML, served on
+/// the `props` plane).
 #[must_use]
 pub fn read_facts(rows: &[wire::TocNode], raw: &[u8]) -> Vec<ReadFact> {
     let mut out = Vec::new();
     let mut dewey = DeweyCounter::new();
     let raw_addrs = raw_addresses(rows);
     for (i, row) in rows.iter().enumerate() {
-        // An anchor row echoing a heading host must not be lifted into the
-        // heading plane (its `hpath` is None — it addresses nothing here).
-        match row.kind.as_str() {
-            "heading" if row.anchor.is_none() => {
+        // An anchor row never enters the heading plane, whatever host kind
+        // it echoes (its `hpath` is None — it addresses nothing there).
+        match row.anchor.as_deref() {
+            None if row.kind == "heading" => {
                 let level = row.level.unwrap_or(0);
                 let segs = row.hpath.as_deref().unwrap_or_default();
                 let title = segs.last().map(|s| s.h.clone()).unwrap_or_default();
@@ -90,10 +93,7 @@ pub fn read_facts(rows: &[wire::TocNode], raw: &[u8]) -> Vec<ReadFact> {
                     anchor: None,
                 });
             }
-            "list_item" => {
-                let Some(anchor) = row.anchor.as_deref() else {
-                    continue; // a list_item row without an anchor never projects
-                };
+            Some(anchor) if row.kind != "frontmatter" => {
                 out.push(ReadFact {
                     n: format!("^{anchor}"),
                     depth: 0,
@@ -109,9 +109,8 @@ pub fn read_facts(rows: &[wire::TocNode], raw: &[u8]) -> Vec<ReadFact> {
                     anchor: Some(anchor.to_string()),
                 });
             }
-            // frontmatter and every other host kind: no read row (the Go
-            // switch default — task/callout/fence/table/paragraph anchors
-            // are NOT addressable on this face).
+            // frontmatter-hosted anchors (no block to serve — the caret is
+            // literal YAML) and anchor-less non-heading rows: no read row.
             _ => {}
         }
     }
@@ -431,32 +430,37 @@ mod tests {
         assert_eq!(got.len(), 3);
     }
 
-    /// A task-hosted anchor (`- [ ] x ^t1`) projects kind `task` → DROPPED
-    /// (the Go switch default); a plain `list_item` anchor projects a `^id`
-    /// row. The `basic` golden pins the task case unresolved.
+    /// Every body-hosted anchor projects a `^id` row since F-R4 — a
+    /// task-hosted anchor (`- [ ] x ^t1`) is as addressable as a plain
+    /// `list_item` one (the set Obsidian's own block references cover).
     #[test]
-    fn task_anchor_dropped_list_item_anchor_kept() {
+    fn task_and_list_item_anchors_both_project() {
         let raw = "# H\n\n- [ ] boxed ^t1\n- plain item ^p1\n";
         let got = facts(raw);
         let anchors: Vec<&str> = got.iter().filter_map(|f| f.anchor.as_deref()).collect();
-        assert_eq!(anchors, vec!["p1"], "only the list_item anchor survives");
-        assert!(resolve_selector(&got, &sel("^t1")).is_none());
+        assert_eq!(anchors, vec!["t1", "p1"], "both body-hosted anchors project");
+        let t1 = resolve_selector(&got, &sel("^t1")).expect("task anchor resolves (F-R4)");
+        assert_eq!((t1.n.as_str(), t1.depth, t1.words), ("^t1", 0, 0));
         let p1 = resolve_selector(&got, &sel("^p1")).expect("list_item anchor resolves");
         assert_eq!((p1.n.as_str(), p1.depth, p1.words), ("^p1", 0, 0));
     }
 
-    /// Grammar guard (dogfood P2-c, the NO-change half): truthful host kinds
-    /// on anchor rows must never move an anchor into either read plane. A
-    /// heading-hosted or frontmatter-hosted anchor stays off the face — the
-    /// anchor plane is plain list items only (Go parity) — and the heading
-    /// plane carries exactly the real headings, never a re-kinded anchor row.
+    /// Grammar guard (dogfood P2-c lineage, F-R4 shape): a heading-hosted
+    /// anchor enters the ANCHOR plane — never the heading plane, which
+    /// carries exactly the real headings and no re-kinded anchor row. A
+    /// frontmatter caret stays off both planes (literal YAML, no block —
+    /// served on the `props` plane).
     #[test]
-    fn heading_and_fm_hosted_anchors_stay_off_the_read_face() {
+    fn heading_anchor_rides_the_anchor_plane_fm_caret_stays_off() {
         let raw = "---\ntitle: x ^fm-anchor\n---\n## Has anchor ^anch-head\n\n- item ^li\n";
         let got = facts(raw);
         let anchors: Vec<&str> = got.iter().filter_map(|f| f.anchor.as_deref()).collect();
-        assert_eq!(anchors, vec!["li"], "the anchor plane stays list-item only");
-        assert!(resolve_selector(&got, &sel("^anch-head")).is_none());
+        assert_eq!(
+            anchors,
+            vec!["anch-head", "li"],
+            "the heading-hosted id projects; the frontmatter caret never does"
+        );
+        resolve_selector(&got, &sel("^anch-head")).expect("heading-hosted id resolves (F-R4)");
         assert!(resolve_selector(&got, &sel("^fm-anchor")).is_none());
         let headings: Vec<&str> = got
             .iter()

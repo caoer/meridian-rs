@@ -373,7 +373,10 @@ pub enum Rehearsed {
 /// # Errors
 /// [`RunnerError`] — each stage's typed refusal, exactly as [`run`] answers
 /// it. Nothing was applied in any case.
-pub fn rehearse(root: &fs::WorkspaceRoot, spec: &RehearseSpec<'_>) -> Result<Rehearsal, RunnerError> {
+pub fn rehearse(
+    root: &fs::WorkspaceRoot,
+    spec: &RehearseSpec<'_>,
+) -> Result<Rehearsal, RunnerError> {
     let (task, authority) = pre_eval(
         root,
         spec.page,
