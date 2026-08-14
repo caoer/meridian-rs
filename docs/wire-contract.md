@@ -424,6 +424,40 @@ Frontmatter-plane write, dry (fm_key node = the full key line, computed: span `[
  "fingerprint_after":null,"dry":true,"verdicts":[]}}
 ```
 
+**The set form (dotted cap `splice.set`, v3-only; ruled 2026-08-14 — OQ1: any
+v3 client holding the cap).** A splice request MAY carry
+`files:[{path, edits|plan_edits}, …]` instead of `path` + `edits`/`plan_edits`
+— strictly one form or the other (`bad_request` at decode when both or
+neither appear; the same wall as `edits` vs `plan_edits` today). Two or more
+entries; paths pairwise distinct; one request-level `if_fingerprint`,
+`actor`, `now`, `receipt`, `dry`, `force`. Per-edit guards ride inside each
+entry unchanged; no `pin` (the pin rides the single form, whose `path` is the
+pinning page). The batch laws of this section apply per file (pre-batch
+resolution, disjointness, one reparse per file, the `would_corrupt`
+families); the guard law is §5.1 unchanged — `if_fingerprint` is checked
+first and, being world-grain, covers every entry. **The commit is sealed
+across the set**: every entry validates before any byte lands
+(validate-all-then-apply), one fingerprint advance covers all files plus the
+receipt, one receipt entry (one anchor, §6.6 checked once) names every file,
+one Delta (§7.1) carries every file. A validation refusal anywhere answers
+for the whole request with nothing landed — the refusal names the entry
+(`files[i]` and its path) that measured it. Response: `armed` becomes an
+ARRAY of per-file armed groups (`[{path, file_rev_after, edits:[…]}, …]`,
+request order), one `fingerprint_before`/`fingerprint_after` pair, one
+`seq`. Crash posture: §6.5, the set paragraph. **The corpus is the bound
+(ruled 2026-08-14): no engine-minted numeric cap** — a set names existing,
+pairwise-distinct corpus files, so the corpus's own file count is the
+ceiling; the script lane's 64 is that plane's `max_armed_edits` budget,
+never a transport limit. Callers price their batches by the measured cost
+instead: the commit holds the workspace write flock for its whole span —
+validate-all, stage, rename — at ~13 ms/file (linear, fsync-dominated;
+measured 103 files ≈ 1.9 s, 653 ≈ 8.6 s, 4096 ≈ 53 s on KB-scale files),
+and cooperating writers refuse `workspace_busy` immediately for that whole
+span. Hosts may ratchet stricter per §5.3; the wire stays permissive. The
+cap ships by the §3.2 evolution law (the `splice.plan_edits`/`splice.pin`
+precedent); v2 sessions and cap-less v3 sessions are byte-identical to
+today.
+
 ### §4.5 resolve — the walk plane: where things are, never a handle
 
 `resolve` is **best-effort app-compatible walking**, two-stage: within the ruled grammar it walks the way the app walks — `parseLinktext` → stage 1 `getFirstLinkpathDest(linkpath, from)` (basename index, frontmatter aliases, case-insensitive, source-relative shortest-unambiguous, unresolved first-class) → stage 2 subpath walk (case-insensitive · first-match-wins on duplicates, silent · strictly-deeper-level · anywhere-after · generation-skipping). These empirical walk-law properties are carried verbatim as the **behavior spec**; their ruled **status** is a one-way compatibility floor (everything we mint and emit walks in the app), not a binding two-way parity law. The ruled grammar always wins: an input outside it (e.g. a `_`-bearing anchor, §2.4) refuses loudly (`bad_request`) — conforming behavior, never a deviation to ledger, because we never promised to reproduce the app's walk on inputs outside our own grammar. The `obsidian-compat@1.12.7` pack (§13.4) is the **regression fixture set** that pins the app's actual walk against version drift, alongside the six-probe walk law; hand-frozen resolution fixtures are dead.
@@ -624,7 +658,9 @@ The md *rendering* is a shipped default template; a non-ccc consumer replaces it
 
 ### §6.5 Crash honesty
 
-The batch writes two files via tmp+fsync+rename each; a crash between renames can land content without receipt. Recovery is re-derive (cold rebuild → correct root, never wrong data) and the missing receipt is exactly what the lint finds — the failure is loud in the world model, not hidden in engine state. Stated as a limit (§13.6); multi-file atomic commit is a rung-3 amendment candidate, not assumed.
+The batch writes two files via tmp+fsync+rename each; a crash between renames can land content without receipt. Recovery is re-derive (cold rebuild → correct root, never wrong data) and the missing receipt is exactly what the lint finds — the failure is loud in the world model, not hidden in engine state. Stated as a limit (§13.6).
+
+**A set commit (§4.4 set form) widens the sequence and keeps the posture — in-memory rollback, no journal (ruled 2026-08-14: "effect-less script should be only in memory state, simple is better").** The commit stages every file, verifies every pre-image, then renames member order with the receipt LAST. A rename FAILURE mid-sequence (process alive) restores every member already renamed from its held pre-image bytes — the same tmp+fsync+rename discipline run backwards — and the error names what failed and what restored. Two stated limits, both named rather than silent: a CRASH mid-rename-sequence can land a prefix of the set (each file still fully-old-or-fully-new — atomic renames never tear; cold rebuild yields the correct root of whatever landed); and the restore can ITSELF fail, in which case the error lists exactly which files hold the new bytes, so recovery is a statement, never a guess. Receipt-rename-LAST is load-bearing: in every reachable state a resolvable receipt anchor implies the whole set landed, so the §6.6 collision door remains the lost-answer probe for the entire set. The multi-file atomic commit this section previously deferred as a "rung-3 amendment candidate" is THIS mechanism — delivered by the set form, with the crash window stated instead of journaled away.
 
 ### §6.6 The anchor is the caller's to mint, and a mint that collides is a defect (2026-08-09)
 
@@ -668,7 +704,10 @@ The output therefore carries no `"`, and no backslash that does not open a compl
 
 ### §7.1 Shape (stable)
 
-One Delta = one batch = one fingerprint advance. E3's delta, every value computed:
+One Delta = one batch = one fingerprint advance. A §4.4 SET commit mints ONE
+Delta whose `files[]` carries every content file plus the receipt —
+cardinality is data, and a consumer that assumed ≤2 files was reading the
+old single-content world. E3's delta, every value computed:
 
 ```json
 {"delta":{
@@ -1898,6 +1937,22 @@ tests are the implementation card's.*
   only — the wire still serves no corpus-enumeration op, so enumeration stays
   the host's. The daemon sorts `files[]` after decode; order on the wire is
   not meaning.
+- **Patterns in `files[]` (ruled 2026-08-14, OQ3).** A member containing `*`
+  is a pattern in the one scope glob grammar (`**` spans whole segments, `*`
+  a non-`/` run within one, everything else literal); other members stay
+  literal paths. The daemon expands patterns at ENTRY against the entry
+  world's hash-domain membership — the same walk that pins the entry
+  fingerprint, so expansion is deterministic within the attempt — then
+  merges, dedups and sorts (the same post-decode law). The trace opens with a
+  `{kind:"expanded", pattern, matched:[…]}` row per pattern and replay
+  replays the recording. Zero matches contributes zero paths — data, not a
+  refusal (an idempotent sweep succeeds on an already-clean corpus; the
+  typo'd pattern is visible in its row). Patterns never name out-of-domain
+  paths; a literal still may (§12.1 unchanged). The wire still serves no
+  corpus-enumeration op: expansion is the entry's own walk, not a new read
+  surface. The CLI lane (`mrd script --files`) forwards a pattern-carrying
+  attempt through THIS op — the engine expands, never a CLI-private glob —
+  so one expansion semantics exists in the system.
 - `actor`/`now` ride per §9 and thread to the commit splice verbatim; absent
   stays absent.
 - `dry`, `if_fingerprint`, `expect_armed`, and `receipt` carry the CLI

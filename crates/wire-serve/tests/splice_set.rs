@@ -263,6 +263,40 @@ fn set_door_walls_refuse() {
     assert_eq!(err.code, ErrorCode::BadRequest);
 }
 
+/// The batch-bound measurement receipt (run explicitly:
+/// `cargo test -p wire-serve --test splice_set --release -- --ignored bench`).
+/// One sealed set commit per N over KB-scale files — wall time ≈ flock-hold
+/// time (the flock spans the whole call), the axis a bound decision prices:
+/// cooperating writers refuse `workspace_busy` immediately while it is held.
+#[test]
+#[ignore = "measurement receipt, not a gate — run with --ignored"]
+fn bench_set_commit_scaling() {
+    for n in [103usize, 653, 1024, 4096] {
+        let (_dir, root, rels) = ws(n);
+        let files: Vec<wire::SpliceFile> = rels
+            .iter()
+            .enumerate()
+            .map(|(i, rel)| member(rel, i + 1))
+            .collect();
+        let receipt = ReceiptAddr {
+            path: WPath("receipts/log.md".into()),
+            anchor: format!("r-{n:06}"),
+        };
+        let started = std::time::Instant::now();
+        let out = splice_set(&root, None, &set_args(files, Some(receipt)), &[])
+            .expect("the bench set lands");
+        let wall = started.elapsed();
+        let frame = out.committed.expect("one frame");
+        assert_eq!(frame.delta.files.len(), n + 1);
+        println!(
+            "set-commit N={n}: wall {:?} ({:.2} ms/file), one frame of {} files",
+            wall,
+            wall.as_secs_f64() * 1000.0 / n as f64,
+            frame.delta.files.len()
+        );
+    }
+}
+
 // ── the strict decode walls (§3.2) ──────────────────────────────────────────
 
 fn obj(v: Value) -> Map<String, Value> {

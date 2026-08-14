@@ -411,7 +411,11 @@ options:
   --list                   (run) list the page's tasks with contracts and caps.
   --files PATH             (script) one host-enumerated path, bound inert as
                            files (repeatable). Paths only — content enters
-                           through read() alone.
+                           through read() alone. A member containing * is a
+                           pattern: the attempt forwards through the daemon's
+                           script op and the ENGINE expands it against the
+                           entry world (recorded in the trace; zero matches
+                           is data, not a refusal).
   --args JSON              (script) JSON object of strings, bound inert as the
                            args dict.
   --if-fingerprint FP      (script, put, pin) world-grain guard: refuse unless
