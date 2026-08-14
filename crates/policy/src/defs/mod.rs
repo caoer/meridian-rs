@@ -35,9 +35,10 @@ pub use go_fmt::go_quote;
 pub use i4::{ConformanceRequest, ConformanceResult, Repair, conformance};
 pub use load::{Def, DefError, PropSpec, SectionRule, parse_def};
 pub use rebuild::{
-    InvalidPropertyKey, MultiLineValue, PlanEdit, SafeKey, Seg, ensure_trailing_nl,
-    fm_spelling_preserves, multi_line_value_refusal, rebuild, rev8, yaml_preserve_or_encode,
-    yaml_safe_key, yaml_safe_value,
+    INVALID_PROPERTY_KEY_REMEDY, InvalidPropertyKey, MultiLineValue, PlanEdit, SafeKey, Seg,
+    ensure_trailing_nl, fm_spelling_preserves, invalid_property_key_refusal,
+    multi_line_value_refusal, rebuild, rev8, yaml_preserve_or_encode, yaml_safe_key,
+    yaml_safe_value,
 };
 
 /// One validator finding (Go `types.Finding`), delta-scored by (rule, message).

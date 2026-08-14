@@ -633,9 +633,10 @@ fn plan_create_section(view: &DocView<'_>, e: &PlanEdit) -> Result<Vec<SpliceOp>
 }
 
 fn plan_set_property(view: &DocView<'_>, e: &PlanEdit) -> Result<Vec<SpliceOp>, BodyError> {
-    // A frontmatter key is a SINGLE segment (`yaml_safe_key` is `[A-Za-z0-9_-]+`,
-    // which admits no path). A multi-segment address is refused by that charset
-    // owner below rather than silently taking a piece of itself.
+    // A frontmatter key is a SINGLE hpath segment: `yaml_safe_key` admits the
+    // flat dotted spelling (`task.index.caps`) but no `/`, so a multi-segment
+    // address is refused by that charset owner below rather than silently
+    // taking a piece of itself.
     let joined = hpath_display(&e.target);
     let (key, val) = (&joined, &e.body);
     // The key passes the ONE charset owner here — the composed line is
@@ -644,7 +645,7 @@ fn plan_set_property(view: &DocView<'_>, e: &PlanEdit) -> Result<Vec<SpliceOp>, 
     let safe_key = yaml_safe_key(key).map_err(|InvalidPropertyKey| BodyError {
         code: "E_FAIL_LOUD".to_string(),
         message: format!("invalid frontmatter key {}", go_quote(key)),
-        remedy: "a property key is [A-Za-z0-9_-]+ (single line, no spaces or ':')".to_string(),
+        remedy: INVALID_PROPERTY_KEY_REMEDY.to_string(),
         context: vec![("key".to_string(), key.clone())],
     })?;
     // The value passes the ONE quoting owner here — BEFORE the frontmatter
@@ -722,7 +723,7 @@ pub struct InvalidPropertyKey;
 
 impl std::fmt::Display for InvalidPropertyKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("a frontmatter key is [A-Za-z0-9_-]+")
+        f.write_str("a frontmatter key is dotted segments of [A-Za-z0-9_-]+")
     }
 }
 
@@ -748,23 +749,53 @@ impl std::fmt::Display for SafeKey<'_> {
 }
 
 /// The `set_property` KEY owner, S4b's sibling for the other half of the
-/// composed `{key}: {value}` line. A key outside `[A-Za-z0-9_-]+` carries
-/// `: `, a newline or a `---` fence into frontmatter bytes and forges keys the
-/// caller never named, so it is REFUSED, never sanitized. Fallibility is the
-/// guard: `SafeKey` has no other constructor.
+/// composed `{key}: {value}` line. A key outside the grammar carries `: `, a
+/// newline or a `---` fence into frontmatter bytes and forges keys the caller
+/// never named, so it is REFUSED, never sanitized. Fallibility is the guard:
+/// `SafeKey` has no other constructor.
+///
+/// The grammar is dotted segments of `[A-Za-z0-9_-]+` — the FLAT DOTTED key
+/// law `docs/run-plane.md` mandates for the task grammar and the birth path
+/// already writes (`task.index.caps`). The patch face refusing what birth
+/// landed made one law into two and pushed callers off the face onto disk
+/// edits (dogfood r3 f6). A `.` separates segments and is never a segment
+/// byte: `.`, a leading or trailing dot, and `..` name no property and stay
+/// refused. Nothing widens — a dot carries no `: `, no newline, no fence.
 ///
 /// # Errors
-/// `InvalidPropertyKey` when the key is empty or carries a byte outside
-/// `[A-Za-z0-9_-]`.
+/// `InvalidPropertyKey` when the key is empty, carries an empty segment, or
+/// carries a byte outside `[A-Za-z0-9_-.]`.
 pub fn yaml_safe_key(key: &str) -> Result<SafeKey<'_>, InvalidPropertyKey> {
     if key.is_empty()
-        || !key
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        || key.split('.').any(|seg| {
+            seg.is_empty()
+                || !seg
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        })
     {
         return Err(InvalidPropertyKey);
     }
     Ok(SafeKey(key))
+}
+
+/// The ONE spelling of the key law every door teaches. It used to be two
+/// literals — one in the rebuild committer, one at the wire splice face — so a
+/// caller's recovery quality was a function of which door they entered, and a
+/// law change had two places to miss.
+pub const INVALID_PROPERTY_KEY_REMEDY: &str =
+    "a property key is dotted segments of [A-Za-z0-9_-]+ (single line, no spaces or ':')";
+
+/// The uniform `InvalidPropertyKey` refusal sentence, `multi_line_value_refusal`'s
+/// sibling for the KEY half — for doors that speak one string (the wire face).
+/// The rebuild door carries `message`/`remedy` apart and pairs its own message
+/// with `INVALID_PROPERTY_KEY_REMEDY`; both render the same bytes.
+#[must_use]
+pub fn invalid_property_key_refusal(key: &str) -> String {
+    format!(
+        "invalid frontmatter key {} — {INVALID_PROPERTY_KEY_REMEDY}",
+        go_quote(key)
+    )
 }
 
 /// A multi-line `set_property` value: the ONE refusal `yaml_safe_value` mints.

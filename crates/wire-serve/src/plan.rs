@@ -978,12 +978,8 @@ fn lower_property_group(
     let mut keyed: std::collections::BTreeMap<policy::defs::SafeKey<'_>, &str> =
         std::collections::BTreeMap::new();
     for (k, v) in props {
-        let key = policy::defs::yaml_safe_key(k).map_err(|_| {
-            bad_request(format!(
-                "invalid frontmatter key {} — a property key is [A-Za-z0-9_-]+ (single line, no spaces or ':')",
-                policy::defs::go_quote(k)
-            ))
-        })?;
+        let key = policy::defs::yaml_safe_key(k)
+            .map_err(|_| bad_request(policy::defs::invalid_property_key_refusal(k)))?;
         keyed.insert(key, v);
     }
 
