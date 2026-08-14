@@ -577,6 +577,18 @@ pub enum EvalError {
         /// The ceiling it hit (`ScriptLimits::max_reads`).
         limit: usize,
     },
+    /// The effects-mode run ceiling was reached. The refusal is typed and the
+    /// runs already executed STAND — a live program has no rollback; the trace
+    /// records how far it got. The ceiling exists because a live `run()`'s
+    /// execution is metered on the run plane's own budget, not the script
+    /// clock, so without a count ceiling a run loop would be bounded by
+    /// nothing.
+    RunBudget {
+        /// The script that asked for one run too many.
+        rule_id: String,
+        /// The ceiling it hit (`ScriptLimits::max_runs`).
+        limit: usize,
+    },
     /// The script armed a second CONTENT path — the v1 single-write-file law
     /// (`run-plane.md` § One CONTENT path per commit). §4.4 splice carries one
     /// `path`, so a one-splice commit exists only for a single-file write set.
@@ -643,6 +655,11 @@ impl std::fmt::Display for EvalError {
                 f,
                 "script '{rule_id}' exceeded the read budget of {limit} reads per attempt — \
                  refused, never truncated"
+            ),
+            EvalError::RunBudget { rule_id, limit } => write!(
+                f,
+                "script '{rule_id}' exceeded the run budget of {limit} runs per attempt — \
+                 the runs already executed stand; a live program has no rollback"
             ),
             // The wording the consumer face renders (golden scenario 2a):
             // refused at line N · multi_file_write_set — … would be the second.
@@ -796,6 +813,11 @@ pub struct ScriptLimits {
     /// ceiling counted after eval could only truncate, and truncation is what
     /// this plane refuses.
     pub max_armed_edits: usize,
+    /// Max live `run()` calls per attempt (effects mode only — the pure lane
+    /// never holds the builtin). Exceeding it → [`EvalError::RunBudget`].
+    /// The count ceiling that keeps a run loop bounded now that a run's own
+    /// execution is metered on the run plane's budget, not the script clock.
+    pub max_runs: usize,
 }
 
 impl Default for ScriptLimits {
@@ -804,6 +826,7 @@ impl Default for ScriptLimits {
             eval: EvalLimits::default(),
             max_reads: 64,
             max_armed_edits: 64,
+            max_runs: 64,
         }
     }
 }

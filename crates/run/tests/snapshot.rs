@@ -114,7 +114,9 @@ fn in_window_symlink_is_detected() {
     std::os::unix::fs::symlink(tmp.path().join("secret.md"), root.0.join("notes/x.md")).unwrap();
 
     match bracket.close() {
-        Detection::Symlink { path } => assert_eq!(path, "notes/x.md"),
+        Detection::Symlink { count, first } => {
+            assert_eq!((count, first.as_str()), (1, "notes/x.md"));
+        }
         other => panic!("expected Symlink, got {other:?}"),
     }
 }
