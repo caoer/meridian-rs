@@ -126,8 +126,10 @@ pub fn extract(
 /// face's read-tool vocabulary, engine-side.
 #[derive(Debug, Clone, Default)]
 pub struct ReadParams {
-    /// The whole-call subtree scope, as segments.
-    pub frag: Option<Vec<wire::HpathSeg>>,
+    /// The whole-call subtree scope: ONE tagged selector, resolved to one
+    /// section — a heading path or a dewey ordinal; the anchor arm refuses
+    /// (a block has no subtree). Mutually exclusive with `sections`.
+    pub toc: Option<wire::ReadSel>,
     /// Document-absolute selectors in the tagged read grammar — and the mode
     /// itself: non-empty selects sections, absent/empty answers the toc.
     /// Nothing else picks the arm.
@@ -168,9 +170,11 @@ pub(crate) fn mint_actor(actor: Option<&str>) -> Option<&str> {
 /// data-loss class.
 ///
 /// # Errors
-/// `bad_request` (fix): `frag` and `sections` both present; a section read
-/// with no selectors. `ref_not_found` (fix): a toc `frag` naming no section;
-/// all section selectors missing. `internal` carrying the typed
+/// `bad_request` (fix): `toc` and `sections` both present ("pass one"); a
+/// `toc` anchor arm (a block has no subtree); a section read with no
+/// selectors. `ref_not_found` (fix): a `toc` selector naming no section; all
+/// section selectors missing. `ambiguous_ref` (fix): a `toc` selector
+/// matching more than one section. `internal` carrying the typed
 /// `render_failed` spelling when the walker refuses.
 pub fn composed_read(
     doc: &model::Document,
@@ -188,20 +192,27 @@ pub fn composed_read(
     // against (D-USER r2 F3). One counter: `facts::words_total`.
     let words_total: u64 = wire_map::facts::words_total(doc.raw.as_bytes());
     let display = params.display_path.as_deref().unwrap_or(path.0.as_str());
-    let frag: &[wire::HpathSeg] = params.frag.as_deref().unwrap_or(&[]);
     // `sections`'s presence is the mode. Absent → the toc read; present → a
     // section read, empty included, so `sections: []` still meets the
     // "a section read needs a selector" refusal instead of answering a toc.
     let has_sections = params.sections.is_some();
-    if !frag.is_empty() && has_sections {
+    if params.toc.is_some() && has_sections {
         return Err(bad_request(format!(
-            "read: pass either a #fragment on ref or sections[], not both, for {display} — \
-             the fragment scopes the whole call; sections[] selects document-absolute \
-             paths. Nothing was read and no rev was minted. Fix: drop the `#fragment` from \
-             the ref and keep the document-absolute `sections[]`, or drop `sections[]` and \
-             let the fragment scope the call."
+            "read: toc and sections[] were both passed for {display} — pass one: toc \
+             answers a subtree's MAP, sections[] answers chosen sections' CONTENT, and \
+             one call answers one question. Nothing was read and no rev was minted. \
+             Fix: keep toc for the scoped shape table, or keep sections[] for the \
+             content."
         )));
     }
+    // The scope resolves BEFORE either mode serves: an anchor arm, a miss, or
+    // a duplicate refuses here, so no plane is consulted under a scope that
+    // does not name exactly one section.
+    let scope_fact = match &params.toc {
+        None => None,
+        Some(sel) => Some(resolve_toc_scope(&facts, sel, display)?),
+    };
+    let scope = scope_fact.map(|f| &f.span);
     let header = render::Header {
         display_path: display,
         file_rev: &file_rev,
@@ -212,15 +223,15 @@ pub fn composed_read(
         words_total,
         decorations,
     };
-    // The `^id` anchor plane — computed once, emitted by both modes, scoped by
-    // the same `frag` that scopes the whole call. Its own array: a mixed-in
-    // anchor row's `depth 0` once crashed a client renderer.
-    let anchors: Vec<wire::ReadAnchor> = wire_map::facts::anchor_rows(&facts, frag)
+    // The `^id` anchor plane — computed once, emitted by both modes, bounded
+    // by the same resolved scope that bounds the whole call. Its own array: a
+    // mixed-in anchor row's `depth 0` once crashed a client renderer.
+    let anchors: Vec<wire::ReadAnchor> = wire_map::facts::anchor_rows(&facts, scope)
         .iter()
         .filter_map(|f| read_anchor(f))
         .collect();
     // The frontmatter-properties plane — document-grain, so unlike `anchors`
-    // it is never `frag`-scoped: frontmatter belongs to the document, not to
+    // it is never `toc`-scoped: frontmatter belongs to the document, not to
     // any subtree (wire-contract § A.3).
     let props = read_props(doc);
 
@@ -257,16 +268,10 @@ pub fn composed_read(
             rendered_text: agent_plane_face(body.text)?,
         });
     }
-    let rows = wire_map::facts::toc_rows(&facts, frag);
-    if !frag.is_empty() && rows.is_empty() {
-        let asked = wire::ReadSel::Hpath {
-            hpath: frag.to_vec(),
-        }
-        .display();
-        let mut e = ErrorBody::new(ErrorCode::RefNotFound);
-        e.message = Some(frag_miss_message(&asked, display));
-        return Err(Box::new(e));
-    }
+    // A resolved scope always yields rows (its own section is a row), so the
+    // old empty-scope arm is gone: a selector naming nothing already refused
+    // at resolve_toc_scope, in its own lane's words.
+    let rows = wire_map::facts::toc_rows(&facts, scope);
     // One row set for the heading plane: `rendered_text` renders these rows
     // and `toc` carries these rows, so the structured face never diverges
     // from the rendered one.
@@ -287,36 +292,79 @@ pub fn composed_read(
     })
 }
 
-/// The toc-mode fragment miss, honestly attributed. `frag` is the heading
-/// plane BY TYPE (`Vec<HpathSeg>`), so every miss here is a heading-lane
-/// miss: segments compared against raw heading text, nothing matched. A
-/// `^id`- or dewey-shaped spelling can still arrive on this plane from a
-/// caller that bypassed an ingress door (both faces route those spellings
-/// onto `sections` now) — and the old arm dressed exactly that miss in the
-/// requested selector's spelling, handing a heading miss the anchors[]
-/// recovery clause for a lane that never ran. That anti-teaching sent
-/// season 1 at the engine (finding 5, attribution overturned). The
-/// classification is the selector door's own ([`wire::ReadSel::parse`]), so
-/// the message and the door cannot disagree about what a spelling means.
-fn frag_miss_message(asked: &str, display: &str) -> String {
-    let lane = match wire::ReadSel::parse(asked) {
-        wire::ReadSel::Hpath { .. } => {
-            return format!(
-                "read: no section at \"{asked}\" in {display}. Nothing was read and no \
-                 rev was minted. {}",
-                crate::section_recovery(asked, Some(display))
-            );
+/// The toc-scope resolver: ONE selector → exactly one heading row, or the
+/// refusal that names what actually went wrong in its own lane's words.
+///
+/// The tagged grammar killed the season-1 lane confusion at the type: the
+/// caller STATES hpath or dewey, so a miss is a miss of the lane that ran,
+/// never a `^id` dressed as literal heading text. The anchor arm refuses
+/// before any resolution — a block has no subtree, so no scope exists for it
+/// to name — and a duplicate heading refuses with each candidate's machine
+/// address instead of silently merging the siblings' subtrees, the same
+/// never-silently-picks law the sections plane holds (§2.1).
+fn resolve_toc_scope<'a>(
+    facts: &'a [wire_map::facts::ReadFact],
+    sel: &wire::ReadSel,
+    display: &str,
+) -> Result<&'a wire_map::facts::ReadFact, Box<ErrorBody>> {
+    if let wire::ReadSel::Anchor { .. } = sel {
+        let asked = sel.display();
+        return Err(bad_request(format!(
+            "read: toc:\"{asked}\" cannot scope the shape table — a block has no \
+             subtree, so there is no map under it. Nothing was read and no rev was \
+             minted. Fix: read the block's content with sections:[\"{asked}\"], or \
+             scope the toc with a heading path or a dewey ordinal from a bare read \
+             of {display}."
+        )));
+    }
+    match wire_map::facts::selector_matches(facts, sel).as_slice() {
+        &[fact] => Ok(fact),
+        [] => {
+            let mut e = ErrorBody::new(ErrorCode::RefNotFound);
+            e.message = Some(toc_miss_message(sel, display));
+            Err(Box::new(e))
         }
-        wire::ReadSel::Anchor { .. } => "anchor",
-        wire::ReadSel::Dewey { .. } => "dewey",
-    };
-    format!(
-        "read: no section at \"{asked}\" in {display} — the fragment rides the heading \
-         plane, so \"{asked}\" was searched as literal heading text and the {lane} lane \
-         was never consulted. Nothing was read and no rev was minted. Fix: read that \
-         node with a section selector (MCP read: sections:[\"{asked}\"]; CLI: \
-         `mrd read {display} --section '{asked}'`)."
-    )
+        many => {
+            // The sections plane's own ambiguity spelling and its published
+            // remedy (§2.1 never-silently-picks; AMBIGUITY_FIX byte-shared
+            // with the write door) — one voice for one failure across faces.
+            let candidates: Vec<Vec<wire::HpathSeg>> =
+                many.iter().map(|f| f.hpath.clone()).collect();
+            let mut e = ErrorBody::new(ErrorCode::AmbiguousRef);
+            e.message = Some(format!(
+                "read: toc \"{}\" is ambiguous ({} matches: {}) in {display}. Nothing \
+                 was read and no rev was minted. {}",
+                sel.display(),
+                candidates.len(),
+                candidate_addrs(&candidates).join(" or "),
+                model::selector::AMBIGUITY_FIX
+            ));
+            Err(Box::new(e))
+        }
+    }
+}
+
+/// The toc-scope miss, per lane. The heading arm keeps the standing
+/// section-miss spelling byte-for-byte (the discovery recovery teaches the
+/// ROOT-ANCHORED law and the nearest candidate); the dewey arm is honest
+/// about its own plane — ordinals are positional, so the remedy is the toc
+/// that lists them, never a candidate search over names.
+fn toc_miss_message(sel: &wire::ReadSel, display: &str) -> String {
+    let asked = sel.display();
+    match sel {
+        wire::ReadSel::Dewey { .. } => format!(
+            "read: no section at \"{asked}\" in {display} — dewey ordinals are the toc's \
+             own first column, positional and re-minted per read, so an ordinal the \
+             current toc does not list addresses nothing. Nothing was read and no rev \
+             was minted. Fix: read {display} bare (no toc, no sections) and take the \
+             ordinal — or the hpath — from the table it answers."
+        ),
+        _ => format!(
+            "read: no section at \"{asked}\" in {display}. Nothing was read and no \
+             rev was minted. {}",
+            crate::section_recovery(&asked, Some(display))
+        ),
+    }
 }
 
 /// One section selector → the cat door's `SecRef`, resolving the dewey lane
@@ -888,14 +936,14 @@ fn composed_sections(
 ) -> Result<(SectionsRender, Vec<wire::ReadSectionOut>), Box<ErrorBody>> {
     let display = header.display_path;
     if sels.is_empty() {
-        // Says what to pass, not what the caller "is in": a `#Fragment` is the
+        // Says what to pass, not what the caller "is in": `toc` is the
         // whole-call scope, not a member of `sections[]`.
         return Err(bad_request(format!(
             "read: a section read needs a selector, and none was given. Nothing was read \
              and no rev was minted. Fix: pass one or more section selectors (a heading \
-             path, a dewey ordinal, or a ^anchor), or scope the whole read with a \
-             `#Fragment` on the ref — or list this document's section paths with a toc \
-             read of {display} (MCP read: sections[] omitted; CLI: no --section)."
+             path, a dewey ordinal, or a ^anchor), or scope the shape table with `toc` — \
+             or list this document's section paths with a bare toc read of {display} \
+             (MCP read: sections[] omitted; CLI: no --section)."
         )));
     }
     let mut rows: Vec<render::SectionRow<'_>> = Vec::new();

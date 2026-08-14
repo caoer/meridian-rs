@@ -326,19 +326,24 @@ pub fn strip_anchor_marker(b: &[u8], anchor: &str) -> Vec<u8> {
 }
 
 /// The toc-mode row filter (`renderTocSidecar`): heading rows only (anchor
-/// rows are Depth-0, shape-table-excluded), optionally scoped to the `frag`
-/// subtree — the section itself plus descendants by hpath prefix. An empty
-/// result under a non-empty `frag` is the caller's "no section at" refusal.
+/// rows are Depth-0, shape-table-excluded), optionally scoped to one RESOLVED
+/// section's subtree — its span, which is subtree-inclusive, so containment
+/// is the exact "the section itself plus descendants".
+///
+/// `scope` is a resolved row's span, never a selector: resolution — including
+/// the duplicate-heading refusal and the dewey lane — is the caller's, through
+/// [`selector_matches`]. The old segment-prefix scope silently merged the
+/// subtrees of same-named siblings; a span cannot.
 ///
 /// This is the heading plane, whole: `toc_text` and the composed read's `toc`
 /// array carry exactly these rows, so no `toc` consumer can meet a second row
 /// class. The `^id` anchor plane is [`anchor_rows`], served in its own array.
 #[must_use]
-pub fn toc_rows<'a>(facts: &'a [ReadFact], frag: &[wire::HpathSeg]) -> Vec<&'a ReadFact> {
+pub fn toc_rows<'a>(facts: &'a [ReadFact], scope: Option<&wire::Span>) -> Vec<&'a ReadFact> {
     facts
         .iter()
         .filter(|f| f.depth > 0)
-        .filter(|f| in_frag(f, frag))
+        .filter(|f| in_scope(f, scope))
         .collect()
 }
 
@@ -349,24 +354,23 @@ pub fn toc_rows<'a>(facts: &'a [ReadFact], frag: &[wire::HpathSeg]) -> Vec<&'a R
 /// the [`toc_rows`] array is what keeps a `toc` consumer from meeting a row
 /// class it does not expect.
 ///
-/// Under a non-empty `frag` the anchor rows are scoped by that same byte
-/// containment, so a scoped read never leaks a row from outside the requested
-/// subtree. An empty `frag` is the whole document, including anchors above the
-/// first heading.
+/// Under a scope the anchor rows are bounded by the same byte containment, so
+/// a scoped read never leaks a row from outside the requested subtree. No
+/// scope is the whole document, including anchors above the first heading.
 #[must_use]
-pub fn anchor_rows<'a>(facts: &'a [ReadFact], frag: &[wire::HpathSeg]) -> Vec<&'a ReadFact> {
-    let scope: Vec<wire::Span> = toc_rows(facts, frag).iter().map(|f| f.span).collect();
+pub fn anchor_rows<'a>(facts: &'a [ReadFact], scope: Option<&wire::Span>) -> Vec<&'a ReadFact> {
     facts
         .iter()
         .filter(|f| f.depth == 0)
-        .filter(|f| frag.is_empty() || scope.iter().any(|s| s.0 <= f.span.0 && f.span.0 < s.1))
+        .filter(|f| in_scope(f, scope))
         .collect()
 }
 
-/// The `frag` subtree predicate for a heading row: the section itself plus
-/// descendants by SEGMENT prefix; an empty `frag` is the whole document.
-fn in_frag(f: &ReadFact, frag: &[wire::HpathSeg]) -> bool {
-    frag.is_empty() || (f.hpath.len() >= frag.len() && hpath_matches(frag, &f.hpath[..frag.len()]))
+/// The scope predicate: the row's start byte inside the resolved section's
+/// subtree-inclusive span (the section's own row starts at the span's start,
+/// so it is included); `None` is the whole document.
+fn in_scope(f: &ReadFact, scope: Option<&wire::Span>) -> bool {
+    scope.is_none_or(|s| s.0 <= f.span.0 && f.span.0 < s.1)
 }
 
 #[cfg(test)]
@@ -389,8 +393,8 @@ mod tests {
         .display()
     }
 
-    /// The whole document — the empty `frag` scope, spelled once.
-    const ALL: &[wire::HpathSeg] = &[];
+    /// The whole document — the scope-less read, spelled once.
+    const ALL: Option<&wire::Span> = None;
 
     /// A heading selector from a `/`-joined test spelling, through the ONE
     /// ingress door (so the tests exercise the door callers use).
@@ -398,11 +402,12 @@ mod tests {
         wire::ReadSel::parse(s)
     }
 
-    /// A `frag` scope from a `/`-joined test spelling.
-    fn frag(s: &str) -> Vec<wire::HpathSeg> {
-        match wire::ReadSel::parse(s) {
-            wire::ReadSel::Hpath { hpath } => hpath,
-            other => panic!("a frag scopes headings, got {other:?}"),
+    /// A resolved scope span from a `/`-joined test spelling — resolution
+    /// through the same [`selector_matches`] the serve layer's toc scope uses.
+    fn scope(facts: &[ReadFact], s: &str) -> wire::Span {
+        match selector_matches(facts, &wire::ReadSel::parse(s)).as_slice() {
+            &[fact] => fact.span,
+            other => panic!("a scope resolves to exactly one row, got {}", other.len()),
         }
     }
 
@@ -594,26 +599,24 @@ mod tests {
         );
     }
 
-    /// Frag scoping of anchor rows is the host's own byte containment: the
-    /// scoped subtree's anchors ride, a sibling subtree's never do.
+    /// Scope containment of anchor rows is the host's own byte arithmetic:
+    /// the scoped subtree's anchors ride, a sibling subtree's never do. (A
+    /// selector naming nothing never reaches this layer — resolution and its
+    /// refusal are the serve layer's, before any span exists to scope by.)
     #[test]
-    fn anchor_rows_frag_scopes_anchors_by_byte_containment() {
+    fn anchor_rows_scope_bounds_anchors_by_byte_containment() {
         let raw = "# Tasks\n\n- item ^t1\n\n# Notes\n\n- other ^o1\n";
         let got = facts(raw);
-        let scoped: Vec<&str> = anchor_rows(&got, &frag("Tasks"))
+        let scoped: Vec<&str> = anchor_rows(&got, Some(&scope(&got, "Tasks")))
             .iter()
             .filter_map(|f| f.anchor.as_deref())
             .collect();
         assert_eq!(scoped, vec!["t1"]);
-        let other: Vec<&str> = anchor_rows(&got, &frag("Notes"))
+        let other: Vec<&str> = anchor_rows(&got, Some(&scope(&got, "Notes")))
             .iter()
             .filter_map(|f| f.anchor.as_deref())
             .collect();
         assert_eq!(other, vec!["o1"]);
-        assert!(
-            anchor_rows(&got, &frag("Ghost")).is_empty(),
-            "a frag naming nothing scopes nothing — the caller's refusal"
-        );
     }
 
     /// An anchor above the first heading has no governing section; the
@@ -781,17 +784,16 @@ mod tests {
         );
     }
 
-    /// Frag scoping: the section itself + descendants by segment prefix;
-    /// sibling prefixes ("Note" vs "Notes") never match.
+    /// Scope containment: the section itself + descendants by span; a sibling
+    /// section ("Notes2", a string-prefix cousin) never rides.
     #[test]
-    fn toc_rows_frag_subtree() {
+    fn toc_rows_scope_subtree() {
         let raw = "# Notes\n\nx\n\n## Deep\n\ny\n\n# Notes2\n\nz\n";
         let got = facts(raw);
-        let scoped: Vec<String> = toc_rows(&got, &frag("Notes"))
+        let scoped: Vec<String> = toc_rows(&got, Some(&scope(&got, "Notes")))
             .iter()
             .map(|f| addr(f))
             .collect();
         assert_eq!(scoped, vec!["Notes", "Notes/Deep"]);
-        assert!(toc_rows(&got, &frag("Ghost")).is_empty());
     }
 }

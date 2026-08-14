@@ -655,7 +655,8 @@ pub enum Op {
     ///
     /// `sections` IS the mode: present → a sections read, absent → the toc
     /// read (an explicit `mode` on the wire is an unknown field the strict
-    /// decode refuses). `frag` scopes to one section subtree; `display_path`
+    /// decode refuses; the retired `frag` field refuses the same way).
+    /// `toc` scopes the shape table to one section subtree; `display_path`
     /// is the caller's path spelling for the rendered header line (defaults
     /// to `path`) — the engine never invents host paths.
     ///
@@ -664,10 +665,13 @@ pub enum Op {
     /// MCP-caller-settable.
     Read {
         path: Path,
-        /// The whole-call subtree scope, as segments: the section itself
-        /// plus its descendants, matched per-segment.
+        /// The whole-call subtree scope, ONE selector in the tagged read
+        /// grammar ([`ReadSel`]): a heading path or a dewey ordinal resolves
+        /// to one section — the scope is that section plus its descendants.
+        /// The anchor arm refuses: a block has no subtree (F-R3, 2026-08-13).
+        /// Mutually exclusive with `sections` — the serve refuses both.
         #[serde(skip_serializing_if = "Option::is_none")]
-        frag: Option<Vec<HpathSeg>>,
+        toc: Option<ReadSel>,
         /// Document-absolute section selectors, each in the tagged read
         /// grammar ([`ReadSel`]).
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -1232,10 +1236,10 @@ pub enum ResponseBody {
         /// so a sum counts each descendant once per ancestor level): the
         /// counting law, wire-contract § A.3.
         words_total: u64,
-        /// The heading plane, `frag`-scoped. Mode toc only.
+        /// The heading plane, `toc`-scoped. Mode toc only.
         #[serde(skip_serializing_if = "Option::is_none")]
         toc: Option<Vec<ReadRow>>,
-        /// The `^id` anchor plane, `frag`-scoped by the same byte containment
+        /// The `^id` anchor plane, `toc`-scoped by the same byte containment
         /// the host applies. Always emitted — empty means "this scope has no
         /// addressable block anchor", never "ask again with a flag".
         /// `serde(default)` keeps decoding tolerant of older recorded frames;
@@ -1244,7 +1248,7 @@ pub enum ResponseBody {
         anchors: Vec<ReadAnchor>,
         /// The frontmatter-properties plane (wire-contract § A.3): one row per
         /// top-level key, document order. Document-grain — served by both
-        /// modes and never `frag`-scoped (frontmatter belongs to the document,
+        /// modes and never `toc`-scoped (frontmatter belongs to the document,
         /// not to any subtree). Always emitted — empty means "this document
         /// has no top-level frontmatter keys"; `serde(default)` keeps decoding
         /// tolerant of older recorded frames.
@@ -1597,6 +1601,37 @@ pub struct DeltaFrame {
     pub delta: Delta,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub effects: Vec<EffectEnvelope>,
+    /// § A.9 re-scope summary: present exactly when the effective domain
+    /// configuration changed in this batch. v3-additive
+    /// (`V2_RESERVED_FIELDS`), skip-on-`None` so v2 bytes stay identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rescope: Option<Rescope>,
+    /// § A.9 overflow marker: file rows past the assembly bound were dropped
+    /// and counted. v3-additive, skip-on-`None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overflow: Option<Overflow>,
+}
+
+/// § A.9: one batch's re-scope summary. Membership-only changes collapse
+/// into these counts instead of enumerating per file; the consumer's
+/// disposition is `resync`'s — re-derive what you watch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Rescope {
+    /// The domain-config file whose change re-scoped the attested set.
+    pub cause: Path,
+    /// Paths that LEFT the attested set while remaining on disk.
+    pub unattested: u64,
+    /// Paths that ENTERED the attested set (new-on-disk unknowable at the
+    /// set grain during a re-scope — re-read, never guess).
+    pub attested: u64,
+}
+
+/// § A.9: the frame bounded its own file enumeration before any transport
+/// cap could. The enumeration is a sample; this count is complete.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Overflow {
+    /// File rows dropped at assembly (past `MAX_DELTA_FILES`).
+    pub dropped: u64,
 }
 
 /// One reaction evaluation's wire envelope: the complete hook outcome;
@@ -1696,7 +1731,11 @@ pub struct DeltaFile {
     pub nodes: Vec<DeltaNode>,
 }
 
-/// v2 §7.1: `change ∈ {created, modified, deleted, renamed}`.
+/// §7.1: `change ∈ {created, modified, deleted, renamed, unattested}`.
+/// `unattested` (§ A.9, v3-only) says the file LEFT THE ATTESTED SET while
+/// its bytes remain on disk — `deleted` claims the path is gone from disk,
+/// nothing else. A frozen v2 session receives `unattested` demoted to
+/// `deleted` (v2 keeps its birth vocabulary).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FileChange {
@@ -1704,6 +1743,7 @@ pub enum FileChange {
     Modified,
     Deleted,
     Renamed,
+    Unattested,
 }
 
 /// One node-grain change entry (v2 §7.1/§7.2): identity echoed in the §2.1

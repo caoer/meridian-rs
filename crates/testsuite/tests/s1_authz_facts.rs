@@ -382,19 +382,19 @@ fn extended_rows_carry_the_authz_facts_on_every_row() {
     assert!(rows >= 15, "rows compared: {rows}");
 }
 
-/// A `frag`-scoped read carries the anchors of that subtree ONLY — the
+/// A `toc`-scoped read carries the anchors of that subtree ONLY — the
 /// scoping predicate is the host's own byte containment, so a scoped read is
 /// still a complete authz fact set for what it returns. Each plane answers
 /// its own question: `toc` the scoped headings, `anchors` the scoped blocks.
 #[test]
-fn frag_scoped_read_carries_only_the_subtree_anchors() {
+fn toc_scoped_read_carries_only_the_subtree_anchors() {
     let root_dir = testsuite::parity_dir().join("corpus").join("trailing-ws");
     let rel = "corpus/trailing-ws.md";
     let frames = serve(
         &root_dir,
         &[
-            json!({"id": 1, "op": "read", "path": rel, "frag": [{"h": "Anchor Zone"}]}),
-            json!({"id": 2, "op": "read", "path": rel, "frag": [{"h": "Padded Title"}]}),
+            json!({"id": 1, "op": "read", "path": rel, "toc": {"hpath": [{"h": "Anchor Zone"}]}}),
+            json!({"id": 2, "op": "read", "path": rel, "toc": {"hpath": [{"h": "Padded Title"}]}}),
         ],
     );
     let headings = |frame: &Value| -> Vec<String> {
@@ -446,8 +446,8 @@ fn frag_scoped_read_carries_only_the_subtree_anchors() {
 }
 
 /// `anchors[]` rides a section read too — the field is a property of the
-/// response, never of the face. `frag` and `sections[]` cannot ride one call,
-/// so a frag-scoped section read is unreachable; the frag-scoping rule is
+/// response, never of the face. `toc` and `sections[]` cannot ride one call,
+/// so a toc-scoped section read is unreachable; the toc-scoping rule is
 /// gated on the toc face above.
 #[test]
 fn section_read_carries_the_anchor_plane_too() {
@@ -474,7 +474,7 @@ fn section_read_carries_the_anchor_plane_too() {
     assert_eq!(
         anchors(&frames[1]),
         vec!["anc1", "anc2", "anc3"],
-        "unscoped (no frag): the whole document's anchor plane, every body \
+        "unscoped (no toc): the whole document's anchor plane, every body \
          host included (F-R4)"
     );
 }

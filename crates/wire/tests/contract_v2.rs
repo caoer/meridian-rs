@@ -768,6 +768,8 @@ fn absent_actor_now_absent_on_the_wire() {
 fn e3_delta() -> wire::DeltaFrame {
     wire::DeltaFrame {
         effects: vec![],
+        rescope: None,
+        overflow: None,
         delta: wire::Delta {
             seq: 1,
             root_before: wire::Root(
@@ -838,6 +840,8 @@ fn e3_delta_json() -> Value {
 fn e4_delta() -> wire::DeltaFrame {
     wire::DeltaFrame {
         effects: vec![],
+        rescope: None,
+        overflow: None,
         delta: wire::Delta {
             seq: 2,
             root_before: wire::Root(
@@ -1019,6 +1023,8 @@ fn external_delta_absent_actor_now_and_no_keys_slot() {
             files: e3_delta().delta.files.clone(),
         },
         effects: vec![],
+        rescope: None,
+        overflow: None,
     };
     let v = serde_json::to_value(&frame).unwrap();
     let delta = v["delta"].as_object().unwrap();
