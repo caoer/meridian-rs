@@ -7,7 +7,7 @@
 use wire::{Edit, EditShape, ErrorCode, Path as WPath, PinSpec, PlanEdit, PutAt, SecRef};
 use wire_serve::write::{CreateArgs, SpliceArgs, splice};
 
-/// Pinning page (no lock — first pin births one at EOF).
+/// Pinning page (no lock — first pin births one as file preamble).
 const PINNER: &str = "# Plan\n\ndraws from the guide.\n";
 /// Pinned page — heading ref only (bare `#^anchor` is R31 empty-span false green).
 const TARGET: &str = "# Guide\n\n## Leader's Guideline\n\nreview before you close.\n";
@@ -454,28 +454,23 @@ fn the_anchor_promotion_leaves_the_targets_lock_untouched() {
     );
 }
 
-/// R25: whole-section rewrite that would delete lock at EOF refuses; message
-/// teaches destroy/instead (`put at:end`). Append beside lock still lands.
+/// R25: whole-section rewrite that would delete a LEGACY-placed lock (inside
+/// the section, where the old EOF birth left it) refuses; message teaches
+/// destroy/instead (`put at:end`). A preamble-placed block is out of every
+/// section's reach, so only legacy pages can hit this door section-wise.
 #[test]
 fn a_whole_section_rewrite_that_would_delete_the_lock_refuses() {
     let (dir, root) = workspace();
-    splice(
-        &root,
-        None,
-        &args_for(
-            "plan.md",
-            None,
-            Vec::new(),
-            Some(PinSpec {
-                target: WPath("guide.md".into()),
-                selector: wire::ReadSel::parse("Guide/Leader's Guideline"),
-                vibe: None,
-            }),
+    std::fs::write(
+        dir.path().join("plan.md"),
+        format!(
+            "{PINNER}\n```meridian-lock\nversion: 2\npins:\n  - object: \"[[guide]]\"\n    \
+             hash: \"9ae3f1c0deadbeef9ae3f1c0deadbeef9ae3f1c0\"\n    \
+             path: [\"Guide\", \"Leader's Guideline\"]\n    \
+             fingerprint: \"fp1.span2.b3.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"\n```\n"
         ),
-        &[],
-        None,
     )
-    .expect("the pin lands");
+    .expect("legacy pinner: the block sits at EOF, inside # Plan");
     let minted = std::fs::read_to_string(dir.path().join("plan.md")).expect("read");
     assert!(minted.contains("```meridian-lock"), "{minted}");
 
