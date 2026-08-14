@@ -541,7 +541,10 @@ impl ScriptHost for LiveHost<'_> {
         // The dial deadline caps at the REMAINING wall clock: the harness
         // verb may park up to its own waiter bound, and this call never
         // outlives the entry's budget.
-        let remaining = self.deadline.get().saturating_duration_since(Instant::now());
+        let remaining = self
+            .deadline
+            .get()
+            .saturating_duration_since(Instant::now());
         token_count_dial(endpoint, text, remaining)
             .map_err(|reason| refuse(format!("token_count: {reason}")))
     }
@@ -1453,7 +1456,14 @@ sleep 0.5
         };
         let mut host = host;
         let row = host
-            .run_live("tasks.md", Some("nap"), Vec::new(), Default::default(), false, 1)
+            .run_live(
+                "tasks.md",
+                Some("nap"),
+                Vec::new(),
+                std::collections::BTreeMap::default(),
+                false,
+                1,
+            )
             .expect("the run is admitted and answers a row");
         assert!(row.is_object(), "a § A.8 row came back: {row}");
         assert!(
