@@ -693,7 +693,7 @@ fn bash_runs_on_a_sessions_shaped_root_under_the_declared_domain_shape() {
 
     let outcome = dispatch_bash::run(
         &root,
-        &dispatch_of("echo alive\nprintf 'end:1\\n' >&3\n", &scratch),
+        &dispatch_of("echo alive\nprintf 'end:0\\n' >&3\n", &scratch),
         &mut Vec::new(),
     )
     .expect("under the declared domain shape the walk must not refuse");
@@ -743,7 +743,7 @@ fn the_dispatch_refusal_names_the_count_and_the_first_offender() {
 
     let err = dispatch_bash::run(
         &root,
-        &dispatch_of("echo alive\nprintf 'end:1\\n' >&3\n", &scratch),
+        &dispatch_of("echo alive\nprintf 'end:0\\n' >&3\n", &scratch),
         &mut Vec::new(),
     )
     .expect_err("without the domain shape the strangers refuse the walk");

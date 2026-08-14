@@ -376,7 +376,9 @@ fn symlink_laundering_refused_at_close() {
     std::os::unix::fs::symlink(&secret, root.0.join("notes/x.md")).unwrap();
 
     match guard.close(&[]) {
-        Err(GuardError::Symlink { path }) => assert_eq!(path, "notes/x.md"),
+        Err(GuardError::Symlink { count, first }) => {
+            assert_eq!((count, first.as_str()), (1, "notes/x.md"));
+        }
         other => panic!("expected Symlink refusal, got {other:?}"),
     }
 }
@@ -414,7 +416,9 @@ fn links_under_an_ignored_dir_do_not_refuse_but_others_still_do() {
     // symlink refusal.
     std::os::unix::fs::symlink(&secret, root.0.join("notes/x.md")).unwrap();
     match StepGuard::open(&root) {
-        Err(GuardError::Symlink { path }) => assert_eq!(path, "notes/x.md"),
+        Err(GuardError::Symlink { count, first }) => {
+            assert_eq!((count, first.as_str()), (1, "notes/x.md"));
+        }
         other => panic!("expected Symlink refusal on the non-ignored path, got {other:?}"),
     }
 }
