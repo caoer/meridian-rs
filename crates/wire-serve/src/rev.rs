@@ -121,6 +121,9 @@ pub fn project_response(frame: &mut Value) {
                 // Page-task execution at op grain (§ A.8, the same
                 // precedent — no dotted run.<field> at birth).
                 caps.push(Value::String("run".to_string()));
+                // Pin-graph context assembly at op grain (§ A.10, the same
+                // precedent — no dotted walk.<field> at birth).
+                caps.push(Value::String("walk".to_string()));
             }
             body.insert("contract".to_string(), Value::String("v3".to_string()));
         }

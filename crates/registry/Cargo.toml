@@ -71,6 +71,14 @@ receipt = { workspace = true }
 # outside `model`'s public surface). Both already in the graph and lockfile.
 config = { workspace = true }
 blake3 = "1"
+# § A.10 wire `walk`: the serve arm hands the warm engine's projection to the
+# SAME walk computer the CLI pin planes color through (`view::walk`) — the
+# one-owner law; the corpus assembly it feeds lives in
+# `wire_serve::mount_corpus`, already in the graph.
+view = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+# walk_op gates render green-pin fixtures through the one owner of the lock
+# grammar; `model`/`syntax` (already runtime deps) mint the live fingerprints.
+lock = { workspace = true }

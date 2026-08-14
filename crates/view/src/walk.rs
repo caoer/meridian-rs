@@ -193,6 +193,25 @@ pub fn walk_rooted(
     })
 }
 
+/// Every mount root the corpus's `meridian-lock` addresses name — the exact
+/// set of roots worth building a corpus for. A pin's root is a property of
+/// its address, not of the tree it points into, so the set is knowable from
+/// the ambient corpus alone. The root is read off
+/// [`LockItem::declared_addr`], the structural owner, so nothing re-splits
+/// `declared_ref`. A row with no address contributes no root.
+#[must_use]
+pub fn lock_addressed_roots(docs: &BTreeMap<String, Document>) -> BTreeSet<addr::MountName> {
+    let mut roots = BTreeSet::new();
+    for doc in docs.values() {
+        for item in crate::read_face::page_lock_items(doc) {
+            if let Some(root) = item.declared_addr.as_ref().and_then(addr::Addr::root) {
+                roots.insert(root.clone());
+            }
+        }
+    }
+    roots
+}
+
 /// One `meridian-lock` row with its computed color (status roll-up / decorator).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PinColor {
