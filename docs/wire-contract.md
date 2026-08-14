@@ -1342,6 +1342,32 @@ deferral):**
   byte-identical. No new cap: a response-side additive field under the
   tolerant-client law (§3.2) — the `words`/`anchors`/`props` precedent.
 
+**The counting law — one `words` number per rev, every face (2026-08-13,
+session `12-04-f2-mrd-integration` card `two-faces-word-count`; dogfood
+F-S4 and D-USER r2 F3):**
+
+- A `words` value is always `strings.Fields` over the RAW bytes of the range
+  it names, and is NEVER assembled by summing other rows.
+  - `words_total` (both modes, and the script toc face's `words`) names the
+    FILE: fields over the whole document, frontmatter included — the number
+    `wc -w` prints. It was formerly the sum of the toc rows, which counted
+    every descendant once per ancestor level and published ~2x on any nested
+    document; a reader budgeting a read from the banner was sent the wrong
+    way (MISSION.md banner 10,504 on a ~5,240-word file).
+  - `toc[].words` names a SECTION SUBTREE, unchanged: fields over the
+    heading-excluded, subtree-inclusive content span. Rows therefore do not
+    sum to the banner, and that is the law, not a defect — each number
+    answers its own question.
+  - `sections[].words` is that same section-grain count, off the same raw
+    content bytes `sections[].content` carries, on the structured plane AND
+    in the rendered head. The projection may show less than the section holds
+    (engine-block elision) or more (claim-link decoration); what is SHOWN
+    never changes what is COUNTED, so the two faces cannot answer one
+    question with two numbers. `bytes` alone declares the served length.
+- One derivation each, in code: `wire_map::facts::words_total` and
+  `wire_map::facts::section_words`. A face that computes its own count is the
+  defect this law names.
+
 CLI inventory (descriptive): `status.md`. Cross-root agent address grammar: `address-grammar.md`. Config parse: `meridian-md-schema.md`.
 
 ### A.4 What this document does not teach as core
