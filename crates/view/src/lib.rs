@@ -7,15 +7,20 @@
 //! lock-aware read face for walk/status colour ([`walk`], [`read_face`]).
 //! The projection is advisory; disk and fingerprints are correctness.
 //!
-//! **Never does:** re-parse, read its own output into a fact path
-//! (view-never-store; C2 topology gate), or **write anything to disk** —
-//! [`build_memory`] is `:memory:`-only. The persistent published-file organ
-//! (`publish`, `view.duckdb`, the `view_path` wire op) was DROPPED by ruling
-//! (§10.4, 2026-08-06).
+//! **Never does:** re-parse, or read its own output into a fact path
+//! (view-never-store; C2 topology gate). [`build_memory`] is `:memory:`-only.
+//! The persistent published-file organ (`publish`, `view.duckdb`, the
+//! `view_path` wire op) was DROPPED by ruling (§10.4, 2026-08-06); the ONE
+//! disk write this crate performs is [`store`]'s fingerprint-pinned
+//! append-only `sql.duckdb` cache — an operator surface over its own build,
+//! never a wire-served file path (sql lifecycle-B ruling, 2026-08-14, which
+//! knowingly supersedes §10.4 for sql; session design
+//! `results/sql-duckdb-append-cache-design.md` § Ruling interaction).
 
 pub mod facts;
 pub mod read_face;
 pub mod schema;
+pub mod store;
 pub mod walk;
 
 use std::collections::BTreeMap;
@@ -43,12 +48,15 @@ pub use schema::{SCHEMA_SQL, SCHEMA_VERSION, create_schema};
 pub enum ViewError {
     /// `DuckDB` error from schema or projection.
     Duckdb(duckdb::Error),
+    /// Filesystem error from the [`store`] cache file's housekeeping.
+    Io(std::io::Error),
 }
 
 impl std::fmt::Display for ViewError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ViewError::Duckdb(e) => write!(f, "duckdb: {e}"),
+            ViewError::Io(e) => write!(f, "io: {e}"),
         }
     }
 }
@@ -154,7 +162,7 @@ fn project(
 /// Only rows with NO destination are considered: a resolved edge is in the
 /// domain by construction, so asking about it would be asking a question whose
 /// answer cannot be true.
-fn fill_exclusions(rows: &mut Rows, exclusion: Option<ExclusionProbe<'_>>) {
+pub(crate) fn fill_exclusions(rows: &mut Rows, exclusion: Option<ExclusionProbe<'_>>) {
     let Some(why) = exclusion else { return };
     for row in &mut rows.link {
         let dangling = matches!(row[LINK_COL_DEST_PATH], Value::Null)
@@ -173,7 +181,7 @@ fn fill_exclusions(rows: &mut Rows, exclusion: Option<ExclusionProbe<'_>>) {
 
 /// Corpus name index (basename + frontmatter-alias) — same stage-1 resolver
 /// the engine uses, so link resolution matches.
-fn corpus_index(docs: &BTreeMap<String, Document>) -> CorpusIndex {
+pub(crate) fn corpus_index(docs: &BTreeMap<String, Document>) -> CorpusIndex {
     let mut index = CorpusIndex::new();
     for (path, doc) in docs {
         index.insert(path, doc);
@@ -190,34 +198,35 @@ struct Counters {
     task: u64,
 }
 
-/// Projected rows, staged then bulk-inserted in FK order.
+/// Projected rows, staged then bulk-inserted in FK order. Shared with the
+/// [`store`] append lane, which loads the same staging into hist tables.
 #[derive(Default)]
-struct Rows {
-    doc: Vec<Vec<Value>>,
-    frontmatter: Vec<Vec<Value>>,
-    section: Vec<SectionRow>,
-    link: Vec<Vec<Value>>,
-    tag: Vec<Vec<Value>>,
-    frontmatter_tag: Vec<Vec<Value>>,
-    task: Vec<TaskRow>,
+pub(crate) struct Rows {
+    pub(crate) doc: Vec<Vec<Value>>,
+    pub(crate) frontmatter: Vec<Vec<Value>>,
+    pub(crate) section: Vec<SectionRow>,
+    pub(crate) link: Vec<Vec<Value>>,
+    pub(crate) tag: Vec<Vec<Value>>,
+    pub(crate) frontmatter_tag: Vec<Vec<Value>>,
+    pub(crate) task: Vec<TaskRow>,
 }
 
 /// `section` row — `hpath` bound via dynamic `list_value`, apart from scalars.
-struct SectionRow {
-    scalars_before: Vec<Value>, // path, node_seq
-    hpath: Vec<String>,
-    scalars_after: Vec<Value>, // heading, level, node_rev, span_start, span_end
+pub(crate) struct SectionRow {
+    pub(crate) scalars_before: Vec<Value>, // path, node_seq
+    pub(crate) hpath: Vec<String>,
+    pub(crate) scalars_after: Vec<Value>, // heading, level, node_rev, span_start, span_end
 }
 
 /// `task` row — `hpath` nullable (NULL when document-level).
-struct TaskRow {
-    scalars_before: Vec<Value>, // path, seq, checked, depth, section_seq
-    hpath: Option<Vec<String>>,
-    scalars_after: Vec<Value>, // text, span_start, span_end, node_rev
+pub(crate) struct TaskRow {
+    pub(crate) scalars_before: Vec<Value>, // path, seq, checked, depth, section_seq
+    pub(crate) hpath: Option<Vec<String>>,
+    pub(crate) scalars_after: Vec<Value>, // text, span_start, span_end, node_rev
 }
 
 /// Emit `doc` row and walk the node tree.
-fn collect_doc(
+pub(crate) fn collect_doc(
     path: &str,
     doc: &Document,
     index: &CorpusIndex,
@@ -653,7 +662,7 @@ fn append_rows(conn: &Connection, table: &str, rows: &[Vec<Value>]) -> duckdb::R
 /// it: a plain join encodes both `[]` and `['']` as `''`, and a real `['']`
 /// hpath exists in live corpora. Prefixed, `[]` → `''` and `['']` → `"\u{1f}"`
 /// stay distinct; the decode drops the leading empty split element via `[2:]`.
-fn hpath_join(hpath: &[String]) -> Value {
+pub(crate) fn hpath_join(hpath: &[String]) -> Value {
     let mut joined = String::new();
     for element in hpath {
         joined.push('\u{1f}');
