@@ -69,7 +69,10 @@ use crate::{ExclusionProbe, Rows, ViewError, collect_doc, corpus_index, fill_exc
 /// `2`: `main.dangling` gained `AND exclusion IS NULL`, and the exclusion
 /// mint's bare-name fallback changed stamped content for identical corpora —
 /// a v1 file would serve pre-ruling rows at the same fingerprint.
-pub const CACHE_SCHEMA_VERSION: i64 = 2;
+///
+/// `3`: `hist.frontmatter` gained `prop_rev`; a v2 file's rows cannot answer
+/// a key-grain guard question at all.
+pub const CACHE_SCHEMA_VERSION: i64 = 3;
 
 /// The cache file's basename inside the workspace cache drawer (ruling OQ4).
 pub const SQL_CACHE_FILENAME: &str = "sql.duckdb";
@@ -92,7 +95,7 @@ CREATE TABLE hist.doc (
 );
 CREATE TABLE hist.frontmatter (
     path TEXT, gen BIGINT, ord UBIGINT, key TEXT, value TEXT,
-    span_start UBIGINT, span_end UBIGINT, node_rev TEXT
+    span_start UBIGINT, span_end UBIGINT, node_rev TEXT, prop_rev TEXT
 );
 CREATE TABLE hist.section (
     path TEXT, gen BIGINT, node_seq UBIGINT, hpath TEXT[], heading TEXT,
@@ -133,7 +136,8 @@ CREATE VIEW main.doc AS
     SELECT path, file_rev, line_count, bytes
     FROM hist.doc_latest WHERE NOT tombstone;
 CREATE VIEW main.frontmatter AS
-    SELECT f.path, f.ord, f.key, f.value, f.span_start, f.span_end, f.node_rev
+    SELECT f.path, f.ord, f.key, f.value, f.span_start, f.span_end, f.node_rev,
+           f.prop_rev
     FROM hist.frontmatter f
     SEMI JOIN hist.doc_latest d ON f.path = d.path AND f.gen = d.gen;
 CREATE VIEW main.section AS

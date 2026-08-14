@@ -275,7 +275,7 @@ fn walk(
 ) {
     let mut child_gov = gov_section;
     match &node.kind {
-        NodeKind::Frontmatter { map } => emit_frontmatter(node, path, map, rows),
+        NodeKind::Frontmatter { map } => emit_frontmatter(node, path, doc, map, rows),
         NodeKind::Section {
             heading_text,
             level,
@@ -373,10 +373,32 @@ fn walk(
 /// The `value` column is a published value plane: the stored scalar decodes
 /// through § A.6.1 (`model::scalar`); the locator/rev columns stay
 /// raw-computed (§ A.6.2).
-fn emit_frontmatter(node: &Node, path: &str, map: &model::YamlMap, rows: &mut Rows) {
+///
+/// `prop_rev` is the per-key CAS token (`node-rev-merkle-spec.md` §2.1), taken
+/// off `model::resolve` — the same owner the write door compares `if_node_rev`
+/// against and the read face serves as `props[].prop_rev`. It is READ here,
+/// never recomputed: a second derivation of one hash drifts silently, since
+/// both spellings produce 16 plausible hex characters.
+fn emit_frontmatter(
+    node: &Node,
+    path: &str,
+    doc: &Document,
+    map: &model::YamlMap,
+    rows: &mut Rows,
+) {
     let (span_start, span_end) = (u64c(node.span.start), u64c(node.span.end));
     let node_rev = node.node_rev.0.clone();
     for (ord, (key, value)) in map.0.iter().enumerate() {
+        // A map key resolves by construction — `model::parse_frontmatter` and
+        // the `fm_key` resolver scan the same block with the same column-0,
+        // first-colon, quote-trimmed key rule, first occurrence wins. A miss is
+        // an engine bug; a fallback to the block `node_rev` would serve a token
+        // that silently refuses every guarded write, which is the defect this
+        // column exists to remove.
+        let prop_rev = model::resolve(doc, &model::Ref::FmKey(key.clone()))
+            .expect("frontmatter map key resolves against its own document")
+            .node_rev
+            .0;
         let value = model::scalar::text(value);
         rows.frontmatter.push(vec![
             Value::Text(path.to_string()),
@@ -386,6 +408,7 @@ fn emit_frontmatter(node: &Node, path: &str, map: &model::YamlMap, rows: &mut Ro
             Value::UBigInt(span_start),
             Value::UBigInt(span_end),
             Value::Text(node_rev.clone()),
+            Value::Text(prop_rev),
         ]);
         if key == "tag" || key == "tags" {
             for (seq, tag) in parse_fm_tags(&value).into_iter().enumerate() {
@@ -793,7 +816,7 @@ mod tests {
         )?;
         insert_rows(
             conn,
-            "INSERT INTO frontmatter (path, ord, key, value, span_start, span_end, node_rev) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO frontmatter (path, ord, key, value, span_start, span_end, node_rev, prop_rev) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             &rows.frontmatter,
         )?;
         for row in &rows.section {
@@ -846,7 +869,7 @@ mod tests {
         ),
         (
             "frontmatter",
-            "SELECT coalesce(md5(string_agg(path || '|' || ord::VARCHAR || '|' || key || '|' || value || '|' || span_start::VARCHAR || '|' || span_end::VARCHAR || '|' || node_rev, chr(10) ORDER BY path, key)), 'EMPTY') FROM frontmatter",
+            "SELECT coalesce(md5(string_agg(path || '|' || ord::VARCHAR || '|' || key || '|' || value || '|' || span_start::VARCHAR || '|' || span_end::VARCHAR || '|' || node_rev || '|' || prop_rev, chr(10) ORDER BY path, key)), 'EMPTY') FROM frontmatter",
         ),
         (
             "section",
@@ -944,6 +967,7 @@ mod tests {
             Value::UBigInt(0),
             Value::UBigInt(1),
             Value::Text("rev".to_string()),
+            Value::Text("prev".to_string()),
         ]);
         rows.frontmatter_tag.push(vec![
             Value::Text("d.md".to_string()),
