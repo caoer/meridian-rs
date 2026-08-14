@@ -624,6 +624,18 @@ pub enum Op {
         #[serde(skip_serializing_if = "Option::is_none")]
         dry: Option<bool>,
     },
+    /// § A.10 pin-graph context assembly (v3-only, cap `walk`): up (default)
+    /// = what `path` draws from, transitively; `down: true` = who pins it —
+    /// the dependents listing and blast radius. `depth` bounds the hops
+    /// (`1` = direct edges). Read-only; computed per query, never stored;
+    /// every answer cites the doc revs it read.
+    Walk {
+        path: Path,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        down: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        depth: Option<u32>,
+    },
     /// v2 §4.7 integrity read: the current workspace root cursor + `seq`.
     /// No parameters — the root is world-grain (the only root guard is
     /// `splice.if_root`, §5.1; the v1 scoped/`path` variant is gone with
@@ -1128,6 +1140,46 @@ pub struct MountRow {
     pub primary: bool,
 }
 
+/// One reached walk edge (§ A.10): depth-tagged, color-computed per query.
+/// The color splits into a stable `color`/`reason` pair plus the reason's
+/// free-text `detail` — the same projection the CLI's `--json` face renders
+/// (`view::walk::color_tone` / `color_reason` / `color_detail`), ONE spelling
+/// across the human line, `--json`, and this wire.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WalkRow {
+    /// Hops from the walked root (direct edge = 1).
+    pub depth: u32,
+    /// Canonical selector of the reached end (target for up, dependent for
+    /// down) — the lock row's address spelling, `root:`-qualified when the
+    /// claim crosses roots.
+    pub selector: String,
+    /// The pinned rev; absent = declared-only / grey.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rev: Option<String>,
+    /// The color tone: `green` | `red` | `grey`.
+    pub color: String,
+    /// The stable reason word (`content-drifted`, `unmounted`, …); absent
+    /// exactly on green.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The reason's free-text detail, when the color model carries one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// The teaching for the row's refusal-shaped colors; absent for every
+    /// color that teaches nothing, so the field never invents advice.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub teaching: Option<String>,
+}
+
+/// One §2.4 rev citation: a doc the walk read, at the rev it read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WalkCite {
+    /// Workspace-relative path of the cited doc.
+    pub path: String,
+    /// The document-root rev at read time.
+    pub doc_rev: String,
+}
+
 /// The answering binary's build identity, carried by a v3 `hello` body.
 ///
 /// An object rather than a bare string so a later fact joins it without
@@ -1290,6 +1342,34 @@ pub enum ResponseBody {
         config_rev: Option<NodeRev>,
         /// The live table, rows in document order.
         mounts: Vec<MountRow>,
+    },
+    /// § A.10 the walk listing. Shape-unique in this untagged enum: no other
+    /// body carries a `revs_read` key, so neither direction can capture the
+    /// other's frame.
+    Walk {
+        /// `up` | `down` — the direction walked, echoed.
+        direction: String,
+        /// The walked page (page grain, `.md` path). Named `page`, not the
+        /// walk plane's `root`: on this wire the body-level `root` key IS the
+        /// fingerprint slot (the v3 projection renames it), and a page path
+        /// is not a fingerprint.
+        page: String,
+        /// The depth bound in effect; absent = unbounded.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        depth_bound: Option<u32>,
+        /// BFS order: ascending depth then discovery. Always serialized — a
+        /// pinless page walks to `[]`, never an absent key.
+        entries: Vec<WalkRow>,
+        /// §2.4 honesty citation: the doc revs the listing rests on, path
+        /// order. Always serialized.
+        revs_read: Vec<WalkCite>,
+        /// §12.1 enumerator clause, down walks only: the markdown under the
+        /// root the hash domain does NOT hold, so the blast-radius census
+        /// names what it left out instead of publishing a partial population
+        /// as the whole one. Omitted from the wire when empty, and always on
+        /// up walks — up drops nothing.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        excluded: Vec<String>,
     },
     /// v2 §3.2: `proto` in effect, server name, the complete op-name set
     /// (`caps` includes dotted `op.field` strings for field-only amendments),
@@ -1920,6 +2000,11 @@ pub enum ErrorCode {
     /// binding file) + `message` (names the offending entry, Law A-3c). Env
     /// class — the binding file is an environment fact the caller must change.
     MountTableInvalid,
+    /// § A.10: an in-snapshot cycle in the pin graph reachable from the walk
+    /// root — the listing cannot terminate honestly, so the op refuses and
+    /// names the loop. Extras: `message` (the page loop). Env class — the
+    /// workspace's own pin graph is broken, not one request.
+    WalkCycle,
 }
 
 impl ErrorCode {
@@ -1949,7 +2034,8 @@ impl ErrorCode {
             | ErrorCode::InvalidUtf8
             | ErrorCode::DaemonOnly
             | ErrorCode::ConventionFault
-            | ErrorCode::MountTableInvalid => Recovery::Env,
+            | ErrorCode::MountTableInvalid
+            | ErrorCode::WalkCycle => Recovery::Env,
             ErrorCode::CasMismatch
             | ErrorCode::RefNotFound
             | ErrorCode::ArmedDrift

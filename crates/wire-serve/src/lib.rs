@@ -15,6 +15,7 @@ pub mod decode;
 pub mod gate;
 pub mod guard;
 pub mod ladder;
+pub mod mount_corpus;
 pub mod plan;
 pub(crate) mod positions;
 pub mod reaction;

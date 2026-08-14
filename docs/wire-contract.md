@@ -2204,6 +2204,56 @@ An `overflow` frame is an explicit honesty mark: the enumeration below the bound
 
 The consumer-side half (a drain face bounding rows per answer with partial-cursor semantics) is the consumer's own contract to amend; this section governs what the engine emits.
 
+### A.10 `walk` — pin-graph context assembly (2026-08-14, parity-map crossing orders)
+
+The CLI walk plane crosses to the wire: up (default) = what a page draws
+from, transitively; `down: true` = who pins it — the dependents listing and
+dry-run blast radius. Read-only; computed per query, never stored; every
+answer cites the doc revs it read (§2.4 honesty citation). Workspace-bound
+(unlike § A.5 `mounts`); v3-only at dispatch, advertised at op grain as cap
+`walk` (the `create` precedent — no dotted `walk.<field>` at birth). A v2
+session answers `unknown_op`; the frozen v2 caps stay byte-identical.
+
+Request `{path, down?, depth?}` — `path` is the workspace-relative page,
+`down` toggles direction, `depth` bounds the hops (`1` = direct edges). The
+walk COMPUTER is the one the CLI pin planes color through
+(`view::walk::walk_rooted` over the shared mount-corpus assembly), so a row
+here and the same row under `mrd walk --json` carry ONE spelling of
+color/reason/detail.
+
+```json
+{"id":12,"op":"walk","path":"a.md"}
+{"id":12,"ok":true,"body":{
+ "direction":"up","page":"a.md",
+ "entries":[
+  {"depth":1,"selector":"b.md","rev":"fp1.span2.b3.…","color":"green"},
+  {"depth":2,"selector":"wiki:c.md","rev":"fp1.span2.b3.…","color":"grey",
+   "reason":"unmounted","detail":"root 'wiki'","teaching":"grey(unmounted): …"}],
+ "revs_read":[{"path":"a.md","doc_rev":"…"},{"path":"b.md","doc_rev":"…"}]}}
+```
+
+| Field | Law |
+|---|---|
+| `page` | the walked page, echoed at page grain. Named `page`, not the walk plane's `root`: on this wire the body-level `root` key IS the fingerprint slot (the v3 projection renames it), and a page path is not a fingerprint |
+| `depth_bound` | the bound in effect, echoed; absent = unbounded |
+| `entries[]` | BFS order, ascending depth then discovery; `{depth, selector, rev?, color, reason?, detail?, teaching?}`. `selector` is the lock row's canonical address, `root:`-qualified when the claim crosses roots. `color` is the tone (`green`/`red`/`grey`); `reason` the stable word, absent exactly on green; `teaching` present only for colors that teach — the field never invents advice |
+| `revs_read[]` | `{path, doc_rev}` — the docs the listing rests on, path order. The listing is falsifiable against exactly these revs |
+| `excluded[]` | §12.1 enumerator clause, DOWN walks only: the blast-radius census names the markdown the hash domain left out instead of publishing a partial population as whole. Omitted when empty, and always on up — up drops nothing, naming an excluded ancestor by its correct path at a red edge |
+
+**Doors and refusals.** A NAMED page the hash domain excludes is served
+(§12.1 door-family clause — membership gates enumerations, never what a
+named path is entitled to); a missing root refuses `file_not_found`; an
+unserved member refuses `invalid_utf8`; an in-snapshot cycle refuses
+`walk_cycle` (env class — the workspace's own pin graph is broken, not one
+request), naming the loop. An unreadable hash domain fails the door
+(`io_error`): degrading to the default domain would claim every path is
+hashed — the false-red fail-open decision 0034 ruled out.
+
+**The staleness triple does not apply.** The walk serves from the warm
+engine's projection at one borrow — current-tense by construction, and the
+per-row `rev` plus `revs_read` already carry the falsifiability a caller
+needs. Do not bolt the triple on.
+
 ---
 
 ## § B. Process
