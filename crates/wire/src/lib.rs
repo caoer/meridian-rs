@@ -487,6 +487,21 @@ pub struct Request {
     pub op: Op,
 }
 
+/// One §4.4 set-form member (`splice.set`): a content file and its batch —
+/// `edits` or `plan_edits`, the same mutual exclusion as the single form,
+/// enforced at the strict decode wall per entry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SpliceFile {
+    /// The content file this member edits.
+    pub path: Path,
+    /// The native batch (mutually exclusive with `plan_edits`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edits: Vec<Edit>,
+    /// The plan-level batch (mutually exclusive with `edits`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plan_edits: Vec<PlanEdit>,
+}
+
 /// The op vocabulary. Tag field is `op` (v2 §3.1).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -589,6 +604,42 @@ pub enum Op {
         /// skips it, so the frozen v2 request bytes never change.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pin: Option<PinSpec>,
+    },
+    /// The §4.4 SET form (dotted cap `splice.set`, v3-only at decode): the
+    /// same `"op":"splice"` tag carrying `files[]` instead of `path` +
+    /// `edits`/`plan_edits` — strictly one form or the other (`bad_request`
+    /// at decode when both or neither appear). Two or more entries, paths
+    /// pairwise distinct; one request-level guard/actor/now/receipt/dry/force
+    /// covers the whole set. The commit is sealed across the set:
+    /// validate-all-then-apply, one fingerprint advance, one receipt entry
+    /// naming every file, one Delta of N+1 files. No `pin` — the pin rides
+    /// the single form (its pinning page is that form's `path`).
+    ///
+    /// Shares the `splice` tag: the production request door is the
+    /// hand-rolled strict decoder, which routes on the presence of `files`.
+    /// `skip_deserializing` states that in the type — plain serde
+    /// deserialization resolves the tag to [`Op::Splice`] and is not a
+    /// request door.
+    #[serde(rename = "splice", skip_deserializing)]
+    SpliceSet {
+        /// The set members, each a content file and its batch.
+        files: Vec<SpliceFile>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        actor: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        now: Option<String>,
+        /// One receipt entry rides the sealed set and names every file (§6.6
+        /// anchor checked once).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        receipt: Option<ReceiptAddr>,
+        /// World-grain guard, checked first (§5.1) — being world-grain it
+        /// covers every member.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        if_root: Option<Root>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dry: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        force: Option<bool>,
     },
     /// The birth op (v3-only at dispatch): births one file through the same
     /// guarded door every in-process caller uses
@@ -1475,6 +1526,26 @@ pub enum ResponseBody {
         span: Span,
         #[serde(skip_serializing_if = "Option::is_none")]
         content: Option<String>,
+    },
+    /// The §4.4 SET-form reply (`splice.set`): `armed` is an ARRAY of
+    /// per-file armed groups — one [`Armed`] per member, in request order —
+    /// under ONE root transition, one `seq`, one receipt fact naming every
+    /// file. Ordered before [`ResponseBody::Splice`] in this untagged enum:
+    /// the array-vs-object shape of `armed` is the discriminant.
+    SpliceSet {
+        /// Per-file armed groups, request order.
+        armed: Vec<Armed>,
+        /// Present iff the request named a receipt and the set hit disk.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        receipt: Option<ReceiptFact>,
+        root_before: Root,
+        /// Always serialized — `null` on a dry run, as on the single form.
+        root_after: Option<Root>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dry: Option<bool>,
+        verdicts: Vec<Verdict>,
     },
     /// v2 §4.4: what the write armed — target identities, rev transitions,
     /// spans after, the receipt fact, the root transition — never delivery

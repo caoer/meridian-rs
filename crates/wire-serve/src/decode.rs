@@ -17,7 +17,7 @@ pub(crate) const SPLICE_V2_FIELDS: [&str; 8] = [
 ];
 
 /// v3 `splice` fields: one owner of the set; amendments = V3 \\ V2.
-pub(crate) const SPLICE_V3_FIELDS: [&str; 10] = [
+pub(crate) const SPLICE_V3_FIELDS: [&str; 11] = [
     "path",
     "actor",
     "now",
@@ -28,6 +28,7 @@ pub(crate) const SPLICE_V3_FIELDS: [&str; 10] = [
     "edits",
     "plan_edits",
     "pin",
+    "files",
 ];
 
 /// Which laws one decode pass enforces.
@@ -692,7 +693,8 @@ fn decode_create(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
     })
 }
 
-/// `splice`: only write-existing under v2; v3 also admits `plan_edits`/`pin`.
+/// `splice`: only write-existing under v2; v3 also admits `plan_edits`/`pin`
+/// and the `files[]` set form (dotted cap `splice.set`).
 /// `now` RFC 3339 validated, never generated (§9).
 fn decode_splice(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody>> {
     let op = "splice";
@@ -708,6 +710,20 @@ fn decode_splice(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody
         return Err(bad_request(format!(
             "`now` must be RFC 3339 (§9, validated never generated): `{n}`"
         )));
+    }
+    // The §4.4 set form: strictly one form or the other — `files[]` XOR the
+    // single form's `path`+`edits`/`plan_edits`/`pin` (`bad_request` when both
+    // or neither appear).
+    if let Some(files_v) = obj.get("files") {
+        for single in ["path", "edits", "plan_edits", "pin"] {
+            if obj.contains_key(single) {
+                return Err(bad_request(format!(
+                    "`files` and `{single}` are mutually exclusive on `splice` — the set form \
+                     carries each member's path and batch inside `files[]` (§4.4 set form)"
+                )));
+            }
+        }
+        return decode_splice_set(obj, files_v, now);
     }
     let plan_edits = match obj.get("plan_edits") {
         None => Vec::new(),
@@ -744,6 +760,78 @@ fn decode_splice(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody
         edits,
         plan_edits,
         pin,
+    })
+}
+
+/// The §4.4 set form's members: two or more `{path, edits|plan_edits}`
+/// entries, paths pairwise distinct, per-entry field wall and per-entry
+/// edits-vs-plan_edits exclusion (the single form's own walls, per member).
+fn decode_splice_set(
+    obj: &Map<String, Value>,
+    files_v: &Value,
+    now: Option<String>,
+) -> Result<Op, Box<ErrorBody>> {
+    let Value::Array(items) = files_v else {
+        return Err(bad_request(
+            "`files` must be an array of `{path, edits|plan_edits}` members on `splice`",
+        ));
+    };
+    if items.len() < 2 {
+        return Err(bad_request(
+            "`files` must carry two or more members (§4.4 set form) — a one-file write is \
+             the single `path` form",
+        ));
+    }
+    let mut files = Vec::with_capacity(items.len());
+    for (i, item) in items.iter().enumerate() {
+        let Value::Object(entry) = item else {
+            return Err(bad_request(format!(
+                "`files[{i}]` must be an object with `path` and `edits` or `plan_edits`"
+            )));
+        };
+        check_fields(entry, "files[]", &["path", "edits", "plan_edits"])?;
+        let path = req_path(entry, "files[]", "path")?;
+        let plan_edits = match entry.get("plan_edits") {
+            None => Vec::new(),
+            Some(v) => decode_plan_edits(v)?,
+        };
+        let edits = match entry.get("edits") {
+            Some(edits_v) => {
+                if !plan_edits.is_empty() {
+                    return Err(bad_request(format!(
+                        "`edits` and `plan_edits` are mutually exclusive on `files[{i}]`"
+                    )));
+                }
+                decode_edits(edits_v, Laws::Full)?
+            }
+            None if plan_edits.is_empty() => {
+                return Err(bad_request(format!(
+                    "missing `edits` on `files[{i}]` — every set member carries its batch"
+                )));
+            }
+            None => Vec::new(),
+        };
+        if files.iter().any(|f: &wire::SpliceFile| f.path == path) {
+            return Err(bad_request(format!(
+                "set member paths must be pairwise distinct: `{}` appears twice — merge its \
+                 edits into one member",
+                path.0
+            )));
+        }
+        files.push(wire::SpliceFile {
+            path,
+            edits,
+            plan_edits,
+        });
+    }
+    Ok(Op::SpliceSet {
+        files,
+        actor: opt_str(obj, "splice", "actor")?,
+        now,
+        receipt: obj.get("receipt").map(decode_receipt).transpose()?,
+        if_root: opt_str(obj, "splice", "if_root")?.map(wire::Root),
+        dry: opt_bool(obj, "splice", "dry")?,
+        force: opt_bool(obj, "splice", "force")?,
     })
 }
 
