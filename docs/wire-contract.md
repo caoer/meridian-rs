@@ -160,7 +160,7 @@ Write targets and strict reads name nodes by **exact name only** — three forms
 | Form | Shape | Semantics |
 |---|---|---|
 | hpath | `{"hpath":[{"h":"Goals"},{"h":"Q3"}]}` | per-segment **byte-equality** against the real containment tree; optional occurrence `{"h":"Beta","n":2}` (1-based, document order among identical raw texts at that position). No join string exists — the `#A#a/b` vs `#A#a#b` ambiguity is unrepresentable |
-| anchor | `{"anchor":"r-000042"}` | block id, exact match. Duplicate id in one file → the mint plane refuses `ambiguous_ref` (loud), while the walk plane follows the app (last wins, silent) — the silent-last-wins mint death mode is closed |
+| anchor | `{"anchor":"r-000042"}` | block id, exact match; the resolved node is the id's HOST BLOCK under the Obsidian attachment law (F-R4, `model::anchor_host_span`: a tail id keys its enclosing block — the whole paragraph run, callout or table, a list ITEM line, a heading line; an own-line id attaches to the nearest preceding block through blanks, or joins a directly-adjacent paragraph/list item; a document-start orphan and a frontmatter caret keep the marker's own line). Duplicate id in one file → the mint plane refuses `ambiguous_ref` (loud), while the walk plane follows the app (last wins, silent) — the silent-last-wins mint death mode is closed |
 | fm_key | `{"fm_key":"title"}` | top-level frontmatter key; the node is the full key line (frontmatter plane is nodes, never ref grammar — `#:key` is dead) |
 
 Stale names fail loud (`ref_not_found`); every ref-carrying wire surface — `cat`/`splice` targets and the echoes in `toc` rows, receipts, deltas, and verdicts — uses this grammar and no other.
@@ -374,14 +374,14 @@ Response (S0→S1, all values computed):
  "seq":1,"verdicts":[]}}
 ```
 
-**Teaching row — `at:"end"` on an anchor ALWAYS refuses; two families split which way it dies (family split measured 2026-08-09).** A block-leaf span excludes its terminator, so the insertion point sits on it, and every end-append to an `{"anchor":id}` target lands one of two refusals — never a commit:
+**Teaching row — `at:"end"` on a LINE-grain anchor host always refuses; two families split which way it dies (family split measured 2026-08-09; grain qualifier added by F-R4, 2026-08-13).** A block-leaf span excludes its terminator, so the insertion point sits on it, and an end-append to an `{"anchor":id}` target whose host is a LINE (a list item, a heading line) lands one of two refusals — never a commit:
 
 | the `text` you send | what the reparse measures | `family` |
 |---|---|---|
 | carries no newline (` tail`) | the appended bytes join the line, so the id is no longer line-final: the target stops resolving | `target_identity` |
 | carries a newline (`\nX`) | the first newline terminates the host line, so the bytes land in a NEW line outside the node: the target still resolves and its rev cannot move | `transition_unrepresentable` |
 
-The remedy is not a repair to reach for occasionally — an append to an anchor must re-supply the id line-final in its own `text`, every time, and an append that means to add a LINE belongs to the enclosing section, not to the anchor. *(Correction rationale: this row previously read "the `target_identity` family is the WHOLE of `at:"end"` on an anchor". The refusal it required stands and is unweakened; its single-family attribution was wrong, and the newline half was measured COMMITTING at v1.0.0 `93184797` and at `b1fcc6e3` — silently, exit 0, with a null rev transition. The same escape was measured on `fm_key` targets, whose leaf span excludes its terminator by the same §4.4 law, so the family is defined over the SPAN LAW rather than over the anchor door. Host block kind is NOT the discriminator: paragraph, list-item and heading hosts all behaved identically once the `text` was held fixed.)*
+Since F-R4 an anchor's host is the attached/enclosing BLOCK, not always one line, and the refusal pair is defined over the SPAN LAW, not the door: an end-append whose bytes stay INSIDE the host block — a paragraph run growing a continuation line, a table absorbing a row — changes the node's bytes, arms a true rev transition, and commits. The remedy on the refusing shapes is unchanged: an append to a line-grain anchor must re-supply the id line-final in its own `text`, and an append that means to add a LINE belongs to the enclosing section, not to the anchor. *(Correction rationale: this row previously read "the `target_identity` family is the WHOLE of `at:"end"` on an anchor". The refusal it required stands and is unweakened; its single-family attribution was wrong, and the newline half was measured COMMITTING at v1.0.0 `93184797` and at `b1fcc6e3` — silently, exit 0, with a null rev transition. The same escape was measured on `fm_key` targets, whose leaf span excludes its terminator by the same §4.4 law. The 2026-08-09 measurement "host block kind is NOT the discriminator" held while every host was line-grain; F-R4's block-grain hosts made GRAIN the discriminator — the span law itself is unchanged.)*
 
 The response carries what the write **ARMED** — target identities, rev transitions, spans after, the receipt fact, the root transition — never delivery claims. `verdicts` is the rules-as-data surface (§11). Spans appear in *responses* freely: the wire's business, never argv's.
 
@@ -1065,7 +1065,7 @@ When a workspace is **armed** (attested INDEX present), after CAS and before byt
 | `read` | Addressing + content + render + frontmatter props at one snapshot; section selectors use §2.1 segments (or anchor / dewey). Not a joined string address. |
 | `check_write` | Standalone write pre-flight: the splice verdict computed without writing. Read-only. |
 | `mounts` | Mount-table discovery: the live root registry, machine-scoped. Read-only (§ A.5). |
-| `splice.plan_edits` | Plan-level batch shapes; addresses are **segment arrays** — a heading path, or a `^id` block ref as the array's single segment (W-2, 2026-08-12: the plan lane resolves the read face's OWN anchor plane, so a toc-listed anchor is writeable by its id and a host-excluded or absent id misses on both doors alike; `match` edits inside the block-leaf bytes, `replace_section` replaces the block's content and preserves the `^id` marker by construction — the section arm's heading-preservation mirror — and `append` keeps refusing toward the containing section). |
+| `splice.plan_edits` | Plan-level batch shapes; addresses are **segment arrays** — a heading path, or a `^id` block ref as the array's single segment (W-2, 2026-08-12: the plan lane resolves the read face's OWN anchor plane, so a toc-listed anchor is writeable by its id and a host-excluded or absent id misses on both doors alike; F-R4, 2026-08-13: that plane carries every body host Obsidian addresses — paragraph, list item, task, callout, table, fence, heading — leaving the frontmatter caret the one host-excluded miss; `match` edits inside the block-leaf bytes, `replace_section` replaces the block's content and preserves the `^id` marker by construction — the section arm's heading-preservation mirror — and `append` keeps refusing toward the containing section). |
 | `splice.pin` | Pin rides the write choke-point; selector is segments/anchor. |
 | `create` | File birth through the guarded door; full body bytes. |
 | `hello.identity` | Optional `{build: sha \| sha-dirty \| unknown}` for deploy identity. The `-dirty` marker rides the sha TOKEN (git-describe convention), so this stays one field: `sha` = built from a whole commit, `sha-dirty` = built from a worktree diverging from that commit, `unknown` = no attributable identity was readable. A caller matching a declared sha matches the WHOLE token, never a substring — a decorated sha is a different build and must refuse (`docs/release.md` §5.1). *(2026-08-09: the marker is new; the field, its optionality, and its v3-only rule are unchanged.)* |
@@ -1096,7 +1096,7 @@ When a workspace is **armed** (attested INDEX present), after CAS and before byt
 - Duplicate ids share one spelling, and the anchor grammar carries no occurrence index (`n` disambiguates hpath segments; `{"anchor":id}` has no `n` slot), so **no machine address exists per candidate**: the refusal's `candidates` stays `[]` and the message names how many blocks carry the id. The map stays honest evidence: `toc`'s `anchors[]` publishes every occurrence with its span, duplicates included.
 - The remedy **speaks the anchor grammar, never the heading one**: give each duplicate block a distinct id (a block id addresses exactly one block in its file), or address the enclosing section by heading path. "Rename one heading" is the heading-duplicate remedy and never appears on an anchor refusal.
 
-**Teaching row — the anchor host-kind gate is a READ-face law, and the write door does not carry it (2026-08-09):** `unaddressable_host` and the set `anchors[]` publishes are both scoped to the block kinds this read face addresses. The write door has no host-kind gate. So a paragraph-hosted `^id` that the map never publishes, and that the read door refuses `unaddressable_host`, is still a legal `{"anchor":id}` splice target and arms a rev transition normally. Read this in one direction only: the map remains honest about its OWN door — every address it publishes, it serves — but it is not an index of the write plane, and absence from `anchors[]` is not evidence that a write will refuse.
+**Teaching row — the anchor host-kind gate is a READ-face law, and the write door does not carry it (2026-08-09; F-R4 2026-08-13 widened the plane):** `unaddressable_host` and the set `anchors[]` publishes are both scoped to the block kinds this read face addresses — since F-R4 that is every body host Obsidian's block references cover (paragraph, list item, task, callout, table, fence, heading; the anchor's host span is the attached block per the Obsidian attachment law in `model::anchor_host_span`), leaving the frontmatter caret the one unpublished host. The native write door has no host-kind gate: even a frontmatter-hosted `^id` that the read door refuses `unaddressable_host` is still a legal `{"anchor":id}` splice target on the strict plane and arms a rev transition normally (the PLAN lane, by contrast, resolves against the face plane — door symmetry, A.3). Read this in one direction only: the map remains honest about its OWN door — every address it publishes, it serves — but it is not an index of the native write plane, and absence from `anchors[]` is not evidence that a native write will refuse.
 
 **`check_write` — the standalone pre-flight (recorded 2026-08-07: the deployed host consumes this op on every guarded put):**
 
@@ -1308,18 +1308,19 @@ deferral):**
     `no_match` (nothing carries the address) ·
     `ambiguous` (a heading or dewey selector matched more than one node) ·
     `duplicate_anchor` (more than one block carries the `^id`) ·
-    `unaddressable_host` (the id exists on the page, but its host block kind
-    is outside the face's anchor plane — the P2-c truth-telling row, distinct
-    from `no_match` because the honest remedy differs).
+    `unaddressable_host` (the id exists on the page, but its host is outside
+    the face's anchor plane — since F-R4 the frontmatter caret alone, every
+    body host being addressable; the P2-c truth-telling row, distinct from
+    `no_match` because the honest remedy differs).
   - `candidates` — `ambiguous` only: each candidate's machine address as the
     §2.1 `n`-carrying segment array (actual arrays, never encoded strings),
     in the order the refusal names them. Always serialized; `[]` on every
     other reason — including `duplicate_anchor`, where no per-candidate
     machine address exists (the 2026-08-08 door-symmetry law above).
   - `count` — `duplicate_anchor` only: how many blocks carry the id.
-  - `host` — `unaddressable_host` only: the true host kind (`paragraph`,
-    `task`, `heading`, `frontmatter`, …) — the same open string the toc
-    anchor row echoes, never a fallback.
+  - `host` — `unaddressable_host` only: the true host kind (`frontmatter`
+    in practice since F-R4; the field stays the same open string the toc
+    anchor row echoes, never a fallback).
   - `nearest` — anchor-`no_match` only: the nearest live ids as
     `{anchor, kind}` rows. **The candidate pool spans every `^id` on the
     page, non-addressable hosts included** (season-1b addendum: a typo one
