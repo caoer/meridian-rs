@@ -202,19 +202,42 @@ fn serve(
         return Ok(ScriptTrace::guard_refused(entry, pinned.0.clone()));
     }
 
+    // § A.7 pattern expansion, at entry, against the entry world's hash-domain
+    // membership — the same walk that pinned the entry fingerprint, so the
+    // expansion is deterministic within the attempt. Matching is the ONE scope
+    // glob grammar (`policy::expand_globs`); the rows ride the recording so
+    // the trace shows them and replay replays them. Zero matches contributes
+    // zero paths — data, not a refusal.
+    let (files, expansions) = if request.files.iter().any(|m| policy::is_glob_pattern(m)) {
+        let corpus: Vec<String> = world
+            .docs
+            .keys()
+            .chain(world.unserved.keys())
+            .cloned()
+            .collect();
+        let (expanded, rows) = policy::expand_globs(&request.files, &corpus);
+        let records = rows
+            .into_iter()
+            .map(|(pattern, matched)| effects::ExpansionRecord { pattern, matched })
+            .collect();
+        (expanded, records)
+    } else {
+        (request.files.clone(), Vec::new())
+    };
+
     // Effects mode: the LIVE program model (script-effects ruling, § A.7
     // effects paragraph). Forked here — after the entry fingerprint is known
     // (it rides the trace as the world-at-start fact) and before the pure
     // lane's pinned-world machinery, none of which this model uses.
     if !request.effects.is_empty() {
-        return Ok(live_serve(registry, ws, request, &entry));
+        return Ok(live_serve(registry, ws, request, &entry, files, expansions));
     }
 
     let deadline = Instant::now() + effects::DEFAULT_WALL_CLOCK;
     let ctx = ScriptCtx {
         id: "script".to_owned(),
         args: request.args.clone(),
-        files: request.files.clone(),
+        files,
         effects: Vec::new(),
     };
     let ws_root = fs::WorkspaceRoot(ws.to_path_buf());
@@ -229,6 +252,8 @@ fn serve(
         };
         effects::eval_script(&request.source, &ctx, ScriptLimits::default(), &mut host)
     };
+    // The expansion rows are entry facts: every exit below carries them.
+    eval.recording.expansions = expansions;
 
     // A failed evaluation never commits; zero armed is the read-class exit.
     if eval.outcome.is_err() || eval.armed.is_empty() {
@@ -281,12 +306,19 @@ fn serve(
 /// time through the § A.8 seam and its row is the program's value. No commit
 /// leg, no armed set, no rollback; the trace records the acts in call order
 /// and the outcome word is `effects`.
-fn live_serve(registry: &Registry, ws: &Path, request: &ScriptArgs, entry: &str) -> ScriptTrace {
+fn live_serve(
+    registry: &Registry,
+    ws: &Path,
+    request: &ScriptArgs,
+    entry: &str,
+    files: Vec<String>,
+    expansions: Vec<effects::ExpansionRecord>,
+) -> ScriptTrace {
     let deadline = Instant::now() + effects::DEFAULT_WALL_CLOCK;
     let ctx = ScriptCtx {
         id: "script".to_owned(),
         args: request.args.clone(),
-        files: request.files.clone(),
+        files,
         effects: request.effects.clone(),
     };
     let (eval, acts) = {
@@ -305,7 +337,10 @@ fn live_serve(registry: &Registry, ws: &Path, request: &ScriptArgs, entry: &str)
             reads_seen: std::cell::Cell::new(0),
             acts: std::cell::RefCell::new(Vec::new()),
         };
-        let eval = effects::eval_script(&request.source, &ctx, ScriptLimits::default(), &mut host);
+        let mut eval =
+            effects::eval_script(&request.source, &ctx, ScriptLimits::default(), &mut host);
+        // Entry facts ride the live lane's trace too.
+        eval.recording.expansions = expansions;
         let acts = host.acts.into_inner();
         (eval, acts)
     };
@@ -700,7 +735,7 @@ fn commit(
 
 /// The armed list grouped into §4.4 set members: one entry per distinct
 /// content path in first-arm order, each carrying its own rows in arm order.
-fn set_files(paths: &[String], armed: &[effects::ArmedEdit]) -> Vec<wire::SpliceFile> {
+fn set_files(paths: &[String], armed: &[ArmedEdit]) -> Vec<wire::SpliceFile> {
     paths
         .iter()
         .map(|p| wire::SpliceFile {
@@ -1324,6 +1359,7 @@ mod tests {
                 depth: 0,
             }],
             recording: ScriptRecording {
+                expansions: Vec::new(),
                 actor: String::new(),
                 reads: Vec::new(),
             },

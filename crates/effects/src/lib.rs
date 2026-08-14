@@ -1006,6 +1006,20 @@ pub struct ReadRecord {
     pub face: ReadFace,
 }
 
+/// One § A.7 `files[]` pattern expansion, recorded at entry: the pattern
+/// member and the paths the entry world matched it to. Eval is a pure
+/// function of `(script, args, files, read-responses)` — with patterns the
+/// `files` binding depends on the expansion, so the rows are recorded and
+/// [`replay_script`] replays them exactly as it replays reads. An empty
+/// `matched` is data (the zero contributes zero paths), never silent.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ExpansionRecord {
+    /// The pattern member, verbatim.
+    pub pattern: String,
+    /// The matched workspace-relative paths, sorted.
+    pub matched: Vec<String>,
+}
+
 /// Everything the host answered during one attempt. Replay is a pure function
 /// of `(script, args, files, recording)`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -1014,6 +1028,11 @@ pub struct ScriptRecording {
     pub actor: String,
     /// Every read response, in call order.
     pub reads: Vec<ReadRecord>,
+    /// § A.7 pattern expansions, in member order — empty when `files[]`
+    /// carried no pattern, and skipped then so pattern-less trace bytes are
+    /// unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expansions: Vec<ExpansionRecord>,
 }
 
 /// Measurement of one attempt. Unconditional — reported even on failure
@@ -1126,8 +1145,34 @@ pub fn replay_script(
             },
         };
     }
+    // Recorded § A.7 expansions replay exactly as recorded reads do: each
+    // pattern member substitutes its recorded match list, then the merged
+    // list re-applies the one merge law (dedup + sort). A caller passing the
+    // ORIGINAL files[] (patterns included) reconstructs the exact binding the
+    // live attempt evaluated under.
+    let ctx = if recording.expansions.is_empty() {
+        ctx.clone()
+    } else {
+        let mut files: Vec<String> = Vec::new();
+        for member in &ctx.files {
+            match recording
+                .expansions
+                .iter()
+                .find(|row| row.pattern == *member)
+            {
+                Some(row) => files.extend(row.matched.iter().cloned()),
+                None => files.push(member.clone()),
+            }
+        }
+        files.sort();
+        files.dedup();
+        ScriptCtx {
+            files,
+            ..ctx.clone()
+        }
+    };
     let mut host = RecordedHost::new(recording);
-    kernel::run_script(script, ctx, limits, &mut host)
+    kernel::run_script(script, &ctx, limits, &mut host)
 }
 
 /// A [`ScriptHost`] that serves a [`ScriptRecording`] in call order. Backs
