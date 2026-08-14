@@ -661,8 +661,8 @@ struct SectionsRender {
 enum SelFail {
     Miss {
         sel: wire::ReadSel,
-        /// The `^id` teaching ([`anchor_sel_teach`]); `None` on heading
-        /// and dewey misses, whose teaching is the aggregate recovery clause.
+        /// The `^id` or heading-path teaching ([`anchor_sel_teach`]); `None`
+        /// on dewey misses, whose teaching is the aggregate recovery clause.
         teach: Option<AnchorTeach>,
     },
     Ambiguous {
@@ -796,6 +796,77 @@ struct AnchorTeach {
     nearest: Vec<wire::ReadNearestAnchor>,
 }
 
+/// Heading-lane miss teaching (dogfood r3 gap 6a — parity with the anchor
+/// lane's nearest offer). A heading path is ROOT-ANCHORED, so the two honest
+/// near-misses each get their own clause, both measured off the toc the
+/// engine already projected — never invented:
+///
+/// - the asked segments match a live path's TAIL — the caller held a real
+///   heading without its ancestry; name the root-anchoring rule and the live
+///   full path(s);
+/// - otherwise — the nearest live heading paths, ranked by the leaf heading's
+///   spelling (the same hint machinery the anchor lane rides).
+///
+/// `None` when the page has no headings — the aggregate recovery clause
+/// stands alone there.
+fn hpath_miss_teaching(doc: &model::Document, hpath: &[wire::HpathSeg]) -> Option<String> {
+    if hpath.is_empty() {
+        return None;
+    }
+    let live: Vec<Vec<wire::HpathSeg>> = wire_map::project_toc(doc)
+        .into_iter()
+        .filter(|row| row.kind.as_str() == "heading")
+        .filter_map(|row| row.hpath)
+        .collect();
+    if live.is_empty() {
+        return None;
+    }
+    // (a) Tail match on raw segment text: the asked path IS on the page,
+    // just not anchored at the root heading.
+    let tails: Vec<String> = live
+        .iter()
+        .filter(|segs| {
+            segs.len() > hpath.len()
+                && segs[segs.len() - hpath.len()..]
+                    .iter()
+                    .zip(hpath)
+                    .all(|(seg, want)| seg.h == want.h)
+        })
+        .map(|segs| format!("\"{}\"", join_h(segs)))
+        .take(model::selector::NEAREST_SHOWN)
+        .collect();
+    if !tails.is_empty() {
+        return Some(format!(
+            "a heading path is root-anchored — \"{}\" is on this page at {}; address it \
+             by its full path from the root heading",
+            join_h(hpath),
+            tails.join(" or ")
+        ));
+    }
+    // (b) Nearest by leaf heading text, rendered as full paths.
+    let leaves: Vec<String> = live
+        .iter()
+        .filter_map(|segs| segs.last().map(|s| s.h.clone()))
+        .collect();
+    let want = &hpath[hpath.len() - 1].h;
+    let mut shown: Vec<String> = Vec::new();
+    for leaf in model::selector::nearest(want, &leaves) {
+        for segs in &live {
+            if segs.last().map(|s| s.h.as_str()) == Some(leaf.as_str()) {
+                let rendered = format!("\"{}\"", join_h(segs));
+                if !shown.contains(&rendered) {
+                    shown.push(rendered);
+                }
+            }
+        }
+        if shown.len() >= model::selector::NEAREST_SHOWN {
+            break;
+        }
+    }
+    shown.truncate(model::selector::NEAREST_SHOWN);
+    Some(format!("nearest live heading paths: {}", shown.join(", ")))
+}
+
 /// Face-scoped `^id` miss teaching (Law A-3: a miss teaches before it
 /// refuses). The composed read resolves anchors against the face's anchor
 /// plane, which since F-R4 carries every body-hosted block id Obsidian
@@ -813,6 +884,15 @@ struct AnchorTeach {
 /// `None` for non-anchor selectors. The host-kind probe re-projects the toc
 /// only on this error path, never on a served read.
 fn anchor_sel_teach(doc: &model::Document, sel: &wire::ReadSel) -> Option<AnchorTeach> {
+    // Heading-lane parity (gap 6a): an hpath miss carries the same measured
+    // teaching the write door speaks — prose clause only, no wire rows.
+    if let wire::ReadSel::Hpath { hpath } = sel {
+        return hpath_miss_teaching(doc, hpath).map(|clause| AnchorTeach {
+            clause,
+            host: None,
+            nearest: Vec::new(),
+        });
+    }
     let wire::ReadSel::Anchor { anchor } = sel else {
         return None;
     };
@@ -1564,7 +1644,15 @@ fn miss_parts(sec: &SecRef, doc: &model::Document, display_path: Option<&str>) -
         SecRef::Hpath { hpath } => {
             let asked = join_h(hpath);
             let recovery = raw_spelling_for(doc, hpath).map_or_else(
-                || crate::section_recovery(&asked, display_path),
+                || match hpath_miss_teaching(doc, hpath) {
+                    Some(clause) => {
+                        format!(
+                            "{clause}. {}",
+                            crate::section_recovery(&asked, display_path)
+                        )
+                    }
+                    None => crate::section_recovery(&asked, display_path),
+                },
                 |raw| {
                     format!(
                         "That IS this file's published address for a section, but `put` \

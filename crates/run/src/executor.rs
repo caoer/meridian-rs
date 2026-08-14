@@ -32,7 +32,7 @@ use model::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::caps::Authority;
+use crate::caps::{Authority, Cap};
 use crate::record::{ExecRecord, ExecRecordSink};
 
 /// The run plane's receipt file — ONE convention, whichever door invoked the
@@ -371,9 +371,13 @@ pub enum ExecError {
         /// The ceiling that took a cap which WOULD have admitted this
         /// descriptor, when one did. `None` is not "unknown" — it is the
         /// measured absence of a ceiling cause (deny-default, or a grant that
-        /// never held the cap), and the refusal then names the cause and stops
-        /// rather than teaching a fix it cannot derive.
+        /// never held the cap), and the refusal then names the measured
+        /// grants and the `task.<name>.caps` declaration that grants.
         ceiling: Option<String>,
+        /// The effective grants the resolution measured — the deny-default
+        /// arm's teachable facts (dogfood r3 gap 6b). Empty for a task that
+        /// declares no caps.
+        declared: Vec<String>,
     },
     /// A descriptor argument is missing or wrongly shaped (kernel constructors
     /// make this unreachable; hand-built descriptors fault here).
@@ -433,6 +437,7 @@ impl std::fmt::Display for ExecError {
                 kind,
                 target,
                 ceiling,
+                declared,
             } => {
                 write!(f, "capability denied: {kind} on '{target}'")?;
                 // run-plane § capabilities: a block whose own frontmatter
@@ -441,15 +446,32 @@ impl std::fmt::Display for ExecError {
                 // already in place. Naming the ceiling is the only remedy that
                 // repairs THIS denial — and it is taught only where the
                 // resolution measured one.
-                match ceiling {
-                    Some(ceiling) => write!(
+                if let Some(ceiling) = ceiling {
+                    return write!(
                         f,
                         " — the grant was narrowed away by {ceiling}. Conventions narrow only, \
                          never widen, so declaring the cap again cannot lift it. Fix: widen or \
                          remove that ceiling entry, or aim the effect inside what it leaves."
-                    ),
-                    None => Ok(()),
+                    );
                 }
+                // Deny-by-default (dogfood r3 gap 6b): name WHY, the grants
+                // the resolution measured, and the declaration that grants —
+                // the caller repairs the page, not the engine's source.
+                write!(
+                    f,
+                    " — only declared capabilities are granted, and no declared cap \
+                     covers this effect: "
+                )?;
+                if declared.is_empty() {
+                    write!(f, "the task declares no md.* capabilities")?;
+                } else {
+                    write!(f, "the task's grants are [{}]", declared.join(", "))?;
+                }
+                write!(
+                    f,
+                    ". Fix: add `{kind}:{target}` (or an untargeted `{kind}`) to the \
+                     task's `task.<name>.caps` list in the page's frontmatter."
+                )
             }
             ExecError::BadDescriptor { kind, reason } => {
                 write!(f, "bad {kind} descriptor: {reason}")
@@ -693,10 +715,15 @@ pub fn admit(effects: &[Effect], authority: &Authority) -> Result<(), ExecError>
                 .capabilities()
                 .and_then(|caps| caps.ceiling_denying(kind, Some(&target)))
                 .map(ToString::to_string);
+            let declared = authority
+                .capabilities()
+                .map(|caps| caps.effective.0.iter().map(Cap::as_string).collect())
+                .unwrap_or_default();
             return Err(ExecError::CapDenied {
                 kind: kind.to_owned(),
                 target,
                 ceiling,
+                declared,
             });
         }
     }

@@ -50,13 +50,18 @@ pub enum AddressError {
     /// I/O failure reading the page.
     PageIo { path: String, reason: String },
     /// TASK was named but the page declares no `task.<name>` key. Carries the
-    /// declared task names so the caller can list them.
+    /// declared task names so the caller can list them, and the asked name's
+    /// declaration-only keys (`task.<name>.caps/.args/.env` with no binding) —
+    /// the measured near-miss the refusal teaches (dogfood r3 f5).
     NoTask {
         name: String,
         available: Vec<String>,
+        declaration_keys: Vec<String>,
     },
     /// TASK was omitted and the page declares no task bindings at all.
-    NoTasks,
+    /// `declaration_keys` carries any `task.<name>.<suffix>` keys found — the
+    /// same near-miss fact, measured page-wide.
+    NoTasks { declaration_keys: Vec<String> },
     /// TASK was omitted and the page declares more than one binding — the
     /// caller lists them and exits 2, it never guesses.
     ManyTasks { available: Vec<String> },
@@ -98,14 +103,32 @@ impl std::fmt::Display for AddressError {
                 write!(f, "page {path} refused: {reason}")
             }
             AddressError::PageIo { path, reason } => write!(f, "cannot read page {path}: {reason}"),
-            AddressError::NoTask { name, available } => {
+            AddressError::NoTask {
+                name,
+                available,
+                declaration_keys,
+            } => {
                 write!(f, "no task '{name}' on this page")?;
                 if !available.is_empty() {
                     write!(f, " (declared: {})", available.join(", "))?;
                 }
+                if let Some(near_miss) = near_miss_clause(declaration_keys) {
+                    write!(f, " — {near_miss}")?;
+                }
                 Ok(())
             }
-            AddressError::NoTasks => write!(f, "this page declares no tasks"),
+            AddressError::NoTasks { declaration_keys } => {
+                write!(f, "this page declares no tasks")?;
+                match near_miss_clause(declaration_keys) {
+                    Some(near_miss) => write!(f, " — {near_miss}"),
+                    None => write!(
+                        f,
+                        " — a task is declared in frontmatter: `task.<name>: \"[[#^block-id]]\"` \
+                         binds the name to the fenced code block it runs \
+                         (`task.<name>.caps/.args/.env` carry its declarations)"
+                    ),
+                }
+            }
             AddressError::ManyTasks { available } => write!(
                 f,
                 "this page declares {} tasks — name one: {}",
@@ -173,6 +196,76 @@ pub fn load_page(root: &fs::WorkspaceRoot, rel_path: &Path) -> Result<Document, 
             reason: e.to_string(),
         },
     })
+}
+
+/// The declaration-only near-miss clause: `task.<name>.<suffix>` keys were
+/// measured on the page with no `task.<name>` binding. `None` when no such
+/// keys exist — nothing is invented (the no-unmeasured-remedy law).
+fn near_miss_clause(keys: &[String]) -> Option<String> {
+    if keys.is_empty() {
+        return None;
+    }
+    let mut names: Vec<&str> = Vec::new();
+    for key in keys {
+        if let Some(rest) = key.strip_prefix(TASK_PREFIX)
+            && let Some((base, _)) = rest.rsplit_once('.')
+            && !names.contains(&base)
+        {
+            names.push(base);
+        }
+    }
+    let bindings = names
+        .iter()
+        .map(|n| format!("{TASK_PREFIX}{n}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let example = names.first().copied().unwrap_or("<name>");
+    Some(format!(
+        "found {} but no {bindings} binding: the `.caps/.args/.env` keys carry a task's \
+         declarations, and the binding that names WHICH block runs is the `{TASK_PREFIX}<name>` \
+         key itself — declare `{TASK_PREFIX}{example}: \"[[#^block-id]]\"` naming the fenced \
+         code block to run",
+        keys.join(", ")
+    ))
+}
+
+/// The page's declaration-only `task.*` keys: reserved-suffix keys
+/// (`task.<name>.caps/.args/.env`) whose `<name>` has no binding key — the
+/// near-miss fact the declaration refusals teach. `name` filters to one
+/// task's keys; `None` measures page-wide. Document order.
+#[must_use]
+pub fn declaration_only_keys(doc: &Document, name: Option<&str>) -> Vec<String> {
+    let Some(map) = frontmatter(doc) else {
+        return Vec::new();
+    };
+    let bound: Vec<&str> = map
+        .0
+        .iter()
+        .filter_map(|(key, _)| {
+            let rest = key.strip_prefix(TASK_PREFIX)?;
+            let is_binding = !rest.is_empty()
+                && !rest
+                    .rsplit_once('.')
+                    .is_some_and(|(_, suffix)| RESERVED_SUFFIXES.contains(&suffix));
+            is_binding.then_some(rest)
+        })
+        .collect();
+    map.0
+        .iter()
+        .filter_map(|(key, _)| {
+            let rest = key.strip_prefix(TASK_PREFIX)?;
+            let (base, suffix) = rest.rsplit_once('.')?;
+            if !RESERVED_SUFFIXES.contains(&suffix) || bound.contains(&base) {
+                return None;
+            }
+            if let Some(want) = name
+                && base != want
+            {
+                return None;
+            }
+            Some(key.clone())
+        })
+        .collect()
 }
 
 /// The page's frontmatter map, if any.
@@ -298,9 +391,14 @@ pub fn resolve_task(doc: &Document, task: Option<&str>) -> Result<ResolvedTask, 
             .ok_or_else(|| AddressError::NoTask {
                 name: name.to_owned(),
                 available: names(),
+                declaration_keys: declaration_only_keys(doc, Some(name)),
             })?,
         None => match all.as_slice() {
-            [] => return Err(AddressError::NoTasks),
+            [] => {
+                return Err(AddressError::NoTasks {
+                    declaration_keys: declaration_only_keys(doc, None),
+                });
+            }
             [only] => only,
             _ => return Err(AddressError::ManyTasks { available: names() }),
         },
