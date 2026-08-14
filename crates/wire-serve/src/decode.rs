@@ -544,9 +544,9 @@ fn decode_read(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
     check_fields(
         obj,
         op,
-        &["path", "frag", "sections", "display_path", "actor"],
+        &["path", "toc", "sections", "display_path", "actor"],
     )?;
-    // `sections` and `frag` are structured on the wire: the caller states the
+    // `sections` and `toc` are structured on the wire: the caller states the
     // plane it means, so match order never decides. A joined-string address is
     // refused by name; its door is `wire::ReadSel::parse`, on the caller's side.
     let sections = match obj.get("sections") {
@@ -568,26 +568,27 @@ fn decode_read(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
             ));
         }
     };
-    let frag = match obj.get("frag") {
+    let toc = match obj.get("toc") {
         None | Some(Value::Null) => None,
-        Some(v @ Value::Array(_)) => Some(
-            serde_json::from_value::<Vec<HpathSeg>>(v.clone()).map_err(|_| {
+        Some(v @ Value::Object(_)) => Some(
+            serde_json::from_value::<wire::ReadSel>(v.clone()).map_err(|_| {
                 bad_request(
-                    "`frag` must be an array of hpath segments on `read` \
-                     (`[{\"h\":\"Notes\"},{\"h\":\"Deep\"}]`) — the subtree it scopes is a \
-                     tree fact, and a joined string made it a string-prefix question (U14).",
+                    "`toc` must be ONE tagged section selector on `read` — \
+                     `{\"hpath\":[{\"h\":\"Notes\"},{\"h\":\"Deep\"}]}` for a heading path or \
+                     `{\"n\":\"1.2\"}` for a dewey ordinal. A joined string is not an \
+                     address on this face (U14): convert it once at your own ingress door.",
                 )
             })?,
         ),
         Some(_) => {
             return Err(bad_request(
-                "`frag` must be an array of hpath segments on `read`",
+                "`toc` must be one tagged section selector on `read`",
             ));
         }
     };
     Ok(Op::Read {
         path: req_path(obj, op, "path")?,
-        frag,
+        toc,
         sections,
         display_path: opt_str(obj, op, "display_path")?,
         // §9 read-provenance: wire input, never ambient.

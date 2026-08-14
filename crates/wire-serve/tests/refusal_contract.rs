@@ -2,7 +2,7 @@
 //!
 //! Pins properties, not bytes: message must name the file, disclose partial
 //! state ("Nothing was read" / "no rev was minted"), carry `Fix:`, and keep
-//! the two-plane distinction ("scopes the whole call").
+//! the two-plane distinction plus the ruled "pass one" verdict (F-R3).
 
 use wire::{ErrorCode, Path as WPath};
 use wire_serve::read::{NO_DECORATIONS, ReadParams, composed_read};
@@ -13,7 +13,7 @@ fn doc() -> model::Document {
     model::build(RAW.to_string(), syntax::parse(RAW))
 }
 
-/// Both `#fragment` and `sections[]` is undefined (planes disagree); refusal
+/// Both `toc` and `sections[]` is undefined (planes disagree); refusal
 /// must meet the exemplar bar (file + partial state + Fix + distinction).
 #[test]
 fn both_selector_planes_refuses_at_the_exemplar_bar() {
@@ -23,10 +23,7 @@ fn both_selector_planes_refuses_at_the_exemplar_bar() {
         &WPath("notes.md".into()),
         &wire::Root("r".into()),
         &ReadParams {
-            frag: Some(vec![wire::HpathSeg {
-                h: "Scratch notes".into(),
-                n: None,
-            }]),
+            toc: Some(wire::ReadSel::parse("Scratch notes")),
             sections: Some(vec![wire::ReadSel::parse("Scratch notes/Findings")]),
             display_path: Some("notes.md".into()),
             ..ReadParams::default()
@@ -54,9 +51,11 @@ fn both_selector_planes_refuses_at_the_exemplar_bar() {
     // 3. Fix clause present.
     assert!(m.contains("Fix:"), "carries a fix clause: {m}");
 
-    // 4. Two-plane distinction kept.
+    // 4. The ruled verdict and the two-plane distinction (F-R3): "pass one",
+    // map vs content.
+    assert!(m.contains("pass one"), "carries the ruled verdict: {m}");
     assert!(
-        m.contains("scopes the whole call"),
-        "keeps the distinction the original taught: {m}"
+        m.contains("MAP") && m.contains("CONTENT"),
+        "keeps the two-plane distinction: {m}"
     );
 }
