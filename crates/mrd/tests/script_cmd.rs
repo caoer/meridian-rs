@@ -285,13 +285,14 @@ fn an_append_row_carries_the_section_rev_from_the_same_read() {
     );
 }
 
-/// A write to a page the script never read carries NO token — and meets the
-/// engine's own teaching refusal. Nothing is minted to get past the guard: a
-/// script that writes what it did not read has no picture to guard on.
+/// A write to a page the script never read mints its own token at commit
+/// time (CAS relaxation, ruling 2026-08-13 — put parity: the host's rev
+/// autofill, spoken by this lane as one bare `toc` trip per armed path). The
+/// author performs no read ritual; the entry fingerprint on the splice is
+/// what enforces consistency, and a moved world refuses there.
 #[test]
-fn a_write_to_an_unread_page_carries_no_token_and_the_engine_refuses_it() {
-    const REFUSAL: &str = r#"{"ok":false,"error":{"code":"guard_required","message":"frontmatter key \"owner\" changes existing content with no fingerprint"}}"#;
-    let mut door = Fake::new().answering_splice(REFUSAL);
+fn a_write_to_an_unread_page_mints_its_token_at_commit_and_lands() {
+    let mut door = Fake::new();
     let argv = ["--actor".to_owned(), "8ab41c02".to_owned()];
     let trace = attempt(
         &argv,
@@ -300,12 +301,24 @@ fn a_write_to_an_unread_page_carries_no_token_and_the_engine_refuses_it() {
     )
     .expect("the attempt runs");
 
-    assert!(!door.asked("toc"), "the script read nothing");
     assert!(
-        door.request("splice")["plan_edits"][0]["set_property"]["rev"].is_null(),
-        "absence stays absence"
+        trace
+            .trace
+            .iter()
+            .all(|entry| !matches!(entry, TraceEntry::Read(_) | TraceEntry::Echo(_))),
+        "the script itself read nothing — that is the premise"
     );
-    assert_eq!(trace.outcome, ScriptOutcome::Refused);
+    assert_eq!(
+        door.ops,
+        ["fingerprint", "toc", "splice"],
+        "ONE bare toc trip mints the token; no composed-read bracket, no cat"
+    );
+    assert_eq!(
+        door.request("splice")["plan_edits"][0]["set_property"]["rev"],
+        json!("7c40e1a8b2f9d356"),
+        "the minted doc-root token rides the row"
+    );
+    assert_eq!(trace.outcome, ScriptOutcome::Committed);
 }
 
 // ── 2. the guard refuses before it reads ──────────────────────────────────────

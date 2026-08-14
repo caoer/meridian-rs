@@ -13,7 +13,7 @@
 //! - a mid-program fault keeps every prior act (no rollback), trace says how
 //!   far it got;
 //! - outcome word `effects`; `wrote`/`ran` trace entries;
-//! - the decode walls: effects×{dry, if_fingerprint, expect_armed},
+//! - the decode walls: effects×{`dry`, `if_fingerprint`, `expect_armed`},
 //!   `effects:[]`, unknown names, missing invocation, orphan invocation;
 //! - read alignment: toc face is a dict, a section read is the text string,
 //!   a dewey selector serves.
