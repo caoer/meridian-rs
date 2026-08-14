@@ -57,7 +57,11 @@ pub use sweep::{DrawerInfo, GcReport, gc, list_drawers, remove_drawer};
 ///
 /// `s2`: the dangling-base-exclusion ruling (2026-08-14) — `dangling` view
 /// narrowed and the exclusion mint's fallback restamped `link.exclusion`.
-pub const SCHEMA_SALT: &str = "s2";
+///
+/// `s3`: `frontmatter.prop_rev` — the per-key CAS token
+/// (`node-rev-merkle-spec.md` §2.1) landed as a column on both the ephemeral
+/// projection and `hist.frontmatter`.
+pub const SCHEMA_SALT: &str = "s3";
 
 /// Default GC threshold: a drawer whose last-use is older than this is reapable.
 /// 30 days, mirroring Cargo's registry auto-GC horizon. A path-keyed drawer store

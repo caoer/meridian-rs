@@ -38,7 +38,16 @@ CREATE TABLE frontmatter (
     value      TEXT     NOT NULL,                 -- flat scalar, § A.6.1-decoded (published value plane); '' when empty, never NULL
     span_start UBIGINT  NOT NULL,                 -- C1: Frontmatter node span (all rows of a doc share it)
     span_end   UBIGINT  NOT NULL,
-    node_rev   TEXT     NOT NULL,                 -- blake3(raw[span])[:16]
+    node_rev   TEXT     NOT NULL,                 -- blake3(raw[span])[:16] -- BLOCK grain, shared by every key of the doc
+    -- The PER-KEY CAS token (node-rev-merkle-spec §2.1): blake3 over the key
+    -- line plus its indented continuation lines. This is the grain the write
+    -- door compares `if_node_rev` against on an fm_key target, so it is the
+    -- only one of the two rev columns a guarded single-key splice can use --
+    -- `node_rev` above is the whole block and refuses cas_mismatch whenever any
+    -- OTHER key moved. SERVED, never recomputed: the value comes off the same
+    -- `model::resolve(Ref::FmKey)` owner the read face's `props[].prop_rev`
+    -- and the write door both use, so the three cannot drift.
+    prop_rev   TEXT     NOT NULL,
     PRIMARY KEY (path, key)                       -- first-occurrence wins (YamlMap)
 );
 CREATE TABLE section (
@@ -166,7 +175,10 @@ CREATE VIEW tag_all AS                             -- B2: the union — inline +
 /// `2`: `dangling` gained `AND exclusion IS NULL` (ruling 2026-08-14), and the
 /// shared mint's bare-name fallback changed `exclusion` content for identical
 /// corpora — either alone obligates the bump.
-pub const SCHEMA_VERSION: i32 = 2;
+///
+/// `3`: `frontmatter` gained `prop_rev`, the per-key CAS token
+/// (`node-rev-merkle-spec.md` §2.1).
+pub const SCHEMA_VERSION: i32 = 3;
 
 /// Run the full round-1 DDL against `conn` (8 tables + 4 views).
 ///
