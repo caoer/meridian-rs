@@ -58,6 +58,7 @@ fn receipt_after_apply(page_name: &str, seed: &str, effects: &[Effect]) -> Strin
             exec: None,
             actor: None,
             depth: 0,
+            delta: None,
         },
     )
     .expect("the apply commits — the claim is what the receipt may carry, not whether it runs");

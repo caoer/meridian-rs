@@ -1971,9 +1971,34 @@ fleet make-mutex is recorded DO-NOT-BUILD).
 Combination walls, all `bad_request` at decode: `effects` beside `dry`,
 `if_fingerprint`, or `expect_armed` (a live program cannot rehearse and
 holds no premise and no armed set); `effects: []` (name an effect builtin or
-omit the field); an unknown effect name (the closed set today is `run`);
-`effects` without `invocation` (§9 — run identity derives host-minted:
-per-call ids are `<invocation>-r<K>`, K the 0-based `run()` call ordinal).
+omit the field); an unknown effect name (the closed set today is `run`,
+`token_count` — this sentence is the effects registry, one home); `effects`
+without `invocation` (§9 — run identity derives host-minted: per-call ids
+are `<invocation>-r<K>`, K the 0-based `run()` call ordinal).
+
+**The `token_count` effect (added 2026-08-13, token_count ruling leg B —
+the batch ruling's script seat).** The op gains one more OPTIONAL request
+field (the field wall grows 11 → 12): `token_count_endpoint`, a unix-socket
+path. Declaring `effects:["token_count"]` admits the builtin
+`token_count(text) -> int` — the text's real token cost, measured NOW.
+ONE measurement law: the string argument is measured VERBATIM — the tool
+face's `{text}` arm; the builtin resolves no refs and no sections, so the
+tool face's stored-vs-served split cannot enter it (a program measures
+exactly what its own `read()` served, or what it built). The
+engine never counts tokens (no tokenizer, no credentials — the
+architecture constraint of the parent ruling): the live host is an NDJSON
+socket client dialing the endpoint per call with the consumer daemon's own
+`token_count` verb frame, identityless, so the daemon's optional-session
+default picks the measuring instrument and the parent ruling's tokenizer
+provenance mechanism answers. A frame carrying the endpoint without the
+effect, or an explicit empty endpoint, refuses `bad_request` at decode; the
+effect declared with NO endpoint decodes — the builtin then faults
+"unbound" at call time, which is every lane that has no harness (the
+pure/entry-world host, the CLI wire client). The endpoint's own refusal
+faults the program with its words carried whole. The dial deadline caps at
+the REMAINING wall clock: the call never outlives the entry's budget. A
+measurement is not an act — no trace entry; a top-level
+`n = token_count(…)` rides the bindings echo like any computed name.
 
 Response on this model: a trace whose `outcome` is the NEW word `effects`
 when eval completed; `trace[]` records the program's acts in call order —
@@ -1984,7 +2009,8 @@ still recorded — a live program has no rollback, and the trace says how far
 it got. The outcome vocabulary grows exactly this one word; the pure path's
 five words and their meanings are untouched; v2 unchanged. Delta honesty:
 live `put()`s ride the wire choke-point and advance the ring like any
-splice; `run()`s stay under §18 row 12 exactly as at § A.8.
+splice; `run()`s mint per committed batch through the run plane's delta
+sink, exactly as at § A.8 (run-delta ruling, 2026-08-14).
 
 ### A.8 `run` — page-task execution over the wire (docs-first, 2026-08-13, run-crossing ruling)
 
@@ -2095,13 +2121,25 @@ narrower than the CLI. A long-running target parks only its own connection
 (§ A.7's containment posture); the plane's `run.lock` refusals answer as
 `class:"run"` rows, never hangs.
 
-**Delta honesty (§18 row 12 extends here).** Run applies land through the
-plane's own executor, not the wire choke-point: they advance the fingerprint
-and mint no Delta — the row-12 declared gap covers this op's writes exactly
-as it covers CLI-lane commits. A `sub` consumer sees them as detector-cadence
-external change; cross-lane catchup remains diff-by-root (§4.7). Minting the
-delta for run applies is owed with the same row-12 debt, and this section
-does not silently discharge or widen it.
+**Delta honesty (amended 2026-08-14, run-delta ruling — the § A.8 half of
+the row-12 debt is DISCHARGED).** Run applies on THIS op mint Deltas like
+every other daemon-side write: the plane's executor commits through its own
+seam (`fs::apply_batch`, unchanged), and at each committed batch the serve
+arm's delta sink assembles one frame at the §7.3 single constructor and
+advances the workspace ring **under the same write flock as the commit** —
+one committed batch = one root advance = one Delta (§7.1), the content page
+and the receipt file as two entries of ONE frame's `files`. Because the
+advance happens inside the flock, a detect cycle can never observe a run
+commit as unaccounted external change — no detector-cadence window exists.
+Identity on the frame is §9's: a supplied `actor` threads verbatim; absent,
+the frame carries the plane's own `run:<task>` self-label, the same fact the
+receipt's actor field attests — a governed run is never unattributable, so
+`actor`-absent still means exactly "edited outside the face". `now` is the
+caller's or absent, never invented. A mid-run fault mints frames for the
+batches that committed and none for what refused (no rollback, ruling 2).
+The CLI entry (`mrd run`) is a separate process with no ring in reach: its
+commits stay under §18 row 12 exactly as CLI-lane `put` commits do — that
+half of the debt stands, and this section does not silently discharge it.
 
 **Zero delta everywhere else.** Every §4 op, § A.3/§ A.5/§ A.7, every v2
 byte: unchanged. The CLI entry (`mrd run`) stays functional and

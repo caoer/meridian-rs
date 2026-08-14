@@ -534,6 +534,9 @@ pub(crate) fn script_globals(effects: &[String]) -> Globals {
     if effects.iter().any(|e| e == "run") {
         builder = builder.with(script_run_api);
     }
+    if effects.iter().any(|e| e == "token_count") {
+        builder = builder.with(script_token_count_api);
+    }
     builder.build()
 }
 
@@ -628,11 +631,22 @@ impl<'h> ScriptEntry<'h> {
             .map_err(|e| anyhow::anyhow!("run: {}", e.reason))
     }
 
+    /// Effects mode: measure one `token_count()` NOW through the host.
+    fn token_count_live(&self, text: &str) -> anyhow::Result<i64> {
+        self.host
+            .borrow_mut()
+            .token_count_live(text)
+            .map_err(|e| anyhow::anyhow!("token_count: {}", e.reason))
+    }
+
     /// Arm one `put()` call's plan items — PURE: no host call, no I/O. The
     /// arm-time law runs first and, when it refuses, arms NOTHING from this call
     /// and aborts the script.
     fn arm(&self, path: &str, items: Vec<PlanEdit>, line: u32, depth: u32) -> anyhow::Result<()> {
-        // One CONTENT path per commit (v1 law). The receipt companion is not a
+        // One CONTENT path per commit (v1 law — JUSTIFIED 2026-08-13: the
+        // commit is one §4.4 splice and a splice addresses one content path,
+        // so this law is what keeps all-or-nothing true; see run-plane.md
+        // § One CONTENT path per commit). The receipt companion is not a
         // content path — it rides the splice request's own `receipt` field in
         // the same batch (§6.1), never this list.
         let mut armed = self.armed.borrow_mut();
@@ -997,6 +1011,30 @@ fn script_run_api(builder: &mut GlobalsBuilder) {
     }
 }
 
+/// The effects-mode measurement surface (`token_count` ruling leg B,
+/// 2026-08-13): joins the globals EXACTLY when the submission admits it by
+/// name. A measurement, not a mutation — the count is the program's value
+/// and nothing is journaled, so a top-level `n = token_count(…)` rides the
+/// bindings echo like any computed name.
+#[starlark_module]
+fn script_token_count_api(builder: &mut GlobalsBuilder) {
+    /// `token_count(text)` → the real token cost of `text` as an int,
+    /// measured NOW through the host's bound harness endpoint (a
+    /// `count_tokens` API call — the engine never counts tokens itself).
+    /// ONE law: the string is measured VERBATIM — the tool face's `{text}`
+    /// arm; the builtin resolves no refs and no sections, so a program
+    /// measures exactly what its own `read()` served or what it built
+    /// (the stored/served split is the tool face's, structurally absent
+    /// here). A lane with no endpoint refuses "unbound"; the endpoint's
+    /// own refusal faults the program with its words carried whole.
+    fn token_count(
+        #[starlark(require = pos)] text: String,
+        eval: &mut Evaluator<'_, '_, '_>,
+    ) -> anyhow::Result<i64> {
+        script(eval)?.token_count_live(&text)
+    }
+}
+
 /// Allocate a JSON value as its natural Starlark value — dicts, lists,
 /// strings, ints, bools, None. Numbers outside `i64` fall back to their
 /// string form rather than inventing a float the row never carried.
@@ -1065,7 +1103,7 @@ fn alloc_toc<'v>(heap: Heap<'v>, facts: &TocFacts) -> Value<'v> {
 }
 
 /// The cat face: the section TEXT itself, a plain string (read alignment,
-/// script-effects ruling — *"read() returns actual VALUES the agent computes
+/// script-effects ruling — *"`read()` returns actual VALUES the agent computes
 /// with"*; `"x" in read(p, section=s)` is a legal program). The section's rev
 /// still rides the recording, where the threading law reads it.
 fn alloc_section<'v>(heap: Heap<'v>, facts: &SecFacts) -> Value<'v> {
@@ -1671,6 +1709,27 @@ mod tests {
         assert_eq!(
             live, expected_live,
             "effects:[\"run\"] adds exactly the admitted builtin"
+        );
+        let measured = plane_surface(&script_globals(&["token_count".to_owned()]));
+        let expected_measured: HashSet<String> = ["read", "me", "put", "token_count"]
+            .into_iter()
+            .map(ToOwned::to_owned)
+            .collect();
+        assert_eq!(
+            measured, expected_measured,
+            "effects:[\"token_count\"] adds exactly the admitted builtin — never run"
+        );
+        let both = plane_surface(&script_globals(&[
+            "run".to_owned(),
+            "token_count".to_owned(),
+        ]));
+        let expected_both: HashSet<String> = ["read", "me", "put", "run", "token_count"]
+            .into_iter()
+            .map(ToOwned::to_owned)
+            .collect();
+        assert_eq!(
+            both, expected_both,
+            "the admitted set composes — each name admits its own builtin"
         );
         assert!(
             !hooked.contains("put"),
