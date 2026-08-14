@@ -2401,7 +2401,11 @@ fn push_unique(bucket: &mut Vec<String>, value: &str) {
 /// Frontmatter aliases (lowercased) for stage-1 alias resolution. The flat
 /// frontmatter parse keeps the `aliases` value as one string, so the inline list
 /// `[a, b]` (or a bare single value) is parsed here.
-fn doc_aliases(doc: &Document) -> Vec<String> {
+///
+/// Public because the sql cache's append delta (`view::store`) must speak the
+/// SAME alias keys the resolver indexes — a second parser would drift.
+#[must_use]
+pub fn doc_aliases(doc: &Document) -> Vec<String> {
     let Some(fm) = find_frontmatter(&doc.root) else {
         return Vec::new();
     };
@@ -2416,7 +2420,11 @@ fn doc_aliases(doc: &Document) -> Vec<String> {
 }
 
 /// Parse an inline frontmatter alias value: `[a, b]`, `a, b`, or a bare `a`.
-fn parse_alias_list(value: &str) -> Vec<String> {
+///
+/// Public for the same consumer as [`doc_aliases`]: the sql cache's append
+/// delta parses OLD alias values back out of its own frontmatter rows.
+#[must_use]
+pub fn parse_alias_list(value: &str) -> Vec<String> {
     value
         .trim()
         .trim_start_matches('[')
