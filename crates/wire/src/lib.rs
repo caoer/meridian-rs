@@ -1040,6 +1040,10 @@ pub struct ReadSectionOut {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hpath: Vec<HpathSeg>,
     pub sec_rev: NodeRev,
+    /// The section's own word count, over the raw `content` bytes below —
+    /// the same number `toc[].words` publishes for this section, and the same
+    /// one the rendered head carries whatever elision or decoration did to
+    /// the projection (the counting law, wire-contract § A.3).
     pub words: u64,
     pub content: String,
 }
@@ -1215,6 +1219,10 @@ pub enum ResponseBody {
         path: Path,
         file_rev: NodeRev,
         root: Root,
+        /// The FILE's word count — fields over the whole document, `wc -w`
+        /// parity. Never the sum of `toc[].words` (those are subtree counts,
+        /// so a sum counts each descendant once per ancestor level): the
+        /// counting law, wire-contract § A.3.
         words_total: u64,
         /// The heading plane, `frag`-scoped. Mode toc only.
         #[serde(skip_serializing_if = "Option::is_none")]
