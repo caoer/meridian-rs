@@ -349,13 +349,22 @@ mod tests {
             .collect();
 
         for field in &amendments {
-            let want = format!("splice.{field}");
+            // `files` is the §4.4 SET FORM — a form amendment riding one
+            // field, advertised under its ruled name `splice.set` (Draft A,
+            // 2026-08-14), not the mechanical `splice.files`. Every other
+            // amendment stays a field-only cap per R23.
+            let want = if *field == "files" {
+                "splice.set".to_owned()
+            } else {
+                format!("splice.{field}")
+            };
             assert!(
                 caps.contains(&want.as_str()),
                 "v3-era splice field `{field}` is honoured by the decoder but \
                  NOT advertised: the v3 caps projection must push `{want}` \
                  (R23 — a field-only amendment ships as a dotted `op.field` \
-                 cap). caps = {caps:?}"
+                 cap; the set form's ruled cap name is `splice.set`). \
+                 caps = {caps:?}"
             );
         }
     }
@@ -382,6 +391,7 @@ mod tests {
                 "splice.plan_edits",
                 "splice.pin",
                 "pin-cross-root",
+                "splice.set",
                 "splice.create_rev",
                 "create",
                 "mounts",
