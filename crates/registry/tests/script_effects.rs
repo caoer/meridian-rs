@@ -16,7 +16,13 @@
 //! - the decode walls: effects×{`dry`, `if_fingerprint`, `expect_armed`},
 //!   `effects:[]`, unknown names, missing invocation, orphan invocation;
 //! - read alignment: toc face is a dict, a section read is the text string,
-//!   a dewey selector serves.
+//!   a dewey selector serves;
+//! - `token_count` (leg B of the `token_count` ruling, 2026-08-13): declared
+//!   `effects:["token_count"]` admits the builtin, which measures NOW through
+//!   the NDJSON endpoint the frame's `token_count_endpoint` names — the
+//!   engine never counts tokens itself; undeclared use is an unbound name,
+//!   no endpoint refuses "unbound", the endpoint's own error travels whole,
+//!   and the dial deadline caps at the remaining wall clock.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -382,4 +388,235 @@ fn the_combination_walls_refuse_before_anything_runs() {
         );
     }
     assert!(!ws.join("receipts/run.md").exists(), "nothing ran");
+}
+
+// ---------------------------------------------------------------------------
+// token_count — leg B of the token_count ruling (2026-08-13). The builtin is
+// a socket call wearing a function: the engine holds no tokenizer and no
+// credentials, so `token_count(text)` dials the NDJSON endpoint the frame's
+// `token_count_endpoint` names (the ccc-statusd daemon.sock token_count verb,
+// identityless default) and answers the count as an int.
+// ---------------------------------------------------------------------------
+
+/// One fake harness endpoint: a unix listener answering the daemon.sock
+/// `token_count` wire. `script` decides the answer from the received frame;
+/// received lines are collected for assertion.
+fn fake_harness(
+    dir: &Path,
+    answer: impl Fn(&Value) -> Option<String> + Send + 'static,
+) -> (PathBuf, std::sync::mpsc::Receiver<Value>) {
+    let socket = dir.join("harness.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { return };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            if reader.read_line(&mut line).is_err() || line.is_empty() {
+                continue;
+            }
+            let frame: Value = serde_json::from_str(&line).unwrap();
+            let reply = answer(&frame);
+            let _ = tx.send(frame);
+            if let Some(mut reply) = reply {
+                reply.push('\n');
+                let mut w = stream;
+                let _ = w.write_all(reply.as_bytes());
+            }
+            // No reply: hold the connection open — the deadline pin.
+            else {
+                std::thread::sleep(Duration::from_secs(30));
+            }
+        }
+    });
+    (socket, rx)
+}
+
+/// A live `token_count` submission bound to `endpoint`.
+fn live_tc(id: u64, source: &str, endpoint: &Path) -> Value {
+    json!({"id": id, "op": "script", "source": source,
+           "effects": ["token_count"], "invocation": "scr-tc",
+           "token_count_endpoint": endpoint.to_str().unwrap()})
+}
+
+/// Undeclared use is an unbound name: a submission that did not admit
+/// `token_count` has no such global — on the pure model and on a live
+/// program that admitted only `run`.
+#[test]
+fn token_count_is_not_a_global_unless_declared() {
+    let tmp = TempDir::new().unwrap();
+    let ws = seeded(&tmp);
+    let _server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(&test_config(&tmp).socket_path);
+    conn.hello_v3(&ws);
+
+    let frames = vec![
+        json!({"id": 30, "op": "script", "source": "n = token_count(\"hi\")\n"}),
+        live(31, "n = token_count(\"hi\")\n"),
+    ];
+    for frame in frames {
+        let trace = trace_of(&conn.call(&frame));
+        assert_eq!(trace["outcome"], json!("fault"), "{trace}");
+        assert!(
+            trace["fault"]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("token_count"),
+            "the fault names the unbound name: {trace}"
+        );
+    }
+}
+
+/// The effect declared but no endpoint on the frame: the call refuses
+/// "unbound" — only a lane handed an endpoint can measure.
+#[test]
+fn token_count_without_endpoint_refuses_unbound() {
+    let tmp = TempDir::new().unwrap();
+    let ws = seeded(&tmp);
+    let _server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(&test_config(&tmp).socket_path);
+    conn.hello_v3(&ws);
+
+    let trace = trace_of(&conn.call(&json!({
+        "id": 32, "op": "script", "source": "n = token_count(\"hi\")\n",
+        "effects": ["token_count"], "invocation": "scr-tc"})));
+    assert_eq!(trace["outcome"], json!("fault"), "{trace}");
+    assert!(
+        trace["fault"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("unbound"),
+        "the refusal says unbound: {trace}"
+    );
+}
+
+/// The ruled flow: a declared effect, a bound endpoint, a live measurement —
+/// the count comes back as an int the program computes with, and the wire
+/// frame the endpoint received is the daemon.sock `token_count` verb's
+/// identityless default.
+#[test]
+fn token_count_measures_live_through_the_endpoint() {
+    let tmp = TempDir::new().unwrap();
+    let ws = seeded(&tmp);
+    let (endpoint, rx) = fake_harness(tmp.path(), |frame| {
+        let chars = frame["text"].as_str().unwrap().len();
+        Some(format!(
+            "{{\"type\":\"response\",\"data\":{{\"tokens\":42,\"chars\":{chars},\"session\":\"fake\",\"model\":\"fake-tokenizer\"}}}}"
+        ))
+    });
+    let _server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(&test_config(&tmp).socket_path);
+    conn.hello_v3(&ws);
+
+    let src = "n = token_count(\"hello tokens\")\nfits = n < 100\n";
+    let trace = trace_of(&conn.call(&live_tc(33, src, &endpoint)));
+    assert_eq!(trace["outcome"], json!("effects"), "{trace}");
+    assert_eq!(trace["bindings"]["n"], json!("42"), "{trace}");
+    assert_eq!(trace["bindings"]["fits"], json!("True"), "{trace}");
+
+    let seen = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(seen["type"], json!("token_count"), "{seen}");
+    assert_eq!(seen["text"], json!("hello tokens"), "{seen}");
+    assert!(
+        seen.get("session_id").is_none(),
+        "identityless default — the daemon picks the instrument: {seen}"
+    );
+}
+
+/// The endpoint's own refusal (no live instrument, oversize, …) travels
+/// whole: the program faults with the endpoint's words, not a paraphrase.
+#[test]
+fn token_count_endpoint_error_travels_whole() {
+    let tmp = TempDir::new().unwrap();
+    let ws = seeded(&tmp);
+    let (endpoint, _rx) = fake_harness(tmp.path(), |_| {
+        Some(
+            "{\"type\":\"response\",\"error\":\"no live Claude Code session to measure through\"}"
+                .to_owned(),
+        )
+    });
+    let _server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(&test_config(&tmp).socket_path);
+    conn.hello_v3(&ws);
+
+    let trace = trace_of(&conn.call(&live_tc(34, "n = token_count(\"hi\")\n", &endpoint)));
+    assert_eq!(trace["outcome"], json!("fault"), "{trace}");
+    assert!(
+        trace["fault"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("no live Claude Code session"),
+        "the endpoint's words travel whole: {trace}"
+    );
+}
+
+/// The dial deadline caps at the REMAINING wall clock: an endpoint that
+/// never answers faults the program when the script clock lapses — the call
+/// never outlives the entry's own budget.
+#[test]
+fn token_count_deadline_caps_at_remaining_wall_clock() {
+    let tmp = TempDir::new().unwrap();
+    let ws = seeded(&tmp);
+    let (endpoint, _rx) = fake_harness(tmp.path(), |_| None);
+    let _server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(&test_config(&tmp).socket_path);
+    conn.hello_v3(&ws);
+
+    let started = std::time::Instant::now();
+    let trace = trace_of(&conn.call(&live_tc(35, "n = token_count(\"hi\")\n", &endpoint)));
+    let elapsed = started.elapsed();
+    assert_eq!(trace["outcome"], json!("fault"), "{trace}");
+    assert!(
+        trace["fault"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("wall clock"),
+        "the fault names the clock: {trace}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(15),
+        "the wall clock bound the wait: {elapsed:?}"
+    );
+}
+
+/// The endpoint field walls: `token_count_endpoint` rides the `token_count`
+/// effect only — orphan on a pure script, orphan beside other effects, and
+/// an explicit empty endpoint all refuse at decode.
+#[test]
+fn token_count_endpoint_decode_walls() {
+    let tmp = TempDir::new().unwrap();
+    let ws = seeded(&tmp);
+    let _server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(&test_config(&tmp).socket_path);
+    conn.hello_v3(&ws);
+
+    let cases: Vec<(Value, &str)> = vec![
+        (
+            json!({"id": 40, "op": "script", "source": "x = 1\n",
+                   "token_count_endpoint": "/tmp/x.sock"}),
+            "orphan endpoint on a pure script",
+        ),
+        (
+            json!({"id": 41, "op": "script", "source": "x = 1\n",
+                   "effects": ["run"], "invocation": "s",
+                   "token_count_endpoint": "/tmp/x.sock"}),
+            "endpoint without the token_count effect",
+        ),
+        (
+            json!({"id": 42, "op": "script", "source": "x = 1\n",
+                   "effects": ["token_count"], "invocation": "s",
+                   "token_count_endpoint": ""}),
+            "explicit empty endpoint",
+        ),
+    ];
+    for (frame, name) in cases {
+        let resp = conn.call(&frame);
+        assert_eq!(resp["ok"], json!(false), "{name}: {resp}");
+        assert_eq!(
+            resp["error"]["code"],
+            json!("bad_request"),
+            "{name}: {resp}"
+        );
+    }
 }

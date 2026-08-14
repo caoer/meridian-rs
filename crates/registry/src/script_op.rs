@@ -93,6 +93,7 @@ pub(crate) fn serve_line(
         expect_armed,
         effects,
         invocation,
+        token_count_endpoint,
     } = op
     else {
         // decode() maps the "script" tag to Op::Script only; any other arm
@@ -112,6 +113,7 @@ pub(crate) fn serve_line(
         expect_armed,
         effects,
         invocation,
+        token_count_endpoint,
     };
     match serve(registry, ws, &request) {
         Ok(trace) => {
@@ -157,6 +159,11 @@ struct ScriptArgs {
     effects: Vec<String>,
     /// The host-minted run-identity base, present exactly with `effects`.
     invocation: Option<String>,
+    /// The harness measuring endpoint for the `token_count` effect (leg B):
+    /// present exactly when the effect is declared AND the consumer bound
+    /// one. The decode wall refuses it without the effect; absent with the
+    /// effect declared is legal — the builtin then refuses "unbound".
+    token_count_endpoint: Option<String>,
 }
 
 /// The attempt: entry pass → pin → eval → thread → gate → commit → trace.
@@ -293,6 +300,7 @@ fn live_serve(registry: &Registry, ws: &Path, request: &ScriptArgs, entry: &str)
             now: request.now.clone(),
             // Decode wall: effects ⇒ invocation present.
             invocation: request.invocation.clone().unwrap_or_default(),
+            token_count_endpoint: request.token_count_endpoint.clone(),
             run_seq: std::cell::Cell::new(0),
             reads_seen: std::cell::Cell::new(0),
             acts: std::cell::RefCell::new(Vec::new()),
@@ -345,6 +353,9 @@ struct LiveHost<'a> {
     actor: String,
     now: Option<String>,
     invocation: String,
+    /// The harness measuring endpoint (leg B) — the consumer daemon's own
+    /// socket, dialed per `token_count()` call. None refuses "unbound".
+    token_count_endpoint: Option<String>,
     run_seq: std::cell::Cell<u32>,
     reads_seen: std::cell::Cell<usize>,
     acts: std::cell::RefCell<Vec<(usize, effects::trace::TraceEntry)>>,
@@ -501,6 +512,89 @@ impl ScriptHost for LiveHost<'_> {
         ));
         Ok(row)
     }
+
+    fn token_count_live(&mut self, text: &str) -> Result<i64, effects::EffectFault> {
+        self.within_deadline("a live token_count")?;
+        let refuse = |reason: String| effects::EffectFault { reason };
+        let Some(endpoint) = &self.token_count_endpoint else {
+            return Err(refuse(
+                "token_count is unbound — this frame carried no `token_count_endpoint`, and \
+                 the engine never counts tokens itself (the count is a harness API call)"
+                    .to_owned(),
+            ));
+        };
+        // The dial deadline caps at the REMAINING wall clock: the harness
+        // verb may park up to its own waiter bound, and this call never
+        // outlives the entry's budget.
+        let remaining = self.deadline.saturating_duration_since(Instant::now());
+        token_count_dial(endpoint, text, remaining)
+            .map_err(|reason| refuse(format!("token_count: {reason}")))
+    }
+}
+
+/// One measurement over the harness endpoint's NDJSON wire: write the
+/// consumer daemon's `token_count` verb frame — identityless, so the daemon
+/// applies its optional-session default and picks the measuring instrument —
+/// read the one `response` line, and answer `data.tokens`. Every failure is
+/// a reason string for the effect fault; a lapsed read deadline names the
+/// wall clock, because that is what bound it.
+fn token_count_dial(
+    endpoint: &str,
+    text: &str,
+    remaining: std::time::Duration,
+) -> Result<i64, String> {
+    use std::io::{BufRead, BufReader, Write};
+    if remaining.is_zero() {
+        return Err(
+            "the script entry's wall clock elapsed before the measurement was sent".to_owned(),
+        );
+    }
+    let stream = std::os::unix::net::UnixStream::connect(endpoint).map_err(|e| {
+        format!("the measuring endpoint at {endpoint} did not answer the dial: {e}")
+    })?;
+    stream
+        .set_read_timeout(Some(remaining))
+        .and_then(|()| stream.set_write_timeout(Some(remaining)))
+        .map_err(|e| format!("could not bound the endpoint call: {e}"))?;
+    let mut frame = serde_json::json!({"type": "token_count", "text": text}).to_string();
+    frame.push('\n');
+    let mut writer = &stream;
+    writer
+        .write_all(frame.as_bytes())
+        .map_err(|e| format!("sending the measurement to {endpoint} failed: {e}"))?;
+    let mut line = String::new();
+    BufReader::new(&stream).read_line(&mut line).map_err(|e| {
+        if matches!(
+            e.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ) {
+            "the script entry's wall clock elapsed while waiting for the endpoint's answer"
+                .to_owned()
+        } else {
+            format!("reading the endpoint's answer failed: {e}")
+        }
+    })?;
+    if line.is_empty() {
+        return Err(format!(
+            "the measuring endpoint at {endpoint} closed without answering"
+        ));
+    }
+    let answer: Value = serde_json::from_str(&line).map_err(|e| {
+        format!(
+            "the endpoint's answer is not a JSON line ({e}): {}",
+            line.trim()
+        )
+    })?;
+    if let Some(error) = answer.get("error").and_then(Value::as_str)
+        && !error.is_empty()
+    {
+        return Err(error.to_owned());
+    }
+    answer
+        .get("data")
+        .and_then(|d| d.get("tokens"))
+        .and_then(Value::as_i64)
+        .ok_or_else(|| format!("the endpoint's answer carries no count: {}", line.trim()))
 }
 
 /// The one guarded splice, issued daemon-side through the same choke-point
