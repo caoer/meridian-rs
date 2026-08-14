@@ -490,7 +490,7 @@ fn a_run_apply_pushes_one_attributed_delta_frame() {
     // contiguous with the run frame. The wait clears the detect-cadence
     // coalesce window first — an edit landing INSIDE the window diffs from
     // the pre-commit baseline, the splice lane's own pre-existing posture.
-    std::thread::sleep(Duration::from_millis(1000));
+    std::thread::sleep(Duration::from_secs(1));
     external_edit_note(&ws);
     let next = sub.next_frame().expect("the external edit is detected");
     assert_eq!(
