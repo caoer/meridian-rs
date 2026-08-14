@@ -627,33 +627,6 @@ fn commit(
     entry: &str,
 ) -> CommitLeg {
     let paths = eval.content_paths();
-    let [path] = paths.as_slice() else {
-        // Unreachable by construction — the arm-time law refuses first
-        // (`multi_file_write_set`); it still SPEAKS, the CLI lane's own words.
-        return CommitLeg::Refused(Refusal::minted(
-            Recovery::Fix,
-            format!(
-                "the armed set writes {} content paths; one script commits to ONE file. NO \
-                 splice was issued — nothing was sent, nothing landed, no fingerprint advanced. \
-                 fix: arm one content path",
-                paths.len()
-            ),
-        ));
-    };
-    let args = wire_serve::write::SpliceArgs {
-        id: request.id,
-        path: wire::Path(path.clone()),
-        origin: wire_serve::guard::Origin::Wire,
-        actor: request.actor.clone(),
-        now: request.now.clone(),
-        receipt: request.receipt.clone(),
-        if_root: Some(wire::Root(entry.to_owned())),
-        dry: request.dry,
-        force: false,
-        edits: Vec::new(),
-        plan_edits: eval.armed.iter().map(|armed| armed.edit.clone()).collect(),
-        pin: None,
-    };
     // H1 order: the mint store and ring handles are taken outside any engine
     // borrow (none is held here — the entry world is an Arc, not a lock).
     let mints = registry.read_mints(ws);
@@ -663,8 +636,41 @@ fn commit(
     // except as a panic mid-splice, which is the same indeterminacy: caught,
     // spoken as `commit_unknown`, never an unwind through the connection
     // thread (`docs/run-plane.md` § A controlled failure exit SPEAKS).
+    //
+    // One armed path is the single §4.4 splice; N paths are the §4.4 SET form
+    // (`splice.set`) — one sealed commit under the entry guard, per
+    // run-plane.md § One COMMIT per attempt.
     let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        wire_serve::write::splice(&ws_root, Some(&*ring), &args, &[], Some(&mints))
+        if let [path] = paths.as_slice() {
+            let args = wire_serve::write::SpliceArgs {
+                id: request.id,
+                path: wire::Path(path.clone()),
+                origin: wire_serve::guard::Origin::Wire,
+                actor: request.actor.clone(),
+                now: request.now.clone(),
+                receipt: request.receipt.clone(),
+                if_root: Some(wire::Root(entry.to_owned())),
+                dry: request.dry,
+                force: false,
+                edits: Vec::new(),
+                plan_edits: eval.armed.iter().map(|armed| armed.edit.clone()).collect(),
+                pin: None,
+            };
+            wire_serve::write::splice(&ws_root, Some(&*ring), &args, &[], Some(&mints))
+        } else {
+            let args = wire_serve::write::SpliceSetArgs {
+                id: request.id,
+                files: set_files(&paths, &eval.armed),
+                origin: wire_serve::guard::Origin::Wire,
+                actor: request.actor.clone(),
+                now: request.now.clone(),
+                receipt: request.receipt.clone(),
+                if_root: Some(wire::Root(entry.to_owned())),
+                dry: request.dry,
+                force: false,
+            };
+            wire_serve::write::splice_set(&ws_root, Some(&*ring), &args, &[])
+        }
     }));
     let Ok(outcome) = caught else {
         return CommitLeg::Unknown(lost_commit(request.dry));
@@ -690,6 +696,23 @@ fn commit(
             }
         }
     }
+}
+
+/// The armed list grouped into §4.4 set members: one entry per distinct
+/// content path in first-arm order, each carrying its own rows in arm order.
+fn set_files(paths: &[String], armed: &[effects::ArmedEdit]) -> Vec<wire::SpliceFile> {
+    paths
+        .iter()
+        .map(|p| wire::SpliceFile {
+            path: wire::Path(p.clone()),
+            edits: Vec::new(),
+            plan_edits: armed
+                .iter()
+                .filter(|a| a.path == *p)
+                .map(|a| a.edit.clone())
+                .collect(),
+        })
+        .collect()
 }
 
 /// The engine-minted refusal for a commit whose outcome is NOT KNOWN — the

@@ -579,7 +579,6 @@ fn fault_of(error: &EvalError) -> ScriptFault {
         | EvalError::ReadBudget { .. }
         | EvalError::RunBudget { .. } => (FaultClass::Budget, None),
         EvalError::ArmedBudget { line, .. } => (FaultClass::Budget, Some(*line)),
-        EvalError::MultiFileWriteSet { line, .. } => (FaultClass::Refused, Some(*line)),
     };
     ScriptFault {
         line,

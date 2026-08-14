@@ -589,22 +589,6 @@ pub enum EvalError {
         /// The ceiling it hit (`ScriptLimits::max_runs`).
         limit: usize,
     },
-    /// The script armed a second CONTENT path — the v1 single-write-file law
-    /// (`run-plane.md` § One CONTENT path per commit). §4.4 splice carries one
-    /// `path`, so a one-splice commit exists only for a single-file write set.
-    /// The receipt companion is not a content path: it rides the splice's own
-    /// `receipt:{path,anchor}` field in the same batch (§6.1), never the armed
-    /// list, so this law does not forbid the two-file receipt commit.
-    MultiFileWriteSet {
-        /// The script that armed the second path.
-        rule_id: String,
-        /// 1-based source line of the offending `put()`.
-        line: u32,
-        /// The content path already armed.
-        first: String,
-        /// The path that would have been the second.
-        second: String,
-    },
     /// The armed-edit ceiling was reached — refused, never truncated.
     ArmedBudget {
         /// The script that armed one edit too many.
@@ -660,18 +644,6 @@ impl std::fmt::Display for EvalError {
                 f,
                 "script '{rule_id}' exceeded the run budget of {limit} runs per attempt — \
                  the runs already executed stand; a live program has no rollback"
-            ),
-            // The wording the consumer face renders (golden scenario 2a):
-            // refused at line N · multi_file_write_set — … would be the second.
-            EvalError::MultiFileWriteSet {
-                line,
-                first,
-                second,
-                ..
-            } => write!(
-                f,
-                "refused at line {line} · multi_file_write_set — one script commits to ONE \
-                 file (armed {first}; {second} would be the second)"
             ),
             EvalError::ArmedBudget { line, limit, .. } => write!(
                 f,
@@ -1085,8 +1057,9 @@ pub struct ScriptEval {
 }
 
 impl ScriptEval {
-    /// The distinct content paths the armed edits write, in arm order. The v1
-    /// law holds this to at most one; the receipt companion is not here (§6.4).
+    /// The distinct content paths the armed edits write, in arm order — the
+    /// §4.4 set form's member list when it spans more than one (run-plane.md
+    /// § One COMMIT per attempt); the receipt companion is not here (§6.4).
     #[must_use]
     pub fn content_paths(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();

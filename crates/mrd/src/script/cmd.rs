@@ -398,37 +398,42 @@ fn fingerprint(door: &mut dyn Door) -> Result<String, Fail> {
 }
 
 /// The one guarded splice: the armed list IS `plan_edits[]`, carried verbatim
-/// (ruling B′), against the one content path the arm-time law allows.
+/// (ruling B′). One armed path rides the single §4.4 form; N paths ride the
+/// §4.4 SET form (`splice.set`) — `files[]` of per-path plan groups in
+/// first-arm order, one sealed commit under the entry guard (run-plane.md
+/// § One COMMIT per attempt).
 ///
 /// The response never round-trips through a typed shape — the leg the trace
 /// embeds is the daemon's own bytes.
 fn commit(door: &mut dyn Door, parsed: &Script, eval: &ScriptEval, entry: &str) -> CommitLeg {
     let paths = eval.content_paths();
-    let [path] = paths.as_slice() else {
-        // Unreachable by construction: a second content path refuses at arm
-        // time (`multi_file_write_set`), so this attempt never reaches here.
-        // That unreachability is the only reason this door has no test, and it
-        // is pinned at the law rather than asserted here —
-        // `crates/mrd/tests/script_controlled_exits_speak.rs`
-        // § `door_367_is_unreachable_only_because_the_arm_time_law_refuses_first`.
-        // It still SPEAKS: nothing was sent, so the class is `fix` and the
-        // workspace guarantee is a fact rather than a hope.
-        return CommitLeg::Refused(Refusal::minted(
-            Recovery::Fix,
-            format!(
-                "the armed set writes {} content paths; one script commits to ONE file. NO splice \
-                 was issued — nothing was sent, nothing landed, no fingerprint advanced. fix: arm \
-                 one content path",
-                paths.len()
-            ),
-        ));
+    let mut request = if let [path] = paths.as_slice() {
+        json!({
+            "op": "splice",
+            "path": path,
+            "plan_edits": eval.armed.iter().map(|armed| &armed.edit).collect::<Vec<_>>(),
+            "if_fingerprint": entry,
+        })
+    } else {
+        json!({
+            "op": "splice",
+            "files": paths
+                .iter()
+                .map(|p| {
+                    json!({
+                        "path": p,
+                        "plan_edits": eval
+                            .armed
+                            .iter()
+                            .filter(|a| a.path == *p)
+                            .map(|a| &a.edit)
+                            .collect::<Vec<_>>(),
+                    })
+                })
+                .collect::<Vec<_>>(),
+            "if_fingerprint": entry,
+        })
     };
-    let mut request = json!({
-        "op": "splice",
-        "path": path,
-        "plan_edits": eval.armed.iter().map(|armed| &armed.edit).collect::<Vec<_>>(),
-        "if_fingerprint": entry,
-    });
     if let Some(actor) = &parsed.actor {
         request["actor"] = json!(actor);
     }

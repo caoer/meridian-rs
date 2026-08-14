@@ -129,6 +129,9 @@ struct Fake {
     /// Set when a `splice` request was actually put on the door — the fact the
     /// indeterminacy claim rests on.
     splice_issued: bool,
+    /// The last `splice` request's bytes, verbatim — what the set-form pin
+    /// asserts its shape on.
+    last_splice: Option<Value>,
 }
 
 impl Fake {
@@ -136,6 +139,7 @@ impl Fake {
         Self {
             on_splice,
             splice_issued: false,
+            last_splice: None,
         }
     }
 }
@@ -145,6 +149,7 @@ impl Door for Fake {
         let op = request["op"].as_str().expect("every request names an op");
         if op == "splice" {
             self.splice_issued = true;
+            self.last_splice = Some(request.clone());
             return match self.on_splice {
                 OnSplice::NeverAnswers => Err(io::Error::other("connection reset by peer")),
                 OnSplice::Unparseable => Ok("<html>502 Bad Gateway</html>".to_owned()),
@@ -508,9 +513,6 @@ enum Coverage {
     Swept(OnSplice),
     /// Not a failure exit: the daemon answered and the leg carries its answer.
     Success,
-    /// Unreachable through the seam, and the law that makes it so is PINNED by
-    /// `door_367_is_unreachable_only_because_the_arm_time_law_refuses_first`.
-    UnreachableByArmTimeLaw,
 }
 
 /// Every `CommitLeg` construction inside `fn commit`, in source order, as
@@ -565,9 +567,7 @@ fn every_commit_door_is_either_swept_or_recorded_unreachable() {
     /// The census, in `commit()`'s own source order. Adding a door to `commit()`
     /// means adding its row here and either wiring it into `OnSplice` or stating
     /// the law that keeps it unreachable.
-    const CENSUS: [(&str, Coverage); 9] = [
-        // The armed set writes more than one content path — door 367.
-        ("Refused", Coverage::UnreachableByArmTimeLaw),
+    const CENSUS: [(&str, Coverage); 8] = [
         ("Unknown", Coverage::Swept(OnSplice::NeverAnswers)),
         ("Unknown", Coverage::Swept(OnSplice::Unparseable)),
         // `dry` — a rehearsal that ran everything except disk.
@@ -630,26 +630,15 @@ fn every_commit_door_is_either_swept_or_recorded_unreachable() {
     );
 }
 
-/// **DOOR 367, WITH ITS REASON — the reason is the deliverable.**
+/// **THE SET-FORM LOWERING PIN** (replaces the retired door-367 pin: the
+/// arm-time `multi_file_write_set` law and `commit()`'s single-path door both
+/// retired with the §4.4 set form — run-plane.md § One COMMIT per attempt).
 ///
-/// `commit()`'s first arm refuses an armed set that writes more than one content
-/// path. It speaks, and no test reaches it: the arm-time `multi_file_write_set`
-/// law refuses first, so the run never issues a splice and never enters
-/// `commit()` at all. That is correct behaviour with untested code behind it.
-///
-/// So this test pins the REASON rather than the door. It asserts the arm-time law
-/// still refuses, and that no splice was issued — which is exactly the fact that
-/// makes door 367 unreachable. **If that law is ever moved or relaxed, this test
-/// goes red**, and it goes red in front of the person doing the moving, which is
-/// where the warning has to land. A test that asserted door 367's own behaviour
-/// could not run today and would look like coverage while proving nothing.
-///
-/// When it does go red: door 367 is now reachable, and it needs a row in
-/// `OnSplice` plus its own assertion — not a deletion of this test.
+/// A two-file armed set issues exactly ONE splice, and that splice is the SET
+/// form: `files[]` carrying every armed path's plan group in first-arm order,
+/// under the entry guard — never two splices, never a bare `path` form.
 #[test]
-fn door_367_is_unreachable_only_because_the_arm_time_law_refuses_first() {
-    /// Two content paths, armed in one script. The second `put()` is what the
-    /// arm-time law refuses.
+fn a_multi_file_armed_set_issues_one_set_splice() {
     const TWO_FILES: &str = r#"
 card = read("tasks/0011-token-audit.md")
 put("tasks/0011-token-audit.md", props={"owner": me()})
@@ -658,23 +647,40 @@ put("tasks/0012-second-file.md", props={"owner": me()})
 
     let mut door = Fake::breaking(OnSplice::NeverAnswers);
     let argv = ["--actor".to_owned(), "8ab41c02".to_owned()];
-    let trace = attempt(&argv, TWO_FILES, &mut door).expect("an arm-time refusal still SPEAKS");
+    let trace = attempt(&argv, TWO_FILES, &mut door).expect("a lost answer still SPEAKS");
 
-    assert_eq!(trace.outcome, ScriptOutcome::Refused);
-    let fault = trace.fault.expect("the refusal says why");
-    assert_eq!(fault.class, FaultClass::Refused);
     assert!(
-        fault.reason.contains("multi_file_write_set"),
-        "THE ARM-TIME LAW NO LONGER REFUSES A TWO-FILE ARMED SET, so door 367 in `commit()` \
-         (`crates/mrd/src/script/cmd.rs`, the `let [path] = …` arm) is now REACHABLE and has \
-         no test. Wire it into `OnSplice` and assert what it says — do not delete this pin. \
-         The refusal that arrived instead: {}",
-        fault.reason
+        door.splice_issued,
+        "a two-file armed set commits — one set splice goes out"
+    );
+    let request = door.last_splice.expect("the door recorded the request");
+    assert!(
+        request.get("path").is_none(),
+        "the set form carries no top-level `path`: {request}"
+    );
+    let files = request["files"]
+        .as_array()
+        .expect("the set form carries `files[]`");
+    assert_eq!(files.len(), 2, "one member per armed content path");
+    assert_eq!(files[0]["path"], "tasks/0011-token-audit.md");
+    assert_eq!(files[1]["path"], "tasks/0012-second-file.md");
+    assert!(
+        files
+            .iter()
+            .all(|f| f["plan_edits"].as_array().is_some_and(|e| e.len() == 1)),
+        "each member carries its own plan group: {request}"
     );
     assert!(
-        !door.splice_issued,
-        "a splice went out for a two-file armed set — nothing may reach the wire once the \
-         armed set is refused"
+        request.get("if_fingerprint").is_some(),
+        "the set commit rides the entry guard"
+    );
+    // The daemon never answered, and the request DID go out — the leg is the
+    // same indeterminacy speech as the single form's (a lost answer renders
+    // the refused class and says the outcome is NOT KNOWN).
+    assert_eq!(trace.outcome, ScriptOutcome::Refused);
+    assert!(
+        trace.commit_unknown,
+        "a lost set answer carries the commit-unknown flag, like the single form"
     );
 }
 
