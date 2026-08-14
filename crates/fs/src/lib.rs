@@ -1208,7 +1208,10 @@ pub fn write_conflict(path: &Path) -> io::Error {
 /// lock — they are covered by detection (the pre-rename verify →
 /// `write_conflict`), not prevention. The run plane serializes on its own
 /// `.meridian/run.lock`; run applies and wire splices do not serialize
-/// against each other.
+/// against each other — EXCEPT the daemon-side delta-mint bracket
+/// (§ A.8 run-delta ruling): a run apply with an armed frame sink holds
+/// THIS lock across its commit and ring advance, so the detector cannot
+/// classify a governed run commit as external change.
 ///
 /// `flock` locks belong to the open file description, so two independent
 /// acquires contend even within one process — in-process concurrent writers

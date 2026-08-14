@@ -23,6 +23,7 @@ use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use effects::{ArgValue, ChangeEvent, Domain, Effect, EffectKind, EventFacts, Provenance};
 use model::{
@@ -787,9 +788,19 @@ pub fn apply_under(
         }
     };
 
-    // 7b. Delta-mint pre-facts (§ A.8 run-delta ruling), only when the host
-    // armed a sink: taken under the flock BEFORE the commit — nothing has
-    // landed yet, so a failure here refuses cleanly.
+    // 7b. The delta-mint bracket (§ A.8 run-delta ruling), only when the
+    // host armed a sink: the commit and its frame mint hold the workspace
+    // WRITE flock — the detector's and the wire choke-point's own
+    // serialization point. The run lock alone cannot exclude the detector
+    // (run applies and wire splices do not otherwise serialize), so without
+    // this flock a detect cycle can classify the half-landed commit as
+    // external, actorless change — the misattribution this ruling exists to
+    // kill. Pre-facts fold under the same flock; nothing has landed yet, so
+    // a failure here refuses cleanly.
+    let _delta_bracket = match req.delta {
+        Some(_) => Some(acquire_write_flock(root)?),
+        None => None,
+    };
     let delta_pre = delta_pre_facts(root, req)?;
 
     // 8. THE commit — the only write, atomic, two files (§6.5 crash window
@@ -829,6 +840,32 @@ pub fn apply_under(
         receipt_line,
         file_rev_after,
     })
+}
+
+/// The delta-mint bracket's flock (step 7b): the workspace WRITE lock,
+/// bounded-wait — its holders (a wire splice's critical section, a detect
+/// cycle) are short, so a brief retry converts the NB acquire into a bounded
+/// wait; past the deadline the apply refuses the plane's own typed busy
+/// word. Lock order is run.lock → write.lock on this path and no path takes
+/// them the other way.
+fn acquire_write_flock(root: &fs::WorkspaceRoot) -> Result<fs::WriteLock, ExecError> {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match fs::WriteLock::acquire(root) {
+            Ok(lock) => return Ok(lock),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return Err(ExecError::WorkspaceBusy);
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => {
+                return Err(ExecError::Io {
+                    reason: format!("write flock for the delta mint: {e}"),
+                });
+            }
+        }
+    }
 }
 
 /// The frame mint's pre-commit facts (step 7b): the receipt file's before
