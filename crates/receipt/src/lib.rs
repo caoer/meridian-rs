@@ -228,6 +228,76 @@ pub fn render_line(facts: &ArmedFacts<'_>) -> String {
     out
 }
 
+/// The armed-fact set for one §4.4 SET commit: one line, one anchor, every
+/// file named (§6.6 — a resolvable anchor implies the WHOLE set landed, so
+/// the one entry must speak for every member).
+#[derive(Debug, Clone)]
+pub struct SetArmedFacts<'a> {
+    pub id: Option<wire::RequestId>,
+    pub actor: Option<&'a str>,
+    pub now: Option<&'a str>,
+    pub root_before: &'a wire::Root,
+    /// The receipt's own block anchor (from the request's `receipt.anchor`).
+    pub anchor: &'a str,
+    /// Per-file facts, request order.
+    pub files: Vec<FileFacts<'a>>,
+}
+
+/// One set member's facts: its path and its edit rows.
+#[derive(Debug, Clone)]
+pub struct FileFacts<'a> {
+    pub path: &'a wire::Path,
+    pub edits: Vec<EditFact<'a>>,
+}
+
+/// Render the set-commit receipt line: the single-form template with the op
+/// token `splice.set`, a leading `files=N`, and each member's path opening
+/// its own edit group — one line, one trailing anchor.
+///
+/// Worked shape:
+/// `- splice.set files=2 id=42 actor=… fingerprint_before=b3:… edits=3
+/// notes/a.md edits=2 <row> <row> notes/b.md edits=1 <row> ^r-000042`
+#[must_use]
+pub fn render_set_line(facts: &SetArmedFacts<'_>) -> String {
+    let mut out = String::new();
+    let _ = write!(out, "- splice.set files={}", facts.files.len());
+    if let Some(id) = facts.id {
+        let _ = write!(out, " id={id}");
+    }
+    if let Some(actor) = facts.actor {
+        let _ = write!(out, " actor={}", render_field(actor));
+    }
+    if let Some(now) = facts.now {
+        let _ = write!(out, " now={}", render_field(now));
+    }
+    let total: usize = facts.files.iter().map(|f| f.edits.len()).sum();
+    let _ = write!(
+        out,
+        " fingerprint_before={} edits={total}",
+        render_field(&facts.root_before.0)
+    );
+    for file in &facts.files {
+        let _ = write!(
+            out,
+            " {} edits={}",
+            render_field(&file.path.0),
+            file.edits.len()
+        );
+        for edit in &file.edits {
+            let _ = write!(
+                out,
+                " {} {} {}->{}",
+                target_token(edit.target),
+                op_display(&edit.op),
+                render_field(&edit.before.0),
+                render_field(&edit.after.0)
+            );
+        }
+    }
+    let _ = write!(out, " ^{}", render_field(facts.anchor));
+    out
+}
+
 /// Mint the receipt block anchor for a batch counter: `r-NNNNNN`,
 /// zero-padded to six digits, widening beyond — always inside the block-id
 /// charset `[A-Za-z0-9-]+` (§2.4, decision 011).

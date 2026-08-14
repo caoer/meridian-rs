@@ -589,6 +589,579 @@ pub fn splice_with_mints(
 }
 
 // ---------------------------------------------------------------------------
+// The §4.4 SET form (dotted cap `splice.set`) — N files, one sealed commit
+// ---------------------------------------------------------------------------
+
+/// One decoded §4.4 set request. The member list is [`wire::SpliceFile`]
+/// verbatim; everything request-level (guard, actor, now, receipt, dry,
+/// force) covers the whole set. No `pin` — the pin rides the single form.
+#[derive(Debug, Clone)]
+pub struct SpliceSetArgs {
+    /// Frame correlation token — recorded into the receipt line (§6.1).
+    pub id: Option<u64>,
+    /// The set members: two or more, paths pairwise distinct.
+    pub files: Vec<wire::SpliceFile>,
+    /// Which door this set arrived through (fingerprint-or-force reach).
+    pub origin: crate::guard::Origin,
+    pub actor: Option<String>,
+    pub now: Option<String>,
+    /// One receipt entry rides the sealed set and names every file.
+    pub receipt: Option<ReceiptAddr>,
+    /// The §5.1 world guard — world-grain, so it covers every member.
+    pub if_root: Option<Root>,
+    pub dry: bool,
+    pub force: bool,
+}
+
+/// Everything one validated member carries between the validation loop and
+/// the commit/response assembly.
+struct SetEntryState {
+    path: Path,
+    doc: model::Document,
+    batch: model::SpliceRequest,
+    after_doc: model::CandidateDocument,
+    armed_edits: Vec<ArmedEdit>,
+    effective_edits: Vec<Edit>,
+    born: Vec<Option<crate::plan::Born>>,
+}
+
+/// The §4.4 SET choke-point: the single-form pipeline per member —
+/// load → lower → guard → validate → one reparse → strip/translate → lock
+/// guard → I4 verdict → gate — with EVERY member validated before the first
+/// byte moves (validate-all-then-apply), then one sealed commit: one
+/// fingerprint advance, one receipt entry naming every file, one Delta of
+/// N+1 files, one `seq`. A refusal anywhere answers for the whole request
+/// with nothing landed, naming the member that measured it.
+///
+/// No pin machinery reaches this door, and effects mode is untouched — the
+/// set transaction is defined for the sealed batch model only.
+///
+/// # Errors
+/// Any single-form refusal, stamped with the measuring member's path and the
+/// whole-set clause; in every error case nothing was committed and no Delta
+/// exists.
+#[allow(clippy::too_many_lines)]
+pub fn splice_set(
+    root: &fs::WorkspaceRoot,
+    seq: Option<&dyn crate::seq::SeqSink>,
+    args: &SpliceSetArgs,
+    rulesets: &[policy::CompiledRuleset],
+) -> Result<SpliceOutcome, Box<ErrorBody>> {
+    // The set walls, enforced here as well as at decode — in-process callers
+    // reach this door without the decode pass.
+    if args.files.len() < 2 {
+        return Err(bad_request(
+            "a splice set takes two or more members (§4.4 set form) — a one-file write is \
+             the single `path` form",
+        ));
+    }
+    for (i, file) in args.files.iter().enumerate() {
+        path_confined(root, &file.path)?;
+        if args.files[..i].iter().any(|f| f.path == file.path) {
+            return Err(bad_request(format!(
+                "set member paths must be pairwise distinct: `{}` appears twice — merge its \
+                 edits into one member",
+                file.path.0
+            )));
+        }
+        if let Some(addr) = &args.receipt
+            && addr.path == file.path
+        {
+            return Err(bad_request(format!(
+                "the receipt file `{}` is also a set member: the receipt rename would \
+                 clobber the member's own commit (§6.5) — receipt into a file outside \
+                 the set",
+                addr.path.0
+            )));
+        }
+    }
+
+    // One flock spans the whole critical section: every read#1, every
+    // validation, and the commit's read#2 → verify → renames (§3 one bracket).
+    let flock = acquire_write_lock(root)?;
+
+    let root_before = ambient_root(root)?;
+    // §5.1 order: the world guard first, once — world-grain covers every
+    // member (if any domain file moved, the fingerprint moved).
+    world_guard(args.if_root.as_ref(), &root_before)?;
+    // §6.6 pre-flight, once per set: the anchor is resolved before any byte.
+    preflight_receipt_anchor(root, args.receipt.as_ref())?;
+
+    let mut entries: Vec<SetEntryState> = Vec::with_capacity(args.files.len());
+    let mut verdicts: Vec<Verdict> = Vec::new();
+    for (i, file) in args.files.iter().enumerate() {
+        let entry = validate_set_member(root, args, file, &root_before, rulesets, &mut verdicts)
+            .map_err(|e| set_member_refusal(i, &file.path, e))?;
+        entries.push(entry);
+    }
+
+    // Dry short-circuit (§4.4 batch law): everything except disk.
+    if args.dry {
+        return Ok(SpliceOutcome {
+            candidate: None,
+            body: ResponseBody::SpliceSet {
+                armed: entries
+                    .into_iter()
+                    .map(|e| Armed {
+                        path: e.path,
+                        file_rev_after: None,
+                        edits: e.armed_edits,
+                        effects: Vec::new(),
+                    })
+                    .collect(),
+                receipt: None,
+                root_before,
+                root_after: None,
+                seq: None,
+                dry: Some(true),
+                verdicts,
+            },
+            committed: None,
+        });
+    }
+
+    // The one receipt entry, rendered from every member's armed facts.
+    let receipt_input = match &args.receipt {
+        Some(addr) => Some(receipt_set_input(root, args, &entries, &root_before, addr)?),
+        None => None,
+    };
+
+    // What the reaction feeder and the response need after the batches move
+    // into the commit seam.
+    let commit_entries: Vec<CommitSetEntry> = entries
+        .iter()
+        .map(|e| CommitSetEntry {
+            content_path: e.path.0.clone(),
+            batch: e.batch.clone(),
+        })
+        .collect();
+
+    let mut frame = commit_set(
+        seq,
+        &flock,
+        &CommitSetRequest {
+            entries: commit_entries,
+            receipt: receipt_input,
+            actor: args.actor.clone(),
+            now: args.now.clone(),
+        },
+    )
+    .map_err(|e| match e {
+        CommitSetError::Refused { index, verdict } => {
+            let entry = &entries[index];
+            set_member_refusal(
+                index,
+                &entry.path,
+                verdict_to_wire(&verdict, &entry.effective_edits, &entry.doc, &entry.path),
+            )
+        }
+        CommitSetError::Env(err) => err,
+        CommitSetError::Io(err) => {
+            // The path in the io frame names the set's first member; the fs
+            // error text itself names the file that measured the failure.
+            commit_io_to_wire(&err, &entries[0].path)
+        }
+    })?;
+
+    // Reaction mode (C3): per landed member, after the set landed; outcomes
+    // ride this one frame and each member's own armed feedback.
+    let mut armed_groups: Vec<Armed> = Vec::with_capacity(entries.len());
+    let mut frame_effects = Vec::new();
+    for e in entries {
+        let effects = crate::reaction::feed_landed_change(
+            root,
+            &e.doc,
+            e.after_doc.document(),
+            &e.batch.edits,
+            policy::ChangeOp::Splice,
+            args.actor.as_deref(),
+        );
+        frame_effects.extend(effects.iter().cloned());
+        armed_groups.push(Armed {
+            file_rev_after: Some(NodeRev(e.after_doc.document().root.node_rev.0.clone())),
+            path: e.path,
+            edits: e.armed_edits,
+            effects,
+        });
+    }
+    frame.effects = frame_effects;
+
+    let receipt_fact = resolve_receipt_fact(root, args.receipt.as_ref())?;
+
+    Ok(SpliceOutcome {
+        body: ResponseBody::SpliceSet {
+            armed: armed_groups,
+            receipt: receipt_fact,
+            root_before: frame.delta.root_before.clone(),
+            root_after: Some(frame.delta.root_after.clone()),
+            seq: Some(frame.delta.seq),
+            dry: None,
+            verdicts,
+        },
+        committed: Some(frame),
+        candidate: None,
+    })
+}
+
+/// One member through the single-form validation pipeline (the §4.4 batch
+/// laws per file): lower → fingerprint-or-force guard → resolve + validate →
+/// one reparse → `@fp` strip → stored-form translation → lock artifact guard
+/// → I4 def-conformance → advisory verdicts → the armed gate. Pushes this
+/// member's verdicts; returns its carried state.
+fn validate_set_member(
+    root: &fs::WorkspaceRoot,
+    args: &SpliceSetArgs,
+    file: &wire::SpliceFile,
+    root_before: &Root,
+    rulesets: &[policy::CompiledRuleset],
+    verdicts: &mut Vec<Verdict>,
+) -> Result<SetEntryState, Box<ErrorBody>> {
+    let doc = load_doc(root, &file.path)?;
+    let (mut effective_edits, born) = if file.plan_edits.is_empty() {
+        let n = file.edits.len();
+        (file.edits.clone(), vec![None; n])
+    } else {
+        let lowered = crate::plan::lower(&doc, &file.plan_edits)?;
+        (lowered.edits, lowered.born)
+    };
+    let bypassed = crate::guard::guard_batch(
+        args.origin,
+        args.force,
+        &doc,
+        &file.path,
+        &file.plan_edits,
+        &mut effective_edits,
+    )?;
+    let (model_edits, before_facts) = model_edits_and_before_facts(&doc, &effective_edits, &file.path)?;
+    let mut batch = model::SpliceRequest {
+        if_root: args
+            .if_root
+            .as_ref()
+            .map(|_| model::MerkleRoot(root_before.0.clone())),
+        edits: model_edits,
+        engine: None,
+    };
+    let sealed = match model::validate_batch(
+        &doc,
+        Some(&model::MerkleRoot(root_before.0.clone())),
+        &batch,
+        None,
+    ) {
+        model::SpliceVerdict::Validated(b) => b,
+        refused => {
+            return Err(verdict_to_wire(&refused, &effective_edits, &doc, &file.path));
+        }
+    };
+    let mut after_doc = build_after_doc(&doc, &sealed, &file.path);
+    let mut sealed = sealed;
+    strip_fp_candidate(
+        &doc,
+        root_before,
+        &file.path,
+        &before_facts,
+        &mut batch,
+        &mut sealed,
+        &mut after_doc,
+    )?;
+    translate_stored_candidate(
+        &doc,
+        root_before,
+        &file.path,
+        &before_facts,
+        &mut batch,
+        &mut sealed,
+        &mut after_doc,
+    )?;
+    // No pin reaches the set door, so the only legal lock-byte state is
+    // "unchanged".
+    lock_artifact_guard(&doc, after_doc.document(), None, &file.path)?;
+    let armed_edits = simulate_armed_edits(
+        after_doc.document(),
+        &effective_edits,
+        &before_facts,
+        &born,
+        &sealed,
+    )?;
+    if let Some(refusal) = crate::check_write::verdict(
+        &doc,
+        after_doc.document(),
+        &conformance_target(root, &file.path),
+        args.actor.as_deref().unwrap_or_default(),
+        args.now.as_deref().unwrap_or_default(),
+    )
+    .refuse
+    {
+        return Err(conformance_to_wire(&refusal, &file.path));
+    }
+    verdicts.extend(evaluate_verdicts(rulesets, after_doc.document()));
+    let gate_pass = crate::gate::gate_write(
+        root,
+        &doc,
+        after_doc.document(),
+        &batch.edits,
+        policy::ChangeOp::Splice,
+        args.actor.as_deref(),
+        args.force,
+        after_doc.document(),
+    )?;
+    verdicts.extend(gate_pass.verdicts);
+    verdicts.extend(crate::guard::bypass_verdicts(&bypassed, &doc, &file.path));
+    Ok(SetEntryState {
+        path: file.path.clone(),
+        doc,
+        batch,
+        after_doc,
+        armed_edits,
+        effective_edits,
+        born,
+    })
+}
+
+/// Stamp a member's refusal with the whole-set clause: the entry that
+/// measured it, and the fact that nothing landed (Draft A: "the refusal
+/// names the entry and row that measured it").
+fn set_member_refusal(index: usize, path: &Path, mut e: Box<ErrorBody>) -> Box<ErrorBody> {
+    if e.path.is_none() {
+        e.path = Some(path.clone());
+    }
+    let clause = format!(
+        "The set refused whole at files[{index}] (`{}`): a set commit validates every member \
+         against the entry state before any byte moves, so nothing landed and no fingerprint \
+         advanced.",
+        path.0
+    );
+    e.message = Some(match e.message.take() {
+        Some(msg) => format!("{msg} {clause}"),
+        None => clause,
+    });
+    e
+}
+
+/// The set receipt entry: ONE line, op token `splice.set`, every member named
+/// with its own edit rows, one anchor (§6.6 checked once for the whole set).
+fn receipt_set_input(
+    root: &fs::WorkspaceRoot,
+    args: &SpliceSetArgs,
+    entries: &[SetEntryState],
+    root_before: &Root,
+    addr: &ReceiptAddr,
+) -> Result<(String, model::ReceiptAppend), Box<ErrorBody>> {
+    let io_err = |e: std::io::Error| {
+        let mut err = ErrorBody::new(ErrorCode::IoError);
+        err.cause = Some(e.to_string());
+        Box::new(err)
+    };
+    let files: Vec<receipt::FileFacts<'_>> = entries
+        .iter()
+        .map(|e| receipt::FileFacts {
+            path: &e.path,
+            edits: e
+                .effective_edits
+                .iter()
+                .zip(&e.armed_edits)
+                .enumerate()
+                .map(|(i, (req, armed))| receipt::EditFact {
+                    target: &armed.target,
+                    op: if e.born.get(i).is_some_and(Option::is_some) {
+                        receipt::OpFact::Create
+                    } else {
+                        receipt::OpFact::Edit(&req.edit)
+                    },
+                    before: &armed.node_rev_before,
+                    after: &armed.node_rev_after,
+                })
+                .collect(),
+        })
+        .collect();
+    let facts = receipt::SetArmedFacts {
+        id: args.id,
+        actor: args.actor.as_deref(),
+        now: args.now.as_deref(),
+        root_before,
+        anchor: &addr.anchor,
+        files,
+    };
+    let line = receipt::render_set_line(&facts);
+    let receipt_abs = root.0.join(&addr.path.0);
+    let receipt_len = match std::fs::read(&receipt_abs) {
+        Ok(bytes) => bytes.len(),
+        Err(e) if e.kind() == ErrorKind::NotFound => 0,
+        Err(e) => return Err(io_err(e)),
+    };
+    if let Some(parent) = receipt_abs.parent() {
+        std::fs::create_dir_all(parent).map_err(io_err)?;
+    }
+    Ok((
+        addr.path.0.clone(),
+        model::ReceiptAppend {
+            span: receipt_len..receipt_len,
+            text: format!("{line}\n"),
+        },
+    ))
+}
+
+/// One set member at the commit seam: its path and its model batch.
+#[derive(Debug, Clone)]
+pub struct CommitSetEntry {
+    pub content_path: String,
+    pub batch: model::SpliceRequest,
+}
+
+/// One set commit's inputs — the per-member batches plus the set-level
+/// receipt and the §9 envelope facts.
+#[derive(Debug, Clone)]
+pub struct CommitSetRequest {
+    pub entries: Vec<CommitSetEntry>,
+    pub receipt: Option<(String, model::ReceiptAppend)>,
+    pub actor: Option<String>,
+    pub now: Option<String>,
+}
+
+/// A set commit that did not emit — [`CommitError`]'s shape with the
+/// measuring member's index on the refusal arm.
+#[derive(Debug)]
+pub enum CommitSetError {
+    /// Member `index`'s re-validation refused — the set never reached `fs`.
+    Refused {
+        index: usize,
+        verdict: model::SpliceVerdict,
+    },
+    /// Ambient-root/domain failure, already in the wire envelope shape.
+    Env(Box<ErrorBody>),
+    /// The atomic set write failed or the seam contract refused. `fs` names
+    /// the file and the rollback outcome in the error text.
+    Io(std::io::Error),
+}
+
+/// Commit one SET and return its one Delta (§7.1 generalized: one Delta =
+/// one sealed set = one root advance, `files[]` carrying every member plus
+/// the receipt — cardinality is data). The `commit_batch` discipline per
+/// member: read#2 from disk, re-validate, seal, candidate-tie; then ONE
+/// `fs::apply_set` (verify-all → rename member order, receipt last,
+/// in-memory rollback on failure), one `seq` allocation under the caller's
+/// flock.
+///
+/// # Errors
+/// [`CommitSetError`] — in every error case nothing was emitted and, short
+/// of the stated crash window, nothing stays landed (fs rolls a partial
+/// rename sequence back from held pre-images).
+pub fn commit_set(
+    seq: Option<&dyn crate::seq::SeqSink>,
+    flock: &fs::WriteLock,
+    req: &CommitSetRequest,
+) -> Result<DeltaFrame, CommitSetError> {
+    let root = flock.root();
+    let root_before = ambient(root).map_err(commit_set_env)?;
+
+    // Read#2 + re-validate every member before any byte moves.
+    let mut befores: Vec<model::Document> = Vec::with_capacity(req.entries.len());
+    let mut owned: Vec<(model::ValidatedBatch, model::CandidateDocument)> =
+        Vec::with_capacity(req.entries.len());
+    for (index, entry) in req.entries.iter().enumerate() {
+        let before = fs::load(root, FsPath::new(&entry.content_path)).map_err(CommitSetError::Io)?;
+        let sealed = match model::validate_batch(
+            &before,
+            Some(&model::MerkleRoot(root_before.0.clone())),
+            &entry.batch,
+            None,
+        ) {
+            model::SpliceVerdict::Validated(batch) => batch,
+            refused => {
+                return Err(CommitSetError::Refused {
+                    index,
+                    verdict: refused,
+                });
+            }
+        };
+        let candidate = model::candidate_of_batch(&entry.content_path, &before.raw, &sealed);
+        stored_form_guard_lazy(
+            Some(&before),
+            &candidate,
+            &Path(entry.content_path.clone()),
+        )
+        .map_err(CommitSetError::Env)?;
+        befores.push(before);
+        owned.push((sealed, candidate));
+    }
+    let before_receipt = match &req.receipt {
+        Some((rp, _)) => load_optional_set(root, rp)?,
+        None => None,
+    };
+
+    // The one sealed apply: verify-all-then-rename, receipt last, in-memory
+    // rollback on a mid-sequence failure (no journal — ruling 2026-08-14).
+    let members: Vec<fs::SetMember<'_>> = req
+        .entries
+        .iter()
+        .zip(&befores)
+        .zip(&owned)
+        .map(|((entry, before), (sealed, candidate))| fs::SetMember {
+            content_path: FsPath::new(&entry.content_path),
+            batch: sealed,
+            expected_content: before.raw.as_bytes(),
+            candidate,
+        })
+        .collect();
+    fs::apply_set(
+        root,
+        &members,
+        req.receipt
+            .as_ref()
+            .map(|(rp, append)| (FsPath::new(rp.as_str()), append)),
+    )
+    .map_err(CommitSetError::Io)?;
+
+    // Post-state + the one advanced root.
+    let root_after = ambient(root).map_err(commit_set_env)?;
+    let mut files: Vec<DeltaFile> = Vec::new();
+    for (entry, before) in req.entries.iter().zip(&befores) {
+        let after = fs::load(root, FsPath::new(&entry.content_path)).map_err(CommitSetError::Io)?;
+        if let Some(fd) = model::delta::file_delta(Some(before), Some(&after)) {
+            files.push(wire_map::project_file_delta(&entry.content_path, &fd));
+        }
+    }
+    if let Some((rp, _)) = &req.receipt {
+        let after_receipt = load_optional_set(root, rp)?;
+        if let Some(fd) = model::delta::file_delta(before_receipt.as_ref(), after_receipt.as_ref())
+        {
+            files.push(wire_map::project_file_delta(rp, &fd));
+        }
+    }
+
+    let seq = crate::seq::allocate(seq, flock, &root_before, &root_after, &files);
+    Ok(assemble_delta(
+        seq,
+        root_before,
+        root_after,
+        req.actor.clone(),
+        req.now.clone(),
+        files,
+    ))
+}
+
+/// [`load_optional`]'s twin on the set seam's error type.
+fn load_optional_set(
+    root: &fs::WorkspaceRoot,
+    rel: &str,
+) -> Result<Option<model::Document>, CommitSetError> {
+    match fs::load(root, FsPath::new(rel)) {
+        Ok(doc) => Ok(Some(doc)),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(CommitSetError::Io(e)),
+    }
+}
+
+/// The ambient root on the set seam's error type.
+fn commit_set_env(e: CommitError) -> CommitSetError {
+    match e {
+        CommitError::Env(err) => CommitSetError::Env(err),
+        CommitError::Refused(_) | CommitError::Io(_) => {
+            unreachable!("ambient() answers Env only")
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Guarded create / remove — file birth and death (d2 §2.5 C3, U2.6)
 // ---------------------------------------------------------------------------
 //

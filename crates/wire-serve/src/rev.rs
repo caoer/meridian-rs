@@ -110,6 +110,9 @@ pub fn project_response(frame: &mut Value) {
                 // confusing `pin_target_missing` from a spelling it cannot
                 // parse.
                 caps.push(Value::String("pin-cross-root".to_string()));
+                // The §4.4 set form: `files[]` on `splice`, sealed across the
+                // set (validate-all-then-apply, one fingerprint advance).
+                caps.push(Value::String("splice.set".to_string()));
                 // Law A-1 at the create door: the plan `create` row honors a
                 // parent-section `rev` (§ A.3).
                 caps.push(Value::String("splice.create_rev".to_string()));

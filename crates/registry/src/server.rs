@@ -1273,6 +1273,36 @@ fn dispatch_read(
             }
             Ok(out.body)
         }
+        // The §4.4 SET form — v3-only (cap `splice.set`); the set choke-point.
+        // One sealed commit, one frame on this workspace's ring.
+        Op::SpliceSet {
+            files,
+            actor,
+            now,
+            receipt,
+            if_root,
+            dry,
+            force,
+        } if v3 => {
+            let ws_root = fs::WorkspaceRoot(ws.to_path_buf());
+            let args = wire_serve::write::SpliceSetArgs {
+                id,
+                files,
+                origin: wire_serve::guard::Origin::Wire,
+                actor,
+                now,
+                receipt,
+                if_root,
+                dry: dry.unwrap_or(false),
+                force: force.unwrap_or(false),
+            };
+            let ring = registry.ring(ws);
+            let out = wire_serve::write::splice_set(&ws_root, Some(&*ring), &args, &[])?;
+            if let Some(frame) = out.committed {
+                ring.advance(frame);
+            }
+            Ok(out.body)
+        }
         // Birth op — v3-only; the shared guarded door (`write::create`).
         // Bare commit, numbered on the same ring as `splice`.
         Op::Create {
@@ -1368,6 +1398,7 @@ fn dispatch_read(
         | Op::Read { .. }
         | Op::CheckWrite { .. }
         | Op::Create { .. }
+        | Op::SpliceSet { .. }
         | Op::Walk { .. }
         | Op::Sql { .. }
         | Op::Mounts => Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp))),
