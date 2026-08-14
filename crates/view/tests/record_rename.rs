@@ -76,6 +76,80 @@ fn card_refuses_without_resurrecting_the_old_name() {
     );
 }
 
+/// The refusal a caller actually receives (the served lane, `run_query`)
+/// TEACHES the new word: the rename shipped with no compat alias, so this
+/// message is the entire migration path. Non-resurrection alone is not the
+/// contract — `card` must lead the caller to `record`.
+#[test]
+fn card_refusal_teaches_the_new_name() {
+    let mut docs = BTreeMap::new();
+    docs.insert("tasks/t.md".to_string(), doc("---\ntype: task\n---\n# T\n"));
+    let conn = build(&docs);
+
+    let msg = view::store::run_query(&conn, "SELECT count(*) FROM card")
+        .expect_err("`card` must no longer exist");
+    assert!(
+        msg.contains("card") && msg.contains("does not exist"),
+        "the refusal still names the unknown table, got: {msg}"
+    );
+    assert!(
+        msg.contains("record"),
+        "the refusal teaches the name that replaced it, got: {msg}"
+    );
+    assert!(
+        !msg.contains("Did you mean \"card\""),
+        "no catalog entry may offer the retired name back, got: {msg}"
+    );
+}
+
+/// A face question never fits a `DuckDB` internal. Lexical Did-you-mean draws
+/// from the whole catalog, metadata surfaces included — `card` landed on
+/// `pg_attrdef`, `board_drift` on `duckdb_constraints`. A suggestion fitted to
+/// nothing violates the refusal register. The probe set is every face name
+/// ever removed from the schema (card, the board collapse, the deleted
+/// journal + trace views), plus two shaped to bait a metadata match.
+#[test]
+fn no_refusal_suggests_a_catalog_internal() {
+    let mut docs = BTreeMap::new();
+    docs.insert("tasks/t.md".to_string(), doc("---\ntype: task\n---\n# T\n"));
+    let conn = build(&docs);
+
+    for name in [
+        "card",
+        "board_drift",
+        "board_unresolved",
+        "co_edit_trace",
+        "receipt_journal",
+        "pg_attrdefx",
+        "duckdb_constraintx",
+    ] {
+        let msg = view::store::run_query(&conn, &format!("SELECT count(*) FROM {name}"))
+            .expect_err("the probe names no live table");
+        for internal in ["pg_", "duckdb_", "sqlite_"] {
+            assert!(
+                !msg.contains(&format!("Did you mean \"{internal}")),
+                "no suggestion may fit a catalog internal ({name}), got: {msg}"
+            );
+        }
+    }
+}
+
+/// Near-miss teaching stays intact: the retired-name arm must not eat the
+/// lexical suggestion that already works.
+#[test]
+fn near_miss_suggestion_survives() {
+    let mut docs = BTreeMap::new();
+    docs.insert("tasks/t.md".to_string(), doc("---\ntype: task\n---\n# T\n"));
+    let conn = build(&docs);
+
+    let msg = view::store::run_query(&conn, "SELECT count(*) FROM records")
+        .expect_err("`records` is not a table");
+    assert!(
+        msg.contains("Did you mean \"record\""),
+        "the lexical near-miss still fits, got: {msg}"
+    );
+}
+
 /// `task.text` is the text alone — every list-marker + checkbox spelling is
 /// stripped, and `checked`/`depth` still carry their bits.
 #[test]

@@ -310,8 +310,43 @@ pub fn run_query(conn: &Connection, query: &str) -> Result<(Vec<ColMeta>, Vec<Ve
     Ok((columns, out))
 }
 
+/// Face names that were retired by a rename, and the name that replaced each.
+/// The renames shipped with no compat alias, so the catalog refusal IS the
+/// whole migration path — a caller who learned the old face last week must
+/// read the new word out of the error itself.
+const RETIRED_NAMES: &[(&str, &str)] = &[("card", "record")];
+
+/// `DuckDB`'s built-in metadata surfaces. Its Did-you-mean is pure edit
+/// distance over the WHOLE catalog, so a retired face name can fit one of
+/// these by accident (`card` → `pg_attrdef`, `board_drift` →
+/// `duckdb_constraints`). None of them is ever the answer to a face question.
+const CATALOG_INTERNAL_PREFIXES: &[&str] = &["pg_", "duckdb_", "sqlite_"];
+
+/// Whether a Did-you-mean line offers a catalog internal as the fit.
+fn suggests_catalog_internal(line: &str) -> bool {
+    let Some(rest) = line.trim_start().strip_prefix("Did you mean \"") else {
+        return false;
+    };
+    CATALOG_INTERNAL_PREFIXES
+        .iter()
+        .any(|p| rest.starts_with(p))
+}
+
+/// The unknown table name out of `DuckDB`'s catalog refusal, e.g.
+/// `Catalog Error: Table with name card does not exist!` → `card`.
+fn unknown_table(error: &str) -> Option<&str> {
+    let rest = error.split_once("Table with name ")?.1;
+    rest.split_once(" does not exist").map(|(name, _)| name)
+}
+
 /// Extend a view-DML refusal with its remedy (ruling OQ1: the refusal
 /// teaches). `DuckDB`'s words stay verbatim and first; the teaching follows.
+///
+/// Two more arms ride the same register — reason first, then a suggestion
+/// that fits: a retired face name names its replacement
+/// ([`RETIRED_NAMES`]), and a Did-you-mean fitted to a catalog internal is
+/// dropped ([`CATALOG_INTERNAL_PREFIXES`]). Near-miss face suggestions
+/// (`records` → `record`) are untouched.
 fn teach(error: &str) -> String {
     // DuckDB's three view-DML spellings: UPDATE/DELETE answer a Binder
     // Error naming base tables; INSERT answers a Catalog Error ("doc is not
@@ -328,7 +363,21 @@ fn teach(error: &str) -> String {
              rolled back at call end, never durable."
         );
     }
-    error.to_owned()
+
+    // A suggestion fitted to a catalog internal is worse than none: it sends
+    // the caller at metadata. Drop the clause, keep every other word.
+    let out: String = error
+        .lines()
+        .filter(|line| !suggests_catalog_internal(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if let Some(name) = unknown_table(&out)
+        && let Some((_, new)) = RETIRED_NAMES.iter().find(|(old, _)| *old == name)
+    {
+        return format!("{out}\n`{name}` was renamed to `{new}` — query `{new}` instead.");
+    }
+    out
 }
 
 /// The fingerprint-pinned append-only cache file, open read-write.
