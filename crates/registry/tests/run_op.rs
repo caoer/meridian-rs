@@ -149,7 +149,9 @@ fn seeded(tmp: &TempDir) -> PathBuf {
 }
 
 fn run_frame(id: u64, invocation: &str, targets: Value) -> Value {
-    json!({"id": id, "op": "run", "invocation": invocation, "targets": targets})
+    let mut frame = json!({"id": id, "op": "run", "invocation": invocation});
+    frame["targets"] = targets;
+    frame
 }
 
 /// The per-target rows of an `ok:true` run response, with the §8-frame case

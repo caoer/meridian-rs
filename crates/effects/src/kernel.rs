@@ -632,7 +632,10 @@ impl<'h> ScriptEntry<'h> {
     /// arm-time law runs first and, when it refuses, arms NOTHING from this call
     /// and aborts the script.
     fn arm(&self, path: &str, items: Vec<PlanEdit>, line: u32, depth: u32) -> anyhow::Result<()> {
-        // One CONTENT path per commit (v1 law). The receipt companion is not a
+        // One CONTENT path per commit (v1 law — JUSTIFIED 2026-08-13: the
+        // commit is one §4.4 splice and a splice addresses one content path,
+        // so this law is what keeps all-or-nothing true; see run-plane.md
+        // § One CONTENT path per commit). The receipt companion is not a
         // content path — it rides the splice request's own `receipt` field in
         // the same batch (§6.1), never this list.
         let mut armed = self.armed.borrow_mut();
@@ -1065,7 +1068,7 @@ fn alloc_toc<'v>(heap: Heap<'v>, facts: &TocFacts) -> Value<'v> {
 }
 
 /// The cat face: the section TEXT itself, a plain string (read alignment,
-/// script-effects ruling — *"read() returns actual VALUES the agent computes
+/// script-effects ruling — *"`read()` returns actual VALUES the agent computes
 /// with"*; `"x" in read(p, section=s)` is a legal program). The section's rev
 /// still rides the recording, where the threading law reads it.
 fn alloc_section<'v>(heap: Heap<'v>, facts: &SecFacts) -> Value<'v> {

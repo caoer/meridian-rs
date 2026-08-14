@@ -91,17 +91,13 @@ pub(crate) fn serve_line(
         actor,
         now,
     };
-    match serve(registry, ws, &request) {
-        Ok(rows) => {
-            let mut frame = json!({"id": id, "ok": true, "body": {"targets": rows}});
-            let duration_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
-            wire_serve::rev::attach_meta(&mut frame, duration_us);
-            let mut line = serde_json::to_string(&frame).expect("a run frame serializes");
-            line.push('\n');
-            line
-        }
-        Err(error) => error_line(id, *error, rev),
-    }
+    let rows = serve(registry, ws, &request);
+    let mut frame = json!({"id": id, "ok": true, "body": {"targets": rows}});
+    let duration_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+    wire_serve::rev::attach_meta(&mut frame, duration_us);
+    let mut line = serde_json::to_string(&frame).expect("a run frame serializes");
+    line.push('\n');
+    line
 }
 
 /// One typed error frame, rendered per negotiated rev (the `wire_line` path).
@@ -128,10 +124,9 @@ struct RunArgs {
 /// The attempt: per target in list order, drive the plane and mint one row.
 /// Each target answers for itself — the loop never breaks on a refusal.
 ///
-/// # Errors
-/// A §8 frame ONLY for what never reached the plane — decode already
-/// answered the frame-shape family; nothing here refuses whole calls.
-fn serve(_registry: &Registry, ws: &Path, request: &RunArgs) -> Result<Vec<Value>, Box<ErrorBody>> {
+/// Never refuses: decode already answered the frame-shape family, and plane
+/// refusals ride the rows themselves (§ A.8).
+fn serve(_registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
     let root = fs::WorkspaceRoot(ws.to_path_buf());
     let mut rows = Vec::with_capacity(request.targets.len());
     for (index, target) in request.targets.iter().enumerate() {
@@ -145,7 +140,7 @@ fn serve(_registry: &Registry, ws: &Path, request: &RunArgs) -> Result<Vec<Value
             request.now.as_deref(),
         ));
     }
-    Ok(rows)
+    rows
 }
 
 /// One target → one row, whichever door invoked it — the § A.8 op arm's loop
