@@ -240,7 +240,9 @@ pub(crate) fn run(tail: &[String]) -> Result<(), Fail> {
     // served warm instead of degraded around. One execution path (the
     // NO-SANDBOX ruling, 2026-08-14); only `--rebuild` goes direct, because
     // repair needs the file itself.
-    if !args.rebuild && let Some(frame) = daemon_route(&workspace, &args) {
+    if !args.rebuild
+        && let Some(frame) = daemon_route(&workspace, &args)
+    {
         return emit(&args, &frame);
     }
 
@@ -588,7 +590,13 @@ fn query_frame(args: &SqlArgs, loaded: &Loaded, lane: &mut Lane) -> Result<Frame
     test_fold_race_hook();
     let f_now = fold_live(&loaded.root.0)?;
     if as_of == f_now {
-        return Ok(frame(as_of, f_now, columns, rows, QueryState::FreshAtSample));
+        return Ok(frame(
+            as_of,
+            f_now,
+            columns,
+            rows,
+            QueryState::FreshAtSample,
+        ));
     }
 
     // A mid-build change: `--fresh` gets one bounded retry; the default
@@ -806,8 +814,8 @@ mod tests {
 
     #[test]
     fn parse_cwd_inline_and_spaced() {
-        let inline =
-            SqlArgs::parse(&["--cwd=/somewhere".to_owned(), "SELECT 1".to_owned()]).expect("inline");
+        let inline = SqlArgs::parse(&["--cwd=/somewhere".to_owned(), "SELECT 1".to_owned()])
+            .expect("inline");
         assert_eq!(inline.cwd.as_deref(), Some(Path::new("/somewhere")));
 
         let spaced = SqlArgs::parse(&[
