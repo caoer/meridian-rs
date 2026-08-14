@@ -579,6 +579,8 @@ fn delta_frame_file_and_node_key_sets_are_frozen() {
     let frame = DeltaFrame {
         delta,
         effects: vec![],
+        rescope: None,
+        overflow: None,
     };
     pin_keys(&frame, &["delta"], "DeltaFrame (no reaction output)");
     let mut v = serde_json::to_value(&frame).expect("serializes");
