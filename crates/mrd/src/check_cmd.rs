@@ -625,9 +625,17 @@ fn assess(
     // filtered by the filter that built its corpus, never by a second reading.
     let corpus = mounts.rooted(docs, domain, root);
     let pins = pin_rows(&corpus, mounts.set(), excluded_holders);
+    // D-F: each MOUNTED root's store answers durability for the form-3 rows
+    // that name it — the map is the loaded corpora's own (name, bound path)
+    // pairs, so the store asked is the tree the row was coloured against.
+    let mounted: BTreeMap<addr::MountName, std::path::PathBuf> = mounts
+        .corpora
+        .iter()
+        .map(|m| (m.name.clone(), m.root.clone()))
+        .collect();
     Assessed {
         paths: Vec::new(),
-        report: check::core_of(root, docs, &pins),
+        report: check::core_of(root, docs, &pins, &mounted),
     }
 }
 
@@ -938,10 +946,13 @@ fn render_report(report: &CoreReport) -> String {
     // The anchoring three-state with its population beside it: an empty orphan list
     // means one thing over fifty pinned blobs and another over none. The sight line
     // is stated before the reading it bounds.
+    // D-F narrowed this population to UNMOUNTED roots only: a mounted root's
+    // form-3 rows are asked of that root's own store and counted in the
+    // three-state reading above.
     if !pins.out_of_jurisdiction.is_empty() {
         let _ = writeln!(
             out,
-            "  anchoring scope: {} pin{} outside this root's object store, NOT measured here — {}",
+            "  anchoring scope: {} pin{} in unmounted roots' object stores, NOT measured here — {}",
             pins.out_of_jurisdiction.len(),
             if pins.out_of_jurisdiction.len() == 1 {
                 ""

@@ -103,6 +103,13 @@ pub fn project_response(frame: &mut Value) {
                 caps.push(Value::String("check_write".to_string()));
                 caps.push(Value::String("splice.plan_edits".to_string()));
                 caps.push(Value::String("splice.pin".to_string()));
+                // Cross-root pin (design D-E): `splice.pin.target` admits the
+                // ruled `name:rel` spelling. The face keeps its own
+                // `pin_cross_root` refusal until this cap is present, so an
+                // old engine refuses with today's teaching instead of a
+                // confusing `pin_target_missing` from a spelling it cannot
+                // parse.
+                caps.push(Value::String("pin-cross-root".to_string()));
                 // Law A-1 at the create door: the plan `create` row honors a
                 // parent-section `rev` (§ A.3).
                 caps.push(Value::String("splice.create_rev".to_string()));
@@ -371,6 +378,7 @@ mod tests {
                 "check_write",
                 "splice.plan_edits",
                 "splice.pin",
+                "pin-cross-root",
                 "splice.create_rev",
                 "create",
                 "mounts",
