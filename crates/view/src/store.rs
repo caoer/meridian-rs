@@ -14,9 +14,18 @@
 //! - **`main.*`** — the caller-facing latest views, keeping the ephemeral
 //!   projection's exact names and column shapes (`doc`, `section`, `link`,
 //!   `backlink`, `dangling`, `record`, `tag_all`, `task`, `frontmatter`,
-//!   `frontmatter_tag`, `tag`, `_meridian_view`): one `QUALIFY` window over
-//!   `hist.doc` picks each path's newest version and drops tombstones; child
-//!   views follow by `(path, gen)` semi join.
+//!   `frontmatter_tag`, `tag`) — plus `_meridian_view`, the ONE relation whose
+//!   shape deliberately differs (there a singleton table, here a view over the
+//!   pin ledger). One `QUALIFY` window over `hist.doc` picks each path's newest
+//!   version and drops tombstones; child views follow by `(path, gen)` semi
+//!   join.
+//!
+//! Both namespaces are real schemas in ONE catalog, so a caller reading
+//! `information_schema` sees `doc`/`section`/`task` TWICE — once per schema.
+//! Discovery must stay schema-qualified (`WHERE table_schema = 'main'`, or
+//! `GROUP BY table_schema, table_name`); grouping by `table_name` alone merges
+//! the two relations into one falsely-doubled column list (card
+//! sql-information-schema-doubling).
 //!
 //! Only `INSERT` ever runs — no UPDATE, no DELETE, on any path including
 //! repair (`DuckDB` punishes edits). The only compaction is rebuild-and-swap:
@@ -1180,6 +1189,89 @@ pub(crate) mod tests {
                 "---\ntype: task\nstatus: todo\nowner: w1\nsession: s\n---\n# C\nbody [[a]]\n",
             ),
         ])
+    }
+
+    /// Every relation's column list, schema-qualified, as `DuckDB`'s catalog
+    /// reports it — the caller's self-service discovery route.
+    fn columns_by_relation(conn: &Connection) -> Vec<(String, String, String)> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT table_schema, table_name, \
+                        string_agg(column_name, ', ' ORDER BY ordinal_position) \
+                 FROM information_schema.columns \
+                 GROUP BY table_schema, table_name \
+                 ORDER BY table_schema, table_name",
+            )
+            .expect("prepare catalog query");
+        let mut rows = stmt.query([]).expect("catalog query");
+        let mut out = Vec::new();
+        while let Some(r) = rows.next().expect("catalog row") {
+            out.push((
+                r.get(0).expect("schema"),
+                r.get(1).expect("name"),
+                r.get(2).expect("columns"),
+            ));
+        }
+        out
+    }
+
+    /// Just the caller-facing `main` schema, as `(relation, column list)`.
+    fn main_face(conn: &Connection) -> Vec<(String, String)> {
+        columns_by_relation(conn)
+            .into_iter()
+            .filter(|(schema, ..)| schema == "main")
+            .map(|(_, name, columns)| (name, columns))
+            .collect()
+    }
+
+    /// The cache file's caller-facing `main` face is exactly the ephemeral
+    /// build's face — same relations, same column lists, in order. The stamp
+    /// `_meridian_view` is the one deliberate divergence (a view over the pin
+    /// ledger here, a singleton table there), so it is compared by name only.
+    ///
+    /// The guard the card sql-information-schema-doubling asked for: a
+    /// projection that arrived with a column twice, dropped one, or drifted
+    /// from the ephemeral lane fails here. It also pins the discriminator
+    /// behind the reported "doubling": `hist` is a SEPARATE schema carrying
+    /// same-named tables (`doc`, `section`, `task`), so a caller aggregate
+    /// that groups by `table_name` alone merges two real relations into one
+    /// false list. Qualified by schema — the route below — every column is
+    /// reported exactly once.
+    #[test]
+    fn main_face_columns_match_the_ephemeral_build_exactly() {
+        let docs = fixture_v1();
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        sync_ambient(&mut store, &docs, "b3b:v1").expect("cold build");
+
+        let cached = main_face(store.connection());
+        let fresh = crate::build_memory(&docs, "b3b:reference").expect("fresh build");
+        let ephemeral = main_face(&fresh);
+
+        // The ephemeral lane has no hist twin, so its face IS the contract.
+        assert_eq!(
+            cached.iter().map(|(n, _)| n).collect::<Vec<_>>(),
+            ephemeral.iter().map(|(n, _)| n).collect::<Vec<_>>(),
+            "the cache must serve the ephemeral build's relations"
+        );
+        for ((name, cols), (_, ref_cols)) in cached.iter().zip(&ephemeral) {
+            if name == "_meridian_view" {
+                continue; // the ruled divergence (see doc comment)
+            }
+            assert_eq!(cols, ref_cols, "main.{name} columns drifted from the build");
+        }
+        assert_eq!(cached.len(), 12, "12 caller-facing relations");
+
+        // Each column once, per relation — the literal card assertion.
+        for (name, columns) in &cached {
+            let listed: Vec<&str> = columns.split(", ").collect();
+            let unique: BTreeSet<&str> = listed.iter().copied().collect();
+            assert_eq!(
+                listed.len(),
+                unique.len(),
+                "main.{name} reports a column more than once: {columns}"
+            );
+        }
     }
 
     #[test]
