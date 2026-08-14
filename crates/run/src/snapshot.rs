@@ -71,10 +71,13 @@ pub enum Detection {
     /// config-widening attack) — the detection domain itself moved, so no
     /// residual verdict is possible.
     ConfigChanged,
-    /// A symlinked non-dot path appeared (#25 laundering), named.
+    /// Symlinked non-dot paths appeared (#25 laundering) — named as a count
+    /// plus the first offender (sorted), mirroring [`GuardError::Symlink`].
     Symlink {
-        /// Workspace-relative forward-slash path of the refused link.
-        path: String,
+        /// How many symlinked paths the close walk met (≥ 1).
+        count: usize,
+        /// Workspace-relative forward-slash path of the first offender.
+        first: String,
     },
     /// The close snapshot itself failed — no verdict can be rendered. Fail
     /// closed: not clean, phase 2 refuses.
@@ -104,9 +107,13 @@ impl std::fmt::Display for Detection {
                 f,
                 "mdfs_config.yaml changed during exec window — config-widening refused",
             ),
-            Detection::Symlink { path } => {
-                write!(f, "symlinked path refused in exec-window snapshot: {path}")
+            Detection::Symlink { count: 1, first } => {
+                write!(f, "symlinked path refused in exec-window snapshot: {first}")
             }
+            Detection::Symlink { count, first } => write!(
+                f,
+                "{count} symlinked paths refused in exec-window snapshot, first: {first}"
+            ),
             Detection::Failed { reason } => {
                 write!(
                     f,
@@ -185,7 +192,7 @@ impl ExecBracket {
             Ok(root) => Detection::Clean { root },
             Err(GuardError::OutOfBand(delta)) => Detection::OutOfBand(delta),
             Err(GuardError::ConfigChanged) => Detection::ConfigChanged,
-            Err(GuardError::Symlink { path }) => Detection::Symlink { path },
+            Err(GuardError::Symlink { count, first }) => Detection::Symlink { count, first },
             Err(GuardError::Io(e)) => Detection::Failed {
                 reason: e.to_string(),
             },

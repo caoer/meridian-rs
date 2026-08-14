@@ -576,7 +576,8 @@ fn fault_of(error: &EvalError) -> ScriptFault {
         EvalError::MissingEntry { .. } => (FaultClass::Runtime, None),
         EvalError::Budget { .. }
         | EvalError::SourceTooLarge { .. }
-        | EvalError::ReadBudget { .. } => (FaultClass::Budget, None),
+        | EvalError::ReadBudget { .. }
+        | EvalError::RunBudget { .. } => (FaultClass::Budget, None),
         EvalError::ArmedBudget { line, .. } => (FaultClass::Budget, Some(*line)),
         EvalError::MultiFileWriteSet { line, .. } => (FaultClass::Refused, Some(*line)),
     };

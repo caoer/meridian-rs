@@ -288,6 +288,29 @@ impl Domain {
         ignored.then_some(ExclusionReason::CustomIgnore)
     }
 
+    /// Is a symlink at `rel` OUTSIDE the detection domain — skippable by the
+    /// guarded walk rather than refused?
+    ///
+    /// The ignored-directory carve-out, extended to the link itself: when the
+    /// custom rules ignore `rel` (last-match-wins, so a `!` re-include lifts
+    /// the ignore for the exact path it names) and no `!` rule could
+    /// re-include anything beneath it, nothing at or behind the link can
+    /// reach a hash, attest or receipt surface — the same soundness argument
+    /// [`prunes_dir`](Self::prunes_dir) makes for a real directory, and the
+    /// dir form matters here because a symlink may BE a directory.
+    ///
+    /// Reserved paths are engine substrate: neither a reserved path itself
+    /// nor a directory on the way to one is ever skippable, whatever the
+    /// ignore list says.
+    #[must_use]
+    pub fn skips_symlink(&self, rel: &Path) -> bool {
+        let joined = normalized(rel);
+        if RESERVED_PATHS.contains(&joined.as_str()) {
+            return false;
+        }
+        self.prunes_dir(rel)
+    }
+
     /// May a traversal skip `rel_dir` and everything beneath it WITHOUT
     /// changing the hash domain?
     ///

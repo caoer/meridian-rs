@@ -295,7 +295,7 @@ fn live_serve(registry: &Registry, ws: &Path, request: &ScriptArgs, entry: &str)
             ws: fs::WorkspaceRoot(ws.to_path_buf()),
             ws_path: ws.to_path_buf(),
             root: wire::Root(entry.to_owned()),
-            deadline,
+            deadline: std::cell::Cell::new(deadline),
             actor: request.actor.clone().unwrap_or_default(),
             now: request.now.clone(),
             // Decode wall: effects ⇒ invocation present.
@@ -349,7 +349,11 @@ struct LiveHost<'a> {
     ws: fs::WorkspaceRoot,
     ws_path: std::path::PathBuf,
     root: wire::Root,
-    deadline: Instant,
+    /// The script clock's deadline. A cell because a live `run()` pushes it
+    /// forward by the run's own elapsed — the run plane's walks and child are
+    /// metered on the run plane's own budget (`run.timeout_secs`), never the
+    /// caller's script clock (dogfood r2 D-USER F8).
+    deadline: std::cell::Cell<Instant>,
     actor: String,
     now: Option<String>,
     invocation: String,
@@ -363,7 +367,7 @@ struct LiveHost<'a> {
 
 impl LiveHost<'_> {
     fn within_deadline(&self, what: &str) -> Result<(), effects::EffectFault> {
-        if Instant::now() > self.deadline {
+        if Instant::now() > self.deadline.get() {
             return Err(effects::EffectFault {
                 reason: format!(
                     "the script entry's wall clock elapsed before {what} — budgets bind \
@@ -386,7 +390,7 @@ impl ScriptHost for LiveHost<'_> {
             section: None,
             reason,
         };
-        if Instant::now() > self.deadline {
+        if Instant::now() > self.deadline.get() {
             return Err(fault("the script entry's wall clock elapsed".to_owned()));
         }
         let doc = self.load_live(path).map_err(&fault)?;
@@ -405,7 +409,7 @@ impl ScriptHost for LiveHost<'_> {
             section: Some(section.to_owned()),
             reason,
         };
-        if Instant::now() > self.deadline {
+        if Instant::now() > self.deadline.get() {
             return Err(fault("the script entry's wall clock elapsed".to_owned()));
         }
         let doc = self.load_live(path).map_err(&fault)?;
@@ -497,6 +501,12 @@ impl ScriptHost for LiveHost<'_> {
         // Delta honesty (§ A.7 effects paragraph): a live run() mints per
         // committed batch through the same sink seam as the § A.8 op arm.
         let sink = crate::delta_sink::RingSink::new(self.registry.ring(&self.ws_path));
+        // The clock stops while the run plane executes: admission was checked
+        // above; the dispatch below — its walks, its child — is bounded by the
+        // run plane's own `run.timeout_secs`, and its elapsed pushes the
+        // script deadline forward so it never costs the caller's clock. The
+        // run COUNT stays bounded by the kernel's run ceiling.
+        let started = Instant::now();
         let row = crate::run_op::row_for_target(
             &self.ws,
             &self.ws_path,
@@ -506,6 +516,7 @@ impl ScriptHost for LiveHost<'_> {
             self.now.as_deref(),
             &sink,
         );
+        self.deadline.set(self.deadline.get() + started.elapsed());
         self.acts.borrow_mut().push((
             self.reads_seen.get(),
             effects::trace::TraceEntry::Ran(effects::trace::RanEntry {
@@ -530,7 +541,10 @@ impl ScriptHost for LiveHost<'_> {
         // The dial deadline caps at the REMAINING wall clock: the harness
         // verb may park up to its own waiter bound, and this call never
         // outlives the entry's budget.
-        let remaining = self.deadline.saturating_duration_since(Instant::now());
+        let remaining = self
+            .deadline
+            .get()
+            .saturating_duration_since(Instant::now());
         token_count_dial(endpoint, text, remaining)
             .map_err(|reason| refuse(format!("token_count: {reason}")))
     }
@@ -1371,6 +1385,91 @@ mod tests {
             moved.fm.get("status").map(String::as_str),
             Some("parked"),
             "out-of-domain reads are LIVE — the pin never covered this file"
+        );
+    }
+}
+
+#[cfg(test)]
+mod run_charging_tests {
+    //! run-walk-real-roots (dogfood r2 D-USER F8): a live `run()`'s execution
+    //! is metered on the run plane's own budget, never the script clock. The
+    //! module-grain pin — the wire harness cannot place a deadline.
+
+    use super::*;
+    use crate::state::StateStore;
+    use std::fs::{create_dir_all, write};
+    use std::time::{Duration, Instant};
+
+    const TASKS: &str = "\
+---
+task.nap: \"[[#^b1]]\"
+---
+
+# Tasks
+
+```bash
+sleep 0.5
+```
+^b1
+";
+
+    /// The script clock admits a `run()` and then STOPS while the run plane
+    /// executes: the run's own elapsed — its walks and its child — never
+    /// costs the caller's wall clock. Before the fix, a run outliving the
+    /// remaining clock made every later act fault (`wall clock elapsed
+    /// before a live put`) even though the program's own compute was
+    /// milliseconds.
+    #[cfg(unix)]
+    #[test]
+    fn a_live_runs_execution_never_costs_the_script_clock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_root = tmp.path().join("cache");
+        create_dir_all(&cache_root).unwrap();
+        let registry = Registry::new(
+            StateStore::new(tmp.path().join("state.json")),
+            cache_root,
+            Vec::new(),
+        );
+        let ws = tmp.path().join("ws");
+        create_dir_all(&ws).unwrap();
+        write(ws.join("tasks.md"), TASKS).unwrap();
+        let ws = std::fs::canonicalize(&ws).unwrap();
+        registry.warm_or_build(&ws).expect("entry pass");
+        let world = registry.engine_snapshot(&ws).expect("pinned world");
+        let entry = world.at_fingerprint.0.clone();
+
+        // A budget the 0.5s nap CANNOT fit inside: only stopping the clock
+        // during the run's execution lets the next act through.
+        let host = LiveHost {
+            registry: &registry,
+            ws: fs::WorkspaceRoot(ws.clone()),
+            ws_path: ws.clone(),
+            root: wire::Root(entry),
+            deadline: std::cell::Cell::new(Instant::now() + Duration::from_millis(250)),
+            actor: String::new(),
+            now: None,
+            invocation: "scr-t1".to_owned(),
+            token_count_endpoint: None,
+            run_seq: std::cell::Cell::new(0),
+            reads_seen: std::cell::Cell::new(0),
+            acts: std::cell::RefCell::new(Vec::new()),
+        };
+        let mut host = host;
+        let row = host
+            .run_live(
+                "tasks.md",
+                Some("nap"),
+                Vec::new(),
+                std::collections::BTreeMap::default(),
+                false,
+                1,
+            )
+            .expect("the run is admitted and answers a row");
+        assert!(row.is_object(), "a § A.8 row came back: {row}");
+        assert!(
+            host.within_deadline("a live put").is_ok(),
+            "the run plane's own elapsed must not cost the script clock — \
+             the act AFTER a long run is still admitted"
         );
     }
 }
