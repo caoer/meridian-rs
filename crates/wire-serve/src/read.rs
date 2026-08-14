@@ -182,7 +182,11 @@ pub fn composed_read(
 ) -> Result<ResponseBody, Box<ErrorBody>> {
     let facts = wire_map::facts::read_facts(&wire_map::project_toc(doc), doc.raw.as_bytes());
     let file_rev = doc.root.node_rev.0.clone();
-    let words_total: u64 = facts.iter().map(|f| f.words).sum();
+    // The file's own word count, off its raw bytes — never a sum of the toc
+    // rows. A row's `words` is subtree-inclusive, so summing rows counts every
+    // descendant once per ancestor level: the ~2x banner a reader budgets
+    // against (D-USER r2 F3). One counter: `facts::words_total`.
+    let words_total: u64 = wire_map::facts::words_total(doc.raw.as_bytes());
     let display = params.display_path.as_deref().unwrap_or(path.0.as_str());
     let frag: &[wire::HpathSeg] = params.frag.as_deref().unwrap_or(&[]);
     // `sections`'s presence is the mode. Absent → the toc read; present → a
@@ -400,13 +404,11 @@ pub fn props_of(doc: &model::Document) -> Vec<wire::ReadProp> {
 }
 
 /// The composed read's own whole-file word count, published for the § A.7
-/// in-process serve — the same `words_total` sum `composed_read` serves, so
-/// the script face's `words` agrees across lanes.
+/// in-process serve — the same `facts::words_total` derivation
+/// `composed_read` serves, so the script face's `words` agrees across lanes.
 #[must_use]
 pub fn words_of(doc: &model::Document) -> usize {
-    let facts = wire_map::facts::read_facts(&wire_map::project_toc(doc), doc.raw.as_bytes());
-    let total: u64 = facts.iter().map(|f| f.words).sum();
-    usize::try_from(total).unwrap_or(usize::MAX)
+    usize::try_from(wire_map::facts::words_total(doc.raw.as_bytes())).unwrap_or(usize::MAX)
 }
 
 /// handed quote bytes it never asked about. `span`/`prop_rev` stay over the
@@ -1004,7 +1006,7 @@ fn composed_sections(
         .map(|row| {
             let content = wire_map::facts::section_content(row.fact, doc.raw.as_bytes());
             let content = String::from_utf8_lossy(&content).into_owned();
-            let words = wire_map::gotext::fields_count(&content) as u64;
+            let words = wire_map::facts::section_words(row.fact, doc.raw.as_bytes());
             wire::ReadSectionOut {
                 sel: row.sel.clone(),
                 hpath: row.fact.hpath.clone(),

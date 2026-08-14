@@ -19,8 +19,7 @@
 
 use std::collections::BTreeMap;
 
-use wire_map::facts::ReadFact;
-use wire_map::gotext::fields_count;
+use wire_map::facts::{ReadFact, section_words};
 
 pub mod toon;
 pub mod walk;
@@ -247,7 +246,13 @@ impl Renderer for ToonRenderer {
                         n: row.fact.n.clone(),
                         title: row.fact.title.clone(),
                         sec_rev: row.fact.sec_rev.clone(),
-                        words: fields_count(&content) as u64,
+                        // The section's own content count, off the RAW bytes
+                        // (`facts::section_words`) — the ONE counter every face
+                        // shares. Counting `content` here would publish a number
+                        // that moves with elision and decoration while the
+                        // section's rev stands still (F-S4: two faces, one rev,
+                        // two counts).
+                        words: section_words(row.fact, doc.raw.as_bytes()),
                         content,
                     });
                 }

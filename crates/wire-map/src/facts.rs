@@ -288,6 +288,29 @@ pub fn section_content(fact: &ReadFact, raw: &[u8]) -> Vec<u8> {
     }
 }
 
+/// The ONE section-grain word count: fields over the section's own raw
+/// content bytes ([`section_content`]) — the same bytes a `put` is built
+/// from. Every face that publishes a section's `words` derives it here, so
+/// the structured plane and the rendered projection cannot answer one
+/// question with two numbers (F-S4): elision and decoration change what the
+/// reader is SHOWN, never what the section HOLDS.
+#[must_use]
+pub fn section_words(fact: &ReadFact, raw: &[u8]) -> u64 {
+    fields_count(&String::from_utf8_lossy(&section_content(fact, raw))) as u64
+}
+
+/// The ONE whole-file word count: fields over the document's raw bytes —
+/// `wc -w` of the file, the number a reader cross-checks against.
+///
+/// Never a sum of toc rows. A row counts its heading-excluded but
+/// SUBTREE-INCLUSIVE content span, so summing rows counts every descendant
+/// once per ancestor level — a ~2x lie on any nested document, and the
+/// banner is what readers budget from (D-USER r2 F3).
+#[must_use]
+pub fn words_total(raw: &[u8]) -> u64 {
+    fields_count(&String::from_utf8_lossy(raw)) as u64
+}
+
 /// `stripAnchorMarker` (`readsidecar.go:384`): remove a trailing `" ^id"` /
 /// `"^id"` block marker (space/tab-padded) from an inline-anchor block span;
 /// a span without the suffix returns UNCHANGED (not even right-trimmed).
