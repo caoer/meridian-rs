@@ -237,12 +237,13 @@ pub(crate) fn dispatch(tail: &[String]) -> Result<(), Fail> {
     })?;
 
     // Deny-by-default on starlark; bash is unsandboxed, and under check-*/verify-* refuses on
-    // the run leg.
-    let authority = caps::resolve_authority(&doc, task, resolved.block.lang, &conventions)
+    // the run leg. The value feeds no leg below (execute and rehearse both re-resolve inside
+    // the plane); the call stands for its refusal, so both legs teach caps faults pre-run.
+    caps::resolve_authority(&doc, task, resolved.block.lang, &conventions)
         .map_err(|e| fail_caps(&e))?;
 
     if parsed.dry {
-        return dry(&root, &parsed, &resolved, &authority);
+        return dry(&root, declaring_root, &parsed);
     }
 
     execute(&root, declaring_root, &parsed, task)
@@ -500,53 +501,39 @@ fn list_tasks(
     Ok(())
 }
 
-/// `--dry` — the no-apply inspection leg, split by fence language.
+/// `--dry` — the no-apply inspection leg: the plane's own rehearsal seam
+/// ([`runner::rehearse`]) runs EVERY gate the live run enforces — address →
+/// contract → caps → eval → the executor's choke-point admission — and
+/// applies nothing. Refusals ride [`fail_runner`], the live mapping, so a
+/// rehearsed refusal reads exactly as the live one (dogfood r2 F2).
 fn dry(
     root: &fs::WorkspaceRoot,
+    declaring_root: Option<&Path>,
     parsed: &RunArgs,
-    resolved: &ResolvedTask,
-    authority: &Authority,
 ) -> Result<(), Fail> {
-    match resolved.block.lang {
-        TaskLanguage::Starlark => dry_starlark(root, parsed, resolved, authority),
-        TaskLanguage::Bash => {
-            dry_bash(parsed, resolved);
-            Ok(())
-        }
-    }
-}
-
-/// Starlark `--dry`: the hermetic kernel evaluates the block through the same U5 `evaluate` seam
-/// the real run uses and the full effect set prints. Nothing applies; an eval fault is a
-/// run-plane failure (exit 1).
-fn dry_starlark(
-    root: &fs::WorkspaceRoot,
-    parsed: &RunArgs,
-    resolved: &ResolvedTask,
-    authority: &Authority,
-) -> Result<(), Fail> {
-    let task = &resolved.binding.name;
-    let (_, root_at_eval) = fs::domain_snapshot(root)
-        .map_err(|e| Fail::tool(format!("corpus snapshot failed: {e}")))?;
-    let dispatch = run::dispatch_starlark::StarlarkDispatch {
+    let spec = runner::RehearseSpec {
         page: &parsed.page,
-        task,
-        task_rev: &resolved.task_rev,
-        source: &resolved.block.source,
+        task: parsed.task.as_deref(),
         args: parsed.args.clone(),
         env: parsed.env.clone(),
         invocation_id: DRY_INVOCATION,
         now: None,
-        root_at_eval: &root_at_eval,
-        authority,
-        receipt: None,
-        takeover: false,
+        declaring_root,
         limits: EvalLimits::default(),
         actor: None,
-        delta: None, // dry: evaluate-only, nothing commits
     };
-    let effects =
-        run::dispatch_starlark::evaluate(&dispatch).map_err(|e| fail_run(format!("eval: {e}")))?;
+    let rehearsal = runner::rehearse(root, &spec).map_err(|e| fail_runner(&e))?;
+    match rehearsal.outcome {
+        runner::Rehearsed::Starlark { effects } => {
+            dry_starlark(parsed, &rehearsal.task, &effects);
+        }
+        runner::Rehearsed::Bash { source } => dry_bash(parsed, &rehearsal.task, &source),
+    }
+    Ok(())
+}
+
+/// Starlark `--dry` rendering: the full effect set prints, nothing applied.
+fn dry_starlark(parsed: &RunArgs, task: &str, effects: &[effects::Effect]) {
     match parsed.format() {
         Format::Json => {
             println!(
@@ -579,13 +566,11 @@ fn dry_starlark(
             }
         }
     }
-    Ok(())
 }
 
-/// Bash `--dry`: show the block and refuse to exec. Bash under `--dry` produces no descriptors —
-/// only running it would, and inventing them would be fiction.
-fn dry_bash(parsed: &RunArgs, resolved: &ResolvedTask) {
-    let task = &resolved.binding.name;
+/// Bash `--dry` rendering: show the block and refuse to exec. Bash under `--dry` produces no
+/// descriptors — only running it would, and inventing them would be fiction.
+fn dry_bash(parsed: &RunArgs, task: &str, source: &str) {
     let class = TaskLanguage::Bash.guarantee_class().as_str();
     match parsed.format() {
         Format::Json => {
@@ -599,7 +584,7 @@ fn dry_bash(parsed: &RunArgs, resolved: &ResolvedTask) {
                     "dry": true,
                     "executed": false,
                     "effects": caps::UNDECLARED_EFFECTS,
-                    "source": resolved.block.source,
+                    "source": source,
                 }))
                 .expect("json render")
             );
@@ -608,7 +593,7 @@ fn dry_bash(parsed: &RunArgs, resolved: &ResolvedTask) {
             println!("dry run: task '{task}' (bash, {class}) — NOT executed");
             println!("effects: {} (unsandboxed shell)", caps::UNDECLARED_EFFECTS);
             println!("--- block ---");
-            for line in resolved.block.source.lines() {
+            for line in source.lines() {
                 println!("  {line}");
             }
             println!("--- end ---");
