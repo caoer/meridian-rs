@@ -9,10 +9,11 @@
 //! The law under test: a LOCAL client on its own cache root compares
 //! `hello.identity.build` (already on the hello frame it receives) against its
 //! own baked `MRD_BUILD_SHA`, whole token. Equal → serve. Anything else —
-//! a different token, or no identity published — refuses, naming both builds
-//! and the remedy (restart the daemon; the next call auto-starts the current
-//! build). Zero extra round trips: the comparison is in-memory on a frame the
-//! single dial already parsed.
+//! a different token, or no identity published — refuses, naming both builds,
+//! the reason, and fitted suggestions (ZT ruling 2026-08-14: a teaching
+//! explains WHY and offers suggestions by applicability, never one demanded
+//! command). Zero extra round trips: the comparison is in-memory on a frame
+//! the single dial already parsed.
 //!
 //! Harness: an in-process `RunningServer` bound at the sandbox's DERIVED socket
 //! path (`$XDG_CACHE_HOME/meridian/registry/daemon.sock`), with `build_sha`
@@ -144,7 +145,56 @@ fn read_refuses_on_foreign_identity_and_names_both_builds() {
     assert!(err.contains("SKEW"), "the one skew voice: {err}");
     assert!(
         err.to_lowercase().contains("restart"),
-        "the refusal carries the remedy: {err}"
+        "the refusal carries a restart suggestion: {err}"
+    );
+}
+
+/// ZT ruling (2026-08-14): a refusal teaching explains WHY and offers fitted
+/// suggestions — never a single demanded command, because one imperative does
+/// not apply to all callers (a caller who does not own the resident, or is on
+/// a foreign cache root, must not kill it; a managed install owns its own
+/// restart). Teachings address users; suggestions carry their applicability
+/// ("when you own …"), never authority ("only the owner may …").
+#[test]
+fn teaching_explains_why_and_offers_fitted_suggestions_never_one_imperative() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let _daemon = sb.daemon(Some(FOREIGN_BUILD));
+
+    let out = sb.run(&ws, &["read", "doc.md"]);
+    let err = stderr_of(&out);
+
+    // Reason first: the teaching explains the keying that makes builds skew
+    // before it suggests anything.
+    assert!(
+        err.contains("Why:"),
+        "the teaching leads with the reason: {err}"
+    );
+    assert!(
+        err.contains("cache root"),
+        "the reason names the socket's cache-root keying: {err}"
+    );
+    // Fitted suggestions, each opening with its applicability condition.
+    assert!(
+        err.contains("when you own"),
+        "own-the-resident case, applicability phrasing: {err}"
+    );
+    assert!(
+        err.contains("daemon.pid"),
+        "the owner's restart suggestion still names the pidfile: {err}"
+    );
+    assert!(
+        err.to_lowercase().contains("rerun"),
+        "managed-install case suggests rerunning the step that owns the restart duty: {err}"
+    );
+    assert!(
+        err.to_lowercase().contains("report"),
+        "not-the-owner case suggests reporting to the daemon's operator: {err}"
+    );
+    // The old demand register is gone.
+    assert!(
+        !err.contains("Restart the daemon and rerun"),
+        "no single demanded command: {err}"
     );
 }
 
