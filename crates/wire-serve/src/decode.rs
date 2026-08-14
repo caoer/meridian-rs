@@ -157,25 +157,7 @@ pub fn decode(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody>> 
             check_fields(obj, op, &[])?;
             Ok(Op::Mounts)
         }
-        "walk" => {
-            // § A.10: the page, the direction toggle, the depth bound.
-            check_fields(obj, op, &["path", "down", "depth"])?;
-            let depth = obj
-                .get("depth")
-                .map(|_| req_u64(obj, op, "depth"))
-                .transpose()?
-                .map(|d| {
-                    u32::try_from(d).map_err(|_| {
-                        bad_request(&format!("`depth` on `{op}` exceeds the supported bound: {d}"))
-                    })
-                })
-                .transpose()?;
-            Ok(Op::Walk {
-                path: req_path(obj, op, "path")?,
-                down: opt_bool(obj, op, "down")?,
-                depth,
-            })
-        }
+        "walk" => decode_walk(obj),
         "read" => decode_read(obj),
         "check_write" => decode_check_write(obj),
         "splice" => decode_splice(obj, rev),
@@ -185,6 +167,27 @@ pub fn decode(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody>> 
         // §3.2: only genuinely unknown names land here.
         _ => Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp))),
     }
+}
+
+/// § A.10 `walk`: the page, the direction toggle, the depth bound.
+fn decode_walk(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
+    let op = "walk";
+    check_fields(obj, op, &["path", "down", "depth"])?;
+    let depth = obj
+        .get("depth")
+        .map(|_| req_u64(obj, op, "depth"))
+        .transpose()?
+        .map(|d| {
+            u32::try_from(d).map_err(|_| {
+                bad_request(format!("`depth` on `{op}` exceeds the supported bound: {d}"))
+            })
+        })
+        .transpose()?;
+    Ok(Op::Walk {
+        path: req_path(obj, op, "path")?,
+        down: opt_bool(obj, op, "down")?,
+        depth,
+    })
 }
 
 /// § A.7 `script` field set — the entry's own inputs and nothing else. No

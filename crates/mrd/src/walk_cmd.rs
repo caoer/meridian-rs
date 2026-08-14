@@ -156,7 +156,7 @@ fn voiced(mounts: Mounts) -> Mounts {
 /// the wire serve path read ONE owner; this spelling stays for the in-crate
 /// callers (`check`/`status`).
 pub(crate) fn lock_addressed_roots(docs: &BTreeMap<String, Document>) -> BTreeSet<addr::MountName> {
-    view::walk::lock_addressed_roots(docs)
+    walk::lock_addressed_roots(docs)
 }
 
 /// Every mount root the corpus's wikilink/embed targets name — the set of roots whose pages the
