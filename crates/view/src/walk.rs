@@ -433,8 +433,12 @@ fn step_selector(src: &str, edge: &LockItem) -> String {
 /// Canonical root-qualified address. Qualification is load-bearing: without it
 /// BFS walks ambient same-path (wrong document). Cross-root is a leaf by
 /// construction (`root:path` absent from ambient keys).
+///
+/// Display rides the live grammar — `path §selector`, never the retired
+/// `path#selector` join (ZT ruling 2026-08-14, walk-wire boundary: ONE
+/// grammar everywhere, display values included).
 fn edge_address(edge: &LockItem) -> String {
-    let canonical = canonical_ref(&edge.to_path, &edge.to_sel);
+    let canonical = display_ref(&edge.to_path, &edge.to_sel);
     match &edge.to_root {
         Some(root) => format!("{root}:{canonical}"),
         None => canonical,
@@ -645,6 +649,18 @@ fn canonical_ref(to_path: &str, to_sel: &str) -> String {
     }
 }
 
+/// The SERVED spelling of a target+selector pair: `path §selector` — the live
+/// grammar every teaching surface speaks since the stale-teaching sweep.
+/// [`canonical_ref`]'s `#` join stays internal (it feeds `Selector::parse`,
+/// the stored-plane grammar); it never rides a served row.
+fn display_ref(to_path: &str, to_sel: &str) -> String {
+    if to_sel.is_empty() {
+        to_path.to_string()
+    } else {
+        format!("{to_path} §{to_sel}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -820,7 +836,10 @@ mod tests {
         assert_eq!(
             report.entries,
             vec![WalkEntry {
-                selector: "22-01-session.md#seq-160".to_string(),
+                // Live grammar (2026-08-14 ruling): the SERVED row spells
+                // `path §selector`; the `#` in the pin spelling above is the
+                // stored plane's and stays.
+                selector: "22-01-session.md §seq-160".to_string(),
                 rev: Some(token),
                 color: Color::Grey(GreyReason::ImmutableRoot),
                 depth: 1,
@@ -963,6 +982,27 @@ mod tests {
         model::fingerprint::fingerprint(&d, &d.root)
             .expect("the fixture page has content")
             .into_string()
+    }
+
+    /// The served row's display grammar (ZT ruling 2026-08-14, walk-wire
+    /// boundary): a section-scoped claim spells `path §selector` — the
+    /// retired `path#selector` join never rides a served entry, whatever the
+    /// stored pin spelled.
+    #[test]
+    fn a_section_scoped_entry_spells_the_live_grammar_never_the_hash_join() {
+        let body = "# Target\n\ncontent\n";
+        let hex64 = "0".repeat(64);
+        let entry = only_entry(&pinned_corpus_ref(
+            "sources/target.md#Target",
+            &format!("fp1.span2.b3.{hex64}"),
+            body,
+        ));
+        assert_eq!(entry.selector, "sources/target.md §Target");
+        assert!(
+            !entry.selector.contains(".md#"),
+            "the retired join never rides a served row: {}",
+            entry.selector
+        );
     }
 
     /// Gate 1: five pin states render distinct labels.

@@ -2118,7 +2118,7 @@ op reached the plane. No aggregate boolean exists anywhere in the body:
 ```json
 {"id":9,"ok":true,"body":{"targets":[
  {"page":"rules/escalate.md","invocation":"run-1755100931421-4417-3-t0",
-  "receipt":"receipts/run.md#r-run-1755100931421-4417-3-t0",
+  "receipt":"receipts/run.md §^r-run-1755100931421-4417-3-t0",
   "dry":false, "task":"arm", "task_rev":"…", "guarantee":"hermetic",
   "state":"applied", "applied":[{"kind":"md.patch","domain":"…"}],
   "unexecuted":[], "caps":{"effective":["md.patch:rules/*"],
@@ -2260,7 +2260,7 @@ color/reason/detail.
 |---|---|
 | `page` | the walked page, echoed at page grain. Named `page`, not the walk plane's `root`: on this wire the body-level `root` key IS the fingerprint slot (the v3 projection renames it), and a page path is not a fingerprint |
 | `depth_bound` | the bound in effect, echoed; absent = unbounded |
-| `entries[]` | BFS order, ascending depth then discovery; `{depth, selector, rev?, color, reason?, detail?, teaching?}`. `selector` is the lock row's canonical address, `root:`-qualified when the claim crosses roots. `color` is the tone (`green`/`red`/`grey`); `reason` the stable word, absent exactly on green; `teaching` present only for colors that teach — the field never invents advice |
+| `entries[]` | BFS order, ascending depth then discovery; `{depth, selector, rev?, color, reason?, detail?, teaching?}`. `selector` is the lock row's canonical address, `root:`-qualified when the claim crosses roots; a section-scoped claim spells `path §selector` — the live grammar, never the retired `path#selector` join (ruling 2026-08-14: one grammar everywhere, display values included; the `#` spelling survives only on the stored/lock plane). `color` is the tone (`green`/`red`/`grey`); `reason` the stable word, absent exactly on green; `teaching` present only for colors that teach — the field never invents advice |
 | `revs_read[]` | `{path, doc_rev}` — the docs the listing rests on, path order. The listing is falsifiable against exactly these revs |
 | `excluded[]` | §12.1 enumerator clause, DOWN walks only: the blast-radius census names the markdown the hash domain left out instead of publishing a partial population as whole. Omitted when empty, and always on up — up drops nothing, naming an excluded ancestor by its correct path at a red edge |
 

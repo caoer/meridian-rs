@@ -242,8 +242,9 @@ fn a_threaded_actor_lands_in_the_plane_receipt_under_the_derived_anchor() {
     assert_eq!(rows[0]["state"], json!("applied"));
     assert_eq!(
         rows[0]["receipt"],
-        json!("receipts/run.md#r-run-778-1-t0"),
-        "the § A.8 receipt address"
+        json!("receipts/run.md §^r-run-778-1-t0"),
+        "the § A.8 receipt address, live grammar (2026-08-14 ruling): \
+         `path §^anchor`, never the retired `#` join"
     );
 
     let receipts = fs::read_to_string(ws.join("receipts/run.md")).unwrap();
