@@ -1,5 +1,5 @@
-//! C1 board-red projections + locked read face (d2 §2.1 / §2.3 / §5.3), mounted
-//! over [`crate::facts`] — never a fork of that contract.
+//! C1 board-red projections (d2 §2.1 / §2.3 / §5.3), mounted over
+//! [`crate::facts`] — never a fork of that contract.
 //!
 //! 1. **Pin projection** — pure parse of each page's `meridian-lock` into
 //!    `input_lock` rows ([`page_lock_items`]). Every row carries `src_doc_rev`
@@ -7,9 +7,6 @@
 //! 2. **`board_red`** — the one red view, reading the colour plane's reds from
 //!    the projected verdict. Default face, no optional pack. Legacy
 //!    `board_drift` / `board_unresolved` retired with the `node_rev` compare.
-//! 3. **[`lock_read_face`]** — `enable_external_access=false` +
-//!    `lock_configuration=true`: SQL packs have no write path and cannot
-//!    re-raise it (A10).
 //!
 //! `edge`/`claim` are not populated here.
 //!
@@ -162,31 +159,16 @@ pub fn create_read_face_schema(conn: &Connection) -> duckdb::Result<()> {
     conn.execute_batch(READ_FACE_SCHEMA_SQL)
 }
 
-/// Lock the read face as a capability (A10; §2.1):
-/// `enable_external_access=false` + `lock_configuration=true` — no
-/// `ATTACH`/`COPY`/external read, and settings cannot be re-raised.
-///
-/// Call AFTER schema + projections are loaded (ordinary INSERTs still work;
-/// only the external/write surface is frozen).
+/// Board-ready face: project `node` + `input_lock`, create board views.
 ///
 /// # Errors
-/// Propagates any `DuckDB` error from the two `SET`s.
-pub fn lock_read_face(conn: &Connection) -> duckdb::Result<()> {
-    conn.execute_batch("SET enable_external_access=false;\nSET lock_configuration=true;")
-}
-
-/// Locked, board-ready face: project `node` + `input_lock`, create board views,
-/// then lock. Refuses `ATTACH`/`COPY`/external access.
-///
-/// # Errors
-/// [`ViewError::Duckdb`] on schema, projection, or lock failure.
+/// [`ViewError::Duckdb`] on schema or projection failure.
 pub fn open_board(docs: &BTreeMap<String, Document>) -> Result<Connection, ViewError> {
     let conn = Connection::open_in_memory()?;
     facts::create_facts_schema(&conn)?;
     facts::project_nodes(&conn, docs)?;
     create_read_face_schema(&conn)?;
     project_input_locks(&conn, docs)?;
-    lock_read_face(&conn)?;
     Ok(conn)
 }
 

@@ -641,7 +641,6 @@ pub enum Op {
     /// resident engine (sql lifecycle-B ruling, 2026-08-14 — which knowingly
     /// supersedes §10.4's no-view-organ close for sql; the daemon is the
     /// file's single owner and the wire carries results, never a file path).
-    /// Always the `agent` execution profile: the wire IS the untrusted lane.
     Sql {
         /// The SQL statement, verbatim. One statement — multi-statement
         /// input silently drops all result sets but the last, so faces

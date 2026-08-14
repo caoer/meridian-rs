@@ -48,9 +48,29 @@ Every hash in this spec — node_rev, file leaf, interior, workspace fingerprint
 `node_rev = hex(blake3(node_span_bytes))[:16]` where `node_span_bytes = raw_file_bytes[span.start : span.end)` — the node's **span bytes exactly as issued** under the wire span laws (`wire-contract.md` §1 span sub-laws: raw disk bytes, UTF-8-valid files only, leaf block spans exclude the final line terminator).
 
 - For a **section** (heading ref via `resolve`): the span is heading-inclusive (`wire-contract.md` §1 span sub-laws — heading line through end of subtree), so `node_rev` covers the heading too. Consequence, deliberate: a heading rename invalidates the section's CAS token — a writer composing against `#Alpha` must notice `#Alpha` became `#Alpha2`. The content-only span (`content_span`, `wire-contract.md` §1 rev sub-laws) is a write-target convenience and mints no separate rev.
-- For **frontmatter**: the whole-block span (`---`…`---` inclusive, `wire-contract.md` §18 row 3 — span-lawed with the section family). Per-key spans mint their own node_rev today — the `fm_key` grain of the `wire-contract.md` §A.3 props plane: blake3 over the **full key grain span** (the key line plus its indented continuation lines, key name included, terminator-exclusive end), served as `prop_rev`. What remains future-only is the delta `keys:[{key, change, value_rev}]` sub-array (`wire-contract.md` §7.4).
+- For **frontmatter**: the whole-block span (`---`…`---` inclusive, `wire-contract.md` §18 row 3 — span-lawed with the section family). Per-key spans mint their own rev at the `fm_key` grain, spelled `prop_rev` — §2.1 is its law. What remains future-only is the delta `keys:[{key, change, value_rev}]` sub-array (`wire-contract.md` §7.4).
 - For any other node kind (`toc`/`extract` nodes — `wire-contract.md` §4.1/§4.3): its `wire-contract.md` §1 span, verbatim.
 - **No normalization of content.** No newline canonicalization, no trailing-space trim, no NFC. The span law already guarantees disk bytes = string bytes (UTF-8 refusal); hashing anything but the raw bytes would let two "equal" revisions denote different disk states — the exact corruption CAS exists to prevent.
+
+### 2.1 `prop_rev` — the per-key frontmatter CAS token
+
+`prop_rev = hex(blake3(fm_key_grain_span_bytes))[:16]` — same hash family (§1), same 16-hex width, same equality-only opacity as `node_rev`. It is not a second hash scheme; it is §2 applied at a second grain.
+
+**The grain.** `fm_key_grain_span` = the key line, extended over every indented continuation line of a block value. The key name is inside the span, the end excludes the last content line's terminator (§1 leaf law), and a blank line joins the grain only when a later indented line extends past it — trailing blanks belong to the inter-key gap. The scan stops at the next column-0 non-blank line or at the block end.
+
+**Why it exists beside the block-grain `node_rev`.** A frontmatter node's `node_rev` covers the whole `---`…`---` span, so **every key of a document shares one token** — measured over a 6586-document corpus, 6586/6586 multi-key documents. A `splice` that guards a single key with that token therefore refuses `cas_mismatch` whenever any *other* key moved, which on a live corpus is the common case: block grain answers "did this document's frontmatter move", never "did THIS key move". The two revs are additive and neither replaces the other. Reading the wrong one is a diagnosis error, not a race: a guarded miss at key grain is a real drift; a miss at block grain says nothing about the key.
+
+**One owner, three faces.** The token is computed in exactly one place — `model::resolve(doc, Ref::FmKey(key))`, which the write door already compares `if_node_rev` against. Every face **serves** that value and none recomputes it:
+
+| Face | Spelling |
+|---|---|
+| the write door's guard | `if_node_rev` on an `fm_key` target (`wire-contract.md` §4.7) |
+| the composed read | `props[].prop_rev` (`wire-contract.md` § A.3) |
+| the corpus projection | the `frontmatter.prop_rev` column (`mrd sql`) |
+
+A face that recomputed the hash would be a second owner of one fact, and the two would drift where they disagree — silently, because both answer 16 plausible hex characters. The projection's `frontmatter.node_rev` column keeps its block-grain meaning unchanged; `prop_rev` is additive next to it.
+
+**Stored form, never decoded.** `prop_rev` hashes source bytes under `wire-contract.md` § A.6.2: a guard token must distinguish `owner: ""` from `owner:`, and the value-plane decode (§ A.6.1) would collapse those two states into one.
 
 ## 3. File leaf hash — and why there is no per-file sub-merkle
 
