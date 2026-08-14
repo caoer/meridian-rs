@@ -81,6 +81,12 @@ pub struct Registry {
     /// `stat` per domain member instead of a re-read of the whole corpus.
     /// Same lifetime as the engine: dropped on idle-reap.
     domain_caches: Mutex<HashMap<PathBuf, fs::DomainCache>>,
+    /// § A.11 resident sql caches: the open `sql.duckdb` handle per
+    /// workspace, this daemon being each file's single owner. The CONNECTION
+    /// dies on idle-reap with the engine; the FILE deliberately survives —
+    /// its pin is content-derived, so trusting it across the gap is sound
+    /// (re-warm compares fingerprints before serving).
+    sql_stores: Mutex<HashMap<PathBuf, Arc<Mutex<view::store::SqlStore>>>>,
     /// G11 activity clock: request count + last request unix secs. Pre-warm
     /// backoff and idle-exit both read this.
     requests: AtomicU64,
@@ -145,6 +151,9 @@ impl Registry {
             prewarm_signatures: Mutex::new(HashMap::new()),
             // Cold: no memo; the first currency pass reads every member once.
             domain_caches: Mutex::new(HashMap::new()),
+            // Cold: no open sql handles; first `sql` op opens (or cold-builds)
+            // each workspace's file.
+            sql_stores: Mutex::new(HashMap::new()),
             requests: AtomicU64::new(0),
             // Clock starts at birth so idle-exit can age an unused daemon.
             last_request: AtomicU64::new(now_secs()),
@@ -388,6 +397,47 @@ impl Registry {
         engines.get(canonical).cloned()
     }
 
+    /// The workspace's resident sql cache handle (§ A.11), opened in its
+    /// storage drawer on first use — this daemon is the file's single owner.
+    /// `workspace` must be canonical (the hello bind supplies it).
+    ///
+    /// # Errors
+    /// The file cannot be opened or initialised ([`view::store::SqlStore::open`]).
+    pub(crate) fn sql_store(
+        &self,
+        workspace: &Path,
+    ) -> Result<Arc<Mutex<view::store::SqlStore>>, view::ViewError> {
+        let mut stores = self
+            .sql_stores
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(store) = stores.get(workspace) {
+            return Ok(Arc::clone(store));
+        }
+        let drawer = cache::drawer_dir(&self.cache_root, workspace);
+        let store = view::store::SqlStore::open(&drawer.join(view::store::SQL_CACHE_FILENAME))?;
+        let store = Arc::new(Mutex::new(store));
+        stores.insert(workspace.to_path_buf(), Arc::clone(&store));
+        Ok(store)
+    }
+
+    /// The workspace's current corpus root through the §12.2 leaf memo — one
+    /// `stat` per member, byte-reads only movers. The § A.11 post-result
+    /// currency pass.
+    ///
+    /// # Errors
+    /// I/O failure walking or reading the domain.
+    pub(crate) fn currency_root(&self, workspace: &Path) -> io::Result<model::MerkleRoot> {
+        let mut caches = self
+            .domain_caches
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        caches
+            .entry(workspace.to_path_buf())
+            .or_default()
+            .root(&fs::WorkspaceRoot(workspace.to_path_buf()))
+    }
+
     /// Workspace delta ring, created on first use. `workspace` must be
     /// canonical — S6 isolation key (hello bind supplies it). [`Arc`] so a
     /// parked subscriber never holds this map's lock.
@@ -628,6 +678,16 @@ impl Registry {
                 .unwrap_or_else(PoisonError::into_inner);
             for key in &reaped {
                 caches.remove(key);
+            }
+            drop(caches);
+            // The sql handle rides the same horizon; the FILE stays (its pin
+            // is content-derived, re-warm re-compares before serving).
+            let mut stores = self
+                .sql_stores
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            for key in &reaped {
+                stores.remove(key);
             }
         }
         reaped
