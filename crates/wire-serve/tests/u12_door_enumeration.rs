@@ -90,10 +90,18 @@ const DOORS: &[DoorPin] = &[
     // ---- wire-serve/write.rs — U12's own file, all five guarded ----
     DoorPin {
         file: WRITE_RS,
-        door_fn: "splice",
+        // The byte-landing body. `splice` itself is a thin coat since the
+        // cross-root pin ledger surface landed — it delegates to
+        // `splice_with_mints` and can land nothing itself, so the census
+        // follows the body that mints and discharges. Hollowing the coat is
+        // caught by `every_pinned_name_is_declared_exactly_once_in_its_file`
+        // (a renamed door) and by the mint-site census; a
+        // `splice_with_mints` losing its guard call fails here exactly as
+        // `splice` used to.
+        door_fn: "splice_with_mints",
         mint_fn: "build_after_doc",
         guard_fn: Some("translate_stored_candidate"),
-        label: "splice (via build_after_doc)",
+        label: "splice_with_mints (via build_after_doc)",
         class: Door::TranslatedAndGuarded,
     },
     DoorPin {
