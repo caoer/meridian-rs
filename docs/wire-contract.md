@@ -2135,11 +2135,15 @@ the row-12 debt is DISCHARGED).** Run applies on THIS op mint Deltas like
 every other daemon-side write: the plane's executor commits through its own
 seam (`fs::apply_batch`, unchanged), and at each committed batch the serve
 arm's delta sink assembles one frame at the §7.3 single constructor and
-advances the workspace ring **under the same write flock as the commit** —
-one committed batch = one root advance = one Delta (§7.1), the content page
-and the receipt file as two entries of ONE frame's `files`. Because the
-advance happens inside the flock, a detect cycle can never observe a run
-commit as unaccounted external change — no detector-cadence window exists.
+advances the workspace ring **under the workspace WRITE flock, held as a
+bracket around the commit and the mint** (amended 2026-08-14b: the run
+plane's own `run.lock` does not exclude the detector — run applies and wire
+splices do not otherwise serialize — so the bracket takes `write.lock`, the
+detector's and the choke-point's serialization point). One committed batch =
+one root advance = one Delta (§7.1), the content page and the receipt file
+as two entries of ONE frame's `files`. Because the detector reconciles under
+the same flock, a detect cycle can never observe a half-landed run commit or
+an un-advanced ring — no misattribution window exists.
 Identity on the frame is §9's: a supplied `actor` threads verbatim; absent,
 the frame carries the plane's own `run:<task>` self-label, the same fact the
 receipt's actor field attests — a governed run is never unattributable, so

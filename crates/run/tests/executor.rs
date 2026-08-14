@@ -176,7 +176,7 @@ fn append_section_lands_inside_the_section() {
 }
 
 #[test]
-fn joint_field_and_section_batch_synthesizes_event_without_node_names() {
+fn joint_field_and_section_batch_synthesizes_event_with_both_names() {
     let (_tmp, root) = workspace();
     let now = current_root(&root);
     let applied = apply(
@@ -206,8 +206,14 @@ fn joint_field_and_section_batch_synthesizes_event_without_node_names() {
         event.fields_changed.len(),
         event.sections_changed.len()
     );
-    assert!(event.fields_changed.is_empty(), "{event:?}");
-    assert!(event.sections_changed.is_empty(), "{event:?}");
+    // RATIFIED (sub-node-grain ruling, 2026-08-14): region-grain node deltas
+    // give the joint batch BOTH its identities.
+    assert_eq!(event.fields_changed, vec!["status".to_owned()], "{event:?}");
+    assert_eq!(
+        event.sections_changed,
+        vec!["Tasks#Log".to_owned()],
+        "{event:?}"
+    );
     assert_ne!(event.fingerprint_before, event.fingerprint_after);
     assert_eq!(event.depth, 1);
 }
