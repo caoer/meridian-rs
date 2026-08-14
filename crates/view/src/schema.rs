@@ -130,14 +130,23 @@ CREATE VIEW backlink AS                           -- inbound vault edges = resol
     -- from the source side alone. `dest_path IS NOT NULL` already excludes
     -- cross-root rows, since their destination is not a path in this corpus.
     SELECT dest_path AS path, src_path, kind, alias FROM link WHERE dest_path IS NOT NULL;
-CREATE VIEW dangling AS                            -- broken VAULT refs only (external excluded)
+CREATE VIEW dangling AS                            -- broken VAULT refs with NO exclusion explanation
     -- **A RESOLVED CROSS-ROOT EDGE IS NOT DANGLING.** `dest_path` is NULL for
     -- it by construction (its target is not a path in this corpus), so the
     -- `dest_root IS NULL` clause is what stops every working cross-vault link
     -- being reported broken. Pinned as a RED TEST, not left as a comment:
     -- `view/tests/u21_cross_root_link_rows.rs`.
+    -- **AN EXCLUDED TARGET IS NOT DANGLING EITHER** (ruling 2026-08-14): an
+    -- edge whose target is a real, deliberately-unhashed file (`exclusion`
+    -- stamped) is an authoring choice, not rot — mirror of the cross-root
+    -- clause above. Pinned in `view/tests/dangling_exclusion.rs`. Raw rows
+    -- stay reachable unchanged: `link WHERE dest_path IS NULL AND dest_root
+    -- IS NULL` is the escape hatch, and it is also where the stated limit
+    -- lives — a pathed spelling only a suffix walk could find (e.g.
+    -- `attachments/….xlsx`) is never stamped, so it stays visible here.
     SELECT src_path, target_raw FROM link
-     WHERE kind IN ('wikilink','embed') AND dest_path IS NULL AND dest_root IS NULL;
+     WHERE kind IN ('wikilink','embed') AND dest_path IS NULL AND dest_root IS NULL
+       AND exclusion IS NULL;
 CREATE VIEW card AS                                -- session tree as a board: pivot frontmatter
     SELECT d.path,
         max(fm.value) FILTER (fm.key = 'type')    AS type,
@@ -153,7 +162,11 @@ CREATE VIEW tag_all AS                             -- B2: the union — inline +
 
 /// Schema version in `_meridian_view.schema_version`. Mismatch ⇒ treat view as
 /// ABSENT (delete-don't-migrate).
-pub const SCHEMA_VERSION: i32 = 1;
+///
+/// `2`: `dangling` gained `AND exclusion IS NULL` (ruling 2026-08-14), and the
+/// shared mint's bare-name fallback changed `exclusion` content for identical
+/// corpora — either alone obligates the bump.
+pub const SCHEMA_VERSION: i32 = 2;
 
 /// Run the full round-1 DDL against `conn` (8 tables + 4 views).
 ///
