@@ -1299,3 +1299,80 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod run_charging_tests {
+    //! run-walk-real-roots (dogfood r2 D-USER F8): a live `run()`'s execution
+    //! is metered on the run plane's own budget, never the script clock. The
+    //! module-grain pin — the wire harness cannot place a deadline.
+
+    use super::*;
+    use crate::state::StateStore;
+    use std::fs::{create_dir_all, write};
+    use std::time::{Duration, Instant};
+
+    const TASKS: &str = "\
+---
+task.nap: \"[[#^b1]]\"
+---
+
+# Tasks
+
+```bash
+sleep 0.5
+```
+^b1
+";
+
+    /// The script clock admits a `run()` and then STOPS while the run plane
+    /// executes: the run's own elapsed — its walks and its child — never
+    /// costs the caller's wall clock. Before the fix, a run outliving the
+    /// remaining clock made every later act fault (`wall clock elapsed
+    /// before a live put`) even though the program's own compute was
+    /// milliseconds.
+    #[cfg(unix)]
+    #[test]
+    fn a_live_runs_execution_never_costs_the_script_clock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_root = tmp.path().join("cache");
+        create_dir_all(&cache_root).unwrap();
+        let registry = Registry::new(
+            StateStore::new(tmp.path().join("state.json")),
+            cache_root,
+            Vec::new(),
+        );
+        let ws = tmp.path().join("ws");
+        create_dir_all(&ws).unwrap();
+        write(ws.join("tasks.md"), TASKS).unwrap();
+        let ws = std::fs::canonicalize(&ws).unwrap();
+        registry.warm_or_build(&ws).expect("entry pass");
+        let world = registry.engine_snapshot(&ws).expect("pinned world");
+        let entry = world.at_fingerprint.0.clone();
+
+        // A budget the 0.5s nap CANNOT fit inside: only stopping the clock
+        // during the run's execution lets the next act through.
+        let host = LiveHost {
+            registry: &registry,
+            ws: fs::WorkspaceRoot(ws.clone()),
+            ws_path: ws.clone(),
+            root: wire::Root(entry),
+            deadline: Instant::now() + Duration::from_millis(250),
+            actor: String::new(),
+            now: None,
+            invocation: "scr-t1".to_owned(),
+            run_seq: std::cell::Cell::new(0),
+            reads_seen: std::cell::Cell::new(0),
+            acts: std::cell::RefCell::new(Vec::new()),
+        };
+        let mut host = host;
+        let row = host
+            .run_live("tasks.md", Some("nap"), Vec::new(), Default::default(), false, 1)
+            .expect("the run is admitted and answers a row");
+        assert!(row.is_object(), "a § A.8 row came back: {row}");
+        assert!(
+            host.within_deadline("a live put").is_ok(),
+            "the run plane's own elapsed must not cost the script clock — \
+             the act AFTER a long run is still admitted"
+        );
+    }
+}

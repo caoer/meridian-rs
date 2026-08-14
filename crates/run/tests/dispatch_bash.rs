@@ -646,3 +646,114 @@ fn without_a_pre_receipt_the_run_still_pins_a_locked_window_root() {
     };
     assert_eq!(*root_at_eval, root_before.0);
 }
+
+// ---- run-walk-real-roots (dogfood r2 D-USER F2): the run plane on a ----
+// ---- sessions-shaped root.                                           ----
+
+/// The sessions-root fixture: stranger symlinks in the live root's own shape —
+/// venv links under real `scratch*` dirs (a non-ASCII name among them),
+/// symlinked `bin` DIRECTORIES under results experiment dirs, and a dot-path
+/// snapshot link. Under the declared domain shape the whole plane comes back:
+/// the walk skips every stranger and the bash task RUNS.
+#[cfg(unix)]
+#[test]
+fn bash_runs_on_a_sessions_shaped_root_under_the_declared_domain_shape() {
+    let (tmp, root) = workspace();
+    let scratch = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.0.join("meridian")).unwrap();
+    std::fs::write(
+        root.0.join("meridian/domain.md"),
+        "---\nversion: 1\nignore:\n  - \"scratch*/\"\n  - \"bin/\"\n---\n\n# Domain\n\nScratch is ungoverned by definition; venv bin dirs are strangers' tooling.\n",
+    )
+    .unwrap();
+
+    let out_of_tree = tmp.path().join("stranger-target");
+    std::fs::create_dir_all(&out_of_tree).unwrap();
+    std::fs::write(out_of_tree.join("t.md"), "elsewhere\n").unwrap();
+
+    // 97-shape: venv file links (one with a non-ASCII name) under real scratch dirs.
+    let venv = root
+        .0
+        .join("year=2026/month=07/s1/results/team-g/scratch-r2-verify/venv/bin");
+    std::fs::create_dir_all(&venv).unwrap();
+    std::os::unix::fs::symlink(out_of_tree.join("t.md"), venv.join("\u{1D70B}thon")).unwrap();
+    let venv2 = root.0.join("year=2026/month=08/s2/scratch/venv/bin");
+    std::fs::create_dir_all(&venv2).unwrap();
+    std::os::unix::fs::symlink(out_of_tree.join("t.md"), venv2.join("python")).unwrap();
+    // 24-shape: the run dir's `bin` IS the symlink (a directory link).
+    std::fs::create_dir_all(root.0.join("results/u16-experiment/run-e1-h1")).unwrap();
+    std::os::unix::fs::symlink(
+        &out_of_tree,
+        root.0.join("results/u16-experiment/run-e1-h1/bin"),
+    )
+    .unwrap();
+    // dot-shape: a snapshot subtree in the dot gap.
+    std::fs::create_dir_all(root.0.join(".scratch-snap/run")).unwrap();
+    std::os::unix::fs::symlink(&out_of_tree, root.0.join(".scratch-snap/run/bin")).unwrap();
+
+    let outcome = dispatch_bash::run(
+        &root,
+        &dispatch_of("echo alive\nprintf 'end:1\\n' >&3\n", &scratch),
+        &mut Vec::new(),
+    )
+    .expect("under the declared domain shape the walk must not refuse");
+    assert!(
+        outcome.detection.is_clean(),
+        "the window verifies clean: {:?}",
+        outcome.detection
+    );
+    assert!(
+        matches!(outcome.status, ExecStatus::Exited { code: 0 }),
+        "the block really ran: {:?}",
+        outcome.status
+    );
+    assert!(
+        matches!(outcome.phase2, Phase2::Applied { .. }),
+        "phase 2 commits on the clean window: {:?}",
+        outcome.phase2
+    );
+}
+
+/// The same root WITHOUT the declared shape refuses — and the refusal is a
+/// count plus the first offender, not one mine per attempt: a caller can size
+/// the cleanup (or the missing domain shape) from one answer.
+#[cfg(unix)]
+#[test]
+fn the_dispatch_refusal_names_the_count_and_the_first_offender() {
+    let (tmp, root) = workspace();
+    let scratch = tempfile::tempdir().unwrap();
+
+    let out_of_tree = tmp.path().join("stranger-target");
+    std::fs::create_dir_all(&out_of_tree).unwrap();
+    std::fs::write(out_of_tree.join("t.md"), "elsewhere\n").unwrap();
+    let venv = root
+        .0
+        .join("year=2026/month=07/s1/results/team-g/scratch-r2-verify/venv/bin");
+    std::fs::create_dir_all(&venv).unwrap();
+    std::os::unix::fs::symlink(out_of_tree.join("t.md"), venv.join("\u{1D70B}thon")).unwrap();
+    let venv2 = root.0.join("year=2026/month=08/s2/scratch/venv/bin");
+    std::fs::create_dir_all(&venv2).unwrap();
+    std::os::unix::fs::symlink(out_of_tree.join("t.md"), venv2.join("python")).unwrap();
+    std::fs::create_dir_all(root.0.join("results/u16-experiment/run-e1-h1")).unwrap();
+    std::os::unix::fs::symlink(
+        &out_of_tree,
+        root.0.join("results/u16-experiment/run-e1-h1/bin"),
+    )
+    .unwrap();
+
+    let err = dispatch_bash::run(
+        &root,
+        &dispatch_of("echo alive\nprintf 'end:1\\n' >&3\n", &scratch),
+        &mut Vec::new(),
+    )
+    .expect_err("without the domain shape the strangers refuse the walk");
+    let text = err.to_string();
+    assert!(
+        text.contains("3 symlinked paths refused in exec-window snapshot"),
+        "the count is the claim; got: {text}"
+    );
+    assert!(
+        text.contains("first: results/u16-experiment/run-e1-h1/bin"),
+        "the first offender (sorted) is named; got: {text}"
+    );
+}
