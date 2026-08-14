@@ -20,6 +20,7 @@
 //! Register writes both; idle-reap drops only the entry.
 
 mod client;
+mod delta_sink;
 mod engine;
 mod mounts;
 mod protocol;

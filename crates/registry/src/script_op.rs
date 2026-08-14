@@ -483,6 +483,9 @@ impl ScriptHost for LiveHost<'_> {
             env,
             dry: Some(dry),
         };
+        // Delta honesty (§ A.7 effects paragraph): a live run() mints per
+        // committed batch through the same sink seam as the § A.8 op arm.
+        let sink = crate::delta_sink::RingSink::new(self.registry.ring(&self.ws_path));
         let row = crate::run_op::row_for_target(
             &self.ws,
             &self.ws_path,
@@ -490,6 +493,7 @@ impl ScriptHost for LiveHost<'_> {
             &invocation,
             (!self.actor.is_empty()).then_some(self.actor.as_str()),
             self.now.as_deref(),
+            &sink,
         );
         self.acts.borrow_mut().push((
             self.reads_seen.get(),
