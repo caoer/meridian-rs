@@ -144,7 +144,8 @@ the call count, so the refusal is the budget and nothing else.
 **Effects mode (added 2026-08-13, script-effects ruling; supersedes the
 same-day armed-run design, under which no code shipped).** A submission may
 carry `effects: […]` beside `dry`/`files`/`args`: the list declares which
-effect builtins the program may use. The closed set today is `run`; a
+effect builtins the program may use. The closed set's one home is the wire
+contract's § A.7 effects paragraph (today: `run`, `token_count`); a
 `mutex()` builtin mirroring fleet make-mutex semantics is recorded
 DO-NOT-BUILD, for later. **The flag switches the execution model:**
 
@@ -172,6 +173,17 @@ DO-NOT-BUILD, for later. **The flag switches the execution model:**
   last-writer-wins each other on one section, same as two shell scripts;
   the engine write flock keeps files structurally intact; exclusivity
   belongs to the coordination layer.
+- **`token_count(text)` (token_count ruling leg B, 2026-08-13)** answers
+  the text's real token cost as an int, measured at call time through the
+  harness endpoint the § A.7 frame binds (`token_count_endpoint`) — a
+  socket call wearing a function; the engine never counts tokens. ONE
+  measurement law: the string is measured verbatim (the tool face's
+  `{text}` arm) — no ref resolution, so the tool face's stored-vs-served
+  split cannot enter; compose with `read()` to measure served content. A
+  lane with no endpoint faults "unbound"; the endpoint's refusal faults
+  the program with its words carried whole; the dial deadline caps at the
+  remaining wall clock. A measurement, not an act: no trace entry — a
+  top-level binding echoes like any computed name.
 - **No rollback.** A mid-program fault leaves every prior act landed; the
   trace records how far the program got. The outcome word for a completed
   live program is `effects` (the vocabulary's one addition); `fault` keeps
