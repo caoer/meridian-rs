@@ -71,7 +71,9 @@ pub use check_eval::{CheckError, CheckLimits, CheckTelemetry};
 /// filename to name. A loaded [`Rule`] runs its check leg over a [`Change`],
 /// returning the [`CheckOutcome`]'s [`Refusal`]s; a refusal always cites its
 /// passing case.
-pub use declaration::{CheckOutcome, LoadError, Refusal};
+pub use declaration::{
+    CheckOutcome, LoadError, Refusal, expand_globs, glob_match, is_glob_pattern,
+};
 
 /// The HOOK capability (U1.3): the emit leg's declaration. A [`Hook`] carries the
 /// declared severity, scope, effect caps, per-eval budget, the VERBATIM `how:` block

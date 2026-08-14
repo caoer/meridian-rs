@@ -32,6 +32,10 @@ model = { workspace = true }
 # digest all live in `effects` so this crate and the CLI lane reach ONE
 # implementation of each.
 effects = { workspace = true }
+# § A.7 files[] pattern expansion (OQ3 ruling 2026-08-14): the entry pass
+# expands patterns through the ONE scope glob grammar — `policy` owns it, and
+# reaching it directly keeps a second implementation unmintable here.
+policy = { workspace = true }
 # § A.8 wire run serve (2026-08-13, run-crossing ruling): the op arm drives
 # the run plane's own seam (`run::runner::run`) per target — the serve path
 # consumes the plane, it never re-implements it (run-plane.md charter

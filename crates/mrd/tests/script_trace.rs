@@ -89,6 +89,7 @@ fn ok_eval(armed: Vec<ArmedEdit>, reads: Vec<ReadRecord>) -> ScriptEval {
         }),
         armed,
         recording: ScriptRecording {
+            expansions: Vec::new(),
             actor: "8ab41c02".to_owned(),
             reads,
         },
@@ -101,6 +102,7 @@ fn failed_eval(error: EvalError, armed: Vec<ArmedEdit>, reads: Vec<ReadRecord>) 
         outcome: Err(error),
         armed,
         recording: ScriptRecording {
+            expansions: Vec::new(),
             actor: "8ab41c02".to_owned(),
             reads,
         },

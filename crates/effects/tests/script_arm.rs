@@ -257,6 +257,56 @@ fn a_put_with_no_edit_kwarg_refuses() {
 // § One COMMIT per attempt; the arm-time multi_file_write_set law is retired)
 // ---------------------------------------------------------------------------
 
+/// Replay applies recorded § A.7 expansions to the ORIGINAL `files[]`: the
+/// pattern member substitutes its recorded match list, so the replayed
+/// binding is byte-identical to the live attempt's — the purity law with
+/// patterns included.
+#[test]
+fn replay_substitutes_recorded_expansions() {
+    let live_ctx = effects::ScriptCtx {
+        id: "script".to_owned(),
+        args: std::collections::BTreeMap::new(),
+        // The EXPANDED list, as the host bound it live.
+        files: vec!["tasks/a.md".to_owned(), "tasks/b.md".to_owned()],
+        effects: Vec::new(),
+    };
+    // No reads in the script, so an empty recording serves as the live host.
+    let empty = effects::ScriptRecording::default();
+    let mut host = effects::RecordedHost::new(&empty);
+    let mut eval = effects::eval_script(
+        "n = len(files)\nfirst = files[0]\n",
+        &live_ctx,
+        effects::ScriptLimits::default(),
+        &mut host,
+    );
+    assert!(eval.outcome.is_ok(), "{:?}", eval.outcome);
+    // The host stamps the entry fact after eval, as both lanes do.
+    eval.recording.expansions = vec![effects::ExpansionRecord {
+        pattern: "tasks/*.md".to_owned(),
+        matched: vec!["tasks/a.md".to_owned(), "tasks/b.md".to_owned()],
+    }];
+
+    // Replay with the ORIGINAL member list — the pattern, unexpanded.
+    let replay_ctx = effects::ScriptCtx {
+        id: "script".to_owned(),
+        args: std::collections::BTreeMap::new(),
+        files: vec!["tasks/*.md".to_owned()],
+        effects: Vec::new(),
+    };
+    let replayed = effects::replay_script(
+        "n = len(files)\nfirst = files[0]\n",
+        &replay_ctx,
+        effects::ScriptLimits::default(),
+        &eval.recording,
+    );
+    let live = eval.outcome.expect("live ok");
+    let back = replayed.outcome.expect("replay ok");
+    assert_eq!(
+        live.bindings, back.bindings,
+        "replayed bindings are byte-identical (n=2, first=tasks/a.md)"
+    );
+}
+
 #[test]
 fn a_second_content_path_arms_a_set() {
     let eval = run(r#"

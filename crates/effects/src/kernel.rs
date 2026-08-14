@@ -892,11 +892,13 @@ impl<'h> ScriptEntry<'h> {
         }
     }
 
-    /// Everything the host answered this attempt.
+    /// Everything the host answered this attempt. Expansion rows are entry
+    /// facts the CALLER stamps after eval (the kernel never expands).
     fn recording(&self) -> ScriptRecording {
         ScriptRecording {
             actor: self.actor.clone(),
             reads: self.reads.borrow().clone(),
+            expansions: Vec::new(),
         }
     }
 }

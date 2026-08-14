@@ -147,6 +147,11 @@ pub struct ArmedEntry {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TraceEntry {
+    /// A § A.7 `files[]` pattern expansion at entry — one row per pattern
+    /// member, rendered before the reads (expansion happens before
+    /// evaluation). Present so the binding is reconstructible and the
+    /// zero-match case observable; a typo'd pattern is visible here.
+    Expanded(crate::ExpansionRecord),
     /// A quiet read — comprehension, condition, loop body, function body.
     Read(ReadEntry),
     /// A top-level-statement read: `card = read(…)` binds and echoes.
@@ -437,11 +442,16 @@ impl ScriptTrace {
         };
         let committed = outcome == ScriptOutcome::Committed;
 
+        // Expansion rows open the trace: they happened at entry, before the
+        // first read, and the face renders them in that order.
         let mut trace: Vec<TraceEntry> = eval
             .recording
-            .reads
+            .expansions
             .iter()
-            .map(|read| {
+            .cloned()
+            .map(TraceEntry::Expanded)
+            .collect();
+        trace.extend(eval.recording.reads.iter().map(|read| {
                 let entry = ReadEntry {
                     line: read.line,
                     path: read.path.clone(),
@@ -452,8 +462,7 @@ impl ScriptTrace {
                     ReadPosition::Echo => TraceEntry::Echo(entry),
                     ReadPosition::Quiet => TraceEntry::Read(entry),
                 }
-            })
-            .collect();
+            }));
         trace.extend(eval.armed.iter().map(|armed| {
             let ArmedEdit {
                 path,
@@ -536,7 +545,8 @@ impl ScriptTrace {
     pub fn armed_entries(&self) -> impl Iterator<Item = &ArmedEntry> {
         self.trace.iter().filter_map(|entry| match entry {
             TraceEntry::Armed(armed) => Some(armed),
-            TraceEntry::Read(_)
+            TraceEntry::Expanded(_)
+            | TraceEntry::Read(_)
             | TraceEntry::Echo(_)
             | TraceEntry::Wrote(_)
             | TraceEntry::Ran(_) => None,

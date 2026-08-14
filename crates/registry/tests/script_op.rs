@@ -574,6 +574,51 @@ fn a_set_member_that_cannot_validate_refuses_the_whole_set() {
     assert_eq!(conn.fingerprint(), before, "nothing landed");
 }
 
+/// § A.7 patterns: a `files[]` member carrying `*` expands at entry against
+/// the entry world's hash-domain membership — the binding is the EXPANDED
+/// list, the trace opens with the recorded `{pattern, matched}` row, and a
+/// zero-match pattern is data (`no_effect`), never a refusal.
+#[test]
+fn a_files_pattern_expands_against_the_entry_world() {
+    let tmp = TempDir::new().unwrap();
+    let ws = seeded(&tmp);
+    let _server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(&test_config(&tmp).socket_path);
+    conn.hello_v3(&ws);
+
+    let resp = conn.call(&json!({
+        "id": 31, "op": "script",
+        "source": "n = len(files)\n",
+        "files": ["logs/*.md", "doc.md"],
+    }));
+    let trace = trace_of(&resp);
+    assert_eq!(trace["outcome"], json!("no_effect"), "trace: {trace}");
+    assert_eq!(
+        trace["trace"][0],
+        json!({"kind": "expanded", "pattern": "logs/*.md", "matched": ["logs/receipts.md"]}),
+        "the expansion row opens the trace: {trace}"
+    );
+    assert_eq!(
+        trace["bindings"]["n"],
+        json!("2"),
+        "the binding is the EXPANDED list (logs/receipts.md + doc.md): {trace}"
+    );
+
+    let resp = conn.call(&json!({
+        "id": 32, "op": "script",
+        "source": "n = len(files)\n",
+        "files": ["gone/*.md"],
+    }));
+    let trace = trace_of(&resp);
+    assert_eq!(trace["outcome"], json!("no_effect"), "zero matches is data");
+    assert_eq!(
+        trace["trace"][0]["matched"],
+        json!([]),
+        "the zero is observable, never silent: {trace}"
+    );
+    assert_eq!(trace["bindings"]["n"], json!("0"), "trace: {trace}");
+}
+
 /// `dry` rehearses: same trace shape, `no_effect`, no disk change, and the
 /// embedded rehearsal leg carries `fingerprint_after: null`.
 #[test]

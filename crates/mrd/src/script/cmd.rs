@@ -124,6 +124,17 @@ pub fn attempt(args: &[String], source: &str, door: &mut dyn Door) -> Result<Scr
 /// # Errors
 /// A transport failure, or a refusal that never reached evaluation.
 pub(crate) fn run(door: &mut dyn Door, parsed: &Script, source: &str) -> Result<ScriptTrace, Fail> {
+    // § A.7 patterns (OQ3 ruling 2026-08-14): expansion is the ENGINE's,
+    // against the daemon's entry world — never a CLI-private glob. A
+    // `--files` member carrying a pattern forwards the WHOLE attempt as one
+    // wire `script` op through the same door: the daemon pins the entry,
+    // expands (recording the rows), evaluates, and commits; the answer is
+    // the same ScriptTrace this lane assembles locally — one trace contract,
+    // one expansion site in the system.
+    if parsed.files.iter().any(|m| policy::is_glob_pattern(m)) {
+        return forward(door, parsed, source);
+    }
+
     // 1. The entry fingerprint (§4.7) — the premise the whole run is consistent
     //    with, and the value the commit will guard on.
     let entry = fingerprint(door)?;
@@ -210,6 +221,62 @@ pub(crate) fn run(door: &mut dyn Door, parsed: &Script, source: &str) -> Result<
         commit(door, parsed, &eval, &entry)
     };
     Ok(ScriptTrace::assemble(entry, &eval, leg))
+}
+
+/// Forward one whole attempt as the § A.7 wire `script` op — the pattern
+/// lane. The daemon owns the entry pin, the expansion, the evaluation, and
+/// the commit; the trace that comes back is the one contract both lanes
+/// speak, embedded verbatim.
+///
+/// # Errors
+/// A transport failure, an unparseable answer, or a §8 error frame (a
+/// refusal that never reached an entry — e.g. no workspace bound).
+fn forward(door: &mut dyn Door, parsed: &Script, source: &str) -> Result<ScriptTrace, Fail> {
+    let mut request = json!({"op": "script", "source": source});
+    if !parsed.files.is_empty() {
+        request["files"] = json!(parsed.files);
+    }
+    if !parsed.args.is_empty() {
+        request["args"] = json!(parsed.args);
+    }
+    if let Some(actor) = &parsed.actor {
+        request["actor"] = json!(actor);
+    }
+    if let Some(now) = &parsed.now {
+        request["now"] = json!(now);
+    }
+    if let Some((rpath, anchor)) = &parsed.receipt {
+        request["receipt"] = json!({"path": rpath, "anchor": anchor});
+    }
+    if let Some(pinned) = &parsed.if_fingerprint {
+        request["if_fingerprint"] = json!(pinned);
+    }
+    if let Some(digest) = &parsed.expect_armed {
+        request["expect_armed"] = json!(digest);
+    }
+    if parsed.dry {
+        request["dry"] = json!(true);
+    }
+    let line = door
+        .call(&request)
+        .map_err(|e| Fail::tool(format!("the daemon did not answer `script`: {e}")))?;
+    let frame = Frame::parse(&line).map_err(|e| Fail::tool(e.to_string()))?;
+    match (frame.ok, frame.body.as_ref(), frame.error.as_ref()) {
+        (true, Some(body), _) => serde_json::from_str::<ScriptTrace>(body.get()).map_err(|e| {
+            Fail::tool(format!(
+                "the daemon answered `script` with a trace this build cannot read ({e}) — \
+                 engine and CLI likely disagree on the trace shape; align their versions"
+            ))
+        }),
+        (false, _, Some(error)) => Err(Fail::tool(format!(
+            "`script` refused before any entry existed: {}",
+            error.get()
+        ))),
+        _ => Err(Fail::tool(
+            "the daemon's `script` answer violates the §8 frame shape (no body, no error)"
+                .to_owned(),
+        )),
+    }
 }
 
 /// Thread each armed plan row's CAS token — from the script's OWN recorded
@@ -628,6 +695,15 @@ fn print_human(trace: &ScriptTrace) {
         trace.entry_fingerprint,
         outcome_word(trace.outcome)
     );
+    for entry in &trace.trace {
+        if let super::TraceEntry::Expanded(row) = entry {
+            println!(
+                "  expanded {} -> {} file(s)",
+                row.pattern,
+                row.matched.len()
+            );
+        }
+    }
     for armed in trace.armed_entries() {
         let verb = if armed.committed { "wrote" } else { "armed" };
         println!("  {verb} {} (line {})", armed.path, armed.line);
@@ -887,6 +963,61 @@ mod tests {
         }
     }
 
+    /// A door that answers the § A.7 `script` op with a canned trace and
+    /// refuses every other op — the pattern lane forwards EVERYTHING, so a
+    /// `fingerprint`/`toc`/`splice` trip here is a law violation.
+    struct ScriptOnly {
+        script_frames: Vec<Value>,
+    }
+
+    impl Door for ScriptOnly {
+        fn call(&mut self, request: &Value) -> io::Result<String> {
+            assert_eq!(
+                request["op"], "script",
+                "the pattern lane forwards the WHOLE attempt as one script op — \
+                 it spends no other trip: {request}"
+            );
+            self.script_frames.push(request.clone());
+            let trace = json!({
+                "entry_fingerprint": "b3:feedface",
+                "outcome": "no_effect",
+                "trace": [{"kind": "expanded", "pattern": "notes/*.md", "matched": []}],
+                "bindings": {"n": "0"},
+                "telemetry": {"fuel_used": 1, "mem_used": 1, "reads_used": 0, "wall_ms": 1},
+            });
+            Ok(json!({"id": null, "ok": true, "body": trace}).to_string())
+        }
+    }
+
+    /// § A.7 patterns (OQ3 ruling): a `--files` member carrying `*` forwards
+    /// the whole attempt through the daemon's script op — the engine expands,
+    /// never a CLI-private glob — and the daemon's trace comes back verbatim.
+    #[test]
+    fn a_files_pattern_forwards_the_attempt_to_the_daemon() {
+        let mut door = ScriptOnly {
+            script_frames: Vec::new(),
+        };
+        let argv = [
+            "--files".to_owned(),
+            "notes/*.md".to_owned(),
+            "--actor".to_owned(),
+            "8ab41c02".to_owned(),
+        ];
+        let trace = super::super::cmd::attempt(&argv, "n = len(files)\n", &mut door)
+            .expect("the forwarded attempt answers");
+        assert_eq!(door.script_frames.len(), 1, "exactly one wire trip");
+        let sent = &door.script_frames[0];
+        assert_eq!(sent["files"], json!(["notes/*.md"]), "the pattern rides verbatim");
+        assert_eq!(sent["actor"], json!("8ab41c02"));
+        assert_eq!(sent["source"], json!("n = len(files)\n"));
+        assert_eq!(trace.entry_fingerprint, "b3:feedface");
+        assert_eq!(
+            trace.bindings.get("n").map(String::as_str),
+            Some("0"),
+            "the daemon's trace is embedded verbatim"
+        );
+    }
+
     /// A toc read of `path`, publishing `file_rev` for the file and `note_rev`
     /// for its `Notes` section.
     fn toc_read(path: &str, file_rev: &str, note_rev: &str) -> ReadRecord {
@@ -924,6 +1055,7 @@ mod tests {
 
     fn recording(reads: Vec<ReadRecord>) -> ScriptRecording {
         ScriptRecording {
+            expansions: Vec::new(),
             actor: "8ab41c02".to_owned(),
             reads,
         }

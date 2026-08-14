@@ -148,11 +148,56 @@ pub(crate) fn path_in_scope(scope: &[String], path: &str) -> bool {
 /// Match a `path` against one obsidian-legal glob. Segments split on `/`; `**`
 /// matches zero or more whole segments; within a segment `*` matches any run of
 /// non-`/` characters and every other character is literal. This is the flat glob
-/// grammar `paths:` declares (rulings § scoping — the Claude-rules pattern).
-fn glob_match(pattern: &str, path: &str) -> bool {
+/// grammar `paths:` declares (rulings § scoping — the Claude-rules pattern), and
+/// the ONE glob grammar in the system — `files[]` pattern expansion (§ A.7)
+/// reuses it rather than minting a second.
+pub fn glob_match(pattern: &str, path: &str) -> bool {
     let pat: Vec<&str> = pattern.split('/').collect();
     let txt: Vec<&str> = path.split('/').collect();
     seg_match(&pat, &txt)
+}
+
+/// Whether a `files[]` member is a PATTERN: the grammar's only metacharacter
+/// is `*`, so a member containing one is a pattern and anything else is a
+/// literal path (§ A.7 patterns — no second detection grammar).
+#[must_use]
+pub fn is_glob_pattern(member: &str) -> bool {
+    member.contains('*')
+}
+
+/// Expand `files[]` members against a corpus membership listing (§ A.7
+/// patterns): each pattern member matches through [`glob_match`] — the one
+/// grammar — and literal members pass through verbatim. The expansion is
+/// merged, deduplicated and sorted (the same law the host applies to
+/// enumerated `files[]`). Returns the expanded list plus one
+/// `(pattern, matches)` row per pattern member in member order — the rows the
+/// script trace records and replay replays. Zero matches contributes zero
+/// paths: data, never a refusal (an idempotent sweep must succeed on an
+/// already-clean corpus).
+#[must_use]
+pub fn expand_globs(
+    members: &[String],
+    corpus: &[String],
+) -> (Vec<String>, Vec<(String, Vec<String>)>) {
+    let mut expanded: Vec<String> = Vec::new();
+    let mut rows: Vec<(String, Vec<String>)> = Vec::new();
+    for member in members {
+        if is_glob_pattern(member) {
+            let mut matched: Vec<String> = corpus
+                .iter()
+                .filter(|path| glob_match(member, path))
+                .cloned()
+                .collect();
+            matched.sort();
+            expanded.extend(matched.iter().cloned());
+            rows.push((member.clone(), matched));
+        } else {
+            expanded.push(member.clone());
+        }
+    }
+    expanded.sort();
+    expanded.dedup();
+    (expanded, rows)
 }
 
 /// Segment-list match with `**` spanning zero or more segments.
@@ -290,5 +335,42 @@ mod tests {
         assert!(path_in_scope(&scope, "notes/plan.md"));
         assert!(path_in_scope(&scope, "tasks/x/y.md"));
         assert!(!path_in_scope(&scope, "other/plan.md"));
+    }
+
+    // ── § A.7 files[] expansion over the same grammar ───────────────────────
+
+    fn corpus() -> Vec<String> {
+        ["tasks/a.md", "tasks/b.md", "notes/deep/c.md", "top.md"]
+            .map(String::from)
+            .to_vec()
+    }
+
+    #[test]
+    fn expansion_merges_literals_and_matches_dedup_sorted() {
+        let members = ["tasks/*.md", "top.md", "tasks/a.md"].map(String::from);
+        let (expanded, rows) = super::expand_globs(&members, &corpus());
+        // `tasks/a.md` matched AND named literally — once in the result.
+        assert_eq!(expanded, ["tasks/a.md", "tasks/b.md", "top.md"]);
+        assert_eq!(rows.len(), 1, "one row per PATTERN member only");
+        assert_eq!(rows[0].0, "tasks/*.md");
+        assert_eq!(rows[0].1, ["tasks/a.md", "tasks/b.md"]);
+    }
+
+    #[test]
+    fn zero_matches_is_a_recorded_row_not_a_refusal() {
+        let members = ["gone/*.md".to_string()];
+        let (expanded, rows) = super::expand_globs(&members, &corpus());
+        assert!(expanded.is_empty(), "zero contributes zero paths");
+        assert_eq!(rows, vec![("gone/*.md".to_string(), Vec::new())]);
+    }
+
+    #[test]
+    fn a_literal_is_never_matched_against_the_corpus() {
+        // A literal outside the corpus passes through verbatim — out-of-domain
+        // literals keep §12.1's law; only patterns consult membership.
+        let members = ["not/in/corpus.md".to_string()];
+        let (expanded, rows) = super::expand_globs(&members, &corpus());
+        assert_eq!(expanded, ["not/in/corpus.md"]);
+        assert!(rows.is_empty());
     }
 }
