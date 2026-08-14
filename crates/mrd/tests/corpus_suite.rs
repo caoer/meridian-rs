@@ -513,24 +513,25 @@ fn a_check_citation_cannot_vouch_for_a_same_named_hook() {
 }
 
 #[test]
-fn one_generation_is_one_batch_that_names_no_identity() {
-    // Production applies a mixed frontmatter+section emission as one atomic batch with no
-    // addressable Delta container; a proof that split it into single-edit writes would derive
-    // two rich events and fabricate the downstream fire this watcher is waiting for.
+fn one_generation_is_one_batch_that_names_both_identities() {
+    // RATIFIED (sub-node-grain ruling, 2026-08-14 — supersedes the
+    // names-no-identity pin): production applies a mixed frontmatter+section
+    // emission as ONE atomic batch whose synthesized event names BOTH its
+    // addressable identities, so the watcher fires on production truth — one
+    // case, one event, ONE real downstream edge. A proof that split the
+    // generation into single-edit writes would derive two events and fire
+    // the watcher twice; the single edge is the one-batch pin.
     let (code, report) = run_hook_json("mixed-generation");
-    assert_eq!(code, 1, "the watcher must go dead: {report}");
+    assert_eq!(code, 0, "the watcher fires and nothing is dead: {report}");
     assert_eq!(
         case(&report, "pull-the-trigger")["fired"],
         serde_json::json!(["mixed-emitter"])
     );
-    assert_eq!(
-        report["dead_rules"],
-        serde_json::json!(["hook:mixed-watcher"])
-    );
+    assert_eq!(report["dead_rules"], serde_json::json!([]));
     assert_eq!(
         report["quiescence"]["edges"],
-        serde_json::json!([]),
-        "one batch, one event, no invented downstream edge"
+        serde_json::json!([{"from": "mixed-emitter", "to": "mixed-watcher"}]),
+        "one batch, one event, one REAL downstream edge"
     );
     assert_eq!(report["quiescence"]["verdict"], "acyclic");
 }

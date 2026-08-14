@@ -603,3 +603,56 @@ fn a_bash_run_mints_one_frame_per_committed_batch() {
     );
     server.shutdown();
 }
+
+/// The lock-bracket regression gate (run-delta amendment 2026-08-14b): the
+/// run plane's `run.lock` does not exclude the detector, so without the
+/// WRITE-flock bracket a detect cycle under load classifies a half-landed
+/// run commit as external, actorless change (shed twice in one workspace
+/// suite run before the bracket). Twelve governed runs under a live
+/// subscriber — EVERY frame that names the run's files carries the actor.
+#[test]
+fn under_a_live_subscriber_every_run_frame_stays_attributed() {
+    let tmp = TempDir::new().unwrap();
+    let ws = seeded(&tmp);
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+
+    let mut sub = Conn::open(server.socket_path());
+    assert_eq!(sub.hello_v2(&ws)["ok"], json!(true));
+    assert_eq!(sub.sub(0)["ok"], json!(true));
+
+    let mut conn = Conn::open(server.socket_path());
+    conn.hello_v3(&ws);
+    for i in 0..12 {
+        let resp = conn.call(&json!({
+            "id": 60 + i, "op": "run", "invocation": format!("run-s{i}"),
+            "actor": "stress-actor",
+            "targets": [{"page": "tasks.md", "task": "fix-note", "args": [format!("v{i}")]}],
+        }));
+        assert!(
+            rows_of(&resp)[0].get("refusal").is_none(),
+            "run {i} landed: {resp}"
+        );
+    }
+
+    let mut governed = 0;
+    while let Some(frame) = sub.next_frame() {
+        let names_run_files = frame["delta"]["files"].as_array().unwrap().iter().any(|f| {
+            let p = f["path"].as_str().unwrap();
+            p == "tasks.md" || p == "receipts/run.md"
+        });
+        if names_run_files {
+            assert_eq!(
+                frame["delta"]["actor"],
+                json!("stress-actor"),
+                "a governed run frame lost its actor — the detector won the \
+                 bracket: {frame}"
+            );
+            governed += 1;
+        }
+        if governed >= 12 {
+            break;
+        }
+    }
+    assert!(governed >= 12, "only {governed} governed frames arrived");
+    server.shutdown();
+}

@@ -11,8 +11,9 @@ how: {}
 
 # mixed-watcher
 
-Watches for the identities a SPLIT proof would have invented. It must stay silent and
-be reported dead: production's single mixed batch names neither `status` nor `Log`.
+Watches the identities of the mixed batch. Since the sub-node-grain ruling the
+single production batch names BOTH `status` and `Log`, so this watcher fires once,
+on one event — a split proof would fire it twice, which the suite refuses.
 
 ```starlark
 def on_change(event):
