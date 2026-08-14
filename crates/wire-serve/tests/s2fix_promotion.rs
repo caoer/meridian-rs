@@ -7,7 +7,7 @@
 use wire::{Path as WPath, PinSpec, ResponseBody};
 use wire_serve::write::{SpliceArgs, splice};
 
-/// Pinning page with no lock block — first pin births one at EOF.
+/// Pinning page with no lock block — first pin births one as file preamble.
 const PINNER: &str = "---\ntitle: Plan\n---\n\n# Plan\n\ndraws from the guide.\n";
 
 fn workspace(pinner: &str, target: &str) -> (tempfile::TempDir, fs::WorkspaceRoot) {
