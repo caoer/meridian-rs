@@ -1945,9 +1945,34 @@ fleet make-mutex is recorded DO-NOT-BUILD).
 Combination walls, all `bad_request` at decode: `effects` beside `dry`,
 `if_fingerprint`, or `expect_armed` (a live program cannot rehearse and
 holds no premise and no armed set); `effects: []` (name an effect builtin or
-omit the field); an unknown effect name (the closed set today is `run`);
-`effects` without `invocation` (§9 — run identity derives host-minted:
-per-call ids are `<invocation>-r<K>`, K the 0-based `run()` call ordinal).
+omit the field); an unknown effect name (the closed set today is `run`,
+`token_count` — this sentence is the effects registry, one home); `effects`
+without `invocation` (§9 — run identity derives host-minted: per-call ids
+are `<invocation>-r<K>`, K the 0-based `run()` call ordinal).
+
+**The `token_count` effect (added 2026-08-13, token_count ruling leg B —
+the batch ruling's script seat).** The op gains one more OPTIONAL request
+field (the field wall grows 11 → 12): `token_count_endpoint`, a unix-socket
+path. Declaring `effects:["token_count"]` admits the builtin
+`token_count(text) -> int` — the text's real token cost, measured NOW.
+ONE measurement law: the string argument is measured VERBATIM — the tool
+face's `{text}` arm; the builtin resolves no refs and no sections, so the
+tool face's stored-vs-served split cannot enter it (a program measures
+exactly what its own `read()` served, or what it built). The
+engine never counts tokens (no tokenizer, no credentials — the
+architecture constraint of the parent ruling): the live host is an NDJSON
+socket client dialing the endpoint per call with the consumer daemon's own
+`token_count` verb frame, identityless, so the daemon's optional-session
+default picks the measuring instrument and the parent ruling's tokenizer
+provenance mechanism answers. A frame carrying the endpoint without the
+effect, or an explicit empty endpoint, refuses `bad_request` at decode; the
+effect declared with NO endpoint decodes — the builtin then faults
+"unbound" at call time, which is every lane that has no harness (the
+pure/entry-world host, the CLI wire client). The endpoint's own refusal
+faults the program with its words carried whole. The dial deadline caps at
+the REMAINING wall clock: the call never outlives the entry's budget. A
+measurement is not an act — no trace entry; a top-level
+`n = token_count(…)` rides the bindings echo like any computed name.
 
 Response on this model: a trace whose `outcome` is the NEW word `effects`
 when eval completed; `trace[]` records the program's acts in call order —
