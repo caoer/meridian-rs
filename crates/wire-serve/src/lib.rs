@@ -86,15 +86,15 @@ pub fn section_recovery(selector: &str, display_path: Option<&str>) -> String {
         (true, Some(p)) => format!(
             "Fix: block anchors ride the toc's `anchors[]` plane — list this document's \
              with a toc read of {p} (MCP read: sections[] omitted; CLI: `mrd read {p} \
-             --json`) and write through a listed `^id`. An id hosted outside that plane \
-             (a task, table, callout or paragraph line) is written through its containing \
-             section instead: the section's heading path with a `find` needle."
+             --json`) and write through a listed `^id`. Every body-hosted id is listed \
+             there (paragraph, list item, task, callout, table, fence, heading); only a \
+             frontmatter caret is not — its keys are written through the `props` plane."
         ),
         (true, None) => "Fix: block anchors ride the toc's `anchors[]` plane — list this \
              document's with a toc read (MCP read: sections[] omitted; CLI: `--json`) and \
-             write through a listed `^id`. An id hosted outside that plane (a task, \
-             table, callout or paragraph line) is written through its containing section \
-             instead: the section's heading path with a `find` needle."
+             write through a listed `^id`. Every body-hosted id is listed there \
+             (paragraph, list item, task, callout, table, fence, heading); only a \
+             frontmatter caret is not — its keys are written through the `props` plane."
             .to_owned(),
         (false, Some(p)) => format!(
             "Fix: list this document's section paths with a toc read of {p} (MCP read: \

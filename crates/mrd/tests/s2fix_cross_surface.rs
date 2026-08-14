@@ -1454,14 +1454,12 @@ fn f12_a_refused_pin_leaves_the_target_byte_identical_and_says_why() {
 fn r31_every_empty_span_form_refuses_at_the_pin_door() {
     let sb = sandbox();
     let ws = sb.workspace("r31-mint");
-    // Rows 1-3: an own-line anchor mid-file, at EOF, and indented.
-    write(&ws, "ownline_mid.md", "# T\n\nintro\n\n^midline\n\nmore\n");
-    write(&ws, "ownline_eof.md", "# T\n\nintro\n\n^ateof\n");
-    write(
-        &ws,
-        "ownline_ind.md",
-        "# T\n\nintro\n\n  ^indented\n\nmore\n",
-    );
+    // Rows 1-3: own-line anchors with NO preceding block — the one shape
+    // whose host still empties under R2/R2b (F-R4: a mid-file own-line
+    // anchor attaches to the block above and legitimately mints).
+    write(&ws, "ownline_mid.md", "^midline\n\nmore\n");
+    write(&ws, "ownline_eof.md", "^ateof");
+    write(&ws, "ownline_ind.md", "  ^indented\n\nmore\n");
     // Rows 4-5: the fragment-less whole-page refs.
     write(&ws, "empty.md", "");
     write(&ws, "anchors_only.md", "^a\n^b\n");
@@ -1472,9 +1470,9 @@ fn r31_every_empty_span_form_refuses_at_the_pin_door() {
     git(&ws, &["commit", "-qm", "init"]);
 
     for (form, refr) in [
-        ("1 own-line anchor, mid-file", "ownline_mid.md#^midline"),
-        ("2 own-line anchor, at EOF", "ownline_eof.md#^ateof"),
-        ("3 own-line anchor, indented", "ownline_ind.md#^indented"),
+        ("1 own-line anchor, document start", "ownline_mid.md#^midline"),
+        ("2 own-line anchor, orphan at EOF", "ownline_eof.md#^ateof"),
+        ("3 own-line anchor, indented orphan", "ownline_ind.md#^indented"),
         ("4 whole-page ref over an empty file", "empty.md"),
         (
             "5 whole-page ref over an anchors-only file",
@@ -1489,7 +1487,9 @@ fn r31_every_empty_span_form_refuses_at_the_pin_door() {
             "form {form}: the pin door must REFUSE, never colour: {said}"
         );
         assert!(
-            said.contains("no section addressed by") || said.contains("pin needs a SECTION"),
+            said.contains("no section addressed by")
+                || said.contains("pin needs a SECTION")
+                || said.contains("addresses no content to fingerprint"),
             "form {form}: the refusal is typed and teaches: {said}"
         );
         // Whole words only: the refusal for the whole-page forms legitimately
@@ -1536,7 +1536,7 @@ fn r31_a_stored_empty_span_pin_never_reads_green_on_any_plane() {
     let empty_digest = blake3::hash(b"").to_hex().to_string();
     let empty_token = format!("fp1.span2.b3.{empty_digest}");
 
-    write(&ws, "ownline.md", "# T\n\nintro\n\n^midline\n\nmore\n");
+    write(&ws, "ownline.md", "^midline\n\nmore\n");
     write(&ws, "empty.md", "");
     write(&ws, "anchors_only.md", "^a\n^b\n");
     for (page, refr) in [

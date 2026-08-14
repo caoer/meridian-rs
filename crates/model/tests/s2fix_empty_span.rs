@@ -60,7 +60,10 @@ enum Disposition {
 /// - [`Selector::Page`] — document root; empty/own-line-anchor-only files normalize empty.
 /// - [`Selector::Heading`] — section includes heading line (`#` unreachable by
 ///   removals); never empty.
-/// - [`Selector::Block`] — host line; own-line R2 removal empties the span; inline keeps host.
+/// - [`Selector::Block`] — host block; an own-line anchor with NO preceding
+///   block (document start — F-R4 attachment reaches everything else) keeps
+///   its marker line as host, and the R2 removal empties it; every attached
+///   or inline form keeps host bytes.
 /// - [`Selector::ImmutableRoot`] — grey before resolution.
 fn disposition(sel: &Selector) -> Disposition {
     match sel {
@@ -84,24 +87,35 @@ fn rows() -> Vec<Row> {
     let heading =
         |segs: &[&str]| Selector::Heading(segs.iter().map(|s| (*s).to_string()).collect());
     vec![
-        // Block: own-line anchor (R2/R2b empty)
+        // Block: own-line anchor with no preceding block — the only shape
+        // whose host still empties under the R2/R2b removal (an attached
+        // own-line anchor hosts the block it attaches to; F-R4)
         Row {
-            name: "bare #^anchor, own line mid-file (R2)",
-            raw: "# H\n\n^guideline\n\nbody\n",
+            name: "bare #^anchor, own line at document start (R2)",
+            raw: "^guideline\n\nbody\n",
             sel: block("guideline"),
             empties: true,
         },
         Row {
             name: "bare #^anchor, own line at EOF (R2b)",
-            raw: "# H\n\n^guideline",
+            raw: "^guideline",
             sel: block("guideline"),
             empties: true,
         },
         Row {
             name: "bare #^anchor, own line indented (R2)",
-            raw: "# H\n\n  ^guideline\n",
+            raw: "  ^guideline\n\nbody\n",
             sel: block("guideline"),
             empties: true,
+        },
+        // Block: own-line anchor mid-file — attached since F-R4, keeps the
+        // host block's bytes (this row used to empty when the host was the
+        // marker's own line)
+        Row {
+            name: "bare #^anchor, own line mid-file (attached)",
+            raw: "# H\n\n^guideline\n\nbody\n",
+            sel: block("guideline"),
+            empties: false,
         },
         // Block: inline forms keep host text
         Row {
@@ -243,12 +257,12 @@ fn the_owner_refuses_every_empty_form_and_mints_every_other() {
 /// so a shared digest cannot be an artifact of identical fixtures.
 #[test]
 fn two_unrelated_documents_share_one_empty_digest() {
-    let a = (
-        "# Alpha\n\n^one\n\nalpha body\n",
-        Selector::Block("one".into()),
-    );
+    // Document-start own-line anchors: the one shape whose host is still the
+    // marker's own line (nothing precedes to attach to — F-R4), so the R2
+    // removal empties the canonical span.
+    let a = ("^one\n\nalpha body\n", Selector::Block("one".into()));
     let b = (
-        "# Beta\n\n^two\n\nbeta body — utterly different\n",
+        "^two\n\nbeta body — utterly different\n",
         Selector::Block("two".into()),
     );
 
