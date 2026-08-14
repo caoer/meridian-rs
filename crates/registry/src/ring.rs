@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use wire::{DeltaFrame, ErrorBody, Root};
+use wire::{DeltaFrame, ErrorBody, ErrorCode, Root};
 use wire_serve::ring::RootRing;
 use wire_serve::watch::WatchState;
 
@@ -35,6 +35,15 @@ pub const DETECT_CADENCE: Duration = Duration::from_millis(250);
 #[derive(Debug)]
 pub struct WorkspaceRing {
     state: Mutex<RingState>,
+    /// The detector's currency instrument AND its single-flight token: the
+    /// leaf memo ([`fs::DomainCache`]) a cycle stats the corpus through, held
+    /// for the whole cycle. `detect` try-locks it — a fold in flight means
+    /// this cadence's work is already being done, so the caller skips instead
+    /// of starting a duplicate (the incident shape: N subscriber threads ×
+    /// one full-tree re-digest each, continuously, because the cadence gate
+    /// only sees COMPLETED cycles). `prime` blocks on it — a subscribe must
+    /// observe a baseline, not skip.
+    fold: Mutex<fs::DomainCache>,
     /// Live subscriptions — drives detection and reaper exemption.
     subscribers: AtomicUsize,
 }
@@ -83,6 +92,7 @@ impl WorkspaceRing {
                 watch: WatchState::new(root),
                 last_detect: None,
             }),
+            fold: Mutex::new(fs::DomainCache::new()),
             subscribers: AtomicUsize::new(0),
         }
     }
@@ -138,10 +148,16 @@ impl WorkspaceRing {
     ///
     /// Gates in order:
     /// 1. **Coalesce** — recent cycle ⇒ do nothing (N subscribers, one fold).
-    /// 2. **Pre-check** — unlocked fold vs baseline; unchanged root updates
-    ///    cadence and returns without the write flock (quiet cycles dominate;
-    ///    flock is `LOCK_EX|LOCK_NB`, so holding it would refuse concurrent splices).
-    /// 3. **Reconcile under flock** — only when root moved. `WouldBlock` ⇒ write
+    /// 2. **Single-flight** — a cycle in flight ⇒ do nothing. The cadence
+    ///    stamp lands at cycle COMPLETION, so without this gate every
+    ///    subscriber thread that ticks while a slow cycle runs starts its own
+    ///    (the deploy-7 incident: 23 connections × one continuous full-tree
+    ///    re-digest each, multi-core pegged, face ops starved).
+    /// 3. **Pre-check** — leaf-memo currency pass vs baseline; unchanged root
+    ///    updates cadence and returns without the write flock (quiet cycles
+    ///    dominate; flock is `LOCK_EX|LOCK_NB`, so holding it would refuse
+    ///    concurrent splices).
+    /// 4. **Reconcile under flock** — only when root moved. `WouldBlock` ⇒ write
     ///    in flight; skip (never block a subscriber thread on an unrelated writer).
     ///
     /// # Errors
@@ -156,7 +172,12 @@ impl WorkspaceRing {
                 return Ok(false);
             }
         }
-        self.cycle(ws_root)
+        // Gate 2: the winner's cycle IS this cadence's detection; frames it
+        // emits land on the shared ring, which every push loop drains.
+        let Ok(mut fold) = self.fold.try_lock() else {
+            return Ok(false);
+        };
+        self.cycle(ws_root, &mut fold)
     }
 
     /// Establish baseline and return the settled root — at subscribe time,
@@ -169,7 +190,11 @@ impl WorkspaceRing {
     /// # Errors
     /// Snapshot or classification failure — refuse rather than ack an unanchorable stream.
     pub fn prime(&self, ws_root: &fs::WorkspaceRoot) -> Result<Root, Box<ErrorBody>> {
-        self.cycle(ws_root)?;
+        // Blocking, not try: a subscribe must observe a baseline. Bounded by
+        // one in-flight cycle; before single-flight it would have run its own
+        // concurrent fold instead.
+        let mut fold = self.fold.lock().unwrap_or_else(PoisonError::into_inner);
+        self.cycle(ws_root, &mut fold)?;
         let state = self.state();
         match state.watch.root() {
             Some(root) => Ok(root.clone()),
@@ -180,9 +205,18 @@ impl WorkspaceRing {
     }
 
     /// One detection cycle, cadence ignored. Gates described on [`Self::detect`].
-    fn cycle(&self, ws_root: &fs::WorkspaceRoot) -> Result<bool, Box<ErrorBody>> {
-        // Unlocked fold — gate 2 on `detect`.
-        let disk_root: Root = wire_serve::ambient_root(ws_root)?;
+    fn cycle(
+        &self,
+        ws_root: &fs::WorkspaceRoot,
+        fold: &mut fs::DomainCache,
+    ) -> Result<bool, Box<ErrorBody>> {
+        // Unlocked currency pass — gate 3 on `detect`. One `stat` per member,
+        // bytes only for members whose identity moved: the same leaf memo (and
+        // the same evidence standing) the registry's `warm_or_build` currency
+        // pass serves reads by, byte-identical to `domain_snapshot`'s fold.
+        // The old pre-check re-read and re-digested every member on every
+        // cycle — G11's defect on the watch plane.
+        let disk_root = Root(fold.root(ws_root).map_err(|e| io_error_body(&e))?.0);
         {
             let mut state = self.state();
             if state.watch.root() == Some(&disk_root) {
@@ -200,6 +234,15 @@ impl WorkspaceRing {
         state.last_detect = Some(Instant::now());
         Ok(true)
     }
+}
+
+/// The memo pass's refusal in the envelope [`wire_serve::ambient_root`] always
+/// answered with: wire `io_error`, cause carried (member refusals arrive
+/// pre-named by `fs::corpus_member_refusal`).
+fn io_error_body(e: &std::io::Error) -> Box<ErrorBody> {
+    let mut err = ErrorBody::new(ErrorCode::IoError);
+    err.cause = Some(e.to_string());
+    Box::new(err)
 }
 
 /// Write-path allocator: registry `seq` from the same ring the detector
