@@ -667,7 +667,8 @@ pub enum Op {
     ///
     /// `sections` IS the mode: present → a sections read, absent → the toc
     /// read (an explicit `mode` on the wire is an unknown field the strict
-    /// decode refuses). `frag` scopes to one section subtree; `display_path`
+    /// decode refuses; the retired `frag` field refuses the same way).
+    /// `toc` scopes the shape table to one section subtree; `display_path`
     /// is the caller's path spelling for the rendered header line (defaults
     /// to `path`) — the engine never invents host paths.
     ///
@@ -676,10 +677,13 @@ pub enum Op {
     /// MCP-caller-settable.
     Read {
         path: Path,
-        /// The whole-call subtree scope, as segments: the section itself
-        /// plus its descendants, matched per-segment.
+        /// The whole-call subtree scope, ONE selector in the tagged read
+        /// grammar ([`ReadSel`]): a heading path or a dewey ordinal resolves
+        /// to one section — the scope is that section plus its descendants.
+        /// The anchor arm refuses: a block has no subtree (F-R3, 2026-08-13).
+        /// Mutually exclusive with `sections` — the serve refuses both.
         #[serde(skip_serializing_if = "Option::is_none")]
-        frag: Option<Vec<HpathSeg>>,
+        toc: Option<ReadSel>,
         /// Document-absolute section selectors, each in the tagged read
         /// grammar ([`ReadSel`]).
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -1284,10 +1288,10 @@ pub enum ResponseBody {
         /// so a sum counts each descendant once per ancestor level): the
         /// counting law, wire-contract § A.3.
         words_total: u64,
-        /// The heading plane, `frag`-scoped. Mode toc only.
+        /// The heading plane, `toc`-scoped. Mode toc only.
         #[serde(skip_serializing_if = "Option::is_none")]
         toc: Option<Vec<ReadRow>>,
-        /// The `^id` anchor plane, `frag`-scoped by the same byte containment
+        /// The `^id` anchor plane, `toc`-scoped by the same byte containment
         /// the host applies. Always emitted — empty means "this scope has no
         /// addressable block anchor", never "ask again with a flag".
         /// `serde(default)` keeps decoding tolerant of older recorded frames;
@@ -1296,7 +1300,7 @@ pub enum ResponseBody {
         anchors: Vec<ReadAnchor>,
         /// The frontmatter-properties plane (wire-contract § A.3): one row per
         /// top-level key, document order. Document-grain — served by both
-        /// modes and never `frag`-scoped (frontmatter belongs to the document,
+        /// modes and never `toc`-scoped (frontmatter belongs to the document,
         /// not to any subtree). Always emitted — empty means "this document
         /// has no top-level frontmatter keys"; `serde(default)` keeps decoding
         /// tolerant of older recorded frames.

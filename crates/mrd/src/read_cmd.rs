@@ -297,33 +297,35 @@ fn daemon_read(workspace: &Path, r: &Read) -> Option<DaemonRead> {
 /// The two selector inputs routed to their wire fields — the CLI's half of the
 /// one-door law (Law A-2: a fragment is selector bytes). The fragment goes
 /// through [`wire::ReadSel::parse`] like every human selector string: a
-/// heading path is a subtree scope and stays `frag`; a `^id` or dewey
-/// spelling names one node — a section read — so it MOVES onto `sections`,
-/// never onto both planes (the engine refuses `frag` + `sections` together).
-/// Before this door, `#^id` reached the engine as a heading whose literal
-/// text was `^id`, missed, and refused — the anchor lane was never entered
-/// (season-1 finding 5, attribution overturned onto the faces).
+/// heading path is a subtree scope and rides the `toc` scope; a `^id` or
+/// dewey spelling names one node — a section read — so it MOVES onto
+/// `sections`, never onto both planes (the engine refuses `toc` + `sections`
+/// together). Before this door, `#^id` reached the engine as a heading whose
+/// literal text was `^id`, missed, and refused — the anchor lane was never
+/// entered (season-1 finding 5, attribution overturned onto the faces).
 ///
 /// With explicit `--section` values beside a fragment, nothing moves: both
-/// planes ride as given and the engine's either/or refusal answers, exactly
+/// planes ride as given and the engine's pass-one refusal answers, exactly
 /// as before the door (it refuses on presence, before reading any content).
 fn route_selectors(
     frag: Option<&str>,
     sections: &[String],
-) -> (Option<Vec<wire::HpathSeg>>, Option<Vec<wire::ReadSel>>) {
+) -> (Option<wire::ReadSel>, Option<Vec<wire::ReadSel>>) {
     let explicit: Option<Vec<wire::ReadSel>> =
         (!sections.is_empty()).then(|| sections.iter().map(|s| wire::ReadSel::parse(s)).collect());
     let Some(frag) = frag else {
         return (None, explicit);
     };
     match wire::ReadSel::parse(frag) {
-        wire::ReadSel::Hpath { hpath } => (Some(hpath), explicit),
+        sel @ wire::ReadSel::Hpath { .. } => (Some(sel), explicit),
         sel if explicit.is_none() => (None, Some(vec![sel])),
         _ => (
-            Some(vec![wire::HpathSeg {
-                h: frag.to_owned(),
-                n: None,
-            }]),
+            Some(wire::ReadSel::Hpath {
+                hpath: vec![wire::HpathSeg {
+                    h: frag.to_owned(),
+                    n: None,
+                }],
+            }),
             explicit,
         ),
     }
@@ -341,9 +343,9 @@ impl Read {
         // Both selector fields are structured on the wire; this is where a typed string becomes
         // structure — once, at the edge, through the one selector door, so nothing inward of
         // the CLI carries a joined address.
-        let (frag, sections) = route_selectors(self.frag.as_deref(), &self.sections);
-        if let Some(frag) = frag {
-            req["frag"] = json!(frag);
+        let (toc, sections) = route_selectors(self.frag.as_deref(), &self.sections);
+        if let Some(toc) = toc {
+            req["toc"] = json!(toc);
         }
         if let Some(sections) = sections {
             req["sections"] = json!(sections);
@@ -379,9 +381,9 @@ fn in_process_read(workspace: &Path, r: &Read) -> Result<Value, Fail> {
         .map_err(|e| engine::json_refusal(r.format, workspace, &e))?;
     // The same routing the wire request does — one door, two transports,
     // so warm and degrade cannot diverge on what a selector means.
-    let (frag, sections) = route_selectors(r.frag.as_deref(), &r.sections);
+    let (toc, sections) = route_selectors(r.frag.as_deref(), &r.sections);
     let params = wire_serve::read::ReadParams {
-        frag,
+        toc,
         sections,
         display_path: Some(r.path.clone()),
         // Read provenance is the daemon's to stamp; the local CLI sends none on
@@ -425,8 +427,10 @@ mod frag_door_tests {
 
     #[test]
     fn a_heading_fragment_stays_the_whole_call_scope() {
-        let (frag, sections) = route_selectors(Some("Alpha/Beta"), &[]);
-        let hpath = frag.expect("the heading plane rides");
+        let (toc, sections) = route_selectors(Some("Alpha/Beta"), &[]);
+        let wire::ReadSel::Hpath { hpath } = toc.expect("the heading plane rides") else {
+            panic!("a heading fragment routes onto the toc scope's hpath arm");
+        };
         let texts: Vec<&str> = hpath.iter().map(|s| s.h.as_str()).collect();
         assert_eq!(texts, ["Alpha", "Beta"]);
         assert!(sections.is_none(), "nothing moved onto sections");
