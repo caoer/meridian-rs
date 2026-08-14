@@ -751,33 +751,25 @@ host (budget 2), which re-resolves a selector per attempt and re-runs pinned
 `files[]` as-pinned. `attempts:N` is therefore a host fact, stamped on the
 composed face, never a field of the entry's own trace.
 
-**One CONTENT path per commit (v1 law).** §4.4 splice carries one `path`, so
-a one-splice commit exists only for a single-file write set. State it as one
-CONTENT path — the **receipt companion still rides the same batch** (§6.1:
-one fingerprint advance covering both files), so this law must not be read as
-contradicting the two-file receipt commit or as reopening the §6.5 crash
-window. A script arming a second content path refuses `multi_file_write_set`
-**pre-commit** — consumer-plane typed and face-rendered, never a §8 code; the
-closed taxonomy stays closed. Multi-file atomicity remains the §6.5 rung-3
-candidate.
-
-*(Justified, 2026-08-13 — ZT's justify-or-remove investigation.)* The rule's
-concrete advantage, stated exactly: **it is what makes the script's
-all-or-nothing promise true with the machinery that exists.** The transaction
-is ONE splice, and a splice addresses one content path by schema; a two-file
-write set would need two splices, and the promise then tears on LIVE paths,
-not just crashes — a refusal (validation, guard, foreign interleave) at the
-second splice leaves the first already landed, a partial commit the face
-swore never happens, and the single-fingerprint guarantee dies with it (the
-second splice commits against a world the first moved). The receipt
-companion is not a counter-example: it rides the SAME sealed batch, and its
-§6.5 crash window is tolerable precisely because a missing receipt is
-lintable and re-derivable — a missing second CONTENT file is user data no
-lint can name and nothing can re-derive. So single-file atomicity is not the
-constraint (two files do ride one batch); **single-splice transactionality
-is**. Removing the rule honestly is the §6.5 rung-3 amendment — an intent
-journal and an N-file sealed batch, engine + wire schema + crash story in
-one change — never a rule deletion.
+**One COMMIT per attempt (the set-form law — replaces "One CONTENT path per
+commit", ruled 2026-08-14).** The armed list may span N content paths: an
+effect-less script's entire output is a finite armed list, known in full
+before any I/O, so the commit can validate the WHOLE set against the world
+before the first byte moves. One armed path commits as the single §4.4
+splice, byte-identical to before; N paths commit as the §4.4 SET form
+(`splice.set`) — per-path plan groups in first-arm order, one sealed
+validate-all-then-apply commit under the entry fingerprint, one receipt
+entry naming every file, one Delta, one fingerprint advance. All-or-nothing
+holds by measurement rather than by fencing: a refusal anywhere in the set
+lands nothing (the §5.2 diagnosis even sharpens inside a set — the world
+guard passed, so a `no_match` on file k is provably the program's own text,
+never a moved world). The receipt companion rides the same sealed set
+(§6.1), as it always did. The arm-time `multi_file_write_set` refusal and
+the single-path commit door are retired in the same change that made the
+set commit real — the old rule was the fence while the machinery did not
+exist; the crash story is §6.5's set paragraph (in-memory rollback, no
+journal, stated windows). Effects mode is untouched: write-one was never
+its law, and each live `put()` stays one single-path splice.
 
 **Wire-client mode.** When a daemon is resident the script entry does its I/O
 **as a wire client through the one door**: reads lower to `toc`/`cat`, and the
@@ -1107,9 +1099,7 @@ comes from. Five clauses hold it:
   the one authorized — re-arming is the caller's act), and an elapsed wall clock
   before the commit is `retry` (nothing was sent, so the same request may
   succeed). They carry no `code`: no wire code was minted, and inventing one
-  would put a value on the §8 surface that no daemon can answer with. The
-  arm-time single-write-file law refuses `fix` on the same reading — the script
-  armed a set no splice may carry, and only the script can change that.
+  would put a value on the §8 surface that no daemon can answer with.
 - **The migration is ADDITIVE.** `code` and `recovery` are optional and omitted
   when absent, so a consumer matching `outcome: refused` plus `fault.reason` is
   byte-unaffected by a frame that carries neither.
@@ -1235,9 +1225,9 @@ write path. Everything that differs is at the entry.
 | Hermeticity | hermetic by construction: sealed kernel, zero I/O, `RunCtx` inert | recorded-read purity: eval is a pure function of (script, args, files, read-response sequence); trace records every read; replay against recorded reads is byte-identical (decision #3 amendment) |
 | Reads | none — inputs arrive as inert `RunCtx` data | CLI lane: `read()` lowering to `toc`/`cat` — live, as a wire client through the one door. In-process lane (§ A.7): `read()` serving from the entry world plus the program's own armed overlay |
 | Enumeration | page names its own targets | none in-kernel: host resolves selector → inert **sorted** `files[]`, paths only |
-| Commit | one atomic `if_fingerprint`-pinned batch via the local executor | ONE guarded splice as the caller (`actor`/`now`/`receipt` on the request); **write set = one file (v1 law)**; `multi_file_write_set` refuses pre-commit |
+| Commit | one atomic `if_fingerprint`-pinned batch via the local executor | ONE guarded commit as the caller (`actor`/`now`/`receipt` on the request): the single §4.4 splice for one armed path, the §4.4 SET form for N (§ One COMMIT per attempt) |
 | Concurrency | workspace flock, `LOCK_NB` (decision #9) | stand-still optimistic: entry fingerprint pinned, commit `if_fingerprint` = entry; conflict ⇒ host re-resolves selector and retries (budget 2, `attempts` on the face) |
-| Failure grain | one violation refuses the whole batch; bash phase-1 may stand committed and reported (decision #22) | one violation refuses the whole script; nothing ever partially lands (single-write-file keeps retry sound) |
+| Failure grain | one violation refuses the whole batch; bash phase-1 may stand committed and reported (decision #22) | one violation refuses the whole script; nothing ever partially lands (the sealed set keeps retry sound: a refusal lands nothing, so a re-run never double-applies) |
 | Output | run record: stdout streamed + content-addressed out-of-tree log; receipt linkage via `ExecRecordSink` | `ScriptTrace` → text face: echo semantics, embedded §4.4 splice response verbatim, telemetry always present |
 | Guarantee label | per block: `hermetic` (starlark) / `detected` (bash, U6b) | recorded-read + stand-still, stated as such; zero-armed outcome is read-class (`Ok(vec![])` precedent) |
 | Daemon relation | local run beside a resident daemon = external change (accepted-gaps row, actor-absent) | wire client — writes arrive as governed change, actor-carrying, Delta-minted like any splice |

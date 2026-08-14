@@ -797,7 +797,10 @@ pub enum Op {
         /// The caller's arguments — an inert dict, string keys and values.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         args: BTreeMap<String, String>,
-        /// Host-enumerated paths only, no content; sorted at decode.
+        /// Host-enumerated paths, no content; sorted at decode. A member
+        /// containing `*` is a pattern (§ A.7): the daemon expands it at
+        /// entry against the entry world, records the row, and binds the
+        /// expanded list.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         files: Vec<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
