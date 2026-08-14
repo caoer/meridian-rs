@@ -127,14 +127,18 @@ fn real_lock_elided_on_render_face_verbatim_on_raw() {
         out.text
     );
 
-    // The rendered word recount excludes the elided bytes; the fact keeps
-    // the raw-face count (addressing is untouched by render).
+    // The counting law (wire-contract § A.3, 2026-08-13): `words` is a fact
+    // about the section's CONTENT, counted once over its raw bytes — elision
+    // changes what the reader is SHOWN, never what the section HOLDS. This
+    // assertion formerly demanded the opposite (a render-face recount BELOW
+    // the raw fact), which is exactly the two-faces-one-rev drift the law
+    // closes: the same section answered two numbers depending on who asked.
     let rendered_config: &RenderedSection = &out.sections[0];
-    assert!(
-        rendered_config.words < config.words,
-        "render-face words ({}) recounted below the raw fact ({})",
-        rendered_config.words,
-        config.words
+    assert_eq!(
+        rendered_config.words, config.words,
+        "the rendered face publishes the section's own count ({}), not a \
+         recount of the projection ({})",
+        config.words, rendered_config.words
     );
 }
 
@@ -183,8 +187,9 @@ fn all_lock_page_renders_structure_not_empty() {
     assert!(!out.text.is_empty(), "never a bare empty string");
     assert!(
         out.text
-            .contains(&format!("\n  \"1\",Pins,{},0,", fact.sec_rev)),
-        "the head still declares the section, with its rev: {}",
+            .contains(&format!("\n  \"1\",Pins,{},{},", fact.sec_rev, fact.words)),
+        "the head still declares the section, with its rev and its content's \
+         own word count: {}",
         out.text
     );
     assert!(
@@ -197,7 +202,12 @@ fn all_lock_page_renders_structure_not_empty() {
         "the lock itself is elided: {}",
         out.text
     );
-    assert_eq!(out.sections[0].words, 0, "no words survive elision");
+    assert_eq!(
+        out.sections[0].words, fact.words,
+        "the rendered body is empty, but the section's word count is a fact \
+         about its content (the counting law, wire-contract § A.3) — `bytes` \
+         alone declares how much of it survived the projection"
+    );
 }
 
 /// An elided block takes its own line with it (fence-to-fence bytes plus

@@ -1697,15 +1697,21 @@ fn pin_target_missing(target: &Path, message: String) -> Box<ErrorBody> {
 /// either already bears a stable id (reuse it, promote nothing) or it does not
 /// (mint the slug).
 fn anchor_on_line(doc: &model::Document, line_start: usize) -> Option<String> {
-    fn walk(node: &model::Node, line_start: usize) -> Option<String> {
-        if let model::NodeKind::Anchor { name } = &node.kind
-            && node.span.start == line_start
-        {
-            return Some(name.clone());
-        }
-        node.children.iter().find_map(|c| walk(c, line_start))
+    // A RAW-line probe since F-R4: the promoted marker's anchor NODE keys the
+    // block it attaches to (the heading above the slot), so node spans no
+    // longer witness the marker's own line — the line's bytes do.
+    let bytes = doc.raw.as_bytes();
+    if line_start >= bytes.len() {
+        return None;
     }
-    walk(&doc.root, line_start)
+    let end = bytes[line_start..]
+        .iter()
+        .position(|&b| b == b'\n')
+        .map_or(bytes.len(), |p| line_start + p);
+    let line = doc.raw[line_start..end].trim();
+    let rest = line.strip_prefix('^')?;
+    (!rest.is_empty() && rest.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+        .then(|| rest.to_string())
 }
 
 /// The D15 slug: a deterministic block id derived from the target's own heading

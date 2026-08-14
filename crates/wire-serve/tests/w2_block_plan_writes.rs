@@ -89,10 +89,14 @@ fn read_back(dir: &tempfile::TempDir, rel: &str) -> String {
 
 /// `- plain item ^blk-1` is a PLAIN list item — inside the face's anchor law,
 /// so its id is toc-listed (readable) and therefore must be writeable.
-/// `- [ ] task item ^tsk-1` is TASK-hosted — outside the law on BOTH doors.
+/// `- [ ] task item ^tsk-1` is TASK-hosted — since F-R4, inside the law on
+/// BOTH doors too (every body host Obsidian addresses is). A frontmatter
+/// caret is the one remaining excluded host.
 const DOC: &str = "# Tasks\n\n- plain item ^blk-1\n- second row\n\n# Notes\n\npara\n";
 const DOC_WITH_TASK: &str =
     "# Tasks\n\n- plain item ^blk-1\n- [ ] task item ^tsk-1\n\n# Notes\n\npara\n";
+const DOC_WITH_FM_CARET: &str =
+    "---\ntitle: x ^fm-1\n---\n# Tasks\n\n- plain item ^blk-1\n\n# Notes\n\npara\n";
 
 /// The miss teaching for an id the DOCUMENT does not carry — discovery: the
 /// anchors[] plane is where listed ids live (W-2 acceptance killed the
@@ -104,22 +108,22 @@ fn absent_message(id: &str) -> String {
         "no section addressed by \"^{id}\". No edit was applied; the batch is refused \
          whole. Fix: block anchors ride the toc's `anchors[]` plane — list this \
          document's with a toc read (MCP read: sections[] omitted; CLI: `--json`) and \
-         write through a listed `^id`. An id hosted outside that plane (a task, table, \
-         callout or paragraph line) is written through its containing section instead: \
-         the section's heading path with a `find` needle."
+         write through a listed `^id`. Every body-hosted id is listed there \
+         (paragraph, list item, task, callout, table, fence, heading); only a \
+         frontmatter caret is not — its keys are written through the `props` plane."
     )
 }
 
 /// The miss teaching for an id the document CARRIES but the anchor plane
-/// excludes (task-, fence-, table-, callout-, paragraph-hosted) — the
-/// containing-section lane, the read door's own unaddressable-host answer.
+/// excludes — since F-R4, a frontmatter caret alone (literal YAML, no block;
+/// the `props` plane is the servable lane), the read door's own
+/// unaddressable-host answer.
 fn excluded_message(id: &str) -> String {
     format!(
         "no section addressed by \"^{id}\". No edit was applied; the batch is refused \
-         whole. Fix: `^{id}` exists in this document, but its host block is outside the \
-         face's anchor plane (`anchors[]` carries list-item hosts only) — write it \
-         through its containing section: the section's heading path with a `find` \
-         needle."
+         whole. Fix: `^{id}` exists in this document, but its host is the frontmatter \
+         — a caret there is literal YAML, not a block; frontmatter keys are written \
+         through the `props` plane, not a block ref."
     )
 }
 
@@ -366,15 +370,14 @@ fn plan_match_at_missing_anchor_keeps_the_miss_teaching() {
     );
 }
 
-/// A task-hosted id is outside the face's anchor law on BOTH doors: the read
-/// face does not list it (the `basic` golden pins `^task1` unresolved), so the
-/// write door must not resolve it either — door symmetry, the same class as a
-/// miss.
+/// A task-hosted id is inside the face's anchor law since F-R4 — readable,
+/// therefore writeable, door symmetry in the widened direction (ZT ruled the
+/// old task/paragraph/table exclusion an under-implementation of Obsidian's
+/// own block semantics).
 #[test]
-fn plan_match_at_task_hosted_anchor_stays_outside_the_face_law() {
+fn plan_match_at_task_hosted_anchor_writes_since_the_widening() {
     let (dir, root) = ws(&[("card.md", DOC_WITH_TASK)]);
-    let seed = read_back(&dir, "card.md");
-    let err = splice(
+    splice(
         &root,
         None,
         &plan_args(
@@ -382,7 +385,7 @@ fn plan_match_at_task_hosted_anchor_stays_outside_the_face_law() {
             vec![PlanEdit::Match {
                 hpath: vec![seg("^tsk-1")],
                 old: "task item".into(),
-                new: "x".into(),
+                new: "task item, edited by id,".into(),
                 all: false,
                 rev: None,
             }],
@@ -390,10 +393,41 @@ fn plan_match_at_task_hosted_anchor_stays_outside_the_face_law() {
         &[],
         None,
     )
-    .expect_err("a host outside the anchor law does not resolve on the write door");
+    .expect("a task-hosted id resolves on the write door (F-R4)");
+    assert_eq!(
+        read_back(&dir, "card.md"),
+        "# Tasks\n\n- plain item ^blk-1\n- [ ] task item, edited by id, ^tsk-1\n\n# Notes\n\npara\n",
+        "the edit landed inside the task line; marker and neighbors untouched"
+    );
+}
+
+/// The one remaining excluded host: a frontmatter caret is literal YAML, not
+/// a block — unlisted on the read door, unresolvable on the write door, and
+/// the teaching names the `props` plane as the servable lane.
+#[test]
+fn plan_match_at_frontmatter_caret_refuses_toward_the_props_plane() {
+    let (dir, root) = ws(&[("card.md", DOC_WITH_FM_CARET)]);
+    let seed = read_back(&dir, "card.md");
+    let err = splice(
+        &root,
+        None,
+        &plan_args(
+            "card.md",
+            vec![PlanEdit::Match {
+                hpath: vec![seg("^fm-1")],
+                old: "x".into(),
+                new: "y".into(),
+                all: false,
+                rev: None,
+            }],
+        ),
+        &[],
+        None,
+    )
+    .expect_err("a frontmatter caret does not resolve on the write door");
     assert_eq!(
         err.message.as_deref(),
-        Some(excluded_message("tsk-1").as_str())
+        Some(excluded_message("fm-1").as_str())
     );
     assert_eq!(read_back(&dir, "card.md"), seed);
 }
@@ -572,32 +606,32 @@ fn fixture_a_probe_anchor_writes_and_survives() {
     );
 }
 
-/// Fixture B — `health/runtime.md` `^check`: a code-fence-hosted anchor (the
-/// `^check` line trails the closing fence), NOT toc-listed — outside the read
-/// face's anchor law, so the write door must not resolve it either (a write
-/// door wider than the read door is W-2's own asymmetry, inverted). Its
-/// STABLE address through the face is the documented section+find lane: the
-/// containing section's heading path plus a content needle — pinned here
-/// landing a version-pin edit INSIDE the fence, fence and marker untouched.
-/// (The anchor itself stays a walk/run-plane address — `[[page#^check]]`,
-/// `md run` — which this face law does not touch. Pin refresh itself is
-/// ZT-deferred; only addressability rides this card.)
+/// Fixture B — `health/runtime.md` `^check`: the Obsidian own-line form
+/// below a code fence. Under W-2 this shape was host-excluded and the
+/// fixture pinned the refusal + section+find workaround; F-R4 ruled that
+/// exclusion an under-implementation, and the anchor now attaches to the
+/// FENCE (the block Obsidian's own cache assigns) — toc-listed, readable,
+/// therefore writeable. Both halves now land the same version-pin edit:
+/// through the `^check` id directly, and through the section+find lane that
+/// remains valid.
 #[test]
-fn fixture_b_fence_hosted_check_anchor_has_the_section_find_lane() {
+fn fixture_b_fence_hosted_check_anchor_writes_by_id_and_by_section_find() {
     const RUNTIME: &str = "# Wiki Runtime\n\n## Tasks\n\n```bash\nchk md \"md version\" \"build: 0099f641\" \"build meridian\"\nchk node \"node --version\" \"v24.16.0\" \"osf rebuild\"\nexit $fail\n```\n\n^check\n";
-    let (dir, root) = ws(&[("runtime.md", RUNTIME)]);
+    const RUNTIME_MOVED: &str = "# Wiki Runtime\n\n## Tasks\n\n```bash\nchk md \"md version\" \"build: feedc0de\" \"build meridian\"\nchk node \"node --version\" \"v24.16.0\" \"osf rebuild\"\nexit $fail\n```\n\n^check\n";
 
-    // Half 1 — door symmetry: the fence-hosted id is unlisted on the read
-    // face, so the write door misses with the standing teaching.
-    let err = splice(
+    // Half 1 — the id lane (F-R4): the fence-hosted id resolves on the write
+    // door and the edit lands INSIDE the fence; fence delimiters and the
+    // trailing ^check marker are byte-untouched.
+    let (dir, root) = ws(&[("runtime.md", RUNTIME)]);
+    splice(
         &root,
         None,
         &plan_args(
             "runtime.md",
             vec![PlanEdit::Match {
                 hpath: vec![seg("^check")],
-                old: "0099f641".into(),
-                new: "aaaaaaaa".into(),
+                old: "build: 0099f641".into(),
+                new: "build: feedc0de".into(),
                 all: false,
                 rev: None,
             }],
@@ -605,22 +639,17 @@ fn fixture_b_fence_hosted_check_anchor_has_the_section_find_lane() {
         &[],
         None,
     )
-    .expect_err("Fixture B: a host-excluded anchor does not resolve on the write door");
-    assert_eq!(
-        err.message.as_deref(),
-        Some(excluded_message("check").as_str())
-    );
+    .expect("Fixture B: the fence-hosted id writes by id (F-R4)");
     assert_eq!(
         read_back(&dir, "runtime.md"),
-        RUNTIME,
-        "refusal moved no bytes"
+        RUNTIME_MOVED,
+        "one pin moved through ^check; fence and marker byte-identical"
     );
 
-    // Half 2 — the stable lane: containing section + content find. The pin
-    // edit lands inside the fence; the fence, its other lines, and the
-    // trailing ^check marker are byte-untouched.
+    // Half 2 — the section+find lane stays valid on a fresh copy.
+    let (dir2, root2) = ws(&[("runtime.md", RUNTIME)]);
     splice(
-        &root,
+        &root2,
         None,
         &plan_args(
             "runtime.md",
@@ -635,10 +664,10 @@ fn fixture_b_fence_hosted_check_anchor_has_the_section_find_lane() {
         &[],
         None,
     )
-    .expect("Fixture B: section+find is the stable write lane for a fence-hosted anchor");
+    .expect("Fixture B: section+find remains a valid write lane");
     assert_eq!(
-        read_back(&dir, "runtime.md"),
-        "# Wiki Runtime\n\n## Tasks\n\n```bash\nchk md \"md version\" \"build: feedc0de\" \"build meridian\"\nchk node \"node --version\" \"v24.16.0\" \"osf rebuild\"\nexit $fail\n```\n\n^check\n",
-        "one pin moved; fence and ^check marker byte-identical"
+        read_back(&dir2, "runtime.md"),
+        RUNTIME_MOVED,
+        "the two lanes land the identical byte result"
     );
 }

@@ -22,5 +22,6 @@ mod u4a2_composed_read;
 mod u4b_real_lock;
 mod walk_resolve;
 mod wire_vocab;
+mod word_count_one_counter;
 mod wsfix_oracle;
 mod yaml_confinement;
