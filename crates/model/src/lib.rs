@@ -376,12 +376,8 @@ fn trim_ascii(mut s: &[u8]) -> &[u8] {
 /// ordered `1.`/`1)` marker followed by a space or line end.
 fn is_list_line(bytes: &[u8], line: &ByteSpan) -> bool {
     let s = trim_ascii(&bytes[line.clone()]);
-    if let Some(rest) = s
-        .strip_prefix(b"- ")
-        .or_else(|| s.strip_prefix(b"* "))
-        .or_else(|| s.strip_prefix(b"+ "))
-    {
-        return !rest.is_empty() || true;
+    if s.starts_with(b"- ") || s.starts_with(b"* ") || s.starts_with(b"+ ") {
+        return true;
     }
     if s == b"-" || s == b"*" || s == b"+" {
         return true;
