@@ -505,12 +505,18 @@ fn plan_set_property_refuses_forged_keys_at_both_doors_and_writes_nothing() {
     assert_legal_create_landed(&std::fs::read_to_string(dir.path().join("plan.md")).expect("read"));
 }
 
-/// Golden MUST-CARRY refusals: p-replace-on-block + p-create-top (engine, no write).
+/// Golden MUST-CARRY refusals: p-replace-on-block (now the frontmatter twin
+/// — F-R4 made every body host writeable, so the host-excluded class lives
+/// on the one remaining excluded host) + p-create-top (engine, no write).
 #[test]
 fn golden_target_class_refusals_fire_engine_side() {
-    let (dir, root) = ws(&[("card.md", "# Tasks\n\n- [ ] one ^task1\n")]);
+    let (dir, root) = ws(&[(
+        "card.md",
+        "---\ntitle: x ^fm-c\n---\n# Tasks\n\n- [ ] one ^task1\n",
+    )]);
 
-    let err = splice(
+    // The F-R4 half first: the task-hosted id COMMITS on the plan lane.
+    splice(
         &root,
         None,
         &plan_args(
@@ -529,15 +535,36 @@ fn golden_target_class_refusals_fire_engine_side() {
         &[],
         None,
     )
-    .expect_err("block replace target refuses");
+    .expect("a task-hosted id writes since F-R4");
+
+    let err = splice(
+        &root,
+        None,
+        &plan_args(
+            "card.md",
+            vec![PlanEdit::Match {
+                hpath: vec![HpathSeg {
+                    h: "^fm-c".into(),
+                    n: None,
+                }],
+                old: "x".into(),
+                new: "y".into(),
+                all: false,
+                rev: None,
+            }],
+        ),
+        &[],
+        None,
+    )
+    .expect_err("a frontmatter caret target refuses");
     assert_eq!(
         err.message.as_deref(),
         Some(
-            "no section addressed by \"^task1\". No edit was applied; the batch is \
-             refused whole. Fix: `^task1` exists in this document, but its host \
-             block is outside the face's anchor plane (`anchors[]` carries \
-             list-item hosts only) — write it through its containing section: the \
-             section's heading path with a `find` needle."
+            "no section addressed by \"^fm-c\". No edit was applied; the batch is \
+             refused whole. Fix: `^fm-c` exists in this document, but its host is \
+             the frontmatter — a caret there is literal YAML, not a block; \
+             frontmatter keys are written through the `props` plane, not a block \
+             ref."
         )
     );
 
@@ -564,7 +591,8 @@ fn golden_target_class_refusals_fire_engine_side() {
 
     assert_eq!(
         std::fs::read_to_string(dir.path().join("card.md")).expect("read"),
-        "# Tasks\n\n- [ ] one ^task1\n",
-        "refusals leave the file untouched"
+        "---\ntitle: x ^fm-c\n---\n# Tasks\n\n- [ ] two ^task1\n",
+        "the one committed edit (the F-R4 task write) is all that landed — \
+         both refusals moved no bytes"
     );
 }

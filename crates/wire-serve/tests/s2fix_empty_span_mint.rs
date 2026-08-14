@@ -69,20 +69,24 @@ struct Probe {
 /// is absent by construction — `PinSpec` carries a selector and the grammar
 /// refuses a bare target or empty fragment — pinned separately below.
 fn probes() -> Vec<Probe> {
+    // Document-start own-line anchors: the one shape whose host is still the
+    // marker's own line (nothing precedes to attach to — F-R4), so the R2/R2b
+    // removal empties the canonical span. A mid-file own-line anchor attaches
+    // to the block above and no longer empties.
     vec![
         Probe {
-            name: "bare #^anchor, own line mid-file (R2)",
-            target_body: "# H\n\n^guideline\n\nbody\n",
+            name: "bare #^anchor, own line at document start (R2)",
+            target_body: "^guideline\n\nbody\n",
             selector: "^guideline",
         },
         Probe {
             name: "bare #^anchor, own line at EOF (R2b)",
-            target_body: "# H\n\n^guideline",
+            target_body: "^guideline",
             selector: "^guideline",
         },
         Probe {
             name: "bare #^anchor, own line indented (R2)",
-            target_body: "# H\n\n  ^guideline\n",
+            target_body: "  ^guideline\n\nbody\n",
             selector: "^guideline",
         },
     ]
@@ -119,13 +123,15 @@ fn every_empty_normalizing_form_is_refused_at_the_pin_door() {
             probe.name
         );
 
-        // Which rung refused, recorded: today the read-face resolve — an
-        // own-line anchor projects no fact, so the owner never sees it.
+        // Which rung refused, recorded. Since F-R4 an own-line orphan still
+        // PROJECTS a fact (its own line, paragraph-kinded), so the pin
+        // resolves and the refusal comes from the fingerprint OWNER — the
+        // exact belt this family exists to prove reaches its owner.
         assert!(
             err.message
                 .as_deref()
-                .is_some_and(|m| m.contains("no section addressed")),
-            "{}: expected the read-face resolve rung, got {:?}",
+                .is_some_and(|m| m.contains("addresses no content to fingerprint")),
+            "{}: expected the fingerprint owner's empty-span rung, got {:?}",
             probe.name,
             err.message
         );
@@ -190,7 +196,9 @@ fn a_whole_page_ref_cannot_reach_the_mint_at_all() {
 /// which keeps the belt-on-belt discharge in `write.rs` honest.
 #[test]
 fn the_owner_refuses_an_empty_span_even_when_no_earlier_rung_would() {
-    let raw = "# H\n\n^guideline\n\nbody\n";
+    // Document-start orphan: the one anchor shape whose host still empties
+    // under the R2 removal (a mid-file own-line anchor attaches — F-R4).
+    let raw = "^guideline\n\nbody\n";
     let doc = model::build(raw.to_string(), syntax::parse(raw));
     let r#ref = model::Ref::anchor("guideline").expect("block id");
     let target = model::resolve(&doc, &r#ref).expect("the anchor resolves as a node");

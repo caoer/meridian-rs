@@ -344,28 +344,16 @@ fn resolve_binding(doc: &Document, binding: &TaskBinding) -> Result<ResolvedTask
 }
 
 /// The fenced code block an anchor keys. An anchor cannot sit inside a fence
-/// (fence content is masked at parse), so a block-keying anchor is the
-/// Obsidian own-line form directly BELOW the fence: the nearest `CodeBlock`
-/// whose span ends before the anchor's line with only blank bytes between.
+/// (fence content is masked at parse); the Obsidian own-line form below the
+/// fence resolves to the fence in the MODEL since the F-R4 host widening, so
+/// a block-keying anchor's host span IS the `CodeBlock`'s span — this probe
+/// no longer re-implements the attachment, it recognizes it.
 fn host_code_block(doc: &Document, anchor_span: &ByteSpan) -> Option<(ByteSpan, NodeRev)> {
-    fn collect<'a>(node: &'a Node, out: &mut Vec<&'a Node>) {
-        if matches!(node.kind, NodeKind::CodeBlock { .. }) {
-            out.push(node);
+    fn find(node: &Node, span: &ByteSpan) -> Option<(ByteSpan, NodeRev)> {
+        if matches!(node.kind, NodeKind::CodeBlock { .. }) && node.span == *span {
+            return Some((node.span.clone(), node.node_rev.clone()));
         }
-        for c in &node.children {
-            collect(c, out);
-        }
+        node.children.iter().find_map(|c| find(c, span))
     }
-    let mut blocks: Vec<&Node> = Vec::new();
-    collect(&doc.root, &mut blocks);
-    blocks
-        .into_iter()
-        .filter(|b| {
-            b.span.end <= anchor_span.start
-                && doc.raw[b.span.end..anchor_span.start]
-                    .bytes()
-                    .all(|c| matches!(c, b' ' | b'\t' | b'\r' | b'\n'))
-        })
-        .max_by_key(|b| b.span.end)
-        .map(|b| (b.span.clone(), b.node_rev.clone()))
+    find(&doc.root, anchor_span)
 }
