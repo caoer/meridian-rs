@@ -189,13 +189,13 @@ fn the_heading_and_anchor_planes_stay_disjoint_over_the_whole_corpus() {
     for (doc, rel) in corpus_docs() {
         let (_, facts) = facts_of(&doc, &rel);
         assert!(
-            wire_map::facts::toc_rows(&facts, &[])
+            wire_map::facts::toc_rows(&facts, None)
                 .iter()
                 .all(|f| f.anchor.is_none() && f.depth > 0),
             "{doc}/{rel}: the heading plane carries headings and NOTHING else"
         );
         assert!(
-            anchor_rows(&facts, &[])
+            anchor_rows(&facts, None)
                 .iter()
                 .all(|f| f.anchor.is_some() && f.depth == 0 && f.hpath.is_empty()),
             "{doc}/{rel}: the anchor plane carries anchors, and they publish no \

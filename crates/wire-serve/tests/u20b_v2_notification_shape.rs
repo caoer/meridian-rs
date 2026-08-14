@@ -27,6 +27,8 @@ fn frame_of(effects: Vec<EffectEnvelope>) -> DeltaFrame {
             files: vec![],
         },
         effects,
+        rescope: None,
+        overflow: None,
     }
 }
 
@@ -55,6 +57,75 @@ fn a_v2_notification_frame_has_exactly_the_frozen_key_set() {
             .map(ToString::to_string)
             .collect::<BTreeSet<_>>(),
         "the v2 delta key set is frozen (§7.1); `actor`/`now` are absent, never null"
+    );
+}
+
+/// § A.9's frame with everything on: the summaries plus an `unattested` row.
+fn rescoped_frame() -> DeltaFrame {
+    let mut frame = frame_of(vec![]);
+    frame.delta.files = vec![wire::DeltaFile {
+        path: wire::Path("kept.md".into()),
+        change: wire::FileChange::Unattested,
+        from_path: None,
+        file_rev_before: Some(wire::NodeRev("e3c4acaceb75b907".into())),
+        file_rev_after: None,
+        nodes: vec![],
+    }];
+    frame.rescope = Some(wire::Rescope {
+        cause: wire::Path("meridian/domain.md".into()),
+        unattested: 1,
+        attested: 0,
+    });
+    frame.overflow = Some(wire::Overflow { dropped: 3 });
+    frame
+}
+
+/// § A.9 v2 demotion: the summaries are post-v2 fields (stripped typed), and
+/// `unattested` demotes to `deleted` — v2 keeps its birth vocabulary.
+#[test]
+fn a_v2_frame_demotes_unattested_to_deleted_and_strips_the_summaries() {
+    let value = serialize_v2(&rescoped_frame());
+    assert_eq!(
+        keys(&value),
+        ["delta"]
+            .iter()
+            .map(ToString::to_string)
+            .collect::<BTreeSet<_>>(),
+        "rescope/overflow postdate frozen v2 and never reach a v2 session"
+    );
+    assert_eq!(
+        value["delta"]["files"][0]["change"],
+        serde_json::json!("deleted"),
+        "v2's closed change vocabulary: the un-attestation split is v3's"
+    );
+}
+
+/// § A.9 v3: the summaries ride the frame root beside `delta`, and the
+/// fingerprint rekey leaves them untouched.
+#[test]
+fn a_v3_frame_carries_the_rescope_summaries_at_the_root() {
+    let mut out = Vec::new();
+    wire_serve::ring::write_frame(&mut out, &rescoped_frame(), true).expect("frame serializes");
+    let value: serde_json::Value = serde_json::from_slice(&out).expect("frame is JSON");
+    assert_eq!(
+        keys(&value),
+        ["delta", "rescope", "overflow"]
+            .iter()
+            .map(ToString::to_string)
+            .collect::<BTreeSet<_>>(),
+    );
+    assert_eq!(
+        value["rescope"],
+        serde_json::json!({"cause":"meridian/domain.md","unattested":1,"attested":0})
+    );
+    assert_eq!(value["overflow"], serde_json::json!({"dropped":3}));
+    assert_eq!(
+        value["delta"]["files"][0]["change"],
+        serde_json::json!("unattested")
+    );
+    assert!(
+        value["delta"].get("fingerprint_before").is_some(),
+        "the v3 rekey still applies inside delta"
     );
 }
 

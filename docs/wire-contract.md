@@ -708,7 +708,7 @@ E4's delta, in full (every value computed):
              "node_rev_after":"5c6ca7ec00ae279e","span_after":[287,549]}]}]}}
 ```
 
-Laws: `seq` is a monotone per-workspace batch counter (the `changes_seq` of §10), **per-daemon-epoch** — a daemon restart resets it (memory is disposable and disk is markdown-only, §14, so no counter survives on disk to reload), which means `from_seq`/`changes_seq` catchup is valid only within one epoch and cross-epoch catchup is diff-by-root (§4.7), the root being the only restart-durable handle; file `change ∈ {created, modified, deleted, renamed}` (renamed carries `from_path`); node `change ∈ {added, edited, removed}`; node entries name the **deepest section containing each changed byte range** — ancestor section revs change implicitly (rev = span hash) and are re-readable via `toc`, never duplicated into the delta. External changes (a human editing in Obsidian) produce deltas with `actor`/`now` **absent** — the engine never invents identity or time it wasn't given; `seq` is assigned at detection.
+Laws: `seq` is a monotone per-workspace batch counter (the `changes_seq` of §10), **per-daemon-epoch** — a daemon restart resets it (memory is disposable and disk is markdown-only, §14, so no counter survives on disk to reload), which means `from_seq`/`changes_seq` catchup is valid only within one epoch and cross-epoch catchup is diff-by-root (§4.7), the root being the only restart-durable handle; file `change ∈ {created, modified, deleted, renamed, unattested}` (renamed carries `from_path`; `unattested` is § A.9's re-scope honesty word — the file LEFT THE ATTESTED SET while its bytes remain on disk, v3-only, demoted to `deleted` for a frozen v2 session); node `change ∈ {added, edited, removed}`; node entries name the **deepest section containing each changed byte range** — ancestor section revs change implicitly (rev = span hash) and are re-readable via `toc`, never duplicated into the delta. External changes (a human editing in Obsidian) produce deltas with `actor`/`now` **absent** — the engine never invents identity or time it wasn't given; `seq` is assigned at detection.
 
 ### §7.2 Node-grain at birth
 
@@ -1084,6 +1084,30 @@ When a workspace is **armed** (attested INDEX present), after CAS and before byt
 - When **all** selectors fail, the refusal names **every** failed selector with its own reason (no match / ambiguous), symmetric with the partial-read `notice`, which names them the same way.
 - Refusal **remedies speak the operation, not one host's tool name**: the recovery clause names the toc read in each surface's own dialect (MCP: a read with `sections[]` omitted, CLI: `--section`-less read) and never prescribes a binary the caller may not have. *(Ruled 2026-08-06, dogfood F5: dual-dialect IS this spec, not a partial fix — a remedy leads with the caller's surface (the MCP spelling first) and MAY carry a labeled CLI alternative in the same sentence.)* *(2026-08-12: the MCP spelling was `mode:"toc"` until the `mode` parameter left the MCP read face (ZT ruling, executed daemon-side at ccc-statusd 3b68e37a); the MCP toc read is now a read with `sections[]` omitted.)*
 
+**The `toc` scope (F-R3, ZT 2026-08-13; executed 2026-08-14):**
+
+- The composed read's whole-call subtree scope is the `toc` field: **ONE tagged
+  §2.1 selector**, not a segment array. It replaces `frag` — the retired field
+  name refuses at the strict decode like any unknown field, and no `#fragment`
+  concept survives anywhere on the wire (every position one meaning: `path` =
+  which file, `sections` = which content, `toc` = which subtree map).
+- Resolution precedes serving, through the same `selector_matches` the
+  sections plane uses: a heading path or a **dewey ordinal** resolves to one
+  row and the scope is that row's subtree-inclusive span (rows and the
+  `anchors` plane are bounded by byte containment — the segment-prefix scope
+  is retired, since it silently merged same-named siblings' subtrees).
+- The **anchor arm refuses** `bad_request`: a block has no subtree, so no map
+  exists under it; the refusal teaches the `sections` lane that serves a
+  block's content.
+- A **bare duplicate refuses** `ambiguous_ref` naming each candidate's
+  `n`-carrying machine address with the published AMBIGUITY remedy — §2.1's
+  never-silently-picks, now holding at the scope door exactly as at the
+  section and write doors. A dewey miss refuses `ref_not_found` in the dewey
+  lane's own voice (ordinals are positional toc facts; the remedy is the bare
+  read that lists them).
+- `toc` beside `sections` refuses `bad_request` **"pass one"** — the map and
+  the content are two questions, and one call answers one.
+
 **Door symmetry over duplicate headings (2026-08-06, fix-write-dup-symmetry):**
 
 - An `n`-less address that matches more than one node refuses `ambiguous_ref`-class at **every** door — read and write alike (`splice.plan_edits`, and any host lowering onto it). No door may pick an occurrence the caller did not name: the write-door refusal names each candidate's machine address (its `n`-carrying segment array) and teaches `n`, the same evidence the read door gives. Two doors, one answer — a selector one door refuses as ambiguous, no other door resolves.
@@ -1278,9 +1302,9 @@ deferral):**
   "this document has no top-level frontmatter keys", never "ask again with
   a flag". Decoding stays tolerant of older recorded frames; serialization
   is unconditional.
-- Document-grain, both modes, never `frag`-scoped: frontmatter belongs to
-  the document, not to any subtree — a `frag` cannot contain it and does
-  not filter it.
+- Document-grain, both modes, never `toc`-scoped: frontmatter belongs to
+  the document, not to any subtree — a `toc` scope cannot contain it and
+  does not filter it.
 - v3-only by construction: the composed read is v3-only at dispatch, so the
   plane never appears on a v2 session and the frozen v2 caps and bytes stay
   byte-identical. No new cap: a response-side additive field under the
@@ -2179,6 +2203,30 @@ byte: unchanged. The CLI entry (`mrd run`) stays functional and
 byte-compatible — same runner, same receipts, its own host-minted identity.
 The 0025 socket law (§ A.3) is untouched: this op rides the same one door
 behind the same connect-time identity comparison.
+
+### A.9 Re-scope honesty on the delta plane (docs-first, 2026-08-14, dogfood r3 f9)
+
+**The defect this ratifies away.** A domain re-scope (the §12 config changed — `meridian/domain.md` landed on a live root) flooded the feed as one batch of 1,010 `deleted` file rows. Every one was false at the file grain: the files remained on disk; they left the ATTESTED SET. A watcher acting on `deleted` (cleaning up references, say) would act on 1,010 falsehoods, and the enumeration itself was undeliverable — the transport cap that finally bit was a consumer-side token cap with no drain-cursor semantics. Three amendments, all additive:
+
+**1. The `unattested` file-change word (v3-only).** A path in the previous attested set and absent from the current one, whose file still exists on disk (any filesystem object at that path — probed at classification, never inferred), mints `change:"unattested"`: `file_rev_before` present when the departed bytes still parse, `file_rev_after` absent (no attested post-state exists), no node entries (the content did not change — nothing node-grain happened). `deleted` now claims exactly what it says: the path is gone from disk. Consequences carried with it: a still-on-disk path can never be claimed by the `renamed` pairing (a rename asserts the origin left the disk), and a frozen v2 session receives such a row demoted to `deleted` — v2 keeps its birth vocabulary, the honesty split is v3's.
+
+**2. The `rescope` batch summary.** When the effective domain configuration changed between the detector's baselines — compared as parsed scope rules (config identity + `Domain` semantics), so a prose-only edit to `meridian/domain.md` re-scopes nothing — the emitted frame carries a root-level sibling of `delta` (the `effects` precedent):
+
+```json
+{"delta":{…},"rescope":{"cause":"meridian/domain.md","unattested":1010,"attested":2}}
+```
+
+`cause` names the config file whose change re-scoped the set (on a config switch, the file now in effect; on a config removal, the departed one). Under a `rescope`, membership-only changes COLLAPSE into the counts and are not enumerated per file: `unattested` counts paths that left the set while remaining on disk, `attested` counts paths that entered it (whether an entering path is also new on disk is unknowable at the set grain during a re-scope — re-read, never guess). Rows that state disk-true or content facts still ride: the cause file's own row **first in the batch** (config-change-rides-first, now law rather than sort-order luck), genuine `deleted` rows (path gone from disk), `modified` rows in full node grain, `renamed` pairs. The consumer's disposition is `resync`'s (§8): the attested set was re-planned; re-derive what you watch, then continue from the cursor. Replay ≡ live holds — the ring stores the collapsed frame, `diff` replays it byte-identical (§7.3).
+
+**3. The `overflow` marker — the feed bounds itself before any transport does.** A frame's file enumeration is bounded at assembly (`MAX_DELTA_FILES`, 128 — sized against the measured storm: ≈158 chars per rendered row, a ≈25k-token consumer cap ≈ 630 rows per drain, so a 128-row frame keeps several frames deliverable per drain). Rows past the bound — deterministic order: cause first, then path-sorted — are dropped and counted:
+
+```json
+{"delta":{…},"overflow":{"dropped":988}}
+```
+
+An `overflow` frame is an explicit honesty mark: the enumeration below the bound is a sample, the count is complete, and the recovery is re-read — never a transport layer silently truncating an answer the producer believed delivered. Both new fields are v3-additive (`rev::V2_RESERVED_FIELDS` rows at the notification root, stripped for v2 typed — the `effects` discipline), and tolerant consumers ignore unknown fields (§7.4's law); a consumer meeting an unknown `change` word treats it as "this file's membership or content moved — re-read".
+
+The consumer-side half (a drain face bounding rows per answer with partial-cursor semantics) is the consumer's own contract to amend; this section governs what the engine emits.
 
 ---
 

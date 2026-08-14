@@ -63,6 +63,8 @@ fn computed_delta(
             files,
         },
         effects: vec![],
+        rescope: None,
+        overflow: None,
     }
 }
 
