@@ -54,15 +54,12 @@ fn record_serves_the_frontmatter_pivot() {
 }
 
 /// The retired name is gone from the catalog, and the refusal does not
-/// resurrect it: DuckDB's Did-you-mean draws candidates from the live
+/// resurrect it: `DuckDB`'s Did-you-mean draws candidates from the live
 /// catalog, so `card` must not be offerable.
 #[test]
 fn card_refuses_without_resurrecting_the_old_name() {
     let mut docs = BTreeMap::new();
-    docs.insert(
-        "tasks/t.md".to_string(),
-        doc("---\ntype: task\n---\n# T\n"),
-    );
+    docs.insert("tasks/t.md".to_string(), doc("---\ntype: task\n---\n# T\n"));
     let conn = build(&docs);
 
     let err = conn
