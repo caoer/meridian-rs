@@ -30,6 +30,7 @@ mod run_op;
 mod script_op;
 mod server;
 mod state;
+mod walk_op;
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 

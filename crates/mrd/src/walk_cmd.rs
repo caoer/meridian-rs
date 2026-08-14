@@ -119,21 +119,17 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     Ok(())
 }
 
-/// One mounted root's corpus, owned — the backing store `RootedCorpus` borrows.
-struct MountedCorpus {
-    name: addr::MountName,
-    docs: BTreeMap<String, Document>,
-}
+/// The shared mount-table corpus assembly (`wire_serve::mount_corpus` — one
+/// owner across the CLI pin planes and the § A.10 wire serve path), with the
+/// CLI's voicing folded on: the shared loader returns each mounted root's
+/// unserved members, and this face speaks them to stderr.
+pub(crate) type Mounts = wire_serve::mount_corpus::MountCorpora;
 
-/// Load `MERIDIAN.md`'s mount table into both halves resolution needs: one corpus per usable
-/// root, and the projection that says what the file declares. A declared root that cannot be
-/// used is carried with its state, never dropped.
-///
 /// Full-table face: every bound root gets a corpus. Kept for a caller that cannot compute a
 /// needed set; every production verb today can, and uses [`load_mounts_for`].
 #[allow(dead_code)] // full-table face — deliberate; no production caller remains after the residual narrow
 pub(crate) fn load_mounts() -> Mounts {
-    load_mounts_where(&|_| true)
+    voiced(wire_serve::mount_corpus::load_mounts_where(&|_| true))
 }
 
 /// [`load_mounts`], building a corpus only for the roots in `needed` — a corpus build costs the
@@ -142,24 +138,25 @@ pub(crate) fn load_mounts() -> Mounts {
 /// ([`lock_addressed_roots`]); `links` and ephemeral `sql` off wikilink/embed targets
 /// ([`link_addressed_roots`]). `needed` narrows the corpora, never the [`addr::MountSet`].
 pub(crate) fn load_mounts_for(needed: &BTreeSet<addr::MountName>) -> Mounts {
-    load_mounts_where(&|name| needed.contains(name))
+    voiced(wire_serve::mount_corpus::load_mounts_for(needed))
 }
 
-/// Every mount root the corpus's `meridian-lock` addresses name — the exact set of roots worth
-/// building. A pin's root is a property of its address, not of the tree it points into, so the
-/// set is knowable from the ambient corpus alone. The root is read off
-/// [`view::read_face::LockItem::declared_addr`], the structural owner, so nothing re-splits
-/// `declared_ref`. A row with no address contributes no root.
-pub(crate) fn lock_addressed_roots(docs: &BTreeMap<String, Document>) -> BTreeSet<addr::MountName> {
-    let mut roots = BTreeSet::new();
-    for doc in docs.values() {
-        for item in view::read_face::page_lock_items(doc) {
-            if let Some(root) = item.declared_addr.as_ref().and_then(addr::Addr::root) {
-                roots.insert(root.clone());
-            }
-        }
+/// Voice each mounted root's unserved members — the shared loader returns
+/// them (voicing is the caller's; the wire host has no stderr), the CLI
+/// speaks them exactly as it always has.
+fn voiced(mounts: Mounts) -> Mounts {
+    for corpus in &mounts.corpora {
+        crate::voice_unserved(&corpus.unserved);
     }
-    roots
+    mounts
+}
+
+/// Every mount root the corpus's `meridian-lock` addresses name — moved to
+/// the walk plane ([`view::walk::lock_addressed_roots`]) so the CLI verbs and
+/// the wire serve path read ONE owner; this spelling stays for the in-crate
+/// callers (`check`/`status`).
+pub(crate) fn lock_addressed_roots(docs: &BTreeMap<String, Document>) -> BTreeSet<addr::MountName> {
+    view::walk::lock_addressed_roots(docs)
 }
 
 /// Every mount root the corpus's wikilink/embed targets name — the set of roots whose pages the
@@ -197,119 +194,6 @@ fn collect_link_roots(node: &model::Node, roots: &mut BTreeSet<addr::MountName>)
     for child in &node.children {
         collect_link_roots(child, roots);
     }
-}
-
-/// The one loader both faces above are spellings of, so the table bind, the refusal carrying,
-/// and the set assembly cannot drift between an eager caller and a narrowed one.
-fn load_mounts_where(wanted: &dyn Fn(&addr::MountName) -> bool) -> Mounts {
-    let Ok(resolution) = config::resolve(&config::Env::from_process()) else {
-        return Mounts::default();
-    };
-    let Some(cfg) = resolution.config() else {
-        return Mounts::default();
-    };
-    let Ok(table) = config::mount::bind(cfg) else {
-        return Mounts::default();
-    };
-
-    let mut corpora: Vec<MountedCorpus> = Vec::new();
-    let mut bound: Vec<addr::MountName> = Vec::new();
-    let mut unreachable: Vec<(addr::MountName, String, String)> = Vec::new();
-
-    for mount in table.mounts() {
-        let Ok(name) = addr::MountName::parse(mount.name()) else {
-            continue; // not a canonical name — no address can reach it anyway
-        };
-        // Declared, but the mount plane refuses it. Carried, with the path it declares and that
-        // plane's own reason verbatim — never dropped.
-        if mount.state().refuses() {
-            // The raw filesystem reason where the mount plane has one; otherwise that plane's
-            // teaching is the most specific thing available.
-            let detail = match mount.state() {
-                config::mount::MountState::PathUnseeable { detail } => detail.clone(),
-                other => other.detail(),
-            };
-            unreachable.push((name, mount.declared_path().to_owned(), detail));
-            continue;
-        }
-        let Some(path) = mount.canonical_path() else {
-            continue;
-        };
-        // Bound per the table, corpus not asked for. It joins `bound` exactly as a built root
-        // does: the table's answer does not depend on whether this process read its pages.
-        if !wanted(&name) {
-            bound.push(name);
-            continue;
-        }
-        match build_docs_at(path) {
-            Ok(docs) => {
-                bound.push(name.clone());
-                corpora.push(MountedCorpus { name, docs });
-            }
-            // Bound per the table, but its corpus will not build — unreadable from here, and
-            // just as much a declared root as any other.
-            Err(e) => unreachable.push((name, path.display().to_string(), e.message)),
-        }
-    }
-
-    let mut set = addr::MountSet::new(bound);
-    for (name, path, detail) in unreachable {
-        set = set.with_unreachable(name, path, detail);
-    }
-    Mounts { corpora, set }
-}
-
-/// The mount table as the pin planes consume it: the loaded corpora, and the projection naming
-/// what the file declares and which of it is usable.
-#[derive(Default)]
-pub(crate) struct Mounts {
-    corpora: Vec<MountedCorpus>,
-    set: addr::MountSet,
-}
-
-impl Mounts {
-    /// The root-keyed corpus over `docs`: the ambient workspace plus one root per bound mount.
-    /// One owner for this assembly — `walk`, `check` and `status` all colour pins through the
-    /// same computer, so they must hand it the same corpus.
-    /// `domain` is the ambient workspace's hash domain, and it is REQUIRED
-    /// rather than optional: a colour door that cannot say which paths its
-    /// corpus was filtered by reds every out-of-domain target (decision 0034).
-    /// Forcing it at the one assembly point is what keeps the three doors
-    /// answering alike.
-    /// `root` is REQUIRED for the same reason one level down (decision 0049): a
-    /// colour door that knows a target is out of domain but cannot READ that
-    /// target greys an absence, and the corpus map cannot tell the two apart.
-    pub(crate) fn rooted<'a>(
-        &'a self,
-        docs: &'a BTreeMap<String, Document>,
-        domain: &'a fs::domain::Domain,
-        root: &'a fs::WorkspaceRoot,
-    ) -> model::RootedCorpus<'a> {
-        let mut corpus = model::RootedCorpus::ambient(docs)
-            .with_hash_domain(domain)
-            .with_ambient_disk(root);
-        for mount in &self.corpora {
-            corpus = corpus.with_root(mount.name.clone(), &mount.docs);
-        }
-        corpus
-    }
-
-    /// The projection naming what `MERIDIAN.md` declares and which of it is usable — the mount
-    /// table resolution is a lookup in.
-    pub(crate) fn set(&self) -> &addr::MountSet {
-        &self.set
-    }
-}
-
-/// [`build_docs`] without the workspace-resolution wrapper — a mount path is already canonical
-/// (canonicalize-at-bind), so re-resolving it would ask a second owner an answered question.
-fn build_docs_at(root: &Path) -> Result<BTreeMap<String, Document>, Fail> {
-    let root = fs::WorkspaceRoot(root.to_path_buf());
-    let (files, _fingerprint) = fs::domain_snapshot(&root)
-        .map_err(|e| Fail::tool(format!("cannot read the mounted corpus: {e}")))?;
-    let (_index, docs, unserved) = fs::build_corpus(files);
-    crate::voice_unserved(&unserved);
-    Ok(docs)
 }
 
 /// The parsed `walk` invocation: the root page, direction, optional depth bound, output format.

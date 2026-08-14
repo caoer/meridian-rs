@@ -157,6 +157,25 @@ pub fn decode(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody>> 
             check_fields(obj, op, &[])?;
             Ok(Op::Mounts)
         }
+        "walk" => {
+            // § A.10: the page, the direction toggle, the depth bound.
+            check_fields(obj, op, &["path", "down", "depth"])?;
+            let depth = obj
+                .get("depth")
+                .map(|_| req_u64(obj, op, "depth"))
+                .transpose()?
+                .map(|d| {
+                    u32::try_from(d).map_err(|_| {
+                        bad_request(&format!("`depth` on `{op}` exceeds the supported bound: {d}"))
+                    })
+                })
+                .transpose()?;
+            Ok(Op::Walk {
+                path: req_path(obj, op, "path")?,
+                down: opt_bool(obj, op, "down")?,
+                depth,
+            })
+        }
         "read" => decode_read(obj),
         "check_write" => decode_check_write(obj),
         "splice" => decode_splice(obj, rev),
