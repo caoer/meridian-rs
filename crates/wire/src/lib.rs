@@ -1591,10 +1591,13 @@ pub struct FileLinks {
     /// ADDITIVE AND SUBSET, both deliberately. `unresolved` keeps every key it
     /// had and `resolved` stays a bool, so the Obsidian mirror (§4.6) is
     /// untouched — this map is read BESIDE the edge, never instead of it. And
-    /// a key is present here only when a file is really on disk under that
-    /// path: **a genuine typo carries no reason**, which is the whole
-    /// discriminator. Four facts collapsed to one word before this field
-    /// existed, leaving an excluded file indistinguishable from a broken link.
+    /// a key is present here only when a file is really on disk under the
+    /// path the mint resolved — the literal spelling, the `.md` append rule,
+    /// or the bare-name fallback over out-of-domain files (case-exact,
+    /// deterministic tie-break; ruling 2026-08-14): **a genuine typo carries
+    /// no reason**, which is the whole discriminator. Four facts collapsed to
+    /// one word before this field existed, leaving an excluded file
+    /// indistinguishable from a broken link.
     ///
     /// Reason-beside-verdict is the engine's own idiom (`model::selector`'s
     /// `Color` carries its reason for the same purpose), not an invention.

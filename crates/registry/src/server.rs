@@ -1249,12 +1249,25 @@ fn dispatch_read(
                 pin,
             };
             // S7: session host — pin gate answers from the read-mint ledger.
-            // Handle outside any engine borrow (H1).
+            // Handle outside any engine borrow (H1). `foreign` hands the
+            // cross-root pin gate the TARGET workspace's ledger (D-C): the
+            // per-workspace map behind a closure, keyed by the same canonical
+            // path the serving session's hello bound.
             let mints = registry.read_mints(ws);
+            let foreign = |workspace: &Path| registry.read_mints(workspace);
             // U20b: numbered producer on this workspace's ring. Sink inside
             // flock; advance after flock drops (allocator makes the gap safe).
             let ring = registry.ring(ws);
-            let out = wire_serve::write::splice(&ws_root, Some(&*ring), &args, &[], Some(&mints))?;
+            let out = wire_serve::write::splice_with_mints(
+                &ws_root,
+                Some(&*ring),
+                &args,
+                &[],
+                wire_serve::write::Mints {
+                    ambient: Some(&mints),
+                    foreign: Some(&foreign),
+                },
+            )?;
             if let Some(frame) = out.committed {
                 ring.advance(frame);
             }

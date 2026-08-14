@@ -52,9 +52,8 @@ pub(crate) fn serve(
         None,
     ));
     let corpus = mounts.rooted(&engine.docs, &domain, &root);
-    let exclusion = |target: &str| {
-        fs::domain::link_target_exclusion(&root, &domain, target).map(|why| why.word().to_owned())
-    };
+    let probe = fs::domain::LinkTargetProbe::new(&root, &domain);
+    let exclusion = |target: &str| probe.exclusion(target).map(|why| why.word().to_owned());
 
     let store = registry
         .sql_store(ws)

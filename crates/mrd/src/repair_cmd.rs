@@ -48,10 +48,15 @@
 //! reported, and the lock write alone is skipped (it rides `LockWriteArgs::dry`, so the door's
 //! guards still run). Not a diff face.
 //!
-//! # Scope: the ambient root only
-//! A pin naming another root names another object store and another history, and this verb holds
-//! one repository handle. Cross-root pins are skipped and their population is stated, as
-//! `check`'s pin plane states `out_of_jurisdiction`.
+//! # Scope: the ambient root plus every MOUNTED root (cross-root design D-G)
+//! A pin naming another root names another object store and another history. When that root is
+//! MOUNTED (bound in ~/MERIDIAN.md), this verb assesses it in place: the target is read from
+//! that root's checkout, the history walked in that root's repo, and the recovered `hash`
+//! written into the HOME lock — the one write stays the pinning page's own guarded lock door.
+//! The crossing is strictly read-only on the foreign root. An UNMOUNTED root stays skip-and-
+//! state (grey law: cannot see from here, never guessed), as `check`'s pin plane states its
+//! `out_of_jurisdiction`. The batching discipline survives per root: one `path_history` + one
+//! `blobs_with_oids_at` pair per root — never a spawn per pin.
 //!
 //! Exit triad: 0 nothing lost, or every lost pin repaired (or rehearsed under `--dry`) / 1 at
 //! least one TRUE LOSS / 2 bad invocation or a tool failure.
@@ -102,20 +107,19 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     }
     let docs = docs;
 
-    let mut survey = survey(&docs, parsed.page.as_deref())?;
-    let repo = git::Repo::at(root.0.clone());
-    let lost = lost_pins(&repo, &root, &docs, std::mem::take(&mut survey.candidates))?;
+    let mounted = mounted_roots();
+    let mut survey = survey(&docs, parsed.page.as_deref(), &mounted)?;
+    let lost = lost_pins(&root, &docs, std::mem::take(&mut survey.candidates))?;
 
     progress(&format!(
-        "scanned {} pin(s) in {} page(s) — {} lost, {} in another root's object store",
+        "scanned {} pin(s) in {} page(s) — {} lost, {} in unmounted roots' object stores",
         survey.scanned,
         survey.pages,
         lost.len(),
         survey.outside.len()
     ));
 
-    let prefix = repo_prefix(&repo, &root)?;
-    let outcomes = recover(&repo, &lost, &prefix)?;
+    let outcomes = recover_all(&root, &lost)?;
     let applied = apply(
         &root,
         &docs,
@@ -150,6 +154,28 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
 
 // the survey — which pins are even askable
 
+/// Which root a pin's target — and therefore its object store and history —
+/// belongs to.
+#[derive(Debug, Clone)]
+enum Owner {
+    /// The ambient workspace's own.
+    Ambient,
+    /// A MOUNTED root's, by its bound canonical path. Read-only jurisdiction
+    /// — the history walk and the target read happen there; the lock write
+    /// stays home.
+    Mounted { root: std::path::PathBuf },
+}
+
+impl Owner {
+    /// The directory whose repo answers for this pin's blob and history.
+    fn store<'a>(&'a self, ambient: &'a fs::WorkspaceRoot) -> &'a std::path::Path {
+        match self {
+            Owner::Ambient => &ambient.0,
+            Owner::Mounted { root } => root,
+        }
+    }
+}
+
 /// One pin as this verb reads it: where it is declared, what it claims, and the file its blob is
 /// the blob of.
 #[derive(Debug, Clone)]
@@ -158,9 +184,38 @@ struct PinSite {
     src_path: String,
     /// The row, verbatim — the only thing repair ever rewrites is its `hash`.
     entry: lock::PinEntry,
-    /// The target's workspace-relative path with `.md` back on: `object` is the link spelling,
-    /// which drops it, and `check::layer0::ask_store` makes the same re-attachment.
+    /// The target's path inside its OWNING root with `.md` back on: `object` is the link
+    /// spelling, which drops it (and, form-3, prefixes the root name), and
+    /// `check::layer0::ask_store` makes the same re-attachment.
     target: String,
+    /// Whose checkout, store and history answer for this target.
+    owner: Owner,
+}
+
+/// The machine's bound mounts as name → canonical path — the roots this verb
+/// may assess (R14 narrowed by D-G: mounted roots are walked, unmounted stay
+/// skip-and-state). A missing or invalid ~/MERIDIAN.md yields the empty map:
+/// every form-3 row then states, exactly as before the narrowing.
+fn mounted_roots() -> BTreeMap<addr::MountName, std::path::PathBuf> {
+    let mut out = BTreeMap::new();
+    let Ok(resolution) = config::resolve(&config::Env::from_process()) else {
+        return out;
+    };
+    let Ok(table) = resolution.bind() else {
+        return out;
+    };
+    for mount in table.mounts() {
+        if mount.state().refuses() {
+            continue;
+        }
+        let Ok(name) = addr::MountName::parse(mount.name()) else {
+            continue;
+        };
+        if let Some(path) = mount.canonical_path() {
+            out.insert(name, path.to_path_buf());
+        }
+    }
+    out
 }
 
 /// What the corpus offered, including the populations that were not measured.
@@ -175,8 +230,13 @@ struct Survey {
 }
 
 /// Read every `meridian-lock` pin in the corpus (or in one page), splitting the askable from the
-/// two populations that are not.
-fn survey(docs: &BTreeMap<String, Document>, page: Option<&str>) -> Result<Survey, Fail> {
+/// two populations that are not. `mounted` decides jurisdiction for form-3 rows: a bound root's
+/// rows are candidates in that root; an unmounted root's are stated.
+fn survey(
+    docs: &BTreeMap<String, Document>,
+    page: Option<&str>,
+    mounted: &BTreeMap<addr::MountName, std::path::PathBuf>,
+) -> Result<Survey, Fail> {
     let mut out = Survey {
         candidates: Vec::new(),
         outside: Vec::new(),
@@ -205,15 +265,26 @@ fn survey(docs: &BTreeMap<String, Document>, page: Option<&str>) -> Result<Surve
         for entry in found.lock.pins {
             out.scanned += 1;
             // Jurisdiction is decided on structure first (the ordering `check::layer0::objects_in`
-            // holds): a behavioural skip would let a broken ambient store hide inside the exemption.
-            match addr::Addr::parse(&entry.object) {
-                Ok(addr) => {
-                    if let Some(name) = addr.root() {
-                        out.outside
-                            .push(format!("`{path}` pin `{}` (root `{name}`)", entry.object));
-                        continue;
+            // holds): a behavioural skip would let a broken ambient store hide inside the
+            // exemption. A form-3 row routes to its own root when that root is MOUNTED (D-G);
+            // an unmounted root's rows are stated, never silently dropped.
+            let (owner, rel) = match addr::Addr::parse(&entry.object) {
+                Ok(addr) => match addr.root() {
+                    Some(name) => {
+                        let Some(root) = mounted.get(name) else {
+                            out.outside.push(format!(
+                                "`{path}` pin `{}` (root `{name}`, unmounted)",
+                                entry.object
+                            ));
+                            continue;
+                        };
+                        (
+                            Owner::Mounted { root: root.clone() },
+                            addr.path().to_owned(),
+                        )
                     }
-                }
+                    None => (Owner::Ambient, entry.object.clone()),
+                },
                 Err(e) => {
                     out.unaskable.push(format!(
                         "`{path}` pin `{}` is not an address, so WHICH git holds it is unknown \
@@ -222,7 +293,7 @@ fn survey(docs: &BTreeMap<String, Document>, page: Option<&str>) -> Result<Surve
                     ));
                     continue;
                 }
-            }
+            };
             if !git::is_oid(&entry.hash) {
                 out.unaskable.push(format!(
                     "`{path}` pin `{}` has a hash that is not an object id, so git cannot be \
@@ -231,23 +302,23 @@ fn survey(docs: &BTreeMap<String, Document>, page: Option<&str>) -> Result<Surve
                 ));
                 continue;
             }
-            let target = format!("{}.md", entry.object);
+            let target = format!("{rel}.md");
             out.candidates.push(PinSite {
                 src_path: path.clone(),
                 entry,
                 target,
+                owner,
             });
         }
     }
     Ok(out)
 }
 
-/// The pins that are lost — both planes dark. One batched `cat-file --batch-check` answers the
-/// retrieval plane for every candidate at once (`git::Repo::object_info`), and the claim plane is
-/// [`model::selector::classify_pin`] against the live target. A pin that fails only one of the
-/// two is not this verb's business.
+/// The pins that are lost — both planes dark. One batched `cat-file --batch-check` per OWNING
+/// store answers the retrieval plane (`git::Repo::object_info`), and the claim plane is
+/// [`model::selector::classify_pin`] against the live target in its owning root. A pin that
+/// fails only one of the two is not this verb's business.
 fn lost_pins(
-    repo: &git::Repo,
     root: &fs::WorkspaceRoot,
     docs: &BTreeMap<String, Document>,
     candidates: Vec<PinSite>,
@@ -255,13 +326,33 @@ fn lost_pins(
     if candidates.is_empty() {
         return Ok(Vec::new());
     }
-    let oids: Vec<&str> = candidates.iter().map(|c| c.entry.hash.as_str()).collect();
-    let held = repo.object_info(&oids).map_err(|e| {
-        Fail::tool(format!(
-            "the object store could not be asked which pinned blobs it still holds ({e}), and a \
-             pin cannot be called lost on an unread store. Nothing was written."
-        ))
-    })?;
+    // Group by owning store, preserving order: one batched ask per store.
+    let mut groups: BTreeMap<std::path::PathBuf, Vec<usize>> = BTreeMap::new();
+    for (at, site) in candidates.iter().enumerate() {
+        groups
+            .entry(site.owner.store(root).to_path_buf())
+            .or_default()
+            .push(at);
+    }
+    let mut held: Vec<Option<git::ObjectInfo>> = Vec::new();
+    held.resize_with(candidates.len(), || None);
+    for (store, members) in &groups {
+        let repo = git::Repo::at(store.clone());
+        let oids: Vec<&str> = members
+            .iter()
+            .map(|&at| candidates[at].entry.hash.as_str())
+            .collect();
+        let answers = repo.object_info(&oids).map_err(|e| {
+            Fail::tool(format!(
+                "the object store at {} could not be asked which pinned blobs it still holds \
+                 ({e}), and a pin cannot be called lost on an unread store. Nothing was written.",
+                store.display()
+            ))
+        })?;
+        for (&at, answer) in members.iter().zip(answers) {
+            held[at] = answer;
+        }
+    }
     let mut lost = Vec::new();
     for (site, present) in candidates.into_iter().zip(held) {
         if present.is_some() {
@@ -292,14 +383,29 @@ fn live_color(
     site: &PinSite,
 ) -> Color {
     let selector = view::walk::model_selector(&site.entry.object, &site.entry.selector);
-    if let Some(doc) = docs.get(&site.target) {
-        model::selector::classify_pin(&selector, &site.entry.fingerprint, Some(doc))
-    } else {
-        // A miss here is "not in the hash domain" OR "no such file"; the door read tells them
-        // apart. A read failure leaves the answer exactly what it was before this clause —
-        // the pin is assessed against no document, never against a fabricated one.
-        let loaded = fs::load(root, std::path::Path::new(&site.target)).ok();
-        model::selector::classify_pin(&selector, &site.entry.fingerprint, loaded.as_ref())
+    match &site.owner {
+        Owner::Ambient => {
+            if let Some(doc) = docs.get(&site.target) {
+                model::selector::classify_pin(&selector, &site.entry.fingerprint, Some(doc))
+            } else {
+                // A miss here is "not in the hash domain" OR "no such file"; the door read
+                // tells them apart. A read failure leaves the answer exactly what it was
+                // before this clause — the pin is assessed against no document, never against
+                // a fabricated one.
+                let loaded = fs::load(root, std::path::Path::new(&site.target)).ok();
+                model::selector::classify_pin(&selector, &site.entry.fingerprint, loaded.as_ref())
+            }
+        }
+        // The mounted target is read from ITS root's checkout — never from the
+        // ambient corpus, whose same-named file is a different document.
+        Owner::Mounted { root: mounted } => {
+            let loaded = fs::load(
+                &fs::WorkspaceRoot(mounted.clone()),
+                std::path::Path::new(&site.target),
+            )
+            .ok();
+            model::selector::classify_pin(&selector, &site.entry.fingerprint, loaded.as_ref())
+        }
     }
 }
 
@@ -340,6 +446,29 @@ fn repo_prefix(repo: &git::Repo, root: &fs::WorkspaceRoot) -> Result<String, Fai
     } else {
         Ok(format!("{rel}/"))
     }
+}
+
+/// [`recover`] per OWNING root: the lost pins are grouped by the repo whose
+/// history holds their target, and each group is walked with that root's own
+/// handle — one `git log` + one `cat-file --batch` pair per root (D-G's
+/// batching discipline). Outcome order follows the group walk, which `emit`
+/// names per row, so no caller depends on input order.
+fn recover_all(root: &fs::WorkspaceRoot, lost: &[PinSite]) -> Result<Vec<Outcome>, Fail> {
+    let mut groups: BTreeMap<std::path::PathBuf, Vec<PinSite>> = BTreeMap::new();
+    for site in lost {
+        groups
+            .entry(site.owner.store(root).to_path_buf())
+            .or_default()
+            .push(site.clone());
+    }
+    let mut out = Vec::new();
+    for (store, members) in groups {
+        let repo = git::Repo::at(store.clone());
+        let store_root = fs::WorkspaceRoot(store);
+        let prefix = repo_prefix(&repo, &store_root)?;
+        out.extend(recover(&repo, &members, &prefix)?);
+    }
+    Ok(out)
 }
 
 /// Walk the recorded history of every lost pin's target and decide each one: one `git log` and
@@ -466,7 +595,10 @@ fn floor(root: &fs::WorkspaceRoot, outcomes: &[Outcome]) -> Result<(), Fail> {
         }
         let selector =
             view::walk::model_selector(&outcome.site.entry.object, &outcome.site.entry.selector);
-        let Ok(live) = fs::load(root, std::path::Path::new(&outcome.site.target)) else {
+        // Disk = the target's OWNING root's checkout, resolved through the
+        // mount table (the floor invariant generalizes without strain — D-G).
+        let disk = fs::WorkspaceRoot(outcome.site.owner.store(root).to_path_buf());
+        let Ok(live) = fs::load(&disk, std::path::Path::new(&outcome.site.target)) else {
             continue;
         };
         if !matches!(
@@ -654,7 +786,7 @@ fn emit(
             }
             if !survey.outside.is_empty() {
                 println!(
-                    "in another root's object store (not measured here): {}",
+                    "in unmounted roots' object stores (not measured here): {}",
                     survey.outside.len()
                 );
             }
@@ -736,6 +868,7 @@ mod tests {
                 extra: BTreeMap::new(),
             },
             target: ".github/dotspec.md".to_owned(),
+            owner: Owner::Ambient,
         };
         (tmp, root, site)
     }

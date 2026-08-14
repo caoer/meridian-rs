@@ -160,11 +160,12 @@ pub fn core(
     docs: &BTreeMap<String, Document>,
     claims: &[realise::Claim],
     pins: &[PinRow],
+    mounted: &BTreeMap<addr::MountName, std::path::PathBuf>,
 ) -> Result<CoreReport, CoreError> {
     let drifted_claims = claims_realised(root, claims).map_err(CoreError::Claim)?;
     Ok(CoreReport {
         drifted_claims,
-        pins: pin_plane(root, docs, pins),
+        pins: pin_plane(root, docs, pins, mounted),
         orphans: orphan::orphaned_runs(docs),
     })
 }
@@ -189,10 +190,11 @@ pub fn core_of(
     root: &WorkspaceRoot,
     docs: &BTreeMap<String, Document>,
     pins: &[PinRow],
+    mounted: &BTreeMap<addr::MountName, std::path::PathBuf>,
 ) -> CoreReport {
     CoreReport {
         drifted_claims: Vec::new(),
-        pins: pin_plane(root, docs, pins),
+        pins: pin_plane(root, docs, pins, mounted),
         orphans: orphan::orphaned_runs(docs),
     }
 }

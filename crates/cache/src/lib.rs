@@ -54,7 +54,10 @@ pub use sweep::{DrawerInfo, GcReport, gc, list_drawers, remove_drawer};
 /// cache. Bump this together with `view::SCHEMA_VERSION` /
 /// `view::store::CACHE_SCHEMA_VERSION` on any projection or hist DDL change:
 /// the old drawer path simply stops resolving and `gc` reaps it.
-pub const SCHEMA_SALT: &str = "s1";
+///
+/// `s2`: the dangling-base-exclusion ruling (2026-08-14) — `dangling` view
+/// narrowed and the exclusion mint's fallback restamped `link.exclusion`.
+pub const SCHEMA_SALT: &str = "s2";
 
 /// Default GC threshold: a drawer whose last-use is older than this is reapable.
 /// 30 days, mirroring Cargo's registry auto-GC horizon. A path-keyed drawer store
