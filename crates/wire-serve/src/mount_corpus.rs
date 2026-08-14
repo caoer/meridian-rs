@@ -19,6 +19,9 @@ use model::Document;
 /// [`model::RootedCorpus`] borrows — plus the members it could not serve.
 pub struct MountedCorpus {
     pub name: addr::MountName,
+    /// The root's canonical bound path (canonicalize-at-bind) — the handle
+    /// the per-root durability read (`check`) opens that root's git through.
+    pub root: std::path::PathBuf,
     pub docs: BTreeMap<String, Document>,
     /// Hash-domain members under this root that serve no spans/nodes
     /// (per-file UTF-8 degradation), path → condition. The caller voices.
@@ -129,6 +132,7 @@ pub fn load_mounts_where(wanted: &dyn Fn(&addr::MountName) -> bool) -> MountCorp
                 bound.push(name.clone());
                 corpora.push(MountedCorpus {
                     name,
+                    root: path.to_path_buf(),
                     docs,
                     unserved,
                 });

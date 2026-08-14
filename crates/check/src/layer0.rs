@@ -14,6 +14,7 @@
 //! in transcript JSONL.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 
 use fs::WorkspaceRoot;
 use model::Document;
@@ -231,11 +232,17 @@ impl PinPlane {
     }
 }
 
-/// Read the pin plane over `docs`: sort the caller's pin colours, then ask THIS
-/// root's object store about every blob the corpus pins.
+/// Read the pin plane over `docs`: sort the caller's pin colours, then ask
+/// each object store the corpus pins into — THIS root's for bare objects, and
+/// every MOUNTED root's for the form-3 objects that name it (cross-root
+/// design D-F: one rev-list + cat-file pair per root, only when that root has
+/// rows).
 ///
 /// `docs` must be the SAME corpus build the pin colours came from, or the two
-/// halves describe two different corpora.
+/// halves describe two different corpora. `mounted` maps each bound root name
+/// to its canonical path; a form-3 object whose root is NOT in the map is
+/// skipped and STATED ([`PinPlane::out_of_jurisdiction`]) — unmounted is a
+/// sight line, never a silent drop.
 ///
 /// A corpus that pins no blob asks git nothing, so a workspace outside a
 /// repository stays green rather than being refused for a question nobody
@@ -247,6 +254,7 @@ pub fn pin_plane(
     root: &WorkspaceRoot,
     docs: &BTreeMap<String, Document>,
     pins: &[PinRow],
+    mounted: &BTreeMap<addr::MountName, PathBuf>,
 ) -> PinPlane {
     let mut plane = PinPlane {
         red: Vec::new(),
@@ -272,14 +280,23 @@ pub fn pin_plane(
             Color::Green => {}
         }
     }
-    match objects_in(docs) {
+    match objects_in(docs, mounted) {
         Err(detail) => plane.cannot_ask = Some(detail),
-        Ok((objects, outside)) => {
-            plane.out_of_jurisdiction = outside;
-            if !objects.is_empty()
-                && let Err(detail) = ask_store(root, &objects, &mut plane)
+        Ok(grouped) => {
+            plane.out_of_jurisdiction = grouped.unmounted;
+            if !grouped.ambient.is_empty()
+                && let Err(detail) = ask_store(&root.0, &grouped.ambient, &mut plane)
             {
                 plane.cannot_ask = Some(detail);
+            }
+            for (name, objects) in &grouped.foreign {
+                let store = &mounted[name];
+                if let Err(detail) = ask_store(store, objects, &mut plane) {
+                    // One unaskable store leaves the PLANE unread (grey,
+                    // never falsely clean), and the refusal names WHICH
+                    // root could not answer.
+                    plane.cannot_ask = Some(format!("mounted root `{name}`: {detail}"));
+                }
             }
         }
     }
@@ -287,12 +304,26 @@ pub fn pin_plane(
 }
 
 /// One pinned blob located in the corpus — the R4 per-pin `hash` and the target
-/// it is the blob OF.
+/// it is the blob OF. `key` is the lock object spelling verbatim (rooted for a
+/// form-3 row); `rel` is the path half alone — what the live re-hash joins
+/// onto the owning root.
 #[derive(Debug)]
 struct ObjectRef {
     src_path: String,
     key: String,
+    rel: String,
     blob_sha: String,
+}
+
+/// The corpus's pinned blobs, grouped by the store that must answer for each.
+#[derive(Debug, Default)]
+struct GroupedObjects {
+    /// Bare objects — THIS root's store answers.
+    ambient: Vec<ObjectRef>,
+    /// Form-3 objects whose root is MOUNTED — that root's store answers.
+    foreign: BTreeMap<addr::MountName, Vec<ObjectRef>>,
+    /// Form-3 objects whose root is NOT mounted here — skipped and stated.
+    unmounted: Vec<String>,
 }
 
 /// Every pinned blob the corpus declares, or the reason the plane is unread.
@@ -306,9 +337,11 @@ struct ObjectRef {
 /// declares the same blob twice, so rows are deduped by `(object, hash)` —
 /// two rows would ask git one question twice and report one orphan as two
 /// findings.
-fn objects_in(docs: &BTreeMap<String, Document>) -> Result<(Vec<ObjectRef>, Vec<String>), String> {
-    let mut out: Vec<ObjectRef> = Vec::new();
-    let mut outside: Vec<String> = Vec::new();
+fn objects_in(
+    docs: &BTreeMap<String, Document>,
+    mounted: &BTreeMap<addr::MountName, PathBuf>,
+) -> Result<GroupedObjects, String> {
+    let mut out = GroupedObjects::default();
     let mut seen: BTreeSet<(String, String, String)> = BTreeSet::new();
     for (path, doc) in docs {
         let Ok(Some(found)) = lock::find(doc) else {
@@ -316,26 +349,30 @@ fn objects_in(docs: &BTreeMap<String, Document>) -> Result<(Vec<ObjectRef>, Vec<
         };
         for pin in found.lock.pins {
             let key = pin.object;
-            // Jurisdiction is decided on STRUCTURE (is this object's root the
-            // ambient one), never on failure — a behavioural skip would let a
-            // broken ambient store hide inside the exemption. A cross-root
-            // object names another store; it is skipped and STATED
-            // (`PinPlane::out_of_jurisdiction`). Cross-root blob durability
-            // belongs to the per-root anchoring read.
-            match addr::Addr::parse(&key) {
-                Ok(addr) => {
-                    if let Some(name) = addr.root() {
-                        outside.push(format!("`{path}` pin `{key}` (root `{name}`)"));
+            // Jurisdiction is decided on STRUCTURE (which root does this
+            // object's address name), never on failure — a behavioural skip
+            // would let a broken store hide inside the exemption. A form-3
+            // object routes to its own root's store when that root is
+            // MOUNTED; an unmounted root's rows are skipped and STATED.
+            let owner = match addr::Addr::parse(&key) {
+                Ok(addr) => match addr.root() {
+                    Some(name) if mounted.contains_key(name) => {
+                        Some((name.clone(), addr.path().to_owned()))
+                    }
+                    Some(name) => {
+                        out.unmounted
+                            .push(format!("`{path}` pin `{key}` (root `{name}`, unmounted)"));
                         continue;
                     }
-                }
+                    None => None,
+                },
                 Err(e) => {
                     return Err(format!(
                         "`{path}` pin `{key}` is not an address, so WHICH git to ask is \
                          unknown: {e}"
                     ));
                 }
-            }
+            };
             let oid = pin.hash.to_ascii_lowercase();
             if !git::is_oid(&oid) {
                 return Err(format!(
@@ -346,14 +383,23 @@ fn objects_in(docs: &BTreeMap<String, Document>) -> Result<(Vec<ObjectRef>, Vec<
             if !seen.insert((path.clone(), key.clone(), oid.clone())) {
                 continue;
             }
-            out.push(ObjectRef {
-                src_path: path.clone(),
-                key,
-                blob_sha: oid,
-            });
+            match owner {
+                Some((name, rel)) => out.foreign.entry(name).or_default().push(ObjectRef {
+                    src_path: path.clone(),
+                    key: key.clone(),
+                    rel,
+                    blob_sha: oid,
+                }),
+                None => out.ambient.push(ObjectRef {
+                    src_path: path.clone(),
+                    rel: key.clone(),
+                    key,
+                    blob_sha: oid,
+                }),
+            }
         }
     }
-    Ok((out, outside))
+    Ok(out)
 }
 
 /// Ask ONE object store about every entry, in ONE pass, and classify.
@@ -368,11 +414,11 @@ fn objects_in(docs: &BTreeMap<String, Document>) -> Result<(Vec<ObjectRef>, Vec<
 /// All three states are counted as a READING; only the ORPHAN is a finding.
 /// The orphan check costs one `git hash-object` per non-anchored entry only.
 fn ask_store(
-    root: &WorkspaceRoot,
+    store_root: &std::path::Path,
     objects: &[ObjectRef],
     plane: &mut PinPlane,
 ) -> Result<(), String> {
-    let repo = git::Repo::at(root.0.clone());
+    let repo = git::Repo::at(store_root.to_path_buf());
     let reachable = repo
         .reachable_objects()
         .map_err(|e| format!("the object store could not be asked: {e}"))?;
@@ -396,9 +442,10 @@ fn ask_store(
             ObjectAnchor::NeverAnchored => plane.never += 1,
         }
         // If the file still hashes to this blob, committing it anchors it — a
-        // lifecycle moment, not a defect. `object` is the wiki-link inner text
-        // without `.md`, so the extension goes back on before git is asked.
-        let live = match repo.blob_oid(&root.0.join(format!("{}.md", object.key))) {
+        // lifecycle moment, not a defect. `rel` is the object's path half
+        // without `.md`, so the extension goes back on before git is asked —
+        // joined onto the store that owns the row, never the ambient root.
+        let live = match repo.blob_oid(&store_root.join(format!("{}.md", object.rel))) {
             Ok(oid) if oid.eq_ignore_ascii_case(&object.blob_sha) => continue,
             Ok(oid) => oid,
             Err(e) => format!("the file could not be hashed ({e})"),
@@ -441,7 +488,7 @@ mod tests {
     /// A drifted claim surfaces as a [`ClaimFinding`]; a converged one does not.
     #[test]
     fn claims_realised_reports_only_drifted_claims() {
-        let root = WorkspaceRoot(std::path::PathBuf::from("/nonexistent"));
+        let root = WorkspaceRoot(PathBuf::from("/nonexistent"));
         let claims = [
             fixed_claim("green", CheckOutcome::Converged),
             fixed_claim(
@@ -499,7 +546,7 @@ mod tests {
     /// blindness too, which is the fail-open this split must never become.
     #[test]
     fn the_domain_grey_is_reported_while_a_blindness_grey_still_gates() {
-        let root = WorkspaceRoot(std::path::PathBuf::from("/nonexistent"));
+        let root = WorkspaceRoot(PathBuf::from("/nonexistent"));
         let docs = BTreeMap::new();
 
         let unattested = pin_plane(
@@ -510,6 +557,7 @@ mod tests {
                     path: "drafts/tmp.md".to_string(),
                 },
             ))],
+            &BTreeMap::new(),
         );
         assert!(
             unattested.grey.is_empty() && unattested.unattested.len() == 1,
@@ -533,6 +581,7 @@ mod tests {
             &root,
             &docs,
             &[pin(Color::Grey(model::selector::GreyReason::Ambiguous))],
+            &BTreeMap::new(),
         );
         assert!(
             blind.cannot_assess() && !blind.is_green(),
@@ -544,13 +593,14 @@ mod tests {
     /// grey pin a refusal-for-want-of-evidence.
     #[test]
     fn a_red_pin_is_a_finding_and_a_grey_pin_is_an_absence_of_evidence() {
-        let root = WorkspaceRoot(std::path::PathBuf::from("/nonexistent"));
+        let root = WorkspaceRoot(PathBuf::from("/nonexistent"));
         let docs = BTreeMap::new();
 
         let red = pin_plane(
             &root,
             &docs,
             &[pin(Color::Red(model::selector::RedReason::Drifted))],
+            &BTreeMap::new(),
         );
         assert!(red.is_red(), "a drifted pin is a lie the ledger is telling");
         assert!(
@@ -562,12 +612,13 @@ mod tests {
             &root,
             &docs,
             &[pin(Color::Grey(model::selector::GreyReason::Ambiguous))],
+            &BTreeMap::new(),
         );
         assert!(!grey.is_red(), "grey is not red");
         assert!(grey.cannot_assess(), "grey names itself");
         assert!(!grey.is_green(), "and it is never green");
 
-        let green = pin_plane(&root, &docs, &[pin(Color::Green)]);
+        let green = pin_plane(&root, &docs, &[pin(Color::Green)], &BTreeMap::new());
         assert!(green.is_green(), "a green pin leaves nothing to report");
     }
 
@@ -616,9 +667,9 @@ mod tests {
     /// grey, never an empty list a reader could bank as clean.
     #[test]
     fn an_unaskable_object_store_is_grey_never_an_empty_clean_reading() {
-        let root = WorkspaceRoot(std::path::PathBuf::from("/nonexistent"));
+        let root = WorkspaceRoot(PathBuf::from("/nonexistent"));
         let docs = corpus("claim.md", &pin_page("source", &"a".repeat(40)));
-        let plane = pin_plane(&root, &docs, &[]);
+        let plane = pin_plane(&root, &docs, &[], &BTreeMap::new());
         assert!(
             plane.cannot_ask.is_some(),
             "there is no repository at /nonexistent — the question could not be put"
@@ -635,9 +686,9 @@ mod tests {
     /// A corpus pinning no blob asks git nothing and stays green.
     #[test]
     fn a_corpus_that_references_no_blob_asks_nothing_and_stays_green() {
-        let root = WorkspaceRoot(std::path::PathBuf::from("/nonexistent"));
+        let root = WorkspaceRoot(PathBuf::from("/nonexistent"));
         let docs = corpus("claim.md", "# Claim\n\nno lock at all.\n");
-        let plane = pin_plane(&root, &docs, &[]);
+        let plane = pin_plane(&root, &docs, &[], &BTreeMap::new());
         assert!(
             plane.cannot_ask.is_none(),
             "git was never asked, so there is nothing it could not answer"
@@ -650,22 +701,34 @@ mod tests {
     /// so the population is stated.
     #[test]
     fn a_cross_root_pin_is_skipped_and_stated_never_silently_dropped() {
-        let root = WorkspaceRoot(std::path::PathBuf::from("/nonexistent"));
+        let root = WorkspaceRoot(PathBuf::from("/nonexistent"));
         let docs = corpus("claim.md", &pin_page("alpha:source", &"a".repeat(40)));
 
-        let (asked, outside) = objects_in(&docs).expect("a cross-root pin is not an error");
+        let grouped =
+            objects_in(&docs, &BTreeMap::new()).expect("a cross-root pin is not an error");
         assert!(
-            asked.is_empty(),
-            "the ambient store is never asked about another root's blob: {asked:?}"
+            grouped.ambient.is_empty(),
+            "the ambient store is never asked about another root's blob: {:?}",
+            grouped.ambient
         );
-        assert_eq!(outside.len(), 1, "and the skip is counted, not dropped");
         assert!(
-            outside[0].contains("alpha") && outside[0].contains("claim.md"),
-            "the statement names the root AND the page that declares it: {outside:?}"
+            grouped.foreign.is_empty(),
+            "an UNMOUNTED root has no store to route to: {:?}",
+            grouped.foreign.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            grouped.unmounted.len(),
+            1,
+            "and the skip is counted, not dropped"
+        );
+        assert!(
+            grouped.unmounted[0].contains("alpha") && grouped.unmounted[0].contains("claim.md"),
+            "the statement names the root AND the page that declares it: {:?}",
+            grouped.unmounted
         );
 
         // The disclosure reaches the PLANE, which is what the faces render.
-        let plane = pin_plane(&root, &docs, &[]);
+        let plane = pin_plane(&root, &docs, &[], &BTreeMap::new());
         assert_eq!(
             plane.out_of_jurisdiction.len(),
             1,
@@ -684,11 +747,11 @@ mod tests {
     /// once ambient, once cross-root — and they must differ.
     #[test]
     fn a_broken_ambient_store_still_greys_and_is_not_swallowed_by_the_exemption() {
-        let root = WorkspaceRoot(std::path::PathBuf::from("/nonexistent"));
+        let root = WorkspaceRoot(PathBuf::from("/nonexistent"));
 
         // ARM 1 — AMBIENT pin, unaskable store: greys. Fails CLOSED.
         let ambient = corpus("claim.md", &pin_page("source", &"a".repeat(40)));
-        let ambient_plane = pin_plane(&root, &ambient, &[]);
+        let ambient_plane = pin_plane(&root, &ambient, &[], &BTreeMap::new());
         assert!(
             ambient_plane.cannot_ask.is_some(),
             "a broken AMBIENT store is still grey — the exemption must not cover it"
@@ -697,7 +760,7 @@ mod tests {
 
         // ARM 2 — CROSS-ROOT pin, same unaskable store: scoped out, never asked.
         let cross = corpus("claim.md", &pin_page("alpha:source", &"a".repeat(40)));
-        let cross_plane = pin_plane(&root, &cross, &[]);
+        let cross_plane = pin_plane(&root, &cross, &[], &BTreeMap::new());
         assert!(
             cross_plane.cannot_ask.is_none(),
             "the cross-root blob was never this plane's to ask about"
@@ -711,12 +774,83 @@ mod tests {
         );
     }
 
+    /// D-F — a form-3 object whose root is MOUNTED is ASKED of that root's own
+    /// store: anchored counts, no `out_of_jurisdiction` row. Before this, no
+    /// plane anywhere answered durability for a cross-root blob.
+    #[test]
+    fn a_mounted_roots_form_3_blob_is_asked_of_that_roots_own_store() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let alpha = tmp.path().join("alpha");
+        std::fs::create_dir_all(&alpha).expect("mkdir");
+        std::fs::write(alpha.join("source.md"), "# S\n\ncontent.\n").expect("target");
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.email", "df@example.invalid"],
+            vec!["config", "user.name", "df"],
+            vec!["add", "."],
+            vec!["commit", "-q", "-m", "seed"],
+        ] {
+            let ok = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&alpha)
+                .args(&args)
+                .status()
+                .expect("git runs")
+                .success();
+            assert!(ok, "git {args:?}");
+        }
+        let oid = git::Repo::at(alpha.clone())
+            .blob_oid(&alpha.join("source.md"))
+            .expect("the committed file has a blob oid");
+
+        let root = WorkspaceRoot(PathBuf::from("/nonexistent"));
+        let docs = corpus("claim.md", &pin_page("alpha:source", &oid));
+        let mounted = BTreeMap::from([(
+            addr::MountName::parse("alpha").expect("a name"),
+            alpha.clone(),
+        )]);
+
+        let plane = pin_plane(&root, &docs, &[], &mounted);
+        assert!(
+            plane.out_of_jurisdiction.is_empty(),
+            "a MOUNTED root's rows are asked, not stated as outside: {:?}",
+            plane.out_of_jurisdiction
+        );
+        assert_eq!(plane.anchored, 1, "the committed blob reads ANCHORED");
+        assert!(
+            plane.cannot_ask.is_none() && plane.orphaned.is_empty(),
+            "one committed cross-root blob is a clean reading"
+        );
+
+        // The counter-arm: the same corpus with the root NOT mounted stays a
+        // stated skip — mounting is what converts the sight line into a read.
+        let unmounted = pin_plane(&root, &docs, &[], &BTreeMap::new());
+        assert_eq!(unmounted.out_of_jurisdiction.len(), 1);
+        assert_eq!(unmounted.asked(), 0, "nothing was asked without the mount");
+
+        // And an unaskable MOUNTED store greys the plane NAMING the root —
+        // never a silent skip, never a false clean.
+        let broken = BTreeMap::from([(
+            addr::MountName::parse("alpha").expect("a name"),
+            PathBuf::from("/nonexistent-store"),
+        )]);
+        let grey = pin_plane(&root, &docs, &[], &broken);
+        assert!(
+            grey.cannot_ask
+                .as_deref()
+                .is_some_and(|d| d.contains("alpha")),
+            "the refusal names WHICH root could not answer: {:?}",
+            grey.cannot_ask
+        );
+    }
+
     /// A value that is not an object id is REPORTED, never skipped — a read
     /// that dropped it would report a corrupt retrieval plane as a true zero.
     #[test]
     fn a_value_that_is_not_an_object_id_is_reported_never_skipped() {
         let docs = corpus("claim.md", &pin_page("source", "not-an-oid"));
-        let detail = objects_in(&docs).expect_err("git cannot be asked about a non-oid");
+        let detail =
+            objects_in(&docs, &BTreeMap::new()).expect_err("git cannot be asked about a non-oid");
         assert!(
             detail.contains("not an object id"),
             "and it says why: {detail}"
@@ -744,9 +878,9 @@ mod tests {
              blocks on one page"
         );
         assert!(
-            objects_in(&docs)
+            objects_in(&docs, &BTreeMap::new())
                 .expect("a refusal is not this reader's error")
-                .0
+                .ambient
                 .is_empty(),
             "so it declares no askable object here"
         );
@@ -765,7 +899,7 @@ mod tests {
                 })
             }
         }
-        let root = WorkspaceRoot(std::path::PathBuf::from("/nonexistent"));
+        let root = WorkspaceRoot(PathBuf::from("/nonexistent"));
         let claim = Claim {
             selector: "faulty".to_string(),
             rule: None,

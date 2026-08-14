@@ -5,6 +5,8 @@
 //! ([`the_engine_keeps_no_memory_and_this_pins_it`]), so the engine's
 //! memorylessness is a pinned, visible fact rather than an absence to infer.
 
+use std::collections::BTreeMap;
+
 use fs::WorkspaceRoot;
 use wire::Path as WirePath;
 use wire_serve::write::{CreateArgs, SpliceArgs, create, splice};
@@ -67,7 +69,7 @@ fn live_root(root: &WorkspaceRoot) -> String {
 fn core_over(root: &WorkspaceRoot) -> check::CoreReport {
     let (files, _fold) = fs::domain_snapshot(root).expect("snapshot");
     let (_index, docs, _unserved) = fs::build_corpus(files);
-    check::core(root, &docs, &[], &[]).expect("core read")
+    check::core(root, &docs, &[], &[], &BTreeMap::new()).expect("core read")
 }
 
 /// A governed corpus reads GREEN, and the green is EARNED — the write path
@@ -154,7 +156,12 @@ fn a_drifted_pin_still_reddens_after_the_journal_died() {
         color: model::selector::Color::Red(model::selector::RedReason::Drifted),
         label: "red content-drifted".to_string(),
     };
-    let plane = check::pin_plane(&root, &docs, std::slice::from_ref(&drifted));
+    let plane = check::pin_plane(
+        &root,
+        &docs,
+        std::slice::from_ref(&drifted),
+        &BTreeMap::new(),
+    );
     assert!(
         plane.is_red(),
         "the ledger claims content that is not there"
@@ -184,7 +191,7 @@ fn an_unaskable_object_store_is_still_grey_and_never_a_clean_reading() {
     let doc = model::build(page.clone(), syntax::parse(&page));
     let docs = BTreeMap::from([("claim.md".to_string(), doc)]);
 
-    let plane = check::pin_plane(&root, &docs, &[]);
+    let plane = check::pin_plane(&root, &docs, &[], &BTreeMap::new());
     assert!(
         plane.cannot_ask.is_some(),
         "there is no repository at /nonexistent — the question could not be put"
