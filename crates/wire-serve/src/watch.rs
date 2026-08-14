@@ -7,9 +7,18 @@
 //! - else → external: one change set = one root advance = one Delta;
 //!   `actor`/`now` absent (§7.1); `seq` at detection; one production constructor.
 //!
-//! **Rename ruling:** within one batch, exactly one removed + exactly one added
-//! path with byte-equal content → `renamed` + `from_path`. Else delete+create,
-//! `from_path` unwired.
+//! **Rename ruling (sharpened by § A.9):** within one batch, exactly one
+//! DISK-TRUE removal (the path is gone from disk) + exactly one added path
+//! with byte-equal content, and no re-scope cause → `renamed` + `from_path`.
+//! Else delete+create, `from_path` unwired — a still-on-disk origin is a
+//! membership leave and never pairs.
+//!
+//! **§ A.9 re-scope honesty:** a removed path still present on disk mints
+//! `unattested` (it left the ATTESTED SET), never `deleted`. When the
+//! effective domain config changed between baselines, membership-only
+//! changes collapse into the frame's `rescope` summary (cause + counts) and
+//! the cause row rides first; the enumeration is bounded at
+//! [`MAX_DELTA_FILES`] with an `overflow` count past it.
 //!
 //! **§52 per-file degradation** (node-rev-merkle-spec §3, line 52): a non-UTF-8
 //! member's bytes already moved the root (`domain_snapshot` folds raw bytes),
@@ -226,25 +235,45 @@ fn external_effects(
 }
 
 /// Byte-level classification → wire Delta file entries, path-deterministic
-/// order, the ruled rename form applied (module header). Infallible: a
-/// non-UTF-8 member degrades to its rev-less entry (§52, module header)
-/// instead of refusing the frame.
+/// order (cause first under a re-scope), the ruled rename form applied
+/// (module header), the § A.9 honesty laws applied at the one mint point.
+/// Infallible: a non-UTF-8 member degrades to its rev-less entry (§52,
+/// module header) instead of refusing the frame.
 fn classify_to_wire(
     ws_root: &fs::WorkspaceRoot,
     changes: &fs::WatchChanges,
     cause: Option<&str>,
 ) -> Classified {
-    let _ = (ws_root, cause);
-    if changes.removed.len() == 1
-        && changes.added.len() == 1
-        && changes.removed[0].1 == changes.added[0].1
-    {
-        let (from_path, bytes) = &changes.removed[0];
-        let (to_path, _) = &changes.added[0];
+    // Disk truth splits the removed list (§ A.9): a path with anything still
+    // at it on disk left the ATTESTED SET; only a path gone from disk was
+    // deleted. Probed, never inferred — `symlink_metadata` so a symlink now
+    // squatting the path (itself outside the domain) still counts as present.
+    type Removed<'a> = Vec<&'a (String, Vec<u8>)>;
+    let (gone, still): (Removed<'_>, Removed<'_>) = changes
+        .removed
+        .iter()
+        .partition(|(path, _)| ws_root.0.join(path).symlink_metadata().is_err());
+
+    let mut files = Vec::new();
+    let mut rescope = cause.map(|c| Rescope {
+        cause: Path(c.to_string()),
+        unattested: 0,
+        attested: 0,
+    });
+
+    // Rename ruling, sharpened by § A.9: `renamed` asserts the origin LEFT
+    // THE DISK, so only a disk-true removal may pair — and never under a
+    // re-scope, where an added path may have been on disk all along (entered
+    // the set) and "renamed from" would be a guess.
+    let mut added: Removed<'_> = changes.added.iter().collect();
+    let mut gone = gone;
+    if cause.is_none() && gone.len() == 1 && added.len() == 1 && gone[0].1 == added[0].1 {
+        let (from_path, bytes) = gone[0];
+        let (to_path, _) = added[0];
         // A poison rename stays a rename — byte equality needs no parse —
         // but mints no rev (§52: no spans/nodes served).
         let rev = doc_of(bytes).map(|doc| NodeRev(doc.root.node_rev.0));
-        let mut files = vec![DeltaFile {
+        files.push(DeltaFile {
             path: Path(to_path.clone()),
             change: FileChange::Renamed,
             from_path: Some(Path(from_path.clone())),
@@ -253,18 +282,13 @@ fn classify_to_wire(
             file_rev_before: rev.clone(),
             file_rev_after: rev,
             nodes: vec![],
-        }];
-        files.extend(modified_entries(changes));
-        files.sort_by(|a, b| a.path.0.cmp(&b.path.0));
-        return Classified {
-            files,
-            rescope: None,
-            overflow: None,
-        };
+        });
+        gone.clear();
+        added.clear();
     }
-    // Refuse-to-guess: deletes and creates emitted as themselves.
-    let mut files = Vec::new();
-    for (path, before) in &changes.removed {
+
+    // Disk-true deletes: emitted as themselves, full facts.
+    for (path, before) in gone {
         files.push(match doc_of(before) {
             Some(doc) => {
                 let fd = model::delta::file_delta(Some(&doc), None).expect("state changed");
@@ -273,7 +297,28 @@ fn classify_to_wire(
             None => degraded_entry(path, FileChange::Deleted),
         });
     }
-    for (path, after) in &changes.added {
+
+    // Membership leaves: collapsed into the count under a re-scope,
+    // per-file `unattested` rows otherwise (§ A.9).
+    match &mut rescope {
+        Some(summary) => summary.unattested = still.len() as u64,
+        None => {
+            for (path, before) in still {
+                files.push(unattested_entry(path, before));
+            }
+        }
+    }
+
+    // Additions: under a re-scope every added path ENTERED the set and
+    // collapses into the count — except the cause file's own row, which
+    // states a disk fact and rides (config-change-rides-first).
+    for (path, after) in added {
+        if let Some(summary) = &mut rescope
+            && path != &summary.cause.0
+        {
+            summary.attested += 1;
+            continue;
+        }
         files.push(match doc_of(after) {
             Some(doc) => {
                 let fd = model::delta::file_delta(None, Some(&doc)).expect("state changed");
@@ -282,12 +327,44 @@ fn classify_to_wire(
             None => degraded_entry(path, FileChange::Created),
         });
     }
+
     files.extend(modified_entries(changes));
     files.sort_by(|a, b| a.path.0.cmp(&b.path.0));
+    // Config-change-rides-first is law, not sort-order luck (§ A.9).
+    if let Some(summary) = &rescope
+        && let Some(at) = files.iter().position(|f| f.path.0 == summary.cause.0)
+    {
+        files[..=at].rotate_right(1);
+    }
+
+    // § A.9's bound: the feed limits its own enumeration before any
+    // transport layer can truncate it silently. Deterministic prefix rides;
+    // the count is complete.
+    let overflow = (files.len() > MAX_DELTA_FILES).then(|| {
+        let dropped = (files.len() - MAX_DELTA_FILES) as u64;
+        files.truncate(MAX_DELTA_FILES);
+        Overflow { dropped }
+    });
+
     Classified {
         files,
-        rescope: None,
-        overflow: None,
+        rescope,
+        overflow,
+    }
+}
+
+/// The § A.9 `unattested` entry: the path left the attested set while its
+/// file remains on disk. Departed rev kept when the departed bytes still
+/// parse, no post-state rev (nothing attested exists to hash), no node grain
+/// (no content changed — §7.1 never-duplicated posture).
+fn unattested_entry(path: &str, before: &[u8]) -> DeltaFile {
+    DeltaFile {
+        path: Path(path.to_string()),
+        change: FileChange::Unattested,
+        from_path: None,
+        file_rev_before: doc_of(before).map(|doc| NodeRev(doc.root.node_rev.0)),
+        file_rev_after: None,
+        nodes: vec![],
     }
 }
 
@@ -588,7 +665,7 @@ mod tests {
         );
         assert_eq!(
             out.overflow,
-            Some(wire::Overflow { dropped: 2 }),
+            Some(Overflow { dropped: 2 }),
             "dropped rows are counted, never silently absent"
         );
         assert_eq!(

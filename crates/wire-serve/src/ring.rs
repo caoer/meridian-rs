@@ -193,10 +193,11 @@ impl RootRing {
 /// `fingerprint_*` before write.
 ///
 /// The v2 branch strips every key [`crate::rev::is_reserved`] names at
-/// [`Position::NotificationRoot`] — today exactly `effects` — on the *typed*
-/// value. Typed is load-bearing: routing a frame through `Value` alphabetizes
-/// its keys (`serde_json::Map` is a `BTreeMap`), breaking the frozen v2 struct
-/// order that `u20b_v2_notification_shape.rs` pins.
+/// [`Position::NotificationRoot`] — `effects`, `rescope`, `overflow` — on the
+/// *typed* value, and demotes the § A.9 `unattested` change word to v2's
+/// `deleted`. Typed is load-bearing: routing a frame through `Value`
+/// alphabetizes its keys (`serde_json::Map` is a `BTreeMap`), breaking the
+/// frozen v2 struct order that `u20b_v2_notification_shape.rs` pins.
 ///
 /// # Errors
 /// I/O failure on the output stream — never a content condition.
@@ -205,22 +206,46 @@ pub fn write_frame(output: &mut impl Write, frame: &DeltaFrame, v3: bool) -> io:
         let mut v = serde_json::to_value(frame)?;
         crate::rev::project_delta_frame(&mut v);
         serde_json::to_writer(&mut *output, &v)?;
-    } else if crate::rev::is_reserved("effects", Position::NotificationRoot)
-        && !frame.effects.is_empty()
-    {
+    } else if v2_demotable(frame) {
         // Demoted copy: the ring keeps the full frame, because a v3 subscriber
-        // on the same workspace is entitled to the reaction plane.
-        let demoted = DeltaFrame {
+        // on the same workspace is entitled to the reaction plane and the
+        // § A.9 summaries.
+        let mut demoted = DeltaFrame {
             delta: frame.delta.clone(),
             effects: Vec::new(),
             rescope: None,
             overflow: None,
         };
+        for file in &mut demoted.delta.files {
+            // § A.9 vocabulary demotion, not a field strip: v2's `change` set
+            // is closed, and `deleted` is what frozen v2 always said for a
+            // path leaving the corpus — the un-attestation split is v3's.
+            if file.change == wire::FileChange::Unattested {
+                file.change = wire::FileChange::Deleted;
+            }
+        }
         serde_json::to_writer(&mut *output, &demoted)?;
     } else {
         serde_json::to_writer(&mut *output, frame)?;
     }
     output.write_all(b"\n")
+}
+
+/// Does a frozen v2 session need a demoted copy of this frame? Every
+/// post-v2 field is consulted through the registry (`rev::is_reserved` —
+/// Law 3: one table, both hosts); the `unattested` VALUE demotion is a
+/// vocabulary rule, not a field, so it is named here directly.
+fn v2_demotable(frame: &DeltaFrame) -> bool {
+    (crate::rev::is_reserved("effects", Position::NotificationRoot) && !frame.effects.is_empty())
+        || (crate::rev::is_reserved("rescope", Position::NotificationRoot)
+            && frame.rescope.is_some())
+        || (crate::rev::is_reserved("overflow", Position::NotificationRoot)
+            && frame.overflow.is_some())
+        || frame
+            .delta
+            .files
+            .iter()
+            .any(|f| f.change == wire::FileChange::Unattested)
 }
 
 #[cfg(test)]
