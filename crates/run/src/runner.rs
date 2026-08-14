@@ -227,17 +227,15 @@ pub fn run(
     live: &mut (dyn Write + Send),
 ) -> Result<RunReport, RunnerError> {
     // 1. Pre-eval resolution (U2): address → contract → caps.
-    let doc = address::load_page(root, Path::new(spec.page)).map_err(RunnerError::Address)?;
-    let task = address::resolve_task(&doc, spec.task).map_err(RunnerError::Address)?;
+    let (task, authority) = pre_eval(
+        root,
+        spec.page,
+        spec.task,
+        &spec.args,
+        &spec.env,
+        spec.declaring_root,
+    )?;
     let name = task.binding.name.clone();
-
-    let contract = contracts::contract_for(&doc, &name).map_err(RunnerError::Contract)?;
-    contracts::validate(&name, &contract, &spec.args, &spec.env).map_err(RunnerError::Violation)?;
-
-    let (conventions, _source) =
-        caps::load_conventions(spec.declaring_root).map_err(RunnerError::Caps)?;
-    let authority = caps::resolve_authority(&doc, &name, task.block.lang, &conventions)
-        .map_err(RunnerError::Caps)?;
 
     // 2. Dispatch by fence language (decision #13).
     let outcome = dispatch(root, spec, &task, &name, &authority, live)?;
@@ -280,6 +278,161 @@ pub fn run(
         cascade,
         cap_reached,
     })
+}
+
+/// The pre-eval chain (U2), ONE owner for both tenses: address → contract →
+/// caps, in the order the live run enforces them. [`rehearse`] composes the
+/// SAME chain, so a rehearsal refuses exactly where a run would — dry-green
+/// predicts live-green by construction (dogfood r2 F2).
+fn pre_eval(
+    root: &fs::WorkspaceRoot,
+    page: &str,
+    task: Option<&str>,
+    args: &[String],
+    env: &BTreeMap<String, String>,
+    declaring_root: Option<&Path>,
+) -> Result<(address::ResolvedTask, Authority), RunnerError> {
+    let doc = address::load_page(root, Path::new(page)).map_err(RunnerError::Address)?;
+    let task = address::resolve_task(&doc, task).map_err(RunnerError::Address)?;
+    let name = task.binding.name.clone();
+
+    let contract = contracts::contract_for(&doc, &name).map_err(RunnerError::Contract)?;
+    contracts::validate(&name, &contract, args, env).map_err(RunnerError::Violation)?;
+
+    let (conventions, _source) =
+        caps::load_conventions(declaring_root).map_err(RunnerError::Caps)?;
+    let authority = caps::resolve_authority(&doc, &name, task.block.lang, &conventions)
+        .map_err(RunnerError::Caps)?;
+    Ok((task, authority))
+}
+
+/// One dry rehearsal request: the [`RunSpec`] fields a rehearsal consumes —
+/// the addressed page/task, its contract inputs, and the §9 identity. No
+/// receipt, scratch, timeout, or cwd exists here: nothing executes, nothing
+/// lands.
+#[derive(Debug)]
+pub struct RehearseSpec<'a> {
+    /// The page the task lives on (workspace-relative).
+    pub page: &'a str,
+    /// The task to rehearse; `None` addresses the page's only binding.
+    pub task: Option<&'a str>,
+    /// Supplied positional args (validated against the declared contract).
+    pub args: Vec<String>,
+    /// Supplied env (validated against the declared contract).
+    pub env: BTreeMap<String, String>,
+    /// Caller-supplied invocation id (rides eval provenance only).
+    pub invocation_id: &'a str,
+    /// Caller-supplied time fact.
+    pub now: Option<&'a str>,
+    /// The convention-declaring root — same semantics as [`RunSpec`]'s field.
+    pub declaring_root: Option<&'a Path>,
+    /// Kernel eval limits.
+    pub limits: EvalLimits,
+    /// Caller-supplied identity (§9, § A.8).
+    pub actor: Option<&'a str>,
+}
+
+/// What one rehearsal proved: the resolved task facts plus the language leg.
+#[derive(Debug)]
+pub struct Rehearsal {
+    /// The resolved task name.
+    pub task: String,
+    /// The addressed block's procedure-hash (`node_rev` at address time).
+    pub task_rev: String,
+    /// The language-split outcome.
+    pub outcome: Rehearsed,
+}
+
+/// The rehearsal's language legs.
+#[derive(Debug)]
+pub enum Rehearsed {
+    /// Starlark, every gate green: the full declared effect set, its md.*
+    /// partition admitted by the block's authority through the executor's own
+    /// choke point ([`executor::admit`]). Nothing applied.
+    Starlark {
+        /// Every effect the block emitted, in emission order — never filtered.
+        effects: Vec<Effect>,
+    },
+    /// Bash rehearses by showing the block — no eval, no descriptors: its
+    /// effects only exist by running it, and inventing them would be fiction.
+    Bash {
+        /// The fence's inner source, verbatim.
+        source: String,
+    },
+}
+
+/// Rehearse one addressed task: run EVERY pre-apply gate the live run
+/// enforces — the [`pre_eval`] chain (address → contract → caps), then on the
+/// starlark leg the U5 evaluation and the executor's own choke-point
+/// admission over the md.* partition — and apply nothing.
+///
+/// The refusals are the live run's own [`RunnerError`] values, so both doors'
+/// existing mappings render a rehearsed refusal byte-identical to the live
+/// one: one gate, one grammar, both tenses (dogfood r2 F2).
+///
+/// # Errors
+/// [`RunnerError`] — each stage's typed refusal, exactly as [`run`] answers
+/// it. Nothing was applied in any case.
+pub fn rehearse(root: &fs::WorkspaceRoot, spec: &RehearseSpec<'_>) -> Result<Rehearsal, RunnerError> {
+    let (task, authority) = pre_eval(
+        root,
+        spec.page,
+        spec.task,
+        &spec.args,
+        &spec.env,
+        spec.declaring_root,
+    )?;
+    let name = task.binding.name.clone();
+    match task.block.lang {
+        TaskLanguage::Starlark => {
+            let root_at_eval =
+                fs::domain_snapshot(root)
+                    .map(|(_, r)| r)
+                    .map_err(|e| RunnerError::Root {
+                        reason: e.to_string(),
+                    })?;
+            let effects = dispatch_starlark::evaluate(&StarlarkDispatch {
+                page: spec.page,
+                task: &name,
+                task_rev: &task.task_rev,
+                source: &task.block.source,
+                args: spec.args.clone(),
+                env: spec.env.clone(),
+                invocation_id: spec.invocation_id,
+                now: spec.now,
+                root_at_eval: &root_at_eval,
+                authority: &authority,
+                receipt: None,
+                takeover: false,
+                limits: spec.limits,
+                actor: spec.actor,
+                // A rehearsal never commits, so no Delta can honestly exist.
+                delta: None,
+            })
+            .map_err(|e| RunnerError::Starlark(DispatchError::Eval(e)))?;
+            // The choke point, rehearsal tense: the SAME admission the apply
+            // enforces, over the same md.* partition.
+            let md: Vec<Effect> = effects
+                .iter()
+                .filter(|e| e.kind.domain() == Domain::Md)
+                .cloned()
+                .collect();
+            executor::admit(&md, &authority)
+                .map_err(|e| RunnerError::Starlark(DispatchError::Exec(e)))?;
+            Ok(Rehearsal {
+                task: name,
+                task_rev: task.task_rev,
+                outcome: Rehearsed::Starlark { effects },
+            })
+        }
+        TaskLanguage::Bash => Ok(Rehearsal {
+            task: name,
+            task_rev: task.task_rev,
+            outcome: Rehearsed::Bash {
+                source: task.block.source.clone(),
+            },
+        }),
+    }
 }
 
 /// Dispatch the addressed block by its fence language (decision #13): the
