@@ -4,10 +4,15 @@
 //! The plane's executor commits through its own seam and offers each
 //! committed batch's facts to a [`run::executor::DeltaSink`]; this module is
 //! the one production implementor. It assembles the frame at the §7.3 single
-//! constructor and advances the workspace ring — all inside the executor's
-//! write flock, which is what closes the detector window: by the time a
-//! detect cycle can take the flock, the ring tip already carries the moved
-//! root and `reconcile` syncs silently (the internal-commit arm).
+//! constructor and advances the workspace ring inside the executor's flock —
+//! which is `.meridian/run.lock`, NOT the detector's `.meridian/write.lock`.
+//! Holding it is therefore not by itself what closes the detector window: the
+//! disk root moves at `apply_batch`, one fold before the advance here, and a
+//! detect cycle inside that window classifies a GOVERNED apply as external,
+//! actor-less. The detector closes the window from its own side, by taking the
+//! run lock too before it reconciles ([`crate::ring::WorkspaceRing::detect`]);
+//! by the time a cycle can reconcile, the ring tip carries the moved root and
+//! `reconcile` syncs silently (the internal-commit arm).
 //!
 //! Degradation posture: the mint never fails a landed commit. A post-commit
 //! fold or receipt read failure logs and skips the frame — the detector's

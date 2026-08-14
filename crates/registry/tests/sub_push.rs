@@ -746,6 +746,67 @@ fn a_frame_written_inside_the_horizon_resets_it() {
     server.shutdown();
 }
 
+/// § A.8 Delta honesty, the detector half: a detect cycle publishes NOTHING
+/// while a run holds `.meridian/run.lock`.
+///
+/// The run plane commits under the run lock, not the detector's
+/// `.meridian/write.lock` — `crates/fs/src/lib.rs` states the split ("run
+/// applies and wire splices do not serialize against each other"). Its sink
+/// advances the ring inside that same run lock, but the disk root moves at
+/// `apply_batch`, one fold earlier. A detect cycle landing in that window sees
+/// a moved root the ring tip does not carry, takes the external arm, and mints
+/// an ACTOR-LESS frame for a GOVERNED apply — the fact the run-delta ruling
+/// denies. Under full-workspace load the window opened in 4 of 6 passes,
+/// shedding `run_op::a_bash_run_mints_one_frame_per_committed_batch` and
+/// `script_effects::a_live_run_pushes_attributed_frames`.
+///
+/// The gate is the mechanism, deterministically: a foreign holder of the run
+/// lock stands in for a run mid-commit. While it is held the subscriber is
+/// served nothing; when it releases, the (genuinely external) edit arrives on
+/// the next cycle — deferral, never loss.
+///
+/// *Mutation:* drop the run-lock acquire from `WorkspaceRing::cycle` — the
+/// frame arrives while the lock is held and the first leg fails.
+#[test]
+fn a_detect_cycle_defers_while_a_run_holds_the_run_lock() {
+    let tmp = TempDir::new().unwrap();
+    let ws = write_ws(&tmp.path().join("ws"), &[("plan.md", PLAN)]);
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+
+    let mut sub = Conn::open(server.socket_path());
+    assert_eq!(sub.hello(&ws)["ok"], json!(true));
+    assert_eq!(sub.sub(0)["ok"], json!(true), "the epoch is primed");
+
+    // A run's critical section, stood in for by its lock: taken BEFORE the
+    // change lands, exactly as the plane takes it before `apply_batch`.
+    let run_lock = run::WorkspaceLock::acquire(&ws).expect("the run lock is free");
+    external_edit(&ws, "plan.md", "# Goals\n\nship by September\n");
+
+    // Several cadences' worth of cycles (250ms detect, 50ms tick) — long
+    // enough that a detector willing to classify this would have.
+    sub.writer
+        .set_read_timeout(Some(Duration::from_millis(1500)))
+        .unwrap();
+    assert!(
+        sub.next_frame().is_none(),
+        "a run in flight owns the frame for its own commit: the detector \
+         must publish nothing while the run lock is held"
+    );
+
+    // Deferral, not loss: the change is still served once the plane is done.
+    drop(run_lock);
+    sub.writer.set_read_timeout(Some(PUSH_WAIT)).unwrap();
+    let frame = sub
+        .next_frame()
+        .expect("the deferred change is served on the next cycle");
+    assert_eq!(
+        frame["delta"]["files"][0]["path"],
+        json!("plan.md"),
+        "the deferred change names its file: {frame}"
+    );
+    server.shutdown();
+}
+
 /// Control for the reap pin: exemption is for subscriptions, not "never reap".
 #[allow(clippy::duration_suboptimal_units)]
 #[test]

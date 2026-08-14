@@ -11,10 +11,12 @@
 //! absent (§7.1 — engine never invents identity). Missing attribution, not
 //! wrong data; chain stays contiguous because there is exactly one producer.
 //!
-//! # Flock is the serialization point
+//! # Flocks are the serialization point — both of them
 //! Detect reconcile holds the workspace write flock so it never classifies a
-//! torn mid-batch state. Pre-check (unlocked fold vs baseline) keeps quiet
-//! cycles off the flock so writers are not spuriously `workspace_busy`.
+//! torn mid-batch state, and the run flock so it never classifies a governed
+//! run apply as external (the plane writes under `.meridian/run.lock` alone;
+//! see [`WorkspaceRing::detect`]). Pre-check (unlocked fold vs baseline) keeps
+//! quiet cycles off both so writers are not spuriously `workspace_busy`.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -141,8 +143,11 @@ impl WorkspaceRing {
     /// 2. **Pre-check** — unlocked fold vs baseline; unchanged root updates
     ///    cadence and returns without the write flock (quiet cycles dominate;
     ///    flock is `LOCK_EX|LOCK_NB`, so holding it would refuse concurrent splices).
-    /// 3. **Reconcile under flock** — only when root moved. `WouldBlock` ⇒ write
-    ///    in flight; skip (never block a subscriber thread on an unrelated writer).
+    /// 3. **Reconcile under both flocks** — only when root moved, and only
+    ///    with `.meridian/write.lock` AND `.meridian/run.lock` in hand.
+    ///    `WouldBlock` on either ⇒ a write or a run is in flight; skip (never
+    ///    block a subscriber thread on an unrelated writer, and never speak for
+    ///    a governed commit whose own frame is still coming).
     ///
     /// # Errors
     /// Snapshot or classification failure. Callers log and continue.
@@ -193,6 +198,22 @@ impl WorkspaceRing {
         // Root moved — take write flock so reconcile cannot observe mid-batch.
         let Ok(_write_lock) = fs::WriteLock::acquire(ws_root) else {
             return Ok(false); // a write is in flight; its change keeps
+        };
+        // And the RUN flock: the run plane commits under `.meridian/run.lock`,
+        // never this detector's `.meridian/write.lock` (`fs`: the two planes do
+        // not serialize against each other), and its sink advances the ring
+        // inside that same run lock — but the disk root moves at `apply_batch`,
+        // one fold earlier. Reconciling inside that window classifies a
+        // GOVERNED apply as external and mints it actor-less (§7.1 forbids
+        // inventing the actor back), which is the run-delta ruling's exact
+        // negation. Deferring costs latency only: the run's own frame speaks
+        // for the change, and a genuinely external edit is served next cycle.
+        //
+        // Lock order is write → run here and run → (never write) on the plane,
+        // but BOTH acquires are `LOCK_NB` and neither side ever waits, so no
+        // AB-BA deadlock is representable.
+        let Ok(_run_lock) = run::WorkspaceLock::acquire(&ws_root.0) else {
+            return Ok(false); // a run is in flight; its own frame speaks for it
         };
         let mut state = self.state();
         let RingState { ring, watch, .. } = &mut *state;
