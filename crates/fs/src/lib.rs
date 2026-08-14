@@ -1745,6 +1745,289 @@ fn fsync_dir(dir: &Path) -> io::Result<()> {
     File::open(dir)?.sync_all()
 }
 
+// ---------------------------------------------------------------------------
+// The set commit (§4.4 set form): N content files + one receipt, sealed
+// ---------------------------------------------------------------------------
+
+/// One member of a set commit: a content file, its sealed batch, the validated
+/// pre-image the batch's spans index, and the candidate the caller gated.
+/// The same per-file contract as [`apply_batch`]'s content half; the receipt
+/// never rides a member — it is set-level (one receipt entry names every file).
+pub struct SetMember<'a> {
+    /// The content file this member edits (workspace-relative).
+    pub content_path: &'a Path,
+    /// The sealed batch — `receipt` MUST be `None` (set-level receipt only).
+    pub batch: &'a model::ValidatedBatch,
+    /// The exact pre-image bytes the batch's spans index (read#2's bytes).
+    pub expected_content: &'a [u8],
+    /// The sealed candidate — must BE this member's splice result.
+    pub candidate: &'a model::CandidateDocument,
+}
+
+/// Commit a SET of content files plus one optional receipt append in one
+/// sealed batch: stage all, verify all pre-images, then rename member order,
+/// receipt LAST. Validation and verification run whole-set-first, so any
+/// refusal lands NOTHING (the §4.4 set law: validate-all-then-apply).
+///
+/// # Rollback — in-memory pre-images, no journal (ruling 2026-08-14)
+/// A rename FAILURE mid-sequence (process alive) restores every member already
+/// renamed from its held pre-image bytes — the same tmp+fsync+rename
+/// discipline, run backwards — and the error names the member that failed.
+/// There is NO journal file: "effect-less script should be only in memory
+/// state, simple is better" (the ruling superseding the §6.5 set-journal
+/// draft). A CRASH mid-rename-sequence is therefore an accepted rare window —
+/// stated like the single-commit §6.5 window: every file is still
+/// fully-old-or-fully-new (atomic renames, never torn), a cold rebuild yields
+/// the correct root of whatever landed, and receipt-rename-LAST keeps §6.6
+/// honest — a resolvable receipt anchor still implies the whole set landed.
+///
+/// # Seam contract (enforced fail-loud, `InvalidInput` before any byte)
+/// Two or more members; content paths pairwise distinct; the receipt path
+/// distinct from every content path; every member's `batch.receipt` is `None`
+/// (the set receipt is passed set-level, never per member); each member's
+/// candidate is its batch's splice result.
+///
+/// # Errors
+/// Seam violations (`InvalidInput`), the typed [`write_conflict`] refusal
+/// (any live destination ≠ its pre-image — nothing landed), or I/O failure at
+/// a stage, fsync, or rename step (with the restore outcome named).
+pub fn apply_set(
+    root: &WorkspaceRoot,
+    members: &[SetMember<'_>],
+    receipt: Option<(&Path, &model::ReceiptAppend)>,
+) -> io::Result<()> {
+    stage_set(root, members, receipt)?.commit()
+}
+
+/// A staged set commit: every content temp plus the optional receipt temp,
+/// each carrying the pre-image its verify compares against. Separated from
+/// the renames so the rollback/crash tests can drive failure between staging
+/// and each rename deterministically (the [`StagedCommit`] precedent).
+struct StagedSet {
+    /// `(staged file, validated pre-image)` per member, in member order.
+    contents: Vec<(StagedFile, Vec<u8>)>,
+    /// The receipt temp and its stage-time pre-image (absent file ⇒ empty).
+    receipt: Option<(StagedFile, Vec<u8>)>,
+}
+
+/// Stage a whole set: seam contract first, then apply each member's sealed
+/// spans to its pre-image and stage the result, then stage the receipt
+/// append. A failure anywhere discards every temp already staged — staging is
+/// entirely off to the side, so no destination is touched.
+fn stage_set(
+    root: &WorkspaceRoot,
+    members: &[SetMember<'_>],
+    receipt: Option<(&Path, &model::ReceiptAppend)>,
+) -> io::Result<StagedSet> {
+    if members.len() < 2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a set commit takes two or more content members; one file is apply_batch's path",
+        ));
+    }
+    for (i, m) in members.iter().enumerate() {
+        if m.batch.receipt.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a set member's batch must not carry a receipt append: the set receipt is \
+                 set-level (one receipt entry names every file)",
+            ));
+        }
+        if members[..i].iter().any(|p| p.content_path == m.content_path) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "set content paths must be pairwise distinct: `{}` appears twice",
+                    m.content_path.display()
+                ),
+            ));
+        }
+        if let Some((rp, _)) = receipt
+            && rp == m.content_path
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "receipt_path equals a set content path: the receipt rename would clobber (§6.5)",
+            ));
+        }
+    }
+
+    let mut contents: Vec<(StagedFile, Vec<u8>)> = Vec::with_capacity(members.len());
+    let discard_staged = |contents: &[(StagedFile, Vec<u8>)]| {
+        for (staged, _) in contents {
+            let _ = fs::remove_file(&staged.tmp);
+        }
+    };
+    for m in members {
+        let new_bytes = apply_spans(
+            m.expected_content,
+            m.batch.edits.iter().map(|e| (&e.span, e.text.as_str())),
+        );
+        if new_bytes != m.candidate.raw().as_bytes() {
+            discard_staged(&contents);
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "candidate document is not this batch's splice result for `{}`: the gated \
+                     document and the landing bytes must be the same object",
+                    m.content_path.display()
+                ),
+            ));
+        }
+        match stage_file(&root.0.join(m.content_path), &new_bytes) {
+            Ok(staged) => contents.push((staged, m.expected_content.to_vec())),
+            Err(e) => {
+                discard_staged(&contents);
+                return Err(e);
+            }
+        }
+    }
+
+    let receipt = match receipt {
+        Some((rp, append)) => match stage_receipt(&root.0.join(rp), append) {
+            Ok((staged, old)) => Some((staged, old)),
+            Err(e) => {
+                discard_staged(&contents);
+                return Err(e);
+            }
+        },
+        None => None,
+    };
+
+    Ok(StagedSet { contents, receipt })
+}
+
+impl StagedSet {
+    /// Commit the set: verify every live destination still equals its
+    /// pre-image (refuse [`write_conflict`] with nothing landed), then rename
+    /// member order, receipt last. A rename failure restores every member
+    /// already renamed from its held pre-image (in-memory rollback — no
+    /// journal, ruling 2026-08-14); a crash mid-sequence is the stated set
+    /// window (see [`apply_set`]).
+    fn commit(self) -> io::Result<()> {
+        if let Err(conflict) = self.verify_pre_images() {
+            self.discard();
+            return Err(conflict);
+        }
+        for i in 0..self.contents.len() {
+            if let Err(e) = commit_rename(&self.contents[i].0) {
+                let restore = self.restore_renamed(i);
+                self.discard();
+                return Err(rollback_error(
+                    &e,
+                    &self.contents[i].0.dst,
+                    "content rename",
+                    restore,
+                ));
+            }
+        }
+        // ┄┄ stated set window: a crash between here and the receipt rename
+        // lands content-without-receipt for the whole set — §6.6 stays honest
+        // (no resolvable anchor ⇒ the caller cannot mistake it for landed) ┄┄
+        if let Some((staged, _)) = &self.receipt
+            && let Err(e) = commit_rename(staged)
+        {
+            let restore = self.restore_renamed(self.contents.len());
+            self.discard();
+            return Err(rollback_error(&e, &staged.dst, "receipt rename", restore));
+        }
+        Ok(())
+    }
+
+    /// The pre-rename verify, whole set: every content destination must still
+    /// hold its validated pre-image (gone ⇒ conflict — read#2 saw a real
+    /// file), and the receipt destination its stage-time bytes. All checks run
+    /// BEFORE the first rename, so a refusal commits nothing.
+    fn verify_pre_images(&self) -> io::Result<()> {
+        for (staged, expected) in &self.contents {
+            let live = match fs::read(&staged.dst) {
+                Ok(bytes) => bytes,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    return Err(write_conflict(&staged.dst));
+                }
+                Err(e) => return Err(e),
+            };
+            if live != *expected {
+                return Err(write_conflict(&staged.dst));
+            }
+        }
+        if let Some((staged, expected)) = &self.receipt
+            && read_or_empty(&staged.dst)? != *expected
+        {
+            return Err(write_conflict(&staged.dst));
+        }
+        Ok(())
+    }
+
+    /// Restore the first `renamed` members to their held pre-images — stage
+    /// the pre-image bytes and rename them back, the same atomic discipline.
+    /// Best-effort: a member whose restore itself fails is reported, never
+    /// silently left ambiguous.
+    fn restore_renamed(&self, renamed: usize) -> RestoreOutcome {
+        let mut restored = Vec::new();
+        let mut failed = Vec::new();
+        for (staged, pre_image) in self.contents.iter().take(renamed).rev() {
+            let outcome = stage_file(&staged.dst, pre_image).and_then(|s| commit_rename(&s));
+            match outcome {
+                Ok(()) => restored.push(staged.dst.display().to_string()),
+                Err(e) => failed.push(format!("{} ({e})", staged.dst.display())),
+            }
+        }
+        RestoreOutcome { restored, failed }
+    }
+
+    /// Remove every staged temp still on disk (hygiene — no litter). Renamed
+    /// temps are already gone; `remove_file` on them is a no-op error, ignored.
+    fn discard(&self) {
+        for (staged, _) in &self.contents {
+            let _ = fs::remove_file(&staged.tmp);
+        }
+        if let Some((staged, _)) = &self.receipt {
+            let _ = fs::remove_file(&staged.tmp);
+        }
+    }
+}
+
+/// What an in-memory rollback managed to undo, for the loud error.
+struct RestoreOutcome {
+    restored: Vec<String>,
+    failed: Vec<String>,
+}
+
+/// The loud rollback error: names the rename that failed, what was restored,
+/// and — when a restore itself failed — exactly which files remain in their
+/// NEW state, so recovery is a statement, never a guess.
+fn rollback_error(
+    cause: &io::Error,
+    dst: &Path,
+    step: &str,
+    restore: RestoreOutcome,
+) -> io::Error {
+    let mut msg = format!(
+        "set commit failed at the {step} for `{}`: {cause}. ",
+        dst.display()
+    );
+    if restore.restored.is_empty() && restore.failed.is_empty() {
+        msg.push_str("No member had renamed yet — nothing landed.");
+    } else {
+        if !restore.restored.is_empty() {
+            msg.push_str(&format!(
+                "Rolled back to pre-images: {}. ",
+                restore.restored.join(", ")
+            ));
+        }
+        if !restore.failed.is_empty() {
+            msg.push_str(&format!(
+                "ROLLBACK INCOMPLETE — these files hold the NEW bytes and their restore \
+                 failed: {}. Restore them from the receipt-less new state or re-run the \
+                 set once the cause clears.",
+                restore.failed.join(", ")
+            ));
+        }
+    }
+    io::Error::new(cause.kind(), msg)
+}
+
 /// Filesystem watcher: the DETECTION primitive — a §12
 /// domain baseline plus byte-level change classification against a fresh
 /// snapshot. The watcher detects; root folding is `model`'s, Delta emission
@@ -1819,8 +2102,8 @@ impl Watcher {
 #[cfg(test)]
 mod tests {
     use super::{
-        TEMP_SEQ, USER_RULES_DIR, WorkspaceRoot, apply_batch, is_write_conflict, stage_batch,
-        temp_path_for, user_rule_pages, walk,
+        SetMember, TEMP_SEQ, USER_RULES_DIR, WorkspaceRoot, apply_batch, apply_set,
+        is_write_conflict, stage_batch, stage_set, temp_path_for, user_rule_pages, walk,
     };
     use std::fs;
     use std::io;
@@ -1936,6 +2219,291 @@ mod tests {
             .unwrap()
             .filter_map(Result::ok)
             .any(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+    }
+
+    // ── the set commit (§4.4 set form) ──────────────────────────────────────
+
+    /// Shared pre-image for every set-fixture content file.
+    const SET_S0: &str = "# Goals\n\nship by August\n";
+
+    fn set_edit(new_text: &str) -> model::Edit {
+        model::Edit {
+            target: model::Ref::Hpath(vec![model::HpathSeg {
+                h: "Goals".into(),
+                n: None,
+            }]),
+            edit: model::EditKind::Match {
+                old: "ship by August".into(),
+                new: new_text.into(),
+            },
+            if_node_rev: None,
+        }
+    }
+
+    /// A sealed one-edit batch over [`SET_S0`], receipt-less (set-level receipt).
+    fn set_validated(new_text: &str) -> model::ValidatedBatch {
+        let doc = model::build(SET_S0.to_string(), syntax::parse(SET_S0));
+        let req = model::SpliceRequest {
+            if_root: None,
+            edits: vec![set_edit(new_text)],
+            engine: None,
+        };
+        match model::validate_batch(&doc, None, &req, None) {
+            model::SpliceVerdict::Validated(vb) => vb,
+            other => panic!("set fixture batch must validate, got {other:?}"),
+        }
+    }
+
+    /// Three content files in three separate directories (so a permission
+    /// sabotage hits ONE member's rename) plus the receipt file.
+    fn set_workspace() -> (tempfile::TempDir, WorkspaceRoot, Vec<PathBuf>) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let rels: Vec<PathBuf> = (1..=3)
+            .map(|i| PathBuf::from(format!("notes/d{i}/f{i}.md")))
+            .collect();
+        for rel in &rels {
+            fs::create_dir_all(dir.path().join(rel.parent().unwrap())).unwrap();
+            fs::write(dir.path().join(rel), SET_S0).unwrap();
+        }
+        fs::create_dir_all(dir.path().join("receipts")).unwrap();
+        fs::write(dir.path().join(receipt_rel()), RECEIPT_OLD).unwrap();
+        let root = WorkspaceRoot(dir.path().to_path_buf());
+        (dir, root, rels)
+    }
+
+    /// `(batch, candidate)` per member — owned so members can borrow them.
+    fn set_batches(rels: &[PathBuf]) -> Vec<(model::ValidatedBatch, model::CandidateDocument)> {
+        rels.iter()
+            .enumerate()
+            .map(|(i, rel)| {
+                let vb = set_validated(&format!("ship by September-{}", i + 1));
+                let cand =
+                    model::candidate_of_batch(&rel.to_string_lossy(), SET_S0, &vb);
+                (vb, cand)
+            })
+            .collect()
+    }
+
+    fn set_members<'a>(
+        rels: &'a [PathBuf],
+        owned: &'a [(model::ValidatedBatch, model::CandidateDocument)],
+    ) -> Vec<SetMember<'a>> {
+        rels.iter()
+            .zip(owned)
+            .map(|(rel, (vb, cand))| SetMember {
+                content_path: rel,
+                batch: vb,
+                expected_content: SET_S0.as_bytes(),
+                candidate: cand,
+            })
+            .collect()
+    }
+
+    /// SET GATE 1: an N-file set plus receipt lands whole — every member holds
+    /// its new bytes, the receipt appended, no staged litter anywhere.
+    #[test]
+    fn set_commit_lands_every_member_receipt_last() {
+        let (dir, root, rels) = set_workspace();
+        let owned = set_batches(&rels);
+        let members = set_members(&rels, &owned);
+        let append = receipt_append();
+
+        apply_set(&root, &members, Some((&receipt_rel(), &append))).expect("the set lands whole");
+
+        for (i, rel) in rels.iter().enumerate() {
+            assert_eq!(
+                fs::read(dir.path().join(rel)).unwrap(),
+                SET_S0
+                    .replace("ship by August", &format!("ship by September-{}", i + 1))
+                    .as_bytes(),
+                "member {} holds its new bytes",
+                i + 1
+            );
+            assert!(
+                !any_tmp_in(&dir.path().join(rel.parent().unwrap())),
+                "no staged litter beside member {}",
+                i + 1
+            );
+        }
+        assert_eq!(
+            fs::read(dir.path().join(receipt_rel())).unwrap(),
+            format!("{RECEIPT_OLD}{RECEIPT_LINE}").as_bytes(),
+            "receipt appended (last rename)"
+        );
+    }
+
+    /// SET GATE 2 (validate-all-then-apply): pre-image drift on ANY member
+    /// refuses the WHOLE set with the typed write-conflict — no member's bytes
+    /// move, no staged litter survives.
+    #[test]
+    fn set_verify_drift_refuses_whole_nothing_landed() {
+        let (dir, root, rels) = set_workspace();
+        let owned = set_batches(&rels);
+        let members = set_members(&rels, &owned);
+        let append = receipt_append();
+
+        let staged = stage_set(&root, &members, Some((&receipt_rel(), &append))).unwrap();
+        // Out-of-band writer moves member 2 between stage and commit.
+        let drifted = "# Goals\n\nship by NEVER\n";
+        fs::write(dir.path().join(&rels[1]), drifted).unwrap();
+
+        let err = staged.commit().expect_err("drift refuses the whole set");
+        assert!(is_write_conflict(&err), "typed write-conflict, got {err:?}");
+        assert_eq!(
+            fs::read(dir.path().join(&rels[0])).unwrap(),
+            SET_S0.as_bytes(),
+            "member 1 untouched — nothing landed"
+        );
+        assert_eq!(
+            fs::read(dir.path().join(&rels[1])).unwrap(),
+            drifted.as_bytes(),
+            "the out-of-band bytes stand (never clobbered)"
+        );
+        assert_eq!(
+            fs::read(dir.path().join(&rels[2])).unwrap(),
+            SET_S0.as_bytes(),
+            "member 3 untouched — nothing landed"
+        );
+        assert_eq!(
+            fs::read(dir.path().join(receipt_rel())).unwrap(),
+            RECEIPT_OLD.as_bytes(),
+            "receipt untouched"
+        );
+        for rel in &rels {
+            assert!(
+                !any_tmp_in(&dir.path().join(rel.parent().unwrap())),
+                "refusal leaves no staged litter"
+            );
+        }
+    }
+
+    /// SET GATE 3 (in-memory rollback, no journal — ruling 2026-08-14): a
+    /// rename FAILURE mid-sequence restores every already-renamed member to
+    /// its pre-image, and the error names the failing member.
+    #[test]
+    #[cfg(unix)]
+    fn set_rename_failure_rolls_back_previous_renames() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, root, rels) = set_workspace();
+        let owned = set_batches(&rels);
+        let members = set_members(&rels, &owned);
+
+        let staged = stage_set(&root, &members, None).unwrap();
+        // Member 3's parent goes read-only AFTER staging: verify still reads,
+        // the rename fails EACCES — members 1 and 2 have already renamed.
+        let locked = dir.path().join(rels[2].parent().unwrap());
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+
+        let err = staged.commit().expect_err("member 3's rename fails");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("f3.md") && msg.contains("Rolled back"),
+            "error names the failing member and the rollback: {msg}"
+        );
+        for (i, rel) in rels.iter().enumerate() {
+            assert_eq!(
+                fs::read(dir.path().join(rel)).unwrap(),
+                SET_S0.as_bytes(),
+                "member {} back at its pre-image (in-memory rollback)",
+                i + 1
+            );
+        }
+    }
+
+    /// SET GATE 4 (receipt-rename-last is load-bearing): a receipt rename
+    /// failure restores ALL content members — in every reachable non-crash
+    /// state, a resolvable receipt anchor implies the whole set landed (§6.6).
+    #[test]
+    #[cfg(unix)]
+    fn set_receipt_rename_failure_restores_all_members() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, root, rels) = set_workspace();
+        let owned = set_batches(&rels);
+        let members = set_members(&rels, &owned);
+        let append = receipt_append();
+
+        let staged = stage_set(&root, &members, Some((&receipt_rel(), &append))).unwrap();
+        let locked = dir.path().join("receipts");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+
+        let err = staged.commit().expect_err("the receipt rename fails");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(
+            err.to_string().contains("receipt rename"),
+            "error names the receipt step: {err}"
+        );
+        for (i, rel) in rels.iter().enumerate() {
+            assert_eq!(
+                fs::read(dir.path().join(rel)).unwrap(),
+                SET_S0.as_bytes(),
+                "member {} restored — no content landed without its receipt",
+                i + 1
+            );
+        }
+        assert_eq!(
+            fs::read(dir.path().join(receipt_rel())).unwrap(),
+            RECEIPT_OLD.as_bytes(),
+            "receipt file untouched"
+        );
+    }
+
+    /// SET GATE 5: the seam contract refuses fail-loud before any byte —
+    /// fewer than two members, duplicate paths, a member-level receipt, a
+    /// receipt path colliding with a content path.
+    #[test]
+    fn set_seam_contract_refuses_before_any_byte() {
+        let (dir, root, rels) = set_workspace();
+        let owned = set_batches(&rels);
+        let append = receipt_append();
+
+        // Fewer than two members.
+        let one = set_members(&rels[..1], &owned[..1]);
+        let err = apply_set(&root, &one, None).expect_err("one member refuses");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+
+        // Duplicate content paths.
+        let dup_rels = vec![rels[0].clone(), rels[0].clone()];
+        let dup = set_members(&dup_rels, &owned[..2]);
+        let err = apply_set(&root, &dup, None).expect_err("duplicate path refuses");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+
+        // A member-level receipt append (must be set-level).
+        let with_receipt = validated(Some(receipt_append()));
+        let cand = model::candidate_of_batch(&rels[0].to_string_lossy(), PLAN_S0, &with_receipt);
+        let bad = vec![
+            SetMember {
+                content_path: &rels[0],
+                batch: &with_receipt,
+                expected_content: PLAN_S0.as_bytes(),
+                candidate: &cand,
+            },
+            SetMember {
+                content_path: &rels[1],
+                batch: &owned[1].0,
+                expected_content: SET_S0.as_bytes(),
+                candidate: &owned[1].1,
+            },
+        ];
+        let err = apply_set(&root, &bad, None).expect_err("member-level receipt refuses");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+
+        // Receipt path collides with a content path.
+        let two = set_members(&rels[..2], &owned[..2]);
+        let err = apply_set(&root, &two, Some((&rels[0], &append)))
+            .expect_err("receipt==content refuses");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+
+        // Nothing anywhere moved.
+        for rel in &rels {
+            assert_eq!(
+                fs::read(dir.path().join(rel)).unwrap(),
+                SET_S0.as_bytes(),
+                "seam refusals touch nothing"
+            );
+        }
     }
 
     /// GATE 1 (§6.5 crash honesty): a crash injected BETWEEN the two renames
