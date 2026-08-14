@@ -550,6 +550,22 @@ fn the_gate_refuses_an_unread_pin_and_admits_it_after_a_covering_read() {
         "the remedy names a mode parameter no surface carries: {:?}",
         err.message
     );
+    // F-R3 face-wide law (stale-teaching sweep, ZT 2026-08-14): a teaching
+    // never joins target#selector — the retired fragment grammar refuses at
+    // every tool's ref door, so a refusal that spells it hands the caller an
+    // invalid address. The selector is named on its own.
+    assert!(
+        err.message.as_deref().is_some_and(|m| !m.contains(".md#")),
+        "the refusal joins target#selector (retired fragment grammar): {:?}",
+        err.message
+    );
+    assert!(
+        err.message
+            .as_deref()
+            .is_some_and(|m| m.contains("\"Guide/Leader's Guideline\" in guide.md")),
+        "the refusal names the selector on its own, beside the page: {:?}",
+        err.message
+    );
     assert_eq!(read_page(&root, "guide.md"), TARGET, "target untouched");
     assert_eq!(read_page(&root, "plan.md"), PINNER, "pinner untouched");
 
@@ -616,6 +632,11 @@ fn a_host_with_no_session_refuses_an_actor_pin_and_says_why() {
         "{:?}",
         err.message
     );
+    assert!(
+        err.message.as_deref().is_some_and(|m| !m.contains(".md#")),
+        "the ledgerless refusal joins target#selector (retired fragment grammar): {:?}",
+        err.message
+    );
 }
 
 /// GATE 7: receipt is "was it read", not "is it current" → `write_conflict` on drift.
@@ -649,6 +670,11 @@ fn a_rev_change_between_read_and_pin_is_a_write_conflict_not_a_silent_pin() {
     assert!(
         err.expected.is_some() && err.actual.is_some(),
         "the refusal carries both revs"
+    );
+    assert!(
+        err.message.as_deref().is_some_and(|m| !m.contains(".md#")),
+        "the drift refusal joins target#selector (retired fragment grammar): {:?}",
+        err.message
     );
     assert!(
         !read_page(&root, "guide.md").contains("^leaders-guideline"),
