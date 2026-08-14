@@ -192,8 +192,7 @@ fn nearest_pool_includes_non_addressable_ids() {
     assert_eq!(rows[0].nearest[0].kind, "paragraph");
     let notice = notice.expect("notice");
     assert!(
-        notice.contains("^dogfood-anchor")
-            && !notice.contains("^dogfood-anchor (paragraph-hosted"),
+        notice.contains("^dogfood-anchor") && !notice.contains("^dogfood-anchor (paragraph-hosted"),
         "an addressable candidate is offered bare (F-R4): {notice}"
     );
 }

@@ -438,7 +438,11 @@ mod tests {
         let raw = "# H\n\n- [ ] boxed ^t1\n- plain item ^p1\n";
         let got = facts(raw);
         let anchors: Vec<&str> = got.iter().filter_map(|f| f.anchor.as_deref()).collect();
-        assert_eq!(anchors, vec!["t1", "p1"], "both body-hosted anchors project");
+        assert_eq!(
+            anchors,
+            vec!["t1", "p1"],
+            "both body-hosted anchors project"
+        );
         let t1 = resolve_selector(&got, &sel("^t1")).expect("task anchor resolves (F-R4)");
         assert_eq!((t1.n.as_str(), t1.depth, t1.words), ("^t1", 0, 0));
         let p1 = resolve_selector(&got, &sel("^p1")).expect("list_item anchor resolves");

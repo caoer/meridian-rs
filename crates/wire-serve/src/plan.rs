@@ -233,16 +233,14 @@ fn resolve_block<'a>(
         )));
     }
     idx.anchor(id).map_err(|miss| match miss {
-        Miss::NotFound if idx.doc_anchor_ids.iter().any(|a| a == id) => {
-            bad_request(format!(
-                "no section addressed by {shown}. {clause} Fix: `^{id}` exists in this \
+        Miss::NotFound if idx.doc_anchor_ids.iter().any(|a| a == id) => bad_request(format!(
+            "no section addressed by {shown}. {clause} Fix: `^{id}` exists in this \
                  document, but its host is the frontmatter — a caret there is literal \
                  YAML, not a block; frontmatter keys are written through the `props` \
                  plane, not a block ref.",
-                shown = policy::defs::go_quote(&crate::display_hpath(addr)),
-                clause = crate::NO_PARTIAL_WRITE_CLAUSE,
-            ))
-        }
+            shown = policy::defs::go_quote(&crate::display_hpath(addr)),
+            clause = crate::NO_PARTIAL_WRITE_CLAUSE,
+        )),
         Miss::NotFound => section_miss(addr, &Miss::NotFound),
         Miss::Ambiguous(n) => {
             let mut e = ErrorBody::new(ErrorCode::AmbiguousRef);

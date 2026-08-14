@@ -13,8 +13,7 @@ use wire_serve::read::{NO_DECORATIONS, ReadParams, composed_read};
 
 /// Three nested levels: `C`'s words live inside `B`'s subtree span, which
 /// lives inside `A`'s. A sum over the rows counts `C` three times.
-const NESTED: &str =
-    "---\ntype: note\n---\n\n# A\n\none two three\n\n## B\n\nfour five six\n\n### C\n\nseven eight nine\n";
+const NESTED: &str = "---\ntype: note\n---\n\n# A\n\none two three\n\n## B\n\nfour five six\n\n### C\n\nseven eight nine\n";
 
 fn read_toc(raw: &str) -> ResponseBody {
     let doc = model::build(raw.to_string(), syntax::parse(raw));
