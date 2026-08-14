@@ -1,8 +1,11 @@
 //! `mrd sql <query>` — operator SQL over the corpus projection, under the
 //! honest-tense freshness frame.
 //!
-//! # Lanes (ruling OQ5 — the ladder, in order)
-//! 1. *(daemon route — lifecycle-B wire residency; the daemon holds the file)*
+//! # Lanes (the ladder, in order — ONE ladder for every caller since the
+//! NO-SANDBOX ruling, 2026-08-14)
+//! 1. **daemon route** — lifecycle-B wire residency; the daemon holds the
+//!    file, so a held file is served warm instead of degraded around
+//!    (`--rebuild` skips it: repair needs the file direct);
 //! 2. **direct file**: the fingerprint-pinned append-only `sql.duckdb` cache
 //!    in the workspace cache drawer ([`view::store`]) — open read-write when
 //!    unheld, append the corpus delta, query through the always-rollback
@@ -24,8 +27,7 @@
 //! # Order of operations (§Q3, buffered)
 //! 1. fold `F0` + bring the projection to `F0` (cache append, or `:memory:`
 //!    build);
-//! 2. execute the query to completion under the `--execution-profile`
-//!    sandbox (B5 order), materialise all rows;
+//! 2. execute the query to completion, materialise all rows;
 //! 3. sample `live` = a full-corpus disk fold ([`fs::domain_snapshot`]) last,
 //!    so it post-dates the result;
 //! 4. `FRESH_AT_SAMPLE` iff `as_of == live`, else `STALE` (or `RACED` under a
@@ -42,30 +44,19 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
-use view::store::{ColMeta, ExecProfile, SqlStore};
+use view::store::{ColMeta, SqlStore};
 
 use crate::resolve::resolve_runtime;
 use crate::{Fail, current_dir};
 
 /// The buffered top-level JSON document's schema version (OD9).
-const JSON_SCHEMA_VERSION: u32 = 1;
+/// v2 (2026-08-14, NO-SANDBOX ruling): the `execution_profile` key is gone —
+/// it existed only for the deleted profile split.
+const JSON_SCHEMA_VERSION: u32 = 2;
 
 // ---------------------------------------------------------------------------
 // arguments
 // ---------------------------------------------------------------------------
-
-/// Parse the `--execution-profile` selector (B5/OD9). A missing flag defaults
-/// to `local`, so untrusted agent SQL can never silently fall into the trusted
-/// profile — the agent caller MUST pass `--execution-profile=agent`.
-fn parse_profile(value: &str) -> Result<ExecProfile, Fail> {
-    match value {
-        "local" => Ok(ExecProfile::Local),
-        "agent" => Ok(ExecProfile::Agent),
-        other => Err(Fail::tool(format!(
-            "unknown --execution-profile `{other}` (expected `local` or `agent`)"
-        ))),
-    }
-}
 
 /// The parsed `mrd sql` invocation.
 struct SqlArgs {
@@ -73,7 +64,6 @@ struct SqlArgs {
     fresh: bool,
     json: bool,
     rebuild: bool,
-    profile: ExecProfile,
     cwd: Option<PathBuf>,
 }
 
@@ -83,7 +73,6 @@ impl SqlArgs {
         let mut fresh = false;
         let mut json = false;
         let mut rebuild = false;
-        let mut profile = ExecProfile::Local;
         let mut cwd: Option<PathBuf> = None;
 
         let mut i = 0;
@@ -103,10 +92,6 @@ impl SqlArgs {
                 // The explicit rebuild verb (ruling OQ3) — delete the cache
                 // file and cold-build at the live corpus; doubles as repair.
                 "--rebuild" => rebuild = true,
-                "--execution-profile" => {
-                    let v = take_value(flag, inline, tail, &mut i)?;
-                    profile = parse_profile(&v)?;
-                }
                 "--cwd" => {
                     let v = take_value(flag, inline, tail, &mut i)?;
                     cwd = Some(PathBuf::from(v));
@@ -132,7 +117,6 @@ impl SqlArgs {
             fresh,
             json,
             rebuild,
-            profile,
             cwd,
         })
     }
@@ -202,7 +186,6 @@ impl LiveSource {
 struct Frame {
     as_of: Option<String>,
     live: Option<String>,
-    profile: ExecProfile,
     live_source: LiveSource,
     stale: Option<bool>,
     state: QueryState,
@@ -214,11 +197,10 @@ struct Frame {
 
 impl Frame {
     /// The empty `NO_VIEW` frame (§Q3 — loud, never empty-as-if-fresh).
-    fn no_view(profile: ExecProfile, message: String) -> Self {
+    fn no_view(message: String) -> Self {
         Frame {
             as_of: None,
             live: None,
-            profile,
             live_source: LiveSource::None,
             stale: None,
             state: QueryState::NoView,
@@ -233,8 +215,7 @@ impl Frame {
 // entry point
 // ---------------------------------------------------------------------------
 
-/// Run `mrd sql <query> [--fresh] [--json] [--rebuild]
-/// [--execution-profile local|agent] [--cwd PATH]`.
+/// Run `mrd sql <query> [--fresh] [--json] [--rebuild] [--cwd PATH]`.
 ///
 /// # Errors
 /// The cwd/workspace cannot be resolved, the view cannot be built, or (in human
@@ -254,22 +235,18 @@ pub(crate) fn run(tail: &[String]) -> Result<(), Fail> {
     })?;
     let workspace = resolved.workspace;
 
-    // Ladder rung 1 (ruling OQ5): under the agent profile, the resident
-    // daemon answers first — lifecycle B makes it the cache file's single
-    // owner, so a held file is served warm instead of degraded around.
-    // Local-profile queries skip the daemon deliberately: the wire lane is
-    // always the agent sandbox, and silently downgrading an operator's
-    // local query would change its semantics.
-    if args.profile == ExecProfile::Agent
-        && !args.rebuild
-        && let Some(frame) = daemon_route(&workspace, &args)
-    {
+    // Ladder rung 1: the resident daemon answers first for EVERY caller —
+    // lifecycle B makes it the cache file's single owner, so a held file is
+    // served warm instead of degraded around. One execution path (the
+    // NO-SANDBOX ruling, 2026-08-14); only `--rebuild` goes direct, because
+    // repair needs the file itself.
+    if !args.rebuild && let Some(frame) = daemon_route(&workspace, &args) {
         return emit(&args, &frame);
     }
 
     let loaded = match load_corpus(&workspace) {
         Ok(loaded) => loaded,
-        Err(msg) => return emit(&args, &Frame::no_view(args.profile, msg)),
+        Err(msg) => return emit(&args, &Frame::no_view(msg)),
     };
     let mut lane = open_lane(&loaded.root.0, args.rebuild);
 
@@ -353,9 +330,9 @@ fn daemon_route(workspace: &Path, args: &SqlArgs) -> Option<Frame> {
     }
 
     let ask = serde_json::json!({"id": 1, "op": "sql", "query": query});
-    let mut frame = daemon_sql_frame(&daemon_call(&mut writer, &mut reader, &ask)?, args.profile)?;
+    let mut frame = daemon_sql_frame(&daemon_call(&mut writer, &mut reader, &ask)?)?;
     if args.fresh && frame.state == QueryState::Stale {
-        frame = daemon_sql_frame(&daemon_call(&mut writer, &mut reader, &ask)?, args.profile)?;
+        frame = daemon_sql_frame(&daemon_call(&mut writer, &mut reader, &ask)?)?;
         if frame.state == QueryState::Stale {
             frame.state = QueryState::Raced;
         }
@@ -365,7 +342,7 @@ fn daemon_route(workspace: &Path, args: &SqlArgs) -> Option<Frame> {
 
 /// Project one § A.11 response onto the OD9 frame. A daemon-side fault
 /// (`ok:false`) answers `None` — the ladder degrades rather than guessing.
-fn daemon_sql_frame(response: &Value, profile: ExecProfile) -> Option<Frame> {
+fn daemon_sql_frame(response: &Value) -> Option<Frame> {
     if response.get("ok") != Some(&Value::Bool(true)) {
         return None;
     }
@@ -398,7 +375,6 @@ fn daemon_sql_frame(response: &Value, profile: ExecProfile) -> Option<Frame> {
     Some(Frame {
         as_of: Some(as_of),
         live,
-        profile,
         live_source: if state == QueryState::Unverified {
             LiveSource::None
         } else {
@@ -534,7 +510,7 @@ fn attempt(args: &SqlArgs, loaded: &Loaded, lane: &mut Lane) -> Result<Attempt, 
         Lane::Cache(store) => {
             sync_store(store, loaded)?;
             let result = store
-                .query(args.profile, query)
+                .query(query)
                 .map_err(|e| Fail::tool(format!("cannot query the sql cache: {e}")))?;
             let (columns, rows, error) = match result {
                 Ok((c, r)) => (c, r, None),
@@ -565,17 +541,11 @@ fn attempt(args: &SqlArgs, loaded: &Loaded, lane: &mut Lane) -> Result<Attempt, 
             // No drawer on this lane: the env temp root is the absolute
             // spill home (card sql-spill-config-lockout — the default was
             // `.tmp` RELATIVE to the shell cwd).
-            view::store::apply_profile(
+            view::store::apply_spill_containment(
                 &conn,
-                args.profile,
                 &std::env::temp_dir().join("mrd-sql-spill"),
             )
-            .map_err(|e| {
-                Fail::tool(format!(
-                    "cannot apply the {} sandbox: {e}",
-                    args.profile.label()
-                ))
-            })?;
+            .map_err(|e| Fail::tool(format!("cannot apply the spill containment: {e}")))?;
             let (columns, rows, error) = match view::store::run_query(&conn, query) {
                 Ok((c, r)) => (c, r, None),
                 Err(msg) => (Vec::new(), Vec::new(), Some(msg)),
@@ -606,7 +576,6 @@ fn query_frame(args: &SqlArgs, loaded: &Loaded, lane: &mut Lane) -> Result<Frame
         return Ok(Frame {
             as_of: Some(as_of),
             live: None,
-            profile: args.profile,
             live_source: LiveSource::None,
             stale: None,
             state: QueryState::Unverified,
@@ -619,14 +588,7 @@ fn query_frame(args: &SqlArgs, loaded: &Loaded, lane: &mut Lane) -> Result<Frame
     test_fold_race_hook();
     let f_now = fold_live(&loaded.root.0)?;
     if as_of == f_now {
-        return Ok(frame(
-            as_of,
-            f_now,
-            columns,
-            rows,
-            args.profile,
-            QueryState::FreshAtSample,
-        ));
+        return Ok(frame(as_of, f_now, columns, rows, QueryState::FreshAtSample));
     }
 
     // A mid-build change: `--fresh` gets one bounded retry; the default
@@ -634,7 +596,7 @@ fn query_frame(args: &SqlArgs, loaded: &Loaded, lane: &mut Lane) -> Result<Frame
     if args.fresh {
         let reloaded = match load_corpus(&loaded.root.0) {
             Ok(l) => l,
-            Err(msg) => return Ok(Frame::no_view(args.profile, msg)),
+            Err(msg) => return Ok(Frame::no_view(msg)),
         };
         let retry = attempt(args, &reloaded, lane)?;
         if retry.error.is_none() {
@@ -645,25 +607,11 @@ fn query_frame(args: &SqlArgs, loaded: &Loaded, lane: &mut Lane) -> Result<Frame
             } else {
                 QueryState::Raced
             };
-            return Ok(frame(
-                retry.as_of,
-                f_now2,
-                retry.columns,
-                retry.rows,
-                args.profile,
-                state,
-            ));
+            return Ok(frame(retry.as_of, f_now2, retry.columns, retry.rows, state));
         }
     }
 
-    Ok(frame(
-        as_of,
-        f_now,
-        columns,
-        rows,
-        args.profile,
-        QueryState::Stale,
-    ))
+    Ok(frame(as_of, f_now, columns, rows, QueryState::Stale))
 }
 
 /// Assemble a folded frame (always `live_source=fold`).
@@ -673,14 +621,12 @@ fn frame(
     live: String,
     columns: Vec<ColMeta>,
     rows: Vec<Vec<Value>>,
-    profile: ExecProfile,
     state: QueryState,
 ) -> Frame {
     let stale = Some(as_of != live);
     Frame {
         as_of: Some(as_of),
         live: Some(live),
-        profile,
         live_source: LiveSource::Fold,
         stale,
         state,
@@ -771,7 +717,6 @@ fn frame_json(frame: &Frame) -> String {
     let doc = json!({
         "schema_version": JSON_SCHEMA_VERSION,
         "as_of_fingerprint": frame.as_of,
-        "execution_profile": frame.profile.label(),
         "live_source": frame.live_source.wire(),
         "stale": frame.stale,
         "state": frame.state.wire(),
@@ -846,9 +791,8 @@ mod tests {
     use duckdb::Connection;
 
     #[test]
-    fn parse_defaults_to_local_profile() {
+    fn parse_defaults() {
         let args = SqlArgs::parse(&["SELECT 1".to_owned()]).expect("parse");
-        assert_eq!(args.profile.label(), "local");
         assert!(!args.fresh && !args.json && !args.rebuild);
         assert_eq!(args.query.as_deref(), Some("SELECT 1"));
     }
@@ -861,27 +805,18 @@ mod tests {
     }
 
     #[test]
-    fn parse_execution_profile_inline_and_spaced() {
-        let inline = SqlArgs::parse(&[
-            "--execution-profile=agent".to_owned(),
-            "SELECT 1".to_owned(),
-        ])
-        .expect("inline");
-        assert_eq!(inline.profile.label(), "agent");
+    fn parse_cwd_inline_and_spaced() {
+        let inline =
+            SqlArgs::parse(&["--cwd=/somewhere".to_owned(), "SELECT 1".to_owned()]).expect("inline");
+        assert_eq!(inline.cwd.as_deref(), Some(Path::new("/somewhere")));
 
         let spaced = SqlArgs::parse(&[
-            "--execution-profile".to_owned(),
-            "agent".to_owned(),
+            "--cwd".to_owned(),
+            "/somewhere".to_owned(),
             "SELECT 1".to_owned(),
         ])
         .expect("spaced");
-        assert_eq!(spaced.profile.label(), "agent");
-    }
-
-    #[test]
-    fn parse_unknown_profile_is_loud() {
-        let err = SqlArgs::parse(&["--execution-profile=root".to_owned(), "SELECT 1".to_owned()]);
-        assert!(err.is_err(), "an unknown profile must fail loud");
+        assert_eq!(spaced.cwd.as_deref(), Some(Path::new("/somewhere")));
     }
 
     #[test]
@@ -924,7 +859,6 @@ mod tests {
         let frame = Frame {
             as_of: Some("f0".to_owned()),
             live: Some("f0".to_owned()),
-            profile: ExecProfile::Local,
             live_source: LiveSource::Fold,
             stale: Some(false),
             state: QueryState::FreshAtSample,
@@ -949,47 +883,28 @@ mod tests {
         );
     }
 
+    /// The ephemeral lane's containment is plain config (NO-SANDBOX ruling):
+    /// spill is bounded, nothing is locked, nothing is disabled.
     #[test]
-    fn agent_sandbox_blocks_external_access_locks_config_no_statement_timeout() {
+    fn spill_containment_bounds_spill_and_locks_nothing() {
         let conn = Connection::open_in_memory().unwrap();
-        view::store::apply_profile(
-            &conn,
-            ExecProfile::Agent,
-            &std::env::temp_dir().join("mrd-sql-spill"),
-        )
-        .expect("apply agent sandbox");
+        view::store::apply_spill_containment(&conn, &std::env::temp_dir().join("mrd-sql-spill"))
+            .expect("apply spill containment");
 
-        assert!(
-            conn.execute_batch("SELECT * FROM read_csv('/etc/hosts')")
-                .is_err(),
-            "enable_external_access=false must block file reads"
-        );
-        assert!(
-            conn.execute_batch("SET memory_limit='8GB'").is_err(),
-            "lock_configuration=true must freeze settings"
-        );
-        let timeout_settings: i64 = conn
+        let budget: String = conn
             .query_row(
-                "SELECT count(*) FROM duckdb_settings() WHERE name ILIKE '%statement_timeout%'",
+                "SELECT value FROM duckdb_settings() WHERE name = 'max_temp_directory_size'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(timeout_settings, 0, "no statement_timeout setting exists");
-    }
-
-    #[test]
-    fn local_sandbox_does_not_lock_configuration() {
-        let conn = Connection::open_in_memory().unwrap();
-        view::store::apply_profile(
-            &conn,
-            ExecProfile::Local,
-            &std::env::temp_dir().join("mrd-sql-spill"),
-        )
-        .expect("apply local sandbox");
+        assert!(
+            !budget.contains('%'),
+            "the spill budget must be a bounded size, never a %-of-disk default: {budget}"
+        );
         assert!(
             conn.execute_batch("SET memory_limit='2GB'").is_ok(),
-            "local does not lock configuration"
+            "the containment locks nothing — a caller SET succeeds"
         );
     }
 }

@@ -1,105 +1,13 @@
-//! C1 projections + locked read face gates:
-//! - `gate_blocked_attach` / `gate_lock_read_face_primitive` — lock capability
+//! C1 projection gates:
 //! - `gate_stale_projection` — `doc_rev` staleness triggers rebuild
 
 use std::collections::BTreeMap;
 
-use duckdb::Connection;
 use model::Document;
-use view::{lock_read_face, open_board, stale_paths};
+use view::{open_board, stale_paths};
 
 fn doc(raw: &str) -> Document {
     model::build(raw.to_string(), syntax::parse(raw))
-}
-
-fn scalar_i64(conn: &Connection, sql: &str) -> i64 {
-    conn.query_row(sql, [], |r| r.get(0)).expect("scalar query")
-}
-
-/// `DuckDB` `enable_external_access=false` refusal (phrase may vary by version).
-fn is_external_access_refusal(msg: &str) -> bool {
-    let m = msg.to_lowercase();
-    m.contains("disabled by configuration")
-        || m.contains("external access")
-        || m.contains("enable_external_access")
-        || m.contains("permission error")
-}
-
-/// Locked face refuses ATTACH/COPY/external; unlocked control proves the lock.
-#[test]
-fn gate_blocked_attach() {
-    let tmp = tempfile::tempdir().unwrap();
-    let db_file = tmp.path().join("attached.duckdb");
-    let attach = format!("ATTACH '{}' AS x", db_file.display());
-
-    // Positive control: without lock, ATTACH succeeds.
-    let control = Connection::open_in_memory().unwrap();
-    control
-        .execute_batch(&attach)
-        .expect("an unlocked connection CAN attach — the lock is what blocks it");
-
-    let docs = BTreeMap::new();
-    let conn = open_board(&docs).expect("open board");
-
-    let attach_err = conn.execute_batch(&attach).unwrap_err().to_string();
-    assert!(
-        is_external_access_refusal(&attach_err),
-        "ATTACH from a locked read face must refuse (external access disabled), got: {attach_err}"
-    );
-
-    let copy_err = conn
-        .execute_batch(&format!(
-            "COPY (SELECT 1 AS x) TO '{}'",
-            tmp.path().join("leak.csv").display()
-        ))
-        .unwrap_err()
-        .to_string();
-    assert!(
-        is_external_access_refusal(&copy_err),
-        "COPY TO a file must refuse (no write path), got: {copy_err}"
-    );
-
-    let read_err = conn
-        .execute_batch("SELECT * FROM read_csv('/etc/hosts')")
-        .unwrap_err()
-        .to_string();
-    assert!(
-        is_external_access_refusal(&read_err),
-        "external file read must refuse, got: {read_err}"
-    );
-
-    // lock_configuration=true: cannot re-raise.
-    let reraise_err = conn
-        .execute_batch("SET enable_external_access=true")
-        .unwrap_err()
-        .to_string();
-    assert!(
-        reraise_err.to_lowercase().contains("lock")
-            || reraise_err.to_lowercase().contains("cannot"),
-        "re-enabling external access must refuse (configuration locked), got: {reraise_err}"
-    );
-
-    // Face is read-only, not dead.
-    assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM node"), 0);
-}
-
-/// `lock_read_face` alone: external read succeeds before lock, refuses after.
-#[test]
-fn gate_lock_read_face_primitive() {
-    let tmp = tempfile::tempdir().unwrap();
-    let csv = tmp.path().join("data.csv");
-    std::fs::write(&csv, "a\n1\n").unwrap();
-    let read = format!("SELECT * FROM read_csv('{}')", csv.display());
-
-    let conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch(&read)
-        .expect("before the lock, an external file read succeeds");
-
-    lock_read_face(&conn).expect("lock");
-    assert!(
-        conn.execute_batch(&read).is_err(),
-        "after lock_read_face, the same external read refuses"
-    );
 }
 
 /// Projection keyed on `doc_rev` — rev change is stale; rebuild refreshes (§2.1/§8).

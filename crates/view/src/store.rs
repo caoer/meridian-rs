@@ -217,83 +217,29 @@ pub struct AppendCounts {
     pub removed: u64,
 }
 
-/// The sandbox profile a query connection runs under (B5). `Local` is the
-/// trusted CLI: memory cap only. `Agent` is every untrusted lane (the MCP
-/// face, the wire op): caps set, external access off, configuration locked.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum ExecProfile {
-    /// Trusted local CLI: `memory_limit` only, no sandbox.
-    Local,
-    /// Untrusted agent / proxy: the locked `DuckDB` sandbox (B5 order).
-    Agent,
-}
-
-impl ExecProfile {
-    /// The wire/CLI spelling of the profile.
-    #[must_use]
-    pub fn label(self) -> &'static str {
-        match self {
-            ExecProfile::Local => "local",
-            ExecProfile::Agent => "agent",
-        }
-    }
-}
-
-/// The `local` (trusted) profile RAM cap — generous, only to avoid exhausting
-/// host RAM; the user already has a shell (B5).
-const LOCAL_MEMORY_LIMIT: &str = "4GB";
-/// The `agent` (untrusted) profile RAM cap (B5).
-const AGENT_MEMORY_LIMIT: &str = "512MB";
-/// The `agent` profile CPU fan-out bound (B5).
-const AGENT_THREADS: i64 = 1;
-/// The `agent` profile deep-parse-bomb bound (B5; `DuckDB` default is 1000).
-const AGENT_MAX_EXPRESSION_DEPTH: u32 = 1000;
-/// Both profiles' spill budget (card sql-spill-config-lockout): the `DuckDB`
+/// Every lane's spill budget (card sql-spill-config-lockout): the `DuckDB`
 /// default is 90% of available disk — effectively unbounded, and it `ENOSPC`ed
-/// a host (one query spilled >9 GiB into the seat's cwd). Bounded for local
-/// too: the operator's shell is trusted, the disk is shared.
+/// a host (one query spilled >9 GiB into the seat's cwd).
 const SPILL_BUDGET: &str = "8GiB";
 
-/// Apply the profile's resource limits to `conn` (B5). Order is load-bearing
-/// for `agent`: set the caps, disable external access, then lock the
-/// configuration so untrusted SQL cannot re-raise any of it. The cache file
-/// must already be open on this connection — `enable_external_access=false`
-/// blocks opening new files, never the database already attached. There is no
-/// `statement_timeout` pragma — a wall-clock cap is the parent's process kill.
-///
-/// `spill_dir` (card sql-spill-config-lockout) becomes the ABSOLUTE
-/// `temp_directory`, with [`SPILL_BUDGET`] as `max_temp_directory_size`, on
-/// BOTH profiles and BEFORE any lock: the locked defaults were a small
-/// memory cap (spills early), a 90%-of-disk budget, and a `.tmp` path
-/// RELATIVE to the shell cwd — no flag changes the process cwd, so spills
-/// landed wherever the seat happened to be, and the agent lock froze it all.
+/// Bound the connection's disk spill (card sql-spill-config-lockout):
+/// `spill_dir` becomes the ABSOLUTE `temp_directory`, with [`SPILL_BUDGET`]
+/// as `max_temp_directory_size`. Plain config, never a sandbox (the
+/// NO-SANDBOX ruling, 2026-08-14) — nothing is locked, and a caller's own
+/// `SET` can re-point it. The `DuckDB` defaults were the defect this repairs:
+/// a `.tmp` path RELATIVE to the shell cwd (no flag changes the process cwd,
+/// so spills landed wherever the seat happened to be) and a %-of-disk budget.
 ///
 /// # Errors
-/// Propagates the `DuckDB` error from the pragma batch.
-pub fn apply_profile(
-    conn: &Connection,
-    profile: ExecProfile,
-    spill_dir: &Path,
-) -> duckdb::Result<()> {
+/// Propagates the `DuckDB` error from the two `SET`s.
+pub fn apply_spill_containment(conn: &Connection, spill_dir: &Path) -> duckdb::Result<()> {
     // Best-effort: DuckDB creates the directory on first spill too.
     let _ = std::fs::create_dir_all(spill_dir);
     let spill = spill_dir.display().to_string().replace('\'', "''");
-    let containment = format!(
+    conn.execute_batch(&format!(
         "SET temp_directory='{spill}';\n\
-         SET max_temp_directory_size='{SPILL_BUDGET}';\n"
-    );
-    let sql = match profile {
-        ExecProfile::Local => format!("{containment}SET memory_limit='{LOCAL_MEMORY_LIMIT}';"),
-        ExecProfile::Agent => format!(
-            "{containment}\
-             SET memory_limit='{AGENT_MEMORY_LIMIT}';\n\
-             SET threads={AGENT_THREADS};\n\
-             SET max_expression_depth={AGENT_MAX_EXPRESSION_DEPTH};\n\
-             SET enable_external_access=false;\n\
-             SET lock_configuration=true;"
-        ),
-    };
-    conn.execute_batch(&sql)
+         SET max_temp_directory_size='{SPILL_BUDGET}';"
+    ))
 }
 
 /// One result column of a served query.
@@ -372,26 +318,20 @@ fn teach(error: &str) -> String {
 /// The fingerprint-pinned append-only cache file, open read-write.
 ///
 /// The holder is the file's single writer for its lifetime (`DuckDB`'s own
-/// lock excludes every other process, read-only included — receipt P4). The
-/// base connection stays unsandboxed for appends; caller queries run on
-/// [`SqlStore::query`]'s profile-sandboxed clone.
+/// lock excludes every other process, read-only included — receipt P4).
+/// Appends ride the base connection; caller queries run on
+/// [`SqlStore::query`]'s clone through the rollback lane. Spill containment
+/// ([`apply_spill_containment`]) is applied once at open — the `SET`s are
+/// instance-global in `DuckDB`, so every connection inherits it.
 pub struct SqlStore {
     conn: Connection,
     file: PathBuf,
-    /// The profile whose pragmas are in force on the database instance.
-    /// `lock_configuration` (and every other `SET`) is instance-global in
-    /// `DuckDB`, not per-connection — measured: a second `apply_profile`
-    /// after an `agent` lock refuses. So the sandbox is applied once and
-    /// recorded here; an `agent` lock can never be relaxed for the file's
-    /// lifetime.
-    sandbox: std::cell::Cell<Option<ExecProfile>>,
 }
 
 impl std::fmt::Debug for SqlStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SqlStore")
             .field("file", &self.file)
-            .field("sandbox", &self.sandbox.get().map(ExecProfile::label))
             .finish_non_exhaustive()
     }
 }
@@ -427,8 +367,8 @@ impl SqlStore {
         let store = SqlStore {
             conn,
             file: file.to_path_buf(),
-            sandbox: std::cell::Cell::new(None),
         };
+        apply_spill_containment(&store.conn, &store.spill_dir())?;
         if fresh {
             store.conn.execute_batch(CACHE_SCHEMA_SQL)?;
             return Ok(store);
@@ -453,11 +393,12 @@ impl SqlStore {
         let _ = std::fs::remove_file(wal_path(file));
         let conn = Connection::open(file)?;
         conn.execute_batch(CACHE_SCHEMA_SQL)?;
-        Ok(SqlStore {
+        let store = SqlStore {
             conn,
             file: file.to_path_buf(),
-            sandbox: std::cell::Cell::new(None),
-        })
+        };
+        apply_spill_containment(&store.conn, &store.spill_dir())?;
+        Ok(store)
     }
 
     /// The file's current pin, `None` for a fresh (never-appended) file.
@@ -810,39 +751,21 @@ impl SqlStore {
     }
 
     /// Run one caller query through the rollback lane on a clone of the base
-    /// connection: `BEGIN → statement → collect → ROLLBACK`. The profile's
-    /// pragmas are applied ONCE per store — they are instance-global, so the
-    /// first `agent` query locks the whole file's configuration for this
-    /// holder's lifetime (open-before-sandbox-pragmas by construction; the
-    /// lock never blocks appends — inserts on the open database need no
-    /// external access and no configuration change).
+    /// connection: `BEGIN → statement → collect → ROLLBACK`. One execution
+    /// path for every caller (the NO-SANDBOX ruling, 2026-08-14): no profile,
+    /// no lock — spill containment is already in force instance-wide from
+    /// open.
     ///
     /// # Errors
-    /// A connection/sandbox failure is a `ViewError`; the caller's own SQL
-    /// failing is `Ok` with the error string in the result (their register,
-    /// not ours) — including `DuckDB`'s MVCC transaction conflicts, verbatim.
+    /// A connection failure is a `ViewError`; the caller's own SQL failing is
+    /// `Ok` with the error string in the result (their register, not ours) —
+    /// including `DuckDB`'s MVCC transaction conflicts, verbatim.
     #[allow(clippy::type_complexity)]
     pub fn query(
         &self,
-        profile: ExecProfile,
         sql: &str,
     ) -> Result<Result<(Vec<ColMeta>, Vec<Vec<Json>>), String>, ViewError> {
         let conn = self.conn.try_clone()?;
-        match self.sandbox.get() {
-            Some(applied) if applied == profile => {} // already in force, instance-wide
-            Some(ExecProfile::Agent) => {
-                // The agent lock cannot be relaxed (lock_configuration).
-                return Err(ViewError::Io(std::io::Error::other(
-                    "the agent sandbox is locked on this cache instance; a local-profile query needs its own process",
-                )));
-            }
-            _ => {
-                // The drawer-derived spill home: absolute, beside the cache
-                // file, reaped with the drawer — never the shell cwd.
-                apply_profile(&conn, profile, &self.spill_dir())?;
-                self.sandbox.set(Some(profile));
-            }
-        }
         conn.execute_batch("BEGIN")?;
         let result = run_query(&conn, sql);
         // Always roll back — reads are unaffected; DML dies here (P3/P6).
@@ -874,7 +797,7 @@ impl SqlStore {
         &self.file
     }
 
-    /// The drawer-derived spill directory query connections are pointed at
+    /// The drawer-derived spill directory this store's instance is pointed at
     /// (card sql-spill-config-lockout).
     #[must_use]
     pub fn spill_dir(&self) -> PathBuf {
@@ -883,7 +806,7 @@ impl SqlStore {
             .map_or_else(|| PathBuf::from("sql-spill"), |p| p.join("sql-spill"))
     }
 
-    /// The base (unsandboxed) connection — appends, pin reads, tests.
+    /// The base connection — appends, pin reads, tests.
     #[must_use]
     pub fn connection(&self) -> &Connection {
         &self.conn
@@ -1370,7 +1293,7 @@ pub(crate) mod tests {
 
         // DML against hist executes (visible to its own statement) …
         let (cols, rows) = store
-            .query(ExecProfile::Local, "UPDATE hist.doc SET bytes = 0")
+            .query("UPDATE hist.doc SET bytes = 0")
             .expect("lane")
             .expect("dml accepted");
         assert_eq!(cols[0].name, "Count");
@@ -1390,7 +1313,7 @@ pub(crate) mod tests {
         let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
         sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
         let err = store
-            .query(ExecProfile::Local, "UPDATE doc SET bytes = 0")
+            .query("UPDATE doc SET bytes = 0")
             .expect("lane")
             .expect_err("views refuse DML");
         assert!(
@@ -1401,30 +1324,6 @@ pub(crate) mod tests {
             err.contains("hist"),
             "the refusal teaches the hist lane (OQ1): {err}"
         );
-    }
-
-    #[test]
-    fn agent_profile_queries_are_sandboxed_and_appends_stay_unrestricted() {
-        let dir = tempfile::tempdir().expect("tmpdir");
-        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
-        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
-
-        let err = store
-            .query(ExecProfile::Agent, "SELECT * FROM read_csv('/etc/hosts')")
-            .expect("lane")
-            .expect_err("external access is off under agent");
-        assert!(!err.is_empty());
-        let err = store
-            .query(ExecProfile::Agent, "SET memory_limit='8GB'")
-            .expect("lane")
-            .expect_err("configuration is locked under agent");
-        assert!(!err.is_empty());
-
-        // The sandbox rode the clone, never the base connection: a later
-        // append still writes.
-        let v2 = corpus(&[("a.md", "# Only\n")]);
-        sync_ambient(&mut store, &v2, "b3b:v2").expect("append after sandboxed queries");
-        assert_surface_matches_fresh(&store, &v2);
     }
 
     #[test]
@@ -1463,16 +1362,15 @@ mod spill_tests {
     /// of disk; path `.tmp` RELATIVE to the shell cwd; caller locked out).
     /// It `ENOSPC`ed a host: one query spilled >9 GiB into the seat's cwd.
     #[test]
-    fn spill_config_is_absolute_and_bounded_before_the_lock() {
+    fn spill_config_is_absolute_and_bounded() {
         let dir = tempfile::tempdir().expect("tmpdir");
         let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
         sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
 
         let (_, rows) = store
             .query(
-                ExecProfile::Agent,
                 "SELECT name, value FROM duckdb_settings() \
-                 WHERE name IN ('temp_directory','max_temp_directory_size','lock_configuration') \
+                 WHERE name IN ('temp_directory','max_temp_directory_size') \
                  ORDER BY name",
             )
             .expect("lane")
@@ -1485,7 +1383,6 @@ mod spill_tests {
                 .expect("value")
                 .to_owned()
         };
-        assert_eq!(value("lock_configuration"), "true");
         let temp = value("temp_directory");
         assert!(
             temp.starts_with('/'),
@@ -1500,30 +1397,19 @@ mod spill_tests {
             !budget.contains('%'),
             "the spill budget must be a bounded size, never a %%-of-disk default: {budget}"
         );
-
-        // And the lock still refuses caller overrides (T1/T2 stay true).
-        let refused = store
-            .query(ExecProfile::Agent, "SET temp_directory='/tmp/elsewhere'")
-            .expect("lane")
-            .expect_err("locked");
-        assert!(refused.contains("locked"), "{refused}");
     }
 
-    /// BOTH profiles get the containment — local is unlocked but must not
-    /// default to the loaded gun either.
+    /// The containment is plain config, not a lock (NO-SANDBOX ruling): a
+    /// caller's own `SET` through the query lane succeeds — nothing refuses,
+    /// nothing is frozen.
     #[test]
-    fn local_profile_carries_the_same_spill_containment() {
+    fn spill_containment_is_plain_config_not_a_lock() {
         let dir = tempfile::tempdir().expect("tmpdir");
         let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
         sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
-        let (_, rows) = store
-            .query(
-                ExecProfile::Local,
-                "SELECT value FROM duckdb_settings() WHERE name = 'max_temp_directory_size'",
-            )
+        store
+            .query("SET memory_limit='1GB'")
             .expect("lane")
-            .expect("readback");
-        let budget = rows[0][0].as_str().expect("value");
-        assert!(!budget.contains('%'), "local is bounded too: {budget}");
+            .expect("configuration is not locked — a caller SET succeeds");
     }
 }
