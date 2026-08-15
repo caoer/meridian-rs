@@ -5,7 +5,9 @@
 //! **Owns:** corpus-level reads. The outgoing edge map (contract §4.6 `links` — the app's
 //! `resolvedLinks`/`unresolvedLinks` shape, per-edge counts), backlinks (find-references
 //! over wikilinks/embeds), board queries, and rename *planning* — the corpus-wide,
-//! span-exact wikilink-rewrite plan (depth/anchor/alias-preserving).
+//! span-exact wikilink-rewrite plan (depth/anchor/alias-preserving). Plus the sql
+//! provenance law ([`provenance`]): which dependency regions a corpus SQL read rests on
+//! (merged plan §4.5 — row provenance, never the WHERE clause).
 //!
 //! **Never does:** apply edits (a rename plan is a list of splices; application goes
 //! through `model` validation + `fs` execution like every other write), own the corpus
@@ -16,6 +18,8 @@
 //! (`CorpusIndex::resolve_linkpath` — `getFirstLinkpathDest` parity, contract §4.5): the
 //! app's `resolvedLinks` counts a link toward its destination file; heading/block
 //! fragments never split an edge.
+
+pub mod provenance;
 
 use std::collections::BTreeMap;
 

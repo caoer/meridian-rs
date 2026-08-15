@@ -56,6 +56,11 @@ impl ChildKind {
     }
 }
 
+/// An entry visitor for [`RadixChildMap::for_each_entry`]: called with the
+/// entry's name bytes, kind, and 32-byte hash. A named alias so the walk's
+/// signatures stay readable (clippy `type_complexity`).
+pub(crate) type EntryVisitor<'a> = dyn FnMut(&[u8], ChildKind, &[u8; 32]) + 'a;
+
 /// Hash-work counters — instruments, not caches (the §4.2.4 cost law made
 /// assertable). Monotonic; readers diff before/after.
 #[derive(Default, Clone, Copy)]
@@ -145,6 +150,36 @@ impl RadixChildMap {
                 }
                 Err(_) => return None,
             }
+        }
+    }
+
+    /// Visit every `(name, kind, hash)` entry, names strictly ascending in
+    /// byte order (the trie induces the sort, §4.2.1); a §4.4 collision key
+    /// visits its File arm before its Dir arm. Read-only — no vertex, bucket,
+    /// or slot handle escapes (§4.3): the caller sees child ENTRIES, which are
+    /// the directory listing, never trie structure. O(width) over the map —
+    /// the §4.3.1 forest expansion's listing read.
+    pub(crate) fn for_each_entry(&self, f: &mut EntryVisitor<'_>) {
+        fn walk(v: &Vertex, acc: &mut Vec<u8>, f: &mut EntryVisitor<'_>) {
+            let base = acc.len();
+            acc.extend_from_slice(&v.ext);
+            match &v.terminal {
+                Terminal::None => {}
+                Terminal::One(kind, hash) => f(acc, *kind, hash),
+                Terminal::Both { file, dir } => {
+                    f(acc, ChildKind::File, file);
+                    f(acc, ChildKind::Dir, dir);
+                }
+            }
+            for (slot, child) in &v.children {
+                acc.push(*slot);
+                walk(child, acc, f);
+                acc.pop();
+            }
+            acc.truncate(base);
+        }
+        if let Some(root) = &self.root {
+            walk(root, &mut Vec::new(), f);
         }
     }
 
@@ -463,7 +498,9 @@ fn merge_only_child(v: &mut Vertex) {
 /// Minimal-form unsigned LEB128 (§4.2 definitions): low 7 bits per byte,
 /// high bit = "more". Emitting by value makes minimality structural — a
 /// non-minimal varint is not a legal encoding, and none can be produced.
-fn write_uleb128(out: &mut Vec<u8>, mut value: usize) {
+/// Crate-visible: the §4.3.1 forest fold ([`crate::forest`]) uses the same
+/// varint law, so the two encodings cannot drift.
+pub(crate) fn write_uleb128(out: &mut Vec<u8>, mut value: usize) {
     loop {
         let byte = u8::try_from(value & 0x7f).unwrap_or(0);
         value >>= 7;

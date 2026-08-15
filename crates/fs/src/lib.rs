@@ -28,6 +28,7 @@ pub mod base;
 pub mod digestmemo;
 pub mod domain;
 pub mod fence;
+pub mod forest;
 pub mod guard;
 pub mod radix;
 pub mod resident;
