@@ -74,6 +74,7 @@ fn spec_for(scratch: &tempfile::TempDir, args: Vec<String>) -> RunSpec<'_> {
         }),
         pre_receipt: None,
         takeover: false,
+        fatal_preexec: false,
         scratch: scratch.path(),
         timeout: Duration::from_secs(30),
         // These fixtures exercise the runner's dispatch, not the convention

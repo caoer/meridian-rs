@@ -5,15 +5,21 @@
 //! ┌ LOCKED WINDOW (one flock, u4-gate addendum on #19) ──────────────┐
 //! │ phase 1: pre-exec receipt commit  →  root_after_phase1 snapshot  │
 //! └──────────────────────────────────────────────────────────────────┘
-//!   → U6b bracket OPENS against the computed root (PreExecMismatch ⇒
-//!     refuse; exec never starts)
+//!   → U6b bracket OPENS against the OBSERVED tree; observed !=
+//!     computed root is REPORTED as [`BashOutcome::pre_exec`] and the
+//!     exec proceeds over the observed baseline (card
+//!     run-preexec-severity — blameless by construction: no block ran,
+//!     and the run flock never excluded wire writers). The
+//!     `fatal_preexec` opt-in restores the refusal (exec never starts).
 //!   → exec (invocation cwd — U16, `setsid`, timeout→group SIGKILL;
 //!     stdout teed; md.* descriptors on the shim fd)
 //!   → U6b bracket CLOSES after group kill (residual-compare #19 +
 //!     config #20 + symlink #25) — verdict on EVERY path
 //!   → phase 2 (clean window only): shim batch through executor choke
-//!     point, pinned to COMPUTED `root_after_phase1` — never re-read
-//!     after bash (#19).
+//!     point, pinned to the window baseline — the computed
+//!     `root_after_phase1`, or the observed pre-exec root when it
+//!     diverged; either is captured BEFORE bash, never re-read after
+//!     (#19).
 //! ```
 //!
 //! **No `Exec` `EffectKind`** (ruling 1): only md.* descriptors on the shim
@@ -31,10 +37,12 @@
 //!   verdict on [`BashOutcome::detection`]; NEVER rolled back (ruling 2).
 //!
 //! # Detection (U6b)
-//! Bracket opens against computed `root_after_phase1`, closes after group
+//! Bracket opens against the observed pre-exec tree, closes after group
 //! kill; phase 2 gates on [`Detection::is_clean`]. Verdict is an observation
 //! about the window, not a claim about the block. Rendered on every OUTCOME
-//! path; a [`BashError`] aborts with bracket unclosed and no verdict.
+//! path; a [`BashError`] aborts with bracket unclosed and no verdict. The
+//! pre-exec divergence is its own fact ([`BashOutcome::pre_exec`]), never
+//! folded into the window verdict — one event class, one severity: report.
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};
@@ -44,12 +52,14 @@ use std::time::Duration;
 use effects::Effect;
 use model::MerkleRoot;
 
+use fs::digestmemo::DigestMemo;
+
 use crate::caps::Authority;
 use crate::exec::{self, ExecSpec, ExecStatus};
 use crate::executor::{self, Applied, ApplyRequest, ExecError, ReceiptAddr, WorkspaceLock};
 use crate::record::{self, RecordError, RunLog, StdoutRecord};
 use crate::shim::{self, ShimError, ShimStream};
-use crate::snapshot::{Detection, ExecBracket, OpenRefusal};
+use crate::snapshot::{Detection, ExecBracket, OpenRefusal, PreExecDivergence};
 
 /// The authority every apply on this path rides: bash is an unsandboxed shell
 /// with undeclared effects (`docs/laws.md` § Amendment — capabilities do not
@@ -88,6 +98,13 @@ pub struct BashDispatch<'a> {
     pub receipt: Option<ReceiptAddr>,
     /// Decision-#26 explicit foreign-edit takeover (phase 2 only).
     pub takeover: bool,
+    /// Fatal opt-in for the pre-exec divergence (card run-preexec-severity):
+    /// `false` (the default posture) REPORTS an out-of-band change landing
+    /// between the phase-1 commit and the bracket opening — same trust
+    /// posture as the in-window delta, the exec runs, stdout stands — while
+    /// `true` restores the hard refusal (exec never starts, exit 1). The
+    /// gap is structural: the run flock never excluded wire writers.
+    pub fatal_preexec: bool,
     /// The caller-created out-of-tree scratch directory (artifacts; NOT the
     /// cwd — U16 runs the step in the invocation cwd).
     pub scratch: &'a Path,
@@ -127,6 +144,14 @@ pub struct BashOutcome {
     /// also timed out or failed). The U7 labeler consumes this as the
     /// type-level evidence for the #23 gate.
     pub detection: Detection,
+    /// A foreign write BETWEEN the phase-1 commit and the bracket opening,
+    /// reported not refused (default posture; [`BashDispatch::fatal_preexec`]
+    /// restores the refusal). `None` = the observed pre-exec tree folded to
+    /// the computed `root_after_phase1`. When `Some`, the window baseline and
+    /// phase 2's pin are the OBSERVED root — the external change stands
+    /// (ruling 2) and the receipts attest the tree the block actually ran
+    /// over.
+    pub pre_exec: Option<PreExecDivergence>,
     /// The phase-2 verdict.
     pub phase2: Phase2,
 }
@@ -243,57 +268,33 @@ pub fn run(
     // where a refusal is recorded.
     let mut log = preflight(root, d, log)?;
 
-    // 1. THE LOCKED WINDOW (u4-gate addendum on #19): the phase-1 commit and
-    // the root_after_phase1 snapshot happen under ONE flock — no gap another
-    // run could commit into between the two.
-    let (root_after_phase1, pre_receipt_line) = {
-        let lock = WorkspaceLock::acquire(&root.0).map_err(|e| {
-            BashError::Phase1(if e.kind() == io::ErrorKind::WouldBlock {
-                ExecError::WorkspaceBusy
-            } else {
-                ExecError::Io {
-                    reason: format!("workspace lock: {e}"),
-                }
-            })
-        })?;
-        let root0 = snapshot(root)?;
-        match &d.pre_receipt {
-            Some(addr) => {
-                let applied = executor::apply_under(
-                    &lock,
-                    root,
-                    &ApplyRequest {
-                        page: d.page,
-                        task: d.task,
-                        task_rev: d.task_rev,
-                        invocation_id: d.invocation_id,
-                        now: d.now,
-                        effects: &[],
-                        authority: &BASH_AUTHORITY,
-                        pin_root: &root0,
-                        live_root: &root0,
-                        receipt: Some(addr.clone()),
-                        takeover: false,
-                        exec: None, // pre-exec: no child has run yet
-                        actor: d.actor,
-                        depth: 0,
-                        delta: d.delta,
-                    },
-                )
-                .map_err(BashError::Phase1)?;
-                // Still inside the lock: the root the receipt commit made.
-                (snapshot(root)?, applied.receipt_line)
-            }
-            None => (root0, None),
-        }
-    };
+    // The drawer digest memo (F8): every corpus observation below serves
+    // unmoved members from recorded digests instead of re-reading the whole
+    // tree. Cold (no drawer, first run, torn file) only costs reads.
+    let mut memo = load_memo(root);
 
-    // 2. U6b: the detection bracket opens against the flock-COMPUTED root
-    // (#19 addendum — the computed root is the authority, never a re-read).
-    // A PreExecMismatch means the tree moved between the phase-1 commit and
-    // here: the exec never starts (the pre-exec receipt stands; the orphan
-    // lint finds it).
-    let bracket = ExecBracket::open(root, &root_after_phase1).map_err(BashError::Detection)?;
+    // 1. THE LOCKED WINDOW (u4-gate addendum on #19): the phase-1 commit and
+    // the root_after_phase1 fold happen under ONE flock — no gap another
+    // RUN could commit into between the two (wire writers ride a different
+    // lock; their gap is step 2's subject).
+    let (root_after_phase1, pre_receipt_line) = locked_window(root, d, &mut memo)?;
+
+    // 2. U6b: the detection bracket opens against the OBSERVED tree; the
+    // flock-computed root stays the authority for what phase 1 committed
+    // against (#19). A divergence between the two is blameless by
+    // construction (no block ran) and common on a live corpus — the run
+    // flock never excluded wire writers — so the default posture REPORTS it
+    // exactly like the in-window delta and the exec proceeds over the
+    // observed baseline. `fatal_preexec` restores the refusal: the exec
+    // never starts (the pre-exec receipt stands; the orphan lint finds it).
+    let (bracket, pre_exec) = open_bracket(root, d.fatal_preexec, &root_after_phase1, &mut memo)?;
+    // What the window is detected against, and what phase 2 pins: the
+    // observed pre-exec root when it diverged (the receipts attest the tree
+    // the block actually ran over — still captured BEFORE bash, so #19's
+    // never-re-read-after-bash law holds), else the computed root.
+    let window_root = pre_exec
+        .as_ref()
+        .map_or(&root_after_phase1, |div| &div.observed);
 
     // 3. Exec under the supervision bracket (#21/S3), stdout teed into the
     // record (U8) live. seal() runs inside the consumer — the record is
@@ -323,7 +324,7 @@ pub fn run(
     // 4. U6b: close the bracket now the group is dead (S3) — UNCONDITIONAL,
     // so the delta is named on every exit path (timeout / nonzero /
     // shim-fail included). The verdict rides the outcome.
-    let detection = bracket.close();
+    let detection = bracket.close_memoized(&mut memo);
 
     // 5. The failure matrix (S2/S6/#21) behind the detection gate (#14): a
     // window that did not verify clean refuses phase 2 outright — nothing
@@ -345,20 +346,16 @@ pub fn run(
                 Ok(descriptors) => {
                     let exec = exec_record(&result.status, &stdout, &d.env);
                     if *code == 0 {
-                        let effects = shim::to_effects(
-                            &descriptors,
-                            d.task,
-                            d.invocation_id,
-                            &root_after_phase1.0,
-                        );
-                        apply_phase2(root, d, &root_after_phase1, effects, exec.as_ref())
+                        let effects =
+                            shim::to_effects(&descriptors, d.task, d.invocation_id, &window_root.0);
+                        apply_phase2(root, d, window_root, effects, exec.as_ref())
                     } else {
                         // G3b: completion is not success. The descriptors are
                         // discarded (a failed block's effects never apply) but
                         // the run is still recorded with its exit code — a
                         // check exiting nonzero on a finding must not leave
                         // the same bytes as a crash.
-                        completion_receipt(root, d, &root_after_phase1, exec.as_ref())
+                        completion_receipt(root, d, window_root, exec.as_ref())
                     }
                 }
             },
@@ -367,6 +364,8 @@ pub fn run(
         Phase2::RefusedDetection
     };
 
+    save_memo(root, &memo);
+
     Ok(BashOutcome {
         pre_receipt_line,
         status: result.status,
@@ -374,8 +373,153 @@ pub fn run(
         stderr: result.stderr,
         shim: result.shim,
         detection,
+        pre_exec,
         phase2,
     })
+}
+
+/// Step 1, the locked window: acquire the workspace flock, observe the
+/// corpus (memoized), commit the phase-1 pre-exec receipt against that
+/// fold, and compute `root_after_phase1` by OVERLAYING the receipt page's
+/// post-commit bytes onto the observation — no second sweep, and MORE
+/// computed than a re-read (#19): a wire write racing the flock surfaces in
+/// step 2's divergence report instead of silently entering the attested
+/// baseline.
+fn locked_window(
+    root: &fs::WorkspaceRoot,
+    d: &BashDispatch<'_>,
+    memo: &mut DigestMemo,
+) -> Result<(MerkleRoot, Option<String>), BashError> {
+    let lock = WorkspaceLock::acquire(&root.0).map_err(|e| {
+        BashError::Phase1(if e.kind() == io::ErrorKind::WouldBlock {
+            ExecError::WorkspaceBusy
+        } else {
+            ExecError::Io {
+                reason: format!("workspace lock: {e}"),
+            }
+        })
+    })?;
+    let mut leaves = fs::domain_leaves_memoized(root, memo).map_err(|e| BashError::Root {
+        reason: e.to_string(),
+    })?;
+    let root0 = leaves.root();
+    let Some(addr) = &d.pre_receipt else {
+        return Ok((root0, None));
+    };
+    let applied = executor::apply_under(
+        &lock,
+        root,
+        &ApplyRequest {
+            page: d.page,
+            task: d.task,
+            task_rev: d.task_rev,
+            invocation_id: d.invocation_id,
+            now: d.now,
+            effects: &[],
+            authority: &BASH_AUTHORITY,
+            pin_root: &root0,
+            live_root: &root0,
+            receipt: Some(addr.clone()),
+            takeover: false,
+            exec: None, // pre-exec: no child has run yet
+            actor: d.actor,
+            depth: 0,
+            delta: d.delta,
+        },
+    )
+    .map_err(BashError::Phase1)?;
+    // Still inside the lock: the receipt page is the one member the commit
+    // touched; its re-read is the only byte cost of the post-commit fold.
+    let receipt_bytes = std::fs::read(root.0.join(&addr.path)).map_err(|e| BashError::Root {
+        reason: format!("receipt page after phase 1: {e}"),
+    })?;
+    leaves.overlay(Path::new(&addr.path), model::leaf_digest(&receipt_bytes));
+    Ok((leaves.root(), applied.receipt_line))
+}
+
+/// Step 2's severity policy (card run-preexec-severity): open the bracket
+/// against the observed tree, compare against the flock-computed authority,
+/// and either carry the divergence as a REPORT fact (default) or refuse
+/// under the fatal opt-in. The memo is saved on the refusal paths so the
+/// caller's retry — the common next move — reads warm.
+fn open_bracket(
+    root: &fs::WorkspaceRoot,
+    fatal_preexec: bool,
+    root_after_phase1: &MerkleRoot,
+    memo: &mut DigestMemo,
+) -> Result<(ExecBracket, Option<PreExecDivergence>), BashError> {
+    let (bracket, observed) = match ExecBracket::open_observing(root, memo) {
+        Ok(pair) => pair,
+        Err(e) => {
+            save_memo(root, memo);
+            return Err(BashError::Detection(e));
+        }
+    };
+    if observed == *root_after_phase1 {
+        return Ok((bracket, None));
+    }
+    if fatal_preexec {
+        save_memo(root, memo);
+        return Err(BashError::Detection(OpenRefusal::PreExecMismatch {
+            expected: root_after_phase1.clone(),
+            observed,
+        }));
+    }
+    let divergence = PreExecDivergence {
+        expected: root_after_phase1.clone(),
+        observed,
+    };
+    Ok((bracket, Some(divergence)))
+}
+
+/// The digest memo's basename inside the per-workspace cache drawer (beside
+/// `sql.duckdb`): run's corpus observations amortise there the same way
+/// sql's projection does (F8). Version rides the name — an older binary
+/// simply reads cold.
+const DIGEST_MEMO_FILENAME: &str = "run-digests.v1";
+
+/// Load the digest memo from the workspace cache drawer. Every failure — no
+/// cache root, no drawer, no file, alien bytes — is a cold memo: the memo is
+/// evidence cache, never authority, and absence only costs reads.
+fn load_memo(root: &fs::WorkspaceRoot) -> DigestMemo {
+    let Ok(canonical) = root.0.canonicalize() else {
+        return DigestMemo::new();
+    };
+    let drawer = cache::CacheDrawer::open(&canonical);
+    let Some(dir) = drawer.dir() else {
+        return DigestMemo::new();
+    };
+    match std::fs::read(dir.join(DIGEST_MEMO_FILENAME)) {
+        Ok(bytes) => DigestMemo::from_bytes(&bytes),
+        Err(_) => DigestMemo::new(),
+    }
+}
+
+/// Persist the memo back to the drawer, atomic (temp + rename) and silent:
+/// concurrent runs last-writer-win over a cache whose worst staleness is an
+/// extra read, and a failed save must never cost a run that already
+/// succeeded.
+fn save_memo(root: &fs::WorkspaceRoot, memo: &DigestMemo) {
+    let Ok(canonical) = root.0.canonicalize() else {
+        return;
+    };
+    let drawer = cache::CacheDrawer::open(&canonical);
+    let Some(dir) = drawer.dir() else {
+        return;
+    };
+    // The sentinel is gc bookkeeping; its failure must not cost the save.
+    let _ = drawer.register();
+    if std::fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    let tmp = dir.join(format!("{DIGEST_MEMO_FILENAME}.tmp.{}", std::process::id()));
+    if std::fs::write(&tmp, memo.to_bytes()).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return;
+    }
+    if std::fs::rename(&tmp, dir.join(DIGEST_MEMO_FILENAME)).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
 }
 
 /// G3 pre-flight: ask the guard whether it would refuse BEFORE anything
@@ -504,14 +648,4 @@ fn exec_record(
         return None;
     };
     Some(record::ExecRecord::new(*code, record.clone(), env))
-}
-
-/// One corpus-root snapshot ([`fs::domain_snapshot`]) with the dispatch's
-/// error shape.
-fn snapshot(root: &fs::WorkspaceRoot) -> Result<MerkleRoot, BashError> {
-    fs::domain_snapshot(root)
-        .map(|(_, r)| r)
-        .map_err(|e| BashError::Root {
-            reason: e.to_string(),
-        })
 }

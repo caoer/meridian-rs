@@ -62,11 +62,20 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use crate::WorkspaceRoot;
+use crate::digestmemo::DigestMemo;
 use crate::domain::{CONFIG_FILE_NAME, DOMAIN_CONFIG_PATH, Domain};
 
 /// The detection bracket around one exec window: pre-step domain snapshot +
 /// captured config state, consumed by [`StepGuard::close`] (one bracket, one
 /// verdict).
+///
+/// The snapshots hold `path → leaf digest`, not bytes ([`model::leaf_digest`]
+/// is the one leaf law, so digest equality IS byte equality and the folds
+/// are byte-identical to the old full-byte compare) — the residual verdict
+/// is unchanged while the whole corpus no longer rides in memory twice per
+/// window. Byte reads are served through a caller-held [`DigestMemo`] where
+/// one is offered ([`StepGuard::open_memoized`]): an unmoved member costs a
+/// stat, a moved one a guarded `O_NOFOLLOW` read.
 #[derive(Debug)]
 #[must_use = "an unclosed guard detects nothing — close() renders the verdict"]
 pub struct StepGuard {
@@ -75,8 +84,8 @@ pub struct StepGuard {
     config: ConfigState,
     /// Keyed by raw name bytes (merkle-spec §4/§9): two names that would
     /// merge under a lossy decode stay two entries, so the residual compare
-    /// cannot be blinded by a hostile name.
-    pre: BTreeMap<Vec<u8>, Vec<u8>>,
+    /// cannot be blinded by a hostile name. Values are §12.2 leaf digests.
+    pre: BTreeMap<Vec<u8>, [u8; 32]>,
 }
 
 /// The captured domain-config state: the raw bytes of both declaration
@@ -244,9 +253,24 @@ impl StepGuard {
     /// baseline cannot be established over links; [`GuardError::Io`] on any
     /// read failure (a non-UTF-8 config included, refused as `InvalidData`).
     pub fn open(root: &WorkspaceRoot) -> Result<StepGuard, GuardError> {
+        Self::open_memoized(root, &mut DigestMemo::new())
+    }
+
+    /// [`StepGuard::open`] with byte reads served through `memo`: an unmoved
+    /// member costs one stat, a moved or unknown one a guarded read that is
+    /// recorded back. The verdicts are identical to `open`'s — the memo only
+    /// moves WHERE digests come from, never what they are (module docs of
+    /// [`crate::digestmemo`] state the stat-evidence standing).
+    ///
+    /// # Errors
+    /// Exactly [`StepGuard::open`]'s.
+    pub fn open_memoized(
+        root: &WorkspaceRoot,
+        memo: &mut DigestMemo,
+    ) -> Result<StepGuard, GuardError> {
         let config = read_config(root)?;
         let domain = config.parse_domain()?;
-        let pre = strict_domain_files(root, &domain)?;
+        let pre = strict_domain_digests(root, &domain, memo)?;
         Ok(StepGuard {
             root: root.clone(),
             domain,
@@ -265,16 +289,14 @@ impl StepGuard {
     /// The pre-step root as this guard observed it at open: the fold of the
     /// captured baseline. The run layer cross-checks this against the
     /// flock-computed `root_after_phase1` (the computed root is the
-    /// authority; a mismatch means the tree moved between the phase-1 commit
-    /// and the bracket opening, and the exec must not start).
+    /// authority; a divergence means the tree moved between the phase-1
+    /// commit and the bracket opening — blameless by construction, reported
+    /// by default and refused only under the caller's fatal opt-in).
     #[must_use]
     pub fn pre_root(&self) -> model::MerkleRoot {
-        let refs: Vec<(&[u8], &[u8])> = self
-            .pre
-            .iter()
-            .map(|(p, b)| (p.as_slice(), b.as_slice()))
-            .collect();
-        model::merkle_root(&refs, self.domain.version())
+        let refs: Vec<(&[u8], [u8; 32])> =
+            self.pre.iter().map(|(p, d)| (p.as_slice(), *d)).collect();
+        model::merkle_root_of_leaves(&refs, self.domain.version())
     }
 
     /// Cross-step continuity (the bracket is mid-RUN, not just mid-step):
@@ -304,27 +326,41 @@ impl StepGuard {
     /// [`GuardError::OutOfBand`] naming the residual delta;
     /// [`GuardError::Io`] on snapshot read failure.
     pub fn close(self, edits: &[GovernedEdit]) -> Result<model::MerkleRoot, GuardError> {
+        self.close_memoized(edits, &mut DigestMemo::new())
+    }
+
+    /// [`StepGuard::close`] with byte reads served through `memo` — the same
+    /// verdict discipline, one stat per unmoved member instead of one read.
+    ///
+    /// # Errors
+    /// Exactly [`StepGuard::close`]'s.
+    pub fn close_memoized(
+        self,
+        edits: &[GovernedEdit],
+        memo: &mut DigestMemo,
+    ) -> Result<model::MerkleRoot, GuardError> {
         if read_config(&self.root)? != self.config {
             return Err(GuardError::ConfigChanged);
         }
-        let actual = strict_domain_files(&self.root, &self.domain)?;
+        let actual = strict_domain_digests(&self.root, &self.domain, memo)?;
         let mut expected = self.pre;
         for edit in edits {
             if self.domain.contains(Path::new(&edit.path)) {
                 // A governed edit's path is a String (run-plane input, UTF-8);
-                // its UTF-8 bytes are its raw name bytes — identity.
-                expected.insert(edit.path.clone().into_bytes(), edit.bytes.clone());
+                // its UTF-8 bytes are its raw name bytes — identity. The
+                // expected value is the edit's own §12.2 leaf.
+                expected.insert(
+                    edit.path.clone().into_bytes(),
+                    model::leaf_digest(&edit.bytes),
+                );
             }
         }
         let delta = residual(&expected, &actual);
         if !delta.is_empty() {
             return Err(GuardError::OutOfBand(delta));
         }
-        let refs: Vec<(&[u8], &[u8])> = actual
-            .iter()
-            .map(|(p, b)| (p.as_slice(), b.as_slice()))
-            .collect();
-        Ok(model::merkle_root(&refs, self.domain.version()))
+        let refs: Vec<(&[u8], [u8; 32])> = actual.iter().map(|(p, d)| (p.as_slice(), *d)).collect();
+        Ok(model::merkle_root_of_leaves(&refs, self.domain.version()))
     }
 }
 
@@ -386,24 +422,86 @@ fn read_config_file(root: &WorkspaceRoot, rel: &str) -> Result<Option<Vec<u8>>, 
 }
 
 /// The guarded snapshot: [`walk_strict`] narrowed to the hash domain, each
-/// file read via [`read_nofollow`]. Returned as a sorted path→bytes map (the
-/// residual compare's working shape).
-fn strict_domain_files(
+/// member's §12.2 leaf digest served from `memo` when its stat identity is
+/// unmoved, else read via [`read_nofollow`] (bytes dropped after hashing —
+/// the corpus never rides in memory) and recorded back. Returned as a sorted
+/// path→digest map (the residual compare's working shape).
+///
+/// Misses are read in parallel above [`crate::PARALLEL_READ_FLOOR`], the
+/// order-preserving contiguous-chunk pattern of the domain snapshot's sweep:
+/// the first refusal is the first failing member in sorted order, never
+/// whichever worker lost a race.
+fn strict_domain_digests(
     root: &WorkspaceRoot,
     domain: &Domain,
-) -> Result<BTreeMap<Vec<u8>, Vec<u8>>, GuardError> {
+    memo: &mut DigestMemo,
+) -> Result<BTreeMap<Vec<u8>, [u8; 32]>, GuardError> {
+    let rels: Vec<PathBuf> = walk_strict(root, domain)?
+        .into_iter()
+        .filter(|rel| domain.contains(rel))
+        .collect();
+    let identities = crate::member_identities(&root.0, &rels, crate::PARALLEL_STAT_FLOOR)?;
     let mut files = BTreeMap::new();
-    for rel in walk_strict(root, domain)? {
-        if !domain.contains(&rel) {
-            continue;
+    let mut misses: Vec<(PathBuf, crate::StatKey)> = Vec::new();
+    for (rel, key) in identities {
+        match memo.lookup(&rel, &key) {
+            Some(digest) => {
+                files.insert(crate::hash_name(&rel).to_vec(), digest);
+            }
+            None => misses.push((rel, key)),
         }
-        let bytes = read_nofollow(
-            &root.0.join(&rel),
-            &crate::display_name(crate::hash_name(&rel)),
-        )?;
-        files.insert(crate::hash_name(&rel).to_vec(), bytes);
+    }
+    let digests = read_and_digest_nofollow(root, &misses)?;
+    // Order-preserving by construction: digests[i] belongs to misses[i].
+    for ((rel, key), (_, digest)) in misses.into_iter().zip(digests) {
+        files.insert(crate::hash_name(&rel).to_vec(), digest);
+        memo.record(rel, key, digest);
     }
     Ok(files)
+}
+
+/// One member's digest row: its rel path and §12.2 leaf digest.
+type DigestRow = (PathBuf, [u8; 32]);
+
+/// Read + digest the missed members through the guarded `O_NOFOLLOW` read,
+/// parallel in order-preserving contiguous chunks at or above
+/// [`crate::PARALLEL_READ_FLOOR`]. Bytes are hashed and dropped inside each
+/// worker; the first refusal is the sorted-order first, matching the serial
+/// loop byte for byte.
+fn read_and_digest_nofollow(
+    root: &WorkspaceRoot,
+    misses: &[(PathBuf, crate::StatKey)],
+) -> Result<Vec<DigestRow>, GuardError> {
+    let digest_of = |(rel, _key): &(PathBuf, crate::StatKey)| -> Result<DigestRow, GuardError> {
+        let bytes = read_nofollow(
+            &root.0.join(rel),
+            &crate::display_name(crate::hash_name(rel)),
+        )?;
+        Ok((rel.clone(), model::leaf_digest(&bytes)))
+    };
+    if misses.len() < crate::PARALLEL_READ_FLOOR {
+        return misses.iter().map(digest_of).collect();
+    }
+    let workers = std::thread::available_parallelism().map_or(2, |n| n.get().clamp(2, 8));
+    let chunk = misses.len().div_ceil(workers);
+    let mut rows: Vec<Result<Vec<DigestRow>, GuardError>> = Vec::new();
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = misses
+            .chunks(chunk)
+            .map(|c| scope.spawn(move || c.iter().map(&digest_of).collect()))
+            .collect();
+        for handle in handles {
+            match handle.join() {
+                Ok(chunk_rows) => rows.push(chunk_rows),
+                Err(panic) => std::panic::resume_unwind(panic),
+            }
+        }
+    });
+    let mut out = Vec::with_capacity(misses.len());
+    for chunk_rows in rows {
+        out.extend(chunk_rows?);
+    }
+    Ok(out)
 }
 
 /// The guarded walk: like [`crate::walk`] but (a) refuses any symlink on a
@@ -517,20 +615,22 @@ fn open_nofollow(path: &Path) -> io::Result<File> {
 }
 
 /// The residual compare: diff the actual post-step snapshot against the
-/// expected set, path-by-path, byte-by-byte. Sorted output by construction
-/// (both maps iterate in path order) — reports are deterministic.
+/// expected set, path-by-path, digest-by-digest ([`model::leaf_digest`] is
+/// the one leaf law, so digest equality IS byte equality). Sorted output by
+/// construction (both maps iterate in path order) — reports are
+/// deterministic.
 fn residual(
-    expected: &BTreeMap<Vec<u8>, Vec<u8>>,
-    actual: &BTreeMap<Vec<u8>, Vec<u8>>,
+    expected: &BTreeMap<Vec<u8>, [u8; 32]>,
+    actual: &BTreeMap<Vec<u8>, [u8; 32]>,
 ) -> ResidualDelta {
     // The compare runs on raw name bytes; the delta LISTS are report prose,
     // rendered through the §9 display law (identity for UTF-8 names,
     // injective escape otherwise — never a merge).
     let mut delta = ResidualDelta::default();
-    for (path, bytes) in expected {
+    for (path, digest) in expected {
         match actual.get(path) {
             None => delta.missing.push(crate::display_name(path)),
-            Some(a) if a != bytes => delta.altered.push(crate::display_name(path)),
+            Some(a) if a != digest => delta.altered.push(crate::display_name(path)),
             Some(_) => {}
         }
     }
