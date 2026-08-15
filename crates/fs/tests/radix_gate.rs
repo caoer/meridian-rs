@@ -42,6 +42,7 @@ fn one_change_rehashes_the_same_vertex_count_at_every_width() {
         map.set(b"target.md", ChildKind::File, h(2));
         table.push((width, map.vertex_hashes() - v0, map.hashed_bytes() - b0));
     }
+    eprintln!("RADIX-GATE same-vertex-count (width, vertex re-hashes, bytes): {table:?}");
     for (width, ops, bytes) in &table {
         assert_eq!(
             *ops, 2,
@@ -93,6 +94,7 @@ fn flat_directory_update_insert_delete_stay_bounded() {
         );
         rows.push((width, update_ops, insert_ops, delete_ops));
     }
+    eprintln!("RADIX-GATE flat-dir ops (width, update, insert, delete): {rows:?}");
     for (width, update_ops, insert_ops, delete_ops) in &rows {
         for (label, ops) in [
             ("update", update_ops),
@@ -133,7 +135,14 @@ fn uniform_names_at_live_and_flat100k_widths() {
         let target = name(width / 3);
         let v0 = map.vertex_hashes();
         let b0 = map.hashed_bytes();
+        let t0 = std::time::Instant::now();
         map.set(target.as_bytes(), ChildKind::File, h(0xf00d));
+        let dt = t0.elapsed();
+        eprintln!(
+            "RADIX-GATE uniform width {width}: {} vertex re-hashes, {} B, {dt:?}",
+            map.vertex_hashes() - v0,
+            map.hashed_bytes() - b0
+        );
         rows.push((width, map.vertex_hashes() - v0, map.hashed_bytes() - b0));
     }
     for (width, ops, bytes) in &rows {
@@ -182,9 +191,10 @@ fn spec_worked_example_law2_byte_identity() {
     assert_eq!(hex(root.dir_value()), PIN_FINGERPRINT_V2);
 }
 
-// §5.1 pinned values (spec `docs/node-rev-merkle-spec.md` §5.1 — the
-// generator's output and this module must agree byte-for-byte).
-const PIN_DIR_TASKS: &str = "TBD";
-const PIN_FINGERPRINT: &str = "TBD";
-const PIN_DIR_TASKS_V2: &str = "TBD";
-const PIN_FINGERPRINT_V2: &str = "TBD";
+// §5.1 pinned values (spec `docs/node-rev-merkle-spec.md` §5.1): generated
+// by `worked-example-gen.go`'s law-2 arm and re-derived here byte-for-byte —
+// two implementations, two languages, one encoding.
+const PIN_DIR_TASKS: &str = "ef0e7e2eca3cacfcc3bf8fded1454d65645a5a20359c770d6e2dea009d285bd2";
+const PIN_FINGERPRINT: &str = "d53c447167825d40f442c65b10f5ae2c6176a49e1e2d8237902d7eaa3008319e";
+const PIN_DIR_TASKS_V2: &str = "e4f51f04970d9feb5c680de5534e1824b27d2660577395e5fadcd9d82fb8a967";
+const PIN_FINGERPRINT_V2: &str = "6aab1dd1ef89648508430e0ded866c6ad964b1074fc9b624d025f5c27d10fc58";
