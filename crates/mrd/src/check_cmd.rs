@@ -11,7 +11,8 @@
 //!
 //! Write history is not assessed: the engine keeps no memory. `check` answers
 //! at-rest truth — does the world still match the pins. Every face carries a
-//! `write_history: not-assessed` line with its reason.
+//! `write_history: not-assessed` line naming the narrowing (what the green
+//! stopped covering; the WHY is docs/`--help` teaching — report-voice pass).
 //!
 //! Pin colours come from `view::walk::lock_pin_colors`, the same call `mrd
 //! status`'s lock axis makes over the same corpus build, so the planes agree by
@@ -358,7 +359,7 @@ impl Gate<'_> {
     fn detail(&self) -> String {
         if self.permits() {
             return "every pin in the interval holds and every pinned blob is durably \
-                 anchored; write history is not assessed — the engine keeps no memory by design"
+                 anchored; write history is not assessed"
                 .to_string();
         }
         // Before the pin findings, because it is not one: there is nothing in this
@@ -912,13 +913,15 @@ fn render_report(report: &CoreReport) -> String {
     let mut out = String::new();
 
     // The disclosure is mandatory: dropping it would leave a reader carrying the old,
-    // wider green forward, so the narrowing is stated with its reason.
+    // wider green forward. It states the NARROWING — what the green stopped covering,
+    // and where the answer lives — never the engine's mechanism: the WHY (the engine
+    // keeps no memory; ZT 2026-08-03) is docs/status.md's and `mrd --help`'s to teach,
+    // on demand, not a footnote charged to every invocation (report-voice pass, ZT
+    // rulings 3–5, 2026-08-15).
     let _ = writeln!(
         out,
-        "  write_history: {WRITE_HISTORY_NOT_ASSESSED} — the engine keeps no memory by design: \
-         history is pinned to git at lock, and anything between locks is not history. This verb \
-         answers at-rest truth only (does the world still match the pins), so chain continuity \
-         and last-receipt-vs-live are not checked here at all — not grey, NOT CHECKED"
+        "  write_history: {WRITE_HISTORY_NOT_ASSESSED} — chain continuity and \
+         last-receipt-vs-live are not checked; history is in git"
     );
 
     for claim in &report.drifted_claims {
@@ -1260,8 +1263,14 @@ mod tests {
              account for anything"
         );
         assert!(
-            gate.detail().contains("no memory"),
-            "and the pass states the law rather than implying a wider check: {}",
+            gate.detail().contains("write history is not assessed"),
+            "and the pass names the narrowing rather than implying a wider check: {}",
+            gate.detail()
+        );
+        assert!(
+            !gate.detail().contains("no memory"),
+            "the mechanism WHY is docs/--help teaching, never a footnote on the \
+             verdict detail (report-voice pass): {}",
             gate.detail()
         );
     }
