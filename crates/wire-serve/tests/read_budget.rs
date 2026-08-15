@@ -18,10 +18,18 @@
 //! The recovery the refusal points at must stay SERVABLE (clause 3): the toc
 //! read is the way in, so it is never word-bounded.
 
+use std::fmt::Write as _;
+
 use wire::{ErrorCode, Path as WPath, ReadSel, ResponseBody};
 use wire_serve::read::{
     NO_DECORATIONS, READ_MAX_SELECTORS, READ_MAX_WORDS, ReadParams, composed_read,
 };
+
+/// The ceiling as a `usize`, for the fixture builders. Stated once so the
+/// tests below read as arithmetic on the constant, not on a cast.
+fn max_words() -> usize {
+    usize::try_from(READ_MAX_WORDS).expect("the ceiling fits a usize on any host that runs this")
+}
 
 /// A document whose one section carries `words` words — receipt A's shape at
 /// test scale.
@@ -30,23 +38,23 @@ fn doc_of(words: usize) -> String {
     format!("---\ntype: note\n---\n\n# Big\n\n{body}\n")
 }
 
-/// Sixty-six small sections, so a selector-count gate is reachable without a
-/// large document.
+/// Small sections, so a selector-count gate is reachable without a large
+/// document.
 fn many_sections(n: usize) -> String {
     let mut raw = String::from("---\ntype: note\n---\n\n");
     for i in 0..n {
-        raw.push_str(&format!("# S{i}\n\nbody {i}\n\n"));
+        let _ = write!(raw, "# S{i}\n\nbody {i}\n\n");
     }
     raw
 }
 
-fn read(raw: &str, params: ReadParams) -> Result<ResponseBody, Box<wire::ErrorBody>> {
+fn read(raw: &str, params: &ReadParams) -> Result<ResponseBody, Box<wire::ErrorBody>> {
     let doc = model::build(raw.to_string(), syntax::parse(raw));
     composed_read(
         &doc,
         &WPath("page.md".into()),
         &wire::Root("r".into()),
-        &params,
+        params,
         None,
         &NO_DECORATIONS,
     )
@@ -68,9 +76,9 @@ fn dewey(n: &str) -> ReadSel {
 /// measured number instead of letting the host clip the answer away.
 #[test]
 fn an_oversized_section_refuses_with_its_measured_words() {
-    let raw = doc_of(READ_MAX_WORDS as usize + 500);
+    let raw = doc_of(max_words() + 500);
     let err =
-        read(&raw, sections(vec![dewey("1")])).expect_err("past the ceiling, the read refuses");
+        read(&raw, &sections(vec![dewey("1")])).expect_err("past the ceiling, the read refuses");
     let msg = err.message.clone().unwrap_or_default();
     assert_eq!(
         err.code,
@@ -104,11 +112,11 @@ fn an_oversized_section_refuses_with_its_measured_words() {
 /// fit and together do not still refuse.
 #[test]
 fn the_ceiling_bounds_the_call_not_the_section() {
-    let half = READ_MAX_WORDS as usize / 2 + 200;
+    let half = max_words() / 2 + 200;
     let body = vec!["word"; half].join(" ");
     let raw = format!("---\ntype: note\n---\n\n# A\n\n{body}\n\n# B\n\n{body}\n");
-    read(&raw, sections(vec![dewey("1")])).expect("one half fits");
-    read(&raw, sections(vec![dewey("1"), dewey("2")]))
+    read(&raw, &sections(vec![dewey("1")])).expect("one half fits");
+    read(&raw, &sections(vec![dewey("1"), dewey("2")]))
         .expect_err("both halves together are past the ceiling");
 }
 
@@ -118,7 +126,7 @@ fn the_ceiling_bounds_the_call_not_the_section() {
 #[test]
 fn repeated_identical_selectors_are_served_once_and_marked() {
     let raw = many_sections(3);
-    let body = read(&raw, sections(vec![dewey("1"); 65])).expect("repeats are not a refusal");
+    let body = read(&raw, &sections(vec![dewey("1"); 65])).expect("repeats are not a refusal");
     let ResponseBody::Read {
         sections,
         notice,
@@ -160,7 +168,7 @@ fn distinct_spellings_of_one_node_both_serve() {
             }],
         },
     ];
-    let ResponseBody::Read { sections, .. } = read(&raw, sections(both)).expect("both serve")
+    let ResponseBody::Read { sections, .. } = read(&raw, &sections(both)).expect("both serve")
     else {
         panic!("composed read answers a Read body");
     };
@@ -179,7 +187,7 @@ fn distinct_selectors_past_the_face_ceiling_refuse() {
     let sels: Vec<ReadSel> = (1..=READ_MAX_SELECTORS + 1)
         .map(|i| dewey(&i.to_string()))
         .collect();
-    let err = read(&raw, sections(sels)).expect_err("past the list ceiling, the read refuses");
+    let err = read(&raw, &sections(sels)).expect_err("past the list ceiling, the read refuses");
     let msg = err.message.clone().unwrap_or_default();
     assert_eq!(
         err.code,
@@ -206,7 +214,7 @@ fn the_ceiling_itself_serves() {
         .map(|i| dewey(&i.to_string()))
         .collect();
     let ResponseBody::Read { sections, .. } =
-        read(&raw, sections(sels)).expect("64 selectors serve")
+        read(&raw, &sections(sels)).expect("64 selectors serve")
     else {
         panic!("composed read answers a Read body");
     };
@@ -218,10 +226,10 @@ fn the_ceiling_itself_serves() {
 /// the toc and the refusal would point at a door that also refuses.
 #[test]
 fn the_toc_read_is_never_word_bounded() {
-    let raw = doc_of(READ_MAX_WORDS as usize * 2);
+    let raw = doc_of(max_words() * 2);
     let body = read(
         &raw,
-        ReadParams {
+        &ReadParams {
             display_path: Some("page.md".into()),
             ..ReadParams::default()
         },
@@ -243,7 +251,7 @@ fn an_ordinary_section_read_is_unchanged() {
         notice,
         truncated,
         ..
-    } = read(&raw, sections(vec![dewey("2")])).expect("an ordinary read serves")
+    } = read(&raw, &sections(vec![dewey("2")])).expect("an ordinary read serves")
     else {
         panic!("composed read answers a Read body");
     };
