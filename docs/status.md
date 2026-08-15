@@ -871,6 +871,16 @@ the type: `Answer` has no public path field, `root` returns `None` on
 prints both on its header line; `mrd init` prints the ladder's answer for the
 directory it just declared.
 
+A refusal states them too. When `mrd run` misses its page and an answered rung
+named the root, the refusal appends both facts:
+`page not found: <ref> (workspace <root>, source: env-override)` — same form
+for `git-root`. The ref is the part of the invocation most likely to be
+correct; the root is the part the environment may have swapped underneath it
+(a sticky `MERIDIAN_WORKSPACE` from an earlier shell is the field case —
+dogfood F6), so a miss that hides the root points diagnosis at the wrong
+suspect. A `cwd-default` miss stays bare: `root` is `None` there — a defaulted
+cwd is not a workspace, and the refusal does not promote it to one.
+
 An answered rung opens the hashed drawer directly. A `cwd-default` tree adopts a
 running daemon's registered ancestor if one answers, else degrades to an
 ephemeral, per-invocation store that writes nothing — it is never silently
