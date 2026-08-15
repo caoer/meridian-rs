@@ -34,6 +34,10 @@ Docs: `docs/README.md` (process + standing corrections), `docs/wire-contract.md`
 charters), `docs/node-rev-merkle-spec.md` (rev/hash law), `docs/status.md`
 (mrd CLI, descriptive only).
 
+Fleet SOP (agents working this repo): build/test on CI, land by PR, clean up
+your worktree — `/Users/Shared/repos/field-notes-sessions/sop/worker.md`
+(`sop/leader.md`, `sop/advisor.md` beside it).
+
 - **Docs-first (binding):** accurate design lives in `docs/`. **Doc correct >
   code correct.** Material changes update the correct doc **before** code. Do
   not re-derive dual addresses or teach DuckDB/`view_path` as agent core.
