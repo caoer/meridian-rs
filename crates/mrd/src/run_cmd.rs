@@ -240,12 +240,20 @@ impl RunArgs {
 /// Run `mrd run <tail>`. Errors [`Fail`] on the triad's 1/2 legs — see the module docs for the
 /// mapping.
 pub(crate) fn dispatch(tail: &[String]) -> Result<(), Fail> {
-    let parsed = RunArgs::parse(tail)?;
+    let mut parsed = RunArgs::parse(tail)?;
     let cwd = current_dir()?;
     let answer = workspace::resolve(&cwd)
         .map_err(|e| Fail::tool(format!("workspace resolution failed: {e:?}")))?;
     // An unanchored tree runs against the cwd.
     let root = fs::WorkspaceRoot(answer.root_or_cwd().to_path_buf());
+    // §2.1 echo law at the argv boundary: receipts, the foreign-edit scan, and
+    // rule scoping key on the page's ONE workspace-relative spelling, so the
+    // admitted ref resolves here and rides root-relative everywhere below. A
+    // ref resolving outside the root has no such spelling and stays verbatim —
+    // refusing it is the path-law door family's business.
+    if let Some(rel) = fs::workspace_relative(&root, &parsed.page) {
+        parsed.page = rel;
+    }
     // The two roots answer different questions: `root_or_cwd` above is where files are read,
     // `answer.root()` here is whether anything is entitled to declare policy. They coincide
     // whenever the ladder answered; on a cwd default the second is `None`, so no convention

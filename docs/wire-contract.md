@@ -2196,7 +2196,11 @@ op reached the plane. No aggregate boolean exists anywhere in the body:
   object verbatim (`run-plane.md` § the report; `caps` absent on an
   unsandboxed row, `exec` facts carried as the plane states them, bash
   stdout as the report's own bounded record — this op streams nothing),
-  plus addressing (`page`, `invocation`, `receipt`, `dry`).
+  plus addressing (`page`, `invocation`, `receipt`, `dry`). The echoed
+  `page` — on rows and in the run receipt alike — is the target ref's
+  resolved workspace-relative spelling (§2.1's grammar), never the
+  request's bytes: a caller that spells one page two ways still reads one
+  history back.
 - A target the plane REFUSED pre-report answers a `refusal` row:
   `class:"invocation"` for the CLI's exit-2 family (addressing, contract
   violation, authoring faults — `declared_tasks[]` rides the several-tasks
