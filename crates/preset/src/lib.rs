@@ -23,9 +23,11 @@ use wire::{ErrorBody, ErrorCode};
 /// into (d3 §6). Overridable by the def frontmatter key `root`.
 const DEFAULT_ROOT_RECORD: &str = "SESSION.md";
 
-/// The workspace prefix the convention floor lives under (the U4.4 floor suite:
-/// `conventions/<slug>/CHECK.md`). A session preset's `inputs` pin paths here.
-const FLOOR_PREFIX: &str = "conventions/";
+/// The DEFAULT workspace prefix the convention floor lives under (the U4.4 floor
+/// suite: `conventions/<slug>/CHECK.md`). A fallback, never a validity predicate
+/// — the def's own `floor:` key answers first (run-plane.md § 6, Law 6.3; the
+/// no-hard-coded-flow amendment, laws.md).
+const DEFAULT_FLOOR_PREFIX: &str = "conventions/";
 
 // ---------------------------------------------------------------------------
 // The caller envelope (§9 — the crate mints no identity and no clock)
@@ -83,6 +85,9 @@ pub struct PresetDef {
     /// The convention-floor pins — the `inputs` block sequence, read through the
     /// U2.11 whole-value grain (d2 §5.5). Each item is a `path@rev` pin.
     pub inputs: Vec<String>,
+    /// The workspace prefix this def's floor pins live under (`floor:` or the
+    /// [`DEFAULT_FLOOR_PREFIX`]) — what [`pins_floor`] measures the pins against.
+    pub floor_prefix: String,
     /// The `^properties` rules; `None` ⇒ the def declares no `^properties` block
     /// (a structural def defect [`new_record`] refuses).
     pub properties: Option<Vec<PropRule>>,
@@ -232,6 +237,7 @@ pub fn load_def(root: &fs::WorkspaceRoot, def_path: &str) -> Result<PresetDef, P
         root_record: fm_scalar(&doc, "root").unwrap_or_else(|| DEFAULT_ROOT_RECORD.to_owned()),
         births: fm_scalar(&doc, "births"),
         inputs: read_inputs_grain(&doc),
+        floor_prefix: fm_scalar(&doc, "floor").unwrap_or_else(|| DEFAULT_FLOOR_PREFIX.to_owned()),
         properties: parse_properties(&doc.raw),
         anchorless_properties: parse_properties(&doc.raw).is_none()
             && title_section(&doc.raw, "Properties").is_some(),
@@ -1340,10 +1346,17 @@ fn is_cas_mismatch(err: &ErrorBody) -> bool {
     err.code == ErrorCode::CasMismatch
 }
 
-/// Whether a session preset's `inputs` pin the convention floor (the U4.4 floor
-/// suite under `conventions/`) — non-empty and every pin under [`FLOOR_PREFIX`].
-/// A read-only check over the parsed def (d2 §5.5, "inputs pins the pack floor").
+/// Whether a session preset's `inputs` pin the convention floor — non-empty and
+/// every pin under the def's OWN floor prefix ([`PresetDef::floor_prefix`]:
+/// `floor:`, else [`DEFAULT_FLOOR_PREFIX`]). A read-only check over the parsed
+/// def (d2 §5.5, "inputs pins the pack floor"); the prefix is the def's
+/// declaration, so a floor filed anywhere is as valid (run-plane.md § 6,
+/// Law 6.3).
 #[must_use]
 pub fn pins_floor(def: &PresetDef) -> bool {
-    !def.inputs.is_empty() && def.inputs.iter().all(|pin| pin.starts_with(FLOOR_PREFIX))
+    !def.inputs.is_empty()
+        && def
+            .inputs
+            .iter()
+            .all(|pin| pin.starts_with(&def.floor_prefix))
 }

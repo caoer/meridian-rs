@@ -655,7 +655,7 @@ into the user's tree, or reads as the user's law, is semantics; what the engine
 keeps for itself is mechanism.** Tests and fixtures may use concrete flow words
 freely — a fixture is an example, not a decision.
 
-**Status: two violations open.** The audit at `073d184f1` named three, recorded
+**Status: one violation open.** The audit at `073d184f1` named three, recorded
 here so they are inherited as decisions rather than rediscovered as defects. Each
 is owed a fix that moves the concreteness into the user's markdown.
 
@@ -666,6 +666,10 @@ is owed a fix that moves the concreteness into the user's markdown.
 - **OPEN — `realise`'s `render_card`** (`crates/realise/src/lib.rs:610`) writes a
   card whose type word, state key, state value and prose are all baked, so a
   user's own rules cannot match the page the engine minted for them.
-- **OPEN — `preset`'s `FLOOR_PREFIX = "conventions/"`**
-  (`crates/preset/src/lib.rs:28`) is a folder name acting as a validity predicate
-  on a user's preset.
+- **FIXED — `preset`'s floor prefix.** `FLOOR_PREFIX = "conventions/"` was a
+  folder name acting as a validity predicate on a user's preset. It is now
+  `DEFAULT_FLOOR_PREFIX`, the fallback behind the def's own `floor:` key
+  (`run-plane.md` § 6, Law 6.3); `pins_floor` measures the pins against
+  `PresetDef::floor_prefix`, so a def filing its convention suite under
+  `standards/` is as valid as one under `conventions/`. Gated by
+  `crates/preset/tests/gates.rs`.
