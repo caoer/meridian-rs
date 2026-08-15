@@ -200,7 +200,7 @@ pub fn splice_with_mints(
     let flock = acquire_write_lock(root)?;
 
     let mut doc = load_doc(root, &args.path)?;
-    let mut root_before = ambient_root(root)?;
+    let root_before = ambient_root(root)?;
 
     // §5.1 order: the world guard first — so a stale plan refuses before any
     // per-target resolution can answer for it, and before this splice's own
@@ -460,8 +460,9 @@ pub fn splice_with_mints(
     // target's fingerprint cannot move and no other page pinning that target
     // reddens. That is what permits promoting into a possibly-unowned target at
     // all (D14), and it is asserted in `s2fix_promotion`.
-    if let Some(minted) = pin.as_ref()
-        && let Some(p) = minted.promotion.as_ref()
+    let mut promotion_row: Option<CommitPromotion> = None;
+    if let Some(minted) = pin.as_mut()
+        && let Some(p) = minted.promotion.take()
     {
         fs::replace_file(&p.root, FsPath::new(&p.target.0), &p.candidate)
             .map_err(|e| io_to_wire(&e))?;
@@ -479,24 +480,41 @@ pub fn splice_with_mints(
         {
             store.mint(actor, &p.target.0, &minted.fact.selector, &p.sec_rev);
         }
-        // The promotion moved the corpus root — this splice's own write.
-        // Re-read it so the receipt records the root the commit reports, and
-        // re-guard the batch on the current value: re-comparing the client's
+        // The promotion moved the corpus root — this splice's own write. The
+        // batch re-guards on the advanced value (re-comparing the client's
         // pre-promotion token would self-refuse `root_mismatch` on our own
-        // write. The client's guard was already honored above.
+        // write; the client's guard was already honored above). `root_before`
+        // itself keeps the call's pre-state: the response, the receipt and the
+        // frame name that one value (§6.4 — same facts, one set), and the
+        // frame tells the promotion as its own row instead of folding it
+        // silently under a moved baseline (r8 D4: five physical mints, zero
+        // sub rows).
         //
         // Only when the marker landed under the PINNING workspace: a
         // cross-root promotion moves the TARGET root's cursor, and this
         // workspace's `if_root` world stays exactly what the client guarded
         // (cross-root design D-B point 6 — the re-guard dance is not needed
-        // there). The predicate is physical containment, so a target root
-        // nested inside the pinning workspace still re-guards correctly.
-        if promotion_under(root, p) {
-            root_before = ambient_root(root)?;
+        // there). The row follows the same physical line: it rides only where
+        // this workspace's world moved — a cross-root mint is the target
+        // root's story, told on that root's own plane. The predicate is
+        // physical containment, so a target root nested inside the pinning
+        // workspace still re-guards correctly.
+        if promotion_under(root, &p) {
+            let advanced = ambient_root(root)?;
+            if advanced != root_before
+                && let Some(path) = promotion_frame_path(root, &p)
+            {
+                promotion_row = Some(CommitPromotion {
+                    path,
+                    after: p.candidate.into_document(),
+                    before: p.before,
+                    root_before: root_before.clone(),
+                });
+            }
             batch.if_root = args
                 .if_root
                 .as_ref()
-                .map(|_| model::MerkleRoot(root_before.0.clone()));
+                .map(|_| model::MerkleRoot(advanced.0.clone()));
         }
     }
 
@@ -528,6 +546,7 @@ pub fn splice_with_mints(
             receipt: receipt_input,
             actor: args.actor.clone(),
             now: args.now.clone(),
+            promotion: promotion_row,
         },
     )
     .map_err(|e| match e {
@@ -1741,6 +1760,10 @@ struct PendingPromotion {
     /// The page the marker lands in, relative to `root` — the pin's target,
     /// which may be the pinning page itself.
     target: Path,
+    /// The target as it was before the marker — the before tense of the
+    /// Delta row this write owes the commit frame (r8 D4: an untold mint is
+    /// a write sub's history denies).
+    before: model::Document,
     /// The sealed candidate to write — its bytes are the exact bytes that land,
     /// and also the pinning page's pre-image when the target IS the pinning
     /// page.
@@ -1996,6 +2019,7 @@ fn mint_pin(
         promotion: promoted.map(|candidate| PendingPromotion {
             root: target.root.clone(),
             target: target.rel.clone(),
+            before: target_doc,
             candidate,
             sec_rev: promoted_sec_rev,
         }),
@@ -2936,6 +2960,24 @@ fn promotion_under(root: &fs::WorkspaceRoot, p: &PendingPromotion) -> bool {
     let landed = std::fs::canonicalize(p.root.0.join(&p.target.0));
     let pinning = std::fs::canonicalize(&root.0).unwrap_or_else(|_| root.0.clone());
     matches!(landed, Ok(path) if path.starts_with(&pinning))
+}
+
+/// The committing workspace's spelling of a promotion target that landed
+/// under it: the target's own rel when the roots coincide, else the physical
+/// path re-based under the pinning root (a target root nested inside it).
+/// `None` when no spelling exists — the caller leaves the row untold rather
+/// than fabricating a path (degrade to re-derive, never to wrong data: the
+/// watcher's next reconcile still names the change, actor-absent).
+fn promotion_frame_path(root: &fs::WorkspaceRoot, p: &PendingPromotion) -> Option<String> {
+    if p.root.0 == root.0 {
+        return Some(p.target.0.clone());
+    }
+    let landed = std::fs::canonicalize(p.root.0.join(&p.target.0)).ok()?;
+    let base = std::fs::canonicalize(&root.0).unwrap_or_else(|_| root.0.clone());
+    landed
+        .strip_prefix(&base)
+        .ok()
+        .map(|rel| rel.to_string_lossy().into_owned())
 }
 
 /// The workspace-relative respelling of an ABSOLUTE spelling that lies inside
@@ -4519,6 +4561,32 @@ pub struct CommitRequest {
     pub receipt: Option<(String, model::ReceiptAppend)>,
     pub actor: Option<String>,
     pub now: Option<String>,
+    /// A pin's anchor promotion this splice already landed under the same
+    /// flock — present exactly when it moved THIS workspace's world. The
+    /// frame owes it a file row and its `root_before` (r8 D4: an untold mint
+    /// is a write sub's history denies).
+    pub promotion: Option<CommitPromotion>,
+}
+
+/// The promotion write as the commit frame must tell it: the splice knows it
+/// made the write, so the frame carries the row and spans the call's whole
+/// root movement. A cross-root promotion never builds one — it is the target
+/// root's story, told on that root's own plane.
+#[derive(Debug, Clone)]
+pub struct CommitPromotion {
+    /// The promotion target, relative to the committing workspace — the row's
+    /// frame path.
+    pub path: String,
+    /// The target's pre-promotion parse — the row's before tense (and the
+    /// content or receipt row's, when the target IS that file: one changed
+    /// file is one row, §7.1).
+    pub before: model::Document,
+    /// The target's post-promotion parse — the row's after tense.
+    pub after: model::Document,
+    /// The world before the promotion landed — the frame's true `root_before`.
+    /// The batch validates against the advanced root (its own write moved it);
+    /// the CHAIN spans from before the first of this call's writes.
+    pub root_before: Root,
 }
 
 /// A commit that did not emit: no byte reached disk, no Delta exists, the
@@ -4616,7 +4684,7 @@ pub fn commit_batch(
     let root_after = ambient(root)?;
 
     // Change facts → wire projection, in §7.1 print order: content file first,
-    // then the receipt file.
+    // then the receipt file, then a promotion's own row.
     let files = commit_delta_files(
         &req.content_path,
         &before_content,
@@ -4624,7 +4692,18 @@ pub fn commit_batch(
         req.receipt
             .as_ref()
             .map(|(rp, _)| (rp.as_str(), before_receipt.as_ref(), after_receipt.as_ref())),
+        req.promotion.as_ref(),
     );
+
+    // The chain tense: a promoting splice moved the world twice (marker, then
+    // batch) — one call is one Delta (§7.1), so the frame spans from before
+    // the FIRST of its writes. Validation above used the ambient root: the
+    // batch's own guard was re-based onto it precisely because the promotion
+    // was this splice's write.
+    let root_before = req
+        .promotion
+        .as_ref()
+        .map_or(root_before, |p| p.root_before.clone());
 
     // Assemble at the one production site and return the frame — the caller
     // advances its ring (or, on the resident daemon, discards it).
@@ -4639,25 +4718,41 @@ pub fn commit_batch(
     ))
 }
 
-/// One two-file commit's change facts → wire Delta file entries, §7.1 print
-/// order: content file first, then the receipt file. Shared by
-/// [`commit_batch`] and the run plane's registry sink (§ A.8 Delta honesty),
-/// so a run frame's file grain cannot drift from a splice frame's.
+/// One commit's change facts → wire Delta file entries, §7.1 print order:
+/// content file first, then the receipt file, then a pin promotion's own row.
+/// Shared by [`commit_batch`] and the run plane's registry sink (§ A.8 Delta
+/// honesty), so a run frame's file grain cannot drift from a splice frame's.
+///
+/// A promotion into the content or receipt file folds into that file's own
+/// row as its before tense — one changed file is one row (§7.1), covering
+/// both of this call's writes to it. Only a promotion into a third file rides
+/// as its own entry.
 #[must_use]
 pub fn commit_delta_files(
     content_path: &str,
     before_content: &model::Document,
     after_content: &model::Document,
     receipt: Option<(&str, Option<&model::Document>, Option<&model::Document>)>,
+    promotion: Option<&CommitPromotion>,
 ) -> Vec<DeltaFile> {
+    let promoted_into = |path: &str| promotion.filter(|p| p.path == path);
     let mut files = Vec::new();
-    if let Some(fd) = model::delta::file_delta(Some(before_content), Some(after_content)) {
+    let content_before = promoted_into(content_path).map_or(before_content, |p| &p.before);
+    if let Some(fd) = model::delta::file_delta(Some(content_before), Some(after_content)) {
         files.push(wire_map::project_file_delta(content_path, &fd));
     }
     if let Some((rp, before, after)) = receipt
-        && let Some(fd) = model::delta::file_delta(before, after)
+        && let Some(fd) =
+            model::delta::file_delta(promoted_into(rp).map(|p| &p.before).or(before), after)
     {
         files.push(wire_map::project_file_delta(rp, &fd));
+    }
+    if let Some(p) = promotion
+        && p.path != content_path
+        && receipt.is_none_or(|(rp, _, _)| rp != p.path)
+        && let Some(fd) = model::delta::file_delta(Some(&p.before), Some(&p.after))
+    {
+        files.push(wire_map::project_file_delta(&p.path, &fd));
     }
     files
 }

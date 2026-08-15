@@ -474,6 +474,118 @@ fn the_delta_chain_is_contiguous() {
     server.shutdown();
 }
 
+/// r8 D4 at the drain grain (card pin-mint-sub-attribution): a promoting
+/// pin's anchor mint reaches a subscriber as a row on the TARGET file, on the
+/// actor-carrying frame, and the chain join holds — `fingerprint_before`
+/// meets the previous frame's `fingerprint_after` instead of silently
+/// skipping the promotion's own root movement. Five physical mints with zero
+/// rows across drains 616→683 is the defect this gate must never re-admit.
+#[test]
+fn a_promoting_pin_pushes_the_targets_row_on_the_actors_frame() {
+    let tmp = TempDir::new().unwrap();
+    let ws = write_ws(
+        &tmp.path().join("ws"),
+        &[
+            ("plan.md", PLAN),
+            (
+                "guide.md",
+                "# Guide\n\n## Steps\n\nreview before you close.\n",
+            ),
+        ],
+    );
+    // R4: a pin row folds the target's git blob oid — the workspace is a repo.
+    for args in [
+        vec!["init", "-q"],
+        vec!["config", "user.email", "sub@example.invalid"],
+        vec!["config", "user.name", "sub"],
+    ] {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&ws)
+            .args(&args)
+            .status()
+            .expect("git runs in the test environment");
+        assert!(status.success(), "git {args:?}");
+    }
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+
+    // v3 session: `read` and `splice.pin` are v3-only at decode.
+    let mut ops = Conn::open(server.socket_path());
+    let hello = ops.call(&json!({
+        "op": "hello", "proto": 1, "contract": "v3",
+        "workspace": ws.to_str().unwrap(),
+    }));
+    assert_eq!(hello["ok"], json!(true), "{hello}");
+    // D16: the covering read mints the receipt the pin gate spends.
+    let read = ops.call(&json!({
+        "op": "read", "path": "guide.md",
+        "sections": [{"hpath": [{"h": "Guide"}, {"h": "Steps"}]}],
+        "actor": "agent:pinner",
+    }));
+    assert_eq!(read["ok"], json!(true), "{read}");
+
+    let mut sub = Conn::open(server.socket_path());
+    let sub_hello = sub.call(&json!({
+        "op": "hello", "proto": 1, "contract": "v3",
+        "workspace": ws.to_str().unwrap(),
+    }));
+    assert_eq!(sub_hello["ok"], json!(true), "{sub_hello}");
+    assert_eq!(sub.sub(0)["ok"], json!(true));
+
+    // Frame 1: an external edit — the detector's actor-absent baseline.
+    external_edit(
+        &ws,
+        "plan.md",
+        "# Goals\n\nship by September\n\n# Notes\n\nnothing yet\n",
+    );
+    let external = sub.next_frame().expect("the external edit is pushed");
+
+    // Frame 2: the promoting pin.
+    let splice = ops.call(&json!({
+        "id": 7, "op": "splice", "path": "plan.md",
+        "actor": "agent:pinner", "now": "2026-08-15T12:00:00Z",
+        "pin": {
+            "target": "guide.md",
+            "selector": {"hpath": [{"h": "Guide"}, {"h": "Steps"}]},
+        },
+    }));
+    assert_eq!(splice["ok"], json!(true), "the pin commits: {splice}");
+    assert_eq!(
+        splice["body"]["pin"]["promoted"],
+        json!(true),
+        "control: this pin really minted an anchor: {splice}"
+    );
+    let frame = sub.next_frame().expect("the pin's commit is pushed");
+
+    let files = frame["delta"]["files"].as_array().expect("files: {frame}");
+    let paths: Vec<&str> = files.iter().filter_map(|f| f["path"].as_str()).collect();
+    assert_eq!(
+        paths,
+        vec!["plan.md", "guide.md"],
+        "the pinning page and the minted target both ride: {frame}"
+    );
+    assert_eq!(
+        frame["delta"]["actor"],
+        json!("agent:pinner"),
+        "the mint is actor-attributed: {frame}"
+    );
+    assert!(
+        files[1]["nodes"].as_array().is_some_and(|n| !n.is_empty()),
+        "the target row carries node grain: {frame}"
+    );
+    assert_eq!(
+        frame["delta"]["fingerprint_before"], external["delta"]["fingerprint_after"],
+        "the chain joins across the promoting pin — no silently-skipped root \
+         movement: {frame}"
+    );
+    assert_eq!(
+        frame["delta"]["seq"].as_u64(),
+        external["delta"]["seq"].as_u64().map(|s| s + 1),
+        "consecutive seq: {frame}"
+    );
+    server.shutdown();
+}
+
 /// Reap: push-only subscriber makes no `last_use` touch; workspace must not be
 /// reaped. Real damage is a fork: map entry gone ⇒ next `sub` mints a second
 /// ring and per-workspace `seq` (§4.7) splits. Pin is on ring identity.

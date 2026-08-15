@@ -70,6 +70,7 @@ impl DeltaSink for RingSink {
             facts
                 .receipt_path
                 .map(|rp| (rp, facts.receipt_before, receipt_after.as_ref())),
+            None, // the run plane mints no pins, so no promotion row
         );
         // Allocate under the executor's flock and advance in the same act —
         // no allocation gap exists on this producer.
