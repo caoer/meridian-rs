@@ -104,7 +104,14 @@ mrd put <PATH> [--dry | --validate] [--force] [--actor A] [--now T]
  an engine refusal answers {workspace, error} on stdout
  (the engine's §8 error body, v3 vocabulary — never
  empty stdout) beside the human stderr line, exit triad
- unchanged
+ unchanged. The human commit face prints one line per
+ FIRED intent beside the fingerprint —
+ `fired: <rule_id> <action> → <target> (receipt <addr>)`,
+ target omitted when the intent carries none, the
+ receipt address VERBATIM (the pairing key delivery
+ faces echo as `correlation`) — what the write armed,
+ never that anything was delivered; a workspace with
+ no armed hooks prints exactly what it always did
 mrd pin <PAGE> <TARGET>#<SELECTOR> [--vibe] [--dry] [--json]
  mint a meridian-lock pin: PAGE records the claim,
  TARGET#SELECTOR is the content being attested
