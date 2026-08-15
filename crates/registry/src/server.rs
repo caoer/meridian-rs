@@ -596,7 +596,8 @@ pub enum ServeOutcome {
         workspace: PathBuf,
         /// The contract rev the session negotiated at `hello`.
         rev: Rev,
-        /// The subscription anchor the accepted `sub` declared.
+        /// The resolved subscription anchor: the resumption cursor's seq, or
+        /// the acked tip for a live subscribe (B-01).
         from_seq: u64,
         /// The live subscription claim, taken at arm time inside the dispatch
         /// — the reaper exemption is engaged before the ack renders, and every
@@ -606,7 +607,7 @@ pub enum ServeOutcome {
 }
 
 /// An accepted `sub` in flight between its dispatch and the push plane: the
-/// declared anchor plus the subscription claim taken at arm time.
+/// resolved anchor plus the subscription claim taken at arm time.
 #[derive(Debug)]
 struct ArmedSub {
     from_seq: u64,
@@ -1189,9 +1190,13 @@ fn dispatch_read(
             )
         }),
         Op::Root => warm_engine_read(registry, ws, |engine| {
+            // `tree_instance` absent for the same reason `seq` stays 0: this
+            // op does not read the ring, and a ring surface it did not read
+            // is not its fact to teach (B-01 identity rides the `sub` ack).
             Ok(ResponseBody::Root {
                 root: engine_root(engine),
                 seq: 0,
+                tree_instance: None,
             })
         }),
         Op::Diff { from_root, to_root } => warm_engine_read(registry, ws, |engine| {
@@ -1376,7 +1381,31 @@ fn dispatch_read(
         // S2: stands behind the same bind + deny ceiling as composed reads.
         // No actor: delta stream is not actor-scoped (identities/revs/spans only).
         // v2 `read`/`check_write`/`create` fall through to `unknown_op` below.
-        Op::Sub { from_seq } => {
+        Op::Sub {
+            tree_instance,
+            from_seq,
+        } => {
+            // Cursor-pair law first (B-01, §4.7): `from_seq` without
+            // `tree_instance` anchors by number alone — the upgrade-required
+            // refusal; instance without seq is half a cursor. Request-shape
+            // facts, refused before any ring is touched.
+            let cursor = match (tree_instance, from_seq) {
+                (Some(tree_instance), Some(seq)) => Some(wire_serve::ring::Cursor {
+                    tree_instance,
+                    seq,
+                }),
+                (None, None) => None,
+                (None, Some(_)) => {
+                    let mut e = ErrorBody::new(ErrorCode::BadRequest);
+                    e.message = Some(wire::sub_upgrade_teaching().into());
+                    return Err(Box::new(e));
+                }
+                (Some(_), None) => {
+                    let mut e = ErrorBody::new(ErrorCode::BadRequest);
+                    e.message = Some(wire::sub_half_cursor_teaching().into());
+                    return Err(Box::new(e));
+                }
+            };
             // The claim is taken HERE, at fetch, under the rings map lock
             // (`Registry::subscribe`) — linearized against the reaper's
             // decide-and-remove, so from this line the workspace is
@@ -1389,23 +1418,45 @@ fn dispatch_read(
             // `sub` drops the guard on return — the transient claim releases.
             let guard = registry.subscribe(ws);
             let ring = Arc::clone(guard.ring());
-            if !ring.can_anchor(from_seq) {
-                let mut e = ErrorBody::new(ErrorCode::RootUnknown);
-                e.message = Some(
-                    "from_seq outside this epoch's retained history — catch up by diff-by-root (§7.1)"
-                        .into(),
-                );
-                return Err(Box::new(e));
+            if let Some(cursor) = &cursor {
+                // Instance before sequence (B-01): the two refusals are
+                // distinct facts, and a dead instance never consults seq.
+                match ring.can_anchor(cursor) {
+                    wire_serve::ring::Anchor::Anchored => {}
+                    wire_serve::ring::Anchor::DeadInstance => {
+                        let mut e = ErrorBody::new(ErrorCode::RootUnknown);
+                        e.message = Some(wire::sub_dead_instance_teaching(
+                            &cursor.tree_instance,
+                            &ring.instance(),
+                        ));
+                        return Err(Box::new(e));
+                    }
+                    wire_serve::ring::Anchor::OutsideHistory => {
+                        let mut e = ErrorBody::new(ErrorCode::RootUnknown);
+                        e.message = Some(
+                            "from_seq outside this tree instance's retained history — catch up by diff-by-root (§7.1)"
+                                .into(),
+                        );
+                        return Err(Box::new(e));
+                    }
+                }
             }
             // Prime before ack: first reconcile adopts baseline silently;
-            // ack-then-prime would swallow interim edits.
-            let root = ring.prime(&fs::WorkspaceRoot(ws.to_path_buf()))?;
+            // ack-then-prime would swallow interim edits. The (root, seq)
+            // pair is one instant's — a live sub anchors at exactly the tip
+            // the acked baseline carries.
+            let (root, seq) = ring.prime(&fs::WorkspaceRoot(ws.to_path_buf()))?;
+            // A live subscribe anchors at the acked tip; a resumption at its
+            // cursor — frames landed during prime are past it and deliver.
+            let from_seq = cursor.map_or(seq, |c| c.seq);
             // Armed only on success — refused `sub` leaves a request channel.
             *armed = Some(ArmedSub { from_seq, guard });
-            // §4.7 ack: baseline root so first frame's `root_before` matches.
+            // §4.7 ack: baseline root so first frame's `root_before` matches,
+            // plus the cursor identity the client resumes with (B-01).
             Ok(ResponseBody::Root {
                 root,
-                seq: ring.seq(),
+                seq,
+                tree_instance: Some(ring.instance()),
             })
         }
         // `Op::Mounts` is unreachable here (routed before the binding guard);
@@ -1944,11 +1995,12 @@ mod arm_time_exemption_tests {
         )
     }
 
-    /// `hello` (binds + registers) then `sub` from 0 — the accepted-sub line
-    /// dialogue, socketless (`serve_lines` is the socket's own path).
+    /// `hello` (binds + registers) then a live `sub` (no cursor, B-01) — the
+    /// accepted-sub line dialogue, socketless (`serve_lines` is the socket's
+    /// own path).
     fn hello_then_sub(ws: &Path) -> String {
         format!(
-            "{{\"op\":\"hello\",\"proto\":1,\"workspace\":{}}}\n{{\"op\":\"sub\",\"from_seq\":0}}\n",
+            "{{\"op\":\"hello\",\"proto\":1,\"workspace\":{}}}\n{{\"op\":\"sub\"}}\n",
             serde_json::to_string(ws.to_str().unwrap()).unwrap()
         )
     }
