@@ -117,8 +117,8 @@ fn fixture_roots() -> Vec<(String, tempfile::TempDir)> {
 }
 
 const DOC: &str = "# Alpha\n\none two three\n";
-const EDIT_FIRST: &str = r#"[{"target":{"hpath":["Alpha"]},"edit":{"match":{"old":"one two three","new":"first commit"}}}]"#;
-const EDIT_FENCED: &str = r#"[{"target":{"hpath":["Alpha"]},"edit":{"match":{"old":"one two three","new":"MUST NEVER LAND"}}}]"#;
+const EDIT_FIRST: &str = r#"[{"target":{"hpath":[{"h":"Alpha"}]},"edit":{"match":{"old":"one two three","new":"first commit"}}}]"#;
+const EDIT_FENCED: &str = r#"[{"target":{"hpath":[{"h":"Alpha"}]},"edit":{"match":{"old":"one two three","new":"MUST NEVER LAND"}}}]"#;
 
 struct Sandbox {
     cache_home: PathBuf,
