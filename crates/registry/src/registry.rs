@@ -348,42 +348,34 @@ impl Registry {
             // (movers only — see the stamp law above); cold → the one
             // whole-corpus parse site. Leaf-set clones happen on this rebuild
             // path only, never per currency pass.
-            let engine = match prior {
-                Some(prior) => {
-                    let fresh = {
-                        let mut caches = self
-                            .domain_caches
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner);
-                        caches.entry(canonical.clone()).or_default().leaf_digests()
-                    };
-                    let update = fs::update_corpus(
-                        &root,
-                        &prior.docs,
-                        &prior.unserved,
-                        &prior.leaves,
-                        &fresh,
-                    )?;
-                    parsed = Some(update.parsed);
-                    WorkspaceEngine {
-                        index: update.index,
-                        docs: update.docs,
-                        unserved: update.unserved,
-                        at_fingerprint: update.root,
-                        leaves: update.leaves,
-                    }
+            let engine = if let Some(prior) = prior {
+                let fresh = {
+                    let mut caches = self
+                        .domain_caches
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner);
+                    caches.entry(canonical.clone()).or_default().leaf_digests()
+                };
+                let update =
+                    fs::update_corpus(&root, &prior.docs, &prior.unserved, &prior.leaves, &fresh)?;
+                parsed = Some(update.parsed);
+                WorkspaceEngine {
+                    index: update.index,
+                    docs: update.docs,
+                    unserved: update.unserved,
+                    at_fingerprint: update.root,
+                    leaves: update.leaves,
                 }
-                None => {
-                    let (files, leaves, fingerprint) = fs::domain_snapshot_with_leaves(&root)?;
-                    let (index, docs, unserved) = fs::build_corpus(files);
-                    parsed = Some(docs.len());
-                    WorkspaceEngine {
-                        index,
-                        docs,
-                        unserved,
-                        at_fingerprint: fingerprint,
-                        leaves,
-                    }
+            } else {
+                let (files, leaves, fingerprint) = fs::domain_snapshot_with_leaves(&root)?;
+                let (index, docs, unserved) = fs::build_corpus(files);
+                parsed = Some(docs.len());
+                WorkspaceEngine {
+                    index,
+                    docs,
+                    unserved,
+                    at_fingerprint: fingerprint,
+                    leaves,
                 }
             };
             let docs_parsed = parsed.unwrap_or(0);
