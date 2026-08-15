@@ -2,7 +2,7 @@
 type: contract
 id: laws
 status: standing
-updated: 2026-08-09
+updated: 2026-08-15
 description: The three architecture laws, enforced as crate dependency edges rather than conventions, plus the charter of every crate.
 owns: [architecture laws, crate charters]
 ---
@@ -600,3 +600,69 @@ and it does not authorize the human face growing an enumeration. **The `script`
 budget refusal is the law's positive example and does not change** — *"exceeded
 the read budget of 64 reads per attempt — refused, never truncated"* names the
 number, names the units, and gives absence exactly one meaning.
+
+## Amendment — no hard-coded flow (mechanism in code, semantics in markdown)
+
+Law: ZT ruling 2026-08-15, made while answering a status-enum question — the
+principle superseded the question. Verbatim:
+
+> *"I want to make sure that in our code there is no hard-coded folder name,
+> because the tool we designed will be and can be used by anyone, any user.
+> Different user has different, like, reasoning and understanding about what is
+> Kanban flow, what do they want. Some of them are not even engineers. So
+> hard-code any concrete concept will be kind of like a waste, and like waste of
+> our design's elegancy. So the flexibility will comes with the Meriden's hooks
+> features, which anyone can design the Markdown file to describe what they want
+> and what is the rule of it."*
+
+**Mechanism in code, semantics in markdown.** Engine code carries the evaluator;
+the user's markdown carries every concrete flow concept. The law has two halves
+and both bind:
+
+1. **No baked folder names.** No engine path may decide where a user's content
+   lives, and no folder name may act as a validity predicate on user markdown.
+   A directory a user is expected to author into is a value read from their
+   markdown, defaulted in code at most.
+2. **No baked flow vocabulary.** No status word, no state-key name, no card or
+   kanban concept, no role or lane name may appear in an engine decision — not in
+   a comparison, not in a refusal string, and not in bytes the engine writes into
+   the user's tree.
+
+**The user-markdown home.** Flow semantics live in user-authored pages — rule and
+hook pages on the policy/effects planes, and the frontmatter of the page a verb
+is invoked on. Those pages name the folders, the states, the key that spells
+state, and the prose; the engine reads them as data. This is the same
+replaceability the wire already rules for consumers (`wire-contract.md` §1.1,
+"zero consumer concepts", and §11: *pack data behind a generic manifest; no
+evaluator hard-coded*) — this amendment states it for the whole engine, not for
+one plane.
+
+**What "generic evaluation" means.** The engine matches on **structure** —
+a frontmatter key exists, a selector resolves, a pin verifies, a rule fires — and
+never on a flow literal. Concreteness enters only as a value the user supplied
+and the engine echoes back unread. The shipped model is
+`preset::DEFAULT_ROOT_RECORD`: the constant is a fallback, `fm_scalar(&doc,
+"root")` is the answer, and a user who spells their root differently is served.
+Every flow-touching site should read like that one.
+
+**The boundary — engine-intrinsic vocabulary is mechanism, and is not covered.**
+The engine's own state and mount convention (`MERIDIAN.md`, `.meridian/`,
+receipt paths, the daemon's socket and state files) and the engine's own verdict
+vocabularies (`realise`'s `converged` / `drifted-fixed` / `non-convergent`,
+the rules registry's `collision`) are the engine speaking about itself, the
+equivalent of `.git`. The test that separates the two: **what the engine writes
+into the user's tree, or reads as the user's law, is semantics; what the engine
+keeps for itself is mechanism.** Tests and fixtures may use concrete flow words
+freely — a fixture is an example, not a decision.
+
+**Status: docs-first, gate owed.** No test enforces this amendment yet, and code
+at `073d184f1` violates it in three named places, recorded here so they are
+inherited as decisions rather than rediscovered as defects: `realise`'s
+`render_card` (`crates/realise/src/lib.rs:610`) writes a card whose type word,
+state key, state value and prose are all baked, so a user's own rules cannot
+match the page the engine minted for them; `realise`'s board directory is generic
+in the library (`RealiseSpec::board_dir`) but unreachable from the CLI, which
+pins `"board"` (`crates/mrd/src/realise_cmd.rs:42`); and `preset`'s
+`FLOOR_PREFIX = "conventions/"` (`crates/preset/src/lib.rs:28`) is a folder name
+acting as a validity predicate on a user's preset. Each is owed a fix that moves
+the concreteness into the user's markdown.
