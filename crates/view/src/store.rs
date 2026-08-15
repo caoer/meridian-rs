@@ -1069,14 +1069,14 @@ impl SqlStore {
             };
             let key = blake3::hash(text.as_bytes()).to_hex().to_string();
             let r = [
-                row[0].clone(),      // path
-                generation.clone(),  // gen
-                row[1].clone(),      // seq
-                row[2].clone(),      // section_seq
-                row[3].clone(),      // hpath
-                row[5].clone(),      // span_start
-                row[6].clone(),      // span_end
-                row[7].clone(),      // node_rev
+                row[0].clone(),     // path
+                generation.clone(), // gen
+                row[1].clone(),     // seq
+                row[2].clone(),     // section_seq
+                row[3].clone(),     // hpath
+                row[5].clone(),     // span_start
+                row[6].clone(),     // span_end
+                row[7].clone(),     // node_rev
                 Value::Text(key.clone()),
             ];
             narrow.append_row(duckdb::appender_params_from_iter(r.iter()))?;
@@ -1659,7 +1659,11 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().expect("tmpdir");
         let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
         let shared = "# H\nshared body\n";
-        let v1 = corpus(&[("x.md", shared), ("y.md", shared), ("z.md", "# Z\nown body\n")]);
+        let v1 = corpus(&[
+            ("x.md", shared),
+            ("y.md", shared),
+            ("z.md", "# Z\nown body\n"),
+        ]);
         sync_ambient(&mut store, &v1, "b3b:v1").expect("cold");
 
         let count = |store: &SqlStore, sql: &str| -> i64 {
@@ -1673,7 +1677,11 @@ pub(crate) mod tests {
         assert_eq!(texts_v1, 2, "identical chunks share one text row");
 
         // Edit z.md only; x.md/y.md untouched, their chunk text unchanged.
-        let v2 = corpus(&[("x.md", shared), ("y.md", shared), ("z.md", "# Z\nedited body\n")]);
+        let v2 = corpus(&[
+            ("x.md", shared),
+            ("y.md", shared),
+            ("z.md", "# Z\nedited body\n"),
+        ]);
         sync_ambient(&mut store, &v2, "b3b:v2").expect("append");
         let texts_v2 = count(&store, "SELECT count(*) FROM hist.body_text");
         assert_eq!(

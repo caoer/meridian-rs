@@ -847,6 +847,7 @@ fn resolved_of(node: &Node, bytes: &[u8]) -> Resolved {
 /// Public because the body projection's chunk law (`docs/body-projection.md`
 /// §2) starts a section's chunk at this span's start — the law has one owner
 /// here; a second derivation in the projector would drift silently.
+#[must_use]
 pub fn content_span(node: &Node, bytes: &[u8]) -> ByteSpan {
     match &node.kind {
         NodeKind::Section { .. } => {

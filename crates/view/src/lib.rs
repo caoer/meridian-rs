@@ -436,7 +436,13 @@ pub(crate) fn collect_doc(
 /// the first section's span start (file end when the document has no
 /// sections). Emitted only when non-empty; it takes `seq` 0 when present, so
 /// it rides BEFORE the walk (`docs/body-projection.md` §2).
-fn emit_preamble(root: &Node, path: &str, doc: &Document, counters: &mut Counters, rows: &mut Rows) {
+fn emit_preamble(
+    root: &Node,
+    path: &str,
+    doc: &Document,
+    counters: &mut Counters,
+    rows: &mut Rows,
+) {
     let start = root
         .children
         .iter()
@@ -1066,21 +1072,27 @@ mod tests {
                 "a.md",
                 "---\ntitle: Alpha\n---\npreamble line\n\n# Top\nintro\n\n## Sub\nsub body\n",
             ),
-            ("cjk.md", "# \u{4e2d}\u{6587}\n\u{6b63}\u{6587}\u{5185}\u{5bb9}\n"),
+            (
+                "cjk.md",
+                "# \u{4e2d}\u{6587}\n\u{6b63}\u{6587}\u{5185}\u{5bb9}\n",
+            ),
             ("nopre.md", "# Only\nbody\n"),
             ("fmonly.md", "---\nk: v\n---\n"),
             ("hollow.md", "# A\n## B\nb\n"),
         ]
         .into_iter()
-        .map(|(p, raw)| (p.to_string(), model::build(raw.to_string(), syntax::parse(raw))))
+        .map(|(p, raw)| {
+            (
+                p.to_string(),
+                model::build(raw.to_string(), syntax::parse(raw)),
+            )
+        })
         .collect();
         let conn = build_memory(&docs, "b3:body-gate").expect("build");
 
         let rows: Vec<(String, u64, Option<u64>, Option<String>, String)> = {
             let mut stmt = conn
-                .prepare(
-                    "SELECT path, seq, section_seq, hpath, text FROM body ORDER BY path, seq",
-                )
+                .prepare("SELECT path, seq, section_seq, hpath, text FROM body ORDER BY path, seq")
                 .expect("prepare");
             let got = stmt
                 .query_map([], |r| {
