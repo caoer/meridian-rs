@@ -27,6 +27,10 @@ libc = "0.2"
 # test-only: the exec-guard gates compare close()'s verified root against an
 # independently folded merkle_root (model is already a production dep).
 model = { workspace = true }
+# test-only: the §4.3.1 forest gates bind the ONE glob grammar
+# (`policy::glob_match`) to the grammar-agnostic expansion — production code
+# takes the predicate as a closure, so `policy` never enters the graph edge.
+policy = { workspace = true }
 # test-only: the canonicality property corpus for the radix child map (the
 # workspace kernel-test convention); tempfile builds on-disk corpora.
 proptest = { workspace = true }
