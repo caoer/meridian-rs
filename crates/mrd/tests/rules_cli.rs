@@ -813,6 +813,39 @@ fn a_corrupt_artifact_is_unreadable_never_silently_unarmed() {
     );
 }
 
+/// The copy-paste trap, through the process boundary (dogfood F2): a hand-edited
+/// scope cell carrying the chain line's `workspace:0` — the resolver's
+/// layer:depth spelling — used to parse clean and govern nothing (exit 0, the
+/// cell read `armed=-`, the header counted the row). Now the artifact refuses as
+/// unreadable, the refusal that reaches the operator teaches BOTH vocabularies,
+/// and the exit gates.
+#[test]
+fn a_hand_edited_scope_cell_pasting_the_resolver_spelling_is_loud_not_inert() {
+    let s = populated();
+    arm(&s, &[("", "root.only", "block")]);
+    // The hand edit a `mrd rules` reader performs: the scope cell becomes the
+    // winner line's own spelling. Rev and page stay real — only the vocabulary
+    // is confused.
+    let page =
+        std::fs::read_to_string(s.ws.join(policy::armed::ARMED_RULES_PATH)).expect("the artifact");
+    let pasted = page.replace("| `.` |", "| `workspace:0` |");
+    assert_ne!(pasted, page, "the minted scope cell was the workspace root");
+    s.write(policy::armed::ARMED_RULES_PATH, &pasted);
+
+    let out = s.run(&["rules", "sessions/s1"]);
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "a pasted resolver spelling is a finding, never a silent no-op: {stdout}"
+    );
+    assert!(stdout.contains("armed-set  UNREADABLE"), "{stdout}");
+    assert!(
+        stdout.contains("layer:depth") && stdout.contains("arm root"),
+        "the teaching names both vocabularies where the operator reads: {stdout}"
+    );
+}
+
 // ── read-only, and one resolver ───────────────────────────────────────────────
 
 /// P12 — the read-only proof, asserted directly. Every view of the verb runs over a populated
