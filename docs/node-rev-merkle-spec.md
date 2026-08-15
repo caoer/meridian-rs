@@ -2,18 +2,20 @@
 type: spec
 id: merkle
 status: standing
-updated: 2026-08-08
-description: Normative hash law for `node_rev` and the workspace merkle fingerprint, with worked examples.
-owns: [node_rev, merkle encoding]
+updated: 2026-08-15
+description: Normative hash law for `node_rev` and the workspace merkle fingerprint (two law versions, radix-256 from the cutover), plus the resident tree that serves it, with worked examples.
+owns: [node_rev, merkle encoding, resident tree, event feed]
 ---
 
 # node_rev + workspace fingerprint (merkle) spec
 
 > **Standing:** Design law is `wire-contract.md` (one contract). Mint addresses = segments only. Receipts = armed wire facts. DuckDB/`view_path` not agent core. **Doc correct > code correct; docs first.** See `README.md`.
 
-**Scope note:** this document is **node_rev and workspace merkle (fingerprint) hash law**. It does not define section address grammar; mint-plane hpath remains segment form only. Worked-example generator assets stay under `node-rev-merkle-spec.assets/`.
+**Scope note:** this document is **node_rev and workspace merkle (fingerprint) hash law**, plus the **resident tree** — the engine-held instrument that serves that law (§6: structure, stable-read protocol, stamps, event feed, checkpoint). It does not define section address grammar; mint-plane hpath remains segment form only. Worked-example generator assets stay under `node-rev-merkle-spec.assets/`.
 
-The hash scheme behind the wire nouns `node_rev` and **`fingerprint`** (workspace content hash — design noun **`fingerprint`**; the wire's default v2 vocabulary spells the field `root`, re-keyed to `fingerprint` once a client negotiates `contract:"v3"` — `wire-contract.md` §1). Binds: what bytes are hashed, tree composition to the 32-byte workspace fingerprint, and incremental update on `splice`. Integrity surface on the wire is **`fingerprint` + `if_fingerprint` + `diff`** — there is no separate `guard` op (`wire-contract.md` §4.7). Under the three laws: no snapshot files, no second database, Rust memory disposable.
+**Ruling basis (2026-08-15):** the sections marked RULED below cite the fingerprint-grain decision files (`decisions/2026-08-15-*.md`, session `15-14-fingerprint-grain`) and the merged plan of record (`results/pins-deliverable/merged-plan.md`, same session). Every such ruling is PROVISIONAL per ZT's standing reclassification ("anything I agreed on this session is not rule … any agent can discuss with me") — build against it, challenge it with evidence, directly with him.
+
+The hash scheme behind the wire nouns `node_rev` and **`fingerprint`** (workspace content hash — design noun **`fingerprint`**; the wire's default v2 vocabulary spells the field `root`, re-keyed to `fingerprint` once a client negotiates `contract:"v3"` — `wire-contract.md` §1). Binds: what bytes are hashed, tree composition to the 32-byte workspace fingerprint, incremental update on `splice`, and the resident tree with its feed. Integrity surface on the wire is **`fingerprint` + `if_fingerprint` + `diff`** — there is no separate `guard` op (`wire-contract.md` §4.7); the scoped-premise surface (`scope`, `guards[]`, `scope_bytes`, `absent`) is the wire-law card's to spell, against §7's grain ladder. Under the three laws: no snapshot files (the §6.5 checkpoint is a disposable index, not a snapshot — its own section states why), no second database, Rust memory disposable.
 
 ## 0. Design inheritance — the merkle-root-spike, absorbed
 
@@ -28,12 +30,12 @@ An earlier merkle-root prototype was folded into this spec. Its scheme is adopte
 - **Byte-sorted child names** for deterministic walks.
 - **Diff shape** — roots equal ⇒ 1 comparison (the commit fast path); unequal ⇒ descend only unequal branches, naming every drifted path in one pass, remove+add on species change, whole-subtree enumeration on add/remove.
 - **Pluggable leaf hasher seam** — kept as a seam, though §3 rejects section-grain leaves for composition.
-- **Measured envelope** (M4 Max): session dir 4,141 nodes → root 74ms; whole corpus 9.5GB/50,319 nodes → 2.2s warm / 5.2s cold. These numbers justify §6's no-persistence stance.
+- **Measured envelope** (M4 Max): session dir 4,141 nodes → root 74ms; whole corpus 9.5GB/50,319 nodes → 2.2s warm / 5.2s cold. These numbers sized §6's original no-persistence stance — superseded 2026-08-15 by the resident tree + disposable checkpoint (§6; the supersession record is at §6's head).
 
 **Rejected (with reasons):**
-- **Snapshot persistence** (a `Save`/`Load` binary format, requiring the snapshot to live OUTSIDE the hashed dir). That design served an offline-subscriber demo. In meridian-rs it violates law 2 (Rust memory is disposable; disk = markdown only — "no snapshot files") — and the recovery numbers make it unnecessary: cold rebuild is 2.2s, "daemon death is a blip". The subscriber holds a 32-byte root, never a tree; the daemon holds no trees — the root re-derives on demand (§6–7 re-derive the drift-naming capability the snapshot existed for).
+- **Snapshot persistence** (a `Save`/`Load` binary format, requiring the snapshot to live OUTSIDE the hashed dir). That design served an offline-subscriber demo. In meridian-rs it violates law 2 (Rust memory is disposable; disk = markdown only — "no snapshot files") — and the recovery numbers make it unnecessary: cold rebuild is 2.2s, "daemon death is a blip". The subscriber holds a 32-byte root, never a tree; the daemon holds no trees — the root re-derives on demand (§6–7 re-derive the drift-naming capability the snapshot existed for). *Scoped 2026-08-15 (`decisions/2026-08-15-restart-index-allowed.md`):* the ban this bullet records targets TRUSTED snapshots — objects that can serve stale AS truth. The disposable, checksummed, identity-bound checkpoint of §6.5 is the allowed opposite (it cannot serve stale by construction); markdown stays the sole truth.
 - **xxhash64 width.** 64-bit is a race detector, not collision-resistant; the vision's cursor is 32 bytes (law 2) and the wire example is `b3:`-prefixed. §1 rules blake3-256.
-- **mtime+size leaf cache** — rejected for v1: its lie window (same mtime+size, different bytes) buys warm-rebuild speed we don't need once the tree is memory-resident and event-updated (§6). Cold start eats the 2–5s honestly.
+- **mtime+size leaf cache** — rejected for v1: its lie window (same mtime+size, different bytes) buys warm-rebuild speed we don't need once the tree is memory-resident and event-updated (§6). Cold start eats the 2–5s honestly. *Superseded in part 2026-08-15:* the resident tree keeps a `StatKey`-keyed memo, and the lie window this bullet feared is closed by law, not by abstinence — the §6.2 watermark + stable-read protocol (a same-instant same-size in-place edit still refuses; merged plan §7's hermetic gate row).
 
 ## 1. One hash family: BLAKE3-256
 
@@ -82,6 +84,17 @@ Files that are **not valid UTF-8** still get leaf hashes (blake3 needs no UTF-8)
 
 ## 4. Tree composition — leaves to the 32-byte workspace fingerprint
 
+Two interior laws exist. **Merkle law 1** (§4.1, the flat encoding) is the
+shipped law; it RETIRES at the one-time cutover. **Merkle law 2** (§4.2, the
+fixed-256 radix child map) is the law of the first scoped-token version.
+Exactly one law is current per workspace at any time — there is no dual-hash
+serving window. Rulings: `decisions/2026-08-15-width-sharding-now.md`
+(sharding-now, deferral rejected); cutover GO per
+`decisions/2026-08-15-plan-rulings-final.md` R1 (priced protocol, four
+pre-cutover blockers first, pay-once accepted in its `B_cutover` amendment).
+
+### 4.1 Merkle law 1 — the flat interior encoding (retiring at the cutover)
+
 The inherited scheme with blake3-256 in place of xxhash64:
 
 ```
@@ -94,8 +107,223 @@ type_byte: 0x00 = file, 0x01 = dir
 - **`name_bytes` are the exact on-disk bytes of the child's name** — on Unix, the `OsStr` bytes verbatim. Never a lossy decode (`to_string_lossy` on the hash path is a spec violation: two distinct non-UTF-8 names that decode to one replacement string would collapse to one leaf, letting content changes leave the fingerprint unmoved), and never a separator rewrite (a `\` inside a name is a name byte, not a path separator). §9 rules this.
 - The workspace directory's own name is not hashed (no parent to hold it).
 - **`fingerprint` (wire noun)** = the workspace tree's interior hash, spelled `b3:<64hex>` (prefix may advance with domain `version` — `wire-contract.md` §12.3). A file-scope leaf hash is that file's leaf; it is not a second wire “root” op.
+- **Why it retires:** re-folding a directory re-encodes ALL its children, so a
+  flat 100,000-file folder stays O(100,000) however well cached. The width
+  term is a real cost law; the byte-identity deferral ("keep this encoding,
+  shard later") was rejected as a priced less-worse
+  (`decisions/2026-08-15-width-sharding-now.md`), and the cutover is taken
+  while no scoped tokens exist in the wild.
 
-## 5. Worked example (real values)
+### 4.2 Merkle law 2 — the fixed-256 radix child map (the new hash-law version)
+
+RULED (`decisions/2026-08-15-width-sharding-now.md`): each directory's child
+list becomes a canonical radix map with fanout fixed at 256 — one child slot
+(the ruling's "bucket") per byte value — so one change re-hashes a bounded
+number of vertices, never every sibling. The requirement spine is the codex
+design §2.1–2.2 (a bounded-fanout authenticated map, canonical: history never
+affects the result), instantiated under the ruled fixed-256 shape. The cost
+law lives in the data structure, not in a benchmark: updating one entry
+touches the vertices on that entry's key path (bounded by the name's byte
+length) plus one directory node per filesystem ancestor — sibling count
+appears nowhere.
+
+**Carried over from law 1 unchanged:** the hash family (§1, blake3-256); the
+leaf law (§3, `leaf(file) = blake3(raw_file_bytes)` — deliberately untagged,
+so a leaf stays the plain blake3 of the file: externally checkable with any
+b3 tool, and reusable across the cutover from the `StatKey` memo without
+re-reading content; cross-kind confusion is prevented structurally by the
+kind byte beside every hash, as in law 1); raw name bytes, byte-order sort,
+zero normalization (§9); symlinks skipped (§9); empty directories pruned
+bottom-up; the workspace root's own name never hashed; file modes never
+hashed.
+
+**Definitions.** A directory's child set `C` is a set of entries
+`(name, kind, hash)`: `name` = the child's exact on-disk name bytes (§9),
+`kind` = file or dir, `hash` = the child's 32-byte value (file → its §3 leaf;
+dir → that directory's §4.2.3 value). Names are unique within `C`; one name
+reaching the map as BOTH kinds is the collision case, representable and lawed
+in §4.4. Every varint in this law is unsigned LEB128 in **minimal-length
+form** — a non-minimal varint is not a legal encoding (canonicality). Byte
+order comparisons are on unsigned byte values.
+
+#### 4.2.1 The canonical radix trie over `C`
+
+The child map is the radix trie over the key set `{name}` produced by this
+recursion, and no other shape is legal for a given `C` — the shape is a pure
+function of the current entry set, so insertion and deletion history never
+affect the result:
+
+```
+build(S, pos):                      # S = entries; pos = name bytes consumed
+  ext      = longest common prefix of { name[pos..] : entries in S }
+  pos'     = pos + len(ext)
+  terminal = the entry whose len(name) == pos'
+             # at most one NAME; a file+dir collision at that name is one
+             # terminal with two values (§4.4)
+  groups   = partition of the remaining entries by the byte name[pos']
+  children = { b → build(groups[b], pos' + 1) : each byte value b present }
+  return vertex(ext, terminal, children)
+
+child map of C = build(C, 0)        # the root vertex
+```
+
+Invariants the recursion forces (an encoder that emits anything else is out
+of law): a vertex with no terminal has ≥ 2 children — otherwise `ext` was not
+longest; a vertex with no children has a terminal; vertex count ≤ 2·|C| − 1;
+fanout ≤ 256.
+
+#### 4.2.2 Vertex hash — bucket layout and the empty-bucket rules
+
+```
+vhash(v) = blake3( "mrk2.vtx" ‖ varint(len(ext)) ‖ ext
+                   ‖ terminal_frame ‖ children_frame )
+
+terminal_frame — exactly one of three markers:
+  0x00                                   no terminal at this vertex
+  0x01 ‖ kind_byte ‖ hash_32B            one terminal
+                                         (kind_byte: 0x00 file, 0x01 dir)
+  0x02 ‖ file_hash_32B ‖ dir_hash_32B    the §4.4 collision terminal —
+                                         both kinds, fixed order, no
+                                         kind bytes (the order spells them)
+
+children_frame:
+  varint(n) ‖ n × ( slot_byte ‖ vhash_32B )   slot bytes strictly ascending
+```
+
+Domain tags are the literal 8 ASCII bytes shown, no terminator, no length
+prefix — the tag table and its prefix-freedom argument are §4.3.
+
+**Empty-bucket rules.** An unoccupied slot contributes NOTHING — no
+placeholder byte, no zero hash; only occupied slots encode, strictly
+ascending. A vertex with no terminal and no children is unrepresentable (its
+subtree would be empty). On delete, the map re-canonicalizes as if the entry
+had never existed: a vertex left with one child and no terminal merges into
+that child (the prefix re-extends), and a slot left empty vanishes from its
+parent's frame — no tombstone slots, no retained split points.
+
+#### 4.2.3 Directory value and the workspace fingerprint
+
+```
+dir(d) = blake3( "mrk2.dir" ‖ vhash(child map of C) )    # C nonempty
+dir(workspace root with C = ∅) = blake3( "mrk2.dir" )    # the empty tree
+```
+
+- The wrap gives a directory ONE value whatever its trie shape, and
+  domain-separates directory values from map vertices (§4.3).
+- Non-root empty directories stay pruned and never reach this rule; only the
+  workspace root may be empty.
+- The **workspace fingerprint** = `dir(workspace root)`. A child directory's
+  `dir()` value is the `hash` in its parent's child map; a file-scope value
+  is its §3 leaf, unchanged.
+
+#### 4.2.4 The cost law, stated
+
+A one-entry change re-hashes: the entry's key-path vertices (bounded by the
+name's byte length; with compression typically 1–3), each vertex pre-image at
+most `8 + varint + len(ext) + 65 + varint + 33·256` bytes ≈ 8.5 KiB at full
+fanout — bounded by the 256 fanout, never by directory width — then the
+`mrk2.dir` wrap, then the same again per filesystem ancestor. Under law 1 the
+same change re-encoded every sibling — O(width) bytes, unbounded. The
+flat-100k acceptance gate publishes this as operation counts (merged plan
+§7(c): per-commit unrelated-member stat/read/hash counters = 0, plus the
+flat-100k directory case with its same-vertex-count discipline). Width today,
+for calibration: live-corpus maximum directory width 428 (k3 census, merged
+plan §4.2) — the cutover is cheap NOW and a cliff later.
+
+#### 4.2.5 Versioning — one law current, typed retirement
+
+- The hash-law version is a dimension of its own, ORTHOGONAL to the
+  workspace-domain version (blocker B-02, merged plan §6 step 5): the
+  `mrk2.` domain tags bind the law version into every interior value, so law-2
+  and any future law-3 values can never collide even over identical
+  structure. The wire prefix advance (today `b3:`) is `wire-contract.md`
+  §12.3's to spell, amended by the wire-law card of this wave.
+- Every TOKEN value changes at the cutover (leaf values survive but re-spell
+  under the new version prefix). A held old-law token refuses
+  **`fingerprint_version_retired`** with re-mint teaching — never
+  `fingerprint_mismatch`, which would lie: the premise did not move, the LAW
+  moved. A token from an unknown FUTURE family is a distinct
+  unsupported-version refusal. Only a current-family unequal digest is the
+  scoped mismatch. Three errors, three facts, never flattened (§7).
+- No dual-hash serving window: maintaining two trees to keep old tokens valid
+  is permanent waste against requirement 6. The cutover is paid once per
+  workspace (`decisions/2026-08-15-plan-rulings-final.md` R1 + its
+  `B_cutover` amendment, ZT verbatim: "that's OK. only pay once. not every
+  read."); `sub` re-baselines at a labeled epoch boundary, never a silent
+  chain break.
+
+### 4.3 Domain tags — one table
+
+Every interior hash in law 2 begins with an 8-byte ASCII domain tag. The
+three tags are equal length and differ at byte 5, so they are prefix-free and
+no tagged pre-image of one kind can parse as another. Content leaves are
+deliberately untagged (§4.2's carry-over list states why).
+
+| tag (8 ASCII bytes) | over |
+|---|---|
+| `mrk2.vtx` | a radix-map vertex (§4.2.2) — hash-law INTERNAL, see below |
+| `mrk2.dir` | a directory's child map (§4.2.3) — the scoped directory value |
+| `mrk2.fst` | a forest fold (§4.3.1) — a derived match set, never a directory |
+
+**Vertices are hash-law internals.** A caller premise names PATH nodes only —
+the workspace root, a folder, a file leaf, or `absent`. Radix vertices and
+their slots are hashed, never addressable as a `scope`, and no wire surface
+mints or compares a vertex token (merged plan §4.2, consistent with the codex
+premise algebra: nothing below a path node holds a scope).
+
+#### 4.3.1 The forest fold — its own domain tag
+
+A set premise ("all files matching `a/*.md`"; "the rows this query actually
+scanned") guards a DERIVED match set, not a directory. Its fold carries its
+own domain tag, distinct from directory folds, so the two can never collide —
+this subsection is the merged plan §4.5's named spec residue, discharged:
+
+```
+forest(M) = blake3( "mrk2.fst" ‖ varint(n)
+                    ‖ n × ( varint(len(path)) ‖ path_bytes ‖ leaf_32B ) )
+```
+
+- `M` = exactly the matching members: workspace-relative paths in raw bytes,
+  segments joined by `/` (0x2f — unambiguous: a POSIX name cannot contain
+  it), strictly ascending by path bytes; `leaf` = each member's §3 leaf hash;
+  `n` = |M|.
+- Computed from the resident listings at O(dir width), zero byte I/O. A new
+  MATCHING sibling joins the re-expansion and moves the fold — the membership
+  hole stays closed. A non-matching sibling never moves it — the false
+  conflict dies. Deletes and renames are caught by two-point set comparison
+  (entry expansion vs live expansion).
+- `n = 0` is legal: `blake3("mrk2.fst" ‖ 0x00)` is the fold of "nothing
+  matches" — a mintable premise that guards a match set's CONTINUED
+  emptiness.
+- The subtree fold (`mrk2.dir` at a folder scope) remains the conservative
+  fallback and the explicit directory-premise form. Consistency law (merged
+  plan §4.5): every set premise — pattern root, selector root, sql
+  provenance — validates against the TREE, the same instrument as every
+  other guard; no premise anywhere consults the journal.
+
+### 4.4 Name collisions — lint loud, refuse at address time
+
+RULED shape (merged plan §4.1; Bazel unique-segment precedent). Law 1 ignored
+file/dir name collisions both ways, which left some path's bytes OUTSIDE the
+fold. Law 2 closes both halves:
+
+- **Both kinds enter the fold.** A name reaching one child map as both a file
+  and a directory (however composed — e.g. through the write overlay) is ONE
+  key whose terminal carries both values (`0x02`, §4.2.2). No bytes sit
+  outside the integrity surface; ancestor folds above a collision stay
+  honest.
+- **The tree build LINTS the collision loudly** — a named diagnostic on every
+  build that sees it, never silence — and serving continues; one odd name
+  must not take a workspace down.
+- **Collision paths refuse addressing.** The colliding path, and every path
+  through it, refuses **`scope_unresolved`** (fix class) at mint and at
+  guard: `scope: "x.md"` cannot say WHICH kind it premises, and an ambiguous
+  premise is no premise. This is also the stated precondition of the forest
+  digest (§4.3.1).
+- Integrity-covered but unaddressable is the deliberate posture — the exact
+  §9 stance on non-UTF-8 names, applied to kind ambiguity.
+
+## 5. Worked example (real values — law 1; law-2 shape in §5.1)
 
 Workspace: two entries. `notes.md` = `"# Notes\n\nhello\n"`; `tasks/x.md` (64 bytes) =
 
@@ -165,53 +393,304 @@ fingerprint : b3:807b… → b3:a1f7bb8e46227d0c44df8c993fa1ab066b299d275d01d81e
 leaf(notes.md) : unchanged (96c26935d00a1339…)
 ```
 
-(All values computed by a reference implementation of this spec, blake3-256, 2026-07-18; the generator is `node-rev-merkle-spec.assets/worked-example-gen.go` — 127 lines of Go, with `node-rev-merkle-spec.assets/go.mod` — and should land as the fixture seed for the rung-3 test suite.)
+(All values computed by a reference implementation of this spec, blake3-256, 2026-07-18; the generator is `node-rev-merkle-spec.assets/worked-example-gen.go` — 127 lines of Go, with `node-rev-merkle-spec.assets/go.mod` — and should land as the fixture seed for the rung-3 test suite. The interior/fingerprint values above are LAW 1 values; `node_rev` and leaf values are law-independent and survive the cutover.)
 
-## 6. Incremental update on splice — memory-only, event-fed
+### 5.1 The same workspace under law 2 — exact pre-images, symbolic hashes
 
-The daemon holds no merkle tree in memory. The workspace root is derived on demand through `fs::DomainCache` — a `StatKey`-keyed leaf-digest memo plus remembered directory listings — by a full stat sweep and a full fold (`merkle_root_of_leaves`) on every currency pass. On a successful `splice(path, …)`:
+The two keys `notes.md` and `tasks` share no first byte (`n` = 0x6e, `t` =
+0x74), so the child map is one root vertex fanning to two leaf vertices:
 
-1. The splice writes the new bytes to disk under the write flock (`wire_serve::write::splice`); it hands no leaf to any tree.
-2. The next currency pass re-reads the moved file (identity changed → re-read → re-hash) and re-folds: one `stat` per domain member, O(changed) bytes read, then all entries re-encoded (uleb128‖name‖type‖hash) into one buffer and one blake3 — O(corpus) in stats, O(changed) in bytes.
-3. The splice response carries ambient **`fingerprint_before` / `fingerprint_after`** (and related fields per `wire-contract.md` §4.4) — the caller's next world cursor.
+```
+v_n  ext="otes.md"  terminal=(file, leaf(notes.md))  children=∅
+     pre-image: "mrk2.vtx" ‖ 07 ‖ 6f 74 65 73 2e 6d 64 ‖ 01 ‖ 00 ‖ leaf(notes.md) ‖ 00
+v_t  ext="asks"     terminal=(dir, dir(tasks/))      children=∅
+     pre-image: "mrk2.vtx" ‖ 04 ‖ 61 73 6b 73 ‖ 01 ‖ 01 ‖ dir(tasks/) ‖ 00
+root ext=""  terminal=none  children={ 0x6e → v_n, 0x74 → v_t }
+     pre-image: "mrk2.vtx" ‖ 00 ‖ 00 ‖ 02 ‖ 6e ‖ vhash(v_n) ‖ 74 ‖ vhash(v_t)
 
-Out-of-band changes (hand edits, git operations) arrive via the watch feed → the next currency pass re-reads and re-hashes the moved members. Watch latency is a freshness window, not a correctness hole: recovery (§7 below / `wire-contract.md` §4.7 `diff`) catches anything missed, and splice re-reads under the write flock before writing, so CAS never trusts the memo alone — the memo serves integrity reads, never silent write authority.
+dir(tasks/)  = blake3("mrk2.dir" ‖ vhash( "mrk2.vtx" ‖ 04 ‖ 78 2e 6d 64 ‖ 01 ‖ 00 ‖ leaf(tasks/x.md) ‖ 00 ))
+fingerprint  = blake3("mrk2.dir" ‖ vhash(root))
+```
 
-**No persistence.** Nothing is persisted to disk — no snapshot files, no on-disk cache. Daemon start = full rebuild (measured 2.2–5.2s corpus-wide, §0). The inherited snapshot format is dropped here (§0 rejected).
+Reading the frames back against §4.2.2: `07 ‖ "otes.md"` is the varint-framed
+`ext`; `01 ‖ 00 ‖ hash` is a one-terminal frame of kind file; the trailing
+`00` is `children_frame` with n = 0; the root's `00 ‖ 00 ‖ 02 ‖ …` is empty
+`ext`, no terminal, then two ascending `(slot, vhash)` pairs. Compression at
+scale: 100,000 names sharing the prefix `2026-08-1` collapse that run into
+one vertex's `ext`; divergence fans out below it, so the key path stays a few
+vertices deep. **Law-2 REAL values land with the radix-map construction card
+(merged plan §6 step 2)**: the §5 generator grows the law-2 encoder, its
+output is pinned here exactly as the law-1 values are, and that fixture is
+the radix card's byte-identity gate — this section's byte layout is the law;
+the numbers are that card's receipt.
 
-**Fingerprint history ring.** `diff(from_fingerprint, to_fingerprint)` needs the frames behind old fingerprints; clients hold only the token. The daemon keeps a bounded in-memory ring of recent `DeltaFrame`s (`RootRing`, `wire-serve/src/ring.rs`), which `diff` replays between two roots. A fingerprint not in the ring answers `fingerprint_unknown` → full resync — re-derive, never wrong data.
+## 6. The resident tree — memory-held, event-fed, checkpointed
 
-## 7. Integrity surface + CAS (wire vocabulary)
+> **Supersession record (2026-08-15).** This section previously ruled
+> derive-on-demand: no tree in memory, a full stat sweep + full fold per
+> currency pass, no persistence, cold rebuild on every daemon start. That
+> stance paid two flock-held full-corpus reads per guarded write (~1.5 s of
+> corpus reading, measured) to keep 32 bytes, and made every world guard
+> root-grain. The merged fingerprint-grain plan replaces it
+> (`results/pins-deliverable/merged-plan.md` §4.1/§4.3/§4.8/§4.9, session
+> `15-14-fingerprint-grain`, citing the rulings named below). The old text is
+> in git history at `504bcce80`.
 
-Two grains, composable — **no separate `guard` op** (dropped; integrity = `fingerprint` + `if_fingerprint` + `diff`):
+### 6.1 The resident structure and the own-write overlay
 
-| Guard / op | Grain | Question | Failure |
+The engine holds the merkle tree RESIDENT, evolved from `fs::DomainCache` —
+the cache that already holds the two hard halves: per-file leaf digests keyed
+by `StatKey` (device, inode, size, mtime, ctime) and per-directory listings —
+never a second subsystem beside it. Per node it keeps: the §4.2 child map,
+the cached 32-byte fold, a dirty bit, and a `last_seq` stamp (§6.3).
+
+- **Own writes update the tree synchronously.** A commit knows the exact
+  bytes it wrote: it replaces those leaves and re-folds the ancestor chain
+  (measured: one leaf + 13-level refold in 13.6–20.6 µs, median 14.0 µs —
+  merged plan lane D). `root_after` / `fingerprint_after` derives from this
+  overlay, NEVER from a second corpus read — the overlay is MORE correct than
+  a re-read, because a foreign write racing the commit never silently enters
+  the folded baseline (`DomainLeaves::overlay`'s own doc law). Both
+  exclusion-held `ambient_root` corpus reads leave the write path. The splice
+  response keeps its `wire-contract.md` §4.4 transition fields.
+- **Foreign changes arrive through the feed (§6.4)** and mark the touched
+  nodes dirty; folds recompute lazily on demand — maintenance cost follows
+  change, never corpus size (requirement 1).
+- **Memory:** ~10 MB at today's corpus (ESTIMATED, never measured — flagged);
+  full fold from already-known leaves 12.1 ms (measured, lane C);
+  build-from-scratch stays the 1.45 s cold baseline (§6.5 makes it rare).
+
+### 6.2 The watermark trust close — the full stable-read protocol
+
+`StatKey` alone can miss a same-instant, same-size, in-place write. The close
+is git's racy-clean rule, adopted as LAW and shipped as a full protocol, not
+a sentence (fable F-11, adopted by merged plan §4.1):
+
+1. The leaf memo carries an **observation watermark**; any leaf whose mtime
+   is at or after the watermark is re-read before its digest is trusted — or
+   its memo entry is deliberately spoiled.
+2. A **per-backend timestamp-granularity calibration probe** runs at
+   workspace open: the watermark's comparison unit is measured, never
+   assumed.
+3. Reads **open without following links**; an identity check (fstat) runs
+   BEFORE and AFTER the byte read — identity moved mid-read ⇒ discard and
+   re-read.
+4. An **event-generation fence** brackets the read: a feed event landing
+   during the read re-classifies it rather than letting a torn observation
+   into the memo.
+5. A **still-open in-place writer** is classified SUSPECT until its identity
+   settles.
+6. **Unknown capability or event loss puts guard currency in a LOUD untrusted
+   state** — never silent trust.
+
+With this clause the resident tree is at least as strict as BOTH of today's
+instruments on every path; the acceptance row is merged plan §7's "same-tick
+same-size in-place edit still refuses" gate.
+
+### 6.3 Stamps — `last_seq`, instance-bound
+
+Merged plan §4.9, stated as law:
+
+- Each resident node carries `last_seq` = the highest journal seq beneath it,
+  maintained by the SAME guarded write path that maintains digests — the hash
+  instrument audits the stamp instrument, so the two cannot drift silently
+  (the ZFS hole_birth lesson).
+- Fast path: "subtree untouched iff the node's `last_seq` ≤ the token's
+  seq" — one node read, O(1), legal only while the event stream can vouch
+  (§6.4); the §6.2-governed extent refresh is the floor when it cannot.
+- **Stamps are instance-bound** (kimi D3, adopted unconditionally): ring seq
+  is per-daemon-epoch and rings are idle-reaped, so a stamp compare across a
+  reap or restart could FALSE-PASS "untouched". Stamps and stamp-bearing
+  tokens carry the tree instance id; instance mismatch degrades to the
+  content-fold compare — always available, epoch-free, history-free.
+- **Hash tokens are epoch-free; cursors are not.** A content-hash guard token
+  survives daemon restart — exactly the demand on disposable memory; cursors
+  stay confined to the delta plane. Advisory `{instance, seq}` hints may ride
+  premises; the engine answers IDENTICALLY with them absent.
+- **Stamps never answer for the dead:** a deleted or renamed-away path has no
+  current node to carry its stamp. Delete visibility while the journal lives
+  comes from journal frames; past the ring's horizon it is cursor-too-old —
+  re-derive, never a stamped guess.
+
+### 6.4 Feeding the tree — the event feed and the rescan ladder
+
+The tree must learn about changes the engine did not make itself. The
+event-source question was adjudicated ENGINE-SIDE, five lanes unanimous
+(merged plan §4.3):
+
+- **The engine owns its senses.** One kernel file watcher (FSEvents on macOS,
+  inotify on Linux) per workspace, owned by the engine process. Strongest
+  reasons first: a dead cross-process feed is indistinguishable from a quiet
+  corpus; the engine holds workspaces the daemon never tracks (CLI lane,
+  ad-hoc repos, CI fixtures); the currency proof must ride the SAME stream
+  that feeds the tree; and the daemon (ccc-statusd) is the engine's CUSTOMER
+  by charter — the engine's freshness must not depend on its customer's
+  uptime.
+- **The daemon journal is a legal ADDITIONAL feed** where it already
+  watches — an opportunistic dirty-path hint, never the instrument any guard
+  or currency answer depends on.
+- **Guard correctness consults neither journal nor watcher.** The guard is a
+  live fold over the named premise through the watermarked memo (§6.2). The
+  journal's three vacuous windows — unsubscribed external edits never
+  journaled; idle-reap deletes subscriber-less rings; the RAM-only ring
+  resets its seq on restart — are irrelevant to guard honesty by
+  construction. No premise anywhere consults the journal (§4.3.1's
+  consistency law).
+- **Watcher lifecycle** (kimi D1, adopted): the watcher's lifetime is the
+  workspace REGISTRATION, not engine warmth. An idle-reaped engine keeps its
+  watcher; events accumulate into a dirty set held by the registry; the next
+  warm applies the dirty set — O(dirty), never O(corpus).
+- **The currency barrier (the cookie).** A guard-grade currency question
+  writes a sentinel at `.meridian/cookie` and waits to see it return through
+  the ordered event stream — an O(1) proof that everything before it is
+  already folded in (watchman's shape). The path is LAW, not convention:
+  dot-prefixed segments are outside the hash domain by the standing
+  `wire-contract.md` §12.1 floor, so the cookie can never move the root or
+  break a held token. A cookie inside the hash domain is refused by
+  construction (merged plan §7's gate row).
+- **The rescan ladder — every cause NAMED, throttled:** kernel event overflow
+  → mark-all-dirty → the next pass is the full stat sweep (lane B, 160 ms
+  warm, measured); watcher instance change → one LABELED re-baseline (1.45 s
+  cold / 160 ms warm, measured); the watcher never restarts across a rescan;
+  a rebuilt index commits by swap. Self-echo — the engine's own writes
+  re-arriving through the watcher — is deduped as a cost saving only: overlay
+  idempotence is the correctness, masking is never load-bearing.
+- **Idle re-check — RULED: SUSPICIOUS-ONLY, NO TIMER**
+  (`decisions/2026-08-15-pre-merge-rulings.md` ruling 3). The engine
+  re-checks files only on a named reason for doubt — a missed event, watcher
+  overflow, an instance change, a failed spot check (vouch failure), a cookie
+  timeout — and may piggyback on guard-path touches. Zero background work
+  when healthy (requirement 6, "no waste anywhere"). The periodic idle sweep
+  is DECLINED, its price on the record: a silent event-stream loss with no
+  named trigger goes uncaught until a guard touches its scope.
+
+### 6.5 Restart — the disposable checkpoint
+
+RULED (`decisions/2026-08-15-restart-index-allowed.md`, superseding the
+memory-only direction): requirement 2 — "the engine knows, it does not
+re-ask" — binds ACROSS ordinary daemon restarts. The engine may hold a
+checksummed, DISPOSABLE derived index outside the hash domain (git-index
+class): the checkpoint.
+
+- **Identity tuple:** `(workspace_uuid, domain_version, tree_root,
+  journal_instance, journal_seq, parse-cache generation)`. ANY field
+  mismatching forces exactly one loud, labeled re-baseline. Without
+  `domain_version` a checkpoint would survive a hash-law change (the §4.2
+  cutover changes the interior encoding) and serve old-law nodes as current;
+  without the journal cursor pair, O(changes-while-down) has no replay point.
+- **Restart replay** (codex gate 11, adopted as written): one journaled
+  change while down = exactly one file read and hashed, zero unchanged
+  members statted, no cold rebuild. An invalid journal instance = exactly one
+  labeled re-baseline. A cursor outside retained history is itself a
+  mismatch.
+- **Markdown stays the sole truth, always.** The §0 ban on trusted snapshots
+  is UNTOUCHED — that ban targets objects that can serve stale AS truth; this
+  object is the opposite (it cannot serve stale by construction). The caution
+  rides with the allowance: the distinction is real only while loud-discard
+  and identity-binding are ENFORCED — a checkpoint trusted after a mismatch,
+  or outliving a domain-version change, is the banned object wearing the
+  allowed object's name.
+- **Format ordering:** the checkpoint format is downstream of the §4.2
+  encoding — never persist what the next step replaces (merged plan §6
+  step 10).
+
+### 6.6 Fingerprint history ring
+
+`diff(from_fingerprint, to_fingerprint)` needs the frames behind old
+fingerprints; clients hold only the token. The daemon keeps a bounded
+in-memory ring of recent `DeltaFrame`s (`RootRing`, `wire-serve/src/ring.rs`),
+which `diff` replays between two roots. A fingerprint not in the ring answers
+`fingerprint_unknown` → full resync — re-derive, never wrong data. Under the
+resident tree the detect side becomes event-fed (the poll survives as the
+fallback clock); frames are unchanged on the wire and the ring keeps its
+bound. At the §4.2.5 cutover the ring re-baselines at a labeled epoch
+boundary, never a silent chain break.
+
+## 7. Integrity surface + CAS — the grain ladder
+
+The premise grains, one instrument: the resident tree (§6) serves every row.
+Legality is D-04 — "it can be any allowable legal token in the tree": every
+ADDRESSABLE node is a legal premise. Sufficiency (the coverage law), field
+spellings (`scope`, `guards[]`, `scope_bytes`), and requiredness geography
+are wire-side law — `wire-contract.md` §5.3 and the wire-law card of this
+wave. **No separate `guard` op** (dropped; integrity = mint + premise +
+`diff`).
+
+| Premise / op | Grain | Question | Failure |
 |---|---|---|---|
-| `if_node_rev` (on `splice`) | one node | "is THIS section still what I read?" | `cas_mismatch` {expected, actual} — refresh: re-read, re-plan |
-| `if_fingerprint` (on `splice`, optional) | workspace | "is the WORLD still what I planned against?" | `fingerprint_mismatch` {expected, actual} — resync / re-plan |
-| `fingerprint` op | workspace | read the current content-hash cursor | — |
-| `diff` | range of fingerprints | batches of Delta between two cursors | `fingerprint_unknown` if outside retained history |
+| `if_node_rev` (on `splice`) | one node | "is THIS section still what I read?" | `cas_mismatch` {expected, actual} — re-read, re-plan |
+| `if_node_rev` on an `fm_key` target (`prop_rev`, §2.1) | one frontmatter key | "did THIS key move?" | `cas_mismatch` at key grain |
+| **scoped fingerprint** `{scope, fingerprint}` | any PATH node: root, folder, file leaf, or `absent` | "is THIS subtree still what I planned against?" | `fingerprint_mismatch` {expected, actual, scope} — re-read that scope, re-plan |
+| **forest fold** (pattern / selector / sql-provenance premise, §4.3.1) | a derived match set | "is the SET I derived still exactly this?" | `fingerprint_mismatch` naming the set premise |
+| workspace token (root scope — the old `if_fingerprint`) | the world | "is the WORLD still what I planned against?" | `fingerprint_mismatch` — resync, re-plan |
+| `fingerprint {scope}` op | any PATH node | mint the current token at a scope (root default) | `scope_unresolved` — fix the path |
+| `diff` | range of fingerprints | batches of Delta between two cursors | `fingerprint_unknown` outside retained history |
 
-**`fingerprint` op** — read the current cursor:
+**The scope rows, their law (merged plan §4.4):**
+
+- **`absent` is a value, not an error.** A lawful path with no node — never
+  created, emptied, pruned — mints the reserved non-hex spelling `absent`,
+  and the chain law holds: absence of the whole prefix is still `absent`
+  (`a/b/c` with `a/` itself missing mints `absent` — creation-guard plans
+  stand on exactly this). A path is unlawful — `scope_unresolved`, fix
+  class — only where it escapes the root, conflicts in kind with an EXISTING
+  entry along its prefix, or names a §4.4 collision.
+- **Raw-byte names are addressable** through the opaque canonical byte-path
+  arm (`scope_bytes`: base64url raw segments; the wire card spells it) beside
+  the UTF-8 `scope` convenience — mint and guard serve both. This closes §9's
+  "integrity-covered but unaddressable" posture for names.
+- **Guard-path freshness:** at check time the engine refreshes the named
+  premise's own extent through the watermarked memo (§6.2) — guard one file,
+  pay one stat; guard a folder, pay the folder; guard the world, pay the
+  world. Refusals narrow because the PREMISE narrows, never because the
+  engine looked less hard. The fast path is the instance-bound stamp compare
+  (§6.3), O(1) while the event stream can vouch; the extent refresh is the
+  floor when it cannot.
+- **Radix vertices hold no scope** (§4.3): nothing below a path node is
+  addressable, so the grain ladder bottoms out at the file leaf and at
+  `absent`.
+
+**`fingerprint` op** — mint the current cursor (root default; scoped form per
+the wire card):
 
 ```jsonc
 → {"id":7,"op":"fingerprint"}
 ← {"id":7,"ok":true,"body":{"fingerprint":"b3:807b69c6…","seq":N}}
 ```
 
-**Ordering when both guards ride one splice:** `if_fingerprint` first (cheapest world check, fails the whole batch), then per-edit `if_node_rev`. A failing world guard skips node work.
+**Three errors, three facts, never flattened** (merged plan §4.2/§4.4; the
+register-law refusal texts are drafted in the plan's Appendix C):
 
-**What each layer never does:** the engine never decides *when* a guard is **required** (host policy / geography — `wire-contract.md` §5.3); hosts never compute hashes (node_rev / fingerprint are opaque equality tokens). Multi-file all-or-nothing commit remains a named limit (`wire-contract.md` §6.5).
+| refusal family | the fact | the recovery |
+|---|---|---|
+| `fingerprint_mismatch` {expected, actual, scope} | the premise MOVED | re-read that scope, re-plan |
+| `scope_unresolved` | the premise cannot be evaluated at that path | fix the path (`absent` is NOT this — a lawful empty path mints `absent`) |
+| cursor family: `fingerprint_unknown`, dead instance, **`fingerprint_version_retired`** | the reference is TOO OLD — a seq past the ring, a reaped instance, a retired hash law (§4.2.5) | re-derive and resume; with the resident tree the re-derivation degrades to a scope-fold compare, never a full relist. `fingerprint_version_retired` teaches re-mint: the premise did not move — the LAW moved |
 
-**Consistency with the three laws:** disk stays the only durable truth (memo and ring are memory); recovery is re-derive; the engine answers “what changed”, policy decides what to do about it.
+**Ordering when several premises ride one write:** widest first — root token,
+then folder scopes, then per-edit `if_node_rev`; a failing wider premise
+skips narrower work (the old two-guard ordering, generalized).
+
+**What each layer never does:** the engine never decides *when* a guard is
+**required** (host policy / geography — `wire-contract.md` §5.3, as amended
+by this wave's rulings); hosts never compute hashes (node_rev / fingerprint
+are opaque equality tokens).
+
+**Consistency with the three laws:** disk stays the only durable truth (memo,
+ring, and tree are memory; the checkpoint is disposable, §6.5); recovery is
+re-derive; the engine answers “what changed”, policy decides what to do about
+it.
 
 ## 8. Interaction with the write plane
 
-- `splice` request: optional `if_fingerprint`. Response: fingerprint transition fields per `wire-contract.md` §4.4.
+- `splice` request: optional `if_fingerprint`. Response: fingerprint transition fields per `wire-contract.md` §4.4; `fingerprint_after` is the own-write overlay's fold (§6.1), never a re-read.
+- The scoped-premise fields (`scope`, `guards[]`, `scope_bytes`) are capability-advertised; a frozen v2 session using them un-negotiated refuses `bad_request` loudly, never silence (merged plan §4.4). Field law: the wire-law card.
 - Node objects / `resolve`: node_rev algorithm (§1–2) is the hash law for CAS tokens.
 - Caps advertise `fingerprint`, `diff`, `splice.if_fingerprint` (and related) — not a `guard` op.
-- Error codes: `fingerprint_mismatch`, `fingerprint_unknown` (not `root_*`).
-- **File death mints no terminal hash (RULED, ZT 2026-08-15, card `engine-delete-door`: "No tombstone — death Delta is the record").** A guarded `remove` (`wire-contract.md` § A.3) unlinks the leaf; the next fold composes the tree without it under the existing §4 encoding — removal is already in the diff shape (§0, "whole-subtree enumeration on add/remove") and no new hash law exists for it. A rev is a function of bytes (§2); absent bytes mint nothing: the death's terminal facts are the removed file's LAST rev (`file_rev_before`, confirmed by the remove-what-you-read CAS) and the workspace fingerprint transition, both carried by the death Delta (`change:"deleted"`, `wire-contract.md` §7.1). No tombstone leaf, no on-disk marker — disk stays markdown only, and history past the ring re-derives to a world where the path is simply absent.
+- Error codes: `fingerprint_mismatch`, `fingerprint_unknown`, `scope_unresolved`, `fingerprint_version_retired` (not `root_*`); the three-family split is §7's law.
+- Routine writes route through the daemon (RULED B, daemon-routed — `decisions/2026-08-15-pre-merge-rulings.md` ruling 4): the CLI rides the daemon's resident tree over IPC; direct writing retires; `LOCK_EX` on `write.lock` becomes takeover/recovery only. The write plane's own law (lease, intents, parallel disjoint commits, honest durability) is the authority contract's, not this spec's.
+- The effects lane (`run`, script-with-effects) is UNGUARDED by ruling (`decisions/2026-08-15-no-guard-on-effects.md`; the normative paragraph lives in `run-plane.md`) — but guard-free never means fold-invisible: every effects write rides the same write choke-point and maintains the resident tree (leaf update, chain refold, §6.2 watermark discipline). That is tree maintenance, not a guard.
+- **File death mints no terminal hash (RULED, ZT 2026-08-15, card `engine-delete-door`: "No tombstone — death Delta is the record").** A guarded `remove` (`wire-contract.md` § A.3) unlinks the leaf; the next fold composes the tree without it under the current §4 encoding — removal is already in the diff shape (§0, "whole-subtree enumeration on add/remove") and no new hash law exists for it. Under law 2 this is the §4.2.2 delete rule: the child map re-canonicalizes as if the entry never existed. A rev is a function of bytes (§2); absent bytes mint nothing: the death's terminal facts are the removed file's LAST rev (`file_rev_before`, confirmed by the remove-what-you-read CAS) and the workspace fingerprint transition, both carried by the death Delta (`change:"deleted"`, `wire-contract.md` §7.1). No tombstone leaf, no on-disk marker — disk stays markdown only, and history past the ring re-derives to a world where the path is simply absent. The emptied path itself now mints `absent` (§7) — a legal premise, not an error.
 
 ## 9. Normalization rulings (closed for v1)
 
@@ -220,6 +699,7 @@ Two grains, composable — **no separate `guard` op** (dropped; integrity = `fin
 - **Non-UTF-8 names: hashed truthfully, unservable — the §3 analog for names.** A domain member whose NAME is not valid UTF-8 still gets its leaf and enters the root with its exact name bytes (blake3 and the interior encoding need no UTF-8). It cannot be SERVED: wire paths are JSON strings (UTF-8 by construction), and no injective UTF-8 spelling exists that also keeps every valid name fixed — so such a member is integrity-covered but unaddressable, exactly as a non-UTF-8-CONTENT file is integrity-covered but serves no spans. Stated limits that follow: the serving snapshot (`DomainFiles`) carries only the UTF-8-named members, and a watch delta cannot name such a path — the frame's fingerprints stay truthful and the §6/§7 resync law covers what the delta cannot spell. Reachability: macOS refuses creating such names (errno 92); Linux is the reachable platform.
 - **Symlinks: skipped silently** — consistent with the addressing jail's stance that symlinks are resolved and confined at the addressing layer; a symlink's target, if in-tree, is hashed at its real path. Cost: retargeting an in-tree symlink alone doesn't move the fingerprint — accepted for now, listed below.
 - **Content: raw bytes always** (§2, §3). CRLF, trailing whitespace, BOM — all hash as written.
+- **File/dir name collisions: no longer ignored.** Law 2 hashes both kinds (§4.4 — nothing sits outside the fold), lints the build loudly, and refuses `scope_unresolved` at mint and guard on the colliding path. All the rulings above carry into law 2 unchanged: raw name bytes end to end are the trie's key bytes, byte-order sort is the slot and forest ordering (§4.2.2, §4.3.1).
 
 ## 10. Open questions for architecture review
 
