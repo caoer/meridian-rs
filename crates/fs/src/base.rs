@@ -78,17 +78,20 @@ pub fn base_snapshot_under(root: &WorkspaceRoot, domain: &Domain) -> io::Result<
         })
         .collect();
 
-    let leaves: Vec<model::BaseMemberLeaf<'_>> = members
-        .iter()
-        .map(|m| model::BaseMemberLeaf {
-            path: &m.path,
-            leaf: m.bytes.as_ref().ok().map(|b| model::leaf_digest(b)),
-        })
-        .collect();
-    Ok(BaseSnapshot {
-        members,
-        fold: model::base_fold(&leaves),
-    })
+    // The fold is computed BEFORE the members move into the snapshot: the
+    // leaves borrow them, so folding inside the struct literal would move and
+    // borrow in one expression.
+    let fold = {
+        let leaves: Vec<model::BaseMemberLeaf<'_>> = members
+            .iter()
+            .map(|m| model::BaseMemberLeaf {
+                path: &m.path,
+                leaf: m.bytes.as_ref().ok().map(|b| model::leaf_digest(b)),
+            })
+            .collect();
+        model::base_fold(&leaves)
+    };
+    Ok(BaseSnapshot { members, fold })
 }
 
 /// Is `name` — one path segment as READ FROM THE DIRECTORY — a `.base` member
