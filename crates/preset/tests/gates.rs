@@ -44,6 +44,38 @@ id: {{id}}
 - results/notes.md
 "#;
 
+/// A session preset that files its convention floor OUTSIDE `conventions/` and
+/// says so with `floor:` — as valid as [`SESSION_PRESET`] (run-plane.md § 6,
+/// Law 6.3).
+const ELSEWHERE_FLOOR_PRESET: &str = r#"---
+type: def
+defines: session
+root: SESSION.md
+floor: standards/
+inputs:
+  - "standards/reviewer-not-owner/CHECK.md@rev-a"
+---
+
+# Properties ^properties
+
+- `type` required
+
+# Template ^template
+
+```record
+---
+type: session
+id: {{id}}
+---
+
+# {{id}}
+```
+
+# Unfold
+
+- SESSION.md
+"#;
+
 /// An INVALID session preset: `^properties` requires `owner`, but the `^template`
 /// frontmatter never declares it — no record this def can birth satisfies its own
 /// `^properties`, so `mrd new` refuses `def_invalid` naming the `owner` rule.
@@ -304,6 +336,35 @@ fn session_preset_pins_the_convention_floor() {
     );
     assert_eq!(def.defines, "session");
     assert_eq!(def.scaffold.len(), 4);
+    assert_eq!(
+        def.floor_prefix, "conventions/",
+        "a def declaring no `floor:` falls back to the default prefix"
+    );
+}
+
+/// The floor prefix is the DEF's declaration, not the engine's predicate
+/// (run-plane.md § 6 Law 6.3): a preset filing its convention suite under
+/// `standards/` pins its floor and is exactly as valid as one under
+/// `conventions/`.
+#[test]
+fn a_def_declaring_its_own_floor_prefix_pins_it() {
+    let (_tmp, root) = workspace(&[("presets/session.md", ELSEWHERE_FLOOR_PRESET)]);
+    let def = load_def(&root, "presets/session.md").unwrap();
+    assert_eq!(def.floor_prefix, "standards/");
+    assert!(
+        pins_floor(&def),
+        "pins under the def's declared floor pin the floor"
+    );
+}
+
+/// The prefix still measures something: pins outside the DECLARED floor do not
+/// pin it. The check moved to the def's word, it did not evaporate.
+#[test]
+fn pins_outside_the_declared_floor_do_not_pin_it() {
+    let (_tmp, root) = workspace(&[("presets/session.md", SESSION_PRESET)]);
+    let mut def = load_def(&root, "presets/session.md").unwrap();
+    def.floor_prefix = "standards/".to_owned();
+    assert!(!pins_floor(&def));
 }
 
 // ---------------------------------------------------------------------------
