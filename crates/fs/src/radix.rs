@@ -555,7 +555,8 @@ mod tests {
             let refs: Vec<(&Vec<u8>, &Val)> = s.iter().collect();
             let mut vertices = 0usize;
             let vhash = oracle_build(&refs, 0, &mut vertices);
-            assert!(vertices <= 2 * s.len() - 1, "vertex count ≤ 2·|C| − 1");
+            // < 2·|C| is the same integer fact as ≤ 2·|C| − 1 (§4.2.1).
+            assert!(vertices < 2 * s.len(), "vertex count ≤ 2·|C| − 1");
             pre.extend_from_slice(&vhash);
         }
         *blake3::hash(&pre).as_bytes()
@@ -599,7 +600,8 @@ mod tests {
             let (mut vertices, mut names) = (0usize, 0usize);
             walk(root, &mut vertices, &mut names);
             assert!(names >= 1, "a live trie holds at least one key");
-            assert!(vertices <= 2 * names - 1, "vertex count ≤ 2·|C| − 1");
+            // < 2·|C| is the same integer fact as ≤ 2·|C| − 1 (§4.2.1).
+            assert!(vertices < 2 * names, "vertex count ≤ 2·|C| − 1");
         }
     }
 
