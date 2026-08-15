@@ -302,6 +302,69 @@ fn unknown_flag_exits_2() {
     assert!(stderr(&out).contains("unknown flag"), "{}", stderr(&out));
 }
 
+/// A tail slot (`task.<name>.args: title, rows...`) takes any number of
+/// trailing args, zero included, and every one of them reaches `ctx.args`.
+#[test]
+fn a_variadic_tail_reaches_ctx_args_at_any_count() {
+    let ws = Ws::new();
+    std::fs::write(
+        ws.file("fmt.md"),
+        "---\ntask.fmt: \"[[#^f-1]]\"\ntask.fmt.caps: md.set_field\ntask.fmt.args: title, rows...\n---\n\n# Tasks\n\n```starlark\ndef run(ctx):\n    set_field(field = \"status\", value = \"|\".join(ctx.args))\n```\n^f-1\n",
+    )
+    .expect("fmt page");
+    for (supplied, expected) in [
+        (vec!["t"], "t"),
+        (vec!["t", "r1"], "t|r1"),
+        (vec!["t", "r1", "r2"], "t|r1|r2"),
+    ] {
+        let mut argv = vec!["fmt.md", "fmt", "--dry", "--json", "--"];
+        argv.extend(supplied);
+        let out = ws.run(&argv);
+        assert_eq!(code(&out), 0, "{}", stderr(&out));
+        let v: Value = serde_json::from_str(&stdout(&out)).expect("json");
+        assert_eq!(v["effects"][0]["args"]["value"], expected);
+    }
+}
+
+/// The tail is a floor, not a licence: the fixed prefix still refuses, and the
+/// refusal echoes the declaration as written.
+#[test]
+fn a_variadic_tail_still_refuses_a_missing_fixed_arg() {
+    let ws = Ws::new();
+    std::fs::write(
+        ws.file("fmt.md"),
+        "---\ntask.fmt: \"[[#^f-1]]\"\ntask.fmt.args: title, rows...\n---\n\n# Tasks\n\n```starlark\ndef run(ctx):\n    pass\n```\n^f-1\n",
+    )
+    .expect("fmt page");
+    let out = ws.run(&["fmt.md", "fmt", "--dry"]);
+    assert_eq!(code(&out), 2);
+    let err = stderr(&out);
+    assert!(
+        err.contains("takes at least 1 arg(s) (title, rows...)"),
+        "{err}"
+    );
+    assert!(
+        err.contains("declared contract: args: [title, rows...]"),
+        "{err}"
+    );
+}
+
+/// `--list` echoes a tail in the spelling it was declared with, on both faces.
+#[test]
+fn list_echoes_the_tail_suffix() {
+    let ws = Ws::new();
+    std::fs::write(
+        ws.file("fmt.md"),
+        "---\ntask.fmt: \"[[#^f-1]]\"\ntask.fmt.args: title, rows...\n---\n\n# Tasks\n\n```starlark\ndef run(ctx):\n    pass\n```\n^f-1\n",
+    )
+    .expect("fmt page");
+    let text = stdout(&ws.run(&["fmt.md", "--list"]));
+    assert!(text.contains("args: title, rows..."), "{text}");
+    let v: Value =
+        serde_json::from_str(&stdout(&ws.run(&["fmt.md", "--list", "--json"]))).expect("json");
+    assert_eq!(v["tasks"][0]["args"][1], "rows...");
+}
+
 /// `--dry` rehearses the capability gate (dogfood r2 F2): a task that emits
 /// an effect its authority denies refuses on the RUN leg exactly as the live
 /// call would — a rehearsal that passes what live refuses predicts nothing.
