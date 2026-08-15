@@ -657,7 +657,7 @@ fn the_cached_base_surface_equals_a_fresh_build() {
 
     let fresh = build(&root);
     let want: String = fresh
-        .query_row(DIGEST, [], |r| r.get(0))
+        .query_row(digest, [], |r| r.get(0))
         .expect("fresh digest");
     assert_eq!(
         cache_col(&store, digest),
