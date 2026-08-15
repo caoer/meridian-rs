@@ -46,9 +46,10 @@
 //! - `armed` — the row count of the attested armed-rules artifact
 //!   ([`fs::domain::ARMED_RULES_PATH`]);
 //! - `drifted` — armed rows whose live page rev ≠ the rev the artifact pinned;
-//! - `forced-since-realise` — rendered as explicitly not tracked, with the
-//!   reason: the engine keeps no memory, so a forced write between two locks is
-//!   not a thing `status` can observe.
+//! - `forced-since-realise` — rendered as explicitly not tracked, never as a
+//!   count (nothing observes one). The reason (the engine keeps no memory, so a
+//!   forced write between two locks is not a thing `status` can observe) rides
+//!   the `--json` face and `mrd --help`, not the human line.
 //!
 //! # Exit triad
 //! - **0** — clean: nothing armed drifted and the armed law is readable.
@@ -145,7 +146,10 @@ fn parse(tail: &[String]) -> Result<(Format, Option<PathBuf>), Fail> {
 /// the human line and the `--json` face cannot disagree about what was checked.
 const FORCED_NOT_TRACKED: &str = "not-tracked";
 
-/// Why it is not tracked — rendered, not implied.
+/// Why it is not tracked — carried on the `--json` face
+/// (`forced_since_realise.why`), where a machine reader has no `--help` to
+/// ask. The human line states `not-tracked` bare: the axis name already says
+/// exactly what is not tracked, and the WHY is teaching (report-voice pass).
 const FORCED_NOT_TRACKED_WHY: &str = "the engine keeps no memory by design — \
                                       a forced write between two locks is not history; look in git";
 
@@ -319,10 +323,15 @@ impl StatusReport {
         // states the rules facts; `armed-rules` is the storage artifact's
         // name, and the report does not narrate storage. The `--json` keys
         // are shape-stable and keep `armed_rules`.
+        //
+        // `not-tracked` is the whole honest answer (the ruling-4 shape): the
+        // axis names exactly what is not tracked, the WHY is teaching that
+        // lives in `mrd --help` and on the `--json` face
+        // (`forced_since_realise.why`), never a footnote charged to every
+        // invocation (report-voice pass, ZT rulings 3–5).
         let _ = writeln!(
             out,
-            "  rules: {} armed · {} drifted · forced-since-realise: {FORCED_NOT_TRACKED} \
-             ({FORCED_NOT_TRACKED_WHY})",
+            "  rules: {} armed · {} drifted · forced-since-realise: {FORCED_NOT_TRACKED}",
             self.armed, self.drifted,
         );
         let _ = writeln!(out, "  {}", self.composed_line());
@@ -1119,8 +1128,9 @@ mod tests {
             "the axis is named and disclosed, not dropped: {out}"
         );
         assert!(
-            out.contains("the engine keeps no memory by design"),
-            "and the line carries the reason: {out}"
+            !out.contains("the engine keeps no memory"),
+            "the WHY is teaching (--json / --help), never a footnote on the \
+             human line (report-voice pass): {out}"
         );
         assert!(
             !out.contains("0 forced-since-realise"),
