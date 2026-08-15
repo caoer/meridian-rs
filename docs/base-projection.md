@@ -325,6 +325,18 @@ workspace-relative path as the name). Zero members fold the empty sequence;
 `NULL` means the build was handed no base walk (a docs-only `build_memory`
 caller), which is "not asked", never "empty".
 
+**An UNREADABLE member (§4.4) contributes
+`varint(len(path)) ‖ path ‖ 0x01 ‖ [0u8; 32]`** — the same slot, the §4 type
+byte flipped, a zero leaf where no leaf exists (amendment 2026-08-15, ruled by
+the board at implementation: the recipe above covers only members whose bytes
+were read). It is the one encoding that keeps the three states DISTINCT in the
+witness: readable (`0x00` + its leaf), unreadable-but-seen (`0x01` + zeroes),
+and absent (no contribution at all). Omitting the member instead would fold an
+unreadable member and a deleted one to the same value — the §12.1 absence lie
+this spec forecloses everywhere else, arriving through the witness. The zero
+leaf is not a content claim: `0x01` already says no content was read, and the
+row's own `file_rev` is NULL beside it.
+
 The `bf:` token is **a staleness witness, not an attestation**: it is compared
 only against a re-walk of the same workspace within the same face, never
 across contexts, never on the wire — so §12.3's domain-version laddering has
