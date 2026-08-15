@@ -86,6 +86,68 @@ fn walk_dir(abs_dir: &Path, rel_dir: &Path, out: &mut Vec<PathBuf>) -> io::Resul
     Ok(())
 }
 
+/// The markdown the domain DECLINES yet the vault still shows: every md file
+/// on a dot-free path that the §12 filter excludes — the custom-ignore class,
+/// exactly, as sorted workspace-relative paths.
+///
+/// This is the enumerator for voices about declined pages (`mrd rules`'s
+/// `not offered to registration` / `cannot be answered` blocks), and it walks
+/// by the projection's own dir law: a dot-prefixed segment is never entered
+/// and never reported ([`domain::dot_segment`] — the same spelling
+/// [`hash_domain`]'s walk skips by), so a face fed from here can never caveat
+/// a path the record projection refuses to serve (dogfood F11). Custom-ignored
+/// DIRECTORIES are entered, never pruned: their files are exactly what this
+/// walk exists to find. Contrast [`walk`], the ADDRESSABLE set, which keeps
+/// dot-dir md files because they stay `load`-able.
+///
+/// A non-UTF-8 NAME is skipped — wire paths are UTF-8, so such a file is
+/// unservable and unnameable alike.
+///
+/// # Errors
+/// I/O failure loading the domain config or traversing the root.
+pub fn declined_markdown(root: &WorkspaceRoot) -> io::Result<Vec<String>> {
+    let domain = domain::Domain::load(root)?;
+    let mut out = Vec::new();
+    declined_dir(&root.0, "", &domain, &mut out)?;
+    out.sort();
+    Ok(out)
+}
+
+fn declined_dir(
+    abs_dir: &Path,
+    rel_dir: &str,
+    domain: &domain::Domain,
+    out: &mut Vec<String>,
+) -> io::Result<()> {
+    for entry in fs::read_dir(abs_dir)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        // Before the is_dir branch, so a dot FILE and a dot DIRECTORY are
+        // declined by the same line — the user rung's own discipline.
+        if domain::dot_segment(name) {
+            continue;
+        }
+        let rel = if rel_dir.is_empty() {
+            name.to_owned()
+        } else {
+            format!("{rel_dir}/{name}")
+        };
+        if file_type.is_dir() {
+            declined_dir(&entry.path(), &rel, domain, out)?;
+        } else if file_type.is_file()
+            && matches!(
+                domain.exclusion(Path::new(&rel)),
+                Some(domain::ExclusionReason::CustomIgnore)
+            )
+        {
+            out.push(rel);
+        }
+    }
+    Ok(())
+}
+
 /// The disk behind the ambient root, as the question `model` asks — one
 /// predicate, one owner, the same division [`domain::Domain`] answers
 /// [`model::HashDomain`] under.
@@ -332,7 +394,7 @@ fn walk_domain_dir(
         let rel = rel_dir.join(&name);
         if file_type.is_dir() {
             // Dot-segment: structurally outside the hash domain at any depth.
-            if name.to_string_lossy().starts_with('.') {
+            if domain::dot_segment(&name.to_string_lossy()) {
                 continue;
             }
             if domain.prunes_dir(&rel) {

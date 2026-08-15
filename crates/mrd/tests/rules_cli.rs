@@ -726,15 +726,21 @@ fn arm(s: &Sandbox, requests: &[(&str, &str, &str)]) {
     s.write(policy::armed::ARMED_RULES_PATH, &page);
 }
 
-/// **P9** — with no artifact every armed cell reads `-` and the header names the
-/// absent artifact: registered here, armed nowhere.
+/// **P9** — with no artifact every armed cell reads `-` and the header reads
+/// `none`, ALONE: registered here, armed nowhere.
+///
+/// The header once footnoted `(meridian/armed-rules.md absent)`. ZT ruling 4
+/// (2026-08-15): `none` is the whole honest answer — where an armed set would
+/// live is teaching, and teaching lives in docs, not restated by every
+/// invocation. The present and corrupt arms keep their path (the diagnostic).
 #[test]
 fn without_an_artifact_every_row_is_registered_and_unarmed() {
     let s = populated();
     let stdout = s.stdout(&["rules", "sessions/s1"]);
+    assert!(stdout.contains("  armed-set  none\n"), "{stdout}");
     assert!(
-        stdout.contains("armed-set  none  (meridian/armed-rules.md absent)"),
-        "{stdout}"
+        !stdout.contains("meridian/armed-rules.md"),
+        "the absent header narrates no storage internals: {stdout}"
     );
     assert!(stdout.contains("  task.notify  armed=-"), "{stdout}");
 }
@@ -1315,13 +1321,30 @@ fn an_armed_page_leaving_the_domain_is_named_not_dropped() {
 /// The workspace feed's OTHER exclusion class — the dot-segment structural
 /// floor — on the UNARMED axis, which is the only axis it has.
 ///
+/// ⛔ ASSERTION RE-POINTED, NOT DELETED — dogfood F11 (fp b3b:a9616651,
+/// 2026-08-15), card `rules-caveat-scope`. This gate used to assert the dot
+/// page is NAMED under `not offered to registration`. That naming is the
+/// defect F11 measured at scale: the caveat scan entered dot directories the
+/// record projection refuses to serve, and a dot-named snapshot dir produced
+/// 16 of 20 caveat lines plus the exit with them. The workspace caveat scan
+/// now walks by the projection's own dir law — a dot segment is never entered
+/// (`fs::domain::dot_segment`, one spelling with the hash-domain walk) — so a
+/// dot page is INVISIBLE to this face exactly as it is invisible to the vault
+/// and to everything the engine serves.
+///
+/// Decision 0017 ("never exclude silently") survives on the class it was
+/// minted for: the CUSTOM-IGNORE class stays named
+/// ([`dot_noise_is_invisible_while_a_custom_ignored_rule_page_is_still_named`]),
+/// and the USER rung's dot decline stays named — its bounded `rules/` tree has
+/// no projection to be consistent with
+/// ([`a_dot_segment_user_rule_page_is_named_not_dropped`]).
+///
 /// ⛔ THE TWO CLASSES ARE NOT SYMMETRIC AND THE ASYMMETRY IS A FINDING: a custom
 /// ignore rule can be declared AFTER a page is armed, leaving it on disk; a
 /// dot-segment page can never be armed at all, because it is never in the domain
-/// to be discovered. This gate asserts the class that CAN exist, so the family
-/// is not closed over a subset.
+/// to be discovered.
 #[test]
-fn a_dot_segment_workspace_rule_page_is_named_not_dropped() {
+fn a_dot_segment_workspace_rule_page_is_invisible_like_the_projection_serves_it() {
     let witness = engine_witness();
     let s = sandbox();
 
@@ -1348,22 +1371,102 @@ fn a_dot_segment_workspace_rule_page_is_named_not_dropped() {
     );
     let (subject, _, subject_rc) = drive(&s, &["rules"]);
     assert_ne!(control, subject, "both arms identical:\n{subject}");
+
+    // Fail-closed is untouched: the dot page never registers, so the id is
+    // gone from the law. Invisibility scopes the VOICE, never the enforcement.
     assert!(
-        subject.contains("not offered to registration")
-            && subject.contains("outside the hash domain")
-            && subject.contains(".hidden/notify.md"),
-        "the declined page is NAMED, not dropped:\n{witness}\n{subject}"
+        !subject.contains("task.notify") && subject.contains("(no rules in effect)"),
+        "the dot page must not register:\n{witness}\n{subject}"
+    );
+    assert!(
+        !subject.contains(".hidden/notify.md") && !subject.contains("not offered to registration"),
+        "a dot path is invisible to the caveat scan, as it is to the \
+         projection (F11):\n{witness}\n{subject}"
     );
 
-    // Exit-neutral, and deliberately so: a page outside the attested surface is
-    // legitimately absent from the answer. The door owes a VOICE, not a
-    // finding. Only the armed orphan moves the exit, because only it is a red
-    // armed row the shipped help already promised to report.
     assert_eq!(control_rc, Some(0), "{control}");
     assert_eq!(
         subject_rc,
         Some(0),
-        "naming a declined page is not itself a finding:\n{subject}"
+        "an invisible page is no finding:\n{subject}"
+    );
+}
+
+/// **THE F11 GATE, BOTH HALVES.** The caveat scan and the record projection
+/// apply ONE exclusion law.
+///
+/// Half 1 (the F11 receipt, in miniature): a dot-named snapshot directory —
+/// a rule-tagged page and a broken-frontmatter page inside it, the two
+/// populations that produced 16 of ZT's 20 caveat lines — yields ZERO caveat
+/// lines and a clean exit. The projection serves no record under a dot
+/// segment, so `mrd rules` caveats nothing under one.
+///
+/// Half 2 (the caveat discipline survives, decision 0017): the SAME two pages
+/// under a custom-ignored directory — operator-declared in
+/// `meridian/domain.md`, vault-visible — are still NAMED, each under its own
+/// verdict string, exit-neutral.
+#[test]
+fn dot_noise_is_invisible_while_a_custom_ignored_rule_page_is_still_named() {
+    let witness = engine_witness();
+    let s = sandbox();
+    s.write(
+        "rules/notify.md",
+        &rule_page("hook", "task.notify", "the workspace rule"),
+    );
+    let (control, _, control_rc) = drive(&s, &["rules"]);
+    assert!(
+        control.contains("task.notify"),
+        "the control did not fire:\n{witness}\n{control}"
+    );
+    assert_eq!(control_rc, Some(0), "{control}");
+
+    // ── half 1: the dot-named snapshot dir, invisible ────────────────────────
+    s.write(
+        ".snap-copy/dropped-rule.md",
+        &rule_page("hook", "task.dropped", "a copy nobody serves"),
+    );
+    s.write(
+        ".snap-copy/broken.md",
+        "---\ntags: [rules/hook\n---\n\n# an unclosed flow sequence\n",
+    );
+    let (subject, subject_err, subject_rc) = drive(&s, &["rules"]);
+    assert_eq!(
+        control, subject,
+        "a dot-named dir must not change the answer AT ALL:\n{witness}\n{subject}"
+    );
+    assert_eq!(subject_rc, Some(0), "{subject}{subject_err}");
+
+    // ── half 2: the same shape, custom-ignored — named, exit-neutral ─────────
+    s.write(
+        "meridian/domain.md",
+        "---\nversion: 1\nignore:\n  - \"archive/**\"\n---\n\n# domain\n",
+    );
+    s.write(
+        "archive/dropped-rule.md",
+        &rule_page("hook", "task.dropped", "declared out of the domain"),
+    );
+    s.write(
+        "archive/broken.md",
+        "---\ntags: [rules/hook\n---\n\n# an unclosed flow sequence\n",
+    );
+    let (voiced, _, voiced_rc) = drive(&s, &["rules"]);
+    assert!(
+        voiced.contains("not offered to registration")
+            && voiced.contains("archive/dropped-rule.md"),
+        "the operator-declared exclusion is NAMED (decision 0017):\n{witness}\n{voiced}"
+    );
+    assert!(
+        voiced.contains("cannot be answered") && voiced.contains("archive/broken.md"),
+        "the undecidable page keeps its own verdict string:\n{voiced}"
+    );
+    assert!(
+        !voiced.contains(".snap-copy/"),
+        "and the dot noise stays invisible beside it:\n{voiced}"
+    );
+    assert_eq!(
+        voiced_rc,
+        Some(0),
+        "a decline is a voice, not a finding:\n{voiced}"
     );
 }
 
