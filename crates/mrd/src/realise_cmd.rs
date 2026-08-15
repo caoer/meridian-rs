@@ -13,6 +13,10 @@
 //! - `realise.rule` — the id of the rule this claim realises. A pending-agent card references it
 //!   by id and never embeds the rule body. Optional; validated against the `policy::RuleId`
 //!   grammar at parse time.
+//! - `realise.board_dir` — the workspace-relative directory pending-agent cards are born in.
+//!   Optional; defaults to `board`. The folder a user files cards in is THEIR flow, so it is read
+//!   off their markdown and only defaulted in code (`docs/laws.md` § Amendment — no hard-coded
+//!   flow, rule 1).
 //!
 //! The retry budget is one apply then one re-check.
 //!
@@ -37,8 +41,8 @@ use crate::{Fail, Format};
 /// claim did not converge (non-convergent or pending-agent).
 const EXIT_FINDING: u8 = 1;
 
-/// The default realise board directory pending-agent cards are born in (mirrors
-/// `mrd attest`'s realised-gate default).
+/// The fallback realise board directory pending-agent cards are born in when the page declares
+/// no `realise.board_dir` (mirrors `mrd attest`'s realised-gate default).
 const DEFAULT_BOARD_DIR: &str = "board";
 
 /// The actor this verb records on every write it drives through the run plane.
@@ -95,6 +99,8 @@ fn realise_page(root: &fs::WorkspaceRoot, page: &str, parsed: &Parsed) -> Result
         }
     };
 
+    let board_dir = board_dir(&doc, page)?;
+
     let claim = realise::Claim {
         selector: format!("{page}#{field}"),
         rule,
@@ -121,7 +127,7 @@ fn realise_page(root: &fs::WorkspaceRoot, page: &str, parsed: &Parsed) -> Result
         invocation_id,
         now: Some(now),
         actor: REALISE_ACTOR.to_owned(),
-        board_dir: DEFAULT_BOARD_DIR.to_owned(),
+        board_dir,
         scratch: scratch.clone(),
         dry_run: parsed.dry,
         limits: EvalLimits::default(),
@@ -244,6 +250,23 @@ fn fm_scalar(doc: &model::Document, key: &str) -> Option<String> {
     find(&doc.root)
         .and_then(|m| m.0.iter().find(|(k, _)| k == key))
         .map(|(_, v)| model::scalar::text(v))
+}
+
+/// The workspace-relative directory pending-agent cards are born in: the page's own
+/// `realise.board_dir`, or [`DEFAULT_BOARD_DIR`] when it declares none. A declared-but-blank value
+/// is refused loud rather than defaulted — an author who wrote the key meant a folder, and
+/// silently minting into `board/` would file their cards where they are not looking.
+fn board_dir(doc: &model::Document, page: &str) -> Result<String, Fail> {
+    let Some(declared) = fm_scalar(doc, "realise.board_dir") else {
+        return Ok(DEFAULT_BOARD_DIR.to_owned());
+    };
+    let trimmed = declared.trim();
+    if trimmed.is_empty() {
+        return Err(Fail::tool(format!(
+            "{page} declares an empty `realise.board_dir` — name a directory or drop the key"
+        )));
+    }
+    Ok(trimmed.to_owned())
 }
 
 /// Mint the realise identity: a unique, path-safe invocation id and an RFC3339 time fact. The
