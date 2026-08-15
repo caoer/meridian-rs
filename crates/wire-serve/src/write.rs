@@ -5089,7 +5089,10 @@ mod tests {
 /// rows 13/14).
 #[cfg(test)]
 mod guarded_create_remove {
-    use wire::{Edit, EditShape, ErrorCode, FileChange, HpathSeg, NodeRev, Path, Recovery, SecRef};
+    use wire::{
+        Edit, EditShape, ErrorCode, FileChange, HpathSeg, NodeRev, Path, Recovery, ReferrerKind,
+        SecRef,
+    };
 
     use super::{CreateArgs, RemoveArgs, SpliceArgs, ambient_root, create, remove, splice};
 
@@ -5266,6 +5269,303 @@ mod guarded_create_remove {
         )
         .expect_err("removing an absent file refuses");
         assert_eq!(err.code, ErrorCode::FileNotFound);
+    }
+
+    /// § A.3 referential guard, wikilink arm: a record with inbound wikilinks
+    /// refuses `remove_refused` (fix) naming the referring file, the kind,
+    /// and the exact edge count — and nothing is removed.
+    #[test]
+    fn remove_refuses_while_a_wikilink_references_the_record() {
+        let (dir, root) = ws();
+        let born = create(
+            &root,
+            None,
+            &create_args("notes/victim.md", "# Victim\n"),
+            &[],
+        )
+        .unwrap();
+        create(
+            &root,
+            None,
+            &create_args(
+                "notes/fan.md",
+                "# Fan\n\nsee [[victim]], and [[victim]] again\n",
+            ),
+            &[],
+        )
+        .unwrap();
+
+        let err = remove(
+            &root,
+            None,
+            &remove_args("notes/victim.md", &born.file_rev_after.0),
+            &[],
+        )
+        .expect_err("a referenced record must not die");
+        assert_eq!(err.code, ErrorCode::RemoveRefused);
+        assert_eq!(err.recovery, Recovery::Fix, "remove_refused → fix");
+        let referrers = err
+            .referrers
+            .as_deref()
+            .expect("the refusal names the referrers");
+        assert_eq!(referrers.len(), 1, "one referring file");
+        assert_eq!(referrers[0].path, "notes/fan.md");
+        assert_eq!(referrers[0].kind, ReferrerKind::Wikilink);
+        assert_eq!(referrers[0].count, 2, "every edge counted");
+        assert!(
+            dir.path().join("notes/victim.md").exists(),
+            "a refused remove leaves the record on disk"
+        );
+    }
+
+    /// § A.3 referential guard, embed arm: `![[victim]]` blocks with its own
+    /// kind — the caller's unlink worklist distinguishes an embed from a link.
+    #[test]
+    fn remove_refuses_an_inbound_embed_naming_the_kind() {
+        let (_dir, root) = ws();
+        let born = create(
+            &root,
+            None,
+            &create_args("notes/victim.md", "# Victim\n"),
+            &[],
+        )
+        .unwrap();
+        create(
+            &root,
+            None,
+            &create_args("notes/gallery.md", "# Gallery\n\n![[victim]]\n"),
+            &[],
+        )
+        .unwrap();
+
+        let err = remove(
+            &root,
+            None,
+            &remove_args("notes/victim.md", &born.file_rev_after.0),
+            &[],
+        )
+        .expect_err("an embedded record must not die");
+        assert_eq!(err.code, ErrorCode::RemoveRefused);
+        let referrers = err.referrers.as_deref().unwrap();
+        assert_eq!(
+            (referrers[0].path.as_str(), referrers[0].kind),
+            ("notes/gallery.md", ReferrerKind::Embed)
+        );
+    }
+
+    /// § A.3 referential guard, pin arm: an ambient `meridian-lock` pin on the
+    /// record blocks with kind `pin` — the walk plane's Down predicate applied
+    /// at the door. The pinning page is a raw fixture write: the birth door
+    /// refuses lock-bearing bodies, and the guard reads DISK, so a hand-landed
+    /// pin must count exactly like an engine-minted one.
+    #[test]
+    fn remove_refuses_while_a_lock_pin_references_the_record() {
+        let (dir, root) = ws();
+        let born = create(
+            &root,
+            None,
+            &create_args("notes/victim.md", "# Victim\n"),
+            &[],
+        )
+        .unwrap();
+
+        let mut l = lock::Lock::new();
+        l.upsert_pin(lock::PinEntry::new(
+            "victim",
+            "9ae3f1deadbeef",
+            lock::Selector::Path(Vec::new()),
+            "fp1.v1.b3.deadbeef",
+        ));
+        std::fs::write(
+            dir.path().join("notes/pinner.md"),
+            format!("# Pinner\n\n{}\n", lock::render(&l)),
+        )
+        .unwrap();
+
+        let err = remove(
+            &root,
+            None,
+            &remove_args("notes/victim.md", &born.file_rev_after.0),
+            &[],
+        )
+        .expect_err("a pinned record must not die");
+        assert_eq!(err.code, ErrorCode::RemoveRefused);
+        let referrers = err.referrers.as_deref().unwrap();
+        assert_eq!(
+            (
+                referrers[0].path.as_str(),
+                referrers[0].kind,
+                referrers[0].count
+            ),
+            ("notes/pinner.md", ReferrerKind::Pin, 1)
+        );
+    }
+
+    /// § A.3 self-edge exclusion: a record's own links to itself do not hold
+    /// it alive — the death lands and the Delta rides.
+    #[test]
+    fn remove_ignores_the_records_own_self_references() {
+        let (dir, root) = ws();
+        let born = create(
+            &root,
+            None,
+            &create_args("notes/victim.md", "# Victim\n\nme: [[victim]]\n"),
+            &[],
+        )
+        .unwrap();
+
+        remove(
+            &root,
+            None,
+            &remove_args("notes/victim.md", &born.file_rev_after.0),
+            &[],
+        )
+        .expect("a self-referencing record still dies");
+        assert!(!dir.path().join("notes/victim.md").exists());
+    }
+
+    /// § A.3: `if_file_rev` is a precondition of the op — a rev-less remove
+    /// refuses `guard_required` (fix) from EVERY origin, teaching the slot,
+    /// and touches nothing. There is no force alternative.
+    #[test]
+    fn remove_without_the_read_rev_refuses_guard_required() {
+        let (dir, root) = ws();
+        create(
+            &root,
+            None,
+            &create_args("notes/victim.md", "# Victim\n"),
+            &[],
+        )
+        .unwrap();
+
+        let err = remove(
+            &root,
+            None,
+            &RemoveArgs {
+                if_file_rev: None,
+                ..remove_args("notes/victim.md", "unused")
+            },
+            &[],
+        )
+        .expect_err("a rev-less remove refuses");
+        assert_eq!(err.code, ErrorCode::GuardRequired);
+        assert_eq!(err.recovery, Recovery::Fix);
+        assert!(
+            err.message
+                .as_deref()
+                .is_some_and(|m| m.contains("if_file_rev")),
+            "the refusal teaches the slot: {:?}",
+            err.message
+        );
+        assert!(dir.path().join("notes/victim.md").exists());
+    }
+
+    /// §5.1 world guard on remove: a supplied stale `if_root` refuses
+    /// `root_mismatch` (resync) before anything dies — honored when present,
+    /// never demanded (§ A.3).
+    #[test]
+    fn remove_with_a_stale_world_guard_refuses_root_mismatch() {
+        let (dir, root) = ws();
+        let born = create(
+            &root,
+            None,
+            &create_args("notes/victim.md", "# Victim\n"),
+            &[],
+        )
+        .unwrap();
+        let stale = ambient_root(&root).unwrap();
+        // The world moves under the plan.
+        create(
+            &root,
+            None,
+            &create_args("notes/other.md", "# Other\n"),
+            &[],
+        )
+        .unwrap();
+
+        let err = remove(
+            &root,
+            None,
+            &RemoveArgs {
+                if_root: Some(stale),
+                ..remove_args("notes/victim.md", &born.file_rev_after.0)
+            },
+            &[],
+        )
+        .expect_err("a stale world guard refuses");
+        assert_eq!(err.code, ErrorCode::RootMismatch);
+        assert_eq!(err.recovery, Recovery::Resync);
+        assert!(dir.path().join("notes/victim.md").exists());
+    }
+
+    /// § A.3, receipted not argued: the referential check and the unlink share
+    /// the write flock. Phase 1 — while a cooperating writer holds the flock,
+    /// the door refuses `workspace_busy` fast and touches nothing: no writer
+    /// can interleave with a remove already inside its critical section,
+    /// because the same lock excludes both directions. Phase 2 — a link that
+    /// lands after the caller's read is SEEN by the check: the corpus is
+    /// snapshotted after acquisition, never taken from the caller's picture,
+    /// so the check-to-unlink window contains no gap a fresh write can slip
+    /// through.
+    #[test]
+    fn remove_check_and_unlink_share_the_write_flock() {
+        let (dir, root) = ws();
+        let born = create(
+            &root,
+            None,
+            &create_args("notes/victim.md", "# Victim\n"),
+            &[],
+        )
+        .unwrap();
+
+        // Phase 1: the flock is held elsewhere — the door refuses fast,
+        // before reading or unlinking anything.
+        {
+            let _held = super::acquire_write_lock(&root).expect("the test takes the flock");
+            let err = remove(
+                &root,
+                None,
+                &remove_args("notes/victim.md", &born.file_rev_after.0),
+                &[],
+            )
+            .expect_err("the door must not act while another writer holds the flock");
+            assert_eq!(err.code, ErrorCode::WorkspaceBusy);
+            assert!(dir.path().join("notes/victim.md").exists());
+        }
+
+        // Phase 2: a referring file lands AFTER the caller's read (any writer
+        // that reached the lock first); the caller's rev is still fresh, yet
+        // the in-flock check sees the new link and refuses.
+        std::fs::write(
+            dir.path().join("notes/late.md"),
+            "# Late\n\nsee [[victim]]\n",
+        )
+        .unwrap();
+        let err = remove(
+            &root,
+            None,
+            &remove_args("notes/victim.md", &born.file_rev_after.0),
+            &[],
+        )
+        .expect_err("the check reads the world as of the flock, not the caller's read");
+        assert_eq!(err.code, ErrorCode::RemoveRefused);
+        assert_eq!(
+            err.referrers.as_deref().map(|r| r[0].path.as_str()),
+            Some("notes/late.md"),
+            "the late link is exactly what the refusal names"
+        );
+
+        // Unlink the referrer; the same call now lands — the door's answer
+        // tracks the corpus, not the request's history.
+        std::fs::remove_file(dir.path().join("notes/late.md")).unwrap();
+        remove(
+            &root,
+            None,
+            &remove_args("notes/victim.md", &born.file_rev_after.0),
+            &[],
+        )
+        .expect("referentially empty again — the death lands");
+        assert!(!dir.path().join("notes/victim.md").exists());
     }
 
     /// Workspace-root confinement: a `..`-escape or an absolute path refuses
