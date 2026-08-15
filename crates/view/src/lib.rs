@@ -530,10 +530,18 @@ fn emit_section(
     rows: &mut Rows,
 ) {
     let heading = chain.last().map_or(String::new(), |s| s.h.clone());
+    // `n` is this row's OWN segment — the last of the chain — and stays NULL
+    // where the published address omits it, so the column and `hpath` can never
+    // disagree about whether the heading is ambiguous.
+    let n = chain
+        .last()
+        .and_then(|s| s.n)
+        .map_or(Value::Null, Value::UInt);
     rows.section.push(vec![
         Value::Text(path.to_string()),
         Value::UBigInt(node_seq),
         Value::Text(hpath_json(chain)),
+        n,
         Value::Text(heading),
         Value::UTinyInt(level),
         Value::Text(node.node_rev.0.clone()),
@@ -865,7 +873,7 @@ mod tests {
         )?;
         insert_rows(
             conn,
-            "INSERT INTO section (path, node_seq, hpath, heading, level, node_rev, span_start, span_end) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO section (path, node_seq, hpath, n, heading, level, node_rev, span_start, span_end) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             &rows.section,
         )?;
         insert_rows(
@@ -905,7 +913,7 @@ mod tests {
         ),
         (
             "section",
-            "SELECT coalesce(md5(string_agg(path || '|' || node_seq::VARCHAR || '|' || hpath || '|' || heading || '|' || level::VARCHAR || '|' || node_rev || '|' || span_start::VARCHAR || '|' || span_end::VARCHAR, chr(10) ORDER BY path, node_seq)), 'EMPTY') FROM section",
+            "SELECT coalesce(md5(string_agg(path || '|' || node_seq::VARCHAR || '|' || hpath || '|' || coalesce(n::VARCHAR,'~N~') || '|' || heading || '|' || level::VARCHAR || '|' || node_rev || '|' || span_start::VARCHAR || '|' || span_end::VARCHAR, chr(10) ORDER BY path, node_seq)), 'EMPTY') FROM section",
         ),
         (
             "link",
@@ -1021,27 +1029,36 @@ mod tests {
             Value::UInt(1),
             Value::UBigInt(2),
         ]);
+        // Each shape carries the `n` its own last segment does, so both lanes
+        // are exercised on a NULL occurrence and a present one.
         let shapes = [
-            hpath_json(&[AddrSeg {
-                h: String::new(),
-                n: None,
-            }]),
-            hpath_json(&[
-                AddrSeg {
-                    h: "a\"b\\c".to_string(),
+            (
+                hpath_json(&[AddrSeg {
+                    h: String::new(),
                     n: None,
-                },
-                AddrSeg {
-                    h: "Dup".to_string(),
-                    n: Some(2),
-                },
-            ]),
+                }]),
+                Value::Null,
+            ),
+            (
+                hpath_json(&[
+                    AddrSeg {
+                        h: "a\"b\\c".to_string(),
+                        n: None,
+                    },
+                    AddrSeg {
+                        h: "Dup".to_string(),
+                        n: Some(2),
+                    },
+                ]),
+                Value::UInt(2),
+            ),
         ];
-        for (seq, hpath) in shapes.into_iter().enumerate() {
+        for (seq, (hpath, n)) in shapes.into_iter().enumerate() {
             rows.section.push(vec![
                 Value::Text("d.md".to_string()),
                 Value::UBigInt(seq as u64),
                 Value::Text(hpath),
+                n,
                 Value::Text("h".to_string()),
                 Value::UTinyInt(1),
                 Value::Text("rev".to_string()),

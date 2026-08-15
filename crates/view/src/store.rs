@@ -90,7 +90,11 @@ use crate::{ExclusionProbe, Rows, ViewError, collect_doc, corpus_index, fill_exc
 /// `5`: `hist.section.hpath` / `hist.task.hpath` became TEXT — the published
 /// `[{"h":…},…]` machine address (card sql-hpath-read-grammar); a v4 file's
 /// TEXT[] rows would serve the retired spelling.
-pub const CACHE_SCHEMA_VERSION: i64 = 5;
+///
+/// `6`: `hist.section.n` added — the occurrence index served as its own column
+/// (`wire-contract.md` § A.11); a v5 file's rows carry no such column, so the
+/// appender's positional load would land every later column one slot left.
+pub const CACHE_SCHEMA_VERSION: i64 = 6;
 
 /// The cache file's basename inside the workspace cache drawer (ruling OQ4).
 pub const SQL_CACHE_FILENAME: &str = "sql.duckdb";
@@ -116,7 +120,7 @@ CREATE TABLE hist.frontmatter (
     span_start UBIGINT, span_end UBIGINT, node_rev TEXT, prop_rev TEXT
 );
 CREATE TABLE hist.section (
-    path TEXT, gen BIGINT, node_seq UBIGINT, hpath TEXT, heading TEXT,
+    path TEXT, gen BIGINT, node_seq UBIGINT, hpath TEXT, n UINTEGER, heading TEXT,
     level UTINYINT, node_rev TEXT, span_start UBIGINT, span_end UBIGINT
 );
 CREATE TABLE hist.link (
@@ -159,7 +163,7 @@ CREATE VIEW main.frontmatter AS
     FROM hist.frontmatter f
     SEMI JOIN hist.doc_latest d ON f.path = d.path AND f.gen = d.gen;
 CREATE VIEW main.section AS
-    SELECT s.path, s.node_seq, s.hpath, s.heading, s.level, s.node_rev,
+    SELECT s.path, s.node_seq, s.hpath, s.n, s.heading, s.level, s.node_rev,
            s.span_start, s.span_end
     FROM hist.section s
     SEMI JOIN hist.doc_latest d ON s.path = d.path AND s.gen = d.gen;
@@ -1055,7 +1059,7 @@ pub(crate) mod tests {
         ),
         (
             "section",
-            "SELECT coalesce(md5(string_agg(path || '|' || node_seq::VARCHAR || '|' || hpath || '|' || heading || '|' || level::VARCHAR || '|' || node_rev || '|' || span_start::VARCHAR || '|' || span_end::VARCHAR, chr(10) ORDER BY path, node_seq)), 'EMPTY') FROM section",
+            "SELECT coalesce(md5(string_agg(path || '|' || node_seq::VARCHAR || '|' || hpath || '|' || coalesce(n::VARCHAR,'~N~') || '|' || heading || '|' || level::VARCHAR || '|' || node_rev || '|' || span_start::VARCHAR || '|' || span_end::VARCHAR, chr(10) ORDER BY path, node_seq)), 'EMPTY') FROM section",
         ),
         (
             "link",
