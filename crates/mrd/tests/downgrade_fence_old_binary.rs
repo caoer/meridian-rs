@@ -100,10 +100,10 @@ fn fixture_roots() -> Vec<(String, tempfile::TempDir)> {
     let mut roots = Vec::new();
     let default = tempfile::tempdir().expect("default tempdir");
     roots.push((fs_name(default.path()), default));
-    if Path::new("/dev/shm").is_dir() {
-        if let Ok(shm) = tempfile::tempdir_in("/dev/shm") {
-            roots.push((fs_name(shm.path()), shm));
-        }
+    if Path::new("/dev/shm").is_dir()
+        && let Ok(shm) = tempfile::tempdir_in("/dev/shm")
+    {
+        roots.push((fs_name(shm.path()), shm));
     }
     if let Ok(extra) = std::env::var("MERIDIAN_FENCE_FS_ROOTS") {
         for base in extra.split(':').filter(|s| !s.is_empty()) {
