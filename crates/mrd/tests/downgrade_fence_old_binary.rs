@@ -60,7 +60,7 @@ fn fs_name(path: &Path) -> String {
     let c = std::ffi::CString::new(path.as_os_str().as_bytes()).expect("no NUL in fixture path");
     let mut s: libc::statfs = unsafe { std::mem::zeroed() };
     // SAFETY: statfs writes into the zeroed struct; the CString outlives the call.
-    if unsafe { libc::statfs(c.as_ptr(), &mut s) } != 0 {
+    if unsafe { libc::statfs(c.as_ptr(), &raw mut s) } != 0 {
         return "statfs-failed".into();
     }
     // The magic is a bit pattern, not an arithmetic value.
@@ -82,7 +82,7 @@ fn fs_name(path: &Path) -> String {
     let c = std::ffi::CString::new(path.as_os_str().as_bytes()).expect("no NUL in fixture path");
     let mut s: libc::statfs = unsafe { std::mem::zeroed() };
     // SAFETY: statfs writes into the zeroed struct; the CString outlives the call.
-    if unsafe { libc::statfs(c.as_ptr(), &mut s) } != 0 {
+    if unsafe { libc::statfs(c.as_ptr(), &raw mut s) } != 0 {
         return "statfs-failed".into();
     }
     let bytes: Vec<u8> = s
@@ -229,7 +229,9 @@ fn old_binary_matrix_across_fence_rungs() {
 
         // Post-commit rungs: the fence holds against the real binary.
         for phase in [ActivationPhase::Renamed, ActivationPhase::ParentSynced] {
-            let ws = sb.workspace(base.path(), &format!("post-{phase:?}"));
+            // Workspace basenames must stay inside init's [a-z0-9-] charset.
+            let name = format!("post-{phase:?}").to_lowercase();
+            let ws = sb.workspace(base.path(), &name);
             let root = fs::WorkspaceRoot(std::fs::canonicalize(&ws).expect("canonical"));
             fence::activate_until(&root, phase).expect("build the crash state");
             assert_eq!(fence::status(&root).expect("legal"), FenceStatus::Active);
