@@ -15,11 +15,14 @@
 //! caller hands in over the post-batch doc — the resident daemon hands `&[]`.
 //! Empty rulesets ⇒ `verdicts: []`.
 //!
-//! # The delta ring lives with the caller
+//! # The delta ring lives with the sink
 //! [`commit_batch`] assembles one `DeltaFrame` at the single §7.3 constructor
 //! ([`assemble_delta`]) and returns it; it does not hold or advance a ring.
-//! The resident daemon advances its per-workspace ring with the returned
-//! frame; a ringless in-process caller discards it.
+//! The frame reaches the resident daemon's per-workspace ring through the
+//! sink's committed hook ([`crate::seq::SeqSink::committed`]), invoked while
+//! the write flock is still held — so a detect cycle can never take the flock
+//! and re-tell the just-committed change as external. The returned frame is
+//! data for the caller's response; a ringless in-process caller discards it.
 
 use std::fmt::Write as _;
 use std::io::ErrorKind;
@@ -576,6 +579,12 @@ pub fn splice_with_mints(
     // The receipt FACT from the true post-state (host-block-leaf grain).
     let receipt_fact = resolve_receipt_fact(root, args.receipt.as_ref())?;
 
+    // The frame lands on the sink's ring HERE, under the flock — after the
+    // last fallible step, so a post-commit failure leaves the change to the
+    // detector (external, degraded but honest) instead of telling a frame the
+    // caller never received. Closes the detector double-emission window.
+    crate::seq::committed(seq, &flock, &frame);
+
     Ok(SpliceOutcome {
         body: ResponseBody::Splice {
             armed: Armed {
@@ -806,6 +815,9 @@ pub fn splice_set(
     frame.effects = frame_effects;
 
     let receipt_fact = resolve_receipt_fact(root, args.receipt.as_ref())?;
+
+    // Under the flock, after the last fallible step — see `splice`.
+    crate::seq::committed(seq, &flock, &frame);
 
     Ok(SpliceOutcome {
         body: ResponseBody::SpliceSet {
@@ -1409,6 +1421,8 @@ pub fn create(
         args.now.clone(),
         model::delta::file_delta(None, Some(after_doc.document())).as_ref(),
     );
+    // Under the flock, after the last fallible step — see `splice`.
+    crate::seq::committed(seq, &flock, &committed);
     Ok(CreateOutcome {
         root_before,
         root_after: Some(root_after),
@@ -1504,6 +1518,8 @@ pub fn remove(
         args.now.clone(),
         model::delta::file_delta(Some(&before_doc), None).as_ref(),
     );
+    // Under the flock, after the last fallible step — see `splice`.
+    crate::seq::committed(seq, &flock, &committed);
     Ok(RemoveOutcome {
         root_before,
         root_after: Some(root_after),
@@ -1652,7 +1668,9 @@ pub fn lock_write(
         .map(|fd| vec![wire_map::project_file_delta(&args.path.0, &fd)])
         .unwrap_or_default();
     // Allocate inside the flock this fn already holds, not at the caller before
-    // it. See `crate::seq`.
+    // it. See `crate::seq`. The sink outlives the shadowing `seq` number: the
+    // committed offer below still needs it.
+    let sink = seq;
     let seq = crate::seq::allocate(seq, &flock, &root_before, &root_after, &files);
     let committed = assemble_delta(
         seq,
@@ -1662,6 +1680,8 @@ pub fn lock_write(
         args.now.clone(),
         files,
     );
+    // Under the flock, after the last fallible step — see `splice`.
+    crate::seq::committed(sink, &flock, &committed);
     Ok(LockWriteOutcome {
         root_before,
         root_after: Some(root_after),

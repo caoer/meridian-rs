@@ -303,6 +303,10 @@ impl wire_serve::seq::SeqSink for RingSink<'_> {
     fn allocate(&self, _b: &wire::Root, _a: &wire::Root, _f: &[wire::DeltaFile]) -> u64 {
         self.0.allocate_seq()
     }
+
+    // An allocator by design (see above): the assertion is about seq
+    // consumption, so the offered frame is deliberately not recorded.
+    fn committed(&self, _frame: &wire::DeltaFrame) {}
 }
 
 #[test]
