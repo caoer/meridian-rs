@@ -1598,8 +1598,12 @@ fn warm_err_to_wire(e: &io::Error) -> Box<ErrorBody> {
         // (Law A-3c).
         let mut err = ErrorBody::new(ErrorCode::CorpusRace);
         err.path = Some(wire::Path(member.member.clone()));
+        // The REASON only: this frame carries `recovery: retry` structurally,
+        // so repeating the text face's recovery line here would teach the
+        // same move twice, in two registers.
         err.message = Some(format!(
-            "{e} — transient; the same request snapshots the current corpus"
+            "{} — transient; the same request snapshots the current corpus",
+            member.reason()
         ));
         return Box::new(err);
     }
@@ -1829,6 +1833,7 @@ mod recovery_class_truth_tests {
         let e = std::io::Error::new(
             std::io::ErrorKind::NotFound,
             fs::CorpusMemberError {
+                kind: std::io::ErrorKind::NotFound,
                 member: "notes/x.md".to_owned(),
                 condition: "vanished between the domain walk and its stat".to_owned(),
             },
@@ -1862,6 +1867,7 @@ mod recovery_class_truth_tests {
         let e = std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             fs::CorpusMemberError {
+                kind: std::io::ErrorKind::PermissionDenied,
                 member: "notes/x.md".to_owned(),
                 condition: "cannot be read (permission denied)".to_owned(),
             },
