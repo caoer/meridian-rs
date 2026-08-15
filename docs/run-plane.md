@@ -1258,7 +1258,13 @@ who sent it. Every row above is that sentence applied to one axis.
 
 A page declares tasks in frontmatter: `task.<name>: "[[#^block-id]]"` binds a
 task name to a same-file fenced code block; `task.<name>.caps` / `.args` /
-`.env` carry its capability declaration and input contract. Cross-file refs
+`.env` carry its capability declaration and input contract. `.args` names
+positional slots in order and the count is exact, with one form for
+variable-length input: the LAST name may carry a `...` tail
+(`task.fmt.args: title, rows...`), which keeps the earlier names as fixed slots
+and takes every remaining arg, zero included. Both dispatchers already consume
+a positional list (bash argv, starlark `ctx.args`), so a tail changes no supply
+surface; `.env` is supplied by name and refuses the suffix. Cross-file refs
 are an S1 **non-goal** (decision #11) and refuse with a typed error. Every
 addressing fault is distinct and pre-eval: no such task, dangling binding,
 ambiguous anchor, not-a-code-block, unknown fence language, cross-file ref.
