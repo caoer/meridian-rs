@@ -609,7 +609,7 @@ Three properties are load-bearing, in the order they matter:
  "fingerprint":"b3:6e866e13b5e65ef9961c050f8a621cf1980b00ee293be650deef5f4dbc6823f0","seq":2}}
 ```
 
-**The scoped mint arm (docs-first 2026-08-15, `scoped-guards` cap — §5.4; ruled base: D-04).** Under the cap, `fingerprint` takes an optional `scope` (a `Path`, §1) or `scope_bytes` (base64url over the raw path bytes, for names the UTF-8 `Path` noun cannot carry) — exactly one of the two; both absent is the root mint above, byte-identical to v2. The op mints the NAMED node's token: the workspace root, a folder, or a file leaf — `fingerprint {scope}` is the one mint home for every premise the §5.4 guard family accepts. A lawful path with no node answers the reserved non-hex value `absent` (§5.6); an unlawful path refuses `scope_unresolved` (§5.6, §8). The response echoes the request's scope pair beside the token, so a caller can never desync what it minted from where. Worked scoped-token values land with the implementation card — the interior encoding itself is changing under the width ruling (`node-rev-merkle-spec.md`), and this document prints no value an engine did not compute.
+**The scoped mint arm (docs-first 2026-08-15, `scoped-guards` cap — §5.4; ruled base: D-04).** Under the cap, `fingerprint` takes an optional `scope` (a `Path`, §1) or `scope_bytes` (base64url over the raw path bytes, for names the UTF-8 `Path` noun cannot carry) — exactly one of the two; both absent is the root mint above, byte-identical to v2; both supplied refuses `bad_request` — a mint names ONE node (bounce-2 closure, 2026-08-15; teaching: §8.2, the mint-pair text — the broken-premise-pair text cannot fit this door, since a mint supplies no fingerprint to pair). The op mints the NAMED node's token: the workspace root, a folder, or a file leaf — `fingerprint {scope}` is the one mint home for every premise the §5.4 guard family accepts. A lawful path with no node answers the reserved non-hex value `absent` (§5.6); an unlawful path refuses `scope_unresolved` (§5.6, §8). The response echoes the request's scope pair beside the token, so a caller can never desync what it minted from where. Worked scoped-token values land with the implementation card — the interior encoding itself is changing under the width ruling (`node-rev-merkle-spec.md`), and this document prints no value an engine did not compute.
 
 `diff` is reserved AT the integrity rung with its shape standing now — the compound front door:
 
@@ -700,7 +700,7 @@ The wire is permissive forever: unguarded, actor-less, receipt-less splices are 
 
 **Raw-byte names are addressable.** `scope_bytes` (base64url over the raw path bytes) rides beside the UTF-8 `scope` convenience — exactly one of the two per premise; mint (§4.7) and guard serve both. This closes the declared non-UTF-8 gap: "integrity-covered but unaddressable" is no longer the posture (`node-rev-merkle-spec.md` §9, amended in step — the UTF-8 read-face serving limits stand there).
 
-**The field matrix — one law at every strict wall (bounce-1 closure, 2026-08-15).** Top level, per door: `splice` (single and set form) and `script` take `if_fingerprint` (+ optional `scope`) as the one-premise sugar, and `guards[]` as the list. **`scope_bytes` is a top-level field on NO door**: a raw-byte premise rides a `guards[]` entry, and the raw-byte mint rides the `fingerprint` op (§4.7) — the § A.7 field wall (12 → 14: `guards`, `scope`) is this matrix applied, and no fifteenth field exists. Sugar and list supplied together are legal: the sugar desugars to one more entry in the premise list, and the engine checks every premise. Per premise (a `guards[]` entry): `{scope?, scope_bytes?, fingerprint}` — exactly one of `scope`/`scope_bytes`, or neither for the root premise; `fingerprint` is required and holds a token or `absent` (§5.6). Pair violations — `scope` or `scope_bytes` without its `fingerprint`, both spellings in one premise, sugar `scope` without `if_fingerprint` — refuse `bad_request` with teaching (§8.2). Effects doors take NO guard-family field (`if_fingerprint`, `guards`, `scope`, `scope_bytes` alike): inapplicable on `run` and beside `effects` on `script` — `bad_request` at the strict wall (§ A.7/§ A.8; teaching: §8.2).
+**The field matrix — one law at every strict wall (bounce-1 closure, 2026-08-15).** Top level, per door: `splice` (single and set form) and `script` take `if_fingerprint` (+ optional `scope`) as the one-premise sugar, and `guards[]` as the list. **`scope_bytes` is a top-level field on NO door**: a raw-byte premise rides a `guards[]` entry, and the raw-byte mint rides the `fingerprint` op (§4.7) — the § A.7 field wall (12 → 14: `guards`, `scope`) is this matrix applied, and no fifteenth field exists. Sugar and list supplied together are legal: the sugar desugars to one more entry in the premise list, and the engine checks every premise. Per premise (a `guards[]` entry): `{scope?, scope_bytes?, fingerprint}` — exactly one of `scope`/`scope_bytes`, or neither for the root premise; `fingerprint` is required and holds a token or `absent` (§5.6). Pair violations — `scope` or `scope_bytes` without its `fingerprint`, both spellings in one premise, sugar `scope` without `if_fingerprint` — refuse `bad_request` with teaching (§8.2); the mint door's own pair violation — both spellings on one `fingerprint` request — refuses `bad_request` at §4.7 with its own fitted text (§8.2, bounce-2 closure). Effects doors take NO guard-family field (`if_fingerprint`, `guards`, `scope`, `scope_bytes` alike): inapplicable on `run` and beside `effects` on `script` — `bad_request` at the strict wall (§ A.7/§ A.8; teaching: §8.2).
 
 **Guard-path freshness.** At check time the engine refreshes the named premise's own extent: guard one file, pay one file; guard a folder, pay the folder; guard the world, pay the world. Refusals narrow because the PREMISE narrows, never because the engine looked less hard.
 
@@ -715,6 +715,7 @@ Two different questions, two laws:
 - **Legality (D-04):** every addressable node of the tree is a legal premise — root, any folder, any file leaf, and `absent`. The engine checks every premise the caller supplies.
 - **Sufficiency (the Coverage Law):** legality does not satisfy requiredness. Let `W` be the caller-authored write set (every path the caller's own edits publish) and `G` the premise list — purely the caller's premises, everywhere this law speaks; no engine premise ever enters `G`. Requiredness holds iff **for every `w` in `W` there exists at least one `g` in `G` whose scope is ancestor-or-self of `w`** (an exact-section or absence premise covering `w` also suffices). A premise need not cover every target. A premise that covers no target is legal WIDENING — checked, strictest wins, never sufficient alone. Failure refuses `scope_does_not_cover` naming the UNCOVERED caller-authored target set; the engine never silently promotes the request to one common ancestor (LCA) or to root.
 - **Placement:** coverage is enforced at transaction/set ADMISSION — the door seam where the complete `W` and the complete `G` exist, before any per-member validation or byte move.
+- **Door scope** *(added 2026-08-15, bounce-2 closure — ruled execution class)*: the sufficiency demand binds exactly the doors under A.1's pure-write demand — the ops that land content by DECLARING their write set in the request (`splice` in every form, `create`, `remove`). The script door (§ A.7) is admitted by its own law, not this one: its commit premise is the engine-computed touch set — which always contains the armed writes — so a guardless pure script is admitted by construction, with an empty `G` and no uncovered set to name; caller premises there stay legal as WIDENING only (R3, `decisions/2026-08-15-plan-rulings-final.md`). Effects doors hold no premise at all (`decisions/2026-08-15-no-guard-on-effects.md`). Law source: fingerprint-grain plan §4.6, cited WITH `decisions/2026-08-15-coverage-quantifier-deviation.md` (standing citation law).
 - **Engine-generated writes, outside `W`** (the receipt rider, which crosses scopes inside one commit): the engine's own commit act covers them — the engine verifies them against the live tree at commit; the caller's `G` must cover the caller-authored targets.
 
 Consequences at the doors, stated so nothing is silently reinterpreted: a single-file `splice` whose every content edit carries `if_node_rev` is covered at those edits — an exact-section premise covers the mutation it guards, so A.1's demand is unchanged in effect; the set form's natural cover is each target file's own leaf token — one copyable token per file, membership-safe within the file; a root premise covers everything (today's `if_fingerprint`, unchanged); disjoint extra premises are legal as widening only.
@@ -926,7 +927,7 @@ Reads are idempotent: after a lost answer, re-send freely.
 
 ### §8.2 Register-law refusal texts — the scoped-guard family (docs-first, 2026-08-15)
 
-Refusal teaching speaks the register law: **reason first, fitted remedy, never session rules.** The texts below are carried from the fingerprint-grain merged plan's Appendix C (k3's F-12 redrafted form) byte-for-byte; the additions are `fingerprint_version_unsupported` and the three `bad_request` guard-family texts (bounce-1 closure, 2026-08-15), each drafted HERE in the same register because Appendix C carried no text for them — recorded, not slipped in.
+Refusal teaching speaks the register law: **reason first, fitted remedy, never session rules.** The texts below are carried from the fingerprint-grain merged plan's Appendix C (k3's F-12 redrafted form) byte-for-byte; the additions are `fingerprint_version_unsupported` and the three `bad_request` guard-family texts (bounce-1 closure, 2026-08-15), each drafted HERE in the same register because Appendix C carried no text for them — recorded, not slipped in. Bounce-2 closure (2026-08-15), same drafted-here provenance: the mint-pair text joins, and the broken-premise-pair remedy is re-worded — its old teaching ("one scope spelling PLUS its token — exactly one spelling") contradicted the LEGAL bare-root premise `{"fingerprint": …}` with no scope spelling (§5.4).
 
 ```
 fingerprint_mismatch (scoped):
@@ -962,12 +963,20 @@ source):
    or drop the field — the v2 forms (root if_fingerprint, if_node_rev)
    are fully served without it."
 bad_request — guard family, broken premise pair (drafted here — no
-Appendix C source):
+Appendix C source; remedy re-worded bounce-2 to admit the root form):
   "<detail — one of: <spelling> carries no fingerprint; both scope and
    scope_bytes in one premise; scope without if_fingerprint>. A premise
-   is one scope spelling PLUS its token — exactly one spelling, token
-   required. Mint the pair together (fingerprint{scope: "<scope>"}) and
-   send both."
+   is a token plus at most ONE scope spelling — the token is required,
+   the spelling is not: a bare {fingerprint} is the legal root premise.
+   To scope a premise, mint the pair together
+   (fingerprint{scope: "<scope>"}) and send both; to guard the world,
+   send the token alone."
+bad_request — mint pair, both spellings on one fingerprint request
+(drafted here — no Appendix C source; bounce-2 closure):
+  "this mint names its node twice — scope and scope_bytes in one
+   fingerprint request. A mint names ONE node: keep the one spelling
+   that names your path (scope for UTF-8 names, scope_bytes for raw
+   bytes) and re-send; both absent mints the root."
 bad_request — guard family, effects door (drafted here — no Appendix C
 source):
   "<field> was supplied on an unguarded door: run and script-with-effects
