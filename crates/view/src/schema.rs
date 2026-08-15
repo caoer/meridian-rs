@@ -1,10 +1,10 @@
-//! Round-1 view schema — 8 physical tables + 4 SQL views (binding design §Q1).
-//! Disposable projections of the parsed corpus, rebuilt on fingerprint change
-//! (view-never-store). DDL is the contract: singleton `_meridian_view`,
-//! task→section identity FK, derived `resolved`, C1 locator triple on every
-//! fact row.
+//! Round-1 view schema — 9 physical tables + 4 SQL views (binding design §Q1;
+//! `body` added by docs/body-projection.md). Disposable projections of the
+//! parsed corpus, rebuilt on fingerprint change (view-never-store). DDL is the
+//! contract: singleton `_meridian_view`, task→section identity FK, derived
+//! `resolved`, C1 locator triple on every fact row.
 
-/// Full round-1 DDL: singleton stamp + 7 fact tables + 4 views. Binding design —
+/// Full round-1 DDL: singleton stamp + 8 fact tables + 4 views. Binding design —
 /// do not edit without leader approval.
 pub const SCHEMA_SQL: &str = r#"
 -- View-never-store: every table is a disposable projection of the resident engine's parsed corpus,
@@ -198,6 +198,22 @@ CREATE TABLE task (
     PRIMARY KEY (path, seq),
     FOREIGN KEY (path, section_seq) REFERENCES section(path, node_seq)  -- task->section by IDENTITY (<=1)
 );
+CREATE TABLE body (                               -- exclusive-content chunks (docs/body-projection.md §2-§3)
+    path        TEXT     NOT NULL REFERENCES doc(path),
+    seq         UBIGINT  NOT NULL,                -- 0-based document order of chunks
+    section_seq UBIGINT,                          -- owning section's node_seq; NULL = preamble (before first heading)
+    hpath       TEXT,                             -- owning section's machine address (as section.hpath); ADVISORY; NULL on preamble
+    text        TEXT     NOT NULL,                -- the chunk bytes, verbatim: content start to first child section (heading lines in NO chunk)
+    span_start  UBIGINT  NOT NULL,                -- the chunk's own byte range (C1: slicing raw bytes yields text)
+    span_end    UBIGINT  NOT NULL,
+    -- The OWNING SECTION's CAS token, not a chunk hash: a search hit's next
+    -- move is a guarded splice on that section, and a chunk-grain rev would
+    -- teach an affordance that refuses (no chunk splice door exists). NULL on
+    -- preamble rows.
+    node_rev    TEXT,
+    PRIMARY KEY (path, seq),
+    FOREIGN KEY (path, section_seq) REFERENCES section(path, node_seq)
+);
 
 -- Convenience SQL views (no new storage) --
 CREATE VIEW backlink AS                           -- inbound vault edges = resolved reverse read
@@ -265,7 +281,11 @@ CREATE VIEW tag_all AS                             -- B2: the union — inline +
 /// §5.1 mint rule also narrows `exclusion` CONTENT on a case-insensitive
 /// volume (a spelling that reached bytes only through case-folding stops
 /// stamping), so a v6 file would serve pre-rule rows at the same fingerprint.
-pub const SCHEMA_VERSION: i32 = 7;
+///
+/// `8`: the `body` relation — exclusive-content chunks per section plus
+/// preamble (`docs/body-projection.md`); a version-7 projection has no body
+/// rows to serve.
+pub const SCHEMA_VERSION: i32 = 8;
 
 /// Run the full round-1 DDL against `conn` (8 tables + 4 views).
 ///

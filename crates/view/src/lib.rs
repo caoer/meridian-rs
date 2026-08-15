@@ -310,6 +310,7 @@ struct Counters {
     link: u64,
     tag: u64,
     task: u64,
+    body: u64,
 }
 
 /// Projected rows, staged then bulk-inserted in FK order. Shared with the
@@ -326,6 +327,7 @@ pub(crate) struct Rows {
     pub(crate) base: Vec<Vec<Value>>,
     pub(crate) base_view: Vec<Vec<Value>>,
     pub(crate) base_formula: Vec<Vec<Value>>,
+    pub(crate) body: Vec<Vec<Value>>,
 }
 
 /// One segment of a section's published machine address: raw heading text plus
@@ -415,6 +417,7 @@ pub(crate) fn collect_doc(
     ]);
 
     let mut counters = Counters::default();
+    emit_preamble(root, path, doc, &mut counters, rows);
     walk(
         root,
         path,
@@ -427,6 +430,58 @@ pub(crate) fn collect_doc(
         corpus,
         mounts,
     );
+}
+
+/// Emit the preamble `body` chunk — frontmatter end (0 without frontmatter) to
+/// the first section's span start (file end when the document has no
+/// sections). Emitted only when non-empty; it takes `seq` 0 when present, so
+/// it rides BEFORE the walk (`docs/body-projection.md` §2).
+fn emit_preamble(root: &Node, path: &str, doc: &Document, counters: &mut Counters, rows: &mut Rows) {
+    let start = root
+        .children
+        .iter()
+        .find(|c| matches!(c.kind, NodeKind::Frontmatter { .. }))
+        .map_or(0, |fm| fm.span.end);
+    let end = root
+        .children
+        .iter()
+        .find(|c| matches!(c.kind, NodeKind::Section { .. }))
+        .map_or(doc.raw.len(), |s| s.span.start);
+    if start >= end {
+        return;
+    }
+    let seq = counters.body;
+    counters.body += 1;
+    push_body_chunk(path, seq, None, None, start..end, doc, rows);
+}
+
+/// Stage one `body` row. `section` carries the owning section's
+/// `(node_seq, hpath-chain)` and its CAS token; `None` for preamble. The text
+/// slice is byte-exact: chunk boundaries are line-aligned by construction, so
+/// the expect is an engine-bug trap, never a data path.
+fn push_body_chunk(
+    path: &str,
+    seq: u64,
+    section: Option<(u64, &[AddrSeg])>,
+    node_rev: Option<&str>,
+    span: std::ops::Range<usize>,
+    doc: &Document,
+    rows: &mut Rows,
+) {
+    let text = doc
+        .raw
+        .get(span.start..span.end)
+        .expect("body chunk boundaries are line-aligned");
+    rows.body.push(vec![
+        Value::Text(path.to_string()),
+        Value::UBigInt(seq),
+        section.map_or(Value::Null, |(n, _)| Value::UBigInt(n)),
+        section.map_or(Value::Null, |(_, chain)| Value::Text(hpath_json(chain))),
+        Value::Text(text.to_string()),
+        Value::UBigInt(u64c(span.start)),
+        Value::UBigInt(u64c(span.end)),
+        node_rev.map_or(Value::Null, |r| Value::Text(r.to_string())),
+    ]);
 }
 
 /// Walk one node (emit fact rows), recurse with governing `section_seq` for
@@ -454,6 +509,7 @@ fn walk(
             let node_seq = counters.section;
             counters.section += 1;
             emit_section(node, path, *level, node_seq, chain, rows);
+            emit_section_chunk(node, path, node_seq, chain, doc, counters, rows);
             child_gov = Some(node_seq);
         }
         NodeKind::Wikilink {
@@ -668,6 +724,40 @@ fn emit_section(
     ]);
 }
 
+/// Emit one `body` chunk for a section — the exclusive-content law
+/// (`docs/body-projection.md` §2): from the content span's start (heading line
+/// stripped — `model::content_span`, the law's one owner) to the first child
+/// section's span start, else the section's own span end. Always emitted,
+/// empty text included: `COUNT(body WHERE section_seq IS NOT NULL) =
+/// COUNT(section)` is the spec's invariant.
+fn emit_section_chunk(
+    node: &Node,
+    path: &str,
+    node_seq: u64,
+    chain: &[AddrSeg],
+    doc: &Document,
+    counters: &mut Counters,
+    rows: &mut Rows,
+) {
+    let start = model::content_span(node, doc.raw.as_bytes()).start;
+    let end = node
+        .children
+        .iter()
+        .find(|c| matches!(c.kind, NodeKind::Section { .. }))
+        .map_or(node.span.end, |c| c.span.start);
+    let seq = counters.body;
+    counters.body += 1;
+    push_body_chunk(
+        path,
+        seq,
+        Some((node_seq, chain)),
+        Some(&node.node_rev.0),
+        start..end,
+        doc,
+        rows,
+    );
+}
+
 /// Emit one `link` row. `resolved` is generated, never inserted. Schema CHECKs
 /// make "both dests set" and "root without path" unrepresentable.
 #[allow(clippy::too_many_arguments)]
@@ -876,7 +966,8 @@ impl Rows {
         // other table already loads in).
         append_rows(conn, "base", &self.base)?;
         append_rows(conn, "base_view", &self.base_view)?;
-        append_rows(conn, "base_formula", &self.base_formula)
+        append_rows(conn, "base_formula", &self.base_formula)?;
+        append_rows(conn, "body", &self.body)
     }
 }
 
@@ -965,6 +1056,104 @@ mod tests {
         assert_eq!(parse_fm_tags("['#foo', \"bar\"]"), vec!["foo", "bar"]);
     }
 
+    /// The body-projection worked gate (`docs/body-projection.md` §8) plus its
+    /// §7.1 negatives: exclusive-content chunks, preamble handling, CJK bytes
+    /// verbatim, the empty-content row, and the section-count invariant.
+    #[test]
+    fn body_chunks_follow_the_exclusive_content_law() {
+        let docs: BTreeMap<String, Document> = [
+            (
+                "a.md",
+                "---\ntitle: Alpha\n---\npreamble line\n\n# Top\nintro\n\n## Sub\nsub body\n",
+            ),
+            ("cjk.md", "# \u{4e2d}\u{6587}\n\u{6b63}\u{6587}\u{5185}\u{5bb9}\n"),
+            ("nopre.md", "# Only\nbody\n"),
+            ("fmonly.md", "---\nk: v\n---\n"),
+            ("hollow.md", "# A\n## B\nb\n"),
+        ]
+        .into_iter()
+        .map(|(p, raw)| (p.to_string(), model::build(raw.to_string(), syntax::parse(raw))))
+        .collect();
+        let conn = build_memory(&docs, "b3:body-gate").expect("build");
+
+        let rows: Vec<(String, u64, Option<u64>, Option<String>, String)> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT path, seq, section_seq, hpath, text FROM body ORDER BY path, seq",
+                )
+                .expect("prepare");
+            let got = stmt
+                .query_map([], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+                })
+                .expect("query");
+            got.collect::<Result<_, _>>().expect("rows")
+        };
+
+        let expect: Vec<(String, u64, Option<u64>, Option<String>, String)> = vec![
+            // a.md: preamble, Top's exclusive content, Sub's content.
+            ("a.md".into(), 0, None, None, "preamble line\n\n".into()),
+            (
+                "a.md".into(),
+                1,
+                Some(0),
+                Some(r#"[{"h":"Top"}]"#.into()),
+                "intro\n\n".into(),
+            ),
+            (
+                "a.md".into(),
+                2,
+                Some(1),
+                Some(r#"[{"h":"Top"},{"h":"Sub"}]"#.into()),
+                "sub body\n".into(),
+            ),
+            // cjk.md: bytes verbatim.
+            (
+                "cjk.md".into(),
+                0,
+                Some(0),
+                Some("[{\"h\":\"\u{4e2d}\u{6587}\"}]".into()),
+                "\u{6b63}\u{6587}\u{5185}\u{5bb9}\n".into(),
+            ),
+            // fmonly.md: zero rows (no preamble byte, no section).
+            // hollow.md: A's chunk is EMPTY but PRESENT; B carries the byte.
+            (
+                "hollow.md".into(),
+                0,
+                Some(0),
+                Some(r#"[{"h":"A"}]"#.into()),
+                String::new(),
+            ),
+            (
+                "hollow.md".into(),
+                1,
+                Some(1),
+                Some(r#"[{"h":"A"},{"h":"B"}]"#.into()),
+                "b\n".into(),
+            ),
+            // nopre.md: no preamble row.
+            (
+                "nopre.md".into(),
+                0,
+                Some(0),
+                Some(r#"[{"h":"Only"}]"#.into()),
+                "body\n".into(),
+            ),
+        ];
+        assert_eq!(rows, expect);
+
+        // The §2 invariant: one section chunk per section, always.
+        let (chunks, sections): (i64, i64) = conn
+            .query_row(
+                "SELECT (SELECT count(*) FROM body WHERE section_seq IS NOT NULL), \
+                        (SELECT count(*) FROM section)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("counts");
+        assert_eq!(chunks, sections);
+    }
+
     #[test]
     fn build_memory_over_empty_corpus_stamps_singleton() {
         let docs = BTreeMap::new();
@@ -1041,6 +1230,11 @@ mod tests {
             conn,
             "INSERT INTO base_formula (path, ord, name, expr) VALUES (?, ?, ?, ?)",
             &rows.base_formula,
+        )?;
+        insert_rows(
+            conn,
+            "INSERT INTO body (path, seq, section_seq, hpath, text, span_start, span_end, node_rev) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            &rows.body,
         )
     }
 
@@ -1048,7 +1242,7 @@ mod tests {
     /// generated, never stored, so it is derived equal by construction). The
     /// hpath columns are TEXT (the JSON machine address — injective and
     /// self-delimiting), so they digest verbatim.
-    const LANE_DIGESTS: [(&str, &str); 10] = [
+    const LANE_DIGESTS: [(&str, &str); 11] = [
         (
             "doc",
             "SELECT coalesce(md5(string_agg(path || '|' || file_rev || '|' || line_count::VARCHAR || '|' || bytes::VARCHAR, chr(10) ORDER BY path)), 'EMPTY') FROM doc",
@@ -1089,9 +1283,13 @@ mod tests {
             "base_formula",
             "SELECT coalesce(md5(string_agg(path || '|' || ord::VARCHAR || '|' || name || '|' || expr, chr(10) ORDER BY path, name)), 'EMPTY') FROM base_formula",
         ),
+        (
+            "body",
+            "SELECT coalesce(md5(string_agg(path || '|' || seq::VARCHAR || '|' || coalesce(section_seq::VARCHAR,'~N~') || '|' || coalesce(hpath,'~N~') || '|' || text || '|' || span_start::VARCHAR || '|' || span_end::VARCHAR || '|' || coalesce(node_rev,'~N~'), chr(10) ORDER BY path, seq)), 'EMPTY') FROM body",
+        ),
     ];
 
-    /// Load `rows` into a fresh schema through `lane`; return the 7 digests.
+    /// Load `rows` into a fresh schema through `lane`; return the per-table digests.
     fn lane_digests(
         rows: &Rows,
         lane: impl Fn(&Rows, &Connection) -> duckdb::Result<()>,
