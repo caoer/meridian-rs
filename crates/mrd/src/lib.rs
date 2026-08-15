@@ -230,8 +230,16 @@ usage:
                            form. There is no --all/--full, and naming every
                            section instead DUPLICATES the nested bodies. Human:
                            rendered text. --json toc: structured toc[] only, no
-                           rendered_text. Exits: 0 served / 1 engine refused /
-                           2 bad invocation.
+                           rendered_text. READ BUDGET: one section read serves
+                           at most 20000 WORDS and names at most 64 DISTINCT
+                           --section selectors. Over either the read REFUSES,
+                           never truncates. The word ceiling is priced in the
+                           map you already have: a bare read lists every section
+                           with its own words, so pick what fits before asking.
+                           Repeated identical selectors are served ONCE and the
+                           collapse is stated. The section map itself is never
+                           word-bounded — it is the way back in. Exits: 0 served
+                           / 1 engine refused / 2 bad invocation.
 ! mrd put <PATH> [--dry | --validate] [--force] [--actor A] [--now T]
           [--if-fingerprint FP] [--receipt PATH#ANCHOR] [--json]
                            batch write. STDIN = BARE JSON array

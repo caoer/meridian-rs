@@ -38,6 +38,26 @@ fn agent_plane_face(rendered: String) -> Result<String, Box<ErrorBody>> {
 /// wires it without taking a `render` dependency of its own.
 pub use render::{ClaimLink, Decorations, NO_DECORATIONS};
 
+/// The read plane's own size ceiling: the words ONE sections call may serve.
+///
+/// Counted in WORDS, not bytes, because the face already speaks words — the
+/// banner's `words_total` and every toc row's `words:N` — so a caller reads
+/// the cost of a section before asking for it, and the ceiling is
+/// discoverable BEFORE it refuses (laws.md § the face-honesty law, clause 2).
+/// A byte bound would be invisible until tripped.
+///
+/// The number is a product knob (leader call, 2026-08-15, card
+/// `read-budget-refusal-missing`): the bound exists to fire before the MCP
+/// host clips the result, and hosts in this fleet clip tool output near ~25k
+/// tokens — roughly 18–19k English words — so 20 000 is the largest round
+/// bound that still beats the clip in the common case. Tunable in one line.
+pub const READ_MAX_WORDS: u64 = 20_000;
+
+/// The § A.8 fan-out ceiling every face list carries, at the read door: the
+/// DISTINCT selectors one `sections[]` call may name. Reused, not invented —
+/// the same 64 the run plane's `targets[]` carries.
+pub const READ_MAX_SELECTORS: usize = 64;
+
 /// wire §4.1 the map: header `file_rev` (the document root's rev over whole-file
 /// bytes) + the ambient `root`, rows from the `wire-map` projection. `ambient`
 /// is the corpus content-hash cursor the caller already holds.
@@ -172,7 +192,9 @@ pub(crate) fn mint_actor(actor: Option<&str>) -> Option<&str> {
 /// # Errors
 /// `bad_request` (fix): `toc` and `sections` both present ("pass one"); a
 /// `toc` anchor arm (a block has no subtree); a section read with no
-/// selectors. `ref_not_found` (fix): a `toc` selector naming no section; all
+/// selectors; a section read past either of this plane's bounds — more than
+/// [`READ_MAX_SELECTORS`] distinct selectors, or a resolved set that would
+/// serve more than [`READ_MAX_WORDS`] words. `ref_not_found` (fix): a `toc` selector naming no section; all
 /// section selectors missing. `ambiguous_ref` (fix): a `toc` selector
 /// matching more than one section. `internal` carrying the typed
 /// `render_failed` spelling when the walker refuses.
@@ -266,7 +288,11 @@ pub fn composed_read(
             anchors,
             props,
             sections: Some(rendered_sections),
-            truncated: body.notice.is_some().then_some(true),
+            // `truncated` means rows are MISSING from the answer, which is
+            // the unresolved plane alone. A collapsed repeat is carried by
+            // the notice beside it and is not a truncation: every distinct
+            // selector the caller named is served.
+            truncated: (!body.unresolved.is_empty()).then_some(true),
             notice: body.notice,
             unresolved: body.unresolved,
             rendered_text: agent_plane_face(body.text)?,
@@ -1018,6 +1044,32 @@ fn unaddressable_fix(host: &str, display: &str) -> String {
     }
 }
 
+/// Collapse identical selectors, keeping first-occurrence order, and report
+/// how many were dropped.
+///
+/// Identity is the selector's own serialized form: two selectors are the same
+/// question only when they are the same spelling. Two DIFFERENT spellings that
+/// land on one node stay two rows — the caller asked twice in two grammars and
+/// each row carries its own `sel` back, so collapsing them would answer a
+/// question that was not asked.
+///
+/// Keyed through a set rather than a linear scan so a pathological list is
+/// `O(n log n)`: the count ceiling is applied to the DISTINCT set, so this
+/// runs before anything bounds the input length.
+fn dedupe_selectors(sels: &[wire::ReadSel]) -> (Vec<wire::ReadSel>, usize) {
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut out: Vec<wire::ReadSel> = Vec::with_capacity(sels.len());
+    for sel in sels {
+        // Selectors are strings and ints; serialization is infallible.
+        let key = serde_json::to_string(sel).unwrap_or_default();
+        if seen.insert(key) {
+            out.push(sel.clone());
+        }
+    }
+    let repeats = sels.len() - out.len();
+    (out, repeats)
+}
+
 /// A candidate's machine address — the verbatim `[{"h":…,"n":…}]` segment
 /// array the read face publishes and `put`/`sections[]` take back.
 fn machine_addr(hpath: &[wire::HpathSeg]) -> String {
@@ -1059,9 +1111,24 @@ fn composed_sections(
              (MCP read: sections[] omitted; CLI: no --section)."
         )));
     }
+    // Repeats first, ceiling second. An identical selector is one question
+    // asked twice: it resolves to the same node, so its row, its bytes and its
+    // rev are byte-identical — 65 copies is the r9 F1 receipt B waste, not 65
+    // answers. Collapsing before counting also means a caller who repeats
+    // themselves is never refused for a fan-out they never asked for.
+    let (distinct, repeats) = dedupe_selectors(sels);
+    if distinct.len() > READ_MAX_SELECTORS {
+        return Err(bad_request(format!(
+            "read: {} distinct section selectors were passed for {display} — past the \
+             ceiling of {READ_MAX_SELECTORS} per call. Nothing was read and no rev was \
+             minted.\n  → split the ask: pass at most {READ_MAX_SELECTORS} selectors per \
+             read and repeat the call for the rest.",
+            distinct.len()
+        )));
+    }
     let mut rows: Vec<render::SectionRow<'_>> = Vec::new();
     let mut failures: Vec<SelFail> = Vec::new();
-    for sel in sels {
+    for sel in &distinct {
         let matches = wire_map::facts::selector_matches(facts, sel);
         match matches.as_slice() {
             &[fact] => rows.push(render::SectionRow { sel, fact }),
@@ -1133,13 +1200,47 @@ fn composed_sections(
         ));
         return Err(Box::new(e));
     }
-    let notice = (!failures.is_empty()).then(|| {
-        let entries: Vec<String> = failures.iter().map(SelFail::notice_entry).collect();
-        format!(
-            "unresolved selectors (no rev minted): {}",
-            entries.join(", ")
-        )
-    });
+    // The size bound, measured on the rows this call actually resolved — so
+    // the number the refusal names is the number the caller would have been
+    // served, never an estimate off the whole file. Nested selections are
+    // counted as served: a parent and its child both selected DO carry the
+    // child's bytes twice.
+    let served_words: u64 = rows
+        .iter()
+        .map(|row| wire_map::facts::section_words(row.fact, doc.raw.as_bytes()))
+        .sum();
+    if served_words > READ_MAX_WORDS {
+        return Err(bad_request(format!(
+            "read: this call would serve {served_words} words from {} section(s) of \
+             {display} — past the read ceiling of {READ_MAX_WORDS} words per call: \
+             refused, never truncated. Nothing was read and no rev was minted.\n  \
+             → narrow the ask: a bare toc \
+             read of {display} lists every section with its own `words:N`, so you can \
+             pick the ones that fit; then pass those in `sections[]`, or scope the shape \
+             table to one subtree first with `toc:`.",
+            rows.len()
+        )));
+    }
+    let notice = {
+        let mut entries: Vec<String> = Vec::new();
+        if !failures.is_empty() {
+            let fails: Vec<String> = failures.iter().map(SelFail::notice_entry).collect();
+            entries.push(format!(
+                "unresolved selectors (no rev minted): {}",
+                fails.join(", ")
+            ));
+        }
+        // Marked, never silent: a collapsed repeat is a served answer that
+        // does not match the shape of the ask, which is exactly what
+        // face-honesty clause 1 exists to state out loud.
+        if repeats > 0 {
+            entries.push(format!(
+                "collapsed {repeats} repeated selector(s): each section is served once — \
+                 a repeat resolves to the same node, so its bytes and its rev are identical"
+            ));
+        }
+        (!entries.is_empty()).then(|| entries.join("; "))
+    };
     let unresolved: Vec<wire::ReadUnresolved> = failures.iter().map(SelFail::row).collect();
     let job = render::RenderJob::Sections {
         header,
