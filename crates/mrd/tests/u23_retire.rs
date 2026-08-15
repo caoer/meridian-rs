@@ -945,3 +945,139 @@ fn every_reason_word_carries_the_four_property_contract() {
         "every reason word the engine can emit has a fixture here"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The outside-domain line — capped prose over a complete population
+// ---------------------------------------------------------------------------
+
+/// How many excluded files the cap fixture plants under `bulk/`. Well above the
+/// cap, so the remainder clause does real arithmetic.
+const EXCLUDED_BULK: usize = 12;
+/// The cap the human line is expected to honour — stated independently of the
+/// implementation constant ON PURPOSE: a test that imports the value it checks
+/// passes for any value.
+const EXPECTED_SHOWN: usize = 3;
+
+/// A base vault plus a `bulk/**` ignore rule, `EXCLUDED_BULK` files under it,
+/// and one dot-segment page — the population `retire` must enumerate COMPLETELY
+/// on its machine answer and name only a sample of in prose.
+fn vault_with_excluded(sb: &Sandbox) -> PathBuf {
+    let mut files = base_vault(true);
+    files.push((
+        "meridian/domain.md",
+        "---\nversion: 1\nignore:\n  - \"bulk/**\"\n---\n\nVendored copies do not move this workspace's fingerprint.\n".to_owned(),
+    ));
+    let ws = sb.workspace(&as_pairs(&files));
+    for i in 0..EXCLUDED_BULK {
+        let p = ws.join(format!("bulk/file{i:02}.md"));
+        std::fs::create_dir_all(p.parent().expect("parent")).expect("mkdir");
+        std::fs::write(p, "# bulk\n\nexcluded.\n").expect("write");
+    }
+    let dot = ws.join(".snapshots/2026-08-15/index.md");
+    std::fs::create_dir_all(dot.parent().expect("parent")).expect("mkdir");
+    std::fs::write(dot, "# noise\n\nnever served.\n").expect("write");
+    ws
+}
+
+/// The human line states the FULL outside-domain count, names at most
+/// `EXPECTED_SHOWN` paths with the remainder clause, and points at the key that
+/// carries the rest — while `files_excluded` stays the COMPLETE population, dot
+/// paths included, because this verb certifies absence (decision 0017).
+/// *Mutation:* restore the uncapped `excluded.join(", ")` and the line grows
+/// with the root — the 2026-08-10 3.1M-character shape.
+#[test]
+fn the_outside_domain_line_samples_the_paths_while_the_json_key_stays_complete() {
+    let sb = sandbox();
+    let ws = vault_with_excluded(&sb);
+
+    let said = stdout(&sb.run(&ws, &["retire", "report"]));
+
+    // Positive control FIRST: an absent line satisfies every bound below.
+    assert!(
+        said.contains("outside the hash domain"),
+        "the outside-domain line did not fire at all, so this gate would pass \
+         vacuously — the fixture is wrong, not the cap: {said}"
+    );
+
+    // The machine answer names the whole population — the count the prose must
+    // state, and the completeness the cap must not touch.
+    let report = json(&sb.run(&ws, &["retire", "report", "--json"]));
+    let excluded: Vec<&str> = report["files_excluded"]
+        .as_array()
+        .expect("files_excluded")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    for member in [
+        "bulk/file00.md",
+        "bulk/file11.md",
+        ".snapshots/2026-08-15/index.md",
+    ] {
+        assert!(
+            excluded.contains(&member),
+            "certify-absence keeps the machine enumeration COMPLETE, dot paths \
+             included; missing {member}: {excluded:?}"
+        );
+    }
+
+    // The COUNT is the whole population and is never capped — the half that
+    // keeps the exclusion non-silent.
+    assert!(
+        said.contains(&format!("{} markdown file(s)", excluded.len())),
+        "the line must state the FULL count ({}): {said}",
+        excluded.len()
+    );
+
+    // The SAMPLE is capped, and admits it.
+    let rest = excluded.len() - EXPECTED_SHOWN;
+    assert!(
+        said.contains(&format!("and {rest} more")),
+        "the line must say how many it did NOT name — a sample that does not \
+         admit it is a sample reads as the whole list: {said}"
+    );
+
+    // The assertion that actually fails when the cap is removed.
+    let named = excluded.iter().filter(|rel| said.contains(**rel)).count();
+    assert_eq!(
+        named, EXPECTED_SHOWN,
+        "the line named {named} paths; the cap is {EXPECTED_SHOWN}: {said}"
+    );
+
+    // Capping prose loses nothing only if the reader is told where the rest is.
+    assert!(
+        said.contains("`files_excluded`"),
+        "a capped line must point at the complete machine-readable list, or \
+         the cap becomes the silence the enumerator clause forbids: {said}"
+    );
+}
+
+/// The negative case: a population at or under the cap is named in full and
+/// claims no remainder. *Mutation:* make the remainder clause unconditional and
+/// this line claims "and 0 more", teaching readers to ignore the clause.
+#[test]
+fn a_small_outside_domain_population_is_named_in_full_with_no_remainder() {
+    let sb = sandbox();
+    let mut files = base_vault(true);
+    files.push((
+        "meridian/domain.md",
+        "---\nversion: 1\nignore:\n  - \"bulk/**\"\n---\n\nignored.\n".to_owned(),
+    ));
+    let ws = sb.workspace(&as_pairs(&files));
+    let p = ws.join("bulk/only.md");
+    std::fs::create_dir_all(p.parent().expect("parent")).expect("mkdir");
+    std::fs::write(p, "# one\n\nexcluded.\n").expect("write");
+
+    let said = stdout(&sb.run(&ws, &["retire", "report"]));
+    assert!(
+        said.contains("outside the hash domain"),
+        "control: the line must fire here too: {said}"
+    );
+    assert!(
+        said.contains("bulk/only.md"),
+        "a population under the cap is named in full: {said}"
+    );
+    assert!(
+        !said.contains(" more"),
+        "there is no remainder, so the line must not claim one: {said}"
+    );
+}

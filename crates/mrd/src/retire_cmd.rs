@@ -1280,12 +1280,18 @@ fn render_human(
         per_decl.len(),
         fingerprint.0
     );
+    // The COUNT is the whole population; the PROSE names a capped sample and
+    // points at the key that carries the rest. The population itself is lawfully
+    // complete — this verb certifies absence, so `files_excluded` on the `--json`
+    // enumerates every file, dot paths included (decision 0017). Only the human
+    // line is bounded, by the house spelling (card retire-cmd-cap-join): an
+    // uncapped join over a large root is the 2026-08-10 3.1M-character shape.
     if !excluded.is_empty() {
         let _ = writeln!(
             out,
-            "outside the hash domain: {} markdown file(s) under this root were NOT scanned — {}. This sweep certifies absence over the domain only: a reference living in one of these files is NOT retired and is NOT reported here (decision 0017).",
+            "outside the hash domain: {} markdown file(s) under this root were NOT scanned — {}. This sweep certifies absence over the domain only: a reference living in one of these files is NOT retired and is NOT reported here (decision 0017). The complete list is the `files_excluded` key of this verb's `--json`.",
             excluded.len(),
-            excluded.join(", ")
+            crate::capped_sample(excluded)
         );
     }
     for (decl, c, _) in per_decl {
