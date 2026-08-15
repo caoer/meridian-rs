@@ -1,7 +1,7 @@
 //! The §6.4 event feed — the engine owns its senses (merkle-spec, adjudicated
 //! engine-side, five lanes unanimous; merged plan §4.3).
 //!
-//! One kernel file watcher per workspace (notify: FSEvents on macOS, inotify
+//! One kernel file watcher per workspace (notify: `FSEvents` on macOS, inotify
 //! on Linux), owned by this daemon — the engine process. Events accumulate
 //! into a per-workspace DIRTY SET held by the registry, and the set applies
 //! into the workspace's resident memo ([`fs::DomainCache`]) whenever the
@@ -239,7 +239,7 @@ impl FeedState {
 /// engine is cold, so filtering by it here could drop the one event that
 /// mattered; a custom-ignored member's spoil is merely a no-op re-read.
 fn member_candidate(rel: &Path) -> bool {
-    let mut segments = 0usize;
+    let mut any_segment = false;
     for component in rel.components() {
         let Component::Normal(seg) = component else {
             return false;
@@ -250,9 +250,9 @@ fn member_candidate(rel: &Path) -> bool {
         if fs::domain::dot_segment(seg) {
             return false;
         }
-        segments += 1;
+        any_segment = true;
     }
-    segments > 0
+    any_segment
         && rel
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("md"))

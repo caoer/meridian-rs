@@ -2,7 +2,7 @@
 //! real events, across a real engine reap. The deterministic law tests (the
 //! O(dirty) counters, the guard-independence gate, the reap split) live in
 //! `registry::engine_tests` and drive the feed through its hint door; THIS
-//! file proves the kernel half — FSEvents on macOS, inotify on Linux —
+//! file proves the kernel half — `FSEvents` on macOS, inotify on Linux —
 //! delivers an edit made while the engine is cold into the dirty set, and
 //! that the next warm applies it.
 

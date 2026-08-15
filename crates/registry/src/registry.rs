@@ -589,12 +589,11 @@ impl Registry {
     /// (nothing resident to patch, so the hint is moot).
     pub fn note_dirty(&self, workspace: &Path, paths: &[PathBuf]) -> bool {
         let feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
-        match feeds.get(workspace) {
-            Some(FeedSlot::Live(feed)) => {
-                feed.note_dirty(paths.iter().map(PathBuf::as_path));
-                true
-            }
-            _ => false,
+        if let Some(FeedSlot::Live(feed)) = feeds.get(workspace) {
+            feed.note_dirty(paths.iter().map(PathBuf::as_path));
+            true
+        } else {
+            false
         }
     }
 
@@ -602,9 +601,10 @@ impl Registry {
     #[must_use]
     pub fn feed_stats(&self, workspace: &Path) -> Option<feed::FeedStats> {
         let feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
-        match feeds.get(workspace) {
-            Some(FeedSlot::Live(feed)) => Some(feed.stats()),
-            _ => None,
+        if let Some(FeedSlot::Live(feed)) = feeds.get(workspace) {
+            Some(feed.stats())
+        } else {
+            None
         }
     }
 
