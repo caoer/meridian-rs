@@ -17,6 +17,12 @@
 //!   Optional; defaults to `board`. The folder a user files cards in is THEIR flow, so it is read
 //!   off their markdown and only defaulted in code (`docs/laws.md` § Amendment — no hard-coded
 //!   flow, rule 1).
+//! - `realise.card` — the workspace-relative template page minting this claim's pending-agent
+//!   board card: the page's `^template` block supplies the card's ENTIRE vocabulary (the state
+//!   key's spelling, status words, headings, prose are the user's — docs/laws.md § Amendment,
+//!   no hard-coded flow); the engine fills only `{{selector}}`, `{{rule}}`, `{{detail}}`,
+//!   `{{now}}`, `{{actor}}`. Declared but unresolvable refuses the mint loud. Absent ⇒ the
+//!   built-in card body.
 //!
 //! The retry budget is one apply then one re-check.
 //!
@@ -112,6 +118,7 @@ fn realise_page(root: &fs::WorkspaceRoot, page: &str, parsed: &Parsed) -> Result
         apply,
         // Exactly one apply, then one re-check.
         retry_budget: 1,
+        card_template: fm_scalar(&doc, "realise.card"),
     };
 
     let (invocation_id, now) = mint_identity()?;
