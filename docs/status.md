@@ -703,12 +703,15 @@ at-rest truth — does the world still match the pins — writing nothing and
 minting no receipt. `status = freshness, check = validity`: this verb answers
 "what lies?".
 
-**Write history is not assessed: the engine keeps no memory.** Every face
-carries the `write_history: not-assessed` disclosure with its reason — history
-is pinned to git at lock, and anything between locks is not history — so chain
+**Write history is not assessed: the engine keeps no memory.** History is
+pinned to git at lock, and anything between locks is not history — so chain
 continuity and last-receipt-vs-live are **not checked here at all: not grey,
 NOT CHECKED**. Green means the world still matches the pins, never how it got
-there.
+there. Every face carries the `write_history: not-assessed` disclosure naming
+the narrowing — what the green stopped covering, and that the answer lives in
+git. The disclosure states the narrowed CLAIM, never the engine's mechanism:
+the WHY above is this document's to teach, on demand, not a footnote charged
+to every invocation (the report-voice law, ZT rulings 3–5, 2026-08-15).
 
 **The interval this verb spans.** The `worktree` interval — the bytes on disk
 — is always assessed. `--staged` adds the interval a commit records: git
