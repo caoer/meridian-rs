@@ -34,7 +34,7 @@ mod script_edit;
 pub mod trace;
 
 pub use kernel::validate;
-pub use script_edit::{ArmedEdit, hpath_addresses};
+pub use script_edit::{ArmedEdit, hpath_addresses, segs_address, sel_addresses};
 
 /// One rule's metered outcome: typed result plus exact fuel (Starlark ticks)
 /// and peak-heap bytes. Never-reached eval → `0`/`0` + authoring fault; bomb
@@ -832,12 +832,17 @@ pub trait ScriptHost: Send {
     /// The §4.2 cat face for one `section` of `path`. There is no whole-file
     /// body: read one section, not the disk. `armed` as on [`ScriptHost::toc`].
     ///
+    /// `section` arrives as the parsed selector: the one human-string→selector
+    /// door ([`wire::ReadSel::parse`]) sits at the kernel's `section=` boundary
+    /// — never inward of it — so a host serves segments and cannot re-split a
+    /// heading whose raw text carries `/`.
+    ///
     /// # Errors
     /// A [`ReadFault`] when the host cannot serve the section; the script aborts.
     fn cat(
         &mut self,
         path: &str,
-        section: &str,
+        section: &wire::ReadSel,
         armed: &[ArmedEdit],
     ) -> Result<SecFacts, ReadFault>;
 
@@ -956,12 +961,33 @@ pub struct TocFacts {
 /// One toc row: the section, its optional `^anchor`, and its node rev.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TocEntry {
-    /// The section heading.
+    /// The section heading — the `/`-joined display spelling.
     pub section: String,
     /// The block anchor, when the row carries one. Absence stays absence.
     pub anchor: Option<String>,
     /// The node rev of this section.
     pub rev: String,
+    /// The raw §2.1 segments behind `section` — one `{h, n?}` per heading,
+    /// exactly as the wire published them. This is the feedable address: the
+    /// joined `section` splits on `/`, so a heading whose raw text carries one
+    /// is round-trippable only through this field (`docs/laws.md` D-1). Empty
+    /// on an anchor-only row, and on rows recorded before the field existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hpath: Vec<wire::HpathSeg>,
+}
+
+impl TocEntry {
+    /// Does this row address the same node as an armed `hpath`? Segment-true
+    /// when the row carries its segments; the joined-string parse otherwise
+    /// (pre-field rows) — the one matcher every threading lane uses, so a
+    /// licensed row cannot depend on which spelling the toc arrived in.
+    #[must_use]
+    pub fn addresses(&self, hpath: &[wire::HpathSeg]) -> bool {
+        if self.hpath.is_empty() {
+            return hpath_addresses(&self.section, hpath);
+        }
+        segs_address(&self.hpath, hpath)
+    }
 }
 
 /// The cat face (§4.2): one section's text and its rev.
@@ -997,8 +1023,12 @@ pub enum ReadPosition {
 pub struct ReadRecord {
     /// The path read.
     pub path: String,
-    /// The section, when the cat face was asked for.
-    pub section: Option<String>,
+    /// The parsed section selector, when the cat face was asked for — the
+    /// STRUCTURE, not a spelling: a display string would collide the
+    /// one-segment `A/B` with the two-segment path, and replay divergence
+    /// plus rev threading both compare this field. The trace derives its
+    /// display spelling from here ([`wire::ReadSel::display`]).
+    pub section: Option<wire::ReadSel>,
     /// 1-based source line of the call.
     pub line: u32,
     /// Whether the call sat at module top level or nested.
@@ -1198,11 +1228,17 @@ impl<'r> RecordedHost<'r> {
         Self { recording, next: 0 }
     }
 
-    /// Take the next recorded response, refusing on divergence.
-    fn next_face(&mut self, path: &str, section: Option<&str>) -> Result<&'r ReadFace, ReadFault> {
+    /// Take the next recorded response, refusing on divergence. Selectors
+    /// compare STRUCTURALLY — two spellings of one address diverge or match
+    /// exactly as the live kernel would have parsed them.
+    fn next_face(
+        &mut self,
+        path: &str,
+        section: Option<&wire::ReadSel>,
+    ) -> Result<&'r ReadFace, ReadFault> {
         let fault = |reason: String| ReadFault {
             path: path.to_owned(),
-            section: section.map(ToOwned::to_owned),
+            section: section.map(wire::ReadSel::display),
             reason,
         };
         let record = self
@@ -1210,12 +1246,12 @@ impl<'r> RecordedHost<'r> {
             .reads
             .get(self.next)
             .ok_or_else(|| fault("the recording holds no further read".to_owned()))?;
-        if record.path != path || record.section.as_deref() != section {
+        if record.path != path || record.section.as_ref() != section {
             return Err(fault(format!(
                 "diverges from the recording, which holds read #{} of {:?} section={:?}",
                 self.next + 1,
                 record.path,
-                record.section
+                record.section.as_ref().map(wire::ReadSel::display)
             )));
         }
         self.next += 1;
@@ -1238,14 +1274,14 @@ impl ScriptHost for RecordedHost<'_> {
     fn cat(
         &mut self,
         path: &str,
-        section: &str,
+        section: &wire::ReadSel,
         _armed: &[ArmedEdit],
     ) -> Result<SecFacts, ReadFault> {
         match self.next_face(path, Some(section))? {
             ReadFace::Section(facts) => Ok(facts.clone()),
             ReadFace::Toc(_) => Err(ReadFault {
                 path: path.to_owned(),
-                section: Some(section.to_owned()),
+                section: Some(section.display()),
                 reason: "the recording holds a toc face here, not a section face".to_owned(),
             }),
         }

@@ -26,9 +26,9 @@ use starlark::values::list::UnpackList;
 use starlark::values::none::NoneType;
 use starlark::values::structs::AllocStruct;
 use starlark_syntax::syntax::ast::{AssignTarget, AstExpr, AstStmt, Expr, Stmt};
-use wire::PlanEdit;
+use wire::{PlanEdit, ReadSel};
 
-use crate::script_edit::{ArmRefusal, plan_items};
+use crate::script_edit::{ArmRefusal, SectionArg, plan_items, segment_of_entry};
 use crate::{
     ArgValue, ArmedEdit, ChangeEvent, ChangeFact, Effect, EffectKind, EvalError, EvalLimits,
     EventFacts, Provenance, ReadFace, ReadFault, ReadPosition, ReadRecord, Rule, RunCtx, ScriptCtx,
@@ -824,7 +824,7 @@ impl<'h> ScriptEntry<'h> {
     fn read(
         &self,
         path: &str,
-        section: Option<&str>,
+        section: Option<&ReadSel>,
         site: Option<(usize, usize)>,
     ) -> anyhow::Result<ReadFace> {
         if self.reads.borrow().len() >= self.max_reads {
@@ -860,7 +860,7 @@ impl<'h> ScriptEntry<'h> {
         };
         self.reads.borrow_mut().push(ReadRecord {
             path: path.to_owned(),
-            section: section.map(ToOwned::to_owned),
+            section: section.cloned(),
             // Source lines are 1-based for a reader; the resolver is 0-based.
             line: site.map_or(0, |(line, _)| u32::try_from(line + 1).unwrap_or(u32::MAX)),
             position,
@@ -914,6 +914,93 @@ fn call_site(eval: &Evaluator<'_, '_, '_>) -> Option<(usize, usize)> {
     Some((begin.line, begin.column))
 }
 
+/// The `section=` boundary, shared by `read` and `put` — one address grammar,
+/// one door (run-plane.md § One address grammar, one parser). Two spellings:
+///
+/// - a **string** — the joined selector coat, handed on for [`ReadSel::parse`]
+///   exactly as ever (D-1: the coat splits on `/` and is never widened);
+/// - a **list** — the §2.1 segment array, one `{h, n?}` object per heading,
+///   raw text taken verbatim. The wire's own machine form, so the engine's
+///   section-miss teaching ("feed the row back as an hpath array") is
+///   executable on this plane, and a heading whose raw text carries `/` is
+///   addressable.
+///
+/// # Errors
+/// Anything outside the two spellings, in the D-1 line's first arm: what can
+/// never exist refuses at the boundary — a bare string in the list (the
+/// retired v1 spelling, the wire's own single-sourced refusal), an empty
+/// list, an out-of-shape member — and the refusal names only forms this
+/// plane accepts.
+fn section_arg(builtin: &str, value: Option<Value<'_>>) -> anyhow::Result<Option<SectionArg>> {
+    let Some(value) = value else { return Ok(None) };
+    if value.is_none() {
+        return Ok(None);
+    }
+    if let Some(s) = value.unpack_str() {
+        return Ok(Some(SectionArg::Coat(s.to_owned())));
+    }
+    let Some(list) = starlark::values::list::ListRef::from_value(value) else {
+        anyhow::bail!(
+            "{builtin}(section=…) takes the joined heading path as a string, or the §2.1 \
+             segment array — a list of {{h, n?}} objects, one per heading, raw text; got {}",
+            value.to_repr()
+        );
+    };
+    if list.is_empty() {
+        anyhow::bail!(
+            "{builtin}(section=[]) addresses nothing — a segment list names at least one \
+             {{\"h\": …}} segment"
+        );
+    }
+    let mut segs = Vec::with_capacity(list.len());
+    for member in list.iter() {
+        segs.push(list_segment(member).map_err(|reason| anyhow::anyhow!(reason))?);
+    }
+    Ok(Some(SectionArg::Segments(segs)))
+}
+
+/// One member of a `section=[…]` list → its §2.1 segment, through the one
+/// validator ([`segment_of_entry`]) so every refusal is single-sourced.
+fn list_segment(member: Value<'_>) -> Result<wire::HpathSeg, String> {
+    if let Some(s) = member.unpack_str() {
+        return segment_of_entry(None, None, None, Some(s), &member.to_repr());
+    }
+    let Some(dict) = starlark::values::dict::DictRef::from_value(member) else {
+        return Err(format!(
+            "a segment is a {{h, n?}} object — one per heading, raw text; got {}",
+            member.to_repr()
+        ));
+    };
+    let describe = member.to_repr();
+    let mut h: Option<String> = None;
+    let mut n: Option<i64> = None;
+    for (key, val) in dict.iter() {
+        match key.unpack_str() {
+            Some("h") => {
+                let Some(text) = val.unpack_str() else {
+                    return Err(format!(
+                        "a segment's `h` is raw heading text (a string); got {} in {describe}",
+                        val.to_repr()
+                    ));
+                };
+                h = Some(text.to_owned());
+            }
+            Some("n") => {
+                let Some(k) = val.unpack_i32() else {
+                    return Err(format!(
+                        "a segment's `n` is a 1-based occurrence among same-text siblings \
+                         (an int); got {} in {describe}",
+                        val.to_repr()
+                    ));
+                };
+                n = Some(i64::from(k));
+            }
+            _ => return segment_of_entry(None, None, Some(&key.to_str()), None, &describe),
+        }
+    }
+    segment_of_entry(h.as_deref(), n, None, None, &describe)
+}
+
 /// The script plane's entire builtin surface: one effectful reader and the
 /// caller's identity. No descriptor constructors (they arrive at U2), no exec,
 /// no enumeration — decision #17 stands permanently.
@@ -923,14 +1010,23 @@ fn script_api(builder: &mut GlobalsBuilder) {
     /// `read(path, section=…)` → the cat face `{text, rev}` (§4.2). The only
     /// effectful builtin; every response is recorded, which is what makes
     /// replay byte-identical. There is no whole-file body.
+    ///
+    /// `section` is the joined selector string, or the §2.1 segment array —
+    /// the same two spellings the toc face publishes (`section` / `hpath` per
+    /// row), so any row feeds back verbatim.
     fn read<'v>(
         #[starlark(require = pos)] path: String,
-        #[starlark(require = named)] section: Option<String>,
+        #[starlark(require = named)] section: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Value<'v>> {
+        let selector = match section_arg("read", section)? {
+            None => None,
+            Some(SectionArg::Coat(s)) => Some(ReadSel::parse(&s)),
+            Some(SectionArg::Segments(segs)) => Some(ReadSel::Hpath { hpath: segs }),
+        };
         let site = call_site(eval);
         let heap = eval.heap();
-        let face = script(eval)?.read(&path, section.as_deref(), site)?;
+        let face = script(eval)?.read(&path, selector.as_ref(), site)?;
         Ok(alloc_read_face(heap, &face))
     }
 
@@ -942,17 +1038,22 @@ fn script_api(builder: &mut GlobalsBuilder) {
     /// guarded splice. `props` arms one `set_property` per key, keys sorted;
     /// `append` arms one section-addressed `append`. Ruling (B′): these are the
     /// wire's second edit dialect, spoken verbatim — no third grammar.
-    fn put(
+    ///
+    /// `section` as on `read`: the joined string, or the §2.1 segment array —
+    /// the array is how a heading whose raw text carries `/` is addressed
+    /// (D-1: the joined spelling splits, and the coat is never widened).
+    fn put<'v>(
         #[starlark(require = pos)] path: String,
         #[starlark(require = named)] props: Option<BTreeMap<String, String>>,
-        #[starlark(require = named)] section: Option<String>,
+        #[starlark(require = named)] section: Option<Value<'v>>,
         #[starlark(require = named)] append: Option<String>,
-        eval: &mut Evaluator<'_, '_, '_>,
+        eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<NoneType> {
         // Keys sorted: the same group order `wire-serve::plan::lower` and the
         // MCP `put` face build, so the armed list aligns 1:1 with the commit.
         let props: Vec<(String, String)> = props.unwrap_or_default().into_iter().collect();
-        let items = plan_items(&props, section.as_deref(), append.as_deref())
+        let section = section_arg("put", section)?;
+        let items = plan_items(&props, section.as_ref(), append.as_deref())
             .map_err(|reason| anyhow::anyhow!("{reason}"))?;
         let line =
             call_site(eval).map_or(0, |(line, _)| u32::try_from(line + 1).unwrap_or(u32::MAX));
@@ -1086,11 +1187,29 @@ fn alloc_toc<'v>(heap: Heap<'v>, facts: &TocFacts) -> Value<'v> {
         .toc
         .iter()
         .map(|entry| {
-            heap.alloc(AllocDict([
+            let mut row = vec![
                 (heap.alloc("section"), heap.alloc(entry.section.as_str())),
                 (heap.alloc("anchor"), opt_str(heap, entry.anchor.as_deref())),
                 (heap.alloc("rev"), heap.alloc(entry.rev.as_str())),
-            ]))
+            ];
+            // The feedable machine address (D-1): the raw §2.1 segments behind
+            // `section`, publishable straight back into `section=` on either
+            // builtin. Absent on an anchor-only row — absence stays absence.
+            if !entry.hpath.is_empty() {
+                let segs: Vec<Value<'v>> = entry
+                    .hpath
+                    .iter()
+                    .map(|seg| {
+                        let mut fields = vec![(heap.alloc("h"), heap.alloc(seg.h.as_str()))];
+                        if let Some(n) = seg.n {
+                            fields.push((heap.alloc("n"), heap.alloc(i64::from(n))));
+                        }
+                        heap.alloc(AllocDict(fields))
+                    })
+                    .collect();
+                row.push((heap.alloc("hpath"), heap.alloc(segs)));
+            }
+            heap.alloc(AllocDict(row))
         })
         .collect();
     heap.alloc(AllocDict([

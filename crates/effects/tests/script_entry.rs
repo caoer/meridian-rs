@@ -11,6 +11,7 @@ use effects::{
     ArmedEdit, EvalError, ReadFace, ReadFault, ReadPosition, ScriptCtx, ScriptHost, ScriptLimits,
     SecFacts, TocEntry, TocFacts, eval_script, replay_script,
 };
+use wire::{HpathSeg, ReadSel};
 
 /// A fixture workspace: paths → toc facts, `(path, section)` → section facts.
 /// Counts its calls so a test can prove a host was (or was not) consulted.
@@ -42,11 +43,19 @@ impl FixtureHost {
                             section: "Goals".to_owned(),
                             anchor: None,
                             rev: "sec-goals".to_owned(),
+                            hpath: vec![HpathSeg {
+                                h: "Goals".to_owned(),
+                                n: None,
+                            }],
                         },
                         TocEntry {
                             section: "Notes".to_owned(),
                             anchor: Some("^n1".to_owned()),
                             rev: "sec-notes".to_owned(),
+                            hpath: vec![HpathSeg {
+                                h: "Notes".to_owned(),
+                                n: None,
+                            }],
                         },
                     ],
                     words: 41,
@@ -83,16 +92,17 @@ impl ScriptHost for FixtureHost {
     fn cat(
         &mut self,
         path: &str,
-        section: &str,
+        section: &ReadSel,
         _armed: &[ArmedEdit],
     ) -> Result<SecFacts, ReadFault> {
         self.calls += 1;
+        let display = section.display();
         self.sections
-            .get(&(path.to_owned(), section.to_owned()))
+            .get(&(path.to_owned(), display.clone()))
             .cloned()
             .ok_or_else(|| ReadFault {
                 path: path.to_owned(),
-                section: Some(section.to_owned()),
+                section: Some(display),
                 reason: "no such section".to_owned(),
             })
     }
@@ -123,10 +133,13 @@ impl ScriptHost for NoReadHost {
     fn cat(
         &mut self,
         path: &str,
-        section: &str,
+        section: &ReadSel,
         _armed: &[ArmedEdit],
     ) -> Result<SecFacts, ReadFault> {
-        unreachable!("the host was consulted for cat({path}, {section})");
+        unreachable!(
+            "the host was consulted for cat({path}, {})",
+            section.display()
+        );
     }
 
     fn actor(&self) -> &str {
@@ -415,7 +428,11 @@ fn read_serves_the_toc_face_and_the_cat_face() {
     );
     assert!(matches!(eval.recording.reads[0].face, ReadFace::Toc(_)));
     assert!(matches!(eval.recording.reads[1].face, ReadFace::Section(_)));
-    assert_eq!(eval.recording.reads[1].section.as_deref(), Some("Goals"));
+    assert_eq!(
+        eval.recording.reads[1].section,
+        Some(ReadSel::parse("Goals")),
+        "the record holds the parsed selector"
+    );
 }
 
 /// Acceptance 3 — the replay law. Re-evaluating against the recorded response
@@ -583,12 +600,12 @@ impl ScriptHost for CountingRunHost {
     fn cat(
         &mut self,
         path: &str,
-        section: &str,
+        section: &ReadSel,
         _armed: &[ArmedEdit],
     ) -> Result<SecFacts, ReadFault> {
         Err(ReadFault {
             path: path.to_owned(),
-            section: Some(section.to_owned()),
+            section: Some(section.display()),
             reason: "no pages on this host".to_owned(),
         })
     }
@@ -643,5 +660,58 @@ for i in range(100):
     assert_eq!(
         host.run_calls, 64,
         "the runs up to the ceiling executed and stand — never truncated below it"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The §2.1 segment form on the read face (dogfood r7 F1's read half)
+// ---------------------------------------------------------------------------
+
+/// `read(path, section=[…])` is the machine spelling of the same address the
+/// joined string cannot always carry: it serves the cat face, records, and
+/// replays byte-identically — the replay law holds for the structured
+/// spelling exactly as for the string coat.
+#[test]
+fn read_takes_the_segment_form_and_replays_byte_identically() {
+    let src = r#"sec = read("tasks/0011.md", section=[{"h": "A/B split"}])"#;
+    let ctx = ctx();
+    let mut host = FixtureHost::new();
+    host.sections.insert(
+        ("tasks/0011.md".to_owned(), "A/B split".to_owned()),
+        SecFacts {
+            text: "either arm\n".to_owned(),
+            rev: "sec-ab".to_owned(),
+        },
+    );
+    let eval = eval_script(src, &ctx, ScriptLimits::default(), &mut host);
+    assert!(
+        eval.outcome.is_ok(),
+        "the segment form serves: {:?}",
+        eval.outcome
+    );
+    let read = &eval.recording.reads[0];
+    assert_eq!(
+        read.section,
+        Some(ReadSel::Hpath {
+            hpath: vec![HpathSeg {
+                h: "A/B split".to_owned(),
+                n: None,
+            }],
+        }),
+        "the record holds the STRUCTURE — one segment, `/` as heading text"
+    );
+    let ReadFace::Section(facts) = &read.face else {
+        panic!("a section read records the cat face");
+    };
+    assert_eq!(
+        facts.text, "either arm\n",
+        "the slash-bearing section's own text served"
+    );
+
+    let replayed = replay_script(src, &ctx, ScriptLimits::default(), &eval.recording);
+    assert!(replayed.outcome.is_ok(), "{:?}", replayed.outcome);
+    assert_eq!(
+        replayed.recording.reads, eval.recording.reads,
+        "replay against the recording is byte-identical for the segment form"
     );
 }

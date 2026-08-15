@@ -329,7 +329,7 @@ fn guarded(
                             facts
                                 .toc
                                 .iter()
-                                .find(|entry| addresses(&entry.section, hpath))
+                                .find(|entry| entry.addresses(hpath))
                                 .map(|entry| entry.rev.clone())
                         })
                     });
@@ -408,42 +408,30 @@ fn section_rev_of(
         if read.path != path {
             return None;
         }
+        // The ONE matcher family, shared with the § A.7 entry-rev threading —
+        // a licensed row must not depend on which lane evaluated it (moved
+        // 2026-08-12). Recorded selectors and toc rows both compare
+        // segment-true (`effects::sel_addresses` / `TocEntry::addresses`), so
+        // a heading whose raw text carries `/` threads exactly like any
+        // other; the non-heading spellings (an `^anchor` row, a dewey) match
+        // no armed row, as ever.
         match &read.face {
             ReadFace::Section(facts)
-                if read.section.as_deref().is_some_and(|s| addresses(s, hpath)) =>
+                if read
+                    .section
+                    .as_ref()
+                    .is_some_and(|sel| effects::sel_addresses(sel, hpath)) =>
             {
                 Some(facts.rev.clone())
             }
             ReadFace::Toc(facts) => facts
                 .toc
                 .iter()
-                .find(|entry| addresses(&entry.section, hpath))
+                .find(|entry| entry.addresses(hpath))
                 .map(|entry| entry.rev.clone()),
             ReadFace::Section(_) => None,
         }
     })
-}
-
-/// Does the recorded section spelling `recorded` address the same node as the
-/// armed row's `hpath`?
-///
-/// **Both sides go through [`ReadSel::parse`]** — the one human-string→selector
-/// door, which is also what `put(section=…)` arms through
-/// (`effects::script_edit::section_segments`) and what `read(path, section=…)`
-/// resolves through. Comparing a normalized JOIN against the raw recorded string
-/// instead made the two spellings of one address disagree: `read(section="/A/B")`
-/// records `/A/B`, the armed row joins to `A/B`, no rev threads, and the write
-/// meets `guard_required` for a read that HAPPENED. A rev is a CAS token, so a
-/// missed match is not a missed optimization — it is a refusal blaming the
-/// caller for the parser's disagreement with itself.
-///
-/// The non-heading spellings answer `false` rather than a segment comparison: an
-/// `^anchor` row and a dewey ordinal are real addresses that an `append` (which
-/// carries an hpath) cannot be pointed at, so they match no armed row.
-fn addresses(recorded: &str, hpath: &[wire::HpathSeg]) -> bool {
-    // The ONE matcher, shared with the § A.7 entry-rev threading — a licensed
-    // row must not depend on which lane evaluated it (moved 2026-08-12).
-    effects::hpath_addresses(recorded, hpath)
 }
 
 /// The §4.7 integrity rung: mint the entry fingerprint.
@@ -1041,6 +1029,10 @@ mod tests {
                     section: "Notes".to_owned(),
                     anchor: None,
                     rev: note_rev.to_owned(),
+                    hpath: vec![HpathSeg {
+                        h: "Notes".to_owned(),
+                        n: None,
+                    }],
                 }],
                 words: 7,
             }),
@@ -1051,7 +1043,7 @@ mod tests {
     fn section_read(path: &str, rev: &str) -> ReadRecord {
         ReadRecord {
             path: path.to_owned(),
-            section: Some("Notes".to_owned()),
+            section: Some(wire::ReadSel::parse("Notes")),
             line: 2,
             position: ReadPosition::Echo,
             face: ReadFace::Section(SecFacts {

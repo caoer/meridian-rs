@@ -787,3 +787,125 @@ fn a_v2_session_answers_unknown_op_and_caps_split_by_rev() {
     assert_eq!(resp["ok"], json!(false));
     assert_eq!(resp["error"]["code"], json!("unknown_op"), "{resp}");
 }
+
+// ---------------------------------------------------------------------------
+// D-1's machine form on this plane — a `/`-bearing heading (dogfood r7 F1).
+// ---------------------------------------------------------------------------
+
+/// A heading whose raw text carries `/` and a doc that also holds the nested
+/// path the joined coat would collide it with.
+const SLASH_DOC: &str = "---\nstatus: open\n---\n# r7-c\n\nintro\n\n## A/B split\n\n- seed\n\n## A\n\n### B split\n\nnested\n";
+
+/// F1's write half: the §2.1 segment form — the exact array the refusal
+/// teaches — reaches a `/`-bearing heading on the script plane, end to end:
+/// the commit lands, and it lands on the slash-bearing heading, never on the
+/// nested `A/B split` path the joined coat would split it into.
+#[test]
+fn a_slash_bearing_heading_is_writable_through_the_segment_form() {
+    let tmp = TempDir::new().unwrap();
+    let ws = write_ws(&tmp, "project", &[("doc.md", SLASH_DOC)]);
+    let _server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(&test_config(&tmp).socket_path);
+    conn.hello_v3(&ws);
+
+    let resp = conn.call(&script(
+        31,
+        "put(\"doc.md\", section=[{\"h\": \"r7-c\"}, {\"h\": \"A/B split\"}], append=\"- landed\\n\")\n",
+    ));
+    let trace = trace_of(&resp);
+    assert_eq!(trace["outcome"], json!("committed"), "trace: {trace}");
+
+    let on_disk = fs::read_to_string(ws.join("doc.md")).unwrap();
+    let ab = on_disk.find("## A/B split").unwrap();
+    let nested_a = on_disk.find("\n## A\n").unwrap();
+    let landed = on_disk.find("- landed").unwrap();
+    assert!(
+        ab < landed && landed < nested_a,
+        "the append landed inside the slash-bearing section, not the nested \
+         path: {on_disk}"
+    );
+
+    // The armed row carries the segments verbatim — one entry per heading,
+    // `/` as heading TEXT (ruling B': the wire's dialect, no third grammar).
+    let rows = trace["trace"].as_array().unwrap();
+    let armed: Vec<&Value> = rows
+        .iter()
+        .filter(|r| r["kind"] == json!("armed"))
+        .collect();
+    assert_eq!(armed.len(), 1, "one armed row: {trace}");
+    assert_eq!(
+        armed[0]["edit"]["append"]["hpath"],
+        json!([{"h": "r7-c"}, {"h": "A/B split"}]),
+        "segments verbatim: {trace}"
+    );
+    assert_eq!(armed[0]["committed"], json!(true), "{trace}");
+}
+
+/// F1's teaching half, closed as a loop: the toc face PUBLISHES the raw
+/// segments (`hpath` per heading row), and feeding that row back — exactly
+/// what the section-miss refusal instructs — writes the section. Before this,
+/// the refusal taught a form the plane rejected: the teaching is now
+/// executable on the plane that prints it.
+#[test]
+fn a_toc_row_feeds_back_into_put_for_a_slash_bearing_heading() {
+    let tmp = TempDir::new().unwrap();
+    let ws = write_ws(&tmp, "project", &[("doc.md", SLASH_DOC)]);
+    let _server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(&test_config(&tmp).socket_path);
+    conn.hello_v3(&ws);
+
+    let resp = conn.call(&script(
+        32,
+        "card = read(\"doc.md\")\n\
+         rows = [r for r in card[\"toc\"] if r[\"section\"] == \"r7-c/A/B split\"]\n\
+         put(\"doc.md\", section=rows[0][\"hpath\"], append=\"- fed back\\n\")\n",
+    ));
+    let trace = trace_of(&resp);
+    assert_eq!(trace["outcome"], json!("committed"), "trace: {trace}");
+
+    let on_disk = fs::read_to_string(ws.join("doc.md")).unwrap();
+    let ab = on_disk.find("## A/B split").unwrap();
+    let nested_a = on_disk.find("\n## A\n").unwrap();
+    let fed = on_disk.find("- fed back").unwrap();
+    assert!(
+        ab < fed && fed < nested_a,
+        "the fed-back row addressed the slash-bearing section: {on_disk}"
+    );
+}
+
+/// The read face takes the same segment form: `read(path, section=[…])`
+/// serves the `/`-bearing section's cat face — the read half of the class,
+/// so the section-miss teaching's array form repairs reads too.
+#[test]
+fn a_slash_bearing_section_is_readable_through_the_segment_form() {
+    let tmp = TempDir::new().unwrap();
+    let ws = write_ws(&tmp, "project", &[("doc.md", SLASH_DOC)]);
+    let _server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(&test_config(&tmp).socket_path);
+    conn.hello_v3(&ws);
+
+    let resp = conn.call(&script(
+        33,
+        "sec = read(\"doc.md\", section=[{\"h\": \"r7-c\"}, {\"h\": \"A/B split\"}])\n",
+    ));
+    let trace = trace_of(&resp);
+    assert_eq!(trace["outcome"], json!("no_effect"), "trace: {trace}");
+    // A read-bound name rides its echo entry, never the bindings block.
+    let rows = trace["trace"].as_array().unwrap();
+    let echo = rows
+        .iter()
+        .find(|r| r["kind"] == json!("echo"))
+        .expect("the read echoes");
+    assert!(
+        echo["face"]["Section"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("seed"),
+        "the slash-bearing section's own text served: {trace}"
+    );
+    assert_eq!(
+        echo["section"],
+        json!("r7-c/A/B split"),
+        "the echo names the display spelling: {trace}"
+    );
+}

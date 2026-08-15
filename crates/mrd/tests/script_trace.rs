@@ -47,6 +47,10 @@ fn toc_read(line: u32, position: ReadPosition) -> ReadRecord {
                 section: "Notes".to_owned(),
                 anchor: None,
                 rev: "3b62f9c8".to_owned(),
+                hpath: vec![HpathSeg {
+                    h: "Notes".to_owned(),
+                    n: None,
+                }],
             }],
             words: 41,
         }),
@@ -279,7 +283,7 @@ fn the_trace_round_trips_and_never_says_attempts() {
             toc_read(1, ReadPosition::Echo),
             ReadRecord {
                 path: "tasks/0012-cache-sweep.md".to_owned(),
-                section: Some("Close".to_owned()),
+                section: Some(wire::ReadSel::parse("Close")),
                 line: 2,
                 position: ReadPosition::Quiet,
                 face: ReadFace::Section(SecFacts {
