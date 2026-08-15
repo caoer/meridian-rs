@@ -9,6 +9,7 @@
 //! Reuse key is the corpus CONTENT hash (R5), not workspace-identity Merkle.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 /// The warm per-workspace engine state: the parsed corpus that `query` reads
 /// (U2), plus the corpus content hash it was built at (the reuse key).
@@ -33,7 +34,7 @@ pub struct WorkspaceEngine {
     /// build time. The incremental pass's delta baseline
     /// ([`fs::update_corpus`]): the next rebuild re-parses exactly the
     /// members whose leaf moved against this record.
-    pub leaves: std::collections::BTreeMap<std::path::PathBuf, [u8; 32]>,
+    pub leaves: BTreeMap<PathBuf, [u8; 32]>,
 }
 
 /// Whether `warm_or_build` reused or rebuilt. `Reused` proves zero parses
