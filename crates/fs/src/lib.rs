@@ -27,6 +27,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub mod base;
 pub mod digestmemo;
 pub mod domain;
+pub mod fence;
 pub mod guard;
 
 /// The workspace root every wire `path` resolves strictly inside. Constructed

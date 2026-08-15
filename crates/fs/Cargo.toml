@@ -23,6 +23,9 @@ libc = "0.2"
 # test-only: the exec-guard gates compare close()'s verified root against an
 # independently folded merkle_root (model is already a production dep).
 model = { workspace = true }
+# test-only: the B-03 fence matrix asserts EISDIR by errno and measures which
+# filesystem backs each fixture (statfs). Already a production dep above.
+libc = "0.2"
 # test-only: blake3 recomputes the §12.1 counterfactual roots (the production
 # merkle_root lives in `model`, M3-MERKLE); tempfile builds on-disk corpora.
 blake3 = "1"
