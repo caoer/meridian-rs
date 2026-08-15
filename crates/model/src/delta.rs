@@ -34,11 +34,18 @@ pub enum FileChangeKind {
     Deleted,
 }
 
-/// v2 §7.1 node change class.
+/// v2 §7.1 node change class, plus the v3 `anchored` word.
+///
+/// `Anchored` says the node moved SOLELY by gaining an anchor id — an
+/// attestation minted onto it, not content someone rewrote. It is a byte
+/// verdict, never an intent: a write that changes content and mints an anchor
+/// in the same node stays [`NodeChangeKind::Edited`], because content did
+/// change and a reader must not be told otherwise.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeChangeKind {
     Added,
     Edited,
+    Anchored,
     Removed,
 }
 
@@ -114,14 +121,21 @@ pub fn file_delta(before: Option<&Document>, after: Option<&Document>) -> Option
 /// A pure append has an empty before-region (no removed scan); a pure
 /// deletion has an empty after-region (no added/edited entry). Entries
 /// dedupe by identity across regions.
+///
+/// **Anchor mints (§7.1 `anchored`):** a region whose whole content is one
+/// newly-resolving anchor marker reports its node `anchored` instead of
+/// `edited` — attesting to a page must never read as rewriting it. The
+/// classification is per region and `edited` wins: a node touched by any
+/// other region in the same batch carries the honest content verdict.
 #[must_use]
 pub fn node_deltas(before: &Document, after: &Document) -> Vec<NodeDelta> {
     let mut out = Vec::new();
     for (b_range, a_range) in changed_regions(&before.raw, &after.raw) {
         if !a_range.is_empty() {
+            let mint = anchor_mint(before, after, &b_range, &a_range);
             let probe = trim_final_terminator(&after.raw, a_range);
             if !probe.is_empty() {
-                collect_touched(before, after, &after.root, &probe, &mut out);
+                collect_touched(before, after, &after.root, &probe, mint, &mut out);
             }
         }
         if !b_range.is_empty() {
@@ -144,6 +158,7 @@ fn collect_touched(
     after: &Document,
     node: &Node,
     range: &ByteSpan,
+    mint: bool,
     out: &mut Vec<NodeDelta>,
 ) {
     // The root's span covers the whole file, so a non-empty probe always
@@ -159,7 +174,7 @@ fn collect_touched(
                 continue;
             };
             if t.span.start < range.end && range.start < t.span.end {
-                push_touched(before, target, &t.node_rev, &t.span, out);
+                push_touched(before, target, &t.node_rev, &t.span, mint, out);
             }
         }
         return;
@@ -172,12 +187,12 @@ fn collect_touched(
     if addressable_children.is_empty() {
         // Deepest intersecting addressable node — report it, if it is one.
         if let Some(target) = identity_of(after, node, range) {
-            push_touched(before, target, &node.node_rev, &node.span, out);
+            push_touched(before, target, &node.node_rev, &node.span, mint, out);
         }
         return;
     }
     for child in addressable_children {
-        collect_touched(before, after, child, range, out);
+        collect_touched(before, after, child, range, mint, out);
     }
 }
 
@@ -192,18 +207,28 @@ fn addressable_subtree(node: &Node) -> bool {
 }
 
 /// One after-side entry, tense resolved in `before`: `edited` on a surviving
-/// identity whose rev moved, `added` on a proven absence. An `Ambiguous`
-/// before-identity stays silent — with occurrence-qualified section
-/// identities the arm is vestigial, and a feed that cannot name the prior
-/// node truthfully says nothing rather than guessing (file-grain honesty).
+/// identity whose rev moved (`anchored` where that move was only an anchor
+/// mint), `added` on a proven absence. An `Ambiguous` before-identity stays
+/// silent — with occurrence-qualified section identities the arm is
+/// vestigial, and a feed that cannot name the prior node truthfully says
+/// nothing rather than guessing (file-grain honesty).
+///
+/// A repeat touch of an identity already entered keeps the entry the first
+/// region minted, with one exception: a NON-mint region promotes a standing
+/// `anchored` entry to `edited`. Content did change, so the row must say so —
+/// the mint verdict is only true for a node nothing else touched.
 fn push_touched(
     before: &Document,
     target: Ref,
     rev_after: &NodeRev,
     span_after: &ByteSpan,
+    mint: bool,
     out: &mut Vec<NodeDelta>,
 ) {
-    if out.iter().any(|d| d.target == target) {
+    if let Some(seen) = out.iter_mut().find(|d| d.target == target) {
+        if !mint && seen.change == NodeChangeKind::Anchored {
+            seen.change = NodeChangeKind::Edited;
+        }
         return;
     }
     match resolve(before, &target) {
@@ -211,7 +236,11 @@ fn push_touched(
             if prior.node_rev != *rev_after {
                 out.push(NodeDelta {
                     target,
-                    change: NodeChangeKind::Edited,
+                    change: if mint {
+                        NodeChangeKind::Anchored
+                    } else {
+                        NodeChangeKind::Edited
+                    },
                     node_rev_before: Some(prior.node_rev),
                     node_rev_after: Some(rev_after.clone()),
                     span_after: Some(span_after.clone()),
@@ -227,6 +256,77 @@ fn push_touched(
         }),
         Err(ResolveError::Ambiguous(_)) => {}
     }
+}
+
+/// Is this region exactly one anchor mint? A byte verdict with three parts,
+/// all required:
+///
+/// 1. deleting one `^id` marker from the after-region yields the
+///    before-region byte for byte — so nothing else in the region changed;
+/// 2. `id` resolves as an anchor in `after`;
+/// 3. `id` does NOT resolve in `before` — a marker that merely moved is not
+///    a mint, and the node that lost it reports its own honest change.
+///
+/// Both mint spellings qualify: the marker on its own line (the pin door's
+/// own form) and the tail id appended to a content line.
+fn anchor_mint(before: &Document, after: &Document, b: &ByteSpan, a: &ByteSpan) -> bool {
+    let a_text = &after.raw[a.clone()];
+    let b_text = &before.raw[b.clone()];
+    markers(a_text).into_iter().any(|(span, id)| {
+        strip_marker(a_text, &span) == b_text
+            && Ref::anchor(id).is_ok_and(|r| {
+                resolve(after, &r).is_ok()
+                    && matches!(resolve(before, &r), Err(ResolveError::NotFound))
+            })
+    })
+}
+
+/// Every `^id` marker in `text`: its span and its id. The id grammar is
+/// [`Ref::anchor`]'s (`[A-Za-z0-9-]+`); a `^` starting no valid id is not a
+/// marker.
+fn markers(text: &str) -> Vec<(ByteSpan, &str)> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    for (i, _) in text.match_indices('^') {
+        let end = bytes[i + 1..]
+            .iter()
+            .position(|b| !(b.is_ascii_alphanumeric() || *b == b'-'))
+            .map_or(bytes.len(), |n| i + 1 + n);
+        if end > i + 1 {
+            out.push((i..end, &text[i + 1..end]));
+        }
+    }
+    out
+}
+
+/// `text` without the marker at `span`, cleaned the way the mint wrote it: a
+/// marker alone on its line takes the whole line with it, a tail id takes the
+/// whitespace that separated it from the content.
+fn strip_marker(text: &str, span: &ByteSpan) -> String {
+    let bytes = text.as_bytes();
+    let line_start = text[..span.start].rfind('\n').map_or(0, |n| n + 1);
+    let line_end = text[span.end..]
+        .find('\n')
+        .map_or(text.len(), |n| span.end + n + 1);
+    let alone = bytes[line_start..span.start]
+        .iter()
+        .all(u8::is_ascii_whitespace)
+        && bytes[span.end..line_end]
+            .iter()
+            .all(u8::is_ascii_whitespace);
+    let (cut_start, cut_end) = if alone {
+        (line_start, line_end)
+    } else {
+        let mut start = span.start;
+        while start > line_start && bytes[start - 1].is_ascii_whitespace() {
+            start -= 1;
+        }
+        (start, span.end)
+    };
+    let mut out = String::with_capacity(text.len());
+    out.push_str(&text[..cut_start]);
+    out.push_str(&text[cut_end..]);
+    out
 }
 
 /// Block-leaf spans exclude their final line terminator (§1 span law); a
@@ -561,6 +661,65 @@ mod tests {
         assert_eq!(d.change, NodeChangeKind::Edited);
         assert!(d.node_rev_before.is_some() && d.node_rev_after.is_some());
         assert_eq!(d.span_after.as_ref(), Some(&(5..a.raw.len())));
+    }
+
+    /// The F3 row (dogfood-r9-user): a pin mints its anchor into the TARGET
+    /// section, and the section must NOT report `edited` — attesting to a
+    /// page never reads as rewriting it.
+    #[test]
+    fn anchor_mint_reports_anchored_not_edited() {
+        let b = doc("# R\n\n## Acceptance walk\n\nA consequential section.\n");
+        let a = doc("# R\n\n## Acceptance walk\n^acceptance-walk\n\nA consequential section.\n");
+        let got = node_deltas(&b, &a);
+        let sec = got
+            .iter()
+            .find(|d| matches!(&d.target, Ref::Hpath(segs) if segs.last().unwrap().h == "Acceptance walk"))
+            .expect("the minted-into section reports: {got:?}");
+        assert_eq!(sec.change, NodeChangeKind::Anchored);
+        assert!(sec.node_rev_before.is_some() && sec.node_rev_after.is_some());
+    }
+
+    /// The tail spelling needs no new word: the marker sits INSIDE its host
+    /// block's span, so the anchor node is itself the deepest addressable
+    /// node in the region and the entry is `added ^id` — already an identity
+    /// and a verb no reader can mistake for a section rewrite. `anchored`
+    /// exists for the own-line spelling (the pin door's own form), where the
+    /// marker falls outside the host span and only the SECTION reports.
+    #[test]
+    fn tail_anchor_mint_reports_the_anchor_added() {
+        let b = doc("# R\n\n## Walk\n\nbody line\n");
+        let a = doc("# R\n\n## Walk\n\nbody line ^walk-1\n");
+        let got = node_deltas(&b, &a);
+        assert_eq!(got.len(), 1, "one entry: {got:?}");
+        assert_eq!(got[0].target, Ref::Anchor("walk-1".into()));
+        assert_eq!(got[0].change, NodeChangeKind::Added);
+    }
+
+    /// Content wins: a write that rewrites the section AND mints an anchor
+    /// says `edited`, because content did change.
+    #[test]
+    fn content_edit_beside_a_mint_stays_edited() {
+        let b = doc("# R\n\n## Walk\n\nold body\n");
+        let a = doc("# R\n\n## Walk\n^walk-2\n\nnew body\n");
+        let got = node_deltas(&b, &a);
+        let sec = got
+            .iter()
+            .find(|d| matches!(&d.target, Ref::Hpath(segs) if segs.last().unwrap().h == "Walk"))
+            .expect("the section reports: {got:?}");
+        assert_eq!(sec.change, NodeChangeKind::Edited);
+    }
+
+    /// A marker that MOVED is not a mint: the id already resolved in
+    /// `before`, so the receiving node reports its own content change.
+    #[test]
+    fn moved_anchor_is_not_a_mint() {
+        let b = doc("# R\n\n## A\n^m1\n\n## B\n\nbody\n");
+        let a = doc("# R\n\n## A\n\n## B\n^m1\n\nbody\n");
+        let got = node_deltas(&b, &a);
+        assert!(
+            got.iter().all(|d| d.change != NodeChangeKind::Anchored),
+            "a moved marker mints nothing: {got:?}"
+        );
     }
 
     /// An appended anchor-bearing block echoes as the anchor added; the host
