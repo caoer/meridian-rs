@@ -99,7 +99,7 @@ one caller's inline intent.
 |---|---|
 | `script` | the source; the module top level IS the body, no hook lookup |
 | `args` | the caller's arguments as an **inert dict** — string keys, string values |
-| `files[]` | **paths only**, sorted, pre-enumerated by the host |
+| `files[]` | **paths only**, in call order — `files[i]` is the i-th path the caller named (order-bind ruling); patterns expand in place |
 | `actor` | the caller's own identity, threaded per §9 — the engine mints none |
 | `now` | caller-supplied time — the kernel never reads a clock |
 | budget overrides | fuel / mem / call depth / source bytes / wall clock / max reads / max armed edits |
@@ -1224,7 +1224,7 @@ write path. Everything that differs is at the entry.
 | Languages | starlark + bash (fence dispatch, decision #13) | starlark only; no exec, ever (decision #17 stands) |
 | Hermeticity | hermetic by construction: sealed kernel, zero I/O, `RunCtx` inert | recorded-read purity: eval is a pure function of (script, args, files, read-response sequence); trace records every read; replay against recorded reads is byte-identical (decision #3 amendment) |
 | Reads | none — inputs arrive as inert `RunCtx` data | CLI lane: `read()` lowering to `toc`/`cat` — live, as a wire client through the one door. In-process lane (§ A.7): `read()` serving from the entry world plus the program's own armed overlay |
-| Enumeration | page names its own targets | none in-kernel: host resolves selector → inert **sorted** `files[]`, paths only |
+| Enumeration | page names its own targets | none in-kernel: host resolves selector (sorted) or binds caller `files[]` in call order — inert paths only |
 | Commit | one atomic `if_fingerprint`-pinned batch via the local executor | ONE guarded commit as the caller (`actor`/`now`/`receipt` on the request): the single §4.4 splice for one armed path, the §4.4 SET form for N (§ One COMMIT per attempt) |
 | Concurrency | workspace flock, `LOCK_NB` (decision #9) | stand-still optimistic: entry fingerprint pinned, commit `if_fingerprint` = entry; conflict ⇒ host re-resolves selector and retries (budget 2, `attempts` on the face) |
 | Failure grain | one violation refuses the whole batch; bash phase-1 may stand committed and reported (decision #22) | one violation refuses the whole script; nothing ever partially lands (the sealed set keeps retry sound: a refusal lands nothing, so a re-run never double-applies) |

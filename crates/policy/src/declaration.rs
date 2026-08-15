@@ -168,9 +168,10 @@ pub fn is_glob_pattern(member: &str) -> bool {
 
 /// Expand `files[]` members against a corpus membership listing (§ A.7
 /// patterns): each pattern member matches through [`glob_match`] — the one
-/// grammar — and literal members pass through verbatim. The expansion is
-/// merged, deduplicated and sorted (the same law the host applies to
-/// enumerated `files[]`). Returns the expanded list plus one
+/// grammar — and literal members pass through verbatim. Members keep their
+/// typed position (order-bind ruling): a pattern expands in place to its
+/// sorted matches, and a path already bound earlier is dropped — first
+/// occurrence wins, never a global sort. Returns the expanded list plus one
 /// `(pattern, matches)` row per pattern member in member order — the rows the
 /// script trace records and replay replays. Zero matches contributes zero
 /// paths: data, never a refusal (an idempotent sweep must succeed on an
@@ -196,8 +197,13 @@ pub fn expand_globs(
             expanded.push(member.clone());
         }
     }
-    expanded.sort();
-    expanded.dedup();
+    // Members keep their typed position (order-bind ruling): a pattern
+    // expands IN PLACE to its sorted matches (the host enumerates a set —
+    // that order is the host's), and a path already bound earlier is dropped,
+    // first occurrence wins — never a global sort, which would silently
+    // substitute the host's order for the caller's.
+    let mut seen = std::collections::HashSet::new();
+    expanded.retain(|path| seen.insert(path.clone()));
     (expanded, rows)
 }
 

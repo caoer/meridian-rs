@@ -893,12 +893,15 @@ impl<'h> ScriptEntry<'h> {
     }
 
     /// Everything the host answered this attempt. Expansion rows are entry
-    /// facts the CALLER stamps after eval (the kernel never expands).
+    /// facts the CALLER stamps after eval (the kernel never expands); the
+    /// `files` binding is the kernel's own entry fact, recorded here so the
+    /// trace prints it (order-bind ruling).
     fn recording(&self) -> ScriptRecording {
         ScriptRecording {
             actor: self.actor.clone(),
             reads: self.reads.borrow().clone(),
             expansions: Vec::new(),
+            files: self.files.clone(),
         }
     }
 }

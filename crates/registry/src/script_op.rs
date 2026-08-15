@@ -365,7 +365,20 @@ fn live_serve(
             }
         }
         if after_reads == 0 {
-            index = 0;
+            // An act before the first read still happened after the entry
+            // facts — never ahead of the expansion/bound rows that open the
+            // trace (order-bind ruling: the binding is the header).
+            index = trace
+                .trace
+                .iter()
+                .take_while(|e| {
+                    matches!(
+                        e,
+                        effects::trace::TraceEntry::Expanded(_)
+                            | effects::trace::TraceEntry::Bound { .. }
+                    )
+                })
+                .count();
         }
         let at = (index + inserted).min(trace.trace.len());
         trace.trace.insert(at, act);
@@ -1362,6 +1375,7 @@ mod tests {
                 expansions: Vec::new(),
                 actor: String::new(),
                 reads: Vec::new(),
+                files: Vec::new(),
             },
             telemetry: effects::ScriptTelemetry {
                 fuel_used: 0,

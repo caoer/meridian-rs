@@ -267,8 +267,11 @@ fn decode_script(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
             ));
         }
     };
-    // Paths only, never content; sorted here so order on the wire is not
-    // meaning (the CLI lane sorts client-side — one law, two doors).
+    // Paths only, never content; call order preserved — `files[i]` is the
+    // i-th path the caller typed, because the program indexes the list and a
+    // host-substituted order lands edits on the wrong document silently
+    // (order-bind ruling; the CLI lane preserves order the same way — one
+    // law, two doors).
     let files = match obj.get("files") {
         None => Vec::new(),
         Some(Value::Array(items)) => {
@@ -282,7 +285,6 @@ fn decode_script(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
                 };
                 out.push(path.to_owned());
             }
-            out.sort();
             out
         }
         Some(_) => {
