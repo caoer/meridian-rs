@@ -374,6 +374,11 @@ for i in range(65):
         );
     };
     assert_eq!(*limit, 64);
+    let text = eval.outcome.as_ref().unwrap_err().to_string();
+    assert!(
+        text.contains("→") && text.contains("slice the targets"),
+        "the refusal carries its fitted recovery — chunk at the ceiling: {text}"
+    );
     assert_eq!(
         eval.armed.len(),
         64,
