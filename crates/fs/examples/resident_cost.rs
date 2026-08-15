@@ -110,13 +110,13 @@ fn main() {
     // The fable-bench assertion, re-run against this implementation: the
     // served root equals the engine's own fold over the same leaves.
     let version = fs::domain::Domain::load(&root).expect("domain").version();
-    let refs: Vec<(&[u8], [u8; 32])> = leaves
+    let leaf_refs: Vec<(&[u8], [u8; 32])> = leaves
         .iter()
         .map(|(rel, digest)| (fs::hash_name(rel), *digest))
         .collect();
     assert_eq!(
         served,
-        model::merkle_root_of_leaves(&refs, version),
+        model::merkle_root_of_leaves(&leaf_refs, version),
         "served root diverged from model::merkle_root_of_leaves"
     );
     println!("byte_identity  served == merkle_root_of_leaves  OK");
