@@ -323,9 +323,8 @@ pub fn activate_until(root: &WorkspaceRoot, until: ActivationPhase) -> io::Resul
 /// legacy lock (retry after it exits); [`FenceStateError`] when `write.lock`
 /// holds a state this mechanism did not make; any other I/O failure.
 pub fn activate(root: &WorkspaceRoot) -> io::Result<ActivatedFence> {
-    match status(root)? {
-        FenceStatus::Active => return Ok(ActivatedFence { _legacy_lock: None }),
-        FenceStatus::NotInstalled => {}
+    if status(root)? == FenceStatus::Active {
+        return Ok(ActivatedFence { _legacy_lock: None });
     }
     let lock = WriteLock::acquire(root)?;
     activate_until(root, ActivationPhase::ParentSynced)?;
