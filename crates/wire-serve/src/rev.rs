@@ -118,6 +118,9 @@ pub fn project_response(frame: &mut Value) {
                 caps.push(Value::String("splice.create_rev".to_string()));
                 // Birth op at op grain (no dotted create.<field>).
                 caps.push(Value::String("create".to_string()));
+                // Death op at op grain (§ A.3 remove door; no dotted
+                // remove.<field>, and no force field exists on the op).
+                caps.push(Value::String("remove".to_string()));
                 // Mount-table discovery at op grain (§ A.5, the create
                 // precedent); the frozen v2 caps stay byte-identical.
                 caps.push(Value::String("mounts".to_string()));
@@ -394,6 +397,7 @@ mod tests {
                 "splice.set",
                 "splice.create_rev",
                 "create",
+                "remove",
                 "mounts",
                 "mounts.primary",
                 "hello.identity",

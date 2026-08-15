@@ -211,6 +211,7 @@ Two grains, composable — **no separate `guard` op** (dropped; integrity = `fin
 - Node objects / `resolve`: node_rev algorithm (§1–2) is the hash law for CAS tokens.
 - Caps advertise `fingerprint`, `diff`, `splice.if_fingerprint` (and related) — not a `guard` op.
 - Error codes: `fingerprint_mismatch`, `fingerprint_unknown` (not `root_*`).
+- **File death mints no terminal hash (RULED, ZT 2026-08-15, card `engine-delete-door`: "No tombstone — death Delta is the record").** A guarded `remove` (`wire-contract.md` § A.3) unlinks the leaf; the next fold composes the tree without it under the existing §4 encoding — removal is already in the diff shape (§0, "whole-subtree enumeration on add/remove") and no new hash law exists for it. A rev is a function of bytes (§2); absent bytes mint nothing: the death's terminal facts are the removed file's LAST rev (`file_rev_before`, confirmed by the remove-what-you-read CAS) and the workspace fingerprint transition, both carried by the death Delta (`change:"deleted"`, `wire-contract.md` §7.1). No tombstone leaf, no on-disk marker — disk stays markdown only, and history past the ring re-derives to a world where the path is simply absent.
 
 ## 9. Normalization rulings (closed for v1)
 
