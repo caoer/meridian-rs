@@ -3034,25 +3034,20 @@ fn promotion_frame_path(root: &fs::WorkspaceRoot, p: &PendingPromotion) -> Optio
 /// The workspace-relative respelling of an ABSOLUTE spelling that lies inside
 /// `root`, or `None` when no respelling exists (relative violations, paths
 /// outside the root). Teaching only — admission stays lexical (`addr::confined`).
-/// Canonicalizes to survive symlinked prefixes (`/tmp` vs `/private/tmp`); a
-/// missing leaf canonicalizes through its parent so a write to a not-yet-born
-/// inside path still gets its respelling.
 ///
 /// Public because both doors teach it: the write door's [`path_confined`]
 /// here, and the read door's `bad_path` face at the CLI (dogfood NEW-A —
-/// one computation, so the two doors cannot train opposite habits).
+/// one computation, so the two doors cannot train opposite habits). The
+/// computation itself is [`fs::workspace_relative`] — the same one the run
+/// doors key §2.1 receipts with, so a taught spelling and a receipted
+/// spelling cannot drift; this wrapper only keeps the teaching's
+/// absolute-spellings-only admission.
 #[must_use]
 pub fn relative_respelling(root: &fs::WorkspaceRoot, path: &str) -> Option<String> {
     if !path.starts_with('/') {
         return None;
     }
-    let p = std::path::Path::new(path);
-    let canonical = std::fs::canonicalize(p).ok().or_else(|| {
-        let parent = std::fs::canonicalize(p.parent()?).ok()?;
-        Some(parent.join(p.file_name()?))
-    })?;
-    let rel = canonical.strip_prefix(&root.0).ok()?.to_str()?;
-    (!rel.is_empty()).then(|| rel.to_owned())
+    fs::workspace_relative(root, path)
 }
 
 /// The §5.1 world guard, shared by `create`/`remove`: refuse `root_mismatch` if

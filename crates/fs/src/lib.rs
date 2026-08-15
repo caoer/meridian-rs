@@ -53,6 +53,35 @@ pub fn load(root: &WorkspaceRoot, rel_path: &Path) -> io::Result<model::Document
     Ok(model::build(raw, nodes))
 }
 
+/// The canonical workspace-relative spelling of `path` — absolute or
+/// root-relative argv alike — when it resolves inside `root`; `None` when it
+/// resolves outside the root (no such spelling exists) or cannot be resolved
+/// at all. The one respell computation: the write door's teaching
+/// (`wire_serve::write::relative_respelling`) and the run doors' §2.1 receipt
+/// keys both delegate here, so a taught spelling and a receipted spelling
+/// cannot drift.
+///
+/// Both sides canonicalize, so symlinked prefixes (`/tmp` vs `/private/tmp`)
+/// and `.`/`..`-bearing spellings resolve to one form; a missing leaf
+/// resolves through its parent, so a not-yet-born file still gets its
+/// spelling. The root itself (empty rel) is no page spelling — `None`.
+#[must_use]
+pub fn workspace_relative(root: &WorkspaceRoot, path: &str) -> Option<String> {
+    let p = Path::new(path);
+    let abs = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        root.0.join(p)
+    };
+    let canonical = fs::canonicalize(&abs).ok().or_else(|| {
+        let parent = fs::canonicalize(abs.parent()?).ok()?;
+        Some(parent.join(abs.file_name()?))
+    })?;
+    let base = fs::canonicalize(&root.0).unwrap_or_else(|_| root.0.clone());
+    let rel = canonical.strip_prefix(&base).ok()?.to_str()?;
+    (!rel.is_empty()).then(|| rel.to_owned())
+}
+
 /// Walk the corpus: every markdown file under the root, as root-relative paths,
 /// sorted. This is the ADDRESSABLE set — dot-dir md files (`.github/README.md`)
 /// are included, since they stay `load`-able even when ignored for hashing
@@ -4009,6 +4038,81 @@ mod read_digest_parallel_tests {
             serial_below,
             reference[..PARALLEL_READ_FLOOR - 1],
             "len < floor: serial, the same leading rows"
+        );
+    }
+}
+
+/// Design tests for [`workspace_relative`]: the one respell computation the
+/// door teachings and the §2.1 receipt keys share.
+#[cfg(test)]
+mod workspace_relative_tests {
+    use super::{WorkspaceRoot, workspace_relative};
+    use std::fs;
+
+    fn workspace() -> (tempfile::TempDir, WorkspaceRoot) {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join("a/b")).unwrap();
+        fs::write(tmp.path().join("a/b/page.md"), "# P\n").unwrap();
+        let root = WorkspaceRoot(tmp.path().to_owned());
+        (tmp, root)
+    }
+
+    #[test]
+    fn every_inside_spelling_resolves_to_the_one_relative_form() {
+        let (tmp, root) = workspace();
+        let abs = tmp.path().join("a/b/page.md");
+        for spelling in [
+            "a/b/page.md".to_owned(),
+            "./a/b/page.md".to_owned(),
+            "a/../a/b/page.md".to_owned(),
+            abs.to_str().unwrap().to_owned(),
+        ] {
+            assert_eq!(
+                workspace_relative(&root, &spelling).as_deref(),
+                Some("a/b/page.md"),
+                "spelling {spelling:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_symlinked_spelling_collapses_onto_the_physical_page() {
+        let (tmp, root) = workspace();
+        std::os::unix::fs::symlink(tmp.path().join("a/b"), tmp.path().join("alias")).unwrap();
+        assert_eq!(
+            workspace_relative(&root, "alias/page.md").as_deref(),
+            Some("a/b/page.md"),
+            "two spellings of one file are one key"
+        );
+    }
+
+    #[test]
+    fn an_outside_path_has_no_spelling() {
+        let (_tmp, root) = workspace();
+        let other = tempfile::tempdir().unwrap();
+        let outside = other.path().join("evil.md");
+        fs::write(&outside, "# E\n").unwrap();
+        assert_eq!(workspace_relative(&root, outside.to_str().unwrap()), None);
+        assert_eq!(workspace_relative(&root, "../evil.md"), None);
+    }
+
+    #[test]
+    fn the_root_itself_is_no_page_spelling() {
+        let (tmp, root) = workspace();
+        assert_eq!(
+            workspace_relative(&root, tmp.path().to_str().unwrap()),
+            None
+        );
+        assert_eq!(workspace_relative(&root, "."), None);
+    }
+
+    #[test]
+    fn a_missing_leaf_resolves_through_its_parent() {
+        let (_tmp, root) = workspace();
+        assert_eq!(
+            workspace_relative(&root, "a/b/unborn.md").as_deref(),
+            Some("a/b/unborn.md"),
+            "a not-yet-born inside file still gets its spelling"
         );
     }
 }
