@@ -3,7 +3,7 @@
 //! They live here because every one of them needs BOTH halves of the design at
 //! once: the `fs` walk that defines membership and folds the witness, and the
 //! `view` projection that turns its bytes into rows. Neither crate can host
-//! them alone — `view` reads no disk by charter, and `fs` holds no DuckDB.
+//! them alone — `view` reads no disk by charter, and `fs` holds no `DuckDB`.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -650,7 +650,7 @@ fn the_cached_base_surface_equals_a_fresh_build() {
     let mut store = view::store::SqlStore::open(&file).expect("open");
     sync(&mut store, &root);
 
-    const DIGEST: &str = "SELECT coalesce(md5(string_agg(\
+    let digest = "SELECT coalesce(md5(string_agg(\
          path || '|' || coalesce(file_rev,'~N~') || '|' || coalesce(error,'~N~') || '|' || \
          coalesce(filters,'~N~') || '|' || coalesce(extra,'~N~'), \
          chr(10) ORDER BY path)), 'EMPTY') FROM base";
@@ -660,7 +660,7 @@ fn the_cached_base_surface_equals_a_fresh_build() {
         .query_row(DIGEST, [], |r| r.get(0))
         .expect("fresh digest");
     assert_eq!(
-        cache_col(&store, DIGEST),
+        cache_col(&store, digest),
         vec![want],
         "the cache's latest base view is bit-identical to a fresh build"
     );
