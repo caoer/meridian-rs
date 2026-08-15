@@ -60,6 +60,19 @@ CREATE TABLE section (
     -- rendered duplicate siblings identically and its joined spelling could
     -- not address (card sql-hpath-read-grammar, dogfood r8 § D5).
     hpath      TEXT     NOT NULL,
+    -- This row's OWN occurrence index (`wire-contract.md` § A.11, ZT ruling
+    -- 2026-08-15): 1-based position among the same-parent, same-raw-text
+    -- sibling sections, and NULL exactly where the published address omits it
+    -- -- so `n IS NOT NULL` is the ambiguity predicate and this is the last
+    -- segment of `hpath` above, never a second spelling of it. SERVED from the
+    -- same address owner `hpath` renders from, never recomputed here: a second
+    -- owner of one fact drifts silently, both answering a plausible integer.
+    -- It is NOT `node_seq` -- that ordinal counts every section of the file
+    -- (this row's identity), while `n` counts one heading text under one
+    -- parent. Deriving one from the other addresses a real but DIFFERENT
+    -- section, whose node_rev then guards the write, so a wrong-target commit
+    -- passes CAS instead of refusing.
+    n          UINTEGER,
     heading    TEXT     NOT NULL,
     level      UTINYINT NOT NULL,                 -- u8
     node_rev   TEXT     NOT NULL,                 -- blake3(section span)[:16]
@@ -194,7 +207,11 @@ CREATE VIEW tag_all AS                             -- B2: the union — inline +
 /// `[{"h":…},…]` machine address with per-segment `n` on ambiguity — replacing
 /// the TEXT[] chain whose rendering could not address (card
 /// sql-hpath-read-grammar, dogfood r8 § D5).
-pub const SCHEMA_VERSION: i32 = 5;
+///
+/// `6`: `section.n` added — the row's own occurrence index, served beside the
+/// `hpath` that already carries it (`wire-contract.md` § A.11, ZT ruling
+/// 2026-08-15 "Rule: add n"). Additive; no existing column re-grained.
+pub const SCHEMA_VERSION: i32 = 6;
 
 /// Run the full round-1 DDL against `conn` (8 tables + 4 views).
 ///
