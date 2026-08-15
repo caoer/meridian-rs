@@ -827,8 +827,11 @@ one workspace fingerprint — the world stood still, or the commit refused.*
 narrows to the TOUCH SET; frozen view KEPT, pre-merge ruling 2).**
 Wire-contract § A.7 carries the full law; what it supersedes HERE, named:
 
-- Point 3 above, the pre-eval caller-guard paragraph, and the set-form
-  commit below are AMENDED at the premise: the commit's authority is no
+- Point 3 above, the pre-eval caller-guard paragraph, the set-form commit
+  below, and the 2026-08-13 CAS-relaxation's premise restatements
+  ("auto-guarded by the entry-fingerprint snapshot", "consistent with
+  exactly one workspace fingerprint") are AMENDED at the premise: the
+  commit's authority is no
   longer the whole-corpus entry fingerprint — it is the **touch set** the
   attempt itself recorded (point reads, armed targets, pattern/selector
   expansions as set folds, sql provenance regions), verified entry-vs-live
