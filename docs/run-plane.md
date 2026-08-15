@@ -1582,6 +1582,7 @@ A preset def is a page carrying `type: def`. Its frontmatter declares:
 | `root` | the root record the scaffold pins the preset into | `SESSION.md` |
 | `births` | the `{{id}}`-filled target path template for one record | `{{kind}}/{{id}}.md` |
 | `inputs` | the convention-floor pins — a **block sequence** | no floor pinned |
+| `floor` | the workspace prefix this def's floor pins live under | `conventions/` |
 
 Its body declares, in named sections:
 
@@ -1751,6 +1752,15 @@ declared, in declared order. A root record carrying the def pin alone leaves the
 floor readable only transitively — def@rev, then the def's content — which is
 one indirection weaker than "readable from the session itself" and survives only
 while the def blob does.
+
+**Law 6.3 — the floor prefix is a default the def overrides, never a validity
+predicate the engine owns** *(no-hard-coded-flow amendment,
+`docs/laws.md` § Amendment — no hard-coded flow; ZT ruling 2026-08-15)*.
+`conventions/` is where the U4.4 floor suite lives by convention, so it is the
+fallback; a def spelling `floor: standards/` pins its floor there and is exactly
+as valid. The engine reads the def's own key and only falls back to the
+constant — the shape `root` / `DEFAULT_ROOT_RECORD` already had. A user who
+files their convention suite elsewhere is served, not refused.
 
 ## 7. Refusals and exit codes
 
