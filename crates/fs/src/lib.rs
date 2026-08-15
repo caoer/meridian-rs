@@ -1496,19 +1496,47 @@ pub fn display_name(name: &[u8]) -> String {
 /// that want the locus structurally use [`corpus_member_error`].
 #[derive(Debug)]
 pub struct CorpusMemberError {
+    /// The mint's `io::ErrorKind` — the one discriminator, so the churn
+    /// teaching below and the wire's `corpus_race` mapping read the same
+    /// fact rather than two.
+    pub kind: io::ErrorKind,
     /// The workspace-relative path of the offending member.
     pub member: String,
     /// What the member fails, human-stated (`is not UTF-8 (…)`).
     pub condition: String,
 }
 
-impl std::fmt::Display for CorpusMemberError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
+impl CorpusMemberError {
+    /// The reason alone, without the recovery line. A face that carries the
+    /// recovery class STRUCTURALLY — the wire frame's own `recovery` field —
+    /// uses this; a text face uses [`Display`](std::fmt::Display), which
+    /// teaches the class in words because it has nowhere else to put it.
+    #[must_use]
+    pub fn reason(&self) -> String {
+        format!(
             "the corpus cannot be served: {} {}",
             self.member, self.condition
         )
+    }
+}
+
+impl std::fmt::Display for CorpusMemberError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.reason())?;
+        // A member that is simply GONE is ordinary corpus churn — an
+        // unrelated writer moved or deleted a file the caller never named,
+        // and the next read derives from the corpus as it is now. Only that
+        // family gets the line: a permission fault or a poison member
+        // persists, and promising a re-issue would be false. Class per §8's
+        // `corpus_race` binding (retry), the same one the wire seam mints.
+        if self.kind == io::ErrorKind::NotFound {
+            write!(
+                f,
+                "\n  → the member left the corpus while it was being read, and \
+                 nothing you named is wrong — re-issue the call (recovery: retry)"
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -1520,6 +1548,7 @@ fn corpus_member_refusal(kind: io::ErrorKind, member: &str, condition: String) -
     io::Error::new(
         kind,
         CorpusMemberError {
+            kind,
             member: member.to_string(),
             condition,
         },
