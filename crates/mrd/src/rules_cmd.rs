@@ -1074,12 +1074,18 @@ fn render_human(report: &RulesReport) -> String {
             report.declined_workspace.join(", ")
         );
     }
+    // The one declined population with no registrar narrowing in front of it:
+    // `register` refuses on unparseable frontmatter BEFORE reading any tag, so
+    // every malformed-frontmatter excluded file lands here, rule-intent or not
+    // — unbounded in a generated corpus. Hence the cap its two bounded
+    // neighbours do not take (card rules-undecidable-carrier). The count stays
+    // the full population; the complete list rides `not_offered.undecidable`.
     if !report.undecidable.is_empty() {
         let _ = writeln!(
             out,
-            "cannot be answered — {} excluded markdown file(s) have frontmatter that does not parse, so whether they carry a rule is unknown, not decided: {}",
+            "cannot be answered — {} excluded markdown file(s) have frontmatter that does not parse, so whether they carry a rule is unknown, not decided: {}. The complete list is the `not_offered.undecidable` key of this verb's `--json`.",
             report.undecidable.len(),
-            report.undecidable.join(", ")
+            crate::capped_sample(&report.undecidable)
         );
     }
     if !report.declined_user.is_empty() {

@@ -705,6 +705,30 @@ points at `files_excluded` on this verb's own `--json` as the complete list.
 The count stays the full population: capping the sample bounds the prose, it
 never re-scopes what was excluded.
 
+**Extended to the `mrd rules` undecidable line (2026-08-15, card
+rules-undecidable-carrier).** The CAP class again, and the last uncapped
+human-face join in this verb. `cannot be answered` is the one declined voice
+whose population is genuinely UNBOUNDED: `register` splits frontmatter and
+refuses on `FrontmatterUnparsed` **before** any tag is read
+(`policy/src/registration.rs`), so every excluded file with a malformed
+frontmatter block lands here whether or not it ever meant to carry a rule — no
+registrar narrowing stands between it and a generated corpus. Its two
+neighbours (`not offered to registration`, both feeds) are narrowed to pages
+that OFFER THEMSELVES to registration (`rule_pages_among`) and are bounded by
+construction; they are not in this class and are not capped. The line now
+prints the full count, the same `EXCLUDED_SHOWN` sample and remainder clause as
+every other face (one spelling, `capped_sample`), and points at
+`not_offered.undecidable` on this verb's own `--json` as the complete list.
+
+**The carrier was already there** — `not_offered` has carried all three
+declined populations complete since 2026-08-09, `--json` untouched by this
+card. A prior audit (card cap-convention-audit) read only the top-level keys of
+`to_json`, missed the nested block, and therefore ruled this site
+"REPORT, do not land" for want of a machine carrier. The verdict was right for
+the wrong reason: the site needed the cap, and nothing needed minting. Its
+Reason 1 — the other two declined voices are registrar-narrowed, hence out of
+the class — is independent and stands.
+
 ### `mrd check` — does the world still match the pins
 
 Both layer-0 planes the core reads are memory-free: the claim plane (pinned
