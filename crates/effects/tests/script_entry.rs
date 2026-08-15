@@ -533,6 +533,10 @@ fn the_read_past_the_ceiling_refuses_typed_and_names_it() {
         err.to_string().contains("64"),
         "the refusal names the ceiling: {err}"
     );
+    assert!(
+        err.to_string().contains("→") && err.to_string().contains("files[0:64]"),
+        "the refusal carries its fitted recovery — chunk at the ceiling: {err}"
+    );
     assert_eq!(host.calls, 64, "the ceiling is enforced, not exceeded");
     // Telemetry is unconditional — reported even on refusal.
     assert!(
@@ -656,6 +660,11 @@ for i in range(100):
     assert!(
         text.contains("run budget of 64 runs per attempt"),
         "the ceiling names itself; got: {text}"
+    );
+    assert!(
+        text.contains("→") && text.contains("fresh attempt"),
+        "the refusal carries its fitted recovery — continue past the runs that \
+         stand, never re-run them: {text}"
     );
     assert_eq!(
         host.run_calls, 64,
