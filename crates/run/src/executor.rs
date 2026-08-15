@@ -498,9 +498,18 @@ impl std::fmt::Display for ExecError {
                 f,
                 "workspace busy: another run holds the lock — retry when it exits"
             ),
+            // The recovery line is fitted to the ONE thing this refusal
+            // knows: the corpus moved, and the caller's own request was
+            // never at fault (the pin is often the plane's own, not
+            // theirs). Class per §8's `root_mismatch` binding — `resync`,
+            // not `refresh`: a merkle root is not invertible, so the door
+            // cannot name which files drifted and cannot promise that
+            // re-reading one node is enough.
             ExecError::RootMismatch { expected, actual } => write!(
                 f,
-                "root mismatch: pinned {expected}, live {actual} — out-of-band change, nothing applied"
+                "root mismatch: pinned {expected}, live {actual} — out-of-band change, nothing applied\n  \
+                 → the corpus moved between the guard and this call, and nothing you named is wrong — \
+                 re-read what this run touches, then re-issue the call (recovery: resync)"
             ),
             ExecError::Refused { verdict } => write!(f, "batch refused: {verdict}"),
             ExecError::Page { path, reason } => write!(f, "page {path}: {reason}"),

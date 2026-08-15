@@ -1535,6 +1535,21 @@ Exit triad: **0** clean · **1** the run plane refused or failed (eval fault,
 cap refusal, foreign edit, workspace busy, root mismatch, timeout, bash
 nonzero) · **2** the invocation is wrong (usage, addressing, contract).
 
+**A CHURN refusal carries a recovery line.** Two refusals here blame nothing
+the caller wrote — the corpus moved under an unrelated writer while the call
+was in flight: a **root mismatch** (the plane pinned a root for itself and the
+world advanced past it) and a **corpus member that vanished** mid-read. Both
+end with one fitted line — reason first, then `→ <the move> (recovery:
+<class>)` — because a caller who reads only the reason has no way to know the
+call was never wrong. The class is §8's, verbatim: `resync` for the root
+mismatch (a merkle root is not invertible, so the door cannot say which files
+drifted and cannot promise one re-read is enough) and `retry` for the vanished
+member (`corpus_race` — the next snapshot serves the corpus as it now is). A
+face that carries `recovery` **structurally** — the wire error frame — states
+the reason alone; the line is for the text faces, which have nowhere else to
+put the class. Receipts: dogfood r9 prober § F3. Re-deriving instead of
+refusing is the churn-grain design, not this wording.
+
 ## Guarantee classes — labeled per block
 
 | Class | Path | Claim |
