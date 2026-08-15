@@ -258,6 +258,57 @@ fn a_threaded_actor_lands_in_the_plane_receipt_under_the_derived_anchor() {
     );
 }
 
+/// §2.1's echo law on the wire door (§ A.8): a target whose `page` arrives as
+/// a machine-absolute spelling of an in-workspace page answers its row — and
+/// mints its receipt — under the page's ONE workspace-relative spelling, so a
+/// read-back by the canonical key sees every invocation's history. The row
+/// echo and the receipt fact move together: both are ref-carrying surfaces.
+#[test]
+fn receipt_and_row_page_echo_the_resolved_workspace_relative_spelling() {
+    let tmp = TempDir::new().unwrap();
+    let ws = seeded(&tmp);
+    let _server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(&test_config(&tmp).socket_path);
+    conn.hello_v3(&ws);
+
+    // One page, two spellings: canonical, then machine-absolute.
+    let abs = ws.join("tasks.md");
+    let resp = conn.call(&run_frame(
+        13,
+        "run-779-1",
+        json!([
+            {"page": "tasks.md", "task": "fix-note", "args": ["one"]},
+            {"page": abs.to_str().unwrap(), "task": "fix-note", "args": ["two"]},
+        ]),
+    ));
+    let rows = rows_of(&resp);
+    assert_eq!(rows[0]["page"], json!("tasks.md"));
+    assert_eq!(
+        rows[1]["page"],
+        json!("tasks.md"),
+        "the absolute spelling resolves to the one workspace-relative ref: {resp}"
+    );
+    assert_eq!(rows[1]["state"], json!("applied"), "row 1: {resp}");
+
+    let receipts = fs::read_to_string(ws.join("receipts/run.md")).unwrap();
+    let pages: std::collections::BTreeSet<String> = receipts
+        .lines()
+        .filter_map(|l| l.strip_prefix("- run "))
+        .map(|body| {
+            let line = body.rsplit_once(" ^").map_or(body, |(j, _)| j);
+            serde_json::from_str::<Value>(line).expect("receipt json")["page"]
+                .as_str()
+                .expect("page fact")
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(
+        pages.into_iter().collect::<Vec<_>>(),
+        vec!["tasks.md".to_owned()],
+        "one page owns ONE receipt key across request spellings: {receipts}"
+    );
+}
+
 /// TASK omitted with several declared: the row lists them and refuses on the
 /// invocation class — the CLI's list-then-exit-2, in row tense.
 #[test]
