@@ -382,10 +382,13 @@ impl Domain {
         if segments.iter().any(|s| dot_segment(s)) {
             return Some(ExclusionReason::DotSegment);
         }
-        // 3. custom ignore — gitignore last-match-wins.
+        // 3. custom ignore — gitignore last-match-wins. `rel` names a FILE
+        //    here (the hash domain is a set of files), so dir-only rules match
+        //    through `matches_file`; dir-context callers (`prunes_dir`) keep
+        //    the raw form.
         let mut ignored = false;
         for rule in &self.rules {
-            if rule.matches(&segments) {
+            if rule.matches_file(&segments) {
                 ignored = !rule.negate;
             }
         }
@@ -608,6 +611,10 @@ struct Rule {
     /// Rooted at the workspace (leading `/` or an internal `/`); otherwise the
     /// pattern matches at any depth (basename semantics).
     anchored: bool,
+    /// A trailing `/` on the pattern: the rule names a DIRECTORY (§12.1 rule 3,
+    /// trailing-slash law), so [`matches_file`](Self::matches_file) binds its
+    /// segments to parent directories only — never to the file's own name.
+    dir_only: bool,
     /// Pattern segments; `**` matches zero or more path segments.
     segs: Vec<String>,
 }
@@ -640,8 +647,26 @@ impl Rule {
         Some(Rule {
             negate,
             anchored,
+            dir_only,
             segs,
         })
+    }
+
+    /// Does this rule match `path` when it names a FILE?
+    ///
+    /// A dir-only rule binds to directories, so the file's own — final —
+    /// segment is off-limits: the rule matches only through the parents.
+    /// Without this split, the `**` a trailing slash compiles to matches ZERO
+    /// segments and the "directory" glob lands on the file itself — how
+    /// `scratch*/` once dropped the FILE `tasks/scratch-snapS-cleanup.md` out
+    /// of a live hash domain (§12.1 rule 3 trailing-slash law, dogfood
+    /// 2026-08-15, card record-reproject-on-put).
+    fn matches_file(&self, path: &[&str]) -> bool {
+        match (self.dir_only, path.split_last()) {
+            (true, Some((_, parents))) => self.matches(parents),
+            (true, None) => false,
+            (false, _) => self.matches(path),
+        }
     }
 
     fn matches(&self, path: &[&str]) -> bool {
@@ -957,6 +982,61 @@ mod tests {
         let d = Domain::from_config("ignore:\n  - \"archive/**\"\n  - \"!archive/index.md\"\n");
         assert!(!d.contains(Path::new("archive/old.md")));
         assert!(d.contains(Path::new("archive/index.md"))); // re-included by `!`
+    }
+
+    /// §12.1 rule 3, trailing-slash law: a dir-only pattern binds directories.
+    /// Regression for the live defect: the sessions root's `scratch*/` rule
+    /// (declared for per-seat scratch DIRECTORIES) silently dropped the FILE
+    /// `tasks/scratch-snapS-cleanup.md` out of the hash domain — the sql
+    /// projection census undercounted the board by one card while the
+    /// named-path doors served the file (card record-reproject-on-put,
+    /// 2026-08-15). `git check-ignore` rules the same pair: exit 1 on the
+    /// file, exit 0 on the directory's contents.
+    #[test]
+    fn dir_only_pattern_never_matches_a_bare_file() {
+        let d = Domain::from_config("version: 2\nignore:\n  - \"scratch*/\"\n");
+        // the incident's shape: a FILE whose basename fits the pattern body.
+        assert_eq!(
+            d.exclusion(Path::new(
+                "year=2026/month=08/15-00-mrd-next-board/tasks/scratch-snapS-cleanup.md"
+            )),
+            None,
+        );
+        assert!(d.contains(Path::new("scratch-notes.md"))); // root-level file, same law
+        // directory semantics stand: files beneath a matching dir segment.
+        assert_eq!(
+            d.exclusion(Path::new("results/scratch-r4/venv.md")),
+            Some(ExclusionReason::CustomIgnore),
+        );
+        assert!(!d.contains(Path::new("scratch-top/deep/nested.md")));
+    }
+
+    /// The same law, anchored: `archive/deep/` names one directory, never the
+    /// sibling file `archive/deep.md`.
+    #[test]
+    fn anchored_dir_only_pattern_binds_the_directory_only() {
+        let d = Domain::from_config("ignore:\n  - \"archive/deep/\"\n");
+        assert!(d.contains(Path::new("archive/deep.md")));
+        assert!(!d.contains(Path::new("archive/deep/x.md")));
+    }
+
+    /// A `!` re-include with a trailing slash follows the same law through the
+    /// same loop: it lifts the ignore for the directory's contents.
+    #[test]
+    fn negated_dir_only_reincludes_directory_contents() {
+        let d = Domain::from_config("ignore:\n  - \"vendor/\"\n  - \"!vendor/keep/\"\n");
+        assert!(!d.contains(Path::new("vendor/x.md")));
+        assert!(d.contains(Path::new("vendor/keep/x.md")));
+    }
+
+    /// Dir-context matching is untouched by the trailing-slash law: the
+    /// directory itself, and anything beneath it, still prunes.
+    #[test]
+    fn dir_only_pattern_still_prunes_the_directory() {
+        let d = Domain::from_config("ignore:\n  - \"scratch*/\"\n");
+        assert!(d.prunes_dir(Path::new("results/scratch-r4")));
+        assert!(d.prunes_dir(Path::new("results/scratch-r4/deep")));
+        assert!(!d.prunes_dir(Path::new("results")));
     }
 
     #[test]
