@@ -688,3 +688,40 @@ markdown, gated by its own test.
   `PresetDef::floor_prefix`, so a def filing its convention suite under
   `standards/` is as valid as one under `conventions/`. Gated by
   `crates/preset/tests/gates.rs`.
+
+## Amendment — the one state owner (fingerprint grain)
+
+Law: merged fingerprint-grain plan §4.9 — the unification sentence owed by the
+panel's round 4 (session `15-14-fingerprint-grain`,
+`results/pins-deliverable/merged-plan.md`). Rulings behind it:
+`decisions/2026-08-15-pre-merge-rulings.md` (ruling 4, daemon-routed
+authority), `decisions/2026-08-15-restart-index-allowed.md` (the checkpoint's
+identity tuple binds to this name), `broker-headtohead.md` § RULED (the
+commit shape whose linearized step this law names). All provisional per ZT's
+standing reclassification. Docs-first: this law lands before the code that
+implements it; the merkle-spec half is `node-rev-merkle-spec.md` §6.3.
+
+> **The workspace naming tree, the parsed world, the journal seq, and every
+> minted generation advance under ONE generation name `(instance, seq)`, in
+> one act, owned by one per-workspace state owner — so tree, parse cache,
+> journal, and tokens can never skew against each other.**
+
+- **One act.** A commit's settled delta applies to the resident tree, the
+  parse cache, and the journal in one short state-owner step that assigns the
+  next `(instance, seq)`; roots chain contiguously
+  (`commit[n].root_before == commit[n-1].root_after`). Everything outside
+  that step — staging, validation, durability I/O — runs parallel and
+  unordered (the ruled commit shape: the only linearized work is the µs
+  in-memory advance + journal append, group-committable).
+- **One name.** Every minted generation — a script's pinned entry generation,
+  a node's `last_seq` stamp, a checkpoint binding, a delta frame — carries
+  the same `(instance, seq)` pair. Two artifacts of one generation can never
+  disagree about WHEN.
+- **The audit edge.** Per-node `last_seq` stamps are maintained by the SAME
+  guarded write path that maintains digests, so the hash instrument audits
+  the stamp instrument and the two cannot drift silently
+  (`node-rev-merkle-spec.md` §6.3, the ZFS hole_birth lesson). Stamps are
+  instance-bound; an instance mismatch degrades to the content-fold
+  compare — hash tokens stay epoch-free, cursors do not.
+- **The home is the implementing card's to fix** (the registry/serve seam);
+  the LAW binds whichever home: no second place may advance any of the four.
