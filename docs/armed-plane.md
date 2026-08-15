@@ -22,9 +22,11 @@ Status: normative for the floor-convention arming ladder. Law: U4.4;
 `laws.md` § policy gate; `wire-contract.md` § A.2 (block-is-a-feature, refusal
 taxonomy, genesis-epoch grey).
 
-Arming a workspace's law is a **documented manual bootstrap, not tooling.** There
-is no `mrd arm` command and no arming automation — arming is a reviewer act,
-recorded through the ordinary write door. This page is the ladder a maintainer
+Arming is a **reviewer act with a verb**: `mrd arm <ID> --mode M --rev R
+[--at DIR]` is the attest path — the legal road the binding law's refusals
+name. The reviewer reads the resolved page, and the act admits the attestation
+only at the rev they read (`--rev` is required and has no live-rev default — a
+default would attest bytes nobody read). This page is the ladder a maintainer
 climbs to take a workspace from **never-armed** (the gate is a bit-for-bit
 no-op) to **steady state** (the door enforces the armed floor).
 
@@ -165,29 +167,44 @@ Three properties the runbook depends on:
   it fires. A hook row carrying `warn`/`block`, or a check row carrying `armed`,
   is refused at the act, so no artifact can render one.
 
-#### What is NOT yet wired (read before trusting this rung)
+#### The disk edge (wired), and what is still deferred
 
 The door and the reaction feeder are BOTH re-keyed onto the artifact, and the
 folder loader is gone — that was the loader-cutover card. Both armed-law surfaces
 now pivot on the `meridian/attested` marker through one shared reader, so the
 workspace cannot disagree with itself about whether it is armed.
 
-What is still unwired is the ARM act's DISK EDGE: nothing in production writes
-`meridian/attested` and `meridian/armed-rules.md`, and it must write **both
-atomically** — an artifact without the marker arms nothing, and a marker without
-the artifact fails every write closed. Until that lands, the rungs below are
-literally manual: a maintainer writes both files. Deferred by ruling and re-owed
-in `[[arm-disk-edge]]`, together with the redesigned `mrd realise --truth`
-convergence over the artifact+marker pair.
+The ARM act's DISK EDGE is `wire_serve::armed_disk::ArmSession` (`mrd arm`
+drives it): the workspace write flock held from artifact read to commit,
+rename-atomic landing, and the crash order **artifact first, marker second** —
+a crash between the two leaves artifact-without-marker, which reads as
+never-armed: the safe, re-runnable state (the identical re-arm is a no-op).
+The marker landing is the act's commit point. The edge deliberately does not
+ride the caller door: a direct door write to the artifact is `binding_break`
+(row 9) precisely because arming is an attestation, and the act's own law —
+`policy::armed::arm`'s faults, the drift check, the strict parse of the
+standing artifact — is discharged before the session opens. To every other
+process the landing is an external write, observed exactly as an editor's save.
+
+Two deferrals stay open, by name:
+
+- **`arming_precondition` (taxonomy row 8) is not yet evaluated ON the attest
+  path.** It never could be: row-9 binding refusal fires before rule evaluation
+  on direct writes, and nothing could arm the meta-convention before the verb
+  existed. Wiring the armed `meta-convention` into `mrd arm`'s re-arm leg is
+  the follow-up rung.
+- **The redesigned `mrd realise --truth` convergence** over the artifact+marker
+  pair keeps its own owner (the remainder of `[[arm-disk-edge]]`).
 
 The **first** arming write is special, and its specialness is permanent:
 
 - **ungated** — at the moment it lands, the workspace is still never-armed (the
   marker does not yet exist), so `gate()` is a no-op. The first-arming write
   therefore lands UNGATED — it cannot be gated by the law it is installing.
-- **journaled** — it is still a guarded write, so it appends its row to the
-  receipt journal (`op=create path=meridian/armed-rules.md … ^r-NNNNNN`). The
-  genesis act is present and permanent in the ledger.
+- **its permanence is the pair itself** — the attested row pins the page and
+  rev, and the marker pins the epoch, permanently. (An earlier revision
+  promised a receipt-journal row here; the journal era is retired — its
+  producer side is deleted, and nothing replaces it.)
 - **grey on the enforcement axis, never green** — a never-armed write carries NO
   enforcement verdict (`t.result.verdicts` is empty). Grey is the ABSENCE of a
   green enforcement verdict, not a token. The genesis epoch renders grey; refusal

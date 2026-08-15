@@ -15,6 +15,7 @@ mod gc;
 mod history_cmd;
 // The commit-fence READ plane. Public because the design tests for `mrd skill hook` hold the
 // emitted document to this module's constants. Nothing here writes.
+mod arm_cmd;
 pub mod hook;
 mod init;
 mod new_cmd;
@@ -282,6 +283,23 @@ usage:
                            print that layer alone. Exits: 0 clean /
                            1 finding (collision | refused rule page | red armed row)
                            / 2 bad invocation or PATH outside workspace.
+! mrd arm <ID> --mode <off|warn|block|armed> --rev <16HEX> [--at DIR] [--json]
+                           the ARM act (the attest path): resolve ID at the arm
+                           root (--at, default `.` = workspace root, a
+                           DIRECTORY — never the resolver's layer:depth
+                           spelling), admit the attestation only if the live
+                           page rev equals --rev, and pin the winner into
+                           meridian/armed-rules.md — creating the once-armed
+                           marker on the first arm. --rev is the attestation:
+                           the rev the reviewer READ (`mrd rules` winner rev=;
+                           `mrd read` serves the page); no live-rev default. A
+                           check arms off|warn|block, a hook off|armed. Re-arm
+                           on the same (id, arm root): identical row = no-op
+                           \"unchanged\"; differing row REPLACED (the re-arm
+                           every drift refusal commands). Corrupt existing
+                           artifact refuses, byte-untouched. Exits: 0 armed |
+                           unchanged / 1 refused (arm fault | drift | corrupt
+                           artifact | busy lock) / 2 bad invocation.
   mrd config               MERIDIAN.md config plane: resolve bootstrap
                            (MERIDIAN_CONFIG, then $HOME/MERIDIAN.md) and print
                            path, state, origin, rev/fingerprint, BOUND mount
@@ -591,6 +609,7 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
         "repair" => repair_cmd::dispatch(&args[1..]),
         "walk" => walk_cmd::dispatch(&args[1..]),
         "rules" => rules_cmd::dispatch(&args[1..]),
+        "arm" => arm_cmd::dispatch(&args[1..]),
         "check" => check_cmd::dispatch(&args[1..]),
         "skill" => skill_cmd::dispatch(&args[1..]),
         "config" => {
@@ -977,20 +996,20 @@ mod help {
             assert_eq!(words_of(overflowing), vec!["pin"]);
         }
 
-        /// The write mark is the gutter: 14 verbs write, the rest read.
+        /// The write mark is the gutter: 15 verbs write, the rest read.
         #[test]
-        fn fourteen_verbs_are_marked_as_writers() {
+        fn fifteen_verbs_are_marked_as_writers() {
             let marked: Vec<&str> = LISTING
                 .lines()
                 .filter(|line| line.starts_with("! "))
                 .collect();
             assert_eq!(
                 marked.len(),
-                14,
+                15,
                 "marked as writers:\n{}",
                 marked.join("\n")
             );
-            assert_eq!(blocks().len(), 27, "verb blocks in the listing");
+            assert_eq!(blocks().len(), 28, "verb blocks in the listing");
         }
 
         /// Every option that names an owner names a verb that exists.

@@ -713,6 +713,17 @@ impl ArmedArtifact {
         &self.rows
     }
 
+    /// Withdraw the row keyed (id, arm root), returning it, or `None` when no
+    /// such row stands. The RE-ARM primitive: every drift teaching commands
+    /// "re-arm at the live rev", and a re-arm is withdraw-then-[`arm`] — the
+    /// replacement row still passes the whole act, so removal cannot be used
+    /// to skip a gate. It does not disarm by itself: an attested-off rule is a
+    /// row spelled `off`, never an absent row.
+    pub fn remove(&mut self, id: &RuleId, root: &ArmRoot) -> Option<ArmedRow> {
+        let position = self.rows.iter().position(|row| row.key() == (id, root))?;
+        Some(self.rows.remove(position))
+    }
+
     /// Fold another act's rows in — how a per-workspace artifact accumulates arms at
     /// different roots.
     ///
@@ -2166,6 +2177,37 @@ mod tests {
             "the refusal names both vocabularies: {}",
             err.detail
         );
+    }
+
+    /// The RE-ARM primitive: withdraw the (id, root) row, arm again at the live
+    /// rev, merge — the replacement passed the whole act, and the reddened row
+    /// is gone. Exactly the path every Drifted teaching commands.
+    #[test]
+    fn a_re_arm_withdraws_the_row_and_the_fresh_attestation_fires() {
+        let mut ws = Workspace::default().check("c.md", "c");
+        let mut artifact = arm_one(&ws, "c", Mode::Block).expect("arms");
+
+        ws.edit("c.md", &format!("{}\n<!-- amended -->\n", check_page("c")));
+        assert!(
+            artifact.verify(&ws).firing().is_empty(),
+            "the edited page reddened its row"
+        );
+
+        let withdrawn = artifact
+            .remove(&id("c"), &ArmRoot::workspace())
+            .expect("the row stood");
+        assert_eq!(withdrawn.id(), &id("c"));
+        assert!(
+            artifact.remove(&id("c"), &ArmRoot::workspace()).is_none(),
+            "withdrawing twice finds nothing"
+        );
+
+        artifact
+            .merge(arm_one(&ws, "c", Mode::Block).expect("re-arms at the live rev"))
+            .expect("the key was withdrawn, so the merge is no duplicate");
+        let verdict = artifact.verify(&ws);
+        assert_eq!(verdict.firing().len(), 1, "the fresh attestation fires");
+        assert!(verdict.red().is_empty());
     }
 
     // ── reading an attested page back ─────────────────────────────────────────
