@@ -2487,6 +2487,34 @@ executes, is visible to its own statement, and dies at ROLLBACK — the
 "writes nothing durable" contract on a persistent file. Nothing else is
 guarded: trust posture, no statement classifier, no auth.
 
+**The occurrence index is SERVED as a column, never re-derived (ruled
+2026-08-15 — ZT, verbatim: "Rule: add n").** The projection's `section`
+relation publishes `n`: the section's own 1-based occurrence among the
+same-parent, same-raw-text sibling sections — §2.1's occurrence index, the
+one this document already laws — and it is **NULL exactly where the
+published address omits it**, so `n IS NOT NULL` is the ambiguity predicate
+and the column is the last segment of that row's `hpath`, never a second
+spelling of it. It is SERVED from the same address owner the `hpath` column
+and the read face's toc publish from (`model`'s occurrence law), never
+recomputed in the projector: a second owner of one fact drifts silently,
+because both answer a plausible small integer.
+
+The defect it closes is a wrong-target WRITE that passes CAS. Without the
+column a caller building corpus-wide section edits re-derives the occurrence
+from `node_seq`, and the two count different things — `node_seq` is the
+document-order ordinal over EVERY section of the file (the row's identity),
+while `n` counts only siblings sharing one parent and one heading text. The
+address that mistake produces resolves to a real, different section, whose
+`node_rev` the caller then reads and guards against, so the write commits
+against a live guard and lands on the wrong section silently. A refusal
+would have been the good outcome; this class does not get one.
+
+⚠️ **`n` addresses a SECTION inside one file. It never says which entry of a
+`files[]` request a row belongs to** — that question is answered where it is
+already owned, by `files[i]` under §A.7 and the §4.4 set form, and this
+section neither restates nor extends those rules. The two indices meet on any
+corpus-wide sweep and must not be read as one.
+
 **The CLI ladder.** `mrd sql` asks the resident daemon FIRST (this op),
 opens the drawer file directly when unheld, and answers from `:memory:`
 last. ONE ladder for every caller (the NO-SANDBOX ruling, 2026-08-14,
