@@ -694,6 +694,17 @@ very verb's own machine answer, which stays the complete §12.1 enumeration
 and uncapped: dot paths in the voice (the F11 disease) and unbounded prose
 (the 2026-08-10 3.1M-character measurement's shape), both closed here.
 
+**Extended to the `mrd retire` human render (2026-08-15, card
+retire-cmd-cap-join).** This one is the CAP class only, never the walk-law
+class: `retire` certifies absence, so its outside-domain population is
+lawfully COMPLETE — dot paths included — and stays so on `files_excluded`,
+byte-identical. What was uncapped was the human line, which joined that whole
+population into prose. It now names the same `EXCLUDED_SHOWN` sample with the
+same remainder clause as every other face (one spelling, `capped_sample`), and
+points at `files_excluded` on this verb's own `--json` as the complete list.
+The count stays the full population: capping the sample bounds the prose, it
+never re-scopes what was excluded.
+
 ### `mrd check` — does the world still match the pins
 
 Both layer-0 planes the core reads are memory-free: the claim plane (pinned
