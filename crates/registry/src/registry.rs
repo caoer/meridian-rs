@@ -1188,21 +1188,23 @@ mod engine_tests {
         // draining accessor).
         rewrite(&canonical, "a.md", "# A moved\n");
         assert!(reg.note_dirty(&canonical, &[PathBuf::from("a.md")]));
-        let fs_root = fs::WorkspaceRoot(canonical.clone());
+        // `::fs` is the engine crate — this test module aliases `fs` to
+        // `std::fs` for its fixtures.
+        let fs_root = ::fs::WorkspaceRoot(canonical.clone());
         let cache = {
             let caches = reg.domain_caches.lock().unwrap();
             Arc::clone(caches.get(&canonical).expect("resident memo"))
         };
         let guarded_root = {
             let mut memo = cache.lock().unwrap();
-            fs::guard::StepGuard::open_cached(&fs_root, &mut memo)
+            ::fs::guard::StepGuard::open_cached(&fs_root, &mut memo)
                 .expect("guard opens")
                 .pre_root()
         };
 
         // The same observation with NO feed anywhere near it.
-        let mut bare = fs::DomainCache::new();
-        let bare_root = fs::guard::StepGuard::open_cached(&fs_root, &mut bare)
+        let mut bare = ::fs::DomainCache::new();
+        let bare_root = ::fs::guard::StepGuard::open_cached(&fs_root, &mut bare)
             .expect("guard opens")
             .pre_root();
         assert_eq!(
