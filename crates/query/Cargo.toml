@@ -23,3 +23,7 @@ model = { workspace = true }
 [dev-dependencies]
 # test-only: building in-memory corpora for the edge-map fixtures
 syntax = { workspace = true }
+# test-only: the §7 sql-provenance gates validate emitted regions against the
+# resident tree (`fs::ResidentTree`) — the premise instrument. Production
+# code emits scope PATHS only, so `fs` never enters the graph edge.
+fs = { workspace = true }
