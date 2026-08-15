@@ -708,12 +708,14 @@ The wire is permissive forever: unguarded, actor-less, receipt-less splices are 
 
 ### §5.5 The Coverage Law — legality is not sufficiency
 
-Two different questions, two laws (quantifiers in the adjudicated form — carried exactly):
+*(Amended 2026-08-15, bounce-1 closure — the sufficiency quantifier re-drawn over the CALLER-AUTHORED write set; ruled: ZT, Arm B, `decisions/2026-08-15-coverage-quantifier-deviation.md`. A recorded deviation from the frozen plan: cite fingerprint-grain plan §4.4 WITH that deviation record.)*
+
+Two different questions, two laws:
 
 - **Legality (D-04):** every addressable node of the tree is a legal premise — root, any folder, any file leaf, and `absent`. The engine checks every premise the caller supplies.
-- **Sufficiency (the Coverage Law):** legality does not satisfy requiredness. Let `W` be the complete governed write set (every path the transaction can publish) and `G` the premise list. Requiredness holds iff **for every `w` in `W` there exists at least one `g` in `G` whose scope is ancestor-or-self of `w`** (an exact-section or absence premise covering `w` also suffices). A premise need not cover every target. A premise that covers no target is legal WIDENING — checked, strictest wins, never sufficient alone. Failure refuses `scope_does_not_cover` naming the UNCOVERED target set; the engine never silently promotes the request to one common ancestor (LCA) or to root.
-- **Placement:** coverage is enforced at transaction/set ADMISSION — the door seam where the complete `W` (including engine-generated receipt destinations) and the complete `G` exist, before any per-member validation or byte move.
-- **Engine-generated members of `W`** (the receipt rider, which crosses scopes inside one commit) are covered by the engine's own commit act — the engine verifies them against the live tree at commit; the caller's `G` must cover the caller-authored targets.
+- **Sufficiency (the Coverage Law):** legality does not satisfy requiredness. Let `W` be the caller-authored write set (every path the caller's own edits publish) and `G` the premise list — purely the caller's premises, everywhere this law speaks; no engine premise ever enters `G`. Requiredness holds iff **for every `w` in `W` there exists at least one `g` in `G` whose scope is ancestor-or-self of `w`** (an exact-section or absence premise covering `w` also suffices). A premise need not cover every target. A premise that covers no target is legal WIDENING — checked, strictest wins, never sufficient alone. Failure refuses `scope_does_not_cover` naming the UNCOVERED caller-authored target set; the engine never silently promotes the request to one common ancestor (LCA) or to root.
+- **Placement:** coverage is enforced at transaction/set ADMISSION — the door seam where the complete `W` and the complete `G` exist, before any per-member validation or byte move.
+- **Engine-generated writes, outside `W`** (the receipt rider, which crosses scopes inside one commit): the engine's own commit act covers them — the engine verifies them against the live tree at commit; the caller's `G` must cover the caller-authored targets.
 
 Consequences at the doors, stated so nothing is silently reinterpreted: a single-file `splice` whose every content edit carries `if_node_rev` is covered at those edits — an exact-section premise covers the mutation it guards, so A.1's demand is unchanged in effect; the set form's natural cover is each target file's own leaf token — one copyable token per file, membership-safe within the file; a root premise covers everything (today's `if_fingerprint`, unchanged); disjoint extra premises are legal as widening only.
 
