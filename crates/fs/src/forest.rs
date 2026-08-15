@@ -36,7 +36,7 @@
 
 use std::path::Path;
 
-use crate::resident::{ResidentTree, ScopeRefusal};
+use crate::resident::{MemberLeaf, ResidentTree, ScopeRefusal};
 
 /// The 8-byte ASCII domain tag opening a forest-fold pre-image (§4.3):
 /// prefix-free against `mrk2.vtx`/`mrk2.dir` (differs at byte 5), so a
@@ -53,7 +53,7 @@ const TAG_FOREST: &[u8; 8] = b"mrk2.fst";
 /// drift. `n = 0` is legal: the fold of "nothing matches" — a mintable
 /// premise that guards a match set's CONTINUED emptiness.
 #[must_use]
-pub fn fold(members: &[(Vec<u8>, [u8; 32])]) -> [u8; 32] {
+pub fn fold(members: &[MemberLeaf]) -> [u8; 32] {
     debug_assert!(
         members.windows(2).all(|w| w[0].0 < w[1].0),
         "forest members must be strictly ascending by path bytes (§4.3.1)"
@@ -85,7 +85,7 @@ pub fn expand(
     tree: &ResidentTree,
     prefix: &Path,
     mut matches: impl FnMut(&[u8]) -> bool,
-) -> Result<Vec<(Vec<u8>, [u8; 32])>, ScopeRefusal> {
+) -> Result<Vec<MemberLeaf>, ScopeRefusal> {
     let mut members = tree.files_under(prefix)?;
     members.retain(|(path, _)| matches(path));
     Ok(members)
@@ -169,7 +169,7 @@ mod tests {
 
     /// A small workspace: two matching drafts, a non-matching sibling file,
     /// a non-matching binary, and an unrelated subtree.
-    fn tree() -> ResidentTree {
+    fn corpus() -> ResidentTree {
         let mut tree = ResidentTree::new();
         tree.set_leaf(&p("a/draft-1.md"), h(1));
         tree.set_leaf(&p("a/draft-3.md"), h(3));
@@ -201,7 +201,7 @@ mod tests {
     /// hash work (no refold: the instrument counters stand still).
     #[test]
     fn expand_is_sorted_bounded_and_refold_free() {
-        let mut tree = tree();
+        let mut tree = corpus();
         tree.fingerprint(); // settle folds so the counter baseline is clean
         let before = tree.stats().vertex_hashes;
         let members = expand(&tree, &p("a"), glob("a/draft-*.md")).expect("a resolves");
@@ -239,7 +239,7 @@ mod tests {
     /// passes. The digest moves with its match set and with nothing else.
     #[test]
     fn membership_both_directions() {
-        let mut tree = tree();
+        let mut tree = corpus();
         let entry = digest(&tree, &p("a"), glob("a/draft-*.md")).expect("mint");
 
         // A new matching sibling joins the re-expansion → refuse.
@@ -279,7 +279,7 @@ mod tests {
     fn creation_deletion_and_both_rename_halves_trip() {
         let matcher = || glob("a/draft-*.md");
         // Creation.
-        let mut tree = tree();
+        let mut tree = corpus();
         let entry = digest(&tree, &p("a"), matcher()).expect("mint");
         tree.set_leaf(&p("a/draft-0.md"), h(12));
         assert!(matches!(
@@ -288,7 +288,7 @@ mod tests {
         ));
 
         // Deletion.
-        let mut tree = tree();
+        let mut tree = corpus();
         let entry = digest(&tree, &p("a"), matcher()).expect("mint");
         tree.remove_leaf(&p("a/draft-3.md"));
         assert!(matches!(
@@ -297,7 +297,7 @@ mod tests {
         ));
 
         // Rename half OUT (a/draft-3.md → a/final-3.md): leaves the set.
-        let mut tree = tree();
+        let mut tree = corpus();
         let entry = digest(&tree, &p("a"), matcher()).expect("mint");
         tree.remove_leaf(&p("a/draft-3.md"));
         tree.set_leaf(&p("a/final-3.md"), h(3));
@@ -307,7 +307,7 @@ mod tests {
         ));
 
         // Rename half IN (a/x.bin's twin arriving as a/draft-9.md): joins.
-        let mut tree = tree();
+        let mut tree = corpus();
         let entry = digest(&tree, &p("a"), matcher()).expect("mint");
         tree.remove_leaf(&p("a/x.bin"));
         tree.set_leaf(&p("a/draft-9.md"), h(9));
@@ -318,7 +318,7 @@ mod tests {
 
         // A WITHIN-set rename (same content, new matching name) also trips:
         // the fold covers member PATHS, not just leaves.
-        let mut tree = tree();
+        let mut tree = corpus();
         let entry = digest(&tree, &p("a"), matcher()).expect("mint");
         tree.remove_leaf(&p("a/draft-3.md"));
         tree.set_leaf(&p("a/draft-4.md"), h(3));
@@ -334,7 +334,7 @@ mod tests {
     /// never a refusal).
     #[test]
     fn empty_match_set_is_a_mintable_premise() {
-        let mut tree = tree();
+        let mut tree = corpus();
         let entry = digest(&tree, &p("a"), glob("a/todo-*.md")).expect("mint");
         assert_eq!(entry, fold(&[]));
         assert_eq!(
@@ -360,7 +360,7 @@ mod tests {
     /// its meaning (merged plan §4.5).
     #[test]
     fn forest_narrows_where_the_subtree_fold_stays_conservative() {
-        let mut tree = tree();
+        let mut tree = corpus();
         let forest_entry = digest(&tree, &p("a"), glob("a/draft-*.md")).expect("mint");
         let dir_entry = tree.fold_at(&p("a")).expect("a resolves");
         tree.set_leaf(&p("a/final.md"), h(8));
@@ -382,7 +382,7 @@ mod tests {
     /// premise. Sibling subtrees keep serving.
     #[test]
     fn collision_under_prefix_refuses() {
-        let mut tree = tree();
+        let mut tree = corpus();
         tree.set_leaf(&p("a/name"), h(1));
         tree.set_leaf(&p("a/name/inner.md"), h(2));
         let err = expand(&tree, &p("a"), glob("a/*")).expect_err("collision refuses");
@@ -398,7 +398,7 @@ mod tests {
     /// root listing) and stays strictly ascending across directories.
     #[test]
     fn root_scope_expands_every_member_once() {
-        let mut tree = tree();
+        let mut tree = corpus();
         tree.set_leaf(&p("top.md"), h(14));
         let members = expand(&tree, Path::new(""), glob("**")).expect("root resolves");
         let paths: Vec<&[u8]> = members.iter().map(|(p, _)| p.as_slice()).collect();

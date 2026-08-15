@@ -54,6 +54,11 @@ impl Node {
     }
 }
 
+/// One listed member (merkle-spec §4.3.1): the workspace-relative path BYTES
+/// ([`crate::hash_name`] spelling) and the member's §3 leaf hash — the pair
+/// the forest fold consumes and [`ResidentTree::files_under`] lists.
+pub type MemberLeaf = (Vec<u8>, [u8; 32]);
+
 /// A resolved scope fold (merkle-spec §7 scope rows).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScopeFold {
@@ -343,7 +348,7 @@ impl ResidentTree {
     /// [`ScopeRefusal`] when `scope` names, passes through, or CONTAINS a §4.4
     /// collision key — §4.3.1's stated precondition: a collision key cannot
     /// say WHICH kind is a member, and an ambiguous member set is no premise.
-    pub fn files_under(&self, scope: &Path) -> Result<Vec<(Vec<u8>, [u8; 32])>, ScopeRefusal> {
+    pub fn files_under(&self, scope: &Path) -> Result<Vec<MemberLeaf>, ScopeRefusal> {
         let path = crate::hash_name(scope);
         let mut key: Vec<u8> = Vec::new();
         for seg in split_segments(path) {
@@ -368,7 +373,7 @@ impl ResidentTree {
                 reason: RefusalReason::Collision,
             });
         }
-        let mut out: Vec<(Vec<u8>, [u8; 32])> = Vec::new();
+        let mut out: Vec<MemberLeaf> = Vec::new();
         let mut collect = |dir_key: &[u8], node: &Node| {
             node.map.for_each_entry(&mut |name, kind, hash| {
                 if kind == ChildKind::File {

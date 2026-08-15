@@ -314,21 +314,20 @@ fn bounded_regions(tokens: &[Tok]) -> Option<BTreeSet<String>> {
             let Some(Tok::Word(a)) = tokens.get(after + 1) else {
                 return None;
             };
-            alias = a.clone();
+            alias.clone_from(a);
             after += 2;
         }
         Some(Tok::Word(w)) if w != "where" && !CLAUSE_TAILS.contains(&w.as_str()) => {
-            alias = w.clone();
+            alias.clone_from(w);
             after += 1;
         }
         _ => {}
     }
     // After the relation only WHERE or a tail clause may follow (a comma
-    // would be a second relation).
+    // would be a second relation; a missing WHERE reads every row: world).
     match tokens.get(after) {
-        None => return None, // no WHERE — every row of the relation: world
         Some(Tok::Word(w)) if w == "where" || CLAUSE_TAILS.contains(&w.as_str()) => {}
-        Some(_) => return None,
+        None | Some(_) => return None,
     }
 
     // The WHERE region, split into top-level conjuncts.
