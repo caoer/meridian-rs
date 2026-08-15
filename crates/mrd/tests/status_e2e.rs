@@ -302,9 +302,11 @@ fn a_journal_shaped_page_is_inert_and_the_disclosure_is_rendered() {
         so.contains("forced-since-realise: not-tracked"),
         "the axis is disclosed, not dropped: {so}"
     );
+    // The WHY rides `--json` and `--help`, never the human line (report-voice
+    // pass, ZT rulings 3–5: the report states what is, teaching is on demand).
     assert!(
-        so.contains("the engine keeps no memory by design"),
-        "and the line carries its reason: {so}"
+        !so.contains("the engine keeps no memory"),
+        "the human line carries no mechanism footnote: {so}"
     );
 }
 

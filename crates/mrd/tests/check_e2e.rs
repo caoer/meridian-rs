@@ -145,13 +145,12 @@ fn no_repo_fence(root: &Path) -> serde_json::Value {
 
 /// The MANDATORY disclosure line, verbatim, spelled once (U5 § 6; advisor gate 1 §2). Every
 /// render assert below carries it, so deleting the line fails this file rather than silently
-/// returning a reader to the old, wider green.
+/// returning a reader to the old, wider green. The line states the narrowing and the pointer
+/// only; the mechanism WHY is docs/`--help` teaching (report-voice pass, ZT rulings 3–5).
 fn write_history_line() -> String {
     format!(
-        "  write_history: {} — the engine keeps no memory by design: history is pinned to git at \
-         lock, and anything between locks is not history. This verb answers at-rest truth only \
-         (does the world still match the pins), so chain continuity and last-receipt-vs-live are \
-         not checked here at all — not grey, NOT CHECKED\n",
+        "  write_history: {} — chain continuity and last-receipt-vs-live are not checked; \
+         history is in git\n",
         check::WRITE_HISTORY_NOT_ASSESSED
     )
 }
