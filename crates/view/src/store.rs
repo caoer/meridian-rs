@@ -10,7 +10,12 @@
 //!   `tombstone` (the path was removed at that generation). The pin ledger
 //!   `hist.pin` is itself append-only; **the highest-generation pin row IS the
 //!   file's fingerprint pin**, written in the same transaction as the rows it
-//!   covers, so the file is always at exactly one fingerprint.
+//!   covers, so the file is always at exactly one fingerprint. One table is
+//!   NOT generation-keyed: `hist.body_text (body_key, text)` is the
+//!   content-addressed chunk store (`docs/body-projection.md` §4) —
+//!   insert-if-absent, so unchanged body text is stored once across
+//!   generations and paths while `hist.body` carries the narrow per-gen rows
+//!   that reference it.
 //! - **`main.*`** — the caller-facing latest views, keeping the ephemeral
 //!   projection's exact names and column shapes (`doc`, `section`, `link`,
 //!   `backlink`, `dangling`, `record`, `tag_all`, `task`, `frontmatter`,
@@ -119,7 +124,11 @@ use crate::{
 /// tables, `hist.link.exclusion_path`, and `hist.pin.base_fold`. A v6 file
 /// carries no base rows at all and its `exclusion` content predates the §5.1
 /// mint rule.
-pub const CACHE_SCHEMA_VERSION: i64 = 7;
+///
+/// `8`: `hist.body` + `hist.body_text` + `main.body` — the content-addressed
+/// body projection (`docs/body-projection.md` §4); a v7 file has no chunk
+/// rows to serve.
+pub const CACHE_SCHEMA_VERSION: i64 = 8;
 
 /// The cache file's basename inside the workspace cache drawer (ruling OQ4).
 pub const SQL_CACHE_FILENAME: &str = "sql.duckdb";
@@ -180,6 +189,17 @@ CREATE TABLE hist.base_view (
 CREATE TABLE hist.base_formula (
     path TEXT, gen BIGINT, ord UBIGINT, name TEXT, expr TEXT
 );
+-- The body split (docs/body-projection.md §4): narrow per-gen rows reference
+-- content-addressed text, so an edit re-stores only chunks whose bytes are
+-- new to this file's history.
+CREATE TABLE hist.body (
+    path TEXT, gen BIGINT, seq UBIGINT, section_seq UBIGINT, hpath TEXT,
+    span_start UBIGINT, span_end UBIGINT, node_rev TEXT, body_key TEXT
+);
+CREATE TABLE hist.body_text (
+    body_key TEXT,   -- full 64-hex blake3 of the chunk bytes (spec §4: corpus-wide address, full width)
+    text     TEXT
+);
 CREATE TABLE hist.pin (
     gen BIGINT, fingerprint VARCHAR, applied_at TIMESTAMP,
     files_added BIGINT, files_changed BIGINT, files_removed BIGINT,
@@ -231,6 +251,12 @@ CREATE VIEW main.task AS
            t.span_start, t.span_end, t.node_rev
     FROM hist.task t
     SEMI JOIN hist.doc_latest d ON t.path = d.path AND t.gen = d.gen;
+CREATE VIEW main.body AS
+    SELECT b.path, b.seq, b.section_seq, b.hpath, t.text,
+           b.span_start, b.span_end, b.node_rev
+    FROM hist.body b
+    SEMI JOIN hist.doc_latest d ON b.path = d.path AND b.gen = d.gen
+    JOIN hist.body_text t USING (body_key);
 
 -- The base relations, same protocol: ONE window over hist.base picks each
 -- member's newest generation and drops tombstones; children follow by
@@ -959,6 +985,7 @@ impl SqlStore {
         self.append_scalar(&rows.frontmatter_tag, "frontmatter_tag", &generation)?;
         self.append_scalar(&rows.section, "section", &generation)?;
         self.append_scalar(&rows.task, "task", &generation)?;
+        self.append_body_chunks(&rows.body, &generation)?;
 
         // base: path, generation, tombstone, rest — the hist.doc shape, so the
         // latest-pick window and the tombstone rule read identically.
@@ -1010,6 +1037,56 @@ impl SqlStore {
                 .iter(),
             ),
         )?;
+        Ok(())
+    }
+
+    /// Appender load of the body split (`docs/body-projection.md` §4): each
+    /// staged row `(path, seq, section_seq, hpath, text, span_start, span_end,
+    /// node_rev)` becomes one narrow `hist.body` row carrying `body_key`
+    /// (full-hex blake3 of the chunk bytes) in place of `text`, plus one
+    /// `hist.body_text` row when the key is new to this file's history. The
+    /// read-then-insert is race-free by the single-appender protocol — the
+    /// holder is the file's only writer — and stays INSERT-only, so the
+    /// never-edit law holds.
+    fn append_body_chunks(&self, rows: &[Vec<Value>], generation: &Value) -> Result<(), ViewError> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let mut known: BTreeSet<String> = {
+            let mut stmt = self.conn.prepare("SELECT body_key FROM hist.body_text")?;
+            let mut got = stmt.query([])?;
+            let mut keys = BTreeSet::new();
+            while let Some(row) = got.next()? {
+                keys.insert(row.get::<_, String>(0)?);
+            }
+            keys
+        };
+        let mut narrow = self.conn.appender_to_db("body", "hist")?;
+        let mut texts = self.conn.appender_to_db("body_text", "hist")?;
+        for row in rows {
+            let Value::Text(text) = &row[4] else {
+                unreachable!("body row text column is TEXT by construction");
+            };
+            let key = blake3::hash(text.as_bytes()).to_hex().to_string();
+            let r = [
+                row[0].clone(),      // path
+                generation.clone(),  // gen
+                row[1].clone(),      // seq
+                row[2].clone(),      // section_seq
+                row[3].clone(),      // hpath
+                row[5].clone(),      // span_start
+                row[6].clone(),      // span_end
+                row[7].clone(),      // node_rev
+                Value::Text(key.clone()),
+            ];
+            narrow.append_row(duckdb::appender_params_from_iter(r.iter()))?;
+            if known.insert(key.clone()) {
+                let t = [Value::Text(key), Value::Text(text.clone())];
+                texts.append_row(duckdb::appender_params_from_iter(t.iter()))?;
+            }
+        }
+        narrow.flush()?;
+        texts.flush()?;
         Ok(())
     }
 
@@ -1302,10 +1379,10 @@ pub(crate) mod tests {
             .expect("sync")
     }
 
-    /// Per-surface digest over every column of every row — the 7 base tables
+    /// Per-surface digest over every column of every row — the 8 base tables
     /// plus the 4 convenience views, so the acceptance is the whole caller
     /// surface, not just storage.
-    const SURFACE_DIGESTS: [(&str, &str); 11] = [
+    const SURFACE_DIGESTS: [(&str, &str); 12] = [
         (
             "doc",
             "SELECT coalesce(md5(string_agg(path || '|' || file_rev || '|' || line_count::VARCHAR || '|' || bytes::VARCHAR, chr(10) ORDER BY path)), 'EMPTY') FROM doc",
@@ -1333,6 +1410,10 @@ pub(crate) mod tests {
         (
             "task",
             "SELECT coalesce(md5(string_agg(path || '|' || seq::VARCHAR || '|' || checked::VARCHAR || '|' || depth::VARCHAR || '|' || coalesce(section_seq::VARCHAR,'~N~') || '|' || coalesce(hpath,'~N~') || '|' || text || '|' || span_start::VARCHAR || '|' || span_end::VARCHAR || '|' || node_rev, chr(10) ORDER BY path, seq)), 'EMPTY') FROM task",
+        ),
+        (
+            "body",
+            "SELECT coalesce(md5(string_agg(path || '|' || seq::VARCHAR || '|' || coalesce(section_seq::VARCHAR,'~N~') || '|' || coalesce(hpath,'~N~') || '|' || text || '|' || span_start::VARCHAR || '|' || span_end::VARCHAR || '|' || coalesce(node_rev,'~N~'), chr(10) ORDER BY path, seq)), 'EMPTY') FROM body",
         ),
         (
             "backlink",
@@ -1469,8 +1550,9 @@ pub(crate) mod tests {
             assert_eq!(cols, ref_cols, "main.{name} columns drifted from the build");
         }
         // 12 md relations + the three `.base` relations (`base-projection.md`
-        // §4), which the cache serves under the same latest-view protocol.
-        assert_eq!(cached.len(), 15, "15 caller-facing relations");
+        // §4) + `body` (`body-projection.md`), all under the same
+        // latest-view protocol.
+        assert_eq!(cached.len(), 16, "16 caller-facing relations");
 
         // Each column once, per relation — the literal card assertion.
         for (name, columns) in &cached {
@@ -1566,6 +1648,73 @@ pub(crate) mod tests {
             )
             .expect("resolved");
         assert_eq!(resolved, 1);
+    }
+
+    /// Spec §7.1 test 3: an identical chunk in two docs stores ONE
+    /// `hist.body_text` row, and an edit that leaves a chunk's bytes unchanged
+    /// appends no new text row for it — the content-address dedup that keeps
+    /// the append-only file from re-storing unchanged text.
+    #[test]
+    fn body_text_dedups_across_paths_and_generations() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        let shared = "# H\nshared body\n";
+        let v1 = corpus(&[("x.md", shared), ("y.md", shared), ("z.md", "# Z\nown body\n")]);
+        sync_ambient(&mut store, &v1, "b3b:v1").expect("cold");
+
+        let count = |store: &SqlStore, sql: &str| -> i64 {
+            store
+                .connection()
+                .query_row(sql, [], |r| r.get(0))
+                .expect("count")
+        };
+        // x.md and y.md share one chunk ("shared body\n"); z.md adds one.
+        let texts_v1 = count(&store, "SELECT count(*) FROM hist.body_text");
+        assert_eq!(texts_v1, 2, "identical chunks share one text row");
+
+        // Edit z.md only; x.md/y.md untouched, their chunk text unchanged.
+        let v2 = corpus(&[("x.md", shared), ("y.md", shared), ("z.md", "# Z\nedited body\n")]);
+        sync_ambient(&mut store, &v2, "b3b:v2").expect("append");
+        let texts_v2 = count(&store, "SELECT count(*) FROM hist.body_text");
+        assert_eq!(
+            texts_v2,
+            texts_v1 + 1,
+            "only the edited chunk's new bytes store a text row"
+        );
+        assert_surface_matches_fresh(&store, &v2);
+    }
+
+    /// Spec §7.1 test 4: a heading-only rename moves the section's CAS token
+    /// but stores no new chunk text — heading lines are in no chunk, so the
+    /// dedup survives the rename.
+    #[test]
+    fn heading_rename_leaves_body_text_count_unchanged() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        let v1 = corpus(&[("a.md", "# Alpha\nstable body\n")]);
+        sync_ambient(&mut store, &v1, "b3b:v1").expect("cold");
+        let rev_v1: String = store
+            .connection()
+            .query_row("SELECT node_rev FROM body WHERE path = 'a.md'", [], |r| {
+                r.get(0)
+            })
+            .expect("rev");
+
+        let v2 = corpus(&[("a.md", "# Alpha2\nstable body\n")]);
+        sync_ambient(&mut store, &v2, "b3b:v2").expect("append");
+        let texts: i64 = store
+            .connection()
+            .query_row("SELECT count(*) FROM hist.body_text", [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(texts, 1, "the rename stored no new chunk text");
+        let rev_v2: String = store
+            .connection()
+            .query_row("SELECT node_rev FROM body WHERE path = 'a.md'", [], |r| {
+                r.get(0)
+            })
+            .expect("rev");
+        assert_ne!(rev_v1, rev_v2, "the CAS token moved with the heading");
+        assert_surface_matches_fresh(&store, &v2);
     }
 
     #[test]
