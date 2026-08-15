@@ -92,6 +92,18 @@ impl Sandbox {
         std::fs::canonicalize(&ws).expect("canonical ws")
     }
 
+    /// ZT's own receipt shape: an anchored workspace whose page lives NESTED, so a caller
+    /// standing beside the page spells a ref the root-anchored grammar cannot find.
+    fn nested_workspace(&self) -> PathBuf {
+        let ws = self.tmp.path().join("nested");
+        std::fs::create_dir_all(ws.join(".git")).expect("git anchor");
+        std::fs::create_dir_all(ws.join("results").join("deep")).expect("nested dirs");
+        std::fs::write(ws.join("guide.md"), GUIDE).expect("guide");
+        std::fs::write(ws.join("results").join("BOARD-QUERIES.md"), GUIDE).expect("board");
+        std::fs::write(ws.join("results").join("deep").join("note.md"), GUIDE).expect("note");
+        std::fs::canonicalize(&ws).expect("canonical ws")
+    }
+
     fn daemon_pidfile(&self) -> PathBuf {
         self.cache_root.join("registry").join("daemon.pid")
     }
@@ -239,6 +251,87 @@ fn warm_read_of_a_poison_member_surfaces_the_daemons_teaching_frame() {
         "the warm refusal is the daemon's frame verbatim, not a remint: {:?}",
         stderr(&poison)
     );
+}
+
+// ---------------------------------------------------------------------------
+// Gate 3 — the cwd respelling: a ref that exists relative to the caller's cwd
+// refuses with the workspace-relative spelling, computed and copy-pasteable.
+// ZT hit this twice in 15 minutes (card mrd-cwd-relative-refs); the second hit
+// came AFTER the correct form had been described in prose, which is why the
+// refusal must name the exact spelling and not gesture at its shape.
+// ---------------------------------------------------------------------------
+
+/// The respelling a refusal must name, given the cwd it was called from.
+fn assert_respells(out: &Output, spelling: &str, plane: &str) {
+    assert_eq!(code(out), 1, "{plane}: file_not_found is exit 1");
+    let err = stderr(out);
+    assert!(
+        err.contains("file_not_found"),
+        "{plane}: the refusal wears its typed code: {err:?}"
+    );
+    assert!(
+        err.contains(&format!("`{spelling}`")),
+        "{plane}: the refusal must name the exact workspace-relative spelling \
+         `{spelling}` — a fitted suggestion is one the caller pastes without \
+         translating it: {err:?}"
+    );
+}
+
+#[test]
+fn degraded_read_from_a_nested_cwd_respells_the_ref_from_the_workspace_root() {
+    let sb = sandbox();
+    let ws = sb.nested_workspace();
+    // ZT's receipt verbatim: standing in `results/`, ask for the page beside you.
+    let out = sb.run_degraded(&ws.join("results"), &["read", "BOARD-QUERIES.md"]);
+    assert_respells(&out, "results/BOARD-QUERIES.md", "degrade");
+}
+
+#[test]
+fn degraded_read_from_a_deeper_cwd_respells_through_every_segment() {
+    let sb = sandbox();
+    let ws = sb.nested_workspace();
+    let out = sb.run_degraded(&ws.join("results").join("deep"), &["read", "note.md"]);
+    assert_respells(&out, "results/deep/note.md", "degrade");
+}
+
+/// The teaching is earned, never guessed: a ref that names nothing on disk gets
+/// the plain miss, so the operator never chases a spelling that does not exist.
+#[test]
+fn a_ref_that_exists_nowhere_gets_no_respelling() {
+    let sb = sandbox();
+    let ws = sb.nested_workspace();
+    let out = sb.run_degraded(&ws.join("results"), &["read", "no-such-page.md"]);
+    assert_eq!(code(&out), 1, "file_not_found is exit 1");
+    let err = stderr(&out);
+    assert!(
+        !err.contains("Did you mean"),
+        "no candidate exists, so nothing is suggested: {err:?}"
+    );
+}
+
+/// The warm plane teaches identically — the daemon mints the miss, the face
+/// composes the respelling, and the two transports cannot train opposite habits.
+#[test]
+fn warm_read_from_a_nested_cwd_respells_the_ref_from_the_workspace_root() {
+    let sb = sandbox();
+    let ws = sb.nested_workspace();
+
+    let warm_json = sb.run_warm(&ws, &["read", "guide.md", "--json"]);
+    let missed = sb.run_warm(&ws.join("results"), &["read", "BOARD-QUERIES.md"]);
+
+    let pid = sb.wait_daemon_pid(Duration::from_secs(5));
+    if let Some(pid) = pid {
+        signal(pid, libc::SIGTERM);
+        wait_dead(pid, Duration::from_secs(5));
+    }
+
+    assert!(pid.is_some(), "the auto-spawned daemon wrote a pidfile");
+    assert!(
+        stdout(&warm_json).contains("\"source\": \"daemon\""),
+        "the control read must really be daemon-backed: {}",
+        stdout(&warm_json)
+    );
+    assert_respells(&missed, "results/BOARD-QUERIES.md", "warm");
 }
 
 // ---------------------------------------------------------------------------
