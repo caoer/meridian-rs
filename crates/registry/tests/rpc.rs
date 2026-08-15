@@ -238,7 +238,7 @@ fn idle_reap_demotes_stale_entries_and_keeps_registrations() {
     let tmp = TempDir::new().unwrap();
     let ws = tmp.path().join("workspace");
     mkdirs(&ws);
-    std::fs::write(ws.join("a.md"), "# A\n").unwrap();
+    fs::write(ws.join("a.md"), "# A\n").unwrap();
     let server = RunningServer::start(test_config(&tmp)).unwrap();
     let client = Client::new(server.socket_path().to_path_buf());
     let five_days = 5 * 24 * 60 * 60;
