@@ -124,4 +124,64 @@ func main() {
 	fmt.Printf("root -> b3:%s\n", hexFull(rootHash2))
 	// unchanged: notes.md leaf
 	fmt.Printf("unchanged: leaf(notes.md) still %s\n", hex8(nLeaf))
+
+	// ——— Merkle law 2 (spec §4.2, worked in §5.1): the same workspace under
+	// the fixed-256 radix child map. Pre-images follow §4.2.2 exactly:
+	// "mrk2.vtx" ‖ varint(len(ext)) ‖ ext ‖ terminal_frame ‖ children_frame,
+	// then the §4.2.3 wrap "mrk2.dir" ‖ vhash. These values are pinned in
+	// §5.1 and are the radix card's byte-identity gate.
+	uleb := func(n int) []byte {
+		var buf [10]byte
+		k := binary.PutUvarint(buf[:], uint64(n))
+		return buf[:k]
+	}
+	vtx := func(ext, terminal, children []byte) [32]byte {
+		pre := []byte("mrk2.vtx")
+		pre = append(pre, uleb(len(ext))...)
+		pre = append(pre, ext...)
+		pre = append(pre, terminal...)
+		pre = append(pre, children...)
+		return b3(pre)
+	}
+	oneTerminal := func(kind byte, h [32]byte) []byte {
+		return append([]byte{0x01, kind}, h[:]...)
+	}
+	noTerminal := []byte{0x00}
+	noChildren := []byte{0x00} // children_frame with n = 0
+	dirWrap := func(vh [32]byte) [32]byte {
+		return b3(append([]byte("mrk2.dir"), vh[:]...))
+	}
+	twoChildren := func(s1 byte, v1 [32]byte, s2 byte, v2 [32]byte) []byte {
+		out := []byte{0x02, s1}
+		out = append(out, v1[:]...)
+		out = append(out, s2)
+		out = append(out, v2[:]...)
+		return out
+	}
+
+	// tasks/: one vertex — ext "x.md", file terminal, no children.
+	vX := vtx([]byte("x.md"), oneTerminal(0x00, xLeaf), noChildren)
+	dirTasks := dirWrap(vX)
+	// root map: v_n (ext "otes.md"), v_t (ext "asks"), root fans 0x6e/0x74.
+	vN := vtx([]byte("otes.md"), oneTerminal(0x00, nLeaf), noChildren)
+	vT := vtx([]byte("asks"), oneTerminal(0x01, dirTasks), noChildren)
+	vRoot := vtx([]byte{}, noTerminal, twoChildren(0x6e, vN, 0x74, vT))
+	fp2 := dirWrap(vRoot)
+	fmt.Printf("\n=== merkle law 2 (spec §5.1) ===\n")
+	fmt.Printf("vhash(v_x, tasks/ map) = %s\n", hexFull(vX))
+	fmt.Printf("dir(tasks/)            = %s\n", hexFull(dirTasks))
+	fmt.Printf("vhash(v_n)             = %s\n", hexFull(vN))
+	fmt.Printf("vhash(v_t)             = %s\n", hexFull(vT))
+	fmt.Printf("vhash(root)            = %s\n", hexFull(vRoot))
+	fmt.Printf("fingerprint (law 2)    = %s\n", hexFull(fp2))
+
+	// The same §5 splice under law 2: only the x.md key path recomputes.
+	vX2 := vtx([]byte("x.md"), oneTerminal(0x00, xLeaf2), noChildren)
+	dirTasks2 := dirWrap(vX2)
+	vT2 := vtx([]byte("asks"), oneTerminal(0x01, dirTasks2), noChildren)
+	vRoot2 := vtx([]byte{}, noTerminal, twoChildren(0x6e, vN, 0x74, vT2))
+	fp22 := dirWrap(vRoot2)
+	fmt.Printf("AFTER splice: dir(tasks/)  -> %s\n", hexFull(dirTasks2))
+	fmt.Printf("AFTER splice: fingerprint  -> %s\n", hexFull(fp22))
+	fmt.Printf("unchanged: vhash(v_n) still %s\n", hex8(vN))
 }

@@ -13,6 +13,10 @@ workspace = true
 [dependencies]
 model = { workspace = true }
 syntax = { workspace = true }
+# Law-2 interior hashing (merkle-spec §4.2): the radix child map mints
+# `mrk2.vtx`/`mrk2.dir` values here — the same §1 hash family the rev/leaf
+# laws use. Already in the graph via `model`; the edge becomes direct.
+blake3 = "1"
 
 # O_NOFOLLOW for the exec-window guard's symlink-refusing reads (guard.rs,
 # #25). libc is already a graph dependency (cache/run); no new crate enters.
@@ -23,10 +27,10 @@ libc = "0.2"
 # test-only: the exec-guard gates compare close()'s verified root against an
 # independently folded merkle_root (model is already a production dep).
 model = { workspace = true }
+# test-only: the canonicality property corpus for the radix child map (the
+# workspace kernel-test convention); tempfile builds on-disk corpora.
+proptest = { workspace = true }
 # test-only: the B-03 fence matrix asserts EISDIR by errno and measures which
 # filesystem backs each fixture (statfs). Already a production dep above.
 libc = "0.2"
-# test-only: blake3 recomputes the §12.1 counterfactual roots (the production
-# merkle_root lives in `model`, M3-MERKLE); tempfile builds on-disk corpora.
-blake3 = "1"
 tempfile = "3"
