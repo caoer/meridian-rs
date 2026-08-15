@@ -32,21 +32,23 @@ pub const RING_BOUND: usize = 256;
 ///
 /// # The seq invariant
 /// A `seq` returned by an allocation can never be re-issued by
-/// [`Self::advance`]. The registry allocates inside the workspace write flock
-/// but advances the ring after the flock drops; in that window the
-/// external-change detector can emit a frame carrying the very `seq` the write
-/// path just allocated. [`Self::allocate_seq`] is the one issuing point for
-/// both producers and `reserved` is the high-water mark that makes re-issue
+/// [`Self::advance`]. The write path now records its frame inside the same
+/// flock it allocated under (`SeqSink::committed`), so the allocate→record gap
+/// no longer spans a flock drop — but the invariant does not lean on that
+/// caller discipline: a producer that unwinds after allocating, or any future
+/// caller that records late, must still never collide with the detector's own
+/// allocation. [`Self::allocate_seq`] is the one issuing point for both
+/// producers and `reserved` is the high-water mark that makes re-issue
 /// impossible. Proof:
 /// `allocation_survives_a_detector_advance_before_the_writers`.
 #[derive(Debug, Default)]
 pub struct RootRing {
     entries: VecDeque<DeltaFrame>,
     /// High-water mark of the seqs issued but not yet recorded: an allocation
-    /// lands here the instant it is handed out, while its frame reaches
-    /// `entries` only after the writer's flock drops — that gap is the race.
-    /// Recorded frames are covered by the other term of
-    /// [`Self::allocate_seq`]'s max.
+    /// lands here the instant it is handed out, its frame only when the
+    /// producer records it — the floor that keeps an unwound or late-recording
+    /// producer's number from ever being re-issued. Recorded frames are
+    /// covered by the other term of [`Self::allocate_seq`]'s max.
     ///
     /// Atomic, and deliberately the only interior mutability in this type: an
     /// allocation must be callable through a `&self` sink from either host,
