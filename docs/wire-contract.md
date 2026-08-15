@@ -2381,7 +2381,21 @@ honest tense).
 | `state` | `FRESH_AT_SAMPLE` \| `STALE` \| `UNVERIFIED` — UNVERIFIED iff `error` is set (a failed query certifies nothing) |
 | `columns[]` | `{name, type}` as `DuckDB` reports them — the same pair the CLI `--json` frame carries |
 | `rows[]` | row-major JSON cells; list cells are real arrays per row (the F1 fix), never column dumps. Booleans and numerics ride as JSON numbers/bools; every other scalar family — timestamp (tz-aware columns marked `+00`), date, time, interval, decimal, enum, struct, map — is a string speaking `DuckDB`'s own `::VARCHAR` text, never a `Debug` repr (r6 S1); a union cell is its member's cell |
-| `error` | the caller's own SQL failing is a SUCCESS body with the engine's words verbatim (faces render their `SQL:` register from it) — plus the OQ1 teaching on view-DML refusals. Never a wire error: `ok:false` frames are the door's own faults (`io_error`, `bad_request`, `unknown_op`) |
+| `error` | the caller's own SQL failing is a SUCCESS body with the engine's words verbatim (faces render their `SQL:` register from it) — plus the teaching arms below. Never a wire error: `ok:false` frames are the door's own faults (`io_error`, `bad_request`, `unknown_op`) |
+
+**Teaching arms on a refusal (reason first, then a suggestion that fits).**
+The engine's words lead; three arms may extend or trim them:
+
+1. **View-DML** (ruling OQ1): the remedy names the `hist.*` lane.
+2. **A retired face name** names the name that replaced it — `card` was
+   renamed to `record`, and the rename shipped with NO compat alias, so this
+   refusal is the whole migration path for a caller who learned the old face.
+3. **A Did-you-mean fitted to a catalog internal is dropped.** `DuckDB`'s
+   suggestion is pure edit distance over the whole catalog, so a face name can
+   land on metadata by accident (`card` → `pg_attrdef`, `board_drift` →
+   `duckdb_constraints`). A `pg_` / `duckdb_` / `sqlite_` fit is never the
+   answer to a face question; near-miss face suggestions (`records` →
+   `record`) are untouched.
 
 **DML law (ruled).** The latest-layer names (`doc`, `section`, …) are VIEWS
 over append-only history: DML against them refuses through `DuckDB`'s own
