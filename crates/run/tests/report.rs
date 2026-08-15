@@ -98,6 +98,7 @@ fn bash(phase2: Phase2, status: ExecStatus, pre_receipt: Option<&str>) -> RunRep
                 bytes: Vec::new(),
                 overflowed: false,
             },
+            pre_exec: None,
             // A clean window: these failures are exec-fail/timeout, not
             // detection — the delta line reads "none".
             detection: Detection::Clean {
@@ -226,4 +227,66 @@ fn a_bash_timeout_is_interrupted_not_partial() {
         Some("- run {} ^p-000001"),
     ));
     assert_eq!(r.state, ReportState::Interrupted);
+}
+
+/// Card run-preexec-severity: the pre-exec fact rides the report on both
+/// faces. Bash clean = an explicit "none" (absence keeps one meaning);
+/// divergent = the register-law line; starlark = no line at all (no exec
+/// window, no pre-exec gap).
+#[test]
+fn pre_exec_delta_rides_both_report_faces() {
+    // clean bash → explicit none
+    let clean = report::render(&bash(
+        Phase2::Applied {
+            effects: vec![],
+            applied: None,
+        },
+        ExecStatus::Exited { code: 0 },
+        Some("^p-1"),
+    ));
+    assert!(clean.to_text().contains("pre-exec delta: none"));
+    assert!(
+        clean
+            .to_json()
+            .unwrap()
+            .contains("\"pre_exec_delta\":\"none\"")
+    );
+
+    // divergent bash → the reason-first line, run still Applied
+    let mut divergent_report = bash(
+        Phase2::Applied {
+            effects: vec![],
+            applied: None,
+        },
+        ExecStatus::Exited { code: 0 },
+        Some("^p-1"),
+    );
+    if let TaskOutcome::Bash(o) = &mut divergent_report.outcome {
+        o.pre_exec = Some(run::snapshot::PreExecDivergence {
+            expected: MerkleRoot("b3:aaaa".to_owned()),
+            observed: MerkleRoot("b3:bbbb".to_owned()),
+        });
+    }
+    let divergent = report::render(&divergent_report);
+    assert_eq!(divergent.state, ReportState::Applied, "report, do not gate");
+    let text = divergent.to_text();
+    assert!(
+        text.contains("pre-exec delta: out-of-band change before exec window"),
+        "{text}"
+    );
+    assert!(
+        text.contains("b3:aaaa") && text.contains("b3:bbbb"),
+        "{text}"
+    );
+    // the window verdict stays its own line, unpolluted
+    assert!(text.contains("out-of-band delta: none"), "{text}");
+
+    // starlark → no pre-exec line on either face
+    let s = report::render(&starlark(
+        vec![],
+        caps("md.set_field", CapSource::Explicit, &[]),
+        false,
+    ));
+    assert!(!s.to_text().contains("pre-exec delta"));
+    assert!(!s.to_json().unwrap().contains("pre_exec_delta"));
 }

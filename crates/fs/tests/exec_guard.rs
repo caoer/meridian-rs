@@ -671,3 +671,75 @@ fn a_symlinked_reserved_path_never_skips() {
         "the armed-rules artifact stays refused whatever the ignore list says"
     );
 }
+
+/// F8 (card run-preexec-severity): the memoized guard serves unmoved members
+/// from recorded digests — a second observation over the same memo reads
+/// only what moved, and the verdicts are byte-identical to the read-it-all
+/// path (leaf digests ARE byte identity).
+#[test]
+fn a_memoized_reobservation_reads_only_moved_members() {
+    let (_tmp, root) = workspace();
+    let mut memo = fs::digestmemo::DigestMemo::new();
+
+    // First observation: everything is a miss (cold memo).
+    let guard = StepGuard::open_memoized(&root, &mut memo).unwrap();
+    let cold_misses = memo.misses();
+    assert!(cold_misses >= 2, "the fixture has at least two members");
+    assert_eq!(memo.hits(), 0);
+    drop(guard);
+
+    // One member moves; the second observation reads exactly that one.
+    write(&root.0, "notes/plan.md", "moved\n");
+    let guard = StepGuard::open_memoized(&root, &mut memo).unwrap();
+    assert_eq!(memo.misses(), cold_misses + 1, "one moved member, one read");
+    assert_eq!(memo.hits(), cold_misses - 1, "every other member served");
+
+    // Verdict parity: the memoized fold equals the full-read fold.
+    assert_eq!(guard.pre_root(), fs::domain_snapshot(&root).unwrap().1);
+}
+
+/// The memoized close names a residual delta identically to the full-read
+/// close — the compare runs on leaf digests, and digest inequality is byte
+/// inequality.
+#[test]
+fn a_memoized_close_names_the_same_residual() {
+    let (_tmp, root) = workspace();
+    let mut memo = fs::digestmemo::DigestMemo::new();
+    let guard = StepGuard::open_memoized(&root, &mut memo).unwrap();
+
+    write(&root.0, "notes/rogue.md", "landed mid-window\n");
+    write(&root.0, "notes/plan.md", "tampered\n");
+
+    match guard.close_memoized(&[], &mut memo) {
+        Err(GuardError::OutOfBand(delta)) => {
+            assert_eq!(delta.unexpected, vec!["notes/rogue.md".to_owned()]);
+            assert_eq!(delta.altered, vec!["notes/plan.md".to_owned()]);
+            assert!(delta.missing.is_empty());
+        }
+        other => panic!("expected OutOfBand, got {other:?}"),
+    }
+}
+
+/// `domain_root_memoized` is `domain_snapshot`'s root served through the
+/// memo: equal cold, equal after movement, bytes read only for the mover.
+#[test]
+fn domain_root_memoized_matches_the_full_fold() {
+    let (_tmp, root) = workspace();
+    let mut memo = fs::digestmemo::DigestMemo::new();
+
+    let memoized = fs::domain_leaves_memoized(&root, &mut memo).unwrap().root();
+    assert_eq!(memoized, fs::domain_snapshot(&root).unwrap().1);
+
+    write(&root.0, "notes/plan.md", "revised\n");
+    let after = fs::domain_leaves_memoized(&root, &mut memo).unwrap().root();
+    assert_eq!(after, fs::domain_snapshot(&root).unwrap().1);
+    assert_ne!(memoized, after);
+
+    // The overlay: fold the next tree from THIS observation plus the one
+    // member about to change — equal to the full fold over the changed tree.
+    let mut leaves = fs::domain_leaves_memoized(&root, &mut memo).unwrap();
+    let next = b"overlaid\n";
+    leaves.overlay(Path::new("notes/plan.md"), model::leaf_digest(next));
+    write(&root.0, "notes/plan.md", "overlaid\n");
+    assert_eq!(leaves.root(), fs::domain_snapshot(&root).unwrap().1);
+}

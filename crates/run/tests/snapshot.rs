@@ -180,3 +180,55 @@ fn bracket_guarantee_class_is_detected() {
     );
     assert_eq!(ExecBracket::GUARANTEE_CLASS.as_str(), "detected");
 }
+
+/// Card run-preexec-severity: the DEFAULT path observes instead of judging.
+/// The same moved-underfoot tree that `open` refuses hands back a usable
+/// bracket plus the observed root — the caller reports the divergence, the
+/// window is detected against the observed tree, and a clean window closes
+/// on exactly that baseline.
+#[test]
+fn open_observing_hands_back_the_observed_root_without_judging() {
+    let (_tmp, root) = workspace();
+    let after_phase1 = computed_root(&root);
+
+    // out-of-band write BETWEEN the flock window and the bracket opening —
+    // blameless by construction: no block ran.
+    write(&root.0, "notes/plan.md", "moved underfoot\n");
+
+    let (bracket, observed) =
+        ExecBracket::open_observing(&root, &mut fs::digestmemo::DigestMemo::new())
+            .expect("observing open never judges the root");
+    assert_ne!(
+        observed, after_phase1,
+        "the divergence is the caller's fact"
+    );
+
+    // The window is clean AGAINST THE OBSERVED BASELINE: the pre-exec write
+    // does not pollute the in-window verdict.
+    let detection = bracket.close();
+    match detection {
+        Detection::Clean { root: verified } => assert_eq!(verified, observed),
+        other => panic!("expected Clean against the observed baseline, got {other:?}"),
+    }
+}
+
+/// The report fact renders reason-first, names both roots, and accuses
+/// nobody (register law; the wording is the severity ruling's).
+#[test]
+fn pre_exec_divergence_display_names_both_roots_and_accuses_nobody() {
+    let divergence = run::snapshot::PreExecDivergence {
+        expected: MerkleRoot("b3:aaaa".to_owned()),
+        observed: MerkleRoot("b3:bbbb".to_owned()),
+    };
+    let line = divergence.to_string();
+    assert!(
+        line.contains("out-of-band change before exec window"),
+        "{line}"
+    );
+    assert!(
+        line.contains("b3:aaaa") && line.contains("b3:bbbb"),
+        "{line}"
+    );
+    assert!(line.contains("nothing is accused"), "{line}");
+    assert!(line.contains("observed tree"), "{line}");
+}

@@ -1,16 +1,19 @@
 //! `mrd run` — the local run plane mounted on the CLI. The argv surface is locked:
 //!
 //! ```text
-//! mrd run <PAGE> [TASK] [-- ARGS] --env K=V --dry --list --json
+//! mrd run <PAGE> [TASK] [-- ARGS] --env K=V --dry --list --json --fatal-preexec
 //! ```
 //!
 //! No argv JSON: positional args ride verbatim after `--`, env rides as repeated
 //! `--env KEY=VALUE` pairs, and both are contract-validated pre-eval.
 //!
 //! # Exit triad
-//! - **0** — clean: `--list`, a completed `--dry`, a clean run.
+//! - **0** — clean: `--list`, a completed `--dry`, a clean run. A foreign write landing
+//!   BEFORE the exec window is reported (`pre-exec delta:` line), not refused — the run
+//!   stands (card run-preexec-severity); `--fatal-preexec` opts back into the refusal.
 //! - **1** — the run plane refused or failed: eval fault, a bash fence under a read-only
-//!   convention, foreign edit, workspace busy, root mismatch, timeout, bash nonzero exit.
+//!   convention, foreign edit, workspace busy, in-window out-of-band delta, timeout, bash
+//!   nonzero exit, or a pre-exec divergence under `--fatal-preexec`.
 //! - **2** — the invocation is wrong (usage, addressing, contract violation) or the tool failed
 //!   pre-run. TASK omitted with several declared tasks lists them and exits 2.
 //!
@@ -36,6 +39,7 @@ use run::exec::ExecStatus;
 use run::executor::{ExecError, ReceiptAddr};
 use run::fence::TaskLanguage;
 use run::runner::{self, CascadeError, RunSpec, RunnerError, TaskOutcome};
+use run::snapshot::OpenRefusal;
 use serde_json::json;
 
 use crate::{Fail, Format, current_dir};
@@ -93,6 +97,16 @@ fn fail_runner(e: &RunnerError) -> Fail {
         RunnerError::Caps(e) => fail_caps(e),
         RunnerError::Starlark(DispatchError::Exec(err))
         | RunnerError::Bash(BashError::Phase1(err)) => fail_exec(err),
+        // The fatal opt-in's own refusal (card run-preexec-severity): only
+        // `--fatal-preexec` mints this variant on the CLI path, so the
+        // recovery is measured, not guessed (face-honesty clause 3) — the
+        // same invocation without the flag proceeds and reports the delta.
+        RunnerError::Bash(BashError::Detection(refusal @ OpenRefusal::PreExecMismatch { .. })) => {
+            fail_run(format!(
+                "detection bracket: {refusal} — refused by --fatal-preexec; rerun without \
+                 the flag and the same run proceeds with this delta reported"
+            ))
+        }
         RunnerError::Cascade(CascadeError::Apply { error, .. }) => {
             let mut fail = fail_exec(error);
             fail.message = format!("cascade: {}", fail.message);
@@ -103,6 +117,9 @@ fn fail_runner(e: &RunnerError) -> Fail {
 }
 
 /// The parsed `mrd run` invocation.
+// Four independent argv switches ARE the surface: --json composes with all
+// three legs, so an enum would invent coupling the CLI does not have.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug)]
 struct RunArgs {
     page: String,
@@ -114,6 +131,9 @@ struct RunArgs {
     dry: bool,
     list: bool,
     json: bool,
+    /// Opt back into refusing a pre-exec foreign write (exit 1, exec never
+    /// starts) instead of the default report-and-run posture.
+    fatal_preexec: bool,
 }
 
 impl RunArgs {
@@ -127,6 +147,7 @@ impl RunArgs {
         let mut dry = false;
         let mut list = false;
         let mut json = false;
+        let mut fatal_preexec = false;
         let mut i = 0;
         while i < tail.len() {
             match tail[i].as_str() {
@@ -137,6 +158,7 @@ impl RunArgs {
                 "--dry" => dry = true,
                 "--list" => list = true,
                 "--json" => json = true,
+                "--fatal-preexec" => fatal_preexec = true,
                 "--env" => {
                     i += 1;
                     let Some(pair) = tail.get(i) else {
@@ -163,7 +185,10 @@ impl RunArgs {
         }
         let Some(page) = page else {
             return Err(Fail::tool(
-                "usage: mrd run <PAGE> [TASK] [-- ARGS] --env K=V --dry --list --json".to_owned(),
+                "usage: mrd run <PAGE> [TASK] [-- ARGS] --env K=V --dry --list --json \
+                 --fatal-preexec (refuse instead of report a foreign write landing just \
+                 before the exec window)"
+                    .to_owned(),
             ));
         };
         if list && (task.is_some() || dry || !args.is_empty() || !env.is_empty()) {
@@ -181,6 +206,7 @@ impl RunArgs {
             dry,
             list,
             json,
+            fatal_preexec,
         })
     }
 
@@ -280,6 +306,7 @@ fn execute(
             anchor: format!("p-{invocation_id}"),
         }),
         takeover: false,
+        fatal_preexec: parsed.fatal_preexec,
         scratch: &scratch,
         timeout,
         declaring_root,
@@ -629,6 +656,53 @@ mod tests {
         assert_eq!(p.args, vec!["page", "--not-a-flag"]);
         assert_eq!(p.env.get("HOME_WIKI").map(String::as_str), Some("/w"));
         assert!(p.dry && p.json && !p.list);
+        assert!(!p.fatal_preexec, "report is the default posture");
+    }
+
+    /// Card run-preexec-severity: the fatal opt-in parses, and it is
+    /// discoverable before it refuses — the usage line names it (face-honesty
+    /// clause 2).
+    #[test]
+    fn parse_fatal_preexec_opt_in() {
+        let p =
+            RunArgs::parse(&strings(&["notes.md", "census", "--fatal-preexec"])).expect("parse");
+        assert!(p.fatal_preexec);
+
+        let usage = RunArgs::parse(&[]).expect_err("no PAGE refuses");
+        assert!(
+            usage.message.contains("--fatal-preexec"),
+            "{}",
+            usage.message
+        );
+    }
+
+    /// The fatal refusal carries its measured recovery (face-honesty clause
+    /// 3): only `--fatal-preexec` mints this variant on the CLI path, so the
+    /// teaching names the flag and the report-instead alternative.
+    #[test]
+    fn fatal_preexec_refusal_teaches_the_recovery() {
+        use run::snapshot::OpenRefusal;
+        let fail = fail_runner(&RunnerError::Bash(BashError::Detection(
+            OpenRefusal::PreExecMismatch {
+                expected: model::MerkleRoot("b3:aaaa".to_owned()),
+                observed: model::MerkleRoot("b3:bbbb".to_owned()),
+            },
+        )));
+        assert_eq!(fail.code, EXIT_RUN);
+        assert!(
+            fail.message
+                .contains("out-of-band change before exec window")
+        );
+        assert!(
+            fail.message.contains("refused by --fatal-preexec"),
+            "{}",
+            fail.message
+        );
+        assert!(
+            fail.message.contains("rerun without the flag"),
+            "{}",
+            fail.message
+        );
     }
 
     #[test]

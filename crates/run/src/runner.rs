@@ -45,6 +45,11 @@ pub struct RunSpec<'a> {
     pub pre_receipt: Option<ReceiptAddr>,
     /// Decision-#26 explicit foreign-edit takeover.
     pub takeover: bool,
+    /// Fatal opt-in for the pre-exec divergence (card run-preexec-severity):
+    /// `false` reports a foreign write landing between the phase-1 commit
+    /// and the bracket opening (the exec runs, stdout stands); `true`
+    /// restores the hard refusal. Unused on the starlark path.
+    pub fatal_preexec: bool,
     /// Bash artifact scratch dir (caller-created; NOT the cwd since U16;
     /// unused on the starlark path).
     pub scratch: &'a Path,
@@ -495,6 +500,7 @@ fn dispatch(
                     pre_receipt: spec.pre_receipt.clone(),
                     receipt: spec.receipt.clone(),
                     takeover: spec.takeover,
+                    fatal_preexec: spec.fatal_preexec,
                     scratch: spec.scratch,
                     timeout: spec.timeout,
                     actor: spec.actor,

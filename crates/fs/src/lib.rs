@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 use std::sync::PoisonError;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+pub mod digestmemo;
 pub mod domain;
 pub mod guard;
 
@@ -426,6 +427,30 @@ impl StatKey {
             size: meta.size(),
             mtime: (meta.mtime(), meta.mtime_nsec()),
             ctime: (meta.ctime(), meta.ctime_nsec()),
+        }
+    }
+
+    /// The raw identity fields, for [`digestmemo`]'s line codec. Crate-only:
+    /// the fields stay private so no consumer grows an opinion about them.
+    pub(crate) fn raw_parts(&self) -> (u64, u64, u64, (i64, i64), (i64, i64)) {
+        (self.dev, self.ino, self.size, self.mtime, self.ctime)
+    }
+
+    /// Rebuild an identity from [`StatKey::raw_parts`]'s fields (the memo's
+    /// deserialization arm).
+    pub(crate) fn from_raw_parts(
+        dev: u64,
+        ino: u64,
+        size: u64,
+        mtime: (i64, i64),
+        ctime: (i64, i64),
+    ) -> StatKey {
+        StatKey {
+            dev,
+            ino,
+            size,
+            mtime,
+            ctime,
         }
     }
 
@@ -888,6 +913,84 @@ pub fn domain_snapshot(root: &WorkspaceRoot) -> io::Result<(DomainFiles, model::
         leaves.iter().map(|(n, d)| (n.as_slice(), *d)).collect();
     let folded = model::merkle_root_of_leaves(&leaf_refs, domain.version());
     Ok((files, folded))
+}
+
+/// One domain observation's leaves — `raw name bytes → §12.2 leaf digest` —
+/// foldable ([`DomainLeaves::root`]) and overlayable
+/// ([`DomainLeaves::overlay`]). The overlay is how a caller that KNOWS the
+/// one member a commit changed folds the post-commit root without a second
+/// sweep: replace that member's leaf, refold. The result is byte-identical
+/// to what [`domain_snapshot`] would fold over the post-commit tree, and
+/// more computed than a re-read — a foreign write racing the commit never
+/// silently enters the folded baseline.
+#[derive(Debug)]
+pub struct DomainLeaves {
+    leaves: BTreeMap<Vec<u8>, [u8; 32]>,
+    domain: domain::Domain,
+}
+
+impl DomainLeaves {
+    /// The fold of these leaves ([`model::merkle_root_of_leaves`] — the same
+    /// tree, encoding, and root as [`domain_snapshot`]'s over the same
+    /// bytes).
+    #[must_use]
+    pub fn root(&self) -> model::MerkleRoot {
+        let refs: Vec<(&[u8], [u8; 32])> = self
+            .leaves
+            .iter()
+            .map(|(n, d)| (n.as_slice(), *d))
+            .collect();
+        model::merkle_root_of_leaves(&refs, self.domain.version())
+    }
+
+    /// Replace (or insert) one member's leaf digest. A path outside the hash
+    /// domain is ignored — the fold never grows a member the domain walk
+    /// would not serve (the same filter [`guard::StepGuard::close`] applies
+    /// to governed edits).
+    pub fn overlay(&mut self, rel: &Path, digest: [u8; 32]) {
+        if self.domain.contains(rel) {
+            self.leaves.insert(hash_name(rel).to_vec(), digest);
+        }
+    }
+}
+
+/// The domain's current leaves with bytes read only for members whose stat
+/// identity moved — [`domain_snapshot`]'s observation served through a
+/// caller-held [`digestmemo::DigestMemo`]. An unmoved member reuses its
+/// recorded [`model::leaf_digest`]; a moved one is re-read through the same
+/// leaf law. Walk semantics are the domain walk's (dot-dirs pruned at
+/// descent, symlinks silently skipped); a caller needing the guarded walk
+/// uses [`guard::StepGuard`].
+///
+/// Not counted by [`fold_count`], which counts FULL folds — the number the
+/// registry's quiet-cycle gates budget.
+///
+/// # Errors
+/// I/O failure loading the domain config, traversing the root, `stat`ing a
+/// member, or reading a member whose identity moved.
+pub fn domain_leaves_memoized(
+    root: &WorkspaceRoot,
+    memo: &mut digestmemo::DigestMemo,
+) -> io::Result<DomainLeaves> {
+    let domain = domain::Domain::load(root)?;
+    let rels = hash_domain(root, &domain)?;
+    let identities = member_identities(&root.0, &rels, PARALLEL_STAT_FLOOR)?;
+    let mut leaves: BTreeMap<Vec<u8>, [u8; 32]> = BTreeMap::new();
+    let mut misses: Vec<(PathBuf, StatKey)> = Vec::new();
+    for (rel, key) in identities {
+        if let Some(digest) = memo.lookup(&rel, &key) {
+            leaves.insert(hash_name(&rel).to_vec(), digest);
+        } else {
+            misses.push((rel, key));
+        }
+    }
+    let miss_rels: Vec<PathBuf> = misses.iter().map(|(rel, _)| rel.clone()).collect();
+    let read = read_and_digest_members(root, &miss_rels, PARALLEL_READ_FLOOR)?;
+    for ((rel, key), (_, digest)) in misses.into_iter().zip(read) {
+        leaves.insert(hash_name(&rel).to_vec(), digest);
+        memo.record(rel, key, digest);
+    }
+    Ok(DomainLeaves { leaves, domain })
 }
 
 /// Below this member count the read+digest sweep stays serial: a fold that
