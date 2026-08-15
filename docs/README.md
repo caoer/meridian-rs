@@ -45,6 +45,7 @@ owns: [process, standing corrections, inventory, reading order]
 | `node-rev-merkle-spec.md` | `node_rev` + merkle encoding (+ `.assets/`) |
 | `fingerprint-norm-spec.md` | Fingerprint CID-token + norm-v2 algorithm |
 | `armed-plane.md` | Arming ladder + `gate()` seam |
+| `base-projection.md` | `.base` (Obsidian Bases) projection into the sql face: membership, relations, `base_fold` witness |
 | `run-plane.md` | Run plane + preset/session birth |
 | `status.md` | CLI / build **descriptive** snapshot |
 | `worker-log.md` | **Optional** history / provenance — deletable |
