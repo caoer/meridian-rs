@@ -582,6 +582,9 @@ impl ScriptHost for LiveHost<'_> {
         // Delta honesty (§ A.7 effects paragraph): a live run() mints per
         // committed batch through the same sink seam as the § A.8 op arm.
         let sink = crate::delta_sink::RingSink::new(self.registry.ring(&self.ws_path));
+        // Observation unification (§ A.7 shares the § A.8 seam): the in-script
+        // run() serves its bracket observations from the same resident memo.
+        let cache = self.registry.domain_cache(&self.ws_path);
         // The clock stops while the run plane executes: admission was checked
         // above; the dispatch below — its walks, its child — is bounded by the
         // run plane's own `run.timeout_secs`, and its elapsed pushes the
@@ -596,6 +599,7 @@ impl ScriptHost for LiveHost<'_> {
             (!self.actor.is_empty()).then_some(self.actor.as_str()),
             self.now.as_deref(),
             &sink,
+            &cache,
         );
         self.deadline.set(self.deadline.get() + started.elapsed());
         self.acts.borrow_mut().push((

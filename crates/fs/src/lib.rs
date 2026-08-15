@@ -17,7 +17,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fs::{self, File};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
@@ -588,15 +588,20 @@ type DirMemo = BTreeMap<PathBuf, (StatKey, Vec<DirEntryKind>)>;
 /// only facts [`hash_domain`]'s walk takes from an enumeration, so remembering
 /// them is remembering the listing.
 ///
-/// Both flags are kept because `read_dir`'s type is `lstat`-shaped: a symlink
-/// is neither `is_dir` nor `is_file`, and the domain walk descends only the
-/// first and admits only the second. Deriving one from the other would quietly
-/// start following symlinks into the hash domain.
+/// All three flags are kept because `read_dir`'s type is `lstat`-shaped: a
+/// symlink is neither `is_dir` nor `is_file`, and the domain walk descends
+/// only the first and admits only the second. Deriving one from another would
+/// quietly start following symlinks into the hash domain. `is_symlink` is
+/// what lets the GUARDED observation ([`DomainCache::observe`]) refuse links
+/// from remembered listings exactly as the fresh strict walk does — a link's
+/// creation or removal moves its directory's own timestamps, so an unmoved
+/// listing still carries the truth about it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DirEntryKind {
     name: std::ffi::OsString,
     is_dir: bool,
     is_file: bool,
+    is_symlink: bool,
 }
 
 impl DomainCache {
@@ -634,38 +639,92 @@ impl DomainCache {
     /// member, or reading a member whose identity moved.
     pub fn root(&mut self, root: &WorkspaceRoot) -> io::Result<model::MerkleRoot> {
         let domain = domain::Domain::load(root)?;
-        let (mut rels, fresh_dirs, listings) = Self::walk_tree(&self.dirs, &root.0, &domain)?;
+        let rows = self
+            .observe(root, &domain, ObserveLaw::Plain)
+            .map_err(plain_refusal)?;
+        // Raw name bytes into the fold (merkle-spec §4/§9) — the same names
+        // `domain_snapshot` folds, so the byte-identity holds on any corpus.
+        let leaves: Vec<(&[u8], [u8; 32])> = rows
+            .iter()
+            .map(|(rel, digest)| (hash_name(rel), *digest))
+            .collect();
+        Ok(model::merkle_root_of_leaves(&leaves, domain.version()))
+    }
+
+    /// The locked-window observation of the run plane, served from this memo:
+    /// the domain's current [`DomainLeaves`] — plain-walk semantics, byte
+    /// reads only for movers. Value-identical to [`domain_leaves_memoized`]
+    /// over the same tree; what changes is where listings and digests come
+    /// from (the resident dir + leaf memos instead of a fresh walk and the
+    /// caller's drawer memo).
+    ///
+    /// # Errors
+    /// I/O failure loading the domain config, traversing the root, `stat`ing
+    /// a member, or reading a member whose identity moved.
+    pub fn domain_leaves(&mut self, root: &WorkspaceRoot) -> io::Result<DomainLeaves> {
+        let domain = domain::Domain::load(root)?;
+        let rows = self
+            .observe(root, &domain, ObserveLaw::Plain)
+            .map_err(plain_refusal)?;
+        let leaves = rows
+            .iter()
+            .map(|(rel, digest)| (hash_name(rel).to_vec(), *digest))
+            .collect();
+        Ok(DomainLeaves { leaves, domain })
+    }
+
+    /// One observation of the domain through the resident memos — the shared
+    /// core of [`root`](Self::root), [`domain_leaves`](Self::domain_leaves),
+    /// and the guarded bracket observations ([`guard::StepGuard::open_cached`]
+    /// / [`guard::StepGuard::close_cached`]).
+    ///
+    /// The walk and the `stat`s are live: the member SET is observed now, and
+    /// every member's identity is checked now. Listings are served from the
+    /// dir memo for unmoved directories; digests from the leaf memo for
+    /// unmoved members; moved members are re-read under the law's own read
+    /// (plain [`fs::read`] vs guarded `O_NOFOLLOW`). On success the leaf memo
+    /// holds exactly the observed generation — vanished members are dropped,
+    /// so the memo cannot outlive its corpus.
+    pub(crate) fn observe(
+        &mut self,
+        root: &WorkspaceRoot,
+        domain: &domain::Domain,
+        law: ObserveLaw,
+    ) -> Result<BTreeMap<PathBuf, [u8; 32]>, ObserveRefusal> {
+        let (mut rels, mut offenders, fresh_dirs, listings) =
+            Self::walk_tree(&self.dirs, &root.0, domain, law)?;
+        // The listings are facts about the tree either way — recorded even
+        // when the guarded law refuses below, exactly as a fresh walk's
+        // enumeration cost is paid before its verdict.
         self.dirs = fresh_dirs;
         self.listings += listings;
+        if !offenders.is_empty() {
+            // The walk completed; the refusal is a count plus the first
+            // offender in sorted order (the strict walk's discipline).
+            offenders.sort();
+            return Err(ObserveRefusal::Symlink {
+                count: offenders.len(),
+                first: offenders.remove(0),
+            });
+        }
         rels.sort();
         let identities = member_identities(&root.0, &rels, PARALLEL_STAT_FLOOR)?;
         let mut fresh: BTreeMap<PathBuf, (StatKey, [u8; 32])> = BTreeMap::new();
+        let mut rows: BTreeMap<PathBuf, [u8; 32]> = BTreeMap::new();
         for (rel, key) in identities {
             let digest = match self.leaves.get(&rel) {
                 Some((seen, digest)) if *seen == key => *digest,
                 _ => {
                     self.reads += 1;
-                    let bytes = fs::read(root.0.join(&rel)).map_err(|e| {
-                        corpus_member_refusal(
-                            e.kind(),
-                            &display_name(hash_name(&rel)),
-                            format!("cannot be read ({e})"),
-                        )
-                    })?;
+                    let bytes = read_member(root, &rel, law)?;
                     model::leaf_digest(&bytes)
                 }
             };
+            rows.insert(rel.clone(), digest);
             fresh.insert(rel, (key, digest));
         }
         self.leaves = fresh;
-        // Raw name bytes into the fold (merkle-spec §4/§9) — the same names
-        // `domain_snapshot` folds, so the byte-identity holds on any corpus.
-        let leaves: Vec<(&[u8], [u8; 32])> = self
-            .leaves
-            .iter()
-            .map(|(rel, (_, digest))| (hash_name(rel), *digest))
-            .collect();
-        Ok(model::merkle_root_of_leaves(&leaves, domain.version()))
+        Ok(rows)
     }
 
     /// [`hash_domain`]'s traversal, with the listing of an unmoved directory
@@ -697,12 +756,16 @@ impl DomainCache {
     /// synchronous, kernel-fresh metadata pass per call — the constant moved,
     /// not the semantics.
     ///
-    /// Returns `(member files, fresh dir memo, enumerations run)`.
+    /// Returns `(member files, symlink offenders, fresh dir memo, enumerations
+    /// run)`. Offenders are non-empty only under [`ObserveLaw::Guarded`]; the
+    /// walk COMPLETES before the caller refuses on them, matching the strict
+    /// walk's count-plus-first-offender discipline.
     fn walk_tree(
         prior: &DirMemo,
         root: &Path,
         domain: &domain::Domain,
-    ) -> io::Result<(Vec<PathBuf>, DirMemo, u64)> {
+        law: ObserveLaw,
+    ) -> io::Result<(Vec<PathBuf>, Vec<String>, DirMemo, u64)> {
         struct Shared {
             /// Rel dirs awaiting a scan.
             todo: VecDeque<PathBuf>,
@@ -710,6 +773,7 @@ impl DomainCache {
             /// walk is done when the queue is empty AND no worker holds one.
             active: usize,
             files: Vec<PathBuf>,
+            offenders: Vec<String>,
             dirs: Vec<(PathBuf, (StatKey, Vec<DirEntryKind>))>,
             listings: u64,
             /// The first scan failure; the sweep fails with it (a tree that
@@ -718,25 +782,29 @@ impl DomainCache {
         }
 
         let mut files = Vec::new();
+        let mut offenders = Vec::new();
         let mut fresh_dirs = BTreeMap::new();
         let mut listings = 0u64;
 
         // The root's own scan runs serially — flat trees never see a thread.
         let scan = scan_dir(prior, root, Path::new(""))?;
         listings += u64::from(scan.enumerated);
-        let (mut root_files, subdirs) = classify(&scan.entries, Path::new(""), domain);
+        let (mut root_files, subdirs, mut root_offenders) =
+            classify(&scan.entries, Path::new(""), domain, law);
         if let Some(key) = scan.key {
             fresh_dirs.insert(PathBuf::new(), (key, scan.entries));
         }
         files.append(&mut root_files);
+        offenders.append(&mut root_offenders);
         if subdirs.is_empty() {
-            return Ok((files, fresh_dirs, listings));
+            return Ok((files, offenders, fresh_dirs, listings));
         }
 
         let shared = std::sync::Mutex::new(Shared {
             todo: subdirs.into(),
             active: 0,
             files: Vec::new(),
+            offenders: Vec::new(),
             dirs: Vec::new(),
             listings: 0,
             err: None,
@@ -765,15 +833,16 @@ impl DomainCache {
                             }
                         };
                         let scanned = scan_dir(prior, root, &rel).map(|scan| {
-                            let split = classify(&scan.entries, &rel, domain);
+                            let split = classify(&scan.entries, &rel, domain, law);
                             (scan, split)
                         });
                         let mut s = shared.lock().unwrap_or_else(PoisonError::into_inner);
                         s.active -= 1;
                         match scanned {
-                            Ok((scan, (mut new_files, new_subdirs))) => {
+                            Ok((scan, (mut new_files, new_subdirs, mut new_offenders))) => {
                                 s.listings += u64::from(scan.enumerated);
                                 s.files.append(&mut new_files);
+                                s.offenders.append(&mut new_offenders);
                                 s.todo.extend(new_subdirs);
                                 if let Some(key) = scan.key {
                                     s.dirs.push((rel, (key, scan.entries)));
@@ -798,9 +867,10 @@ impl DomainCache {
             return Err(err);
         }
         files.append(&mut s.files);
+        offenders.append(&mut s.offenders);
         fresh_dirs.extend(s.dirs);
         listings += s.listings;
-        Ok((files, fresh_dirs, listings))
+        Ok((files, offenders, fresh_dirs, listings))
     }
 
     /// How many directories this memo has ENUMERATED (`read_dir`) over its
@@ -862,6 +932,7 @@ fn scan_dir(prior: &DirMemo, root: &Path, rel_dir: &Path) -> io::Result<DirScan>
             entries.push(DirEntryKind {
                 is_dir: file_type.is_dir(),
                 is_file: file_type.is_file(),
+                is_symlink: file_type.is_symlink(),
                 name: entry.file_name(),
             });
         }
@@ -874,19 +945,68 @@ fn scan_dir(prior: &DirMemo, root: &Path, rel_dir: &Path) -> io::Result<DirScan>
     })
 }
 
-/// Split a scanned directory's entries into the files the domain admits and
-/// the subdirectories worth descending — the same two pruning rules
+/// Which walk law a cached observation runs under ([`DomainCache::observe`]).
+///
+/// The two laws share the listing memo and the leaf memo; they differ only in
+/// what a symlink means and how a moved member's bytes are read — exactly the
+/// difference between [`hash_domain`]'s plain walk and the guarded walk of
+/// [`guard::StepGuard`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ObserveLaw {
+    /// The plain domain walk: symlinks are silently outside the domain, byte
+    /// reads follow the ordinary read path ([`hash_domain`] semantics).
+    Plain,
+    /// The guarded walk: any symlink on a non-dot, non-ignored path refuses
+    /// the whole observation (count + sorted first offender), and moved
+    /// members are read `O_NOFOLLOW` — [`guard::StepGuard`]'s law.
+    Guarded,
+}
+
+/// Why a cached observation refused — the crate-internal shape
+/// [`guard::StepGuard`] maps onto [`guard::GuardError`]. The plain law only
+/// ever constructs `Io`.
+pub(crate) enum ObserveRefusal {
+    /// Underlying I/O failure (config, listing, stat, or member read).
+    Io(io::Error),
+    /// Guarded law only: symlinked non-dot paths in the walk, refused as a
+    /// count plus the first offender in sorted order.
+    Symlink {
+        /// How many symlinked paths the walk met (≥ 1).
+        count: usize,
+        /// Workspace-relative forward-slash path of the first offender.
+        first: String,
+    },
+}
+
+impl From<io::Error> for ObserveRefusal {
+    fn from(e: io::Error) -> Self {
+        ObserveRefusal::Io(e)
+    }
+}
+
+/// Split a scanned directory's entries into the files the domain admits, the
+/// subdirectories worth descending, and — under the guarded law — the symlink
+/// offenders. Plain classification applies the same two pruning rules
 /// [`walk_domain_dir`] applies (dot-segment structurally outside the domain,
-/// [`domain::Domain::prunes_dir`] where re-inclusion is impossible).
+/// [`domain::Domain::prunes_dir`] where re-inclusion is impossible); the
+/// guarded law replays [`guard`]'s strict walk over the remembered listing:
+/// dot-prefixed entries of ANY kind are skipped first, a symlink at a path the
+/// domain's own rules exclude is skipped ([`domain::Domain::skips_symlink`]),
+/// and every other symlink is an offender.
 fn classify(
     entries: &[DirEntryKind],
     rel_dir: &Path,
     domain: &domain::Domain,
-) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    law: ObserveLaw,
+) -> (Vec<PathBuf>, Vec<PathBuf>, Vec<String>) {
     let mut files = Vec::new();
     let mut subdirs = Vec::new();
+    let mut offenders = Vec::new();
     for entry in entries {
         let rel = rel_dir.join(&entry.name);
+        if law == ObserveLaw::Guarded && entry.name.to_string_lossy().starts_with('.') {
+            continue; // strict law: dot paths are outside detection, any kind
+        }
         if entry.is_dir {
             if entry.name.to_string_lossy().starts_with('.') {
                 continue;
@@ -895,11 +1015,82 @@ fn classify(
                 continue;
             }
             subdirs.push(rel);
+        } else if law == ObserveLaw::Guarded && entry.is_symlink {
+            if domain.skips_symlink(&rel) {
+                continue;
+            }
+            offenders.push(display_name(hash_name(&rel)));
         } else if entry.is_file && domain.contains(&rel) {
             files.push(rel);
         }
     }
-    (files, subdirs)
+    (files, subdirs, offenders)
+}
+
+/// A plain-law [`ObserveRefusal`] back into the `io::Result` world. The plain
+/// walk skips symlinks (matching [`hash_domain`]) so it never constructs the
+/// symlink arm; the mapping still answers it typed rather than panicking.
+fn plain_refusal(refusal: ObserveRefusal) -> io::Error {
+    match refusal {
+        ObserveRefusal::Io(e) => e,
+        ObserveRefusal::Symlink { first, .. } => io::Error::other(format!(
+            "symlink refusal on a plain observation (defect — the plain walk skips links): {first}"
+        )),
+    }
+}
+
+/// One moved member's bytes under the observation law: plain reads follow the
+/// ordinary path with the corpus-scoped refusal shape ([`DomainCache::root`]'s
+/// law); guarded reads are `O_NOFOLLOW`, and a link racing the walk surfaces
+/// as the symlink refusal ([`guard`]'s law), never a read-through.
+fn read_member(root: &WorkspaceRoot, rel: &Path, law: ObserveLaw) -> Result<Vec<u8>, ObserveRefusal> {
+    let abs = root.0.join(rel);
+    match law {
+        ObserveLaw::Plain => fs::read(&abs).map_err(|e| {
+            ObserveRefusal::Io(corpus_member_refusal(
+                e.kind(),
+                &display_name(hash_name(rel)),
+                format!("cannot be read ({e})"),
+            ))
+        }),
+        ObserveLaw::Guarded => match open_nofollow(&abs) {
+            Ok(mut f) => {
+                let mut buf = Vec::new();
+                f.read_to_end(&mut buf).map_err(ObserveRefusal::Io)?;
+                Ok(buf)
+            }
+            Err(e) => {
+                if fs::symlink_metadata(&abs).is_ok_and(|m| m.file_type().is_symlink()) {
+                    // The walk→read race mints for the ONE path it caught.
+                    Err(ObserveRefusal::Symlink {
+                        count: 1,
+                        first: display_name(hash_name(rel)),
+                    })
+                } else {
+                    Err(ObserveRefusal::Io(e))
+                }
+            }
+        },
+    }
+}
+
+/// `O_NOFOLLOW` open (unix): opening a symlink fails (`ELOOP`) instead of
+/// reading through it. The guarded read primitive, shared by the strict walk
+/// ([`guard`]) and the guarded cached observation ([`DomainCache::observe`]).
+#[cfg(unix)]
+pub(crate) fn open_nofollow(path: &Path) -> io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+}
+
+/// Off unix there is no `O_NOFOLLOW`; the guarded walk has already refused
+/// symlinks, so only the walk→read race is uncovered here.
+#[cfg(not(unix))]
+pub(crate) fn open_nofollow(path: &Path) -> io::Result<File> {
+    File::open(path)
 }
 
 /// Members below this count take the serial stat loop — thread spawn only

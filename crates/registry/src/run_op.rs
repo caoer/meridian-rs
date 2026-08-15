@@ -131,6 +131,10 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
     // Delta honesty (§ A.8): every committed batch of every target mints its
     // frame on the bound workspace's ring, inside the executor's flock.
     let sink = crate::delta_sink::RingSink::new(registry.ring(ws));
+    // Observation unification (engine-warm-cost design § 5): the daemon door
+    // serves the bash bracket's observations from the workspace's resident
+    // domain memo — the same instrument every currency pass runs on.
+    let cache = registry.domain_cache(ws);
     let mut rows = Vec::with_capacity(request.targets.len());
     for (index, target) in request.targets.iter().enumerate() {
         let invocation = format!("{}-t{index}", request.invocation);
@@ -142,6 +146,7 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
             request.actor.as_deref(),
             request.now.as_deref(),
             &sink,
+            &cache,
         ));
     }
     rows
@@ -160,6 +165,7 @@ pub(crate) fn row_for_target(
     actor: Option<&str>,
     now: Option<&str>,
     sink: &crate::delta_sink::RingSink,
+    cache: &std::sync::Mutex<fs::DomainCache>,
 ) -> Value {
     // §2.1 echo law at the wire boundary: the receipt fact, the row's `page`
     // addressing, and the refusal rows all echo the target ref, so it
@@ -180,12 +186,13 @@ pub(crate) fn row_for_target(
     if target.dry.unwrap_or(false) {
         dry_row(root, ws, target, invocation, actor, now)
     } else {
-        execute_row(root, ws, target, invocation, actor, now, sink)
+        execute_row(root, ws, target, invocation, actor, now, sink, cache)
     }
 }
 
 /// Execute one target through the plane's own seam and mint its row: the
 /// report object verbatim plus addressing, or a refusal row.
+#[allow(clippy::too_many_arguments)] // the door's full fact set, one seam
 fn execute_row(
     root: &fs::WorkspaceRoot,
     ws: &Path,
@@ -194,6 +201,7 @@ fn execute_row(
     actor: Option<&str>,
     now: Option<&str>,
     sink: &crate::delta_sink::RingSink,
+    cache: &std::sync::Mutex<fs::DomainCache>,
 ) -> Value {
     let timeout = match run::exec::configured_timeout(Some(ws)) {
         Ok(t) => t,
@@ -237,6 +245,10 @@ fn execute_row(
         // runs at the bound workspace root.
         step_cwd: Some(ws),
         delta: Some(sink),
+        // The daemon lane (card run-observation-unification): bracket
+        // observations from the resident domain memo; the drawer memo stays
+        // the CLI's instrument.
+        observations: run::dispatch_bash::ObservationSource::Resident(cache),
     };
     // No live stream on the wire: the report's own sealed stdout record is
     // the exec-facts surface (§ A.8 — "this op streams nothing").

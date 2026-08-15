@@ -514,6 +514,9 @@ fn run_apply(
         actor: None,
         step_cwd: None,
         delta: None, // realise lane: delta status unchanged by the § A.8 ruling
+        // Realise drives the plane wherever it is hosted; it holds no resident
+        // cache handle, so its observations keep the drawer instrument.
+        observations: run::dispatch_bash::ObservationSource::Drawer,
     };
     let mut sink = io::sink();
     let report = runner::run(root, &run_spec, &[], &mut sink).map_err(|e| RealiseError::Apply {

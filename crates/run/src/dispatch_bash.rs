@@ -47,6 +47,7 @@
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::Path;
+use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use effects::Effect;
@@ -68,6 +69,25 @@ use crate::snapshot::{Detection, ExecBracket, OpenRefusal, PreExecDivergence};
 /// One constant rather than a [`BashDispatch`] field — the law made
 /// structural: the dispatcher holds no capability input for a caller to hand it.
 const BASH_AUTHORITY: Authority = Authority::Unsandboxed;
+
+/// Where the bracket's three corpus observations — the pre-flock leaves, the
+/// bracket open, the bracket close — come from (card
+/// run-observation-unification; engine-warm-cost design § 5). The values are
+/// lane-independent by the `cached_observation` gates; only the instrument
+/// moves.
+#[derive(Debug, Clone, Copy)]
+pub enum ObservationSource<'a> {
+    /// The CLI lane: fresh walks per observation, byte reads amortised by the
+    /// workspace drawer memo (`run-digests.v1`, F8) — a separate process has
+    /// no resident memo in reach.
+    Drawer,
+    /// The daemon lane: the host's resident [`fs::DomainCache`] — dir-listing
+    /// memo + leaf memo shared with every other op on the workspace. Locked
+    /// per observation, never across the exec window, so a run cannot stall
+    /// the host's warm passes while its child executes. No drawer I/O rides
+    /// this lane.
+    Resident(&'a Mutex<fs::DomainCache>),
+}
 
 /// One bash block dispatch: the addressed block's facts plus the
 /// caller-supplied identity (§9 — nothing here mints or reads a clock).
@@ -119,6 +139,9 @@ pub struct BashDispatch<'a> {
     /// the phase-1 pre-exec receipt commit and every phase-2 commit each
     /// offer their facts. `None` on the CLI entry.
     pub delta: Option<&'a dyn executor::DeltaSink>,
+    /// Where the bracket's corpus observations come from: the CLI drawer memo
+    /// or the daemon's resident domain cache.
+    pub observations: ObservationSource<'a>,
 }
 
 /// What one bash dispatch produced. The exec facts are ALWAYS present —
@@ -268,16 +291,19 @@ pub fn run(
     // where a refusal is recorded.
     let mut log = preflight(root, d, log)?;
 
-    // The drawer digest memo (F8): every corpus observation below serves
-    // unmoved members from recorded digests instead of re-reading the whole
-    // tree. Cold (no drawer, first run, torn file) only costs reads.
-    let mut memo = load_memo(root);
+    // The observation lane (card run-observation-unification): on the CLI
+    // lane the drawer digest memo (F8) — every corpus observation below
+    // serves unmoved members from recorded digests instead of re-reading the
+    // whole tree; cold (no drawer, first run, torn file) only costs reads.
+    // On the daemon lane the host's resident domain cache serves listings
+    // AND digests, and no drawer I/O happens at all.
+    let mut lane = Lane::open(root, d.observations);
 
     // 1. THE LOCKED WINDOW (u4-gate addendum on #19): the phase-1 commit and
     // the root_after_phase1 fold happen under ONE flock — no gap another
     // RUN could commit into between the two (wire writers ride a different
     // lock; their gap is step 2's subject).
-    let (root_after_phase1, pre_receipt_line) = locked_window(root, d, &mut memo)?;
+    let (root_after_phase1, pre_receipt_line) = locked_window(root, d, &mut lane)?;
 
     // 2. U6b: the detection bracket opens against the OBSERVED tree; the
     // flock-computed root stays the authority for what phase 1 committed
@@ -287,7 +313,7 @@ pub fn run(
     // exactly like the in-window delta and the exec proceeds over the
     // observed baseline. `fatal_preexec` restores the refusal: the exec
     // never starts (the pre-exec receipt stands; the orphan lint finds it).
-    let (bracket, pre_exec) = open_bracket(root, d.fatal_preexec, &root_after_phase1, &mut memo)?;
+    let (bracket, pre_exec) = open_bracket(root, d.fatal_preexec, &root_after_phase1, &mut lane)?;
     // What the window is detected against, and what phase 2 pins: the
     // observed pre-exec root when it diverged (the receipts attest the tree
     // the block actually ran over — still captured BEFORE bash, so #19's
@@ -324,7 +350,7 @@ pub fn run(
     // 4. U6b: close the bracket now the group is dead (S3) — UNCONDITIONAL,
     // so the delta is named on every exit path (timeout / nonzero /
     // shim-fail included). The verdict rides the outcome.
-    let detection = bracket.close_memoized(&mut memo);
+    let detection = lane.close_bracket(bracket);
 
     // 5. The failure matrix (S2/S6/#21) behind the detection gate (#14): a
     // window that did not verify clean refuses phase 2 outright — nothing
@@ -364,7 +390,7 @@ pub fn run(
         Phase2::RefusedDetection
     };
 
-    save_memo(root, &memo);
+    lane.save(root);
 
     Ok(BashOutcome {
         pre_receipt_line,
@@ -388,7 +414,7 @@ pub fn run(
 fn locked_window(
     root: &fs::WorkspaceRoot,
     d: &BashDispatch<'_>,
-    memo: &mut DigestMemo,
+    lane: &mut Lane<'_>,
 ) -> Result<(MerkleRoot, Option<String>), BashError> {
     let lock = WorkspaceLock::acquire(&root.0).map_err(|e| {
         BashError::Phase1(if e.kind() == io::ErrorKind::WouldBlock {
@@ -399,7 +425,7 @@ fn locked_window(
             }
         })
     })?;
-    let mut leaves = fs::domain_leaves_memoized(root, memo).map_err(|e| BashError::Root {
+    let mut leaves = lane.domain_leaves(root).map_err(|e| BashError::Root {
         reason: e.to_string(),
     })?;
     let root0 = leaves.root();
@@ -440,18 +466,19 @@ fn locked_window(
 /// Step 2's severity policy (card run-preexec-severity): open the bracket
 /// against the observed tree, compare against the flock-computed authority,
 /// and either carry the divergence as a REPORT fact (default) or refuse
-/// under the fatal opt-in. The memo is saved on the refusal paths so the
-/// caller's retry — the common next move — reads warm.
+/// under the fatal opt-in. The drawer memo is saved on the refusal paths so
+/// the caller's retry — the common next move — reads warm (the resident lane
+/// is warm by residence; nothing to save).
 fn open_bracket(
     root: &fs::WorkspaceRoot,
     fatal_preexec: bool,
     root_after_phase1: &MerkleRoot,
-    memo: &mut DigestMemo,
+    lane: &mut Lane<'_>,
 ) -> Result<(ExecBracket, Option<PreExecDivergence>), BashError> {
-    let (bracket, observed) = match ExecBracket::open_observing(root, memo) {
+    let (bracket, observed) = match lane.open_bracket(root) {
         Ok(pair) => pair,
         Err(e) => {
-            save_memo(root, memo);
+            lane.save(root);
             return Err(BashError::Detection(e));
         }
     };
@@ -459,7 +486,7 @@ fn open_bracket(
         return Ok((bracket, None));
     }
     if fatal_preexec {
-        save_memo(root, memo);
+        lane.save(root);
         return Err(BashError::Detection(OpenRefusal::PreExecMismatch {
             expected: root_after_phase1.clone(),
             observed,
@@ -470,6 +497,70 @@ fn open_bracket(
         observed,
     };
     Ok((bracket, Some(divergence)))
+}
+
+/// The observation lane, held for one dispatch: the CLI drawer memo (loaded
+/// at entry, saved at exit and on retry-shaped refusals) or a borrow of the
+/// daemon's resident cache (locked per observation, never across the exec
+/// window — the child's whole runtime sits between bracket open and close).
+enum Lane<'a> {
+    /// CLI lane: the loaded drawer memo (`run-digests.v1`).
+    Drawer(DigestMemo),
+    /// Daemon lane: the host's resident domain cache.
+    Resident(&'a Mutex<fs::DomainCache>),
+}
+
+impl<'a> Lane<'a> {
+    /// Enter the lane: load the drawer on the CLI lane; borrow the resident
+    /// cache on the daemon lane.
+    fn open(root: &fs::WorkspaceRoot, source: ObservationSource<'a>) -> Lane<'a> {
+        match source {
+            ObservationSource::Drawer => Lane::Drawer(load_memo(root)),
+            ObservationSource::Resident(cache) => Lane::Resident(cache),
+        }
+    }
+
+    /// The pre-flock leaves observation (the locked window's fold input).
+    fn domain_leaves(&mut self, root: &fs::WorkspaceRoot) -> io::Result<fs::DomainLeaves> {
+        match self {
+            Lane::Drawer(memo) => fs::domain_leaves_memoized(root, memo),
+            Lane::Resident(cache) => cache
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .domain_leaves(root),
+        }
+    }
+
+    /// The bracket-open observation (U6b).
+    fn open_bracket(
+        &mut self,
+        root: &fs::WorkspaceRoot,
+    ) -> Result<(ExecBracket, MerkleRoot), OpenRefusal> {
+        match self {
+            Lane::Drawer(memo) => ExecBracket::open_observing(root, memo),
+            Lane::Resident(cache) => {
+                ExecBracket::open_cached(root, &mut cache.lock().unwrap_or_else(PoisonError::into_inner))
+            }
+        }
+    }
+
+    /// The bracket-close observation — the verdict on every outcome path.
+    fn close_bracket(&mut self, bracket: ExecBracket) -> Detection {
+        match self {
+            Lane::Drawer(memo) => bracket.close_memoized(memo),
+            Lane::Resident(cache) => {
+                bracket.close_cached(&mut cache.lock().unwrap_or_else(PoisonError::into_inner))
+            }
+        }
+    }
+
+    /// Persist the drawer memo (CLI lane). The resident cache persists by
+    /// residence — saving is a no-op there.
+    fn save(&self, root: &fs::WorkspaceRoot) {
+        if let Lane::Drawer(memo) = self {
+            save_memo(root, memo);
+        }
+    }
 }
 
 /// The digest memo's basename inside the per-workspace cache drawer (beside

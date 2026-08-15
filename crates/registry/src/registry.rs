@@ -79,8 +79,12 @@ pub struct Registry {
     prewarm_signatures: Mutex<HashMap<PathBuf, u64>>,
     /// Per-workspace §12.2 leaf memo — what makes a currency pass cost one
     /// `stat` per domain member instead of a re-read of the whole corpus.
-    /// Same lifetime as the engine: dropped on idle-reap.
-    domain_caches: Mutex<HashMap<PathBuf, fs::DomainCache>>,
+    /// Same lifetime as the engine: dropped on idle-reap. Each entry is its
+    /// own `Arc<Mutex<…>>` so the run plane can borrow ONE workspace's memo
+    /// for its bracket observations (card run-observation-unification)
+    /// without holding the map — and so one workspace's pass never serializes
+    /// another's.
+    domain_caches: Mutex<HashMap<PathBuf, Arc<Mutex<fs::DomainCache>>>>,
     /// § A.11 resident sql caches: the open `sql.duckdb` handle per
     /// workspace, this daemon being each file's single owner. The CONNECTION
     /// dies on idle-reap with the engine; the FILE deliberately survives —
@@ -310,15 +314,15 @@ impl Registry {
         // `Reused` — the outcome's zero-parse proof stays per-call.
         let mut parsed: Option<usize> = None;
 
+        let cache = self.domain_cache(&canonical);
         loop {
             // Cheap half (no parse, and no re-read of anything that did not
             // move): content hash from disk through the leaf memo.
             let fingerprint = {
-                let mut caches = self
-                    .domain_caches
+                cache
                     .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
-                caches.entry(canonical.clone()).or_default().root(&root)?
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .root(&root)?
             };
 
             // Warm + unchanged → done. Nothing is copied out of the memo on
@@ -350,11 +354,10 @@ impl Registry {
             // path only, never per currency pass.
             let engine = if let Some(prior) = prior {
                 let fresh = {
-                    let mut caches = self
-                        .domain_caches
+                    cache
                         .lock()
-                        .unwrap_or_else(PoisonError::into_inner);
-                    caches.entry(canonical.clone()).or_default().leaf_digests()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .leaf_digests()
                 };
                 let update =
                     fs::update_corpus(&root, &prior.docs, &prior.unserved, &prior.leaves, &fresh)?;
@@ -471,14 +474,27 @@ impl Registry {
     /// # Errors
     /// I/O failure walking or reading the domain.
     pub(crate) fn currency_root(&self, workspace: &Path) -> io::Result<model::MerkleRoot> {
+        self.domain_cache(workspace)
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .root(&fs::WorkspaceRoot(workspace.to_path_buf()))
+    }
+
+    /// The workspace's resident domain memo (dir listings + §12.2 leaves),
+    /// created on first use — the ONE instrument every currency pass, warm
+    /// rebuild, and daemon-door run observation share (card
+    /// run-observation-unification). `workspace` must be canonical (the hello
+    /// bind supplies it — the same key discipline as [`ring`](Self::ring)).
+    /// [`Arc`] so a holder locks one workspace's memo, never the map; an
+    /// in-flight holder across an idle-reap keeps a private memo that dies
+    /// with it, which is only ever an extra read.
+    #[must_use]
+    pub fn domain_cache(&self, workspace: &Path) -> Arc<Mutex<fs::DomainCache>> {
         let mut caches = self
             .domain_caches
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        caches
-            .entry(workspace.to_path_buf())
-            .or_default()
-            .root(&fs::WorkspaceRoot(workspace.to_path_buf()))
+        Arc::clone(caches.entry(workspace.to_path_buf()).or_default())
     }
 
     /// Workspace delta ring, created on first use. `workspace` must be
