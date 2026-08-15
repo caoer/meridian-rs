@@ -19,6 +19,19 @@
 //!   attachable (`^id` below a heading hosts the heading line).
 //! - **Frontmatter** never hosts an anchor (a caret there is literal YAML).
 //!
+//! **Embed parity for HEADING-hosted ids (probed 2026-08-15, Obsidian
+//! 1.12.7, session 12-04-f2-mrd-integration worker 2feb1670, card
+//! anchors-line-host-hint):** `![[note#^id]]` where `^id` attaches to a
+//! heading renders the heading LINE alone — not the heading's section
+//! content. Control in the same render pass: the heading embed of the same
+//! section served heading + full content. So a face serving the heading
+//! line for a block read of such an id matches the app's own embed
+//! rendering; the section content stays the HEADING selector's answer.
+//! (Burr worth knowing: Obsidian's heading-link lane keeps the raw heading
+//! text marker included — `#Core instincts ^hostid` resolves, `#Core
+//! instincts` does not. The engine's heading titles exclude the trailing
+//! marker; that divergence is the link-lane's, not the block plane's.)
+//!
 //! Documented DELIBERATE supersets (engine serves where Obsidian vanishes the
 //! id; nothing Obsidian serves is refused):
 //! - a mid-paragraph tail id hosts its paragraph run (Obsidian: no id),
