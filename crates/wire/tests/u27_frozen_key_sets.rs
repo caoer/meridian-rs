@@ -665,6 +665,11 @@ fn error_body_key_set_is_frozen_plus_the_v3_ladder_extras() {
         diff: Some("@@".into()),
         new_content: Some("bytes".into()),
         new_fingerprint: Some(rev()),
+        referrers: Some(vec![wire::Referrer {
+            path: "notes/fan.md".into(),
+            kind: wire::ReferrerKind::Wikilink,
+            count: 1,
+        }]),
     };
     pin_keys(
         &err,
@@ -688,6 +693,7 @@ fn error_body_key_set_is_frozen_plus_the_v3_ladder_extras() {
             "overlap",
             "path",
             "recovery",
+            "referrers",
             "required",
             "rung",
             "stage",
