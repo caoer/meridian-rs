@@ -227,3 +227,53 @@ born by {{actor}}
         "the body carries the caller's bytes verbatim: {body:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The public fill seam (`fill_slots`) — the ONE template mechanism, opened to
+// doors with their own slot tables (the realise card mint). The contract:
+// caller-named slots fill; a frontmatter substitution rides the § A.6.3a
+// encoder; a newline into the frontmatter block returns the door-neutral
+// `SlotNewline` FACT (key + placeholder) for the door to word.
+// ---------------------------------------------------------------------------
+
+/// A caller-defined slot table fills, and a frontmatter value carrying `: `
+/// is encoded (double-quoted) instead of minting a shadow key line.
+#[test]
+fn fill_slots_encodes_a_custom_slot_in_frontmatter_value_position() {
+    let template = "---\nstatus: waiting\nreason: {{drift}}\n---\n\n# card: {{drift}}\n";
+    let vars = [("{{drift}}", "page.md: 'status' is 'todo', expected 'done'")];
+    let filled = preset::fill_slots(template, &vars).expect("single-line value fills");
+    assert!(
+        filled.contains("reason: \"page.md: 'status' is 'todo', expected 'done'\""),
+        "the fm fill rides the § A.6.3a encoder: {filled}"
+    );
+    // The BODY fills verbatim — no encoder, no quoting.
+    assert!(
+        filled.contains("# card: page.md: 'status' is 'todo', expected 'done'"),
+        "{filled}"
+    );
+    // One `reason` line — the colon minted no shadow key.
+    assert_eq!(filled.matches("\nreason:").count(), 1, "{filled}");
+}
+
+/// A newline substituted into the frontmatter block returns the `SlotNewline`
+/// fact naming the key and the placeholder — the mechanism reports, the door
+/// words.
+#[test]
+fn fill_slots_returns_the_slot_newline_fact_for_a_multiline_fm_value() {
+    let template = "---\nreason: {{drift}}\n---\n\nbody\n";
+    let vars = [("{{drift}}", "line one\nline two")];
+    let err = preset::fill_slots(template, &vars).expect_err("a newline cannot ride frontmatter");
+    assert_eq!(err.key, "reason");
+    assert_eq!(err.placeholder, "{{drift}}");
+}
+
+/// The same newline in a BODY position fills verbatim — the § A.6.3a plane is
+/// the frontmatter block, not the page.
+#[test]
+fn fill_slots_fills_a_multiline_value_verbatim_in_the_body() {
+    let template = "---\nstatus: waiting\n---\n\n{{drift}}\n";
+    let vars = [("{{drift}}", "line one\nline two")];
+    let filled = preset::fill_slots(template, &vars).expect("body fills verbatim");
+    assert!(filled.contains("line one\nline two"), "{filled}");
+}

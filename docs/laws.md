@@ -655,17 +655,26 @@ into the user's tree, or reads as the user's law, is semantics; what the engine
 keeps for itself is mechanism.** Tests and fixtures may use concrete flow words
 freely — a fixture is an example, not a decision.
 
-**Status: one violation open.** The audit at `073d184f1` named three, recorded
-here so they are inherited as decisions rather than rediscovered as defects. Each
-is owed a fix that moves the concreteness into the user's markdown.
+**Status: all three named violations fixed.** The audit at `073d184f1` named
+three, recorded here so they are inherited as decisions rather than
+rediscovered as defects. Each fix moved the concreteness into the user's
+markdown, gated by its own test.
 
 - **FIXED — `realise`'s board directory.** Generic in the library
   (`RealiseSpec::board_dir`) but pinned to `"board"` at the CLI seam. The seam now
   reads `realise.board_dir` off the realising page and defaults in code only;
   gated by `crates/mrd/tests/realise_cli.rs`, the amendment's first test.
-- **OPEN — `realise`'s `render_card`** (`crates/realise/src/lib.rs:610`) writes a
-  card whose type word, state key, state value and prose are all baked, so a
-  user's own rules cannot match the page the engine minted for them.
+- **FIXED — `realise`'s `render_card`.** It wrote a card whose type word, state
+  key, state value and prose were all baked, so a user's own rules could not
+  match the page the engine minted for them. Now the claim's `realise.card`
+  template page supplies the card's entire vocabulary through the one template
+  mechanism (`preset::template_of` + `preset::fill_slots`); the engine fills only
+  the slots it owns (`{{selector}}`, `{{rule}}`, `{{detail}}`, `{{now}}`,
+  `{{actor}}`), a declared-but-unresolvable template refuses the mint loud, and
+  the baked body mints only when no template is declared. Gated by the
+  card-template scenarios in `crates/realise/tests/scenarios.rs` — the
+  matchability receipt observes the minted card through the engine's own
+  `FieldEquals` on the user's `status:` spelling.
 - **FIXED — `preset`'s floor prefix.** `FLOOR_PREFIX = "conventions/"` was a
   folder name acting as a validity predicate on a user's preset. It is now
   `DEFAULT_FLOOR_PREFIX`, the fallback behind the def's own `floor:` key
