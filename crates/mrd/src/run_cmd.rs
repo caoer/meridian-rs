@@ -66,6 +66,24 @@ fn fail_address(e: &AddressError) -> Fail {
     Fail::tool(e.to_string())
 }
 
+/// A page miss names the root it anchored to and which rung named it. The ref
+/// is the part of the invocation most likely to be correct; the root is the
+/// part the environment may have swapped underneath it (dogfood F6: a sticky
+/// `MERIDIAN_WORKSPACE` made the correct ref miss, and the bare refusal
+/// pointed at the ref). A `cwd-default` answer carries no root
+/// (`Answer::root` is `None`) — a defaulted cwd is not a workspace, so that
+/// miss stays bare.
+fn fail_address_in(e: &AddressError, answer: &workspace::Answer) -> Fail {
+    match (e, answer.root()) {
+        (AddressError::PageNotFound { .. }, Some(root)) => Fail::tool(format!(
+            "{e} (workspace {}, source: {})",
+            root.display(),
+            answer.tier().word()
+        )),
+        _ => fail_address(e),
+    }
+}
+
 /// Cap faults split by leg: a bash fence under a read-only convention is the plane refusing a
 /// well-formed invocation (exit 1); malformed declarations are authoring faults (exit 2).
 fn fail_caps(e: &CapsError) -> Fail {
@@ -207,7 +225,8 @@ pub(crate) fn dispatch(tail: &[String]) -> Result<(), Fail> {
     // whenever the ladder answered; on a cwd default the second is `None`, so no convention
     // ceiling is in force.
     let declaring_root = answer.root();
-    let doc = address::load_page(&root, Path::new(&parsed.page)).map_err(|e| fail_address(&e))?;
+    let doc = address::load_page(&root, Path::new(&parsed.page))
+        .map_err(|e| fail_address_in(&e, &answer))?;
     let (conventions, _source) =
         caps::load_conventions(declaring_root).map_err(|e| fail_caps(&e))?;
 
