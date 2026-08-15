@@ -539,12 +539,18 @@ rules at sessions/s1
  user-scope «local-path» (anchor «local-path»)
  armed-set none (meridian/armed-rules.md absent)
  task.review-notify armed=-
- winner sessions/s1/notify.md rev=018b942787febb31 scope=workspace:2 kinds=hook
- shadowed notify.md rev=e0dc53f2203c5969 scope=workspace:0 kinds=hook
- collide.here REFUSED collision at scope=workspace:2 — this id resolves to nothing
- tied sessions/s1/a.md rev=936e2eddf8bdf331 scope=workspace:2 kinds=hook
- tied sessions/s1/b.md rev=cefb207bdf220b88 scope=workspace:2 kinds=hook
+ winner sessions/s1/notify.md rev=018b942787febb31 layer=workspace depth=2 kinds=hook
+ shadowed notify.md rev=e0dc53f2203c5969 layer=workspace depth=0 kinds=hook
+ collide.here REFUSED collision at layer=workspace depth=2 — this id resolves to nothing
+ tied sessions/s1/a.md rev=936e2eddf8bdf331 layer=workspace depth=2 kinds=hook
+ tied sessions/s1/b.md rev=cefb207bdf220b88 layer=workspace depth=2 kinds=hook
 ```
+
+Chain lines spell the resolution scope as `layer=… depth=…` — the same two
+fields the `--json` face ships — never `scope=`. At this surface `scope` is the
+armed artifact's ARM-ROOT column, a directory; one label carrying both
+vocabularies produced hand-armed rows that parsed clean and governed nothing
+(the pasted `workspace:0` now refuses at parse with a teaching).
 
 - **The chain is never collapsed.** Per id, the winning page then every page it
  shadows, in ladder order (`git config --show-origin`). A collided id renders
