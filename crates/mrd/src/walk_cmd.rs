@@ -42,6 +42,15 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
             cwd.display()
         ))
     })?;
+    // §1 admission, before any corpus is read: without it `admit_named_page`'s
+    // `fs::load` resolves an absolute spelling verbatim and this door WALKS a
+    // page from outside the root (wire-contract §12.1, the door-family clause).
+    crate::path_law::admit(
+        &resolved.workspace,
+        &parsed.page,
+        "walk",
+        "Nothing was walked.",
+    )?;
     let InProcessCorpus { root, mut docs } = build_corpus_in_process(&resolved.workspace)?;
     admit_named_page(&root, &mut docs, &parsed.page);
     let docs = docs;
@@ -73,7 +82,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         parsed.direction,
         parsed.depth,
     )
-    .map_err(walk_error)?;
+    .map_err(|e| walk_error(e, &resolved.workspace, &cwd))?;
 
     match parsed.format {
         Format::Json => {
@@ -313,19 +322,28 @@ pub(crate) fn admit_named_page(
 }
 
 /// Map a [`WalkError`] to the exit-2 tool failure with a teaching diagnostic.
-fn walk_error(error: WalkError) -> Fail {
+fn walk_error(error: WalkError, workspace: &Path, cwd: &Path) -> Fail {
     match error {
         // The refusal keeps its exact wording and gains its recovery only for
         // the enumeration gesture (laws.md § the face-honesty law, clause 3):
-        // `mrd walk .` asks to see the corpus at a door that walks from one
-        // page. A genuine missing page gets no pointer, because none is right.
+        // `mrd walk *` asks to see the corpus at a door that walks from one
+        // page (`.` and `` refuse at the §1 admission before reaching here).
+        // A genuine missing page gets no pointer, because none is right.
         WalkError::RootNotFound(page) if crate::names_the_whole_corpus(&page) => {
             Fail::tool(format!(
                 "walk root not in the corpus: {page} — to list the corpus instead of walking from one \
              page, `mrd links --json` enumerates every file."
             ))
         }
-        WalkError::RootNotFound(page) => Fail::tool(format!("walk root not in the corpus: {page}")),
+        // The miss carries the family's fitted respelling when it is earned —
+        // the same sentence, the same one computation, as the read door's.
+        WalkError::RootNotFound(page) => {
+            let mut m = format!("walk root not in the corpus: {page}");
+            if let Some(suffix) = crate::path_law::cwd_respell_suffix(workspace, cwd, &page) {
+                m.push_str(&suffix);
+            }
+            Fail::tool(m)
+        }
         WalkError::Cycle(loop_pages) => {
             Fail::tool(format!("in-snapshot cycle: {}", loop_pages.join(" -> ")))
         }

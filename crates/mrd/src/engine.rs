@@ -163,7 +163,28 @@ pub(crate) fn run_command(path_arg: Option<&str>, format: Format) -> Result<(), 
             cwd.display()
         ))
     })?;
-    let answer = answer_links(&resolved.workspace, path_arg, format)?;
+    // §1 admission at the face, before any engine contact: the warm daemon
+    // refuses a violating spelling but that refusal melts into the degrade
+    // ([`try_daemon_links`] answers `None`), and the degrade's `load_doc`
+    // resolves an absolute spelling verbatim — so this door SERVED a page from
+    // outside the root (wire-contract §12.1, the door-family clause). The
+    // refusal keeps the `--json` face's `{workspace, error}` frame, exactly as
+    // the degrade's own engine-refusal seam publishes it.
+    if let Some(p) = path_arg
+        && crate::path_law::violates_path_law(p)
+    {
+        let mut error = ErrorBody::new(wire::ErrorCode::BadPath);
+        error.path = Some(WirePath(p.to_owned()));
+        crate::path_law::teach_bad_path(
+            &resolved.workspace,
+            &mut error,
+            "links",
+            "Nothing was served.",
+        );
+        json_error_frame(format, &resolved.workspace, &error);
+        return Err(Fail::tool(render_wire_error(&error)));
+    }
+    let answer = answer_links(&resolved.workspace, &cwd, path_arg, format)?;
     // Read off the ANSWER, so warm and degrade voice one fact from one source:
     // an enumeration names the population it did not carry (§4.6 `excluded`).
     voice_excluded(&answer.body);
@@ -363,6 +384,7 @@ const PING_POLL: Duration = Duration::from_millis(25);
 /// so `links` has exactly ONE terminal engine-refusal seam and it is in the degrade.
 pub(crate) fn answer_links(
     workspace: &Path,
+    cwd: &Path,
     path: Option<&str>,
     format: Format,
 ) -> Result<Answer, Fail> {
@@ -374,7 +396,7 @@ pub(crate) fn answer_links(
             body,
         });
     }
-    let body = in_process_links(workspace, path, format)?;
+    let body = in_process_links(workspace, cwd, path, format)?;
     Ok(Answer {
         source: EngineSource::Ephemeral,
         body,
@@ -734,7 +756,12 @@ pub(crate) fn call_line(
 /// The degrade: build the corpus in-process and answer through the same shared `links` read arm
 /// the daemon serves, then re-key it to the v3 vocabulary the CLI negotiated ([`dial_links`]
 /// sends `contract:v3`) so warm and degrade answers do not drift.
-fn in_process_links(workspace: &Path, path: Option<&str>, format: Format) -> Result<Value, Fail> {
+fn in_process_links(
+    workspace: &Path,
+    cwd: &Path,
+    path: Option<&str>,
+    format: Format,
+) -> Result<Value, Fail> {
     let canonical = workspace::canonicalize(workspace).map_err(|e| {
         Fail::tool(format!(
             "cannot resolve workspace {} ({e})",
@@ -775,7 +802,7 @@ fn in_process_links(workspace: &Path, path: Option<&str>, format: Format) -> Res
         0,
         || Ok(live),
     )
-    .map_err(|e| {
+    .map_err(|mut e| {
         // THE `--json` FACE'S REFUSAL ENVELOPE, and the exit triad is deliberately NOT moved.
         // This is the one leg of `links` where a `wire::ErrorBody` is the terminal outcome for an
         // object the caller addressed, so it owes the frame (status.md § the `--json` face answers
@@ -787,6 +814,7 @@ fn in_process_links(workspace: &Path, path: Option<&str>, format: Format) -> Res
         //
         // The frame names the workspace the CALLER passed, not `canonical`, so a refusal and a
         // success from the same invocation carry the same `workspace` string.
+        crate::path_law::teach_cwd_respelling(workspace, cwd, &mut e);
         json_error_frame(format, workspace, &e);
         Fail::tool(render_wire_error(&e))
     })?;

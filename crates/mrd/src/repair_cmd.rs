@@ -91,12 +91,40 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     })?;
     let root = fs::WorkspaceRoot(canonical.clone());
 
+    // §1 admission, before any corpus is read: without it `admit_named_page`'s
+    // `fs::load` resolves an absolute spelling verbatim and this door ACCEPTS a
+    // page from outside the root (wire-contract §12.1, the door-family clause).
+    if let Some(page) = parsed.page.as_deref() {
+        crate::path_law::admit(
+            &resolved.workspace,
+            page,
+            "repair",
+            "Nothing was scanned and nothing was written.",
+        )?;
+    }
+
     let (files, _fold) = fs::domain_snapshot(&root)
         .map_err(|e| Fail::tool(format!("cannot read the corpus: {e}")))?;
     let (_index, mut docs, unserved) = fs::build_corpus(files);
     crate::voice_unserved(&unserved);
     if let Some(page) = parsed.page.as_deref() {
         crate::walk_cmd::admit_named_page(&root, &mut docs, page);
+        // The named-page miss, refused HERE where the workspace and cwd are in
+        // scope, so the refusal carries the family's fitted respelling when it
+        // is earned — the same sentence, the same one computation, as the read
+        // door's.
+        if !docs.contains_key(page) {
+            let mut m = format!(
+                "no page `{page}` in this workspace's corpus, so there is no lock block to \
+                 repair. Give a workspace-relative path, or omit it to scan the whole corpus."
+            );
+            if let Some(suffix) =
+                crate::path_law::cwd_respell_suffix(&resolved.workspace, &cwd, page)
+            {
+                m.push_str(&suffix);
+            }
+            return Err(Fail::tool(m));
+        }
     } else {
         // A pageless repair sweeps every lock in the corpus — an enumeration —
         // so it owes the enumerator clause (§12.1): it may exclude what its
@@ -108,7 +136,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let docs = docs;
 
     let mounted = mounted_roots();
-    let mut survey = survey(&docs, parsed.page.as_deref(), &mounted)?;
+    let mut survey = survey(&docs, parsed.page.as_deref(), &mounted);
     let lost = lost_pins(&root, &docs, std::mem::take(&mut survey.candidates))?;
 
     progress(&format!(
@@ -236,7 +264,7 @@ fn survey(
     docs: &BTreeMap<String, Document>,
     page: Option<&str>,
     mounted: &BTreeMap<addr::MountName, std::path::PathBuf>,
-) -> Result<Survey, Fail> {
+) -> Survey {
     let mut out = Survey {
         candidates: Vec::new(),
         outside: Vec::new(),
@@ -244,14 +272,6 @@ fn survey(
         scanned: 0,
         pages: 0,
     };
-    if let Some(page) = page
-        && !docs.contains_key(page)
-    {
-        return Err(Fail::tool(format!(
-            "no page `{page}` in this workspace's corpus, so there is no lock block to repair. \
-             Give a workspace-relative path, or omit it to scan the whole corpus."
-        )));
-    }
     for (path, doc) in docs {
         if page.is_some_and(|only| only != path) {
             continue;
@@ -311,7 +331,7 @@ fn survey(
             });
         }
     }
-    Ok(out)
+    out
 }
 
 /// The pins that are lost — both planes dark. One batched `cat-file --batch-check` per OWNING

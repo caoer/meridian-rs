@@ -19,6 +19,7 @@ mod arm_cmd;
 pub mod hook;
 mod init;
 mod new_cmd;
+mod path_law;
 mod pin_cmd;
 mod preset_cmd;
 mod put_cmd;
