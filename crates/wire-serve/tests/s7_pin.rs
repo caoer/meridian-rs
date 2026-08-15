@@ -996,10 +996,12 @@ fn a_pin_rides_alongside_caller_edits_in_one_batch() {
     let frame = out.committed.expect("one delta");
     assert_eq!(
         frame.delta.files.len(),
-        1,
-        "ONE file moved: content and lock are the same rename"
+        2,
+        "content and lock are the same rename — ONE row; the promotion into \
+         the target is this call's other write, told as its own row (r8 D4)"
     );
     assert_eq!(frame.delta.files[0].path, WPath("plan.md".into()));
+    assert_eq!(frame.delta.files[1].path, WPath("guide.md".into()));
 }
 
 /// Self-pin of any own section: the preamble-placed lock sits outside every
@@ -1175,9 +1177,11 @@ fn a_fresh_world_guard_survives_the_pins_own_root_advance() {
     else {
         panic!("splice body");
     };
-    assert_ne!(
+    assert_eq!(
         root_before, &live,
-        "the reported root_before is post-promotion — the promotion is a real write"
+        "the reported root_before is the root the client pinned — the \
+         promotion is a real write and the frame tells it as a row, never by \
+         silently moving the baseline (r8 D4)"
     );
     assert!(root_after.is_some());
     assert!(read_page(&root, "plan.md").contains("```meridian-lock"));
