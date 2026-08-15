@@ -292,7 +292,7 @@ impl StatusReport {
     /// The one-line stderr summary that rides the exit-1 `Fail`.
     fn finding_summary(&self) -> String {
         if let Some(detail) = &self.artifact_fault {
-            return format!("armed-rules fault: {detail}");
+            return format!("rules fault: {detail}");
         }
         format!("{} drifted", self.drifted)
     }
@@ -315,9 +315,13 @@ impl StatusReport {
         use std::fmt::Write as _;
         let mut out = String::new();
         let _ = writeln!(out, "status  {} ({})", self.workspace, self.source);
+        // `rules:`, not `armed-rules:` — ZT ruling 5 (2026-08-15): the line
+        // states the rules facts; `armed-rules` is the storage artifact's
+        // name, and the report does not narrate storage. The `--json` keys
+        // are shape-stable and keep `armed_rules`.
         let _ = writeln!(
             out,
-            "  armed-rules: {} armed · {} drifted · forced-since-realise: {FORCED_NOT_TRACKED} \
+            "  rules: {} armed · {} drifted · forced-since-realise: {FORCED_NOT_TRACKED} \
              ({FORCED_NOT_TRACKED_WHY})",
             self.armed, self.drifted,
         );
@@ -326,7 +330,7 @@ impl StatusReport {
             let _ = writeln!(out, "  hint: {nudge}");
         }
         if let Some(detail) = &self.artifact_fault {
-            let _ = writeln!(out, "  armed-rules fault: {detail}");
+            let _ = writeln!(out, "  rules fault: {detail}");
         }
         out
     }
