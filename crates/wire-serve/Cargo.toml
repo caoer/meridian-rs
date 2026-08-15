@@ -33,6 +33,11 @@ render = { workspace = true }
 model = { workspace = true }
 # The corpus edge map (§4.6 links), read over the borrowed index + docs.
 query = { workspace = true }
+# The lock-pin PROJECTION (read_face::page_lock_items_in_corpus) — one owner,
+# two consumers: the walk plane reads it for listings, the remove door reads
+# it for the inbound-pin half of the referential check (§ A.3). Re-deriving
+# pin-target resolution here would be a second owner of one fact.
+view = { workspace = true }
 # Disk (W1): the write choke-point loads fresh bytes, folds the ambient root, and
 # lands the two-file atomic commit (`fs::load`/`domain_snapshot`/`apply_batch`);
 # the shared `load_doc`/`ambient_root`/`domain_snapshot` mappers live here too.

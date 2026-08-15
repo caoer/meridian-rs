@@ -28,6 +28,7 @@ mod realise_cmd;
 mod reconcile_cmd;
 mod repair_cmd;
 mod resolve;
+mod rm_cmd;
 // The type-2 retirement DSL. Public because the coverage census asserts that the set of reason
 // words its fixtures exercise is the set `Reason::ALL` declares.
 pub mod retire_cmd;
@@ -265,6 +266,21 @@ usage:
                            {workspace,error} on stdout. Exits: 0
                            committed|rehearsal-ok / 1 refused / 2 bad
                            invocation.
+! mrd rm <PAGE> --rev <FILE_REV> [--if-fingerprint FP] [--dry] [--actor A]
+         [--now T] [--json]
+                           guarded file death (§ A.3 remove door) — the write
+                           model's third mutation beside new (birth) and put
+                           (edit). --rev = the page's whole-file rev from a
+                           prior read (remove-what-you-read; REQUIRED — the
+                           engine demands it from every origin). Refuses while
+                           anything still references the page: inbound
+                           wikilinks, embeds, and ambient meridian-lock pins,
+                           checked inside the write flock; the refusal names
+                           every referring file, edge kind, and count. NO
+                           --force exists on this door. --if-fingerprint =
+                           optional world-grain guard. --dry rehearses
+                           everything except disk. Exits: 0 removed|dry / 1
+                           refused / 2 bad invocation.
 ! mrd pin <PAGE> <TARGET>#<SELECTOR> [--vibe] [--dry] [--json]
                            attest: record in PAGE's meridian-lock that it draws
                            from TARGET#SELECTOR at that section's content
@@ -652,6 +668,7 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
         }
         "read" => read_cmd::dispatch(&args[1..]),
         "put" => put_cmd::dispatch(&args[1..]),
+        "rm" => rm_cmd::dispatch(&args[1..]),
         "pin" => pin_cmd::dispatch(&args[1..]),
         "repair" => repair_cmd::dispatch(&args[1..]),
         "walk" => walk_cmd::dispatch(&args[1..]),
