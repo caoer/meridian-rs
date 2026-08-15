@@ -662,7 +662,13 @@ inherited as decisions rather than rediscovered as defects: `realise`'s
 state key, state value and prose are all baked, so a user's own rules cannot
 match the page the engine minted for them; `realise`'s board directory is generic
 in the library (`RealiseSpec::board_dir`) but unreachable from the CLI, which
-pins `"board"` (`crates/mrd/src/realise_cmd.rs:42`); and `preset`'s
-`FLOOR_PREFIX = "conventions/"` (`crates/preset/src/lib.rs:28`) is a folder name
-acting as a validity predicate on a user's preset. Each is owed a fix that moves
+pins `"board"` (`crates/mrd/src/realise_cmd.rs:42`). Each is owed a fix that moves
 the concreteness into the user's markdown.
+
+**Fixed — `preset`'s floor prefix (2026-08-15).** The third named place is
+closed: `FLOOR_PREFIX = "conventions/"` was a folder name acting as a validity
+predicate on a user's preset, and is now the fallback behind the def's own
+`floor:` key (`run-plane.md` § 6, Law 6.3). `pins_floor` reads
+`PresetDef::floor_prefix`, so a def filing its convention suite under
+`standards/` is as valid as one under `conventions/`. Gated by
+`crates/preset/tests/gates.rs`.
