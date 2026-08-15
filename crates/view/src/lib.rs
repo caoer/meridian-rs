@@ -1067,6 +1067,8 @@ mod tests {
     /// verbatim, the empty-content row, and the section-count invariant.
     #[test]
     fn body_chunks_follow_the_exclusive_content_law() {
+        /// One asserted chunk row: (path, seq, section_seq, hpath, text).
+        type BodyRow = (String, u64, Option<u64>, Option<String>, String);
         let docs: BTreeMap<String, Document> = [
             (
                 "a.md",
@@ -1090,7 +1092,7 @@ mod tests {
         .collect();
         let conn = build_memory(&docs, "b3:body-gate").expect("build");
 
-        let rows: Vec<(String, u64, Option<u64>, Option<String>, String)> = {
+        let rows: Vec<BodyRow> = {
             let mut stmt = conn
                 .prepare("SELECT path, seq, section_seq, hpath, text FROM body ORDER BY path, seq")
                 .expect("prepare");
@@ -1102,7 +1104,7 @@ mod tests {
             got.collect::<Result<_, _>>().expect("rows")
         };
 
-        let expect: Vec<(String, u64, Option<u64>, Option<String>, String)> = vec![
+        let expect: Vec<BodyRow> = vec![
             // a.md: preamble, Top's exclusive content, Sub's content.
             ("a.md".into(), 0, None, None, "preamble line\n\n".into()),
             (
