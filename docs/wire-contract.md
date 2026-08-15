@@ -2,7 +2,7 @@
 type: contract
 id: wire
 status: standing
-updated: 2026-08-12
+updated: 2026-08-15
 description: Standing wire constitution. One document. Docs define law; code may lag.
 owns: [the wire constitution — nouns, ops, guards, receipts, errors]
 ---
@@ -213,7 +213,7 @@ Correlation: one response per request, id echoed by value; in-flight uniqueness 
   "fingerprint":"b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9"}}
 ```
 
-`caps` is the complete set — no version sniffing, ever. The example shows the sixteen-cap base set (the v2 spelling is byte-identical minus the fingerprint renames); a negotiated v3 session is pushed fourteen more on top — `read`, `check_write`, `splice.plan_edits`, `splice.pin`, `pin-cross-root`, `splice.create_rev`, `create`, `mounts`, `mounts.primary`, `hello.identity`, `script`, `run`, `walk`, `sql` (§A.3/§A.5/§A.7/§A.8/§A.10/§A.11) — thirty caps in all. Field-only amendments ship as dotted `op.field` strings (`mounts.primary` is one: the mounts row's declared-primary designation, §A.5); `pin-cross-root` is a behavior cap on the existing `splice.pin` field (§A.3). `fingerprint` in the hello body is optional (the engine may not have walked yet); when present it is the first ambient fingerprint.
+`caps` is the complete set — no version sniffing, ever. The example shows the sixteen-cap base set (the v2 spelling is byte-identical minus the fingerprint renames); a negotiated v3 session is pushed fifteen more on top — `read`, `check_write`, `splice.plan_edits`, `splice.pin`, `pin-cross-root`, `splice.create_rev`, `create`, `mounts`, `mounts.primary`, `hello.identity`, `script`, `run`, `walk`, `sql`, `scoped-guards` (§A.3/§A.5/§A.7/§A.8/§A.10/§A.11/§5.4) — thirty-one caps in all. Field-only amendments ship as dotted `op.field` strings (`mounts.primary` is one: the mounts row's declared-primary designation, §A.5); `pin-cross-root` is a behavior cap on the existing `splice.pin` field (§A.3). `scoped-guards` (docs-first 2026-08-15) is a behavior cap in the `pin-cross-root` pattern covering the whole scoped-premise family at once — the `guards[]` list and the `scope`/`scope_bytes` fields on `splice` (single and set form) and `script`, and the `fingerprint` op's mint arm (§4.7, §5.4–§5.7): one family, one flag. A frozen v2 session is never pushed it, and un-negotiated use of any guard-family field refuses `bad_request` loudly at this section's strict wall — never silence. `fingerprint` in the hello body is optional (the engine may not have walked yet); when present it is the first ambient fingerprint.
 
 **Rev-presence law:** `node_rev` is MUST on every `toc`/`cat`/`extract` node whenever `splice ∈ caps`.
 
@@ -429,13 +429,15 @@ v3 client holding the cap).** A splice request MAY carry
 `files:[{path, edits|plan_edits}, …]` instead of `path` + `edits`/`plan_edits`
 — strictly one form or the other (`bad_request` at decode when both or
 neither appear; the same wall as `edits` vs `plan_edits` today). Two or more
-entries; paths pairwise distinct; one request-level `if_fingerprint`,
+entries; paths pairwise distinct; one request-level `if_fingerprint` (or
+`guards[]` — scoped premises, §5.4, 2026-08-15),
 `actor`, `now`, `receipt`, `dry`, `force`. Per-edit guards ride inside each
 entry unchanged; no `pin` (the pin rides the single form, whose `path` is the
 pinning page). The batch laws of this section apply per file (pre-batch
 resolution, disjointness, one reparse per file, the `would_corrupt`
-families); the guard law is §5.1 unchanged — `if_fingerprint` is checked
-first and, being world-grain, covers every entry. **The commit is sealed
+families); the guard law is §5.1 unchanged — a scope-less `if_fingerprint`
+is checked first and, being world-grain, covers every entry (scoped
+premises on the set form answer to the §5.5 Coverage Law at admission). **The commit is sealed
 across the set**: every entry validates before any byte lands
 (validate-all-then-apply), one fingerprint advance covers all files plus the
 receipt, one receipt entry (one anchor, §6.6 checked once) names every file,
@@ -607,6 +609,8 @@ Three properties are load-bearing, in the order they matter:
  "fingerprint":"b3:6e866e13b5e65ef9961c050f8a621cf1980b00ee293be650deef5f4dbc6823f0","seq":2}}
 ```
 
+**The scoped mint arm (docs-first 2026-08-15, `scoped-guards` cap — §5.4; ruled base: D-04).** Under the cap, `fingerprint` takes an optional `scope` (a `Path`, §1) or `scope_bytes` (base64url over the raw path bytes, for names the UTF-8 `Path` noun cannot carry) — exactly one of the two; both absent is the root mint above, byte-identical to v2. The op mints the NAMED node's token: the workspace root, a folder, or a file leaf — `fingerprint {scope}` is the one mint home for every premise the §5.4 guard family accepts. A lawful path with no node answers the reserved non-hex value `absent` (§5.6); an unlawful path refuses `scope_unresolved` (§5.6, §8). The response echoes the request's scope pair beside the token, so a caller can never desync what it minted from where. Worked scoped-token values land with the implementation card — the interior encoding itself is changing under the width ruling (`node-rev-merkle-spec.md`), and this document prints no value an engine did not compute.
+
 `diff` is reserved AT the integrity rung with its shape standing now — the compound front door:
 
 ```json
@@ -639,6 +643,8 @@ Requests never require revs; receipts always return them — after any read or w
 `if_node_rev` is compared against `blake3(target's full span bytes)[:16]` **re-derived at execution time from the pre-batch state** — the same bytes, the same hash, the same truncation that `toc`/`cat` served as `node_rev`. There is no second rev derivation anywhere: no content-span rev exists (§1), and no client span exists to disagree with a minted one (§4.4). The natural implementation — hash the bytes you are about to replace — is the *only* implementation, so the "fails 100% of content_span splices" trap is not fixed but **unrepresentable**.
 
 `if_fingerprint` compares against the current workspace fingerprint and is checked FIRST — world-grain, cheapest, fails the whole batch (`fingerprint_mismatch{expected,actual}` → re-plan); then per-edit `if_node_rev` (node-grain, `cas_mismatch{expected,actual}` → refresh). Merkle-spec §7 semantics carried; Rust computes hashes; hosts only compare opaque tokens.
+
+*(Amended 2026-08-15 — scoped guards, §5.4.)* `if_fingerprint` with no `scope` keeps exactly this meaning: the root premise, byte-identical to v2. Under the `scoped-guards` cap it is the one-premise sugar for `guards:[{scope?, fingerprint}]`, and the order generalizes without changing what any v2 caller observes: coverage at admission (§5.5) → every supplied premise (§5.4; a scoped refusal names its premise — `fingerprint_mismatch{expected,actual,scope}`) → per-edit `if_node_rev`. A premise refusal still fails the whole batch before any byte lands.
 
 ### §5.2 The failure split (the adoption carrot, on the wire)
 
@@ -681,6 +687,49 @@ Without `if_node_rev`, `no_match` is ambiguous between typo and moved world — 
 The wire is permissive forever: unguarded, actor-less, receipt-less splices are legal wire frames. Requiredness — "shared scopes need `if_node_rev`", "this tree needs `actor`", "receipts mandatory under `results/`" — lives in **host/client policy** (the geography law), not in wire schema: the wire always accepts the frame. Tightening requiredness after adoption is host work.
 
 **Scope grammar (bound here):** a ratchet scope is expressed in the fleet vocabulary and no other — a `Path`-set selector (path globs, config data that never rides the wire) plus, where a scope names nodes, strict-plane refs per §2.1. No second address grammar exists in policy config, and the §11.3 pack manifest carries no scope field by design: packs bind rules to the world model; the ratchet binds requiredness to scopes on the host side. (Fix-at-freeze, §18 row 1.)
+
+### §5.4 Scoped guards — the premise list (docs-first, 2026-08-15; ruled base: D-04, fingerprint-grain plan §4.4)
+
+*Like § A.5/§ A.7, this law lands before its code: decode, admission, the scoped fold, and tests are the implementation cards'. Worked scoped-token values land with them — the interior encoding itself changes under the width ruling (`node-rev-merkle-spec.md`) — so the shapes below carry ellipsis tokens deliberately.*
+
+**Any legal token in the tree is a legal guard (ruling D-04).** A write's world premise is no longer root-only: a premise names any addressable PATH node — the workspace root, a folder, a file leaf — or holds the reserved value `absent` (§5.6). The engine checks every premise the caller supplies. Interior sharding structure below a path node (the radix buckets of the hash law) is never addressable as a scope — premises name path nodes only.
+
+**Shape: a list.** `guards:[{scope?, scope_bytes?, fingerprint}, …]` rides `splice` (single and set form) and `script` — because "I read B and I am writing A" is two premises, and their common ancestor over-covers: two literals under `a/` LCA to `a/`, so a neighbor creating `a/3.md` — a file the plan never bound — would refuse. Singular `if_fingerprint` (+ optional `scope`) stays as sugar for the one-premise case and for v2 continuity; wire `splice` is single-file, so the sugar is sufficient for most put calls. A premise with neither `scope` nor `scope_bytes` is the root premise — the v2 world guard as a list entry.
+
+**`scope` is a JSON field beside the token, never a token encoding** — settled by this section's own geography law (§5.3): requiredness binds to host-side PATH scopes ("`results/**` requires a premise"), and hosts never parse tokens — a path buried inside an opaque token is invisible to the exact plane that applies the policy. The field keeps the token opaque and the geography composable. Pair-validation is atomic at the door: `scope` without `fingerprint` refuses `bad_request` with teaching, so the one-string form's advantage (hash and path cannot desync) is preserved by construction. An `@`-form (`<token>@<scope>`) remains available to FACES as display spelling only — it is never a wire spelling, and no wire surface parses or emits it.
+
+**Raw-byte names are addressable.** `scope_bytes` (base64url over the raw path bytes) rides beside the UTF-8 `scope` convenience — exactly one of the two per premise; mint (§4.7) and guard serve both. This closes the declared non-UTF-8 gap: "integrity-covered but unaddressable" is no longer the posture.
+
+**Guard-path freshness.** At check time the engine refreshes the named premise's own extent: guard one file, pay one file; guard a folder, pay the folder; guard the world, pay the world. Refusals narrow because the PREMISE narrows, never because the engine looked less hard.
+
+**Negotiation.** The family is capability-advertised as `scoped-guards` (§3.2). A frozen v2 session is never pushed it, and un-negotiated use of any guard-family field refuses `bad_request` loudly at the §3.2 strict wall — never silence.
+
+### §5.5 The Coverage Law — legality is not sufficiency
+
+Two different questions, two laws (quantifiers in the adjudicated form — carried exactly):
+
+- **Legality (D-04):** every addressable node of the tree is a legal premise — root, any folder, any file leaf, and `absent`. The engine checks every premise the caller supplies.
+- **Sufficiency (the Coverage Law):** legality does not satisfy requiredness. Let `W` be the complete governed write set (every path the transaction can publish) and `G` the premise list. Requiredness holds iff **for every `w` in `W` there exists at least one `g` in `G` whose scope is ancestor-or-self of `w`** (an exact-section or absence premise covering `w` also suffices). A premise need not cover every target. A premise that covers no target is legal WIDENING — checked, strictest wins, never sufficient alone. Failure refuses `scope_does_not_cover` naming the UNCOVERED target set; the engine never silently promotes the request to one common ancestor (LCA) or to root.
+- **Placement:** coverage is enforced at transaction/set ADMISSION — the door seam where the complete `W` (including engine-generated receipt destinations) and the complete `G` exist, before any per-member validation or byte move.
+- **Engine-generated members of `W`** (the receipt rider, which crosses scopes inside one commit) are covered by the engine's own commit act — the engine verifies them against the live tree at commit; the caller's `G` must cover the caller-authored targets.
+
+Consequences at the doors, stated so nothing is silently reinterpreted: a single-file `splice` whose every content edit carries `if_node_rev` is covered at those edits — an exact-section premise covers the mutation it guards, so A.1's demand is unchanged in effect; the set form's natural cover is each target file's own leaf token — one copyable token per file, membership-safe within the file; a root premise covers everything (today's `if_fingerprint`, unchanged); disjoint extra premises are legal as widening only.
+
+### §5.6 `absent` — a value, not an error
+
+A lawful path with no node — never created, emptied, pruned — mints the reserved non-hex token value `absent` (§4.7), and the chain law holds: **absence of the whole prefix is still `absent`** — `a/b/c` with `a/` itself missing mints `absent`, one value, not an error. Creation-guard plans stand on exactly this: an absence premise at the birth path refuses when anything now exists there. `absent` carries no algorithm/domain prefix because it names no fold — its comparison is node-existence at the named scope, not hash equality. A path is unlawful — `scope_unresolved`, recovery `fix` — only where it escapes the root or conflicts in kind with an EXISTING entry along its prefix. `scope_unresolved` is never the answer for lawful absence.
+
+### §5.7 The error split — three errors, three facts
+
+Never one word for two facts. Three states, three recoveries:
+
+| fact | code | recovery |
+|---|---|---|
+| the premise MOVED | `fingerprint_mismatch{expected,actual,scope?}` | `resync` — re-read that scope, re-plan |
+| the premise cannot be evaluated at that path | `scope_unresolved` | `fix` — fix the path |
+| the reference is TOO OLD (the cursor family: `fingerprint_unknown`, a dead instance, `fingerprint_version_retired`) | §8 | `resync` — re-derive and resume |
+
+The version vocabulary inside the cursor family stays split (§12.3): a token from a KNOWN RETIRED hash-law family refuses `fingerprint_version_retired` with re-mint teaching — never `fingerprint_mismatch`, which would lie (the premise did not move; the LAW moved). A token from an UNKNOWN FUTURE family refuses `fingerprint_version_unsupported` — distinct, because "your token is past my law" and "the law moved past your token" demand different acts. Register-law texts for the whole family: §8.2.
 
 ## §6 Receipts — outcome as fact
 
@@ -847,14 +896,16 @@ Every error frame carries `code` + `recovery` from the CLOSED six-class enum; ea
 
 | class | meaning | codes |
 |---|---|---|
-| `fix` | your request is wrong; change it | `bad_request`, `unknown_op`, `bad_path`, `no_match`, `not_unique`, `would_corrupt{family,lost?,cause?,target?}`, `ambiguous_ref{candidates}`, `remove_refused{referrers}` (§ A.3 remove door — inbound references exist; unlink the named referrers, then resend) |
+| `fix` | your request is wrong; change it | `bad_request`, `unknown_op`, `bad_path`, `no_match`, `not_unique`, `would_corrupt{family,lost?,cause?,target?}`, `ambiguous_ref{candidates}`, `remove_refused{referrers}` (§ A.3 remove door — inbound references exist; unlink the named referrers, then resend), `scope_does_not_cover{uncovered}` (§5.5 — coverage failed; the extra names the uncovered target set), `scope_unresolved` (§5.6 — the path cannot hold a token) |
 | `env` | the world outside the workspace is wrong | `file_not_found`, `io_error{cause}`, `invalid_utf8{path,message}`, `daemon_only`, `mount_table_invalid{path,message}` |
 | `refresh` | your picture of a node is stale; re-read one thing | `cas_mismatch{expected,actual}`, `ref_not_found{stage,dest?}` |
 | `retry` | transient; same request may succeed | `lock_timeout`, `stale_view{required,as_of_fingerprint,live_fingerprint}` |
-| `resync` | your picture of the world is stale; re-plan | `fingerprint_mismatch{expected,actual}`, `fingerprint_unknown` |
+| `resync` | your picture of the world is stale; re-plan | `fingerprint_mismatch{expected,actual,scope?}`, `fingerprint_unknown`, `fingerprint_version_retired` (§5.7, §12.3 — the token's hash-law family is retired; re-mint at the same scope), `fingerprint_version_unsupported` (§5.7 — the token's family is unknown and newer than the serving law) |
 | `respawn` | the channel itself is broken | `bad_frame`, `unsupported_proto`, `internal` |
 
 W4 dispositions: v1's `not_found` is **retired** — `file_not_found` (env: the file is gone) is distinct from `ref_not_found` (refresh: the name dangles), and `io_error` carries its cause. `ref_not_found.stage` makes the two-stage decomposition observable in every failure (1 = vault-namespace miss, no `dest`; 2 = subpath miss, `dest` present — §4.5). `budget_exceeded` is deliberately NOT here: it is a typed *finding* inside `verdicts` (§11), never a wire error. **`daemon_only`** (env class) is **RETIRED** (hosts ruling, §3.3, 2026-08-06): it named the one deployment gap — a corpus-class rules pack, one whose WHEN needs the resident corpus name index (e.g. `link_resolves`, §11.2), loaded against a sidecar-mode engine with no resident index (the `BudgetClass::Corpus` law, §11.3). With the sidecar host deleted, every wire door is daemon-backed and the resident index is always reachable, so the code is unmintable; the `BudgetClass::Corpus` law stands, now gating nothing at the wire. Null-id frames: §3.1. Three declared deltas from the ruled class table (previously undeclared, now fixed): `fingerprint_mismatch` rebound refresh→`resync` (a failed world guard invalidates the plan, not one node's picture — §5.1's split), `unsupported_proto` rebound fix→`respawn` (a protocol mismatch is a channel property; no request edit repairs it), and `bad_id` dropped (folded into `bad_request` + `id:null`/`id_raw`, §3.1 — one malformed-envelope code, not two). All three are behavior-preserving relabelings, now declared. Deviation-from-v1 rows: `not_found` retirement (this table), unknown-`kinds` rejection (§4.3) — each with its rationale at the cited section; the consolidated ledger is §18.
+
+*(Amended 2026-08-15 — the scoped-guard family, §5.4–§5.7.)* Four codes join the closed enum, each statically bound to exactly one class as the table now shows: `scope_does_not_cover{uncovered}` (fix), `scope_unresolved` (fix), `fingerprint_version_retired` (resync), `fingerprint_version_unsupported` (resync). The closed-enum law is unchanged — a client that doesn't recognize a code still dispatches on `recovery` alone. `fingerprint_mismatch` regains `scope` (optional; absent = the root premise, the exact v2 shape): §18 row 2's return clause FIRED — the scoped world guard arrived by amendment, and `scope` returns with it, as that row promised. The version split is law, not labeling: a retired-family token must NEVER answer `fingerprint_mismatch` — the premise did not move, the LAW moved (§5.7, §12.3).
 
 ### §8.1 The no-answer case — transport loss is not a class (RULED 2026-08-08)
 
@@ -868,6 +919,39 @@ Two consequences, both **client law** — the wire cannot rule on frames it neve
 A **blind re-send without `force` cannot double-apply** — the wire-origin guard demand (A.1, A.3) refuses every arm: a guarded edit's token re-derives against post-commit bytes (`cas_mismatch`, §5.1), a birth's subject now exists (`cas_mismatch`, absence guard), an unguarded content edit never reaches the write (`guard_required`). The refusal it draws is still ambiguous between "my lost write landed" and "a foreign write landed" — which is why the read comes first — but nothing applies twice while the client finds out. This is §5.2's adoption carrot extended: the guard demand is also what makes loss recovery safe. **`force` strips the node-grain tokens (A.1) and reopens the double-apply; a post-loss re-send MUST NOT carry `force`.**
 
 Reads are idempotent: after a lost answer, re-send freely.
+
+### §8.2 Register-law refusal texts — the scoped-guard family (docs-first, 2026-08-15)
+
+Refusal teaching speaks the register law: **reason first, fitted remedy, never session rules.** The texts below are carried from the fingerprint-grain merged plan's Appendix C (k3's F-12 redrafted form) byte-for-byte; the one addition is `fingerprint_version_unsupported`, drafted HERE in the same register because Appendix C carried no text for the unknown-future-family refusal — recorded, not slipped in.
+
+```
+fingerprint_mismatch (scoped):
+  "the premise at <scope> moved — expected <expected>, live is <actual>.
+   Re-read under <scope> and re-plan. This refusal is about this premise
+   only; it says nothing about what else was or was not checked."
+scope_does_not_cover:
+  "this write touches <uncovered targets> and no premise covers them —
+   a premise must cover what it guards. Add a premise at each listed
+   target's file or an ancestor (mint: fingerprint{scope: "<dir>"});
+   premises beyond the cover are legal and also checked."
+scope_unresolved:
+  "<scope> cannot hold a token — it escapes the workspace, names a
+   file/dir kind conflict with an existing entry, or is not encodable.
+   A lawful path that simply has no node mints "absent" — that is a
+   legal premise, not this error."
+absent (as actual, inside fingerprint_mismatch):
+  "the scope <scope> had a token when you planned and has no node now —
+   it was emptied or removed. Re-read the parent and re-plan."
+fingerprint_version_retired:
+  "this token was minted under a retired hash law. The premise did not
+   move — the law did. Re-mint at the same scope
+   (fingerprint{scope: "<scope>"}) and re-plan once."
+fingerprint_version_unsupported (drafted here — no Appendix C source):
+  "this token was minted under a hash law this engine does not know —
+   the token is newer than the law being served. Re-mint at the same
+   scope (fingerprint{scope: "<scope>"}) to proceed under the serving
+   law; to keep the newer tokens, upgrade the engine, not the token."
+```
 
 ## §9 actor and now — wire inputs, never ambient
 
@@ -1003,6 +1087,14 @@ Two laws read straight off the table. **The prefix tracks the domain RULES, neve
 
 **Amendment, 2026-08-09.** Before this date §12.3 published a pair anchored at S2 — v0 `b3:05f0c6192308db5937c3e1352d1f9a6fc31b89b1a57175c8af6ce7903525aa4a`, v1 `b3a:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68`. Those values close arithmetically only if the domain config's own bytes stay OUT of the domain, which is true of the legacy non-md `mdfs_config.yaml` and false of the standing `meridian/domain.md`. The published worked example was therefore reproducible only through the surface §12.1 says do not create and do not teach. Ruled (advisor, 2026-08-09): the table recomputes over the standing surface. §12.1 stands untouched — the legacy filename stays forbidden — and the superseded values are printed here rather than scrubbed. §18 row 11.
 
+**Hash-law retirement rides the same ladder (docs-first 2026-08-15; ruled: `decisions/2026-08-15-width-sharding-now.md`, GO per `decisions/2026-08-15-plan-rulings-final.md` R1).** The one-time interior-encoding cutover (fixed-256 radix child maps — `node-rev-merkle-spec.md`) changes the hash LAW, so the prefix advances exactly as this section's ladder already guarantees: old tokens never silently compare equal. What this section adds is the refusal law at the boundary, three facts never flattened (§5.7, §8.2):
+
+- A held token from a KNOWN RETIRED family refuses `fingerprint_version_retired` with re-mint teaching — never `fingerprint_mismatch`, which would lie: the premise did not move, the LAW moved.
+- A token from an UNKNOWN FUTURE family refuses `fingerprint_version_unsupported` — distinct, taught apart.
+- Only a current-family unequal digest is the normal scoped mismatch.
+
+**No dual-hash serving window exists**: the engine never serves two hash laws at once — the honest price is one typed, taught re-plan event per workspace at cutover, not permanent double maintenance. `sub` re-baselines at the cutover with a labeled epoch boundary, never a silent chain break.
+
 ## §13 Threat and limit register (the honesty standard, throughout)
 
 1. **16-hex rev truncation:** ≈2^32 birthday work on attacker-fed content forges a rev collision. The mitigation is the trusted-local boundary — this wire serves local, trusted workspaces; any "adversary-proof" claim is dead. Full-width `fingerprint` and `file_rev`-over-whole-file are the honest escalation ladder for wider guarantees.
@@ -1129,7 +1221,7 @@ The fix-at-freeze rule requires each reviewer-flagged debt fixed or waived with 
 | # | Item | Disposition |
 |---|---|---|
 | 1 | Policy-scope grammar was unbound to the strict plane (ratchet scopes lived as host-side prose; the pack manifest has no scope field) | **FIXED** — §5.3 now binds scope grammar: `Path`-set selectors + strict-plane refs (§2.1), no second grammar; the manifest's scope-field absence is declared deliberate |
-| 2 | The repo's reserved `fingerprint_mismatch` shape (`crates/wire` §6.5 reserved-codes note) carries extra fields `expected/actual/scope/changed`; this contract ships `{expected,actual}` — the `scope` and `changed` drops are declared here | **WAIVED, declared** — the only world-grain guard is `if_fingerprint` (§5.1); no scoped-fingerprint construct exists for `scope` to describe. If a scoped world guard ever arrives by amendment, `scope` returns with it. *(Amended 2026-08-10: `changed` STRUCK. It was promised here and MINTED BY NOTHING — the only assignment in the whole workspace was a hand-written conformance fixture, while both real producers set `expected`/`actual` only. Measured against a real daemon: the set is NOT derivable by the caller — an intruding write to a file the caller never read and never armed moves the workspace-wide root and the caller's premise cannot name it — but the doors cannot hold it either: the daemon's root-history ring is out of scope at both doors, RAM-only per epoch, and bounded at 256 with eviction, so it would be UNAVAILABLE EXACTLY WHEN THE CALLER IS MOST STALE. A field a door cannot always honestly fill is manufactured, not aligned; `resync` already instructs the full re-read that is the set's only honest recovery. Zero wire change — no producer ever emitted it.)* |
+| 2 | The repo's reserved `fingerprint_mismatch` shape (`crates/wire` §6.5 reserved-codes note) carries extra fields `expected/actual/scope/changed`; this contract ships `{expected,actual}` — the `scope` and `changed` drops are declared here | **WAIVED, declared** — the only world-grain guard is `if_fingerprint` (§5.1); no scoped-fingerprint construct exists for `scope` to describe. If a scoped world guard ever arrives by amendment, `scope` returns with it. *(Return clause FIRED 2026-08-15: the scoped world guard arrived — §5.4 — and `scope` returns with it, `fingerprint_mismatch{expected,actual,scope?}` (§5.7, §8). `changed` stays struck; its 2026-08-10 strike below is untouched.)* *(Amended 2026-08-10: `changed` STRUCK. It was promised here and MINTED BY NOTHING — the only assignment in the whole workspace was a hand-written conformance fixture, while both real producers set `expected`/`actual` only. Measured against a real daemon: the set is NOT derivable by the caller — an intruding write to a file the caller never read and never armed moves the workspace-wide root and the caller's premise cannot name it — but the doors cannot hold it either: the daemon's root-history ring is out of scope at both doors, RAM-only per epoch, and bounded at 256 with eviction, so it would be UNAVAILABLE EXACTLY WHEN THE CALLER IS MOST STALE. A field a door cannot always honestly fill is manufactured, not aligned; `resync` already instructs the full re-read that is the set's only honest recovery. Zero wire change — no producer ever emitted it.)* |
 | 3 | The frontmatter node's span `[0,20]` is terminator-inclusive, against the v1 §5.2 / merkle-spec §2 leaf-block law (exclude the final terminator) — previously undeclared | **WAIVED, declared** — the frontmatter node is a fence-to-fence container, span-lawed with the section (newline-inclusive) family, not the leaf-block family; the `fm_key` leaf inside it (`[4,15]`, §4.4) excludes its terminator, consistent with the leaf law. All hashes stand |
 | 4 | Two silent rebinds vs the ruled failure-class table plus one dropped code | **FIXED, declared** — §8 now declares all three deltas with rationale: `fingerprint_mismatch`→`resync`, `unsupported_proto`→`respawn`, `bad_id` folded into `bad_request` + `id:null`/`id_raw`. Behavior-preserving |
 | 5 | The base packet's A6 self-claim "replay ≡ live stated and tested" — nothing executable tests it today | **FIXED, restated honestly** — executed: the fixture recomputation behind every worked value (§17 tool attest). NOT executed: any replay ≡ live test, any conformance-pack run — both are impl-rung deliverables in the impl-plan (rung-4 test; GT regeneration). The word "tested" is retracted |
@@ -1159,6 +1251,8 @@ These are **current law**, not optional history. Detail that only implements cod
 ### A.1 Fingerprint-or-force (every wire door)
 
 Content-mutating writes on the **wire door** (the daemon socket — the only door, §3.3) require fingerprint match **or** `force`. Guard fields stay **schema-optional** (a guardless frame still **decodes**). A content-mutating write with neither fingerprint nor `force` is refused **after decode** as `guard_required` (recovery: `fix`) — semantic refusal, not a frame rejection. `force` is any client's refuse→rewrite path; MCP is not a separate trust plane. In-process paths (`mrd` without the wire door) are out of this ruling's reach by **scope**, not trust.
+
+*(Amended 2026-08-15 — coverage, §5.5.)* The demand's satisfying set is the §5.4 premise vocabulary: any legal tree token, judged by the Coverage Law at admission. `guard_required` keeps its exact meaning — a content-mutating write carrying NO premise at all and no `force`; a write carrying premises that fail coverage refuses `scope_does_not_cover{uncovered}` instead (§5.5, §8.2). Where the demand was already satisfiable it still is, unchanged in effect: per-edit `if_node_rev` covers its own edit, and `if_fingerprint` covers everything.
 
 ### A.2 Armed change plane (block is a feature)
 
@@ -2328,6 +2422,50 @@ live `put()`s ride the wire choke-point and advance the ring like any
 splice; `run()`s mint per committed batch through the run plane's delta
 sink, exactly as at § A.8 (run-delta ruling, 2026-08-14).
 
+**The commit premise — AMENDED to the touch set (docs-first 2026-08-15,
+fingerprint-grain plan §4.6; read visibility RULED frozen view,
+`decisions/2026-08-15-pre-merge-rulings.md` ruling 2).** The engine's
+secret whole-corpus entry pin dies: commit authority is no longer a
+re-pinned entry ROOT. In its place **the premise is the touch set — the
+engine computes it; the caller declares nothing:**
+
+- The pure lane already records everything: `toc`/`cat` point reads, armed
+  write targets, `files[]` literal and pattern expansions, sql reads. Point
+  reads and armed writes contribute leaf premises; pattern and selector
+  expansions contribute their set-premise folds; sql contributes the
+  provenance regions it actually scanned (set-premise law:
+  `node-rev-merkle-spec.md`). Commit verifies entry-vs-live at exactly
+  those nodes — O(touch set), never O(corpus). Foreign churn outside the
+  touch set stops causing retries at all. **Zero new caller fields are
+  required on this door** — ZT's "EASIER, not stricter", mechanically.
+- **An explicit caller premise stays legal as WIDENING** (strictest wins)
+  and can never drop write coverage: the touch-set floor always contains
+  the armed writes. `if_fingerprint` (+ optional `scope`) and `guards[]`
+  ride this op with §5.4's meaning under the `scoped-guards` cap; the
+  field wall grows 12 → 14 (`guards`, `scope`). `effects` excludes
+  `guards`/`scope` exactly as it excludes `if_fingerprint` (the
+  combination wall above) — a live program holds no premise.
+- **Read visibility is UNCHANGED — FROZEN VIEW, kept** (pre-merge
+  ruling 2): the entry-world read law above stands word for word. A
+  running script sees the world exactly as it was when it started; foreign
+  mid-run changes stay invisible until the next run; the ratified A.7
+  read-stability promise is KEPT and existing tests keep their meaning.
+- `expect_armed` is orthogonal and stays: it proves the host authorized
+  THIS set; the touch-set verify proves the world did not move under the
+  premise. One gates set identity, the other set freshness.
+- `dry` is untouched byte-for-byte; the dry trace additionally prints the
+  recorded premise set.
+- Retry budget: unchanged host policy; it now spends only on genuine
+  same-subtree contention.
+- **Host requiredness (R3 — `decisions/2026-08-15-plan-rulings-final.md`):**
+  the host-policy ratchet that forced callers to hand-copy a fingerprint
+  token onto script doors (`require_if_fingerprint`) is RETIRED. The
+  protection it bought — no silent under-guarding — is now by
+  construction: the touch-set premise guards exactly what the script
+  touched. A caller-passed token remains legal as a widening guard (D-04
+  unchanged). Host-policy change; the engine mechanism is identical either
+  way.
+
 ### A.8 `run` — page-task execution over the wire (docs-first, 2026-08-13, run-crossing ruling)
 
 *The run plane's task entry (`mrd run`, `run-plane.md`) becomes invocable
@@ -2412,7 +2550,8 @@ op reached the plane. No aggregate boolean exists anywhere in the body:
   `class:"invocation"` for the CLI's exit-2 family (addressing, contract
   violation, authoring faults — `declared_tasks[]` rides the several-tasks
   listing), `class:"run"` for the exit-1 family that refused before a
-  report existed (workspace busy, foreign edit, root mismatch, timeout),
+  report existed (workspace busy, timeout; the former foreign-edit and
+  root-mismatch legs are RETIRED — the no-guard amendment below),
   `reason` verbatim from the plane's typed error.
 - `dry` rows carry the plane's dry legs unchanged: a starlark dry answers
   the full effect set with `applied:false`; a bash dry answers the block
@@ -2477,6 +2616,32 @@ byte: unchanged. The CLI entry (`mrd run`) stays functional and
 byte-compatible — same runner, same receipts, its own host-minted identity.
 The 0025 socket law (§ A.3) is untouched: this op rides the same one door
 behind the same connect-time identity comparison.
+
+**No guard on this door — RULED
+(`decisions/2026-08-15-no-guard-on-effects.md`).** `run` is NOT guarded: no
+CAS premise, no fingerprint requiredness, no synthesized touch-set guard —
+on execution whose consequences mrd cannot bound, a guard PROMISES what it
+cannot keep and buys complexity and slowness for the false promise.
+Consequences on this op, each stated:
+
+- **A supplied guard field is rejected as inapplicable, never ceremonially
+  checked.** `if_fingerprint`, `guards`, `scope` are not in this op's field
+  set, so the §3.2 strict wall refuses them `bad_request` at decode — that
+  refusal is this law working, not a gap to close.
+- **`task_rev` is TARGETING, never CAS.** A task-selection pin chooses WHAT
+  to execute — which task bytes the plane resolved; it is never a world
+  premise, and no refusal on this door is a premise refusal.
+- **The `class:"run"` family loses its premise legs** (the row list above):
+  the plane's self-pinned corpus root (root mismatch) and the per-target
+  pin-and-verify (foreign edit) RETIRE. A foreign advance re-derives and
+  proceeds; a vanished unrelated record drops from view and never fails
+  another target. What remains in `class:"run"` is execution refusals —
+  workspace busy, timeout. Normative detail: `run-plane.md` § the no-guard
+  amendment.
+- **Guard-free never means fold-invisible.** Every landed run write rides
+  the same write choke-point, advances the resident folds other writers'
+  premises compare against, and mints Deltas exactly as the delta-honesty
+  paragraph above states. That is tree maintenance, not a guard.
 
 ### A.9 Re-scope honesty on the delta plane (docs-first, 2026-08-14, dogfood r3 f9)
 
