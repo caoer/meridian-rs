@@ -393,36 +393,55 @@ def run(ctx):
 ";
 
 /// §2.1's echo law at the argv boundary (run-plane.md § Record ↔ receipt
-/// linkage): one page invoked under three argv spellings — workspace-relative,
-/// `./`-prefixed, machine-absolute — mints every receipt under the page's ONE
-/// workspace-relative key, so a read-back by that key sees the whole history.
-/// Before the boundary resolved the ref, each spelling owned its own key and
-/// the histories could not see each other.
+/// linkage), composed with the §1 door-family admission (wire-contract §12.1
+/// line 878): one page owns ONE receipt key, and the two laws deliver it in
+/// two halves. The workspace-relative spelling — the one grammar — runs and
+/// receipts under the page's own key. The `./`-prefixed and machine-absolute
+/// spellings violate §1, so the door refuses them BEFORE the rebind and they
+/// mint NOTHING — a second key is not merely rewritten away, it is
+/// unreachable from this face. (The rebind stays live as the wire door's
+/// resolution seam; the CLI admission runs first, per the two cards' agreed
+/// ordering.) Before the boundary, each spelling ran AND owned its own key,
+/// and the histories could not see each other.
 #[test]
 fn receipt_page_key_is_canonical_across_argv_spellings() {
     let ws = Ws::new();
     std::fs::write(ws.file("canon.md"), CANON_PAGE).expect("canon page");
-    let abs = ws.file("canon.md");
-    let spellings = [
-        "canon.md".to_owned(),
-        "./canon.md".to_owned(),
-        abs.to_str().expect("utf-8 path").to_owned(),
-    ];
-    for (i, spelling) in spellings.iter().enumerate() {
-        let value = format!("v{i}");
-        let out = ws.run(&[spelling.as_str(), "mark", "--", value.as_str()]);
-        assert_eq!(code(&out), 0, "spelling {spelling}: {}", stderr(&out));
-    }
 
+    // The one grammar: two committing runs under the workspace-relative key.
+    for value in ["v0", "v1"] {
+        let out = ws.run(&["canon.md", "mark", "--", value]);
+        assert_eq!(code(&out), 0, "canon.md: {}", stderr(&out));
+    }
+    let receipts = std::fs::read_to_string(ws.file("receipts/run.md")).expect("receipt file");
+    let count_after_admitted = receipts.lines().filter(|l| l.starts_with("- run ")).count();
+    assert!(
+        count_after_admitted >= 2,
+        "two committed runs mint at least two receipt lines:\n{receipts}"
+    );
+
+    // The §1 refusals: neither spelling reaches execution, neither mints.
+    let abs = ws.file("canon.md");
+    for spelling in ["./canon.md", abs.to_str().expect("utf-8 path")] {
+        let out = ws.run(&[spelling, "mark", "--", "vX"]);
+        assert_eq!(code(&out), 2, "spelling {spelling}: {}", stderr(&out));
+        assert!(
+            stderr(&out).contains("the run door admits only workspace-relative"),
+            "spelling {spelling} refuses in the family voice: {}",
+            stderr(&out)
+        );
+    }
     let receipts = std::fs::read_to_string(ws.file("receipts/run.md")).expect("receipt file");
     let bodies: Vec<&str> = receipts
         .lines()
         .filter_map(|l| l.strip_prefix("- run "))
         .collect();
-    assert!(
-        bodies.len() >= 3,
-        "three committed runs mint at least three receipt lines:\n{receipts}"
+    assert_eq!(
+        bodies.len(),
+        count_after_admitted,
+        "a refused spelling mints NO receipt line:\n{receipts}"
     );
+
     let pages: std::collections::BTreeSet<String> = bodies
         .iter()
         .map(|body| {

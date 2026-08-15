@@ -70,8 +70,33 @@ pub(crate) fn run(args: &[String]) -> Result<(), Fail> {
 
 /// The reconciliation loop over one page's declared claim.
 fn realise_page(root: &fs::WorkspaceRoot, page: &str, parsed: &Parsed) -> Result<(), Fail> {
-    let doc = fs::load(root, Path::new(page))
-        .map_err(|e| Fail::tool(format!("cannot read page {page}: {e}")))?;
+    // §1 admission, before the page is read: without it `fs::load` resolves an
+    // absolute spelling verbatim and this door OPENS a page from outside the
+    // root (wire-contract §12.1, the door-family clause).
+    crate::path_law::admit(
+        &root.0,
+        page,
+        "realise",
+        "Nothing was checked and no apply ran.",
+    )?;
+    let doc = fs::load(root, Path::new(page)).map_err(|e| match e.kind() {
+        // The miss speaks the family voice — the door's own fact, then the
+        // fitted respelling when it is earned — never the raw io error, which
+        // leaked `os error 2` at a door whose neighbours teach the grammar.
+        std::io::ErrorKind::NotFound => {
+            let mut m = format!(
+                "no file at {page} under the workspace root — nothing was checked and no \
+                 apply ran."
+            );
+            if let Ok(cwd) = std::env::current_dir()
+                && let Some(suffix) = crate::path_law::cwd_respell_suffix(&root.0, &cwd, page)
+            {
+                m.push_str(&suffix);
+            }
+            Fail::tool(m)
+        }
+        _ => Fail::tool(format!("cannot read page {page}: {e}")),
+    })?;
 
     let field = fm_scalar(&doc, "realise.field").ok_or_else(|| {
         Fail::tool(format!(
