@@ -86,7 +86,11 @@ use crate::{ExclusionProbe, Rows, ViewError, collect_doc, corpus_index, fill_exc
 /// `4`: the `card` view became `record`, and `task.text` dropped its
 /// list-marker + checkbox prefix — a v3 file's `hist.task` rows carry the
 /// marker bytes and would digest differently from a fresh build.
-pub const CACHE_SCHEMA_VERSION: i64 = 4;
+///
+/// `5`: `hist.section.hpath` / `hist.task.hpath` became TEXT — the published
+/// `[{"h":…},…]` machine address (card sql-hpath-read-grammar); a v4 file's
+/// TEXT[] rows would serve the retired spelling.
+pub const CACHE_SCHEMA_VERSION: i64 = 5;
 
 /// The cache file's basename inside the workspace cache drawer (ruling OQ4).
 pub const SQL_CACHE_FILENAME: &str = "sql.duckdb";
@@ -112,7 +116,7 @@ CREATE TABLE hist.frontmatter (
     span_start UBIGINT, span_end UBIGINT, node_rev TEXT, prop_rev TEXT
 );
 CREATE TABLE hist.section (
-    path TEXT, gen BIGINT, node_seq UBIGINT, hpath TEXT[], heading TEXT,
+    path TEXT, gen BIGINT, node_seq UBIGINT, hpath TEXT, heading TEXT,
     level UTINYINT, node_rev TEXT, span_start UBIGINT, span_end UBIGINT
 );
 CREATE TABLE hist.link (
@@ -131,7 +135,7 @@ CREATE TABLE hist.frontmatter_tag (
 );
 CREATE TABLE hist.task (
     path TEXT, gen BIGINT, seq UBIGINT, checked BOOLEAN, depth UINTEGER,
-    section_seq UBIGINT, hpath TEXT[], text TEXT,
+    section_seq UBIGINT, hpath TEXT, text TEXT,
     span_start UBIGINT, span_end UBIGINT, node_rev TEXT
 );
 CREATE TABLE hist.pin (
@@ -724,8 +728,8 @@ impl SqlStore {
         self.append_scalar(&rows.link, "link", &generation)?;
         self.append_scalar(&rows.tag, "tag", &generation)?;
         self.append_scalar(&rows.frontmatter_tag, "frontmatter_tag", &generation)?;
-        self.append_section(rows, &generation)?;
-        self.append_task(rows, &generation)?;
+        self.append_scalar(&rows.section, "section", &generation)?;
+        self.append_scalar(&rows.task, "task", &generation)?;
 
         self.conn.execute(
             "INSERT INTO hist.pin \
@@ -764,63 +768,6 @@ impl SqlStore {
             app.append_row(duckdb::appender_params_from_iter(r.iter()))?;
         }
         app.flush()?;
-        Ok(())
-    }
-
-    /// `hist.section` — the `hpath` list column rides the same stage-table
-    /// workaround as the ephemeral lane ([`crate::hpath_join`]): a TEMP stage
-    /// table (memory-backed, never file churn), appender-loaded, decoded by
-    /// one set-based `INSERT..SELECT`.
-    fn append_section(&self, rows: &Rows, generation: &Value) -> Result<(), ViewError> {
-        self.conn.execute_batch(
-            "CREATE TEMP TABLE _stage_section (path TEXT, gen BIGINT, node_seq UBIGINT, hpath_j TEXT, heading TEXT, level UTINYINT, node_rev TEXT, span_start UBIGINT, span_end UBIGINT);",
-        )?;
-        {
-            let mut app = self
-                .conn
-                .appender_to_catalog_and_db("_stage_section", "temp", "main")?;
-            for row in &rows.section {
-                let mut params: Vec<Value> = Vec::with_capacity(9);
-                params.push(row.scalars_before[0].clone());
-                params.push(generation.clone());
-                params.extend(row.scalars_before[1..].iter().cloned());
-                params.push(crate::hpath_join(&row.hpath));
-                params.extend(row.scalars_after.iter().cloned());
-                app.append_row(duckdb::appender_params_from_iter(params.iter()))?;
-            }
-            app.flush()?;
-        }
-        self.conn.execute_batch(
-            "INSERT INTO hist.section SELECT path, gen, node_seq, CASE WHEN hpath_j = '' THEN []::TEXT[] ELSE string_split(hpath_j, chr(31))[2:] END, heading, level, node_rev, span_start, span_end FROM _stage_section; \
-             DROP TABLE _stage_section;",
-        )?;
-        Ok(())
-    }
-
-    /// `hist.task` — as `hist.section`, with NULL `hpath` kept NULL.
-    fn append_task(&self, rows: &Rows, generation: &Value) -> Result<(), ViewError> {
-        self.conn.execute_batch(
-            "CREATE TEMP TABLE _stage_task (path TEXT, gen BIGINT, seq UBIGINT, checked BOOLEAN, depth UINTEGER, section_seq UBIGINT, hpath_j TEXT, text TEXT, span_start UBIGINT, span_end UBIGINT, node_rev TEXT);",
-        )?;
-        {
-            let mut app = self
-                .conn
-                .appender_to_catalog_and_db("_stage_task", "temp", "main")?;
-            for row in &rows.task {
-                let mut params: Vec<Value> = Vec::with_capacity(11);
-                params.push(row.scalars_before[0].clone());
-                params.push(generation.clone());
-                params.extend(row.scalars_before[1..].iter().cloned());
-                params.push(row.hpath.as_deref().map_or(Value::Null, crate::hpath_join));
-                params.extend(row.scalars_after.iter().cloned());
-                app.append_row(duckdb::appender_params_from_iter(params.iter()))?;
-            }
-            app.flush()?;
-        }
-        self.conn.execute_batch(
-            "INSERT INTO hist.task SELECT path, gen, seq, checked, depth, section_seq, CASE WHEN hpath_j IS NULL THEN NULL WHEN hpath_j = '' THEN []::TEXT[] ELSE string_split(hpath_j, chr(31))[2:] END, text, span_start, span_end, node_rev FROM _stage_task; \
-             DROP TABLE _stage_task;",
-        )?;
         Ok(())
     }
 
@@ -1108,7 +1055,7 @@ pub(crate) mod tests {
         ),
         (
             "section",
-            "SELECT coalesce(md5(string_agg(path || '|' || node_seq::VARCHAR || '|' || len(hpath)::VARCHAR || '#' || array_to_string(hpath, chr(31)) || '|' || heading || '|' || level::VARCHAR || '|' || node_rev || '|' || span_start::VARCHAR || '|' || span_end::VARCHAR, chr(10) ORDER BY path, node_seq)), 'EMPTY') FROM section",
+            "SELECT coalesce(md5(string_agg(path || '|' || node_seq::VARCHAR || '|' || hpath || '|' || heading || '|' || level::VARCHAR || '|' || node_rev || '|' || span_start::VARCHAR || '|' || span_end::VARCHAR, chr(10) ORDER BY path, node_seq)), 'EMPTY') FROM section",
         ),
         (
             "link",
@@ -1124,7 +1071,7 @@ pub(crate) mod tests {
         ),
         (
             "task",
-            "SELECT coalesce(md5(string_agg(path || '|' || seq::VARCHAR || '|' || checked::VARCHAR || '|' || depth::VARCHAR || '|' || coalesce(section_seq::VARCHAR,'~N~') || '|' || CASE WHEN hpath IS NULL THEN '~N~' ELSE len(hpath)::VARCHAR || '#' || array_to_string(hpath, chr(31)) END || '|' || text || '|' || span_start::VARCHAR || '|' || span_end::VARCHAR || '|' || node_rev, chr(10) ORDER BY path, seq)), 'EMPTY') FROM task",
+            "SELECT coalesce(md5(string_agg(path || '|' || seq::VARCHAR || '|' || checked::VARCHAR || '|' || depth::VARCHAR || '|' || coalesce(section_seq::VARCHAR,'~N~') || '|' || coalesce(hpath,'~N~') || '|' || text || '|' || span_start::VARCHAR || '|' || span_end::VARCHAR || '|' || node_rev, chr(10) ORDER BY path, seq)), 'EMPTY') FROM task",
         ),
         (
             "backlink",

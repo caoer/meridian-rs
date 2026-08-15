@@ -3980,6 +3980,7 @@ dependencies = [
  "syntax",
  "tempfile",
  "toml",
+ "wire-map",
 ]
 
 [[package]]
