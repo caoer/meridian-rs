@@ -207,12 +207,13 @@ fn the_receipt_survives_the_write_that_rebuilds_the_warm_engine() {
         "the corpus content hash MOVED — the next warm must rebuild: {splice}"
     );
 
-    // `Built` is the parse-count proof that the warm engine was rebuilt.
+    // `Built` is the parse-count proof that the warm engine was rebuilt —
+    // and the count is the incremental arm's: only the spliced member parses.
     let canonical = workspace::canonicalize(&ws).unwrap();
     assert_eq!(
         server.registry().warm_or_build(&canonical).unwrap(),
-        registry::WarmOutcome::Built { docs: 2 },
-        "the write rebuilt the warm engine"
+        registry::WarmOutcome::Built { docs: 1 },
+        "the write rebuilt the warm engine, re-parsing only the written member"
     );
 
     let mints = server.registry().read_mints(&canonical);

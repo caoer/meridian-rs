@@ -1951,7 +1951,7 @@ fn root_prefix(version: u32) -> String {
 /// Houses the vault name/alias index the walk plane's stage 1 needs
 /// (`getFirstLinkpathDest` parity, contract §4.5): file basename → paths and
 /// frontmatter alias → paths, both lowercased (stage 1 is case-insensitive).
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct CorpusIndex {
     by_basename: BTreeMap<String, Vec<String>>,
     by_alias: BTreeMap<String, Vec<String>>,

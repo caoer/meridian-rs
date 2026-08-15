@@ -810,6 +810,20 @@ impl DomainCache {
     pub fn listings(&self) -> u64 {
         self.listings
     }
+
+    /// The memo's current leaf set — member → §12.2 leaf digest, as of the
+    /// last [`root`](Self::root) pass. The incremental rebuild arm's delta
+    /// input ([`update_corpus`]): each digest was byte-derived when its
+    /// [`StatKey`] last moved, the same evidence grade the reuse check runs
+    /// on. A clone, so callers take it only on the rebuild path — never per
+    /// currency pass (the hot path stays allocation-free).
+    #[must_use]
+    pub fn leaf_digests(&self) -> BTreeMap<PathBuf, [u8; 32]> {
+        self.leaves
+            .iter()
+            .map(|(rel, (_, digest))| (rel.clone(), *digest))
+            .collect()
+    }
 }
 
 /// One directory's scan during [`DomainCache`]'s walk: its identity, its
@@ -988,22 +1002,36 @@ pub fn fold_count() -> u64 {
 /// # Errors
 /// I/O failure loading the domain config, traversing the root, or reading a file.
 pub fn domain_snapshot(root: &WorkspaceRoot) -> io::Result<(DomainFiles, model::MerkleRoot)> {
+    let (files, _leaves, folded) = domain_snapshot_with_leaves(root)?;
+    Ok((files, folded))
+}
+
+/// [`domain_snapshot`] with the per-member leaf set alongside the fold — the
+/// form a resident engine records so a later incremental pass
+/// ([`update_corpus`]) has a delta baseline. Same walk, same read, same fold;
+/// the leaves are the very digests the returned root folded.
+///
+/// # Errors
+/// I/O failure loading the domain config, traversing the root, or reading a file.
+pub fn domain_snapshot_with_leaves(
+    root: &WorkspaceRoot,
+) -> io::Result<(DomainFiles, BTreeMap<PathBuf, [u8; 32]>, model::MerkleRoot)> {
     FOLD_COUNT.fetch_add(1, Ordering::Relaxed);
     let domain = domain::Domain::load(root)?;
     let rels = hash_domain(root, &domain)?;
     let members = read_and_digest_members(root, &rels, PARALLEL_READ_FLOOR)?;
     let mut files = Vec::with_capacity(rels.len());
-    let mut leaves: Vec<(Vec<u8>, [u8; 32])> = Vec::with_capacity(rels.len());
+    let mut leaves: BTreeMap<PathBuf, [u8; 32]> = BTreeMap::new();
     for (rel, (bytes, digest)) in rels.iter().zip(members) {
-        leaves.push((hash_name(rel).to_vec(), digest));
+        leaves.insert(rel.clone(), digest);
         if let Some(rel_str) = rel.to_str() {
             files.push((rel_str.to_owned(), bytes));
         }
     }
     let leaf_refs: Vec<(&[u8], [u8; 32])> =
-        leaves.iter().map(|(n, d)| (n.as_slice(), *d)).collect();
+        leaves.iter().map(|(rel, d)| (hash_name(rel), *d)).collect();
     let folded = model::merkle_root_of_leaves(&leaf_refs, domain.version());
-    Ok((files, folded))
+    Ok((files, leaves, folded))
 }
 
 /// One domain observation's leaves — `raw name bytes → §12.2 leaf digest` —
@@ -1331,14 +1359,12 @@ pub fn build_corpus(
     BTreeMap<String, model::Document>,
     BTreeMap<String, String>,
 ) {
-    let mut index = model::CorpusIndex::new();
     let mut docs = BTreeMap::new();
     let mut unserved = BTreeMap::new();
     for (rel, bytes) in files {
         match String::from_utf8(bytes) {
             Ok(text) => {
                 let doc = model::build(text.clone(), syntax::parse(&text));
-                index.insert(&rel, &doc);
                 docs.insert(rel, doc);
             }
             Err(e) => {
@@ -1346,7 +1372,139 @@ pub fn build_corpus(
             }
         }
     }
-    (index, docs, unserved)
+    (corpus_index_of(&docs), docs, unserved)
+}
+
+/// The corpus name index over `docs`, in the docs map's own (path) order —
+/// the ONE index constructor, shared by [`build_corpus`] and
+/// [`update_corpus`] so the two build paths cannot disagree on multi-candidate
+/// order.
+fn corpus_index_of(docs: &BTreeMap<String, model::Document>) -> model::CorpusIndex {
+    let mut index = model::CorpusIndex::new();
+    for (rel, doc) in docs {
+        index.insert(rel, doc);
+    }
+    index
+}
+
+/// One incremental corpus pass's product ([`update_corpus`]): the same parts a
+/// from-scratch [`build_corpus`] yields, plus the leaf set and fold they were
+/// built at, plus how many documents this pass actually parsed.
+#[derive(Debug)]
+pub struct CorpusUpdate {
+    /// The rebuilt name index — constructed over the FINAL docs map, so it
+    /// cannot drift from a from-scratch build over the same tree.
+    pub index: model::CorpusIndex,
+    /// The updated documents, keyed by workspace-relative path.
+    pub docs: BTreeMap<String, model::Document>,
+    /// The updated unserved map (non-UTF-8 CONTENT members).
+    pub unserved: BTreeMap<String, String>,
+    /// The leaf set the fold describes — the next pass's delta baseline.
+    pub leaves: BTreeMap<PathBuf, [u8; 32]>,
+    /// The fold of `leaves` — what the engine is stamped with.
+    pub root: model::MerkleRoot,
+    /// Documents parsed by THIS pass (movers only) — the [`build_corpus`]
+    /// zero-parse proof, kept per-pass.
+    pub parsed: usize,
+}
+
+/// Rebuild a corpus INCREMENTALLY against a prior build. `fresh` is the
+/// current §12.2 leaf set (a [`DomainCache::leaf_digests`] pass); `prior_*`
+/// are the parts and leaf set of the build being updated.
+///
+/// Per member of `fresh`: an unmoved leaf (digest equal to `prior_leaves`)
+/// carries its parsed document — or its unserved condition — forward, bytes
+/// untouched; a moved, added, or unaccounted-for member is read NOW, its
+/// digest re-derived from the very bytes parsed, so the per-member
+/// stamp==bytes atomicity of [`domain_snapshot`] is preserved for everything
+/// this pass parses. A member absent from `fresh` is vanished and drops. A
+/// mover that vanishes between the leaf pass and the read drops the same way
+/// (the fold describes what was actually built); any other read failure
+/// refuses the pass whole — the Law A-3c posture, unchanged.
+///
+/// The returned root folds the resulting leaf set through
+/// [`model::merkle_root_of_leaves`] — byte-identical to what
+/// [`domain_snapshot`] folds over the same tree state.
+///
+/// # Errors
+/// I/O failure loading the domain config or reading a moved member.
+pub fn update_corpus(
+    root: &WorkspaceRoot,
+    prior_docs: &BTreeMap<String, model::Document>,
+    prior_unserved: &BTreeMap<String, String>,
+    prior_leaves: &BTreeMap<PathBuf, [u8; 32]>,
+    fresh: &BTreeMap<PathBuf, [u8; 32]>,
+) -> io::Result<CorpusUpdate> {
+    let domain = domain::Domain::load(root)?;
+    let mut docs: BTreeMap<String, model::Document> = BTreeMap::new();
+    let mut unserved: BTreeMap<String, String> = BTreeMap::new();
+    let mut leaves: BTreeMap<PathBuf, [u8; 32]> = BTreeMap::new();
+    let mut parsed = 0usize;
+    for (rel, fresh_digest) in fresh {
+        let carried = prior_leaves.get(rel) == Some(fresh_digest)
+            && match rel.to_str() {
+                // A UTF-8-named member of the prior build is in exactly one
+                // of docs/unserved; a hole means the prior parts do not
+                // describe this member — re-read it rather than guess.
+                Some(rel_str) => {
+                    prior_docs.contains_key(rel_str) || prior_unserved.contains_key(rel_str)
+                }
+                // Non-UTF-8 NAME: integrity-covered, never servable — the
+                // leaf alone is the whole carry.
+                None => true,
+            };
+        if carried {
+            leaves.insert(rel.clone(), *fresh_digest);
+            if let Some(rel_str) = rel.to_str() {
+                if let Some(doc) = prior_docs.get(rel_str) {
+                    docs.insert(rel_str.to_owned(), doc.clone());
+                } else if let Some(why) = prior_unserved.get(rel_str) {
+                    unserved.insert(rel_str.to_owned(), why.clone());
+                }
+            }
+            continue;
+        }
+        let bytes = match fs::read(root.0.join(rel)) {
+            Ok(bytes) => bytes,
+            // Vanished since the leaf pass: not part of what this pass
+            // builds, exactly as a fresh walk would report it.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                return Err(corpus_member_refusal(
+                    e.kind(),
+                    &display_name(hash_name(rel)),
+                    format!("cannot be read ({e})"),
+                ));
+            }
+        };
+        leaves.insert(rel.clone(), model::leaf_digest(&bytes));
+        if let Some(rel_str) = rel.to_str() {
+            match String::from_utf8(bytes) {
+                Ok(text) => {
+                    let doc = model::build(text.clone(), syntax::parse(&text));
+                    docs.insert(rel_str.to_owned(), doc);
+                    parsed += 1;
+                }
+                Err(e) => {
+                    unserved.insert(
+                        rel_str.to_owned(),
+                        format!("is not UTF-8 ({})", e.utf8_error()),
+                    );
+                }
+            }
+        }
+    }
+    let leaf_refs: Vec<(&[u8], [u8; 32])> =
+        leaves.iter().map(|(rel, d)| (hash_name(rel), *d)).collect();
+    let folded = model::merkle_root_of_leaves(&leaf_refs, domain.version());
+    Ok(CorpusUpdate {
+        index: corpus_index_of(&docs),
+        docs,
+        unserved,
+        leaves,
+        root: folded,
+        parsed,
+    })
 }
 
 /// A process-unique suffix source for staging paths (combined with the pid and
