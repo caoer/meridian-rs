@@ -121,18 +121,18 @@ fn gate5_task_section_identity_fk() {
     insert_doc(&conn, "x.md");
     // two sections sharing the heading text 'Steps' (identity keeps them distinct)
     conn.execute(
-        "INSERT INTO section VALUES ('x.md', 0, ['Steps'], 'Steps', 1, 'r', 0, 10)",
+        r#"INSERT INTO section VALUES ('x.md', 0, '[{"h":"Steps","n":1}]', 'Steps', 1, 'r', 0, 10)"#,
         [],
     )
     .unwrap();
     conn.execute(
-        "INSERT INTO section VALUES ('x.md', 1, ['Steps'], 'Steps', 1, 'r', 10, 20)",
+        r#"INSERT INTO section VALUES ('x.md', 1, '[{"h":"Steps","n":2}]', 'Steps', 1, 'r', 10, 20)"#,
         [],
     )
     .unwrap();
     // one task under section node_seq 0
     conn.execute(
-        "INSERT INTO task VALUES ('x.md', 0, false, 0, 0, ['Steps'], 'a task', 1, 5, 'r')",
+        r#"INSERT INTO task VALUES ('x.md', 0, false, 0, 0, '[{"h":"Steps","n":1}]', 'a task', 1, 5, 'r')"#,
         [],
     )
     .unwrap();
@@ -163,7 +163,7 @@ fn gate5_task_section_identity_fk() {
     // a bad section_seq (no such section) violates the composite FK
     let err = conn
         .execute(
-            "INSERT INTO task VALUES ('x.md', 2, false, 0, 99, ['Steps'], 'bad', 25, 30, 'r')",
+            r#"INSERT INTO task VALUES ('x.md', 2, false, 0, 99, '[{"h":"Steps","n":1}]', 'bad', 25, 30, 'r')"#,
             [],
         )
         .unwrap_err();

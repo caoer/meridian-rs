@@ -53,7 +53,13 @@ CREATE TABLE frontmatter (
 CREATE TABLE section (
     path       TEXT     NOT NULL REFERENCES doc(path),
     node_seq   UBIGINT  NOT NULL,                 -- document-order ordinal; section identity
-    hpath      TEXT[]   NOT NULL,                 -- heading chain; ADVISORY, NOT a join key
+    -- The published machine address, as the read face's toc publishes it and
+    -- read/put accept it verbatim: '[{"h":…},…]' compact JSON, per-segment "n"
+    -- (1-based occurrence among same-parent same-text siblings) only where the
+    -- raw text is ambiguous. ADVISORY, NOT a join key. The former TEXT[] chain
+    -- rendered duplicate siblings identically and its joined spelling could
+    -- not address (card sql-hpath-read-grammar, dogfood r8 § D5).
+    hpath      TEXT     NOT NULL,
     heading    TEXT     NOT NULL,
     level      UTINYINT NOT NULL,                 -- u8
     node_rev   TEXT     NOT NULL,                 -- blake3(section span)[:16]
@@ -123,7 +129,7 @@ CREATE TABLE task (
     checked     BOOLEAN  NOT NULL,
     depth       UINTEGER NOT NULL,                -- u32
     section_seq UBIGINT,                          -- governing section node_seq; NULL = document-level
-    hpath       TEXT[],                           -- ADVISORY; NULL when document-level
+    hpath       TEXT,                             -- governing section's machine address ('[{"h":…},…]', as section.hpath); ADVISORY; NULL when document-level
     text        TEXT     NOT NULL,                -- task-line text (identity-bearing, bounded; not body)
     span_start  UBIGINT  NOT NULL,                -- C1: TaskItem node span
     span_end    UBIGINT  NOT NULL,
@@ -183,7 +189,12 @@ CREATE VIEW tag_all AS                             -- B2: the union — inline +
 /// record, corpus-wide; the old noun promised a board (dogfood r6 U-S1) —
 /// and `task.text` dropped its list-marker + checkbox prefix (`checked`
 /// already carries the bit; dogfood r6 S11).
-pub const SCHEMA_VERSION: i32 = 4;
+///
+/// `5`: `section.hpath` / `task.hpath` became TEXT — the published
+/// `[{"h":…},…]` machine address with per-segment `n` on ambiguity — replacing
+/// the TEXT[] chain whose rendering could not address (card
+/// sql-hpath-read-grammar, dogfood r8 § D5).
+pub const SCHEMA_VERSION: i32 = 5;
 
 /// Run the full round-1 DDL against `conn` (8 tables + 4 views).
 ///
