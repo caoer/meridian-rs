@@ -1787,3 +1787,150 @@ fn the_user_view_does_not_manufacture_armed_orphans() {
     );
     assert_eq!(rc, Some(0), "and the view stays clean:\n{user_view}");
 }
+
+/// **THE UNDECIDABLE LINE IS BOUNDED, AND ITS POPULATION IS NOT LOST.**
+///
+/// `cannot be answered` is the one declined voice with no registrar narrowing
+/// in front of it: `register` refuses on unparseable frontmatter BEFORE any tag
+/// is read, so every malformed-frontmatter excluded file lands here whether or
+/// not it ever meant to carry a rule. In a generated corpus that population has
+/// no bound, and this line used to join all of it into prose.
+///
+/// The cap is only lawful because a COMPLETE carrier exists to point at —
+/// `not_offered.undecidable` on this verb's own `--json`, which this gate holds
+/// complete in the same breath it holds the prose bounded. Without that half,
+/// capping would delete the population rather than defer it.
+#[test]
+fn the_undecidable_line_is_capped_and_points_at_its_complete_carrier() {
+    /// `mrd::EXCLUDED_SHOWN`, crate-private — restated here because this gate
+    /// drives the real binary over its process boundary.
+    const EXPECTED_SHOWN: usize = 3;
+    const BROKEN: usize = 11;
+
+    let s = sandbox();
+    s.write(
+        "rules/notify.md",
+        &rule_page("hook", "task.notify", "the workspace rule"),
+    );
+    s.write(
+        "meridian/domain.md",
+        "---\nversion: 1\nignore:\n  - \"archive/**\"\n---\n\n# domain\n",
+    );
+    for n in 0..(BROKEN - 1) {
+        s.write(
+            &format!("archive/broken{n:02}.md"),
+            "---\ntags: [rules/hook\n---\n\n# an unclosed flow sequence\n",
+        );
+    }
+    // The planted file with NO rule intent whatsoever — a plain note whose
+    // frontmatter happens not to parse. It lands in this population anyway,
+    // which is the whole reason the population is unbounded.
+    s.write(
+        "archive/plain-note.md",
+        "---\ntitle: a note: with a stray colon\n---\n\n# not a rule page\n",
+    );
+
+    let said = s.stdout(&["rules"]);
+
+    // Positive control FIRST: an absent line satisfies every bound below. The
+    // gate reads the LINE, so no neighbouring voice can satisfy it by accident.
+    let line = said
+        .lines()
+        .find(|line| line.contains("cannot be answered"))
+        .unwrap_or_else(|| {
+            panic!(
+                "the undecidable line did not fire at all, so this gate would \
+                 pass vacuously — the fixture is wrong, not the cap: {said}"
+            )
+        })
+        .to_owned();
+
+    // The carrier names the whole population — including the file that never
+    // offered itself to registration.
+    let value: serde_json::Value =
+        serde_json::from_str(&s.stdout(&["rules", "--json"])).expect("json");
+    let carried: Vec<&str> = value["rules"]["not_offered"]["undecidable"]
+        .as_array()
+        .expect("not_offered.undecidable")
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    assert_eq!(
+        carried.len(),
+        BROKEN,
+        "the machine carrier must stay COMPLETE — capping the prose defers the \
+         population, it never re-scopes it: {carried:?}"
+    );
+    assert!(
+        carried.iter().any(|rel| rel.contains("plain-note.md")),
+        "a malformed-frontmatter file with no rule intent is still undecidable \
+         — that is why this population has no bound: {carried:?}"
+    );
+
+    // The COUNT is the whole population and is never capped — the half that
+    // keeps the exclusion non-silent (decision 0017).
+    assert!(
+        line.contains(&format!("{BROKEN} excluded markdown file(s)")),
+        "the line must state the FULL count ({BROKEN}): {line}"
+    );
+
+    // The SAMPLE is capped, and admits it.
+    let rest = BROKEN - EXPECTED_SHOWN;
+    assert!(
+        line.contains(&format!("and {rest} more")),
+        "the line must say how many it did NOT name — a sample that does not \
+         admit it is a sample reads as the whole list: {line}"
+    );
+
+    // The assertion that actually fails when the cap is removed.
+    let named = carried.iter().filter(|rel| line.contains(**rel)).count();
+    assert_eq!(
+        named, EXPECTED_SHOWN,
+        "the line named {named} paths; the cap is {EXPECTED_SHOWN}: {line}"
+    );
+
+    // Capping prose loses nothing only if the reader is told where the rest is.
+    assert!(
+        line.contains("`not_offered.undecidable`"),
+        "a capped line must point at the complete machine-readable list, or \
+         the cap becomes the silence decision 0017 ended: {line}"
+    );
+}
+
+/// The negative case: a population at or under the cap is named in full and
+/// claims no remainder. *Mutation:* make the remainder clause unconditional and
+/// this line claims "and 0 more", teaching readers to ignore the clause.
+#[test]
+fn a_small_undecidable_population_is_named_in_full_with_no_remainder() {
+    let s = sandbox();
+    s.write(
+        "rules/notify.md",
+        &rule_page("hook", "task.notify", "the workspace rule"),
+    );
+    s.write(
+        "meridian/domain.md",
+        "---\nversion: 1\nignore:\n  - \"archive/**\"\n---\n\n# domain\n",
+    );
+    for name in ["one", "two"] {
+        s.write(
+            &format!("archive/{name}.md"),
+            "---\ntags: [rules/hook\n---\n\n# an unclosed flow sequence\n",
+        );
+    }
+
+    let said = s.stdout(&["rules"]);
+    // Scoped to the line under test — a neighbouring voice must not be able to
+    // satisfy or break the remainder assertion.
+    let line = said
+        .lines()
+        .find(|line| line.contains("cannot be answered"))
+        .unwrap_or_else(|| panic!("control: the line must fire here too: {said}"));
+    assert!(
+        line.contains("archive/one.md") && line.contains("archive/two.md"),
+        "a population under the cap is named IN FULL: {line}"
+    );
+    assert!(
+        !line.contains(" more"),
+        "nothing was withheld, so the line must claim no remainder: {line}"
+    );
+}
