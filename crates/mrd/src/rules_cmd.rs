@@ -35,6 +35,15 @@
 //! one discovery now resolves (`armed=armed@<page>`) — arming pins resolution,
 //! and later discovery never changes it.
 //!
+//! `armed=` means WHAT GOVERNS HERE and nothing else, so `-` is never asked to
+//! carry a cause. An armed row whose arm root does not contain this path governs
+//! nothing here and gets its own line, beneath the rows — the same treatment as
+//! an armed row whose pinned page left the corpus. Containment is a FACT and
+//! reddens nothing: arming a sibling scope is normal. Redness is a FAULT
+//! wherever it lives, so it is named on that line and counted in the findings —
+//! which is what makes this verb and `mrd status` agree about one artifact
+//! instead of one reading clean while the other reads drifted.
+//!
 //! Exit triad: **0** clean · **1** findings (a collision, a refused rule page,
 //! an armed row whose pinned page drifted or vanished, an unreadable armed
 //! artifact) · **2** bad invocation or an unreadable workspace.
@@ -330,6 +339,35 @@ struct ArmedOrphan {
     cause: &'static str,
 }
 
+/// An armed row for an id this answer RESOLVES whose arm root does not contain
+/// the queried path — so it governs nothing here and no [`ArmedCell`] is about
+/// it.
+///
+/// ⛔ Before this existed the row was silent, and `armed=-` spelled two
+/// unrelated truths: "no armed row exists for this id anywhere" and "an armed
+/// row exists and is armed elsewhere". The header four lines above printed
+/// `armed-set … (N row(s))` in both cases, so the reader had a count they could
+/// not reconcile with any row. Worse, the row's REDNESS went with it: a drifted
+/// arm outside the queried path exited 0 here while `mrd status` exited 1 on the
+/// same workspace.
+///
+/// The cell is NOT where this belongs. `armed=` means WHAT GOVERNS HERE, and a
+/// cell carrying two facts is how the silent cause masked the loud one in the
+/// first place. This is a sibling of [`ArmedOrphan`] and prints on the same
+/// pattern.
+#[derive(Debug, PartialEq, Eq)]
+struct ArmedElsewhere {
+    id: String,
+    /// The page the arm attested — a workspace spelling, from the artifact.
+    page: String,
+    /// The arm root the row was pinned at, which does NOT contain this path.
+    scope: String,
+    mode: String,
+    /// Why the pinned page no longer stands, when it does not. Containment is a
+    /// FACT and rides the section header; redness is a FAULT and rides here.
+    redness: Option<String>,
+}
+
 /// Why an armed row's pinned page is absent from the corpus — decided by
 /// looking, never by inheriting `verify_at`'s word.
 ///
@@ -383,6 +421,9 @@ struct RulesReport {
     undecidable: Vec<String>,
     /// Armed rows this answer counts in its header and shows nowhere.
     armed_orphans: Vec<ArmedOrphan>,
+    /// Armed rows this answer counts in its header whose arm root does not
+    /// contain the queried path, so they govern nothing here.
+    armed_elsewhere: Vec<ArmedElsewhere>,
 }
 
 impl RulesReport {
@@ -400,11 +441,21 @@ impl RulesReport {
         if !self.refused.is_empty() {
             findings.push(format!("{} refused rule page(s)", self.refused.len()));
         }
+        // Redness is a FAULT WHEREVER IT LIVES. Containment is a fact and never
+        // reaches this list — arming a sibling scope is normal and must not
+        // redden an unrelated query — but a red row does, whether or not its arm
+        // root contains this path. That is what makes this verb and `mrd status`
+        // agree on one artifact instead of contradicting each other.
         let red = self
             .rows
             .iter()
             .filter(|row| row.armed.as_ref().is_some_and(|a| a.redness.is_some()))
-            .count();
+            .count()
+            + self
+                .armed_elsewhere
+                .iter()
+                .filter(|row| row.redness.is_some())
+                .count();
         if red > 0 {
             findings.push(format!("{red} red armed row(s)"));
         }
@@ -544,10 +595,16 @@ fn build(workspace: &Path, at: &str, view: View) -> Result<RulesReport, Fail> {
     undecidable.sort();
     undecidable.dedup();
 
-    let armed_orphans = if view.admits(ScopeLayer::Workspace) {
-        orphans(artifact.as_ref(), at, &effective, workspace)
+    // ⛔ Same view guard as the orphans, for the same reason: under `--user` the
+    // resolved set holds no workspace id, so every workspace-spelled armed row
+    // would be manufactured into a finding.
+    let (armed_orphans, armed_elsewhere) = if view.admits(ScopeLayer::Workspace) {
+        (
+            orphans(artifact.as_ref(), at, &effective, workspace),
+            armed_elsewhere(artifact.as_ref(), at, &effective, &CorpusPages(&corpus)),
+        )
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
 
     Ok(RulesReport {
@@ -563,6 +620,7 @@ fn build(workspace: &Path, at: &str, view: View) -> Result<RulesReport, Fail> {
         declined_user: user_declined,
         undecidable,
         armed_orphans,
+        armed_elsewhere,
     })
 }
 
@@ -732,6 +790,57 @@ fn load_armed(corpus: &BTreeMap<String, String>) -> (ArmedSource, Option<ArmedAr
     }
 }
 
+/// The word a [`Redness`] renders as. One mapping, shared by the armed cell and
+/// the elsewhere section, so the two faces cannot drift apart.
+fn redness_word(why: &Redness) -> &'static str {
+    match why {
+        Redness::Drifted { .. } => "drifted",
+        Redness::Missing { .. } => "missing",
+        // A row whose mode is outside its page's kind vocabulary reads as a
+        // mismatch, not drift: the page is untouched and its rev still matches,
+        // so "drifted" would send a reader to diff a page that never moved.
+        Redness::ModeOutsideKind { .. } => "kind-mismatch",
+    }
+}
+
+/// The armed rows for ids this answer RESOLVES whose arm root does not contain
+/// `at` — everything [`ArmedArtifact::select_at`] drops, which is precisely what
+/// used to be silent.
+///
+/// ⛔ The containment question and its verification are `policy`'s single
+/// [`ArmedArtifact::verify_elsewhere_at`] call, never re-derived here: a path
+/// predicate written at this layer would be the second resolver the CLI is
+/// forbidden to hold. This function only drops the rows whose id discovery no
+/// longer resolves — those are [`ArmedOrphan`]s and have their own section, so
+/// the two "shown nowhere" populations never double-count.
+fn armed_elsewhere(
+    artifact: Option<&ArmedArtifact>,
+    at: &str,
+    effective: &EffectiveSet,
+    pages: &dyn PageSource,
+) -> Vec<ArmedElsewhere> {
+    let Some(artifact) = artifact else {
+        return Vec::new();
+    };
+    artifact
+        .verify_elsewhere_at(at, pages)
+        .into_iter()
+        .filter(|found| {
+            effective
+                .resolved()
+                .get(found.row().id().as_str())
+                .is_some()
+        })
+        .map(|found| ArmedElsewhere {
+            id: found.row().id().as_str().to_owned(),
+            page: found.row().page().to_owned(),
+            scope: found.row().scope().as_str().to_owned(),
+            mode: found.row().mode().as_str().to_owned(),
+            redness: found.why().map(|why| redness_word(why).to_owned()),
+        })
+        .collect()
+}
+
 /// One row per resolved id and one per collision, id-ascending within each, the
 /// resolved set first.
 fn rows(
@@ -749,21 +858,12 @@ fn rows(
     if let Some(artifact) = artifact {
         let verdict = artifact.verify_at(at, pages);
         for red in verdict.red() {
-            let why = match red.why() {
-                Redness::Drifted { .. } => "drifted",
-                Redness::Missing { .. } => "missing",
-                // A row whose mode is outside its page's kind vocabulary reads as
-                // a mismatch, not drift: the page is untouched and its rev still
-                // matches, so "drifted" would send a reader to diff a page that
-                // never moved.
-                Redness::ModeOutsideKind { .. } => "kind-mismatch",
-            };
             reddened.insert(
                 (
                     red.row().id().as_str().to_owned(),
                     red.row().scope().as_str().to_owned(),
                 ),
-                why,
+                redness_word(red.why()),
             );
         }
     }
@@ -920,6 +1020,34 @@ fn render_human(report: &RulesReport) -> String {
             );
         }
     }
+    // Same reason as the orphan section above, one step less severe: the header
+    // counts these rows and no `armed=` cell is about them, so the reader cannot
+    // reconstruct them from anything else on the page. The section header
+    // carries the containment fact once; each line carries its own redness, so
+    // the loud cause is never swallowed by the silent one.
+    if !report.armed_elsewhere.is_empty() {
+        let _ = writeln!(
+            out,
+            "armed rows counted above whose arm root does NOT contain this path:"
+        );
+        for row in &report.armed_elsewhere {
+            // `scope` here IS the armed artifact's arm-root column — the same
+            // vocabulary the orphan section uses, and the workspace root prints
+            // `.` exactly as the artifact's own cell does.
+            let redness = row
+                .redness
+                .as_ref()
+                .map_or_else(String::new, |why| format!(" ({why})"));
+            let _ = writeln!(
+                out,
+                "  {}  armed={} at scope={} — pinned {}{redness}",
+                row.id,
+                row.mode,
+                display_path(&row.scope),
+                row.page
+            );
+        }
+    }
     if !report.refused.is_empty() {
         let _ = writeln!(out, "refused:");
         for refusal in &report.refused {
@@ -1033,6 +1161,17 @@ fn to_json(workspace: &Path, report: &RulesReport) -> Value {
                 "mode": orphan.mode,
                 "cause": orphan.cause,
             })).collect::<Vec<_>>(),
+            // STRICTLY ADDITIVE: `armed` above keeps meaning WHAT GOVERNS HERE
+            // and stays null for these rows, so no consumer that reads
+            // `armed.mode` as governing is broken by the diagnosis. The cause
+            // rides its own key.
+            "armed_elsewhere": report.armed_elsewhere.iter().map(|row| json!({
+                "id": row.id,
+                "page": row.page,
+                "scope": row.scope,
+                "mode": row.mode,
+                "redness": row.redness,
+            })).collect::<Vec<_>>(),
             "not_offered": {
                 "workspace": report.declined_workspace,
                 "user": report.declined_user,
@@ -1075,6 +1214,7 @@ mod tests {
             declined_user: Vec::new(),
             undecidable: Vec::new(),
             armed_orphans: Vec::new(),
+            armed_elsewhere: Vec::new(),
         }
     }
 
