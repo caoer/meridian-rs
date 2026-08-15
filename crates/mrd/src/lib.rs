@@ -75,9 +75,9 @@ pub(crate) fn voice_unserved(unserved: &std::collections::BTreeMap<String, Strin
 }
 
 /// The domain-excluded voice, shared by every in-process face that ENUMERATES
-/// the corpus: one line naming the markdown under the root that the hash domain
-/// does not carry (a dot-segment path, a `meridian/domain.md` ignore rule), on
-/// stderr so machine stdout stays clean.
+/// the corpus: one line naming the markdown the domain DECLINES yet the vault
+/// still shows — the custom-ignore class, exactly — on stderr so machine
+/// stdout stays clean.
 ///
 /// Twin of [`voice_unserved`], and for the same reason: an enumeration's answer
 /// is stamped `as_of` a fingerprint that an out-of-domain file's bytes cannot
@@ -86,7 +86,18 @@ pub(crate) fn voice_unserved(unserved: &std::collections::BTreeMap<String, Strin
 /// An enumerator MAY exclude what its attestation cannot reach; it may never
 /// exclude SILENTLY (session decision 0017; `docs/wire-contract.md` §12.1,
 /// enumerator clause). Doors asked about ONE named path do not voice here —
-/// they serve the path instead (`walk_cmd::admit_named_page`).
+/// they serve the path instead (`walk_cmd::admit_named_page`); the `docs`
+/// filter below is that discipline's other half, keeping an admitted named
+/// page out of its own door's voice.
+///
+/// The enumeration is [`fs::declined_markdown`] — the projection's own walk
+/// law, one shared predicate ([`fs::domain::dot_segment`], §12.1 rule 2), a
+/// dot-prefixed segment never entered and never voiced — so this voice can
+/// never name a path the record projection refuses to serve (dogfood F11,
+/// carried from `mrd rules` to this face; card
+/// voice-excluded-walk-consistency). The complete outside-domain enumeration,
+/// dot class included, stays on the machine channel: the `excluded` key of
+/// bare `mrd links --json` (§4.6).
 ///
 /// ⚠️ **The PROSE sample is capped at [`EXCLUDED_SHOWN`]; the COUNT never is,
 /// and the wire's `excluded` key stays complete.** Uncapped, this line is a
@@ -103,13 +114,13 @@ pub(crate) fn voice_unserved(unserved: &std::collections::BTreeMap<String, Strin
 pub(crate) fn voice_excluded(
     root: &fs::WorkspaceRoot,
     docs: &std::collections::BTreeMap<String, model::Document>,
-    unserved: &std::collections::BTreeMap<String, String>,
 ) {
-    let Ok(all) = fs::walk(root) else { return };
-    let excluded: Vec<String> = all
-        .iter()
-        .filter_map(|rel| rel.to_str().map(str::to_owned))
-        .filter(|rel| !docs.contains_key(rel) && !unserved.contains_key(rel))
+    let Ok(declined) = fs::declined_markdown(root) else {
+        return;
+    };
+    let excluded: Vec<String> = declined
+        .into_iter()
+        .filter(|rel| !docs.contains_key(rel))
         .collect();
     if excluded.is_empty() {
         return;

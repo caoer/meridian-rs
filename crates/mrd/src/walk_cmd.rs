@@ -42,11 +42,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
             cwd.display()
         ))
     })?;
-    let InProcessCorpus {
-        root,
-        mut docs,
-        unserved,
-    } = build_corpus_in_process(&resolved.workspace)?;
+    let InProcessCorpus { root, mut docs } = build_corpus_in_process(&resolved.workspace)?;
     admit_named_page(&root, &mut docs, &parsed.page);
     let docs = docs;
 
@@ -56,7 +52,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     // subject reads as an exclusion. `--up` is not gated in: it drops nothing, naming an
     // excluded ancestor by its correct path at a red edge (measured, `1ee5317a`).
     if matches!(parsed.direction, Direction::Down) {
-        crate::voice_excluded(&root, &docs, &unserved);
+        crate::voice_excluded(&root, &docs);
     }
 
     // The mount table, with a corpus for the roots this workspace's own lock addresses name and
@@ -262,20 +258,20 @@ pub(crate) fn build_docs(workspace: &Path) -> Result<BTreeMap<String, Document>,
     build_corpus_in_process(workspace).map(|corpus| corpus.docs)
 }
 
-/// The in-process corpus build, whole: what [`build_docs`] returns plus the two values it
-/// drops. [`crate::voice_excluded`] takes all three, and a caller that only ever gets `docs`
-/// back cannot name what the hash domain left out.
+/// The in-process corpus build, whole: what [`build_docs`] returns plus the root it drops.
+/// [`crate::voice_excluded`] takes both — the root to enumerate the declined class from, the
+/// docs to keep an admitted named page out of the voice. The unserved map never leaves the
+/// build: it is voiced right where it is minted ([`crate::voice_unserved`]), and the declined
+/// class it used to help subtract is structurally disjoint from it.
 struct InProcessCorpus {
     /// The canonical workspace root the snapshot was taken at.
     root: fs::WorkspaceRoot,
     /// The served projection — the corpus the walk reads.
     docs: BTreeMap<String, Document>,
-    /// Hash-domain members `fs::build_corpus` could not serve, by member and condition.
-    unserved: BTreeMap<String, String>,
 }
 
-/// Build [`InProcessCorpus`] from the workspace on disk. [`build_docs`] is this with the two
-/// extra values dropped.
+/// Build [`InProcessCorpus`] from the workspace on disk. [`build_docs`] is this with the
+/// root dropped.
 fn build_corpus_in_process(workspace: &Path) -> Result<InProcessCorpus, Fail> {
     let canonical = workspace::canonicalize(workspace).map_err(|e| {
         Fail::tool(format!(
@@ -288,11 +284,7 @@ fn build_corpus_in_process(workspace: &Path) -> Result<InProcessCorpus, Fail> {
         .map_err(|e| Fail::tool(format!("cannot read the corpus: {e}")))?;
     let (_index, docs, unserved) = fs::build_corpus(files);
     crate::voice_unserved(&unserved);
-    Ok(InProcessCorpus {
-        root,
-        docs,
-        unserved,
-    })
+    Ok(InProcessCorpus { root, docs })
 }
 
 /// Fold a NAMED page the hash domain excludes into the corpus map before a door
