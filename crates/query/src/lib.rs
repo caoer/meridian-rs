@@ -30,6 +30,17 @@ use model::{
 pub struct Backlink {
     pub path: String,
     pub span: ByteSpan,
+    /// Which edge kind wrote the reference — the remove door's refusal
+    /// vocabulary rides this (no-serde law: `wire::ReferrerKind` twins it).
+    pub kind: BacklinkKind,
+}
+
+/// The two corpus link-plane edge kinds a backlink can be. The lock-pin plane
+/// is a separate projection (`view::read_face`), never folded in here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum BacklinkKind {
+    Wikilink,
+    Embed,
 }
 
 /// One file's outgoing edges (contract §4.6): per-edge counts, dangling refs
@@ -145,7 +156,7 @@ pub fn file_links(
     mounts: Option<&MountSet>,
 ) -> FileLinks {
     let mut entry = FileLinks::default();
-    for (target, _span) in link_nodes(doc) {
+    for (target, _span, _kind) in link_nodes(doc) {
         match resolve_edge(index, source, target, corpus, mounts) {
             RefResolution::Ambient(dest) => *entry.resolved.entry(dest).or_insert(0) += 1,
             RefResolution::Rooted { root, path } => {
@@ -221,15 +232,16 @@ fn backlinks_with(
         .flat_map(|(source, doc)| {
             link_nodes(doc)
                 .into_iter()
-                .filter(|(linkpath, _)| {
+                .filter(|(linkpath, _, _)| {
                     matches!(
                         resolve_edge(index, source, linkpath, corpus, mounts),
                         RefResolution::Ambient(dest) if dest == target
                     )
                 })
-                .map(|(_, span)| Backlink {
+                .map(|(_, span, kind)| Backlink {
                     path: source.clone(),
                     span,
+                    kind,
                 })
                 .collect::<Vec<_>>()
         })
@@ -296,16 +308,22 @@ fn resolve_edge(
 /// Every wikilink/embed in the document, span order. `NodeKind::Link`
 /// (external markdown links) never edges — the app's `resolvedLinks` counts
 /// vault links only.
-fn link_nodes(doc: &Document) -> Vec<(&str, ByteSpan)> {
+fn link_nodes(doc: &Document) -> Vec<(&str, ByteSpan, BacklinkKind)> {
     let mut out = Vec::new();
     collect_links(&doc.root, &mut out);
-    out.sort_by_key(|(_, span)| span.start);
+    out.sort_by_key(|(_, span, _)| span.start);
     out
 }
 
-fn collect_links<'a>(node: &'a Node, out: &mut Vec<(&'a str, ByteSpan)>) {
-    if let NodeKind::Wikilink { target, .. } | NodeKind::Embed { target, .. } = &node.kind {
-        out.push((target.as_str(), node.span.clone()));
+fn collect_links<'a>(node: &'a Node, out: &mut Vec<(&'a str, ByteSpan, BacklinkKind)>) {
+    match &node.kind {
+        NodeKind::Wikilink { target, .. } => {
+            out.push((target.as_str(), node.span.clone(), BacklinkKind::Wikilink));
+        }
+        NodeKind::Embed { target, .. } => {
+            out.push((target.as_str(), node.span.clone(), BacklinkKind::Embed));
+        }
+        _ => {}
     }
     for c in &node.children {
         collect_links(c, out);

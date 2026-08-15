@@ -675,6 +675,40 @@ pub enum Op {
         #[serde(skip_serializing_if = "Option::is_none")]
         dry: Option<bool>,
     },
+    /// § A.3 remove door (v3-only, cap `remove`): guarded file death — the
+    /// birth op's twin. The record's whole-file rev is the mandatory guard
+    /// (remove-what-you-read); the engine recomputes the referential check
+    /// under the write flock, so any inbound wikilink/embed/ambient-pin edge
+    /// refuses `remove_refused{referrers}` and the unlink never runs.
+    ///
+    /// No `force` field: the one irreversible op is the one door with no
+    /// escape hatch (the forced-birth precedent applied to death). A `force`
+    /// on this op hits the strict field wall.
+    Remove {
+        path: Path,
+        /// Remove-what-you-read: the record's whole-file rev from the
+        /// caller's read. Schema-optional per § A.1 (a rev-less frame still
+        /// decodes); absent it refuses `guard_required` after decode. Stale
+        /// it refuses `cas_mismatch{expected,actual}`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        if_file_rev: Option<NodeRev>,
+        /// §9: recorded exactly as given into the death Delta and journal row.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        actor: Option<String>,
+        /// §9: RFC 3339, format-validated never generated.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        now: Option<String>,
+        /// The §5.1 world-grain guard — honored when present, never demanded
+        /// (the referential check is recomputed in the critical section, so
+        /// the world guard adds convergence cost, not safety). Mismatch
+        /// refuses `root_mismatch` and nothing dies.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        if_root: Option<Root>,
+        /// Rehearsal: guards, referential check and verdicts, no disk. A dry
+        /// remove still refuses a referenced or drifted record.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dry: Option<bool>,
+    },
     /// § A.10 pin-graph context assembly (v3-only, cap `walk`): up (default)
     /// = what `path` draws from, transitively; `down: true` = who pins it —
     /// the dependents listing and blast radius. `depth` bounds the hops
@@ -1602,6 +1636,28 @@ pub enum ResponseBody {
         /// same shape `splice` carries, `[]` on an unarmed workspace.
         verdicts: Vec<Verdict>,
     },
+    /// The death reply (the `remove` op, v3-only): what died — the removed
+    /// path, its confirmed whole-file rev, and the root transition. Never a
+    /// delivery claim (A7), exactly like `splice` and `create`.
+    ///
+    /// Shape-unique in this untagged enum: `file_rev_before` appears on no
+    /// other variant, and `file_rev_after`/`armed` appear on none of this one.
+    Remove {
+        path: Path,
+        /// The removed file's whole-file rev — the caller's read rev,
+        /// re-confirmed live under the flock before the unlink.
+        file_rev_before: NodeRev,
+        root_before: Root,
+        /// Always serialized — `null` on a dry run, the same absence-vs-null
+        /// contract `splice` and `create` carry.
+        root_after: Option<Root>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dry: Option<bool>,
+        /// The §11 rules-as-data surface over the death's before-state.
+        verdicts: Vec<Verdict>,
+    },
     /// v2 §4.7: the current root at world grain + `seq`, the monotone
     /// per-workspace batch counter (per-daemon-epoch — a restart resets it;
     /// cross-epoch catchup is diff-by-root, §7.1 laws).
@@ -2118,8 +2174,18 @@ pub enum ErrorCode {
     /// fingerprint and no `force`. Extras: `path` + `message` (names the
     /// grain and the runnable command that mints the token). Fix class —
     /// send the token, or `force`. The CLI in-process door is exempt
-    /// (local-operator trust) and never raises it.
+    /// (local-operator trust) and never raises it. One further minter, its
+    /// own law (§ A.3 remove door): a `remove` with no `if_file_rev` refuses
+    /// this code from EVERY origin — deletion has no recovery, so the
+    /// remove-what-you-read token is a precondition of the op, in-process
+    /// callers included, and no `force` alternative exists there.
     GuardRequired,
+    /// § A.3 remove door: the record still has inbound references — removing
+    /// it would strand them dangling. Extras: `path` + `message` +
+    /// `referrers` (every referring file with its edge kind and count). Fix
+    /// class — unlink or retarget each named edge, then resend. Never
+    /// force-escapable: the op has no `force` field.
+    RemoveRefused,
     /// The machine's mount table failed to re-derive after the binding file
     /// (`~/MERIDIAN.md`) changed — duplicate names/paths/vault names, nested
     /// mounts, or the closed-schema refusals (§ A.5). The `mounts` op refuses
@@ -2155,7 +2221,8 @@ impl ErrorCode {
             | ErrorCode::IndexIntegrity
             | ErrorCode::ReadMintRequired
             | ErrorCode::PinTargetMissing
-            | ErrorCode::GuardRequired => Recovery::Fix,
+            | ErrorCode::GuardRequired
+            | ErrorCode::RemoveRefused => Recovery::Fix,
             ErrorCode::FileNotFound
             | ErrorCode::IoError
             | ErrorCode::InvalidUtf8
@@ -2177,6 +2244,31 @@ impl ErrorCode {
             }
         }
     }
+}
+
+/// One inbound reference blocking a `remove` (§ A.3 remove door): the
+/// referring file, its edge kind, and how many edges it holds. Rows are
+/// path-lex sorted, then kind — a deterministic unlink worklist.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Referrer {
+    /// The referring file's corpus path.
+    pub path: String,
+    pub kind: ReferrerKind,
+    /// How many edges of this kind the file holds toward the record.
+    pub count: u64,
+}
+
+/// The closed edge-kind vocabulary of the remove door's referential guard:
+/// the corpus link plane's two kinds plus the ambient `meridian-lock` pin
+/// plane (the walk plane's Down direction). Cross-root inbound pins are a
+/// stated limit of the guard (§ A.3), not a fourth kind. `Ord` follows
+/// declaration order and is the refusal's within-file sort.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReferrerKind {
+    Wikilink,
+    Embed,
+    Pin,
 }
 
 /// The two §4.4 `would_corrupt` families — which identity does not survive the
@@ -2306,6 +2398,10 @@ pub struct ErrorBody {
     /// back for the token.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_fingerprint: Option<NodeRev>,
+    /// `remove_refused` (§ A.3 remove door): every referring file with its
+    /// edge kind and count, path-lex sorted — the caller's unlink worklist.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub referrers: Option<Vec<Referrer>>,
 }
 
 impl ErrorBody {
@@ -2338,6 +2434,7 @@ impl ErrorBody {
             diff: None,
             new_content: None,
             new_fingerprint: None,
+            referrers: None,
         }
     }
 }
