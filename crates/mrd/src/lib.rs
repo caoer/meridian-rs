@@ -1060,16 +1060,16 @@ mod help {
             assert_eq!(words_of(overflowing), vec!["pin"]);
         }
 
-        /// The write mark is the gutter: 15 verbs write, the rest read.
+        /// The write mark is the gutter: 16 verbs write, the rest read.
         #[test]
-        fn fifteen_verbs_are_marked_as_writers() {
+        fn sixteen_verbs_are_marked_as_writers() {
             let marked: Vec<&str> = LISTING
                 .lines()
                 .filter(|line| line.starts_with("! "))
                 .collect();
             assert_eq!(
                 marked.len(),
-                15,
+                16,
                 "marked as writers:\n{}",
                 marked.join("\n")
             );

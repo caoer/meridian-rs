@@ -2483,6 +2483,7 @@ name = "query"
 version = "1.0.0"
 dependencies = [
  "addr",
+ "lock",
  "model",
  "syntax",
 ]
@@ -4351,7 +4352,6 @@ dependencies = [
  "serde_json",
  "syntax",
  "tempfile",
- "view",
  "wire",
  "wire-map",
 ]

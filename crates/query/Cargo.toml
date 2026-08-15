@@ -14,6 +14,10 @@ workspace = true
 # the `std`-only address leaf: the mount table this plane injects, and the ONE
 # lexical predicate that decides whether the address plane owns a spelling
 addr = { workspace = true }
+# the meridian-lock FORMAT law: `lock::find` is the one parser behind the
+# inbound pin-edge enumeration (`lock_pin_referrers`) — this crate reads the
+# declared edges, never renders or writes a block
+lock = { workspace = true }
 model = { workspace = true }
 
 [dev-dependencies]
