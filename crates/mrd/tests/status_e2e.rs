@@ -137,9 +137,11 @@ fn status_genesis_is_clean_and_unverified() {
     let so = stdout(&out);
     assert_eq!(code(&out), 0, "clean genesis exits 0: {}", stderr(&out));
     assert!(
-        so.contains("0 armed · 0 drifted · forced-since-realise: not-tracked"),
-        "genesis armed-rules line: {so}"
+        so.contains("  rules: 0 armed · 0 drifted · forced-since-realise: not-tracked"),
+        "genesis rules line, labelled `rules:` (ZT ruling 5 — the report \
+         states the rules facts, not the artifact's name): {so}"
     );
+    assert!(!so.contains("armed-rules:"), "the old label is gone: {so}");
     assert!(so.contains("pin green"), "clean pin: {so}");
     assert!(so.contains("armed off"), "no armed mode: {so}");
     // W-C1: fetch-less status never renders a bare `at-tip`.
