@@ -69,7 +69,13 @@ pub use sweep::{DrawerInfo, GcReport, gc, list_drawers, remove_drawer};
 /// `s5`: `section.n` — the occurrence index served as its own column on both
 /// the ephemeral projection and `hist.section` (card editset-n-column,
 /// `wire-contract.md` § A.11).
-pub const SCHEMA_SALT: &str = "s5";
+///
+/// `s6`: the `.base` projection (`docs/base-projection.md`) — three `hist.base*`
+/// tables, `hist.link.exclusion_path`, and `hist.pin.base_fold`. The appender
+/// loads POSITIONALLY, so an s5 drawer would land every column after
+/// `exclusion` one slot left; and the §5.1 mint rule restamped `link.exclusion`
+/// content for identical corpora, exactly as `s2`'s ruling did.
+pub const SCHEMA_SALT: &str = "s6";
 
 /// Default GC threshold: a drawer whose last-use is older than this is reapable.
 /// 30 days, mirroring Cargo's registry auto-GC horizon. A path-keyed drawer store
