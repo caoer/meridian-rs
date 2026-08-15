@@ -46,6 +46,7 @@ owns: [process, standing corrections, inventory, reading order]
 | `fingerprint-norm-spec.md` | Fingerprint CID-token + norm-v2 algorithm |
 | `armed-plane.md` | Arming ladder + `gate()` seam |
 | `base-projection.md` | `.base` (Obsidian Bases) projection into the sql face: membership, relations, `base_fold` witness |
+| `body-projection.md` | Section body text in the sql face: exclusive-chunk law, `body` relation, content-addressed cache protocol |
 | `run-plane.md` | Run plane + preset/session birth |
 | `status.md` | CLI / build **descriptive** snapshot |
 | `worker-log.md` | **Optional** history / provenance — deletable |

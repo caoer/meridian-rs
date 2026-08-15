@@ -84,9 +84,9 @@ fn gate1_schema_parses_clean() {
     let tables: i64 = scalar_i64(
         &conn,
         "SELECT count(*) FROM information_schema.tables \
-         WHERE table_name IN ('_meridian_view','doc','frontmatter','section','link','tag','frontmatter_tag','task','backlink','dangling','record','tag_all')",
+         WHERE table_name IN ('_meridian_view','doc','frontmatter','section','link','tag','frontmatter_tag','task','body','backlink','dangling','record','tag_all')",
     );
-    assert_eq!(tables, 12, "8 physical tables + 4 SQL views");
+    assert_eq!(tables, 13, "9 physical tables + 4 SQL views");
     println!("===SCHEMA PARSED OK===");
 }
 

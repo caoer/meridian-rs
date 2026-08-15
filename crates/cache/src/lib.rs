@@ -75,7 +75,10 @@ pub use sweep::{DrawerInfo, GcReport, gc, list_drawers, remove_drawer};
 /// loads POSITIONALLY, so an s5 drawer would land every column after
 /// `exclusion` one slot left; and the §5.1 mint rule restamped `link.exclusion`
 /// content for identical corpora, exactly as `s2`'s ruling did.
-pub const SCHEMA_SALT: &str = "s6";
+///
+/// `s7`: the body projection — `body` relation on the ephemeral schema,
+/// `hist.body` + `hist.body_text` on the cache (`docs/body-projection.md`).
+pub const SCHEMA_SALT: &str = "s7";
 
 /// Default GC threshold: a drawer whose last-use is older than this is reapable.
 /// 30 days, mirroring Cargo's registry auto-GC horizon. A path-keyed drawer store
