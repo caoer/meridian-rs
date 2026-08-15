@@ -57,7 +57,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
@@ -279,6 +279,32 @@ impl StepGuard {
         })
     }
 
+    /// [`StepGuard::open`] with the observation served from a resident
+    /// [`crate::DomainCache`] — the daemon door's instrument (card
+    /// run-observation-unification): listings from the dir memo, digests from
+    /// the leaf memo, moved members read through the same guarded `O_NOFOLLOW`
+    /// law. The verdicts are identical to `open`'s — the cache only moves
+    /// WHERE listings and digests come from, never what they are.
+    ///
+    /// # Errors
+    /// Exactly [`StepGuard::open`]'s.
+    pub fn open_cached(
+        root: &WorkspaceRoot,
+        cache: &mut crate::DomainCache,
+    ) -> Result<StepGuard, GuardError> {
+        let config = read_config(root)?;
+        let domain = config.parse_domain()?;
+        let pre = cache
+            .observe(root, &domain, crate::ObserveLaw::Guarded)
+            .map_err(observe_refusal)?;
+        Ok(StepGuard {
+            root: root.clone(),
+            domain,
+            config,
+            pre,
+        })
+    }
+
     /// The captured config state — the run layer pins step 1's state and
     /// checks every later guard against it via [`StepGuard::verify_config`].
     #[must_use]
@@ -343,6 +369,39 @@ impl StepGuard {
             return Err(GuardError::ConfigChanged);
         }
         let actual = strict_domain_digests(&self.root, &self.domain, memo)?;
+        self.verdict(edits, &actual)
+    }
+
+    /// [`StepGuard::close`] with the observation served from a resident
+    /// [`crate::DomainCache`] — the pair of [`StepGuard::open_cached`]. Same
+    /// verdict discipline, same order (config bracket first, then the guarded
+    /// observation, then the residual compare).
+    ///
+    /// # Errors
+    /// Exactly [`StepGuard::close`]'s.
+    pub fn close_cached(
+        self,
+        edits: &[GovernedEdit],
+        cache: &mut crate::DomainCache,
+    ) -> Result<model::MerkleRoot, GuardError> {
+        if read_config(&self.root)? != self.config {
+            return Err(GuardError::ConfigChanged);
+        }
+        let actual = cache
+            .observe(&self.root, &self.domain, crate::ObserveLaw::Guarded)
+            .map_err(observe_refusal)?;
+        self.verdict(edits, &actual)
+    }
+
+    /// The close verdict, one owner for both observation sources: overlay the
+    /// governed edits onto the captured baseline, residual-compare, and fold
+    /// the verified post-step root. Order above (config bracket before the
+    /// observation) is the callers' to hold.
+    fn verdict(
+        self,
+        edits: &[GovernedEdit],
+        actual: &BTreeMap<Vec<u8>, [u8; 32]>,
+    ) -> Result<model::MerkleRoot, GuardError> {
         let mut expected = self.pre;
         for edit in edits {
             if self.domain.contains(Path::new(&edit.path)) {
@@ -355,12 +414,22 @@ impl StepGuard {
                 );
             }
         }
-        let delta = residual(&expected, &actual);
+        let delta = residual(&expected, actual);
         if !delta.is_empty() {
             return Err(GuardError::OutOfBand(delta));
         }
         let refs: Vec<(&[u8], [u8; 32])> = actual.iter().map(|(p, d)| (p.as_slice(), *d)).collect();
         Ok(model::merkle_root_of_leaves(&refs, self.domain.version()))
+    }
+}
+
+/// A cached observation's refusal in the guard's vocabulary: I/O stays I/O,
+/// the symlink refusal keeps its count-plus-first shape — byte-identical
+/// wording to the fresh strict walk's.
+fn observe_refusal(refusal: crate::ObserveRefusal) -> GuardError {
+    match refusal {
+        crate::ObserveRefusal::Io(e) => GuardError::Io(e),
+        crate::ObserveRefusal::Symlink { count, first } => GuardError::Symlink { count, first },
     }
 }
 
@@ -596,22 +665,10 @@ fn read_nofollow(abs: &Path, rel: &str) -> Result<Vec<u8>, GuardError> {
     }
 }
 
-/// `O_NOFOLLOW` open (unix): opening a symlink fails (`ELOOP`) instead of
-/// reading through it.
-#[cfg(unix)]
+/// `O_NOFOLLOW` open — the crate-shared primitive ([`crate::open_nofollow`]),
+/// re-spelled locally so the read sites here keep their name.
 fn open_nofollow(path: &Path) -> io::Result<File> {
-    use std::os::unix::fs::OpenOptionsExt;
-    OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
-}
-
-/// Off unix there is no `O_NOFOLLOW`; the guarded walk has already refused
-/// symlinks, so only the walk→read race is uncovered here.
-#[cfg(not(unix))]
-fn open_nofollow(path: &Path) -> io::Result<File> {
-    File::open(path)
+    crate::open_nofollow(path)
 }
 
 /// The residual compare: diff the actual post-step snapshot against the

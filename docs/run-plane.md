@@ -656,6 +656,30 @@ lane removes is the multiplication by `trips(R)`. A stale engine still pays
 Measured figures for this lane ride the change that lands it, in its
 delivery record — this section states the shape.
 
+**The bash bracket's observations, unified onto the resident memo** *(added
+2026-08-15, card run-observation-unification — engine-warm-cost design § 5)*.
+A bash dispatch observes the corpus three times — the pre-flock leaves fold,
+the bracket open, the bracket close — and each observation used to run its own
+fresh walk: full `read_dir` enumeration, full stat sweep, byte reads amortised
+by the per-workspace drawer memo (`run-digests.v1`, F8). The observation
+source is now injected (`RunSpec.observations`). The CLI lane keeps exactly
+that instrument — a separate process has no resident memo in reach. When the
+door is the daemon (the § A.8 `run` op and the § A.7 in-script `run()`), the
+observations serve from the registry's resident `fs::DomainCache` — the
+dir-listing memo plus the leaf memo every currency pass and warm rebuild
+already run on — locked per observation, never across the exec window, with
+no drawer I/O at all. The verdicts are lane-independent by gate
+(`crates/fs/tests/cached_observation.rs`: same folds, same residual deltas,
+same symlink refusals — including from remembered listings). What the
+daemon lane stops paying is the enumeration and the drawer serialization; the
+stat sweep stays, deliberately — the walk and the stats are live, that is
+what an observation IS. Measured on a 29.5 k-doc synthetic corpus (hermetic,
+`crates/fs/examples/run_observation_cost.rs`): the three-observation trio
+went from ~288–305 ms (drawer) to ~245–248 ms (resident) median, with
+enumerations per warm trio dropping ~888 → 0 and byte reads identical at
+movers-only; a run now also leaves the shared memo warm for the next op's
+currency pass, and vice versa.
+
 **The transaction — stand-still optimistic.** The word **snapshot is
 banned** here: the daemon has no MVCC and v1 must not grow one.
 
