@@ -153,7 +153,7 @@ impl WorkspaceFeed {
                             s.collapse();
                             return;
                         }
-                        if !relevant(&event.kind) {
+                        if !relevant(event.kind) {
                             return;
                         }
                         for path in &event.paths {
@@ -272,7 +272,7 @@ fn member_candidate(rel: &Path) -> bool {
 /// — the engine's own observation reads would feed themselves back through
 /// the watcher as fresh dirt — EXCEPT close-after-write, which on inotify is
 /// the one signal some write patterns leave.
-fn relevant(kind: &EventKind) -> bool {
+fn relevant(kind: EventKind) -> bool {
     match kind {
         EventKind::Access(AccessKind::Close(AccessMode::Write)) => true,
         EventKind::Access(_) => false,
@@ -361,20 +361,20 @@ mod tests {
     #[test]
     fn access_noise_is_filtered_except_close_write() {
         use notify::event::{AccessKind, AccessMode};
-        assert!(!relevant(&EventKind::Access(AccessKind::Read)));
-        assert!(!relevant(&EventKind::Access(AccessKind::Open(
+        assert!(!relevant(EventKind::Access(AccessKind::Read)));
+        assert!(!relevant(EventKind::Access(AccessKind::Open(
             AccessMode::Any
         ))));
-        assert!(!relevant(&EventKind::Access(AccessKind::Close(
+        assert!(!relevant(EventKind::Access(AccessKind::Close(
             AccessMode::Read
         ))));
-        assert!(relevant(&EventKind::Access(AccessKind::Close(
+        assert!(relevant(EventKind::Access(AccessKind::Close(
             AccessMode::Write
         ))));
-        assert!(relevant(&EventKind::Modify(notify::event::ModifyKind::Any)));
-        assert!(relevant(&EventKind::Create(notify::event::CreateKind::Any)));
-        assert!(relevant(&EventKind::Remove(notify::event::RemoveKind::Any)));
-        assert!(relevant(&EventKind::Any));
+        assert!(relevant(EventKind::Modify(notify::event::ModifyKind::Any)));
+        assert!(relevant(EventKind::Create(notify::event::CreateKind::Any)));
+        assert!(relevant(EventKind::Remove(notify::event::RemoveKind::Any)));
+        assert!(relevant(EventKind::Any));
     }
 
     /// Cap breach collapses to all-dirty; the take drains it and the next
