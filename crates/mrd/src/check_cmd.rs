@@ -842,11 +842,7 @@ fn render_human(
     let _ = writeln!(out, "  interval: {}", interval_line(interval));
     out.push_str(&render_report(worktree));
     if let Some(staged) = staged {
-        let _ = writeln!(
-            out,
-            "  interval: {STAGED} — the bytes a commit would record for {}",
-            staged.paths.join(", ")
-        );
+        out.push_str(&staged_interval_line(&staged.paths));
         out.push_str(&staged_predicate_line());
         out.push_str(&render_report(&staged.report));
     }
@@ -893,6 +889,22 @@ fn interval_line(interval: &Interval) -> String {
             staged.paths.len()
         ),
     }
+}
+
+/// The staged interval's own line, naming the paths a commit would record.
+///
+/// Extracted so a test can hold the line's promise: the PROSE sample is capped
+/// by [`crate::capped_sample`], the COUNT is not (it rides [`interval_line`]
+/// above, which prints `paths.len()` for the same population), and the complete
+/// set stays on the machine answer as `diverged_paths`. A staged commit is
+/// unbounded — a rebase or a generated tree stages thousands of paths — so the
+/// uncapped join here was the same shape decision 0017 ended elsewhere
+/// (card cap-convention-audit).
+fn staged_interval_line(paths: &[String]) -> String {
+    format!(
+        "  interval: {STAGED} — the bytes a commit would record for {}\n",
+        crate::capped_sample(paths)
+    )
 }
 
 /// The predicate the staged interval asserts: the pin plane, over the bytes a commit
@@ -963,7 +975,11 @@ fn render_report(report: &CoreReport) -> String {
             } else {
                 "s"
             },
-            pins.out_of_jurisdiction.join(" · ")
+            // Capped prose, complete wire: the count is in this same sentence
+            // and the whole set rides `anchoring_out_of_jurisdiction.refs` on
+            // `--json`. The separator normalises to the house spelling — one
+            // `capped_sample` for every human face (card cap-convention-audit).
+            crate::capped_sample(&pins.out_of_jurisdiction)
         );
     }
     if let Some(detail) = &pins.cannot_ask {
@@ -1487,5 +1503,124 @@ mod tests {
     #[test]
     fn parse_rejects_stray_positional() {
         assert_eq!(Check::parse(&["extra".to_string()]).unwrap_err().code, 2);
+    }
+
+    fn paths(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("staged/file{i:02}.md")).collect()
+    }
+
+    /// The staged interval names a BOUNDED sample of the diverging paths. The
+    /// count is not on this line by design — `interval_line` prints
+    /// `paths.len()` for the same population — and `diverged_paths` on
+    /// `--json` stays the complete carrier.
+    #[test]
+    fn the_staged_interval_line_samples_the_paths() {
+        let all = paths(40);
+        let said = staged_interval_line(&all);
+
+        // Positive control first: a bound is trivially satisfied by an absent line.
+        assert!(
+            said.contains("the bytes a commit would record"),
+            "the staged line did not fire, so this gate would pass vacuously: {said}"
+        );
+        let rest = all.len() - crate::EXCLUDED_SHOWN;
+        assert!(
+            said.contains(&format!("and {rest} more")),
+            "the line must say how many paths it did NOT name — a sample that \
+             does not admit it is a sample reads as the whole list: {said}"
+        );
+        let named = all.iter().filter(|p| said.contains(p.as_str())).count();
+        assert_eq!(
+            named,
+            crate::EXCLUDED_SHOWN,
+            "the line named {named} paths; the cap is {}. A rebase or a \
+             generated tree stages thousands: {said}",
+            crate::EXCLUDED_SHOWN
+        );
+
+        // And the count the operator needs is still voiced, uncapped, beside it.
+        let interval = interval_line(&Interval::Diverges(StagedBytes {
+            paths: all.clone(),
+            files: fs::DomainFiles::default(),
+        }));
+        assert!(
+            interval.contains(&format!("{} path(s) differ", all.len())),
+            "the FULL count must survive the cap — it is the half that keeps \
+             the divergence non-silent: {interval}"
+        );
+    }
+
+    /// A population under the cap is named in full and claims no remainder — a
+    /// remainder clause that fires at zero teaches readers to ignore it.
+    #[test]
+    fn a_short_staged_list_is_named_in_full() {
+        let all = paths(2);
+        let said = staged_interval_line(&all);
+        for path in &all {
+            assert!(said.contains(path.as_str()), "{path} must be named: {said}");
+        }
+        assert!(
+            !said.contains(" more"),
+            "there is no remainder, so the line must not claim one: {said}"
+        );
+    }
+
+    fn jurisdiction_report(refs: Vec<String>) -> CoreReport {
+        CoreReport {
+            drifted_claims: Vec::new(),
+            pins: PinPlane {
+                out_of_jurisdiction: refs,
+                ..holding_pins()
+            },
+            orphans: Vec::new(),
+        }
+    }
+
+    /// The out-of-jurisdiction line states the FULL count and samples the refs.
+    /// The complete set rides `anchoring_out_of_jurisdiction.refs` on `--json`.
+    #[test]
+    fn the_out_of_jurisdiction_line_counts_all_and_samples_the_refs() {
+        let refs: Vec<String> = (0..25).map(|i| format!("outside{i:02}.md#S")).collect();
+        let said = render_report(&jurisdiction_report(refs.clone()));
+
+        assert!(
+            said.contains("anchoring scope:"),
+            "the line did not fire, so this gate would pass vacuously: {said}"
+        );
+        assert!(
+            said.contains(&format!("{} pins in unmounted roots", refs.len())),
+            "the COUNT is never capped — it is what makes the skip non-silent: {said}"
+        );
+        let rest = refs.len() - crate::EXCLUDED_SHOWN;
+        assert!(
+            said.contains(&format!("and {rest} more")),
+            "the line must admit the remainder: {said}"
+        );
+        let named = refs.iter().filter(|r| said.contains(r.as_str())).count();
+        assert_eq!(
+            named,
+            crate::EXCLUDED_SHOWN,
+            "the line named {named} refs; the cap is {}: {said}",
+            crate::EXCLUDED_SHOWN
+        );
+    }
+
+    /// Under the cap: named in full, no remainder clause, and the singular
+    /// still agrees with the count.
+    #[test]
+    fn a_short_out_of_jurisdiction_list_is_named_in_full() {
+        let said = render_report(&jurisdiction_report(vec!["outside.md#S".to_string()]));
+        assert!(
+            said.contains("1 pin in unmounted roots"),
+            "one ref stays singular: {said}"
+        );
+        assert!(
+            said.contains("outside.md#S"),
+            "the lone ref is named: {said}"
+        );
+        assert!(
+            !said.contains(" more"),
+            "there is no remainder, so the line must not claim one: {said}"
+        );
     }
 }

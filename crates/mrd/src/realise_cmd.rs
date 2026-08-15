@@ -253,19 +253,32 @@ fn render(format: Format, page: &str, state: State, applies: u32, receipts: &[St
         Format::Human => {
             println!("realise {page} — {}", state.as_str());
             if applies > 0 {
-                // Show just the receipt anchors (`^r-NNNNNN`), not the whole
-                // journal line — the full receipt rides `--json`.
-                let anchors: Vec<&str> = receipts
-                    .iter()
-                    .filter_map(|line| line.rsplit(' ').next())
-                    .collect();
-                println!("  applies: {applies} (receipts: {})", anchors.join(", "));
+                println!("{}", applies_line(applies, receipts));
             }
         }
     }
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
+
+/// The human `applies:` line — the full count, then a capped sample of the
+/// receipt anchors (`^r-NNNNNN`) rather than the whole journal lines.
+///
+/// Extracted so a test can hold the line's promise. Two halves, as everywhere
+/// else this convention lands: `applies` is the COUNT and is never capped, the
+/// PROSE names at most [`crate::EXCLUDED_SHOWN`] anchors with a remainder
+/// clause, and the complete `receipts` array stays on `--json` — which is also
+/// where the whole journal line already lived (card cap-convention-audit).
+fn applies_line(applies: u32, receipts: &[String]) -> String {
+    let anchors: Vec<String> = receipts
+        .iter()
+        .filter_map(|line| line.rsplit(' ').next().map(str::to_owned))
+        .collect();
+    format!(
+        "  applies: {applies} (receipts: {})",
+        crate::capped_sample(&anchors)
+    )
+}
 
 /// Read a scalar frontmatter value off a parsed document, DECODED through the one scalar owner
 /// (wire-contract § A.6.1). Dotted keys (`realise.field`) are ordinary map entries, exactly as
@@ -409,5 +422,58 @@ mod tests {
             assert!(wire::now_is_rfc3339(&s), "secs={secs} → {s}");
             secs += 1_000_003; // a prime-ish stride: walks every weekday/month
         }
+    }
+
+    fn journal(n: usize) -> Vec<String> {
+        (0..n)
+            .map(|i| format!("2026-08-15T00:00:00Z applied page.md ^r-{i:06}"))
+            .collect()
+    }
+
+    /// The `applies:` line states the FULL count and samples the anchors. The
+    /// complete `receipts` array stays on `--json`.
+    #[test]
+    fn the_applies_line_counts_all_and_samples_the_anchors() {
+        let receipts = journal(30);
+        let said = applies_line(receipts.len() as u32, &receipts);
+
+        // Positive control: a bound is trivially satisfied by an absent line.
+        assert!(
+            said.contains("applies:"),
+            "the line did not fire, so this gate would pass vacuously: {said}"
+        );
+        assert!(
+            said.contains(&format!("applies: {}", receipts.len())),
+            "the COUNT is never capped: {said}"
+        );
+        let rest = receipts.len() - crate::EXCLUDED_SHOWN;
+        assert!(
+            said.contains(&format!("and {rest} more")),
+            "the line must admit the remainder: {said}"
+        );
+        let named = (0..receipts.len())
+            .filter(|i| said.contains(&format!("^r-{i:06}")))
+            .count();
+        assert_eq!(
+            named,
+            crate::EXCLUDED_SHOWN,
+            "the line named {named} anchors; the cap is {}: {said}",
+            crate::EXCLUDED_SHOWN
+        );
+    }
+
+    /// Under the cap: every anchor named, no remainder clause.
+    #[test]
+    fn a_short_applies_list_names_every_anchor() {
+        let receipts = journal(2);
+        let said = applies_line(receipts.len() as u32, &receipts);
+        assert!(
+            said.contains("^r-000000") && said.contains("^r-000001"),
+            "{said}"
+        );
+        assert!(
+            !said.contains(" more"),
+            "there is no remainder, so the line must not claim one: {said}"
+        );
     }
 }
