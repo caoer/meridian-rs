@@ -35,8 +35,8 @@ use std::sync::Arc;
 use policy::defs::multi_line_value_refusal;
 use wire::{
     Armed, ArmedEdit, Delta, DeltaFile, DeltaFrame, Edit, EditShape, ErrorBody, ErrorCode,
-    HpathSeg, NodeRev, Path, PutAt, ReceiptAddr, ReceiptFact, ResponseBody, Root, SecRef, Severity,
-    Span, Verdict, WouldCorruptFamily,
+    HpathSeg, NodeRev, Path, PutAt, ReceiptAddr, ReceiptFact, Referrer, ReferrerKind, ResponseBody,
+    Root, SecRef, Severity, Span, Verdict, WouldCorruptFamily,
 };
 
 use crate::read::{ambiguous, to_model_ref};
@@ -1262,16 +1262,34 @@ pub fn create_response(path: Path, out: &CreateOutcome) -> ResponseBody {
     }
 }
 
+/// The death reply body (§ A.3 remove door): what died — its confirmed rev —
+/// and the root transition. The birth reply's mirror.
+pub fn remove_response(path: Path, out: &RemoveOutcome) -> ResponseBody {
+    ResponseBody::Remove {
+        path,
+        file_rev_before: out.file_rev_before.clone(),
+        root_before: out.root_before.clone(),
+        root_after: out.root_after.clone(),
+        seq: out.committed.as_ref().map(|frame| frame.delta.seq),
+        dry: out.dry.then_some(true),
+        verdicts: out.verdicts.clone(),
+    }
+}
+
 /// One `remove` request's fields. `if_file_rev` is the rev the caller read —
 /// remove-what-you-read: the live file must still carry it, or the death
-/// refuses citing the drift. `if_root`/`dry` mirror `create`.
+/// refuses citing the drift. Schema-optional (§ A.1: a rev-less frame still
+/// decodes) and semantically mandatory from EVERY origin — deletion has no
+/// recovery, so absence refuses `guard_required` after decode, in-process
+/// callers included (§ A.3 remove door). `if_root`/`dry` mirror `create`.
 #[derive(Debug, Clone)]
 pub struct RemoveArgs {
     pub id: Option<u64>,
     /// The path whose file is removed (workspace-confined).
     pub path: Path,
     /// The whole-file rev the caller read — the remove-what-you-read guard.
-    pub if_file_rev: NodeRev,
+    /// `None` decodes and refuses `guard_required` (never a frame rejection).
+    pub if_file_rev: Option<NodeRev>,
     pub actor: Option<String>,
     pub now: Option<String>,
     pub if_root: Option<Root>,
@@ -1433,19 +1451,29 @@ pub fn create(
     })
 }
 
-/// **Guarded `remove`**: death of one file under CAS remove-what-you-read +
-/// workspace-root, and emit the `deleted` change surface.
+/// **Guarded `remove`** (§ A.3 remove door): death of one file — the write
+/// model's third mutation, completing birth (`create`) and edit (`splice`) —
+/// under remove-what-you-read + the referential check, emitting the `deleted`
+/// change surface.
 ///
-/// Order: path confinement → world guard (§5.1) → load the live file (absent ⇒
-/// `file_not_found`) → the remove-what-you-read CAS (the live rev must equal
-/// `if_file_rev`, else refuse citing rev read vs found) → the gate seam over
-/// the death's before-state → unlink → root advance → death Delta.
+/// Order: path confinement → the write flock (D9) → ONE domain snapshot (the
+/// world cursor, the world guard, and the corpus the referential check reads
+/// are one read) → world guard (§5.1) → load the live file (absent ⇒
+/// `file_not_found`) → the `if_file_rev` demand (absent ⇒ `guard_required`;
+/// deletion has no recovery, so the token is a precondition from EVERY
+/// origin) → the remove-what-you-read CAS → the referential check (any
+/// inbound wikilink/embed/ambient-pin ⇒ `remove_refused{referrers}`) → the
+/// gate seam over the death's before-state → unlink → root advance → death
+/// Delta. Check and unlink share the flock: a cooperating writer cannot land
+/// a link between them.
 ///
 /// # Errors
 /// `bad_path`, `root_mismatch`, `file_not_found` (nothing to remove),
+/// `guard_required` (no `if_file_rev` — there is no force on this door),
 /// `cas_mismatch` (the file drifted from the read rev — taxonomy row 14,
-/// recovery `refresh`), or an I/O failure. In every error case nothing was
-/// removed.
+/// recovery `refresh`), `remove_refused` (inbound references exist; the
+/// refusal names every referrer), or an I/O failure. In every error case
+/// nothing was removed.
 pub fn remove(
     root: &fs::WorkspaceRoot,
     seq: Option<&dyn crate::seq::SeqSink>,
@@ -1455,22 +1483,42 @@ pub fn remove(
     let fs_path = FsPath::new(&args.path.0);
     path_confined(root, &args.path)?;
 
-    // D9: deaths serialize on the same write flock (read-rev CAS → unlink is
-    // a critical section like any other write).
+    // D9: deaths serialize on the same write flock (read-rev CAS →
+    // referential check → unlink is ONE critical section like any other
+    // write).
     let flock = acquire_write_lock(root)?;
 
-    let root_before = ambient_root(root)?;
+    // One in-flock snapshot answers three questions: the world cursor the
+    // response reports, the §5.1 world guard, and the corpus the referential
+    // check reads — the same bytes the root folded, no second read.
+    let (domain_files, root_before) = crate::domain_snapshot(root)?;
     world_guard(args.if_root.as_ref(), &root_before)?;
 
     // Load what is there — you cannot remove nothing (`file_not_found`, env).
     let before_doc = load_doc(root, &args.path)?;
     let current = NodeRev(before_doc.root.node_rev.0.clone());
 
+    // Remove-what-you-read is a precondition of the op (§ A.3): deletion is
+    // the one unrecoverable write, so a rev-less remove refuses from every
+    // origin — in-process callers included, and no force alternative exists.
+    let Some(if_file_rev) = args.if_file_rev.as_ref() else {
+        return Err(remove_guard_required(&args.path));
+    };
+
     // remove-what-you-read CAS (row 14, recovery refresh): the live rev must
     // still equal the rev the caller read. Drift refuses citing rev read
     // (`expected`) vs found (`actual`).
-    if args.if_file_rev != current {
-        return Err(cas_mismatch(&args.if_file_rev, &current));
+    if *if_file_rev != current {
+        return Err(cas_mismatch(if_file_rev, &current));
+    }
+
+    // The referential check, inside the same critical section as the unlink
+    // (§ A.3: checking outside the lock is a TOCTOU hole — a link landed
+    // between check and unlink would be stranded by a door that just
+    // certified nothing pointed at the file).
+    let referrers = inbound_referrers(&args.path.0, domain_files);
+    if !referrers.is_empty() {
+        return Err(remove_refused(&args.path, referrers));
     }
 
     // Advisory §11.1 findings from any caller packs (never a decision).
@@ -1528,6 +1576,85 @@ pub fn remove(
         verdicts,
         dry: false,
     })
+}
+
+/// Every inbound reference to `target` in the corpus, aggregated to the
+/// refusal's `referrers` rows: (referring file, edge kind, count), path-lex
+/// then kind order (§ A.3 remove door).
+///
+/// Two planes, each read through its one owner: wikilinks/embeds via
+/// [`query::backlinks`] (link-plane resolution, walk stage 1), ambient
+/// `meridian-lock` pins via [`view::read_face::page_lock_items_in_corpus`]
+/// with the walk plane's own Down predicate (`to_root` none, no root refusal,
+/// `to_path` = target — cross-root inbound is that plane's stated limit,
+/// § A.3). Self-edges are excluded: a record cannot hold itself alive.
+fn inbound_referrers(target: &str, files: fs::DomainFiles) -> Vec<Referrer> {
+    let (index, docs, _unserved) = fs::build_corpus(files);
+    let mut counts: std::collections::BTreeMap<(String, ReferrerKind), u64> =
+        std::collections::BTreeMap::new();
+
+    for b in query::backlinks(&index, &docs, target) {
+        if b.path == target {
+            continue;
+        }
+        let kind = match b.kind {
+            query::BacklinkKind::Wikilink => ReferrerKind::Wikilink,
+            query::BacklinkKind::Embed => ReferrerKind::Embed,
+        };
+        *counts.entry((b.path, kind)).or_insert(0) += 1;
+    }
+
+    for (src, doc) in &docs {
+        if src == target {
+            continue;
+        }
+        for item in view::read_face::page_lock_items_in_corpus(src, doc, &index, &docs) {
+            if item.to_root.is_none() && item.root_refusal.is_none() && item.to_path == target {
+                *counts.entry((src.clone(), ReferrerKind::Pin)).or_insert(0) += 1;
+            }
+        }
+    }
+
+    counts
+        .into_iter()
+        .map(|((path, kind), count)| Referrer { path, kind, count })
+        .collect()
+}
+
+/// The `remove_refused` refusal (§ A.3): the record still has inbound
+/// references, named one by one — reason first, then the fitted remedy.
+fn remove_refused(path: &Path, referrers: Vec<Referrer>) -> Box<ErrorBody> {
+    let edges: u64 = referrers.iter().map(|r| r.count).sum();
+    let files = referrers.len();
+    let mut e = ErrorBody::new(ErrorCode::RemoveRefused);
+    e.path = Some(path.clone());
+    e.message = Some(format!(
+        "refused: {} still has {edges} inbound reference{} from {files} file{} — removing it \
+         would strand them dangling. The referrers list names each referring file, its edge \
+         kind (wikilink / embed / pin), and its edge count: unlink or retarget those edges \
+         (re-read each referring file first, then edit it through the write door), then resend \
+         the remove. There is no force on this door.",
+        path.0,
+        if edges == 1 { "" } else { "s" },
+        if files == 1 { "" } else { "s" },
+    ));
+    e.referrers = Some(referrers);
+    Box::new(e)
+}
+
+/// The remove door's `guard_required` (§ A.3): no `if_file_rev` on the one
+/// unrecoverable write — demanded from every origin, no force alternative.
+fn remove_guard_required(path: &Path) -> Box<ErrorBody> {
+    let mut e = ErrorBody::new(ErrorCode::GuardRequired);
+    e.path = Some(path.clone());
+    e.message = Some(format!(
+        "refused: this remove carries no `if_file_rev` — deletion is the one write with no \
+         recovery, so remove-what-you-read is a precondition of the op: read {} (a toc or cat \
+         serves its whole-file rev), then resend with `if_file_rev` set to the rev you read. \
+         There is no force on this door.",
+        path.0
+    ));
+    Box::new(e)
 }
 
 // ---------------------------------------------------------------------------
@@ -4989,7 +5116,7 @@ mod guarded_create_remove {
         RemoveArgs {
             id: None,
             path: Path(path.into()),
-            if_file_rev: NodeRev(if_file_rev.into()),
+            if_file_rev: Some(NodeRev(if_file_rev.into())),
             actor: Some("alice".into()),
             now: None,
             if_root: None,

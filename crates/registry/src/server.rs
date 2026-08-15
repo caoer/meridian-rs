@@ -1326,6 +1326,33 @@ fn dispatch_read(
             let out = wire_serve::write::create(&ws_root, Some(&*ring), &args, &[])?;
             Ok(wire_serve::write::create_response(path, &out))
         }
+        // Death op — v3-only; the shared guarded door (`write::remove`, § A.3):
+        // remove-what-you-read + the in-flock referential check. Bare commit,
+        // numbered on the same ring as `splice`.
+        Op::Remove {
+            path,
+            if_file_rev,
+            actor,
+            now,
+            if_root,
+            dry,
+        } if v3 => {
+            let ws_root = fs::WorkspaceRoot(ws.to_path_buf());
+            let args = wire_serve::write::RemoveArgs {
+                id,
+                path: path.clone(),
+                if_file_rev,
+                actor,
+                now,
+                if_root,
+                dry: dry.unwrap_or(false),
+            };
+            // Death is a root advance — owes the chain a seq. Sink records
+            // inside the flock (`SeqSink::committed`) — see `Op::Splice`.
+            let ring = registry.ring(ws);
+            let out = wire_serve::write::remove(&ws_root, Some(&*ring), &args, &[])?;
+            Ok(wire_serve::write::remove_response(path, &out))
+        }
         // I4 def-conformance — v3-only, warm-engine doc, read-only.
         Op::CheckWrite {
             path,
@@ -1393,6 +1420,7 @@ fn dispatch_read(
         | Op::Read { .. }
         | Op::CheckWrite { .. }
         | Op::Create { .. }
+        | Op::Remove { .. }
         | Op::SpliceSet { .. }
         | Op::Walk { .. }
         | Op::Sql { .. }

@@ -175,6 +175,7 @@ pub fn decode(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody>> 
         "check_write" => decode_check_write(obj),
         "splice" => decode_splice(obj, rev),
         "create" => decode_create(obj),
+        "remove" => decode_remove(obj),
         "script" => decode_script(obj),
         "run" => decode_run(obj),
         // §3.2: only genuinely unknown names land here.
@@ -688,6 +689,35 @@ fn decode_create(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
     Ok(Op::Create {
         path: req_path(obj, op, "path")?,
         body: req_str(obj, op, "body")?,
+        actor: opt_str(obj, op, "actor")?,
+        now,
+        if_root: opt_str(obj, op, "if_root")?.map(wire::Root),
+        dry: opt_bool(obj, op, "dry")?,
+    })
+}
+
+/// Death-op fields. No `force` — the one irreversible op has no escape hatch
+/// (§ A.3 remove door; the forced-birth precedent applied to death).
+pub(crate) const REMOVE_FIELDS: [&str; 6] =
+    ["path", "if_file_rev", "actor", "now", "if_root", "dry"];
+
+/// Strict-decode `remove`. Rev-agnostic; v3 gate at dispatch. `now` is RFC
+/// 3339. `if_file_rev` decodes as optional (§ A.1 schema-optional guard law);
+/// the door's own `guard_required` demand is semantic, after decode.
+fn decode_remove(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
+    let op = "remove";
+    check_fields(obj, op, &REMOVE_FIELDS)?;
+    let now = opt_str(obj, op, "now")?;
+    if let Some(n) = &now
+        && !wire::now_is_rfc3339(n)
+    {
+        return Err(bad_request(format!(
+            "`now` must be RFC 3339 (§9, validated never generated): `{n}`"
+        )));
+    }
+    Ok(Op::Remove {
+        path: req_path(obj, op, "path")?,
+        if_file_rev: opt_str(obj, op, "if_file_rev")?.map(wire::NodeRev),
         actor: opt_str(obj, op, "actor")?,
         now,
         if_root: opt_str(obj, op, "if_root")?.map(wire::Root),
