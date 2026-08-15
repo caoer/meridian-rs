@@ -17,6 +17,7 @@
 //! knowingly supersedes §10.4 for sql; session design
 //! `results/sql-duckdb-append-cache-design.md` § Ruling interaction).
 
+mod base;
 pub mod facts;
 pub mod read_face;
 pub mod schema;
@@ -31,13 +32,48 @@ use duckdb::Connection;
 use duckdb::types::Value;
 use model::{CorpusIndex, Document, Node, NodeKind};
 
-/// The caller-injected exclusion probe: given a link target, the word naming why
-/// the hash domain excludes it, or `None` when it does not.
+/// The caller-injected exclusion probe: given a link target, the file it
+/// resolved to and the word naming why the hash domain excludes it, or `None`
+/// when it does not.
 ///
 /// Named because the signature appears at three call depths and the concept —
 /// *"ask the caller, who has the root and the disk, a question this crate cannot
 /// answer"* — is what a reader needs at each of them.
-pub type ExclusionProbe<'a> = &'a dyn Fn(&str) -> Option<String>;
+///
+/// It answers `(path, word)` rather than the word alone because the probe
+/// computes both and the projection used to discard the path
+/// (`base-projection.md` §5.1). The path is the join key `link.exclusion_path`
+/// carries; the word is unchanged.
+pub type ExclusionProbe<'a> = &'a dyn Fn(&str) -> Option<(String, String)>;
+
+/// One `.base` member as a caller's walk found it — the shape [`BaseWalk`]
+/// carries, and the projection's whole input for the base relations.
+///
+/// It is caller-injected for the same reason [`ExclusionProbe`] is: membership
+/// is a directory-enumeration question over the workspace root, and this crate
+/// reads nothing from disk. `fs::base::base_snapshot` is the walk that answers
+/// it (`base-projection.md` §3).
+pub struct BaseMember {
+    /// Workspace-relative ON-DISK spelling.
+    pub path: String,
+    /// The member's raw bytes, or the message of whatever refused to read them
+    /// (§4.4 — a member the walk SAW is a named row, never an absence).
+    pub bytes: Result<Vec<u8>, String>,
+}
+
+/// A `.base` walk handed to a build: the members and the `bf:` witness the
+/// walker folded over them (`base-projection.md` §6.2).
+///
+/// **Absent is not empty.** A build handed no walk stamps `base_fold` NULL —
+/// "not asked" — while a walk that found nothing stamps the fold of the empty
+/// sequence. §12.1's absence rule forecloses collapsing the two.
+pub struct BaseWalk<'a> {
+    /// The members, in path byte order.
+    pub members: &'a [BaseMember],
+    /// The `bf:` fold the WALKER computed, stamped verbatim. This crate folds
+    /// nothing itself — the same discipline `as_of` is under (G14).
+    pub fold: &'a str,
+}
 
 pub use read_face::{READ_FACE_SCHEMA_SQL, create_read_face_schema, open_board, stale_paths};
 pub use schema::{SCHEMA_SQL, SCHEMA_VERSION, create_schema};
@@ -84,7 +120,14 @@ pub fn build_memory(
 ) -> Result<Connection, ViewError> {
     let conn = Connection::open_in_memory()?;
     create_schema(&conn)?;
-    project(&conn, docs, &model::RootedCorpus::ambient(docs), None, None)?;
+    project(
+        &conn,
+        docs,
+        &model::RootedCorpus::ambient(docs),
+        None,
+        None,
+        None,
+    )?;
     write_stamp(
         &conn,
         as_of,
@@ -93,6 +136,7 @@ pub fn build_memory(
         None,
         "view::build_memory",
         docs.len(),
+        None,
     )?;
     Ok(conn)
 }
@@ -105,6 +149,10 @@ pub fn build_memory(
 /// Ambient callers pass **no** mount authority, not an empty table: empty
 /// means "looked and bound nothing"; absent means "never consulted".
 ///
+/// `base` is the same shape of claim: `None` stamps `base_fold` NULL — the
+/// base plane was NOT WALKED — while a walk that found nothing stamps the fold
+/// of the empty sequence (`base-projection.md` §6.2/§6.3).
+///
 /// # Errors
 /// As [`build_memory`].
 pub fn build_memory_rooted(
@@ -113,10 +161,11 @@ pub fn build_memory_rooted(
     mounts: &addr::MountSet,
     as_of: &str,
     exclusion: Option<ExclusionProbe<'_>>,
+    base: Option<&BaseWalk<'_>>,
 ) -> Result<Connection, ViewError> {
     let conn = Connection::open_in_memory()?;
     create_schema(&conn)?;
-    project(&conn, docs, corpus, Some(mounts), exclusion)?;
+    project(&conn, docs, corpus, Some(mounts), exclusion, base)?;
     write_stamp(
         &conn,
         as_of,
@@ -125,6 +174,7 @@ pub fn build_memory_rooted(
         None,
         "view::build_memory_rooted",
         docs.len(),
+        base.map(|b| b.fold),
     )?;
     Ok(conn)
 }
@@ -138,6 +188,7 @@ fn project(
     corpus: &model::RootedCorpus<'_>,
     mounts: Option<&addr::MountSet>,
     exclusion: Option<ExclusionProbe<'_>>,
+    base: Option<&BaseWalk<'_>>,
 ) -> duckdb::Result<()> {
     let index = corpus_index(docs);
     let mut rows = Rows::default();
@@ -145,7 +196,68 @@ fn project(
         collect_doc(path, doc, &index, &mut rows, corpus, mounts);
     }
     fill_exclusions(&mut rows, exclusion);
+    if let Some(base) = base {
+        collect_base(base.members, &mut rows);
+    }
     rows.insert(conn)
+}
+
+/// Stage the three `.base` relations from a caller's walk
+/// (`base-projection.md` §4). One `base` row per member; children only for a
+/// member that parsed (§4.4: an error row has ZERO children).
+pub(crate) fn collect_base(members: &[BaseMember], rows: &mut Rows) {
+    for member in members {
+        let (parsed, file_rev, bytes) = match &member.bytes {
+            Ok(raw) => (
+                base::parse(raw),
+                // The merkle-spec §4 leaf truncated to 16 hex — the SAME shape
+                // as `doc.file_rev`, so operators compare like with like. It
+                // participates in no interior, no fingerprint, no receipt
+                // (§6.1).
+                Value::Text(hex16(&model::leaf_digest(raw))),
+                Value::UBigInt(u64c(raw.len())),
+            ),
+            Err(message) => (base::unreadable(message), Value::Null, Value::Null),
+        };
+        rows.base.push(vec![
+            Value::Text(member.path.clone()),
+            file_rev,
+            bytes,
+            opt_text(parsed.error.as_deref()),
+            opt_text(parsed.filters.as_deref()),
+            opt_text(parsed.properties.as_deref()),
+            opt_text(parsed.extra.as_deref()),
+        ]);
+        for (ord, view) in parsed.views.iter().enumerate() {
+            rows.base_view.push(vec![
+                Value::Text(member.path.clone()),
+                Value::UBigInt(u64c(ord)),
+                opt_text(view.name.as_deref()),
+                opt_text(view.type_.as_deref()),
+                opt_text(view.filters.as_deref()),
+                opt_text(view.config.as_deref()),
+            ]);
+        }
+        for (ord, formula) in parsed.formulas.iter().enumerate() {
+            rows.base_formula.push(vec![
+                Value::Text(member.path.clone()),
+                Value::UBigInt(u64c(ord)),
+                Value::Text(formula.name.clone()),
+                Value::Text(formula.expr.clone()),
+            ]);
+        }
+    }
+}
+
+/// A 32-byte digest as the 16-hex-character `file_rev` the corpus already
+/// speaks (`node-rev-merkle-spec.md` §4 leaf, truncated).
+fn hex16(digest: &[u8; 32]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(16);
+    for byte in &digest[..8] {
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
 }
 
 /// Fill `link.exclusion` for the DANGLING rows whose target is a real file the
@@ -172,8 +284,11 @@ pub(crate) fn fill_exclusions(rows: &mut Rows, exclusion: Option<ExclusionProbe<
         let Value::Text(target) = &row[LINK_COL_TARGET_RAW] else {
             continue;
         };
-        if let Some(word) = why(target) {
+        // The probe answers both facts at once; the projection stops
+        // truncating it to the word (§5.1). The DDL CHECK holds them paired.
+        if let Some((path, word)) = why(target) {
             row[LINK_COL_EXCLUSION] = Value::Text(word);
+            row[LINK_COL_EXCLUSION_PATH] = Value::Text(path);
         }
     }
 }
@@ -208,6 +323,9 @@ pub(crate) struct Rows {
     pub(crate) tag: Vec<Vec<Value>>,
     pub(crate) frontmatter_tag: Vec<Vec<Value>>,
     pub(crate) task: Vec<Vec<Value>>,
+    pub(crate) base: Vec<Vec<Value>>,
+    pub(crate) base_view: Vec<Vec<Value>>,
+    pub(crate) base_formula: Vec<Vec<Value>>,
 }
 
 /// One segment of a section's published machine address: raw heading text plus
@@ -588,8 +706,10 @@ fn emit_link(
             Some(Dest::Rooted { path, .. }) => Value::Text(path.clone()),
             _ => Value::Null,
         },
-        // `exclusion` — filled by [`project`] after collection, because the
-        // answer needs the workspace root and this crate holds none.
+        // `exclusion` + `exclusion_path` — filled by [`project`] after
+        // collection, because the answer needs the workspace root and this
+        // crate holds none.
+        Value::Null,
         Value::Null,
         Value::UBigInt(u64c(node.span.start)),
         Value::UBigInt(u64c(node.span.end)),
@@ -604,6 +724,7 @@ const LINK_COL_TARGET_RAW: usize = 3;
 const LINK_COL_DEST_PATH: usize = 7;
 const LINK_COL_DEST_ROOT: usize = 8;
 const LINK_COL_EXCLUSION: usize = 10;
+const LINK_COL_EXCLUSION_PATH: usize = 11;
 
 /// Emit one inline `tag` row (`Tag.name`, no leading `#`).
 fn emit_tag(node: &Node, path: &str, name: &str, counters: &mut Counters, rows: &mut Rows) {
@@ -750,7 +871,12 @@ impl Rows {
         append_rows(conn, "link", &self.link)?;
         append_rows(conn, "tag", &self.tag)?;
         append_rows(conn, "frontmatter_tag", &self.frontmatter_tag)?;
-        append_rows(conn, "task", &self.task)
+        append_rows(conn, "task", &self.task)?;
+        // The base relations, parents before children (the FK order every
+        // other table already loads in).
+        append_rows(conn, "base", &self.base)?;
+        append_rows(conn, "base_view", &self.base_view)?;
+        append_rows(conn, "base_formula", &self.base_formula)
     }
 }
 
@@ -765,6 +891,7 @@ fn append_rows(conn: &Connection, table: &str, rows: &[Vec<Value>]) -> duckdb::R
 
 /// Insert singleton `_meridian_view` stamp. epoch/seq both set or both NULL
 /// (DDL CHECK enforces pairing).
+#[allow(clippy::too_many_arguments)]
 fn write_stamp(
     conn: &Connection,
     as_of_fingerprint: &str,
@@ -773,12 +900,13 @@ fn write_stamp(
     seq: Option<u64>,
     builder: &str,
     doc_count: usize,
+    base_fold: Option<&str>,
 ) -> duckdb::Result<()> {
     let built_unix = i64::try_from(now_secs()).unwrap_or(i64::MAX);
     conn.execute(
         "INSERT INTO _meridian_view \
-         (singleton, schema_version, as_of_fingerprint, workspace, built_epoch, built_seq, built_unix, builder, doc_count) \
-         VALUES (true, ?, ?, ?, ?, ?, ?, ?, ?)",
+         (singleton, schema_version, as_of_fingerprint, workspace, built_epoch, built_seq, built_unix, builder, doc_count, base_fold) \
+         VALUES (true, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         duckdb::params_from_iter(
             [
                 Value::Int(SCHEMA_VERSION),
@@ -789,6 +917,9 @@ fn write_stamp(
                 Value::BigInt(built_unix),
                 Value::Text(builder.to_string()),
                 Value::UBigInt(u64c(doc_count)),
+                // NULL = the build was handed no base walk ("not asked",
+                // never "empty" — §6.2).
+                base_fold.map_or(Value::Null, |f| Value::Text(f.to_string())),
             ]
             .iter(),
         ),
@@ -878,7 +1009,7 @@ mod tests {
         )?;
         insert_rows(
             conn,
-            "INSERT INTO link (src_path, seq, kind, target_raw, heading, block, alias, dest_path, dest_root, dest_root_path, exclusion, span_start, span_end, node_rev) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO link (src_path, seq, kind, target_raw, heading, block, alias, dest_path, dest_root, dest_root_path, exclusion, exclusion_path, span_start, span_end, node_rev) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             &rows.link,
         )?;
         insert_rows(
@@ -895,6 +1026,21 @@ mod tests {
             conn,
             "INSERT INTO task (path, seq, checked, depth, section_seq, hpath, text, span_start, span_end, node_rev) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             &rows.task,
+        )?;
+        insert_rows(
+            conn,
+            "INSERT INTO base (path, file_rev, bytes, error, filters, properties, extra) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            &rows.base,
+        )?;
+        insert_rows(
+            conn,
+            "INSERT INTO base_view (path, ord, name, type, filters, config) VALUES (?, ?, ?, ?, ?, ?)",
+            &rows.base_view,
+        )?;
+        insert_rows(
+            conn,
+            "INSERT INTO base_formula (path, ord, name, expr) VALUES (?, ?, ?, ?)",
+            &rows.base_formula,
         )
     }
 
@@ -902,7 +1048,7 @@ mod tests {
     /// generated, never stored, so it is derived equal by construction). The
     /// hpath columns are TEXT (the JSON machine address — injective and
     /// self-delimiting), so they digest verbatim.
-    const LANE_DIGESTS: [(&str, &str); 7] = [
+    const LANE_DIGESTS: [(&str, &str); 10] = [
         (
             "doc",
             "SELECT coalesce(md5(string_agg(path || '|' || file_rev || '|' || line_count::VARCHAR || '|' || bytes::VARCHAR, chr(10) ORDER BY path)), 'EMPTY') FROM doc",
@@ -917,7 +1063,7 @@ mod tests {
         ),
         (
             "link",
-            "SELECT coalesce(md5(string_agg(src_path || '|' || seq::VARCHAR || '|' || kind || '|' || target_raw || '|' || coalesce(heading,'~N~') || '|' || coalesce(block,'~N~') || '|' || coalesce(alias,'~N~') || '|' || coalesce(dest_path,'~N~') || '|' || coalesce(dest_root,'~N~') || '|' || coalesce(dest_root_path,'~N~') || '|' || coalesce(exclusion,'~N~') || '|' || span_start::VARCHAR || '|' || span_end::VARCHAR || '|' || node_rev, chr(10) ORDER BY src_path, seq)), 'EMPTY') FROM link",
+            "SELECT coalesce(md5(string_agg(src_path || '|' || seq::VARCHAR || '|' || kind || '|' || target_raw || '|' || coalesce(heading,'~N~') || '|' || coalesce(block,'~N~') || '|' || coalesce(alias,'~N~') || '|' || coalesce(dest_path,'~N~') || '|' || coalesce(dest_root,'~N~') || '|' || coalesce(dest_root_path,'~N~') || '|' || coalesce(exclusion,'~N~') || '|' || coalesce(exclusion_path,'~N~') || '|' || span_start::VARCHAR || '|' || span_end::VARCHAR || '|' || node_rev, chr(10) ORDER BY src_path, seq)), 'EMPTY') FROM link",
         ),
         (
             "tag",
@@ -930,6 +1076,18 @@ mod tests {
         (
             "task",
             "SELECT coalesce(md5(string_agg(path || '|' || seq::VARCHAR || '|' || checked::VARCHAR || '|' || depth::VARCHAR || '|' || coalesce(section_seq::VARCHAR,'~N~') || '|' || coalesce(hpath,'~N~') || '|' || text || '|' || span_start::VARCHAR || '|' || span_end::VARCHAR || '|' || node_rev, chr(10) ORDER BY path, seq)), 'EMPTY') FROM task",
+        ),
+        (
+            "base",
+            "SELECT coalesce(md5(string_agg(path || '|' || coalesce(file_rev,'~N~') || '|' || coalesce(bytes::VARCHAR,'~N~') || '|' || coalesce(error,'~N~') || '|' || coalesce(filters,'~N~') || '|' || coalesce(properties,'~N~') || '|' || coalesce(extra,'~N~'), chr(10) ORDER BY path)), 'EMPTY') FROM base",
+        ),
+        (
+            "base_view",
+            "SELECT coalesce(md5(string_agg(path || '|' || ord::VARCHAR || '|' || coalesce(name,'~N~') || '|' || coalesce(type,'~N~') || '|' || coalesce(filters,'~N~') || '|' || coalesce(config,'~N~'), chr(10) ORDER BY path, ord)), 'EMPTY') FROM base_view",
+        ),
+        (
+            "base_formula",
+            "SELECT coalesce(md5(string_agg(path || '|' || ord::VARCHAR || '|' || name || '|' || expr, chr(10) ORDER BY path, name)), 'EMPTY') FROM base_formula",
         ),
     ];
 
@@ -1008,6 +1166,7 @@ mod tests {
             Value::Null,
             Value::Null,
             Value::Text("d.md".to_string()),
+            Value::Null,
             Value::Null,
             Value::Null,
             Value::Null,

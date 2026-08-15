@@ -52,7 +52,30 @@ pub(crate) fn serve(
     ));
     let corpus = mounts.rooted(&engine.docs, &domain, &root);
     let probe = fs::domain::LinkTargetProbe::new(&root, &domain);
-    let exclusion = |target: &str| probe.exclusion(target).map(|why| why.word().to_owned());
+    let exclusion = |target: &str| {
+        probe
+            .resolution(target)
+            .map(|(path, why)| (path, why.word().to_owned()))
+    };
+
+    // The `.base` plane's own walk, under the SAME domain (`base-projection.md`
+    // §3). A walk that fails hands the build no members: the append then leaves
+    // every base row where it is and the stamp says NOT ASKED — an absent walk
+    // must never read as an empty one, or the next append would tombstone every
+    // member the workspace still has.
+    let walk = fs::base::base_snapshot_under(&root, &domain).ok();
+    let members: Vec<view::BaseMember> = walk
+        .iter()
+        .flat_map(|w| w.members.iter())
+        .map(|m| view::BaseMember {
+            path: m.path.clone(),
+            bytes: m.bytes.clone(),
+        })
+        .collect();
+    let base = walk.as_ref().map(|w| view::BaseWalk {
+        members: &members,
+        fold: &w.fold,
+    });
 
     let store = registry
         .sql_store(ws)
@@ -65,6 +88,7 @@ pub(crate) fn serve(
             Some(mounts.set()),
             Some(&exclusion),
             &engine.at_fingerprint.0,
+            base.as_ref(),
         )
         .map_err(|e| io_error(format!("cannot append to the sql cache: {e}")))?;
 

@@ -52,8 +52,8 @@ fn a_resolved_cross_root_edge_is_not_dangling_and_keeps_dest_path_free() {
     let root = addr::MountName::parse("sessions").expect("a name");
     let corpus = model::RootedCorpus::ambient(&ambient).with_root(root.clone(), &sessions);
     let mounts = addr::MountSet::new([root]);
-    let conn =
-        view::build_memory_rooted(&ambient, &corpus, &mounts, &fold(&ambient), None).expect("view");
+    let conn = view::build_memory_rooted(&ambient, &corpus, &mounts, &fold(&ambient), None, None)
+        .expect("view");
 
     assert_eq!(
         one_text(

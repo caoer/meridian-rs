@@ -204,7 +204,7 @@ impl<'a> LinkTargetProbe<'a> {
         } else {
             rel.with_extension("md")
         };
-        if self.root.0.join(&candidate).is_file() {
+        if self.root.0.join(&candidate).is_file() && self.spelled_on_disk(&candidate) {
             let why = self.domain.exclusion(&candidate)?;
             return Some((candidate.to_string_lossy().into_owned(), why));
         }
@@ -219,6 +219,40 @@ impl<'a> LinkTargetProbe<'a> {
         let path = index.get(&name)?.first()?;
         let why = self.domain.exclusion(Path::new(path))?;
         Some((path.clone(), why))
+    }
+
+    /// Does `candidate`'s FINAL SEGMENT match the parent directory's entry
+    /// case-exactly — i.e. is this the on-disk spelling?
+    ///
+    /// **A stamp carries the on-disk spelling, or it does not stamp**
+    /// (`base-projection.md` §5.1). `is_file` above answers `true` through
+    /// filesystem case-folding on APFS, so without this the literal arm would
+    /// stamp `[[bases/tasks.base]]` over on-disk `bases/TASKS.base` — a path
+    /// no `base` row contains, a join key that misses — and would stamp
+    /// `[[abc.base]]` over on-disk `abc.BASE` as deliberate, canonizing the
+    /// exact typo the 2026-08-14 ruling's case-exact guard exists to prevent.
+    /// The guard already held on the fallback arm (its candidates come from
+    /// directory enumeration); this is the same guard reaching the arm it had
+    /// not yet reached.
+    ///
+    /// A spelling that reaches bytes only through case-folding stays
+    /// unverified, unstamped, and honestly dangling. An unreadable parent
+    /// directory reads as absence (the standing posture), so it does not
+    /// stamp either.
+    fn spelled_on_disk(&self, candidate: &Path) -> bool {
+        let Some(name) = candidate.file_name().and_then(|n| n.to_str()) else {
+            return false;
+        };
+        let parent = self
+            .root
+            .0
+            .join(candidate.parent().unwrap_or(Path::new("")));
+        let Ok(entries) = std::fs::read_dir(parent) else {
+            return false;
+        };
+        entries
+            .flatten()
+            .any(|e| e.file_name().to_str() == Some(name))
     }
 }
 
