@@ -366,10 +366,11 @@ struct RulesReport {
     refused: Vec<String>,
     /// Files whose bytes are not UTF-8, so their tags cannot be read.
     unreadable: Vec<String>,
-    /// Markdown under the workspace root that the hash domain does not carry,
-    /// so it was never offered to registration. Derived from the WORKSPACE
-    /// feed's own population — `fs::walk` minus what the snapshot returned —
-    /// never from another face's.
+    /// Markdown the workspace's CUSTOM-IGNORE rules decline — vault-visible,
+    /// operator-declared, so its drop is voiced. Enumerated by
+    /// [`fs::declined_markdown`], the projection's own walk law: a dot path is
+    /// invisible here exactly as the record projection serves none of it
+    /// (dogfood F11) — never from another face's population.
     declined_workspace: Vec<String>,
     /// Markdown under the user `rules/` tree that a dot segment declined. A
     /// SECOND and INDEPENDENT exclusion: this feed never consults the residency
@@ -537,7 +538,7 @@ fn build(workspace: &Path, at: &str, view: View) -> Result<RulesReport, Fail> {
     // armed row would look orphaned. That would be a manufactured finding in
     // the direction that certifies a defect — the worst direction — so the
     // view is asked first.
-    let (workspace_declined, workspace_undecidable) = declined_workspace(workspace, &corpus);
+    let (workspace_declined, workspace_undecidable) = declined_workspace(workspace);
     let (user_declined, user_undecidable) = declined_user();
     let mut undecidable = workspace_undecidable;
     undecidable.extend(user_undecidable);
@@ -577,24 +578,28 @@ fn build(workspace: &Path, at: &str, view: View) -> Result<RulesReport, Fail> {
 /// prints must be about rule pages. An operator told "36 files are outside the
 /// hash domain" learns nothing about their law and stops reading the line.
 ///
-/// The population is still CONTENT-DEFINED — `fs::walk` minus the snapshot,
-/// which covers the custom-ignore class and the dot-segment class and a third
-/// nobody has invented yet — and is then narrowed by ASKING THE REGISTRAR,
-/// never by a path predicate: a page counts when it OFFERS ITSELF to
-/// registration, whether it then registers or is refused. Both are rule pages
-/// whose law is missing from this answer, and a refused one is arguably worse.
-fn declined_workspace(
-    workspace: &Path,
-    corpus: &BTreeMap<String, String>,
-) -> (Vec<String>, Vec<String>) {
+/// ⛔ AND ITS SECOND FORM WALKED A TREE THE ENGINE DOES NOT SERVE (dogfood
+/// F11, 2026-08-15). It enumerated `fs::walk` minus the snapshot — the
+/// ADDRESSABLE set, which enters dot directories — so a dot-named snapshot
+/// dir the record projection holds ZERO records for produced 16 of 20 caveat
+/// lines. The enumerator is now [`fs::declined_markdown`], which walks by the
+/// projection's own dir law (one shared dot-segment predicate) and reports
+/// the CUSTOM-IGNORE class: operator-declared, vault-visible exclusions,
+/// whose silent drop is the defect session decision 0017 ended. A dot path
+/// is invisible here exactly as it is invisible to everything the engine
+/// serves.
+///
+/// The population is then narrowed by ASKING THE REGISTRAR, never by a path
+/// predicate: a page counts when it OFFERS ITSELF to registration, whether it
+/// then registers or is refused. Both are rule pages whose law is missing
+/// from this answer, and a refused one is arguably worse.
+fn declined_workspace(workspace: &Path) -> (Vec<String>, Vec<String>) {
     let root = fs::WorkspaceRoot(workspace.to_path_buf());
-    let Ok(all) = fs::walk(&root) else {
+    let Ok(declined) = fs::declined_markdown(&root) else {
         return (Vec::new(), Vec::new());
     };
-    let outside: Vec<(String, String)> = all
-        .iter()
-        .filter_map(|rel| rel.to_str().map(str::to_owned))
-        .filter(|rel| !corpus.contains_key(rel))
+    let outside: Vec<(String, String)> = declined
+        .into_iter()
         .filter_map(|rel| {
             // An unreadable or non-UTF-8 excluded file cannot be shown to carry
             // a rule tag, so it is not claimed as one.
@@ -860,8 +865,12 @@ fn render_human(report: &RulesReport) -> String {
         ArmedSource::Present { path, rows } => {
             let _ = writeln!(out, "  armed-set  {path} ({rows} row(s))");
         }
-        ArmedSource::Absent { path } => {
-            let _ = writeln!(out, "  armed-set  none  ({path} absent)");
+        // `none` is the whole honest answer. Where an armed set WOULD live is
+        // teaching, and teaching lives in docs on demand — never a footnote
+        // charged to every invocation (ZT ruling 4, 2026-08-15). The present
+        // and corrupt arms keep their path: there it is the diagnostic.
+        ArmedSource::Absent { .. } => {
+            let _ = writeln!(out, "  armed-set  none");
         }
         ArmedSource::Unreadable { path, detail } => {
             let _ = writeln!(out, "  armed-set  UNREADABLE  ({path}: {detail})");
@@ -1066,7 +1075,7 @@ mod tests {
                 reason: "no anchor at /home/u/MERIDIAN.md".to_owned(),
             },
             armed: ArmedSource::Absent {
-                path: "meridian/armed-rules.md".to_owned(),
+                path: policy::armed::ARMED_RULES_PATH.to_owned(),
             },
             rows,
             refused: Vec::new(),
@@ -1094,7 +1103,7 @@ mod tests {
 rules at sessions/s1
   workspace  /ws
   user-scope none  (no anchor at /home/u/MERIDIAN.md)
-  armed-set  none  (meridian/armed-rules.md absent)
+  armed-set  none
   task.review-notify  armed=-
       winner    sessions/s1/notify.md  rev=aaaaaaaaaaaaaaaa  layer=workspace depth=2  kinds=hook
       shadowed  notify.md  rev=aaaaaaaaaaaaaaaa  layer=workspace depth=0  kinds=hook
@@ -1188,7 +1197,7 @@ rules at sessions/s1
             chain: Vec::new(),
         });
         r.armed = ArmedSource::Unreadable {
-            path: "meridian/armed-rules.md".to_owned(),
+            path: policy::armed::ARMED_RULES_PATH.to_owned(),
             detail: "the header is not byte-exact".to_owned(),
         };
         let findings = r.findings();

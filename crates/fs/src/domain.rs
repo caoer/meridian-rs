@@ -112,6 +112,22 @@ impl std::fmt::Display for ExclusionReason {
     }
 }
 
+/// §12.1 rule 2 in ONE spelling: is `name` — a single path segment —
+/// dot-prefixed?
+///
+/// The structural floor is also a WALK law: every enumerator that feeds a
+/// serving or caveat face skips a dot-prefixed segment without entering it —
+/// the hash-domain walk, the link fallback index, and the declined-markdown
+/// scan all call THIS predicate. It exists because two walks once disagreed
+/// about the rule (dogfood F11, 2026-08-15): `mrd rules` walked a dot-named
+/// snapshot directory the record projection holds zero records for, and
+/// reddened for files the engine does not serve. One spelling, and the two
+/// faces cannot diverge again.
+#[must_use]
+pub fn dot_segment(name: &str) -> bool {
+    name.starts_with('.')
+}
+
 /// WHY a wikilink target is a real file the hash domain does not carry, or
 /// `None`. THE ONE MINT for the edge-map planes: the `links` doors and the
 /// `sql link` projection both ask through here, so a `dot-segment` in one face
@@ -221,7 +237,7 @@ fn build_fallback_index(root: &WorkspaceRoot, domain: &Domain) -> BTreeMap<Strin
             let name = entry.file_name();
             // A non-UTF-8 name can never match a UTF-8 target.
             let Some(name) = name.to_str() else { continue };
-            if name.starts_with('.') {
+            if dot_segment(name) {
                 continue;
             }
             let rel = if rel_dir.is_empty() {
@@ -363,7 +379,7 @@ impl Domain {
             .collect();
         // 2. default ignore — any dot-prefixed segment (structural floor,
         //    above custom rules: a `!` re-include cannot lift a dot path).
-        if segments.iter().any(|s| s.starts_with('.')) {
+        if segments.iter().any(|s| dot_segment(s)) {
             return Some(ExclusionReason::DotSegment);
         }
         // 3. custom ignore — gitignore last-match-wins.

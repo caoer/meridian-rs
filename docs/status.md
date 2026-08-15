@@ -537,7 +537,7 @@ it (registration ruling § 7).
 rules at sessions/s1
  workspace /var/…/ws
  user-scope «local-path» (anchor «local-path»)
- armed-set none (meridian/armed-rules.md absent)
+ armed-set none
  task.review-notify armed=-
  winner sessions/s1/notify.md rev=018b942787febb31 layer=workspace depth=2 kinds=hook
  shadowed notify.md rev=e0dc53f2203c5969 layer=workspace depth=0 kinds=hook
@@ -567,6 +567,12 @@ vocabularies produced hand-armed rows that parsed clean and governed nothing
  resolved `MERIDIAN.md`. No anchor ⇒ an empty user layer that says so — never a
  `$HOME` walk, because a machine that never declared a user scope has not
  implicitly declared all of it.
+- **The `armed-set` header states what is, never the engine's storage.** An
+ unarmed workspace reads `armed-set none` — the whole honest answer. Where an
+ armed set would live is teaching, and teaching lives in docs on demand, never
+ as a parenthetical charged to every invocation (ZT ruling 4, 2026-08-15). A
+ present or corrupt artifact still names its path: there the path is the
+ diagnostic, not a footnote.
 - **`armed=` is a separate column**, read from the attested armed set
  (`meridian/armed-rules.md`) and joined on `(id, arm root)` narrowed to PATH —
  never on id alone, never recomputed. `-` registered but unarmed · `<mode>`
@@ -623,6 +629,23 @@ where enforcement lives.
  ignore in `meridian/domain.md`. The fixture is still on disk and still tested
  by the schema pack; it is simply no longer attested content that every
  discovery consumer sweeps.
+
+**Exclusion consistency — LANDED (dogfood F11, 2026-08-15).** The declined
+voices — `not offered to registration` and `cannot be answered` — enumerate by
+the projection's own walk law: a dot-prefixed segment is never entered, one
+shared predicate (`fs::domain::dot_segment`) spelling §12.1 rule 2 for the
+hash-domain walk, the link fallback index, and this scan alike. So `mrd rules`
+can never caveat a path the record projection refuses to serve (measured: 16 of
+20 caveat lines and their noise came from a dot-named snapshot directory the
+projection holds zero records for). The custom-ignore class stays voiced,
+exit-neutral: an operator-declared `meridian/domain.md` exclusion is
+vault-visible content whose silent drop is the defect session decision 0017
+ended — the repo's own excluded schema fixture is the standing example, named
+under `cannot be answered` at exit 0. Findings, and exit 1 with them, are
+attributable only to served-corpus conditions: collisions, on-chain refusals,
+red armed rows, unreadable in-domain files, an unreadable armed set. The USER
+rung is untouched — it has no projection to be consistent with, and its
+dot-declined pages stay named (two feeds, two sentences).
 
 ### `mrd check` — does the world still match the pins
 
