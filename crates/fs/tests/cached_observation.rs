@@ -172,8 +172,14 @@ fn cached_bracket_refuses_symlinks_like_the_fresh_walk() {
     let cached_err = StepGuard::open_cached(&root, &mut cache).unwrap_err();
     match (&fresh_err, &cached_err) {
         (
-            GuardError::Symlink { count: fc, first: ff },
-            GuardError::Symlink { count: cc, first: cf },
+            GuardError::Symlink {
+                count: fc,
+                first: ff,
+            },
+            GuardError::Symlink {
+                count: cc,
+                first: cf,
+            },
         ) => {
             assert_eq!((fc, ff), (cc, cf), "symlink refusals diverge");
             assert_eq!(*cc, 2);

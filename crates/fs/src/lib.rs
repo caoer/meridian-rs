@@ -646,7 +646,7 @@ impl DomainCache {
         // `domain_snapshot` folds, so the byte-identity holds on any corpus.
         let leaves: Vec<(&[u8], [u8; 32])> = rows
             .iter()
-            .map(|(rel, digest)| (hash_name(rel), *digest))
+            .map(|(name, digest)| (name.as_slice(), *digest))
             .collect();
         Ok(model::merkle_root_of_leaves(&leaves, domain.version()))
     }
@@ -663,13 +663,9 @@ impl DomainCache {
     /// a member, or reading a member whose identity moved.
     pub fn domain_leaves(&mut self, root: &WorkspaceRoot) -> io::Result<DomainLeaves> {
         let domain = domain::Domain::load(root)?;
-        let rows = self
+        let leaves = self
             .observe(root, &domain, ObserveLaw::Plain)
             .map_err(plain_refusal)?;
-        let leaves = rows
-            .iter()
-            .map(|(rel, digest)| (hash_name(rel).to_vec(), *digest))
-            .collect();
         Ok(DomainLeaves { leaves, domain })
     }
 
@@ -690,7 +686,7 @@ impl DomainCache {
         root: &WorkspaceRoot,
         domain: &domain::Domain,
         law: ObserveLaw,
-    ) -> Result<BTreeMap<PathBuf, [u8; 32]>, ObserveRefusal> {
+    ) -> Result<BTreeMap<Vec<u8>, [u8; 32]>, ObserveRefusal> {
         let (mut rels, mut offenders, fresh_dirs, listings) =
             Self::walk_tree(&self.dirs, &root.0, domain, law)?;
         // The listings are facts about the tree either way — recorded even
@@ -710,7 +706,10 @@ impl DomainCache {
         rels.sort();
         let identities = member_identities(&root.0, &rels, PARALLEL_STAT_FLOOR)?;
         let mut fresh: BTreeMap<PathBuf, (StatKey, [u8; 32])> = BTreeMap::new();
-        let mut rows: BTreeMap<PathBuf, [u8; 32]> = BTreeMap::new();
+        // Name-keyed rows (merkle-spec §4/§9 raw name bytes) — the shape every
+        // consumer folds or compares in, built once here so no observation
+        // pays a second per-member map conversion.
+        let mut rows: BTreeMap<Vec<u8>, [u8; 32]> = BTreeMap::new();
         for (rel, key) in identities {
             let digest = match self.leaves.get(&rel) {
                 Some((seen, digest)) if *seen == key => *digest,
@@ -720,7 +719,7 @@ impl DomainCache {
                     model::leaf_digest(&bytes)
                 }
             };
-            rows.insert(rel.clone(), digest);
+            rows.insert(hash_name(&rel).to_vec(), digest);
             fresh.insert(rel, (key, digest));
         }
         self.leaves = fresh;
@@ -1043,7 +1042,11 @@ fn plain_refusal(refusal: ObserveRefusal) -> io::Error {
 /// ordinary path with the corpus-scoped refusal shape ([`DomainCache::root`]'s
 /// law); guarded reads are `O_NOFOLLOW`, and a link racing the walk surfaces
 /// as the symlink refusal ([`guard`]'s law), never a read-through.
-fn read_member(root: &WorkspaceRoot, rel: &Path, law: ObserveLaw) -> Result<Vec<u8>, ObserveRefusal> {
+fn read_member(
+    root: &WorkspaceRoot,
+    rel: &Path,
+    law: ObserveLaw,
+) -> Result<Vec<u8>, ObserveRefusal> {
     let abs = root.0.join(rel);
     match law {
         ObserveLaw::Plain => fs::read(&abs).map_err(|e| {
