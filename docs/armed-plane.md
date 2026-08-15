@@ -143,7 +143,7 @@ one row per **(id, arm root)**:
 | `id` | the page's frontmatter `id:` |
 | `page` | workspace path of the RESOLVED page — the override winner |
 | `rev` | the page rev the row is attested at |
-| `scope` | the ARM ROOT: the root the resolution was narrowed to |
+| `scope` | the ARM ROOT: the root the resolution was narrowed to — a workspace-relative DIRECTORY, `.` for the workspace root. The resolver's `layer:depth` spelling (`workspace:0` in old `mrd rules` receipts) is refused at parse with a teaching: a head segment carrying `:` is the address grammar's `root:` qualifier (§ 4.2 D11), never a workspace path |
 | `mode` | checks `off\|warn\|block` · hooks `off\|armed` |
 
 The act is one indivisible step — narrow to the arm root's chain, resolve through
