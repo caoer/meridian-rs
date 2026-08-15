@@ -66,6 +66,11 @@ config = { workspace = true }
 # foreign-edit check parses prior receipts back).
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+# The per-workspace cache drawer, where the run plane's digest memo lives
+# beside `sql.duckdb` (F8, card run-preexec-severity): run's corpus
+# observations amortise across invocations the way sql's projection does.
+# Already in the graph via `config` — this edge adds no new member.
+cache = { workspace = true }
 # Workspace flock (decision #9) — same flock(2) discipline as cache's drawer lock.
 libc = "0.2"
 # Run-log content hash (U8): full sha256 over streamed stdout — the same

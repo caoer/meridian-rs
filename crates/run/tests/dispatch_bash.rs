@@ -55,6 +55,7 @@ fn dispatch_of<'a>(source: &'a str, scratch: &'a tempfile::TempDir) -> BashDispa
             anchor: "r-000001".to_owned(),
         }),
         takeover: false,
+        fatal_preexec: false,
         scratch: scratch.path(),
         timeout: Duration::from_secs(30),
         actor: None,
@@ -757,4 +758,39 @@ fn the_dispatch_refusal_names_the_count_and_the_first_offender() {
         text.contains("first: results/u16-experiment/run-e1-h1/bin"),
         "the first offender (sorted) is named; got: {text}"
     );
+}
+
+/// Card run-preexec-severity: a run whose observed pre-exec tree folds to
+/// the computed `root_after_phase1` carries NO pre-exec fact — absence has
+/// one meaning (clean), on the outcome as in the report.
+#[cfg(unix)]
+#[test]
+fn a_quiet_pre_exec_gap_reports_no_divergence() {
+    let (_tmp, root) = workspace();
+    let scratch = tempfile::tempdir().unwrap();
+    let out = dispatch_bash::run(
+        &root,
+        &dispatch_of("printf 'end:0\\n' >&3\n", &scratch),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    assert!(out.pre_exec.is_none(), "got {:?}", out.pre_exec);
+    assert!(matches!(out.phase2, Phase2::Applied { .. }));
+}
+
+/// The fatal opt-in flag is plumbing, not policy: a quiet gap under
+/// `fatal_preexec: true` runs exactly like the default — the flag only bites
+/// when a divergence exists (which no in-process test can inject
+/// deterministically; the observing seam is gated in tests/snapshot.rs and
+/// the policy split is exercised there).
+#[cfg(unix)]
+#[test]
+fn fatal_preexec_on_a_quiet_gap_changes_nothing() {
+    let (_tmp, root) = workspace();
+    let scratch = tempfile::tempdir().unwrap();
+    let mut d = dispatch_of("printf 'end:0\\n' >&3\n", &scratch);
+    d.fatal_preexec = true;
+    let out = dispatch_bash::run(&root, &d, &mut Vec::new()).unwrap();
+    assert!(out.pre_exec.is_none());
+    assert!(matches!(out.phase2, Phase2::Applied { .. }));
 }
