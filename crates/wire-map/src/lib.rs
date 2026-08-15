@@ -363,6 +363,7 @@ fn project_node_delta(d: &model::delta::NodeDelta) -> wire::DeltaNode {
         change: match d.change {
             M::Added => wire::NodeChange::Added,
             M::Edited => wire::NodeChange::Edited,
+            M::Anchored => wire::NodeChange::Anchored,
             M::Removed => wire::NodeChange::Removed,
         },
         node_rev_before: d

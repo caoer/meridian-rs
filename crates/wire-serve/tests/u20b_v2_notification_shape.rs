@@ -100,6 +100,58 @@ fn a_v2_frame_demotes_unattested_to_deleted_and_strips_the_summaries() {
     );
 }
 
+/// A frame whose only post-v2 content is one `anchored` node row — no
+/// summaries, no un-attested file — so the demotion is driven by the node
+/// word alone.
+fn anchored_frame() -> DeltaFrame {
+    let mut frame = frame_of(vec![]);
+    frame.delta.files = vec![wire::DeltaFile {
+        path: wire::Path("receipt.md".into()),
+        change: wire::FileChange::Modified,
+        from_path: None,
+        file_rev_before: Some(wire::NodeRev("e3c4acaceb75b907".into())),
+        file_rev_after: Some(wire::NodeRev("a9794a262e67ed02".into())),
+        nodes: vec![wire::DeltaNode {
+            target: wire::SecRef::Hpath {
+                hpath: vec![wire::HpathSeg {
+                    h: "Acceptance walk".into(),
+                    n: None,
+                }],
+            },
+            change: wire::NodeChange::Anchored,
+            node_rev_before: Some(wire::NodeRev("33d5b0e1b27cb48b".into())),
+            node_rev_after: Some(wire::NodeRev("41f643f034e5681f".into())),
+            span_after: Some(wire::Span(49, 75)),
+        }],
+    }];
+    frame
+}
+
+/// v2 demotion one grain down: `anchored` is v3's split of what v2 always
+/// called `edited`, and the node's rev did move — so v2 hears `edited`.
+#[test]
+fn a_v2_frame_demotes_anchored_to_edited() {
+    let value = serialize_v2(&anchored_frame());
+    assert_eq!(
+        value["delta"]["files"][0]["nodes"][0]["change"],
+        serde_json::json!("edited"),
+        "v2's closed node vocabulary: the attestation split is v3's"
+    );
+}
+
+/// A v3 session hears the honest word — this is the whole point of the
+/// split: a pin into another agent's page must not read as an edit of it.
+#[test]
+fn a_v3_frame_carries_the_anchored_word() {
+    let mut out = Vec::new();
+    wire_serve::ring::write_frame(&mut out, &anchored_frame(), true).expect("frame serializes");
+    let value: serde_json::Value = serde_json::from_slice(&out).expect("frame is JSON");
+    assert_eq!(
+        value["delta"]["files"][0]["nodes"][0]["change"],
+        serde_json::json!("anchored")
+    );
+}
+
 /// § A.9 v3: the summaries ride the frame root beside `delta`, and the
 /// fingerprint rekey leaves them untouched.
 #[test]

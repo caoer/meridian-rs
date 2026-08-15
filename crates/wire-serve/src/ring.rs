@@ -225,6 +225,13 @@ pub fn write_frame(output: &mut impl Write, frame: &DeltaFrame, v3: bool) -> io:
             if file.change == wire::FileChange::Unattested {
                 file.change = wire::FileChange::Deleted;
             }
+            for node in &mut file.nodes {
+                // Same rule one grain down: `anchored` is v3's split of what
+                // v2 always called `edited` — the node's rev did move.
+                if node.change == wire::NodeChange::Anchored {
+                    node.change = wire::NodeChange::Edited;
+                }
+            }
         }
         serde_json::to_writer(&mut *output, &demoted)?;
     } else {
@@ -243,11 +250,12 @@ fn v2_demotable(frame: &DeltaFrame) -> bool {
             && frame.rescope.is_some())
         || (crate::rev::is_reserved("overflow", Position::NotificationRoot)
             && frame.overflow.is_some())
-        || frame
-            .delta
-            .files
-            .iter()
-            .any(|f| f.change == wire::FileChange::Unattested)
+        || frame.delta.files.iter().any(|f| {
+            f.change == wire::FileChange::Unattested
+                || f.nodes
+                    .iter()
+                    .any(|n| n.change == wire::NodeChange::Anchored)
+        })
 }
 
 #[cfg(test)]
