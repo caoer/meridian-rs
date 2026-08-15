@@ -828,10 +828,15 @@ narrows to the TOUCH SET; frozen view KEPT, pre-merge ruling 2).**
 Wire-contract § A.7 carries the full law; what it supersedes HERE, named:
 
 - Point 3 above, the pre-eval caller-guard paragraph, the set-form commit
-  below, and the 2026-08-13 CAS-relaxation's premise restatements
+  below, the 2026-08-13 CAS-relaxation's premise restatements
   ("auto-guarded by the entry-fingerprint snapshot", "consistent with
-  exactly one workspace fingerprint") are AMENDED at the premise: the
-  commit's authority is no
+  exactly one workspace fingerprint"), and — named and retired, bounce-2
+  closure 2026-08-15 — the execution-model seam's commit leg below (the
+  arm→commit blockquote's `--if-fingerprint <the arm's entry fingerprint>`
+  pin and its "any movement of the world between the two refuses" claim,
+  both rewritten in place) plus the seam table's Concurrency cell
+  ("commit `if_fingerprint` = entry", rewritten in place) are AMENDED at
+  the premise: the commit's authority is no
   longer the whole-corpus entry fingerprint — it is the **touch set** the
   attempt itself recorded (point reads, armed targets, pattern/selector
   expansions as set folds, sql provenance regions), verified entry-vs-live
@@ -968,7 +973,14 @@ states the execution model that gives it one:
 
 > **The MCP host runs the entry TWICE per attempt: once as an ARM (`--dry`),
 > then, if and only if its own write-authorization plane admits every armed row,
-> once as a COMMIT pinned with `--if-fingerprint <the arm's entry fingerprint>`.**
+> once as a COMMIT carrying `--expect-armed <the arm's armed_digest>`.**
+> *(Commit leg amended 2026-08-15, bounce-2 closure — the touch-set amendment
+> above, fingerprint-grain plan §4.6: the commit's world premise is the
+> engine-computed touch set, verified entry-vs-live; the former
+> `--if-fingerprint <the arm's entry fingerprint>` pin is retired as premise —
+> a host-passed token stays legal as WIDENING only (R3,
+> `decisions/2026-08-15-plan-rulings-final.md`). `--expect-armed` proves set
+> identity; the touch-set verify proves set freshness.)*
 
 Four things follow, and only these four. First, **this is a consumer-plane
 sequencing law, and the wire contract carries zero delta** — the split is two
@@ -976,14 +988,20 @@ ordinary invocations of the entry, and the ops on the socket are the same five.
 The CLI surface is NOT untouched, and saying so was the gap the sub-amendment
 below closes: the commit child gains `--expect-armed`, which is consumer-plane
 too and changes no request shape. Second, the split
-is **safe by construction, never by being fast**: the commit's `if_fingerprint`
-is the arm's `entry_fingerprint`, so any movement of the world between the two
-refuses at §5.1 as an ordinary `fingerprint_mismatch`, which the host's retry
-budget already handles. Correctness never depends on the gap being small. Third,
+is **safe by construction, never by being fast** *(amended 2026-08-15 with the
+commit leg)*: the commit verifies its touch set entry-vs-live, so movement of
+the world INSIDE the touch set between the two legs refuses at §5.1 as an
+ordinary `fingerprint_mismatch` naming the moved premise's scope, which the
+host's retry budget already handles; movement OUTSIDE the touch set never
+refuses at all (plan §4.6 — foreign churn stops causing retries). Correctness
+never depends on the gap being small. Third,
 **recorded-read purity is what makes the arm's set the commit's set**: eval is a
 pure function of (script, args, files, read-response sequence), and an unmoved
-fingerprint means an unmoved read-response sequence, so the two evaluations arm
-identically. The arm is therefore OUTPUT, never a second decision. Fourth, the
+touch set means an unmoved read-response sequence — every read is itself a
+touch-set member — so the two evaluations arm identically; a between-legs move
+that DOES change what the commit child arms is caught pre-splice by
+`--expect-armed` (sub-amendment below). The arm is therefore OUTPUT, never a
+second decision. Fourth, the
 gate is **parity with `put`, not a second policy grammar** — the same organs
 (`checkPutAuthz`, `checkContentWrite`), the same per-target flock held across the
 commit child, and the same journal pipeline. A script commit that took no flock
@@ -1336,7 +1354,7 @@ write path. Everything that differs is at the entry.
 | Reads | none — inputs arrive as inert `RunCtx` data | CLI lane: `read()` lowering to `toc`/`cat` — live, as a wire client through the one door. In-process lane (§ A.7): `read()` serving from the entry world plus the program's own armed overlay |
 | Enumeration | page names its own targets | none in-kernel: host resolves selector (sorted) or binds caller `files[]` in call order — inert paths only |
 | Commit | one atomic `if_fingerprint`-pinned batch via the local executor | ONE guarded commit as the caller (`actor`/`now`/`receipt` on the request): the single §4.4 splice for one armed path, the §4.4 SET form for N (§ One COMMIT per attempt) |
-| Concurrency | workspace flock, `LOCK_NB` (decision #9) | stand-still optimistic: entry fingerprint pinned, commit `if_fingerprint` = entry; conflict ⇒ host re-resolves selector and retries (budget 2, `attempts` on the face) |
+| Concurrency | workspace flock, `LOCK_NB` (decision #9) | stand-still optimistic at touch-set grain (amended 2026-08-15, plan §4.6): entry world pinned for reads (frozen view); commit premise = the engine-computed touch set, verified entry-vs-live — foreign churn outside it never refuses; conflict inside it ⇒ host re-resolves selector and retries (budget 2, `attempts` on the face) |
 | Failure grain | one violation refuses the whole batch; bash phase-1 may stand committed and reported (decision #22) | one violation refuses the whole script; nothing ever partially lands (the sealed set keeps retry sound: a refusal lands nothing, so a re-run never double-applies) |
 | Output | run record: stdout streamed + content-addressed out-of-tree log; receipt linkage via `ExecRecordSink` | `ScriptTrace` → text face: echo semantics, embedded §4.4 splice response verbatim, telemetry always present |
 | Guarantee label | per block: `hermetic` (starlark) / `detected` (bash, U6b) | recorded-read + stand-still, stated as such; zero-armed outcome is read-class (`Ok(vec![])` precedent) |
