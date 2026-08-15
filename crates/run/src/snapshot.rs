@@ -4,10 +4,40 @@
 //! refusal produce a [`Detection`] verdict. Observation only — never rolls
 //! back; phase 2 gates on [`Detection::is_clean`].
 
+use fs::digestmemo::DigestMemo;
 use fs::guard::{ConfigState, GuardError, ResidualDelta, StepGuard};
 use model::MerkleRoot;
 
 use crate::fence::GuaranteeClass;
+
+/// An out-of-band change BETWEEN the phase-1 commit and the bracket opening,
+/// carried as a report fact: the computed authority and what the guarded
+/// snapshot observed. No block had run when it landed, so there is nothing
+/// to accuse — the run plane reports it exactly like an in-window delta and
+/// refuses only under the caller's fatal opt-in ([`ExecBracket::open`]).
+/// The change itself stands as external change, never rolled back (ruling 2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreExecDivergence {
+    /// The flock-computed `root_after_phase1` (#19 — the authority for what
+    /// phase 1 committed against).
+    pub expected: MerkleRoot,
+    /// The root the guarded snapshot observed on disk at bracket open — the
+    /// baseline the exec window is actually detected against.
+    pub observed: MerkleRoot,
+}
+
+impl std::fmt::Display for PreExecDivergence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "out-of-band change before exec window: the corpus moved between this run's \
+             receipt commit and its exec (computed root_after_phase1 {}, observed pre-exec \
+             root {}). No block had run, so nothing is accused; the change stands as \
+             external change and the window is detected against the observed tree.",
+            self.expected.0, self.observed.0,
+        )
+    }
+}
 
 /// The detection bracket around ONE exec window: opened after the phase-1
 /// commit (against its flock-computed root), closed after the process group
@@ -25,7 +55,10 @@ pub enum OpenRefusal {
     /// The observed pre-exec tree does not fold to the flock-computed
     /// `root_after_phase1`: an out-of-band change landed BETWEEN the phase-1
     /// commit and the bracket opening. Distinct from the in-window delta by
-    /// construction — and no block ran, so there is nothing to accuse.
+    /// construction — and no block ran, so there is nothing to accuse. Since
+    /// card run-preexec-severity this refusal is minted only under the
+    /// caller's fatal opt-in ([`ExecBracket::open`]); the default path
+    /// observes and reports instead ([`ExecBracket::open_observing`]).
     PreExecMismatch {
         /// The computed authority (#19).
         expected: MerkleRoot,
@@ -141,15 +174,37 @@ impl ExecBracket {
         root: &fs::WorkspaceRoot,
         root_after_phase1: &MerkleRoot,
     ) -> Result<ExecBracket, OpenRefusal> {
-        let guard = StepGuard::open(root).map_err(OpenRefusal::Guard)?;
-        let observed = guard.pre_root();
+        let (bracket, observed) = Self::open_observing(root, &mut DigestMemo::new())?;
         if observed != *root_after_phase1 {
             return Err(OpenRefusal::PreExecMismatch {
                 expected: root_after_phase1.clone(),
                 observed,
             });
         }
-        Ok(ExecBracket { guard })
+        Ok(bracket)
+    }
+
+    /// Open the bracket against whatever tree is actually on disk, handing
+    /// back the observed pre-exec root instead of judging it. The DEFAULT
+    /// severity path (card run-preexec-severity): the caller compares the
+    /// observed root against the flock-computed `root_after_phase1` and
+    /// REPORTS a divergence as [`PreExecDivergence`] — same trust posture as
+    /// the in-window delta, refusal only under the fatal opt-in (which rides
+    /// [`ExecBracket::open`], where the compare still refuses).
+    ///
+    /// Byte reads are served through `memo` (see [`fs::digestmemo`]).
+    ///
+    /// # Errors
+    /// [`OpenRefusal::Guard`] when the guarded snapshot refuses (symlink) or
+    /// fails (I/O) — those refusals are about the OBSERVATION itself and no
+    /// severity policy softens them.
+    pub fn open_observing(
+        root: &fs::WorkspaceRoot,
+        memo: &mut DigestMemo,
+    ) -> Result<(ExecBracket, MerkleRoot), OpenRefusal> {
+        let guard = StepGuard::open_memoized(root, memo).map_err(OpenRefusal::Guard)?;
+        let observed = guard.pre_root();
+        Ok((ExecBracket { guard }, observed))
     }
 
     /// Open the bracket AND pin it to the run-initial config state. #20 is
@@ -188,7 +243,14 @@ impl ExecBracket {
     /// with an empty governed set (#19 — any delta is out-of-band).
     #[must_use]
     pub fn close(self) -> Detection {
-        match self.guard.close(&[]) {
+        self.close_memoized(&mut DigestMemo::new())
+    }
+
+    /// [`ExecBracket::close`] with byte reads served through `memo` — same
+    /// verdict, one stat per unmoved member instead of one read.
+    #[must_use]
+    pub fn close_memoized(self, memo: &mut DigestMemo) -> Detection {
+        match self.guard.close_memoized(&[], memo) {
             Ok(root) => Detection::Clean { root },
             Err(GuardError::OutOfBand(delta)) => Detection::OutOfBand(delta),
             Err(GuardError::ConfigChanged) => Detection::ConfigChanged,

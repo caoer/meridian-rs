@@ -504,6 +504,9 @@ fn run_apply(
         receipt: Some(receipt),
         pre_receipt: None,
         takeover: false,
+        // Realise keeps the default posture: a pre-exec foreign write is
+        // reported, never refused (card run-preexec-severity).
+        fatal_preexec: false,
         scratch: &spec.scratch,
         timeout: spec.timeout,
         declaring_root: spec.declaring_root.as_deref(),

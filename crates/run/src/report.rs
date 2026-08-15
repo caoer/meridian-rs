@@ -136,6 +136,13 @@ pub struct Report {
     pub effects: Option<String>,
     /// The cascade reached the depth cap (the generic cap-reached fact).
     pub cap_reached: bool,
+    /// The pre-exec divergence line (bash only; card run-preexec-severity):
+    /// a foreign write between the phase-1 commit and the bracket opening,
+    /// reported with the same trust posture as the in-window delta. `"none"`
+    /// when the observed pre-exec tree folded to the computed root; absent
+    /// on the starlark path (no exec window, no pre-exec gap).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pre_exec_delta: Option<String>,
     /// The exec-window out-of-band delta line (S1 hermetic: no exec window).
     pub out_of_band_delta: String,
     /// Bash exec facts — ADDITIVE, `RunReport`-sourced, NEVER receipt-sourced
@@ -214,6 +221,7 @@ pub fn render(report: &RunReport) -> Report {
             Authority::Unsandboxed => Some(crate::caps::UNDECLARED_EFFECTS.to_owned()),
         },
         cap_reached: report.cap_reached,
+        pre_exec_delta: pre_exec_delta(report),
         out_of_band_delta: out_of_band_delta(report),
         exec: ExecReport::of(&report.outcome),
     }
@@ -297,6 +305,9 @@ impl Report {
                 (None, None) => {}
             }
         }
+        if let Some(pre) = &self.pre_exec_delta {
+            let _ = writeln!(s, "pre-exec delta: {pre}");
+        }
         let _ = writeln!(s, "out-of-band delta: {}", self.out_of_band_delta);
         s
     }
@@ -372,6 +383,19 @@ fn classify(report: &RunReport, applied: &[EffectLine], unexecuted: &[EffectLine
         return ReportState::UnexecutedNoCapability;
     }
     ReportState::Applied
+}
+
+/// The pre-exec divergence line — the report half of the fatal-opt-in split
+/// (card run-preexec-severity). Reads [`dispatch_bash::BashOutcome::pre_exec`];
+/// the fatal path never reaches a report (the dispatch refuses pre-exec).
+fn pre_exec_delta(report: &RunReport) -> Option<String> {
+    match &report.outcome {
+        TaskOutcome::Starlark(_) => None,
+        TaskOutcome::Bash(o) => Some(match &o.pre_exec {
+            None => "none".to_owned(),
+            Some(div) => div.to_string(),
+        }),
+    }
 }
 
 /// The exec-window out-of-band-delta line. The bracket is U6b's and rides the
