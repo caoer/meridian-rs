@@ -89,13 +89,25 @@ fn an_edit_while_the_engine_is_cold_survives_into_the_next_warm() {
         reg.feed_stats(&canonical)
     );
 
-    // The next warm applies the dirty set; the served state is the disk truth.
-    let root = reg.currency_root(&canonical).unwrap();
+    // The next warm applies the dirty set; the served state is the disk
+    // truth (compared via the public warm door — the warm's currency pass
+    // runs through the same drain).
+    reg.warm_or_build(&ws).unwrap();
+    let root = reg
+        .engine_snapshot(&canonical)
+        .expect("engine warm again")
+        .at_fingerprint
+        .clone();
     let scratch_tmp = tempfile::tempdir().unwrap();
     let scratch = registry_in(scratch_tmp.path());
+    scratch.warm_or_build(&ws).unwrap();
+    let fresh = scratch
+        .engine_snapshot(&canonical)
+        .expect("scratch engine warm")
+        .at_fingerprint
+        .clone();
     assert_eq!(
-        root,
-        scratch.currency_root(&canonical).unwrap(),
+        root, fresh,
         "the post-gap root equals a from-scratch derivation of the same disk"
     );
 }
