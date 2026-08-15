@@ -262,20 +262,39 @@ impl Registry {
 
     /// Warm the resident engine for `workspace`; rebuild only when the corpus
     /// content hash changed (U1). Reuse key is the content hash (R5), not
-    /// workspace-identity Merkle. `Reused` ⇒ zero parses (`build_corpus` is
-    /// rebuild-only). Fingerprint read and parse are outside the `engines`
-    /// write lock (the locked section compares fingerprints and inserts —
-    /// no I/O, no parse) so workspaces do not block each other.
+    /// workspace-identity Merkle. `Reused` ⇒ zero parses. Fingerprint read
+    /// and parse are outside the `engines` write lock (the locked section
+    /// compares fingerprints and inserts — no I/O, no parse) so workspaces
+    /// do not block each other.
+    ///
+    /// A rebuild against a RESIDENT engine is INCREMENTAL
+    /// ([`fs::update_corpus`]): it re-reads and re-parses exactly the members
+    /// whose §12.2 leaf digest moved against the engine's recorded leaf set —
+    /// O(corpus) in `stat`s, O(delta) in bytes and parses. Cold (no resident
+    /// engine) builds from scratch ([`fs::domain_snapshot_with_leaves`] +
+    /// [`fs::build_corpus`]) — the only whole-corpus parse site.
+    ///
+    /// **Stamp law (amended with the incremental arm).** A built engine's
+    /// `at_fingerprint` folds its own leaf set. A mover's leaf derives from
+    /// the very bytes this pass read and parsed; an unmoved member's leaf —
+    /// and its parsed document — carry forward from the resident build on
+    /// `StatKey` evidence (dev, ino, size, mtime, ctime — the §12.2 memo's
+    /// standing). That is the SAME evidence grade every warm hit has always
+    /// served on: a hit serves the resident corpus because the memo's fold
+    /// matches the stamp. The incremental arm spends that one trust in the
+    /// same place, once per carry; no digest ever carries across a leaf that
+    /// moved, and nothing served is stamped with a root its own build did
+    /// not fold.
     ///
     /// Concurrent rebuilds of one workspace are WITNESS-GUARDED: a rebuild
     /// records what was resident when it judged the rebuild necessary, and
     /// its insert lands only while the resident engine is still exactly that
     /// witness. A build that lost the race never replaces the winner blind —
-    /// the pass goes around: it re-derives freshness from disk bytes and
-    /// either adopts the resident (fingerprints equal) or rebuilds again.
-    /// The resident engine therefore never regresses to an older corpus
-    /// state. Both sides of every comparison are byte-derived fingerprints;
-    /// no clock ordering and no memo-carried digest decides freshness.
+    /// the pass goes around: it re-derives freshness from disk and either
+    /// adopts the resident (fingerprints equal) or rebuilds again. The
+    /// resident engine therefore never regresses to an older corpus state.
+    /// No clock ordering decides freshness — every comparison is between
+    /// fingerprints, each the fold of a build's own leaf set.
     ///
     /// # Errors
     /// Canonicalize failure or corpus unreadable. A non-UTF-8 MEMBER is not an
@@ -306,8 +325,9 @@ impl Registry {
             // this path: it is the hot one, and a 20k-entry clone per currency
             // pass would put back a slice of what the memo just removed. A
             // miss records the resident fingerprint as the WITNESS the guarded
-            // insert below checks against.
-            let witness = {
+            // insert below checks against, and pins the resident engine as
+            // the incremental pass's prior build.
+            let (witness, prior) = {
                 let engines = self.engines.read().unwrap_or_else(PoisonError::into_inner);
                 match engines.get(&canonical) {
                     Some(engine) if engine.at_fingerprint == fingerprint => {
@@ -316,26 +336,49 @@ impl Registry {
                             Some(docs) => WarmOutcome::Built { docs },
                         });
                     }
-                    Some(engine) => Some(engine.at_fingerprint.clone()),
-                    None => None,
+                    Some(engine) => (
+                        Some(engine.at_fingerprint.clone()),
+                        Some(Arc::clone(engine)),
+                    ),
+                    None => (None, None),
                 }
             };
 
-            // Cold or content changed → rebuild (only parse site). The rebuild
-            // re-reads from disk rather than from the memo: `docs` must be the
-            // bytes it parsed, and `domain_snapshot`'s fold is the byte-derived
-            // one, so the reuse key a served answer is stamped with never comes
-            // from a digest the memo carried forward.
-            let (files, fingerprint) = fs::domain_snapshot(&root)?;
-            let (index, docs, unserved) = fs::build_corpus(files);
-            let docs_parsed = docs.len();
-            parsed = Some(docs_parsed);
-            let engine = WorkspaceEngine {
-                index,
-                docs,
-                unserved,
-                at_fingerprint: fingerprint,
+            // Content changed → incremental pass against the resident build
+            // (movers only — see the stamp law above); cold → the one
+            // whole-corpus parse site. Leaf-set clones happen on this rebuild
+            // path only, never per currency pass.
+            let engine = if let Some(prior) = prior {
+                let fresh = {
+                    let mut caches = self
+                        .domain_caches
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner);
+                    caches.entry(canonical.clone()).or_default().leaf_digests()
+                };
+                let update =
+                    fs::update_corpus(&root, &prior.docs, &prior.unserved, &prior.leaves, &fresh)?;
+                parsed = Some(update.parsed);
+                WorkspaceEngine {
+                    index: update.index,
+                    docs: update.docs,
+                    unserved: update.unserved,
+                    at_fingerprint: update.root,
+                    leaves: update.leaves,
+                }
+            } else {
+                let (files, leaves, fingerprint) = fs::domain_snapshot_with_leaves(&root)?;
+                let (index, docs, unserved) = fs::build_corpus(files);
+                parsed = Some(docs.len());
+                WorkspaceEngine {
+                    index,
+                    docs,
+                    unserved,
+                    at_fingerprint: fingerprint,
+                    leaves,
+                }
             };
+            let docs_parsed = parsed.unwrap_or(0);
 
             // Test-only: park here when the gate is armed (see the field docs).
             #[cfg(test)]
@@ -787,8 +830,8 @@ mod engine_tests {
 
         assert_eq!(
             reg.warm_or_build(&ws).unwrap(),
-            WarmOutcome::Built { docs: 2 },
-            "a corpus change rebuilds once"
+            WarmOutcome::Built { docs: 1 },
+            "a corpus change rebuilds once, parsing only the mover"
         );
         assert_eq!(
             reg.warm_or_build(&ws).unwrap(),
@@ -957,8 +1000,8 @@ mod engine_tests {
         rewrite(&canonical, "b.md", "# B moved\n");
         assert_eq!(
             reg.warm_or_build(&ws).unwrap(),
-            WarmOutcome::Built { docs: 2 },
-            "the corpus pass is not memo-blind"
+            WarmOutcome::Built { docs: 1 },
+            "the corpus pass is not memo-blind — and re-parses only the mover"
         );
         let after = reg.with_engine(&canonical, |e| e.unwrap().at_fingerprint.clone());
         assert_ne!(before, after, "and the ambient root advanced");
@@ -1060,6 +1103,143 @@ mod engine_tests {
             a.resolved.get("c.md"),
             Some(&1),
             "the rebuilt index reflects the on-disk edit — correct via fingerprint"
+        );
+    }
+
+    /// The incremental review bar: after `label`, the registry's resident
+    /// engine (incrementally maintained) must be INDISTINGUISHABLE from a
+    /// cold registry's from-scratch build of the same tree — root, docs,
+    /// index, unserved, and the recorded leaf set all equal.
+    fn assert_matches_scratch(reg: &Registry, ws: &Path, label: &str) {
+        let canonical = workspace::canonicalize(ws).unwrap();
+        let scratch_home = tempfile::tempdir().unwrap();
+        let scratch = registry_in(scratch_home.path());
+        scratch.warm_or_build(ws).unwrap();
+
+        let incremental = reg
+            .engine_snapshot(&canonical)
+            .expect("incremental engine resident");
+        let fresh = scratch
+            .engine_snapshot(&canonical)
+            .expect("scratch engine resident");
+
+        assert_eq!(
+            incremental.at_fingerprint, fresh.at_fingerprint,
+            "{label}: incremental stamp equals the from-scratch fold"
+        );
+        assert_eq!(
+            incremental.leaves, fresh.leaves,
+            "{label}: recorded leaf sets equal"
+        );
+        assert_eq!(
+            incremental.docs.keys().collect::<Vec<_>>(),
+            fresh.docs.keys().collect::<Vec<_>>(),
+            "{label}: same document set"
+        );
+        for (rel, doc) in &incremental.docs {
+            assert_eq!(
+                doc.raw, fresh.docs[rel].raw,
+                "{label}: {rel} carries the same bytes"
+            );
+        }
+        assert_eq!(
+            incremental.unserved, fresh.unserved,
+            "{label}: same unserved map"
+        );
+        assert_eq!(incremental.index, fresh.index, "{label}: same name index");
+    }
+
+    /// The (a)-shape equivalence gate: one corpus evolves through every
+    /// mutation kind — modify, add, remove, rename, degrade to non-UTF-8,
+    /// recover — and after every step the incrementally-maintained engine
+    /// equals a from-scratch build. The outcome assertions pin the O(delta)
+    /// parse claim: each pass parses exactly the movers.
+    #[test]
+    fn incremental_rebuild_equals_from_scratch_across_mutation_kinds() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(
+            home.path(),
+            &[
+                ("a.md", "# A\n\nsee [[b]]\n"),
+                ("b.md", "# B\n"),
+                ("sub/c.md", "# C\n\nsee [[a]]\n"),
+            ],
+        );
+
+        assert_eq!(
+            reg.warm_or_build(&ws).unwrap(),
+            WarmOutcome::Built { docs: 3 },
+            "cold build parses the whole corpus"
+        );
+        assert_matches_scratch(&reg, &ws, "cold build");
+
+        rewrite(&ws, "a.md", "# A changed\n\nsee [[b]] and [[c]]\n");
+        assert_eq!(
+            reg.warm_or_build(&ws).unwrap(),
+            WarmOutcome::Built { docs: 1 },
+            "modify parses the one mover"
+        );
+        assert_matches_scratch(&reg, &ws, "modify");
+
+        rewrite(&ws, "d.md", "# D\n\naliased\n");
+        assert_eq!(
+            reg.warm_or_build(&ws).unwrap(),
+            WarmOutcome::Built { docs: 1 },
+            "add parses the one new member"
+        );
+        assert_matches_scratch(&reg, &ws, "add");
+
+        fs::remove_file(ws.join("b.md")).unwrap();
+        assert_eq!(
+            reg.warm_or_build(&ws).unwrap(),
+            WarmOutcome::Built { docs: 0 },
+            "remove parses nothing"
+        );
+        assert_matches_scratch(&reg, &ws, "remove");
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        fs::rename(ws.join("sub/c.md"), ws.join("sub/c2.md")).unwrap();
+        assert_eq!(
+            reg.warm_or_build(&ws).unwrap(),
+            WarmOutcome::Built { docs: 1 },
+            "rename parses the one member under its new name"
+        );
+        assert_matches_scratch(&reg, &ws, "rename");
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        fs::write(ws.join("d.md"), [0xff, 0xfe, 0x00, 0x01]).unwrap();
+        assert_eq!(
+            reg.warm_or_build(&ws).unwrap(),
+            WarmOutcome::Built { docs: 0 },
+            "a member degrading to non-UTF-8 parses nothing (it is unserved)"
+        );
+        assert_matches_scratch(&reg, &ws, "degrade to non-UTF-8");
+
+        rewrite(&ws, "d.md", "# D again\n");
+        assert_eq!(
+            reg.warm_or_build(&ws).unwrap(),
+            WarmOutcome::Built { docs: 1 },
+            "a member recovering from non-UTF-8 is parsed again"
+        );
+        assert_matches_scratch(&reg, &ws, "recover from non-UTF-8");
+    }
+
+    /// A rewrite that restores the exact prior bytes moves every stat clock,
+    /// yet the fold is unchanged — the warm must reuse, not rebuild: the
+    /// boundary's freshness is content, never time.
+    #[test]
+    fn a_touch_that_restores_bytes_reuses() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(home.path(), &[("a.md", "# A\n"), ("b.md", "# B\n")]);
+
+        reg.warm_or_build(&ws).unwrap();
+        rewrite(&ws, "a.md", "# A\n");
+        assert_eq!(
+            reg.warm_or_build(&ws).unwrap(),
+            WarmOutcome::Reused,
+            "same bytes ⇒ same fold ⇒ reuse, whatever the clocks say"
         );
     }
 }
