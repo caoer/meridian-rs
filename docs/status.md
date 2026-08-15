@@ -859,7 +859,7 @@ spellings:
 
 | axis | moves the exit | |
 |---|---|---|
-| the ARMED plane — an armed rule drifted, or the armed-rules artifact faulted | **yes** ⇒ exit 1 | the `pin` axis and the armed-rules line |
+| the ARMED plane — an armed rule drifted, or the armed-rules artifact faulted | **yes** ⇒ exit 1 | the `pin` axis and the `rules:` line (label per ZT ruling 5, 2026-08-15: the line states the RULES facts; `armed-rules` is the artifact's name, not the report's voice) |
 | `lock` | **no** — `red …`, `grey …` and `unreadable (<why>)` all exit 0 | a READING, not a gate |
 | `anchor` | no | freshness, and `status` cannot fetch |
 | `vibe-debt` | no | a meter, never a gate (above) |

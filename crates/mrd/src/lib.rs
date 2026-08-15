@@ -341,7 +341,7 @@ usage:
                            append-only sql.duckdb cache when a cache root
                            resolves, else an ephemeral in-memory build.
                            --rebuild recreates the cache file (repair verb).
-  mrd status [--cwd PATH]  pure-local drift + freshness: armed-rules line (N
+  mrd status [--cwd PATH]  pure-local drift + freshness: rules line (N
                            armed · M drifted · forced-since-realise:
                            not-tracked — the engine keeps no memory), then the
                            five-axis line (pin · lock · anchor · armed ·
