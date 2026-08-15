@@ -48,7 +48,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
             cwd.display()
         ))
     })?;
-    let (source, mut body) = answer_read(&resolved.workspace, &parsed)?;
+    let (source, mut body) = answer_read(&resolved.workspace, &cwd, &parsed)?;
 
     match parsed.format {
         Format::Json => {
@@ -164,14 +164,17 @@ enum DaemonRead {
 /// Answer the composed read: dial the resident daemon (auto-spawning it) and serve its answer —
 /// success or typed refusal alike. Only when the daemon is unreachable degrade to the
 /// in-process engine — the same leaves, the same projection, only the reported source differs.
-fn answer_read(workspace: &Path, r: &Read) -> Result<(EngineSource, Value), Fail> {
+fn answer_read(workspace: &Path, cwd: &Path, r: &Read) -> Result<(EngineSource, Value), Fail> {
     match try_daemon_read(workspace, r) {
         DaemonRead::Served(body) => Ok((EngineSource::Daemon, body)),
         DaemonRead::Refused(mut error) => {
             teach_bad_path(workspace, &mut error);
+            teach_cwd_respelling(workspace, cwd, &mut error);
             Err(engine::json_refusal(r.format, workspace, &error))
         }
-        DaemonRead::Unavailable => Ok((EngineSource::Ephemeral, in_process_read(workspace, r)?)),
+        DaemonRead::Unavailable => {
+            Ok((EngineSource::Ephemeral, in_process_read(workspace, cwd, r)?))
+        }
         DaemonRead::Skew(message) => Err(Fail::tool(message)),
     }
 }
@@ -230,6 +233,48 @@ fn teach_bad_path(workspace: &Path, error: &mut ErrorBody) {
         );
     }
     error.message = Some(m);
+}
+
+/// The `file_not_found` companion to [`teach_bad_path`]: when the caller's cwd lies inside the
+/// workspace and the ref names a file that EXISTS relative to that cwd, the refusal names the
+/// workspace-relative spelling verbatim. Teaching only — admission is unchanged, the ref grammar
+/// is unchanged, and nothing downstream sees a rewritten path. Reuses the write door's
+/// [`wire_serve::write::relative_respelling`] by handing it the joined absolute spelling, so the
+/// respell computation has ONE implementation across all three refusals that carry one.
+fn teach_cwd_respelling(workspace: &Path, cwd: &Path, error: &mut ErrorBody) {
+    use std::fmt::Write as _;
+    if error.code != wire::ErrorCode::FileNotFound {
+        return;
+    }
+    let Some(path) = error.path.clone() else {
+        return;
+    };
+    if path.0.starts_with('/') {
+        return;
+    }
+    let candidate = cwd.join(&path.0);
+    if !candidate.is_file() {
+        return;
+    }
+    let Ok(canonical) = workspace::canonicalize(workspace) else {
+        return;
+    };
+    let root = fs::WorkspaceRoot(canonical);
+    let Some(abs) = candidate.to_str() else {
+        return;
+    };
+    let Some(rel) = wire_serve::write::relative_respelling(&root, abs) else {
+        return;
+    };
+    if rel == path.0 {
+        return;
+    }
+    let m = error.message.get_or_insert_with(String::new);
+    let _ = write!(
+        m,
+        " Did you mean `{rel}`? — that file exists relative to your cwd, and refs are spelled \
+         from the workspace root, never from where you stand."
+    );
 }
 
 /// The whole daemon path: socket, ensure-up, `hello` (v3, workspace-bound), then the `read` op.
@@ -357,7 +402,7 @@ impl Read {
 /// The degrade: load the one document from disk, answer through the same composed-read leaf the
 /// daemon serves, then run the same v3 vocabulary projection — warm and degrade bodies are
 /// byte-identical for the same state.
-fn in_process_read(workspace: &Path, r: &Read) -> Result<Value, Fail> {
+fn in_process_read(workspace: &Path, cwd: &Path, r: &Read) -> Result<Value, Fail> {
     // The same admission the warm decoder runs before any engine contact —
     // without it `fs::load`'s `root.join(path)` resolves an absolute spelling
     // verbatim and serves bytes from outside the root.
@@ -375,8 +420,12 @@ fn in_process_read(workspace: &Path, r: &Read) -> Result<Value, Fail> {
     })?;
     let root = fs::WorkspaceRoot(canonical);
     let wpath = WirePath(r.path.clone());
-    let doc = wire_serve::load_doc(&root, &wpath)
-        .map_err(|e| engine::json_refusal(r.format, workspace, &e))?;
+    // The degrade teaches the same respelling the warm path teaches: a refusal that carries the
+    // fitted spelling on one transport and not the other trains the habit only half the time.
+    let doc = wire_serve::load_doc(&root, &wpath).map_err(|mut e| {
+        teach_cwd_respelling(workspace, cwd, &mut e);
+        engine::json_refusal(r.format, workspace, &e)
+    })?;
     let ambient = wire_serve::ambient_root(&root)
         .map_err(|e| engine::json_refusal(r.format, workspace, &e))?;
     // The same routing the wire request does — one door, two transports,
