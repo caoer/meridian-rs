@@ -373,6 +373,7 @@ fn worked_root_frames_match_contract() {
                     "b3:6e866e13b5e65ef9961c050f8a621cf1980b00ee293be650deef5f4dbc6823f0".into(),
                 ),
                 seq: 2,
+                tree_instance: None,
             },
         },
     };

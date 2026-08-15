@@ -650,10 +650,7 @@ fn a_live_run_pushes_attributed_frames() {
         json!(true)
     );
     sub.writer.set_read_timeout(Some(PUSH_WAIT)).unwrap();
-    assert_eq!(
-        sub.call(&json!({"op": "sub", "from_seq": 0}))["ok"],
-        json!(true)
-    );
+    assert_eq!(sub.call(&json!({"op": "sub"}))["ok"], json!(true));
 
     let mut conn = Conn::open(&test_config(&tmp).socket_path);
     conn.hello_v3(&ws);
