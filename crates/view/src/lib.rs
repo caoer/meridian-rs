@@ -1067,7 +1067,7 @@ mod tests {
     /// verbatim, the empty-content row, and the section-count invariant.
     #[test]
     fn body_chunks_follow_the_exclusive_content_law() {
-        /// One asserted chunk row: (path, seq, section_seq, hpath, text).
+        /// One asserted chunk row: (`path`, `seq`, `section_seq`, `hpath`, `text`).
         type BodyRow = (String, u64, Option<u64>, Option<String>, String);
         let docs: BTreeMap<String, Document> = [
             (
