@@ -1134,7 +1134,7 @@ fn prune_file(
     let args = wire_serve::write::RemoveArgs {
         id: None,
         path: wire::Path(path.to_owned()),
-        if_file_rev,
+        if_file_rev: Some(if_file_rev),
         actor: opts.actor.clone(),
         now: opts.now.clone(),
         if_root: None,

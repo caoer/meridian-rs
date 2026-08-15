@@ -4351,6 +4351,7 @@ dependencies = [
  "serde_json",
  "syntax",
  "tempfile",
+ "view",
  "wire",
  "wire-map",
 ]
