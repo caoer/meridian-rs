@@ -538,9 +538,10 @@ impl<'a> Lane<'a> {
     ) -> Result<(ExecBracket, MerkleRoot), OpenRefusal> {
         match self {
             Lane::Drawer(memo) => ExecBracket::open_observing(root, memo),
-            Lane::Resident(cache) => {
-                ExecBracket::open_cached(root, &mut cache.lock().unwrap_or_else(PoisonError::into_inner))
-            }
+            Lane::Resident(cache) => ExecBracket::open_cached(
+                root,
+                &mut cache.lock().unwrap_or_else(PoisonError::into_inner),
+            ),
         }
     }
 

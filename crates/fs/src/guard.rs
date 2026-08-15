@@ -294,13 +294,9 @@ impl StepGuard {
     ) -> Result<StepGuard, GuardError> {
         let config = read_config(root)?;
         let domain = config.parse_domain()?;
-        let rows = cache
+        let pre = cache
             .observe(root, &domain, crate::ObserveLaw::Guarded)
             .map_err(observe_refusal)?;
-        let pre = rows
-            .iter()
-            .map(|(rel, digest)| (crate::hash_name(rel).to_vec(), *digest))
-            .collect();
         Ok(StepGuard {
             root: root.clone(),
             domain,
@@ -373,7 +369,7 @@ impl StepGuard {
             return Err(GuardError::ConfigChanged);
         }
         let actual = strict_domain_digests(&self.root, &self.domain, memo)?;
-        self.verdict(edits, actual)
+        self.verdict(edits, &actual)
     }
 
     /// [`StepGuard::close`] with the observation served from a resident
@@ -391,14 +387,10 @@ impl StepGuard {
         if read_config(&self.root)? != self.config {
             return Err(GuardError::ConfigChanged);
         }
-        let rows = cache
+        let actual = cache
             .observe(&self.root, &self.domain, crate::ObserveLaw::Guarded)
             .map_err(observe_refusal)?;
-        let actual = rows
-            .iter()
-            .map(|(rel, digest)| (crate::hash_name(rel).to_vec(), *digest))
-            .collect();
-        self.verdict(edits, actual)
+        self.verdict(edits, &actual)
     }
 
     /// The close verdict, one owner for both observation sources: overlay the
@@ -408,7 +400,7 @@ impl StepGuard {
     fn verdict(
         self,
         edits: &[GovernedEdit],
-        actual: BTreeMap<Vec<u8>, [u8; 32]>,
+        actual: &BTreeMap<Vec<u8>, [u8; 32]>,
     ) -> Result<model::MerkleRoot, GuardError> {
         let mut expected = self.pre;
         for edit in edits {
@@ -422,7 +414,7 @@ impl StepGuard {
                 );
             }
         }
-        let delta = residual(&expected, &actual);
+        let delta = residual(&expected, actual);
         if !delta.is_empty() {
             return Err(GuardError::OutOfBand(delta));
         }

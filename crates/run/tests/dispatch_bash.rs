@@ -824,7 +824,10 @@ fn the_resident_lane_runs_the_same_clean_dispatch_as_the_drawer_lane() {
 
     for (out, lane) in [(&drawer_out, "drawer"), (&resident_out, "resident")] {
         assert!(out.status.success(), "{lane} lane exec failed");
-        assert!(out.pre_exec.is_none(), "{lane} lane saw a pre-exec divergence");
+        assert!(
+            out.pre_exec.is_none(),
+            "{lane} lane saw a pre-exec divergence"
+        );
         assert!(
             out.detection.is_clean(),
             "{lane} lane window not clean: {:?}",
@@ -859,8 +862,8 @@ fn the_resident_lane_names_the_same_out_of_band_delta() {
         let mut d = dispatch_of(&src, &scratch);
         d.observations = observations;
         // The source string must outlive the dispatch borrow — run inline.
-        let out = dispatch_bash::run(root, &BashDispatch { source: &src, ..d }, &mut Vec::new())
-            .unwrap();
+        let out =
+            dispatch_bash::run(root, &BashDispatch { source: &src, ..d }, &mut Vec::new()).unwrap();
         assert!(matches!(out.phase2, Phase2::RefusedDetection));
         match out.detection {
             Detection::OutOfBand(delta) => delta,
