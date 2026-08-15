@@ -24,6 +24,11 @@
 //! - Board card idempotency by claim selector (§5.4): the card path derives
 //!   from the selector, so a re-realise hits the `if_absent` CAS — already
 //!   scheduled, never a second card.
+//! - Card vocabulary is the user's (docs/laws.md § Amendment — no hard-coded
+//!   flow): a claim's [`Claim::card_template`] page supplies the card body
+//!   through the one template mechanism (`crates/preset`); the engine fills
+//!   only the slots it owns. The baked [`render_card`] body mints only when
+//!   no template is declared.
 //! - §9 identity/time: the engine mints no clock and no identity; everything
 //!   is caller-supplied on [`RealiseSpec`].
 
@@ -177,6 +182,15 @@ pub struct Claim {
     /// Max apply attempts before `non-convergent` (A4). Ignored when `apply`
     /// is `None`.
     pub retry_budget: u32,
+    /// The user-supplied template page (workspace-relative) whose `^template`
+    /// block supplies this claim's pending-agent card body — the card's whole
+    /// vocabulary is the USER's, the engine fills only the slots it owns
+    /// (`{{selector}}`, `{{rule}}`, `{{detail}}`, `{{now}}`, `{{actor}}`;
+    /// docs/laws.md § Amendment — no hard-coded flow). Declared but
+    /// unresolvable REFUSES the mint loud — a silent fallback would let a
+    /// typo'd path resurrect the baked vocabulary invisibly. `None` ⇒ the
+    /// built-in [`render_card`] body.
+    pub card_template: Option<String>,
 }
 
 /// The terminal state the A4 mechanical classifier assigns a claim (d2 §2.1).
@@ -386,7 +400,7 @@ pub fn realise(
                 let card = if spec.dry_run {
                     None
                 } else {
-                    mint_board_card(root, &claim.selector, claim.rule.as_deref(), &detail, spec)?
+                    mint_board_card(root, claim, &detail, spec)?
                 };
                 results.push(ClaimResult {
                     selector: claim.selector.clone(),
@@ -545,11 +559,12 @@ fn applied_of(outcome: TaskOutcome) -> Option<Applied> {
 /// error.
 fn mint_board_card(
     root: &fs::WorkspaceRoot,
-    selector: &str,
-    rule: Option<&str>,
+    claim: &Claim,
     detail: &str,
     spec: &RealiseSpec,
 ) -> Result<Option<String>, RealiseError> {
+    let selector = claim.selector.as_str();
+    let rule = claim.rule.as_deref();
     let path = format!(
         "{}/{}.md",
         spec.board_dir.trim_end_matches('/'),
@@ -565,7 +580,10 @@ fn mint_board_card(
             reason: format!("`now` is not RFC3339: {now:?}"),
         });
     }
-    let body = render_card(selector, rule, detail, spec.now.as_deref());
+    let body = match claim.card_template.as_deref() {
+        Some(template) => render_card_from_template(root, template, selector, rule, detail, spec)?,
+        None => render_card(selector, rule, detail, spec.now.as_deref()),
+    };
     let args = wire_serve::write::CreateArgs {
         id: None,
         path: wire::Path(path.clone()),
@@ -607,8 +625,71 @@ fn card_slug(selector: &str) -> String {
         .collect()
 }
 
-/// Render a pending-agent board card: a governed markdown page an agent pulls
-/// from the board and works through the same doors as any editor (§5.4).
+/// Render the card body from the claim's user-supplied template page
+/// (docs/laws.md § Amendment — no hard-coded flow): the page's `^template`
+/// block IS the card — folder names, the key that spells state, status words,
+/// and prose are all the user's — and the engine substitutes only the slot
+/// values it owns: `{{selector}}`, `{{rule}}` (empty when the claim declares
+/// none), `{{detail}}`, `{{now}}` (empty when the caller passed none),
+/// `{{actor}}`.
+///
+/// Extraction and fill are `crates/preset`'s — the ONE template mechanism —
+/// so a frontmatter substitution rides the § A.6.3a encoder (a `detail`
+/// carrying `: ` cannot mint a shadow key line) and a newline into the
+/// frontmatter block refuses rather than rewrites.
+///
+/// Every failure is a LOUD [`RealiseError::CardMint`] naming the template
+/// page: an unreadable page, a page with no `^template` block, a newline into
+/// frontmatter. Never a silent fallback — that would let a typo'd path
+/// resurrect the baked vocabulary invisibly.
+fn render_card_from_template(
+    root: &fs::WorkspaceRoot,
+    template_page: &str,
+    selector: &str,
+    rule: Option<&str>,
+    detail: &str,
+    spec: &RealiseSpec,
+) -> Result<String, RealiseError> {
+    let err = |reason: String| RealiseError::CardMint {
+        selector: selector.to_owned(),
+        reason,
+    };
+    let doc = fs::load(root, Path::new(template_page))
+        .map_err(|e| err(format!("card template {template_page}: {e}")))?;
+    let template = preset::template_of(&doc.raw).ok_or_else(|| {
+        err(format!(
+            "card template {template_page} declares no ^template block — the card body is the \
+             fenced record inside the section whose heading LINE carries the `^template` anchor \
+             (`# Template ^template`); a bare `# Template` heading declares nothing"
+        ))
+    })?;
+    let vars = [
+        ("{{selector}}", selector),
+        ("{{rule}}", rule.unwrap_or("")),
+        ("{{detail}}", detail),
+        ("{{now}}", spec.now.as_deref().unwrap_or("")),
+        ("{{actor}}", spec.actor.as_str()),
+    ];
+    preset::fill_slots(&template, &vars).map_err(|e| {
+        let key = if e.key.is_empty() {
+            e.placeholder.as_str()
+        } else {
+            e.key.as_str()
+        };
+        err(format!(
+            "card template {template_page}: {} — the card mint filled {} there, and the engine \
+             stamps the observed drift exactly as given (§9), so it refuses rather than \
+             rewrite it",
+            policy::defs::multi_line_value_refusal(key),
+            e.placeholder
+        ))
+    })
+}
+
+/// Render the BUILT-IN pending-agent board card — the body minted only when
+/// the claim declares no [`Claim::card_template`]: a governed markdown page an
+/// agent pulls from the board and works through the same doors as any editor
+/// (§5.4).
 ///
 /// A card references its rule, it never embeds it (verdict 18.1): the card
 /// carries the rule id in `rule:` plus one wikilink, so the law has exactly

@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use effects::EvalLimits;
-use realise::{ApplyBinding, Check, Claim, ClaimState, FieldEquals, RealiseSpec, realise};
+use realise::{
+    ApplyBinding, Check, CheckOutcome, Claim, ClaimState, FieldEquals, RealiseSpec, realise,
+};
 
 /// A page whose `status` an apply task converges to `done` (the happy claim).
 const CONVERGES_PAGE: &str = "\
@@ -134,6 +136,7 @@ fn failing_check_no_apply_mints_pending_agent_and_board_card() {
         check: field_check("target.md", "status", "done"),
         apply: None, // not apply-capable → drift is pending-agent
         retry_budget: 0,
+        card_template: None,
     };
 
     let report = realise(&root, &[claim], &spec(&scratch)).unwrap();
@@ -188,6 +191,7 @@ fn failing_check_no_apply_mints_pending_agent_and_board_card() {
         check: field_check("target.md", "status", "done"),
         apply: None,
         retry_budget: 0,
+        card_template: None,
     };
     let report2 = realise(&root, &[claim2], &spec(&scratch)).unwrap();
     let ClaimState::PendingAgent { card: card2 } = &report2.claims[0].state else {
@@ -211,6 +215,7 @@ fn retry_exhausted_renders_non_convergent() {
         check: field_check("drift.md", "resolved", "done"), // apply never sets this
         apply: Some(binding("drift.md", "nudge")),
         retry_budget: 3,
+        card_template: None,
     };
 
     let report = realise(&root, &[claim], &spec(&scratch)).unwrap();
@@ -252,6 +257,7 @@ fn no_apply_lands_unrecorded() {
             check: field_check("conv.md", "status", "done"),
             apply: Some(binding("conv.md", "fix")),
             retry_budget: 3,
+            card_template: None,
         },
         // already converged — must run zero applies, mint no receipt
         Claim {
@@ -260,6 +266,7 @@ fn no_apply_lands_unrecorded() {
             check: field_check("already.md", "status", "done"),
             apply: Some(binding("conv.md", "fix")),
             retry_budget: 3,
+            card_template: None,
         },
     ];
 
@@ -303,6 +310,7 @@ fn caps_union_is_the_union_of_every_apply_claims_declared_caps() {
             check: field_check("conv.md", "status", "done"),
             apply: Some(binding("conv.md", "fix")), // md.set_field
             retry_budget: 1,
+            card_template: None,
         },
         Claim {
             selector: "c2".to_owned(),
@@ -310,6 +318,7 @@ fn caps_union_is_the_union_of_every_apply_claims_declared_caps() {
             check: field_check("flag.md", "flag", "on"),
             apply: Some(binding("flag.md", "flip")), // md.set_field
             retry_budget: 1,
+            card_template: None,
         },
     ];
 
@@ -335,6 +344,7 @@ fn dry_run_uses_zero_caps_projects_blast_radius_and_writes_nothing() {
         check: field_check("conv.md", "status", "done"),
         apply: Some(binding("conv.md", "fix")),
         retry_budget: 3,
+        card_template: None,
     };
 
     let mut dry = spec(&scratch);
@@ -366,6 +376,7 @@ fn a_converged_claim_runs_no_apply() {
         check: field_check("already.md", "status", "done"),
         apply: Some(binding("already.md", "fix")),
         retry_budget: 3,
+        card_template: None,
     };
 
     let report = realise(&root, &[claim], &spec(&scratch)).unwrap();
@@ -388,6 +399,7 @@ fn mint_card(rule: Option<&str>, now: Option<&str>) -> String {
         check: field_check("target.md", "status", "done"),
         apply: None,
         retry_budget: 0,
+        card_template: None,
     };
     let mut s = spec(&scratch);
     s.now = now.map(str::to_owned);
@@ -452,6 +464,7 @@ fn a_malformed_now_refuses_the_card_mint() {
         check: field_check("target.md", "status", "done"),
         apply: None,
         retry_budget: 0,
+        card_template: None,
     };
     let mut s = spec(&scratch);
     s.now = Some("1753264800".to_owned()); // unix seconds — the old shape
@@ -487,6 +500,7 @@ fn converge_claim(page: &str) -> Claim {
         check: field_check(page, "status", "done"),
         apply: Some(binding(page, "fix")),
         retry_budget: 2,
+        card_template: None,
     }
 }
 
@@ -545,4 +559,257 @@ fn an_invocation_id_outside_the_block_id_charset_refuses_before_applying() {
         !root.0.join("receipts/realise.md").exists(),
         "no receipt is published on a refused mint"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The card-template plane (docs/laws.md § Amendment — no hard-coded flow):
+// a claim's `card_template` page supplies the minted card's ENTIRE vocabulary;
+// the engine fills only the slots it owns. The baked body mints only when no
+// template is declared (the F1 gates above pin those bytes).
+// ---------------------------------------------------------------------------
+
+/// A user card template speaking its OWN flow vocabulary — `status:` (not the
+/// engine's `state:`), its own words, its own headings. The engine's slots ride
+/// `{{…}}`.
+const CARD_TEMPLATE_PAGE: &str = r"---
+description: the flow's own card shape — the engine never words it
+---
+
+# Template ^template
+
+```record
+---
+status: needs-human
+claim: {{selector}}
+reason: {{detail}}
+opened: {{now}}
+by: {{actor}}
+---
+
+# waiting: {{selector}}
+
+Drifted per [[{{rule}}]] — pull this card and converge it by hand.
+```
+";
+
+/// A template that references `{{detail}}` only in the BODY — the shape that
+/// admits a multi-line drift detail.
+const CARD_TEMPLATE_BODY_DETAIL: &str = r"---
+description: body-detail card shape
+---
+
+# Template ^template
+
+```record
+---
+status: needs-human
+---
+
+# waiting: {{selector}}
+
+{{detail}}
+```
+";
+
+/// A page with a `# Template` heading but NO `^template` anchor on the heading
+/// line — the one shape where "declares no ^template" reads as false to the
+/// author staring at their visible heading.
+const ANCHORLESS_TEMPLATE_PAGE: &str =
+    "---\ndescription: x\n---\n\n# Template\n\n```record\nbody\n```\n";
+
+fn template_claim(template: Option<&str>) -> Claim {
+    Claim {
+        selector: "status-must-be-done".to_owned(),
+        rule: Some("status-move".to_owned()),
+        check: field_check("target.md", "status", "done"),
+        apply: None,
+        retry_budget: 0,
+        card_template: template.map(str::to_owned),
+    }
+}
+
+/// THE LAW'S RECEIPT (docs/laws.md § Amendment): the minted card's vocabulary
+/// comes from the user's template page — and the engine's own matcher
+/// (`FieldEquals`, the same reader rule pages match with) observes the minted
+/// card CONVERGED on the user's `status:` spelling. The `state:` mismatch that
+/// made engine-minted cards invisible to user rules is dead.
+#[test]
+fn a_declared_template_supplies_the_cards_entire_vocabulary() {
+    let (_tmp, root, scratch) = workspace(&[
+        ("target.md", "---\nstatus: todo\n---\n\n# Body\n"),
+        ("flows/card.md", CARD_TEMPLATE_PAGE),
+    ]);
+
+    let report = realise(
+        &root,
+        &[template_claim(Some("flows/card.md"))],
+        &spec(&scratch),
+    )
+    .unwrap();
+    let ClaimState::PendingAgent { card } = &report.claims[0].state else {
+        panic!("expected pending-agent, got {:?}", report.claims[0].state);
+    };
+    assert_eq!(card.as_deref(), Some("board/status-must-be-done.md"));
+
+    let card = std::fs::read_to_string(root.0.join("board/status-must-be-done.md")).unwrap();
+
+    // The user's vocabulary, slot-filled.
+    assert!(card.contains("status: needs-human"), "{card}");
+    assert!(card.contains("claim: status-must-be-done"), "{card}");
+    assert!(card.contains("opened: 2026-07-23T10:00:00Z"), "{card}");
+    assert!(card.contains("by: realise:test"), "{card}");
+    assert!(card.contains("# waiting: status-must-be-done"), "{card}");
+    assert!(card.contains("[[status-move]]"), "{card}");
+
+    // The engine's baked vocabulary is GONE — no `state:` key, no engine
+    // status word, no engine type word, no engine prose.
+    for baked in [
+        "state:",
+        "pending-agent",
+        "board-card",
+        "Check drifted with no apply-capable claim",
+    ] {
+        assert!(
+            !card.contains(baked),
+            "baked vocabulary survived ({baked}): {card}"
+        );
+    }
+
+    // The drift detail rode the frontmatter as ONE encoded value — the `: `
+    // inside it minted no shadow key (§ A.6.3a).
+    assert!(
+        card.contains("reason: \"target.md: 'status' is 'todo', expected 'done'\""),
+        "{card}"
+    );
+
+    // The matchability receipt, via the engine's own matcher: a rule watching
+    // the USER's spelling observes the minted card converged.
+    let observed = FieldEquals {
+        page: "board/status-must-be-done.md".to_owned(),
+        field: "status".to_owned(),
+        expected: "needs-human".to_owned(),
+    }
+    .observe(&root)
+    .unwrap();
+    assert_eq!(
+        observed,
+        CheckOutcome::Converged,
+        "user rules match the minted card"
+    );
+}
+
+/// Idempotency is untouched by the template plane: the card path stays
+/// selector-derived, so a re-realise hits the same `if_absent` CAS.
+#[test]
+fn a_template_card_stays_idempotent_by_selector() {
+    let (_tmp, root, scratch) = workspace(&[
+        ("target.md", "---\nstatus: todo\n---\n\n# Body\n"),
+        ("flows/card.md", CARD_TEMPLATE_PAGE),
+    ]);
+
+    let s = spec(&scratch);
+    realise(&root, &[template_claim(Some("flows/card.md"))], &s).unwrap();
+    let report2 = realise(&root, &[template_claim(Some("flows/card.md"))], &s).unwrap();
+    let ClaimState::PendingAgent { card } = &report2.claims[0].state else {
+        panic!("still pending-agent on re-run");
+    };
+    assert!(card.is_none(), "already scheduled — no second card minted");
+}
+
+/// A DECLARED template that cannot be read refuses the mint LOUD, naming the
+/// page — never a silent fallback to the baked body, which would let a typo'd
+/// path resurrect the engine vocabulary invisibly.
+#[test]
+fn a_missing_template_page_refuses_the_mint_loud() {
+    let (_tmp, root, scratch) = workspace(&[("target.md", "---\nstatus: todo\n---\n\n# Body\n")]);
+
+    let err = realise(
+        &root,
+        &[template_claim(Some("flows/absent.md"))],
+        &spec(&scratch),
+    )
+    .unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("card template flows/absent.md"), "{msg}");
+    assert!(
+        !root.0.join("board/status-must-be-done.md").exists(),
+        "no card is born on a refused template"
+    );
+}
+
+/// A template page whose `# Template` heading carries no `^template` anchor
+/// declares nothing — the refusal teaches the anchor-on-heading-line rule
+/// instead of minting the baked body.
+#[test]
+fn a_template_page_without_a_template_block_refuses() {
+    let (_tmp, root, scratch) = workspace(&[
+        ("target.md", "---\nstatus: todo\n---\n\n# Body\n"),
+        ("flows/card.md", ANCHORLESS_TEMPLATE_PAGE),
+    ]);
+
+    let err = realise(
+        &root,
+        &[template_claim(Some("flows/card.md"))],
+        &spec(&scratch),
+    )
+    .unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("no ^template block"), "{msg}");
+    assert!(
+        msg.contains("heading LINE carries the `^template` anchor"),
+        "{msg}"
+    );
+    assert!(!root.0.join("board/status-must-be-done.md").exists());
+}
+
+/// A drift detail carrying a newline cannot ride a frontmatter slot — the mint
+/// refuses (§ A.6.3a, never sanitized) — but the SAME detail fills verbatim in
+/// a body slot: the template author chooses which plane carries it.
+#[test]
+fn a_multiline_detail_refuses_frontmatter_but_fills_body() {
+    struct DriftsMultiline;
+    impl Check for DriftsMultiline {
+        fn observe(&self, _root: &fs::WorkspaceRoot) -> Result<CheckOutcome, realise::CheckError> {
+            Ok(CheckOutcome::Drifted {
+                detail: "observed: line one\nline two".to_owned(),
+            })
+        }
+    }
+    let multiline_claim = |template: &str| Claim {
+        selector: "multi".to_owned(),
+        rule: None,
+        check: Box::new(DriftsMultiline),
+        apply: None,
+        retry_budget: 0,
+        card_template: Some(template.to_owned()),
+    };
+
+    // Frontmatter slot: refused, no card born.
+    let (_tmp, root, scratch) = workspace(&[
+        ("target.md", "---\nstatus: todo\n---\n\n# Body\n"),
+        ("flows/card.md", CARD_TEMPLATE_PAGE),
+    ]);
+    let err = realise(&root, &[multiline_claim("flows/card.md")], &spec(&scratch)).unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("contains a newline"), "{msg}");
+    assert!(
+        msg.contains("{{detail}}"),
+        "the refusal names the slot: {msg}"
+    );
+    assert!(!root.0.join("board/multi.md").exists());
+
+    // Body slot: the same detail mints, verbatim.
+    let (_tmp2, root2, scratch2) = workspace(&[
+        ("target.md", "---\nstatus: todo\n---\n\n# Body\n"),
+        ("flows/card.md", CARD_TEMPLATE_BODY_DETAIL),
+    ]);
+    realise(
+        &root2,
+        &[multiline_claim("flows/card.md")],
+        &spec(&scratch2),
+    )
+    .unwrap();
+    let card = std::fs::read_to_string(root2.0.join("board/multi.md")).unwrap();
+    assert!(card.contains("observed: line one\nline two"), "{card}");
+    assert!(card.contains("status: needs-human"), "{card}");
 }

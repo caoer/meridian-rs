@@ -247,6 +247,19 @@ pub fn load_def(root: &fs::WorkspaceRoot, def_path: &str) -> Result<PresetDef, P
     })
 }
 
+/// The `^template` record body of a page — the fenced code block inside the
+/// section whose heading line carries the `^template` anchor, fences stripped
+/// (the same extraction [`load_def`] serves defs with). `None` ⇒ the page
+/// declares no `^template`.
+///
+/// Public for doors that take a template page WITHOUT the full def contract —
+/// the realise card mint reads its user-supplied card page through this one
+/// extractor — so "where a template lives on a page" has exactly one owner.
+#[must_use]
+pub fn template_of(raw: &str) -> Option<String> {
+    parse_template(raw)
+}
+
 /// Parse the `# Ephemeral` section into the declared-disposable allowlist (each
 /// `- <glob-or-path>` list item). Empty ⇒ no `# Ephemeral` section or no items —
 /// reconcile then prunes NO file (the allowlist is empty by construction).
@@ -604,24 +617,16 @@ fn first_violated_rule<'a>(rules: &'a [PropRule], record: &Document) -> Option<&
     })
 }
 
-/// Fill a `^template` body: replace `{{id}}`, `{{kind}}`, `{{actor}}`, `{{now}}`.
-///
-/// The template's BODY fills verbatim. Inside its FRONTMATTER BLOCK the same
-/// substitution is a **value-plane write** (wire-contract § A.6.3a), so it goes
-/// through the one encoder every other value-plane door uses: the emitted value
-/// is the plain form when the plain form decodes back to exactly the caller's
-/// string, and a double-quoted scalar otherwise. Without this the door
-/// interpolated source bytes, and a caller value carrying `: ` or a newline
-/// minted a SECOND key line — one key twice, which § A.3's first-occurrence
-/// model cannot represent, so disk and the read plane disagreed and no governed
-/// edit could reach the shadow line.
+/// Fill a `^template` body with the four birth slots (`{{id}}`, `{{kind}}`,
+/// `{{actor}}`, `{{now}}`) — `mrd new`'s door over [`fill_slots`], which owns
+/// the fm-aware § A.6.3a encoding walk.
 ///
 /// # Errors
 /// A [`RefusalReason`] (`bad_request`/`fix`) when a filled frontmatter value
-/// carries a newline. A single-line YAML scalar cannot carry one and an
-/// escaped-scalar workaround leaks (§ A.6.3), so the birth is REFUSED — never
-/// sanitized, because §3.4 stamps `actor`/`now` exactly as given and a door
-/// that trims the caller's identity falsifies the provenance it records.
+/// carries a newline ([`birth_newline_refusal`]'s wording of the
+/// [`SlotNewline`] fact): the birth is REFUSED — never sanitized, because
+/// §3.4 stamps `actor`/`now` exactly as given and a door that trims the
+/// caller's identity falsifies the provenance it records.
 fn fill_template(
     template: &str,
     id: &str,
@@ -630,10 +635,49 @@ fn fill_template(
 ) -> Result<String, RefusalReason> {
     let actor = opts.actor.as_deref();
     let now = opts.now.as_deref();
+    fill_slots(template, &birth_vars(id, kind, actor, now)).map_err(|e| birth_newline_refusal(&e))
+}
+
+/// A slot fill the frontmatter plane cannot carry — the MECHANISM half of the
+/// § A.6.3a newline refusal: the value substituted for `placeholder` carried a
+/// newline into the template's frontmatter block, on the line declaring `key`.
+/// Door-neutral by design: `mrd new` words it as its §3.4 `bad_request`
+/// ([`fill_template`]), the realise card mint as a card-mint fault — the
+/// sentence each speaks is the door's, the fact is this struct's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlotNewline {
+    /// The frontmatter key whose line composed the newline (empty when the
+    /// line declares no key — the placeholder then names the site).
+    pub key: String,
+    /// The placeholder (`{{actor}}`, `{{detail}}`, …) whose value carried it.
+    pub placeholder: String,
+}
+
+/// Fill a `^template` body with a caller-supplied slot table — the fill half
+/// of the one template mechanism ([`template_of`] is the extraction half).
+///
+/// The template's BODY fills verbatim. Inside its FRONTMATTER BLOCK the same
+/// substitution is a **value-plane write** (wire-contract § A.6.3a), so it
+/// goes through the one encoder every other value-plane door uses: the
+/// emitted value is the plain form when the plain form decodes back to
+/// exactly the composed string, and a double-quoted scalar otherwise. Without
+/// this the door interpolated source bytes, and a value carrying `: ` or a
+/// newline minted a SECOND key line — one key twice, which § A.3's
+/// first-occurrence model cannot represent.
+///
+/// `mrd new` calls this with the four birth slots; the realise card mint with
+/// the slots its engine owns. One mechanism, per-door slot tables — a second
+/// fill implementation is how the § A.6.3a hazards come back.
+///
+/// # Errors
+/// [`SlotNewline`] when a filled frontmatter value carries a newline — a
+/// single-line YAML scalar cannot hold one and an escaped-scalar workaround
+/// leaks (§ A.6.3), so the caller REFUSES in its own door's vocabulary,
+/// never sanitizes.
+pub fn fill_slots(template: &str, vars: &[(&str, &str)]) -> Result<String, SlotNewline> {
     let Some(fm_end) = frontmatter_block_end(template) else {
-        return Ok(fill_vars(template, id, kind, actor, now));
+        return Ok(fill_all(template, vars));
     };
-    let vars = birth_vars(id, kind, actor, now);
 
     let mut out = String::with_capacity(template.len());
     // The key a value line belongs to — carried across a block sequence, whose
@@ -645,10 +689,10 @@ fn fill_template(
         if let Some(k) = line_key(text) {
             key = k.to_string();
         }
-        out.push_str(&fill_fm_line(text, &key, &vars)?);
+        out.push_str(&fill_fm_line(text, &key, vars)?);
         out.push_str(eol);
     }
-    out.push_str(&fill_vars(&template[fm_end..], id, kind, actor, now));
+    out.push_str(&fill_all(&template[fm_end..], vars));
     Ok(out)
 }
 
@@ -696,7 +740,7 @@ fn line_key(text: &str) -> Option<&str> {
 /// Fill one frontmatter line. A placeholder standing in a VALUE position is
 /// composed and then encoded (§ A.6.3); anything else fills verbatim, with the
 /// newline refusal still standing — a newline is illegal anywhere in this block.
-fn fill_fm_line(text: &str, key: &str, vars: &[(&str, &str)]) -> Result<String, RefusalReason> {
+fn fill_fm_line(text: &str, key: &str, vars: &[(&str, &str)]) -> Result<String, SlotNewline> {
     if !text.contains("{{") {
         return Ok(text.to_string());
     }
@@ -706,15 +750,18 @@ fn fill_fm_line(text: &str, key: &str, vars: &[(&str, &str)]) -> Result<String, 
         let (prefix, region) = text.split_at(split);
         let core = quoted_lone_placeholder(region).unwrap_or_else(|| region.trim_end());
         let composed = fill_all(core, vars);
-        let encoded = policy::defs::yaml_safe_value(&composed)
-            .map_err(|_| multi_line_refusal(key, core, vars))?;
+        let encoded =
+            policy::defs::yaml_safe_value(&composed).map_err(|_| slot_newline(key, core, vars))?;
         return Ok(format!("{prefix}{encoded}"));
     }
     // No value region (a placeholder in the KEY position, or a shape this door
     // does not model): the fill stays verbatim, but a newline still cannot ride
     // into the block — it would mint lines the caller never wrote.
     if let Some((name, _)) = substituted_multiline(text, vars) {
-        return Err(multi_line_refusal_named(key, name));
+        return Err(SlotNewline {
+            key: key.to_owned(),
+            placeholder: (*name).to_owned(),
+        });
     }
     Ok(fill_all(text, vars))
 }
@@ -760,17 +807,23 @@ fn substituted_multiline<'a>(
         .find(|(name, value)| text.contains(name) && value.contains(['\n', '\r']))
 }
 
-/// The multi-line refusal for whichever placeholder in `core` carried the
-/// newline — the composed value is the caller's, so the message names which
-/// caller value it was.
-fn multi_line_refusal(key: &str, core: &str, vars: &[(&str, &str)]) -> RefusalReason {
-    let name = substituted_multiline(core, vars).map_or("{{actor}}", |(name, _)| *name);
-    multi_line_refusal_named(key, name)
+/// The [`SlotNewline`] for whichever placeholder in `core` carried the newline
+/// — the composed value is the caller's, so the fact names which value it was.
+/// (Unreachable fallback: the encoder only fails on a newline, and a newline
+/// in a single-line `core` can only arrive by substitution.)
+fn slot_newline(key: &str, core: &str, vars: &[(&str, &str)]) -> SlotNewline {
+    let placeholder = substituted_multiline(core, vars).map_or("{{?}}", |(name, _)| *name);
+    SlotNewline {
+        key: key.to_owned(),
+        placeholder: placeholder.to_owned(),
+    }
 }
 
-/// The uniform § A.6.3a sentence — one owner, `policy::defs` — plus this door's
-/// provenance clause naming the birth placeholder that carried the newline.
-fn multi_line_refusal_named(key: &str, placeholder: &str) -> RefusalReason {
+/// `mrd new`'s wording of a [`SlotNewline`]: the uniform § A.6.3a sentence —
+/// one owner, `policy::defs` — plus this door's provenance clause naming the
+/// birth placeholder that carried the newline.
+fn birth_newline_refusal(e: &SlotNewline) -> RefusalReason {
+    let SlotNewline { key, placeholder } = e;
     let key = if key.is_empty() { placeholder } else { key };
     RefusalReason::bad_request(format!(
         "{} — the birth door filled {placeholder} there, and `mrd new` stamps a \
