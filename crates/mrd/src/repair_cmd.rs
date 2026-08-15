@@ -103,7 +103,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         // attestation cannot reach, never SILENTLY. A named page takes the
         // door branch above instead: the page is SERVED, and a door that
         // voiced a census would name its own subject as an exclusion.
-        crate::voice_excluded(&root, &docs, &unserved);
+        crate::voice_excluded(&root, &docs);
     }
     let docs = docs;
 

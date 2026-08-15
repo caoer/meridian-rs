@@ -142,6 +142,79 @@ fn the_excluded_note_states_the_full_count_but_samples_the_paths() {
     );
 }
 
+/// The voice walks by the projection's own dir law: a dot-prefixed segment is
+/// never entered and never voiced (`fs::declined_markdown`, one predicate
+/// `fs::domain::dot_segment` — dogfood F11 carried from `mrd rules` to this
+/// face, card voice-excluded-walk-consistency). Before this gate the voice
+/// enumerated raw `fs::walk`, so a dot-named snapshot tree the record
+/// projection holds zero records for was counted and named as "excluded" —
+/// paths no enumeration on this face could ever have served.
+///
+/// Half 1: the planted dot tree moves neither the count nor the sample.
+/// Half 2 (the decision-0017 negative case): the operator-declared
+/// custom-ignore class stays voiced, and the voice stays exit-neutral —
+/// the walk still answers exit 0 beside it.
+#[test]
+fn a_dot_excluded_path_is_never_voiced_while_the_custom_ignore_class_still_is() {
+    let sb = sandbox();
+    let ws = sb.tmp.path().join("dotted");
+    std::fs::create_dir_all(&ws).expect("mkdir");
+    write(&ws, "a.md", "# A\n\nalpha.\n");
+    write(
+        &ws,
+        "meridian/domain.md",
+        "---\nversion: 1\nignore:\n  - \"bulk/**\"\n---\n\nignored.\n",
+    );
+    write(&ws, "bulk/only.md", "# one\n\nexcluded.\n");
+    write(
+        &ws,
+        ".snapshots/2026-08-14/index.md",
+        "# noise\n\nnever served.\n",
+    );
+    write(
+        &ws,
+        ".snapshots/2026-08-15/index.md",
+        "# noise\n\nnever served.\n",
+    );
+    write(&ws, ".obsidian/workspace.md", "# editor\n\nnoise.\n");
+    let init = sb.run(&ws, &["init"]);
+    assert!(init.status.success(), "init: {}", stderr(&init));
+
+    let out = sb.run(&ws, &["walk", "a.md", "--down"]);
+    let said = stderr(&out);
+
+    // Positive control: the custom-ignore class still fires the note at all.
+    assert!(
+        said.contains("outside the hash domain"),
+        "control: the custom-ignore class must keep the note alive, or the \
+         dot assertions below pass vacuously: {said}"
+    );
+    // Half 2, voiced: the operator-declared exclusion is named.
+    assert!(
+        said.contains("bulk/only.md"),
+        "the custom-ignore class must stay voiced (decision 0017): {said}"
+    );
+    // Half 2, exit-neutral: the voice never moves the verdict.
+    assert!(
+        out.status.success(),
+        "the voiced exclusion is exit-neutral (decision 0017); walk answered \
+         non-zero: {said}"
+    );
+    // Half 1, the count: only the declined class is counted — 1, not 1 + the
+    // three dot-tree files.
+    assert!(
+        said.contains("1 markdown file(s)"),
+        "the count must cover the custom-ignore class alone; a larger count \
+         is the raw-walk disease this gate closes: {said}"
+    );
+    // Half 1, the names: no dot path is ever voiced.
+    assert!(
+        !said.contains(".snapshots") && !said.contains(".obsidian"),
+        "a dot-prefixed path is invisible to this voice, as it is to the \
+         record projection (F11): {said}"
+    );
+}
+
 /// The cap must not fire when there is nothing to cap: a population at or under
 /// the cap names every member and claims no remainder.
 #[test]
