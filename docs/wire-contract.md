@@ -234,7 +234,7 @@ Consequences are threaded at §3.1 (pipe debuggability restated at the socket), 
 
 ## §4 The op surface
 
-Eleven ops in this table (the § A.3 standing additions `read` and `create`, and the § A.7 `script` op, land on top, not re-tabled here). The five-verb interface maps onto the original ten 1:1 (§4.8). Read ops are classified by the wire-op criterion: feeds-an-action → wire fact op; feeds-orientation → dashboard-only, NOT on this wire.
+Eleven ops in this table (the § A.3 standing additions `read`, `create` and `remove`, and the § A.7 `script` op, land on top, not re-tabled here). The five-verb interface maps onto the original ten 1:1 (§4.8). Read ops are classified by the wire-op criterion: feeds-an-action → wire fact op; feeds-orientation → dashboard-only, NOT on this wire.
 
 | Op | Rung (panel ladder) | Class |
 |---|---|---|
@@ -847,7 +847,7 @@ Every error frame carries `code` + `recovery` from the CLOSED six-class enum; ea
 
 | class | meaning | codes |
 |---|---|---|
-| `fix` | your request is wrong; change it | `bad_request`, `unknown_op`, `bad_path`, `no_match`, `not_unique`, `would_corrupt{family,lost?,cause?,target?}`, `ambiguous_ref{candidates}` |
+| `fix` | your request is wrong; change it | `bad_request`, `unknown_op`, `bad_path`, `no_match`, `not_unique`, `would_corrupt{family,lost?,cause?,target?}`, `ambiguous_ref{candidates}`, `remove_refused{referrers}` (§ A.3 remove door — inbound references exist; unlink the named referrers, then resend) |
 | `env` | the world outside the workspace is wrong | `file_not_found`, `io_error{cause}`, `invalid_utf8{path,message}`, `daemon_only`, `mount_table_invalid{path,message}` |
 | `refresh` | your picture of a node is stale; re-read one thing | `cas_mismatch{expected,actual}`, `ref_not_found{stage,dest?}` |
 | `retry` | transient; same request may succeed | `lock_timeout`, `stale_view{required,as_of_fingerprint,live_fingerprint}` |
@@ -1187,6 +1187,7 @@ When a workspace is **armed** (attested INDEX present), after CAS and before byt
 | `splice.pin` | Pin rides the write choke-point; selector is segments/anchor. |
 | `pin-cross-root` | `splice.pin.target` admits the ruled `name:rel` rooted spelling (address-grammar A-4/P5): the target is loaded, gated, promoted and blob-written in the NAMED mounted root under that root's own `LOCK_NB` write flock; the lock row's `object` carries `name:rel` minus `.md` verbatim; the read-mint gate consults the TARGET workspace's ledger. A face keeps its own cross-root refusal until this cap is present, so an old engine refuses with its taught message instead of `pin_target_missing` on a spelling it cannot parse. |
 | `create` | File birth through the guarded door; full body bytes. |
+| `remove` | File death through the guarded door; refuses `remove_refused` while anything in the corpus still references the record (the remove-door law, below). |
 | `hello.identity` | Optional `{build: sha \| sha-dirty \| unknown}` for deploy identity. The `-dirty` marker rides the sha TOKEN (git-describe convention), so this stays one field: `sha` = built from a whole commit, `sha-dirty` = built from a worktree diverging from that commit, `unknown` = no attributable identity was readable. A caller matching a declared sha matches the WHOLE token, never a substring — a decorated sha is a different build and must refuse (`docs/release.md` §5.1). *(2026-08-09: the marker is new; the field, its optionality, and its v3-only rule are unchanged.)* |
 
 **The socket law (0025, 2026-08-12): a local client refuses a cross-build daemon.** The socket is keyed on the cache root alone — one cache root ⇒ one socket ⇒ one resident daemon, whatever binary bound it first — so an upgrade-in-place leaves a stale build serving every caller until someone restarts it. Measured (receipt `839fdb38`, session `09-11-mentor-8h-perfection-loop`): a caller following this contract got an answer computed by an engine it did not build — wording that does not exist in the caller's tree — with no error and no way to tell.
@@ -1310,6 +1311,110 @@ team-e multi-root contract, L3 end state):**
   the §4.4 family for armed facts that cannot be represented. The native
   `put:end` door is untouched: a native append addressed the parent, and its
   fact keeps naming the parent.
+
+**The remove door — guarded file death (docs-first, 2026-08-15, card
+`engine-delete-door`; shape ZT-ruled, four selections recorded verbatim on the
+card):**
+
+- **Why this op exists — the write model was incomplete.** The write model
+  governs two of the three mutations a corpus member can undergo: birth
+  (`create`) and edit (`splice`) are locked, rev-minting, delta-transported,
+  attributable and refusable. Death had no op at all: a record could leave
+  the corpus only OUTSIDE the model — a raw unlink with no flock, no rev
+  transition, no `actor`, and no Delta until the watch feed reconstructed it
+  as an anonymous external change. That asymmetry is a defect in the write
+  model itself, and death is the one mutation the corpus cannot recover from
+  its own bytes. `remove` completes the model — one more op in this
+  standing-addition family (the `create` precedent, not a new grammar) — so
+  every mutation moves through the same flock, mints the same grain of
+  facts, and can refuse. One consequence, stated once: with death inside the
+  model, an unlink-and-rebirth no longer masquerades as legitimate creation
+  (a birth has no pre-image, so nothing else distinguishes the two).
+- **Request:** `{"id":…,"op":"remove","path":…,"if_file_rev":…,"actor":…?,
+  "now":…?,"if_fingerprint":…?,"dry":…?}` — strict-decoded, v3-only at
+  dispatch, advertised as cap `remove` at op grain (no dotted `remove.<field>`;
+  frozen v2 caps stay byte-identical). `now` is RFC 3339, validated never
+  generated (§9).
+- **`if_file_rev` is the mandatory guard — remove-what-you-read.** The
+  record's own whole-file rev from the caller's read. Schema-optional like
+  every guard field (§ A.1: a rev-less frame still decodes); absent it refuses
+  `guard_required` (fix) after decode, teaching the slot and the read that
+  mints the token. Stale it refuses `cas_mismatch{expected,actual}` (refresh).
+  The world-grain `if_fingerprint` is honored when present
+  (`fingerprint_mismatch`, resync) and never demanded: the referential check
+  below is recomputed by the engine inside the critical section, so a caller's
+  stale world picture cannot sneak a referenced record past the door — the
+  world guard adds convergence cost, not safety (the scope-key law: node-grain
+  wherever a node token exists).
+- **The referential guard — refuse while referenced.** Under the same write
+  flock that performs the unlink, the engine snapshots the domain
+  (one `domain_snapshot`: the fingerprint, the file set, and the corpus the
+  check reads are ONE read), builds the corpus, and enumerates every inbound
+  reference to the record: wikilinks and embeds (link-plane resolution, the
+  walk plane's stage 1) and ambient `meridian-lock` pins (the walk plane's
+  Down direction, `to_path` = the record). Any inbound edge refuses
+  `remove_refused` (fix) — the unlink never runs. Self-edges are excluded (a
+  record cannot hold itself alive); a dangling inbound spelling resolves to
+  nothing and does not block.
+- **The refusal NAMES the referrers.** `remove_refused` carries
+  `referrers:[{path, kind, count}]` — every referring file, its edge kind
+  (`wikilink` / `embed` / `pin`), and how many edges it holds, path-lex
+  sorted. The message speaks the teaching register: why the removal refused
+  (the named records still reference this one; removing it would strand them
+  dangling), then the fitted remedy — unlink or retarget each named edge,
+  then resend; a bare "refused" would push callers back to `rm`, which is the
+  exact hole this door closes.
+- **Check and unlink are ONE critical section.** The referential check, the
+  `if_file_rev` CAS, and the unlink all run under the workspace write flock —
+  the same flock every meridian writer serializes on — so no cooperating
+  writer can land a link between the check and the unlink (checking outside
+  the lock would be a TOCTOU hole: a link written in that window would be
+  destroyed by a door that just certified nothing pointed at the file).
+  Editors that never take the flock (a human's editor, raw `rm`) remain
+  outside every write door's serialization — the same stated residual every
+  door carries, not a new one.
+- **No `force`, by ruling.** The op declares no `force` field; strict decode
+  refuses a frame carrying one. Everywhere else `force` escapes a guard on a
+  reversible write; deletion is the one irreversible op, so it is the one
+  door with no escape hatch — the forced-birth precedent ("guarded door has
+  no forced-birth escape") applied to death. Operability consequence, stated:
+  a caller holding a stale rev re-reads and resends; a fresh rev plus a
+  referentially-empty record always lands.
+- **No tombstone, by ruling.** The file ceases; the terminal fact is the
+  death Delta the response and the delta plane carry — `change:"deleted"`,
+  `file_rev_before` present, `file_rev_after` absent (§7.1, unchanged) — plus
+  the fingerprint advance. `sub` transports it live with `actor`/`now`
+  attribution; `diff` replays it within the ring; past the ring the removed
+  path is simply absent from the re-derived world (`fingerprint_unknown` →
+  full resync). No on-disk tombstone: disk is markdown only, and git history
+  is the archaeology. Hash law is untouched — a removed leaf leaves the tree
+  under the existing merkle composition (`node-rev-merkle-spec.md` records
+  the ruling).
+- **Response:** `{"path","file_rev_before","fingerprint_before",
+  "fingerprint_after","seq","dry"?,"verdicts"}` — the armed shape of a death:
+  what died (its confirmed rev), the world transition, the Delta's seq.
+  `dry:true` runs everything except disk — guards, referential check,
+  verdicts — and carries `fingerprint_after:null`.
+- **Refusal codes, complete:** `guard_required` (fix — no `if_file_rev`) ·
+  `cas_mismatch{expected,actual}` (refresh — the record drifted from the read
+  rev) · `remove_refused{referrers}` (fix — inbound references exist) ·
+  `fingerprint_mismatch{expected,actual}` (resync — a supplied world guard is
+  stale) · `file_not_found` (env — nothing to remove) · `bad_path` (fix —
+  escapes the workspace). The armed-plane gate runs over the death's
+  before-state (`ChangeOp::Remove`) exactly as at every door — the
+  index-integrity floor (the armed INDEX and once-armed marker refuse
+  removal) stands unchanged and predates this door.
+- **Stated limits.** (1) Cross-root inbound pins are invisible: the guard
+  enumerates the workspace's own corpus, and a pin in a DIFFERENT root
+  pointing into this one lives in a corpus this workspace does not serve —
+  a remove here can strand that pin red (the walk plane colors it broken on
+  the pinning side). §13-register honesty, not silent. (2) The guard reads
+  the attested corpus (§12 hash domain): references written in files outside
+  the domain are not links in the corpus sense and do not block. (3) A reader
+  enumerating the corpus concurrently with a remove can still observe a
+  path vanish mid-read and refuses whole (no-partial-load) — reader behavior
+  on a vanished path is its own engine question, priced on the run-plane
+  lane, not changed here.
 
 **The `replace_section` containment law (docs-first, 2026-08-12; ZT-ratified
 spec `replace-section-containment`, session 12-04-f2-mrd-integration):**
