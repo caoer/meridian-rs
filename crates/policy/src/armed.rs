@@ -2124,8 +2124,7 @@ mod tests {
     #[test]
     fn the_resolvers_layer_depth_spelling_is_refused_as_an_arm_root() {
         for copied in ["workspace:0", "workspace:2", "user:1"] {
-            let fault =
-                ArmRoot::parse(copied).expect_err("resolver vocabulary is not a directory");
+            let fault = ArmRoot::parse(copied).expect_err("resolver vocabulary is not a directory");
             assert!(
                 matches!(fault, PathFault::RootSeparator { .. }),
                 "{copied}: {fault:?}"
@@ -2157,7 +2156,10 @@ mod tests {
         let ws = Workspace::default().check("rules/c.md", "c");
         let page = arm_one(&ws, "c", Mode::Block).expect("arms").render();
         let pasted = page.replace("| `.` |", "| `workspace:0` |");
-        assert_ne!(pasted, page, "the fixture's scope cell was the workspace root");
+        assert_ne!(
+            pasted, page,
+            "the fixture's scope cell was the workspace root"
+        );
         let err = parse_artifact(&pasted).expect_err("the pasted resolver spelling refuses");
         assert!(
             err.detail.contains("arm root") && err.detail.contains("layer:depth"),

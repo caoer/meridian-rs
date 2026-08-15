@@ -223,7 +223,10 @@ pub enum ScopeLayer {
 }
 
 impl ScopeLayer {
-    /// The layer's name, for refusals and the print verb's scope column.
+    /// The layer's name, for refusals and the print verb's `layer=` field —
+    /// never a `scope=` label there: at the rules surface "scope" is the armed
+    /// artifact's arm-root column, a directory, and one label carrying both
+    /// vocabularies was the measured copy-paste trap.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {

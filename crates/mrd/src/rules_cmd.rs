@@ -275,8 +275,13 @@ struct RuleRow {
     id: String,
     /// `resolved`, or `collision` — a collided id resolves to nothing.
     state: &'static str,
-    /// The collision's scope, rendered, when this row is one.
-    collision_scope: Option<String>,
+    /// The collision's resolution scope — (layer, depth) — when this row is
+    /// one. Carried as the two facts; each face spells them itself: the human
+    /// render as `layer=… depth=…`, the JSON as the composite it always shipped.
+    /// Neither face labels them `scope=` — at this surface that word is the
+    /// armed artifact's ARM-ROOT column, a directory, and one label carrying
+    /// two vocabularies was the measured copy-paste trap.
+    collision_scope: Option<(&'static str, usize)>,
     armed: Option<ArmedCell>,
     chain: Vec<ChainEntry>,
 }
@@ -792,7 +797,10 @@ fn rows(
         rows.push(RuleRow {
             id: collision.id().as_str().to_owned(),
             state: "collision",
-            collision_scope: Some(collision.scope().to_string()),
+            collision_scope: Some((
+                collision.scope().layer().as_str(),
+                collision.scope().depth(),
+            )),
             // A collided id resolves to nothing, so there is no winner for an
             // armed row to be about.
             armed: None,
@@ -865,10 +873,11 @@ fn render_human(report: &RulesReport) -> String {
     }
     for row in &report.rows {
         match (&row.collision_scope, &row.armed) {
-            (Some(scope), _) => {
+            (Some((layer, depth)), _) => {
                 let _ = writeln!(
                     out,
-                    "  {}  REFUSED collision at scope={scope} — this id resolves to nothing",
+                    "  {}  REFUSED collision at layer={layer} depth={depth} — this id resolves \
+                     to nothing",
                     row.id
                 );
             }
@@ -882,7 +891,7 @@ fn render_human(report: &RulesReport) -> String {
         for entry in &row.chain {
             let _ = writeln!(
                 out,
-                "      {:8}  {}  rev={}  scope={}:{}  kinds={}",
+                "      {:8}  {}  rev={}  layer={} depth={}  kinds={}",
                 entry.role, entry.page, entry.rev, entry.layer, entry.depth, entry.kinds
             );
         }
@@ -897,10 +906,17 @@ fn render_human(report: &RulesReport) -> String {
             "armed rows counted above whose pinned page is NOT in this answer:"
         );
         for orphan in &report.armed_orphans {
+            // `scope` here IS the armed artifact's arm-root column — the one
+            // place this render says "scope" — and the workspace root prints
+            // `.` exactly as the artifact's own cell does.
             let _ = writeln!(
                 out,
                 "  {}  armed={} at scope={} — pinned {} ({})",
-                orphan.id, orphan.mode, orphan.scope, orphan.page, orphan.cause
+                orphan.id,
+                orphan.mode,
+                display_path(&orphan.scope),
+                orphan.page,
+                orphan.cause
             );
         }
     }
@@ -974,7 +990,9 @@ fn to_json(workspace: &Path, report: &RulesReport) -> Value {
             json!({
                 "id": row.id,
                 "state": row.state,
-                "collision_scope": row.collision_scope,
+                // The composite spelling the JSON always shipped — the machine
+                // face is byte-stable while the human face de-collides.
+                "collision_scope": row.collision_scope.map(|(layer, depth)| format!("{layer}:{depth}")),
                 "armed": row.armed.as_ref().map(|armed| json!({
                     "mode": armed.mode,
                     "pinned_page": armed.elsewhere,
@@ -1078,8 +1096,8 @@ rules at sessions/s1
   user-scope none  (no anchor at /home/u/MERIDIAN.md)
   armed-set  none  (meridian/armed-rules.md absent)
   task.review-notify  armed=-
-      winner    sessions/s1/notify.md  rev=aaaaaaaaaaaaaaaa  scope=workspace:2  kinds=hook
-      shadowed  notify.md  rev=aaaaaaaaaaaaaaaa  scope=workspace:0  kinds=hook
+      winner    sessions/s1/notify.md  rev=aaaaaaaaaaaaaaaa  layer=workspace depth=2  kinds=hook
+      shadowed  notify.md  rev=aaaaaaaaaaaaaaaa  layer=workspace depth=0  kinds=hook
 ";
         assert_eq!(render_human(&report(rows)), expected);
     }
@@ -1095,7 +1113,7 @@ rules at sessions/s1
         let rows = vec![RuleRow {
             id: "shared".to_owned(),
             state: "collision",
-            collision_scope: Some("workspace:1".to_owned()),
+            collision_scope: Some(("workspace", 1)),
             armed: None,
             chain: vec![
                 entry("tied", "s/a.md", 1),
@@ -1105,7 +1123,7 @@ rules at sessions/s1
         }];
         let rendered = render_human(&report(rows));
         assert!(
-            rendered.contains("shared  REFUSED collision at scope=workspace:1"),
+            rendered.contains("shared  REFUSED collision at layer=workspace depth=1"),
             "{rendered}"
         );
         for page in ["s/a.md", "s/b.md", "root.md"] {
@@ -1153,7 +1171,7 @@ rules at sessions/s1
         let mut r = report(vec![RuleRow {
             id: "shared".to_owned(),
             state: "collision",
-            collision_scope: Some("workspace:1".to_owned()),
+            collision_scope: Some(("workspace", 1)),
             armed: None,
             chain: Vec::new(),
         }]);
@@ -1213,11 +1231,35 @@ rules at sessions/s1
         assert_eq!(rules[0]["chain"][0]["role"], json!("winner"));
         assert_eq!(rules[0]["chain"][1]["role"], json!("shadowed"));
         assert_eq!(rules[0]["chain"][0]["depth"], json!(2));
+        assert_eq!(
+            rules[0]["collision_scope"],
+            Value::Null,
+            "a resolved row has no collision"
+        );
         assert_eq!(rules[0]["armed"]["pinned_page"], json!("notify.md"));
         assert_eq!(rules[0]["armed"]["rendered"], json!("armed@notify.md"));
         assert_eq!(value["rules"]["view"], json!("effective"));
         assert_eq!(value["rules"]["armed_set"]["state"], json!("absent"));
         assert_eq!(value["rules"]["user_scope"]["scope"], Value::Null);
+    }
+
+    /// The machine face is byte-stable across the human rename: `collision_scope`
+    /// ships the composite `layer:depth` string it always did, while the human
+    /// render spells the same two facts `layer=… depth=…`.
+    #[test]
+    fn json_ships_the_collision_scope_composite_unchanged() {
+        let rows = vec![RuleRow {
+            id: "shared".to_owned(),
+            state: "collision",
+            collision_scope: Some(("workspace", 1)),
+            armed: None,
+            chain: Vec::new(),
+        }];
+        let value = to_json(Path::new("/ws"), &report(rows));
+        assert_eq!(
+            value["rules"]["rules"][0]["collision_scope"],
+            json!("workspace:1")
+        );
     }
 
     // ── the invocation ────────────────────────────────────────────────────────
