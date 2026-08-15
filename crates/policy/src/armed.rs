@@ -782,6 +782,60 @@ impl ArmedArtifact {
         verify_rows(self.select_at(path).into_iter(), pages)
     }
 
+    /// **The diagnosis complement of [`ArmedArtifact::verify_at`]:** every
+    /// attested row whose arm root does NOT contain `path`, each carrying its
+    /// own redness, ordered by (id, arm root).
+    ///
+    /// `verify_at` answers what GOVERNS a write and is a gate. This answers what
+    /// does NOT, and is a report — for a surface that already speaks about the
+    /// whole artifact (`mrd rules` prints the artifact's row count in its
+    /// header) and must not let a row fall silent merely because the queried
+    /// path sits outside its arm root. Before it existed, an inert arm rendered
+    /// as an empty cell indistinguishable from "armed nowhere", and a DRIFTED
+    /// row outside the path was dropped with it — reported clean by `mrd rules`
+    /// while `mrd status` reported it drifted on the same workspace.
+    ///
+    /// ⛔ **Never a gate, and never composed with [`ArmedArtifact::select_at`]
+    /// by a caller.** The selection law and its verification live together here
+    /// precisely so no consumer re-derives containment; a caller that filtered
+    /// these rows itself would be the second resolver the CLI layer forbids.
+    /// Nothing in this list governs anything: a red row here does not refuse a
+    /// write, it names a fault a reader would otherwise never see.
+    #[must_use]
+    pub fn verify_elsewhere_at(&self, path: &str, pages: &dyn PageSource) -> Vec<ElsewhereRow> {
+        let outside: Vec<&ArmedRow> = self
+            .rows
+            .iter()
+            .filter(|row| !row.scope.contains(path))
+            .collect();
+        // One rev law, shared with the gate: the redness of these rows is
+        // `verify_rows`' verdict, never a second hash check written here.
+        let verdict = verify_rows(outside.iter().copied(), pages);
+        let mut reddened: BTreeMap<(&str, &str), &Redness> = BTreeMap::new();
+        for red in verdict.red() {
+            reddened.insert(
+                (red.row().id().as_str(), red.row().scope().as_str()),
+                red.why(),
+            );
+        }
+        let mut found: Vec<ElsewhereRow> = outside
+            .iter()
+            .map(|row| ElsewhereRow {
+                why: reddened
+                    .get(&(row.id.as_str(), row.scope.as_str()))
+                    .map(|why| (*why).clone()),
+                row: (*row).clone(),
+            })
+            .collect();
+        found.sort_by(|a, b| {
+            a.row
+                .id
+                .cmp(&b.row.id)
+                .then_with(|| a.row.scope.cmp(&b.row.scope))
+        });
+        found
+    }
+
     /// Re-hash every pinned page through the injected source and split the rows into
     /// those that still stand and those that reddened. A red row never fires on
     /// its new bytes.
@@ -923,6 +977,33 @@ impl Redness {
                 Mode::vocabulary(*kind)
             });
         Redness::ModeOutsideKind { kinds, vocabulary }
+    }
+}
+
+/// One attested row that does NOT govern the queried path — the result element
+/// of [`ArmedArtifact::verify_elsewhere_at`].
+///
+/// Its redness is optional because containment and redness are independent
+/// facts: a row can be inert here and perfectly healthy. Keeping them apart is
+/// what stops the silent fact (containment) from masking the loud one (drift) —
+/// the two used to share one rendered cell, and the silent one won.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ElsewhereRow {
+    row: ArmedRow,
+    why: Option<Redness>,
+}
+
+impl ElsewhereRow {
+    /// The row as attested.
+    #[must_use]
+    pub fn row(&self) -> &ArmedRow {
+        &self.row
+    }
+
+    /// Why it no longer stands, when it does not.
+    #[must_use]
+    pub fn why(&self) -> Option<&Redness> {
+        self.why.as_ref()
     }
 }
 

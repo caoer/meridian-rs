@@ -794,6 +794,161 @@ fn a_drifted_pin_reddens_the_armed_cell_and_gates_the_exit() {
     );
 }
 
+// ── the inert arm names its cause (card armed-inert-diagnosis) ───────────────
+//
+// `armed=-` used to spell TWO unrelated truths: "no armed row exists for this id
+// anywhere" and "an armed row exists and its arm root does not contain this
+// path". The header four lines above said `armed-set … (N row(s))` in both. One
+// line caused it — `rows()` built the cell from `select_at(at)`, so a row whose
+// root does not contain the path was dropped, and with it any redness it
+// carried. The cell keeps its meaning (WHAT GOVERNS HERE); the cause moved to
+// its own line, on the ruled `armed rows counted above` pattern.
+
+/// **The containment cause is NAMED.** An id armed only at a sibling root reads
+/// `armed=-` here — correctly, nothing governs this path — and the answer says
+/// WHY instead of leaving the reader to reconcile it with the header's row
+/// count. Containment is a FACT, not a fault: arming a sibling scope is normal,
+/// so this exits 0.
+#[test]
+fn an_arm_that_does_not_contain_this_path_names_its_cause_and_stays_clean() {
+    let s = populated();
+    arm(&s, &[("sessions/s1", "task.notify", "armed")]);
+
+    let out = s.run(&["rules", "sessions/s2"]);
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "an arm on a sibling scope is normal and reddens nothing: {stdout}"
+    );
+    // The cell keeps meaning "what governs here" — unchanged contract.
+    assert!(
+        stdout.contains("  task.notify  armed=-"),
+        "nothing governs s2, and the cell still says so: {stdout}"
+    );
+    assert!(
+        stdout.contains("armed rows counted above whose arm root does NOT contain this path:"),
+        "the row the header counts is no longer silent: {stdout}"
+    );
+    assert!(
+        stdout.contains(
+            "  task.notify  armed=armed at scope=sessions/s1 — pinned sessions/s1/notify.md"
+        ),
+        "the cause names the arm root that DOES hold it: {stdout}"
+    );
+}
+
+/// The control that makes the gate above able to fail: an id armed NOWHERE reads
+/// `-` with no elsewhere line at all. Without this, a section printed
+/// unconditionally would pass the assertion above.
+#[test]
+fn an_id_armed_nowhere_gets_no_elsewhere_line() {
+    let s = populated();
+    arm(&s, &[("sessions/s1", "task.notify", "armed")]);
+
+    let stdout = s.stdout(&["rules", "sessions/s2"]);
+    assert!(stdout.contains("  root.only  armed=-"), "{stdout}");
+    assert!(
+        !stdout.contains("root.only  armed=")
+            || !stdout.contains("root.only  armed=armed at scope="),
+        "root.only is armed nowhere, so it has no elsewhere line: {stdout}"
+    );
+}
+
+/// **The precedence gate — a silent cause never masks a loud one.** This is the
+/// row that produced the first (wrong) field observation: it carries BOTH faults,
+/// and the containment fact won the whole rendering, so the drift vanished at
+/// exit 0. Redness is a fault WHEREVER it lives; it is named and it counts.
+#[test]
+fn a_drifted_arm_outside_this_path_is_still_named_and_still_gates_the_exit() {
+    let s = populated();
+    arm(&s, &[("sessions/s1", "task.notify", "armed")]);
+    // Drift the pinned page AFTER arming — the loud cause.
+    s.write(
+        "sessions/s1/notify.md",
+        &rule_page("hook", "task.notify", "s1 overrides, edited after the arm"),
+    );
+
+    let out = s.run(&["rules", "sessions/s2"]);
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(
+        stdout.contains("(drifted)"),
+        "the LOUD cause is rendered, not swallowed by the containment fact: {stdout}"
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "a red armed row is a finding wherever it is armed: {stdout}{stderr}"
+    );
+    assert!(
+        stderr.contains("red armed row(s)"),
+        "and it is counted in the findings: {stderr}"
+    );
+}
+
+/// **`rules` and `status` agree in every shape.** The same workspace answered
+/// `1 armed · 1 drifted` at exit 1 through `status` while `rules` at a sibling
+/// path exited 0 with an unannotated row — two faces of one artifact
+/// contradicting each other. Measured together, in one sandbox, so neither can
+/// drift from the other.
+#[test]
+fn rules_and_status_agree_on_a_drifted_arm_outside_the_queried_path() {
+    let s = populated();
+    arm(&s, &[("sessions/s1", "task.notify", "armed")]);
+    s.write(
+        "sessions/s1/notify.md",
+        &rule_page("hook", "task.notify", "s1 overrides, edited after the arm"),
+    );
+
+    let status = s.run(&["status"]);
+    let status_out = String::from_utf8_lossy(&status.stdout).to_string();
+    assert!(
+        status_out.contains("1 armed · 1 drifted"),
+        "status counts the artifact workspace-wide: {status_out}"
+    );
+    assert_eq!(status.status.code(), Some(1), "{status_out}");
+
+    let rules = s.run(&["rules", "sessions/s2"]);
+    assert_eq!(
+        rules.status.code(),
+        status.status.code(),
+        "one artifact, one verdict — rules must not read clean where status reads drifted:\n{}\n{status_out}",
+        String::from_utf8_lossy(&rules.stdout)
+    );
+}
+
+/// The MACHINE face is strictly additive: `armed` keeps meaning "what governs
+/// here" and stays null for a row that does not, so no consumer reading
+/// `armed.mode` as governing is broken by the diagnosis. The cause rides a
+/// SIBLING key.
+#[test]
+fn the_json_face_keeps_armed_for_what_governs_and_names_elsewhere_separately() {
+    let s = populated();
+    arm(&s, &[("sessions/s1", "task.notify", "armed")]);
+
+    let stdout = s.stdout(&["rules", "sessions/s2", "--json"]);
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("json");
+    let rows = value["rules"]["rules"].as_array().expect("rows");
+    let notify = rows
+        .iter()
+        .find(|row| row["id"] == "task.notify")
+        .expect("task.notify resolves at s2");
+    assert_eq!(
+        notify["armed"],
+        serde_json::Value::Null,
+        "nothing governs s2: the governing key stays null: {stdout}"
+    );
+    let elsewhere = value["rules"]["armed_elsewhere"]
+        .as_array()
+        .expect("the sibling key exists");
+    assert_eq!(elsewhere.len(), 1, "{stdout}");
+    assert_eq!(elsewhere[0]["id"], "task.notify");
+    assert_eq!(elsewhere[0]["scope"], "sessions/s1");
+    assert_eq!(elsewhere[0]["mode"], "armed");
+    assert_eq!(elsewhere[0]["redness"], serde_json::Value::Null);
+}
+
 /// A corrupt artifact NEVER reads as "nothing armed": the verb says the armed set
 /// is unreadable, keeps printing the registration view, and exits 1.
 #[test]
