@@ -479,16 +479,28 @@ fn links_body_and_file_key_sets_are_frozen() {
     );
 }
 
-/// Frozen §4.7: `{root, seq}` and `{batches}`.
+/// Frozen §4.7: `{root, seq}` and `{batches}`. The B-01 `sub` ack rides the
+/// same body plus `tree_instance` — additive, absent everywhere else, so the
+/// frozen form stays byte-identical.
 #[test]
 fn root_and_diff_body_key_sets_are_frozen() {
     pin_keys(
         &ResponseBody::Root {
             root: root(),
             seq: 2,
+            tree_instance: None,
         },
         &["root", "seq"],
         "Root body",
+    );
+    pin_keys(
+        &ResponseBody::Root {
+            root: root(),
+            seq: 2,
+            tree_instance: Some("1f0.2a.0".into()),
+        },
+        &["root", "seq", "tree_instance"],
+        "Root body (sub ack, B-01)",
     );
     pin_keys(
         &ResponseBody::Diff { batches: vec![] },
@@ -616,6 +628,7 @@ fn response_frame_key_sets_are_frozen() {
             body: ResponseBody::Root {
                 root: root(),
                 seq: 2,
+                tree_instance: None,
             },
         },
     };
