@@ -114,8 +114,14 @@ fn gate1_heading_rename_preserves_block_ids_and_reddens_hpath_pins() {
     assert!(after_raw.contains("# Bar"), "heading renamed to Bar");
     assert!(!after_raw.contains("# Foo"), "the old heading text is gone");
 
-    let hpath_color = resolve_selector(&Selector::Heading(vec!["Foo".to_string()]), Some(&after))
-        .expect_err("the renamed heading no longer resolves");
+    let hpath_color = resolve_selector(
+        &Selector::Heading(vec![model::HpathSeg {
+            h: "Foo".to_string(),
+            n: None,
+        }]),
+        Some(&after),
+    )
+    .expect_err("the renamed heading no longer resolves");
     assert!(
         matches!(
             hpath_color,
@@ -138,9 +144,14 @@ fn gate1_heading_rename_preserves_block_ids_and_reddens_hpath_pins() {
     let restored_raw = read(&root, "page.md");
     assert_eq!(restored_raw, original, "renaming back is byte-identical");
     let restored = build_doc(&restored_raw);
-    let (_, restored_target) =
-        resolve_selector(&Selector::Heading(vec!["Foo".to_string()]), Some(&restored))
-            .expect("the restored heading resolves again");
+    let (_, restored_target) = resolve_selector(
+        &Selector::Heading(vec![model::HpathSeg {
+            h: "Foo".to_string(),
+            n: None,
+        }]),
+        Some(&restored),
+    )
+    .expect("the restored heading resolves again");
     assert_eq!(
         restored_target.node_rev, pinned_hpath,
         "the restored heading matches the original hpath pin's rev again"

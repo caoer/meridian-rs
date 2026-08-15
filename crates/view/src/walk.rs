@@ -585,8 +585,11 @@ fn edge_color(corpus: &model::RootedCorpus<'_>, edge: &LockItem) -> Color {
 /// R4 structural selector → model address selector (translation for
 /// `classify_pin`). Arms: `path:[]` → Page; sole `^id` → Block; sole `seq-N` +
 /// object → `ImmutableRoot` (needs object — without it, grey becomes false red);
-/// else Heading segment-for-segment. `properties:` → Page (span verifier
-/// refuses). Public (U22) so historical repair shares one grammar reading.
+/// else Heading segment-for-segment, each segment read through the R4
+/// occurrence spelling (`"Dup#2"` → `n: Some(2)`, r8 D3 — this door is the one
+/// place the stored spelling becomes an address; [`lock::parse_occurrence`]
+/// owns the grammar). Public (U22) so historical repair shares one grammar
+/// reading.
 #[must_use]
 pub fn model_selector(object: &str, selector: &lock::Selector) -> Selector {
     let lock::Selector::Path(segments) = selector else {
@@ -607,10 +610,25 @@ pub fn model_selector(object: &str, selector: &lock::Selector) -> Selector {
                     seq,
                 };
             }
-            Selector::Heading(segments.clone())
+            Selector::Heading(heading_segments(segments))
         }
-        Some(_) => Selector::Heading(segments.clone()),
+        Some(_) => Selector::Heading(heading_segments(segments)),
     }
+}
+
+/// R4 path elements → occurrence-aware heading segments, one spelling owner
+/// ([`lock::parse_occurrence`]).
+fn heading_segments(segments: &[String]) -> Vec<model::HpathSeg> {
+    segments
+        .iter()
+        .map(|seg| {
+            let (h, n) = lock::parse_occurrence(seg);
+            model::HpathSeg {
+                h: h.to_string(),
+                n,
+            }
+        })
+        .collect()
 }
 
 /// Page-level adjacency for cycle check — corpus-present pages only (leaves

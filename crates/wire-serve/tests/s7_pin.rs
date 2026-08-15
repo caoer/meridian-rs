@@ -72,14 +72,7 @@ fn live_fingerprint(root: &fs::WorkspaceRoot, declared_ref: &str) -> String {
     let (rel, _) = declared_ref.split_once('#').expect("a ref names a section");
     let doc = fs::load(root, std::path::Path::new(rel)).expect("load");
     let r#ref = match model::selector::Selector::parse(declared_ref) {
-        model::selector::Selector::Heading(segs) => model::Ref::Hpath(
-            segs.iter()
-                .map(|h| model::HpathSeg {
-                    h: h.clone(),
-                    n: None,
-                })
-                .collect(),
-        ),
+        model::selector::Selector::Heading(segs) => model::Ref::Hpath(segs),
         model::selector::Selector::Block(id) => model::Ref::anchor(id).expect("block id"),
         other => panic!("unpinnable selector class: {other:?}"),
     };
@@ -1324,4 +1317,246 @@ fn a_duplicated_anchor_refuses_the_pin_rather_than_picking_the_first() {
         !msg.contains("rename one heading"),
         "the remedy speaks the anchor grammar: {msg}"
     );
+}
+
+// GATE 12: duplicate-heading occurrences — the mint de-collides its slug by the
+// occurrence ordinal, and the lock stores the RESOLVED selector (dogfood r8
+// D2+D3, card pin-mint-occurrence-handling: a pin that greys `ambiguous` in the
+// session that minted it is a broken attestation).
+
+/// Two same-named siblings under one parent — the r8 fixture's shape.
+const DUP_TARGET: &str = "# Guide\n\n## Dup\n\nfirst dup body.\n\n## Dup\n\nsecond dup body.\n";
+
+fn dup_workspace() -> (tempfile::TempDir, fs::WorkspaceRoot) {
+    let (dir, root) = workspace();
+    std::fs::write(root.0.join("guide.md"), DUP_TARGET).expect("dup target");
+    (dir, root)
+}
+
+fn seg(h: &str) -> wire::HpathSeg {
+    wire::HpathSeg {
+        h: h.into(),
+        n: None,
+    }
+}
+
+fn seg_n(h: &str, n: u32) -> wire::HpathSeg {
+    wire::HpathSeg {
+        h: h.into(),
+        n: Some(n),
+    }
+}
+
+/// Pin-only splice addressing `guide.md` by segment array (the machine surface —
+/// the string coat has no occurrence spelling by design).
+fn pin_hpath_args(hpath: Vec<wire::HpathSeg>) -> SpliceArgs {
+    let mut args = pin_args("unused");
+    args.pin = Some(PinSpec {
+        target: WPath("guide.md".into()),
+        selector: wire::ReadSel::Hpath { hpath },
+        vibe: None,
+    });
+    args
+}
+
+/// Live fingerprint of the n-th `Guide/Dup` occurrence, read from disk — the
+/// same mint the verify plane recomputes.
+fn live_occurrence_fingerprint(root: &fs::WorkspaceRoot, occurrence: u32) -> String {
+    let doc = fs::load(root, std::path::Path::new("guide.md")).expect("load");
+    let target = model::resolve(
+        &doc,
+        &model::Ref::Hpath(vec![
+            model::HpathSeg {
+                h: "Guide".into(),
+                n: None,
+            },
+            model::HpathSeg {
+                h: "Dup".into(),
+                n: Some(occurrence),
+            },
+        ]),
+    )
+    .expect("the occurrence resolves");
+    let removals = syntax::anchor_removals(&doc.raw);
+    model::fingerprint::fingerprint_span(&doc, &target.span, &removals)
+        .expect("the fixture section has content")
+        .into_string()
+}
+
+/// r8 D2: the SECOND same-named sibling is pinnable. The mint de-collides its
+/// slug with the occurrence ordinal (`^dup-2`) instead of refusing with a
+/// remedy that names an own `^id` the sibling does not have.
+#[test]
+fn a_pin_on_the_second_duplicate_sibling_mints_a_de_collided_slug() {
+    let (_dir, root) = dup_workspace();
+
+    let out = splice(
+        &root,
+        None,
+        &pin_hpath_args(vec![seg("Guide"), seg_n("Dup", 2)]),
+        &[],
+        None,
+    )
+    .expect("the second occurrence pins — de-collision, not refusal");
+    let fact = pin_fact(&out.body);
+
+    assert_eq!(
+        fact.anchor, "dup-2",
+        "the anchor is the title slug plus the occurrence ordinal — \
+         self-describing, and free even though ^dup is not minted yet"
+    );
+    assert!(
+        fact.promoted,
+        "the sibling had no id, so this pin wrote one"
+    );
+    assert_eq!(
+        read_page(&root, "guide.md"),
+        "# Guide\n\n## Dup\n\nfirst dup body.\n\n## Dup\n^dup-2\n\nsecond dup body.\n",
+        "the marker lands under the SECOND sibling, own line, heading untouched"
+    );
+    assert_eq!(
+        fact.fingerprint,
+        live_occurrence_fingerprint(&root, 2),
+        "a freshly minted occurrence pin verifies green immediately"
+    );
+    assert!(
+        read_page(&root, "plan.md").contains("path: [\"Guide\", \"Dup#2\"]"),
+        "r8 D3: the lock stores the RESOLVED selector — the occurrence rides \
+         the stored segment, so the pin cannot walk grey in its own session: {}",
+        read_page(&root, "plan.md")
+    );
+}
+
+/// The occurrence ids are order-independent: `^dup-2` names the second sibling
+/// whichever sibling pins first, the first occurrence keeps the bare title slug,
+/// and every occurrence pin stores its ordinal in its lock row.
+#[test]
+fn occurrence_pins_are_order_independent_and_store_their_ordinals() {
+    let (_dir, root) = dup_workspace();
+
+    // Second sibling FIRST — the bare slug is free, the ordinal still names it.
+    let second = pin_fact(
+        &splice(
+            &root,
+            None,
+            &pin_hpath_args(vec![seg("Guide"), seg_n("Dup", 2)]),
+            &[],
+            None,
+        )
+        .expect("second occurrence pins")
+        .body,
+    );
+    assert_eq!(second.anchor, "dup-2");
+
+    let first = pin_fact(
+        &splice(
+            &root,
+            None,
+            &pin_hpath_args(vec![seg("Guide"), seg_n("Dup", 1)]),
+            &[],
+            None,
+        )
+        .expect("first occurrence pins")
+        .body,
+    );
+    assert_eq!(
+        first.anchor, "dup",
+        "the first occurrence keeps the bare title slug — r8 G1's receipts hold"
+    );
+
+    let pinner = read_page(&root, "plan.md");
+    assert!(
+        pinner.contains("path: [\"Guide\", \"Dup#1\"]"),
+        "the first occurrence stores its ordinal too — a bare `Dup` row would \
+         be born ambiguous: {pinner}"
+    );
+    assert!(pinner.contains("path: [\"Guide\", \"Dup#2\"]"), "{pinner}");
+    assert_eq!(
+        read_page(&root, "guide.md"),
+        "# Guide\n\n## Dup\n^dup\n\nfirst dup body.\n\n## Dup\n^dup-2\n\nsecond dup body.\n",
+        "each sibling carries its own marker"
+    );
+}
+
+/// A re-pin of the same occurrence reuses the marker it minted — idempotence
+/// holds through the de-collided spelling.
+#[test]
+fn a_de_collided_pin_is_idempotent_on_re_pin() {
+    let (_dir, root) = dup_workspace();
+    let args = pin_hpath_args(vec![seg("Guide"), seg_n("Dup", 2)]);
+
+    let minted = pin_fact(&splice(&root, None, &args, &[], None).expect("mints").body);
+    assert!(minted.promoted);
+    let target_after_mint = read_page(&root, "guide.md");
+
+    let reused = pin_fact(&splice(&root, None, &args, &[], None).expect("re-pins").body);
+    assert_eq!(reused.anchor, "dup-2");
+    assert!(
+        !reused.promoted,
+        "the slot already bears the id — reuse, no write"
+    );
+    assert_eq!(
+        read_page(&root, "guide.md"),
+        target_after_mint,
+        "no second marker"
+    );
+    assert_eq!(reused.fingerprint, minted.fingerprint);
+}
+
+/// r8 D2's residual arm: when even the de-collided id is taken, the refusal's
+/// remedy is EXECUTABLE against the target as it stands. The old remedy said
+/// "give that node's own ^id as the selector" — an id the sibling did not have.
+#[test]
+fn a_taken_de_collided_slug_refuses_with_an_executable_remedy() {
+    const PRE_TAKEN: &str =
+        "# Guide\n\nnoise ^dup-2\n\n## Dup\n\nfirst dup body.\n\n## Dup\n\nsecond dup body.\n";
+    let (_dir, root) = dup_workspace();
+    std::fs::write(root.0.join("guide.md"), PRE_TAKEN).expect("pre-taken de-collided id");
+
+    let err = splice(
+        &root,
+        None,
+        &pin_hpath_args(vec![seg("Guide"), seg_n("Dup", 2)]),
+        &[],
+        None,
+    )
+    .expect_err("the de-collided id is taken by another node");
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    let msg = err.message.as_deref().expect("message");
+    assert!(
+        msg.contains("^dup-2") && msg.contains("already taken"),
+        "the refusal names the id that collided: {msg}"
+    );
+    assert!(
+        msg.contains("append") && msg.contains("read") && msg.contains("pin at"),
+        "the remedy teaches the escape that exists — append your own id under \
+         the heading, read it back, pin it: {msg}"
+    );
+    assert!(
+        !msg.contains("give that node's own ^id"),
+        "the unfollowable r8 remedy is gone: {msg}"
+    );
+    assert_eq!(
+        read_page(&root, "guide.md"),
+        PRE_TAKEN,
+        "nothing was written"
+    );
+}
+
+/// The strict-plane guard around the de-collision: an occurrence the caller did
+/// NOT name still refuses `ambiguous_ref` — de-collision names ids, it never
+/// picks siblings (wire-contract A.3).
+#[test]
+fn a_bare_duplicate_heading_pin_still_refuses_ambiguous_ref() {
+    let (_dir, root) = dup_workspace();
+    let err = splice(
+        &root,
+        None,
+        &pin_hpath_args(vec![seg("Guide"), seg("Dup")]),
+        &[],
+        None,
+    )
+    .expect_err("no door may pin an occurrence the caller did not name");
+    assert_eq!(err.code, ErrorCode::AmbiguousRef);
+    assert_eq!(read_page(&root, "guide.md"), DUP_TARGET, "nothing written");
 }
