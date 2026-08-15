@@ -121,6 +121,13 @@ criterion = { version = "0.5", default-features = false, features = ["cargo_benc
 toml = "0.8"
 rand_chacha = "0.9"
 hdrhistogram = "7"
+# The §6.4 event feed's kernel watcher (merkle-spec, "the engine owns its
+# senses"): FSEvents on macOS, inotify on Linux, one recursive watch per
+# workspace, hosted by the resident daemon (crates/registry). Row-13 wire
+# invariance holds: no wire crate names it, and `fs` stays watcher-free so
+# guard correctness structurally cannot consult the feed (§6.4 guard-plane
+# law).
+notify = "8"
 # Kernel test stack (decisions/0003 § Testing methodology): insta = golden
 # descriptor snapshots; proptest = invariants (determinism, fuel bounds, no
 # panic on any event). Dev-only; the plain `cargo test` path drives both (no

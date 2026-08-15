@@ -5,13 +5,14 @@
 //! (deny → sentinel → insert → persist) holds one guard so concurrent
 //! registrars for the same path first-writer-win by serialization.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use crate::engine::{WarmOutcome, WorkspaceEngine};
+use crate::feed;
 use crate::now_secs;
 use crate::protocol::{DenyKind, WorkspaceEntry};
 use crate::state::StateStore;
@@ -61,7 +62,8 @@ pub enum PinOutcome {
 ///
 /// `engines` is resident query state (U1): warm `WorkspaceEngine` per workspace,
 /// keyed like `inner`. Disposable projection of disk — never persisted; cold
-/// start holds none. Idle-reap drops engine with registration.
+/// start holds none. Idle-reap drops the engine; the registration — and with
+/// it the §6.4 feed and the resident memo — survives (merkle-spec §6.4).
 #[derive(Debug)]
 pub struct Registry {
     inner: RwLock<HashMap<PathBuf, WorkspaceEntry>>,
@@ -77,14 +79,24 @@ pub struct Registry {
     /// workspace. Matching signature skips the corpus fold. Advisory only —
     /// missing/stale costs one extra snapshot, never a wrong answer.
     prewarm_signatures: Mutex<HashMap<PathBuf, u64>>,
-    /// Per-workspace §12.2 leaf memo — what makes a currency pass cost one
-    /// `stat` per domain member instead of a re-read of the whole corpus.
-    /// Same lifetime as the engine: dropped on idle-reap. Each entry is its
-    /// own `Arc<Mutex<…>>` so the run plane can borrow ONE workspace's memo
-    /// for its bracket observations (card run-observation-unification)
-    /// without holding the map — and so one workspace's pass never serializes
-    /// another's.
+    /// Per-workspace §12.2 leaf memo + resident tree — what makes a currency
+    /// pass cost one `stat` per domain member instead of a re-read of the
+    /// whole corpus. Registration-lifetime under a live §6.4 feed: it
+    /// survives the idle-reap (the feed's dirty set covers the cold gap, so
+    /// the re-warm is O(dirty)); with no live feed it drops on reap as it
+    /// always did. Each entry is its own `Arc<Mutex<…>>` so the run plane
+    /// can borrow ONE workspace's memo for its bracket observations (card
+    /// run-observation-unification) without holding the map — and so one
+    /// workspace's pass never serializes another's.
     domain_caches: Mutex<HashMap<PathBuf, Arc<Mutex<fs::DomainCache>>>>,
+    /// The §6.4 event feed per workspace (kernel watcher + registry-held
+    /// dirty set). Registration-lifetime (kimi D1): created with the
+    /// workspace's first resident state, kept across every idle-reap,
+    /// dropped at `unregister` — which is exactly what makes retaining
+    /// [`Self::domain_caches`] across a reap sound: the feed covers the cold
+    /// gap. A slot that failed to start is sticky-Failed, loud once; that
+    /// workspace keeps the pre-feed semantics (memo drops on reap).
+    feeds: Mutex<HashMap<PathBuf, FeedSlot>>,
     /// § A.11 resident sql caches: the open `sql.duckdb` handle per
     /// workspace, this daemon being each file's single owner. The CONNECTION
     /// dies on idle-reap with the engine; the FILE deliberately survives —
@@ -133,6 +145,31 @@ pub struct Registry {
         Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
 }
 
+/// One workspace's feed slot: live, or start-failed (sticky — recorded and
+/// logged once; the workspace then keeps the pre-feed reap semantics).
+#[derive(Debug)]
+enum FeedSlot {
+    Live(feed::WorkspaceFeed),
+    Failed,
+}
+
+impl FeedSlot {
+    /// Start the workspace's kernel watcher; loud on failure, once.
+    fn start(workspace: &Path) -> FeedSlot {
+        match feed::WorkspaceFeed::start(workspace) {
+            Ok(feed) => FeedSlot::Live(feed),
+            Err(e) => {
+                eprintln!(
+                    "feed: kernel watcher start failed for {} ({e}) — the resident memo \
+                     will not be retained across idle reaps for this workspace",
+                    workspace.display()
+                );
+                FeedSlot::Failed
+            }
+        }
+    }
+}
+
 impl Registry {
     /// Build a registry seeded with `entries` (loaded from the state file),
     /// persisting to `state` and writing drawer sentinels under `cache_root`.
@@ -155,6 +192,8 @@ impl Registry {
             prewarm_signatures: Mutex::new(HashMap::new()),
             // Cold: no memo; the first currency pass reads every member once.
             domain_caches: Mutex::new(HashMap::new()),
+            // Cold: feeds start with the first resident state per workspace.
+            feeds: Mutex::new(HashMap::new()),
             // Cold: no open sql handles; first `sql` op opens (or cold-builds)
             // each workspace's file.
             sql_stores: Mutex::new(HashMap::new()),
@@ -488,13 +527,85 @@ impl Registry {
     /// [`Arc`] so a holder locks one workspace's memo, never the map; an
     /// in-flight holder across an idle-reap keeps a private memo that dies
     /// with it, which is only ever an extra read.
+    /// Every borrow first ensures the workspace's §6.4 feed exists (the feed
+    /// must predate the first observation — no observation may land without
+    /// gap coverage behind it) and applies its pending dirty set, so every
+    /// consumer — currency pass, warm rebuild, run-plane bracket, script
+    /// door — reads through a memo the feed has already patched.
     #[must_use]
     pub fn domain_cache(&self, workspace: &Path) -> Arc<Mutex<fs::DomainCache>> {
-        let mut caches = self
-            .domain_caches
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        Arc::clone(caches.entry(workspace.to_path_buf()).or_default())
+        let cache = {
+            let mut caches = self
+                .domain_caches
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            Arc::clone(caches.entry(workspace.to_path_buf()).or_default())
+        };
+        let pending = {
+            let mut feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
+            match feeds
+                .entry(workspace.to_path_buf())
+                .or_insert_with(|| FeedSlot::start(workspace))
+            {
+                FeedSlot::Live(feed) => feed.take(),
+                FeedSlot::Failed => feed::Pending::Clean,
+            }
+        };
+        if pending != feed::Pending::Clean {
+            let root = fs::WorkspaceRoot(workspace.to_path_buf());
+            let outcome = {
+                let mut memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
+                feed::apply(&root, &mut memo, pending)
+            };
+            match outcome {
+                feed::Applied::Members(0) => {}
+                feed::Applied::Members(n) => {
+                    let feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
+                    if let Some(FeedSlot::Live(feed)) = feeds.get(workspace) {
+                        feed.note_applied(n);
+                    }
+                    eprintln!(
+                        "feed: applied {n} dirty member(s) into the resident memo for {}",
+                        workspace.display()
+                    );
+                }
+                feed::Applied::Reset => {
+                    eprintln!(
+                        "feed: doubt collapse for {} — resident memo reset, next pass \
+                         re-reads the corpus",
+                        workspace.display()
+                    );
+                }
+            }
+        }
+        cache
+    }
+
+    /// The §6.4 ADDITIONAL-feed door: dirty-path hints from a secondary
+    /// source (the daemon journal where it already watches, or a test rig).
+    /// A hint can only ever ADD a conservative re-read; no guard or currency
+    /// answer depends on one arriving — which is the whole legal standing of
+    /// the journal as a feed. `false` when the workspace has no live feed
+    /// (nothing resident to patch, so the hint is moot).
+    pub fn note_dirty(&self, workspace: &Path, paths: &[PathBuf]) -> bool {
+        let feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
+        match feeds.get(workspace) {
+            Some(FeedSlot::Live(feed)) => {
+                feed.note_dirty(paths.iter().map(PathBuf::as_path));
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The workspace's published feed counters (`None`: no live feed).
+    #[must_use]
+    pub fn feed_stats(&self, workspace: &Path) -> Option<feed::FeedStats> {
+        let feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
+        match feeds.get(workspace) {
+            Some(FeedSlot::Live(feed)) => Some(feed.stats()),
+            _ => None,
+        }
     }
 
     /// Workspace delta ring, created on first use. `workspace` must be
@@ -636,16 +747,37 @@ impl Registry {
     /// drawer is left for `cache::gc`. Returns `true` when an entry was
     /// removed.
     ///
+    /// The §6.4 feed's lifetime IS the registration, so it ends here — and
+    /// the resident memo, whose retention across reaps rode the feed's gap
+    /// coverage, leaves with it.
+    ///
     /// Matches on the canonical path when the directory still resolves, else
     /// on the path as given — so a vanished workspace can still be unregistered
     /// by the canonical path a `list` reported.
     pub fn unregister(&self, path: &Path) -> bool {
         let key = workspace::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-        let mut map = self.inner.write().unwrap_or_else(PoisonError::into_inner);
-        let removed = map.remove(&key).is_some();
-        if removed {
-            self.persist(&map);
-        }
+        let removed = {
+            let mut map = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+            let removed = map.remove(&key).is_some();
+            if removed {
+                self.persist(&map);
+            }
+            removed
+        };
+        let feed = {
+            let mut feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
+            feeds.remove(&key)
+        };
+        let cache = {
+            let mut caches = self
+                .domain_caches
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            caches.remove(&key)
+        };
+        // Kernel-stream release (the feed's Drop) runs outside every map lock.
+        drop(feed);
+        drop(cache);
         removed
     }
 
@@ -660,10 +792,16 @@ impl Registry {
             .collect()
     }
 
-    /// Drop entries with `last_use <= now - threshold_secs`. Injectable clock
-    /// for tests. Deregisters only (drawer is `cache::gc`). Also drops warm
-    /// engine, read-mint ledger, and ring on the same horizon — never on corpus
-    /// change. `engines` lock taken after `inner` is released.
+    /// Idle-reap: DEMOTE workspaces with `last_use <= now - threshold_secs`
+    /// — drop the warm engine, read-mint ledger, ring, and sql handle. The
+    /// REGISTRATION survives, and with it the §6.4 feed and the resident
+    /// memo ([`Self::domain_caches`]): the feed's dirty set covers the cold
+    /// gap, which is what makes the next warm O(dirty) instead of a full
+    /// corpus re-read (merkle-spec §6.4, kimi D1 — "an idle-reaped engine
+    /// keeps its watcher"). A workspace with no LIVE feed has no gap
+    /// coverage, so its memo still drops exactly as it always did.
+    /// Injectable clock for tests. Returns the workspaces that actually shed
+    /// state — an already-cold workspace is not re-reported.
     ///
     /// Live subscriptions are exempt (U20b): push-only connections never touch
     /// `last_use`. Reaping them would fork the per-workspace `seq` (§4.7) —
@@ -690,10 +828,11 @@ impl Registry {
                 let _ = release.recv();
             }
         }
-        let reaped: Vec<PathBuf> = {
-            let mut map = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+        let mut demoted: BTreeSet<PathBuf> = BTreeSet::new();
+        let candidates: Vec<PathBuf> = {
+            let map = self.inner.write().unwrap_or_else(PoisonError::into_inner);
             let mut rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
-            let reaped: Vec<PathBuf> = map
+            let candidates: Vec<PathBuf> = map
                 .iter()
                 .filter(|(key, entry)| {
                     entry.last_use <= cutoff
@@ -701,55 +840,66 @@ impl Registry {
                 })
                 .map(|(key, _)| key.clone())
                 .collect();
-            for key in &reaped {
-                map.remove(key);
+            for key in &candidates {
                 // Ring dies inside the same critical section its exemption was
                 // decided in — a later `sub` gets a fresh epoch, never an
                 // orphaned ring a concurrent claim is riding.
-                rings.remove(key);
+                if rings.remove(key).is_some() {
+                    demoted.insert(key.clone());
+                }
             }
-            drop(rings);
-            if !reaped.is_empty() {
-                self.persist(&map);
-            }
-            reaped
+            candidates
         };
-        if !reaped.is_empty() {
+        if !candidates.is_empty() {
             let mut engines = self.engines.write().unwrap_or_else(PoisonError::into_inner);
-            for key in &reaped {
-                engines.remove(key);
+            for key in &candidates {
+                if engines.remove(key).is_some() {
+                    demoted.insert(key.clone());
+                }
             }
             drop(engines);
             let mut mints = self
                 .read_mints
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            for key in &reaped {
-                mints.remove(key);
+            for key in &candidates {
+                if mints.remove(key).is_some() {
+                    demoted.insert(key.clone());
+                }
             }
             drop(mints);
-            // The leaf memo is a projection of the engine it serves: it dies on
-            // the same horizon, so a re-warmed workspace re-reads its members
-            // rather than trusting digests from before the gap.
-            let mut caches = self
-                .domain_caches
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            for key in &reaped {
-                caches.remove(key);
+            // The resident memo SURVIVES the horizon under a live feed — the
+            // §6.4 point: memo + dirty set make the re-warm O(dirty). With no
+            // live feed there is no gap coverage, so the memo dies here as it
+            // did before the feed existed.
+            {
+                let feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
+                let mut caches = self
+                    .domain_caches
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                for key in &candidates {
+                    if matches!(feeds.get(key), Some(FeedSlot::Live(_))) {
+                        continue;
+                    }
+                    if caches.remove(key).is_some() {
+                        demoted.insert(key.clone());
+                    }
+                }
             }
-            drop(caches);
             // The sql handle rides the same horizon; the FILE stays (its pin
             // is content-derived, re-warm re-compares before serving).
             let mut stores = self
                 .sql_stores
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            for key in &reaped {
-                stores.remove(key);
+            for key in &candidates {
+                if stores.remove(key).is_some() {
+                    demoted.insert(key.clone());
+                }
             }
         }
-        reaped
+        demoted.into_iter().collect()
     }
 
     /// Persist the current map to the state file, logging (never failing) on a
@@ -893,12 +1043,206 @@ mod engine_tests {
             "engine warm before reap"
         );
 
-        // Entry + engine drop on the one idle-reap horizon (R4).
+        // The engine drops on the idle-reap horizon (R4, amended by the
+        // §6.4 registration-lifetime law: the registration itself survives).
         let reaped = reg.reap(u64::MAX, 0);
-        assert!(reaped.contains(&canonical), "the entry was reaped");
+        assert!(reaped.contains(&canonical), "the workspace was demoted");
         assert!(
             !reg.engines.read().unwrap().contains_key(&canonical),
-            "reap drops the warm engine with the registration"
+            "reap drops the warm engine"
+        );
+    }
+
+    /// The §6.4 registration-lifetime law, end to end: an idle-reap demotes
+    /// (engine gone) but the registration, the feed, and the resident memo
+    /// survive — and the quiet re-warm reads ZERO members (O(dirty), dirty
+    /// = 0). A second sweep over the already-cold workspace reports nothing.
+    #[test]
+    fn an_engine_reap_keeps_registration_feed_and_memo() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(
+            home.path(),
+            &[("a.md", "# A\n"), ("b.md", "# B\n"), ("c.md", "# C\n")],
+        );
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.register(&canonical);
+        assert_eq!(
+            reg.warm_or_build(&ws).unwrap(),
+            WarmOutcome::Built { docs: 3 }
+        );
+        assert!(
+            reg.feed_stats(&canonical).is_some(),
+            "the feed starts with the workspace's first resident state"
+        );
+        let reads_before = reg.domain_cache(&canonical).lock().unwrap().leaves_read();
+
+        let reaped = reg.reap(u64::MAX, 0);
+        assert!(reaped.contains(&canonical), "the engine was demoted");
+        assert!(!reg.engines.read().unwrap().contains_key(&canonical));
+        assert!(
+            matches!(reg.resolve(&canonical), ResolveOutcome::Adopted(_)),
+            "the registration survives the reap"
+        );
+        assert!(
+            reg.feed_stats(&canonical).is_some(),
+            "an idle-reaped engine keeps its watcher (§6.4)"
+        );
+
+        // Quiet re-warm: the retained memo serves every digest — zero reads.
+        reg.currency_root(&canonical).unwrap();
+        let reads_after = reg.domain_cache(&canonical).lock().unwrap().leaves_read();
+        assert_eq!(
+            reads_after, reads_before,
+            "a quiet re-warm after a reap reads zero members (O(dirty), dirty=0)"
+        );
+
+        // Nothing warm remains, so the next sweep has nothing to report.
+        assert!(
+            reg.reap(u64::MAX, 0).is_empty(),
+            "an already-cold workspace is not re-demoted every sweep"
+        );
+    }
+
+    /// THE card receipt (quality gate 1): after an engine reap, members
+    /// edited while cold are re-derived at O(dirty) — the counters prove the
+    /// re-warm read exactly the dirty members, never the corpus, and the
+    /// re-derived root equals a from-scratch derivation of the same disk.
+    #[test]
+    fn re_warm_after_a_reap_reads_only_the_dirty_members() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(
+            home.path(),
+            &[
+                ("a.md", "# A\n"),
+                ("b.md", "# B\n"),
+                ("c.md", "# C\n"),
+                ("d.md", "# D\n"),
+                ("sub/e.md", "# E\n"),
+                ("sub/f.md", "# F\n"),
+            ],
+        );
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.register(&canonical);
+        assert_eq!(
+            reg.warm_or_build(&ws).unwrap(),
+            WarmOutcome::Built { docs: 6 }
+        );
+        let reads_warm = reg.domain_cache(&canonical).lock().unwrap().leaves_read();
+
+        assert!(reg.reap(u64::MAX, 0).contains(&canonical));
+
+        // Two members move while the engine is cold; the feed (here its
+        // deterministic hint door — the kernel plumbing is the integration
+        // gate's) accumulates them into the dirty set.
+        rewrite(&canonical, "a.md", "# A moved while cold\n");
+        rewrite(&canonical, "sub/e.md", "# E moved while cold\n");
+        assert!(
+            reg.note_dirty(
+                &canonical,
+                &[PathBuf::from("a.md"), PathBuf::from("sub/e.md")]
+            ),
+            "the live feed accepts dirty-path hints"
+        );
+
+        // Re-warm: the application re-derives the two movers, the spoiled
+        // observation re-verifies exactly those two, and nothing else is
+        // read. 6 members, 2 dirty ⇒ 2 observation reads, never 6.
+        let root = reg.currency_root(&canonical).unwrap();
+        let reads_after = reg.domain_cache(&canonical).lock().unwrap().leaves_read();
+        assert_eq!(
+            reads_after - reads_warm,
+            2,
+            "the re-warm observation read exactly the dirty members"
+        );
+        let stats = reg.feed_stats(&canonical).expect("live feed");
+        assert_eq!(stats.applied, 2, "the published counter names the work");
+
+        // Correctness: the O(dirty) re-warm equals a from-scratch derivation.
+        let scratch_home = tempfile::tempdir().unwrap();
+        let scratch = registry_in(scratch_home.path());
+        assert_eq!(
+            root,
+            scratch.currency_root(&canonical).unwrap(),
+            "the retained-memo root equals the from-scratch root"
+        );
+    }
+
+    /// Quality gate 2: guard correctness consults neither journal nor
+    /// watcher. A dirty-path hint left UN-APPLIED does not change what a
+    /// guard observes — the guard is a live fold through the memo's own
+    /// stat evidence, and it answers identically with no feed at all. The
+    /// pending set is still pending afterwards: the guard consumed nothing.
+    #[test]
+    fn a_pending_dirty_set_never_gates_guard_currency() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(home.path(), &[("a.md", "# A\n"), ("b.md", "# B\n")]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.warm_or_build(&ws).unwrap();
+
+        // The corpus moves; the hint sits in the feed, deliberately not
+        // drained (the cache is reached through the raw map, not the
+        // draining accessor).
+        rewrite(&canonical, "a.md", "# A moved\n");
+        assert!(reg.note_dirty(&canonical, &[PathBuf::from("a.md")]));
+        let fs_root = fs::WorkspaceRoot(canonical.clone());
+        let cache = {
+            let caches = reg.domain_caches.lock().unwrap();
+            Arc::clone(caches.get(&canonical).expect("resident memo"))
+        };
+        let guarded_root = {
+            let mut memo = cache.lock().unwrap();
+            fs::guard::StepGuard::open_cached(&fs_root, &mut memo)
+                .expect("guard opens")
+                .pre_root()
+        };
+
+        // The same observation with NO feed anywhere near it.
+        let mut bare = fs::DomainCache::new();
+        let bare_root = fs::guard::StepGuard::open_cached(&fs_root, &mut bare)
+            .expect("guard opens")
+            .pre_root();
+        assert_eq!(
+            guarded_root, bare_root,
+            "the guard saw the edit through its own live fold — with or \
+             without a feed in the process"
+        );
+
+        let stats = reg.feed_stats(&canonical).expect("live feed");
+        assert_eq!(
+            (stats.pending, stats.applied),
+            (1, 0),
+            "the guard consumed nothing from the feed: the hint is still pending"
+        );
+    }
+
+    /// The feed's lifetime IS the registration: `unregister` ends both the
+    /// feed and the resident memo. A hint for an unknown workspace is
+    /// refused rather than buffered.
+    #[test]
+    fn unregister_ends_the_feed_and_the_resident_memo() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(home.path(), &[("a.md", "# A\n")]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.register(&canonical);
+        reg.warm_or_build(&ws).unwrap();
+        assert!(reg.feed_stats(&canonical).is_some());
+
+        assert!(reg.unregister(&canonical));
+        assert!(
+            reg.feed_stats(&canonical).is_none(),
+            "the feed ends with the registration"
+        );
+        assert!(
+            !reg.domain_caches.lock().unwrap().contains_key(&canonical),
+            "the resident memo leaves with its gap coverage"
+        );
+        assert!(
+            !reg.note_dirty(&canonical, &[PathBuf::from("a.md")]),
+            "a hint for an unregistered workspace is refused"
         );
     }
 
