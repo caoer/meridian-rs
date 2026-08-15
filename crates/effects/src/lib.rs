@@ -638,17 +638,24 @@ impl std::fmt::Display for EvalError {
             EvalError::ReadBudget { rule_id, limit } => write!(
                 f,
                 "script '{rule_id}' exceeded the read budget of {limit} reads per attempt — \
-                 refused, never truncated"
+                 refused, never truncated\n  → the ceiling is per attempt, not per corpus: \
+                 when your set is larger, run one attempt per slice — files[0:{limit}] first, \
+                 files[{limit}:{}] next, until done",
+                limit * 2
             ),
             EvalError::RunBudget { rule_id, limit } => write!(
                 f,
                 "script '{rule_id}' exceeded the run budget of {limit} runs per attempt — \
-                 the runs already executed stand; a live program has no rollback"
+                 the runs already executed stand; a live program has no rollback\n  → continue \
+                 in a fresh attempt starting at the first run this one never made — the {limit} \
+                 that ran are done, and re-running them would run them twice"
             ),
             EvalError::ArmedBudget { line, limit, .. } => write!(
                 f,
                 "refused at line {line} · budget — the armed-edit ceiling of {limit} edits \
-                 per attempt was reached; refused, never truncated"
+                 per attempt was reached; refused, never truncated\n  → the ceiling is per \
+                 attempt, not per corpus: when your edit set is larger, slice the targets and \
+                 run one attempt per slice of at most {limit} edits"
             ),
             EvalError::MissingEntry {
                 rule_id,
