@@ -56,6 +56,11 @@ impl ChildKind {
     }
 }
 
+/// An entry visitor for [`RadixChildMap::for_each_entry`]: called with the
+/// entry's name bytes, kind, and 32-byte hash. A named alias so the walk's
+/// signatures stay readable (clippy `type_complexity`).
+pub(crate) type EntryVisitor<'a> = dyn FnMut(&[u8], ChildKind, &[u8; 32]) + 'a;
+
 /// Hash-work counters — instruments, not caches (the §4.2.4 cost law made
 /// assertable). Monotonic; readers diff before/after.
 #[derive(Default, Clone, Copy)]
@@ -154,8 +159,8 @@ impl RadixChildMap {
     /// or slot handle escapes (§4.3): the caller sees child ENTRIES, which are
     /// the directory listing, never trie structure. O(width) over the map —
     /// the §4.3.1 forest expansion's listing read.
-    pub(crate) fn for_each_entry(&self, f: &mut dyn FnMut(&[u8], ChildKind, &[u8; 32])) {
-        fn walk(v: &Vertex, acc: &mut Vec<u8>, f: &mut dyn FnMut(&[u8], ChildKind, &[u8; 32])) {
+    pub(crate) fn for_each_entry(&self, f: &mut EntryVisitor<'_>) {
+        fn walk(v: &Vertex, acc: &mut Vec<u8>, f: &mut EntryVisitor<'_>) {
             let base = acc.len();
             acc.extend_from_slice(&v.ext);
             match &v.terminal {
