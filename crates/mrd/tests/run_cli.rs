@@ -322,3 +322,68 @@ fn dry_rehearses_the_capability_gate() {
     let after = std::fs::read_to_string(ws.file("nocaps.md")).expect("page");
     assert_eq!(before, after);
 }
+
+/// A page miss under an env-override workspace names the root AND its source
+/// (dogfood F6): the exact command that answered minutes earlier misses after a
+/// sticky `MERIDIAN_WORKSPACE` from another setup redirects the root — the
+/// refusal must point at the root, not the ref. Repro shape: cwd inside a git
+/// workspace that HAS the page, override naming a demo root that does not.
+#[test]
+fn page_miss_names_override_workspace_and_source() {
+    let board = tempfile::tempdir().expect("board");
+    std::fs::create_dir(board.path().join(".git")).expect("git entry");
+    std::fs::write(board.path().join("queries.md"), SOLO_PAGE).expect("page");
+    let demo = tempfile::tempdir().expect("demo");
+    let out = Command::new(env!("CARGO_BIN_EXE_mrd"))
+        .args(["run", "queries.md"])
+        .env("MERIDIAN_WORKSPACE", demo.path())
+        .current_dir(board.path())
+        .output()
+        .expect("spawn mrd");
+    assert_eq!(code(&out), 2);
+    let demo_canon = demo.path().canonicalize().expect("canon");
+    let want = format!(
+        "page not found: queries.md (workspace {}, source: env-override)",
+        demo_canon.display()
+    );
+    assert!(stderr(&out).contains(&want), "{}", stderr(&out));
+}
+
+/// The disclosure is general: a git-root-anchored miss names that root and
+/// `source: git-root` in the same form.
+#[test]
+fn page_miss_names_git_root_workspace_and_source() {
+    let ws = tempfile::tempdir().expect("ws");
+    std::fs::create_dir(ws.path().join(".git")).expect("git entry");
+    let out = Command::new(env!("CARGO_BIN_EXE_mrd"))
+        .args(["run", "missing.md"])
+        .env_remove("MERIDIAN_WORKSPACE")
+        .current_dir(ws.path())
+        .output()
+        .expect("spawn mrd");
+    assert_eq!(code(&out), 2);
+    let canon = ws.path().canonicalize().expect("canon");
+    let want = format!(
+        "page not found: missing.md (workspace {}, source: git-root)",
+        canon.display()
+    );
+    assert!(stderr(&out).contains(&want), "{}", stderr(&out));
+}
+
+/// A `cwd-default` miss stays bare: `Answer::root` is `None` there — a
+/// defaulted cwd is not a workspace, and the refusal does not promote it to
+/// one.
+#[test]
+fn page_miss_on_cwd_default_stays_bare() {
+    let dir = tempfile::tempdir().expect("dir");
+    let out = Command::new(env!("CARGO_BIN_EXE_mrd"))
+        .args(["run", "missing.md"])
+        .env_remove("MERIDIAN_WORKSPACE")
+        .current_dir(dir.path())
+        .output()
+        .expect("spawn mrd");
+    assert_eq!(code(&out), 2);
+    let err = stderr(&out);
+    assert!(err.contains("page not found: missing.md"), "{err}");
+    assert!(!err.contains("(workspace"), "{err}");
+}
