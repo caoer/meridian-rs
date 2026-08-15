@@ -31,6 +31,7 @@ pub mod fence;
 pub mod guard;
 pub mod radix;
 pub mod resident;
+pub mod stable;
 
 /// The workspace root every wire `path` resolves strictly inside. Constructed
 /// once at process start; path-escape rejection (`bad_path`) anchors here.
@@ -592,7 +593,7 @@ impl StatKey {
 /// is nothing here to select a version from.
 #[derive(Debug, Default)]
 pub struct DomainCache {
-    leaves: BTreeMap<PathBuf, (StatKey, [u8; 32])>,
+    leaves: BTreeMap<PathBuf, LeafSeen>,
     dirs: DirMemo,
     /// The resident tree (merkle-spec §6.1): the interior folds, kept.
     /// Updated by every successful observation's generation delta and by the
@@ -607,14 +608,48 @@ pub struct DomainCache {
     /// version law (the overlay composes against the OBSERVED generation,
     /// never a fresher config read).
     domain_seen: Option<domain::Domain>,
+    /// The §6.2 timestamp-granularity calibration, probed lazily at the
+    /// first observation (the cache's workspace open). `None` = not yet
+    /// probed.
+    calibration: Option<stable::Calibration>,
+    /// The shared feed-generation cell: the event-feed watcher advances it,
+    /// the observation path fences byte reads with it, and its loss count
+    /// feeds [`Self::guard_currency`].
+    feed: stable::FeedGen,
+    /// Feed losses absorbed by the last COMPLETED observation — a loss at or
+    /// below this count has been re-derived by a full pass.
+    acked_losses: u64,
     reads: u64,
     listings: u64,
     flat_folds: u64,
+    watermark_rereads: u64,
+    suspect_reads: u64,
+    fenced_reads: u64,
 }
 
-/// The remembered listings: each directory's [`StatKey`] at enumeration time
-/// and the entry set it held then.
-type DirMemo = BTreeMap<PathBuf, (StatKey, Vec<DirEntryKind>)>;
+/// One remembered leaf: the identity its digest was byte-derived under and
+/// the observation watermark of that record. `seen: None` is the deliberate
+/// spoil (merkle-spec §6.2 row 1): the entry never trusts, whatever its key.
+#[derive(Debug, Clone)]
+struct LeafSeen {
+    key: StatKey,
+    digest: [u8; 32],
+    seen: Option<stable::FsStamp>,
+}
+
+/// The remembered listings: each directory's [`StatKey`] at enumeration
+/// time, the observation watermark of that record (`None` = spoiled — a
+/// same-quantum entry change would be invisible to the key compare, exactly
+/// the leaf memo's racy window), and the entry set it held then.
+type DirMemo = BTreeMap<PathBuf, DirSeen>;
+
+/// One remembered directory listing with its trust record (see [`DirMemo`]).
+#[derive(Debug, Clone)]
+struct DirSeen {
+    key: StatKey,
+    seen: Option<stable::FsStamp>,
+    entries: Vec<DirEntryKind>,
+}
 
 /// One remembered directory entry: its name and its `read_dir` file type — the
 /// only facts [`hash_domain`]'s walk takes from an enumeration, so remembering
@@ -722,18 +757,30 @@ impl DomainCache {
     /// The walk and the `stat`s are live: the member SET is observed now, and
     /// every member's identity is checked now. Listings are served from the
     /// dir memo for unmoved directories; digests from the leaf memo for
-    /// unmoved members; moved members are re-read under the law's own read
-    /// (plain [`fs::read`] vs guarded `O_NOFOLLOW`). On success the leaf memo
-    /// holds exactly the observed generation — vanished members are dropped,
-    /// so the memo cannot outlive its corpus.
+    /// unmoved members; moved members are re-read under the §6.2 stable-read
+    /// law ([`stable::read_settled`]: `O_NOFOLLOW`, fd identity fstatted
+    /// before and after the bytes, feed-generation fence). On success the
+    /// leaf memo holds exactly the observed generation — vanished members
+    /// are dropped, so the memo cannot outlive its corpus.
+    ///
+    /// Reuse is gated by the watermark trust close (merkle-spec §6.2), never
+    /// by `StatKey` equality alone: an entry whose stamps sit inside the
+    /// calibrated racy window of its record watermark is re-read even when
+    /// its key is byte-identical — the same-quantum in-place write is
+    /// exactly what the key compare cannot see.
     pub(crate) fn observe(
         &mut self,
         root: &WorkspaceRoot,
         domain: &domain::Domain,
         law: ObserveLaw,
     ) -> Result<BTreeMap<Vec<u8>, [u8; 32]>, ObserveRefusal> {
+        // Losses counted before the pass are re-derived by the pass (a
+        // completed observation IS the full sweep the rescan ladder floors
+        // at); losses landing mid-pass stay unabsorbed.
+        let losses_at_start = self.feed.losses();
+        let trust = self.trust_context(root);
         let (mut rels, mut offenders, fresh_dirs, listings) =
-            Self::walk_tree(&self.dirs, &root.0, domain, law)?;
+            Self::walk_tree(&self.dirs, &root.0, domain, law, trust)?;
         // The listings are facts about the tree either way — recorded even
         // when the guarded law refuses below, exactly as a fresh walk's
         // enumeration cost is paid before its verdict.
@@ -750,22 +797,15 @@ impl DomainCache {
         }
         rels.sort();
         let identities = member_identities(&root.0, &rels, PARALLEL_STAT_FLOOR)?;
-        let mut fresh: BTreeMap<PathBuf, (StatKey, [u8; 32])> = BTreeMap::new();
+        let mut fresh: BTreeMap<PathBuf, LeafSeen> = BTreeMap::new();
         // Name-keyed rows (merkle-spec §4/§9 raw name bytes) — the shape every
         // consumer folds or compares in, built once here so no observation
         // pays a second per-member map conversion.
         let mut rows: BTreeMap<Vec<u8>, [u8; 32]> = BTreeMap::new();
         for (rel, key) in identities {
-            let digest = match self.leaves.get(&rel) {
-                Some((seen, digest)) if *seen == key => *digest,
-                _ => {
-                    self.reads += 1;
-                    let bytes = read_member(root, &rel, law)?;
-                    model::leaf_digest(&bytes)
-                }
-            };
-            rows.insert(hash_name(&rel).to_vec(), digest);
-            fresh.insert(rel, (key, digest));
+            let entry = self.observe_member(root, &rel, key, law, trust)?;
+            rows.insert(hash_name(&rel).to_vec(), entry.digest);
+            fresh.insert(rel, entry);
         }
         // The resident tree follows the observed generation (merkle-spec
         // §6.1): removals first — a same-name kind swap across generations
@@ -779,8 +819,8 @@ impl DomainCache {
                     advanced |= tree.remove_leaf(rel);
                 }
             }
-            for (rel, (_, digest)) in &fresh {
-                advanced |= tree.set_leaf(rel, *digest);
+            for (rel, entry) in &fresh {
+                advanced |= tree.set_leaf(rel, entry.digest);
             }
         }
         if advanced {
@@ -788,7 +828,95 @@ impl DomainCache {
         }
         self.domain_seen = Some(domain.clone());
         self.leaves = fresh;
+        self.acked_losses = losses_at_start;
         Ok(rows)
+    }
+
+    /// One member's leaf under the §6.2 trust decision: a memoized digest
+    /// serves only when the key matches AND the watermark law clears the
+    /// record — a matching key inside the racy window re-reads, because the
+    /// same-quantum in-place write is exactly what the key compare cannot
+    /// see (codex gate 17: `StatKey` equality alone never passes).
+    fn observe_member(
+        &mut self,
+        root: &WorkspaceRoot,
+        rel: &Path,
+        key: StatKey,
+        law: ObserveLaw,
+        trust: stable::TrustCtx,
+    ) -> Result<LeafSeen, ObserveRefusal> {
+        let key_matched = match self.leaves.get(rel) {
+            Some(prior) if prior.key == key && trust.trusts(&key, prior.seen) => {
+                return Ok(LeafSeen {
+                    key,
+                    digest: prior.digest,
+                    seen: prior.seen,
+                });
+            }
+            Some(prior) => prior.key == key,
+            None => false,
+        };
+        if key_matched {
+            // The watermark's own re-read — the trust close's instrument.
+            self.watermark_rereads += 1;
+        }
+        self.reads += 1;
+        // The event-generation fence brackets the read (§6.2 row 4): a feed
+        // event landing inside re-classifies the record as spoiled, never a
+        // torn observation trusted.
+        let bracket = self.feed.bracket();
+        let read = read_member(root, rel, law)?;
+        let fence_clean = self.feed.clean(bracket);
+        if !read.settled {
+            // A still-open in-place writer (§6.2 row 5): the leaf is
+            // SUSPECT — served this pass, never trusted.
+            self.suspect_reads += 1;
+        }
+        if !fence_clean {
+            self.fenced_reads += 1;
+        }
+        let seen = if read.settled && fence_clean {
+            trust.record_seen()
+        } else {
+            None
+        };
+        // The fd-true identity of the bytes actually hashed — never the
+        // walk's path stat, which the minting write can race.
+        Ok(LeafSeen {
+            key: read.key,
+            digest: model::leaf_digest(&read.bytes),
+            seen,
+        })
+    }
+
+    /// The trust context this pass runs under: calibrate lazily at the first
+    /// observation (the cache's workspace open — merkle-spec §6.2 row 2),
+    /// then capture the pass watermark from the probe file's own clock. Any
+    /// gap — probe unavailable, watermark capture failure — degrades to the
+    /// untrusted floor (reuse nothing, spoil every record), LOUDLY, never to
+    /// silent trust.
+    fn trust_context(&mut self, root: &WorkspaceRoot) -> stable::TrustCtx {
+        let dir = stable::meridian_dir(root);
+        let calibration = self
+            .calibration
+            .get_or_insert_with(|| stable::calibrate(&dir));
+        let granule_ns = match calibration {
+            stable::Calibration::Measured { granule_ns } => *granule_ns,
+            stable::Calibration::Unavailable { .. } => return stable::TrustCtx::untrusted(),
+        };
+        match stable::watermark(&dir) {
+            Ok(w) => stable::TrustCtx {
+                granule_ns: Some(granule_ns),
+                watermark: Some(w),
+            },
+            Err(e) => {
+                eprintln!(
+                    "merkle: observation watermark capture failed ({e}) — this pass trusts \
+                     no stat identity and spoils its records (merkle-spec 6.2)"
+                );
+                stable::TrustCtx::untrusted()
+            }
+        }
     }
 
     /// [`hash_domain`]'s traversal, with the listing of an unmoved directory
@@ -829,6 +957,7 @@ impl DomainCache {
         root: &Path,
         domain: &domain::Domain,
         law: ObserveLaw,
+        trust: stable::TrustCtx,
     ) -> io::Result<(Vec<PathBuf>, Vec<String>, DirMemo, u64)> {
         struct Shared {
             /// Rel dirs awaiting a scan.
@@ -838,7 +967,7 @@ impl DomainCache {
             active: usize,
             files: Vec<PathBuf>,
             offenders: Vec<String>,
-            dirs: Vec<(PathBuf, (StatKey, Vec<DirEntryKind>))>,
+            dirs: Vec<(PathBuf, DirSeen)>,
             listings: u64,
             /// The first scan failure; the sweep fails with it (a tree that
             /// cannot be walked refuses the whole pass, unchanged).
@@ -851,12 +980,12 @@ impl DomainCache {
         let mut listings = 0u64;
 
         // The root's own scan runs serially — flat trees never see a thread.
-        let scan = scan_dir(prior, root, Path::new(""))?;
+        let scan = scan_dir(prior, root, Path::new(""), trust)?;
         listings += u64::from(scan.enumerated);
         let (mut root_files, subdirs, mut root_offenders) =
             classify(&scan.entries, Path::new(""), domain, law);
-        if let Some(key) = scan.key {
-            fresh_dirs.insert(PathBuf::new(), (key, scan.entries));
+        if let Some(seen) = scan.into_seen() {
+            fresh_dirs.insert(PathBuf::new(), seen);
         }
         files.append(&mut root_files);
         offenders.append(&mut root_offenders);
@@ -896,7 +1025,7 @@ impl DomainCache {
                                 s = idle.wait(s).unwrap_or_else(PoisonError::into_inner);
                             }
                         };
-                        let scanned = scan_dir(prior, root, &rel).map(|scan| {
+                        let scanned = scan_dir(prior, root, &rel, trust).map(|scan| {
                             let split = classify(&scan.entries, &rel, domain, law);
                             (scan, split)
                         });
@@ -908,8 +1037,8 @@ impl DomainCache {
                                 s.files.append(&mut new_files);
                                 s.offenders.append(&mut new_offenders);
                                 s.todo.extend(new_subdirs);
-                                if let Some(key) = scan.key {
-                                    s.dirs.push((rel, (key, scan.entries)));
+                                if let Some(seen) = scan.into_seen() {
+                                    s.dirs.push((rel, seen));
                                 }
                                 // Every push can wake every sleeper: workers
                                 // outnumber the queue's contents at the fringe.
@@ -955,7 +1084,7 @@ impl DomainCache {
     pub fn leaf_digests(&self) -> BTreeMap<PathBuf, [u8; 32]> {
         self.leaves
             .iter()
-            .map(|(rel, (_, digest))| (rel.clone(), *digest))
+            .map(|(rel, entry)| (rel.clone(), entry.digest))
             .collect()
     }
 
@@ -987,8 +1116,14 @@ impl DomainCache {
         if !self.tree.set_leaf(rel, digest) {
             return Ok(false);
         }
-        self.leaves
-            .insert(rel.to_path_buf(), (StatKey::spoiled(), digest));
+        self.leaves.insert(
+            rel.to_path_buf(),
+            LeafSeen {
+                key: StatKey::spoiled(),
+                digest,
+                seen: None,
+            },
+        );
         self.served = None;
         Ok(true)
     }
@@ -1033,7 +1168,7 @@ impl DomainCache {
         let leaves: Vec<(&[u8], [u8; 32])> = self
             .leaves
             .iter()
-            .map(|(rel, (_, digest))| (hash_name(rel), *digest))
+            .map(|(rel, entry)| (hash_name(rel), entry.digest))
             .collect();
         let folded = model::merkle_root_of_leaves(&leaves, version);
         self.served = Some((version, folded.clone()));
@@ -1080,6 +1215,75 @@ impl DomainCache {
         self.flat_folds
     }
 
+    /// The §6.2 timestamp-granularity calibration this cache runs under —
+    /// the probe's queryable face (the test matrix records it per backend).
+    /// `None` until the first observation probes it.
+    #[must_use]
+    pub fn calibration(&self) -> Option<&stable::Calibration> {
+        self.calibration.as_ref()
+    }
+
+    /// A handle on the shared feed-generation cell. The event-feed watcher
+    /// clones this to advance generations and report loss; the observation
+    /// path fences every byte read with the same cell.
+    #[must_use]
+    pub fn feed_gen(&self) -> stable::FeedGen {
+        self.feed.clone()
+    }
+
+    /// Guard currency as this cache can vouch for it (merkle-spec §6.2
+    /// row 6): LOUD untrusted on no baseline, unknown capability
+    /// (calibration unavailable), or unabsorbed event loss — never silent
+    /// trust. A COMPLETED observation absorbs losses reported before it
+    /// started (a full pass is the rescan ladder's own floor); calibration
+    /// unavailability never heals within the workspace open.
+    #[must_use]
+    pub fn guard_currency(&self) -> stable::GuardCurrency {
+        if self.domain_seen.is_none() {
+            return stable::GuardCurrency::Untrusted {
+                reason: "no observation has landed".to_owned(),
+            };
+        }
+        if let Some(stable::Calibration::Unavailable { reason }) = &self.calibration {
+            return stable::GuardCurrency::Untrusted {
+                reason: reason.clone(),
+            };
+        }
+        let losses = self.feed.losses();
+        if losses > self.acked_losses {
+            return stable::GuardCurrency::Untrusted {
+                reason: format!(
+                    "event loss reported ({} unabsorbed) — a full observation must re-baseline",
+                    losses - self.acked_losses
+                ),
+            };
+        }
+        stable::GuardCurrency::Trusted
+    }
+
+    /// Members re-read because the §6.2 watermark refused their record while
+    /// their `StatKey` matched byte-for-byte — the trust close's own
+    /// instrument (codex gate 17: key equality alone never passes).
+    #[must_use]
+    pub fn watermark_rereads(&self) -> u64 {
+        self.watermark_rereads
+    }
+
+    /// Reads whose fd identity was still moving after the retry budget — a
+    /// still-open in-place writer classified SUSPECT (§6.2 row 5); served
+    /// that pass, recorded spoiled.
+    #[must_use]
+    pub fn suspect_reads(&self) -> u64 {
+        self.suspect_reads
+    }
+
+    /// Reads whose event-generation fence caught a feed event landing inside
+    /// the read bracket (§6.2 row 4); recorded spoiled.
+    #[must_use]
+    pub fn fenced_reads(&self) -> u64 {
+        self.fenced_reads
+    }
+
     /// The overlay's domain: the OBSERVED generation, refused when none has
     /// landed (composing an overlay against a fresher config read than the
     /// tree's own generation would mix two worlds).
@@ -1095,15 +1299,40 @@ impl DomainCache {
 /// whether an enumeration actually ran — the walk's unit of work.
 struct DirScan {
     key: Option<StatKey>,
+    /// The watermark this scan's record rides: a reused listing keeps its
+    /// original record watermark; a fresh enumeration takes the pass's
+    /// ([`stable::TrustCtx::record_seen`] — `None` under the untrusted
+    /// floor, so a later pass re-enumerates).
+    seen: Option<stable::FsStamp>,
     entries: Vec<DirEntryKind>,
     enumerated: bool,
 }
 
+impl DirScan {
+    /// This scan's memo record — `None` when the directory vanished under
+    /// the stat (nothing to remember).
+    fn into_seen(self) -> Option<DirSeen> {
+        self.key.map(|key| DirSeen {
+            key,
+            seen: self.seen,
+            entries: self.entries,
+        })
+    }
+}
+
 /// Scan one directory for [`DomainCache::walk_tree`]: `stat` it, take its
-/// listing from `prior` when the identity is unmoved, `read_dir` otherwise.
-/// An unreadable directory stat re-enumerates rather than trusting what the
-/// memo remembers — the serial walk's own failure posture.
-fn scan_dir(prior: &DirMemo, root: &Path, rel_dir: &Path) -> io::Result<DirScan> {
+/// listing from `prior` when the identity is unmoved AND the §6.2 watermark
+/// law clears the record (a directory whose entry set changed in the same
+/// stamp quantum as its remembered scan is exactly the leaf memo's racy
+/// window — an unmoved-looking key hiding a moved listing), `read_dir`
+/// otherwise. An unreadable directory stat re-enumerates rather than
+/// trusting what the memo remembers — the serial walk's own failure posture.
+fn scan_dir(
+    prior: &DirMemo,
+    root: &Path,
+    rel_dir: &Path,
+    trust: stable::TrustCtx,
+) -> io::Result<DirScan> {
     let abs_dir = if rel_dir.as_os_str().is_empty() {
         root.to_path_buf()
     } else {
@@ -1113,11 +1342,11 @@ fn scan_dir(prior: &DirMemo, root: &Path, rel_dir: &Path) -> io::Result<DirScan>
     let remembered = key.and_then(|key| {
         prior
             .get(rel_dir)
-            .filter(|(seen, _)| *seen == key)
-            .map(|(_, entries)| entries.clone())
+            .filter(|seen| seen.key == key && trust.trusts(&key, seen.seen))
+            .map(|seen| (seen.entries.clone(), seen.seen))
     });
-    let (entries, enumerated) = if let Some(entries) = remembered {
-        (entries, false)
+    let (entries, seen, enumerated) = if let Some((entries, seen)) = remembered {
+        (entries, seen, false)
     } else {
         let mut entries = Vec::new();
         for entry in fs::read_dir(&abs_dir)? {
@@ -1130,10 +1359,11 @@ fn scan_dir(prior: &DirMemo, root: &Path, rel_dir: &Path) -> io::Result<DirScan>
                 name: entry.file_name(),
             });
         }
-        (entries, true)
+        (entries, trust.record_seen(), true)
     };
     Ok(DirScan {
         key,
+        seen,
         entries,
         enumerated,
     })
@@ -1233,31 +1463,29 @@ fn plain_refusal(refusal: ObserveRefusal) -> io::Error {
     }
 }
 
-/// One moved member's bytes under the observation law: plain reads follow the
-/// ordinary path with the corpus-scoped refusal shape ([`DomainCache::root`]'s
-/// law); guarded reads are `O_NOFOLLOW`, and a link racing the walk surfaces
-/// as the symlink refusal ([`guard`]'s law), never a read-through.
+/// One moved member's bytes under the §6.2 stable-read law
+/// ([`stable::read_settled`]: `O_NOFOLLOW`, fd identity fstatted before and
+/// after the bytes — BOTH observation laws; spec §6.2 row 3 is
+/// unconditional). What differs per law is the refusal spelling: plain reads
+/// keep the corpus-scoped refusal shape ([`DomainCache::root`]'s law) — a
+/// member swapped for a symlink between walk and read now refuses there
+/// instead of being read through, strictly stricter; guarded reads spell a
+/// link racing the walk as the symlink refusal ([`guard`]'s law).
 fn read_member(
     root: &WorkspaceRoot,
     rel: &Path,
     law: ObserveLaw,
-) -> Result<Vec<u8>, ObserveRefusal> {
+) -> Result<stable::SettledRead, ObserveRefusal> {
     let abs = root.0.join(rel);
-    match law {
-        ObserveLaw::Plain => fs::read(&abs).map_err(|e| {
-            ObserveRefusal::Io(corpus_member_refusal(
+    match stable::read_settled(&abs) {
+        Ok(read) => Ok(read),
+        Err(e) => match law {
+            ObserveLaw::Plain => Err(ObserveRefusal::Io(corpus_member_refusal(
                 e.kind(),
                 &display_name(hash_name(rel)),
                 format!("cannot be read ({e})"),
-            ))
-        }),
-        ObserveLaw::Guarded => match open_nofollow(&abs) {
-            Ok(mut f) => {
-                let mut buf = Vec::new();
-                f.read_to_end(&mut buf).map_err(ObserveRefusal::Io)?;
-                Ok(buf)
-            }
-            Err(e) => {
+            ))),
+            ObserveLaw::Guarded => {
                 if fs::symlink_metadata(&abs).is_ok_and(|m| m.file_type().is_symlink()) {
                     // The walk→read race mints for the ONE path it caught.
                     Err(ObserveRefusal::Symlink {
@@ -4689,6 +4917,256 @@ mod workspace_relative_tests {
             workspace_relative(&root, "a/b/unborn.md").as_deref(),
             Some("a/b/unborn.md"),
             "a not-yet-born inside file still gets its spelling"
+        );
+    }
+}
+
+/// The §6.2 hermetic trust-close gates (card stable-read-protocol; codex
+/// gate 17). These live INSIDE the crate because the row under test — a
+/// leaf-memo entry whose `StatKey` equals the file's current identity while
+/// its digest is stale — is the same-quantum in-place edit: constructible on
+/// a 1–2 s-quantum backend by racing the clock, unconstructible
+/// deterministically on a nanosecond one. The harness implants the row
+/// directly; production records ride `observe` only.
+#[cfg(test)]
+mod stable_trust_tests {
+    use std::path::{Path, PathBuf};
+
+    use super::{DomainCache, LeafSeen, StatKey, WorkspaceRoot, stable};
+
+    fn workspace(files: &[(&str, &[u8])]) -> (tempfile::TempDir, WorkspaceRoot) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for (rel, bytes) in files {
+            let abs = dir.path().join(rel);
+            if let Some(parent) = abs.parent() {
+                std::fs::create_dir_all(parent).expect("mkdir");
+            }
+            std::fs::write(abs, bytes).expect("write fixture");
+        }
+        let root = WorkspaceRoot(dir.path().to_path_buf());
+        (dir, root)
+    }
+
+    /// Implant the hermetic row: the file's CURRENT on-disk identity paired
+    /// with a stale digest, recorded under `seen`.
+    fn implant(
+        cache: &mut DomainCache,
+        root: &WorkspaceRoot,
+        rel: &str,
+        stale: [u8; 32],
+        seen: Option<stable::FsStamp>,
+    ) {
+        let key = StatKey::of_path(&root.0.join(rel))
+            .expect("stat")
+            .expect("fixture present");
+        cache.leaves.insert(
+            PathBuf::from(rel),
+            LeafSeen {
+                key,
+                digest: stale,
+                seen,
+            },
+        );
+    }
+
+    /// Codex gate 17, both directions. The hermetic row's key compare PASSES
+    /// by construction — what decides is the watermark law alone:
+    ///
+    /// - recorded inside its own racy window (`seen` == the file's mtime,
+    ///   the same-quantum shape) ⇒ the member is re-read despite the
+    ///   matching key, and the served root folds the DISK bytes;
+    /// - recorded comfortably clear of the window (`seen` far ahead of the
+    ///   stamps) ⇒ the memo serves, proving the re-read above was the
+    ///   watermark's refusal and not an always-read.
+    #[test]
+    fn statkey_equality_alone_never_passes_the_watermark() {
+        const OLD: &[u8] = b"# v1 body bytes\n";
+        const NEW: &[u8] = b"# v2 body bytes\n"; // same size, in-place shape
+        let (_tmp, root) = workspace(&[("x.md", NEW), ("other.md", b"bystander\n")]);
+        let stale = model::leaf_digest(OLD);
+
+        // Racy arm: the record watermark sits AT the file's own stamps —
+        // exactly what a same-quantum record looks like. The key matches
+        // the disk byte-for-byte; the watermark refuses anyway.
+        let mut cache = DomainCache::new();
+        cache.root(&root).expect("calibrate + baseline");
+        let (_, _, _, mtime, _) = StatKey::of_path(&root.0.join("x.md"))
+            .expect("stat")
+            .expect("present")
+            .raw_parts();
+        implant(&mut cache, &root, "x.md", stale, Some(mtime));
+        let rereads_before = cache.watermark_rereads();
+        let served = cache.root(&root).expect("observe");
+        let (_, disk) = super::domain_snapshot(&root).expect("snapshot");
+        assert_eq!(served, disk, "the racy row must be re-read from disk");
+        assert!(
+            cache.watermark_rereads() > rereads_before,
+            "the re-read must be the watermark's own (key equality held)"
+        );
+
+        // Trusted arm: same stale row, recorded far clear of the racy
+        // window — the memo SERVES it, so the arm above was decided by the
+        // watermark, not by paranoia.
+        let mut cache = DomainCache::new();
+        cache.root(&root).expect("calibrate + baseline");
+        let far_future = (mtime.0 + 1_000_000, mtime.1);
+        implant(&mut cache, &root, "x.md", stale, Some(far_future));
+        let served = cache.root(&root).expect("observe");
+        assert_ne!(served, disk, "the trusted row must serve the memo digest");
+        let mut oracle = DomainCache::new();
+        oracle.root(&root).expect("observe");
+        let expected = {
+            // Fold the oracle's leaves with x.md's digest swapped for the
+            // stale one — the root the memo-served pass must answer.
+            let mut leaves = oracle.leaf_digests();
+            leaves.insert(PathBuf::from("x.md"), stale);
+            let refs: Vec<(&[u8], [u8; 32])> = leaves
+                .iter()
+                .map(|(rel, d)| (super::hash_name(rel), *d))
+                .collect();
+            model::merkle_root_of_leaves(
+                &refs,
+                super::domain::Domain::load(&root)
+                    .expect("domain")
+                    .version(),
+            )
+        };
+        assert_eq!(served, expected);
+    }
+
+    /// A spoiled record (`seen: None`) never trusts, whatever its key — the
+    /// deliberate-spoil half of §6.2 row 1 (the overlay's posture, and every
+    /// suspect/fenced read's).
+    #[test]
+    fn a_spoiled_record_is_re_read_despite_a_matching_key() {
+        const OLD: &[u8] = b"stale bytes\n";
+        const NEW: &[u8] = b"fresh bytes\n";
+        let (_tmp, root) = workspace(&[("x.md", NEW)]);
+        let mut cache = DomainCache::new();
+        cache.root(&root).expect("baseline");
+        implant(&mut cache, &root, "x.md", model::leaf_digest(OLD), None);
+        let served = cache.root(&root).expect("observe");
+        let (_, disk) = super::domain_snapshot(&root).expect("snapshot");
+        assert_eq!(served, disk, "a spoiled record must fail toward reading");
+    }
+
+    /// Gate 2 (card stable-read-protocol): fixture-induced event loss lands
+    /// in the LOUD untrusted state, visibly — and a completed observation
+    /// re-baselines past it, while a virgin cache and an unabsorbed loss
+    /// both report untrusted.
+    #[test]
+    fn event_loss_lands_in_the_loud_untrusted_state() {
+        let (_tmp, root) = workspace(&[("a.md", b"# A\n")]);
+        let mut cache = DomainCache::new();
+        assert!(
+            matches!(
+                cache.guard_currency(),
+                stable::GuardCurrency::Untrusted { .. }
+            ),
+            "a virgin cache vouches for nothing"
+        );
+
+        cache.root(&root).expect("baseline");
+        assert_eq!(cache.guard_currency(), stable::GuardCurrency::Trusted);
+
+        // The fixture-induced loss: the watcher's handle reports overflow.
+        cache.feed_gen().note_loss("fixture-induced overflow");
+        let stable::GuardCurrency::Untrusted { reason } = cache.guard_currency() else {
+            panic!("event loss must drop guard currency, visibly");
+        };
+        assert!(
+            reason.contains("event loss"),
+            "the untrusted state names its cause: {reason}"
+        );
+
+        // A completed full observation absorbs the loss (the pass IS the
+        // rescan ladder's full-sweep floor).
+        cache.root(&root).expect("re-baseline");
+        assert_eq!(cache.guard_currency(), stable::GuardCurrency::Trusted);
+    }
+
+    /// Unknown capability: a workspace whose `.meridian/` cannot be probed
+    /// serves — correctly — but trusts NO stat identity (every pass re-reads
+    /// every member) and reports untrusted for the whole workspace open.
+    #[cfg(unix)]
+    #[test]
+    fn an_unprobeable_backend_is_loud_and_never_trusts() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let (_tmp, root) = workspace(&[("a.md", b"# A\n"), ("b.md", b"# B\n")]);
+        // An unwritable pre-existing .meridian: the probe cannot create its
+        // file, so calibration is Unavailable for this workspace open.
+        let meridian = root.0.join(".meridian");
+        std::fs::create_dir(&meridian).expect("mkdir");
+        std::fs::set_permissions(&meridian, std::fs::Permissions::from_mode(0o555)).expect("chmod");
+
+        let mut cache = DomainCache::new();
+        let r1 = cache.root(&root).expect("serving continues");
+        let reads_cold = cache.leaves_read();
+        assert!(
+            matches!(
+                cache.calibration(),
+                Some(stable::Calibration::Unavailable { .. })
+            ),
+            "the probe failure is recorded, not guessed around"
+        );
+        assert!(
+            matches!(
+                cache.guard_currency(),
+                stable::GuardCurrency::Untrusted { .. }
+            ),
+            "unknown capability is untrusted for the whole open"
+        );
+
+        // Never silent trust: a quiet pass re-reads every member.
+        let r2 = cache.root(&root).expect("quiet pass");
+        assert_eq!(r1, r2);
+        assert_eq!(
+            cache.leaves_read(),
+            reads_cold * 2,
+            "an uncalibrated backend trusts no stat identity"
+        );
+
+        // Restore write access so the tempdir can clean up.
+        std::fs::set_permissions(&meridian, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod back");
+    }
+
+    /// The dir-listing memo rides the same trust close: a listing recorded
+    /// inside its racy window re-enumerates despite an unmoved directory
+    /// key, so a same-quantum entry change can never hide behind the
+    /// listing memo (the "bytes outside the fold" hazard).
+    #[test]
+    fn a_racy_dir_listing_is_re_enumerated() {
+        let (_tmp, root) = workspace(&[("notes/a.md", b"# A\n")]);
+        let mut cache = DomainCache::new();
+        cache.root(&root).expect("baseline");
+        let listings_warm = cache.listings();
+
+        // Spoil the notes/ listing record: same key, seen at its own mtime.
+        let key = StatKey::of_path(&root.0.join("notes"))
+            .expect("stat")
+            .expect("present");
+        let seen = {
+            let (_, _, _, mtime, _) = key.raw_parts();
+            Some(mtime)
+        };
+        let prior = cache
+            .dirs
+            .get(Path::new("notes"))
+            .expect("memoized")
+            .clone();
+        cache.dirs.insert(
+            PathBuf::from("notes"),
+            super::DirSeen {
+                key,
+                seen,
+                entries: prior.entries,
+            },
+        );
+        cache.root(&root).expect("observe");
+        assert!(
+            cache.listings() > listings_warm,
+            "a racy listing record must re-enumerate"
         );
     }
 }
