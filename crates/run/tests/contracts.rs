@@ -56,7 +56,96 @@ fn wrong_arg_count_names_the_declared_args() {
         ContractViolation::ArgCount {
             task: "fix-drift".to_owned(),
             expected: vec!["page".to_owned()],
+            variadic: false,
             got: 0,
+        }
+    );
+}
+
+/// A page declaring a fixed slot plus a tail: `task.fmt.args: title, rows...`.
+const TAIL_PAGE: &str = "---\ntask.fmt: \"[[#^a-1]]\"\ntask.fmt.args: title, rows...\n---\n";
+
+#[test]
+fn tail_suffix_parses_as_a_variadic_last_slot() {
+    let c = contracts::contract_for(&doc(TAIL_PAGE), "fmt").unwrap();
+    assert_eq!(c.args, vec!["title".to_owned(), "rows".to_owned()]);
+    assert!(c.variadic);
+    assert_eq!(c.min_args(), 1);
+    // Every face echoes the declaration as written.
+    assert_eq!(
+        c.args_declared(),
+        vec!["title".to_owned(), "rows...".to_owned()]
+    );
+}
+
+#[test]
+fn a_tail_takes_any_count_including_none() {
+    let c = contracts::contract_for(&doc(TAIL_PAGE), "fmt").unwrap();
+    for supplied in [
+        args(&["t"]),
+        args(&["t", "r1"]),
+        args(&["t", "r1", "r2", "r3"]),
+    ] {
+        contracts::validate("fmt", &c, &supplied, &env(&[])).unwrap();
+    }
+}
+
+#[test]
+fn a_tail_still_enforces_the_fixed_prefix() {
+    let c = contracts::contract_for(&doc(TAIL_PAGE), "fmt").unwrap();
+    let err = contracts::validate("fmt", &c, &[], &env(&[])).unwrap_err();
+    assert_eq!(
+        err,
+        ContractViolation::ArgCount {
+            task: "fmt".to_owned(),
+            expected: vec!["title".to_owned(), "rows...".to_owned()],
+            variadic: true,
+            got: 0,
+        }
+    );
+    assert_eq!(
+        err.to_string(),
+        "task 'fmt' takes at least 1 arg(s) (title, rows...), got 0"
+    );
+}
+
+#[test]
+fn a_tail_before_the_last_arg_is_an_authoring_fault() {
+    let page = "---\ntask.t: \"[[#^a-1]]\"\ntask.t.args: rows..., title\n---\n";
+    let err = contracts::contract_for(&doc(page), "t").unwrap_err();
+    assert_eq!(
+        err,
+        ContractError::TailNotLast {
+            task: "t".to_owned(),
+            name: "rows".to_owned(),
+        }
+    );
+}
+
+#[test]
+fn env_refuses_the_tail_suffix() {
+    // The name parser is shared with args, so env refuses the suffix in its
+    // own words rather than accepting it silently.
+    let page = "---\ntask.t: \"[[#^a-1]]\"\ntask.t.env: HOME_WIKI...\n---\n";
+    let err = contracts::contract_for(&doc(page), "t").unwrap_err();
+    assert_eq!(
+        err,
+        ContractError::TailOnEnv {
+            task: "t".to_owned(),
+            name: "HOME_WIKI".to_owned(),
+        }
+    );
+}
+
+#[test]
+fn a_bare_tail_with_no_name_is_an_authoring_fault() {
+    let page = "---\ntask.t: \"[[#^a-1]]\"\ntask.t.args: ...\n---\n";
+    let err = contracts::contract_for(&doc(page), "t").unwrap_err();
+    assert_eq!(
+        err,
+        ContractError::BadName {
+            task: "t".to_owned(),
+            name: "...".to_owned(),
         }
     );
 }

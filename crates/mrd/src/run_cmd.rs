@@ -306,7 +306,7 @@ pub(crate) fn dispatch(tail: &[String]) -> Result<(), Fail> {
     contracts::validate(task, &contract, &parsed.args, &parsed.env).map_err(|violation| {
         Fail::tool(format!(
             "{violation}\ndeclared contract: args: [{}], env: [{}]",
-            contract.args.join(", "),
+            contract.args_declared().join(", "),
             contract.env.join(", ")
         ))
     })?;
@@ -499,7 +499,7 @@ fn list_tasks(
                             "task": b.name,
                             "lang": resolved.block.lang.as_str(),
                             "guarantee": resolved.block.lang.guarantee_class().as_str(),
-                            "args": contract.args,
+                            "args": contract.args_declared(),
                             "env": contract.env,
                         });
                         // The `caps` key exists only where capabilities do; an unsandboxed row
@@ -574,7 +574,7 @@ fn list_tasks(
                             }
                         }
                         if !contract.args.is_empty() {
-                            let _ = write!(line, "  args: {}", contract.args.join(", "));
+                            let _ = write!(line, "  args: {}", contract.args_declared().join(", "));
                         }
                         if !contract.env.is_empty() {
                             let _ = write!(line, "  env: {}", contract.env.join(", "));
