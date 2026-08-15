@@ -444,19 +444,98 @@ for the whole request with nothing landed — the refusal names the entry
 (`files[i]` and its path) that measured it. Response: `armed` becomes an
 ARRAY of per-file armed groups (`[{path, file_rev_after, edits:[…]}, …]`,
 request order), one `fingerprint_before`/`fingerprint_after` pair, one
-`seq`. Crash posture: §6.5, the set paragraph. **The corpus is the bound
-(ruled 2026-08-14): no engine-minted numeric cap** — a set names existing,
-pairwise-distinct corpus files, so the corpus's own file count is the
-ceiling; the script lane's 64 is that plane's `max_armed_edits` budget,
-never a transport limit. Callers price their batches by the measured cost
-instead: the commit holds the workspace write flock for its whole span —
-validate-all, stage, rename — at ~13 ms/file (linear, fsync-dominated;
-measured 103 files ≈ 1.9 s, 653 ≈ 8.6 s, 4096 ≈ 53 s on KB-scale files),
-and cooperating writers refuse `workspace_busy` immediately for that whole
-span. Hosts may ratchet stricter per §5.3; the wire stays permissive. The
-cap ships by the §3.2 evolution law (the `splice.plan_edits`/`splice.pin`
-precedent); v2 sessions and cap-less v3 sessions are byte-identical to
-today.
+`seq`. Crash posture — including the case where the in-memory restore
+ITSELF fails — is §6.5, the set paragraph; this document commands no
+journal on any set path (ruled 2026-08-14, and folded through rather than
+appended). The cap ships by the §3.2 evolution law (the
+`splice.plan_edits`/`splice.pin` precedent); v2 sessions and cap-less v3
+sessions are byte-identical to today.
+
+**Two ceilings, named separately, because they bound different audiences
+(amended 2026-08-15, adversarial review F1).** The wire set cap and the
+script arm budget are not one number read twice:
+
+| ceiling | binds | value |
+|---|---|---|
+| **wire set cap** | any v3 client holding `splice.set` — the widest audience OQ1 opened | **the corpus is the bound (ruled 2026-08-14): no engine-minted numeric cap.** A set names existing, pairwise-distinct corpus files, so the corpus's own file count is the ceiling |
+| **script arm budget** | the in-process script evaluator only (§A.7) | `max_armed_edits` = 64 — arming past it faults the ATTEMPT, never a transport limit, and a wire client passes through no evaluator at all |
+
+Both are stated because the face-honesty clause requires it: a limit that
+can refuse must be discoverable before it refuses. Reading only the script
+number under-builds the wire caller — the first real batch anyone ran was
+103 files, so 64 fails on contact at that door. **Moving the wire bound is
+ZT's alone (overrule window open);** the measurement below prices the ruled
+bound and proposes no cap.
+
+**The price, measured end-to-end rather than projected (amended 2026-08-15,
+review F1/F2 against the live set form).** Hold ≈ per-attempt term(corpus)
++ N × per-member marginal, and the two terms behave differently:
+
+- **The per-attempt term is O(corpus), not O(N):** ~57 ms at 200 docs,
+  ~210 ms at 6696 docs (entry fold + post-commit re-fold + commit residue —
+  the commit leg folds TWICE). This is what the set form amortizes: paid
+  once per sealed set instead of once per file.
+- **The per-member marginal is corpus-independent and linear with no knee
+  to N=1024:** 10.2–11.0 ms/member at both corpus sizes (validate
+  ≈ 0.2–0.4 ms; stage + fsync + rename ≈ 10 ms — fsync-dominated). The
+  in-crate bench reads 12.3–13.1 ms/file on a synthetic tree; treat
+  ~11–13 ms/file as the level band.
+- **The resident daemon does NOT amortize the fold across calls:** a wire
+  single-form commit (236 ms @6696 docs) equals the CLI's (232 ms). Every
+  lane pays the per-attempt term per attempt, which is exactly why the set
+  form pays: 16.6× at N=64 and 21.2× at N=1024 against N single commits,
+  same door and corpus.
+- **Wall = hold.** At every measured cell ≥1 s the exclusive-flock hold band
+  is ~100% of the end-to-end wall; there is no unheld phase worth pricing.
+  So the denial table for every other writer on that workspace is the commit
+  column read directly — at 6696 docs: N=1 ≈ 0.24 s · N=64 ≈ 0.91 s ·
+  N=256 ≈ 2.98 s · N=1024 ≈ 11.4 s, and a whole-wiki sealed set extrapolates
+  to ~73 s. A competing writer is refused `workspace_busy` in ≤0.1 ms —
+  immediately, with no engine retry and no queue, so waiting is entirely the
+  caller's policy. Two framings of one total, both true: the per-file lane at
+  N=1024 holds ~242 s across 1024 windows each offering an interleave; the
+  set holds ~11.4 s in ONE window. Hosts ratchet stricter per §5.3; the wire
+  stays permissive.
+- **Levels are quiet-darwin claims** (M4 Max/APFS, load 5.3–5.9, KB-scale
+  members); the shape claims — linearity, the corpus-independent marginal,
+  wall = hold, immediate refusal — are the load-robust ones. Curve,
+  instruments, weaknesses and refutation commands:
+  `12-04-f2-mrd-integration` `results/splice-set-batch-bound-measure.md`
+  (engine `fcd4b7a1`); fold half: `results/sqlwrite-fold-evidence.md`.
+
+No knee exists anywhere on that curve, so a finite N minted here would name
+a boundary the mechanism does not have. The bound stays where it was ruled.
+
+**Sweep composition — what the set form does NOT seal (added 2026-08-15,
+review F3).** Sealing is per ATTEMPT. The workloads that motivate
+corpus-wide write-back are 5827 and 2635 files; a sweep that does not fit
+one attempt's tolerable span is k sealed sets plus at most one refusal, and
+**cross-set atomicity does not exist** — the world may move between sets.
+Three facts a first caller otherwise rediscovers by refusal:
+
+1. **List-building is the caller's plane.** The wire serves no
+   corpus-enumeration op by design, and content predicates ("docs missing
+   `created_at`") are not glob-expressible, so `files[]` arrives from an
+   enumeration plane — §A.11 `sql`, or the caller's own. Patterns in
+   `files[]` (§A.7, ruled 2026-08-14 OQ3) expand NAMES, never contents.
+2. **The script lane faults at arm 65.** A glob matching 200 files does not
+   chunk itself; the attempt dies inside the evaluator's budget, above.
+3. **The sweep loop, written once so it is not re-derived:** sets in sorted
+   order, one `if_fingerprint` per set chained from the previous commit's
+   `fingerprint_after`, stop at the first refusal, re-enumerate and resume.
+   An idempotent predicate converges because a re-run's expansion is empty —
+   the script plane's own termination word (`no_effect`, §A.7). A torn
+   sweep's archaeology is k sealed-set receipts plus one refusal, and it is
+   readable because ONE receipt entry names every file of its set, which no
+   consumer can confuse with N per-file entries.
+
+**Visibility is a lane property, not a set property (added 2026-08-15,
+review F4).** One `seq` and one Delta are minted where a daemon serves the
+write. On in-process lanes there is no seq sink: the commit answers
+`seq: 0` and mints no Delta, so a sealed set — however large — is invisible
+to every watch-plane consumer. That is §18 row 12's declared debt read at
+set grain, not a second defect; cross-lane catchup stays diff-by-root
+(§4.7). A watched corpus writes sets through the daemon door.
 
 ### §4.5 resolve — the walk plane: where things are, never a handle
 
