@@ -61,6 +61,7 @@ fn dispatch_of<'a>(source: &'a str, scratch: &'a tempfile::TempDir) -> BashDispa
         actor: None,
         step_cwd: None,
         delta: None,
+        observations: dispatch_bash::ObservationSource::Drawer,
     }
 }
 
@@ -793,4 +794,131 @@ fn fatal_preexec_on_a_quiet_gap_changes_nothing() {
     let out = dispatch_bash::run(&root, &d, &mut Vec::new()).unwrap();
     assert!(out.pre_exec.is_none());
     assert!(matches!(out.phase2, Phase2::Applied { .. }));
+}
+
+// ---------------------------------------------------------------------------
+// Observation-source lane equivalence (card run-observation-unification):
+// the daemon lane — bracket observations served from a resident
+// `fs::DomainCache` — must produce the SAME dispatch outcome as the CLI
+// drawer lane on an identical tree. The observation values are pinned
+// equivalent at the fs layer (`crates/fs/tests/cached_observation.rs`);
+// these gates pin the dispatch seam itself.
+
+/// A clean two-phase run is byte-identical across lanes: same verdict, same
+/// pin, same attested tree afterwards (two identical trees fold to identical
+/// roots — the merkle is path-relative).
+#[test]
+fn the_resident_lane_runs_the_same_clean_dispatch_as_the_drawer_lane() {
+    let (_tmp_a, drawer_root) = workspace();
+    let (_tmp_b, resident_root) = workspace();
+    let scratch = tempfile::tempdir().unwrap();
+    let src = format!("echo running{EMIT_SET_FIELD}");
+
+    let drawer_out =
+        dispatch_bash::run(&drawer_root, &dispatch_of(&src, &scratch), &mut Vec::new()).unwrap();
+
+    let cache = std::sync::Mutex::new(fs::DomainCache::new());
+    let mut resident = dispatch_of(&src, &scratch);
+    resident.observations = dispatch_bash::ObservationSource::Resident(&cache);
+    let resident_out = dispatch_bash::run(&resident_root, &resident, &mut Vec::new()).unwrap();
+
+    for (out, lane) in [(&drawer_out, "drawer"), (&resident_out, "resident")] {
+        assert!(out.status.success(), "{lane} lane exec failed");
+        assert!(
+            out.pre_exec.is_none(),
+            "{lane} lane saw a pre-exec divergence"
+        );
+        assert!(
+            out.detection.is_clean(),
+            "{lane} lane window not clean: {:?}",
+            out.detection
+        );
+        assert!(
+            matches!(out.phase2, Phase2::Applied { .. }),
+            "{lane} lane phase2: {:?}",
+            out.phase2
+        );
+    }
+
+    // The strongest form: every attested byte equal, tree to tree.
+    assert_eq!(
+        domain_digest(&drawer_root),
+        domain_digest(&resident_root),
+        "the two lanes must leave byte-identical attested trees"
+    );
+}
+
+/// An in-window rogue write is named identically from the resident lane —
+/// same refusal, same delta, same wording, and (ruling 2) the write stands.
+#[test]
+fn the_resident_lane_names_the_same_out_of_band_delta() {
+    let (_tmp_a, drawer_root) = workspace();
+    let (_tmp_b, resident_root) = workspace();
+    let scratch = tempfile::tempdir().unwrap();
+
+    let run_rogue = |root: &fs::WorkspaceRoot,
+                     observations: dispatch_bash::ObservationSource<'_>| {
+        let src = format!("echo sneaky > '{}/rogue.md'", root.0.display());
+        let mut d = dispatch_of(&src, &scratch);
+        d.observations = observations;
+        // The source string must outlive the dispatch borrow — run inline.
+        let out =
+            dispatch_bash::run(root, &BashDispatch { source: &src, ..d }, &mut Vec::new()).unwrap();
+        assert!(matches!(out.phase2, Phase2::RefusedDetection));
+        match out.detection {
+            Detection::OutOfBand(delta) => delta,
+            other => panic!("expected OutOfBand, got {other:?}"),
+        }
+    };
+
+    let drawer_delta = run_rogue(&drawer_root, dispatch_bash::ObservationSource::Drawer);
+    let cache = std::sync::Mutex::new(fs::DomainCache::new());
+    let resident_delta = run_rogue(
+        &resident_root,
+        dispatch_bash::ObservationSource::Resident(&cache),
+    );
+    assert_eq!(drawer_delta, resident_delta, "residual deltas diverge");
+    assert_eq!(drawer_delta.to_string(), resident_delta.to_string());
+}
+
+/// The point of the unification: a resident-lane dispatch leaves the shared
+/// memo WARM — the next currency pass over the unchanged tree enumerates
+/// nothing and reads nothing, exactly what the host's other ops buy from the
+/// same instrument.
+#[test]
+fn a_resident_lane_dispatch_leaves_the_shared_cache_warm() {
+    let (_tmp, root) = workspace();
+    let scratch = tempfile::tempdir().unwrap();
+    let src = format!("echo running{EMIT_SET_FIELD}");
+
+    let cache = std::sync::Mutex::new(fs::DomainCache::new());
+    let mut d = dispatch_of(&src, &scratch);
+    d.observations = dispatch_bash::ObservationSource::Resident(&cache);
+    let out = dispatch_bash::run(&root, &d, &mut Vec::new()).unwrap();
+    assert!(out.detection.is_clean(), "{:?}", out.detection);
+
+    let mut memo = cache.lock().unwrap();
+    // Phase 2 committed AFTER the bracket-close observation (the page splice
+    // and the completion receipt), so the first pass pays exactly that delta —
+    // never the corpus — and the pass after it pays nothing at all.
+    let reads = memo.leaves_read();
+    let after_run = memo.root(&root).unwrap();
+    assert!(
+        memo.leaves_read() - reads <= 2,
+        "the first pass re-reads at most the two phase-2 movers, got {}",
+        memo.leaves_read() - reads
+    );
+    let warm = (memo.listings(), memo.leaves_read());
+    let again = memo.root(&root).unwrap();
+    assert_eq!(
+        (memo.listings(), memo.leaves_read()),
+        warm,
+        "the second pass over the unchanged tree must be stat-only"
+    );
+    assert_eq!(after_run, again);
+    assert_eq!(
+        after_run,
+        fs::domain_snapshot(&root).unwrap().1,
+        "and the fold still agrees with the byte-derived root"
+    );
 }

@@ -207,6 +207,22 @@ impl ExecBracket {
         Ok((ExecBracket { guard }, observed))
     }
 
+    /// [`ExecBracket::open_observing`] with the observation served from a
+    /// resident [`fs::DomainCache`] — the daemon door's instrument (card
+    /// run-observation-unification). Same verdicts, same observed root; only
+    /// where listings and digests come from moves.
+    ///
+    /// # Errors
+    /// Exactly [`ExecBracket::open_observing`]'s.
+    pub fn open_cached(
+        root: &fs::WorkspaceRoot,
+        cache: &mut fs::DomainCache,
+    ) -> Result<(ExecBracket, MerkleRoot), OpenRefusal> {
+        let guard = StepGuard::open_cached(root, cache).map_err(OpenRefusal::Guard)?;
+        let observed = guard.pre_root();
+        Ok((ExecBracket { guard }, observed))
+    }
+
     /// Open the bracket AND pin it to the run-initial config state. #20 is
     /// "mid-RUN", not just mid-step: a config change landing BETWEEN two
     /// clean windows must refuse step N even though each window's own
@@ -250,14 +266,28 @@ impl ExecBracket {
     /// verdict, one stat per unmoved member instead of one read.
     #[must_use]
     pub fn close_memoized(self, memo: &mut DigestMemo) -> Detection {
-        match self.guard.close_memoized(&[], memo) {
-            Ok(root) => Detection::Clean { root },
-            Err(GuardError::OutOfBand(delta)) => Detection::OutOfBand(delta),
-            Err(GuardError::ConfigChanged) => Detection::ConfigChanged,
-            Err(GuardError::Symlink { count, first }) => Detection::Symlink { count, first },
-            Err(GuardError::Io(e)) => Detection::Failed {
-                reason: e.to_string(),
-            },
-        }
+        detection_of(self.guard.close_memoized(&[], memo))
+    }
+
+    /// [`ExecBracket::close`] with the observation served from a resident
+    /// [`fs::DomainCache`] — the pair of [`ExecBracket::open_cached`]. Same
+    /// verdict discipline; one dir-memo walk instead of a fresh enumeration.
+    #[must_use]
+    pub fn close_cached(self, cache: &mut fs::DomainCache) -> Detection {
+        detection_of(self.guard.close_cached(&[], cache))
+    }
+}
+
+/// The guard's close result as the bracket's verdict — one mapping for every
+/// observation source, so a verdict cannot depend on where digests came from.
+fn detection_of(closed: Result<MerkleRoot, GuardError>) -> Detection {
+    match closed {
+        Ok(root) => Detection::Clean { root },
+        Err(GuardError::OutOfBand(delta)) => Detection::OutOfBand(delta),
+        Err(GuardError::ConfigChanged) => Detection::ConfigChanged,
+        Err(GuardError::Symlink { count, first }) => Detection::Symlink { count, first },
+        Err(GuardError::Io(e)) => Detection::Failed {
+            reason: e.to_string(),
+        },
     }
 }
