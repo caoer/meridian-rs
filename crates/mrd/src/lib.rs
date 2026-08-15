@@ -1073,7 +1073,7 @@ mod help {
                 "marked as writers:\n{}",
                 marked.join("\n")
             );
-            assert_eq!(blocks().len(), 28, "verb blocks in the listing");
+            assert_eq!(blocks().len(), 29, "verb blocks in the listing");
         }
 
         /// Every option that names an owner names a verb that exists.
