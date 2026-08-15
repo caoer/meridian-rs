@@ -38,14 +38,20 @@ content. Exactly four top-level keys occur, all optional:
 | `views` | list of view objects (`type`, `name`, own `filters`, `groupBy`, `order`, `sort`, `limit`, `columnSize`, …) | the saved views themselves |
 
 Census, measured 2026-08-15 on the two live corpora this engine dogfoods: 832
-member `.base` files (812 in the sessions tree — `TASKS.base` / `FLEET.base` /
-`DECISIONS.base` / `BOARD.base` per session are standing scaffolding — plus 20
-in the wiki). Key frequencies across every `.base` found (snapshots included,
-1521 files): `views` 1509, `filters` 1495, `formulas` 1085, `properties` 491.
+member `.base` files (812 in the sessions tree, 20 in the wiki). The two
+numbers do different jobs and are labeled so: the 812 is mostly four standing
+templates instantiated per session (`TASKS.base` / `FLEET.base` /
+`DECISIONS.base` / `BOARD.base` — distinct content is roughly two dozen
+files), so it is the WALK-COST number (§9) and the embed-join population
+(§5.1), while the wiki's 20 hand-authored bases and the template set are the
+definition-variety evidence. Key frequencies across every `.base` found
+(snapshots included, 1521 files): `views` 1509, `filters` 1495, `formulas`
+1085, `properties` 491.
 The census also found **aliens**: files carrying the `.base` extension that are
 not Bases YAML at all — shell scripts (`gpurun.base`), backup-suffix markdown
-(`AGENTS.md.base`), and a case-typo (`abc.BASE`). The extension is not proof of
-the format, and §4.4 is where that honesty lands.
+(`AGENTS.md.base`). The extension is not proof of the format, and §4.4 is
+where that honesty lands. (The 2026-08-14 census's `abc.BASE` is a different
+animal — a link-target TYPO naming no file at all; it stays dangling, §3/§5.1.)
 
 Two corpus facts drive the reference design (§5):
 
@@ -87,9 +93,10 @@ row** (§4.4), not an absence.
 
 A file is a member of the base projection iff:
 
-1. its final extension is exactly `.base`, **case-exact** (`abc.BASE` is not a
-   member — the same case law the 2026-08-14 ruling ratified for the probe:
-   a case-folding match would canonize typos on APFS);
+1. its final extension is exactly `.base`, **case-exact** against the name
+   read from the directory (`abc.BASE` is not a member — the case law the
+   2026-08-14 ruling ratified for the probe's fallback arm, applied here for
+   the same reason: a case-folding match would canonize typos on APFS);
 2. it passes the SAME ignore rules the hash domain applies — the dot-segment
    floor and the `meridian/domain.md` custom ignore list — with the md-only
    floor swapped for the `.base`-only floor above.
@@ -97,8 +104,12 @@ A file is a member of the base projection iff:
 One sentence teaches it: **the base domain is the hash domain's rules with the
 floor swapped from `*.md` to `*.base`.** Membership therefore moves when
 `meridian/domain.md` moves, exactly as md membership does; there is no second
-rule surface to maintain. Walk posture is the standing one: per-entry I/O
-errors read as absence; non-UTF-8 paths cannot match and are skipped.
+rule surface to maintain. Walk posture: membership comes from directory
+enumeration, so paths are always on-disk spellings; a directory that cannot be
+enumerated reads as absence (its paths are unknowable, the standing posture);
+a MEMBER whose bytes cannot be read is NOT absence — the walk saw it, and
+§4.4 gives it an error row. Non-UTF-8 paths cannot match `.base` and are
+skipped; non-UTF-8 CONTENT is §4.4's problem, not membership's.
 
 The walk lives in `fs` (charter: disk read/walk into the model) beside
 `domain_snapshot`, returning raw bytes per member plus the fold of §6.2. It is
@@ -112,31 +123,36 @@ Three tables, view-lane only, in both lanes. DDL is the contract, as for every
 projection table (`crates/view/src/schema.rs` mirrors this section):
 
 ```sql
+-- The base relations ride the base_fold witness (§6.2), NEVER
+-- as_of_fingerprint: their bytes cannot move the workspace fingerprint
+-- (§12.1 md-only floor), so their coverage claim is base_fold's alone.
 CREATE TABLE base (
-    path       TEXT     PRIMARY KEY,   -- workspace-relative path (§3 membership)
-    file_rev   TEXT     NOT NULL,      -- blake3(whole file)[:16] — leaf-shaped, in NO fingerprint (§6.1)
-    bytes      UBIGINT  NOT NULL,
-    error      TEXT,                   -- NULL = parsed as a Bases map; else the parser's own message
-    filters    TEXT,                   -- file-level filter tree, compact JSON (§4.2); NULL when absent
+    path       TEXT     PRIMARY KEY,   -- workspace-relative ON-DISK spelling (§3 membership)
+    file_rev   TEXT,                   -- blake3(whole file)[:16] — leaf-shaped, in NO fingerprint (§6.1); NULL only on an unreadable member
+    bytes      UBIGINT,                -- NULL only with file_rev NULL (unreadable member)
+    error      TEXT,                   -- NULL = parsed as a YAML mapping; else the parser's or the read's own message
+    filters    TEXT,                   -- file-level filters subtree, compact JSON (§4.2); NULL when absent
     properties TEXT,                   -- display-config subtree, compact JSON; NULL when absent
-    extra_keys TEXT,                   -- JSON array of top-level keys this spec does not model; NULL when none
-    CHECK (error IS NULL OR (filters IS NULL AND properties IS NULL AND extra_keys IS NULL))
+    extra      TEXT,                   -- compact JSON OBJECT: every top-level key §4.5 does not lift, subtree intact; NULL when none
+    CHECK (error IS NULL OR (filters IS NULL AND properties IS NULL AND extra IS NULL)),
+    CHECK ((file_rev IS NULL) = (bytes IS NULL)),
+    CHECK (error IS NOT NULL OR file_rev IS NOT NULL)  -- an unreadable member always says why
 );
-CREATE TABLE base_view (
+CREATE TABLE base_view (                -- rides base_fold (see base)
     path    TEXT     NOT NULL REFERENCES base(path),
     ord     UBIGINT  NOT NULL,         -- 0-based document order within views:
-    name    TEXT,                      -- as written; NULL when the view carries none
-    type    TEXT,                      -- as written ('table', 'cards', …) — OPEN SET, no CHECK (§4.3)
-    filters TEXT,                      -- view-level filter tree, compact JSON; NULL when absent
-    config  TEXT,                      -- every remaining view key, one compact JSON object in written order; NULL when none remain
+    name    TEXT,                      -- lifted when the entry's name is a string (§4.5); else NULL
+    type    TEXT,                      -- lifted when a string ('table', 'cards', …) — OPEN SET, no CHECK (§4.3)
+    filters TEXT,                      -- view-level filters subtree, compact JSON; NULL when absent
+    config  TEXT,                      -- remaining view keys as one compact JSON object in written order, or the whole entry when it is not a mapping (§4.5); NULL when none
     PRIMARY KEY (path, ord)
 );
-CREATE TABLE base_formula (
+CREATE TABLE base_formula (             -- rides base_fold (see base)
     path TEXT     NOT NULL REFERENCES base(path),
-    ord  UBIGINT  NOT NULL,            -- document order within formulas:
+    ord  UBIGINT  NOT NULL,            -- document order within formulas: (unconstrained beside the PK — the frontmatter precedent)
     name TEXT     NOT NULL,
-    expr TEXT     NOT NULL,            -- the expression, verbatim — never interpreted (§4.3)
-    PRIMARY KEY (path, name)           -- YAML map: one expression per name
+    expr TEXT     NOT NULL,            -- the expression, verbatim scalar or compact JSON of a non-scalar — never interpreted (§4.3)
+    PRIMARY KEY (path, name)           -- guaranteed by the PARSER, not by YAML: the pinned parser refuses duplicate mapping keys (§4.4)
 );
 ```
 
@@ -162,29 +178,64 @@ this projection is DuckDB, and DuckDB ships JSON operators: the tree is
 queryable (`filters->'and'`, `json_array_length`, `LIKE`) instead of being a
 string only an external parser can open.
 
+**This rule governs; §1's shape table describes.** The table says what the
+corpus writes today; the encoding carries whatever a file actually holds — a
+`filters:` that is one bare expression string projects as a JSON string, not
+an error. Where a shape genuinely gates row-making (only `views:` and
+`formulas:` make rows), §4.5 says what happens when it does not hold.
+
 ### §4.3 Structure is modeled; expressions are not
 
 The projection models the Bases **format** (the four keys, the view list, the
 filter tree shape) and serves the Bases **language** (filter and formula
 expressions, view `type` vocabulary) as verbatim text. The language is
 Obsidian's, unversioned and evolving; parsing it in-engine would hard-code a
-moving vocabulary (NO HARD-CODED FLOW), and §5.2 shows interpretation would
-mint false facts even where parsing succeeded. So `type` carries no CHECK enum,
-`config` carries unmodeled view keys as written, and `extra_keys` names
-unmodeled top-level keys — when Obsidian grows a fifth key, the projection
-carries it as data on day one and a schema amendment is a later choice, not a
-prerequisite.
+moving vocabulary into the mechanism (the standing mechanism-vs-flow law), and
+§5.2 shows interpretation would mint false facts even where parsing
+succeeded. So `type` carries no CHECK enum, `config` carries unmodeled view
+keys as written, and `extra` carries unmodeled top-level keys **subtree
+intact** — when Obsidian grows a fifth key, the projection carries its data on
+day one and a schema amendment is a later choice, not a prerequisite.
 
 ### §4.4 Aliens are rows, not absences
 
-A member that does not parse as a Bases map — a shell script wearing `.base`,
-non-UTF-8 bytes, YAML whose root is not a mapping — projects as a `base` row
-with `error` carrying the parser's own message and every content column NULL
-(the DDL CHECK makes the half-parsed state unrepresentable). The row keeps
-`path`, `file_rev`, `bytes`: the walk saw the file, and an enumeration that
-silently dropped it would certify an absence it did not measure. `SELECT path
-FROM base WHERE error IS NOT NULL` is the census of format rot — 3 aliens on
-the measuring corpus today.
+A member the projection cannot read as a YAML mapping — bytes unreadable, or
+bytes that do not parse — projects as a `base` row with `error` carrying the
+message of whatever refused, and every content column NULL (the DDL CHECK
+makes the half-parsed state unrepresentable). The alien classes, named:
+
+- a shell script or markdown wearing `.base`; non-UTF-8 bytes; YAML whose
+  root is not a mapping — the parser's message;
+- **duplicate mapping keys anywhere in the document** — the PINNED PARSER'S
+  rule, not YAML's: serde_yaml refuses the whole document, so one duplicate
+  `groupBy:` makes the file an alien rather than last-key-wins. Named
+  deliberately: tolerating duplicates would need a hand-rolled event-stream
+  walk for a case the live corpus has not produced; if it ever does, that is
+  a design amendment, not a parser default to inherit silently. A §10.1
+  fixture pins the verdict;
+- **a member whose bytes could not be read** — `error` carries the I/O
+  error's message and `file_rev`/`bytes` are NULL (the walk SAW the path;
+  dropping it would certify an absence nobody measured). For the delta grain
+  a NULL `file_rev` compares unequal to everything, so the member re-reads at
+  every sync until it heals.
+
+An error row has **zero children**: no `base_view`, no `base_formula` rows.
+`SELECT path FROM base WHERE error IS NOT NULL` is the census of format rot —
+3 aliens on the measuring corpus today (census run with a duplicate-tolerant
+parser, so the duplicate-key class is pinned by fixture, not by census).
+
+### §4.5 The lifting law — columns are lifted, everything else is carried
+
+A column is lifted only when the value has the modeled shape; everything else
+is CARRIED as §4.2 JSON in the nearest carrier column. Concretely: `views:`
+not a sequence, or `formulas:` not a mapping → the subtree lands intact in
+`extra` and makes no rows (the file is NOT an alien; a good `filters:` beside
+it still projects). A `views:` entry that is not a mapping → a `base_view`
+row at its `ord` with `name`/`type`/`filters` NULL and `config` carrying the
+entry. `name`/`type` present but not strings → carried in `config`, column
+NULL. A formula value that is not a scalar → `expr` carries its compact JSON.
+**Alien (`error`) is reserved for §4.4's classes — a file that cannot be read
+as a YAML mapping at all.** Modeling never destroys data it declines to lift.
 
 ## §5 References
 
@@ -207,10 +258,29 @@ stops truncating it to the word. Every stamped row gains the resolved path —
 `.base` targets join `base.path` **exactly**, with no basename re-derivation
 in SQL, and every other excluded class (`.svg`, `.xlsx`, dot-segment,
 custom-ignore) gets the same honesty for free. *Who embeds this base* becomes
-a join (§11). No new vocabulary word, no change to `dangling`, no change to
-which rows stamp. The wire `links` door (`wire-contract.md` §4.6
-`unresolved_reason`) stays **word-only**: widening a wire map is a wire
-amendment, out of this spec's scope and named in §10.4.
+a join (§11).
+
+**The exactness is earned by a mint rule this spec adds: a stamp carries the
+ON-DISK spelling, or it does not stamp.** The fallback arm already holds this
+(its candidates come from directory enumeration). The literal arm today
+returns the CALLER'S spelling after an `is_file` probe, and on a
+case-insensitive filesystem that probe answers true through case-folding — so
+`[[bases/tasks.base]]` over on-disk `bases/TASKS.base` would stamp a path
+`base` does not contain (a join key that misses), and `[[abc.base]]` over
+on-disk `abc.BASE` would stamp a genuine typo as deliberate — the exact
+canonization the 2026-08-14 ruling's case-exact guard exists to prevent, on
+the arm the guard did not yet reach. So the literal arm verifies its final
+segment against the parent directory's entries case-exactly; a spelling that
+reaches bytes only through filesystem case-folding is NOT verified, stays
+unstamped, and remains honestly dangling. The probe is the ruling's shared
+mint, so the `exclusion` WORD inherits the same sharpening wherever it is
+served — that is the ruling's own one-mint design carried to its stated
+intent, and §10.3 names it as served-content motion.
+
+No new vocabulary word, no change to `dangling`'s definition, and stamping
+narrows only where case-folding was lying. The wire `links` door
+(`wire-contract.md` §4.6 `unresolved_reason`) stays **word-only**: widening a
+wire map is a wire amendment, out of this spec's scope and named in §10.4.
 
 ### §5.2 `.base` → corpus: no edges, deliberately
 
@@ -262,14 +332,34 @@ no job here and the prefix never advances. It shares no prefix space with
 `fingerprint` by construction: a `bf:` value can never compare equal to a
 `b3…:` value.
 
+This is not a G14 repeat, stated because `build_memory`'s own doc comment
+(`crates/view/src/lib.rs`) forbids locally-computed folds: that rule guards
+the FINGERPRINT, whose fold must ride the domain filter and `version` prefix
+from `fs::domain_snapshot`. `base_fold` is computed by the SAME `fs` walk
+that defines base membership (§3) and handed in beside the bytes; `view`
+still folds nothing itself, and no prefix exists to get wrong.
+
 ### §6.3 The freshness frame names the plane
 
-The sql face's honest-tense frame (§Q3 order: sample live LAST) extends to
-both witnesses: fold the md corpus and re-walk the base members, compare each
-against the stamp, and a stale verdict **names the plane that moved** — "the
-corpus moved" and "the base plane moved" are different sentences because their
-remedies differ (a caller who just wrote markdown should not be told their
-Bases changed). Fresh means both matched.
+The sql face's honest-tense frame (order of operations per
+`crates/mrd/src/sql.rs`: sample live LAST) extends to both witnesses: fold
+the md corpus and re-walk the base members, compare each against the stamp,
+and a stale verdict **names the plane that moved** — "the corpus moved" and
+"the base plane moved" are different sentences because their remedies differ
+(a caller who just wrote markdown should not be told their Bases changed).
+
+The state space, enumerated so no implementer invents a cell (md live-fold ×
+base live-walk; "not asked" = the stamp's `base_fold` is NULL — the build was
+handed no walk):
+
+| md fold | base walk | verdict |
+|---|---|---|
+| ok, matched | ok, matched | fresh |
+| ok, moved | ok, any | stale — "the corpus moved" (+ "and the base plane moved" when both) |
+| ok, matched | ok, moved | stale — "the base plane moved" |
+| ok | failed | md tense as computed; base plane: **cannot say** (walk failed, error named) |
+| failed | any | live source `none`; both planes cannot say (the standing posture) |
+| any | stamp not asked | base plane: **"not walked"**, said in the frame — an empty `base` table under a NULL `base_fold` is "not measured", never "measured empty"; silence is the one option the §12.1 absence rule forecloses |
 
 ## §7 The cache lane (`sql.duckdb`)
 
@@ -286,20 +376,35 @@ every other projection table:
   diffed against the live parsed corpus; added/changed/removed append rows and
   tombstones. **An append triggers on either delta** — base motion appends
   even when the fingerprint did not move, so the pin ledger (`hist.pin`) gains
-  `base_fold` beside the fingerprint and the no-op check reads one row.
-- **The affected-set rule extends to the probe's inputs.** The appender
-  already re-projects unchanged docs whose link RESOLUTION a delta can move
-  (name-key matching). A base delta joins that computation: docs holding
-  dangling rows whose bare-name target case-exact-matches an
-  added/removed/changed member's basename — or whose pathed target equals its
-  path — re-project, so `link.exclusion` / `exclusion_path` stay consistent
-  with `base` after every append.
+  `base_fold` beside the fingerprint, the cache's `_meridian_view` VIEW (a
+  view over the pin ledger, unlike the `:memory:` singleton table) selects it,
+  and the no-op check reads one row.
+- **The affected-set rule extends to the probe's inputs — over ALL link rows,
+  not the dangling ones.** The rows a base delta can move divide in two, and
+  the second class is by definition NOT dangling: (i) unresolved, UNEXPLAINED
+  rows an appearing member can newly stamp; (ii) already-STAMPED rows whose
+  stamp a removal must clear or a tie-break shift must re-point (deleting
+  `bases/TAG-FILES.base` must un-stamp its 367 embed rows — under a
+  dangling-only predicate they would stay stamped forever while the cache
+  reported itself fresh, repairable only by rebuild; adding a
+  shorter-or-earlier same-basename member must re-point every stamped bare
+  row whose old winner is NOT itself in the delta). So the predicate: the
+  delta contributes the name-keys of every added/changed/removed member — its
+  basename and its full path, **case-exact** — and a doc re-projects when any
+  of its link rows matches on EITHER the target's own key (bare basename, or
+  literal path) OR the row's `exclusion_path` (full path, or its basename).
+  This key set is SEPARATE from the existing md affected-set keys, which are
+  deliberately lowercased; folding the base keys into that set would
+  reintroduce through the back door exactly the case-folding §3 and §5.1
+  forbid.
 - **The disclosed approximation narrows and the remainder stays disclosed:**
   `.base` motion leaves the store's "moves no fingerprint, triggers no append"
-  list; every OTHER non-md file entering or leaving the exclusion domain
-  (`.svg`, `.xlsx`, …) remains approximated in the cache lane — no snapshot of
-  those exists to diff — and rebuild remains the repair. The `:memory:` lane
-  has no approximation: it re-walks everything per query.
+  list, and `link.exclusion` / `exclusion_path` are consistent with `base` as
+  of the append's own two witnesses (no lag bounds are promised — the
+  honest-tense law). Every OTHER non-md file entering or leaving the exclusion
+  domain (`.svg`, `.xlsx`, …) remains approximated in the cache lane — no
+  snapshot of those exists to diff — and rebuild remains the repair. The
+  `:memory:` lane has no approximation: it re-walks everything per query.
 
 ## §8 Alternatives held, and why they lose
 
@@ -316,6 +421,18 @@ every other projection table:
   instead: a frontmatter-SHAPED file gets its own relations, the way
   frontmatter itself got `frontmatter`/`frontmatter_tag` rather than being
   crammed into `section`.
+- **One `base` table with the whole document as a single JSON column** — the
+  nearest neighbor, since §4.2 already makes JSON the value plane. Rejected on
+  the grain the questions actually arrive at: the mandate's own question is
+  per-VIEW (*which views does this file define*), so view identity —
+  `ord`/`name`/`type` — deserves column identity, answered by `WHERE
+  type = 'table'` rather than a `json_each` unnest re-derived inside every
+  query by every caller; the cache's delta protocol wants child rows keyed
+  `(path, gen)` like every other child table; and the house precedent is
+  exactly this split — `frontmatter_tag` exists because the queried grain
+  earned rows even though `frontmatter` already carried the same bytes. The
+  un-lifted remainder DOES stay JSON (`config`, `extra`) — the design is the
+  precedent's two-layer shape, not a rejection of JSON.
 - **Membership in `doc`.** `doc` is the parsed md corpus the fingerprint
   covers; admitting `.base` rows changes what `COUNT(*) FROM doc` means,
   forces a kind-filter into every existing query forever, and re-creates the
@@ -372,6 +489,15 @@ every other projection table:
 7. **Cache:** base-only motion appends (fingerprint pin unchanged, `base_fold`
    advanced) and the latest views equal a fresh build — the store's standing
    invariant, extended.
+8. **On-disk spelling (§5.1):** on a case-insensitive volume, a literal
+   target whose case mismatches the on-disk name does NOT stamp — the row
+   stays dangling — and a stamped row's `exclusion_path` always equals a
+   `base.path` (for `.base` targets) byte-for-byte.
+9. **Duplicate keys (§4.4):** a fixture with a duplicated mapping key is an
+   alien — `error` set, zero child rows.
+10. **Removal clears the stamp (§7):** delete a `.base` member under the
+    cache lane; the next append un-stamps its embed rows (`exclusion` and
+    `exclusion_path` NULL again, rows back in `dangling`) without a rebuild.
 
 ### §10.2 Doc deltas riding the code card (docs-first: this spec authorizes them)
 
@@ -386,6 +512,12 @@ three relations.
 
 Landing the code changes the sql face's answer set (new tables, new columns):
 conformance re-records in the SAME landing per the standing served-face rule.
+The §5.1 mint rule is also served-CONTENT motion beyond the sql face: on a
+case-insensitive volume, `exclusion` words that previously stamped through
+case-folding stop stamping (rows return to `dangling`, and the §4.6 door's
+map shrinks by the same rows). Shape everywhere is unchanged; the content
+motion is the ruling's case-exact guard reaching the literal arm, and it is
+named here so the landing flags it rather than discovering it.
 
 ### §10.4 Out of scope, named
 
