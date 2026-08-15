@@ -655,14 +655,17 @@ into the user's tree, or reads as the user's law, is semantics; what the engine
 keeps for itself is mechanism.** Tests and fixtures may use concrete flow words
 freely — a fixture is an example, not a decision.
 
-**Status: docs-first, gate owed.** No test enforces this amendment yet, and code
-at `073d184f1` violates it in three named places, recorded here so they are
-inherited as decisions rather than rediscovered as defects: `realise`'s
-`render_card` (`crates/realise/src/lib.rs:610`) writes a card whose type word,
-state key, state value and prose are all baked, so a user's own rules cannot
-match the page the engine minted for them; `realise`'s board directory is generic
-in the library (`RealiseSpec::board_dir`) but unreachable from the CLI, which
-pins `"board"` (`crates/mrd/src/realise_cmd.rs:42`); and `preset`'s
-`FLOOR_PREFIX = "conventions/"` (`crates/preset/src/lib.rs:28`) is a folder name
-acting as a validity predicate on a user's preset. Each is owed a fix that moves
-the concreteness into the user's markdown.
+**Status: two violations open.** The audit at `073d184f1` named three, recorded
+here so they are inherited as decisions rather than rediscovered as defects. Each
+is owed a fix that moves the concreteness into the user's markdown.
+
+- **FIXED — `realise`'s board directory.** Generic in the library
+  (`RealiseSpec::board_dir`) but pinned to `"board"` at the CLI seam. The seam now
+  reads `realise.board_dir` off the realising page and defaults in code only;
+  gated by `crates/mrd/tests/realise_cli.rs`, the amendment's first test.
+- **OPEN — `realise`'s `render_card`** (`crates/realise/src/lib.rs:610`) writes a
+  card whose type word, state key, state value and prose are all baked, so a
+  user's own rules cannot match the page the engine minted for them.
+- **OPEN — `preset`'s `FLOOR_PREFIX = "conventions/"`**
+  (`crates/preset/src/lib.rs:28`) is a folder name acting as a validity predicate
+  on a user's preset.
