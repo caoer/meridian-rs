@@ -40,8 +40,10 @@ fn fold(docs: &BTreeMap<String, Document>) -> String {
 
 /// The caller-side mint stand-in: `.base` target excluded (`non-md`), the
 /// typo unanswered. The view crate never probes disk itself.
-fn probe(target: &str) -> Option<String> {
-    (target == "TAG-FILES.base").then(|| "non-md".to_owned())
+fn probe(target: &str) -> Option<(String, String)> {
+    // The probe answers BOTH facts (`base-projection.md` §5.1): which file it
+    // resolved, and why the domain excludes it.
+    (target == "TAG-FILES.base").then(|| ("bases/TAG-FILES.base".to_owned(), "non-md".to_owned()))
 }
 
 fn one_text(conn: &duckdb::Connection, sql: &str) -> Vec<String> {
@@ -58,7 +60,7 @@ fn an_excluded_target_is_not_dangling_memory_lane() {
     let docs = fixture();
     let corpus = model::RootedCorpus::ambient(&docs);
     let mounts = addr::MountSet::new([]);
-    let conn = view::build_memory_rooted(&docs, &corpus, &mounts, &fold(&docs), Some(&probe))
+    let conn = view::build_memory_rooted(&docs, &corpus, &mounts, &fold(&docs), Some(&probe), None)
         .expect("view");
 
     // The stamp landed where injected (control — the probe was consulted).
@@ -99,7 +101,7 @@ fn an_excluded_target_is_not_dangling_cache_lane() {
     let file = tmp.path().join(view::store::SQL_CACHE_FILENAME);
     let mut store = view::store::SqlStore::open(&file).expect("open");
     store
-        .sync(&docs, &corpus, None, Some(&probe), &fold(&docs))
+        .sync(&docs, &corpus, None, Some(&probe), &fold(&docs), None)
         .expect("sync");
 
     let (_, rows) = store

@@ -45,10 +45,28 @@
 //! deliberate superset of [`model::CorpusIndex`]'s resolution keys), so the
 //! latest views stay equal to a fresh build after every append.
 //!
+//! # The base plane (`docs/base-projection.md` §7)
+//!
+//! `.base` members ride the same protocol under their OWN witness: the latest
+//! `base(path, file_rev)` map is diffed against the live base walk exactly as
+//! `doc(path, file_rev)` is diffed against the live parsed corpus, and an
+//! append triggers on EITHER delta — so base motion appends even when the
+//! fingerprint did not move. The pin ledger therefore carries `base_fold`
+//! beside the fingerprint, and the no-op check reads one row for both.
+//!
+//! Its affected-set rule runs over ALL link rows, not the dangling ones, and
+//! its keys are **case-exact** — separate from the deliberately-lowercased md
+//! keys above, because folding them together would reintroduce the
+//! case-folding the base floor and the §5.1 mint rule forbid.
+//!
 //! Disclosed approximations (repair = the rebuild verb): motion OUTSIDE the
 //! pinned corpus — mount-table edits, other roots' contents (cross-root
 //! `dest_root_path`), and non-md files entering/leaving the `exclusion`
-//! domain — moves no fingerprint and therefore triggers no append.
+//! domain — moves no fingerprint and therefore triggers no append. **`.base`
+//! motion has LEFT that list** (§7); every other non-md class (`.svg`,
+//! `.xlsx`, …) remains approximated, since no snapshot of those exists to
+//! diff, and rebuild remains the repair. The `:memory:` lane has no
+//! approximation: it re-walks everything per query.
 //!
 //! # Query lane
 //!
@@ -69,7 +87,9 @@ use model::Document;
 use serde_json::Value as Json;
 
 use crate::sqltext;
-use crate::{ExclusionProbe, Rows, ViewError, collect_doc, corpus_index, fill_exclusions};
+use crate::{
+    BaseWalk, ExclusionProbe, Rows, ViewError, collect_doc, corpus_index, fill_exclusions,
+};
 
 /// The cache file's own payload schema version, recorded in every pin row.
 /// Bump it — together with the drawer path's `SCHEMA_SALT` — whenever the
@@ -94,7 +114,12 @@ use crate::{ExclusionProbe, Rows, ViewError, collect_doc, corpus_index, fill_exc
 /// `6`: `hist.section.n` added — the occurrence index served as its own column
 /// (`wire-contract.md` § A.11); a v5 file's rows carry no such column, so the
 /// appender's positional load would land every later column one slot left.
-pub const CACHE_SCHEMA_VERSION: i64 = 6;
+///
+/// `7`: the `.base` projection (`docs/base-projection.md`) — three `hist.base*`
+/// tables, `hist.link.exclusion_path`, and `hist.pin.base_fold`. A v6 file
+/// carries no base rows at all and its `exclusion` content predates the §5.1
+/// mint rule.
+pub const CACHE_SCHEMA_VERSION: i64 = 7;
 
 /// The cache file's basename inside the workspace cache drawer (ruling OQ4).
 pub const SQL_CACHE_FILENAME: &str = "sql.duckdb";
@@ -127,6 +152,7 @@ CREATE TABLE hist.link (
     src_path TEXT, gen BIGINT, seq UBIGINT, kind TEXT, target_raw TEXT,
     heading TEXT, block TEXT, alias TEXT,
     dest_path TEXT, dest_root TEXT, dest_root_path TEXT, exclusion TEXT,
+    exclusion_path TEXT,
     span_start UBIGINT, span_end UBIGINT, node_rev TEXT
 );
 CREATE TABLE hist.tag (
@@ -142,10 +168,27 @@ CREATE TABLE hist.task (
     section_seq UBIGINT, hpath TEXT, text TEXT,
     span_start UBIGINT, span_end UBIGINT, node_rev TEXT
 );
+CREATE TABLE hist.base (
+    path TEXT, gen BIGINT, tombstone BOOLEAN DEFAULT false,
+    file_rev TEXT, bytes UBIGINT, error TEXT,
+    filters TEXT, properties TEXT, extra TEXT
+);
+CREATE TABLE hist.base_view (
+    path TEXT, gen BIGINT, ord UBIGINT, name TEXT, type TEXT,
+    filters TEXT, config TEXT
+);
+CREATE TABLE hist.base_formula (
+    path TEXT, gen BIGINT, ord UBIGINT, name TEXT, expr TEXT
+);
 CREATE TABLE hist.pin (
     gen BIGINT, fingerprint VARCHAR, applied_at TIMESTAMP,
     files_added BIGINT, files_changed BIGINT, files_removed BIGINT,
-    engine_version VARCHAR, cache_schema_version BIGINT
+    engine_version VARCHAR, cache_schema_version BIGINT,
+    -- The SECOND witness beside the fingerprint (`base-projection.md` §7):
+    -- base motion appends even when the fingerprint did not move, so the pin
+    -- ledger carries what the append covered on BOTH planes. NULL = the
+    -- append was handed no base walk.
+    base_fold VARCHAR
 );
 
 -- The latest pick, ONE window over hist.doc only (receipt P1); children
@@ -170,6 +213,7 @@ CREATE VIEW main.section AS
 CREATE VIEW main.link AS
     SELECT l.src_path, l.seq, l.kind, l.target_raw, l.heading, l.block,
            l.alias, l.dest_path, l.dest_root, l.dest_root_path, l.exclusion,
+           l.exclusion_path,
            (l.dest_path IS NOT NULL OR l.dest_root IS NOT NULL) AS resolved,
            l.span_start, l.span_end, l.node_rev
     FROM hist.link l
@@ -187,6 +231,24 @@ CREATE VIEW main.task AS
            t.span_start, t.span_end, t.node_rev
     FROM hist.task t
     SEMI JOIN hist.doc_latest d ON t.path = d.path AND t.gen = d.gen;
+
+-- The base relations, same protocol: ONE window over hist.base picks each
+-- member's newest generation and drops tombstones; children follow by
+-- (path, gen) semi join (`base-projection.md` §7).
+CREATE VIEW hist.base_latest AS
+    SELECT * FROM hist.base
+    QUALIFY row_number() OVER (PARTITION BY path ORDER BY gen DESC) = 1;
+CREATE VIEW main.base AS
+    SELECT path, file_rev, bytes, error, filters, properties, extra
+    FROM hist.base_latest WHERE NOT tombstone;
+CREATE VIEW main.base_view AS
+    SELECT v.path, v.ord, v.name, v.type, v.filters, v.config
+    FROM hist.base_view v
+    SEMI JOIN hist.base_latest b ON v.path = b.path AND v.gen = b.gen;
+CREATE VIEW main.base_formula AS
+    SELECT f.path, f.ord, f.name, f.expr
+    FROM hist.base_formula f
+    SEMI JOIN hist.base_latest b ON f.path = b.path AND f.gen = b.gen;
 
 -- Convenience views: today's definitions verbatim, now over the latest views.
 CREATE VIEW main.backlink AS
@@ -210,7 +272,8 @@ CREATE VIEW main.tag_all AS
 
 -- The stamp is a view over the pin ledger: the highest-generation pin row IS the pin.
 CREATE VIEW main._meridian_view AS
-    SELECT fingerprint AS as_of_fingerprint, gen, applied_at, cache_schema_version
+    SELECT fingerprint AS as_of_fingerprint, gen, applied_at, cache_schema_version,
+           base_fold
     FROM hist.pin
     QUALIFY row_number() OVER (ORDER BY gen DESC) = 1;
 ";
@@ -224,6 +287,9 @@ pub struct Pin {
     pub fingerprint: String,
     /// The payload schema version the file was written under.
     pub cache_schema_version: i64,
+    /// The `.base` witness the same append covered (`base-projection.md` §7);
+    /// `None` = that append was handed no base walk.
+    pub base_fold: Option<String>,
 }
 
 /// What one [`SqlStore::sync`] append did (the pin-ledger counts).
@@ -237,6 +303,22 @@ pub struct AppendCounts {
     pub changed: u64,
     /// Paths tombstoned.
     pub removed: u64,
+}
+
+/// One sync's `.base` plane delta (`base-projection.md` §7).
+///
+/// Default is the NOT-ASKED delta: no walk was handed in, so nothing
+/// re-projects and nothing is tombstoned. It is deliberately indistinguishable
+/// from a walk that found every member unmoved, because in both cases the base
+/// rows the file already holds stay exactly as they are.
+#[derive(Default)]
+struct BaseDelta {
+    /// Members to re-project (added or changed).
+    reproject: Vec<crate::BaseMember>,
+    /// Member paths to tombstone.
+    removed: Vec<String>,
+    /// Every moved member's path — the affected-set key source.
+    moved_keys: BTreeSet<String>,
 }
 
 /// Every lane's spill budget (card sql-spill-config-lockout): the `DuckDB`
@@ -490,7 +572,7 @@ impl SqlStore {
     /// delete-and-recreate condition).
     pub fn pin(&self) -> Result<Option<Pin>, ViewError> {
         let mut stmt = self.conn.prepare(
-            "SELECT gen, fingerprint, cache_schema_version \
+            "SELECT gen, fingerprint, cache_schema_version, base_fold \
              FROM hist.pin ORDER BY gen DESC LIMIT 1",
         )?;
         let mut rows = stmt.query([])?;
@@ -499,6 +581,7 @@ impl SqlStore {
                 generation: row.get(0)?,
                 fingerprint: row.get(1)?,
                 cache_schema_version: row.get(2)?,
+                base_fold: row.get(3)?,
             })),
             None => Ok(None),
         }
@@ -529,10 +612,15 @@ impl SqlStore {
         mounts: Option<&addr::MountSet>,
         exclusion: Option<ExclusionProbe<'_>>,
         fingerprint: &str,
+        base: Option<&BaseWalk<'_>>,
     ) -> Result<Option<AppendCounts>, ViewError> {
+        let base_fold = base.map(|b| b.fold);
         let mut pin = self.pin()?;
         if let Some(p) = &pin {
-            if p.fingerprint == fingerprint {
+            // TWO witnesses, one no-op check (`base-projection.md` §7): base
+            // motion appends even when the fingerprint did not move, so a
+            // pinned fingerprint alone no longer proves the file is current.
+            if p.fingerprint == fingerprint && p.base_fold.as_deref() == base_fold {
                 return Ok(None);
             }
             if fingerprint_version(&p.fingerprint) != fingerprint_version(fingerprint) {
@@ -571,11 +659,20 @@ impl SqlStore {
             .map(String::as_str)
             .collect();
 
-        // Unchanged docs whose link resolution the delta can move.
+        // The base plane's own delta, against the cache's own base manifest.
+        let base_delta = self.base_delta(base)?;
+
+        // Unchanged docs whose link resolution the delta can move — on either
+        // plane. A base member appearing, vanishing, or shifting a tie-break
+        // moves what `exclusion`/`exclusion_path` say in docs that did not
+        // move (§7).
         let affected = if pin.is_none() {
             BTreeSet::new()
         } else {
-            self.resolution_affected(docs, &added, &changed, &removed)?
+            let mut affected = self.resolution_affected(docs, &added, &changed, &removed)?;
+            affected.extend(self.base_affected(docs, &base_delta)?);
+            affected.retain(|p| !added.contains(p.as_str()) && !changed.contains(p.as_str()));
+            affected
         };
 
         let counts = AppendCounts {
@@ -598,9 +695,133 @@ impl SqlStore {
             }
         }
         fill_exclusions(&mut rows, exclusion);
+        // Only the moved members re-project; unmoved ones keep their pinned
+        // generation, exactly as an unmoved doc does.
+        crate::collect_base(&base_delta.reproject, &mut rows);
 
-        self.append(&rows, &removed, counts, fingerprint)?;
+        self.append(&rows, &removed, counts, fingerprint, &base_delta, base_fold)?;
         Ok(Some(counts))
+    }
+
+    /// The base plane's delta against the cache's own base manifest
+    /// (`base-projection.md` §7): the latest `base(path, file_rev)` map diffed
+    /// against the live walk, exactly as `doc(path, file_rev)` is diffed
+    /// against the live parsed corpus.
+    ///
+    /// A member with a NULL `file_rev` (unreadable, §4.4) compares unequal to
+    /// everything, so it re-reads at every sync until it heals — deliberate,
+    /// and the reason `file_rev` is `Option` here rather than a sentinel
+    /// string that could accidentally match.
+    ///
+    /// Handed no walk, the base plane is NOT ASKED: nothing is re-projected and
+    /// nothing is tombstoned. An absent walk must never read as an empty one,
+    /// or the next append would tombstone every member the workspace still has.
+    fn base_delta(&self, base: Option<&BaseWalk<'_>>) -> Result<BaseDelta, ViewError> {
+        let Some(base) = base else {
+            return Ok(BaseDelta::default());
+        };
+        let manifest: BTreeMap<String, Option<String>> = {
+            let mut stmt = self.conn.prepare("SELECT path, file_rev FROM base")?;
+            let mut rows = stmt.query([])?;
+            let mut m = BTreeMap::new();
+            while let Some(row) = rows.next()? {
+                m.insert(row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?);
+            }
+            m
+        };
+
+        let mut delta = BaseDelta::default();
+        for member in base.members {
+            let live_rev = member
+                .bytes
+                .as_ref()
+                .ok()
+                .map(|raw| crate::hex16(&model::leaf_digest(raw)));
+            let moved = match manifest.get(&member.path) {
+                None => true,
+                // NULL on either side never compares equal: an unreadable
+                // member re-reads until it heals.
+                Some(pinned) => match (pinned, &live_rev) {
+                    (Some(pinned), Some(live)) => pinned != live,
+                    _ => true,
+                },
+            };
+            if moved {
+                delta.moved_keys.insert(member.path.clone());
+                delta.reproject.push(crate::BaseMember {
+                    path: member.path.clone(),
+                    bytes: member.bytes.clone(),
+                });
+            }
+        }
+        let live: BTreeSet<&str> = base.members.iter().map(|m| m.path.as_str()).collect();
+        for path in manifest.keys() {
+            if !live.contains(path.as_str()) {
+                delta.moved_keys.insert(path.clone());
+                delta.removed.push(path.clone());
+            }
+        }
+        Ok(delta)
+    }
+
+    /// Docs whose `exclusion` / `exclusion_path` the base delta can move
+    /// (`base-projection.md` §7) — over ALL link rows, not the dangling ones.
+    ///
+    /// The rows a base delta moves divide in two, and the second class is by
+    /// definition NOT dangling: (i) unresolved, UNEXPLAINED rows an appearing
+    /// member can newly stamp; (ii) already-STAMPED rows whose stamp a removal
+    /// must clear or a tie-break shift must re-point. Deleting
+    /// `bases/TAG-FILES.base` must un-stamp its 367 embed rows — under a
+    /// dangling-only predicate they would stay stamped forever while the cache
+    /// reported itself fresh, repairable only by rebuild.
+    ///
+    /// So a doc re-projects when any of its link rows matches, **case-exact**,
+    /// on EITHER the target's own key (bare basename, or literal path) OR the
+    /// row's `exclusion_path` (full path, or its basename). This key set is
+    /// SEPARATE from [`Self::resolution_affected`]'s deliberately-lowercased md
+    /// keys: folding them together would reintroduce through the back door
+    /// exactly the case-folding §3 and §5.1 forbid.
+    fn base_affected(
+        &self,
+        docs: &BTreeMap<String, Document>,
+        delta: &BaseDelta,
+    ) -> Result<BTreeSet<String>, ViewError> {
+        if delta.moved_keys.is_empty() {
+            return Ok(BTreeSet::new());
+        }
+        // Each moved member contributes both of its name-keys, case-exact.
+        let mut keys: BTreeSet<&str> = BTreeSet::new();
+        for path in &delta.moved_keys {
+            keys.insert(path.as_str());
+            if let Some(stem) = path.rsplit('/').next() {
+                keys.insert(stem);
+            }
+        }
+
+        let mut affected = BTreeSet::new();
+        let mut stmt = self
+            .conn
+            .prepare("SELECT DISTINCT src_path, target_raw, exclusion_path FROM link")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let src: String = row.get(0)?;
+            if affected.contains(&src) || !docs.contains_key(&src) {
+                continue;
+            }
+            let target: String = row.get(1)?;
+            let target = target.trim();
+            let stamped: Option<String> = row.get(2)?;
+            let hit = keys.contains(target)
+                || target.rsplit('/').next().is_some_and(|b| keys.contains(b))
+                || stamped.is_some_and(|p| {
+                    keys.contains(p.as_str())
+                        || p.rsplit('/').next().is_some_and(|b| keys.contains(b))
+                });
+            if hit {
+                affected.insert(src);
+            }
+        }
+        Ok(affected)
     }
 
     /// Unchanged docs holding a link whose target names a moved name: the
@@ -679,9 +900,11 @@ impl SqlStore {
         removed: &[&str],
         counts: AppendCounts,
         fingerprint: &str,
+        base_delta: &BaseDelta,
+        base_fold: Option<&str>,
     ) -> Result<(), ViewError> {
         self.conn.execute_batch("BEGIN")?;
-        let result = self.append_body(rows, removed, counts, fingerprint);
+        let result = self.append_body(rows, removed, counts, fingerprint, base_delta, base_fold);
         match result {
             Ok(()) => {
                 self.conn.execute_batch("COMMIT")?;
@@ -700,6 +923,8 @@ impl SqlStore {
         removed: &[&str],
         counts: AppendCounts,
         fingerprint: &str,
+        base_delta: &BaseDelta,
+        base_fold: Option<&str>,
     ) -> Result<(), ViewError> {
         let generation = Value::BigInt(counts.generation);
 
@@ -735,11 +960,42 @@ impl SqlStore {
         self.append_scalar(&rows.section, "section", &generation)?;
         self.append_scalar(&rows.task, "task", &generation)?;
 
+        // base: path, generation, tombstone, rest — the hist.doc shape, so the
+        // latest-pick window and the tombstone rule read identically.
+        {
+            let mut app = self.conn.appender_to_db("base", "hist")?;
+            for row in &rows.base {
+                let mut r: Vec<Value> = Vec::with_capacity(row.len() + 2);
+                r.push(row[0].clone());
+                r.push(generation.clone());
+                r.push(Value::Boolean(false));
+                r.extend(row[1..].iter().cloned());
+                app.append_row(duckdb::appender_params_from_iter(r.iter()))?;
+            }
+            for path in &base_delta.removed {
+                let r = [
+                    Value::Text(path.clone()),
+                    generation.clone(),
+                    Value::Boolean(true),
+                    Value::Null,
+                    Value::Null,
+                    Value::Null,
+                    Value::Null,
+                    Value::Null,
+                    Value::Null,
+                ];
+                app.append_row(duckdb::appender_params_from_iter(r.iter()))?;
+            }
+            app.flush()?;
+        }
+        self.append_scalar(&rows.base_view, "base_view", &generation)?;
+        self.append_scalar(&rows.base_formula, "base_formula", &generation)?;
+
         self.conn.execute(
             "INSERT INTO hist.pin \
              (gen, fingerprint, applied_at, files_added, files_changed, files_removed, \
-              engine_version, cache_schema_version) \
-             VALUES (?, ?, now(), ?, ?, ?, ?, ?)",
+              engine_version, cache_schema_version, base_fold) \
+             VALUES (?, ?, now(), ?, ?, ?, ?, ?, ?)",
             duckdb::params_from_iter(
                 [
                     generation,
@@ -749,6 +1005,7 @@ impl SqlStore {
                     Value::BigInt(i64_len(counts.removed)),
                     Value::Text(env!("CARGO_PKG_VERSION").to_owned()),
                     Value::BigInt(CACHE_SCHEMA_VERSION),
+                    base_fold.map_or(Value::Null, |f| Value::Text(f.to_owned())),
                 ]
                 .iter(),
             ),
@@ -1041,7 +1298,7 @@ pub(crate) mod tests {
     ) -> Option<AppendCounts> {
         let ambient = RootedCorpus::ambient(docs);
         store
-            .sync(docs, &ambient, None, None, fingerprint)
+            .sync(docs, &ambient, None, None, fingerprint, None)
             .expect("sync")
     }
 
@@ -1063,7 +1320,7 @@ pub(crate) mod tests {
         ),
         (
             "link",
-            "SELECT coalesce(md5(string_agg(src_path || '|' || seq::VARCHAR || '|' || kind || '|' || target_raw || '|' || coalesce(heading,'~N~') || '|' || coalesce(block,'~N~') || '|' || coalesce(alias,'~N~') || '|' || coalesce(dest_path,'~N~') || '|' || coalesce(dest_root,'~N~') || '|' || coalesce(dest_root_path,'~N~') || '|' || coalesce(exclusion,'~N~') || '|' || resolved::VARCHAR || '|' || span_start::VARCHAR || '|' || span_end::VARCHAR || '|' || node_rev, chr(10) ORDER BY src_path, seq)), 'EMPTY') FROM link",
+            "SELECT coalesce(md5(string_agg(src_path || '|' || seq::VARCHAR || '|' || kind || '|' || target_raw || '|' || coalesce(heading,'~N~') || '|' || coalesce(block,'~N~') || '|' || coalesce(alias,'~N~') || '|' || coalesce(dest_path,'~N~') || '|' || coalesce(dest_root,'~N~') || '|' || coalesce(dest_root_path,'~N~') || '|' || coalesce(exclusion,'~N~') || '|' || coalesce(exclusion_path,'~N~') || '|' || resolved::VARCHAR || '|' || span_start::VARCHAR || '|' || span_end::VARCHAR || '|' || node_rev, chr(10) ORDER BY src_path, seq)), 'EMPTY') FROM link",
         ),
         (
             "tag",
@@ -1211,7 +1468,9 @@ pub(crate) mod tests {
             }
             assert_eq!(cols, ref_cols, "main.{name} columns drifted from the build");
         }
-        assert_eq!(cached.len(), 12, "12 caller-facing relations");
+        // 12 md relations + the three `.base` relations (`base-projection.md`
+        // §4), which the cache serves under the same latest-view protocol.
+        assert_eq!(cached.len(), 15, "15 caller-facing relations");
 
         // Each column once, per relation — the literal card assertion.
         for (name, columns) in &cached {
@@ -1409,7 +1668,7 @@ pub(crate) mod tests {
         store
             .connection()
             .execute(
-                "INSERT INTO hist.pin VALUES (2, 'b3b:v1', now(), 0, 0, 0, 'future', 999)",
+                "INSERT INTO hist.pin VALUES (2, 'b3b:v1', now(), 0, 0, 0, 'future', 999, NULL)",
                 [],
             )
             .expect("future pin");

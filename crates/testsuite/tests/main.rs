@@ -3,6 +3,7 @@
 //! and `wire_golden` (contract example exchanges verbatim) as modules here.
 
 mod armed_disk_agreement;
+mod base_projection;
 mod charset_guard;
 mod daemon_door;
 mod delta_e3e4;

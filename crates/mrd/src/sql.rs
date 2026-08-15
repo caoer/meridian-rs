@@ -181,9 +181,41 @@ impl LiveSource {
     }
 }
 
+/// The `.base` plane's own tense (`base-projection.md` §6.3).
+///
+/// The frame carries TWO witnesses because their remedies differ: a caller who
+/// just wrote markdown must not be told their Bases changed. So "the corpus
+/// moved" and "the base plane moved" are different sentences, and the
+/// unmeasured states are said out loud rather than rendered as silence —
+/// §12.1's absence rule forecloses exactly that.
+#[derive(Clone, PartialEq, Eq)]
+enum BaseTense {
+    /// The live re-walk matched the stamp.
+    Matched,
+    /// The live re-walk differs — the base plane moved.
+    Moved,
+    /// A walk failed, so nothing can be said about this plane.
+    CannotSay,
+    /// The build was handed no walk: "not measured", never "measured empty".
+    NotWalked,
+}
+
+impl BaseTense {
+    fn wire(&self) -> &'static str {
+        match self {
+            BaseTense::Matched => "matched",
+            BaseTense::Moved => "moved",
+            BaseTense::CannotSay => "cannot-say",
+            BaseTense::NotWalked => "not-walked",
+        }
+    }
+}
+
 /// The buffered result + its freshness frame — the OD9 document, rendered to
 /// human or JSON.
 struct Frame {
+    /// The `.base` plane's tense beside the md plane's (§6.3).
+    base: BaseTense,
     as_of: Option<String>,
     live: Option<String>,
     live_source: LiveSource,
@@ -204,6 +236,8 @@ impl Frame {
             live_source: LiveSource::None,
             stale: None,
             state: QueryState::NoView,
+            // No corpus loaded means no walk was run either.
+            base: BaseTense::NotWalked,
             columns: Vec::new(),
             rows: Vec::new(),
             error: Some(message),
@@ -388,6 +422,9 @@ fn daemon_sql_frame(response: &Value) -> Option<Frame> {
             _ => None,
         },
         state,
+        // The daemon serves its own frame; until § A.11 carries the base
+        // tense, this route cannot say what it did not receive.
+        base: BaseTense::CannotSay,
         columns,
         rows,
         error,
@@ -405,6 +442,25 @@ struct Loaded {
     docs: BTreeMap<String, model::Document>,
     mounts: crate::walk_cmd::Mounts,
     domain: fs::domain::Domain,
+    /// The `.base` walk this attempt was taken under (`base-projection.md`
+    /// §3/§6.2), or the error that refused it — the base plane then says
+    /// **cannot say**, never "empty" (§6.3).
+    base: Result<fs::base::BaseSnapshot, String>,
+}
+
+/// The projection inputs a `.base` walk contributes, in the shape `view`
+/// takes. Held beside [`Loaded`] because the members must outlive the borrow.
+fn base_walk(loaded: &Loaded) -> Option<(Vec<view::BaseMember>, String)> {
+    let snapshot = loaded.base.as_ref().ok()?;
+    let members = snapshot
+        .members
+        .iter()
+        .map(|m| view::BaseMember {
+            path: m.path.clone(),
+            bytes: m.bytes.clone(),
+        })
+        .collect();
+    Some((members, snapshot.fold.clone()))
 }
 
 /// Load the corpus for one attempt; an `Err` is the `NO_VIEW` message (a
@@ -430,12 +486,18 @@ fn load_corpus(workspace: &Path) -> Result<Loaded, String> {
     // corpus tells an excluded path from a missing one (§12.1 verdict plane).
     let domain =
         fs::domain::Domain::load(&root).map_err(|e| format!("cannot read the hash domain: {e}"))?;
+    // The base plane's own walk, under the SAME domain (§3: the hash domain's
+    // rules with the floor swapped). A failed walk is not a failed load — the
+    // md plane still answers, and the frame says the base plane cannot speak.
+    let base = fs::base::base_snapshot_under(&root, &domain)
+        .map_err(|e| format!("cannot walk the base plane: {e}"));
     Ok(Loaded {
         root,
         f0: f0.0,
         docs,
         mounts,
         domain,
+        base,
     })
 }
 
@@ -486,7 +548,15 @@ fn sync_store(
         .mounts
         .rooted(&loaded.docs, &loaded.domain, &loaded.root);
     let probe = fs::domain::LinkTargetProbe::new(&loaded.root, &loaded.domain);
-    let exclusion = |target: &str| probe.exclusion(target).map(|why| why.word().to_owned());
+    let exclusion = |target: &str| {
+        probe
+            .resolution(target)
+            .map(|(p, why)| (p, why.word().to_owned()))
+    };
+    let walk = base_walk(loaded);
+    let base = walk
+        .as_ref()
+        .map(|(members, fold)| view::BaseWalk { members, fold });
     store
         .sync(
             &loaded.docs,
@@ -494,6 +564,7 @@ fn sync_store(
             Some(loaded.mounts.set()),
             Some(&exclusion),
             &loaded.f0,
+            base.as_ref(),
         )
         .map_err(|e| Fail::tool(format!("cannot append to the sql cache: {e}")))
 }
@@ -530,13 +601,22 @@ fn attempt(args: &SqlArgs, loaded: &Loaded, lane: &mut Lane) -> Result<Attempt, 
                 .mounts
                 .rooted(&loaded.docs, &loaded.domain, &loaded.root);
             let probe = fs::domain::LinkTargetProbe::new(&loaded.root, &loaded.domain);
-            let exclusion = |target: &str| probe.exclusion(target).map(|why| why.word().to_owned());
+            let exclusion = |target: &str| {
+                probe
+                    .resolution(target)
+                    .map(|(p, why)| (p, why.word().to_owned()))
+            };
+            let walk = base_walk(loaded);
+            let base = walk
+                .as_ref()
+                .map(|(members, fold)| view::BaseWalk { members, fold });
             let conn = view::build_memory_rooted(
                 &loaded.docs,
                 &corpus,
                 loaded.mounts.set(),
                 &loaded.f0,
                 Some(&exclusion),
+                base.as_ref(),
             )
             .map_err(|e| Fail::tool(format!("cannot build the view: {e}")))?;
             let as_of = read_as_of(&conn)?;
@@ -581,6 +661,8 @@ fn query_frame(args: &SqlArgs, loaded: &Loaded, lane: &mut Lane) -> Result<Frame
             live_source: LiveSource::None,
             stale: None,
             state: QueryState::Unverified,
+            // The query failed, so no plane was sampled at all.
+            base: BaseTense::CannotSay,
             columns,
             rows,
             error: Some(error),
@@ -589,6 +671,8 @@ fn query_frame(args: &SqlArgs, loaded: &Loaded, lane: &mut Lane) -> Result<Frame
 
     test_fold_race_hook();
     let f_now = fold_live(&loaded.root.0)?;
+    // Both planes are sampled AFTER the rows, so each post-dates the result.
+    let base = base_tense(loaded);
     if as_of == f_now {
         return Ok(frame(
             as_of,
@@ -596,6 +680,7 @@ fn query_frame(args: &SqlArgs, loaded: &Loaded, lane: &mut Lane) -> Result<Frame
             columns,
             rows,
             QueryState::FreshAtSample,
+            base,
         ));
     }
 
@@ -615,11 +700,19 @@ fn query_frame(args: &SqlArgs, loaded: &Loaded, lane: &mut Lane) -> Result<Frame
             } else {
                 QueryState::Raced
             };
-            return Ok(frame(retry.as_of, f_now2, retry.columns, retry.rows, state));
+            let base = base_tense(&reloaded);
+            return Ok(frame(
+                retry.as_of,
+                f_now2,
+                retry.columns,
+                retry.rows,
+                state,
+                base,
+            ));
         }
     }
 
-    Ok(frame(as_of, f_now, columns, rows, QueryState::Stale))
+    Ok(frame(as_of, f_now, columns, rows, QueryState::Stale, base))
 }
 
 /// Assemble a folded frame (always `live_source=fold`).
@@ -630,6 +723,7 @@ fn frame(
     columns: Vec<ColMeta>,
     rows: Vec<Vec<Value>>,
     state: QueryState,
+    base: BaseTense,
 ) -> Frame {
     let stale = Some(as_of != live);
     Frame {
@@ -638,9 +732,28 @@ fn frame(
         live_source: LiveSource::Fold,
         stale,
         state,
+        base,
         columns,
         rows,
         error: None,
+    }
+}
+
+/// The base plane's tense at the post-result sample (`base-projection.md`
+/// §6.3): re-walk the members and compare against the fold the build was
+/// stamped with.
+///
+/// Its cells are the spec's, and none of them is silence: a build handed no
+/// walk says **not walked** (never "measured empty"), a walk that fails says
+/// **cannot say**, and only a completed re-walk answers matched or moved.
+fn base_tense(loaded: &Loaded) -> BaseTense {
+    let Ok(stamped) = &loaded.base else {
+        return BaseTense::NotWalked;
+    };
+    match fs::base::base_snapshot_under(&loaded.root, &loaded.domain) {
+        Ok(live) if live.fold == stamped.fold => BaseTense::Matched,
+        Ok(_) => BaseTense::Moved,
+        Err(_) => BaseTense::CannotSay,
     }
 }
 
@@ -728,6 +841,9 @@ fn frame_json(frame: &Frame) -> String {
         "live_source": frame.live_source.wire(),
         "stale": frame.stale,
         "state": frame.state.wire(),
+        // The SECOND witness's verdict, beside the md plane's (§6.3). It is a
+        // separate key because the two planes name different remedies.
+        "base_plane": frame.base.wire(),
         "columns": columns,
         "rows": frame.rows,
         "row_count": frame.rows.len(),
@@ -739,6 +855,7 @@ fn frame_json(frame: &Frame) -> String {
 /// Print the human freshness banner + a simple aligned table.
 fn print_human(frame: &Frame) {
     println!("{}", banner(frame));
+    println!("{}", base_banner(frame));
     if frame.columns.is_empty() {
         return;
     }
@@ -777,6 +894,21 @@ fn banner(frame: &Frame) -> String {
             "-- UNVERIFIED (the query failed, so no liveness fold certified rows; as_of={as_of})"
         ),
         QueryState::NoView => "-- NO_VIEW (no buildable corpus)".to_owned(),
+    }
+}
+
+/// The base plane's own line (`base-projection.md` §6.3). It is a SEPARATE
+/// sentence from the md banner on purpose: the two planes have different
+/// remedies, so a caller who just wrote markdown is never told their Bases
+/// moved — and the unmeasured cells say so rather than staying silent.
+fn base_banner(frame: &Frame) -> &'static str {
+    match frame.base {
+        BaseTense::Matched => "-- base plane: matched (the .base members are as built)",
+        BaseTense::Moved => {
+            "-- base plane: MOVED (a .base file changed; the md corpus is judged separately above)"
+        }
+        BaseTense::CannotSay => "-- base plane: cannot say (the base walk did not complete)",
+        BaseTense::NotWalked => "-- base plane: not walked (not measured — never 'measured empty')",
     }
 }
 
@@ -870,6 +1002,7 @@ mod tests {
             live_source: LiveSource::Fold,
             stale: Some(false),
             state: QueryState::FreshAtSample,
+            base: BaseTense::Matched,
             columns: vec![],
             rows: vec![],
             error: None,

@@ -47,6 +47,14 @@ duckdb = { workspace = true }
 # result cells of the shared query lane ([`store::run_query`]) — the one JSON
 # shape both the CLI frame and the wire body consume.
 serde_json = { workspace = true }
+# ENFORCED: `crates/testsuite/tests/yaml_confinement.rs` derives the taker set
+# from cargo metadata. The `.base` parse needs real YAML — Bases values nest
+# arbitrarily, so the hand-rolled-scanner argument that admitted serde_yaml
+# into `config` for arbitrary user frontmatter applies verbatim
+# (`docs/base-projection.md` §9). It lives beside its only consumer as the leaf
+# module `view::base`; `model` stays serde-free (Law 1) and `fs` stays
+# YAML-free (its charter) — it hands raw bytes up.
+serde_yaml = "0.9"
 
 [dev-dependencies]
 # fixture addresses for the gate tests
