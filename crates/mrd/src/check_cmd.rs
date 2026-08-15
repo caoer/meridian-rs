@@ -1263,8 +1263,14 @@ mod tests {
              account for anything"
         );
         assert!(
-            gate.detail().contains("no memory"),
-            "and the pass states the law rather than implying a wider check: {}",
+            gate.detail().contains("write history is not assessed"),
+            "and the pass names the narrowing rather than implying a wider check: {}",
+            gate.detail()
+        );
+        assert!(
+            !gate.detail().contains("no memory"),
+            "the mechanism WHY is docs/--help teaching, never a footnote on the \
+             verdict detail (report-voice pass): {}",
             gate.detail()
         );
     }
