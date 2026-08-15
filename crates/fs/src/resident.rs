@@ -171,21 +171,18 @@ impl ResidentTree {
             let parent_key = dir_key.clone();
             push_segment(&mut dir_key, seg);
             if !self.nodes.contains_key(&dir_key) {
-                let parent = self
-                    .nodes
-                    .get(&parent_key)
-                    .expect("directory chain composes root-down");
-                if parent.map.get(seg, ChildKind::File).is_some() {
-                    self.lint_collision(&dir_key.clone());
+                let collides = self
+                    .node(&parent_key)
+                    .map
+                    .get(seg, ChildKind::File)
+                    .is_some();
+                if collides {
+                    self.lint_collision(&dir_key);
                 }
                 self.nodes.insert(dir_key.clone(), Node::new());
             }
         }
-        let dir = self
-            .nodes
-            .get(&dir_key)
-            .expect("the root node always exists");
-        if dir.map.get(name, ChildKind::File) == Some(digest) {
+        if self.node(&dir_key).map.get(name, ChildKind::File) == Some(digest) {
             return false;
         }
         let mut file_key = dir_key.clone();
@@ -195,9 +192,7 @@ impl ResidentTree {
             // still be pending refold — nodes, not the map, hold that fact).
             self.lint_collision(&file_key);
         }
-        self.nodes
-            .get_mut(&dir_key)
-            .expect("looked up above")
+        self.node_mut(&dir_key)
             .map
             .set(name, ChildKind::File, digest);
         self.mark_dirty(dir_key);
@@ -221,8 +216,7 @@ impl ResidentTree {
                 return false;
             }
         }
-        let dir = self.nodes.get_mut(&dir_key).expect("chain checked above");
-        if !dir.map.remove(name, ChildKind::File) {
+        if !self.node_mut(&dir_key).map.remove(name, ChildKind::File) {
             return false;
         }
         let mut file_key = dir_key.clone();
@@ -231,21 +225,27 @@ impl ResidentTree {
         self.collisions.remove(&file_key);
         self.mark_dirty(dir_key.clone());
         // Prune emptied directories bottom-up; the root always survives.
+        // Emptiness consults the child map AND the live child NODES: a
+        // directory entry publishes into its parent's map only at refold, so
+        // a freshly composed subtree can be invisible to the map while its
+        // nodes are live — pruning on the map alone would orphan it (the
+        // proptest-found `a/ab` + `a/a/a` + remove(`a/ab`) sequence).
         let mut key = dir_key;
-        while !key.is_empty() && self.nodes.get(&key).is_some_and(|node| node.map.is_empty()) {
+        while !key.is_empty()
+            && self.nodes.get(&key).is_some_and(|node| node.map.is_empty())
+            && !self.has_child_nodes(&key)
+        {
             self.nodes.remove(&key);
             self.dirty.remove(&key);
             // The dir arm of a collision key is gone with the node.
             self.collisions.remove(&key);
-            let split = split_parent(&key);
-            let parent = self
-                .nodes
-                .get_mut(split.0)
-                .expect("a pruned node's parent exists");
+            let (parent, name) = split_parent(&key);
+            let parent_key = parent.to_vec();
             // `false` when the Dir entry never landed (created and emptied
-            // between refolds) — nothing to un-publish then.
-            parent.map.remove(split.1, ChildKind::Dir);
-            let parent_key = split.0.to_vec();
+            // between refolds) — nothing to un-publish then. Never a
+            // published empty value: pruning REMOVES the entry (§4.2.3 —
+            // only the workspace root may be empty).
+            self.node_mut(&parent_key).map.remove(name, ChildKind::Dir);
             self.mark_dirty(parent_key.clone());
             key = parent_key;
         }
@@ -271,10 +271,7 @@ impl ResidentTree {
     /// the interim served token stays a law-1 value (merged plan §6 step 3).
     pub fn fingerprint(&mut self) -> [u8; 32] {
         self.refold(&[]);
-        self.nodes
-            .get(&Vec::new())
-            .expect("the root node always exists")
-            .fold
+        self.node(&[]).fold
     }
 
     /// Resolve one scope (merkle-spec §7 scope rows): the workspace root, a
@@ -290,52 +287,23 @@ impl ResidentTree {
     pub fn fold_at(&mut self, scope: &Path) -> Result<ScopeFold, ScopeRefusal> {
         let path = crate::hash_name(scope);
         let segs: Vec<&[u8]> = split_segments(path);
-        if segs.is_empty() {
+        let Some((last, interior)) = segs.split_last() else {
             return Ok(ScopeFold::Value(self.fingerprint()));
-        }
+        };
         let mut key: Vec<u8> = Vec::new();
-        for (i, seg) in segs.iter().enumerate() {
+        for seg in interior {
             let parent_key = key.clone();
             push_segment(&mut key, seg);
-            if self.collisions.contains(&key) {
-                // Names it (last segment) or passes through it (interior):
-                // either way no premise can say WHICH kind (§4.4).
-                return Err(ScopeRefusal {
-                    path: crate::display_name(&key),
-                    reason: RefusalReason::Collision,
-                });
-            }
-            let is_dir = self.nodes.contains_key(&key);
-            let is_file = self
-                .nodes
-                .get(&parent_key)
-                .expect("walk continues only into existing directories")
-                .map
-                .get(seg, ChildKind::File)
-                .is_some();
-            let last = i == segs.len() - 1;
-            if last {
-                if is_dir {
-                    self.refold(&key);
-                    return Ok(ScopeFold::Value(
-                        self.nodes.get(&key).expect("checked above").fold,
-                    ));
-                }
-                if let Some(leaf) = self
-                    .nodes
-                    .get(&parent_key)
-                    .expect("checked above")
-                    .map
-                    .get(seg, ChildKind::File)
-                {
-                    return Ok(ScopeFold::Value(leaf));
-                }
-                return Ok(ScopeFold::Absent);
-            }
-            if is_dir {
+            self.refuse_collision(&key)?;
+            if self.nodes.contains_key(&key) {
                 continue;
             }
-            if is_file {
+            if self
+                .node(&parent_key)
+                .map
+                .get(seg, ChildKind::File)
+                .is_some()
+            {
                 return Err(ScopeRefusal {
                     path: crate::display_name(&key),
                     reason: RefusalReason::KindConflict,
@@ -345,7 +313,17 @@ impl ResidentTree {
             // chain law: creation-guard plans stand on exactly this).
             return Ok(ScopeFold::Absent);
         }
-        unreachable!("every non-empty walk returns at its last segment")
+        let parent_key = key.clone();
+        push_segment(&mut key, last);
+        self.refuse_collision(&key)?;
+        if self.nodes.contains_key(&key) {
+            self.refold(&key);
+            return Ok(ScopeFold::Value(self.node(&key).fold));
+        }
+        match self.node(&parent_key).map.get(last, ChildKind::File) {
+            Some(leaf) => Ok(ScopeFold::Value(leaf)),
+            None => Ok(ScopeFold::Absent),
+        }
     }
 
     /// The `last_seq` slot at a directory scope (root = empty path); `None`
@@ -393,6 +371,49 @@ impl ResidentTree {
             vertex_hashes,
             hashed_bytes,
         }
+    }
+
+    /// The node at `key`. Private on purpose: the lookup panics only on a
+    /// violated internal invariant (every caller walks existing chains), and
+    /// keeping the panic out of public bodies keeps the public surface
+    /// panic-free by construction.
+    fn node(&self, key: &[u8]) -> &Node {
+        self.nodes.get(key).expect("caller walks existing chains")
+    }
+
+    /// [`Self::node`], mutable.
+    fn node_mut(&mut self, key: &[u8]) -> &mut Node {
+        self.nodes
+            .get_mut(key)
+            .expect("caller walks existing chains")
+    }
+
+    /// Whether any node lives strictly below `key` — the subtree-liveness
+    /// half of the prune test (the child map alone cannot answer it: dir
+    /// entries publish lazily at refold).
+    fn has_child_nodes(&self, key: &[u8]) -> bool {
+        if key.is_empty() {
+            return self.nodes.len() > 1;
+        }
+        let mut lo = key.to_vec();
+        lo.push(b'/');
+        self.nodes
+            .range(lo.clone()..)
+            .next()
+            .is_some_and(|(k, _)| k.starts_with(&lo))
+    }
+
+    /// Refuse a scope that names or passes through a §4.4 collision key:
+    /// either way no premise can say WHICH kind, and an ambiguous premise is
+    /// no premise.
+    fn refuse_collision(&self, key: &[u8]) -> Result<(), ScopeRefusal> {
+        if self.collisions.contains(key) {
+            return Err(ScopeRefusal {
+                path: crate::display_name(key),
+                reason: RefusalReason::Collision,
+            });
+        }
+        Ok(())
     }
 
     /// Mark `key`'s fold stale, and its whole ancestor chain — stopping at
@@ -542,8 +563,7 @@ mod tests {
             probe in path_strat(),
         ) {
             let mut tree = ResidentTree::new();
-            let mut shadow: std::collections::BTreeMap<PathBuf, [u8; 32]> =
-                std::collections::BTreeMap::new();
+            let mut shadow: BTreeMap<PathBuf, [u8; 32]> = BTreeMap::new();
             for (i, op) in ops.iter().enumerate() {
                 match op {
                     Op::Set(path, seed) => {
@@ -594,6 +614,28 @@ mod tests {
         assert!(!tree.set_leaf(&p("a/b.md"), h(1)));
         assert_eq!(tree.stats().vertex_hashes, before, "a no-op hashes nothing");
         assert!(tree.dirty.is_empty(), "a no-op dirties nothing");
+    }
+
+    /// The proptest-found orphaning sequence, pinned deterministically: a
+    /// scoped refold publishes `a`'s value, a second leaf composes the
+    /// UNPUBLISHED child `a/a`, and removing `a`'s last file must NOT prune
+    /// `a` — its map looks empty but the child node is live. The fingerprint
+    /// then equals the fresh build's, and the surviving subtree resolves.
+    #[test]
+    fn prune_spares_a_dir_with_unpublished_children() {
+        let mut tree = ResidentTree::new();
+        tree.set_leaf(&p("a/ab"), h(1));
+        let _ = tree.fold_at(&p("a"));
+        tree.set_leaf(&p("a/a/a"), h(2));
+        assert!(tree.remove_leaf(&p("a/ab")));
+        assert_eq!(tree.fold_at(&p("a/a/a")), Ok(ScopeFold::Value(h(2))));
+        let mut fresh = ResidentTree::new();
+        fresh.set_leaf(&p("a/a/a"), h(2));
+        assert_eq!(tree.fingerprint(), fresh.fingerprint());
+        // And the cascade still prunes to empty once the subtree truly dies.
+        assert!(tree.remove_leaf(&p("a/a/a")));
+        assert_eq!(tree.fingerprint(), ResidentTree::new().fingerprint());
+        assert_eq!(tree.fold_at(&p("a")), Ok(ScopeFold::Absent));
     }
 
     /// Emptied directories prune bottom-up and the emptied path answers

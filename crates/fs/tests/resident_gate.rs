@@ -15,7 +15,7 @@
 //! - **§7 scope rows** — folder/file/`absent`/kind-conflict answers.
 
 use std::fs as stdfs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use fs::resident::{RefusalReason, ScopeFold};
 use fs::{DomainCache, WorkspaceRoot};
@@ -329,8 +329,8 @@ fn foreign_changes_refold_to_the_fresh_build_values() {
     assert_ne!(b_before, b_after, "the touched sibling scope moved");
 }
 
-/// PathBuf keys and byte keys agree: a nested fixture with names around the
-/// `/` sort boundary folds identically through the resident tree and the
+/// `PathBuf` keys and byte keys agree: a nested fixture with names around
+/// the `/` sort boundary folds identically through the resident tree and the
 /// from-scratch law-1 recursion (the segmentation is one law, not two).
 #[test]
 fn nested_names_across_the_sort_boundary_stay_byte_identical() {

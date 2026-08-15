@@ -679,10 +679,10 @@ impl DomainCache {
         // value stays law-1, derived from the resident structure's current
         // leaves, recomputed only when the root advances. The observation
         // above invalidated the cache iff the tree moved.
-        if let Some((v, cached)) = &self.served {
-            if *v == version {
-                return Ok(cached.clone());
-            }
+        if let Some((v, cached)) = &self.served
+            && *v == version
+        {
+            return Ok(cached.clone());
         }
         self.flat_folds += 1;
         // Raw name bytes into the fold (merkle-spec §4/§9) — the same names
@@ -1024,10 +1024,10 @@ impl DomainCache {
     /// No observation has landed yet (as [`Self::overlay_leaf`]).
     pub fn overlay_root(&mut self) -> io::Result<model::MerkleRoot> {
         let version = self.overlay_domain()?.version();
-        if let Some((v, cached)) = &self.served {
-            if *v == version {
-                return Ok(cached.clone());
-            }
+        if let Some((v, cached)) = &self.served
+            && *v == version
+        {
+            return Ok(cached.clone());
         }
         self.flat_folds += 1;
         let leaves: Vec<(&[u8], [u8; 32])> = self

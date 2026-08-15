@@ -73,6 +73,9 @@ fn med(mut xs: Vec<Duration>) -> (Duration, Duration, Duration) {
     (xs[0], xs[xs.len() / 2], xs[xs.len() - 1])
 }
 
+// A linear measurement script: each lane reads better in sequence than
+// scattered across helpers whose only caller is the next line.
+#[allow(clippy::too_many_lines)]
 fn main() {
     let mut args = std::env::args().skip(1);
     let root_arg = args.next().expect("usage: resident_cost <root> [reps]");
