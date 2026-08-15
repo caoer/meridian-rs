@@ -1900,8 +1900,9 @@ fn mint_pin(
     // The canonical selector: what the caller asked resolved to, in the read
     // face's own tagged grammar — never the caller's spelling, and never a
     // dewey ordinal (an ordinal is positional and a pin must outlive the next
-    // edit). This is the receipt key, the same structure the mint side keyed on.
-    let selector = canonical_selector(fact);
+    // edit). This is the receipt key, the same key the mint side minted under
+    // (one owner: `wire_map::facts::canonical_sel`).
+    let selector = wire_map::facts::canonical_sel(fact);
     // Refusal messages still need a spelling to name back at a human.
     let selector_text = selector.display();
     // Captured before the promotion re-resolve borrows the doc again: anchor
@@ -2156,21 +2157,6 @@ fn refuse_unrepresentable_heading(
         )));
     }
     Ok(())
-}
-
-/// The canonical read-face selector for a resolved fact: the anchor plane's id
-/// when the fact is a block anchor, otherwise its structural heading address.
-///
-/// It is what a dewey ordinal canonicalizes to: an ordinal is positional and
-/// invalidated by the next heading inserted above it, so carrying one into a
-/// pin would record an address that means something else after any edit.
-fn canonical_selector(fact: &wire_map::facts::ReadFact) -> wire::ReadSel {
-    match &fact.anchor {
-        Some(id) => wire::ReadSel::Anchor { anchor: id.clone() },
-        None => wire::ReadSel::Hpath {
-            hpath: fact.hpath.clone(),
-        },
-    }
 }
 
 /// A wire `Span` as a byte range. Every span this engine mints comes from a

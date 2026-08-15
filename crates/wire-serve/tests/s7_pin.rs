@@ -584,6 +584,94 @@ fn the_gate_refuses_an_unread_pin_and_admits_it_after_a_covering_read() {
     );
 }
 
+/// The receipt is keyed to the RESOLVED NODE, never to the selector form the
+/// read used (dogfood r7 F2): the dewey ordinal is the toc's first column —
+/// the form a caller meets first — so a read by dewey and a pin by the same
+/// ordinal must mint and spend one receipt, not refuse "it was never read".
+#[test]
+fn a_dewey_read_mints_the_receipt_a_dewey_pin_spends() {
+    let (_dir, root) = workspace();
+    let store = receipt::read_mint::ReadMintStore::new();
+
+    // `## Leader's Guideline` is dewey 1.1 in TARGET's toc.
+    session_read(&root, &store, "agent-7", "guide.md", "1.1");
+    let out = splice(
+        &root,
+        None,
+        &agent_pin_args("agent-7", "1.1"),
+        &[],
+        Some(&store),
+    )
+    .expect("the dewey read minted the receipt the dewey pin spends");
+    assert_eq!(
+        pin_fact(&out.body).fingerprint,
+        live_fingerprint(&root, "guide.md#Guide/Leader's Guideline")
+    );
+}
+
+/// Same node, forms crossed the other way: a dewey read gates an hpath pin.
+#[test]
+fn a_dewey_read_gates_an_hpath_pin_of_the_same_node() {
+    let (_dir, root) = workspace();
+    let store = receipt::read_mint::ReadMintStore::new();
+
+    session_read(&root, &store, "agent-7", "guide.md", "1.1");
+    splice(
+        &root,
+        None,
+        &agent_pin_args("agent-7", "Guide/Leader's Guideline"),
+        &[],
+        Some(&store),
+    )
+    .expect("a dewey read of the node gates a heading-path pin of the node");
+}
+
+/// The dogfood recovery shape stays green: an hpath read gates a dewey pin.
+#[test]
+fn an_hpath_read_gates_a_dewey_pin_of_the_same_node() {
+    let (_dir, root) = workspace();
+    let store = receipt::read_mint::ReadMintStore::new();
+
+    session_read(
+        &root,
+        &store,
+        "agent-7",
+        "guide.md",
+        "Guide/Leader's Guideline",
+    );
+    splice(
+        &root,
+        None,
+        &agent_pin_args("agent-7", "1.1"),
+        &[],
+        Some(&store),
+    )
+    .expect("a heading-path read of the node gates a dewey pin of the node");
+}
+
+/// Both spellings land on one node, so the ledger holds ONE receipt — the
+/// re-read replaces in place instead of minting a second key for the same
+/// content.
+#[test]
+fn two_selector_forms_of_one_node_hold_one_receipt() {
+    let (_dir, root) = workspace();
+    let store = receipt::read_mint::ReadMintStore::new();
+
+    session_read(&root, &store, "agent-7", "guide.md", "1.1");
+    session_read(
+        &root,
+        &store,
+        "agent-7",
+        "guide.md",
+        "Guide/Leader's Guideline",
+    );
+    assert_eq!(
+        store.len(),
+        1,
+        "two spellings of one node are one read fact, not two"
+    );
+}
+
 /// Gate is three-part (actor+path+selector); foreign/sibling receipts do not cover.
 #[test]
 fn another_actors_read_and_a_sibling_sections_read_both_fail_the_gate() {

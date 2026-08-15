@@ -232,7 +232,7 @@ pub fn slice_span<'a>(raw: &'a [u8], span: &wire::Span) -> &'a [u8] {
 /// (§2.1; wire-contract A.3, door symmetry over duplicate block ids). The
 /// dewey arm stays first-match (≤1 entry): a dewey ordinal is a positional row
 /// handle whose duplicates are a numbering artifact, not an ambiguity (see
-/// `write::canonical_selector`).
+/// [`canonical_sel`]).
 #[must_use]
 pub fn selector_matches<'a>(facts: &'a [ReadFact], sel: &wire::ReadSel) -> Vec<&'a ReadFact> {
     match sel {
@@ -245,6 +245,33 @@ pub fn selector_matches<'a>(facts: &'a [ReadFact], sel: &wire::ReadSel) -> Vec<&
             .iter()
             .filter(|f| f.anchor.as_deref() == Some(anchor))
             .collect(),
+    }
+}
+
+/// The canonical read-face selector for a resolved fact: the anchor plane's
+/// id when the fact is a block-anchor row, otherwise its structural heading
+/// address — the fact's own published minimal form, `n` only where ambiguous
+/// ([`raw_addresses`]).
+///
+/// One owner on purpose, because this is the READ-RECEIPT KEY on both of its
+/// sides: the composed read mints under it and the pin gate looks up under
+/// it, so every selector form that lands on a node — its dewey ordinal, a
+/// heading path in any admissible spelling — mints the one key a later pin
+/// spends. Keying either side on the caller's verbatim spelling instead is
+/// the dogfood r7 F2 defect: a read by dewey minted a receipt no pin could
+/// ever find, and the refusal blamed a read that had happened.
+///
+/// It is also what a dewey ordinal canonicalizes to in a pin's `ref`: an
+/// ordinal is positional and invalidated by the next heading inserted above
+/// it, so carrying one into a receipt or a lock row would record an address
+/// that means something else after any edit.
+#[must_use]
+pub fn canonical_sel(fact: &ReadFact) -> wire::ReadSel {
+    match &fact.anchor {
+        Some(id) => wire::ReadSel::Anchor { anchor: id.clone() },
+        None => wire::ReadSel::Hpath {
+            hpath: fact.hpath.clone(),
+        },
     }
 }
 

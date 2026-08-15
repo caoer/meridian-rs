@@ -237,7 +237,7 @@ pub fn composed_read(
 
     if has_sections {
         let sels: Vec<wire::ReadSel> = params.sections.clone().unwrap_or_default();
-        let (body, rendered_sections) = composed_sections(doc, &facts, &sels, header)?;
+        let (body, rendered_sections, mint_keys) = composed_sections(doc, &facts, &sels, header)?;
         // Read-is-the-mint: one receipt per section this call actually served
         // — actor, canonical selector, `sec_rev` — off the raw rows whose
         // bytes the caller received verbatim. A toc read mints nothing, and the
@@ -245,12 +245,16 @@ pub fn composed_read(
         // the elided `rendered_text`. Unresolved selectors are absent from
         // these rows, so a miss mints nothing.
         if let (Some(store), Some(actor)) = (mint, mint_actor(params.actor.as_deref())) {
-            // Keyed on the row's own tagged selector, the same structure the
-            // pin gate looks up — so the two sides cannot drift into two
-            // spellings of one address, and a heading named `1.2` cannot open
-            // the gate for the dewey row of that name.
-            for row in &rendered_sections {
-                store.mint(actor, path.0.as_str(), &row.sel, &row.sec_rev.0);
+            // Keyed on the RESOLVED NODE's canonical selector
+            // (`wire_map::facts::canonical_sel` — the key the pin gate looks
+            // up), never on the caller's spelling: any selector form that
+            // lands on a node — its dewey ordinal, a heading path in any
+            // admissible spelling — mints the receipt a pin of that node
+            // spends. Keying on the verbatim `row.sel` was the dogfood r7 F2
+            // defect: a dewey read minted a key no pin could find, and the
+            // refusal blamed a read that had happened.
+            for (key, row) in mint_keys.iter().zip(&rendered_sections) {
+                store.mint(actor, path.0.as_str(), key, &row.sec_rev.0);
             }
         }
         return Ok(ResponseBody::Read {
@@ -1007,13 +1011,25 @@ fn machine_addr(hpath: &[wire::HpathSeg]) -> String {
 /// The sections-mode leg of [`composed_read`]: selector resolution (first
 /// match; partial-read notice), the walker-emitted content, and the rendered
 /// text — refusal messages in the Go host face's verbatim spelling.
+///
+/// The third element is the mint plane: one canonical receipt key
+/// ([`wire_map::facts::canonical_sel`]) per served section, parallel to the
+/// served rows — derived from the same resolved fact as the row it keys, so
+/// the minted key and the served bytes cannot disagree.
 #[allow(clippy::too_many_lines)]
 fn composed_sections(
     doc: &model::Document,
     facts: &[wire_map::facts::ReadFact],
     sels: &[wire::ReadSel],
     header: render::Header<'_>,
-) -> Result<(SectionsRender, Vec<wire::ReadSectionOut>), Box<ErrorBody>> {
+) -> Result<
+    (
+        SectionsRender,
+        Vec<wire::ReadSectionOut>,
+        Vec<wire::ReadSel>,
+    ),
+    Box<ErrorBody>,
+> {
     let display = header.display_path;
     if sels.is_empty() {
         // Says what to pass, not what the caller "is in": `toc` is the
@@ -1141,6 +1157,10 @@ fn composed_sections(
             }
         })
         .collect();
+    let mint_keys: Vec<wire::ReadSel> = rows
+        .iter()
+        .map(|row| wire_map::facts::canonical_sel(row.fact))
+        .collect();
     Ok((
         SectionsRender {
             text: rendered.text,
@@ -1148,6 +1168,7 @@ fn composed_sections(
             unresolved,
         },
         sections,
+        mint_keys,
     ))
 }
 
