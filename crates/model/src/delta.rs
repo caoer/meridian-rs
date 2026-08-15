@@ -679,14 +679,20 @@ mod tests {
         assert!(sec.node_rev_before.is_some() && sec.node_rev_after.is_some());
     }
 
-    /// The tail spelling mints the same verdict.
+    /// The tail spelling needs no new word: the marker sits INSIDE its host
+    /// block's span, so the anchor node is itself the deepest addressable
+    /// node in the region and the entry is `added ^id` — already an identity
+    /// and a verb no reader can mistake for a section rewrite. `anchored`
+    /// exists for the own-line spelling (the pin door's own form), where the
+    /// marker falls outside the host span and only the SECTION reports.
     #[test]
-    fn tail_anchor_mint_reports_anchored() {
+    fn tail_anchor_mint_reports_the_anchor_added() {
         let b = doc("# R\n\n## Walk\n\nbody line\n");
         let a = doc("# R\n\n## Walk\n\nbody line ^walk-1\n");
         let got = node_deltas(&b, &a);
         assert_eq!(got.len(), 1, "one entry: {got:?}");
-        assert_eq!(got[0].change, NodeChangeKind::Anchored);
+        assert_eq!(got[0].target, Ref::Anchor("walk-1".into()));
+        assert_eq!(got[0].change, NodeChangeKind::Added);
     }
 
     /// Content wins: a write that rewrites the section AND mints an anchor
