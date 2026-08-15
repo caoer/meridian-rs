@@ -226,11 +226,15 @@ fn a_non_repository_root_degrades_honestly_and_mints_no_sha() {
 /// The handle runs a shim that logs every argv before exec'ing the real git, so
 /// this counts actual invocations: classifying three blobs spends exactly one
 /// `rev-list` and one `cat-file`.
+///
+/// The shim is the checked-in `tests/fixtures/git-shim.sh`, never a file this
+/// process writes: writing an executable and exec'ing it moments later races
+/// every sibling libtest thread that forks — the fork inherits the still-open
+/// write fd and Linux refuses the exec with ETXTBSY. It logs into the
+/// repository the handle points at, since every call is `git -C <root>`.
 #[cfg(unix)]
 #[test]
 fn one_rev_list_and_one_cat_file_per_check_not_per_blob() {
-    use std::os::unix::fs::PermissionsExt;
-
     let repo_dir = empty_repo();
     let root = repo_dir.path();
     write(root, "a.md", "a\n");
@@ -239,16 +243,10 @@ fn one_rev_list_and_one_cat_file_per_check_not_per_blob() {
     commit(root, "three files");
 
     let log = repo_dir.path().join("git-argv.log");
-    let shim = repo_dir.path().join("git-shim.sh");
-    fs::write(
-        &shim,
-        format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> {}\nexec git \"$@\"\n",
-            log.display()
-        ),
-    )
-    .expect("write shim");
-    fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).expect("chmod shim");
+    let shim = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("git-shim.sh");
 
     let repo = Repo::at_with_program(root, &shim);
     let oids: Vec<String> = ["a.md", "b.md", "c.md"]
