@@ -7,7 +7,7 @@ use wire::{ErrorCode, Op};
 use wire_serve::decode::decode;
 use wire_serve::rev::Rev;
 
-fn frame(v: Value) -> Map<String, Value> {
+fn frame(v: &Value) -> Map<String, Value> {
     v.as_object().expect("test frame is an object").clone()
 }
 
@@ -15,7 +15,7 @@ fn frame(v: Value) -> Map<String, Value> {
 #[test]
 fn the_remove_request_decodes_whole() {
     let op = decode(
-        &frame(json!({
+        &frame(&json!({
             "id": 9,
             "op": "remove",
             "path": "notes/old.md",
@@ -55,7 +55,7 @@ fn the_remove_request_decodes_whole() {
 #[test]
 fn a_rev_less_remove_frame_still_decodes() {
     let op = decode(
-        &frame(json!({"id": 1, "op": "remove", "path": "notes/old.md"})),
+        &frame(&json!({"id": 1, "op": "remove", "path": "notes/old.md"})),
         Rev::V3,
     )
     .expect("schema-optional guard: the frame decodes");
@@ -73,7 +73,7 @@ fn a_rev_less_remove_frame_still_decodes() {
 #[test]
 fn a_force_bearing_remove_hits_the_strict_field_wall() {
     let err = decode(
-        &frame(json!({
+        &frame(&json!({
             "id": 2,
             "op": "remove",
             "path": "notes/old.md",
@@ -95,7 +95,7 @@ fn a_force_bearing_remove_hits_the_strict_field_wall() {
 #[test]
 fn a_malformed_now_refuses_at_decode() {
     let err = decode(
-        &frame(json!({
+        &frame(&json!({
             "id": 3,
             "op": "remove",
             "path": "notes/old.md",

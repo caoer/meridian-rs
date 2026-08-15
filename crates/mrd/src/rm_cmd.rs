@@ -116,6 +116,7 @@ fn print_human(parsed: &Rm, body: &Value) {
 }
 
 /// The parsed `rm` invocation.
+#[derive(Debug)]
 struct Rm {
     path: String,
     /// The record's whole-file rev from a prior read (remove-what-you-read).
