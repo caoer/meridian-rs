@@ -435,7 +435,10 @@ mod tests {
     #[test]
     fn the_applies_line_counts_all_and_samples_the_anchors() {
         let receipts = journal(30);
-        let said = applies_line(receipts.len() as u32, &receipts);
+        let said = applies_line(
+            u32::try_from(receipts.len()).expect("fixture size"),
+            &receipts,
+        );
 
         // Positive control: a bound is trivially satisfied by an absent line.
         assert!(
@@ -466,7 +469,10 @@ mod tests {
     #[test]
     fn a_short_applies_list_names_every_anchor() {
         let receipts = journal(2);
-        let said = applies_line(receipts.len() as u32, &receipts);
+        let said = applies_line(
+            u32::try_from(receipts.len()).expect("fixture size"),
+            &receipts,
+        );
         assert!(
             said.contains("^r-000000") && said.contains("^r-000001"),
             "{said}"
