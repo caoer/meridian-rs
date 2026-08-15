@@ -59,12 +59,22 @@ const DIRTY_CAP: usize = 4096;
 /// One workspace's event feed: the kernel watcher and the dirty set it
 /// accumulates. Dropping it releases the kernel watch — which is why the
 /// registry drops it only at `unregister`, never at reap.
-#[derive(Debug)]
 pub(crate) struct WorkspaceFeed {
     /// Keeps the kernel stream alive; the handler thread owns `state`'s
     /// other [`Arc`]. Held, never spoken to after construction.
     _watcher: notify::RecommendedWatcher,
     state: Arc<Mutex<FeedState>>,
+}
+
+impl std::fmt::Debug for WorkspaceFeed {
+    /// Summary form: the kernel handle is platform state with no stable
+    /// `Debug` contract across notify backends; the counters are the whole
+    /// public truth.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WorkspaceFeed")
+            .field("stats", &self.stats())
+            .finish_non_exhaustive()
+    }
 }
 
 /// The registry-held dirty set plus its instrument counters.
