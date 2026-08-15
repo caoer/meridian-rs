@@ -134,7 +134,7 @@ fn tasks_base_answers_the_worked_gate_select() {
     let conn = build(&root);
     let got = rows(
         &conn,
-        "SELECT b.filters, v.ord, v.name, v.type, v.config \
+        "SELECT b.filters, v.ord::VARCHAR, v.name, v.type, v.config \
          FROM base b JOIN base_view v USING (path) \
          WHERE b.path = 'bases/TASKS.base' ORDER BY v.ord",
         5,
@@ -182,8 +182,8 @@ fn an_alien_base_is_a_named_error_row_with_no_content() {
     let conn = build(&root);
     let got = rows(
         &conn,
-        "SELECT path, error IS NOT NULL, filters, properties, extra, file_rev IS NOT NULL \
-         FROM base",
+        "SELECT path, (error IS NOT NULL)::VARCHAR, filters, properties, extra, \
+                (file_rev IS NOT NULL)::VARCHAR FROM base",
         6,
     );
     assert_eq!(got.len(), 1, "the alien is PRESENT, not dropped");
@@ -368,7 +368,7 @@ fn a_duplicate_mapping_key_is_an_alien_with_zero_children() {
 
     let conn = build(&root);
     assert_eq!(
-        one(&conn, "SELECT error IS NOT NULL::VARCHAR FROM base"),
+        one(&conn, "SELECT (error IS NOT NULL)::VARCHAR FROM base"),
         "true",
         "the parser refuses the document rather than picking a winner"
     );
