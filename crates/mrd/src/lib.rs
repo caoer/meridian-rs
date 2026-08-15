@@ -136,21 +136,35 @@ pub(crate) fn voice_excluded_note(excluded: &[String]) {
     if excluded.is_empty() {
         return;
     }
-    let shown: Vec<&str> = excluded
+    eprintln!(
+        "{}",
+        excluded_note(excluded.len(), &capped_sample(excluded))
+    );
+}
+
+/// The house cap spelling for a prose list of paths: at most [`EXCLUDED_SHOWN`]
+/// names, then the remainder clause. One spelling for every human face that
+/// names a population it also counts — the domain-excluded note above and the
+/// `mrd retire` human render, whose enumeration is lawfully COMPLETE on its
+/// `--json` (`files_excluded`, the certify-absence contract) and therefore
+/// needs the cap on the prose only (card retire-cmd-cap-join).
+///
+/// The remainder clause exists so the sample can never READ as the whole list:
+/// "a, b, c" and "a, b, c and 28933 more" are the same three names and opposite
+/// claims about the population. The COUNT is the caller's to print, never
+/// capped — that is the half that keeps exclusion non-silent (decision 0017).
+pub(crate) fn capped_sample(names: &[String]) -> String {
+    let shown: Vec<&str> = names
         .iter()
         .take(EXCLUDED_SHOWN)
         .map(String::as_str)
         .collect();
-    let rest = excluded.len().saturating_sub(shown.len());
-    // The remainder clause exists so the sample can never READ as the whole
-    // list: "a, b, c" and "a, b, c and 28933 more" are the same three names and
-    // opposite claims about the population.
-    let sample = if rest == 0 {
+    let rest = names.len().saturating_sub(shown.len());
+    if rest == 0 {
         shown.join(", ")
     } else {
         format!("{} and {rest} more", shown.join(", "))
-    };
-    eprintln!("{}", excluded_note(excluded.len(), &sample));
+    }
 }
 
 /// The one-line domain-excluded note [`voice_excluded`] prints. Extracted so a
