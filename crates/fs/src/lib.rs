@@ -30,6 +30,7 @@ pub mod domain;
 pub mod fence;
 pub mod guard;
 pub mod radix;
+pub mod resident;
 
 /// The workspace root every wire `path` resolves strictly inside. Constructed
 /// once at process start; path-escape rejection (`bad_path`) anchors here.
@@ -548,6 +549,20 @@ impl StatKey {
         }
     }
 
+    /// The deliberately-spoiled memo identity (merkle-spec §6.2: "or its
+    /// memo entry deliberately spoiled"): matches no file any filesystem
+    /// reports, so the next observation re-reads the member instead of
+    /// trusting a stat raced by the write that minted the entry.
+    pub(crate) fn spoiled() -> StatKey {
+        StatKey {
+            dev: u64::MAX,
+            ino: u64::MAX,
+            size: u64::MAX,
+            mtime: (i64::MIN, i64::MIN),
+            ctime: (i64::MIN, i64::MIN),
+        }
+    }
+
     /// The identity of the file at `abs`, or `None` when nothing is there.
     /// Symlinks are not followed, matching the domain walk.
     ///
@@ -579,8 +594,22 @@ impl StatKey {
 pub struct DomainCache {
     leaves: BTreeMap<PathBuf, (StatKey, [u8; 32])>,
     dirs: DirMemo,
+    /// The resident tree (merkle-spec §6.1): the interior folds, kept.
+    /// Updated by every successful observation's generation delta and by the
+    /// own-write overlay; law-2 from birth, serving nothing before the
+    /// cutover.
+    tree: resident::ResidentTree,
+    /// The served law-1 root under the interim law (merged plan §6 step 3):
+    /// recomputed only when the tree advances or the domain version moves —
+    /// `(domain version, root)`.
+    served: Option<(u32, model::MerkleRoot)>,
+    /// The domain as of the last observation — the overlay's membership and
+    /// version law (the overlay composes against the OBSERVED generation,
+    /// never a fresher config read).
+    domain_seen: Option<domain::Domain>,
     reads: u64,
     listings: u64,
+    flat_folds: u64,
 }
 
 /// The remembered listings: each directory's [`StatKey`] at enumeration time
@@ -645,13 +674,26 @@ impl DomainCache {
         let rows = self
             .observe(root, &domain, ObserveLaw::Plain)
             .map_err(plain_refusal)?;
+        let version = domain.version();
+        // The interim served-token law (merged plan §6 step 3): the served
+        // value stays law-1, derived from the resident structure's current
+        // leaves, recomputed only when the root advances. The observation
+        // above invalidated the cache iff the tree moved.
+        if let Some((v, cached)) = &self.served {
+            if *v == version {
+                return Ok(cached.clone());
+            }
+        }
+        self.flat_folds += 1;
         // Raw name bytes into the fold (merkle-spec §4/§9) — the same names
         // `domain_snapshot` folds, so the byte-identity holds on any corpus.
         let leaves: Vec<(&[u8], [u8; 32])> = rows
             .iter()
             .map(|(name, digest)| (name.as_slice(), *digest))
             .collect();
-        Ok(model::merkle_root_of_leaves(&leaves, domain.version()))
+        let folded = model::merkle_root_of_leaves(&leaves, version);
+        self.served = Some((version, folded.clone()));
+        Ok(folded)
     }
 
     /// The locked-window observation of the run plane, served from this memo:
@@ -725,6 +767,26 @@ impl DomainCache {
             rows.insert(hash_name(&rel).to_vec(), digest);
             fresh.insert(rel, (key, digest));
         }
+        // The resident tree follows the observed generation (merkle-spec
+        // §6.1): removals first — a same-name kind swap across generations
+        // must never compose a transient §4.4 collision — then idempotent
+        // set for the survivors (an unmoved member re-hashes nothing).
+        let mut advanced = false;
+        {
+            let (leaves, tree) = (&self.leaves, &mut self.tree);
+            for rel in leaves.keys() {
+                if !fresh.contains_key(rel) {
+                    advanced |= tree.remove_leaf(rel);
+                }
+            }
+            for (rel, (_, digest)) in &fresh {
+                advanced |= tree.set_leaf(rel, *digest);
+            }
+        }
+        if advanced {
+            self.served = None;
+        }
+        self.domain_seen = Some(domain.clone());
         self.leaves = fresh;
         Ok(rows)
     }
@@ -895,6 +957,136 @@ impl DomainCache {
             .iter()
             .map(|(rel, (_, digest))| (rel.clone(), *digest))
             .collect()
+    }
+
+    /// Own-write overlay, insert/update half (merkle-spec §6.1): the commit
+    /// KNOWS the bytes it wrote — replace that leaf and re-fold the ancestor
+    /// chain in the resident tree, synchronously. `root_after` then comes
+    /// from [`Self::overlay_root`], never a second corpus read: the overlay
+    /// is MORE correct than a re-read, because a foreign write racing the
+    /// commit never silently enters the folded baseline
+    /// ([`DomainLeaves::overlay`]'s own doc law — that overlay stays the
+    /// correctness law; this is the same law through the resident structure).
+    ///
+    /// Membership follows the OBSERVED domain generation: a path outside it
+    /// is ignored (`Ok(false)`), exactly [`DomainLeaves::overlay`]'s filter.
+    /// The path's memo entry is deliberately spoiled (§6.2's own word): the
+    /// next observation re-reads that member once instead of trusting a stat
+    /// raced by the write that minted it.
+    ///
+    /// Returns whether the tree advanced.
+    ///
+    /// # Errors
+    /// No observation has landed yet — an overlay without a baseline is a
+    /// caller-order defect, refused rather than guessed around.
+    pub fn overlay_leaf(&mut self, rel: &Path, digest: [u8; 32]) -> io::Result<bool> {
+        let domain = self.overlay_domain()?;
+        if !domain.contains(rel) {
+            return Ok(false);
+        }
+        if !self.tree.set_leaf(rel, digest) {
+            return Ok(false);
+        }
+        self.leaves
+            .insert(rel.to_path_buf(), (StatKey::spoiled(), digest));
+        self.served = None;
+        Ok(true)
+    }
+
+    /// Own-write overlay, removal half: a governed `remove` unlinked the
+    /// leaf — the next fold composes the tree without it (merkle-spec §8,
+    /// death Delta; no tombstone). Same domain filter, same spoiling
+    /// posture (the memo entry simply leaves), same advance report as
+    /// [`Self::overlay_leaf`].
+    ///
+    /// # Errors
+    /// No observation has landed yet (as [`Self::overlay_leaf`]).
+    pub fn overlay_remove(&mut self, rel: &Path) -> io::Result<bool> {
+        let domain = self.overlay_domain()?;
+        if !domain.contains(rel) {
+            return Ok(false);
+        }
+        if !self.tree.remove_leaf(rel) {
+            return Ok(false);
+        }
+        self.leaves.remove(rel);
+        self.served = None;
+        Ok(true)
+    }
+
+    /// The served root over the current overlay state — the interim law-1
+    /// value (merged plan §6 step 3), folded from the resident structure's
+    /// current leaves with NO walk, NO stat, NO byte read. Recomputed only
+    /// when the tree advanced since the last serve (lane C class when it
+    /// did, a clone when it did not).
+    ///
+    /// # Errors
+    /// No observation has landed yet (as [`Self::overlay_leaf`]).
+    pub fn overlay_root(&mut self) -> io::Result<model::MerkleRoot> {
+        let version = self.overlay_domain()?.version();
+        if let Some((v, cached)) = &self.served {
+            if *v == version {
+                return Ok(cached.clone());
+            }
+        }
+        self.flat_folds += 1;
+        let leaves: Vec<(&[u8], [u8; 32])> = self
+            .leaves
+            .iter()
+            .map(|(rel, (_, digest))| (hash_name(rel), *digest))
+            .collect();
+        let folded = model::merkle_root_of_leaves(&leaves, version);
+        self.served = Some((version, folded.clone()));
+        Ok(folded)
+    }
+
+    /// Resolve one scope against the resident tree (merkle-spec §7 scope
+    /// rows): root, folder, file leaf, `absent` — or the tree's two
+    /// `scope_unresolved` refusals (§4.4 collision, kind conflict). Law-2
+    /// values, engine-internal until the cutover: no wire surface mints or
+    /// serves from this before merged plan §6 step 7.
+    ///
+    /// # Errors
+    /// [`resident::ScopeRefusal`] naming the refusing path.
+    pub fn fold_at(&mut self, scope: &Path) -> Result<resident::ScopeFold, resident::ScopeRefusal> {
+        self.tree.fold_at(scope)
+    }
+
+    /// The law-2 workspace fingerprint of the resident tree (merkle-spec
+    /// §4.2.3). Engine-internal until the cutover — the interim SERVED value
+    /// is [`Self::root`] / [`Self::overlay_root`]'s law-1 token.
+    pub fn law2_fingerprint(&mut self) -> [u8; 32] {
+        self.tree.fingerprint()
+    }
+
+    /// Live §4.4 collision keys, display-spelled — the loud lint's
+    /// queryable face.
+    #[must_use]
+    pub fn collision_paths(&self) -> Vec<String> {
+        self.tree.collision_paths()
+    }
+
+    /// Resident-tree instrument totals (probe surface).
+    #[must_use]
+    pub fn resident_stats(&self) -> resident::ResidentStats {
+        self.tree.stats()
+    }
+
+    /// How many law-1 flat folds ([`model::merkle_root_of_leaves`]) this
+    /// cache has run for its served root — the interim law's own instrument:
+    /// under it, this advances only when the root advances, never per pass.
+    #[must_use]
+    pub fn flat_folds(&self) -> u64 {
+        self.flat_folds
+    }
+
+    /// The overlay's domain: the OBSERVED generation, refused when none has
+    /// landed (composing an overlay against a fresher config read than the
+    /// tree's own generation would mix two worlds).
+    fn overlay_domain(&self) -> io::Result<domain::Domain> {
+        self.domain_seen.clone().ok_or_else(|| {
+            io::Error::other("overlay before any observation: the resident tree has no baseline")
+        })
     }
 }
 
