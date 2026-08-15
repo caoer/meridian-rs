@@ -121,12 +121,12 @@ fn gate5_task_section_identity_fk() {
     insert_doc(&conn, "x.md");
     // two sections sharing the heading text 'Steps' (identity keeps them distinct)
     conn.execute(
-        r#"INSERT INTO section VALUES ('x.md', 0, '[{"h":"Steps","n":1}]', 'Steps', 1, 'r', 0, 10)"#,
+        r#"INSERT INTO section VALUES ('x.md', 0, '[{"h":"Steps","n":1}]', 1, 'Steps', 1, 'r', 0, 10)"#,
         [],
     )
     .unwrap();
     conn.execute(
-        r#"INSERT INTO section VALUES ('x.md', 1, '[{"h":"Steps","n":2}]', 'Steps', 1, 'r', 10, 20)"#,
+        r#"INSERT INTO section VALUES ('x.md', 1, '[{"h":"Steps","n":2}]', 2, 'Steps', 1, 'r', 10, 20)"#,
         [],
     )
     .unwrap();
@@ -437,4 +437,71 @@ fn gate18_end_to_end_fixture() {
         by_text > identity,
         "the heading-text join double-counts across the duplicate 'Steps' sections ({by_text} > {identity})"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Gate 19 — section.n is the occurrence index, and it is NOT node_seq
+// (`wire-contract.md` § A.11, card editset-n-column)
+// ---------------------------------------------------------------------------
+
+/// A caller that re-derives the occurrence from `node_seq` addresses a real but
+/// DIFFERENT section, whose rev then guards the write — a wrong-target commit
+/// that passes CAS. These asserts pin the three properties that close it: the
+/// column agrees with `hpath` on ambiguity, it carries the occurrence where the
+/// address does, and it separates from `node_seq` on the first document where
+/// the two could be confused.
+#[test]
+fn gate19_section_n_is_the_occurrence_never_the_ordinal() {
+    let mut docs = BTreeMap::new();
+    docs.insert(
+        "n.md".to_string(),
+        // Intro, then two sibling 'Steps' sections with a unique one between
+        // them: node_seq runs 0..3 while the two ambiguous rows are n = 1, 2.
+        doc("# Intro\n\n# Steps\n\ntext\n\n# Notes\n\n# Steps\n\nmore\n"),
+    );
+    let conn = view::build_memory(&docs, &fold(&docs)).unwrap();
+
+    // 1. NULL exactly where the published address omits `n`.
+    let disagree = scalar_i64(
+        &conn,
+        "SELECT count(*) FROM section \
+         WHERE (n IS NULL) <> (hpath NOT LIKE '%\"n\":%')",
+    );
+    assert_eq!(
+        disagree, 0,
+        "`n IS NOT NULL` must be exactly the ambiguity the hpath address carries"
+    );
+
+    // 2. Where it rides, it is the occurrence the address publishes.
+    let occurrences = scalar_i64(
+        &conn,
+        "SELECT count(*) FROM section \
+         WHERE heading='Steps' AND hpath LIKE '%\"n\":' || n::VARCHAR || '%'",
+    );
+    assert_eq!(
+        occurrences, 2,
+        "both 'Steps' rows carry the same occurrence in column and address"
+    );
+
+    // 3. It is NOT the ordinal: the second 'Steps' is node_seq 3, occurrence 2.
+    let second = scalar_i64(
+        &conn,
+        "SELECT n::BIGINT FROM section WHERE heading='Steps' ORDER BY node_seq DESC LIMIT 1",
+    );
+    let second_seq = scalar_i64(
+        &conn,
+        "SELECT node_seq::BIGINT FROM section WHERE heading='Steps' ORDER BY node_seq DESC LIMIT 1",
+    );
+    assert_eq!(second, 2, "the second 'Steps' is occurrence 2");
+    assert_eq!(
+        second_seq, 3,
+        "its document-order ordinal is 3 — re-deriving n from it addresses another section"
+    );
+
+    // 4. The unambiguous siblings carry no occurrence at all.
+    let unambiguous = scalar_i64(
+        &conn,
+        "SELECT count(*) FROM section WHERE heading IN ('Intro','Notes') AND n IS NULL",
+    );
+    assert_eq!(unambiguous, 2, "a heading with no twin publishes no `n`");
 }
