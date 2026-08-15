@@ -111,10 +111,18 @@ impl WorkspaceRing {
         self.state().ring.seq()
     }
 
-    /// §7.1 anchor law, delegated to the shared ring (both hosts refuse the same positions).
+    /// This epoch's tree instance id (B-01) — taught on the `sub` ack, and
+    /// the identity every resumption cursor must echo.
     #[must_use]
-    pub fn can_anchor(&self, from_seq: u64) -> bool {
-        self.state().ring.can_anchor(from_seq)
+    pub fn instance(&self) -> String {
+        self.state().ring.instance().to_string()
+    }
+
+    /// §7.1 + B-01 anchor law, delegated to the shared ring: instance before
+    /// sequence, both refusals typed.
+    #[must_use]
+    pub fn can_anchor(&self, cursor: &wire_serve::ring::Cursor) -> wire_serve::ring::Anchor {
+        self.state().ring.can_anchor(cursor)
     }
 
     /// Register a subscription. Guard lifetime is the subscription's.
@@ -184,27 +192,33 @@ impl WorkspaceRing {
         self.cycle(ws_root, &mut fold)
     }
 
-    /// Establish baseline and return the settled root — at subscribe time,
-    /// before the ack is written.
+    /// Establish baseline and return the settled `(root, tip seq)` — at
+    /// subscribe time, before the ack is written.
     ///
     /// First reconcile of an unprimed `WatchState` emits nothing (adopts world
     /// as baseline). Ack-then-prime would swallow edits between; the §4.7 ack
     /// root must be that baseline so the first frame's `root_before` matches.
     ///
+    /// The pair is read under ONE state lock: the tip seq belongs to the same
+    /// instant as the baseline root, so a live `sub` anchored at the acked
+    /// seq can never skip a frame the acked root does not carry (a frame
+    /// landing after this read is > the pair's seq and delivers).
+    ///
     /// # Errors
     /// Snapshot or classification failure — refuse rather than ack an unanchorable stream.
-    pub fn prime(&self, ws_root: &fs::WorkspaceRoot) -> Result<Root, Box<ErrorBody>> {
+    pub fn prime(&self, ws_root: &fs::WorkspaceRoot) -> Result<(Root, u64), Box<ErrorBody>> {
         // Blocking, not try: a subscribe must observe a baseline. Bounded by
         // one in-flight cycle; before single-flight it would have run its own
         // concurrent fold instead.
         let mut fold = self.fold.lock().unwrap_or_else(PoisonError::into_inner);
         self.cycle(ws_root, &mut fold)?;
         let state = self.state();
+        let seq = state.ring.seq();
         match state.watch.root() {
-            Some(root) => Ok(root.clone()),
+            Some(root) => Ok((root.clone(), seq)),
             // Cycle skipped (write held flock). Disk root is still a truthful
             // anchor; in-flight write's change is detected later.
-            None => wire_serve::ambient_root(ws_root),
+            None => Ok((wire_serve::ambient_root(ws_root)?, seq)),
         }
     }
 
