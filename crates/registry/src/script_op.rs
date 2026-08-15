@@ -165,6 +165,34 @@ struct ScriptArgs {
     token_count_endpoint: Option<String>,
 }
 
+/// The § A.7 literals-first refusal for an illegal `files[]` list, or `None`
+/// when the members are legal.
+///
+/// A pattern expands IN PLACE, so every member standing after it binds at an
+/// index that moves with the day's match count: measured, a zero-match pattern
+/// rebound the literal the caller addressed as `files[1]` to `files[0]` and
+/// armed mode applied the retargeted write. Dry and armed refuse alike — arm
+/// and commit are two calls, and a dry-only warning cannot hold the door the
+/// armed call walks through.
+fn member_order_refusal(files: &[String]) -> Option<Refusal> {
+    let (pattern, literal) = policy::first_member_order_fault(files)?;
+    let literals = files.iter().filter(|m| !policy::is_glob_pattern(m)).count();
+    Some(Refusal::minted(
+        Recovery::Fix,
+        format!(
+            "files_member_order: files[{pattern}] is the pattern \"{}\" and files[{literal}] is \
+             the literal path \"{}\" standing after it. A pattern expands in place, so that \
+             literal binds at whatever index the day's match count leaves it — on a zero-match \
+             day it becomes files[{pattern}], and a fixed-index write lands on a document you \
+             did not name. Nothing was evaluated, nothing was armed, and the workspace is \
+             unchanged. re-issue with every literal member BEFORE every pattern member — the \
+             literals then bind at files[0..{literals}] in call order, whatever the patterns \
+             match",
+            files[pattern], files[literal],
+        ),
+    ))
+}
+
 /// The attempt: entry pass → pin → eval → thread → gate → commit → trace.
 ///
 /// # Errors
@@ -202,34 +230,9 @@ fn serve(
     }
 
     // § A.7 literals-first, checked before expansion so the illegal list is
-    // never bound: a pattern expands in place, so every member after it binds
-    // at an index that moves with the day's match count. Dry and armed refuse
-    // alike — arm and commit are two calls, and a dry-only warning cannot hold
-    // the door the armed call walks through.
-    if let Some((pattern, literal)) = policy::first_member_order_fault(&request.files) {
-        return Ok(ScriptTrace::entry_refused(
-            entry,
-            Refusal::minted(
-                Recovery::Fix,
-                format!(
-                    "files_member_order: files[{pattern}] is the pattern \"{}\" and files[{literal}] \
-                     is the literal path \"{}\" standing after it. A pattern expands in place, so \
-                     that literal binds at whatever index the day's match count leaves it — on a \
-                     zero-match day it becomes files[{pattern}], and a fixed-index write lands on \
-                     a document you did not name. Nothing was evaluated, nothing was armed, and \
-                     the workspace is unchanged. re-issue with every literal member BEFORE every \
-                     pattern member — the literals then bind at files[0..{}] in call order, \
-                     whatever the patterns match",
-                    request.files[pattern],
-                    request.files[literal],
-                    request
-                        .files
-                        .iter()
-                        .filter(|m| !policy::is_glob_pattern(m))
-                        .count(),
-                ),
-            ),
-        ));
+    // never bound.
+    if let Some(refusal) = member_order_refusal(&request.files) {
+        return Ok(ScriptTrace::entry_refused(entry, refusal));
     }
 
     // § A.7 pattern expansion, at entry, against the entry world's hash-domain
