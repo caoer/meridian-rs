@@ -835,7 +835,12 @@ Wire-contract § A.7 carries the full law; what it supersedes HERE, named:
   arm→commit blockquote's `--if-fingerprint <the arm's entry fingerprint>`
   pin and its "any movement of the world between the two refuses" claim,
   both rewritten in place) plus the seam table's Concurrency cell
-  ("commit `if_fingerprint` = entry", rewritten in place) are AMENDED at
+  ("commit `if_fingerprint` = entry", rewritten in place), and — named and
+  DELETED, round-3 closure 2026-08-15, ZT ruling: the touch-set law covers
+  ALL script lanes (S1), same product as MCP `script` — the per-row-guard
+  paragraph's "not peers / enforcement point" close (wire-client mode),
+  which still made the entry `if_fingerprint` the commit's enforcement
+  point — are AMENDED at
   the premise: the commit's authority is no
   longer the whole-corpus entry fingerprint — it is the **touch set** the
   attempt itself recorded (point reads, armed targets, pattern/selector
@@ -916,10 +921,6 @@ since this lane's reads are live), and from ONE bare `toc` trip per armed path
 when they do not: the same host autofill the `put` face performs, spoken by
 this lane at commit time. A mint the daemon refuses leaves the row untokened
 and the engine's own guard answers — degrade is loud, never a guessed token.
-The two guards still compose, but they are not peers: `if_fingerprint` says
-the world stood still since entry, and it is the enforcement point — on an
-unmoved world every threaded token matches by construction, and on a moved
-world the §5.1 guard refuses first, whatever any row's rev says.
 
 **Amendment to § The script entry (the write-follows-read law — DISSOLVED,
 2026-08-13).** The paragraph above originally created a behavioural law: *a
