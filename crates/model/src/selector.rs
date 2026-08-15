@@ -34,9 +34,14 @@ use crate::{Document, Node, NodeKind, Ref, ResolveError, Target, resolve};
 pub enum Selector {
     /// `page` — the whole document root (no fragment).
     Page,
-    /// `page#Heading` — a heading-path section; the path is the `/`-joined
-    /// heading chain (`Task/Objective` → `["Task", "Objective"]`).
-    Heading(Vec<String>),
+    /// `page#Heading` — a heading-path section; the path is the heading chain
+    /// (`Task/Objective` → two segments), each segment optionally carrying a
+    /// 1-based occurrence ordinal among same-named siblings (r8 D3 — the R4
+    /// door reads the stored `"Dup#2"` spelling into `n`; the string grammar
+    /// of [`Selector::parse`] never mints one, occurrence rides structured
+    /// forms only). `n: None` demands uniqueness: a duplicate resolves
+    /// [`GreyReason::Ambiguous`], never a silent pick.
+    Heading(Vec<crate::HpathSeg>),
     /// `page#^block-id` — a block anchor, exact id.
     Block(String),
     /// `session-id#seq-N` — a transcript immutable-root ref. Recognized, stored
@@ -72,7 +77,17 @@ impl Selector {
                 seq,
             };
         }
-        Selector::Heading(frag.split('/').map(str::to_string).collect())
+        // Verbatim segments, no occurrence sub-grammar: `#` inside a human
+        // string is a live ingress delimiter, so `n` rides structured forms
+        // only (the R4 door, `view::walk::model_selector`).
+        Selector::Heading(
+            frag.split('/')
+                .map(|h| crate::HpathSeg {
+                    h: h.to_string(),
+                    n: None,
+                })
+                .collect(),
+        )
     }
 
     /// The transcript class renders grey and is never resolved (d2 §2.2).
@@ -443,15 +458,9 @@ pub fn classify_pin(selector: &Selector, pinned_token: &str, target: Option<&Doc
 /// never reach here (the empty hpath is an inert fallback resolving `NotFound`).
 fn selector_ref(selector: &Selector) -> Ref {
     match selector {
-        Selector::Heading(hpath) => Ref::Hpath(
-            hpath
-                .iter()
-                .map(|h| crate::HpathSeg {
-                    h: h.clone(),
-                    n: None,
-                })
-                .collect(),
-        ),
+        // Segments travel verbatim, `n` included — [`resolve_hpath_node`] picks
+        // the named occurrence and refuses a bare duplicate loud.
+        Selector::Heading(hpath) => Ref::Hpath(hpath.clone()),
         // A dangling anchor id resolves NotFound rather than a charset refusal —
         // the color plane never mints the charset-guard refusal.
         Selector::Block(id) => Ref::Anchor(id.clone()),
@@ -460,12 +469,20 @@ fn selector_ref(selector: &Selector) -> Ref {
 }
 
 /// A human display of a selector's address, in d1's `Task/Objective`
-/// heading-path spelling.
+/// heading-path spelling — occurrence-bearing segments render `Dup#2`, the
+/// read face's own occurrence grammar.
 #[must_use]
 pub fn selector_display(selector: &Selector) -> String {
     match selector {
         Selector::Page => "(page)".to_string(),
-        Selector::Heading(hpath) => hpath.join("/"),
+        Selector::Heading(hpath) => hpath
+            .iter()
+            .map(|s| match s.n {
+                Some(n) => format!("{}#{n}", s.h),
+                None => s.h.clone(),
+            })
+            .collect::<Vec<_>>()
+            .join("/"),
         Selector::Block(id) => format!("^{id}"),
         Selector::ImmutableRoot { session, seq } => format!("{session}#seq-{seq}"),
     }
@@ -789,12 +806,20 @@ mod tests {
         build(raw.to_string(), syntax::parse(raw))
     }
 
+    /// A bare heading segment (no occurrence ordinal).
+    fn hseg(h: &str) -> crate::HpathSeg {
+        crate::HpathSeg {
+            h: h.into(),
+            n: None,
+        }
+    }
+
     #[test]
     fn parse_classifies_four_selector_classes() {
         assert_eq!(Selector::parse("notes/plan.md"), Selector::Page);
         assert_eq!(
             Selector::parse("notes/plan.md#Task/Objective"),
-            Selector::Heading(vec!["Task".into(), "Objective".into()])
+            Selector::Heading(vec![hseg("Task"), hseg("Objective")])
         );
         assert_eq!(
             Selector::parse("notes/plan.md#^a1b2c3"),
@@ -850,7 +875,7 @@ mod tests {
         // A heading that resolves is not an address failure at all.
         assert!(
             resolve_selector(
-                &Selector::Heading(vec!["Task".into(), "Objective".into()]),
+                &Selector::Heading(vec![hseg("Task"), hseg("Objective")]),
                 Some(&d)
             )
             .is_ok(),
@@ -865,7 +890,7 @@ mod tests {
     #[test]
     fn selector_unresolved_for_missing_heading() {
         let d = doc("# Task\n\n## Objective\n\nbody\n");
-        let sel = Selector::Heading(vec!["Task".into(), "Goalz".into()]);
+        let sel = Selector::Heading(vec![hseg("Task"), hseg("Goalz")]);
         let c = resolve_selector(&sel, Some(&d)).expect_err("a missing heading does not resolve");
         let Color::Red(RedReason::SelectorUnresolved { candidates }) = &c else {
             panic!("a missing heading selector must render red(selector-unresolved): {c:?}");
@@ -1067,7 +1092,7 @@ mod tests {
     #[test]
     fn first_anchor_in_span_finds_the_block() {
         let d = doc("# Task\n\n## Objective\n\nbody ^a1b2c3\n");
-        let sel = Selector::Heading(vec!["Task".into(), "Objective".into()]);
+        let sel = Selector::Heading(vec![hseg("Task"), hseg("Objective")]);
         let span = resolve(&d, &selector_ref(&sel)).unwrap().span;
         assert_eq!(first_anchor_in_span(&d, &span), Some("a1b2c3".to_string()));
     }
@@ -1087,7 +1112,7 @@ mod tests {
     #[test]
     fn classify_pin_maps_every_content_verdict_arm() {
         let d = doc("# Task\n\n## Objective\n\nbody v1\n");
-        let sel = Selector::Heading(vec!["Task".into(), "Objective".into()]);
+        let sel = Selector::Heading(vec![hseg("Task"), hseg("Objective")]);
         let token = live_token(&d, &sel);
 
         assert_eq!(classify_pin(&sel, &token, Some(&d)), Color::Green);
@@ -1161,7 +1186,7 @@ mod tests {
         ));
         // A heading that resolves to nothing is selector-unresolved.
         let Color::Red(RedReason::SelectorUnresolved { candidates }) =
-            classify_pin(&Selector::Heading(vec!["Taskk".into()]), &token, Some(&d))
+            classify_pin(&Selector::Heading(vec![hseg("Taskk")]), &token, Some(&d))
         else {
             panic!("a vanished heading must render red selector-unresolved");
         };

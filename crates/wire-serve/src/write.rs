@@ -1951,12 +1951,21 @@ fn mint_pin(
 
     let fact_span = span_range(fact.span);
     let slot = promotion_slot(&target_doc.raw, fact_span.start);
+    // The occurrence ordinal of the pinned node itself — the canonical
+    // selector's LEAF segment carries `n` exactly when siblings collide
+    // (`raw_addresses` publishes minimal addresses), and that ordinal is what
+    // de-collides the minted slug (r8 D2).
+    let leaf_n = match &selector {
+        wire::ReadSel::Hpath { hpath } => hpath.last().and_then(|s| s.n),
+        _ => None,
+    };
     let (anchor, promote) = decide_anchor(
         &target_doc,
         &spelled,
         fact_anchor.as_deref(),
         slot,
         &title,
+        leaf_n,
         &selector_text,
     )?;
 
@@ -2100,7 +2109,17 @@ fn pin_row(
                  meaning, so the engine will not invent one. Nothing was written."
             )));
         }
-        None => segments.iter().map(|s| s.h.clone()).collect(),
+        // Heading grain: segments verbatim, each rendered through the R4
+        // occurrence spelling — `n` rides the stored segment (`"Dup#2"`), so a
+        // pin on a duplicate sibling is not born ambiguous (r8 D3). The read
+        // side of the spelling is `view::walk::model_selector` via
+        // `lock::parse_occurrence`; segments without `n` stay bare, and
+        // `refuse_unrepresentable_heading` has already refused `#`-bearing
+        // heading TEXT before this door, so the spelling cannot collide.
+        None => segments
+            .iter()
+            .map(|s| lock::render_occurrence(&s.h, s.n))
+            .collect(),
     };
     if fact_anchor.is_none()
         && let Some(bad) = elements.iter().find(|h| h.starts_with('^'))
@@ -2128,11 +2147,13 @@ fn pin_row(
         // it addresses THIS file and not a same-named file in another folder.
         object: target.0.trim_end_matches(".md").to_string(),
         hash: hash.to_string(),
-        // Segments, verbatim. `HpathSeg::n` is deliberately dropped: R4's array
-        // is plain strings, and `model::selector::Selector::Heading` resolves
-        // with `n: None`, which demands uniqueness — an address that turns
-        // ambiguous later refuses loudly instead of silently landing on
-        // whichever sibling the ordinal now points at.
+        // `HpathSeg::n` used to be dropped here on the theory that an n-less
+        // address refuses loudly if it turns ambiguous later — but a pin minted
+        // ON a duplicate sibling was then born ambiguous and greyed in the very
+        // session that minted it (r8 D3, a broken attestation). The stored
+        // selector is now the RESOLVED one. If a sibling is later deleted or
+        // inserted, the ordinal resolves elsewhere and the FINGERPRINT is what
+        // refuses — measured red, never a silent green.
         selector: lock::Selector::Path(elements),
     })
 }
@@ -2200,15 +2221,19 @@ fn span_range(span: Span) -> std::ops::Range<usize> {
 /// selector may also be a block anchor; either way nothing needs writing.
 ///
 /// # Errors
-/// `bad_request` when the title yields no id ([`slug_id`]), or when the derived
-/// slug is already taken by another node — refused rather than uniquified, so the
-/// id stays a function of the title alone (D15).
+/// `bad_request` when the title yields no id ([`slug_id`]), or when the id this
+/// pin would mint ([`occurrence_slug`]) is already taken by another node —
+/// refused rather than uniquified further, so the id stays a function of the
+/// address alone (D15 as amended by r8 D2: title + occurrence ordinal). The
+/// refusal's remedy is executable against the target as it stands — the r8
+/// remedy named "that node's own ^id", which a duplicate sibling does not have.
 fn decide_anchor(
     target_doc: &model::Document,
     target: &Path,
     fact_anchor: Option<&str>,
     slot: usize,
     title: &str,
+    leaf_n: Option<u32>,
     selector: &str,
 ) -> Result<(String, bool), Box<ErrorBody>> {
     if let Some(id) = fact_anchor
@@ -2217,18 +2242,44 @@ fn decide_anchor(
     {
         return Ok((id, false));
     }
-    let slug = slug_id(title)?;
+    let slug = occurrence_slug(title, leaf_n)?;
     if !matches!(
         model::resolve(target_doc, &model::Ref::Anchor(slug.clone())),
         Err(model::ResolveError::NotFound)
     ) {
         return Err(bad_request(format!(
-            "the slug id ^{slug} derived from \"{selector}\" is already taken by \
-             another node in {} — give that node's own ^id as the selector instead",
-            target.0
+            "the slug id ^{slug} this pin would mint for \"{selector}\" is already \
+             taken by another node in {file}, so the mint cannot give this section \
+             a stable handle. Nothing was written. Fix in two round trips: append \
+             a block id line of your own under that heading (a put op:append at \
+             this same selector, body \"^your-id\"), read \"^your-id\" back (the \
+             selector-exact read mints the receipt a session pin needs), then \
+             pin at \"^your-id\" — or rename one of the colliding nodes.",
+            file = target.0
         )));
     }
     Ok((slug, true))
+}
+
+/// The id a pin mints for a heading occurrence — the D15 slug of the title,
+/// suffixed with the occurrence ordinal for a second-or-later same-named
+/// sibling (`Dup` #2 → `dup-2`, r8 D2). Order-independent by construction: the
+/// ordinal comes from the ADDRESS, not from which sibling pinned first, so the
+/// id stays a pure function of (title, occurrence) and a claim-link decoration
+/// can recompute it from the lock row alone.
+///
+/// The first occurrence keeps the bare slug — `n: Some(1)` and `n: None` mint
+/// the same id, so pinning a heading that later gains a duplicate does not
+/// strand its anchor.
+///
+/// # Errors
+/// `bad_request` when the title yields no id characters ([`slug_id`]).
+pub(crate) fn occurrence_slug(title: &str, n: Option<u32>) -> Result<String, Box<ErrorBody>> {
+    let slug = slug_id(title)?;
+    Ok(match n {
+        Some(n) if n >= 2 => format!("{slug}-{n}"),
+        _ => slug,
+    })
 }
 
 /// Compose one anchor promotion and put it through the two rungs a target write

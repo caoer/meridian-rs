@@ -84,8 +84,16 @@ struct Row {
 
 fn rows() -> Vec<Row> {
     let block = |id: &str| Selector::Block(id.to_string());
-    let heading =
-        |segs: &[&str]| Selector::Heading(segs.iter().map(|s| (*s).to_string()).collect());
+    let heading = |segs: &[&str]| {
+        Selector::Heading(
+            segs.iter()
+                .map(|s| model::HpathSeg {
+                    h: (*s).to_string(),
+                    n: None,
+                })
+                .collect(),
+        )
+    };
     vec![
         // Block: own-line anchor with no preceding block — the only shape
         // whose host still empties under the R2/R2b removal (an attached
