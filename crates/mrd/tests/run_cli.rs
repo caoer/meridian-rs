@@ -370,6 +370,73 @@ fn page_miss_names_git_root_workspace_and_source() {
     assert!(stderr(&out).contains(&want), "{}", stderr(&out));
 }
 
+/// A committing one-task page for the receipt-key gate: `status` exists and
+/// `mark` sets it, so every run commits one batch and mints one receipt line.
+const CANON_PAGE: &str = "\
+---
+status: todo
+task.mark: \"[[#^mark-1]]\"
+task.mark.caps: md.set_field
+task.mark.args: value
+---
+
+# Tasks
+
+```starlark
+def run(ctx):
+    set_field(field = \"status\", value = ctx.args[0])
+```
+^mark-1
+";
+
+/// §2.1's echo law at the argv boundary (run-plane.md § Record ↔ receipt
+/// linkage): one page invoked under three argv spellings — workspace-relative,
+/// `./`-prefixed, machine-absolute — mints every receipt under the page's ONE
+/// workspace-relative key, so a read-back by that key sees the whole history.
+/// Before the boundary resolved the ref, each spelling owned its own key and
+/// the histories could not see each other.
+#[test]
+fn receipt_page_key_is_canonical_across_argv_spellings() {
+    let ws = Ws::new();
+    std::fs::write(ws.file("canon.md"), CANON_PAGE).expect("canon page");
+    let abs = ws.file("canon.md");
+    let spellings = [
+        "canon.md".to_owned(),
+        "./canon.md".to_owned(),
+        abs.to_str().expect("utf-8 path").to_owned(),
+    ];
+    for (i, spelling) in spellings.iter().enumerate() {
+        let value = format!("v{i}");
+        let out = ws.run(&[spelling.as_str(), "mark", "--", value.as_str()]);
+        assert_eq!(code(&out), 0, "spelling {spelling}: {}", stderr(&out));
+    }
+
+    let receipts = std::fs::read_to_string(ws.file("receipts/run.md")).expect("receipt file");
+    let bodies: Vec<&str> = receipts
+        .lines()
+        .filter_map(|l| l.strip_prefix("- run "))
+        .collect();
+    assert!(
+        bodies.len() >= 3,
+        "three committed runs mint at least three receipt lines:\n{receipts}"
+    );
+    let pages: std::collections::BTreeSet<String> = bodies
+        .iter()
+        .map(|body| {
+            let json = body.rsplit_once(" ^").map_or(*body, |(j, _)| j);
+            serde_json::from_str::<Value>(json).expect("receipt json")["page"]
+                .as_str()
+                .expect("page fact")
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(
+        pages.into_iter().collect::<Vec<_>>(),
+        vec!["canon.md".to_owned()],
+        "one page owns ONE receipt key across argv spellings:\n{receipts}"
+    );
+}
+
 /// A `cwd-default` miss stays bare: `Answer::root` is `None` there — a
 /// defaulted cwd is not a workspace, and the refusal does not promote it to
 /// one.

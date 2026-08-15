@@ -1454,6 +1454,14 @@ Record ↔ receipt linkage:
 
 - The receipt line (in-tree, committed in the same splice batch as its
  edits) carries per-edit rev transitions — the foreign-edit anchors.
+- The receipt's `page` fact is the task page's **canonical
+ workspace-relative spelling**, resolved once at the door that admitted the
+ ref — never the invocation's argv bytes (wire-contract §2.1: every
+ ref-carrying surface speaks that grammar and no other). One page therefore
+ owns ONE receipt history however a caller spelled it, and the foreign-edit
+ scan matches on that one key. A ref that resolves outside the workspace has
+ no such spelling and rides verbatim — refusing it is the path-law door
+ family's business, not the receipt's.
 - The exec record carries **invocation id + exit code + stdout sha256 +
  byte size + log address**, joining the receipt through the
  `ExecRecordSink` seam.

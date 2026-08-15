@@ -161,6 +161,22 @@ pub(crate) fn row_for_target(
     now: Option<&str>,
     sink: &crate::delta_sink::RingSink,
 ) -> Value {
+    // §2.1 echo law at the wire boundary: the receipt fact, the row's `page`
+    // addressing, and the refusal rows all echo the target ref, so it
+    // resolves to its ONE workspace-relative spelling here, before either
+    // leg. A ref resolving outside the root has no such spelling and stays
+    // verbatim — refusing it is the path-law door family's business.
+    let resolved;
+    let target = match fs::workspace_relative(root, &target.page) {
+        Some(page) => {
+            resolved = wire::RunTarget {
+                page,
+                ..target.clone()
+            };
+            &resolved
+        }
+        None => target,
+    };
     if target.dry.unwrap_or(false) {
         dry_row(root, ws, target, invocation, actor, now)
     } else {
