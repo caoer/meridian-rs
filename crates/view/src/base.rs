@@ -222,12 +222,11 @@ fn write_json(out: &mut String, value: &Yaml) {
                 if i > 0 {
                     out.push(',');
                 }
-                match key.as_str() {
-                    Some(text) => write_json_string(out, text),
-                    None => {
-                        let rendered = json_of(key);
-                        write_json_string(out, &rendered);
-                    }
+                if let Some(text) = key.as_str() {
+                    write_json_string(out, text);
+                } else {
+                    let rendered = json_of(key);
+                    write_json_string(out, &rendered);
                 }
                 out.push(':');
                 write_json(out, val);
