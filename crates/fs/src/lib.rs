@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 use std::sync::PoisonError;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+pub mod base;
 pub mod digestmemo;
 pub mod domain;
 pub mod guard;

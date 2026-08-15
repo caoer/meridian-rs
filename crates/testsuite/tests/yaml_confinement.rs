@@ -1,7 +1,8 @@
 //! The `serde_yaml` confinement instrument.
 //!
-//! `crates/policy/Cargo.toml` and `crates/config/Cargo.toml` both state one topology
-//! claim: `serde_yaml` is taken as a direct production dependency by exactly two crates.
+//! `crates/policy/Cargo.toml`, `crates/config/Cargo.toml` and
+//! `crates/view/Cargo.toml` each state one topology claim: `serde_yaml` is taken
+//! as a direct production dependency by exactly these three crates.
 //!
 //! The taker set is derived from `cargo metadata --no-deps`, never hand-maintained.
 //! `--no-deps` reports each workspace member's own manifest edges, so the
@@ -15,8 +16,11 @@ use std::collections::BTreeSet;
 /// The permitted takers. `policy` is the compile decision; `config` is a
 /// stated deviation — user frontmatter is arbitrary YAML and schema §4
 /// requires the parser's own message, so a hand-rolled scanner cannot serve
-/// it.
-const PERMITTED: [&str; 2] = ["config", "policy"];
+/// it. `view` is the second stated deviation, on the same ground: a `.base`
+/// file is one YAML document whose values nest arbitrarily, and §4.4 requires
+/// the parser's own refusal message (`docs/base-projection.md` §9). The parse
+/// is a leaf module beside its only consumer.
+const PERMITTED: [&str; 3] = ["config", "policy", "view"];
 
 /// Workspace metadata, read live. Fails loud if cargo cannot be run: an
 /// instrument that skips itself when its input is missing is silent in the

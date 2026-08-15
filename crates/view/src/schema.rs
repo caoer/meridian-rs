@@ -21,6 +21,12 @@ CREATE TABLE _meridian_view (
     built_unix        BIGINT   NOT NULL,          -- wall clock; ADVISORY, never a freshness input
     builder           VARCHAR  NOT NULL,          -- ADVISORY
     doc_count         UBIGINT  NOT NULL,
+    -- The SECOND witness (`base-projection.md` §6.2): 'bf:'+blake3-hex over the
+    -- `.base` member list. NULL = the base walk did not run ("not asked",
+    -- never "empty"). It rides beside `as_of_fingerprint` rather than inside
+    -- it because `.base` bytes are in NO fingerprint (§12.1 md-only floor), so
+    -- one stamp row carries two witnesses, each naming exactly what it covers.
+    base_fold         VARCHAR,
     PRIMARY KEY (singleton),
     CHECK (singleton),
     CHECK ((built_epoch IS NULL) = (built_seq IS NULL))  -- both NULL (daemonless :memory:) or both set (daemon-built)
@@ -103,6 +109,15 @@ CREATE TABLE link (
     -- which is the discriminator this column exists to restore. `resolved`
     -- keeps its exact meaning; this is read BESIDE it, never instead of it.
     exclusion  TEXT,
+    -- WHICH file the probe resolved (either arm), workspace-relative
+    -- (`base-projection.md` §5.1). The probe computed it and the projection
+    -- used to discard it; keeping it makes *who embeds this base* a join
+    -- (`link.exclusion_path = base.path`, exact, no basename re-derivation in
+    -- SQL) and gives every other excluded class ('.svg', '.xlsx', dot-segment,
+    -- custom-ignore) the same honesty for free. Exactness is earned by the
+    -- §5.1 mint rule: a stamp carries the ON-DISK spelling, or it does not
+    -- stamp.
+    exclusion_path TEXT,
     resolved   BOOLEAN  GENERATED ALWAYS AS (dest_path IS NOT NULL OR dest_root IS NOT NULL) VIRTUAL,  -- DERIVED, never stored
     span_start UBIGINT  NOT NULL,                 -- C1: Wikilink/Link/Embed node span
     span_end   UBIGINT  NOT NULL,
@@ -114,7 +129,40 @@ CREATE TABLE link (
     -- UNREPRESENTABLE here rather than left to the projector's discipline.
     CHECK ((dest_root IS NULL) = (dest_root_path IS NULL)),  -- a root without its path names nothing
     CHECK (dest_path IS NULL OR dest_root IS NULL),          -- one destination, never two
-    CHECK (kind <> 'link' OR dest_root IS NULL)              -- external links are not cross-root either
+    CHECK (kind <> 'link' OR dest_root IS NULL),             -- external links are not cross-root either
+    CHECK ((exclusion IS NULL) = (exclusion_path IS NULL))   -- the word and the file it names arrive together
+);
+-- The three `.base` relations (`base-projection.md` §4), view-lane only.
+-- They ride the `base_fold` witness, NEVER `as_of_fingerprint`: their bytes
+-- cannot move the workspace fingerprint (§12.1 md-only floor), so their
+-- coverage claim is `base_fold`'s alone.
+CREATE TABLE base (
+    path       TEXT     PRIMARY KEY,   -- workspace-relative ON-DISK spelling (§3 membership)
+    file_rev   TEXT,                   -- blake3(whole file)[:16] — leaf-shaped, in NO fingerprint (§6.1); NULL only on an unreadable member
+    bytes      UBIGINT,                -- NULL only with file_rev NULL (unreadable member)
+    error      TEXT,                   -- NULL = parsed as a YAML mapping; else the parser's or the read's own message
+    filters    TEXT,                   -- file-level filters subtree, compact JSON (§4.2); NULL when absent
+    properties TEXT,                   -- display-config subtree, compact JSON; NULL when absent
+    extra      TEXT,                   -- compact JSON OBJECT: every top-level key §4.5 does not lift, subtree intact; NULL when none
+    CHECK (error IS NULL OR (filters IS NULL AND properties IS NULL AND extra IS NULL)),
+    CHECK ((file_rev IS NULL) = (bytes IS NULL)),
+    CHECK (error IS NOT NULL OR file_rev IS NOT NULL)  -- an unreadable member always says why
+);
+CREATE TABLE base_view (                -- rides base_fold (see base)
+    path    TEXT     NOT NULL REFERENCES base(path),
+    ord     UBIGINT  NOT NULL,         -- 0-based document order within views:
+    name    TEXT,                      -- lifted when the entry's name is a string (§4.5); else NULL
+    type    TEXT,                      -- lifted when a string ('table', 'cards', …) — OPEN SET, no CHECK (§4.3)
+    filters TEXT,                      -- view-level filters subtree, compact JSON; NULL when absent
+    config  TEXT,                      -- remaining view keys as one compact JSON object in written order, or the whole entry when it is not a mapping (§4.5); NULL when none
+    PRIMARY KEY (path, ord)
+);
+CREATE TABLE base_formula (             -- rides base_fold (see base)
+    path TEXT     NOT NULL REFERENCES base(path),
+    ord  UBIGINT  NOT NULL,            -- document order within formulas: (unconstrained beside the PK — the frontmatter precedent)
+    name TEXT     NOT NULL,
+    expr TEXT     NOT NULL,            -- the expression, verbatim scalar or compact JSON of a non-scalar — never interpreted (§4.3)
+    PRIMARY KEY (path, name)           -- guaranteed by the PARSER, not by YAML: the pinned parser refuses duplicate mapping keys (§4.4)
 );
 CREATE TABLE tag (                                -- inline #hashtag bodies (NodeKind::Tag) — real node spans
     path       TEXT     NOT NULL REFERENCES doc(path),
@@ -211,7 +259,13 @@ CREATE VIEW tag_all AS                             -- B2: the union — inline +
 /// `6`: `section.n` added — the row's own occurrence index, served beside the
 /// `hpath` that already carries it (`wire-contract.md` § A.11, ZT ruling
 /// 2026-08-15 "Rule: add n"). Additive; no existing column re-grained.
-pub const SCHEMA_VERSION: i32 = 6;
+///
+/// `7`: the `.base` projection (`docs/base-projection.md`) — the three `base`
+/// relations, `link.exclusion_path`, and `_meridian_view.base_fold`. The
+/// §5.1 mint rule also narrows `exclusion` CONTENT on a case-insensitive
+/// volume (a spelling that reached bytes only through case-folding stops
+/// stamping), so a v6 file would serve pre-rule rows at the same fingerprint.
+pub const SCHEMA_VERSION: i32 = 7;
 
 /// Run the full round-1 DDL against `conn` (8 tables + 4 views).
 ///

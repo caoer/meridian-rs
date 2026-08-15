@@ -1916,6 +1916,54 @@ impl MerkleDir {
     }
 }
 
+/// One member of the `.base` projection's staleness witness: its
+/// workspace-relative path and the §12.2 leaf of its bytes — `None` when the
+/// walk SAW the member but could not read it (`base-projection.md` §4.4).
+///
+/// The two states are distinct in [`base_fold`] on purpose: an unreadable
+/// member and a deleted one must never fold alike.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BaseMemberLeaf<'a> {
+    /// Workspace-relative on-disk spelling (`base-projection.md` §3).
+    pub path: &'a str,
+    /// [`leaf_digest`] of the member's bytes; `None` = seen, unreadable.
+    pub leaf: Option<[u8; 32]>,
+}
+
+/// The `bf:` staleness witness over a `.base` member set
+/// (`base-projection.md` §6.2).
+///
+/// `bf:` + lowercase hex of blake3 over the members sorted by path byte order,
+/// each contributing `uleb128(len(path)) ‖ path ‖ type ‖ leaf32` — `type` is
+/// `0x00` with the member's leaf, and `0x01` with a ZERO leaf when the member
+/// was seen but unreadable (§6.2 amendment 2026-08-15). Zero members fold the
+/// empty sequence.
+///
+/// **Not an attestation and not a fingerprint.** It is compared only against a
+/// re-walk of the same workspace in the same face, so §12.3's domain-version
+/// laddering has no job here and the `bf:` prefix never advances. It shares no
+/// prefix space with a `b3…:` root by construction, so the two can never
+/// compare equal.
+///
+/// It lives here, beside [`merkle_root_of_leaves`], because this crate owns the
+/// leaf and varint law — a second spelling of one encoding drifts silently.
+#[must_use]
+pub fn base_fold(members: &[BaseMemberLeaf<'_>]) -> String {
+    let mut sorted: Vec<&BaseMemberLeaf<'_>> = members.iter().collect();
+    sorted.sort_by(|a, b| a.path.as_bytes().cmp(b.path.as_bytes()));
+    let mut enc: Vec<u8> = Vec::new();
+    for member in sorted {
+        let name = member.path.as_bytes();
+        write_uleb128(&mut enc, name.len());
+        enc.extend_from_slice(name);
+        // 0x00 carries a real leaf; 0x01 says "seen, unreadable" and the 32
+        // zero bytes beside it are a slot filler, never a content claim.
+        enc.push(u8::from(member.leaf.is_none()));
+        enc.extend_from_slice(&member.leaf.unwrap_or([0u8; 32]));
+    }
+    format!("bf:{}", blake3::hash(&enc).to_hex())
+}
+
 /// Unsigned LEB128 (the §12.2 varint): low 7 bits per byte, high bit = "more".
 fn write_uleb128(out: &mut Vec<u8>, mut value: usize) {
     loop {
