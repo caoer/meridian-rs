@@ -1468,7 +1468,9 @@ pub(crate) mod tests {
             }
             assert_eq!(cols, ref_cols, "main.{name} columns drifted from the build");
         }
-        assert_eq!(cached.len(), 12, "12 caller-facing relations");
+        // 12 md relations + the three `.base` relations (`base-projection.md`
+        // §4), which the cache serves under the same latest-view protocol.
+        assert_eq!(cached.len(), 15, "15 caller-facing relations");
 
         // Each column once, per relation — the literal card assertion.
         for (name, columns) in &cached {
@@ -1666,7 +1668,7 @@ pub(crate) mod tests {
         store
             .connection()
             .execute(
-                "INSERT INTO hist.pin VALUES (2, 'b3b:v1', now(), 0, 0, 0, 'future', 999)",
+                "INSERT INTO hist.pin VALUES (2, 'b3b:v1', now(), 0, 0, 0, 'future', 999, NULL)",
                 [],
             )
             .expect("future pin");
