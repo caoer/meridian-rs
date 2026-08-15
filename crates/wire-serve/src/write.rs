@@ -1264,6 +1264,7 @@ pub fn create_response(path: Path, out: &CreateOutcome) -> ResponseBody {
 
 /// The death reply body (§ A.3 remove door): what died — its confirmed rev —
 /// and the root transition. The birth reply's mirror.
+#[must_use]
 pub fn remove_response(path: Path, out: &RemoveOutcome) -> ResponseBody {
     ResponseBody::Remove {
         path,
