@@ -228,13 +228,17 @@ fn resolve_adopts_subdir_and_misses_unregistered() {
     server.shutdown();
 }
 
-/// Idle-reap with an injected clock: fresh entries survive their horizon,
-/// a far-future clock ages every entry past it, and threshold 0 reaps all.
+/// Idle-reap with an injected clock, under the §6.4 registration-lifetime
+/// law: fresh entries survive their horizon; an aged WARM workspace is
+/// demoted (engine dropped) while its registration stays listed; a
+/// never-warmed registration has nothing to shed and is not reported. Only
+/// `unregister` ends a registration.
 #[test]
-fn idle_reap_drops_stale_entries() {
+fn idle_reap_demotes_stale_entries_and_keeps_registrations() {
     let tmp = TempDir::new().unwrap();
     let ws = tmp.path().join("workspace");
     mkdirs(&ws);
+    fs::write(ws.join("a.md"), "# A\n").unwrap();
     let server = RunningServer::start(test_config(&tmp)).unwrap();
     let client = Client::new(server.socket_path().to_path_buf());
     let five_days = 5 * 24 * 60 * 60;
@@ -242,25 +246,33 @@ fn idle_reap_drops_stale_entries() {
     client.register(&ws).unwrap();
     assert_eq!(client.list().unwrap().len(), 1);
 
-    // Fresh entry, real clock, 5-day horizon → not reaped.
+    // Fresh entry, real clock, 5-day horizon → untouched.
     let survivors = server.registry().reap(now_secs(), five_days);
     assert!(survivors.is_empty(), "a fresh entry is within its horizon");
     assert_eq!(client.list().unwrap().len(), 1);
 
-    // Far-future clock ages the entry past the 5-day horizon → reaped.
+    // A never-warmed registration holds nothing reapable: an aged clock
+    // demotes nothing and the entry stays listed.
     let future = now_secs() + 10 * 365 * 24 * 60 * 60;
     let reaped = server.registry().reap(future, five_days);
-    assert_eq!(reaped.len(), 1, "an aged entry is reaped");
     assert!(
-        client.list().unwrap().is_empty(),
-        "reaped entries leave the registry"
+        reaped.is_empty(),
+        "a cold registration has nothing to shed: {reaped:?}"
+    );
+    assert_eq!(client.list().unwrap().len(), 1);
+
+    // Warm it, then age it: the engine is demoted, the registration is not.
+    server.registry().warm_or_build(&ws).unwrap();
+    let reaped = server.registry().reap(future, five_days);
+    assert_eq!(reaped.len(), 1, "the aged warm workspace is demoted");
+    assert_eq!(
+        client.list().unwrap().len(),
+        1,
+        "an idle-reaped engine keeps its registration (merkle-spec §6.4)"
     );
 
-    // Threshold-0 path: everything present is reaped.
-    client.register(&ws).unwrap();
-    assert_eq!(client.list().unwrap().len(), 1);
-    let reaped = server.registry().reap(now_secs(), 0);
-    assert_eq!(reaped.len(), 1, "threshold 0 reaps every entry");
+    // Only unregister ends the registration.
+    assert!(client.unregister(&ws).unwrap());
     assert!(client.list().unwrap().is_empty());
 
     server.shutdown();

@@ -80,6 +80,13 @@ blake3 = "1"
 # one-owner law; the corpus assembly it feeds lives in
 # `wire_serve::mount_corpus`, already in the graph.
 view = { workspace = true }
+# The §6.4 event feed (merkle-spec): one kernel watcher per workspace
+# (FSEvents/inotify), owned by this daemon — the engine process. The dirty
+# set it accumulates is registry state (kimi D1 registration-lifetime law),
+# which is why the edge lands here and NOT on `fs`: guards live in `fs`, and
+# keeping it watcher-free makes "guard correctness consults neither journal
+# nor watcher" structural.
+notify = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

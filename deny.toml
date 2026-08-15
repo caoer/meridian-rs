@@ -34,6 +34,14 @@ exceptions = [
     { crate = "untrusted", allow = ["ISC"] },
     { crate = "webpki-roots", allow = ["CDLA-Permissive-2.0"] },
     { crate = "tiny-keccak", allow = ["CC0-1.0"] },
+    # The §6.4 event-feed watcher stack (registry → notify): notify is
+    # CC0-1.0 (public-domain-equivalent); its Linux backend crates are ISC
+    # (OSI-permissive, functionally MIT). Scoped per-crate, strict default
+    # stays.
+    { crate = "notify", allow = ["CC0-1.0"] },
+    { crate = "notify-types", allow = ["CC0-1.0"] },
+    { crate = "inotify", allow = ["ISC"] },
+    { crate = "inotify-sys", allow = ["ISC"] },
 ]
 
 [advisories]
