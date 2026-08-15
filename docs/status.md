@@ -680,6 +680,20 @@ closed at this face. The custom-ignore class stays voiced and exit-neutral
 `mrd links --json` stays the complete §12.1 outside-domain enumeration (§4.6),
 so capping the voice to the declined class silences no machine consumer.
 
+**Extended to the `links` face itself (2026-08-15, card walk-law-audit).** The
+stderr note bare `mrd links` voices keeps riding the answer's own `excluded`
+key — the door/face split: the face never re-derives by a second disk walk —
+but projects that key through the same one predicate before voicing: a member
+with a dot-prefixed segment (`fs::domain::dot_segment`) leaves the count and
+the sample, and the prose is capped to the same one spelling the in-process
+faces print (full count, `EXCLUDED_SHOWN` sample, remainder clause, machine
+pointer). On this face the pointer is self-serving in the good sense: the
+complete list it names — the `excluded` key of `mrd links --json` — is this
+very verb's own machine answer, which stays the complete §12.1 enumeration
+(§4.6), byte-identical. Before this, the face voiced the wire key verbatim
+and uncapped: dot paths in the voice (the F11 disease) and unbounded prose
+(the 2026-08-10 3.1M-character measurement's shape), both closed here.
+
 ### `mrd check` — does the world still match the pins
 
 Both layer-0 planes the core reads are memory-free: the claim plane (pinned
