@@ -176,46 +176,74 @@ fn scalar_or_json(value: &Yaml) -> String {
 /// normalized, sorted, defaulted, or interpreted — two spellings of one query
 /// stay two texts.
 ///
+/// **The text is emitted directly rather than through `serde_json::Value`**,
+/// and that is load-bearing rather than stylistic: `serde_json`'s object map is
+/// a `BTreeMap`, so building a `Value` SORTS the keys — `{"property":…,
+/// "direction":…}` came back out as `{"direction":…,"property":…}`, which §4.2
+/// forbids in the same sentence that forbids normalizing. `serde_json` still
+/// owns every string escape below, so the quoting law has one implementation.
+///
 /// A non-string mapping key renders as its own JSON text (JSON has no other
 /// key space), which is a rendering choice inside a carrier column, never a
 /// lift.
 fn json_of(value: &Yaml) -> String {
-    json_value(value).to_string()
+    let mut out = String::new();
+    write_json(&mut out, value);
+    out
 }
 
-fn json_value(value: &Yaml) -> serde_json::Value {
-    use serde_json::Value as Json;
+fn write_json(out: &mut String, value: &Yaml) {
     match value {
-        Yaml::Null => Json::Null,
-        Yaml::Bool(b) => Json::Bool(*b),
-        Yaml::Number(n) => n
-            .as_i64()
-            .map(Json::from)
-            .or_else(|| n.as_u64().map(Json::from))
-            .or_else(|| {
-                n.as_f64()
-                    .and_then(serde_json::Number::from_f64)
-                    .map(Json::Number)
-            })
+        Yaml::Null => out.push_str("null"),
+        Yaml::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        Yaml::Number(n) => {
             // A YAML number JSON cannot hold (±inf, nan) keeps its own text
             // rather than becoming null — carried, not destroyed.
-            .unwrap_or_else(|| Json::String(format!("{n:?}"))),
-        Yaml::String(s) => Json::String(s.clone()),
-        Yaml::Sequence(items) => Json::Array(items.iter().map(json_value).collect()),
-        Yaml::Mapping(map) => Json::Object(
-            map.iter()
-                .map(|(k, v)| {
-                    let key = k
-                        .as_str()
-                        .map_or_else(|| json_value(k).to_string(), str::to_owned);
-                    (key, json_value(v))
-                })
-                .collect(),
-        ),
+            if n.is_nan() || n.is_infinite() {
+                write_json_string(out, &n.to_string());
+            } else {
+                out.push_str(&n.to_string());
+            }
+        }
+        Yaml::String(s) => write_json_string(out, s),
+        Yaml::Sequence(items) => {
+            out.push('[');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                write_json(out, item);
+            }
+            out.push(']');
+        }
+        Yaml::Mapping(map) => {
+            out.push('{');
+            for (i, (key, val)) in map.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                match key.as_str() {
+                    Some(text) => write_json_string(out, text),
+                    None => {
+                        let rendered = json_of(key);
+                        write_json_string(out, &rendered);
+                    }
+                }
+                out.push(':');
+                write_json(out, val);
+            }
+            out.push('}');
+        }
         // A YAML tag wraps its value; the projection carries the value (the
         // tag is Obsidian language the engine does not interpret).
-        Yaml::Tagged(tagged) => json_value(&tagged.value),
+        Yaml::Tagged(tagged) => write_json(out, &tagged.value),
     }
+}
+
+/// One JSON string literal, escaped by `serde_json` so the quoting law has a
+/// single implementation.
+fn write_json_string(out: &mut String, text: &str) {
+    out.push_str(&serde_json::Value::String(text.to_owned()).to_string());
 }
 
 #[cfg(test)]
