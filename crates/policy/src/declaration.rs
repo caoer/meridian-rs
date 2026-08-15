@@ -166,6 +166,28 @@ pub fn is_glob_pattern(member: &str) -> bool {
     member.contains('*')
 }
 
+/// The first `files[]` member-order fault: a PATTERN member standing before a
+/// LITERAL member (§ A.7 literals-first, ruled 2026-08-15). Returns
+/// `(pattern_index, literal_index)` — the two members the refusal names — or
+/// `None` when the list is legal.
+///
+/// A pattern expands IN PLACE, so every member after it binds at an index that
+/// moves with the day's match count: on a zero-match day a literal called as
+/// `files[1]` binds at `files[0]`, and a fixed-index write lands on the wrong
+/// document (receipt: dogfood r8 § B3). Literals-first makes each literal's
+/// index its own member ordinal, computable from the call alone. Order inside
+/// the pattern region is the host's by declaration, so no call-order index
+/// exists there to protect.
+#[must_use]
+pub fn first_member_order_fault(members: &[String]) -> Option<(usize, usize)> {
+    let pattern = members.iter().position(|m| is_glob_pattern(m))?;
+    let literal = members
+        .iter()
+        .skip(pattern + 1)
+        .position(|m| !is_glob_pattern(m))?;
+    Some((pattern, pattern + 1 + literal))
+}
+
 /// Expand `files[]` members against a corpus membership listing (§ A.7
 /// patterns): each pattern member matches through [`glob_match`] — the one
 /// grammar — and literal members pass through verbatim. Members keep their
@@ -350,6 +372,47 @@ mod tests {
         ["tasks/a.md", "tasks/b.md", "notes/deep/c.md", "top.md"]
             .map(String::from)
             .to_vec()
+    }
+
+    /// § A.7 literals-first. The fault is the ORDER, never the mix: a list may
+    /// carry both kinds as long as every literal stands before every pattern,
+    /// because only then is a literal's index its own member ordinal. The
+    /// expansion tests below still exercise illegal orders directly —
+    /// [`expand_globs`]'s own law is unchanged, and the order gate sits one
+    /// layer up, at the op that binds.
+    #[test]
+    fn a_pattern_before_a_literal_is_the_member_order_fault() {
+        let fault = |members: &[&str]| {
+            first_member_order_fault(
+                &members
+                    .iter()
+                    .copied()
+                    .map(String::from)
+                    .collect::<Vec<_>>(),
+            )
+        };
+        assert_eq!(fault(&["a/*.md", "top.md"]), Some((0, 1)), "the B3 shape");
+        assert_eq!(
+            fault(&["top.md", "a/*.md", "b/*.md", "deep/c.md"]),
+            Some((1, 3)),
+            "the FIRST offending pair is named, across intervening patterns"
+        );
+        assert_eq!(
+            fault(&["top.md", "a/*.md"]),
+            None,
+            "literals first is legal"
+        );
+        assert_eq!(
+            fault(&["a/*.md", "b/*.md"]),
+            None,
+            "all patterns: nothing to shift"
+        );
+        assert_eq!(
+            fault(&["top.md", "a.md"]),
+            None,
+            "all literals: today's law"
+        );
+        assert_eq!(fault(&[]), None);
     }
 
     #[test]

@@ -589,7 +589,9 @@ fn a_files_pattern_expands_against_the_entry_world() {
     let resp = conn.call(&json!({
         "id": 31, "op": "script",
         "source": "n = len(files)\n",
-        "files": ["logs/*.md", "doc.md"],
+        // Literals-first (§ A.7, 2026-08-15): the pattern rides LAST, so the
+        // literal's index cannot move with the match count.
+        "files": ["doc.md", "logs/*.md"],
     }));
     let trace = trace_of(&resp);
     assert_eq!(trace["outcome"], json!("no_effect"), "trace: {trace}");
@@ -601,7 +603,7 @@ fn a_files_pattern_expands_against_the_entry_world() {
     assert_eq!(
         trace["bindings"]["n"],
         json!("2"),
-        "the binding is the EXPANDED list (logs/receipts.md + doc.md): {trace}"
+        "the binding is the EXPANDED list (doc.md + logs/receipts.md): {trace}"
     );
 
     let resp = conn.call(&json!({
@@ -617,6 +619,71 @@ fn a_files_pattern_expands_against_the_entry_world() {
         "the zero is observable, never silent: {trace}"
     );
     assert_eq!(trace["bindings"]["n"], json!("0"), "trace: {trace}");
+}
+
+/// § A.7 literals-first: a pattern member standing BEFORE a literal member
+/// refuses at entry — dry and armed alike — because the pattern expands in
+/// place and the literal's index moves with the day's match count. This is
+/// the B3 fixture (dogfood r8): a zero-match pattern rebound the literal the
+/// caller addressed as `files[1]` to `files[0]`, and armed mode applied the
+/// retargeted write. The refusal is the door: zero evaluation, nothing armed,
+/// the workspace unmoved.
+#[test]
+fn a_pattern_before_a_literal_refuses_at_entry_in_dry_and_armed() {
+    let tmp = TempDir::new().unwrap();
+    let ws = seeded(&tmp);
+    let _server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(&test_config(&tmp).socket_path);
+    conn.hello_v3(&ws);
+    let before = conn.fingerprint();
+
+    for (id, dry) in [(41, true), (42, false)] {
+        let resp = conn.call(&json!({
+            "id": id, "op": "script",
+            // The B3 shape: a zero-match pattern, then the literal the caller
+            // addresses by a fixed index.
+            "source": "put(files[0], props={\"status\": \"done\"})\n",
+            "files": ["gone/*.md", "doc.md"],
+            "dry": dry,
+        }));
+        let trace = trace_of(&resp);
+        assert_eq!(
+            trace["outcome"],
+            json!("refused"),
+            "dry={dry} trace: {trace}"
+        );
+        let reason = trace["fault"]["reason"].as_str().unwrap();
+        assert!(
+            reason.starts_with("files_member_order:")
+                && reason.contains("files[0]")
+                && reason.contains("gone/*.md")
+                && reason.contains("files[1]")
+                && reason.contains("doc.md")
+                && reason.contains("literal member BEFORE every pattern member"),
+            "the refusal names both members and the reordering that fixes it: {trace}"
+        );
+        assert_eq!(trace["fault"]["recovery"], json!("fix"), "trace: {trace}");
+        assert!(
+            trace["trace"].as_array().unwrap().is_empty(),
+            "zero evaluation: no expansion row, no binding row, no read: {trace}"
+        );
+        assert_eq!(trace["telemetry"]["reads_used"], json!(0), "trace: {trace}");
+    }
+    assert_eq!(conn.fingerprint(), before, "nothing landed");
+
+    // The legal spelling of the same intent is served unchanged.
+    let resp = conn.call(&json!({
+        "id": 43, "op": "script",
+        "source": "n = len(files)\n",
+        "files": ["doc.md", "gone/*.md"],
+    }));
+    let trace = trace_of(&resp);
+    assert_eq!(trace["outcome"], json!("no_effect"), "trace: {trace}");
+    assert_eq!(
+        trace["bindings"]["n"],
+        json!("1"),
+        "the literal binds at files[0] whatever the pattern matched: {trace}"
+    );
 }
 
 /// `files[]` binds in CALL ORDER: `files[0]` is the path the caller typed
