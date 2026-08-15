@@ -97,9 +97,18 @@ impl Conn {
         }))
     }
 
-    /// Subscribe from `from_seq`. Returns the ack; connection is push-only if ok.
-    fn sub(&mut self, from_seq: u64) -> Value {
-        self.call(&json!({"op": "sub", "from_seq": from_seq}))
+    /// Live subscribe — no cursor, anchors at the acked tip (B-01).
+    /// Returns the ack; connection is push-only if ok.
+    fn sub(&mut self) -> Value {
+        self.call(&json!({"op": "sub"}))
+    }
+
+    /// Resumption subscribe with a full `{tree_instance, from_seq}` cursor
+    /// (B-01). Returns the ack; connection is push-only if ok.
+    fn sub_at(&mut self, tree_instance: &str, from_seq: u64) -> Value {
+        self.call(&json!({
+            "op": "sub", "tree_instance": tree_instance, "from_seq": from_seq,
+        }))
     }
 
     /// Next Notification, or `None` within [`PUSH_WAIT`].
@@ -140,10 +149,14 @@ fn subscribe_then_write_delivers_a_notification() {
 
     let mut sub = Conn::open(server.socket_path());
     assert_eq!(sub.hello(&ws)["ok"], json!(true));
-    let ack = sub.sub(0);
+    let ack = sub.sub();
     assert_eq!(ack["ok"], json!(true), "sub is served: {ack}");
     assert!(ack["body"]["root"].is_string(), "ack carries a root: {ack}");
     assert_eq!(ack["body"]["seq"], json!(0), "fresh epoch tip: {ack}");
+    assert!(
+        ack["body"]["tree_instance"].is_string(),
+        "the ack teaches the cursor identity — B-01: {ack}"
+    );
 
     external_edit(
         &ws,
@@ -191,7 +204,7 @@ fn a_poison_add_mid_subscription_degrades_that_file_only() {
 
     let mut sub = Conn::open(server.socket_path());
     assert_eq!(sub.hello(&ws)["ok"], json!(true));
-    assert_eq!(sub.sub(0)["ok"], json!(true));
+    assert_eq!(sub.sub()["ok"], json!(true));
 
     // The poison lands behind the engine's back, mid-subscription (the
     // incident's shape: a non-UTF-8 fixture copied into a live corpus).
@@ -251,7 +264,7 @@ fn framing_a_subscription_never_desyncs_another_connection() {
 
     let mut sub = Conn::open(server.socket_path());
     sub.hello(&ws);
-    assert_eq!(sub.sub(0)["ok"], json!(true));
+    assert_eq!(sub.sub()["ok"], json!(true));
 
     // Ring must hold frames before the request connection speaks, or an
     // interleaving defect has nothing to inject.
@@ -299,9 +312,9 @@ fn s6_one_ring_per_workspace_not_per_spelling() {
     assert_eq!(canonical.hello(&ws_a)["ok"], json!(true));
     assert_eq!(roundabout.hello(&spelled)["ok"], json!(true));
     assert_eq!(other.hello(&ws_b)["ok"], json!(true));
-    assert_eq!(canonical.sub(0)["ok"], json!(true));
-    assert_eq!(roundabout.sub(0)["ok"], json!(true));
-    assert_eq!(other.sub(0)["ok"], json!(true));
+    assert_eq!(canonical.sub()["ok"], json!(true));
+    assert_eq!(roundabout.sub()["ok"], json!(true));
+    assert_eq!(other.sub()["ok"], json!(true));
 
     external_edit(&ws_a, "plan.md", "# Goals\n\nonly workspace A moved\n");
 
@@ -335,7 +348,7 @@ fn s2_sub_stands_behind_the_workspace_bind() {
     let server = RunningServer::start(test_config(&tmp)).unwrap();
 
     let mut bare = Conn::open(server.socket_path());
-    let refused = bare.sub(0);
+    let refused = bare.sub();
     assert_eq!(refused["ok"], json!(false), "unbound sub is refused");
     assert_eq!(refused["error"]["code"], json!("bad_request"));
 
@@ -349,7 +362,8 @@ fn s2_sub_stands_behind_the_workspace_bind() {
     server.shutdown();
 }
 
-/// S2 anchor: `from_seq` outside retained history refuses `root_unknown`.
+/// S2 anchor: a live-instance `from_seq` outside retained history refuses
+/// `root_unknown`.
 ///
 /// *Mutation:* drop `can_anchor` in the `sub` arm — impossible-future sub accepted.
 #[test]
@@ -358,11 +372,134 @@ fn an_unanchorable_from_seq_refuses_root_unknown() {
     let ws = write_ws(&tmp.path().join("ws"), &[("plan.md", PLAN)]);
     let server = RunningServer::start(test_config(&tmp)).unwrap();
 
+    // Learn the live instance on a throwaway live sub (an accepted sub
+    // converts its connection, so the probe gets its own).
+    let mut probe = Conn::open(server.socket_path());
+    probe.hello(&ws);
+    let instance = probe.sub()["body"]["tree_instance"]
+        .as_str()
+        .expect("the ack teaches tree_instance")
+        .to_string();
+
     let mut conn = Conn::open(server.socket_path());
     conn.hello(&ws);
-    let refused = conn.sub(9999);
+    let refused = conn.sub_at(&instance, 9999);
     assert_eq!(refused["ok"], json!(false), "ahead of the tip: {refused}");
     assert_eq!(refused["error"]["code"], json!("root_unknown"));
+    server.shutdown();
+}
+
+/// THE B-01 daemon-door gate: a dead-instance cursor refuses on instance,
+/// sequence never consulted — the cursor's seq is the acked tip, the one
+/// number that anchors on the live instance (the control proves it).
+///
+/// *Mutation:* compare seq before instance in `can_anchor` — the dead cursor
+/// anchors and the gate fails.
+#[test]
+fn a_dead_instance_cursor_refuses_root_unknown() {
+    let tmp = TempDir::new().unwrap();
+    let ws = write_ws(&tmp.path().join("ws"), &[("plan.md", PLAN)]);
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+
+    let mut probe = Conn::open(server.socket_path());
+    probe.hello(&ws);
+    let ack = probe.sub();
+    let live = ack["body"]["tree_instance"]
+        .as_str()
+        .expect("the ack teaches tree_instance")
+        .to_string();
+    let tip = ack["body"]["seq"].as_u64().expect("the ack teaches seq");
+
+    let mut dead = Conn::open(server.socket_path());
+    dead.hello(&ws);
+    let refused = dead.sub_at("dead.0.0", tip);
+    assert_eq!(refused["ok"], json!(false), "dead instance: {refused}");
+    assert_eq!(refused["error"]["code"], json!("root_unknown"));
+    let message = refused["error"]["message"]
+        .as_str()
+        .expect("the refusal teaches");
+    assert!(
+        message.contains("dead.0.0") && message.contains(&live),
+        "the teaching names both instances: {message}"
+    );
+
+    // Control: the same seq under the live instance anchors — the refusal
+    // above was the instance evaluation, not the window.
+    let mut ok = Conn::open(server.socket_path());
+    ok.hello(&ws);
+    assert_eq!(ok.sub_at(&live, tip)["ok"], json!(true));
+    server.shutdown();
+}
+
+/// B-01 upgrade-required: `from_seq` without `tree_instance` — anchoring by
+/// number alone — refuses `bad_request` with the upgrade teaching; instance
+/// without seq is half a cursor and refuses too. A refused sub leaves an
+/// ordinary request channel.
+///
+/// *Mutation:* default a missing `tree_instance` to the live instance — the
+/// bare-number client anchors and the gate fails.
+#[test]
+fn a_bare_from_seq_is_upgrade_required() {
+    let tmp = TempDir::new().unwrap();
+    let ws = write_ws(&tmp.path().join("ws"), &[("plan.md", PLAN)]);
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+
+    let mut conn = Conn::open(server.socket_path());
+    conn.hello(&ws);
+    let refused = conn.call(&json!({"op": "sub", "from_seq": 0}));
+    assert_eq!(refused["ok"], json!(false), "number alone: {refused}");
+    assert_eq!(refused["error"]["code"], json!("bad_request"));
+    let message = refused["error"]["message"]
+        .as_str()
+        .expect("the refusal teaches");
+    assert!(
+        message.contains("tree_instance") && message.contains("Upgrade"),
+        "the teaching names the missing identity and the remedy: {message}"
+    );
+
+    let half = conn.call(&json!({"op": "sub", "tree_instance": "x.y.z"}));
+    assert_eq!(half["ok"], json!(false), "half a cursor: {half}");
+    assert_eq!(half["error"]["code"], json!("bad_request"));
+
+    // The channel is still a request channel: a live sub is served.
+    assert_eq!(conn.sub()["ok"], json!(true));
+    server.shutdown();
+}
+
+/// B-01 resumption: a full `{tree_instance, from_seq}` cursor from a live
+/// ack resumes with replay — the retained frame past the cursor arrives
+/// byte-identical on the new connection.
+#[test]
+fn a_valid_cursor_resumes_with_replay() {
+    let tmp = TempDir::new().unwrap();
+    let ws = write_ws(&tmp.path().join("ws"), &[("plan.md", PLAN)]);
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+
+    let mut first = Conn::open(server.socket_path());
+    first.hello(&ws);
+    let ack = first.sub();
+    let cursor_instance = ack["body"]["tree_instance"]
+        .as_str()
+        .expect("the ack teaches tree_instance")
+        .to_string();
+    let cursor_seq = ack["body"]["seq"].as_u64().expect("the ack teaches seq");
+    external_edit(
+        &ws,
+        "plan.md",
+        "# Goals\n\nship by September\n\n# Notes\n\nnothing yet\n",
+    );
+    let seen = first.next_frame().expect("the live sub sees the frame");
+    drop(first); // the client falls away holding its cursor
+
+    let mut resumed = Conn::open(server.socket_path());
+    resumed.hello(&ws);
+    assert_eq!(
+        resumed.sub_at(&cursor_instance, cursor_seq)["ok"],
+        json!(true),
+        "the held cursor anchors within its instance"
+    );
+    let replayed = resumed.next_frame().expect("the retained frame replays");
+    assert_eq!(replayed, seen, "replay ≡ live — §7.3");
     server.shutdown();
 }
 
@@ -379,7 +516,7 @@ fn a_pushed_frame_mints_no_read_receipt() {
 
     let mut sub = Conn::open(server.socket_path());
     sub.hello(&ws);
-    assert_eq!(sub.sub(0)["ok"], json!(true));
+    assert_eq!(sub.sub()["ok"], json!(true));
     external_edit(
         &ws,
         "plan.md",
@@ -445,7 +582,7 @@ fn the_delta_chain_is_contiguous() {
 
     let mut sub = Conn::open(server.socket_path());
     sub.hello(&ws);
-    assert_eq!(sub.sub(0)["ok"], json!(true));
+    assert_eq!(sub.sub()["ok"], json!(true));
 
     let mut frames = Vec::new();
     for n in 1..=3 {
@@ -530,7 +667,7 @@ fn a_promoting_pin_pushes_the_targets_row_on_the_actors_frame() {
         "workspace": ws.to_str().unwrap(),
     }));
     assert_eq!(sub_hello["ok"], json!(true), "{sub_hello}");
-    assert_eq!(sub.sub(0)["ok"], json!(true));
+    assert_eq!(sub.sub()["ok"], json!(true));
 
     // Frame 1: an external edit — the detector's actor-absent baseline.
     external_edit(
@@ -602,7 +739,7 @@ fn a_live_subscription_survives_the_reaper() {
 
     let mut sub = Conn::open(server.socket_path());
     sub.hello(&ws);
-    assert_eq!(sub.sub(0)["ok"], json!(true));
+    assert_eq!(sub.sub()["ok"], json!(true));
 
     let canonical = workspace::canonicalize(&ws).unwrap();
     let before = server.registry().ring(&canonical);
@@ -659,7 +796,7 @@ fn a_wedged_subscriber_is_dropped_and_frees_its_subguard() {
     // Wedged by construction: this connection is never read from again.
     let mut sub = Conn::open(server.socket_path());
     assert_eq!(sub.hello(&ws)["ok"], json!(true));
-    assert_eq!(sub.sub(0)["ok"], json!(true));
+    assert_eq!(sub.sub()["ok"], json!(true));
 
     let canonical = workspace::canonicalize(&ws).unwrap();
     let ring = server.registry().ring(&canonical);
@@ -707,7 +844,7 @@ fn an_armed_sub_defers_idle_exit_and_releasing_it_restores_mortality() {
 
     let mut sub = Conn::open(server.socket_path());
     assert_eq!(sub.hello(&ws)["ok"], json!(true));
-    assert_eq!(sub.sub(0)["ok"], json!(true));
+    assert_eq!(sub.sub()["ok"], json!(true));
 
     // Well past the horizon with no request traffic at all: only the armed sub
     // holds the daemon.
@@ -771,7 +908,7 @@ fn an_armed_sub_with_zero_frames_written_is_dropped_after_the_idle_horizon() {
     // this connection is never closed by the client side.
     let mut sub = Conn::open(server.socket_path());
     assert_eq!(sub.hello(&ws)["ok"], json!(true));
-    assert_eq!(sub.sub(0)["ok"], json!(true));
+    assert_eq!(sub.sub()["ok"], json!(true));
 
     let canonical = workspace::canonicalize(&ws).unwrap();
     let ring = server.registry().ring(&canonical);
@@ -824,7 +961,7 @@ fn a_frame_written_inside_the_horizon_resets_it() {
 
     let mut sub = Conn::open(server.socket_path());
     assert_eq!(sub.hello(&ws)["ok"], json!(true));
-    assert_eq!(sub.sub(0)["ok"], json!(true));
+    assert_eq!(sub.sub()["ok"], json!(true));
 
     let canonical = workspace::canonicalize(&ws).unwrap();
     let ring = server.registry().ring(&canonical);

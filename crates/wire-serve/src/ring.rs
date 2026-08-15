@@ -27,6 +27,33 @@ use crate::rev::Position;
 /// (`root_unknown` → full resync), never to wrong data.
 pub const RING_BOUND: usize = 256;
 
+/// A resumption cursor (B-01, §4.7): a position AND the numbering it was
+/// minted under. A ring `seq` is meaningful only within one tree instance
+/// (§7.1 late law), so the pair travels together — a bare number is not a
+/// cursor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cursor {
+    /// The tree instance the seq was numbered under ([`RootRing::instance`]).
+    pub tree_instance: String,
+    pub seq: u64,
+}
+
+/// The anchor verdict — instance evaluated before sequence (B-01), so the
+/// two refusals stay distinct facts: a dead numbering vs a live numbering
+/// whose window moved on. Both degrade to re-derive (`root_unknown` →
+/// diff-by-root), never to wrong data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Anchor {
+    /// The ring can deliver a contiguous stream from the cursor.
+    Anchored,
+    /// The cursor's tree instance is not the serving instance — its
+    /// numbering died (restart, reap). Sequence was never consulted.
+    DeadInstance,
+    /// Same instance, but the position is outside the retained window
+    /// (evicted or ahead of the tip).
+    OutsideHistory,
+}
+
 /// One epoch's delta history: contiguous [`DeltaFrame`]s in emission order,
 /// oldest evicted past [`RING_BOUND`].
 ///
@@ -41,9 +68,14 @@ pub const RING_BOUND: usize = 256;
 /// producers and `reserved` is the high-water mark that makes re-issue
 /// impossible. Proof:
 /// `allocation_survives_a_detector_advance_before_the_writers`.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct RootRing {
     entries: VecDeque<DeltaFrame>,
+    /// This epoch's tree instance id (B-01): minted at birth, immutable for
+    /// the ring's life, never persisted — so a restart or a reap-and-rebirth
+    /// can never revive an old cursor's numbering. Opaque to clients; they
+    /// echo it, never parse it.
+    instance: String,
     /// High-water mark of the seqs issued but not yet recorded: an allocation
     /// lands here the instant it is handed out, its frame only when the
     /// producer records it — the floor that keeps an unwound or late-recording
@@ -56,11 +88,45 @@ pub struct RootRing {
     reserved: AtomicU64,
 }
 
+impl Default for RootRing {
+    fn default() -> Self {
+        RootRing {
+            entries: VecDeque::new(),
+            instance: mint_instance(),
+            reserved: AtomicU64::new(0),
+        }
+    }
+}
+
+/// Mint a fresh tree instance id: unix millis + pid + a process-global
+/// counter, each hex. The counter separates rings minted inside one process
+/// (reap-and-rebirth); millis + pid separate processes (restart). Trusted
+/// local boundary (§13) — uniqueness against an adversary is a non-goal.
+fn mint_instance() -> String {
+    static NTH: AtomicU64 = AtomicU64::new(0);
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    format!(
+        "{millis:x}.{:x}.{:x}",
+        std::process::id(),
+        NTH.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
 impl RootRing {
-    /// A fresh epoch: empty history, seq at 0.
+    /// A fresh epoch: empty history, seq at 0, its own tree instance.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// This epoch's tree instance id — the identity every resumption cursor
+    /// must carry (B-01). Taught on the `sub` ack.
+    #[must_use]
+    pub fn instance(&self) -> &str {
+        &self.instance
     }
 
     /// The last seq assigned this epoch (0 = no batch yet). Monotone within
@@ -126,25 +192,40 @@ impl RootRing {
             .collect()
     }
 
-    /// The subscribe anchor law (§7.1 late law): can a subscription start at
-    /// `from_seq` — i.e. can this ring deliver a contiguous stream from there?
+    /// The subscribe anchor law (§7.1 late law + B-01): can a subscription
+    /// resume at `cursor` — i.e. can this ring deliver a contiguous stream
+    /// from there?
     ///
-    /// Two anchorable positions only: `current` (live-only, nothing replayed)
-    /// and any position the retained window can still replay from. Everything
-    /// else — evicted, ahead of the tip, or a previous epoch's counter — is
-    /// unanchorable, and the caller answers `root_unknown` → resync by
-    /// diff-by-root.
+    /// Instance is evaluated BEFORE any sequence compare: a seq is a claim
+    /// inside one numbering, and on a young ring an old epoch's number
+    /// FALSE-PASSES the window check once the counter reaches it again — the
+    /// exact gap a bare `from_seq` could not close. A dead instance
+    /// refuses without ever consulting the sequence.
+    ///
+    /// Within the live instance, two anchorable positions only: `current`
+    /// (live-only, nothing replayed) and any position the retained window
+    /// can still replay from. Everything else — evicted or ahead of the
+    /// tip — is unanchorable, and the caller answers `root_unknown` → resync
+    /// by diff-by-root.
     #[must_use]
-    pub fn can_anchor(&self, from_seq: u64) -> bool {
+    pub fn can_anchor(&self, cursor: &Cursor) -> Anchor {
+        if cursor.tree_instance != self.instance {
+            return Anchor::DeadInstance;
+        }
         let current = self.seq();
         // `oldest - 1` is the seq a client holds when it has consumed nothing
         // from the retained window. Saturating: a ring whose oldest frame is
         // seq 0 has no earlier position to name (frames number from 1).
-        from_seq == current
-            || (from_seq < current
+        if cursor.seq == current
+            || (cursor.seq < current
                 && self
                     .oldest_seq()
-                    .is_some_and(|oldest| from_seq >= oldest.saturating_sub(1)))
+                    .is_some_and(|oldest| cursor.seq >= oldest.saturating_sub(1)))
+        {
+            Anchor::Anchored
+        } else {
+            Anchor::OutsideHistory
+        }
     }
 
     /// Record one emitted batch. Contiguity is the caller's:
@@ -433,6 +514,75 @@ mod tests {
             (1..=6).collect::<Vec<u64>>(),
             "no gap: the two producers between them number 1..=6 exactly once"
         );
+    }
+
+    /// THE B-01 gate: across an instance change, a previous-epoch cursor can
+    /// NEVER anchor — even after the new ring's counter passes the old seq
+    /// number, the exact state where a bare-number anchor FALSE-PASSES.
+    /// Instance is evaluated first, so the refusal never consults sequence.
+    #[test]
+    fn a_previous_epoch_cursor_never_anchors_across_an_instance_change() {
+        let mut epoch1 = RootRing::new();
+        for n in 1..=5 {
+            epoch1.advance(frame(n));
+        }
+        let held = Cursor {
+            tree_instance: epoch1.instance().to_string(),
+            seq: 3,
+        };
+        assert_eq!(epoch1.can_anchor(&held), Anchor::Anchored);
+        drop(epoch1); // the restart: memory is disposable, nothing persists
+
+        // The new epoch's counter is driven PAST the held seq: 3 is inside
+        // the new retained window, so a number-alone anchor would pass.
+        let mut epoch2 = RootRing::new();
+        for n in 1..=6 {
+            epoch2.advance(frame(n));
+        }
+        assert_eq!(
+            epoch2.can_anchor(&Cursor {
+                tree_instance: epoch2.instance().to_string(),
+                seq: 3,
+            }),
+            Anchor::Anchored,
+            "the window alone WOULD anchor seq 3 — the refusal below is the instance's"
+        );
+        assert_eq!(
+            epoch2.can_anchor(&held),
+            Anchor::DeadInstance,
+            "a previous-epoch cursor refuses on instance, sequence never consulted"
+        );
+    }
+
+    /// Within one instance, the §7.1 window law is unchanged: current and
+    /// the retained window anchor; evicted or ahead-of-tip positions answer
+    /// `OutsideHistory` — a distinct fact from a dead instance.
+    #[test]
+    fn within_an_instance_the_window_law_is_unchanged() {
+        let mut ring = RootRing::new();
+        for n in 1..=4 {
+            ring.advance(frame(n));
+        }
+        let at = |seq| {
+            ring.can_anchor(&Cursor {
+                tree_instance: ring.instance().to_string(),
+                seq,
+            })
+        };
+        assert_eq!(at(4), Anchor::Anchored, "current (live-only)");
+        assert_eq!(at(2), Anchor::Anchored, "inside the retained window");
+        assert_eq!(at(0), Anchor::Anchored, "nothing consumed, window intact");
+        assert_eq!(at(9), Anchor::OutsideHistory, "ahead of the tip");
+    }
+
+    /// Every ring births its own instance — reap-and-rebirth inside one
+    /// process mints a fresh numbering, same as a restart.
+    #[test]
+    fn each_ring_births_a_distinct_instance() {
+        let a = RootRing::new();
+        let b = RootRing::new();
+        assert_ne!(a.instance(), b.instance());
+        assert!(!a.instance().is_empty());
     }
 
     /// Backwards ranges are outside emission history (nothing was emitted
