@@ -78,6 +78,16 @@ const PINNED: &[(&str, &str, Class)] = &[
         "pub fn parse",
         Class::InternalReader,
     ),
+    // The R4 occurrence spelling (`"Dup#2"` path segments, r8 D3): reads a
+    // stored form the engine's own `render_occurrence` emitted (or a hand
+    // author wrote into a lock block), never a caller's address string — the
+    // pin ingresses refuse `#`-bearing headings, so the trailing ordinal is
+    // the lock grammar's own byte, not a smuggled fragment delimiter.
+    (
+        "crates/lock/src/lib.rs",
+        "pub fn parse_occurrence",
+        Class::InternalReader,
+    ),
     // ---- Not addresses: pinned so a real ingress stays distinguishable -----
     ("crates/model/src/walk.rs", "fn stage2", Class::NotAnAddress),
 ];
