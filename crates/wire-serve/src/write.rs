@@ -5369,12 +5369,18 @@ mod guarded_create_remove {
         )
         .unwrap();
 
+        // A live token of the victim's own content — the walk fixtures' shape
+        // (`live_token`), so the block parses exactly as an engine-minted pin.
+        let victim = model::build("# Victim\n".to_string(), syntax::parse("# Victim\n"));
+        let token = model::fingerprint::fingerprint(&victim, &victim.root)
+            .expect("the fixture page has content")
+            .into_string();
         let mut l = lock::Lock::new();
         l.upsert_pin(lock::PinEntry::new(
             "victim",
             "9ae3f1deadbeef",
             lock::Selector::Path(Vec::new()),
-            "fp1.v1.b3.deadbeef",
+            &token,
         ));
         std::fs::write(
             dir.path().join("notes/pinner.md"),
