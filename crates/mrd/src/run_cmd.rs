@@ -37,7 +37,7 @@ use run::dispatch_bash::{BashError, Phase2};
 use run::dispatch_starlark::DispatchError;
 use run::exec::ExecStatus;
 use run::executor::{ExecError, ReceiptAddr};
-use run::fence::TaskLanguage;
+use run::fence::{GuaranteeClass, TaskLanguage};
 use run::runner::{self, CascadeError, RunSpec, RunnerError, TaskOutcome};
 use run::snapshot::OpenRefusal;
 use serde_json::json;
@@ -376,7 +376,7 @@ fn exit_leg(report: &runner::RunReport) -> Result<(), Fail> {
                 "bash exited {code} — no effect applied; the run is recorded with its exit code"
             ),
             // Unreachable: this variant is built only under `Exited`.
-            other => format!("bash ended {other:?} — phase 2 refused"),
+            other => format!("bash ended {other:?} — no effect applied"),
         },
         Phase2::RefusedSignaled => match &outcome.status {
             ExecStatus::Signaled { signal } => {
@@ -387,12 +387,16 @@ fn exit_leg(report: &runner::RunReport) -> Result<(), Fail> {
                 ));
             }
             // Unreachable: this variant is built only under `Signaled`.
-            other => format!("bash ended {other:?} — phase 2 refused"),
+            other => format!("bash ended {other:?} — no effect applied"),
         },
+        // User voice, never phase vocabulary (report-voice audit, 2026-08-15):
+        // the sibling exited-nonzero arm's "no effect applied" is the model.
         Phase2::RefusedTimeout => {
-            "bash timed out — process group killed, phase 2 refused".to_owned()
+            "bash timed out — process group killed, no effect applied".to_owned()
         }
-        Phase2::RefusedShim(e) => format!("effect-shim stream refused: {e}"),
+        Phase2::RefusedShim(e) => {
+            format!("the run's effects could not be read back: {e} — no effect applied")
+        }
         Phase2::RefusedDetection => outcome.detection.to_string(),
         Phase2::RefusedExec { error, .. } => return Err(fail_exec(error)),
     };
@@ -500,8 +504,16 @@ fn list_tasks(
                 match task_row(doc, conventions, &b.name) {
                     Ok((resolved, contract, authority)) => {
                         let lang = resolved.block.lang.as_str();
-                        let class = resolved.block.lang.guarantee_class().as_str();
-                        let mut line = format!("  {}  {lang}  {class}", b.name);
+                        // The class cell renders only where the guarantee is
+                        // POSITIVE (`hermetic`) — `unsandboxed` names a sandbox
+                        // that does not exist (ZT ruling, 2026-08-15). The
+                        // `--json` `guarantee` key is unchanged.
+                        let class = resolved.block.lang.guarantee_class();
+                        let mut line = if class == GuaranteeClass::Unsandboxed {
+                            format!("  {}  {lang}", b.name)
+                        } else {
+                            format!("  {}  {lang}  {}", b.name, class.as_str())
+                        };
                         match authority.capabilities() {
                             None => {
                                 let _ = write!(line, "  effects: {}", caps::UNDECLARED_EFFECTS);
@@ -636,8 +648,10 @@ fn dry_bash(parsed: &RunArgs, task: &str, source: &str) {
             );
         }
         Format::Human => {
-            println!("dry run: task '{task}' (bash, {class}) — NOT executed");
-            println!("effects: {} (unsandboxed shell)", caps::UNDECLARED_EFFECTS);
+            // No guarantee word for bash: there is no sandbox, so the negation
+            // names nothing (ZT ruling, 2026-08-15). `--json` keeps the class.
+            println!("dry run: task '{task}' (bash) — NOT executed");
+            println!("effects: {}", caps::UNDECLARED_EFFECTS);
             println!("--- block ---");
             for line in source.lines() {
                 println!("  {line}");

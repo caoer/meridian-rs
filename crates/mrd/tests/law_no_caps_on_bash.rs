@@ -115,9 +115,10 @@ fn claims_nothing(surface: &str, what: &str) {
 
 // ── Half 1: no bash surface names a capability ──────────────────────────────
 
-/// `--list` describes a bash task as an unsandboxed shell with undeclared effects, and says
-/// nothing about capabilities. The starlark row on the same page still carries its caps — the
-/// law is scoped to bash, not a deletion.
+/// `--list` describes a bash task as a shell with undeclared effects, and says
+/// nothing about capabilities — and no guarantee word: `unsandboxed` names a
+/// sandbox that does not exist (ZT ruling, 2026-08-15). The starlark row on the
+/// same page still carries its caps — the law is scoped to bash, not a deletion.
 #[test]
 fn list_row_for_bash_claims_no_capability() {
     let ws = Ws::new();
@@ -128,7 +129,7 @@ fn list_row_for_bash_claims_no_capability() {
     for task in ["undeclared-bash", "claiming-bash"] {
         let line = row(&text, task);
         claims_nothing(&line, &format!("--list row for {task}"));
-        assert!(line.contains("unsandboxed"), "{line}");
+        assert!(!line.contains("unsandboxed"), "{line}");
         assert!(line.contains("effects: undeclared"), "{line}");
     }
 
@@ -173,6 +174,8 @@ fn run_report_for_bash_claims_no_capability() {
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     let text = stdout(&out);
     claims_nothing(&text, "run report");
+    // No `unsandboxed` token on the human face (ZT ruling, 2026-08-15).
+    assert!(!text.contains("unsandboxed"), "{text}");
     assert!(text.contains("effects: undeclared"), "{text}");
 }
 
@@ -196,7 +199,8 @@ fn dry_bash_claims_no_capability() {
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     let text = stdout(&out);
     claims_nothing(&text, "--dry report");
-    assert!(text.contains("unsandboxed"), "{text}");
+    // No `unsandboxed` token on the human face (ZT ruling, 2026-08-15).
+    assert!(!text.contains("unsandboxed"), "{text}");
     assert!(text.contains("effects: undeclared"), "{text}");
 }
 

@@ -116,7 +116,8 @@ pub struct Report {
     pub task: String,
     /// The addressed block's procedure-hash (`node_rev` at address time).
     pub task_rev: String,
-    /// The block's guarantee class (`hermetic` / `detected`).
+    /// The block's guarantee class (`hermetic` / `unsandboxed`). Text renders
+    /// it only where positive; `--json` always carries it.
     pub guarantee: String,
     /// The overall report state.
     pub state: ReportState,
@@ -242,7 +243,15 @@ impl Report {
     pub fn to_text(&self) -> String {
         use std::fmt::Write as _;
         let mut s = String::new();
-        let _ = writeln!(s, "task: {} ({})", self.task, self.guarantee);
+        // A guarantee word renders only where it is POSITIVE (`hermetic`).
+        // There is no sandbox, so `(unsandboxed)` names an alternative that
+        // does not exist (ZT ruling, 2026-08-15); `effects: undeclared` below
+        // carries the bash fact. The `--json` `guarantee` field is unchanged.
+        if self.guarantee == crate::fence::GuaranteeClass::Unsandboxed.as_str() {
+            let _ = writeln!(s, "task: {}", self.task);
+        } else {
+            let _ = writeln!(s, "task: {} ({})", self.task, self.guarantee);
+        }
         let _ = writeln!(s, "procedure: {}", self.task_rev);
         let _ = writeln!(s, "state: {}", self.state.as_str());
         let _ = writeln!(s, "applied: {} md descriptor(s)", self.applied.len());
@@ -275,13 +284,10 @@ impl Report {
             }
         }
         if let Some(effects) = &self.effects {
-            let _ = writeln!(s, "effects: {effects} (unsandboxed shell)");
+            let _ = writeln!(s, "effects: {effects}");
         }
         if self.cap_reached {
-            let _ = writeln!(
-                s,
-                "cascade: depth cap reached — capped md.* suppressed by the kernel"
-            );
+            let _ = writeln!(s, "cascade: depth cap reached — capped md.* not applied");
         }
         if let Some(exec) = &self.exec {
             let ended = match (&exec.exit_code, &exec.signal, &exec.timeout_secs) {
