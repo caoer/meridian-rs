@@ -1217,6 +1217,11 @@ fn dispatch_read(
         Op::Walk { path, down, depth } if v3 => warm_engine_read(registry, ws, |engine| {
             crate::walk_op::serve(engine, ws, &path, down.unwrap_or(false), depth)
         }),
+        // § A.12 effective rules at a path — v3-only, read-only, served from
+        // the warm engine's borrow through policy's one resolver.
+        Op::Rules { path } if v3 => warm_engine_read(registry, ws, |engine| {
+            Ok(crate::rules_op::serve(engine, ws, path.as_ref()))
+        }),
         // Write path: bare meridian-fs commit via shared choke-point.
         // No rule packs (`&[]` ⇒ `verdicts: []`). Writes disk; warm engine
         // rebuilds on next read (fingerprint moved). Numbered on the workspace ring.
@@ -1401,6 +1406,7 @@ fn dispatch_read(
         | Op::SpliceSet { .. }
         | Op::Walk { .. }
         | Op::Sql { .. }
+        | Op::Rules { .. }
         | Op::Mounts => Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp))),
     }
 }

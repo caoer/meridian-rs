@@ -137,6 +137,9 @@ pub fn project_response(frame: &mut Value) {
                 // Corpus SQL at op grain (§ A.11, the same precedent — no
                 // dotted sql.<field> at birth).
                 caps.push(Value::String("sql".to_string()));
+                // Effective rules at op grain (§ A.12, the same precedent —
+                // no dotted rules.<field> at birth).
+                caps.push(Value::String("rules".to_string()));
             }
             body.insert("contract".to_string(), Value::String("v3".to_string()));
         }
@@ -400,7 +403,8 @@ mod tests {
                 "script",
                 "run",
                 "walk",
-                "sql"
+                "sql",
+                "rules"
             ])
         );
     }

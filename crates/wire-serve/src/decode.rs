@@ -171,6 +171,14 @@ pub fn decode(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody>> 
                 query: req_str(obj, "sql", "query")?,
             })
         }
+        "rules" => {
+            // § A.12: the narrowing base and nothing else. Absent = the
+            // workspace root; layer views stay CLI-side.
+            check_fields(obj, "rules", &["path"])?;
+            Ok(Op::Rules {
+                path: opt_path(obj, "rules", "path")?,
+            })
+        }
         "read" => decode_read(obj),
         "check_write" => decode_check_write(obj),
         "splice" => decode_splice(obj, rev),

@@ -698,6 +698,18 @@ pub enum Op {
         /// refuse it before the wire.
         query: String,
     },
+    /// § A.12 effective rules at a path (v3-only, cap `rules`): per rule id,
+    /// the page that governs at `path`, its scope, the pages it shadows, and
+    /// the ARM artifact's cell — the diagnostic for a write this wire
+    /// refused on an armed rule. Read-only; no arm, no receipt.
+    Rules {
+        /// The workspace-relative narrowing base — the folder or page whose
+        /// effective law is asked; absent = the workspace root. Not required
+        /// to exist on disk (a refused CREATE names a page that never
+        /// landed).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        path: Option<Path>,
+    },
     /// v2 §4.7 integrity read: the current workspace root cursor + `seq`.
     /// No parameters — the root is world-grain (the only root guard is
     /// `splice.if_root`, §5.1; the v1 scoped/`path` variant is gone with
@@ -1258,6 +1270,117 @@ pub struct WalkCite {
     pub doc_rev: String,
 }
 
+/// One entry of a `rules` override chain (§ A.12): the same columns the CLI
+/// verb prints, winner first then outward — `policy`'s own chain order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuleChainEntry {
+    /// `winner` | `shadowed` | `tied` — a collided id has no winner.
+    pub role: String,
+    /// The registered page, spelled relative to its layer's root.
+    pub page: String,
+    /// The page's registration rev.
+    pub rev: String,
+    /// The § 3 ladder rung: `workspace` | `user`.
+    pub layer: String,
+    /// The mount depth within the layer (path segments of the mount dir).
+    pub depth: u64,
+    /// The registration's kind vocabulary.
+    pub kinds: Vec<String>,
+}
+
+/// The ARM artifact's cell for one id at the queried path (§ A.12).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuleArmedCell {
+    /// The armed mode word (`armed`, `block`, `off`, …).
+    pub mode: String,
+    /// The page the arm pinned — present exactly when it is not the page
+    /// discovery resolves.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pinned_page: Option<String>,
+    /// Why the pinned page no longer stands (`drifted` | `missing` |
+    /// `kind-mismatch`); absent when the arm still stands.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub redness: Option<String>,
+    /// The CLI cell spelling (`armed(missing)@notify.md`) — ONE render
+    /// across the human line, `--json`, and this wire.
+    pub rendered: String,
+}
+
+/// One id's row in a `rules` answer (§ A.12).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuleRow {
+    pub id: String,
+    /// `resolved` | `collision` — a collided id resolves to nothing.
+    pub state: String,
+    /// The collision's scope, rendered; present exactly on `collision` rows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub collision_scope: Option<String>,
+    /// The armed cell; absent when nothing is armed for the id here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub armed: Option<RuleArmedCell>,
+    /// The override chain, winner first then outward.
+    pub chain: Vec<RuleChainEntry>,
+}
+
+/// Where a `rules` answer's user rung came from, or why there is none —
+/// never a silent empty (§ A.12).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RulesUserScope {
+    /// The user scope directory; `null` exactly when the rung is absent.
+    pub scope: Option<String>,
+    /// The anchor that declared it; present exactly when `scope` is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<String>,
+    /// Why there is no user rung; present exactly when `scope` is null.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// The state of the attested armed set in a `rules` answer (§ A.12). An
+/// artifact that is there and does not parse is `unreadable` with `detail` —
+/// a finding, never read as "nothing armed".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RulesArmedSet {
+    /// The artifact's workspace path, named even when absent.
+    pub path: String,
+    /// `present` | `absent` | `unreadable`.
+    pub state: String,
+    /// Row count; present exactly on `present`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rows: Option<u64>,
+    /// Why the artifact does not parse; present exactly on `unreadable`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// An armed row a `rules` answer counts and cannot show (§ A.12): the
+/// artifact pins the id at this path and discovery no longer resolves it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuleOrphan {
+    pub id: String,
+    /// The page the arm attested — a workspace spelling, from the artifact.
+    pub page: String,
+    /// The arm root the row was pinned at.
+    pub scope: String,
+    pub mode: String,
+    /// Why discovery no longer carries the page — established by looking,
+    /// never inherited.
+    pub cause: String,
+}
+
+/// The §12.1 census of a `rules` answer: RULE pages its population left out
+/// (§ A.12). The registrar decides what counts, never a path predicate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RulesNotOffered {
+    /// Rule pages under the workspace root outside the hash domain.
+    pub workspace: Vec<String>,
+    /// Rule pages under the user rules/ tree declined by a dot segment.
+    pub user: Vec<String>,
+    /// Excluded markdown whose frontmatter does not parse — whether it
+    /// carries a rule is unknown, not decided.
+    pub undecidable: Vec<String>,
+}
+
 /// The answering binary's build identity, carried by a v3 `hello` body.
 ///
 /// An object rather than a bare string so a later fact joins it without
@@ -1324,16 +1447,11 @@ pub struct Response {
 /// error envelope under the `error` key. `ok` mirrors which arm rides.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "both arms are large by construction and the lint's own remedy provably \
-              relocates it: measured on this tree, ErrorBody is 520 bytes and ResponseBody \
-              288, so boxing the error arm leaves 288 vs 8 — a WIDER gap, warning the other \
-              way. Only boxing both silences it, at every response construction site, to \
-              trade one pointer chase for another. The §8 extras set is flat and frozen \
-              (extras beside `code`, never nested), so the struct's width is contract shape, \
-              not a layout accident"
-)]
+// No `large_enum_variant` expectation: the § A.12 `rules` body widened
+// ResponseBody to within the lint's ratio of ErrorBody (520 bytes), so the
+// lint no longer fires and an `#[expect]` would itself warn as unfulfilled.
+// Both arms remain large by construction — the §8 extras set is flat and
+// frozen, so the widths are contract shape, not a layout accident.
 pub enum ResponsePayload {
     Body { body: ResponseBody },
     Error { error: ErrorBody },
@@ -1468,6 +1586,35 @@ pub enum ResponseBody {
         /// up walks — up drops nothing.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         excluded: Vec<String>,
+    },
+    /// § A.12 the effective-rules answer. Shape-unique in this untagged
+    /// enum: no other body carries an `armed_set` key, so neither direction
+    /// can capture the other's frame.
+    Rules {
+        /// The narrowing base, echoed verbatim; `""` = the workspace root.
+        at: String,
+        /// The corpus state the answer was computed at — the warm engine's
+        /// fold, verbatim (v3 spelling; the op is v3-only). Discovery, the
+        /// armed artifact, and the rev check all read these bytes.
+        fingerprint: String,
+        /// The user rung's origin, or why there is none.
+        user_scope: RulesUserScope,
+        /// The attested armed set's state.
+        armed_set: RulesArmedSet,
+        /// One row per id, resolved rows first, id-ascending within each
+        /// state. Always serialized — an empty law is `[]`, never absent.
+        rules: Vec<RuleRow>,
+        /// Registration refusals on this path's chain (§ 3 refusal
+        /// scoping). Always serialized.
+        refused: Vec<String>,
+        /// Files whose bytes are not UTF-8, so their tags cannot be read —
+        /// a named hole in the answer. Always serialized.
+        unreadable: Vec<String>,
+        /// Armed rows selected here whose id discovery no longer resolves.
+        /// Always serialized — the one thing a reader cannot reconstruct.
+        armed_orphans: Vec<RuleOrphan>,
+        /// The §12.1 census: rule pages this answer's population left out.
+        not_offered: RulesNotOffered,
     },
     /// v2 §3.2: `proto` in effect, server name, the complete op-name set
     /// (`caps` includes dotted `op.field` strings for field-only amendments),

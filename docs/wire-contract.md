@@ -213,7 +213,7 @@ Correlation: one response per request, id echoed by value; in-flight uniqueness 
   "fingerprint":"b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9"}}
 ```
 
-`caps` is the complete set — no version sniffing, ever. The example shows the sixteen-cap base set (the v2 spelling is byte-identical minus the fingerprint renames); a negotiated v3 session is pushed fourteen more on top — `read`, `check_write`, `splice.plan_edits`, `splice.pin`, `pin-cross-root`, `splice.create_rev`, `create`, `mounts`, `mounts.primary`, `hello.identity`, `script`, `run`, `walk`, `sql` (§A.3/§A.5/§A.7/§A.8/§A.10/§A.11) — thirty caps in all. Field-only amendments ship as dotted `op.field` strings (`mounts.primary` is one: the mounts row's declared-primary designation, §A.5); `pin-cross-root` is a behavior cap on the existing `splice.pin` field (§A.3). `fingerprint` in the hello body is optional (the engine may not have walked yet); when present it is the first ambient fingerprint.
+`caps` is the complete set — no version sniffing, ever. The example shows the sixteen-cap base set (the v2 spelling is byte-identical minus the fingerprint renames); a negotiated v3 session is pushed fifteen more on top — `read`, `check_write`, `splice.plan_edits`, `splice.pin`, `pin-cross-root`, `splice.create_rev`, `create`, `mounts`, `mounts.primary`, `hello.identity`, `script`, `run`, `walk`, `sql`, `rules` (§A.3/§A.5/§A.7/§A.8/§A.10/§A.11/§A.12) — thirty-one caps in all. Field-only amendments ship as dotted `op.field` strings (`mounts.primary` is one: the mounts row's declared-primary designation, §A.5); `pin-cross-root` is a behavior cap on the existing `splice.pin` field (§A.3). `fingerprint` in the hello body is optional (the engine may not have walked yet); when present it is the first ambient fingerprint.
 
 **Rev-presence law:** `node_rev` is MUST on every `toc`/`cat`/`extract` node whenever `splice ∈ caps`.
 
@@ -2409,6 +2409,74 @@ opens the drawer file directly when unheld, and answers from `:memory:`
 last. ONE ladder for every caller (the NO-SANDBOX ruling, 2026-08-14,
 which retired OQ5's profile distinction); only `--rebuild` goes direct,
 because repair needs the file itself.
+
+### A.12 `rules` — effective rules at a path (2026-08-14, parity-map crossing orders)
+
+The CLI's effective-rules print verb crosses to the wire: per rule id at a
+path, the page that governs, its scope, and the pages it shadows — winner
+first, shadowed entries visible, never silently collapsed — plus what the
+ARM artifact attests for it (the armed column). This is the diagnostic for
+a write this wire refused on an armed rule: without it a wire-only caller
+cannot ask WHY. Read-only; no arm, no receipt, no cap spend.
+Workspace-bound; v3-only at dispatch, advertised at op grain as cap `rules`
+(the `create` precedent — no dotted `rules.<field>` at birth). A v2 session
+answers `unknown_op`; the frozen v2 caps stay byte-identical.
+
+Request `{path?}` and nothing else (strict field wall). `path` is the
+workspace-relative narrowing base — the folder or page whose effective law
+is asked; absent = the workspace root (every rule in effect, un-narrowed).
+Unlike the CLI verb, the path is NOT required to exist on disk: the wire's
+caller passes the exact spelling a write op just refused, and a refused
+CREATE names a page that never landed — refusing the diagnostic there would
+orphan the op's one motivating consumer. (The CLI's exists-guard defends an
+interactive caller against typos; a machine-derived path has no typo
+class.) Narrowing and armed-row selection are string containment
+(`policy::governs` / `select_at`), so a never-landed path has a
+well-defined governing set.
+
+Every judgement is `policy`'s — `RuleIndex` discovers, `narrowed_to`
+applies the § 3 narrowing, `resolve` decides, `ArmedArtifact::verify_at`
+reddens — the serve arm contains no override law: `mrd rules`' "one
+resolver, two consumers" charter, held to a third consumer.
+
+```json
+{"id":14,"op":"rules","path":"sessions/s1/notes.md"}
+{"id":14,"ok":true,"body":{
+ "at":"sessions/s1/notes.md","fingerprint":"b3b:…",
+ "user_scope":{"scope":null,"reason":"no anchor at /home/u/MERIDIAN.md"},
+ "armed_set":{"path":"meridian/armed-rules.md","state":"present","rows":1},
+ "rules":[
+  {"id":"task.review-notify","state":"resolved",
+   "armed":{"mode":"armed","rendered":"armed"},
+   "chain":[
+    {"role":"winner","page":"sessions/s1/rules.md","rev":"…","layer":"workspace","depth":2,"kinds":["hook"]},
+    {"role":"shadowed","page":"rules.md","rev":"…","layer":"workspace","depth":0,"kinds":["hook"]}]}],
+ "refused":[],"unreadable":[],"armed_orphans":[],
+ "not_offered":{"workspace":[],"user":[],"undecidable":[]}}}
+```
+
+| Field | Law |
+|---|---|
+| `at` | the narrowing base, echoed verbatim; `""` = the workspace root |
+| `fingerprint` | the corpus state the answer was computed at — the warm engine's fold, verbatim. Discovery, the armed artifact, and the rev check all read THESE bytes (one borrow, one answer); the user rung and the `not_offered` census are per-request reads by nature (a different tree; out-of-domain disk) |
+| `user_scope` | `{scope, anchor}` when the user rung is declared; `{scope: null, reason}` otherwise — never a silent empty |
+| `armed_set` | `{path, state, rows?, detail?}`, `state` ∈ `present`\|`absent`\|`unreadable` — an artifact that is there and does not parse is `unreadable` with `detail`, a finding, never read as "nothing armed" |
+| `rules[]` | one row per id, resolved rows first, id-ascending within each state: `{id, state, collision_scope?, armed?, chain[]}`, `state` ∈ `resolved`\|`collision`. `chain[]` rows are `{role, page, rev, layer, depth, kinds[]}`, `role` ∈ `winner`\|`shadowed`\|`tied`, winner first then outward (a collided id has no winner — `tied` rows then `shadowed`). `armed` is the ARM artifact's cell for the id at this path: `{mode, pinned_page?, redness?, rendered}` — `pinned_page` present exactly when the arm pins a different page than discovery resolves; `redness` ∈ `drifted`\|`missing`\|`kind-mismatch`; `rendered` is the CLI cell spelling (`armed(missing)@notify.md`) |
+| `refused[]` | pages that offered themselves to registration and were refused, narrowed to this path exactly as the rules are (§ 3 refusal scoping — a scoped query reddens for the refusals on its chain, not a stranger's) |
+| `unreadable[]` | domain members serving no spans (non-UTF-8, from the projection's own census) plus user-rung pages whose bytes are not UTF-8 — a hole in the answer, named |
+| `armed_orphans[]` | armed rows selected at this path whose id discovery no longer resolves: `{id, page, scope, mode, cause}` — counted by the artifact and shown here, never dropped on the floor; `cause` is established by looking, never inherited (`not on disk` vs `on disk, outside the hash domain — an ignore rule or a dot segment excludes it`) |
+| `not_offered` | §12.1 enumerator clause: RULE pages this answer's population left out — `{workspace[], user[], undecidable[]}`. The registrar decides what counts as a rule page (a page that offers itself, registered or refused), never a path predicate; `undecidable[]` names excluded markdown whose frontmatter does not parse — neither claimed as a dropped rule page nor cleared |
+
+**No layer views.** The op serves the effective view only — the CLI's
+`--workspace`/`--user` single-layer inspections stay CLI-side. The wire's
+consumer diagnoses a refusal, and refusals judge effective law.
+
+**Findings do not gate the frame.** The CLI verb exits 1 on findings; the
+wire answer is `ok:true` with the findings readable in the body (collision
+rows, red armed cells, orphans, an unreadable armed set). A diagnostic that
+refused to render its own findings would be useless exactly when it is
+needed. `ok:false` frames are the door's own faults only (`bad_path`,
+`io_error`, `unknown_op`).
 
 ---
 
