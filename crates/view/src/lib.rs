@@ -1029,27 +1029,36 @@ mod tests {
             Value::UInt(1),
             Value::UBigInt(2),
         ]);
+        // Each shape carries the `n` its own last segment does, so both lanes
+        // are exercised on a NULL occurrence and a present one.
         let shapes = [
-            hpath_json(&[AddrSeg {
-                h: String::new(),
-                n: None,
-            }]),
-            hpath_json(&[
-                AddrSeg {
-                    h: "a\"b\\c".to_string(),
+            (
+                hpath_json(&[AddrSeg {
+                    h: String::new(),
                     n: None,
-                },
-                AddrSeg {
-                    h: "Dup".to_string(),
-                    n: Some(2),
-                },
-            ]),
+                }]),
+                Value::Null,
+            ),
+            (
+                hpath_json(&[
+                    AddrSeg {
+                        h: "a\"b\\c".to_string(),
+                        n: None,
+                    },
+                    AddrSeg {
+                        h: "Dup".to_string(),
+                        n: Some(2),
+                    },
+                ]),
+                Value::UInt(2),
+            ),
         ];
-        for (seq, hpath) in shapes.into_iter().enumerate() {
+        for (seq, (hpath, n)) in shapes.into_iter().enumerate() {
             rows.section.push(vec![
                 Value::Text("d.md".to_string()),
                 Value::UBigInt(seq as u64),
                 Value::Text(hpath),
+                n,
                 Value::Text("h".to_string()),
                 Value::UTinyInt(1),
                 Value::Text("rev".to_string()),
