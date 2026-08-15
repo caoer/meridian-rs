@@ -1255,8 +1255,10 @@ fn dispatch_read(
             // path the serving session's hello bound.
             let mints = registry.read_mints(ws);
             let foreign = |workspace: &Path| registry.read_mints(workspace);
-            // U20b: numbered producer on this workspace's ring. Sink inside
-            // flock; advance after flock drops (allocator makes the gap safe).
+            // U20b: numbered producer on this workspace's ring. The sink
+            // allocates AND records inside the choke-point's flock
+            // (`SeqSink::committed`), so no detect cycle can re-tell this
+            // write as external between commit and record.
             let ring = registry.ring(ws);
             let out = wire_serve::write::splice_with_mints(
                 &ws_root,
@@ -1268,9 +1270,6 @@ fn dispatch_read(
                     foreign: Some(&foreign),
                 },
             )?;
-            if let Some(frame) = out.committed {
-                ring.advance(frame);
-            }
             Ok(out.body)
         }
         // The §4.4 SET form — v3-only (cap `splice.set`); the set choke-point.
@@ -1296,11 +1295,9 @@ fn dispatch_read(
                 dry: dry.unwrap_or(false),
                 force: force.unwrap_or(false),
             };
+            // Sink records inside the flock (`SeqSink::committed`) — see `Op::Splice`.
             let ring = registry.ring(ws);
             let out = wire_serve::write::splice_set(&ws_root, Some(&*ring), &args, &[])?;
-            if let Some(frame) = out.committed {
-                ring.advance(frame);
-            }
             Ok(out.body)
         }
         // Birth op — v3-only; the shared guarded door (`write::create`).
@@ -1323,12 +1320,10 @@ fn dispatch_read(
                 if_root,
                 dry: dry.unwrap_or(false),
             };
-            // Birth is a root advance — owes the chain a seq.
+            // Birth is a root advance — owes the chain a seq. Sink records
+            // inside the flock (`SeqSink::committed`) — see `Op::Splice`.
             let ring = registry.ring(ws);
             let out = wire_serve::write::create(&ws_root, Some(&*ring), &args, &[])?;
-            if let Some(frame) = out.committed.clone() {
-                ring.advance(frame);
-            }
             Ok(wire_serve::write::create_response(path, &out))
         }
         // I4 def-conformance — v3-only, warm-engine doc, read-only.
