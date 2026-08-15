@@ -30,4 +30,7 @@ model = { workspace = true }
 # test-only: the canonicality property corpus for the radix child map (the
 # workspace kernel-test convention); tempfile builds on-disk corpora.
 proptest = { workspace = true }
+# test-only: the B-03 fence matrix asserts EISDIR by errno and measures which
+# filesystem backs each fixture (statfs). Already a production dep above.
+libc = "0.2"
 tempfile = "3"
