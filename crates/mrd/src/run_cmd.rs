@@ -76,14 +76,22 @@ fn fail_address(e: &AddressError) -> Fail {
 /// `MERIDIAN_WORKSPACE` made the correct ref miss, and the bare refusal
 /// pointed at the ref). A `cwd-default` answer carries no root
 /// (`Answer::root` is `None`) — a defaulted cwd is not a workspace, so that
-/// miss stays bare.
-fn fail_address_in(e: &AddressError, answer: &workspace::Answer) -> Fail {
+/// miss stays bare. The anchored miss carries the family's fitted respelling
+/// when it is earned — the same sentence, the same one computation, as the
+/// read door's ([`crate::path_law::cwd_respell_suffix`]).
+fn fail_address_in(e: &AddressError, answer: &workspace::Answer, cwd: &Path) -> Fail {
     match (e, answer.root()) {
-        (AddressError::PageNotFound { .. }, Some(root)) => Fail::tool(format!(
-            "{e} (workspace {}, source: {})",
-            root.display(),
-            answer.tier().word()
-        )),
+        (AddressError::PageNotFound { path }, Some(root)) => {
+            let mut m = format!(
+                "{e} (workspace {}, source: {})",
+                root.display(),
+                answer.tier().word()
+            );
+            if let Some(suffix) = crate::path_law::cwd_respell_suffix(root, cwd, path) {
+                m.push_str(&suffix);
+            }
+            Fail::tool(m)
+        }
         _ => fail_address(e),
     }
 }
@@ -246,6 +254,20 @@ pub(crate) fn dispatch(tail: &[String]) -> Result<(), Fail> {
         .map_err(|e| Fail::tool(format!("workspace resolution failed: {e:?}")))?;
     // An unanchored tree runs against the cwd.
     let root = fs::WorkspaceRoot(answer.root_or_cwd().to_path_buf());
+    // §1 admission, before the page is read: without it `load_page` resolves an
+    // absolute spelling verbatim and this door EXECUTED a page from outside the
+    // workspace — writing the receipt into the workspace's own
+    // `receipts/run.md` (wire-contract §12.1, the door-family clause; § A.8:
+    // `page` is workspace-relative). Ordered ABOVE the echo-law rebind: the
+    // family refuses the absolute spelling with its fitted respell, so the
+    // rebind below no-ops for every admitted argv (the same string back) and
+    // stays the resolution seam for the wire door.
+    crate::path_law::admit(
+        &root.0,
+        &parsed.page,
+        "run",
+        "Nothing was executed and no receipt was written.",
+    )?;
     // §2.1 echo law at the argv boundary: receipts, the foreign-edit scan, and
     // rule scoping key on the page's ONE workspace-relative spelling, so the
     // admitted ref resolves here and rides root-relative everywhere below. A
@@ -260,7 +282,7 @@ pub(crate) fn dispatch(tail: &[String]) -> Result<(), Fail> {
     // ceiling is in force.
     let declaring_root = answer.root();
     let doc = address::load_page(&root, Path::new(&parsed.page))
-        .map_err(|e| fail_address_in(&e, &answer))?;
+        .map_err(|e| fail_address_in(&e, &answer, &cwd))?;
     let (conventions, _source) =
         caps::load_conventions(declaring_root).map_err(|e| fail_caps(&e))?;
 

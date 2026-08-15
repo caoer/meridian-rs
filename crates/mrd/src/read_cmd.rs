@@ -179,102 +179,22 @@ fn answer_read(workspace: &Path, cwd: &Path, r: &Read) -> Result<(EngineSource, 
     }
 }
 
-/// The §1 path-law admission the warm decoder applies (`req_path`), mirrored
-/// so the two transports cannot drift: before this gate the daemonless read
-/// served any absolute spelling — `/etc/hosts` included — that the warm door
-/// refuses (dogfood NEW-A, degrade half).
-fn violates_path_law(path: &str) -> bool {
-    path.is_empty()
-        || path.starts_with('/')
-        || path
-            .split('/')
-            .any(|seg| seg.is_empty() || seg == "." || seg == "..")
-}
+/// The read door's §1 consequence clause — what did NOT happen because the
+/// refusal fired ([`crate::path_law`] holds the family message; this door
+/// states only its own name and consequence).
+const READ_CONSEQUENCE: &str = "Nothing was read and no rev was minted.";
 
-/// The read door's `bad_path` teaching (dogfood NEW-A): the warm decoder's
-/// refusal echoes only the offending path, so the face composes the §1 rule
-/// and — when the spelling lies inside this workspace — the respell the write
-/// door already computes ([`wire_serve::write::relative_respelling`]: one
-/// implementation, both doors, so the read door untrains the same mistake the
-/// write door untrains). No-op on any other code or an already-taught refusal.
+/// The read door's `bad_path` teaching (dogfood NEW-A), family-composed:
+/// [`crate::path_law::teach_bad_path`] with this door's name and consequence.
 fn teach_bad_path(workspace: &Path, error: &mut ErrorBody) {
-    if error.code != wire::ErrorCode::BadPath || error.message.is_some() {
-        return;
-    }
-    let Some(path) = error.path.clone() else {
-        return;
-    };
-    let mut m = format!(
-        "{} is not a workspace-relative path — the read door admits only workspace-relative \
-         spellings (§1 path law: no absolute path, no `.`/`..`/empty segment). Nothing was \
-         read and no rev was minted.",
-        path.0
-    );
-    if let Ok(canonical) = workspace::canonicalize(workspace) {
-        let root = fs::WorkspaceRoot(canonical);
-        if let Some(rel) = wire_serve::write::relative_respelling(&root, &path.0) {
-            use std::fmt::Write as _;
-            let _ = write!(
-                m,
-                " This path lies inside this workspace — respell it as `{rel}`."
-            );
-        }
-    }
-    // A refusal carries its recovery when one clearly exists (laws.md § the
-    // face-honesty law, clause 3). `mrd read .` is the caller asking to see the
-    // corpus at a door that serves one page; `links --json` is the door that
-    // answers it. Every other bad path keeps the respelling above and gains no
-    // pointer — a wrong pointer is worse than none.
-    if crate::names_the_whole_corpus(&path.0) {
-        use std::fmt::Write as _;
-        let _ = write!(
-            m,
-            " To list the corpus instead of one page, `mrd links --json` enumerates every file."
-        );
-    }
-    error.message = Some(m);
+    crate::path_law::teach_bad_path(workspace, error, "read", READ_CONSEQUENCE);
 }
 
-/// The `file_not_found` companion to [`teach_bad_path`]: when the caller's cwd lies inside the
-/// workspace and the ref names a file that EXISTS relative to that cwd, the refusal names the
-/// workspace-relative spelling verbatim. Teaching only — admission is unchanged, the ref grammar
-/// is unchanged, and nothing downstream sees a rewritten path. Reuses the write door's
-/// [`wire_serve::write::relative_respelling`] by handing it the joined absolute spelling, so the
-/// respell computation has ONE implementation across all three refusals that carry one.
+/// The `file_not_found` companion to [`teach_bad_path`]: the family's fitted
+/// cwd respelling ([`crate::path_law::teach_cwd_respelling`] — one sentence,
+/// identical bytes at every door, one respell implementation).
 fn teach_cwd_respelling(workspace: &Path, cwd: &Path, error: &mut ErrorBody) {
-    use std::fmt::Write as _;
-    if error.code != wire::ErrorCode::FileNotFound {
-        return;
-    }
-    let Some(path) = error.path.clone() else {
-        return;
-    };
-    if path.0.starts_with('/') {
-        return;
-    }
-    let candidate = cwd.join(&path.0);
-    if !candidate.is_file() {
-        return;
-    }
-    let Ok(canonical) = workspace::canonicalize(workspace) else {
-        return;
-    };
-    let root = fs::WorkspaceRoot(canonical);
-    let Some(abs) = candidate.to_str() else {
-        return;
-    };
-    let Some(rel) = wire_serve::write::relative_respelling(&root, abs) else {
-        return;
-    };
-    if rel == path.0 {
-        return;
-    }
-    let m = error.message.get_or_insert_with(String::new);
-    let _ = write!(
-        m,
-        " Did you mean `{rel}`? — that file exists relative to your cwd, and refs are spelled \
-         from the workspace root, never from where you stand."
-    );
+    crate::path_law::teach_cwd_respelling(workspace, cwd, error);
 }
 
 /// The whole daemon path: socket, ensure-up, `hello` (v3, workspace-bound), then the `read` op.
@@ -406,7 +326,7 @@ fn in_process_read(workspace: &Path, cwd: &Path, r: &Read) -> Result<Value, Fail
     // The same admission the warm decoder runs before any engine contact —
     // without it `fs::load`'s `root.join(path)` resolves an absolute spelling
     // verbatim and serves bytes from outside the root.
-    if violates_path_law(&r.path) {
+    if crate::path_law::violates_path_law(&r.path) {
         let mut error = ErrorBody::new(wire::ErrorCode::BadPath);
         error.path = Some(WirePath(r.path.clone()));
         teach_bad_path(workspace, &mut error);

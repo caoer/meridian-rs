@@ -276,7 +276,11 @@ fn a_read_refusal_with_no_obvious_recovery_stays_silent() {
     );
 }
 
-/// CLAUSE 3 at the walk door, with the same pair.
+/// CLAUSE 3 at the walk door, with the same pair. Since the door-family path
+/// law (`wire-contract` §12.1 line 878), `walk .` refuses at the §1 admission
+/// in the ONE family voice the read door refuses `.` in — six doors no longer
+/// speak six refusals for one mistake — and the pointer this clause owes rides
+/// that voice unchanged.
 #[test]
 fn the_walk_refusal_points_at_the_verb_that_enumerates() {
     let sb = sandbox();
@@ -285,8 +289,8 @@ fn the_walk_refusal_points_at_the_verb_that_enumerates() {
     let said = stderr(&sb.run(&ws, &["walk", ".", "--down"]));
 
     assert!(
-        said.contains("walk root not in the corpus"),
-        "control: the refusal must still fire with its own wording: {said}"
+        said.contains("is not a workspace-relative path"),
+        "control: the refusal must still fire, in the family's §1 voice: {said}"
     );
     assert!(
         said.contains("`mrd links --json`"),
