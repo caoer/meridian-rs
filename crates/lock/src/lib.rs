@@ -192,12 +192,55 @@ pub fn is_engine_emitted(lang: &str) -> bool {
 pub enum Selector {
     /// The body arm: heading/anchor segments, root → leaf. `[]` is the whole
     /// body WITHOUT frontmatter.
+    ///
+    /// A heading segment may carry a trailing **occurrence ordinal** —
+    /// `"Dup#2"` names the second same-named sibling at that level (dogfood r8
+    /// D3: the mint stores the RESOLVED selector, so a pin on a duplicate
+    /// heading is not born ambiguous). The spelling is owned by
+    /// [`render_occurrence`] / [`parse_occurrence`]; `#` can never collide
+    /// with minted heading text because every pin ingress refuses `#`-bearing
+    /// headings (`#` is a live delimiter in wikilink refs and `path#frag`).
     Path(Vec<String>),
     /// The frontmatter arm: property keys, a tag union. `[]` is ALL keys —
     /// symmetric with [`Selector::Path`]'s `[]`.
     ///
     /// Duplicate keys are refused, never deduped ([`property_fingerprint`]).
     Properties(Vec<String>),
+}
+
+/// Render one R4 `path` segment: the heading text, with `#n` appended when the
+/// address carries a 1-based occurrence ordinal. The one writer of the
+/// occurrence spelling — [`parse_occurrence`] is its inverse.
+#[must_use]
+pub fn render_occurrence(h: &str, n: Option<u32>) -> String {
+    match n {
+        Some(n) => format!("{h}#{n}"),
+        None => h.to_string(),
+    }
+}
+
+/// Split one R4 `path` segment into heading text and occurrence ordinal.
+///
+/// Only a well-formed trailing ordinal is claimed: `#` followed by a decimal
+/// with no leading zero (`1`-based — `#0` and `#02` stay literal), on a
+/// non-empty head. Everything else is literal heading text, so a hand-authored
+/// row over a `#`-bearing heading keeps resolving by its exact bytes.
+#[must_use]
+pub fn parse_occurrence(seg: &str) -> (&str, Option<u32>) {
+    let Some((head, tail)) = seg.rsplit_once('#') else {
+        return (seg, None);
+    };
+    if head.is_empty()
+        || tail.is_empty()
+        || tail.starts_with('0')
+        || !tail.bytes().all(|b| b.is_ascii_digit())
+    {
+        return (seg, None);
+    }
+    match tail.parse::<u32>() {
+        Ok(n) => (head, Some(n)),
+        Err(_) => (seg, None), // an ordinal past u32 is literal text, not an address
+    }
 }
 
 impl Selector {
@@ -1430,5 +1473,27 @@ mod tests {
         assert!(!is_meridian_lang(""));
         assert!(is_lock_lang("meridian-lock"));
         assert!(!is_lock_lang("meridian-journal"));
+    }
+
+    /// The occurrence spelling pair: render and parse are inverses, and only a
+    /// well-formed trailing ordinal is ever claimed (r8 D3).
+    #[test]
+    fn occurrence_spelling_round_trips_and_claims_only_well_formed_ordinals() {
+        assert_eq!(render_occurrence("Dup", Some(2)), "Dup#2");
+        assert_eq!(render_occurrence("Dup", None), "Dup");
+        assert_eq!(parse_occurrence("Dup#2"), ("Dup", Some(2)));
+        assert_eq!(parse_occurrence("Dup#12"), ("Dup", Some(12)));
+        assert_eq!(parse_occurrence("Dup"), ("Dup", None));
+
+        // Malformed ordinals stay literal — hand-authored `#`-bearing text
+        // keeps resolving by its exact bytes.
+        for literal in ["Dup#0", "Dup#02", "#2", "Dup#", "Dup#x", "Dup#2x", ""] {
+            assert_eq!(parse_occurrence(literal), (literal, None), "{literal}");
+        }
+
+        // Round trip both ways, `#`-bearing heads included.
+        for (h, n) in [("Dup", Some(7)), ("A/B", Some(2)), ("Issue #42", Some(3))] {
+            assert_eq!(parse_occurrence(&render_occurrence(h, n)), (h, n));
+        }
     }
 }

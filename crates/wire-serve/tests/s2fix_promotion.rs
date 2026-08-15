@@ -77,14 +77,7 @@ fn live_fingerprint(root: &fs::WorkspaceRoot, declared_ref: &str) -> String {
     let (rel, _) = declared_ref.split_once('#').expect("a ref names a section");
     let doc = fs::load(root, std::path::Path::new(rel)).expect("load");
     let r#ref = match model::selector::Selector::parse(declared_ref) {
-        model::selector::Selector::Heading(segs) => model::Ref::Hpath(
-            segs.iter()
-                .map(|h| model::HpathSeg {
-                    h: h.clone(),
-                    n: None,
-                })
-                .collect(),
-        ),
+        model::selector::Selector::Heading(segs) => model::Ref::Hpath(segs),
         model::selector::Selector::Block(id) => model::Ref::anchor(id).expect("block id"),
         other => panic!("unpinnable selector class: {other:?}"),
     };

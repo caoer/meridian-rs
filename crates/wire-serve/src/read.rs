@@ -551,20 +551,37 @@ pub fn page_decorations(
         // The anchor form: a path array whose sole element is a `^id`, decoded
         // exactly as `write::pin_row` encodes it. A mixed array is refused at
         // the write door, so a `^`-leading element inside a longer chain never
-        // reaches this face.
+        // reaches this face. Heading segments are read through the R4
+        // occurrence spelling (`"Dup#2"` → `n: Some(2)`), the same door the
+        // walk plane uses.
         let selector = match segments.as_slice() {
             [only] if only.starts_with('^') => {
                 model::selector::Selector::Block(only[1..].to_string())
             }
-            _ => model::selector::Selector::Heading(segments.clone()),
+            _ => model::selector::Selector::Heading(
+                segments
+                    .iter()
+                    .map(|seg| {
+                        let (h, n) = lock::parse_occurrence(seg);
+                        model::HpathSeg {
+                            h: h.to_string(),
+                            n,
+                        }
+                    })
+                    .collect(),
+            ),
         };
-        // The handle a pin's target carries: for a section pin, the slug the
-        // id promotion mints from the heading title — computed by the same
-        // owner, so a decoration keys on what id promotion actually wrote. An
-        // anchor pin is its own handle.
+        // The handle a pin's target carries: for a section pin, the id the
+        // promotion mints from the heading title and occurrence — computed by
+        // the same owner ([`crate::write::occurrence_slug`]), so a decoration
+        // keys on what id promotion actually wrote. An anchor pin is its own
+        // handle.
         let handle = match &selector {
             model::selector::Selector::Block(id) => Some(id.clone()),
-            _ => segments.last().and_then(|h| crate::write::slug_id(h).ok()),
+            model::selector::Selector::Heading(segs) => segs
+                .last()
+                .and_then(|s| crate::write::occurrence_slug(&s.h, s.n).ok()),
+            _ => None,
         };
         let Some(handle) = handle else {
             continue;
