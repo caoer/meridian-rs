@@ -160,6 +160,20 @@ const DOORS: &[DoorPin] = &[
         label: "the run plane's candidate (run::fp::candidate)",
         class: Door::OutsideThisUnit,
     },
+    // The attest path's disk edge (`mrd arm`): lands the engine-RENDERED
+    // armed-rules artifact under the write flock. Outside this unit's files;
+    // its candidate carries no caller bytes — every cell passed the arm act's
+    // intake gates (id grammar, hex rev, closed mode vocabulary, renderable
+    // path), so no stored-form translation applies. Its own law is
+    // `policy::armed::arm`'s faults, discharged before the session opens.
+    DoorPin {
+        file: "crates/wire-serve/src/armed_disk.rs",
+        door_fn: "commit",
+        mint_fn: "commit",
+        guard_fn: None,
+        label: "the attest path (ArmSession::commit, the arm act's disk edge)",
+        class: Door::OutsideThisUnit,
+    },
     // ---- wire-serve/watch.rs — the reaction feeder, a mint that is NOT a
     // door. `external_effects` needs each externally-changed document to carry
     // its own path (a HOOK matches `paths:` against it); the candidate is read
@@ -531,12 +545,16 @@ fn the_arithmetic_closes_and_no_class_is_empty() {
          parse (P4); with it gone `lock_write` is again the only lock door",
     );
     assert_eq!(
-        outside, 1,
-        "the run plane's candidate — stated, not absorbed. WAS 3: G2's two genesis \
-         mints left this count with the verb and the ledger it reset (journal \
-         retirement, U6), the same way the two `realise --truth` doors left it with \
-         the flag itself (registration cutover). The redesigned convergence owes its \
-         own pins when it lands; the journal owes none, because nothing replaces it",
+        outside, 2,
+        "the run plane's candidate, and the attest path's disk edge \
+         (ArmSession::commit — `mrd arm`'s byte-lander, joined 2026-08-15: the \
+         arm act's own faults are its law, discharged before the session \
+         opens) — stated, not absorbed. WAS 1 before the attest path; WAS 3 \
+         further back: G2's two genesis mints left this count with the verb \
+         and the ledger it reset (journal retirement, U6), the same way the \
+         two `realise --truth` doors left it with the flag itself \
+         (registration cutover). The redesigned convergence owes its own pins \
+         when it lands; the journal owes none, because nothing replaces it",
     );
     assert_eq!(
         read_only, 2,
