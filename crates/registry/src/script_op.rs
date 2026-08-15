@@ -40,7 +40,6 @@ use std::time::Instant;
 use effects::trace::{CommitLeg, Refusal, ScriptTrace};
 use effects::{
     ArmedEdit, ReadFault, ScriptCtx, ScriptHost, ScriptLimits, SecFacts, TocEntry, TocFacts,
-    hpath_addresses,
 };
 use serde_json::value::RawValue;
 use serde_json::{Map, Value, json};
@@ -449,20 +448,19 @@ impl ScriptHost for LiveHost<'_> {
     fn cat(
         &mut self,
         path: &str,
-        section: &str,
+        section: &ReadSel,
         _armed: &[ArmedEdit],
     ) -> Result<SecFacts, ReadFault> {
         let fault = |reason: String| ReadFault {
             path: path.to_owned(),
-            section: Some(section.to_owned()),
+            section: Some(section.display()),
             reason,
         };
         if Instant::now() > self.deadline.get() {
             return Err(fault("the script entry's wall clock elapsed".to_owned()));
         }
         let doc = self.load_live(path).map_err(&fault)?;
-        let sec =
-            wire_serve::read::selector_to_secref(&doc, &ReadSel::parse(section)).map_err(&fault)?;
+        let sec = wire_serve::read::selector_to_secref(&doc, section).map_err(&fault)?;
         let facts = match wire_serve::read::cat(&doc, Some(sec)) {
             Ok(ResponseBody::Cat {
                 content, node_rev, ..
@@ -881,7 +879,10 @@ fn thread_entry(
                         facts
                             .toc
                             .iter()
-                            .find(|entry| hpath_addresses(&entry.section, hpath))
+                            // Segment-true (the one matcher family): a row whose
+                            // raw heading carries `/` threads exactly like any
+                            // other.
+                            .find(|entry| entry.addresses(hpath))
                             .map(|entry| entry.rev.clone())
                     });
                 }
@@ -943,6 +944,9 @@ fn toc_facts_of(doc: &model::Document, path: &str, root: &wire::Root) -> TocFact
                 section,
                 anchor,
                 rev: node.node_rev.0.clone(),
+                // The raw segments behind the joined spelling — the feedable
+                // machine address (D-1), `n` carried when the wire minted one.
+                hpath: node.hpath.clone().unwrap_or_default(),
             })
         })
         .collect();
@@ -1101,21 +1105,22 @@ impl ScriptHost for EntryWorldHost {
     fn cat(
         &mut self,
         path: &str,
-        section: &str,
+        section: &ReadSel,
         armed: &[ArmedEdit],
     ) -> Result<SecFacts, ReadFault> {
-        self.within_deadline(path, Some(section))?;
+        let display = section.display();
+        self.within_deadline(path, Some(&display))?;
         let fault = |reason: String| ReadFault {
             path: path.to_owned(),
-            section: Some(section.to_owned()),
+            section: Some(display.clone()),
             reason,
         };
-        // The one human-string→selector door, then the shared resolver — the
-        // dewey lane is served here since the read-alignment ruling
-        // (2026-08-13): one `selector_matches` resolution, every door.
-        let doc = self.doc_for(path, Some(section), armed)?;
-        let sec =
-            wire_serve::read::selector_to_secref(&doc, &ReadSel::parse(section)).map_err(&fault)?;
+        // The kernel's `section=` boundary already parsed the one selector
+        // grammar; the shared resolver serves it — the dewey lane is served
+        // here since the read-alignment ruling (2026-08-13): one
+        // `selector_matches` resolution, every door.
+        let doc = self.doc_for(path, Some(&display), armed)?;
+        let sec = wire_serve::read::selector_to_secref(&doc, section).map_err(&fault)?;
         match wire_serve::read::cat(&doc, Some(sec)) {
             Ok(ResponseBody::Cat {
                 content, node_rev, ..

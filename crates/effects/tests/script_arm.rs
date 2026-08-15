@@ -14,7 +14,7 @@ use effects::{
     ArmedEdit, EvalError, ReadFault, ScriptCtx, ScriptHost, ScriptLimits, SecFacts, TocEntry,
     TocFacts, eval_script,
 };
-use wire::{HpathSeg, PlanEdit};
+use wire::{HpathSeg, PlanEdit, ReadSel};
 
 /// A host that serves two pages and counts its calls — enough to prove `put()`
 /// consulted nothing.
@@ -41,6 +41,10 @@ impl ScriptHost for ArmHost {
                 section: "Notes".to_owned(),
                 anchor: None,
                 rev: "sec-notes".to_owned(),
+                hpath: vec![HpathSeg {
+                    h: "Notes".to_owned(),
+                    n: None,
+                }],
             }],
             words: 41,
         })
@@ -49,12 +53,12 @@ impl ScriptHost for ArmHost {
     fn cat(
         &mut self,
         path: &str,
-        section: &str,
+        section: &ReadSel,
         _armed: &[ArmedEdit],
     ) -> Result<SecFacts, ReadFault> {
         self.calls += 1;
         Ok(SecFacts {
-            text: format!("{path}#{section}\n"),
+            text: format!("{path}#{}\n", section.display()),
             rev: "sec-notes".to_owned(),
         })
     }
@@ -76,7 +80,7 @@ impl ScriptHost for PanicHost {
     fn cat(
         &mut self,
         _path: &str,
-        _section: &str,
+        _section: &ReadSel,
         _armed: &[ArmedEdit],
     ) -> Result<SecFacts, ReadFault> {
         panic!("put() must perform zero I/O — the host was consulted");
@@ -446,5 +450,164 @@ if card["fm"]["owner"] == "":
             rev: None,
         },
         "me() threads the host's actor into the armed value"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The §2.1 segment form on `section=` — D-1's machine escape (dogfood r7 F1)
+// ---------------------------------------------------------------------------
+
+/// The joined coat splits on `/` (D-1, coat never widened), so a heading whose
+/// raw text carries one is reachable only by the machine form. `section=` takes
+/// the wire's own hpath array — one `{h, n?}` entry per heading, `/` as heading
+/// TEXT — which is the exact form the engine's section-miss refusal teaches.
+#[test]
+fn a_segment_list_arms_one_segment_per_entry_with_slash_as_heading_text() {
+    let eval =
+        run(r#"put("tasks/0011.md", section=[{"h": "r7-c"}, {"h": "A/B split"}], append="x\n")"#);
+    assert!(eval.outcome.is_ok(), "{:?}", eval.outcome);
+    assert_eq!(
+        eval.armed[0].edit,
+        PlanEdit::Append {
+            hpath: vec![seg("r7-c"), seg("A/B split")],
+            body: "x\n".to_owned(),
+            rev: None,
+        },
+        "one array entry per heading, no joining, no splitting"
+    );
+}
+
+/// The occurrence index rides the structured form only (`ReadSel::parse` doc):
+/// a segment's `n` pins the k-th same-text sibling, exactly as the wire spells
+/// it.
+#[test]
+fn a_segment_carries_its_occurrence() {
+    let eval = run(
+        r#"put("tasks/0011.md", section=[{"h": "Log"}, {"h": "Entry", "n": 2}], append="x\n")"#,
+    );
+    assert!(eval.outcome.is_ok(), "{:?}", eval.outcome);
+    assert_eq!(
+        eval.armed[0].edit,
+        PlanEdit::Append {
+            hpath: vec![
+                seg("Log"),
+                HpathSeg {
+                    h: "Entry".to_owned(),
+                    n: Some(2),
+                },
+            ],
+            body: "x\n".to_owned(),
+            rev: None,
+        }
+    );
+}
+
+/// A bare string inside the list is the retired v1 spelling, refused with the
+/// wire's own single-sourced text naming the offending value (v2 §2.1) — the
+/// same refusal the wire door answers, so one law speaks one sentence.
+#[test]
+fn a_bare_string_inside_a_segment_list_refuses_with_the_wire_refusal() {
+    let eval = run(r#"put("tasks/0011.md", section=["A/B split"], append="x\n")"#);
+    let Err(EvalError::Runtime { reason, .. }) = &eval.outcome else {
+        panic!("expected a runtime refusal, got {:?}", eval.outcome);
+    };
+    assert!(
+        reason.contains(wire::HPATH_SEG_V1_REFUSAL) && reason.contains("A/B split"),
+        "the wire's own refusal, offending value named: {reason}"
+    );
+    assert!(eval.armed.is_empty(), "a refusal arms nothing");
+}
+
+/// An empty list addresses nothing — refused loud, never treated as an absent
+/// kwarg: the caller passed a list, so the answer speaks the list's grammar.
+#[test]
+fn an_empty_segment_list_refuses_as_addressing_nothing() {
+    let eval = run(r#"put("tasks/0011.md", section=[], append="x\n")"#);
+    let Err(EvalError::Runtime { reason, .. }) = &eval.outcome else {
+        panic!("expected a runtime refusal, got {:?}", eval.outcome);
+    };
+    assert!(
+        reason.contains("section=[]") && reason.contains("{\"h\": …}"),
+        "the refusal names the empty list and the segment shape: {reason}"
+    );
+    assert!(eval.armed.is_empty());
+}
+
+/// Refuse what can never exist (D-1's line): occurrences are 1-based, so
+/// `n: 0` is outside the minting grammar — `bad_request`-class, never a miss.
+#[test]
+fn a_zero_occurrence_refuses_as_outside_the_grammar() {
+    let eval = run(r#"put("tasks/0011.md", section=[{"h": "A", "n": 0}], append="x\n")"#);
+    let Err(EvalError::Runtime { reason, .. }) = &eval.outcome else {
+        panic!("expected a runtime refusal, got {:?}", eval.outcome);
+    };
+    assert!(
+        reason.contains("1-based"),
+        "the refusal names the 1-based law: {reason}"
+    );
+    assert!(eval.armed.is_empty());
+}
+
+/// A key the segment shape does not carry refuses loud — a typo'd `"N"` must
+/// not silently drop the occurrence it meant to pin.
+#[test]
+fn an_unknown_segment_key_refuses_loud() {
+    let eval = run(r#"put("tasks/0011.md", section=[{"h": "A", "N": 2}], append="x\n")"#);
+    let Err(EvalError::Runtime { reason, .. }) = &eval.outcome else {
+        panic!("expected a runtime refusal, got {:?}", eval.outcome);
+    };
+    assert!(
+        reason.contains("`N`") && reason.contains("{h, n?}"),
+        "the unknown key and the lawful shape are both named: {reason}"
+    );
+    assert!(eval.armed.is_empty());
+}
+
+/// An empty heading text addresses nothing any document carries — refused at
+/// the boundary, never armed to miss at the wire.
+#[test]
+fn an_empty_heading_text_in_a_segment_refuses() {
+    let eval = run(r#"put("tasks/0011.md", section=[{"h": ""}], append="x\n")"#);
+    let Err(EvalError::Runtime { reason, .. }) = &eval.outcome else {
+        panic!("expected a runtime refusal, got {:?}", eval.outcome);
+    };
+    assert!(
+        reason.contains("empty heading text"),
+        "the refusal names the empty text: {reason}"
+    );
+    assert!(eval.armed.is_empty());
+}
+
+/// A `section=` that is neither a string nor a list refuses naming BOTH
+/// accepted forms — the refusal may not teach less than the plane accepts.
+#[test]
+fn a_non_string_non_list_section_refuses_naming_both_forms() {
+    let eval = run(r#"put("tasks/0011.md", section=42, append="x\n")"#);
+    let Err(EvalError::Runtime { reason, .. }) = &eval.outcome else {
+        panic!("expected a runtime refusal, got {:?}", eval.outcome);
+    };
+    assert!(
+        reason.contains("joined heading path") && reason.contains("{h, n?}"),
+        "both accepted forms named: {reason}"
+    );
+    assert!(eval.armed.is_empty());
+}
+
+/// The string coat is UNTOUCHED (C2 stays reserved): the joined spelling still
+/// splits on `/`, and the two-segment reading of "A/B" is still what arms —
+/// the characterization that keeps D-1's boundary observable from this plane.
+#[test]
+fn the_string_coat_still_splits_on_slash() {
+    let eval = run(r#"put("tasks/0011.md", section="A/B", append="x\n")"#);
+    assert!(eval.outcome.is_ok(), "{:?}", eval.outcome);
+    assert_eq!(
+        eval.armed[0].edit,
+        PlanEdit::Append {
+            hpath: vec![seg("A"), seg("B")],
+            body: "x\n".to_owned(),
+            rev: None,
+        },
+        "the coat is not widened — the machine form is the escape, not an \
+         escape grammar inside the string"
     );
 }

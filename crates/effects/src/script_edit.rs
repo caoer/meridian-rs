@@ -8,7 +8,7 @@
 //! the wire's second edit dialect, so no third grammar is minted and the wire
 //! schema is untouched.
 
-use wire::{HpathSeg, PlanEdit, ReadSel};
+use wire::{HPATH_SEG_V1_REFUSAL, HpathSeg, PlanEdit, ReadSel};
 
 /// One armed edit: the wire plan-edit shape, the file it targets, and where in
 /// the source it was armed.
@@ -69,6 +69,21 @@ pub(crate) fn section_segments(section: &str) -> Result<Vec<HpathSeg>, String> {
     }
 }
 
+/// A `section=` argument as the Starlark boundary hands it over: the joined
+/// string coat, or the §2.1 segment array already validated
+/// ([`segment_of_entry`] refused every out-of-grammar member at the boundary).
+///
+/// The coat is never widened (`docs/laws.md` D-1 — C2 stays reserved): the
+/// segment arm is the wire's OWN machine form, not an escape grammar inside
+/// the string, so a heading whose raw text carries `/` rides one array entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SectionArg {
+    /// The joined selector string, parsed by [`ReadSel::parse`] as always.
+    Coat(String),
+    /// The §2.1 segment array, taken verbatim — never re-parsed, never joined.
+    Segments(Vec<HpathSeg>),
+}
+
 /// Build the plan items one `put()` call arms, in the order they reach the wire:
 /// properties first as one sorted group, then the body op — the same batch order
 /// `wire-serve::plan::lower` and the MCP `put` face already build.
@@ -82,7 +97,7 @@ pub(crate) fn section_segments(section: &str) -> Result<Vec<HpathSeg>, String> {
 /// (`decisions/2026-08-07-script-bare-append-target.md`).
 pub(crate) fn plan_items(
     props: &[(String, String)],
-    section: Option<&str>,
+    section: Option<&SectionArg>,
     append: Option<&str>,
 ) -> Result<Vec<PlanEdit>, String> {
     if props.is_empty() && append.is_none() {
@@ -99,7 +114,14 @@ pub(crate) fn plan_items(
         })
         .collect();
     if let Some(body) = append {
-        let Some(section) = section.filter(|s| !s.is_empty()) else {
+        // An empty COAT is an absent section (the historical filter); an empty
+        // segment LIST never reaches here — the boundary refused it in the
+        // list's own grammar.
+        let section = match section {
+            Some(SectionArg::Coat(s)) if s.is_empty() => None,
+            other => other,
+        };
+        let Some(section) = section else {
             return Err(
                 "put(append=…) addresses a section — pass section=\"<Section>\". An append \
                  targets the containing heading path; the wire carries no document-grain \
@@ -108,7 +130,10 @@ pub(crate) fn plan_items(
             );
         };
         items.push(PlanEdit::Append {
-            hpath: section_segments(section)?,
+            hpath: match section {
+                SectionArg::Coat(s) => section_segments(s)?,
+                SectionArg::Segments(segs) => segs.clone(),
+            },
             body: body.to_owned(),
             rev: None,
         });
@@ -120,6 +145,59 @@ pub(crate) fn plan_items(
         );
     }
     Ok(items)
+}
+
+/// Validate one member of a `section=[…]` segment list into its §2.1 segment.
+///
+/// The grammar is the wire's own — one `{h, n?}` object per heading, raw text
+/// (v2 §2.1) — and so are the refusals: a bare string is the retired v1
+/// spelling, refused with the wire's single-sourced text naming the offending
+/// value; everything else refuses in the D-1 line's first arm (what can never
+/// exist refuses, it never misses).
+///
+/// `describe` renders the member for refusal text — the caller's own repr.
+///
+/// # Errors
+/// The refusal phrase, ready for the boundary's typed fault.
+pub(crate) fn segment_of_entry(
+    h: Option<&str>,
+    n: Option<i64>,
+    unknown_key: Option<&str>,
+    bare_string: Option<&str>,
+    describe: &str,
+) -> Result<HpathSeg, String> {
+    if let Some(value) = bare_string {
+        return Err(format!("{HPATH_SEG_V1_REFUSAL}: `{value}`"));
+    }
+    if let Some(key) = unknown_key {
+        return Err(format!(
+            "a segment carries {{h, n?}} only — unknown key `{key}` in {describe}"
+        ));
+    }
+    let Some(h) = h else {
+        return Err(format!(
+            "a segment is a {{h, n?}} object — {describe} carries no `h` (raw heading text)"
+        ));
+    };
+    if h.is_empty() {
+        return Err(
+            "a segment's `h` is raw heading text — empty heading text addresses no section"
+                .to_owned(),
+        );
+    }
+    let n = match n {
+        None => None,
+        Some(k) if (1..=i64::from(u32::MAX)).contains(&k) => {
+            Some(u32::try_from(k).expect("range-checked"))
+        }
+        Some(k) => {
+            return Err(format!(
+                "a segment's `n` is a 1-based occurrence among same-text siblings — \
+                 n: {k} addresses nothing"
+            ));
+        }
+    };
+    Ok(HpathSeg { h: h.to_owned(), n })
 }
 
 /// Does a RECORDED section spelling address the same node as an armed row's
@@ -135,10 +213,29 @@ pub(crate) fn plan_items(
 /// `["", "A"]`, and one leading slash must not decide a CAS token.
 #[must_use]
 pub fn hpath_addresses(recorded: &str, hpath: &[HpathSeg]) -> bool {
-    let ReadSel::Hpath { hpath: parsed } = ReadSel::parse(recorded) else {
+    sel_addresses(&ReadSel::parse(recorded), hpath)
+}
+
+/// The selector form of [`hpath_addresses`]: does a recorded [`ReadSel`]
+/// address the same node as an armed row's `hpath`? The heading arm compares
+/// raw segment text; the non-heading spellings answer `false` as ever. One
+/// law whatever the ingress spelling — a string-born selector and a
+/// segment-born one match the same rows.
+#[must_use]
+pub fn sel_addresses(recorded: &ReadSel, hpath: &[HpathSeg]) -> bool {
+    let ReadSel::Hpath { hpath: parsed } = recorded else {
         return false;
     };
-    let mut recorded = parsed
+    segs_address(parsed, hpath)
+}
+
+/// Segment-sequence equality on raw heading TEXT, empty segments filtered on
+/// both sides (`ReadSel::parse("/A")` yields `["", "A"]`, and one leading
+/// slash must not decide a CAS token). Occurrence `n` is not compared — the
+/// threading matcher's standing law; resolution honors `n` engine-side.
+#[must_use]
+pub fn segs_address(recorded: &[HpathSeg], hpath: &[HpathSeg]) -> bool {
+    let mut recorded = recorded
         .iter()
         .map(|seg| seg.h.as_str())
         .filter(|h| !h.is_empty());

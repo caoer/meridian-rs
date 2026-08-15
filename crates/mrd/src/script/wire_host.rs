@@ -332,12 +332,12 @@ impl ScriptHost for WireHost<'_> {
     fn cat(
         &mut self,
         path: &str,
-        section: &str,
+        section: &ReadSel,
         _armed: &[effects::ArmedEdit],
     ) -> Result<SecFacts, ReadFault> {
         let fault = |reason: String| ReadFault {
             path: path.to_owned(),
-            section: Some(section.to_owned()),
+            section: Some(section.display()),
             reason,
         };
         let sec = sec_ref(section).ok_or_else(|| {
@@ -366,14 +366,14 @@ impl ScriptHost for WireHost<'_> {
     }
 }
 
-/// The `sec` selector for a `section=` string, through [`ReadSel::parse`] — the
-/// one human-string→selector door in the tree, so the script face and every
-/// other face parse an address the same way.
+/// The `sec` selector for a parsed `section=` — the kernel's boundary already
+/// ran the one human-string→selector door ([`ReadSel::parse`]), so this lowers
+/// structure to the wire and parses nothing.
 ///
 /// `None` for the dewey arm: `cat` has no dewey target (§4.2 takes hpath /
 /// anchor / `fm_key`), and a positional ordinal is not a document address.
-fn sec_ref(section: &str) -> Option<Value> {
-    match ReadSel::parse(section) {
+fn sec_ref(section: &ReadSel) -> Option<Value> {
+    match section {
         ReadSel::Hpath { hpath } => Some(json!({ "hpath": hpath })),
         ReadSel::Anchor { anchor } => Some(json!({ "anchor": anchor })),
         ReadSel::Dewey { .. } => None,
@@ -384,27 +384,36 @@ fn sec_ref(section: &str) -> Option<Value> {
 ///
 /// Two row shapes reach the face, and both are addresses a script can pass
 /// straight back into `read(path, section=…)`: a heading row publishes its
-/// hpath joined by `/` (what [`ReadSel::parse`] splits again), and an
-/// anchor-bearing block row publishes its `^id`. The frontmatter row is not a
-/// section — it reaches the face as `fm`.
+/// hpath joined by `/` (what [`ReadSel::parse`] splits again) AND the raw
+/// segments behind it (`hpath` — the machine form the joined spelling cannot
+/// always carry, D-1), and an anchor-bearing block row publishes its `^id`.
+/// The frontmatter row is not a section — it reaches the face as `fm`.
 pub(crate) fn toc_entry(node: &Value) -> Option<TocEntry> {
     let rev = node.get("node_rev").and_then(Value::as_str)?.to_owned();
     let anchor = node
         .get("anchor")
         .and_then(Value::as_str)
         .map(|id| format!("^{id}"));
-    let section = match node.get("hpath").and_then(Value::as_array) {
-        Some(hpath) => hpath
-            .iter()
-            .filter_map(|seg| seg.get("h").and_then(Value::as_str))
-            .collect::<Vec<_>>()
-            .join("/"),
-        None => anchor.clone()?,
+    let (section, segments) = match node.get("hpath").and_then(Value::as_array) {
+        Some(hpath) => (
+            hpath
+                .iter()
+                .filter_map(|seg| seg.get("h").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("/"),
+            // The daemon publishes §2.1 objects; a row this build cannot
+            // type keeps the joined spelling and carries no segments —
+            // behavior falls back to the pre-field matcher, never a guess.
+            serde_json::from_value::<Vec<wire::HpathSeg>>(Value::Array(hpath.clone()))
+                .unwrap_or_default(),
+        ),
+        None => (anchor.clone()?, Vec::new()),
     };
     Some(TocEntry {
         section,
         anchor,
         rev,
+        hpath: segments,
     })
 }
 

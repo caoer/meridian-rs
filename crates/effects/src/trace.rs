@@ -455,7 +455,9 @@ impl ScriptTrace {
             let entry = ReadEntry {
                 line: read.line,
                 path: read.path.clone(),
-                section: read.section.clone(),
+                // The DISPLAY spelling — the record holds the structure, and
+                // nothing parses this string back (ReadSel::display's own law).
+                section: read.section.as_ref().map(wire::ReadSel::display),
                 face: read.face.clone(),
             };
             match read.position {

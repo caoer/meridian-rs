@@ -340,6 +340,20 @@ address on the read face and a real refusal on the write face, never a heading
 silently named `^r-…`. A face that parsed its own addresses would mint a second
 grammar for the one thing both faces call `section=`.
 
+**`section=` also takes the §2.1 segment array** *(dogfood r7 F1, card
+script-slash-heading-addressing)*: a list of `{h, n?}` objects, one per
+heading, raw text taken verbatim — the wire's own machine form, on both faces.
+This is not a widening of the string coat (D-1: the coat splits on `/` and C2
+stays reserved); it is the escape the engine's section-miss refusal already
+taught, made real on the plane that prints it. A heading whose raw text
+carries `/` rides one array entry, and the occurrence index `n` — which the
+joined spelling cannot spell — rides the structured form only. The toc face
+publishes each heading row's raw segments as `hpath` beside the joined
+`section`, so any row feeds back into `section=` verbatim. Out-of-grammar
+members refuse at the boundary in the D-1 line's first arm — a bare string in
+the list is the retired v1 spelling and refuses with the wire's own
+single-sourced text (v2 §2.1), and the type refusal names both accepted forms.
+
 **The statement-position rule — echo and quiet.** Every read is recorded; the
 face renders only the ones the reader wrote as a decision. A read **echoes**
 exactly when its call is the whole right-hand side of a top-level assignment,

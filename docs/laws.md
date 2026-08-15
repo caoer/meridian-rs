@@ -402,6 +402,17 @@ hands back the same un-feedable title and the recovery loops (dogfood finding
 `wire_serve::section_recovery`; the in-tree precedent it follows is the
 duplicate-heading refusal, which already teaches machine address + dewey.
 
+> **Amendment (dogfood r7 F1, card script-slash-heading-addressing):** the
+> script plane used to be the one surface that RECEIVED this teaching (the
+> commit leg carries the engine's refusal verbatim, U3) while rejecting both
+> taught forms — `section=` was `str`-only, so the hpath array met a type
+> error and the circle cost a caller several calls to disbelieve. `section=`
+> on the script `put()` and `read()` builtins now takes the §2.1 segment
+> array (run-plane.md § the arming surface), and the script toc face
+> publishes each heading row's raw segments as `hpath`, so the taught
+> recovery is executable on every plane that prints it. The coat itself is
+> untouched — this row and C2's reservation stand.
+
 ### G-1 — the §2.4 charset is enforced at one ingress of two
 
 **This row is a DIVERGENCE, named as a candidate because the fix is a face
