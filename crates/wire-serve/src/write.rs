@@ -6242,6 +6242,77 @@ mod resident_write_path {
         );
     }
 
+    fn create_args(path: &str, body: &str) -> CreateArgs {
+        CreateArgs {
+            id: None,
+            path: Path(path.into()),
+            body: body.into(),
+            actor: None,
+            now: None,
+            if_root: None,
+            dry: false,
+        }
+    }
+
+    fn remove_args(path: &str, if_file_rev: NodeRev) -> RemoveArgs {
+        RemoveArgs {
+            id: None,
+            path: Path(path.into()),
+            if_file_rev: Some(if_file_rev),
+            actor: None,
+            now: None,
+            if_root: None,
+            dry: false,
+        }
+    }
+
+    fn lock_args(path: &str, if_file_rev: NodeRev) -> LockWriteArgs {
+        LockWriteArgs {
+            id: None,
+            path: Path(path.into()),
+            lock: lock::Lock::new(),
+            actor: None,
+            now: None,
+            if_root: None,
+            if_file_rev,
+            dry: false,
+        }
+    }
+
+    fn set_member(path: &str, old: &str, new: &str) -> wire::SpliceFile {
+        wire::SpliceFile {
+            path: Path(path.into()),
+            edits: vec![match_edit(old, new)],
+            plan_edits: Vec::new(),
+        }
+    }
+
+    fn set_args(files: Vec<wire::SpliceFile>) -> SpliceSetArgs {
+        SpliceSetArgs {
+            id: None,
+            files,
+            origin: crate::guard::Origin::InProcess,
+            actor: None,
+            now: None,
+            receipt: None,
+            if_root: None,
+            dry: false,
+            force: false,
+        }
+    }
+
+    /// The live file's whole-file rev — the CAS token a door demands.
+    fn live_rev(root: &fs::WorkspaceRoot, rel: &str) -> NodeRev {
+        NodeRev(
+            fs::load(root, std::path::Path::new(rel))
+                .expect("load")
+                .root
+                .node_rev
+                .0
+                .clone(),
+        )
+    }
+
     /// Interim served-token law on every door: each served root equals the
     /// independent old-law disk fold, and carries the law-1 prefix family.
     #[test]
@@ -6263,25 +6334,10 @@ mod resident_write_path {
             );
         };
 
-        // create
-        let born = create(
-            &root,
-            None,
-            &CreateArgs {
-                id: None,
-                path: Path("notes/new.md".into()),
-                body: "# New\n".into(),
-                actor: None,
-                now: None,
-                if_root: None,
-                dry: false,
-            },
-            &[],
-        )
-        .expect("create");
+        let born =
+            create(&root, None, &create_args("notes/new.md", "# New\n"), &[]).expect("create");
         old_law("create", born.root_after.as_ref().expect("root_after"));
 
-        // splice (single form)
         let out = splice(
             &root,
             None,
@@ -6290,35 +6346,15 @@ mod resident_write_path {
             None,
         )
         .expect("splice");
-        let frame = out.committed.expect("frame");
-        old_law("splice", &frame.delta.root_after);
+        old_law("splice", &out.committed.expect("frame").delta.root_after);
 
-        // splice.set (two members, one sealed commit)
         let set = splice_set(
             &root,
             None,
-            &SpliceSetArgs {
-                id: None,
-                files: vec![
-                    wire::SpliceFile {
-                        path: Path("notes/plan.md".into()),
-                        edits: vec![match_edit("w1", "w2")],
-                        plan_edits: Vec::new(),
-                    },
-                    wire::SpliceFile {
-                        path: Path("notes/second.md".into()),
-                        edits: vec![match_edit("August", "w2")],
-                        plan_edits: Vec::new(),
-                    },
-                ],
-                origin: crate::guard::Origin::InProcess,
-                actor: None,
-                now: None,
-                receipt: None,
-                if_root: None,
-                dry: false,
-                force: false,
-            },
+            &set_args(vec![
+                set_member("notes/plan.md", "w1", "w2"),
+                set_member("notes/second.md", "August", "w2"),
+            ]),
             &[],
         )
         .expect("splice_set");
@@ -6327,48 +6363,17 @@ mod resident_write_path {
             &set.committed.expect("set frame").delta.root_after,
         );
 
-        // lock_write (upsert the engine-owned block)
-        let rev = NodeRev(
-            fs::load(&root, std::path::Path::new("notes/plan.md"))
-                .expect("load")
-                .root
-                .node_rev
-                .0
-                .clone(),
-        );
-        let locked = lock_write(
-            &root,
-            None,
-            &LockWriteArgs {
-                id: None,
-                path: Path("notes/plan.md".into()),
-                lock: lock::Lock::new(),
-                actor: None,
-                now: None,
-                if_root: None,
-                if_file_rev: rev,
-                dry: false,
-            },
-        )
-        .expect("lock_write");
+        let rev = live_rev(&root, "notes/plan.md");
+        let locked = lock_write(&root, None, &lock_args("notes/plan.md", rev)).expect("lock_write");
         old_law(
             "lock_write",
             locked.root_after.as_ref().expect("root_after"),
         );
 
-        // remove (death — the fold composes without the leaf)
         let dead = remove(
             &root,
             None,
-            &RemoveArgs {
-                id: None,
-                path: Path("notes/new.md".into()),
-                if_file_rev: Some(born.file_rev_after.clone()),
-                actor: None,
-                now: None,
-                if_root: None,
-                dry: false,
-            },
+            &remove_args("notes/new.md", born.file_rev_after.clone()),
             &[],
         )
         .expect("remove");
@@ -6438,15 +6443,10 @@ mod resident_write_path {
         let born = create(
             &root,
             None,
-            &CreateArgs {
-                id: None,
-                path: Path(fs::domain::DOMAIN_CONFIG_PATH.into()),
-                body: "---\nignore:\n  - \"drafts/**\"\n---\n# Domain\n".into(),
-                actor: None,
-                now: None,
-                if_root: None,
-                dry: false,
-            },
+            &create_args(
+                fs::domain::DOMAIN_CONFIG_PATH,
+                "---\nignore:\n  - \"drafts/**\"\n---\n# Domain\n",
+            ),
             &[],
         )
         .expect("config birth");
