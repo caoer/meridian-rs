@@ -251,6 +251,30 @@ plan §4.2) — the cutover is cheap NOW and a cliff later.
   `B_cutover` amendment, ZT verbatim: "that's OK. only pay once. not every
   read."); `sub` re-baselines at a labeled epoch boundary, never a silent
   chain break.
+- **The cutover boundary, stated as law (R1: GO — the priced protocol;
+  amended 2026-08-15, bounce-1 closure).** The cutover runs behind the four
+  pre-cutover blockers — B-01 cursor identity, B-02 this section's second
+  version dimension, B-03 the downgrade fence BUILT AND TESTED early, B-04
+  durable cutover authority state — then walks
+  `OLD_SERVING → DRAINING → no-return boundary → new law serves`. The
+  downgrade-fence tombstone (B-03's tested mechanism) ACTIVATES at the
+  no-return boundary and ONLY there; activating it earlier is the
+  no-rollback error class. Retirement precedence rides the same boundary:
+  before no-return the old law is still serving and answers guards
+  normally — nothing refuses `fingerprint_version_retired` yet; once the
+  new law serves, old-family tokens refuse exactly that, with re-mint
+  teaching. (`decisions/2026-08-15-plan-rulings-final.md` R1; merged plan
+  §6 steps 5–7.)
+- **The shadow-build fallback is NOT BUILT (`B_cutover` answered).** ZT
+  accepted the one-time per-workspace pause, so the bounded NON-SERVING
+  shadow — whose only purpose was to shrink that pause — stays on paper,
+  verdict-passed, and is not implemented: no second tree is built beside
+  the serving one, even as preparation. Acceptance MEASURES and RECORDS the
+  real pause; it no longer gates on a budget. The bullet above bans a
+  dual-hash SERVING window; this one says the non-serving BUILD does not
+  exist either — together they leave an implementer no shadow to reach for.
+  (`decisions/2026-08-15-plan-rulings-final.md` § Amendment — B_cutover
+  answered.)
 
 ### 4.3 Domain tags — one table
 
@@ -320,8 +344,10 @@ fold. Law 2 closes both halves:
   guard: `scope: "x.md"` cannot say WHICH kind it premises, and an ambiguous
   premise is no premise. This is also the stated precondition of the forest
   digest (§4.3.1).
-- Integrity-covered but unaddressable is the deliberate posture — the exact
-  §9 stance on non-UTF-8 names, applied to kind ambiguity.
+- Integrity-covered but unaddressable is the deliberate posture for
+  collision paths — kept here even as §9's non-UTF-8 name posture retires
+  behind `scope_bytes` (§7): a byte-exact path arm can say WHICH BYTES, but
+  no premise arm can say WHICH KIND, and an ambiguous premise is no premise.
 
 ## 5. Worked example (real values — law 1; law-2 shape in §5.1)
 
@@ -637,8 +663,9 @@ wave. **No separate `guard` op** (dropped; integrity = mint + premise +
   entry along its prefix, or names a §4.4 collision.
 - **Raw-byte names are addressable** through the opaque canonical byte-path
   arm (`scope_bytes`: base64url raw segments; the wire card spells it) beside
-  the UTF-8 `scope` convenience — mint and guard serve both. This closes §9's
-  "integrity-covered but unaddressable" posture for names.
+  the UTF-8 `scope` convenience — mint and guard serve both. §9's former
+  "integrity-covered but unaddressable" posture for names is RETIRED (§9, as
+  amended); the UTF-8 read-face serving limits stated there stand.
 - **Guard-path freshness:** at check time the engine refreshes the named
   premise's own extent through the watermarked memo (§6.2) — guard one file,
   pay one stat; guard a folder, pay the folder; guard the world, pay the
@@ -696,7 +723,7 @@ it.
 
 - **Names: raw bytes, byte-order sort, no unicode normalization.** The fingerprint is a per-host daemon↔client cursor, never a cross-host sync token — the NFD/NFC divergence (macOS vs Linux) cannot bite a cursor that never crosses hosts. Revisit only if fingerprints ever travel between machines (then: NFC at hash time, flagged as proto-visible).
 - **Name truthfulness (RULED, ZT 2026-08-08, "6b"):** *"we don't have conversion. the content for markle hashing is always truthful. if we have conversion, that's a flaw. if we are talking about per session display layer conversion, such layer is not possible to drift. in defined snapshot, the conversion is two way convertible with zero lose."* (verbatim, unparaphrased). Operationally: every fold — the workspace fingerprint, the exec-guard bracket folds, any derivation that claims to be the corpus root — carries the raw on-disk name bytes end to end. Conversion is legal only in display layers (error prose, listings), and there only where it is two-way convertible with zero loss for the servable set; an escaped rendering (`\xNN` for invalid bytes, `\\` for a literal backslash) is the display form for a name that has no UTF-8 spelling.
-- **Non-UTF-8 names: hashed truthfully, unservable — the §3 analog for names.** A domain member whose NAME is not valid UTF-8 still gets its leaf and enters the root with its exact name bytes (blake3 and the interior encoding need no UTF-8). It cannot be SERVED: wire paths are JSON strings (UTF-8 by construction), and no injective UTF-8 spelling exists that also keeps every valid name fixed — so such a member is integrity-covered but unaddressable, exactly as a non-UTF-8-CONTENT file is integrity-covered but serves no spans. Stated limits that follow: the serving snapshot (`DomainFiles`) carries only the UTF-8-named members, and a watch delta cannot name such a path — the frame's fingerprints stay truthful and the §6/§7 resync law covers what the delta cannot spell. Reachability: macOS refuses creating such names (errno 92); Linux is the reachable platform.
+- **Non-UTF-8 names: hashed truthfully, addressable via `scope_bytes`, unservable on the UTF-8 read faces — AMENDED 2026-08-15 (bounce-1 closure; the "integrity-covered but unaddressable" posture is RETIRED).** A domain member whose NAME is not valid UTF-8 still gets its leaf and enters the root with its exact name bytes (blake3 and the interior encoding need no UTF-8). The integrity plane now serves it: mint and guard take the opaque raw-byte arm (`scope_bytes`, §7; field law `wire-contract.md` §5.4), so a premise can name it and coverage can count it — the plan rules this explicitly (merged plan §4.4, "Raw-byte names are addressable"). What remains true is the READ-face limit: wire paths on the serving surface are JSON strings (UTF-8 by construction), and no injective UTF-8 spelling exists that also keeps every valid name fixed — so such a member serves no spans, the serving snapshot (`DomainFiles`) carries only the UTF-8-named members, and a watch delta cannot name such a path; the frame's fingerprints stay truthful and the §6/§7 resync law covers what the delta cannot spell. Reachability: macOS refuses creating such names (errno 92); Linux is the reachable platform.
 - **Symlinks: skipped silently** — consistent with the addressing jail's stance that symlinks are resolved and confined at the addressing layer; a symlink's target, if in-tree, is hashed at its real path. Cost: retargeting an in-tree symlink alone doesn't move the fingerprint — accepted for now, listed below.
 - **Content: raw bytes always** (§2, §3). CRLF, trailing whitespace, BOM — all hash as written.
 - **File/dir name collisions: no longer ignored.** Law 2 hashes both kinds (§4.4 — nothing sits outside the fold), lints the build loudly, and refuses `scope_unresolved` at mint and guard on the colliding path. All the rulings above carry into law 2 unchanged: raw name bytes end to end are the trie's key bytes, byte-order sort is the slot and forest ordering (§4.2.2, §4.3.1).
