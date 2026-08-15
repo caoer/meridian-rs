@@ -122,6 +122,16 @@ pub(crate) fn voice_excluded(
         .into_iter()
         .filter(|rel| !docs.contains_key(rel))
         .collect();
+    voice_excluded_note(&excluded);
+}
+
+/// Print the capped note for an already-enumerated declined-class population:
+/// full count, [`EXCLUDED_SHOWN`] sample, remainder clause, machine pointer.
+/// One spelling for every face that voices this note — the in-process
+/// enumerators above and the `links` face, whose population rides its answer's
+/// own `excluded` key rather than a walk (`engine::voice_excluded`). Silent on
+/// an empty population.
+pub(crate) fn voice_excluded_note(excluded: &[String]) {
     if excluded.is_empty() {
         return;
     }
@@ -148,6 +158,9 @@ pub(crate) fn voice_excluded(
 /// an `excluded` key in their own `--json` output, so the pointer names the one
 /// carrier that really serves the complete list — the bare `mrd links --json`
 /// enumeration (§4.6, §12.1) — never "the machine answer" of the calling verb.
+/// The `links` face itself voices this same note (card walk-law-audit), where
+/// the pointer is self-referential by design: the complete list is that verb's
+/// own `--json` answer.
 pub(crate) fn excluded_note(count: usize, sample: &str) -> String {
     format!(
         "mrd: note: {count} markdown file(s) under this root are outside the hash domain and are NOT in this listing — {sample}. The complete list is the `excluded` key of `mrd links --json` (§12.1). They are addressable by explicit path (`mrd read`, `mrd links <PATH>`); their bytes do not move the fingerprint this answer is stamped with."
