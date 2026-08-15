@@ -1839,8 +1839,11 @@ pub fn merkle_root_of_leaves<N: AsRef<[u8]>>(leaves: &[(N, [u8; 32])], version: 
     for (path, digest) in leaves {
         tree.insert(path.as_ref(), *digest);
     }
-    let hex = blake3::Hash::from_bytes(tree.fold()).to_hex().to_string();
-    MerkleRoot(format!("{}{hex}", root_prefix(version)))
+    // Law-1 identity: this fold IS the flat interior encoding, and the
+    // interim served-token law (merged plan §6 step 3) keeps every served
+    // token old-law until the cutover. [`RootVersion::token`] owns the
+    // spelling.
+    RootVersion::law1(version).token(tree.fold())
 }
 
 /// A directory in the merkle tree — named entries, each a file (its §12.2 leaf
@@ -1996,6 +1999,241 @@ fn root_prefix(version: u32) -> String {
     }
     let suffix: String = suffix.chars().rev().collect();
     format!("b3{suffix}:")
+}
+
+// §4.2.5 two-dimensional version identity (pre-cutover blocker B-02)
+// ---------------------------------------------------------------------------
+
+/// Merkle hash-law 1 — the flat interior encoding (merkle-spec §4.1, retiring
+/// at the cutover).
+pub const HASH_LAW_FLAT: u32 = 1;
+/// Merkle hash-law 2 — the fixed-256 radix child map (merkle-spec §4.2).
+pub const HASH_LAW_RADIX: u32 = 2;
+
+/// Two-dimensional version identity of a `Root`-family token (merkle-spec
+/// §4.2.5, blocker B-02): the hash-law version is a dimension of its own,
+/// ORTHOGONAL to the §12.3 workspace-domain version. Fields are public so
+/// each dimension is independently comparable.
+///
+/// On the wire both dimensions ride ONE §12.3 prefix ladder: every rule
+/// change — a domain-rule edit OR a hash-law cutover — advances the prefix by
+/// exactly one (wire-contract §12.3, "hash-law retirement rides the same
+/// ladder"), so old tokens never silently compare equal.
+/// [`Self::ladder_position`] is that linearization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RootVersion {
+    /// The interior-encoding law that minted the value: [`HASH_LAW_FLAT`] or
+    /// [`HASH_LAW_RADIX`]; a future law N is N. Laws are sequential — each
+    /// cutover advances this by one.
+    pub hash_law: u32,
+    /// The §12.3 workspace-domain version (`meridian/domain.md` `version:`).
+    pub domain: u32,
+}
+
+impl RootVersion {
+    /// The law-1 (flat interior) identity at `domain`.
+    #[must_use]
+    pub const fn law1(domain: u32) -> Self {
+        RootVersion {
+            hash_law: HASH_LAW_FLAT,
+            domain,
+        }
+    }
+
+    /// The law-2 (radix-256) identity at `domain`.
+    #[must_use]
+    pub const fn law2(domain: u32) -> Self {
+        RootVersion {
+            hash_law: HASH_LAW_RADIX,
+            domain,
+        }
+    }
+
+    /// The §12.3 ladder position: `domain + (hash_law − 1)`. Within one
+    /// workspace's monotone history every (law, domain) pair it ever served
+    /// holds a distinct position — a domain bump and a cutover each advance
+    /// the same ladder by one — and therefore a distinct prefix.
+    #[must_use]
+    pub const fn ladder_position(self) -> u32 {
+        self.domain + (self.hash_law - 1)
+    }
+
+    /// The token prefix this identity mints under (`b3:`, `b3a:`, …).
+    #[must_use]
+    pub fn prefix(self) -> String {
+        root_prefix(self.ladder_position())
+    }
+
+    /// Mint the `Root`-family token of a 32-byte value under this identity —
+    /// the workspace fingerprint, a directory value, or a file-leaf value:
+    /// one token grammar at every scope (wire-contract §5.4/§12.3). A leaf
+    /// value SURVIVES the cutover but its token RE-SPELLS under the new
+    /// prefix (merkle-spec §4.2.5), so the same hex never compares equal
+    /// across identities.
+    #[must_use]
+    pub fn token(self, value: [u8; 32]) -> MerkleRoot {
+        MerkleRoot(format!(
+            "{}{}",
+            self.prefix(),
+            blake3::Hash::from_bytes(value).to_hex()
+        ))
+    }
+}
+
+/// A grammar-parsed `Root`-family token: its §12.3 ladder position and its
+/// digest. Parse is history-agnostic — which (law, domain) pair the position
+/// spells, and whether that family still serves, is
+/// [`ServingVersion::classify`]'s question.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParsedRoot<'a> {
+    /// The ladder position the prefix spells (`b3:` ⇒ 0, `b3a:` ⇒ 1, …).
+    pub position: u32,
+    /// The 64 lowercase hex of the 32-byte value.
+    pub digest: &'a str,
+}
+
+/// Grammar-only parse of a `Root`-family token — the exact inverse of
+/// [`RootVersion::token`]'s spelling: `b3` + bijective base-26 suffix + `:` +
+/// 64 lowercase hex. `None` = not a root token: the reserved `absent` value
+/// (an existence premise, no fold — §5.4), an `fp1.…` fingerprint-plane
+/// token, a bare 16-hex `node_rev`, a `bf:` base fold, or any other spelling.
+#[must_use]
+pub fn parse_root(s: &str) -> Option<ParsedRoot<'_>> {
+    let rest = s.strip_prefix("b3")?;
+    let (suffix, digest) = rest.split_once(':')?;
+    if digest.len() != 64
+        || !digest
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return None;
+    }
+    // Inverse bijective base-26 (`a` = 1, no zero digit); checked, so a
+    // suffix past `u32` refuses rather than wrapping into a live position.
+    let mut position: u32 = 0;
+    for b in suffix.bytes() {
+        if !b.is_ascii_lowercase() {
+            return None;
+        }
+        position = position
+            .checked_mul(26)?
+            .checked_add(u32::from(b - b'a') + 1)?;
+    }
+    Some(ParsedRoot { position, digest })
+}
+
+/// The classification of a HELD `Root`-family token against the serving
+/// identity — the §5.7 error split made mechanical. Three errors, three
+/// facts, never flattened (wire-contract §5.7/§8.2/§12.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RootTokenVerdict {
+    /// Current family: same law, same domain — the only verdict that reaches
+    /// a digest compare. An unequal digest there is the ordinary scoped
+    /// `fingerprint_mismatch`: the premise moved.
+    Current,
+    /// Current law, older §12.3 domain version. The premise DID move — a
+    /// domain-rule edit re-defined the domain — so this is the ordinary
+    /// `fingerprint_mismatch` (delivered by token inequality: the prefixes
+    /// differ by construction), NEVER a version refusal. Named apart from
+    /// [`Self::Current`] so the two dimensions stay independently comparable.
+    DomainMoved,
+    /// KNOWN RETIRED hash-law family ⇒ `fingerprint_version_retired` with
+    /// re-mint teaching — never `fingerprint_mismatch`, which would lie: the
+    /// premise did not move, the LAW moved.
+    Retired,
+    /// UNKNOWN FUTURE family — a ladder position past everything this
+    /// serving identity ever minted ⇒ `fingerprint_version_unsupported`,
+    /// distinct from retired: "your token is past my law" and "the law moved
+    /// past your token" demand different acts.
+    UnsupportedFuture,
+    /// Not a `Root`-family token at all ([`parse_root`] = `None`).
+    Malformed,
+}
+
+/// The serving version identity of a workspace: which (hash-law, domain)
+/// pair mints now, and where on the §12.3 ladder the serving law began. The
+/// boundary is what splits, among positions below the current one, a retired
+/// LAW (version refusal) from an older DOMAIN under the same law (ordinary
+/// mismatch) — a bare position cannot say which fact moved.
+///
+/// Retirement begins ONLY at the cutover's no-return boundary (merkle-spec
+/// §4.2.5, R1): under law 1 the boundary is 0, so
+/// [`RootTokenVerdict::Retired`] is unreachable by construction — nothing
+/// refuses retired before a cutover has happened. Boundary durability is the
+/// cutover record's job (B-04), not this type's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServingVersion {
+    /// The identity currently minting. Invariant:
+    /// `law_boundary ≤ current.ladder_position()`.
+    pub current: RootVersion,
+    /// The ladder position at which `current.hash_law` began to serve — the
+    /// cutover's no-return boundary; 0 for law 1 (no cutover has happened).
+    pub law_boundary: u32,
+}
+
+impl ServingVersion {
+    /// The pre-cutover serving identity: law 1 at `domain`, boundary 0.
+    #[must_use]
+    pub const fn law1(domain: u32) -> Self {
+        ServingVersion {
+            current: RootVersion::law1(domain),
+            law_boundary: 0,
+        }
+    }
+
+    /// The serving identity at the moment a law-2 cutover lands with the
+    /// domain at `domain`: the boundary is the first law-2 position. Later
+    /// domain bumps advance `current.domain` and leave the boundary put.
+    #[must_use]
+    pub const fn law2_cutover(domain: u32) -> Self {
+        ServingVersion {
+            current: RootVersion::law2(domain),
+            law_boundary: RootVersion::law2(domain).ladder_position(),
+        }
+    }
+
+    /// Classify a held token against this identity — the §5.7 split,
+    /// mechanical. Token-value comparison stays the caller's (only
+    /// [`RootTokenVerdict::Current`] reaches it).
+    #[must_use]
+    pub fn classify(&self, token: &str) -> RootTokenVerdict {
+        let Some(parsed) = parse_root(token) else {
+            return RootTokenVerdict::Malformed;
+        };
+        let current = self.current.ladder_position();
+        if parsed.position > current {
+            RootTokenVerdict::UnsupportedFuture
+        } else if parsed.position < self.law_boundary {
+            RootTokenVerdict::Retired
+        } else if parsed.position == current {
+            RootTokenVerdict::Current
+        } else {
+            RootTokenVerdict::DomainMoved
+        }
+    }
+
+    /// The two-dimensional identity a held ladder position spells under this
+    /// serving history: at or past the boundary it carries the serving law,
+    /// below the boundary the law the cutover retired. `None` past the
+    /// current position — an unknown future family has no decodable identity
+    /// here. Exact for the laws in living memory (the serving law and, past a
+    /// cutover, its predecessor): law 2 is the first cutover ever
+    /// (merkle-spec §4.2), so no held token predates two laws.
+    #[must_use]
+    pub fn decode(&self, position: u32) -> Option<RootVersion> {
+        if position > self.current.ladder_position() {
+            return None;
+        }
+        let hash_law = if position >= self.law_boundary {
+            self.current.hash_law
+        } else {
+            self.current.hash_law - 1
+        };
+        Some(RootVersion {
+            hash_law,
+            domain: position - (hash_law - 1),
+        })
+    }
 }
 
 /// The resident corpus name index — derived, disposable model state (law 2).

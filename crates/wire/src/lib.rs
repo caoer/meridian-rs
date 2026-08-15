@@ -2114,6 +2114,18 @@ pub enum ErrorCode {
     /// v2 §4.7: a root range outside the retained history — full resync; the
     /// root is the only restart-durable handle. No extras.
     RootUnknown,
+    /// §5.7/§12.3 (v3 scoped-guard family, amended 2026-08-15): the held
+    /// token's hash-law family is KNOWN RETIRED — the premise did not move,
+    /// the LAW moved, so this is never `fingerprint_mismatch`. Resync:
+    /// re-mint at the same scope, re-plan once. Message:
+    /// [`version_retired_teaching`].
+    FingerprintVersionRetired,
+    /// §5.7/§12.3 (v3 scoped-guard family, amended 2026-08-15): the held
+    /// token's family is UNKNOWN and newer than the serving law — distinct
+    /// from retired, because "your token is past my law" and "the law moved
+    /// past your token" demand different acts. Resync. Message:
+    /// [`version_unsupported_teaching`].
+    FingerprintVersionUnsupported,
     /// v2 §8: transient lock contention — same request may succeed.
     LockTimeout,
     /// v2 §10.2: a `require_root` demand the current world does not meet —
@@ -2238,12 +2250,42 @@ impl ErrorCode {
             | ErrorCode::StaleView
             | ErrorCode::WorkspaceBusy
             | ErrorCode::CorpusRace => Recovery::Retry,
-            ErrorCode::RootMismatch | ErrorCode::RootUnknown => Recovery::Resync,
+            ErrorCode::RootMismatch
+            | ErrorCode::RootUnknown
+            | ErrorCode::FingerprintVersionRetired
+            | ErrorCode::FingerprintVersionUnsupported => Recovery::Resync,
             ErrorCode::BadFrame | ErrorCode::UnsupportedProto | ErrorCode::Internal => {
                 Recovery::Respawn
             }
         }
     }
+}
+
+/// The §8.2 register-law teaching for `fingerprint_version_retired` —
+/// Appendix C of the fingerprint-grain merged plan (k3's F-12 redrafted
+/// form) byte-for-byte, `<scope>` filled. Reason first, fitted remedy,
+/// never session rules.
+#[must_use]
+pub fn version_retired_teaching(scope: &str) -> String {
+    format!(
+        "this token was minted under a retired hash law. The premise did not \
+         move — the law did. Re-mint at the same scope (fingerprint{{scope: \
+         \"{scope}\"}}) and re-plan once."
+    )
+}
+
+/// The §8.2 register-law teaching for `fingerprint_version_unsupported`
+/// (drafted at §8.2 — Appendix C carried no text for it; recorded there,
+/// not slipped in), `<scope>` filled.
+#[must_use]
+pub fn version_unsupported_teaching(scope: &str) -> String {
+    format!(
+        "this token was minted under a hash law this engine does not know — \
+         the token is newer than the law being served. Re-mint at the same \
+         scope (fingerprint{{scope: \"{scope}\"}}) to proceed under the \
+         serving law; to keep the newer tokens, upgrade the engine, not the \
+         token."
+    )
 }
 
 /// One inbound reference blocking a `remove` (§ A.3 remove door): the
@@ -2436,5 +2478,25 @@ impl ErrorBody {
             new_fingerprint: None,
             referrers: None,
         }
+    }
+
+    /// The `fingerprint_version_retired` refusal with its re-mint teaching
+    /// riding along — §4.2.5 typed retirement made mechanical. `scope` is the
+    /// premise's scope spelling.
+    #[must_use]
+    pub fn version_retired(scope: &str) -> Self {
+        let mut body = ErrorBody::new(ErrorCode::FingerprintVersionRetired);
+        body.message = Some(version_retired_teaching(scope));
+        body
+    }
+
+    /// The `fingerprint_version_unsupported` refusal with its teaching riding
+    /// along — the distinct unknown-future-family refusal, never flattened
+    /// into retired or mismatch.
+    #[must_use]
+    pub fn version_unsupported(scope: &str) -> Self {
+        let mut body = ErrorBody::new(ErrorCode::FingerprintVersionUnsupported);
+        body.message = Some(version_unsupported_teaching(scope));
+        body
     }
 }
