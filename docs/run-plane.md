@@ -190,13 +190,13 @@ contract's § A.7 effects paragraph (today: `run`, `token_count`); a
 DO-NOT-BUILD, for later. **The flag switches the execution model:**
 
 - **Absent → pure script.** Everything above, word for word: entry world,
-  armed set, one-content-file law, commit CAS, replay. A script is provably
-  pure by default.
+  armed set, set-form law, the touch-set commit premise (the 2026-08-15
+  amendment below), replay. A script is provably pure by default.
 - **Present → LIVE PROGRAM.** `read()` serves the live disk at call time —
   no pin, no overlay, its own read is the world. `put()` applies
   IMMEDIATELY through the wire splice door: write flock held, structural
   validation intact, the guard's `force` bypass — no rev, no snapshot, no
-  CAS; the one-content-file law does not apply (it is the pure
+  CAS; the set-form law does not apply (it is the pure
   TRANSACTION's law, and there is no transaction here). `run(page,
   task=None, args=[], env={}, dry=False)` executes the addressed task at
   call time through the plane's own seam and RETURNS its § A.8 row as a
