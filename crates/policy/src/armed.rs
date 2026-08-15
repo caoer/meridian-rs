@@ -232,6 +232,28 @@ pub enum PathFault {
         /// The offending character.
         found: char,
     },
+    /// The first path segment carries `:` — under the address grammar a
+    /// `root:`-bearing head is an ADDRESS qualifier (§ 4.2 D11), never a
+    /// workspace path. The whole value rides along so the refusal can recognize
+    /// the resolver's `layer:depth` scope spelling (`workspace:0` on a
+    /// `mrd rules` chain line) and teach that specific confusion — the measured
+    /// copy-paste trap was a scope cell that parsed clean and governed nothing.
+    RootSeparator {
+        /// The offered value, whole.
+        value: String,
+    },
+}
+
+/// Whether `value` is spelled like the resolver's `layer:depth` scope — one
+/// word, a colon, digits. Recognized by SHAPE, not by today's layer names, so a
+/// layer added later still earns the fitted teaching.
+fn is_resolver_scope_spelling(value: &str) -> bool {
+    value.split_once(':').is_some_and(|(layer, depth)| {
+        !layer.is_empty()
+            && layer.chars().all(|c| c.is_ascii_alphabetic())
+            && !depth.is_empty()
+            && depth.bytes().all(|b| b.is_ascii_digit())
+    })
 }
 
 impl std::fmt::Display for PathFault {
@@ -264,6 +286,24 @@ impl std::fmt::Display for PathFault {
                  rather than escaped, so the next renderer inherits the guard",
                 code = *found as u32
             ),
+            PathFault::RootSeparator { value } => {
+                if is_resolver_scope_spelling(value) {
+                    write!(
+                        f,
+                        "`{value}` is the resolver's `layer:depth` scope spelling (the resolution \
+                         chain of `mrd rules`), not a directory — the armed artifact's `scope` \
+                         column takes the ARM ROOT the resolution was narrowed to: a \
+                         workspace-relative directory path, `.` for the workspace root"
+                    )
+                } else {
+                    write!(
+                        f,
+                        "the first path segment carries `:`, which the address grammar reserves \
+                         for a `root:` qualifier — that spelling is an address, never a \
+                         workspace path"
+                    )
+                }
+            }
         }
     }
 }
@@ -276,7 +316,10 @@ impl std::error::Error for PathFault {}
 /// unrepresentable rather than escaped. It refuses exactly what breaks a
 /// backtick-quoted table cell: `|`, a backtick, and any control character. The
 /// page renders as a plain path, never a wikilink, so `[`/`]`/`#`/`^` never
-/// arise here.
+/// arise here. It also holds the address grammar's confinement line (§ 4.2
+/// D11): a head segment carrying `:` is a `root:` qualifier — an address, never
+/// a workspace path — which is what makes the resolver's `workspace:0` scope
+/// spelling unrepresentable in a cell instead of silently inert.
 fn validate_workspace_path(path: &str) -> Result<(), PathFault> {
     if path.starts_with('/') {
         return Err(PathFault::Absolute);
@@ -286,6 +329,13 @@ fn validate_workspace_path(path: &str) -> Result<(), PathFault> {
         .find(|c| *c == '|' || *c == '`' || c.is_control())
     {
         return Err(PathFault::Unrenderable { found });
+    }
+    // D11 exactly: only the HEAD segment's `:` is a root qualifier; a colon
+    // after the first `/` is an ordinary path byte.
+    if path.split('/').next().unwrap_or(path).contains(':') {
+        return Err(PathFault::RootSeparator {
+            value: path.to_string(),
+        });
     }
     for segment in path.split('/') {
         match segment {
@@ -2063,6 +2113,59 @@ mod tests {
             ArmRoot::parse("a|b"),
             Err(PathFault::Unrenderable { found: '|' })
         ));
+    }
+
+    /// `workspace:0` is the RESOLVER's layer:depth scope spelling (the chain
+    /// lines of `mrd rules`), not a directory. Under the address grammar a
+    /// head segment carrying `:` is a `root:` qualifier (§ 4.2 D11) — an
+    /// address, never a workspace path — so an arm root spelled that way is
+    /// refused with a teaching that names both vocabularies. Measured before
+    /// this guard: the pasted cell parsed clean and governed nothing.
+    #[test]
+    fn the_resolvers_layer_depth_spelling_is_refused_as_an_arm_root() {
+        for copied in ["workspace:0", "workspace:2", "user:1"] {
+            let fault = ArmRoot::parse(copied).expect_err("resolver vocabulary is not a directory");
+            assert!(
+                matches!(fault, PathFault::RootSeparator { .. }),
+                "{copied}: {fault:?}"
+            );
+            let teaching = fault.to_string();
+            assert!(
+                teaching.contains("layer:depth"),
+                "names the colliding vocabulary: {teaching}"
+            );
+            assert!(
+                teaching.contains("ARM ROOT") && teaching.contains("workspace root"),
+                "teaches what the column takes instead: {teaching}"
+            );
+        }
+        // D11 exactly: a `:` after the first `/` is an ordinary path byte.
+        assert!(
+            ArmRoot::parse("sessions/a:b").is_ok(),
+            "a colon past the head segment stays a legal directory"
+        );
+    }
+
+    /// The copy-paste row itself: a § 4 scope cell hand-filled with the winner
+    /// line's `workspace:0`. It used to parse clean while governing nothing —
+    /// the config twin of the face-lies family. Now the artifact refuses as
+    /// corrupt, and the refusal teaches the collision at the cell that carries
+    /// it.
+    #[test]
+    fn a_scope_cell_pasted_from_the_winner_line_is_corrupt_not_inert() {
+        let ws = Workspace::default().check("rules/c.md", "c");
+        let page = arm_one(&ws, "c", Mode::Block).expect("arms").render();
+        let pasted = page.replace("| `.` |", "| `workspace:0` |");
+        assert_ne!(
+            pasted, page,
+            "the fixture's scope cell was the workspace root"
+        );
+        let err = parse_artifact(&pasted).expect_err("the pasted resolver spelling refuses");
+        assert!(
+            err.detail.contains("arm root") && err.detail.contains("layer:depth"),
+            "the refusal names both vocabularies: {}",
+            err.detail
+        );
     }
 
     // ── reading an attested page back ─────────────────────────────────────────

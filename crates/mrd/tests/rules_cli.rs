@@ -224,7 +224,7 @@ fn an_inherited_root_rule_has_a_winner_and_no_shadow() {
         block,
         vec![
             "  root.only  armed=-",
-            "      winner    root-only.md  rev=REV  scope=workspace:0  kinds=check"
+            "      winner    root-only.md  rev=REV  layer=workspace depth=0  kinds=check"
         ],
         "inherited, unshadowed, and unarmed"
     );
@@ -245,17 +245,17 @@ fn an_override_prints_the_winner_first_then_the_pages_it_shadows() {
     );
     assert_eq!(
         block[1],
-        "      winner    sessions/s1/notify.md  rev=REV  scope=workspace:2  kinds=hook"
+        "      winner    sessions/s1/notify.md  rev=REV  layer=workspace depth=2  kinds=hook"
     );
     assert_eq!(
-        block[2], "      shadowed  notify.md  rev=REV  scope=workspace:0  kinds=hook",
+        block[2], "      shadowed  notify.md  rev=REV  layer=workspace depth=0  kinds=hook",
         "the workspace-root page it shadows is VISIBLE, not collapsed"
     );
     // The user rung. Its depth digit is deliberately not asserted: this gate is about the
     // layer being present in the chain, in last position, not about its depth.
     assert!(
         block[3].starts_with("      shadowed  rules/user-notify.md  rev=")
-            && block[3].contains("scope=user:"),
+            && block[3].contains("layer=user depth="),
         "the user-space page is the outermost rung of the chain: {}",
         block[3]
     );
@@ -276,7 +276,7 @@ fn sibling_scopes_carrying_one_id_do_not_collide() {
         assert_eq!(
             block[1],
             format!(
-                "      winner    sessions/{session}/notify.md  rev=REV  scope=workspace:2  kinds=hook"
+                "      winner    sessions/{session}/notify.md  rev=REV  layer=workspace depth=2  kinds=hook"
             ),
             "each sibling governs its own subtree"
         );
@@ -302,7 +302,7 @@ fn a_collision_on_one_chain_is_reported_and_gates_the_exit() {
     let block = block_for(&stdout, "collide.here");
     assert_eq!(
         block[0],
-        "  collide.here  REFUSED collision at scope=workspace:1 — this id resolves to nothing"
+        "  collide.here  REFUSED collision at layer=workspace depth=1 — this id resolves to nothing"
     );
     let pages: Vec<&str> = block[1..].iter().map(|line| line.trim()).collect();
     assert_eq!(
@@ -588,7 +588,7 @@ fn the_workspace_flag_prints_one_layer() {
         );
     }
     assert!(
-        !stdout.contains("scope=user:"),
+        !stdout.contains("layer=user"),
         "no user rung in this view: {stdout}"
     );
 }
@@ -607,7 +607,7 @@ fn the_user_flag_prints_one_layer() {
     assert!(stdout.contains("rules/user-notify.md"), "{stdout}");
     assert!(stdout.contains("rules/user-only.md"), "{stdout}");
     assert!(
-        !stdout.contains("scope=workspace:"),
+        !stdout.contains("layer=workspace"),
         "no workspace rung in this view: {stdout}"
     );
     assert!(
@@ -638,8 +638,8 @@ fn a_layout_folder_page_renders_its_lifted_mount_scope() {
         block_for(&stdout, "kept.here"),
         vec![
             "  kept.here  armed=-",
-            // `workspace:0`, NOT `workspace:1` — the `rules/` container lifted.
-            "      winner    rules/kept-here.md  rev=REV  scope=workspace:0  kinds=check"
+            // depth 0, NOT depth 1 — the `rules/` container lifted.
+            "      winner    rules/kept-here.md  rev=REV  layer=workspace depth=0  kinds=check"
         ],
         "a layout-folder page governs the workspace, and says so: {stdout}"
     );
@@ -810,6 +810,39 @@ fn a_corrupt_artifact_is_unreadable_never_silently_unarmed() {
     assert!(
         stdout.contains("winner    sessions/s1/notify.md"),
         "the registration view still prints: {stdout}"
+    );
+}
+
+/// The copy-paste trap, through the process boundary (dogfood F2): a hand-edited
+/// scope cell carrying the chain line's `workspace:0` — the resolver's
+/// layer:depth spelling — used to parse clean and govern nothing (exit 0, the
+/// cell read `armed=-`, the header counted the row). Now the artifact refuses as
+/// unreadable, the refusal that reaches the operator teaches BOTH vocabularies,
+/// and the exit gates.
+#[test]
+fn a_hand_edited_scope_cell_pasting_the_resolver_spelling_is_loud_not_inert() {
+    let s = populated();
+    arm(&s, &[("", "root.only", "block")]);
+    // The hand edit a `mrd rules` reader performs: the scope cell becomes the
+    // winner line's own spelling. Rev and page stay real — only the vocabulary
+    // is confused.
+    let page =
+        std::fs::read_to_string(s.ws.join(policy::armed::ARMED_RULES_PATH)).expect("the artifact");
+    let pasted = page.replace("| `.` |", "| `workspace:0` |");
+    assert_ne!(pasted, page, "the minted scope cell was the workspace root");
+    s.write(policy::armed::ARMED_RULES_PATH, &pasted);
+
+    let out = s.run(&["rules", "sessions/s1"]);
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "a pasted resolver spelling is a finding, never a silent no-op: {stdout}"
+    );
+    assert!(stdout.contains("armed-set  UNREADABLE"), "{stdout}");
+    assert!(
+        stdout.contains("layer:depth") && stdout.contains("arm root"),
+        "the teaching names both vocabularies where the operator reads: {stdout}"
     );
 }
 
@@ -1249,8 +1282,9 @@ fn an_armed_page_leaving_the_domain_is_named_not_dropped() {
         "the answer still counts an armed row it never shows:\n{witness}\n{subject}"
     );
     assert!(
-        subject.contains("task.notify  armed=armed at scope= — pinned rules/notify.md"),
-        "the orphan names the id, its mode, its arm root and its pinned page:\n{subject}"
+        subject.contains("task.notify  armed=armed at scope=. — pinned rules/notify.md"),
+        "the orphan names the id, its mode, its arm root (the workspace root spelled `.`, \
+         never an ambiguous empty cell) and its pinned page:\n{subject}"
     );
 
     // ⛔ THE CAUSE IS ESTABLISHED, NOT MINTED. `policy` reddens this row
