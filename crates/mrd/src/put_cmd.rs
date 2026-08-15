@@ -162,7 +162,12 @@ fn rehearsal_diff(
     ))
 }
 
-/// The human summary: what landed (or was rehearsed), at which fingerprint.
+/// The human summary: what landed (or was rehearsed), at which fingerprint — and one line per
+/// FIRED intent. Without those lines an armed workspace commits identically to an unarmed one
+/// on this face, and the operator who armed the plane can only see it fire through `--json`
+/// (`put.armed.effects[]`). The line speaks the engine's vocabulary: what the write armed,
+/// never that anything was delivered, and the receipt address VERBATIM — it is the pairing key
+/// the delivery faces echo as `correlation`.
 fn print_human(parsed: &Put, body: &Value, diff: Option<&str>) {
     let edits = body
         .pointer("/armed/edits")
@@ -191,6 +196,22 @@ fn print_human(parsed: &Put, body: &Value, diff: Option<&str>) {
         .and_then(Value::as_str)
     {
         println!("  receipt: ^{receipt}");
+    }
+    let fired = body
+        .pointer("/armed/effects")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|envelope| envelope.get("intents").and_then(Value::as_array))
+        .flatten();
+    for intent in fired {
+        let rule = intent.get("rule_id").and_then(Value::as_str).unwrap_or("?");
+        let action = intent.get("action").and_then(Value::as_str).unwrap_or("?");
+        let receipt = intent.get("receipt").and_then(Value::as_str).unwrap_or("?");
+        match intent.get("target").and_then(Value::as_str) {
+            Some(target) => println!("  fired: {rule} {action} → {target} (receipt {receipt})"),
+            None => println!("  fired: {rule} {action} (receipt {receipt})"),
+        }
     }
 }
 
