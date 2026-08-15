@@ -482,6 +482,7 @@ mod tests {
             check: Box::new(Fixed(outcome)),
             apply: None,
             retry_budget: 0,
+            card_template: None,
         }
     }
 
@@ -906,6 +907,7 @@ mod tests {
             check: Box::new(Faults),
             apply: None,
             retry_budget: 0,
+            card_template: None,
         };
         let err = claims_realised(&root, std::slice::from_ref(&claim))
             .expect_err("a faulting observation is an error, not a drift");
