@@ -490,8 +490,14 @@ proposes "just a small cap check on bash" must answer both.
 > and no `deny-default`.
 > 2. The engine **never prints a claim about what a bash task may do** — most of
 > all not `(read-only)`.
-> 3. Bash is **unsandboxed by definition.** The only honest description on any
-> surface is: *unsandboxed shell, undeclared effects.*
+> 3. Bash is **unsandboxed by definition** — and that is exactly why no human
+> surface says the word: with no sandbox in the engine, `unsandboxed` names an
+> alternative that does not exist. The only honest description is the positive
+> fact alone: *undeclared effects*. (Amended 2026-08-15, ZT: *"we dont have
+> sandbox, dont bother mention unsandboxed. thats confusing."* The class
+> survives structurally — `GuaranteeClass::Unsandboxed`, the `--json`
+> `guarantee` key — and a guarantee word renders only where it is positive:
+> `hermetic`.)
 > 4. Capabilities remain a real, enforceable contract for **starlark**, and only
 > starlark.
 

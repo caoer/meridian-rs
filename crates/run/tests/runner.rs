@@ -210,8 +210,10 @@ fn the_depth_cap_suppresses_md_and_names_the_stop() {
 }
 
 /// Under `docs/laws.md` § Amendment a bash task has no guarantee to derive —
-/// the label is `unsandboxed`, and the bracket verdict is asserted as what it
-/// is: an observation about the window, still rendered, never a class.
+/// the class is `Unsandboxed` (a structural fact; `--json` carries it, the
+/// human face never prints the word — ZT ruling, 2026-08-15), and the bracket
+/// verdict is asserted as what it is: an observation about the window, still
+/// rendered, never a class.
 #[test]
 fn a_bash_block_runs_end_to_end_and_labels_unsandboxed() {
     let (_tmp, root) = workspace(BASH_PAGE);

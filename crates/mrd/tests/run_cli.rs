@@ -108,9 +108,10 @@ fn code(out: &Output) -> i32 {
     out.status.code().expect("exit code")
 }
 
-/// `--list` names every task with language, guarantee class, contract, and — where
-/// capabilities apply — its caps. Exit 0. The bash row reads `unsandboxed  effects:
-/// undeclared` (`docs/laws.md` § Amendment — capabilities do not apply to bash).
+/// `--list` names every task with language, contract, and — where capabilities
+/// apply — its caps. Exit 0. The bash row reads `effects: undeclared`, with NO
+/// guarantee word: a class renders only where positive (`hermetic`) — there is
+/// no sandbox, so `unsandboxed` names nothing (ZT ruling, 2026-08-15).
 #[test]
 fn list_shows_every_task_with_class_and_caps() {
     let ws = Ws::new();
@@ -124,13 +125,13 @@ fn list_shows_every_task_with_class_and_caps() {
         "check-sh",
         "starlark",
         "hermetic",
-        "unsandboxed",
         "effects: undeclared",
         "md.set_field",
         "env: HOME_WIKI",
     ] {
         assert!(text.contains(needle), "missing {needle:?} in:\n{text}");
     }
+    assert!(!text.contains("unsandboxed"), "{text}");
     // check-sh is bash under check-*: the LIST shows its typed refusal
     // instead of hiding the row.
     assert!(text.contains("read-only convention"), "{text}");
@@ -261,7 +262,7 @@ fn dry_starlark_prints_effect_truth_applies_nothing() {
 
 /// `--dry` bash: the block shows, exec is refused (exit 0, the refusal is the content) — and
 /// the block demonstrably did not run. A bash task declares no capability (`docs/laws.md`
-/// § Amendment), so the surface states the two honest facts instead.
+/// § Amendment), so the surface states `effects: undeclared` and nothing more.
 #[test]
 fn dry_bash_shows_block_and_refuses_exec() {
     let ws = Ws::new();
@@ -270,7 +271,9 @@ fn dry_bash_shows_block_and_refuses_exec() {
     let text = stdout(&out);
     assert!(text.contains("NOT executed"), "{text}");
     assert!(text.contains("touch pwned-by-fix-drift"), "{text}");
-    assert!(text.contains("unsandboxed"), "{text}");
+    // No guarantee word for bash (ZT ruling, 2026-08-15): `effects:
+    // undeclared` is the fact; a negation naming no real sandbox is not.
+    assert!(!text.contains("unsandboxed"), "{text}");
     assert!(text.contains("effects: undeclared"), "{text}");
     // No descriptor fiction and no exec: the touch never happened.
     assert!(!ws.file("pwned-by-fix-drift").exists());
