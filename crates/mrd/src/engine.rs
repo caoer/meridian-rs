@@ -217,26 +217,31 @@ pub(crate) fn run_command(path_arg: Option<&str>, format: Format) -> Result<(), 
 /// Voice the enumeration's domain-excluded population on stderr, so machine
 /// stdout stays byte-identical to what the wire carried.
 ///
-/// The list rides the answer (§4.6 `excluded`), never a second disk walk here:
-/// a face that re-derived it could disagree with the door that served it, which
-/// is the door/face split this rule exists to close. Empty on the named form —
-/// a named path is served, so nothing was left out (§12.1).
+/// The population rides the answer (§4.6 `excluded`), never a second disk walk
+/// here: a face that re-derived it could disagree with the door that served
+/// it, which is the door/face split this rule exists to close. Empty on the
+/// named form — a named path is served, so nothing was left out (§12.1).
+///
+/// The VOICE projects that key through the projection's one exclusion
+/// predicate before speaking (card walk-law-audit): a member with a
+/// dot-prefixed segment ([`fs::domain::dot_segment`], §12.1 rule 2) leaves
+/// the count and the sample, so this face can never voice a path the record
+/// projection refuses to serve (dogfood F11) — and the prose is capped by the
+/// shared spelling ([`crate::voice_excluded_note`]), never an unbounded join
+/// (the 2026-08-10 3.1M-character measurement). The wire key underneath stays
+/// the complete outside-domain enumeration, and the note points at it as the
+/// complete list — on this face, this verb's own `--json` answer.
 fn voice_excluded(body: &Value) {
-    let names: Vec<&str> = body
+    let declined: Vec<String> = body
         .get("excluded")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .filter_map(Value::as_str)
+        .filter(|rel| !rel.split('/').any(fs::domain::dot_segment))
+        .map(str::to_owned)
         .collect();
-    if names.is_empty() {
-        return;
-    }
-    eprintln!(
-        "mrd: note: {} markdown file(s) under this root are outside the hash domain and are NOT in this listing — {}. They stay addressable by explicit path (`mrd read`, `mrd links <PATH>`); their bytes do not move the fingerprint this answer is stamped with.",
-        names.len(),
-        names.join(", ")
-    );
+    crate::voice_excluded_note(&declined);
 }
 
 /// How many times the page wrote a refused linkpath.
