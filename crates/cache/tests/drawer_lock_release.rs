@@ -91,21 +91,52 @@ impl ForkedFdHolder {
     }
 }
 
+/// A blocking acquire run on a helper thread, bounded by [`ACQUIRE_BOUND`].
+///
+/// A timed-out probe is still parked inside `flock(2)`: it acquires the lock
+/// the instant the lock frees, and releases it again only when its thread ends.
+/// That thread is a second contender for the rest of the test, so the caller
+/// must [`settle`](Self::settle) it — never merely drop it.
+struct BoundedProbe<T> {
+    /// What the acquire returned inside the bound; `None` is the timeout.
+    outcome: Option<T>,
+    helper: thread::JoinHandle<()>,
+}
+
+impl<T> BoundedProbe<T> {
+    /// Did the acquire fail to finish inside the bound? On a blocking `LOCK_EX`
+    /// that is the observable defect, not an inconclusive result.
+    fn timed_out(&self) -> bool {
+        self.outcome.is_none()
+    }
+
+    /// Join the helper thread and take the outcome. Once the lock is free the
+    /// helper acquires it, drops what it acquired (its receiver is gone) and
+    /// exits — so joining here makes that release *happen-before* whatever the
+    /// caller probes next, instead of racing it.
+    ///
+    /// Call it only after the lock under test has been freed; a helper still
+    /// waiting on a genuinely held lock never returns.
+    fn settle(self) -> Option<T> {
+        self.helper
+            .join()
+            .expect("the bounded-acquire helper thread panicked");
+        self.outcome
+    }
+}
+
 /// Run a blocking acquire on a helper thread and wait at most [`ACQUIRE_BOUND`].
-///
-/// `None` means it did not finish inside the bound — on a blocking `LOCK_EX`
-/// that is the observable defect, not an inconclusive result.
-///
-/// The helper thread is left parked on timeout. It completes on its own once the
-/// lock frees (every test here frees it by reaping its child), and its value is
-/// dropped in the thread because the receiver is gone — so a timed-out probe
-/// leaks neither the lock nor the fd past the end of the test.
-fn within_bound<T: Send + 'static>(acquire: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+fn within_bound<T: Send + 'static>(
+    acquire: impl FnOnce() -> T + Send + 'static,
+) -> BoundedProbe<T> {
     let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
+    let helper = thread::spawn(move || {
         let _ = tx.send(acquire());
     });
-    rx.recv_timeout(ACQUIRE_BOUND).ok()
+    BoundedProbe {
+        outcome: rx.recv_timeout(ACQUIRE_BOUND).ok(),
+        helper,
+    }
 }
 
 /// A `flock` this crate does not own, taken the same blocking `LOCK_EX` way
@@ -161,9 +192,13 @@ fn the_fork_window_is_real_a_forked_child_holds_the_lock_past_our_close() {
     // Probe 2, the drawer's mode: a blocking acquire must not complete — the
     // hang, observed as a bounded wait that expires.
     let probe_dir = dir.clone();
-    let hung_while_parked = within_bound(move || raw_flock_blocking(&probe_dir)).is_none();
+    let hung_probe = within_bound(move || raw_flock_blocking(&probe_dir));
+    let hung_while_parked = hung_probe.timed_out();
 
     child.release_and_reap();
+    // The parked probe wins the freed lock; settle it so its release is done
+    // before the acceptance probes below, which would otherwise race it.
+    drop(hung_probe.settle());
 
     assert!(
         refused_while_parked,
@@ -181,7 +216,9 @@ fn the_fork_window_is_real_a_forked_child_holds_the_lock_past_our_close() {
     // both probes — proving the child's fd copy was the sole holder.
     let free_dir = dir.clone();
     assert!(
-        within_bound(move || raw_flock_blocking(&free_dir)).is_some(),
+        within_bound(move || raw_flock_blocking(&free_dir))
+            .settle()
+            .is_some(),
         "the lock stayed held after the child was reaped — something other than the child's \
          fd copy is holding it, so the control does not isolate what it claims to"
     );
@@ -216,8 +253,9 @@ fn dropping_a_drawer_lock_releases_it_across_a_forked_child() {
         "the forked child died before the assert — the window was never open"
     );
     let reacquire_dir = drawer.clone();
-    let reacquired = within_bound(move || cache::DrawerLock::acquire(&reacquire_dir));
+    let probe = within_bound(move || cache::DrawerLock::acquire(&reacquire_dir));
     child.release_and_reap();
+    let reacquired = probe.settle();
 
     match reacquired {
         None => panic!(
@@ -256,8 +294,9 @@ fn register_completes_after_a_drawer_lock_drops_across_a_forked_child() {
         "the forked child died before the assert — the window was never open"
     );
     let (register_dir, register_ws) = (drawer.clone(), workspace.clone());
-    let registered = within_bound(move || cache::register(&register_dir, &register_ws));
+    let probe = within_bound(move || cache::register(&register_dir, &register_ws));
     child.release_and_reap();
+    let registered = probe.settle();
 
     let sentinel = match registered {
         None => panic!(
@@ -341,16 +380,23 @@ fn a_genuinely_held_drawer_lock_still_excludes_both_acquire_modes() {
         "a held exclusive lock must refuse a non-blocking try — the fix must not release early"
     );
     let waiting_dir = drawer.clone();
+    let waiting = within_bound(move || cache::DrawerLock::acquire(&waiting_dir));
     assert!(
-        within_bound(move || cache::DrawerLock::acquire(&waiting_dir)).is_none(),
+        waiting.timed_out(),
         "a blocking acquire completed while the lock was genuinely held — the fix released the \
          lock early and the drawer is no longer serialized against the reaper"
     );
     drop(held);
+    // `waiting`'s helper is still queued on the flock: it takes the lock the
+    // moment the drop above frees it, and gives it back only when its thread
+    // ends. Settle it here so the acceptance probes below contend with nothing
+    // but each other.
+    drop(waiting.settle());
 
     // The acceptance: once the holder is really gone, both modes proceed.
     let free_dir = drawer.clone();
     within_bound(move || cache::DrawerLock::acquire(&free_dir))
+        .settle()
         .expect("the blocking acquire must complete once the holder drops")
         .expect("and it must succeed");
     assert!(
