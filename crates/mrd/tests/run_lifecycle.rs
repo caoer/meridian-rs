@@ -143,10 +143,10 @@ fn bash_task_applies_via_shim_with_run_record() {
     let receipts = receipts_text(&ws);
     assert!(receipts.contains(".meridian/runs/"), "{receipts}");
     assert!(receipts.contains("sha256"), "{receipts}");
-    // The class label: `unsandboxed`, not `detected` — bash has no guarantee to derive
-    // (`docs/laws.md` § Amendment). The brackets verdict still renders, on the out-of-band-delta
-    // line below.
-    assert!(stdout(&out).contains("unsandboxed"), "{}", stdout(&out));
+    // No class label for bash — a guarantee word renders only where positive
+    // (ZT ruling, 2026-08-15; `docs/laws.md` § Amendment). The brackets verdict
+    // still renders, on the out-of-band-delta line below.
+    assert!(!stdout(&out).contains("unsandboxed"), "{}", stdout(&out));
     assert!(
         stdout(&out).contains("out-of-band delta: none"),
         "{}",

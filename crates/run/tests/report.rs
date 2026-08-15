@@ -151,8 +151,41 @@ fn the_depth_cap_is_a_generic_withheld_state() {
         true,
     ));
     assert_eq!(r.state, ReportState::WithheldDepthCap);
-    // Generic line — never a per-effect suppression listing.
-    assert!(r.to_text().contains("depth cap reached"));
+    // Generic line — never a per-effect suppression listing, and never
+    // mechanism narration ("by the kernel"): the fact is cap + not-applied
+    // (report-voice audit, 2026-08-15).
+    assert!(
+        r.to_text()
+            .contains("cascade: depth cap reached — capped md.* not applied")
+    );
+}
+
+/// ZT ruling, 2026-08-15: there is no sandbox, so no human line says
+/// `unsandboxed` — the `task:` line renders bare for bash and `effects:
+/// undeclared` carries the fact. A POSITIVE guarantee (`hermetic`) still
+/// renders, and `--json` keeps the `guarantee` class on both.
+#[test]
+fn a_guarantee_word_renders_only_where_positive() {
+    let b = report::render(&bash(
+        Phase2::Applied {
+            effects: vec![],
+            applied: None,
+        },
+        ExecStatus::Exited { code: 0 },
+        Some("^p-1"),
+    ));
+    let text = b.to_text();
+    assert!(text.contains("task: fix-x\n"), "{text}");
+    assert!(text.contains("effects: undeclared\n"), "{text}");
+    assert!(!text.contains("unsandboxed"), "{text}");
+    assert_eq!(b.guarantee, "unsandboxed", "--json keeps the class");
+
+    let s = report::render(&starlark(
+        vec![md()],
+        caps("md.set_field", CapSource::Explicit, &[]),
+        false,
+    ));
+    assert!(s.to_text().contains("task: fix-x (hermetic)"), "positive");
 }
 
 /// #23 gate condition (b): the report renders the caps a ceiling narrowed away.
