@@ -43,17 +43,17 @@ fn one_change_rehashes_the_same_vertex_count_at_every_width() {
         table.push((width, map.vertex_hashes() - v0, map.hashed_bytes() - b0));
     }
     eprintln!("RADIX-GATE same-vertex-count (width, vertex re-hashes, bytes): {table:?}");
-    for (width, ops, bytes) in &table {
-        assert_eq!(
-            *ops, 2,
-            "width {width}: the key path is target vertex + root = 2, got {ops} ({bytes} B)"
-        );
-    }
-    assert!(
-        table
-            .windows(2)
-            .all(|w| (w[0].1, w[0].2) == (w[1].1, w[1].2)),
-        "per-change work must not move with width: {table:?}"
+    // The published table, pinned exactly: 2 vertex re-hashes and 129
+    // pre-image bytes per change — identical at width 100 and width 100,000.
+    assert_eq!(
+        table,
+        [
+            (100, 2, 129),
+            (1_000, 2, 129),
+            (8_000, 2, 129),
+            (100_000, 2, 129)
+        ],
+        "per-change work must not move with width"
     );
 }
 
@@ -95,19 +95,21 @@ fn flat_directory_update_insert_delete_stay_bounded() {
         rows.push((width, update_ops, insert_ops, delete_ops));
     }
     eprintln!("RADIX-GATE flat-dir ops (width, update, insert, delete): {rows:?}");
-    for (width, update_ops, insert_ops, delete_ops) in &rows {
-        for (label, ops) in [
-            ("update", update_ops),
-            ("insert", insert_ops),
-            ("delete", delete_ops),
-        ] {
-            assert!(
-                *ops <= 12,
-                "width {width}: {label} re-hashed {ops} vertices — the key path \
-                 is bounded by the name, never by the {width} siblings"
-            );
-        }
-    }
+    // The published table, pinned exactly. Update depth grows with the
+    // digit fan's key path (3 → 6 vertices from width 100 to 100,000 — the
+    // name's structure, log-scale), insert is a constant 3 (split: relocated
+    // vertex + new leaf + root), delete is 1 (the dead leaf drops and only
+    // the root frame re-hashes). 100,000 siblings appear in no column.
+    assert_eq!(
+        rows,
+        [
+            (100, 3, 3, 1),
+            (1_000, 4, 3, 1),
+            (8_000, 5, 3, 1),
+            (100_000, 6, 3, 1)
+        ],
+        "flat-directory ops must stay key-path-bounded"
+    );
 }
 
 /// The live-calibration arm: width 428 — the live-corpus maximum directory
@@ -145,17 +147,14 @@ fn uniform_names_at_live_and_flat100k_widths() {
         );
         rows.push((width, map.vertex_hashes() - v0, map.hashed_bytes() - b0));
     }
-    for (width, ops, bytes) in &rows {
-        assert!(
-            *ops <= 8,
-            "width {width}: uniform-name update re-hashed {ops} vertices ({bytes} B)"
-        );
-        assert!(
-            *bytes <= 32 * 1024,
-            "width {width}: per-change bytes are fanout-bounded (§4.2.4 ≈ 8.5 KiB \
-             per vertex at full fanout), got {bytes}"
-        );
-    }
+    // The published pair, pinned exactly: the live-census width costs 3
+    // re-hashes / 1,139 B; 233× more siblings cost 5 re-hashes / 2,215 B —
+    // fanout-bounded per vertex (§4.2.4 ≈ 8.5 KiB ceiling), key-path-deep.
+    assert_eq!(
+        rows,
+        [(428, 3, 1_139), (100_000, 5, 2_215)],
+        "uniform-name update must stay key-path-bounded"
+    );
 }
 
 /// §5/§5.1 worked example under law 2 — byte-identity against the values
