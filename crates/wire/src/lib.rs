@@ -1965,12 +1965,18 @@ pub struct DeltaNode {
     pub span_after: Option<Span>,
 }
 
-/// v2 §7.1: node `change ∈ {added, edited, removed}`.
+/// §7.1: `change ∈ {added, edited, removed, anchored}`.
+/// `anchored` (v3-only) says the node moved SOLELY by gaining an anchor id —
+/// it was attested to, not rewritten; `edited` claims content changed, which
+/// a mint did not. A frozen v2 session receives `anchored` demoted to
+/// `edited` (v2 keeps its birth vocabulary), the same tense-preserving
+/// demotion [`FileChange::Unattested`] takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeChange {
     Added,
     Edited,
+    Anchored,
     Removed,
 }
 
