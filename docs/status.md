@@ -118,6 +118,23 @@ mrd put <PATH> [--dry | --validate] [--force] [--actor A] [--now T]
  faces echo as `correlation`) — what the write armed,
  never that anything was delivered; a workspace with
  no armed hooks prints exactly what it always did
+mrd rm <PAGE> --rev <FILE_REV> [--if-fingerprint FP] [--dry] [--actor A]
+ [--now T] [--json]
+ guarded file death (wire-contract § A.3 remove door):
+ the write model's third mutation beside `new` (birth)
+ and `put` (edit), through the production death
+ choke-point (remove-what-you-read CAS + in-flock
+ referential check + armed gate + write flock). `--rev`
+ is the page's whole-file rev from a prior read,
+ REQUIRED — the engine demands it from every origin and
+ there is no `--force` on this door. A page with inbound
+ wikilinks, embeds, or ambient meridian-lock pins
+ refuses `remove_refused` naming every referring file,
+ its edge kind, and its count — unlink those edges,
+ then rerun. `--json` answers both legs: a removal
+ {workspace, rm}; an engine refusal {workspace, error}.
+ Exit triad: 0 removed|dry / 1 refused / 2 bad
+ invocation
 mrd pin <PAGE> <TARGET>#<SELECTOR> [--vibe] [--dry] [--json]
  mint a meridian-lock pin: PAGE records the claim,
  TARGET#SELECTOR is the content being attested

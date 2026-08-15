@@ -31,7 +31,10 @@ render = { workspace = true }
 # and the `CorpusIndex`; `model::resolve`/`model::walk` back cat/resolve, and the
 # write choke-point validates + simulates the after-doc through `model`.
 model = { workspace = true }
-# The corpus edge map (§4.6 links), read over the borrowed index + docs.
+# The corpus edge map (§4.6 links) and both inbound-reference planes of the
+# § A.3 remove door (kinded backlinks + lock-pin referrers), read over the
+# borrowed index + docs. NOT `view`: C2 topology law — view is a write-only
+# leaf no correctness crate may depend on (`view/tests/topology_assert`).
 query = { workspace = true }
 # Disk (W1): the write choke-point loads fresh bytes, folds the ambient root, and
 # lands the two-file atomic commit (`fs::load`/`domain_snapshot`/`apply_batch`);

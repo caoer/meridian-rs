@@ -101,7 +101,7 @@ fn held_lock_refuses_all_write_ops_then_retry_succeeds() {
             &RemoveArgs {
                 id: None,
                 path: WPath("log.md".into()),
-                if_file_rev: NodeRev("deadbeefdeadbeef".into()),
+                if_file_rev: Some(NodeRev("deadbeefdeadbeef".into())),
                 actor: None,
                 now: None,
                 if_root: None,

@@ -810,7 +810,7 @@ mod scenarios {
         RemoveArgs {
             id: None,
             path: Path(path.into()),
-            if_file_rev: rev,
+            if_file_rev: Some(rev),
             actor: Some("agent:mallory".into()),
             now: None,
             if_root: None,

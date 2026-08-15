@@ -30,6 +30,17 @@ use model::{
 pub struct Backlink {
     pub path: String,
     pub span: ByteSpan,
+    /// Which edge kind wrote the reference — the remove door's refusal
+    /// vocabulary rides this (no-serde law: `wire::ReferrerKind` twins it).
+    pub kind: BacklinkKind,
+}
+
+/// The two corpus link-plane edge kinds a backlink can be. The lock-pin plane
+/// is a separate projection (`view::read_face`), never folded in here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum BacklinkKind {
+    Wikilink,
+    Embed,
 }
 
 /// One file's outgoing edges (contract §4.6): per-edge counts, dangling refs
@@ -145,7 +156,7 @@ pub fn file_links(
     mounts: Option<&MountSet>,
 ) -> FileLinks {
     let mut entry = FileLinks::default();
-    for (target, _span) in link_nodes(doc) {
+    for (target, _span, _kind) in link_nodes(doc) {
         match resolve_edge(index, source, target, corpus, mounts) {
             RefResolution::Ambient(dest) => *entry.resolved.entry(dest).or_insert(0) += 1,
             RefResolution::Rooted { root, path } => {
@@ -176,6 +187,44 @@ pub fn file_links(
         }
     }
     entry
+}
+
+/// Every ambient `meridian-lock` pin edge in the corpus landing on `target`
+/// (a corpus path): one row per edge, the pinning file's path, in path order —
+/// the walk plane's Down predicate at corpus grain, homed here because
+/// inbound-edge enumeration is this crate's charter and `view` is a write-only
+/// leaf no correctness crate may consume (C2, `view/tests/topology_assert`).
+///
+/// Parse via [`lock::find`] (the format's one parser — a malformed lock
+/// declares no edge, exactly as the walk plane's refusal rows never enter
+/// reverse adjacency); the declared object resolves as `<object>.md` through
+/// the same edge resolution the link plane uses ([`resolve_edge`]), ambient
+/// hits only — a rooted or unresolvable spelling is a different corpus (the
+/// wire-contract § A.3 stated limit). Self-edges are returned; excluding them
+/// is the consumer's semantics.
+#[must_use]
+pub fn lock_pin_referrers(
+    index: &CorpusIndex,
+    docs: &BTreeMap<String, Document>,
+    target: &str,
+) -> Vec<String> {
+    let corpus = RootedCorpus::ambient(docs);
+    let mut out = Vec::new();
+    for (src, doc) in docs {
+        let Ok(Some(found)) = lock::find(doc) else {
+            continue;
+        };
+        for pin in &found.lock.pins {
+            let declared = format!("{}.md", pin.object);
+            if matches!(
+                resolve_edge(index, src, &declared, &corpus, None),
+                RefResolution::Ambient(dest) if dest == target
+            ) {
+                out.push(src.clone());
+            }
+        }
+    }
+    out
 }
 
 /// Find-references: every wikilink/embed in the corpus resolving to `target`
@@ -221,15 +270,16 @@ fn backlinks_with(
         .flat_map(|(source, doc)| {
             link_nodes(doc)
                 .into_iter()
-                .filter(|(linkpath, _)| {
+                .filter(|(linkpath, _, _)| {
                     matches!(
                         resolve_edge(index, source, linkpath, corpus, mounts),
                         RefResolution::Ambient(dest) if dest == target
                     )
                 })
-                .map(|(_, span)| Backlink {
+                .map(|(_, span, kind)| Backlink {
                     path: source.clone(),
                     span,
+                    kind,
                 })
                 .collect::<Vec<_>>()
         })
@@ -296,16 +346,22 @@ fn resolve_edge(
 /// Every wikilink/embed in the document, span order. `NodeKind::Link`
 /// (external markdown links) never edges — the app's `resolvedLinks` counts
 /// vault links only.
-fn link_nodes(doc: &Document) -> Vec<(&str, ByteSpan)> {
+fn link_nodes(doc: &Document) -> Vec<(&str, ByteSpan, BacklinkKind)> {
     let mut out = Vec::new();
     collect_links(&doc.root, &mut out);
-    out.sort_by_key(|(_, span)| span.start);
+    out.sort_by_key(|(_, span, _)| span.start);
     out
 }
 
-fn collect_links<'a>(node: &'a Node, out: &mut Vec<(&'a str, ByteSpan)>) {
-    if let NodeKind::Wikilink { target, .. } | NodeKind::Embed { target, .. } = &node.kind {
-        out.push((target.as_str(), node.span.clone()));
+fn collect_links<'a>(node: &'a Node, out: &mut Vec<(&'a str, ByteSpan, BacklinkKind)>) {
+    match &node.kind {
+        NodeKind::Wikilink { target, .. } => {
+            out.push((target.as_str(), node.span.clone(), BacklinkKind::Wikilink));
+        }
+        NodeKind::Embed { target, .. } => {
+            out.push((target.as_str(), node.span.clone(), BacklinkKind::Embed));
+        }
+        _ => {}
     }
     for c in &node.children {
         collect_links(c, out);
