@@ -1583,12 +1583,12 @@ pub fn remove(
 /// refusal's `referrers` rows: (referring file, edge kind, count), path-lex
 /// then kind order (§ A.3 remove door).
 ///
-/// Two planes, each read through its one owner: wikilinks/embeds via
-/// [`query::backlinks`] (link-plane resolution, walk stage 1), ambient
-/// `meridian-lock` pins via [`view::read_face::page_lock_items_in_corpus`]
-/// with the walk plane's own Down predicate (`to_root` none, no root refusal,
-/// `to_path` = target — cross-root inbound is that plane's stated limit,
-/// § A.3). Self-edges are excluded: a record cannot hold itself alive.
+/// Both planes read through `query` — the corpus-reads owner: wikilinks and
+/// embeds via [`query::backlinks`] (link-plane resolution, walk stage 1),
+/// ambient `meridian-lock` pins via [`query::lock_pin_referrers`] (the walk
+/// plane's Down predicate at corpus grain; cross-root inbound is that plane's
+/// stated limit, § A.3). Self-edges are excluded: a record cannot hold itself
+/// alive.
 fn inbound_referrers(target: &str, files: fs::DomainFiles) -> Vec<Referrer> {
     let (index, docs, _unserved) = fs::build_corpus(files);
     let mut counts: std::collections::BTreeMap<(String, ReferrerKind), u64> =
@@ -1605,15 +1605,11 @@ fn inbound_referrers(target: &str, files: fs::DomainFiles) -> Vec<Referrer> {
         *counts.entry((b.path, kind)).or_insert(0) += 1;
     }
 
-    for (src, doc) in &docs {
+    for src in query::lock_pin_referrers(&index, &docs, target) {
         if src == target {
             continue;
         }
-        for item in view::read_face::page_lock_items_in_corpus(src, doc, &index, &docs) {
-            if item.to_root.is_none() && item.root_refusal.is_none() && item.to_path == target {
-                *counts.entry((src.clone(), ReferrerKind::Pin)).or_insert(0) += 1;
-            }
-        }
+        *counts.entry((src, ReferrerKind::Pin)).or_insert(0) += 1;
     }
 
     counts

@@ -189,6 +189,44 @@ pub fn file_links(
     entry
 }
 
+/// Every ambient `meridian-lock` pin edge in the corpus landing on `target`
+/// (a corpus path): one row per edge, the pinning file's path, in path order —
+/// the walk plane's Down predicate at corpus grain, homed here because
+/// inbound-edge enumeration is this crate's charter and `view` is a write-only
+/// leaf no correctness crate may consume (C2, `view/tests/topology_assert`).
+///
+/// Parse via [`lock::find`] (the format's one parser — a malformed lock
+/// declares no edge, exactly as the walk plane's refusal rows never enter
+/// reverse adjacency); the declared object resolves as `<object>.md` through
+/// the same edge resolution the link plane uses ([`resolve_edge`]), ambient
+/// hits only — a rooted or unresolvable spelling is a different corpus (the
+/// wire-contract § A.3 stated limit). Self-edges are returned; excluding them
+/// is the consumer's semantics.
+#[must_use]
+pub fn lock_pin_referrers(
+    index: &CorpusIndex,
+    docs: &BTreeMap<String, Document>,
+    target: &str,
+) -> Vec<String> {
+    let corpus = RootedCorpus::ambient(docs);
+    let mut out = Vec::new();
+    for (src, doc) in docs {
+        let Ok(Some(found)) = lock::find(doc) else {
+            continue;
+        };
+        for pin in &found.lock.pins {
+            let declared = format!("{}.md", pin.object);
+            if matches!(
+                resolve_edge(index, src, &declared, &corpus, None),
+                RefResolution::Ambient(dest) if dest == target
+            ) {
+                out.push(src.clone());
+            }
+        }
+    }
+    out
+}
+
 /// Find-references: every wikilink/embed in the corpus resolving to `target`
 /// (a corpus path), in deterministic order — path-lexicographic, then span
 /// order within a file.
