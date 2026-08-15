@@ -54,6 +54,11 @@ impl Node {
     }
 }
 
+/// One listed member (merkle-spec §4.3.1): the workspace-relative path BYTES
+/// ([`crate::hash_name`] spelling) and the member's §3 leaf hash — the pair
+/// the forest fold consumes and [`ResidentTree::files_under`] lists.
+pub type MemberLeaf = (Vec<u8>, [u8; 32]);
+
 /// A resolved scope fold (merkle-spec §7 scope rows).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScopeFold {
@@ -324,6 +329,83 @@ impl ResidentTree {
             Some(leaf) => Ok(ScopeFold::Value(leaf)),
             None => Ok(ScopeFold::Absent),
         }
+    }
+
+    /// Every file leaf at-or-under a directory `scope` (root = empty path):
+    /// `(workspace-relative path bytes, §3 leaf hash)` pairs, strictly
+    /// ascending by path bytes — the resident listings a §4.3.1 forest
+    /// expansion reads. Zero byte I/O and zero refold work: file entries are
+    /// eager by construction, and directories are enumerated from the node
+    /// table, never from lazily published Dir entries — so this read needs no
+    /// `&mut` and disturbs no dirty state.
+    ///
+    /// A scope that names a FILE or an absent path answers the EMPTY listing —
+    /// set semantics (§4.3.1): nothing can match there now, and `n = 0` is a
+    /// legal fold guarding continued emptiness. Contrast [`Self::fold_at`],
+    /// the path-premise form, which refuses a kind conflict.
+    ///
+    /// # Errors
+    /// [`ScopeRefusal`] when `scope` names, passes through, or CONTAINS a §4.4
+    /// collision key — §4.3.1's stated precondition: a collision key cannot
+    /// say WHICH kind is a member, and an ambiguous member set is no premise.
+    pub fn files_under(&self, scope: &Path) -> Result<Vec<MemberLeaf>, ScopeRefusal> {
+        let path = crate::hash_name(scope);
+        let mut key: Vec<u8> = Vec::new();
+        for seg in split_segments(path) {
+            push_segment(&mut key, seg);
+            self.refuse_collision(&key)?;
+        }
+        // A collision strictly below the scope is inside every candidate
+        // member set — refuse it too (the containment half of the §4.3.1
+        // precondition; the chain above covered at-and-through).
+        let mut lo = key.clone();
+        if !lo.is_empty() {
+            lo.push(b'/');
+        }
+        if let Some(ck) = self
+            .collisions
+            .range(lo.clone()..)
+            .take_while(|k| k.starts_with(&lo))
+            .next()
+        {
+            return Err(ScopeRefusal {
+                path: crate::display_name(ck),
+                reason: RefusalReason::Collision,
+            });
+        }
+        let mut out: Vec<MemberLeaf> = Vec::new();
+        let mut collect = |dir_key: &[u8], node: &Node| {
+            node.map.for_each_entry(&mut |name, kind, hash| {
+                if kind == ChildKind::File {
+                    let mut member = dir_key.to_vec();
+                    push_segment(&mut member, name);
+                    out.push((member, *hash));
+                }
+            });
+        };
+        match self.nodes.get(&key) {
+            Some(node) => collect(&key, node),
+            // A file or an absent path holds no directory node — the empty
+            // member set, never a refusal (set semantics, doc law above).
+            None => return Ok(out),
+        }
+        for (dir_key, node) in self
+            .nodes
+            .range(lo.clone()..)
+            .take_while(|(k, _)| k.starts_with(&lo))
+        {
+            // At the root scope `lo` is empty and the range re-visits the
+            // root node collected above — skip the one repeat.
+            if *dir_key == key {
+                continue;
+            }
+            collect(dir_key, node);
+        }
+        // Nodes interleave with their subdirectories' files in walk order
+        // (`a/z.md` walks before `a/c/x.md`); the fold law wants path-byte
+        // order (§4.3.1), so sort once here.
+        out.sort_unstable();
+        Ok(out)
     }
 
     /// The `last_seq` slot at a directory scope (root = empty path); `None`
