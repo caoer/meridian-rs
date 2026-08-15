@@ -24,7 +24,7 @@ mod sqltext;
 pub mod store;
 pub mod walk;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use duckdb::Connection;
@@ -203,25 +203,76 @@ struct Counters {
 pub(crate) struct Rows {
     pub(crate) doc: Vec<Vec<Value>>,
     pub(crate) frontmatter: Vec<Vec<Value>>,
-    pub(crate) section: Vec<SectionRow>,
+    pub(crate) section: Vec<Vec<Value>>,
     pub(crate) link: Vec<Vec<Value>>,
     pub(crate) tag: Vec<Vec<Value>>,
     pub(crate) frontmatter_tag: Vec<Vec<Value>>,
-    pub(crate) task: Vec<TaskRow>,
+    pub(crate) task: Vec<Vec<Value>>,
 }
 
-/// `section` row — `hpath` bound via dynamic `list_value`, apart from scalars.
-pub(crate) struct SectionRow {
-    pub(crate) scalars_before: Vec<Value>, // path, node_seq
-    pub(crate) hpath: Vec<String>,
-    pub(crate) scalars_after: Vec<Value>, // heading, level, node_rev, span_start, span_end
+/// One segment of a section's published machine address: raw heading text plus
+/// the 1-based occurrence among same-parent siblings sharing that text —
+/// present only where the text is ambiguous. The occurrence law is
+/// `model::resolve_hpath_node`'s (position among same-raw-text Section children
+/// of one parent, child order), the same law the read face's published
+/// addresses and the policy rebuild index count by.
+#[derive(Clone)]
+pub(crate) struct AddrSeg {
+    pub(crate) h: String,
+    pub(crate) n: Option<u32>,
 }
 
-/// `task` row — `hpath` nullable (NULL when document-level).
-pub(crate) struct TaskRow {
-    pub(crate) scalars_before: Vec<Value>, // path, seq, checked, depth, section_seq
-    pub(crate) hpath: Option<Vec<String>>,
-    pub(crate) scalars_after: Vec<Value>, // text, span_start, span_end, node_rev
+/// Occurrence-address the Section children of one node: `Some(seg)` for a
+/// Section child (its `n` set only where its raw text repeats among the
+/// siblings), `None` for every other child — the counting pass behind
+/// [`AddrSeg`]'s law.
+fn child_segs(node: &Node) -> Vec<Option<AddrSeg>> {
+    let mut totals: HashMap<&str, u32> = HashMap::new();
+    for child in &node.children {
+        if let NodeKind::Section { heading_text, .. } = &child.kind {
+            *totals.entry(heading_text.as_str()).or_insert(0) += 1;
+        }
+    }
+    let mut seen: HashMap<&str, u32> = HashMap::new();
+    node.children
+        .iter()
+        .map(|child| {
+            let NodeKind::Section { heading_text, .. } = &child.kind else {
+                return None;
+            };
+            let occ = seen.entry(heading_text.as_str()).or_insert(0);
+            *occ += 1;
+            let ambiguous = totals.get(heading_text.as_str()).is_some_and(|&t| t > 1);
+            Some(AddrSeg {
+                h: heading_text.clone(),
+                n: ambiguous.then_some(*occ),
+            })
+        })
+        .collect()
+}
+
+/// Render an address chain as the exact `[{"h":…},…]` machine address the read
+/// face publishes per toc row and read/put accept verbatim (card
+/// sql-hpath-read-grammar, dogfood r8 § D5): compact JSON, `n` riding only on
+/// ambiguous segments. This is the `hpath` column's one spelling — the
+/// space-padded ` / ` join could not address (read splits on `/` and refused
+/// its padded segments), and duplicate siblings rendered identically.
+pub(crate) fn hpath_json(chain: &[AddrSeg]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::from("[");
+    for (i, seg) in chain.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"h\":");
+        out.push_str(&serde_json::Value::String(seg.h.clone()).to_string());
+        if let Some(n) = seg.n {
+            let _ = write!(out, ",\"n\":{n}");
+        }
+        out.push('}');
+    }
+    out.push(']');
+    out
 }
 
 /// Emit `doc` row and walk the node tree.
@@ -252,6 +303,7 @@ pub(crate) fn collect_doc(
         doc,
         index,
         None,
+        &[],
         &mut counters,
         rows,
         corpus,
@@ -259,7 +311,8 @@ pub(crate) fn collect_doc(
     );
 }
 
-/// Walk one node (emit fact rows), recurse with governing `section_seq` for tasks.
+/// Walk one node (emit fact rows), recurse with governing `section_seq` for
+/// tasks and the governing address `chain` (a Section's own segment included).
 #[allow(clippy::too_many_arguments)]
 fn walk(
     node: &Node,
@@ -267,6 +320,7 @@ fn walk(
     doc: &Document,
     index: &CorpusIndex,
     gov_section: Option<u64>,
+    chain: &[AddrSeg],
     counters: &mut Counters,
     rows: &mut Rows,
     corpus: &model::RootedCorpus<'_>,
@@ -276,12 +330,12 @@ fn walk(
     match &node.kind {
         NodeKind::Frontmatter { map } => emit_frontmatter(node, path, doc, map, rows),
         NodeKind::Section {
-            heading_text,
+            heading_text: _,
             level,
         } => {
             let node_seq = counters.section;
             counters.section += 1;
-            emit_section(node, path, heading_text, *level, node_seq, rows);
+            emit_section(node, path, *level, node_seq, chain, rows);
             child_gov = Some(node_seq);
         }
         NodeKind::Wikilink {
@@ -353,6 +407,7 @@ fn walk(
                 *checked,
                 *depth,
                 gov_section,
+                chain,
                 doc,
                 counters,
                 rows,
@@ -360,10 +415,48 @@ fn walk(
         }
         _ => {}
     }
-    for child in &node.children {
-        walk(
-            child, path, doc, index, child_gov, counters, rows, corpus, mounts,
-        );
+    descend(
+        node, path, doc, index, child_gov, chain, counters, rows, corpus, mounts,
+    );
+}
+
+/// Recurse into `node`'s children: a Section child descends with its own
+/// occurrence-addressed segment appended ([`child_segs`]); every other child
+/// inherits the chain as is.
+#[allow(clippy::too_many_arguments)]
+fn descend(
+    node: &Node,
+    path: &str,
+    doc: &Document,
+    index: &CorpusIndex,
+    child_gov: Option<u64>,
+    chain: &[AddrSeg],
+    counters: &mut Counters,
+    rows: &mut Rows,
+    corpus: &model::RootedCorpus<'_>,
+    mounts: Option<&addr::MountSet>,
+) {
+    for (child, seg) in node.children.iter().zip(child_segs(node)) {
+        if let Some(seg) = seg {
+            let mut child_chain = chain.to_vec();
+            child_chain.push(seg);
+            walk(
+                child,
+                path,
+                doc,
+                index,
+                child_gov,
+                &child_chain,
+                counters,
+                rows,
+                corpus,
+                mounts,
+            );
+        } else {
+            walk(
+                child, path, doc, index, child_gov, chain, counters, rows, corpus, mounts,
+            );
+        }
     }
 }
 
@@ -425,19 +518,28 @@ fn emit_frontmatter(
     }
 }
 
-/// Emit one `section` row — identity `(path, node_seq)`; `hpath` advisory.
-fn emit_section(node: &Node, path: &str, heading: &str, level: u8, node_seq: u64, rows: &mut Rows) {
-    rows.section.push(SectionRow {
-        scalars_before: vec![Value::Text(path.to_string()), Value::UBigInt(node_seq)],
-        hpath: node.hpath.clone().unwrap_or_default(),
-        scalars_after: vec![
-            Value::Text(heading.to_string()),
-            Value::UTinyInt(level),
-            Value::Text(node.node_rev.0.clone()),
-            Value::UBigInt(u64c(node.span.start)),
-            Value::UBigInt(u64c(node.span.end)),
-        ],
-    });
+/// Emit one `section` row — identity `(path, node_seq)`; `hpath` advisory,
+/// rendered as the published machine address ([`hpath_json`]). `chain` includes
+/// the section's own segment, so its last element carries the raw heading text.
+fn emit_section(
+    node: &Node,
+    path: &str,
+    level: u8,
+    node_seq: u64,
+    chain: &[AddrSeg],
+    rows: &mut Rows,
+) {
+    let heading = chain.last().map_or(String::new(), |s| s.h.clone());
+    rows.section.push(vec![
+        Value::Text(path.to_string()),
+        Value::UBigInt(node_seq),
+        Value::Text(hpath_json(chain)),
+        Value::Text(heading),
+        Value::UTinyInt(level),
+        Value::Text(node.node_rev.0.clone()),
+        Value::UBigInt(u64c(node.span.start)),
+        Value::UBigInt(u64c(node.span.end)),
+    ]);
 }
 
 /// Emit one `link` row. `resolved` is generated, never inserted. Schema CHECKs
@@ -538,7 +640,8 @@ fn strip_task_marker(line: &str) -> &str {
 }
 
 /// Emit one `task` row. `section_seq` NULL = document-level; `text` is the
-/// trimmed task text with the marker stripped ([`strip_task_marker`]).
+/// trimmed task text with the marker stripped ([`strip_task_marker`]); `hpath`
+/// is the governing section's machine address (NULL when document-level).
 #[allow(clippy::too_many_arguments)]
 fn emit_task(
     node: &Node,
@@ -546,6 +649,7 @@ fn emit_task(
     checked: bool,
     depth: u32,
     gov_section: Option<u64>,
+    chain: &[AddrSeg],
     doc: &Document,
     counters: &mut Counters,
     rows: &mut Rows,
@@ -554,22 +658,18 @@ fn emit_task(
     counters.task += 1;
     let text =
         strip_task_marker(doc.raw.get(node.span.clone()).unwrap_or_default().trim()).to_string();
-    rows.task.push(TaskRow {
-        scalars_before: vec![
-            Value::Text(path.to_string()),
-            Value::UBigInt(seq),
-            Value::Boolean(checked),
-            Value::UInt(depth),
-            gov_section.map_or(Value::Null, Value::UBigInt),
-        ],
-        hpath: gov_section.and(node.hpath.clone()),
-        scalars_after: vec![
-            Value::Text(text),
-            Value::UBigInt(u64c(node.span.start)),
-            Value::UBigInt(u64c(node.span.end)),
-            Value::Text(node.node_rev.0.clone()),
-        ],
-    });
+    rows.task.push(vec![
+        Value::Text(path.to_string()),
+        Value::UBigInt(seq),
+        Value::Boolean(checked),
+        Value::UInt(depth),
+        gov_section.map_or(Value::Null, Value::UBigInt),
+        gov_section.map_or(Value::Null, |_| Value::Text(hpath_json(chain))),
+        Value::Text(text),
+        Value::UBigInt(u64c(node.span.start)),
+        Value::UBigInt(u64c(node.span.end)),
+        Value::Text(node.node_rev.0.clone()),
+    ]);
 }
 
 /// Resolve wikilink/embed to structural dest: `Ambient` / `Rooted` / `None`
@@ -638,54 +738,11 @@ impl Rows {
     fn insert(&self, conn: &Connection) -> duckdb::Result<()> {
         append_rows(conn, "doc", &self.doc)?;
         append_rows(conn, "frontmatter", &self.frontmatter)?;
-        self.append_section(conn)?;
+        append_rows(conn, "section", &self.section)?;
         append_rows(conn, "link", &self.link)?;
         append_rows(conn, "tag", &self.tag)?;
         append_rows(conn, "frontmatter_tag", &self.frontmatter_tag)?;
-        self.append_task(conn)
-    }
-
-    /// `section` — the `hpath` list column rides the stage-table workaround
-    /// ([`hpath_join`]).
-    fn append_section(&self, conn: &Connection) -> duckdb::Result<()> {
-        conn.execute_batch(
-            "CREATE TABLE _stage_section (path TEXT, node_seq UBIGINT, hpath_j TEXT, heading TEXT, level UTINYINT, node_rev TEXT, span_start UBIGINT, span_end UBIGINT);",
-        )?;
-        {
-            let mut app = conn.appender("_stage_section")?;
-            for row in &self.section {
-                let mut params = row.scalars_before.clone();
-                params.push(hpath_join(&row.hpath));
-                params.extend(row.scalars_after.iter().cloned());
-                app.append_row(duckdb::appender_params_from_iter(params.iter()))?;
-            }
-            app.flush()?;
-        }
-        conn.execute_batch(
-            "INSERT INTO section SELECT path, node_seq, CASE WHEN hpath_j = '' THEN []::TEXT[] ELSE string_split(hpath_j, chr(31))[2:] END, heading, level, node_rev, span_start, span_end FROM _stage_section; \
-             DROP TABLE _stage_section;",
-        )
-    }
-
-    /// `task` — as `section`, with NULL `hpath` (document-level task) kept NULL.
-    fn append_task(&self, conn: &Connection) -> duckdb::Result<()> {
-        conn.execute_batch(
-            "CREATE TABLE _stage_task (path TEXT, seq UBIGINT, checked BOOLEAN, depth UINTEGER, section_seq UBIGINT, hpath_j TEXT, text TEXT, span_start UBIGINT, span_end UBIGINT, node_rev TEXT);",
-        )?;
-        {
-            let mut app = conn.appender("_stage_task")?;
-            for row in &self.task {
-                let mut params = row.scalars_before.clone();
-                params.push(row.hpath.as_deref().map_or(Value::Null, hpath_join));
-                params.extend(row.scalars_after.iter().cloned());
-                app.append_row(duckdb::appender_params_from_iter(params.iter()))?;
-            }
-            app.flush()?;
-        }
-        conn.execute_batch(
-            "INSERT INTO task SELECT path, seq, checked, depth, section_seq, CASE WHEN hpath_j IS NULL THEN NULL WHEN hpath_j = '' THEN []::TEXT[] ELSE string_split(hpath_j, chr(31))[2:] END, text, span_start, span_end, node_rev FROM _stage_task; \
-             DROP TABLE _stage_task;",
-        )
+        append_rows(conn, "task", &self.task)
     }
 }
 
@@ -696,26 +753,6 @@ fn append_rows(conn: &Connection, table: &str, rows: &[Vec<Value>]) -> duckdb::R
         app.append_row(duckdb::appender_params_from_iter(row.iter()))?;
     }
     app.flush()
-}
-
-/// TEXT encoding of an `hpath` list for the stage tables. The `TEXT[]`
-/// columns cannot go through the appender — duckdb-rs does not support
-/// binding List values in `append_row` yet ("binding List parameters is not
-/// yet supported"; retire the stage tables when upstream adds it) — so the
-/// list rides an appender-loaded stage TEXT column, decoded set-based by one
-/// `INSERT..SELECT string_split(...)[2:]`.
-///
-/// Every element is PREFIXED with the unit separator (chr(31)), not joined by
-/// it: a plain join encodes both `[]` and `['']` as `''`, and a real `['']`
-/// hpath exists in live corpora. Prefixed, `[]` → `''` and `['']` → `"\u{1f}"`
-/// stay distinct; the decode drops the leading empty split element via `[2:]`.
-pub(crate) fn hpath_join(hpath: &[String]) -> Value {
-    let mut joined = String::new();
-    for element in hpath {
-        joined.push('\u{1f}');
-        joined.push_str(element);
-    }
-    Value::Text(joined)
 }
 
 /// Insert singleton `_meridian_view` stamp. epoch/seq both set or both NULL
@@ -803,28 +840,11 @@ mod tests {
     //
     // `Rows::insert` loads through the DuckDB Appender; this gate holds it
     // bit-identical, per table over every column of every row, to the
-    // row-at-a-time statement lane it replaced. The hazard the gate exists
-    // for: the stage-table TEXT encoding of `hpath` must keep `[]` and `['']`
-    // distinct — a real `['']` hpath exists in live corpora.
+    // row-at-a-time statement lane it replaced.
 
     /// The retired row-at-a-time statement lane, kept verbatim as the
     /// equivalence reference the appender lane is gated against.
     fn statement_lane_insert(rows: &Rows, conn: &Connection) -> duckdb::Result<()> {
-        /// `list_value(?, …)` with `n` placeholders, or empty `VARCHAR[]` when `n == 0`.
-        fn list_expr(n: usize) -> String {
-            if n == 0 {
-                return "[]::VARCHAR[]".to_string();
-            }
-            let marks = std::iter::repeat_n("?", n).collect::<Vec<_>>().join(", ");
-            format!("list_value({marks})")
-        }
-        /// Scalar-before + list elements + scalar-after for a `list_value` INSERT.
-        fn chain_list(before: &[Value], list: &[String], after: &[Value]) -> Vec<Value> {
-            let mut params = before.to_vec();
-            params.extend(list.iter().map(|s| Value::Text(s.clone())));
-            params.extend(after.iter().cloned());
-            params
-        }
         /// Prepare `sql` once; execute per staged row.
         fn insert_rows(conn: &Connection, sql: &str, rows: &[Vec<Value>]) -> duckdb::Result<()> {
             let mut stmt = conn.prepare(sql)?;
@@ -843,14 +863,11 @@ mod tests {
             "INSERT INTO frontmatter (path, ord, key, value, span_start, span_end, node_rev, prop_rev) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             &rows.frontmatter,
         )?;
-        for row in &rows.section {
-            let hpath_expr = list_expr(row.hpath.len());
-            let sql = format!(
-                "INSERT INTO section (path, node_seq, hpath, heading, level, node_rev, span_start, span_end) VALUES (?, ?, {hpath_expr}, ?, ?, ?, ?, ?)"
-            );
-            let params = chain_list(&row.scalars_before, &row.hpath, &row.scalars_after);
-            conn.execute(&sql, duckdb::params_from_iter(params.iter()))?;
-        }
+        insert_rows(
+            conn,
+            "INSERT INTO section (path, node_seq, hpath, heading, level, node_rev, span_start, span_end) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            &rows.section,
+        )?;
         insert_rows(
             conn,
             "INSERT INTO link (src_path, seq, kind, target_raw, heading, block, alias, dest_path, dest_root, dest_root_path, exclusion, span_start, span_end, node_rev) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -866,26 +883,17 @@ mod tests {
             "INSERT INTO frontmatter_tag (path, seq, tag, key, span_start, span_end, node_rev) VALUES (?, ?, ?, ?, ?, ?, ?)",
             &rows.frontmatter_tag,
         )?;
-        for row in &rows.task {
-            let hpath_expr = match &row.hpath {
-                Some(h) => list_expr(h.len()),
-                None => "NULL".to_string(),
-            };
-            let sql = format!(
-                "INSERT INTO task (path, seq, checked, depth, section_seq, hpath, text, span_start, span_end, node_rev) VALUES (?, ?, ?, ?, ?, {hpath_expr}, ?, ?, ?, ?)"
-            );
-            let empty: Vec<String> = Vec::new();
-            let hpath = row.hpath.as_ref().unwrap_or(&empty);
-            let params = chain_list(&row.scalars_before, hpath, &row.scalars_after);
-            conn.execute(&sql, duckdb::params_from_iter(params.iter()))?;
-        }
-        Ok(())
+        insert_rows(
+            conn,
+            "INSERT INTO task (path, seq, checked, depth, section_seq, hpath, text, span_start, span_end, node_rev) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            &rows.task,
+        )
     }
 
     /// Per-table digest over every column of every row (`resolved` is
     /// generated, never stored, so it is derived equal by construction). The
-    /// section/task hpath term is length-prefixed (`len#join`) so `[]` and
-    /// `['']` digest differently.
+    /// hpath columns are TEXT (the JSON machine address — injective and
+    /// self-delimiting), so they digest verbatim.
     const LANE_DIGESTS: [(&str, &str); 7] = [
         (
             "doc",
@@ -897,7 +905,7 @@ mod tests {
         ),
         (
             "section",
-            "SELECT coalesce(md5(string_agg(path || '|' || node_seq::VARCHAR || '|' || len(hpath)::VARCHAR || '#' || array_to_string(hpath, chr(31)) || '|' || heading || '|' || level::VARCHAR || '|' || node_rev || '|' || span_start::VARCHAR || '|' || span_end::VARCHAR, chr(10) ORDER BY path, node_seq)), 'EMPTY') FROM section",
+            "SELECT coalesce(md5(string_agg(path || '|' || node_seq::VARCHAR || '|' || hpath || '|' || heading || '|' || level::VARCHAR || '|' || node_rev || '|' || span_start::VARCHAR || '|' || span_end::VARCHAR, chr(10) ORDER BY path, node_seq)), 'EMPTY') FROM section",
         ),
         (
             "link",
@@ -913,7 +921,7 @@ mod tests {
         ),
         (
             "task",
-            "SELECT coalesce(md5(string_agg(path || '|' || seq::VARCHAR || '|' || checked::VARCHAR || '|' || depth::VARCHAR || '|' || coalesce(section_seq::VARCHAR,'~N~') || '|' || CASE WHEN hpath IS NULL THEN '~N~' ELSE len(hpath)::VARCHAR || '#' || array_to_string(hpath, chr(31)) END || '|' || text || '|' || span_start::VARCHAR || '|' || span_end::VARCHAR || '|' || node_rev, chr(10) ORDER BY path, seq)), 'EMPTY') FROM task",
+            "SELECT coalesce(md5(string_agg(path || '|' || seq::VARCHAR || '|' || checked::VARCHAR || '|' || depth::VARCHAR || '|' || coalesce(section_seq::VARCHAR,'~N~') || '|' || coalesce(hpath,'~N~') || '|' || text || '|' || span_start::VARCHAR || '|' || span_end::VARCHAR || '|' || node_rev, chr(10) ORDER BY path, seq)), 'EMPTY') FROM task",
         ),
     ];
 
@@ -953,36 +961,9 @@ mod tests {
         rows
     }
 
-    /// The encoding edges, hand-staged so the gate cannot silently lose them
-    /// to parser drift: section hpath `[]` vs `['']` vs a list holding an
-    /// empty element; task hpath NULL vs `[]` vs `['']`.
-    #[test]
-    fn appender_lane_encoding_edges_match_statement_lane() {
-        let mut rows = Rows::default();
-        rows.doc.push(vec![
-            Value::Text("d.md".to_string()),
-            Value::Text("rev0".to_string()),
-            Value::UInt(1),
-            Value::UBigInt(2),
-        ]);
-        let shapes = [
-            vec![],
-            vec![String::new()],
-            vec!["a".to_string(), String::new(), "b".to_string()],
-        ];
-        for (seq, hpath) in shapes.into_iter().enumerate() {
-            rows.section.push(SectionRow {
-                scalars_before: vec![Value::Text("d.md".to_string()), Value::UBigInt(seq as u64)],
-                hpath,
-                scalars_after: vec![
-                    Value::Text("h".to_string()),
-                    Value::UTinyInt(1),
-                    Value::Text("rev".to_string()),
-                    Value::UBigInt(0),
-                    Value::UBigInt(1),
-                ],
-            });
-        }
+    /// One filler row per scalar table, so the encoding-edge gate loads every
+    /// lane and not only the hpath carriers.
+    fn stage_scalar_fillers(rows: &mut Rows) {
         rows.frontmatter.push(vec![
             Value::Text("d.md".to_string()),
             Value::UBigInt(0),
@@ -1026,28 +1007,72 @@ mod tests {
             Value::UBigInt(1),
             Value::Text("rev".to_string()),
         ]);
+    }
+
+    /// The encoding edges, hand-staged so the gate cannot silently lose them
+    /// to parser drift: section hpath for an empty heading (`[{"h":""}]`) and
+    /// for text carrying JSON-hostile bytes; task hpath NULL vs present.
+    #[test]
+    fn appender_lane_encoding_edges_match_statement_lane() {
+        let mut rows = Rows::default();
+        rows.doc.push(vec![
+            Value::Text("d.md".to_string()),
+            Value::Text("rev0".to_string()),
+            Value::UInt(1),
+            Value::UBigInt(2),
+        ]);
+        let shapes = [
+            hpath_json(&[AddrSeg {
+                h: String::new(),
+                n: None,
+            }]),
+            hpath_json(&[
+                AddrSeg {
+                    h: "a\"b\\c".to_string(),
+                    n: None,
+                },
+                AddrSeg {
+                    h: "Dup".to_string(),
+                    n: Some(2),
+                },
+            ]),
+        ];
+        for (seq, hpath) in shapes.into_iter().enumerate() {
+            rows.section.push(vec![
+                Value::Text("d.md".to_string()),
+                Value::UBigInt(seq as u64),
+                Value::Text(hpath),
+                Value::Text("h".to_string()),
+                Value::UTinyInt(1),
+                Value::Text("rev".to_string()),
+                Value::UBigInt(0),
+                Value::UBigInt(1),
+            ]);
+        }
+        stage_scalar_fillers(&mut rows);
         let task_shapes = [
-            (Value::Null, None),
-            (Value::UBigInt(0), Some(vec![])),
-            (Value::UBigInt(1), Some(vec![String::new()])),
+            (Value::Null, Value::Null),
+            (
+                Value::UBigInt(0),
+                Value::Text(hpath_json(&[AddrSeg {
+                    h: String::new(),
+                    n: None,
+                }])),
+            ),
         ];
         for (seq, (section_seq, hpath)) in task_shapes.into_iter().enumerate() {
-            rows.task.push(TaskRow {
-                scalars_before: vec![
-                    Value::Text("d.md".to_string()),
-                    Value::UBigInt(seq as u64),
-                    Value::Boolean(false),
-                    Value::UInt(0),
-                    section_seq,
-                ],
+            rows.task.push(vec![
+                Value::Text("d.md".to_string()),
+                Value::UBigInt(seq as u64),
+                Value::Boolean(false),
+                Value::UInt(0),
+                section_seq,
                 hpath,
-                scalars_after: vec![
-                    Value::Text("t".to_string()),
-                    Value::UBigInt(0),
-                    Value::UBigInt(1),
-                    Value::Text("rev".to_string()),
-                ],
-            });
+                Value::Text("t".to_string()),
+                Value::UBigInt(0),
+                Value::UBigInt(1),
+                Value::Text("rev".to_string()),
+            ]);
         }
         assert_lanes_match(&rows);
     }
@@ -1080,22 +1105,182 @@ mod tests {
         assert!(!rows.link.is_empty(), "link rows");
         assert!(!rows.frontmatter_tag.is_empty(), "frontmatter_tag rows");
         assert!(!rows.task.is_empty(), "task rows");
+        let section_hpath = |row: &Vec<Value>| match &row[2] {
+            Value::Text(s) => s.clone(),
+            other => panic!("section hpath must stage as TEXT, got {other:?}"),
+        };
         assert!(
-            rows.section.iter().any(|s| s.hpath == vec![String::new()]),
-            "a bare `#` heading must stage hpath [''] — the encoding hazard"
+            rows.section
+                .iter()
+                .any(|s| section_hpath(s) == r#"[{"h":""}]"#),
+            "a bare `#` heading must stage hpath [{{\"h\":\"\"}}] — the empty-heading edge"
         );
         assert!(
             rows.task
                 .iter()
-                .any(|t| t.hpath.as_deref() == Some(&[String::new()][..])),
-            "the task under the empty heading must stage hpath ['']"
+                .any(|t| matches!(&t[5], Value::Text(s) if s == r#"[{"h":""}]"#)),
+            "the task under the empty heading must stage its section's address"
         );
         assert!(
-            rows.task.iter().any(|t| t.hpath.is_none()),
+            rows.task.iter().any(|t| matches!(&t[5], Value::Null)),
             "the doc-level task must stage hpath NULL"
         );
 
         assert_lanes_match(&rows);
+    }
+
+    /// The render rule of card sql-hpath-read-grammar (dogfood r8 § D5),
+    /// pinned on a parsed fixture: every hpath cell is the `[{"h":…},…]`
+    /// machine address; duplicate siblings carry distinct `n`; a heading whose
+    /// own text bears `/` stays one segment; the retired ` / ` join appears
+    /// nowhere.
+    #[test]
+    fn hpath_cells_are_machine_addresses_with_n_on_collision() {
+        let raw = "# R8 Fixture\n\n## Alpha\n\nbody\n\n## io/paths\n\n### mix a/b\n\nbody\n\n## Dup\n\n- [ ] task in first Dup\n\n## Dup\n\nbody\n";
+        let mut docs = BTreeMap::new();
+        docs.insert(
+            "f.md".to_string(),
+            model::build(raw.to_string(), syntax::parse(raw)),
+        );
+        let conn = build_memory(&docs, "b3:fixture").expect("build");
+
+        let mut stmt = conn
+            .prepare("SELECT hpath FROM section ORDER BY node_seq")
+            .expect("prepare");
+        let got: Vec<String> = stmt
+            .query_map([], |r| r.get(0))
+            .expect("query")
+            .collect::<Result<_, _>>()
+            .expect("rows");
+        assert_eq!(
+            got,
+            vec![
+                r#"[{"h":"R8 Fixture"}]"#.to_string(),
+                r#"[{"h":"R8 Fixture"},{"h":"Alpha"}]"#.to_string(),
+                r#"[{"h":"R8 Fixture"},{"h":"io/paths"}]"#.to_string(),
+                r#"[{"h":"R8 Fixture"},{"h":"io/paths"},{"h":"mix a/b"}]"#.to_string(),
+                r#"[{"h":"R8 Fixture"},{"h":"Dup","n":1}]"#.to_string(),
+                r#"[{"h":"R8 Fixture"},{"h":"Dup","n":2}]"#.to_string(),
+            ],
+            "every cell is the published machine address; dup siblings differ by n"
+        );
+
+        // The task under the FIRST Dup carries that occurrence's address.
+        let task_hpath: String = conn
+            .query_row("SELECT hpath FROM task WHERE path='f.md'", [], |r| r.get(0))
+            .expect("task hpath");
+        assert_eq!(task_hpath, r#"[{"h":"R8 Fixture"},{"h":"Dup","n":1}]"#);
+    }
+
+    /// The round-trip half of the same card: a dup-sibling cell taken from the
+    /// projection, parsed as the read/put hpath grammar, resolves through
+    /// `model::resolve` to the RIGHT occurrence — and the un-`n`'d spelling of
+    /// the same text stays loudly ambiguous.
+    #[test]
+    fn dup_sibling_hpath_cell_resolves_to_the_right_occurrence() {
+        let raw = "# T\n\n## Dup\n\nfirst body\n\n## Dup\n\nsecond body\n";
+        let doc = model::build(raw.to_string(), syntax::parse(raw));
+        let mut docs = BTreeMap::new();
+        docs.insert("t.md".to_string(), doc);
+        let conn = build_memory(&docs, "b3:roundtrip").expect("build");
+        let cell: String = conn
+            .query_row(
+                "SELECT hpath FROM section WHERE heading='Dup' AND node_seq=2",
+                [],
+                |r| r.get(0),
+            )
+            .expect("dup cell");
+        assert_eq!(cell, r#"[{"h":"T"},{"h":"Dup","n":2}]"#);
+
+        let segs: Vec<serde_json::Value> = serde_json::from_str(&cell).expect("cell parses");
+        let hpath: Vec<model::HpathSeg> = segs
+            .iter()
+            .map(|s| model::HpathSeg {
+                h: s["h"].as_str().expect("h").to_string(),
+                n: s.get("n")
+                    .and_then(serde_json::Value::as_u64)
+                    .map(|n| u32::try_from(n).expect("n fits")),
+            })
+            .collect();
+        let doc = &docs["t.md"];
+        let target =
+            model::resolve(doc, &model::Ref::Hpath(hpath)).expect("cell resolves unambiguously");
+        let resolved = &doc.raw[target.span.clone()];
+        assert!(
+            resolved.contains("second body") && !resolved.contains("first body"),
+            "the n:2 cell resolves to the SECOND Dup, got: {resolved}"
+        );
+
+        let bare = model::Ref::Hpath(vec![
+            model::HpathSeg {
+                h: "T".to_string(),
+                n: None,
+            },
+            model::HpathSeg {
+                h: "Dup".to_string(),
+                n: None,
+            },
+        ]);
+        assert!(
+            matches!(
+                model::resolve(doc, &bare),
+                Err(model::ResolveError::Ambiguous(_))
+            ),
+            "the un-n'd spelling stays loudly ambiguous — n is what the cell adds"
+        );
+    }
+
+    /// One address law, two faces: the projection's hpath cell must be
+    /// byte-identical to the machine address the read face publishes for the
+    /// same section (wire-map's occurrence-addressed `ReadFact.hpath`,
+    /// rendered as the same compact JSON). Guards the drift class the
+    /// machine-form review named: two faces answering one question need one
+    /// observable answer.
+    #[test]
+    fn hpath_cells_match_the_read_faces_published_addresses() {
+        let raw = "# R8 Fixture\n\n## Alpha\n\nbody\n\n## io/paths\n\n### mix a/b\n\nbody\n\n## Dup\n\nfirst\n\n## Dup\n\nsecond\n\n## \u{4e2d}\u{6587} \"q\"\n\nbody\n";
+        let doc = model::build(raw.to_string(), syntax::parse(raw));
+
+        // The read face's published addresses, keyed by section span.
+        let toc = wire_map::project_toc(&doc);
+        let facts = wire_map::facts::read_facts(&toc, doc.raw.as_bytes());
+        let mut published: BTreeMap<(u64, u64), String> = BTreeMap::new();
+        for f in &facts {
+            if f.anchor.is_none() && !f.hpath.is_empty() {
+                let rendered = hpath_json(
+                    &f.hpath
+                        .iter()
+                        .map(|s| AddrSeg {
+                            h: s.h.clone(),
+                            n: s.n,
+                        })
+                        .collect::<Vec<_>>(),
+                );
+                published.insert((f.span.0, f.span.1), rendered);
+            }
+        }
+
+        let mut docs = BTreeMap::new();
+        docs.insert("p.md".to_string(), doc);
+        let conn = build_memory(&docs, "b3:parity").expect("build");
+        let mut stmt = conn
+            .prepare("SELECT hpath, span_start, span_end FROM section ORDER BY node_seq")
+            .expect("prepare");
+        let rows: Vec<(String, u64, u64)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .expect("query")
+            .collect::<Result<_, _>>()
+            .expect("rows");
+        assert!(!rows.is_empty(), "fixture projects sections");
+        for (cell, start, end) in rows {
+            let want = published.get(&(start, end)).unwrap_or_else(|| {
+                panic!("read face publishes no address for span {start}..{end}")
+            });
+            assert_eq!(
+                &cell, want,
+                "projection and read face disagree on the address of span {start}..{end}"
+            );
+        }
     }
 
     /// Stamp is the caller's fold verbatim — not a refold (G14 / §12.3).

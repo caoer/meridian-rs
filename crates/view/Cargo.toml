@@ -54,5 +54,9 @@ addr = { workspace = true }
 # build Document fixtures for the gate tests (parse -> model::build); a dev-only
 # edge, never a runtime dependency of the projector.
 syntax = { workspace = true }
+# cross-face parity gate ONLY (dev-only, like syntax — Law 3 unbroken at
+# runtime): the hpath cells must render the same machine address the read
+# face publishes (`facts::read_facts`), byte-identically.
+wire-map = { workspace = true }
 tempfile = "3"
 toml = { workspace = true }
