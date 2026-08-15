@@ -456,13 +456,14 @@ fn frame_faults_answer_section_8_frames_and_nothing_reaches_the_plane() {
 const PUSH_WAIT: Duration = Duration::from_secs(10);
 
 impl Conn {
-    fn sub(&mut self, from_seq: u64) -> Value {
+    /// Live subscribe — no cursor, anchors at the acked tip (B-01).
+    fn sub(&mut self) -> Value {
         self.writer
             .try_clone()
             .unwrap()
             .set_read_timeout(Some(PUSH_WAIT))
             .unwrap();
-        self.call(&json!({"op": "sub", "from_seq": from_seq}))
+        self.call(&json!({"op": "sub"}))
     }
 
     /// Next Notification, or `None` within [`PUSH_WAIT`].
@@ -492,7 +493,7 @@ fn a_run_apply_pushes_one_attributed_delta_frame() {
 
     let mut sub = Conn::open(server.socket_path());
     assert_eq!(sub.hello_v2(&ws)["ok"], json!(true));
-    let ack = sub.sub(0);
+    let ack = sub.sub();
     assert_eq!(ack["ok"], json!(true), "sub is served: {ack}");
     let ack_root = ack["body"]["root"].as_str().unwrap().to_owned();
 
@@ -578,7 +579,7 @@ fn a_run_apply_without_actor_carries_the_planes_self_label() {
 
     let mut sub = Conn::open(server.socket_path());
     assert_eq!(sub.hello_v2(&ws)["ok"], json!(true));
-    assert_eq!(sub.sub(0)["ok"], json!(true));
+    assert_eq!(sub.sub()["ok"], json!(true));
 
     let mut conn = Conn::open(server.socket_path());
     conn.hello_v3(&ws);
@@ -613,7 +614,7 @@ fn a_bash_run_mints_one_frame_per_committed_batch() {
 
     let mut sub = Conn::open(server.socket_path());
     assert_eq!(sub.hello_v2(&ws)["ok"], json!(true));
-    assert_eq!(sub.sub(0)["ok"], json!(true));
+    assert_eq!(sub.sub()["ok"], json!(true));
 
     let mut conn = Conn::open(server.socket_path());
     conn.hello_v3(&ws);
@@ -670,7 +671,7 @@ fn under_a_live_subscriber_every_run_frame_stays_attributed() {
 
     let mut sub = Conn::open(server.socket_path());
     assert_eq!(sub.hello_v2(&ws)["ok"], json!(true));
-    assert_eq!(sub.sub(0)["ok"], json!(true));
+    assert_eq!(sub.sub()["ok"], json!(true));
 
     let mut conn = Conn::open(server.socket_path());
     conn.hello_v3(&ws);

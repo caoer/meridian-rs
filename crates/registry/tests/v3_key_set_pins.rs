@@ -583,11 +583,16 @@ fn the_cursor_sub_ack_and_diff_body_key_sets_are_pinned() {
     }));
     pin_keys(&diff["body"], &["batches"], "diff body");
 
-    // `sub` turns its connection push-only, so it rides its own.
+    // `sub` turns its connection push-only, so it rides its own. Live
+    // subscribe (B-01): no cursor; the ack teaches the cursor identity.
     let mut sub_conn = fx.conn();
     assert_eq!(sub_conn.hello(&fx.ws)["ok"], json!(true));
-    let ack = sub_conn.call(&json!({"id": 91, "op": "sub", "from_seq": 0}));
-    pin_keys(&ack["body"], &["fingerprint", "seq"], "sub ack body");
+    let ack = sub_conn.call(&json!({"id": 91, "op": "sub"}));
+    pin_keys(
+        &ack["body"],
+        &["fingerprint", "seq", "tree_instance"],
+        "sub ack body",
+    );
 
     fx.shutdown();
 }

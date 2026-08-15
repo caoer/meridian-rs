@@ -150,10 +150,13 @@ pub fn decode(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody>> 
             })
         }
         "sub" => {
-            // v2 §4.7 push path.
-            check_fields(obj, op, &["from_seq"])?;
+            // §4.7 push path, B-01 cursor grammar: both fields optional at
+            // decode — which pairs are lawful (both, neither) is the serve's
+            // anchor evaluation, not field shape.
+            check_fields(obj, op, &["tree_instance", "from_seq"])?;
             Ok(Op::Sub {
-                from_seq: req_u64(obj, op, "from_seq")?,
+                tree_instance: opt_str(obj, op, "tree_instance")?,
+                from_seq: opt_u64(obj, op, "from_seq")?,
             })
         }
         "mounts" => {
@@ -1226,6 +1229,18 @@ fn req_u64(obj: &Map<String, Value>, op: &str, key: &str) -> Result<u64, Box<Err
         ))),
         None => Err(bad_request(format!("missing `{key}` on `{op}`"))),
     }
+}
+
+/// Optional twin of [`req_u64`]: absent → `None`, present → integer-law.
+fn opt_u64(obj: &Map<String, Value>, op: &str, key: &str) -> Result<Option<u64>, Box<ErrorBody>> {
+    obj.get(key)
+        .map(|v| match v {
+            Value::Number(n) if n.as_u64().is_some() => Ok(n.as_u64().unwrap_or_default()),
+            _ => Err(bad_request(format!(
+                "`{key}` on `{op}` must be a non-negative integer"
+            ))),
+        })
+        .transpose()
 }
 
 /// Optional twin of [`req_path`]: absent → `None`, present → path-law.
