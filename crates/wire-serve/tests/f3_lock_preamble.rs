@@ -193,7 +193,8 @@ fn the_lock_bytes_belong_to_no_section_and_counts_stay_honest() {
 /// sections the caller aimed at. The lock bytes land where no section claims
 /// them, so the feed no longer fires `edited §Last` for a write whose receipt
 /// never named it (the file-grain `modified` fact carries the preamble
-/// change).
+/// change). The pin's anchor promotion is the OTHER file this call wrote —
+/// its own row, told, not folded (r8 D4).
 #[test]
 fn one_pin_write_yields_one_truth_across_receipt_and_feed() {
     let (_dir, root) = workspace();
@@ -214,7 +215,17 @@ fn one_pin_write_yields_one_truth_across_receipt_and_feed() {
 
     let out = splice(&root, None, &args, &[], None).expect("append + pin commit");
     let frame = out.committed.expect("a real write emits one delta");
-    assert_eq!(frame.delta.files.len(), 1, "one file moved");
+    let paths: Vec<&str> = frame
+        .delta
+        .files
+        .iter()
+        .map(|f| f.path.0.as_str())
+        .collect();
+    assert_eq!(
+        paths,
+        vec!["plan.md", "guide.md"],
+        "the pinning page and the promotion target — both of this call's writes"
+    );
     let targets: Vec<String> = frame.delta.files[0]
         .nodes
         .iter()
