@@ -86,7 +86,13 @@ mrd read <PATH>[#FRAG] [--section SEL]
  output is the rendered text verbatim). SEL is a
  heading chain, a `^id`, or a dewey ordinal — the
  chain joins on `/` and that delimiter is dead for
- heading text (§ the joined selector coat)
+ heading text (§ the joined selector coat). A section
+ read is bounded: at most 20000 words served and 64
+ distinct selectors per call, refused never truncated,
+ with repeated selectors collapsed and the collapse
+ stated. The section map is never word-bounded — it
+ prices every section (`words`) before you ask for one,
+ and it is the way back in from a refusal
 mrd put <PATH> [--dry | --validate] [--force] [--actor A] [--now T]
  [--if-fingerprint FP] [--receipt PATH#ANCHOR] [--json]
  the batch write: the edits ride stdin as a BARE JSON
