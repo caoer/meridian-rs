@@ -40,6 +40,46 @@ serve path consumes the run plane, it never re-implements it** — one runner,
 one executor, one receipt convention, whichever door invoked it. The CLI
 entry stays a client as written.
 
+**Amendment (2026-08-15, no-guard-on-effects ruling — NORMATIVE): `run` and
+script-with-effects are NOT guarded.** Ruled,
+`decisions/2026-08-15-no-guard-on-effects.md` (ZT, verbatim: *"make sure we
+don't guard run, script with effects, no meaningless safety guard to give
+false promise and cause complexity and slowness"*): no CAS premise, no
+fingerprint requiredness, no synthesized touch-set guard, on execution whose
+consequences mrd cannot bound — a bash script can install a timer that fires
+five minutes later, and no check evaluated at commit time can prevent that.
+A guard there PROMISES what it cannot keep and buys complexity and slowness
+for the false promise. Guards are pure-lane law: the premise/coverage/token
+machinery (wire-contract §5.4–§5.7, § A.7) applies to markdown writes
+through the pure doors, where the engine CAN keep the promise. Consequences,
+each stated so no implementer picks silently:
+
+- **The plane's self-manufactured world pin is REMOVED, and no narrower pin
+  replaces it.** The root-mismatch premise refusal (§ The CLI surface,
+  churn paragraph) and the per-target pin-and-verify (the foreign-edit law,
+  decision #26, § Fence dispatch executor laws) RETIRE. No refusal on this
+  door is a premise refusal.
+- **What remains is observation honesty.** A foreign advance re-derives and
+  proceeds — reported (the named out-of-band window), never refused. A
+  vanished unrelated record drops from view and never fails another target;
+  a vanished ADDRESSED target stays an invocation-law refusal, which is
+  addressing, not a premise.
+- **A task-selection pin is TARGETING, never CAS.** A pin (`task_rev` on
+  the wire row, or any future selection pin) chooses WHAT to execute; its
+  documentation and its faces must call it targeting. A supplied guard
+  field is rejected as inapplicable, never ceremonially checked
+  (wire-contract § A.8).
+- **Guard-free never means fold-invisible.** Every effects write rides the
+  same write choke-point and maintains the resident tree — an effects write
+  advances the folds other writers' premises compare against. That is tree
+  maintenance, not a guard.
+- **Unchanged by this ruling:** `put_live` stays CAS-free by its own
+  standing ruling (2026-08-13); `effects` and guard fields stay mutually
+  exclusive at decode; the step's OWN out-of-band writes still refuse
+  phase-2 convergence (the governed-change law, decisions #14/#19 —
+  enforcement of the one write path, not a world premise); `run.lock`
+  serialization stays (a lock refusal is not a premise refusal).
+
 Sources of truth: the ratified plan (session `21-23-meridian-rs-md-run`,
 `compound plan page (workspace content)`) and the round-1 verdict. This document states the
 surface **as shipped in S1**, including what it deliberately does not
@@ -783,6 +823,35 @@ is what catches a world that moves *during* eval. Two checks, one value.
 The guarantee, stated exactly: *a committed script is consistent with exactly
 one workspace fingerprint — the world stood still, or the commit refused.*
 
+**Amendment (2026-08-15, fingerprint-grain plan §4.6 — the commit premise
+narrows to the TOUCH SET; frozen view KEPT, pre-merge ruling 2).**
+Wire-contract § A.7 carries the full law; what it supersedes HERE, named:
+
+- Point 3 above, the pre-eval caller-guard paragraph, and the set-form
+  commit below are AMENDED at the premise: the commit's authority is no
+  longer the whole-corpus entry fingerprint — it is the **touch set** the
+  attempt itself recorded (point reads, armed targets, pattern/selector
+  expansions as set folds, sql provenance regions), verified entry-vs-live
+  at exactly those nodes, O(touch set). A foreign write OUTSIDE the touch
+  set no longer refuses the commit; a foreign write INSIDE it refuses
+  exactly as before — `fingerprint_mismatch` naming the moved premise's
+  scope (wire-contract §5.7).
+- The guarantee restates at full strength on the premise's own surface:
+  *a committed script is consistent with exactly one state of everything
+  it touched — what it read and what it wrote stood still, or the commit
+  refused.* Frozen-view reads (points 1, 2 and 4 of the entry-world
+  amendment) are UNTOUCHED — ruling 2 keeps the A.7 read-stability
+  promise word for word, and existing tests keep their meaning.
+- The caller's own `if_fingerprint` — pre-eval fast-fail and commit check
+  alike — stays legal as a WIDENING premise: strictest wins, never
+  sufficient alone, never able to drop write coverage (the touch-set
+  floor always contains the armed writes). The host-policy ratchet that
+  forced the token copy onto script doors (`require_if_fingerprint`) is
+  RETIRED (R3, `decisions/2026-08-15-plan-rulings-final.md`).
+- The single-attempt law and the host retry budget are unchanged; retries
+  now spend only on genuine same-subtree contention, because foreign
+  churn outside the touch set never refuses at all.
+
 The entry itself is **single-attempt**. A conflict at the entry is one
 `fingerprint_mismatch` with recovery `resync`; the retry loop belongs to the
 host (budget 2), which re-resolves a selector per attempt and re-runs pinned
@@ -1439,7 +1508,12 @@ Executor laws:
  receipt, the executor compares the target's current rev against that
  receipt's after-rev — a foreign change since is a typed `foreign_edit`
  refusal naming the target and both revs, **never a silent overwrite**.
- Overwrite requires the explicit takeover flag.
+ Overwrite requires the explicit takeover flag. *(RETIRED 2026-08-15 —
+ the no-guard amendment at the top of this document: this was the
+ per-target pin-and-verify, a premise guard on a door whose promise is
+ unkeepable. Replace-class effects are no longer gated on a prior
+ receipt's rev, and the takeover flag gates nothing. The bullet stays as
+ the record of the superseded law.)*
 
 ## Bash: two-phase apply inside the enforcement bracket
 
@@ -1532,8 +1606,9 @@ same words, same exit leg (dogfood r2 F2: a rehearsal that passes what live
 refuses predicts nothing).
 
 Exit triad: **0** clean · **1** the run plane refused or failed (eval fault,
-cap refusal, foreign edit, workspace busy, root mismatch, timeout, bash
-nonzero) · **2** the invocation is wrong (usage, addressing, contract).
+cap refusal, workspace busy, timeout, bash nonzero — the foreign-edit and
+root-mismatch legs are RETIRED, 2026-08-15 no-guard amendment above) ·
+**2** the invocation is wrong (usage, addressing, contract).
 
 **A CHURN refusal carries a recovery line.** Two refusals here blame nothing
 the caller wrote — the corpus moved under an unrelated writer while the call
@@ -1549,6 +1624,14 @@ face that carries `recovery` **structurally** — the wire error frame — state
 the reason alone; the line is for the text faces, which have nowhere else to
 put the class. Receipts: dogfood r9 prober § F3. Re-deriving instead of
 refusing is the churn-grain design, not this wording.
+
+*(Amended 2026-08-15 — the no-guard amendment at the top of this document.
+The root-mismatch leg above is RETIRED with the plane's self-pin: a foreign
+advance re-derives and proceeds, which is exactly the churn-grain design the
+previous sentence already named. `corpus_race` survives only where the
+vanished record is the ADDRESSED target; a vanished unrelated record drops
+from view and never fails another target. The recovery-line law — reason
+first, then the move with its class — stands for the refusals that remain.)*
 
 ## Guarantee classes — labeled per block
 
