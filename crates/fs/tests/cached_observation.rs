@@ -228,24 +228,46 @@ fn cached_bracket_refuses_a_mid_window_config_change() {
 }
 
 /// The cost claim behind the unification, as an assertable invariant rather
-/// than a timing: a second guarded observation over an unchanged tree
+/// than a timing: a warm observation over an unchanged, SETTLED tree
 /// re-enumerates NOTHING and re-reads NOTHING — listings from the dir memo,
 /// digests from the leaf memo — where the fresh strict walk pays every
 /// `read_dir` again each time.
+///
+/// Settled matters since the §6.2 trust close: records minted inside their
+/// own stamp quantum are racy and legitimately re-read (the same-quantum
+/// in-place edit is invisible to the key compare), so the stat-only steady
+/// state begins one calibrated granule after the last write — the sleep
+/// below, sized from the cache's own measured calibration.
 #[test]
-fn a_warm_cache_observes_an_unchanged_tree_without_listing_or_reading() {
+fn a_warm_cache_observes_an_unchanged_settled_tree_without_listing_or_reading() {
     let (_tmp, root) = workspace();
     let mut cache = DomainCache::new();
 
+    // Cold pass: probes the calibration, reads everything, records under a
+    // watermark the fresh writes are racy against.
     let g1 = StepGuard::open_cached(&root, &mut cache).unwrap();
-    let after_cold = (cache.listings(), cache.leaves_read());
     g1.close_cached(&[], &mut cache).unwrap();
 
+    // Let the backend's stamp quantum pass, then let one pass re-record the
+    // racy leftovers under a watermark that now clears them.
+    let fs::stable::Calibration::Measured { granule_ns } = cache
+        .calibration()
+        .expect("probed on first observe")
+        .clone()
+    else {
+        panic!("a writable tempdir calibrates");
+    };
+    std::thread::sleep(std::time::Duration::from_nanos(granule_ns * 2 + 2_000_000));
     let g2 = StepGuard::open_cached(&root, &mut cache).unwrap();
     g2.close_cached(&[], &mut cache).unwrap();
+
+    // The steady state: stat-only, byte-for-byte.
+    let warm = (cache.listings(), cache.leaves_read());
+    let g3 = StepGuard::open_cached(&root, &mut cache).unwrap();
+    g3.close_cached(&[], &mut cache).unwrap();
     assert_eq!(
         (cache.listings(), cache.leaves_read()),
-        after_cold,
-        "a warm observation over an unchanged tree must be stat-only"
+        warm,
+        "a warm observation over an unchanged settled tree must be stat-only"
     );
 }
