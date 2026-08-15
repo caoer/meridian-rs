@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 9b01a1d2611a7f845ed810a49a758b88d6f36d02d780b741f15eda9cf7877131 # shrinks to ops = [Set("a/ab", 0), Set("a/a/a", 0), Remove("a/ab")], probe = "a" — prune on a map-empty dir with an unpublished live child orphaned the subtree

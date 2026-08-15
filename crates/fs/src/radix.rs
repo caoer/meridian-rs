@@ -113,6 +113,41 @@ impl RadixChildMap {
         }
     }
 
+    /// The hash `kind` currently holds at `name`, `None` when no such entry
+    /// exists. A read-only key-path walk — no vertex, bucket, or slot handle
+    /// escapes (§4.3). The tree layer consults it for idempotent updates and
+    /// for §4.4 collision detection (does the OTHER kind already hold this
+    /// name?).
+    #[must_use]
+    pub fn get(&self, name: &[u8], kind: ChildKind) -> Option<[u8; 32]> {
+        let mut v = self.root.as_deref()?;
+        let mut pos = 0;
+        loop {
+            let rem = &name[pos..];
+            let k = lcp(rem, &v.ext);
+            if k < v.ext.len() {
+                return None;
+            }
+            if rem.len() == v.ext.len() {
+                return match (v.terminal, kind) {
+                    (Terminal::One(k0, hash), _) if k0 == kind => Some(hash),
+                    (Terminal::Both { file, .. }, ChildKind::File) => Some(file),
+                    (Terminal::Both { dir, .. }, ChildKind::Dir) => Some(dir),
+                    _ => None,
+                };
+            }
+            let branch_pos = pos + v.ext.len();
+            let slot = name[branch_pos];
+            match v.children.binary_search_by_key(&slot, |(b, _)| *b) {
+                Ok(i) => {
+                    v = &v.children[i].1;
+                    pos = branch_pos + 1;
+                }
+                Err(_) => return None,
+            }
+        }
+    }
+
     /// Remove the `(name, kind)` entry; `false` when no such entry exists.
     ///
     /// The map re-canonicalizes as if the entry had never existed (§4.2.2's
@@ -660,6 +695,13 @@ mod tests {
             }
             check_invariants(&map);
             prop_assert_eq!(map.dir_value(), oracle_value(&shadow));
+            // The read face agrees with the shadow at every surviving key —
+            // and answers None at a name the shadow never held.
+            for (name, val) in &shadow {
+                prop_assert_eq!(map.get(name, ChildKind::File), val.file);
+                prop_assert_eq!(map.get(name, ChildKind::Dir), val.dir);
+            }
+            prop_assert_eq!(map.get(b"never-inserted", ChildKind::File), None);
         }
 
         /// Insertion order independence, stated directly: one entry set
