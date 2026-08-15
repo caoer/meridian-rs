@@ -85,3 +85,86 @@ pub fn resolve_at(root: &fs::WorkspaceRoot, at_path: &str) -> policy::ArmedLaw {
         policy::CheckLimits::default(),
     )
 }
+
+// ── the write edge: the attest path ───────────────────────────────────────────
+
+/// The ARM act's disk session — the attest path the binding law's refusals
+/// name as the legal road (`policy::binding` row 2: a direct door write to the
+/// artifact is `BindingBreak`; "arm or disarm through the attest/arm path").
+///
+/// This edge does not ride the caller door, deliberately: the door has no
+/// whole-page replace, `create` gate-refuses the artifact on a once-armed
+/// workspace, and the act's own law is `policy::armed::arm`'s faults — the
+/// attestation is validated BEFORE this session ever opens. What the session
+/// owns is purely the disk protocol: the workspace write flock from read to
+/// commit (no TOCTOU against another writer), rename-atomic byte landing, and
+/// the crash order artifact-THEN-marker — a crash between the two leaves
+/// artifact-without-marker, which reads as never-armed: the safe, re-runnable
+/// state. The marker landing is the act's commit point. To every OTHER
+/// process this is an external write, observed exactly as an editor's save —
+/// the watch/resync plane already owns that class.
+pub struct ArmSession {
+    lock: fs::WriteLock,
+}
+
+/// What an [`ArmSession::commit`] landed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArmLanding {
+    /// Whether THIS commit created the once-armed marker — the genesis arm
+    /// (armed-plane rung 4). Permanent: the marker is never removed.
+    pub first_arm: bool,
+}
+
+impl ArmSession {
+    /// Open the attest path: take the workspace write flock. Refuses busy
+    /// (`WouldBlock`) exactly as the door does — one lock, one writer.
+    ///
+    /// # Errors
+    /// Any I/O failure at the lock file; `WouldBlock` when another meridian
+    /// writer holds it (transient; retry).
+    pub fn open(root: &fs::WorkspaceRoot) -> std::io::Result<Self> {
+        Ok(Self {
+            lock: fs::WriteLock::acquire(root)?,
+        })
+    }
+
+    /// The artifact bytes as they stand UNDER the lock, or `None` when absent.
+    /// The caller parses strictly and composes; a corrupt artifact must refuse
+    /// the act before [`ArmSession::commit`] is ever reached.
+    #[must_use]
+    pub fn artifact(&self) -> Option<String> {
+        read_artifact(self.lock.root())
+    }
+
+    /// Land the rendered artifact page and, on a never-armed workspace, the
+    /// once-armed marker — artifact FIRST, then marker (the crash order the
+    /// type's docs state). Consumes the session; the flock releases on return.
+    ///
+    /// # Errors
+    /// Any I/O failure landing either half. A failure after the artifact
+    /// rename and before the marker leaves the never-armed, re-runnable state.
+    pub fn commit(self, page: &str) -> std::io::Result<ArmLanding> {
+        let root = self.lock.root();
+        let rel = std::path::Path::new(fs::domain::ARMED_RULES_PATH);
+        let candidate = model::candidate_of_body(fs::domain::ARMED_RULES_PATH, page.to_string());
+        if root.0.join(rel).try_exists()? {
+            fs::replace_file(root, rel, &candidate)?;
+        } else {
+            fs::create_file(root, rel, &candidate)?;
+        }
+
+        if once_armed(root) {
+            return Ok(ArmLanding { first_arm: false });
+        }
+        let marker = root.0.join(fs::domain::ATTESTED_MARKER_PATH);
+        let file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&marker)?;
+        file.sync_all()?;
+        if let Some(parent) = marker.parent() {
+            std::fs::File::open(parent)?.sync_all()?;
+        }
+        Ok(ArmLanding { first_arm: true })
+    }
+}
