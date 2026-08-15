@@ -28,6 +28,7 @@ pub mod base;
 pub mod digestmemo;
 pub mod domain;
 pub mod guard;
+pub mod radix;
 
 /// The workspace root every wire `path` resolves strictly inside. Constructed
 /// once at process start; path-escape rejection (`bad_path`) anchors here.
