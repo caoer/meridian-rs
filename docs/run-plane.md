@@ -99,7 +99,7 @@ one caller's inline intent.
 |---|---|
 | `script` | the source; the module top level IS the body, no hook lookup |
 | `args` | the caller's arguments as an **inert dict** — string keys, string values |
-| `files[]` | **paths only**, in call order — `files[i]` is the i-th path the caller named (order-bind ruling); patterns expand in place |
+| `files[]` | **paths only**, in call order — `files[i]` is the i-th path the caller named (order-bind ruling); patterns expand in place, and a pattern standing before a literal refuses at entry (`files_member_order`, wire-contract § A.7 literals-first) |
 | `actor` | the caller's own identity, threaded per §9 — the engine mints none |
 | `now` | caller-supplied time — the kernel never reads a clock |
 | budget overrides | fuel / mem / call depth / source bytes / wall clock / max reads / max armed edits |

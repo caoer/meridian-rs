@@ -542,6 +542,44 @@ impl ScriptTrace {
         }
     }
 
+    /// The trace of an ENTRY refusal: the attempt's own shape is illegal, so
+    /// the run refused at the door with **zero evaluation** — no reads, nothing
+    /// armed, no splice, and the workspace unchanged.
+    ///
+    /// It is not a caller-guard conflict ([`ScriptTrace::guard_refused`]): no
+    /// world moved, and re-reading changes nothing — the caller re-issues a
+    /// different call, which is why the refusal's own recovery class is `fix`.
+    /// The refusal rides the fault triple, so a refusal and a fault still grep
+    /// apart on `class`. Telemetry is zero and unconditional: nothing ran.
+    #[must_use]
+    pub fn entry_refused(entry_fingerprint: impl Into<String>, refusal: Refusal) -> Self {
+        Self {
+            entry_fingerprint: entry_fingerprint.into(),
+            outcome: ScriptOutcome::Refused,
+            trace: Vec::new(),
+            commit: None,
+            fault: Some(ScriptFault {
+                line: None,
+                class: FaultClass::Refused,
+                code: refusal.code,
+                recovery: refusal.recovery,
+                reason: refusal.reason,
+            }),
+            guard_expected: None,
+            // Zero evaluation bound zero names.
+            bindings: BTreeMap::new(),
+            // Nothing was armed, so there is no armed set to describe.
+            armed_digest: None,
+            commit_unknown: false,
+            telemetry: ScriptTelemetry {
+                fuel_used: 0,
+                mem_used: 0,
+                reads_used: 0,
+                wall_ms: 0,
+            },
+        }
+    }
+
     /// The armed entries, in arm order — the face's armed block. Live-mode
     /// `wrote`/`ran` entries are acts, not arms — never here.
     pub fn armed_entries(&self) -> impl Iterator<Item = &ArmedEntry> {
