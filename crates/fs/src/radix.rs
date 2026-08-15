@@ -192,10 +192,13 @@ impl Terminal {
             (Terminal::One(ChildKind::Dir, _), ChildKind::Dir) => {
                 Terminal::One(ChildKind::Dir, hash)
             }
-            (Terminal::One(ChildKind::File, file), ChildKind::Dir)
-            | (Terminal::Both { file, .. }, ChildKind::Dir) => Terminal::Both { file, dir: hash },
-            (Terminal::One(ChildKind::Dir, dir), ChildKind::File)
-            | (Terminal::Both { dir, .. }, ChildKind::File) => Terminal::Both { file: hash, dir },
+            (
+                Terminal::One(ChildKind::File, file) | Terminal::Both { file, .. },
+                ChildKind::Dir,
+            ) => Terminal::Both { file, dir: hash },
+            (Terminal::One(ChildKind::Dir, dir) | Terminal::Both { dir, .. }, ChildKind::File) => {
+                Terminal::Both { file: hash, dir }
+            }
         };
     }
 
