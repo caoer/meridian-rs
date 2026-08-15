@@ -365,6 +365,9 @@ fn execute(
         // runs (§ A.8 amends the WIRE arm only).
         actor: None,
         step_cwd: None,
+        // The CLI is a separate process: no resident memo in reach — the
+        // drawer memo is this lane's instrument (card run-observation-unification).
+        observations: run::dispatch_bash::ObservationSource::Drawer,
         // A separate process with no ring in reach: CLI commits stay
         // external change (§18 row 12; § A.8 Delta honesty, CLI arm).
         delta: None,

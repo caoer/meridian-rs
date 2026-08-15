@@ -17,7 +17,7 @@ use effects::{ChangeEvent, Domain, Effect, EvalError, EvalLimits, Rule};
 use crate::address::{self, AddressError};
 use crate::caps::{self, Authority, CapsError};
 use crate::contracts::{self, ContractError, ContractViolation};
-use crate::dispatch_bash::{self, BashDispatch, BashError, BashOutcome};
+use crate::dispatch_bash::{self, BashDispatch, BashError, BashOutcome, ObservationSource};
 use crate::dispatch_starlark::{self, DispatchError, DispatchOutcome, StarlarkDispatch};
 use crate::executor::{self, Applied, ApplyRequest, ExecError, ReceiptAddr};
 use crate::fence::{GuaranteeClass, TaskLanguage};
@@ -79,6 +79,13 @@ pub struct RunSpec<'a> {
     /// of the run mints its Delta on the host's ring. `None` on the CLI
     /// entry — a separate process with no ring in reach.
     pub delta: Option<&'a dyn executor::DeltaSink>,
+    /// Where the bash bracket's corpus observations come from (card
+    /// run-observation-unification): [`ObservationSource::Drawer`] on the CLI
+    /// entry (fresh walks + the workspace drawer memo);
+    /// [`ObservationSource::Resident`] on the daemon doors, serving listings
+    /// and digests from the host's resident domain cache. Unused on the
+    /// starlark path.
+    pub observations: ObservationSource<'a>,
 }
 
 /// What one full run produced — the report's (U9) single input.
@@ -506,6 +513,7 @@ fn dispatch(
                     actor: spec.actor,
                     step_cwd: spec.step_cwd,
                     delta: spec.delta,
+                    observations: spec.observations,
                 },
                 live,
             )
