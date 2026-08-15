@@ -1212,8 +1212,9 @@ fn composed_sections(
     if served_words > READ_MAX_WORDS {
         return Err(bad_request(format!(
             "read: this call would serve {served_words} words from {} section(s) of \
-             {display} — past the read ceiling of {READ_MAX_WORDS} words per call. \
-             Nothing was read and no rev was minted.\n  → narrow the ask: a bare toc \
+             {display} — past the read ceiling of {READ_MAX_WORDS} words per call: \
+             refused, never truncated. Nothing was read and no rev was minted.\n  \
+             → narrow the ask: a bare toc \
              read of {display} lists every section with its own `words:N`, so you can \
              pick the ones that fit; then pass those in `sections[]`, or scope the shape \
              table to one subtree first with `toc:`.",
