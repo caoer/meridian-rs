@@ -213,7 +213,7 @@ Correlation: one response per request, id echoed by value; in-flight uniqueness 
   "fingerprint":"b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9"}}
 ```
 
-`caps` is the complete set — no version sniffing, ever. The example shows the sixteen-cap base set (the v2 spelling is byte-identical minus the fingerprint renames); a negotiated v3 session is pushed fifteen more on top — `read`, `check_write`, `splice.plan_edits`, `splice.pin`, `pin-cross-root`, `splice.create_rev`, `create`, `mounts`, `mounts.primary`, `hello.identity`, `script`, `run`, `walk`, `sql`, `scoped-guards` (§A.3/§A.5/§A.7/§A.8/§A.10/§A.11/§5.4) — thirty-one caps in all. Field-only amendments ship as dotted `op.field` strings (`mounts.primary` is one: the mounts row's declared-primary designation, §A.5); `pin-cross-root` is a behavior cap on the existing `splice.pin` field (§A.3). `scoped-guards` (docs-first 2026-08-15) is a behavior cap in the `pin-cross-root` pattern covering the whole scoped-premise family at once — the `guards[]` list and the `scope`/`scope_bytes` fields on `splice` (single and set form) and `script`, and the `fingerprint` op's mint arm (§4.7, §5.4–§5.7): one family, one flag. A frozen v2 session is never pushed it, and un-negotiated use of any guard-family field refuses `bad_request` loudly at this section's strict wall — never silence. `fingerprint` in the hello body is optional (the engine may not have walked yet); when present it is the first ambient fingerprint.
+`caps` is the complete set — no version sniffing, ever. The example shows the sixteen-cap base set (the v2 spelling is byte-identical minus the fingerprint renames); a negotiated v3 session is pushed fifteen more on top — `read`, `check_write`, `splice.plan_edits`, `splice.pin`, `pin-cross-root`, `splice.create_rev`, `create`, `mounts`, `mounts.primary`, `hello.identity`, `script`, `run`, `walk`, `sql`, `scoped-guards` (§A.3/§A.5/§A.7/§A.8/§A.10/§A.11/§5.4) — thirty-one caps in all. Field-only amendments ship as dotted `op.field` strings (`mounts.primary` is one: the mounts row's declared-primary designation, §A.5); `pin-cross-root` is a behavior cap on the existing `splice.pin` field (§A.3). `scoped-guards` (docs-first 2026-08-15) is a behavior cap in the `pin-cross-root` pattern covering the whole scoped-premise family at once — the `guards[]` list (each entry's `scope`/`scope_bytes` premise pair), the singular `scope` field on `splice` (single and set form) and `script`, and the `fingerprint` op's mint arm with its own `scope`/`scope_bytes` pair (§4.7, §5.4–§5.7; `scope_bytes` is a top-level field on no door — §5.4's field matrix): one family, one flag. A frozen v2 session is never pushed it, and un-negotiated use of any guard-family field refuses `bad_request` loudly at this section's strict wall — never silence. `fingerprint` in the hello body is optional (the engine may not have walked yet); when present it is the first ambient fingerprint.
 
 **Rev-presence law:** `node_rev` is MUST on every `toc`/`cat`/`extract` node whenever `splice ∈ caps`.
 
@@ -698,11 +698,13 @@ The wire is permissive forever: unguarded, actor-less, receipt-less splices are 
 
 **`scope` is a JSON field beside the token, never a token encoding** — settled by this section's own geography law (§5.3): requiredness binds to host-side PATH scopes ("`results/**` requires a premise"), and hosts never parse tokens — a path buried inside an opaque token is invisible to the exact plane that applies the policy. The field keeps the token opaque and the geography composable. Pair-validation is atomic at the door: `scope` without `fingerprint` refuses `bad_request` with teaching, so the one-string form's advantage (hash and path cannot desync) is preserved by construction. An `@`-form (`<token>@<scope>`) remains available to FACES as display spelling only — it is never a wire spelling, and no wire surface parses or emits it.
 
-**Raw-byte names are addressable.** `scope_bytes` (base64url over the raw path bytes) rides beside the UTF-8 `scope` convenience — exactly one of the two per premise; mint (§4.7) and guard serve both. This closes the declared non-UTF-8 gap: "integrity-covered but unaddressable" is no longer the posture.
+**Raw-byte names are addressable.** `scope_bytes` (base64url over the raw path bytes) rides beside the UTF-8 `scope` convenience — exactly one of the two per premise; mint (§4.7) and guard serve both. This closes the declared non-UTF-8 gap: "integrity-covered but unaddressable" is no longer the posture (`node-rev-merkle-spec.md` §9, amended in step — the UTF-8 read-face serving limits stand there).
+
+**The field matrix — one law at every strict wall (bounce-1 closure, 2026-08-15).** Top level, per door: `splice` (single and set form) and `script` take `if_fingerprint` (+ optional `scope`) as the one-premise sugar, and `guards[]` as the list. **`scope_bytes` is a top-level field on NO door**: a raw-byte premise rides a `guards[]` entry, and the raw-byte mint rides the `fingerprint` op (§4.7) — the § A.7 field wall (12 → 14: `guards`, `scope`) is this matrix applied, and no fifteenth field exists. Sugar and list supplied together are legal: the sugar desugars to one more entry in the premise list, and the engine checks every premise. Per premise (a `guards[]` entry): `{scope?, scope_bytes?, fingerprint}` — exactly one of `scope`/`scope_bytes`, or neither for the root premise; `fingerprint` is required and holds a token or `absent` (§5.6). Pair violations — `scope` or `scope_bytes` without its `fingerprint`, both spellings in one premise, sugar `scope` without `if_fingerprint` — refuse `bad_request` with teaching (§8.2). Effects doors take NO guard-family field (`if_fingerprint`, `guards`, `scope`, `scope_bytes` alike): inapplicable on `run` and beside `effects` on `script` — `bad_request` at the strict wall (§ A.7/§ A.8; teaching: §8.2).
 
 **Guard-path freshness.** At check time the engine refreshes the named premise's own extent: guard one file, pay one file; guard a folder, pay the folder; guard the world, pay the world. Refusals narrow because the PREMISE narrows, never because the engine looked less hard.
 
-**Negotiation.** The family is capability-advertised as `scoped-guards` (§3.2). A frozen v2 session is never pushed it, and un-negotiated use of any guard-family field refuses `bad_request` loudly at the §3.2 strict wall — never silence.
+**Negotiation.** The family is capability-advertised as `scoped-guards` (§3.2). A frozen v2 session is never pushed it, and un-negotiated use of any guard-family field refuses `bad_request` loudly at the §3.2 strict wall — never silence (teaching: §8.2).
 
 ### §5.5 The Coverage Law — legality is not sufficiency
 
@@ -922,7 +924,7 @@ Reads are idempotent: after a lost answer, re-send freely.
 
 ### §8.2 Register-law refusal texts — the scoped-guard family (docs-first, 2026-08-15)
 
-Refusal teaching speaks the register law: **reason first, fitted remedy, never session rules.** The texts below are carried from the fingerprint-grain merged plan's Appendix C (k3's F-12 redrafted form) byte-for-byte; the one addition is `fingerprint_version_unsupported`, drafted HERE in the same register because Appendix C carried no text for the unknown-future-family refusal — recorded, not slipped in.
+Refusal teaching speaks the register law: **reason first, fitted remedy, never session rules.** The texts below are carried from the fingerprint-grain merged plan's Appendix C (k3's F-12 redrafted form) byte-for-byte; the additions are `fingerprint_version_unsupported` and the three `bad_request` guard-family texts (bounce-1 closure, 2026-08-15), each drafted HERE in the same register because Appendix C carried no text for them — recorded, not slipped in.
 
 ```
 fingerprint_mismatch (scoped):
@@ -951,6 +953,26 @@ fingerprint_version_unsupported (drafted here — no Appendix C source):
    the token is newer than the law being served. Re-mint at the same
    scope (fingerprint{scope: "<scope>"}) to proceed under the serving
    law; to keep the newer tokens, upgrade the engine, not the token."
+bad_request — guard family, un-negotiated (drafted here — no Appendix C
+source):
+  "this session did not negotiate scoped-guards, so <field> cannot ride
+   this request. Reconnect and negotiate the scoped-guards cap in hello,
+   or drop the field — the v2 forms (root if_fingerprint, if_node_rev)
+   are fully served without it."
+bad_request — guard family, broken premise pair (drafted here — no
+Appendix C source):
+  "<detail — one of: <spelling> carries no fingerprint; both scope and
+   scope_bytes in one premise; scope without if_fingerprint>. A premise
+   is one scope spelling PLUS its token — exactly one spelling, token
+   required. Mint the pair together (fingerprint{scope: "<scope>"}) and
+   send both."
+bad_request — guard family, effects door (drafted here — no Appendix C
+source):
+  "<field> was supplied on an unguarded door: run and script-with-effects
+   hold no premise — a guard here would promise what execution cannot
+   keep (no-guard ruling). Drop the guard fields; to guard content
+   writes, use splice, or script without effects (its commit premise is
+   the engine-computed touch set)."
 ```
 
 ## §9 actor and now — wire inputs, never ambient
@@ -1092,6 +1114,13 @@ Two laws read straight off the table. **The prefix tracks the domain RULES, neve
 - A held token from a KNOWN RETIRED family refuses `fingerprint_version_retired` with re-mint teaching — never `fingerprint_mismatch`, which would lie: the premise did not move, the LAW moved.
 - A token from an UNKNOWN FUTURE family refuses `fingerprint_version_unsupported` — distinct, taught apart.
 - Only a current-family unequal digest is the normal scoped mismatch.
+
+**When retirement begins is the cutover's no-return boundary** (stated as law
+in `node-rev-merkle-spec.md` §4.2.5, bounce-1 closure): before the boundary
+the old law is still serving and nothing refuses
+`fingerprint_version_retired`; the downgrade-fence tombstone activates at
+that boundary and only there, and the non-serving shadow build is not
+implemented (`B_cutover` answered — pay once).
 
 **No dual-hash serving window exists**: the engine never serves two hash laws at once — the honest price is one typed, taught re-plan event per workspace at cutover, not permanent double maintenance. `sub` re-baselines at the cutover with a labeled epoch boundary, never a silent chain break.
 
@@ -1248,11 +1277,13 @@ The former row 8 (walk-plane charset/parity "collision") is **dissolved by the o
 
 These are **current law**, not optional history. Detail that only implements code may lag; the shapes below are what agents and hosts must learn.
 
-### A.1 Fingerprint-or-force (every wire door)
+### A.1 Fingerprint-or-force (every pure write door)
 
 Content-mutating writes on the **wire door** (the daemon socket — the only door, §3.3) require fingerprint match **or** `force`. Guard fields stay **schema-optional** (a guardless frame still **decodes**). A content-mutating write with neither fingerprint nor `force` is refused **after decode** as `guard_required` (recovery: `fix`) — semantic refusal, not a frame rejection. `force` is any client's refuse→rewrite path; MCP is not a separate trust plane. In-process paths (`mrd` without the wire door) are out of this ruling's reach by **scope**, not trust.
 
 *(Amended 2026-08-15 — coverage, §5.5.)* The demand's satisfying set is the §5.4 premise vocabulary: any legal tree token, judged by the Coverage Law at admission. `guard_required` keeps its exact meaning — a content-mutating write carrying NO premise at all and no `force`; a write carrying premises that fail coverage refuses `scope_does_not_cover{uncovered}` instead (§5.5, §8.2). Where the demand was already satisfiable it still is, unchanged in effect: per-edit `if_node_rev` covers its own edit, and `if_fingerprint` covers everything.
+
+*(Amended 2026-08-15, bounce-1 closure — requiredness limited to the PURE write doors; ruled: `decisions/2026-08-15-no-guard-on-effects.md`.)* The demand above binds every op that lands content by DECLARING its write set in the request — `splice` in every form with its composed fields (§ A.3/§ A.5), `create`, `remove`. It does NOT bind the effects lane: `run` (§ A.8) and `script` carrying `effects` (§ A.7) are unguarded by ruling — no CAS premise, no fingerprint requiredness, no synthesized touch-set guard — because on execution whose consequences mrd cannot bound, a guard promises what it cannot keep. A guard field supplied on those doors refuses `bad_request` at the §3.2 strict wall (inapplicable to the op — § A.8; teaching: §8.2), never `guard_required`; `guard_required` is a pure-write-door refusal only. `script` WITHOUT `effects` stays inside the demand and satisfies it by construction: its commit premise is the engine-computed touch set (§ A.7), caller premises legal as widening. The section title is amended with this paragraph ("every wire door" → "every pure write door"); the one-door transport law (§3.3) is untouched — the limit is op scope, not transport scope.
 
 ### A.2 Armed change plane (block is a feature)
 
@@ -2306,10 +2337,14 @@ read of a target the program itself armed serves the ARMED content (the
 entry bytes with the program's own armed edits applied, in arm order) and
 that content's own rev — what you read is exactly what is hashed (§4.2), on
 the overlay too. Foreign mid-program changes are INVISIBLE to reads **within
-the hash domain — the surface the entry fingerprint covers**: disk moves
-only at commit, and the commit's §5.1 guards run against the LIVE world
-unchanged — `if_fingerprint` = the entry fingerprint refuses
-`fingerprint_mismatch` when anything foreign landed. Every read of a domain
+the hash domain — the surface the entry pin covers**: the program reads the
+pinned entry generation for the whole attempt (that is what frozen view IS —
+visibility from the pin, rewritten in place 2026-08-15, bounce-1 closure),
+disk moves only at commit, and commit authority is the TOUCH SET — the
+engine verifies entry-vs-live at exactly the nodes the program read and
+armed (the commit-premise amendment below), plus any caller premises as
+widening (§5.4). Foreign churn outside the touch set neither becomes
+visible mid-run nor refuses the commit. Every read of a domain
 member in one attempt is therefore consistent with exactly one fingerprint
 BY CONSTRUCTION, which is what the wire-client lane's composed-read bracket
 exists to approximate across trips. **Out-of-domain paths stay addressable
@@ -2325,7 +2360,8 @@ entry, dropped when the attempt answers, never retained across attempts,
 never shared across connections, no version history, no as-of parameter.
 The daemon still holds no MVCC. What `run-plane.md` bans is daemon-held
 state ACROSS attempts; this is one attempt reading the one picture its own
-entry pass took, with the commit CAS as the only write authority.
+entry pass took, with the commit's touch-set verify (the commit-premise
+amendment below) as the only write authority.
 
 **Containment (the eval boundary).** The kernel runs inside the daemon
 under the entry's own limits — fuel, memory cap, call depth, source bytes,
@@ -2446,10 +2482,15 @@ engine computes it; the caller declares nothing:**
   `guards`/`scope` exactly as it excludes `if_fingerprint` (the
   combination wall above) — a live program holds no premise.
 - **Read visibility is UNCHANGED — FROZEN VIEW, kept** (pre-merge
-  ruling 2): the entry-world read law above stands word for word. A
+  ruling 2): the entry-world read law above stands. A
   running script sees the world exactly as it was when it started; foreign
   mid-run changes stay invisible until the next run; the ratified A.7
   read-stability promise is KEPT and existing tests keep their meaning.
+  (Bounce-1 closure, 2026-08-15: the entry-world paragraph's former
+  root-CAS commit sentence — `if_fingerprint` = the entry fingerprint,
+  refusing on anything foreign — was rewritten in place to this
+  amendment's touch set; the READ law stands, only the commit clause
+  moved, so the two passages now speak one law.)
 - `expect_armed` is orthogonal and stays: it proves the host authorized
   THIS set; the touch-set verify proves the world did not move under the
   premise. One gates set identity, the other set freshness.
@@ -2625,9 +2666,11 @@ cannot keep and buys complexity and slowness for the false promise.
 Consequences on this op, each stated:
 
 - **A supplied guard field is rejected as inapplicable, never ceremonially
-  checked.** `if_fingerprint`, `guards`, `scope` are not in this op's field
-  set, so the §3.2 strict wall refuses them `bad_request` at decode — that
-  refusal is this law working, not a gap to close.
+  checked.** `if_fingerprint`, `guards`, `scope` — and `scope_bytes`, which
+  is a top-level field on NO door (§5.4's field matrix) — are not in this
+  op's field set, so the §3.2 strict wall refuses them `bad_request` at
+  decode (teaching: §8.2) — that refusal is this law working, not a gap to
+  close.
 - **`task_rev` is TARGETING, never CAS.** A task-selection pin chooses WHAT
   to execute — which task bytes the plane resolved; it is never a world
   premise, and no refusal on this door is a premise refusal.
