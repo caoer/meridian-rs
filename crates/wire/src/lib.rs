@@ -751,11 +751,25 @@ pub enum Op {
         #[serde(skip_serializing_if = "Option::is_none")]
         require_root: Option<Root>,
     },
-    /// v2 §4.7 the push path: `{"op":"sub","from_seq":N}` → ok (the ack
-    /// reuses the `{root, seq}` body), then Notification frames each carrying
-    /// one Delta batch (§7.1). `from_seq` catchup is valid only within one
-    /// epoch; outside the retained history → `root_unknown` → diff-by-root.
-    Sub { from_seq: u64 },
+    /// v2 §4.7 the push path, cursor-identity grammar (B-01): a live
+    /// subscribe carries NO cursor (`{"op":"sub"}`) and anchors at the acked
+    /// tip; a resumption carries the full cursor
+    /// (`{"op":"sub","tree_instance":I,"from_seq":N}`), instance evaluated
+    /// before any sequence compare. The ack reuses the `{root, seq}` body
+    /// plus `tree_instance` — where a client learns its cursor — then
+    /// Notification frames each carry one Delta batch (§7.1). `from_seq`
+    /// catchup is valid only within one tree instance; a dead instance or a
+    /// `from_seq` outside the retained history → `root_unknown` →
+    /// diff-by-root. `from_seq` WITHOUT `tree_instance` — anchoring by
+    /// number alone — refuses `bad_request` with the upgrade teaching
+    /// ([`sub_upgrade_teaching`]); instance without `from_seq` is half a
+    /// cursor and refuses the same way ([`sub_half_cursor_teaching`]).
+    Sub {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tree_instance: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        from_seq: Option<u64>,
+    },
     /// The COMPOSED read op (v3-only): addressing + content + render at ONE
     /// engine snapshot — one round trip replacing the `extract`→`cat`→render
     /// 3-hop split. Absent from the frozen v2 `caps`, so a v2 session
@@ -1660,8 +1674,17 @@ pub enum ResponseBody {
     },
     /// v2 §4.7: the current root at world grain + `seq`, the monotone
     /// per-workspace batch counter (per-daemon-epoch — a restart resets it;
-    /// cross-epoch catchup is diff-by-root, §7.1 laws).
-    Root { root: Root, seq: u64 },
+    /// cross-epoch catchup is diff-by-root, §7.1 laws). `tree_instance`
+    /// rides the `sub` ack only (B-01, §4.7): the identity the acked `seq`
+    /// is numbered under, minted fresh per ring epoch. The `root` op serves
+    /// it absent — that op does not read the ring, so it cannot honestly
+    /// name a ring surface.
+    Root {
+        root: Root,
+        seq: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tree_instance: Option<String>,
+    },
     /// v2 §4.7/§7.3 replay: the byte-identical Delta objects that were (or
     /// would have been) emitted as live notifications between the two roots —
     /// each batch is a notification frame body ([`DeltaFrame`]), so catchup
@@ -2285,6 +2308,42 @@ pub fn version_unsupported_teaching(scope: &str) -> String {
          scope (fingerprint{{scope: \"{scope}\"}}) to proceed under the \
          serving law; to keep the newer tokens, upgrade the engine, not the \
          token."
+    )
+}
+
+/// The B-01 register-law teaching for a `sub` that anchors by number alone
+/// (`from_seq` without `tree_instance`) — `bad_request`, the
+/// upgrade-required refusal (§4.7). Reason first, fitted remedy.
+#[must_use]
+pub fn sub_upgrade_teaching() -> &'static str {
+    "this sub anchors by number alone — from_seq without tree_instance — \
+     and seq numbers are per tree instance, so a bare number can anchor on \
+     the wrong epoch. A resumption cursor carries tree_instance and \
+     from_seq together; every sub ack teaches tree_instance. Upgrade the \
+     client to carry both; to start without a cursor, send sub with \
+     neither field and anchor live at the acked tip."
+}
+
+/// The B-01 register-law teaching for half a cursor (`tree_instance`
+/// without `from_seq`) — `bad_request` (§4.7).
+#[must_use]
+pub fn sub_half_cursor_teaching() -> &'static str {
+    "this sub carries tree_instance without from_seq — half a cursor names \
+     no position. Send both to resume, or neither to anchor live at the \
+     acked tip."
+}
+
+/// The B-01 register-law teaching for a dead-instance cursor —
+/// `root_unknown`, the cursor family (§5.7): the numbering died with its
+/// tree instance; sequence was never consulted.
+#[must_use]
+pub fn sub_dead_instance_teaching(held: &str, live: &str) -> String {
+    format!(
+        "this cursor was numbered under tree instance {held}, and the \
+         serving tree is instance {live} — the numbering died with its \
+         instance (a daemon restart or an idle reap), so the sequence was \
+         not consulted. Catch up by diff-by-root (§7.1), then subscribe \
+         live to mint a fresh cursor."
     )
 }
 

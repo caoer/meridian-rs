@@ -150,7 +150,8 @@ impl Registry {
             // Cold: no engines; first `warm_or_build` rebuilds from disk.
             engines: RwLock::new(HashMap::new()),
             read_mints: Mutex::new(HashMap::new()),
-            // Cold: no rings; pre-restart `from_seq` ⇒ `root_unknown` (§7.1).
+            // Cold: no rings; a pre-restart cursor dies on its instance ⇒
+            // `root_unknown` (§7.1, B-01).
             rings: Mutex::new(HashMap::new()),
             prewarm_signatures: Mutex::new(HashMap::new()),
             // Cold: no memo; the first currency pass reads every member once.
