@@ -202,7 +202,7 @@ fn visible_bytes(ws: &Path) -> Vec<(PathBuf, Vec<u8>)> {
 
 /// The matrix, process-boundary cells: per filesystem, the real binary
 /// commits normally on a pre-commit rung (Staged — no early fence), and past
-/// the commit point (Renamed, ParentSynced) it cannot take `write.lock` nor
+/// the commit point (`Renamed`, `ParentSynced`) it cannot take `write.lock` nor
 /// mint an old-law root.
 #[test]
 fn old_binary_matrix_across_fence_rungs() {
