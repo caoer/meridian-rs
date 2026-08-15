@@ -15,13 +15,17 @@
 //! is the `mrd` CLI.
 //!
 //! # Two lifecycles, one workspace
-//! Registry entry ([`WorkspaceEntry`]) drives idle-reap ([`DEFAULT_IDLE_REAP`]).
-//! Drawer sentinel (`cache` `registered.json`) drives 30-day last-use GC.
-//! Register writes both; idle-reap drops only the entry.
+//! Registry entry ([`WorkspaceEntry`]) drives idle-reap ([`DEFAULT_IDLE_REAP`]):
+//! the reap DEMOTES — warm engine, ring, read-mint ledger, and sql handle drop;
+//! the entry, the §6.4 event feed, and the resident memo survive (merkle-spec
+//! §6.4 registration-lifetime law — the feed's dirty set is what makes the next
+//! warm O(dirty)). Drawer sentinel (`cache` `registered.json`) drives 30-day
+//! last-use GC. Only `unregister` ends a registration — and the feed with it.
 
 mod client;
 mod delta_sink;
 mod engine;
+mod feed;
 mod mounts;
 mod protocol;
 mod registry;
@@ -37,14 +41,17 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub use client::Client;
 pub use engine::{WarmOutcome, WorkspaceEngine};
+pub use feed::FeedStats;
 pub use protocol::{DenyKind, Request, Response, WorkspaceEntry};
 pub use registry::{RegisterOutcome, Registry, ResolveOutcome};
 pub use server::{
     Config, RunningServer, ServeOutcome, default_socket_path, in_process_registry, serve_lines,
 };
 
-/// Idle-reap horizon: unused entry (and its warm engine) dropped from memory
-/// and state. Reaper never touches the drawer (`cache::gc` 30-day horizon).
+/// Idle-reap horizon: an unused workspace's warm serving state (engine, ring,
+/// read-mint ledger, sql handle) drops from memory. The registration, its
+/// §6.4 event feed, and the resident memo survive the horizon (merkle-spec
+/// §6.4). Reaper never touches the drawer (`cache::gc` 30-day horizon).
 // `Duration::from_hours`/`from_days` not const-stable at MSRV 1.96.
 #[allow(clippy::duration_suboptimal_units)]
 pub const DEFAULT_IDLE_REAP: Duration = Duration::from_secs(60 * 60);
