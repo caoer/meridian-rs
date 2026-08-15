@@ -50,6 +50,12 @@ blake3 = "1"
 # elision vs the raw face over the engine-written page.
 wire-serve = { workspace = true }
 fs = { workspace = true }
+# test-only: the `.base` projection's §10.1 gates need BOTH halves at once —
+# the `fs` walk that defines membership and the `view` projection that turns
+# its bytes into rows. Neither crate can host them alone. `duckdb` rides along
+# as the connection type those gates read rows out of.
+view = { workspace = true }
+duckdb = { workspace = true }
 lock = { workspace = true }
 # test-only: the one remaining wire host (hosts ruling, wire-contract §3.3,
 # 2026-08-06 — the stdio sidecar is DROPPED). The frame-layer tests drive the

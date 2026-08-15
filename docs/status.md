@@ -449,6 +449,13 @@ reserved by ruling (`laws.md` D-1).
  daemon-published `view.duckdb` file, and `mrd view status` (whose subject
  was that file's freshness) are deleted. The former "keep / reshape / drop"
  line is closed.
+- The sql face also projects **`.base` (Obsidian Bases) files** — the `base`,
+ `base_view` and `base_formula` relations, plus `link.exclusion_path`
+ (`docs/base-projection.md`). They are view-lane only and carry NO wire
+ surface, and their bytes enter no fingerprint: they ride their own
+ `base_fold` witness, which the freshness frame reports as a SECOND plane
+ (`base_plane` in `--json`, its own banner line in human mode) so "the corpus
+ moved" and "the base plane moved" stay different sentences.
 - `mrd sql` is **operator convenience**: it builds an ephemeral `:memory:`
  projection of the corpus per query, writes nothing to disk, and folds
  post-result for an honest freshness frame. It is **not** a peer of
