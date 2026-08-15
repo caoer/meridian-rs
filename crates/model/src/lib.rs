@@ -1835,12 +1835,152 @@ pub fn leaf_digest(bytes: &[u8]) -> [u8; 32] {
 /// `version` and the encoding are exactly [`merkle_root`]'s.
 #[must_use]
 pub fn merkle_root_of_leaves<N: AsRef<[u8]>>(leaves: &[(N, [u8; 32])], version: u32) -> MerkleRoot {
-    let mut tree = MerkleDir::default();
+    merkle_tree_of_leaves(leaves, version).root()
+}
+
+/// The §12.2 tree with interior hashes kept — the thing `merkle_root_of_leaves`
+/// used to throw away after taking the top hash.
+#[derive(Clone)]
+pub struct MerkleTree {
+    dir: MerkleDir,
+    prefix: String,
+}
+
+/// Build the tree `merkle_root_of_leaves` folds. Same insert/prune/encoding.
+#[must_use]
+pub fn merkle_tree_of_leaves<N: AsRef<[u8]>>(leaves: &[(N, [u8; 32])], version: u32) -> MerkleTree {
+    let mut dir = MerkleDir::default();
     for (path, digest) in leaves {
-        tree.insert(path.as_ref(), *digest);
+        dir.insert(path.as_ref(), *digest);
     }
-    let hex = blake3::Hash::from_bytes(tree.fold()).to_hex().to_string();
-    MerkleRoot(format!("{}{hex}", root_prefix(version)))
+    MerkleTree {
+        dir,
+        prefix: root_prefix(version),
+    }
+}
+
+impl MerkleTree {
+    /// Stamp a prefix taken from a live fingerprint (`b3:` / `b3a:` / …) so
+    /// `hash_at` prints tokens that compare equal to that generation.
+    #[must_use]
+    pub fn with_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.prefix = normalize_fp_prefix(&self.prefix, prefix.into());
+        self
+    }
+
+    /// Workspace root token (`b3:<hex>`).
+    #[must_use]
+    pub fn root(&self) -> MerkleRoot {
+        self.token_of(self.dir.fold(), None)
+    }
+
+    /// Token at `path`: file leaf, directory fold, or `None` if the path has
+    /// no node (empty / pruned / unknown). Empty path is the root.
+    #[must_use]
+    pub fn hash_at(&self, path: &str) -> Option<MerkleRoot> {
+        let digest = self.dir.hash_at(path.as_bytes())?;
+        let scope = if path.is_empty() { None } else { Some(path) };
+        Some(self.token_of(digest, scope))
+    }
+
+    fn token_of(&self, digest: [u8; 32], scope: Option<&str>) -> MerkleRoot {
+        let hex = blake3::Hash::from_bytes(digest).to_hex().to_string();
+        MerkleRoot(format_guard_token(
+            &format!("{}{hex}", self.prefix),
+            scope,
+        ))
+    }
+}
+
+fn normalize_fp_prefix(fallback: &str, raw: String) -> String {
+    if let Some((head, _)) = raw.split_once(':') {
+        return format!("{head}:");
+    }
+    if raw.is_empty() {
+        fallback.to_owned()
+    } else {
+        raw
+    }
+}
+
+/// Split a guard token into digest + optional scope.
+/// `b3:<hex>` is the root. `b3:<hex>@<rel-path>` is that node.
+#[must_use]
+pub fn parse_guard_token(token: &str) -> Option<GuardToken> {
+    let (head, scope) = match token.split_once('@') {
+        Some((h, p)) if !p.is_empty() && !p.starts_with('/') && !p.contains('\0') => {
+            (h, Some(p.to_owned()))
+        }
+        None => (token, None),
+        Some(_) => return None,
+    };
+    if !is_fingerprint_spelling(head) {
+        return None;
+    }
+    Some(GuardToken {
+        digest: MerkleRoot(head.to_owned()),
+        scope,
+    })
+}
+
+/// A parsed `if_fingerprint` token (D-04: any legal node).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GuardToken {
+    /// The `b3…:<hex>` digest, never carrying `@`.
+    pub digest: MerkleRoot,
+    /// `None` = workspace root. `Some` = that relative path's node.
+    pub scope: Option<String>,
+}
+
+/// Print a token the caller can pass back as `if_fingerprint`.
+#[must_use]
+pub fn format_guard_token(digest: &str, scope: Option<&str>) -> String {
+    match scope {
+        None | Some("") => digest.to_owned(),
+        Some(path) => format!("{digest}@{path}"),
+    }
+}
+
+/// `scope` covers `path` when it is the path or a strict ancestor. Empty
+/// scope is the root and covers everything.
+#[must_use]
+pub fn scope_covers(scope: &str, path: &str) -> bool {
+    if scope.is_empty() {
+        return true;
+    }
+    path == scope || path.starts_with(&format!("{scope}/"))
+}
+
+/// Longest common path prefix. One path → that path (file-grain). Disjoint
+/// top-level paths → empty (the root).
+#[must_use]
+pub fn lca_path(paths: &[&str]) -> String {
+    let segs: Vec<Vec<&str>> = paths
+        .iter()
+        .map(|p| p.split('/').filter(|s| !s.is_empty()).collect())
+        .collect();
+    let Some(first) = segs.first() else {
+        return String::new();
+    };
+    let mut depth = 0;
+    while first.get(depth).is_some()
+        && segs
+            .iter()
+            .all(|s| s.get(depth) == first.get(depth))
+    {
+        depth += 1;
+    }
+    first[..depth].join("/")
+}
+
+fn is_fingerprint_spelling(s: &str) -> bool {
+    let Some((prefix, hex)) = s.split_once(':') else {
+        return false;
+    };
+    prefix.starts_with("b3")
+        && prefix.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        && hex.len() == 64
+        && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// A directory in the merkle tree — named entries, each a file (its §12.2 leaf
@@ -1850,11 +1990,12 @@ pub fn merkle_root_of_leaves<N: AsRef<[u8]>>(leaves: &[(N, [u8; 32])], version: 
 /// The file arm holds the 32-byte digest rather than the raw bytes: the fold
 /// only ever needed `blake3(raw)`, and keeping the bytes meant every root
 /// derivation copied the whole corpus into the tree before hashing it.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct MerkleDir {
     entries: BTreeMap<Vec<u8>, MerkleEntry>,
 }
 
+#[derive(Clone)]
 enum MerkleEntry {
     File([u8; 32]),
     Dir(MerkleDir),
@@ -1898,6 +2039,35 @@ impl MerkleDir {
                 slot.insert(MerkleEntry::File(digest));
             }
         }
+    }
+
+    /// Digest at `path`: file leaf, directory fold, or `None` if the path has
+    /// no node (unknown, or an empty dir that fold prunes). Empty path is this
+    /// directory's own fold.
+    fn hash_at(&self, path: &[u8]) -> Option<[u8; 32]> {
+        let segs: Vec<&[u8]> = path
+            .split(|b| *b == b'/')
+            .filter(|s| !s.is_empty())
+            .collect();
+        if segs.is_empty() {
+            return Some(self.fold());
+        }
+        let mut dir = self;
+        for (i, seg) in segs.iter().enumerate() {
+            let last = i + 1 == segs.len();
+            match dir.entries.get(*seg)? {
+                MerkleEntry::File(digest) if last => return Some(*digest),
+                MerkleEntry::File(_) => return None,
+                MerkleEntry::Dir(sub) if last => {
+                    if sub.entries.is_empty() {
+                        return None;
+                    }
+                    return Some(sub.fold());
+                }
+                MerkleEntry::Dir(sub) => dir = sub,
+            }
+        }
+        None
     }
 
     /// Fold this directory to its 32-byte node hash (§12.2): children ordered by

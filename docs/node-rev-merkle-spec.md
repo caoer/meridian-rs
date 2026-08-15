@@ -31,7 +31,7 @@ An earlier merkle-root prototype was folded into this spec. Its scheme is adopte
 - **Measured envelope** (M4 Max): session dir 4,141 nodes → root 74ms; whole corpus 9.5GB/50,319 nodes → 2.2s warm / 5.2s cold. These numbers justify §6's no-persistence stance.
 
 **Rejected (with reasons):**
-- **Snapshot persistence** (a `Save`/`Load` binary format, requiring the snapshot to live OUTSIDE the hashed dir). That design served an offline-subscriber demo. In meridian-rs it violates law 2 (Rust memory is disposable; disk = markdown only — "no snapshot files") — and the recovery numbers make it unnecessary: cold rebuild is 2.2s, "daemon death is a blip". The subscriber holds a 32-byte root, never a tree; the daemon holds no trees — the root re-derives on demand (§6–7 re-derive the drift-naming capability the snapshot existed for).
+- **Snapshot persistence** (a `Save`/`Load` binary format, requiring the snapshot to live OUTSIDE the hashed dir). That design served an offline-subscriber demo. In meridian-rs it violates law 2 (Rust memory is disposable; disk = markdown only — "no snapshot files") — and the recovery numbers make it unnecessary: cold rebuild is 2.2s, "daemon death is a blip". The **subscriber / wire** holds a 32-byte node token (root, or `hash@path`), never a tree. The daemon's *memory* holds the tree it already folds on every currency pass — throwing interior hashes away was an implementation defect, not this rejection. Disk still carries no tree. Daemon death still rebuilds from disk.
 - **xxhash64 width.** 64-bit is a race detector, not collision-resistant; the vision's cursor is 32 bytes (law 2) and the wire example is `b3:`-prefixed. §1 rules blake3-256.
 - **mtime+size leaf cache** — rejected for v1: its lie window (same mtime+size, different bytes) buys warm-rebuild speed we don't need once the tree is memory-resident and event-updated (§6). Cold start eats the 2–5s honestly.
 
@@ -183,14 +183,16 @@ Out-of-band changes (hand edits, git operations) arrive via the watch feed → t
 
 ## 7. Integrity surface + CAS (wire vocabulary)
 
-Two grains, composable — **no separate `guard` op** (dropped; integrity = `fingerprint` + `if_fingerprint` + `diff`):
+Three grains, composable — **no separate `guard` op** (dropped; integrity = `fingerprint` + `if_fingerprint` + `diff`). The third grain is ruling D-04 (2026-08-02): `if_fingerprint` is an option argument and may be any legal node of the tree, not the root only.
 
 | Guard / op | Grain | Question | Failure |
 |---|---|---|---|
 | `if_node_rev` (on `splice`) | one node | "is THIS section still what I read?" | `cas_mismatch` {expected, actual} — refresh: re-read, re-plan |
-| `if_fingerprint` (on `splice`, optional) | workspace | "is the WORLD still what I planned against?" | `fingerprint_mismatch` {expected, actual} — resync / re-plan |
+| `if_fingerprint` (on `splice`, optional) | workspace **or subtree** | "is the named node still what I planned against?" | `fingerprint_mismatch` {expected, actual} — resync / re-plan. A token that does not cover every write path refuses `bad_request` (`scope_does_not_cover`). A path with no node (empty dir, pruned) refuses `bad_request` (`no_node`). |
 | `fingerprint` op | workspace | read the current content-hash cursor | — |
 | `diff` | range of fingerprints | batches of Delta between two cursors | `fingerprint_unknown` if outside retained history |
+
+**`if_fingerprint` spelling.** Bare `b3:<64hex>` (or the domain-versioned prefix) is the workspace root — today's token, unchanged. `b3:<64hex>@<rel-path>` is that path's interior hash (a directory fold, or a file leaf). The named node must be an ancestor of every path the write touches. A wider ancestor, including the root, is legal. The engine never silently promotes a token to root.
 
 **`fingerprint` op** — read the current cursor:
 
