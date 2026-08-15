@@ -152,6 +152,11 @@ pub enum TraceEntry {
     /// evaluation). Present so the binding is reconstructible and the
     /// zero-match case observable; a typo'd pattern is visible here.
     Expanded(crate::ExpansionRecord),
+    /// The `files` binding at entry — one row per member, `files[index]` →
+    /// `path`, rendered after the expansion rows that produced it (order-bind
+    /// ruling). Present so a caller sees which document each index names
+    /// without a second call; a swapped expectation is visible here.
+    Bound { index: usize, path: String },
     /// A quiet read — comprehension, condition, loop body, function body.
     Read(ReadEntry),
     /// A top-level-statement read: `card = read(…)` binds and echoes.
@@ -442,15 +447,10 @@ impl ScriptTrace {
         };
         let committed = outcome == ScriptOutcome::Committed;
 
-        // Expansion rows open the trace: they happened at entry, before the
-        // first read, and the face renders them in that order.
-        let mut trace: Vec<TraceEntry> = eval
-            .recording
-            .expansions
-            .iter()
-            .cloned()
-            .map(TraceEntry::Expanded)
-            .collect();
+        // Entry facts open the trace in the order they happened: expansion
+        // rows first (patterns became paths), then the binding they produced
+        // — one `bound` row per `files[i]` — then the reads.
+        let mut trace = entry_fact_rows(&eval.recording);
         trace.extend(eval.recording.reads.iter().map(|read| {
             let entry = ReadEntry {
                 line: read.line,
@@ -546,12 +546,37 @@ impl ScriptTrace {
         self.trace.iter().filter_map(|entry| match entry {
             TraceEntry::Armed(armed) => Some(armed),
             TraceEntry::Expanded(_)
+            | TraceEntry::Bound { .. }
             | TraceEntry::Read(_)
             | TraceEntry::Echo(_)
             | TraceEntry::Wrote(_)
             | TraceEntry::Ran(_) => None,
         })
     }
+}
+
+/// The entry facts that open every trace, in the order they happened:
+/// expansion rows (patterns became paths), then the binding they produced —
+/// one `bound` row per `files[i]` (order-bind ruling: the binding is
+/// visible, never inferred).
+fn entry_fact_rows(recording: &crate::ScriptRecording) -> Vec<TraceEntry> {
+    let mut rows: Vec<TraceEntry> = recording
+        .expansions
+        .iter()
+        .cloned()
+        .map(TraceEntry::Expanded)
+        .collect();
+    rows.extend(
+        recording
+            .files
+            .iter()
+            .enumerate()
+            .map(|(index, path)| TraceEntry::Bound {
+                index,
+                path: path.clone(),
+            }),
+    );
+    rows
 }
 
 /// Classify a kernel error into the closed fault taxonomy. `reason` is the

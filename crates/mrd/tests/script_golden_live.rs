@@ -545,6 +545,7 @@ fn read_paths(trace: &ScriptTrace) -> Vec<&str> {
         .filter_map(|entry| match entry {
             TraceEntry::Read(read) | TraceEntry::Echo(read) => Some(read.path.as_str()),
             TraceEntry::Expanded(_)
+            | TraceEntry::Bound { .. }
             | TraceEntry::Armed(_)
             | TraceEntry::Wrote(_)
             | TraceEntry::Ran(_) => None,
@@ -584,6 +585,7 @@ fn revs_read(trace: &ScriptTrace) -> Vec<String> {
         let read = match entry {
             TraceEntry::Read(read) | TraceEntry::Echo(read) => read,
             TraceEntry::Expanded(_)
+            | TraceEntry::Bound { .. }
             | TraceEntry::Armed(_)
             | TraceEntry::Wrote(_)
             | TraceEntry::Ran(_) => continue,

@@ -696,12 +696,16 @@ fn print_human(trace: &ScriptTrace) {
         outcome_word(trace.outcome)
     );
     for entry in &trace.trace {
-        if let super::TraceEntry::Expanded(row) = entry {
-            println!(
+        match entry {
+            super::TraceEntry::Expanded(row) => println!(
                 "  expanded {} -> {} file(s)",
                 row.pattern,
                 row.matched.len()
-            );
+            ),
+            super::TraceEntry::Bound { index, path } => {
+                println!("  bound files[{index}] -> {path}");
+            }
+            _ => {}
         }
     }
     for armed in trace.armed_entries() {
@@ -777,9 +781,9 @@ pub(crate) struct Script {
     /// shown by the arm leg; this run refuses PRE-SPLICE unless its own armed
     /// set hashes to the same value.
     pub(crate) expect_armed: Option<String>,
-    /// `--files` (repeatable): host-enumerated paths, sorted. Paths only —
-    /// content enters through `read()` alone, which is what keeps replay
-    /// byte-identical.
+    /// `--files` (repeatable): paths in call order — `files[i]` is the i-th
+    /// flag the caller typed (order-bind ruling). Paths only — content enters
+    /// through `read()` alone, which is what keeps replay byte-identical.
     pub(crate) files: Vec<String>,
     /// `--args JSON`: a JSON object of strings, injected inert as a dict.
     pub(crate) args: BTreeMap<String, String>,
@@ -856,9 +860,9 @@ impl Script {
                 }
             }
         }
-        // Sorted, because `files[]` is a host-enumerated set and the entry is
-        // replayed against the same order it ran on.
-        files.sort();
+        // Call order preserved: `files[i]` is the i-th `--files` the caller
+        // typed (order-bind ruling — the wire door binds the same way), and
+        // replay reconstructs that same order from the recording.
         Ok(Script {
             actor,
             now,
@@ -1062,6 +1066,7 @@ mod tests {
             expansions: Vec::new(),
             actor: "8ab41c02".to_owned(),
             reads,
+            files: Vec::new(),
         }
     }
 

@@ -619,6 +619,85 @@ fn a_files_pattern_expands_against_the_entry_world() {
     assert_eq!(trace["bindings"]["n"], json!("0"), "trace: {trace}");
 }
 
+/// `files[]` binds in CALL ORDER: `files[0]` is the path the caller typed
+/// first, whatever the paths' lexical order. Both members carry the same
+/// section name, so a swapped binding would land the edit on the WRONG
+/// document with a committed receipt — the silent-wrong-direction failure
+/// this pin exists to make impossible (round-7 finding: the sorted binding
+/// swapped `results/…` and `agents/…`).
+#[test]
+fn files_bind_in_call_order_so_the_edit_lands_on_the_typed_first_member() {
+    let tmp = TempDir::new().unwrap();
+    // Typed-first sorts LAST: `results/…` > `agents/…` lexically.
+    let ws = write_ws(
+        &tmp,
+        "project",
+        &[
+            ("results/user.md", "# Notes\n\nuser body\n"),
+            ("agents/agent.md", "# Notes\n\nagent body\n"),
+        ],
+    );
+    let _server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(&test_config(&tmp).socket_path);
+    conn.hello_v3(&ws);
+
+    let resp = conn.call(&json!({
+        "id": 33, "op": "script",
+        "source": "put(files[0], section=\"Notes\", append=\"landed on the typed-first member\\n\")\n",
+        "files": ["results/user.md", "agents/agent.md"],
+    }));
+    let trace = trace_of(&resp);
+    assert_eq!(trace["outcome"], json!("committed"), "trace: {trace}");
+    assert!(
+        fs::read_to_string(ws.join("results/user.md"))
+            .unwrap()
+            .contains("landed on the typed-first member"),
+        "the edit lands on the member the caller typed first"
+    );
+    assert_eq!(
+        fs::read_to_string(ws.join("agents/agent.md")).unwrap(),
+        "# Notes\n\nagent body\n",
+        "the other member is untouched"
+    );
+}
+
+/// The answer header prints the binding: one `bound` row per `files[i]` →
+/// resolved path, opening the trace the way expansion rows already do — so
+/// a caller can see which document each index names without a second call.
+#[test]
+fn the_trace_opens_with_one_bound_row_per_files_member() {
+    let tmp = TempDir::new().unwrap();
+    let ws = write_ws(
+        &tmp,
+        "project",
+        &[
+            ("results/user.md", "# Notes\n\nuser body\n"),
+            ("agents/agent.md", "# Notes\n\nagent body\n"),
+        ],
+    );
+    let _server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(&test_config(&tmp).socket_path);
+    conn.hello_v3(&ws);
+
+    let resp = conn.call(&json!({
+        "id": 34, "op": "script",
+        "source": "n = len(files)\n",
+        "files": ["results/user.md", "agents/agent.md"],
+    }));
+    let trace = trace_of(&resp);
+    assert_eq!(trace["outcome"], json!("no_effect"), "trace: {trace}");
+    assert_eq!(
+        trace["trace"][0],
+        json!({"kind": "bound", "index": 0, "path": "results/user.md"}),
+        "the binding opens the trace, in call order: {trace}"
+    );
+    assert_eq!(
+        trace["trace"][1],
+        json!({"kind": "bound", "index": 1, "path": "agents/agent.md"}),
+        "one row per member: {trace}"
+    );
+}
+
 /// `dry` rehearses: same trace shape, `no_effect`, no disk change, and the
 /// embedded rehearsal leg carries `fingerprint_after: null`.
 #[test]

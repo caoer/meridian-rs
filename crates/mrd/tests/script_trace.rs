@@ -92,6 +92,7 @@ fn ok_eval(armed: Vec<ArmedEdit>, reads: Vec<ReadRecord>) -> ScriptEval {
             expansions: Vec::new(),
             actor: "8ab41c02".to_owned(),
             reads,
+            files: Vec::new(),
         },
         telemetry: telemetry(),
     }
@@ -105,6 +106,7 @@ fn failed_eval(error: EvalError, armed: Vec<ArmedEdit>, reads: Vec<ReadRecord>) 
             expansions: Vec::new(),
             actor: "8ab41c02".to_owned(),
             reads,
+            files: Vec::new(),
         },
         telemetry: telemetry(),
     }

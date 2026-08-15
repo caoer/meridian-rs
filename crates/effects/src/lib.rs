@@ -747,9 +747,10 @@ pub fn eval_run(task: &Rule, ctx: &RunCtx, limits: EvalLimits) -> Result<Vec<Eff
 // ---------------------------------------------------------------------------
 
 /// Inert script-plane inputs (the [`RunCtx`] precedent): all caller-supplied,
-/// none minted here. `files` carries **paths only, pre-enumerated and sorted by
-/// the host** — content enters only through `read()`, so it is recorded and
-/// replay stays byte-identical. There is no `glob()` builtin.
+/// none minted here. `files` carries **paths only, in call order** —
+/// `files[i]` is the i-th path the caller named (order-bind ruling; patterns
+/// expand in place upstream). Content enters only through `read()`, so it is
+/// recorded and replay stays byte-identical. There is no `glob()` builtin.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ScriptCtx {
     /// Script identity, used for error provenance only.
@@ -1033,6 +1034,13 @@ pub struct ScriptRecording {
     /// unchanged.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub expansions: Vec<ExpansionRecord>,
+    /// The `files` binding as the program saw it, in binding order — the
+    /// kernel records it at entry so the trace can print one `bound` row per
+    /// member (order-bind ruling: the binding is visible, never inferred).
+    /// Empty when the attempt bound no files, and skipped then so file-less
+    /// trace bytes are unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<String>,
 }
 
 /// Measurement of one attempt. Unconditional — reported even on failure
@@ -1146,10 +1154,11 @@ pub fn replay_script(
         };
     }
     // Recorded § A.7 expansions replay exactly as recorded reads do: each
-    // pattern member substitutes its recorded match list, then the merged
-    // list re-applies the one merge law (dedup + sort). A caller passing the
-    // ORIGINAL files[] (patterns included) reconstructs the exact binding the
-    // live attempt evaluated under.
+    // pattern member substitutes its recorded match list IN PLACE, then a
+    // path already bound earlier is dropped — the one merge law (order-bind
+    // ruling: first occurrence wins, never a global sort). A caller passing
+    // the ORIGINAL files[] (patterns included) reconstructs the exact binding
+    // the live attempt evaluated under.
     let ctx = if recording.expansions.is_empty() {
         ctx.clone()
     } else {
@@ -1164,8 +1173,8 @@ pub fn replay_script(
                 None => files.push(member.clone()),
             }
         }
-        files.sort();
-        files.dedup();
+        let mut seen = std::collections::HashSet::new();
+        files.retain(|path| seen.insert(path.clone()));
         ScriptCtx {
             files,
             ..ctx.clone()

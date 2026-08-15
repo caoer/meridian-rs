@@ -1935,15 +1935,21 @@ tests are the implementation card's.*
   entry. Strict decode at every grain (§3.2's wall).
 - `args` is the inert dict (string keys, string values); `files[]` is paths
   only — the wire still serves no corpus-enumeration op, so enumeration stays
-  the host's. The daemon sorts `files[]` after decode; order on the wire is
-  not meaning.
+  the host's. `files[]` binds in CALL ORDER (order-bind ruling): `files[i]`
+  is the i-th path the caller named, because the program indexes the list
+  and a host-substituted order would land edits on the wrong document
+  silently. The trace opens with one `{kind:"bound", index, path}` row per
+  member, so the binding is visible, never inferred.
 - **Patterns in `files[]` (ruled 2026-08-14, OQ3).** A member containing `*`
   is a pattern in the one scope glob grammar (`**` spans whole segments, `*`
   a non-`/` run within one, everything else literal); other members stay
   literal paths. The daemon expands patterns at ENTRY against the entry
   world's hash-domain membership — the same walk that pins the entry
-  fingerprint, so expansion is deterministic within the attempt — then
-  merges, dedups and sorts (the same post-decode law). The trace opens with a
+  fingerprint, so expansion is deterministic within the attempt. Members
+  keep their typed position: a pattern expands IN PLACE to its sorted
+  matches (the host enumerates a set — that order is the host's), and a
+  path already bound earlier is dropped, first occurrence wins — never a
+  global sort. The trace opens with a
   `{kind:"expanded", pattern, matched:[…]}` row per pattern and replay
   replays the recording. Zero matches contributes zero paths — data, not a
   refusal (an idempotent sweep succeeds on an already-clean corpus; the

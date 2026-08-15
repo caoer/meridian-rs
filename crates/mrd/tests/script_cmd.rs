@@ -519,12 +519,13 @@ fn a_dry_run_returns_the_full_effect_set_with_no_fingerprint_after() {
 
 // ── 6. the inert inputs ───────────────────────────────────────────────────────
 
-/// `files[]` is paths only, sorted by the host, and `args` is a JSON **object**
-/// bound as a dict — callers name their inputs, they do not count them. Both are
-/// inert bindings: a script reaches content only through `read()`, which is what
-/// keeps a run replayable.
+/// `files[]` is paths only, bound in CALL ORDER — `files[0]` is the first
+/// `--files` the caller typed, whatever the paths' lexical order (order-bind
+/// ruling) — and `args` is a JSON **object** bound as a dict — callers name
+/// their inputs, they do not count them. Both are inert bindings: a script
+/// reaches content only through `read()`, which is what keeps a run replayable.
 #[test]
-fn files_are_sorted_paths_and_args_is_a_json_object() {
+fn files_bind_in_call_order_and_args_is_a_json_object() {
     let mut door = Fake::new();
     let argv: Vec<String> = [
         "--files",
@@ -545,6 +546,10 @@ fn files_are_sorted_paths_and_args_is_a_json_object() {
     .expect("the attempt runs");
 
     assert_eq!(trace.outcome, ScriptOutcome::NoEffect);
+    assert_eq!(
+        trace.bindings["seen"], r#"["tasks/z.md", "tasks/a.md", "one", ["what", "who"]]"#,
+        "files[0] is the first --files the caller typed, not the lexical first"
+    );
     assert!(!door.asked("toc"), "no read() call, so no read op");
 }
 
