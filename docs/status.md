@@ -667,6 +667,19 @@ red armed rows, unreadable in-domain files, an unreadable armed set. The USER
 rung is untouched — it has no projection to be consistent with, and its
 dot-declined pages stay named (two feeds, two sentences).
 
+**Extended to the domain-excluded note (2026-08-15, card
+voice-excluded-walk-consistency).** The stderr note the in-process enumerating
+faces voice — `mrd sql`, `mrd walk --down`, `mrd check`, pageless `mrd repair`
+— enumerates through the same walk law (`fs::declined_markdown`; a
+dot-prefixed segment is never entered, one predicate `fs::domain::dot_segment`
+spelling §12.1 rule 2). Its count and sample therefore name the custom-ignore
+class only, and the note can never voice a dot-prefixed path the record
+projection refuses to serve — the same disease F11 measured on `mrd rules`,
+closed at this face. The custom-ignore class stays voiced and exit-neutral
+(decision 0017). The machine channel is untouched: the `excluded` key of bare
+`mrd links --json` stays the complete §12.1 outside-domain enumeration (§4.6),
+so capping the voice to the declined class silences no machine consumer.
+
 ### `mrd check` — does the world still match the pins
 
 Both layer-0 planes the core reads are memory-free: the claim plane (pinned

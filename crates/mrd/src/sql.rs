@@ -419,7 +419,7 @@ fn load_corpus(workspace: &Path) -> Result<Loaded, String> {
         fs::domain_snapshot(&root).map_err(|e| format!("cannot read the corpus: {e}"))?;
     let (_index, docs, unserved) = fs::build_corpus(files);
     crate::voice_unserved(&unserved);
-    crate::voice_excluded(&root, &docs, &unserved);
+    crate::voice_excluded(&root, &docs);
     // The projection is built with mount authority, from the same loader the
     // pin and link planes use; without it a cross-vault link projects as
     // dangling. Corpora narrow to the roots ambient wikilink/embed targets
