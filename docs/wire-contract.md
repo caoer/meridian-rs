@@ -2038,6 +2038,21 @@ tests are the implementation card's.*
   surface. The CLI lane (`mrd script --files`) forwards a pattern-carrying
   attempt through THIS op — the engine expands, never a CLI-private glob —
   so one expansion semantics exists in the system.
+- **Literals first (ruled 2026-08-15, card `script-files-glob-index-stability`).**
+  A list where a PATTERN member stands before a LITERAL member is refused at
+  ENTRY — dry and armed alike — with zero evaluation, nothing armed and the
+  workspace unchanged (`files_member_order`, recovery `fix`). Expansion in
+  place means every member after a pattern binds at an index that moves with
+  the day's match count: measured, a zero-match pattern rebound the literal
+  the caller addressed as `files[1]` to `files[0]` and armed mode applied the
+  retargeted write (dogfood r8 § B3). Under the order law a literal's index is
+  its own member ordinal, computable from the call alone. Order inside the
+  pattern region stays the host's by declaration, so no call-order index
+  exists there to protect; an over-long index on a zero-match day is an
+  out-of-range FAULT — never a write to a document the caller did not name.
+  Dry alone cannot hold this door: arm and commit are two calls (§ the
+  execution-model seam), and the armed call is the one that lands. All-literal
+  and all-pattern lists are unchanged.
 - `actor`/`now` ride per §9 and thread to the commit splice verbatim; absent
   stays absent.
 - `dry`, `if_fingerprint`, `expect_armed`, and `receipt` carry the CLI
