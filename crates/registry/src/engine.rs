@@ -29,6 +29,11 @@ pub struct WorkspaceEngine {
     pub unserved: BTreeMap<String, String>,
     /// The corpus content hash the index + docs were built at — the reuse key.
     pub at_fingerprint: model::MerkleRoot,
+    /// The §12.2 leaf set `at_fingerprint` folds — member → leaf digest at
+    /// build time. The incremental pass's delta baseline
+    /// ([`fs::update_corpus`]): the next rebuild re-parses exactly the
+    /// members whose leaf moved against this record.
+    pub leaves: std::collections::BTreeMap<std::path::PathBuf, [u8; 32]>,
 }
 
 /// Whether `warm_or_build` reused or rebuilt. `Reused` proves zero parses
