@@ -3977,6 +3977,7 @@ name = "view"
 version = "1.0.0"
 dependencies = [
  "addr",
+ "blake3",
  "duckdb",
  "lock",
  "model",
