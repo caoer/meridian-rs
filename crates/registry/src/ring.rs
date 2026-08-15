@@ -5,11 +5,13 @@
 //! shared-state wrapping (N connection threads) and a detector — a subscriber
 //! sends no lines, so nothing else would drive reconcile on its behalf.
 //!
-//! # Sole producer (until write-path `SeqSink` attribution)
-//! Until the write choke-point allocates `seq` under the flock, the registry's
-//! own splices look external to this detector: frames carry `actor`/`now`
-//! absent (§7.1 — engine never invents identity). Missing attribution, not
-//! wrong data; chain stays contiguous because there is exactly one producer.
+//! # Two producers, one critical section
+//! The write choke-point allocates its `seq` AND records its frame under the
+//! workspace write flock (`SeqSink::committed`); the detector allocates and
+//! records under the same flock. So a detect cycle taking the flock after a
+//! write finds the tip already at the moved root and syncs silently — the
+//! just-committed change is never re-told as an actor-absent external frame
+//! (the seq:655 double-emission window, closed).
 //!
 //! # Flock is the serialization point
 //! Detect reconcile holds the workspace write flock so it never classifies a
@@ -135,11 +137,13 @@ impl WorkspaceRing {
         self.state().ring.frames_after(delivered)
     }
 
-    /// Record a frame the write path emitted (detector records its own).
+    /// Record an emitted frame (detector records its own inside reconcile).
     ///
-    /// Lands after `splice` drops the flock — why [`RootRing::allocate_seq`]
-    /// exists: a detection cycle may allocate and advance between allocation
-    /// inside the flock and this call; its number cannot be ours.
+    /// Both remaining callers hold the workspace flock: the run plane's sink
+    /// (`delta_sink`) under the executor's, and the write choke-point through
+    /// `SeqSink::committed` under its own. [`RootRing::allocate_seq`]'s
+    /// reserve remains the floor for any producer that unwinds between
+    /// allocation and this call: its number stays burned, never re-issued.
     pub fn advance(&self, frame: DeltaFrame) {
         self.state().ring.advance(frame);
     }
@@ -245,13 +249,21 @@ fn io_error_body(e: &std::io::Error) -> Box<ErrorBody> {
     Box::new(err)
 }
 
-/// Write-path allocator: registry `seq` from the same ring the detector
-/// numbers from — two producers, one chain.
+/// Write-path allocator and recorder: registry `seq` from the same ring the
+/// detector numbers from — two producers, one chain.
 ///
-/// State lock only for the bump. Lock order is flock → ring state on both
-/// producers; no path takes them the other way.
+/// State lock only for the bump / the record. Lock order is flock → ring
+/// state on both producers; no path takes them the other way.
 impl wire_serve::seq::SeqSink for WorkspaceRing {
     fn allocate(&self, _before: &Root, _after: &Root, _files: &[wire::DeltaFile]) -> u64 {
         self.state().ring.allocate_seq()
+    }
+
+    /// The write path's frame, recorded while the choke-point still holds the
+    /// workspace flock — the `delta_sink` pattern, closing the detector
+    /// window on the write paths: a detect cycle taking the flock next finds
+    /// the tip already at the moved root and syncs silently.
+    fn committed(&self, frame: &DeltaFrame) {
+        self.advance(frame.clone());
     }
 }

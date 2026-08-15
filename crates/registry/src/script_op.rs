@@ -507,11 +507,12 @@ impl ScriptHost for LiveHost<'_> {
         let ring = self.registry.ring(&self.ws_path);
         let outcome = wire_serve::write::splice(&self.ws, Some(&*ring), &args, &[], Some(&mints))
             .map_err(|e| refuse(format!("put: {}", error_text(&e))))?;
-        let fingerprint_after = outcome.committed.as_ref().map(|frame| {
-            let after = frame.delta.root_after.0.clone();
-            ring.advance(frame.clone());
-            after
-        });
+        // The sink recorded the frame inside the flock (`SeqSink::committed`);
+        // the outcome's frame is data here, never re-advanced.
+        let fingerprint_after = outcome
+            .committed
+            .as_ref()
+            .map(|frame| frame.delta.root_after.0.clone());
         self.acts.borrow_mut().push((
             self.reads_seen.get(),
             effects::trace::TraceEntry::Wrote(effects::trace::WroteEntry {
@@ -723,9 +724,8 @@ fn commit(
     };
     match outcome {
         Ok(out) => {
-            if let Some(frame) = out.committed {
-                ring.advance(frame);
-            }
+            // The sink recorded any committed frame inside the flock
+            // (`SeqSink::committed`) — nothing to advance here.
             let raw = v3_body_raw(&out.body);
             if request.dry {
                 CommitLeg::Rehearsal(raw)
