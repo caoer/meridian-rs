@@ -587,10 +587,23 @@ vocabularies produced hand-armed rows that parsed clean and governed nothing
  which is the freeze in visible form (arming pins resolution; later discovery
  never moves it) · `(drifted)`/`(missing)` when the pinned page no longer
  stands. A corrupt artifact reads `UNREADABLE`, never "nothing armed".
+- **`armed=-` names one thing only: nothing governs HERE.** An armed row whose
+ arm root does not contain PATH is not squeezed into that cell — it prints
+ beneath the rows under `armed rows counted above whose arm root does NOT
+ contain this path:`, naming its mode, its arm root, and its pinned page. Before
+ this, `-` spelled both "armed nowhere" and "armed elsewhere" while the header
+ counted a row the reader could not find, and a row that was BOTH out of scope
+ and drifted rendered only the silent half at exit 0. The law: **containment is
+ a fact and reddens nothing** (arming a sibling scope is normal), **redness is a
+ fault wherever it lives** and is named and counted — so this verb and `mrd
+ status` never disagree about one artifact.
 - **One resolver, two consumers.** The verb calls `policy`'s own
  `RuleIndex::discover` → `narrowed_to` → `resolve` and
  `ArmedArtifact::verify_at` — the ONE composition of select-then-verify, not
  `select_at` + `verify` assembled at the call site (C3 gate finding F-4). The
+ elsewhere population is the same rule: `ArmedArtifact::verify_elsewhere_at` is
+ one composed call in `policy`, because a containment predicate written at the
+ CLI would be exactly the second resolver F-4 removed. The
  CLI layer holds no override law, and a test asserts that structurally. A second
  resolver here could report a law the write door does not enforce — the exact
  failure the verb exists to prevent.
