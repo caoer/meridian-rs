@@ -1606,8 +1606,14 @@ Record ↔ receipt linkage:
  sealing the log, and sealing fsyncs the log file and its directory entry
  first. A crash can orphan a log (lint finds it); it can never produce a
  receipt naming a log that is not durable.
-- Records carry env **keys, never values** (S7): the record type accepts
- the full child environment and can only emit the sorted key list.
+- Records carry env **keys, never values** (S7): the record receives the
+ contract-validated **declared** map only, and emits its sorted key list —
+ receipts name declared keys, nothing else. The child's real environment
+ is larger since the run-env ruling (2026-08-16 — `wire-contract.md`
+ § A.8): it inherits the daemon environment under the declared overlay,
+ plus the plane's own injected variables, and none of those inherited
+ keys reach the record. The constructor still discards values, so the
+ type cannot carry a secret whatever it is fed.
 
 ## The CLI surface (locked, decision #12)
 
