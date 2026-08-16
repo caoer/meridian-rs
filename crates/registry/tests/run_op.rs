@@ -709,3 +709,132 @@ fn under_a_live_subscriber_every_run_frame_stays_attributed() {
     assert!(governed >= 12, "only {governed} governed frames arrived");
     server.shutdown();
 }
+
+// ---------------------------------------------------------------------------
+// No guard on this door (card effects-lane; ruled
+// `decisions/2026-08-15-no-guard-on-effects.md`; wire-contract § A.8; plan
+// §4.10 / §7): run exposes no guard requiredness, a supplied guard field is
+// rejected as inapplicable at the §3.2 strict wall (codex gate 15), and an
+// effects write still advances the folds other writers' premises compare
+// against — guard-free never means fold-invisible.
+// ---------------------------------------------------------------------------
+
+/// Codex gate 15: `if_fingerprint`, `guards`, `scope`, `scope_bytes` are in
+/// NO field set of this op — each refuses `bad_request` at decode, naming
+/// the field, at both grains, and nothing reaches the plane. The refusal is
+/// the law working: rejected as inapplicable, never ceremonially checked.
+#[test]
+fn a_supplied_guard_field_on_run_is_rejected_as_inapplicable() {
+    let tmp = TempDir::new().unwrap();
+    let ws = seeded(&tmp);
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(server.socket_path());
+    conn.hello_v3(&ws);
+
+    // Top-level grain: every guard-family field refuses, named.
+    for field in ["if_fingerprint", "guards", "scope", "scope_bytes"] {
+        let mut frame = run_frame(40, "run-g1", json!([{"page": "tasks.md"}]));
+        frame[field] = json!("b3:0000");
+        let resp = conn.call(&frame);
+        assert_eq!(
+            resp["error"]["code"],
+            json!("bad_request"),
+            "`{field}` is inapplicable on `run`: {resp}"
+        );
+        let msg = resp["error"]["message"].as_str().unwrap();
+        // v3 remaps `if_fingerprint` → `if_root` (wire-serve rev.rs) before
+        // the field wall, so that one names the internal key.
+        let named = msg.contains(field) || (field == "if_fingerprint" && msg.contains("if_root"));
+        assert!(named, "the wall names the inapplicable field: {resp}");
+    }
+
+    // Target grain: the same wall.
+    let resp = conn.call(&run_frame(
+        41,
+        "run-g2",
+        json!([{"page": "tasks.md", "if_fingerprint": "b3:0000"}]),
+    ));
+    assert_eq!(resp["error"]["code"], json!("bad_request"), "{resp}");
+    assert!(
+        resp["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("if_fingerprint"),
+        "{resp}"
+    );
+
+    // Nothing reached the plane: no run receipt exists.
+    assert!(
+        !ws.join("receipts/run.md").exists(),
+        "a guard-field refusal must commit nothing"
+    );
+    server.shutdown();
+}
+
+/// Guard-free never means fold-invisible: a run apply rides the write
+/// choke-point and advances the resident folds, so a pure-door premise
+/// minted BEFORE the run refuses `fingerprint_mismatch` after it — and the
+/// re-derived premise commits (the §5.1 world guard compares against folds
+/// the effects write moved).
+#[test]
+fn an_effects_write_advances_the_folds_other_writers_premises_compare_against() {
+    let tmp = TempDir::new().unwrap();
+    let ws = seeded(&tmp);
+    fs::write(ws.join("plan.md"), "# Goals\n\nship by August\n").unwrap();
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(server.socket_path());
+    conn.hello_v3(&ws);
+
+    // The other writer's premise, minted BEFORE the effects write.
+    let pre_run = conn.fingerprint();
+
+    // The effects write: a governed run apply (tasks.md + receipts/run.md).
+    let resp = conn.call(&json!({
+        "id": 50, "op": "run", "invocation": "run-f1",
+        "targets": [{"page": "tasks.md", "task": "fix-note", "args": ["done"]}],
+    }));
+    let rows = rows_of(&resp);
+    assert!(rows[0].get("refusal").is_none(), "the apply landed: {resp}");
+
+    // The stale world premise refuses: the effects write moved the compared folds.
+    let refused = conn.call(&json!({
+        "id": 51, "op": "splice", "path": "plan.md",
+        "if_fingerprint": pre_run,
+        "edits": [{
+            "target": {"hpath": [{"h": "Goals"}]},
+            "edit": {"match": {"old": "ship by August", "new": "ship by September"}},
+        }],
+    }));
+    assert_eq!(refused["ok"], json!(false), "{refused}");
+    assert_eq!(
+        refused["error"]["code"],
+        json!("fingerprint_mismatch"),
+        "the pre-run premise compares against folds the run moved: {refused}"
+    );
+
+    // Control: the re-derived world premise plus the section's live node
+    // token (A.1 node-grain requiredness) commits.
+    let current = conn.fingerprint();
+    assert_ne!(pre_run, current, "the effects write advanced the fold");
+    let toc = conn.call(&json!({"id": 52, "op": "toc", "path": "plan.md"}));
+    let rev = toc["body"]["nodes"]
+        .as_array()
+        .expect("toc nodes")
+        .iter()
+        .find(|n| n["hpath"][0]["h"] == json!("Goals"))
+        .unwrap_or_else(|| panic!("Goals in toc: {toc}"))["node_rev"]
+        .as_str()
+        .expect("node_rev")
+        .to_string();
+    let committed = conn.call(&json!({
+        "id": 53, "op": "splice", "path": "plan.md",
+        "if_fingerprint": current,
+        "edits": [{
+            "target": {"hpath": [{"h": "Goals"}]},
+            "edit": {"match": {"old": "ship by August", "new": "ship by October"}},
+            "if_node_rev": rev,
+        }],
+    }));
+    assert_eq!(committed["ok"], json!(true), "{committed}");
+    server.shutdown();
+}
