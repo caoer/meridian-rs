@@ -79,7 +79,7 @@ which laws it carries. In one line each:
 | `addr` | The agent-plane address: `[root:]path[#selector]` parsed into a fallible type carrying an optional canonical root name, plus the resolution-facing bound-name projection (`MountSet`) every plane resolves through. A `std`-only leaf UPSTREAM of `syntax` — it is where an address becomes a value, so nothing downstream re-splits a string. `Addr::parse` is the sole constructor and the path field carries no root prefix by construction; the colon law is root-wins with **no fallback to the literal reading**, because a fallback turns a typo'd root into a wrong success. Parse is not resolve: whether a named root is BOUND is the resolver's question and its answer is grey, never a parse error |
 | `syntax` | Markdown bytes → dialect node list with byte-exact spans; sole owner of the pulldown-cmark fork |
 | `model` | The governed node tree, resolve, CAS-splice validation, workspace fingerprints — non-serializable by design (Law 1); the frozen heading predicate (`gotext`), the single address law its two dependents share; and the content-identity plane: the `fp1.…` CID-token, `verify_content`'s four-arm verdict (carrying the whole `version.codec.hashfn` triple on `Unverifiable`, so a render names WHICH member is unknown), and the ONE reason-carrying `Color` model every drift surface computes through; and the frontmatter scalar codec (`scalar`) — the single owner of the § A.6 value law, decode for every read seam and the double-quoted encode every value-plane write door emits through |
-| `fs` | Disk read/walk/watch into the model; atomic tmp+fsync+rename splice execution. **And the `.base` membership walk** (`base-projection.md` §3): the hash domain's rules with the floor swapped from `*.md` to `*.base`, returning raw bytes per member plus the §6.2 `bf:` witness. It stays YAML-free — it hands bytes up, and `view` parses them. **And the durability plane's two named sync classes plus the epoch barrier (`epoch.rs`)** — see § Amendment — epoch-batched honest durability: `data_push` hands a file's bytes to the device, `honest_sync` is the ruled platter class, and `EpochBatcher` amortizes one honest seal across every writer that joined an epoch. Both classes carry call-site counters, so which class ran where is measured, never asserted |
+| `fs` | Disk read/walk/watch into the model; atomic tmp+fsync+rename splice execution. **And the `.base` membership walk** (`base-projection.md` §3): the hash domain's rules with the floor swapped from `*.md` to `*.base`, returning raw bytes per member plus the §6.2 `bf:` witness. It stays YAML-free — it hands bytes up, and `view` parses them. **And the durability plane's two named sync classes plus the epoch barrier (`epoch.rs`)** — see § Amendment — epoch-batched honest durability: `data_push` is the cheap class (raw `libc::fsync` on macOS, deliberately not std — std's `sync_all` is a full `F_FULLFSYNC` there), `honest_sync` is the ruled platter class, and `EpochBatcher` amortizes one honest seal across every writer that joined an epoch. Both classes carry call-site counters, so which class ran where is measured, never asserted |
 | `wire` | The serde-only wire vocabulary — the whole host-visible surface (Law 2) |
 | `wire-map` | The named model→wire projection seam, tested as a library function (Law 3) |
 | `git` | The git plumbing organ: shell-out content-addressing (blob object ids, the eager `-w` write) and object reachability against a `Repo` handle. git owns content-addressing — this crate asks git and reports what git said, and NEVER computes or guesses an oid. A `std`-only leaf: no production dependency, so `git`-invocation churn is a one-crate event |
@@ -775,16 +775,32 @@ the honest class is paid without serializing writers, and it lands before the
 code that implements it. Provisional, per ZT's standing reclassification.
 
 > **Honest durability is bought once per epoch, not once per writer.** Each
-> writer hands its own bytes to the device with a cheap `data_push`; the epoch
-> then issues ONE honest seal, and no writer proceeds to its rename until the
-> seal that covers its bytes has returned.
+> writer issues its own cheap `data_push`; the epoch then issues ONE honest
+> seal, and no writer proceeds to its rename until the seal that covers its
+> bytes has returned.
 
 ### The two sync classes are named, and never confused
 
 | Class | Call | What it promises |
 |---|---|---|
-| data push | `fs::data_push` (`sync_all`) | The file's bytes have left the OS for the **device**. On macOS this is drive-cache class — measured p50 0.019 ms, p99 0.037 ms. It is NOT the receipt's promise there |
-| honest sync | `fs::honest_sync` (`F_FULLFSYNC` on macOS, `sync_all` elsewhere) | The ruled platter class — measured p50 4.386 ms, p99 10.352 ms on Mac16,5 / APFS / internal NVMe |
+| data push | `fs::data_push` — **raw `libc::fsync` on macOS**, `sync_all` elsewhere | The cheap class. Measured p50 0.019 ms, p99 0.037 ms on Mac16,5 / APFS / internal NVMe. What that call hands the bytes to is deliberately **not** claimed here (see below); the receipt rests on the barrier, never on this call |
+| honest sync | `fs::honest_sync` — `F_FULLFSYNC` on macOS, `sync_all` elsewhere | The ruled platter class — measured p50 4.386 ms, p99 10.352 ms on the same hardware |
+
+> **The trap, and the reason the push is spelled `libc::fsync` by hand.** Rust
+> std's `File::sync_all` **and** `File::sync_data` both issue
+> `fcntl(F_FULLFSYNC)` on macOS — verified four ways on two instruments
+> (`results/instrument-evidence/fs_usage_syncall.txt`, `syncall_check.rs`,
+> `syncall_out2.txt`): a probe of 30 × `sync_all` + 30 × `sync_data` + 1
+> directory sync decodes as exactly 61 `FULLFSYNC` in `fs_usage`, at ~5.0 ms
+> median in-process. So the engine has never called plain `fsync(2)` on this
+> platform, and the 0.019 ms figure — which came from a probe of raw
+> `fsync(2)` — describes a call class the engine did not use. Spelling the
+> push with std would silently cost every member a full barrier, N members
+> would pay N barriers plus the seal, and the epoch would be inert while
+> looking correct. The push is therefore raw `libc::fsync` on macOS **on
+> purpose**, and the measured figure applies to us only because of that
+> choice. Elsewhere `sync_all` already IS `fsync(2)`, so std is the right
+> call there.
 
 Both classes increment a call-site counter (`fs::honest_sync_count`,
 `fs::data_push_count`, and their per-thread readers). The counters are the
@@ -817,18 +833,28 @@ There is no tick and no timer in the default configuration:
 One honest sync issued on an anchor descriptor covers N writers' files. It
 does so by **ordering**, not by magic, and the ordering is the design:
 
-1. Each writer `data_push`es its own staged temp. That call is what transfers
-   the file's bytes from the OS page cache to the device.
+1. Each writer `data_push`es its own staged temp — raw `fsync(2)`, the cheap
+   class, measured at 19 µs. **What that call hands the bytes to is not
+   established.** 19 µs is consistent with a device handoff and equally
+   consistent with the bytes never leaving memory, and the number alone does
+   not decide between them. This step is therefore stated as what it is
+   measured to be, not as what it would be convenient for it to be.
 2. The epoch's seal issues `F_FULLFSYNC` on an anchor descriptor **on the same
    volume**. On macOS/APFS that is a device-level cache flush
-   (`DKIOCSYNCHRONIZECACHE`), not a per-file operation: it forces everything
-   the device has already been handed onto the platter, whichever descriptor
-   wrote it.
+   (`DKIOCSYNCHRONIZECACHE`), not a per-file operation: it forces what the
+   device holds onto the platter, whichever descriptor wrote it.
 3. A member joins its epoch only **after** its own push has returned, and the
    seal for that epoch starts only **after** the member joined. So the seal
-   that covers a member always starts after that member's bytes reached the
-   device.
+   that covers a member always starts after that member's push completed.
 4. No writer proceeds to its rename before that seal has returned.
+
+**The open question, named rather than buried.** Step 1 is the architecture's
+single point of failure: if raw `fsync(2)` on APFS parks bytes in an in-memory
+checkpoint instead of handing them to the device, the barrier in step 2 sweeps
+nothing and the shared seal is worthless. That question is under research and
+is not settled by this document. If it resolves negative, `SealMode::PerMember`
+becomes the default — a mode flip, not a rebuild, which is the whole reason
+the falsifier ships alongside the claim.
 
 Steps 3 and 4 are the load-bearing invariant, so they are enforced by the type
 and checked at runtime rather than left to prose: `data_push_all` mints a
@@ -839,12 +865,14 @@ if the seal it is about to certify started before the push it is covering.
 A member cannot await an epoch it never pushed for, because it has no token.
 
 **Platform truth, stated rather than hidden.** Nothing here is macOS-only at
-compile time. Where the honest class is plain `sync_all` (Linux and the CI
-runners), a writer's own push is *already* the platter class, so each member
-is independently honest and the epoch seal is a redundant device flush kept
-for identical shape and accounting. The amortization the design buys is
-therefore real on macOS and free-but-inert elsewhere; no promise is weaker on
-either.
+compile time; the two classes differ only in which call each spells. On macOS
+the push is raw `fsync(2)` and the seal is `F_FULLFSYNC`, so the two classes
+are genuinely different calls and the amortization is real. Where the honest
+class is plain `sync_all` (Linux and the CI runners), push and seal are the
+same syscall: a writer's own push is *already* the platter class, so each
+member is independently honest and the epoch seal is a redundant flush kept
+for identical shape and accounting. The batching buys throughput on macOS and
+nothing on Linux; no promise is weaker on either.
 
 **The falsifier ships with the claim.** `SealMode::PerMember` issues one
 honest sync per member descriptor, in parallel across the members of an epoch,
