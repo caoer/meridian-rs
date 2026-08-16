@@ -43,13 +43,6 @@ pub struct RunSpec<'a> {
     pub receipt: Option<ReceiptAddr>,
     /// Bash pre-exec receipt address (S2; unused on the starlark path).
     pub pre_receipt: Option<ReceiptAddr>,
-    /// Decision-#26 explicit foreign-edit takeover.
-    pub takeover: bool,
-    /// Fatal opt-in for the pre-exec divergence (card run-preexec-severity):
-    /// `false` reports a foreign write landing between the phase-1 commit
-    /// and the bracket opening (the exec runs, stdout stands); `true`
-    /// restores the hard refusal. Unused on the starlark path.
-    pub fatal_preexec: bool,
     /// Bash artifact scratch dir (caller-created; NOT the cwd since U16;
     /// unused on the starlark path).
     pub scratch: &'a Path,
@@ -418,7 +411,6 @@ pub fn rehearse(
                 root_at_eval: &root_at_eval,
                 authority: &authority,
                 receipt: None,
-                takeover: false,
                 limits: spec.limits,
                 actor: spec.actor,
                 // A rehearsal never commits, so no Delta can honestly exist.
@@ -483,7 +475,6 @@ fn dispatch(
                         root_at_eval: &root_at_eval,
                         authority,
                         receipt: spec.receipt.clone(),
-                        takeover: spec.takeover,
                         limits: spec.limits,
                         actor: spec.actor,
                         delta: spec.delta,
@@ -506,8 +497,6 @@ fn dispatch(
                     now: spec.now,
                     pre_receipt: spec.pre_receipt.clone(),
                     receipt: spec.receipt.clone(),
-                    takeover: spec.takeover,
-                    fatal_preexec: spec.fatal_preexec,
                     scratch: spec.scratch,
                     timeout: spec.timeout,
                     actor: spec.actor,
@@ -563,6 +552,9 @@ fn cascade(
         let applied = if md.is_empty() {
             None
         } else {
+            // The generation's own eval-time observation — receipt-less
+            // here, but the fold is still the root these effects were
+            // produced against (observation honesty; never compared).
             let live =
                 fs::domain_snapshot(root)
                     .map(|(_, r)| r)
@@ -581,10 +573,8 @@ fn cascade(
                         now: spec.now,
                         effects: &md,
                         authority,
-                        pin_root: &live,
-                        live_root: &live,
+                        observed_root: &live,
                         receipt: None,
-                        takeover: false,
                         exec: None, // cascade generation: no child exec
                         actor: spec.actor,
                         depth: ev.depth,

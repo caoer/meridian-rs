@@ -7,19 +7,19 @@
 //! └──────────────────────────────────────────────────────────────────┘
 //!   → U6b bracket OPENS against the OBSERVED tree; observed !=
 //!     computed root is REPORTED as [`BashOutcome::pre_exec`] and the
-//!     exec proceeds over the observed baseline (card
-//!     run-preexec-severity — blameless by construction: no block ran,
-//!     and the run flock never excluded wire writers). The
-//!     `fatal_preexec` opt-in restores the refusal (exec never starts).
+//!     exec proceeds over the observed baseline (blameless by
+//!     construction: no block ran, and the run flock never excluded
+//!     wire writers; no refusal on this door is a premise refusal —
+//!     no-guard ruling, 2026-08-15).
 //!   → exec (invocation cwd — U16, `setsid`, timeout→group SIGKILL;
 //!     stdout teed; md.* descriptors on the shim fd)
 //!   → U6b bracket CLOSES after group kill (residual-compare #19 +
 //!     config #20 + symlink #25) — verdict on EVERY path
 //!   → phase 2 (clean window only): shim batch through executor choke
-//!     point, pinned to the window baseline — the computed
-//!     `root_after_phase1`, or the observed pre-exec root when it
-//!     diverged; either is captured BEFORE bash, never re-read after
-//!     (#19).
+//!     point; the window baseline — the computed `root_after_phase1`,
+//!     or the observed pre-exec root when it diverged — is the
+//!     receipt's OBSERVATION, captured BEFORE bash, never re-read
+//!     after (#19) and never compared (no world pin).
 //! ```
 //!
 //! **No `Exec` `EffectKind`** (ruling 1): only md.* descriptors on the shim
@@ -116,15 +116,6 @@ pub struct BashDispatch<'a> {
     pub pre_receipt: Option<ReceiptAddr>,
     /// Phase-2 completion receipt address (rides the shim batch commit).
     pub receipt: Option<ReceiptAddr>,
-    /// Decision-#26 explicit foreign-edit takeover (phase 2 only).
-    pub takeover: bool,
-    /// Fatal opt-in for the pre-exec divergence (card run-preexec-severity):
-    /// `false` (the default posture) REPORTS an out-of-band change landing
-    /// between the phase-1 commit and the bracket opening — same trust
-    /// posture as the in-window delta, the exec runs, stdout stands — while
-    /// `true` restores the hard refusal (exec never starts, exit 1). The
-    /// gap is structural: the run flock never excluded wire writers.
-    pub fatal_preexec: bool,
     /// The caller-created out-of-tree scratch directory (artifacts; NOT the
     /// cwd — U16 runs the step in the invocation cwd).
     pub scratch: &'a Path,
@@ -168,12 +159,12 @@ pub struct BashOutcome {
     /// type-level evidence for the #23 gate.
     pub detection: Detection,
     /// A foreign write BETWEEN the phase-1 commit and the bracket opening,
-    /// reported not refused (default posture; [`BashDispatch::fatal_preexec`]
-    /// restores the refusal). `None` = the observed pre-exec tree folded to
-    /// the computed `root_after_phase1`. When `Some`, the window baseline and
-    /// phase 2's pin are the OBSERVED root — the external change stands
-    /// (ruling 2) and the receipts attest the tree the block actually ran
-    /// over.
+    /// reported, never refused (no-guard ruling — a foreign advance
+    /// re-derives and proceeds). `None` = the observed pre-exec tree folded
+    /// to the computed `root_after_phase1`. When `Some`, the window baseline
+    /// and phase 2's receipt observation are the OBSERVED root — the
+    /// external change stands (ruling 2) and the receipts attest the tree
+    /// the block actually ran over.
     pub pre_exec: Option<PreExecDivergence>,
     /// The phase-2 verdict.
     pub phase2: Phase2,
@@ -248,11 +239,10 @@ pub enum BashError {
         /// The underlying failure.
         reason: String,
     },
-    /// The U6b detection bracket refused to open: a pre-exec root mismatch
-    /// (out-of-band change BETWEEN the phase-1 commit and the bracket
-    /// opening — nothing ran, nothing to accuse) or a guarded-snapshot
-    /// refusal (symlink #25 / I/O). The exec never started; a committed
-    /// phase-1 pre-exec receipt stands (the orphan lint finds it).
+    /// The U6b detection bracket refused to open: a guarded-snapshot
+    /// refusal (symlink #25 / I/O) — about the OBSERVATION itself, never a
+    /// premise. The exec never started; a committed phase-1 pre-exec
+    /// receipt stands (the orphan lint finds it).
     Detection(OpenRefusal),
 }
 
@@ -309,15 +299,15 @@ pub fn run(
     // flock-computed root stays the authority for what phase 1 committed
     // against (#19). A divergence between the two is blameless by
     // construction (no block ran) and common on a live corpus — the run
-    // flock never excluded wire writers — so the default posture REPORTS it
-    // exactly like the in-window delta and the exec proceeds over the
-    // observed baseline. `fatal_preexec` restores the refusal: the exec
-    // never starts (the pre-exec receipt stands; the orphan lint finds it).
-    let (bracket, pre_exec) = open_bracket(root, d.fatal_preexec, &root_after_phase1, &mut lane)?;
-    // What the window is detected against, and what phase 2 pins: the
-    // observed pre-exec root when it diverged (the receipts attest the tree
-    // the block actually ran over — still captured BEFORE bash, so #19's
-    // never-re-read-after-bash law holds), else the computed root.
+    // flock never excluded wire writers — so it is REPORTED exactly like
+    // the in-window delta and the exec proceeds over the observed baseline
+    // (no-guard ruling: a foreign advance re-derives and proceeds).
+    let (bracket, pre_exec) = open_bracket(root, &root_after_phase1, &mut lane)?;
+    // What the window is detected against, and what phase 2's receipt
+    // attests: the observed pre-exec root when it diverged (the receipts
+    // attest the tree the block actually ran over — still captured BEFORE
+    // bash, so #19's never-re-read-after-bash law holds), else the computed
+    // root.
     let window_root = pre_exec
         .as_ref()
         .map_or(&root_after_phase1, |div| &div.observed);
@@ -443,10 +433,8 @@ fn locked_window(
             now: d.now,
             effects: &[],
             authority: &BASH_AUTHORITY,
-            pin_root: &root0,
-            live_root: &root0,
+            observed_root: &root0,
             receipt: Some(addr.clone()),
-            takeover: false,
             exec: None, // pre-exec: no child has run yet
             actor: d.actor,
             depth: 0,
@@ -463,15 +451,14 @@ fn locked_window(
     Ok((leaves.root(), applied.receipt_line))
 }
 
-/// Step 2's severity policy (card run-preexec-severity): open the bracket
-/// against the observed tree, compare against the flock-computed authority,
-/// and either carry the divergence as a REPORT fact (default) or refuse
-/// under the fatal opt-in. The drawer memo is saved on the refusal paths so
-/// the caller's retry — the common next move — reads warm (the resident lane
-/// is warm by residence; nothing to save).
+/// Step 2: open the bracket against the observed tree and compare against
+/// the flock-computed authority — a divergence is carried as a REPORT fact,
+/// never a refusal (no-guard ruling; the former fatal opt-in is retired
+/// with the plane's premise refusals). The drawer memo is saved on the
+/// refusal path so the caller's retry — the common next move — reads warm
+/// (the resident lane is warm by residence; nothing to save).
 fn open_bracket(
     root: &fs::WorkspaceRoot,
-    fatal_preexec: bool,
     root_after_phase1: &MerkleRoot,
     lane: &mut Lane<'_>,
 ) -> Result<(ExecBracket, Option<PreExecDivergence>), BashError> {
@@ -484,13 +471,6 @@ fn open_bracket(
     };
     if observed == *root_after_phase1 {
         return Ok((bracket, None));
-    }
-    if fatal_preexec {
-        lane.save(root);
-        return Err(BashError::Detection(OpenRefusal::PreExecMismatch {
-            expected: root_after_phase1.clone(),
-            observed,
-        }));
     }
     let divergence = PreExecDivergence {
         expected: root_after_phase1.clone(),
@@ -665,10 +645,8 @@ fn completion_receipt(
             now: d.now,
             effects: &[],
             authority: &BASH_AUTHORITY,
-            pin_root: root_after_phase1,
-            live_root: root_after_phase1,
+            observed_root: root_after_phase1,
             receipt: d.receipt.clone(),
-            takeover: d.takeover,
             exec,
             actor: d.actor,
             depth: 0,
@@ -683,10 +661,11 @@ fn completion_receipt(
     }
 }
 
-/// Phase 2: the shim batch through the executor's one choke point, pinned
-/// AND validated against the COMPUTED `root_after_phase1` (#19 — never a
-/// re-read around the bash step; out-of-band detection is U6b's bracket).
-/// `exec` (U13) rides into the committed completion receipt.
+/// Phase 2: the shim batch through the executor's one choke point. The
+/// receipt attests the COMPUTED window baseline (#19 — never a re-read
+/// around the bash step; out-of-band detection is U6b's bracket); nothing
+/// compares it (no world pin on this door). `exec` (U13) rides into the
+/// committed completion receipt.
 fn apply_phase2(
     root: &fs::WorkspaceRoot,
     d: &BashDispatch<'_>,
@@ -704,10 +683,8 @@ fn apply_phase2(
             now: d.now,
             effects: &effects,
             authority: &BASH_AUTHORITY,
-            pin_root: root_after_phase1,
-            live_root: root_after_phase1,
+            observed_root: root_after_phase1,
             receipt: d.receipt.clone(),
-            takeover: d.takeover,
             exec,
             actor: d.actor,
             depth: 0,

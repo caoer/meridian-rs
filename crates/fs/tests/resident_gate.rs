@@ -329,6 +329,186 @@ fn foreign_changes_refold_to_the_fresh_build_values() {
     assert_ne!(b_before, b_after, "the touched sibling scope moved");
 }
 
+/// A stamp-plane fixture: a cache bound to `instance` whose journal tip is
+/// the returned atomic (the ring clock, controllable from the test).
+fn bound_cache(instance: &str) -> (DomainCache, std::sync::Arc<std::sync::atomic::AtomicU64>) {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let tip = Arc::new(AtomicU64::new(0));
+    let clock = Arc::clone(&tip);
+    let mut cache = DomainCache::new();
+    cache.bind_stamps(instance, Arc::new(move || clock.load(Ordering::Acquire)));
+    (cache, tip)
+}
+
+/// §6.3 stamps ride the guarded write path that maintains the digests: the
+/// baseline observation, the own-write overlay, and a foreign-change
+/// observation each stamp the touched chains in the same act that moves the
+/// folds — and the untouched sibling chain keeps vouching at its scope.
+#[test]
+fn stamps_ride_the_guarded_write_path() {
+    use std::sync::atomic::Ordering;
+    let (_dir, root) = workspace();
+    write(&root.0, "a/one.md", b"one\n");
+    write(&root.0, "b/two.md", b"two\n");
+    let (mut cache, tip) = bound_cache("epoch-a");
+
+    // Unbound planes exist too — but this one is bound BEFORE the baseline,
+    // so the baseline stamps every composed chain at tip+1 = 1.
+    cache.root(&root).expect("baseline");
+    // Five frames land (the chain grows); a token minted NOW carries seq 5.
+    tip.store(5, Ordering::Release);
+    assert_eq!(
+        cache.stamp_untouched("epoch-a", 5, Path::new("")),
+        Some(true),
+        "quiet corpus: the root vouches untouched for a current token"
+    );
+
+    // An own write at tip 5 stamps 6 — exactly the seq its frame allocates.
+    // The commit's order: bytes land on disk, then the overlay replaces the
+    // leaf it wrote.
+    write(&root.0, "a/one.md", b"one v2\n");
+    cache
+        .overlay_leaf(Path::new("a/one.md"), model::leaf_digest(b"one v2\n"))
+        .expect("overlay");
+    assert_eq!(
+        cache.stamp_untouched("epoch-a", 5, Path::new("a")),
+        Some(false),
+        "the pre-commit token sees the commit"
+    );
+    tip.store(6, Ordering::Release); // the commit's frame is on the ring
+    assert_eq!(
+        cache.stamp_untouched("epoch-a", 6, Path::new("a")),
+        Some(true),
+        "the post-commit token holds"
+    );
+    assert_eq!(
+        cache.stamp_untouched("epoch-a", 5, Path::new("b")),
+        Some(true),
+        "the untouched sibling scope still vouches for the older token"
+    );
+
+    // A foreign change absorbed by an observation stamps in the SAME pass
+    // that re-derives the digest — the hash instrument audits the stamp
+    // instrument: both move together or not at all.
+    write(&root.0, "b/two.md", b"two v2\n");
+    let fold_before = cache.fold_at(Path::new("b")).expect("b before");
+    cache.root(&root).expect("observe the foreign change");
+    let fold_after = cache.fold_at(Path::new("b")).expect("b after");
+    assert_ne!(fold_before, fold_after, "the digest moved");
+    assert_eq!(
+        cache.stamp_untouched("epoch-a", 6, Path::new("b")),
+        Some(false),
+        "the stamp moved with it (7 = one past the tip)"
+    );
+    assert_eq!(
+        cache.stamp_untouched("epoch-a", 7, Path::new("b")),
+        Some(true),
+        "a token minted after the absorption holds"
+    );
+    assert_eq!(
+        cache.stamp_untouched("epoch-a", 6, Path::new("a")),
+        Some(true),
+        "the other chain is untouched by the sibling's churn"
+    );
+}
+
+/// The §7 restart/reap row: a guard across a daemon restart or ring reap
+/// degrades to the content-fold compare, never a stamp answer. Restart —
+/// the fresh cache is unbound; reap — the epoch id changed; and after a
+/// rebind the dead epoch's max-only leftovers read as "touched" against the
+/// young chain, so the caller still lands on the fold, which still answers.
+#[test]
+fn restart_or_reap_degrades_to_the_fold_compare() {
+    let (_dir, root) = workspace();
+    write(&root.0, "tasks/x.md", X_V0);
+    let (mut cache, _tip) = bound_cache("epoch-a");
+    cache.root(&root).expect("baseline");
+    assert_eq!(
+        cache.stamp_untouched("epoch-a", 1, Path::new("tasks")),
+        Some(true),
+        "the live epoch vouches"
+    );
+
+    // Reap: the ring died; a token from the dead epoch never gets a stamp
+    // answer from any binding.
+    assert_eq!(
+        cache.stamp_untouched("epoch-b", u64::MAX, Path::new("tasks")),
+        None,
+        "an instance mismatch is a degrade, whatever the seq"
+    );
+
+    // Restart: a fresh engine's cache is unbound — no stamp answers at all.
+    let mut fresh = DomainCache::new();
+    fresh.root(&root).expect("fresh baseline");
+    assert_eq!(
+        fresh.stamp_untouched("epoch-a", u64::MAX, Path::new("tasks")),
+        None,
+        "an unbound plane never answers"
+    );
+
+    // Rebind to the young epoch: old stamps (≥1) against a seq-0 token can
+    // only say "touched" — conservative, never a false pass — and the fold
+    // floor the caller degrades to still serves the truth.
+    let (tasks_before, fingerprint_before) = {
+        let mut oracle = DomainCache::new();
+        oracle.root(&root).expect("oracle");
+        (
+            oracle.fold_at(Path::new("tasks")).expect("tasks"),
+            oracle.law2_fingerprint(),
+        )
+    };
+    cache.bind_stamps("epoch-b", std::sync::Arc::new(|| 0));
+    assert_eq!(
+        cache.stamp_untouched("epoch-b", 0, Path::new("tasks")),
+        Some(false),
+        "dead-epoch leftovers read touched against the young chain"
+    );
+    assert_eq!(
+        cache.fold_at(Path::new("tasks")).expect("floor"),
+        tasks_before
+    );
+    assert_eq!(cache.law2_fingerprint(), fingerprint_before);
+}
+
+/// §6.3: stamps never answer for the dead. A deleted member's path holds no
+/// node and no leaf — no stamp answers there — while the surviving ancestor
+/// chain records the death for every older token.
+#[test]
+fn stamps_never_answer_for_the_dead() {
+    use std::sync::atomic::Ordering;
+    let (_dir, root) = workspace();
+    write(&root.0, "a/dead.md", b"soon\n");
+    write(&root.0, "a/alive.md", b"stays\n");
+    let (mut cache, tip) = bound_cache("epoch-a");
+    cache.root(&root).expect("baseline");
+    tip.store(3, Ordering::Release);
+    assert_eq!(
+        cache.stamp_untouched("epoch-a", 3, Path::new("a/dead.md")),
+        Some(true),
+        "a live leaf answers through its parent chain"
+    );
+
+    cache
+        .overlay_remove(Path::new("a/dead.md"))
+        .expect("remove");
+    assert_eq!(
+        cache.stamp_untouched("epoch-a", u64::MAX, Path::new("a/dead.md")),
+        None,
+        "the dead path answers from journal frames or re-derivation, never a stamp"
+    );
+    assert_eq!(
+        cache.stamp_untouched("epoch-a", 3, Path::new("a")),
+        Some(false),
+        "the surviving parent records the death (stamped 4, one past the tip)"
+    );
+    assert_eq!(
+        cache.stamp_untouched("epoch-a", 4, Path::new("a")),
+        Some(true),
+        "a token minted after the removal holds"
+    );
+}
+
 /// `PathBuf` keys and byte keys agree: a nested fixture with names around
 /// the `/` sort boundary folds identically through the resident tree and the
 /// from-scratch law-1 recursion (the segmentation is one law, not two).

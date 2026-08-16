@@ -31,6 +31,7 @@ pub mod domain;
 pub mod fence;
 pub mod forest;
 pub mod guard;
+pub mod intent;
 pub mod radix;
 pub mod resident;
 pub mod stable;
@@ -593,6 +594,22 @@ impl StatKey {
 /// It is a cache of a pure function ([`model::leaf_digest`]) and holds exactly
 /// one generation. It retains no history and answers no as-of question: there
 /// is nothing here to select a version from.
+///
+/// # The §6.3 stamp plane
+/// Each resident directory node carries `last_seq` — the highest journal seq
+/// beneath it — maintained HERE, by the same guarded write path that
+/// maintains the digests, so the hash instrument audits the stamp instrument
+/// and the two cannot drift silently (the ZFS `hole_birth` lesson). Once
+/// [`bind_stamps`](Self::bind_stamps) installs a journal binding, every tree
+/// advance — own-write overlay, feed apply, an observation absorbing foreign
+/// change — stamps the touched ancestor chains with `clock() + 1`: one past
+/// the journal tip at the instant of the advance, which is exactly the seq a
+/// choke-point commit's frame will carry, and for an unjournaled advance a
+/// value strictly greater than every token minted before it — the compare
+/// can only degrade, never false-pass. [`stamp_untouched`](Self::stamp_untouched)
+/// answers the fast-path fact; the EVENT-STREAM vouch that makes a stamp
+/// answer legal (merkle-spec §6.3/§6.4 — cookie barrier, loss-free feed) is
+/// the caller's to establish, never assumed here.
 #[derive(Debug, Default)]
 pub struct DomainCache {
     leaves: BTreeMap<PathBuf, LeafSeen>,
@@ -602,6 +619,12 @@ pub struct DomainCache {
     /// own-write overlay; law-2 from birth, serving nothing before the
     /// cutover.
     tree: resident::ResidentTree,
+    /// The §6.3 stamp plane's journal binding: the tree instance id and the
+    /// journal tip clock every stamp mints against. `None` — the unbound
+    /// plane — stamps nothing and answers nothing (every query degrades to
+    /// the content-fold compare). Bound by the cache's owner
+    /// ([`Self::bind_stamps`]); the write paths below stamp through it.
+    stamps: Option<StampSource>,
     /// The served law-1 root under the interim law (merged plan §6 step 3):
     /// recomputed only when the tree advances or the domain version moves —
     /// `(domain version, root)`.
@@ -627,6 +650,39 @@ pub struct DomainCache {
     watermark_rereads: u64,
     suspect_reads: u64,
     fenced_reads: u64,
+    /// Corpus observation passes attempted — one half of the §7(d)
+    /// quiet-workspace counter pair (codex gate 10). A quiet workspace after
+    /// baseline leaves this unmoved, which is what proves no timer exists.
+    sweeps: u64,
+    /// Member identities `stat`ed across all sweeps — the pair's other half.
+    member_stats: u64,
+}
+
+/// The journal tip clock a stamp plane mints against: answers the current
+/// journal seq (the workspace ring's tip) at the instant of a tree advance.
+pub type StampClock = std::sync::Arc<dyn Fn() -> u64 + Send + Sync>;
+
+/// The §6.3 stamp binding: which journal epoch the tree's stamps belong to.
+///
+/// `instance` is the tree instance id (B-01 epoch identity — ring seq is
+/// per-daemon-epoch and rings are idle-reaped, so a seq is meaningful only
+/// within one instance). A query under any OTHER instance answers `None` —
+/// the degrade the §7 restart/reap row demands. Rebinding after an epoch
+/// change keeps old stamp values: max-only stamps from a dead epoch can only
+/// read as "touched" against a young chain's tokens — conservatism that
+/// heals as the new chain grows, never a false pass.
+struct StampSource {
+    instance: String,
+    clock: StampClock,
+}
+
+impl std::fmt::Debug for StampSource {
+    /// The clock is an opaque closure; the instance is the whole public truth.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StampSource")
+            .field("instance", &self.instance)
+            .finish_non_exhaustive()
+    }
 }
 
 /// One remembered leaf: the identity its digest was byte-derived under and
@@ -678,6 +734,18 @@ impl DomainCache {
     #[must_use]
     pub fn new() -> DomainCache {
         DomainCache::default()
+    }
+
+    /// An empty memo sharing an existing feed-generation cell: the registry
+    /// rebuilds a memo through this so the event-feed watcher and the
+    /// observation fence ride ONE instrument — the watcher's `advance` /
+    /// `note_loss` land on the cell this cache brackets reads with.
+    #[must_use]
+    pub fn with_feed(feed: stable::FeedGen) -> DomainCache {
+        DomainCache {
+            feed,
+            ..DomainCache::default()
+        }
     }
 
     /// How many domain members this memo has READ (not `stat`ed) for their
@@ -778,7 +846,9 @@ impl DomainCache {
     ) -> Result<BTreeMap<Vec<u8>, [u8; 32]>, ObserveRefusal> {
         // Losses counted before the pass are re-derived by the pass (a
         // completed observation IS the full sweep the rescan ladder floors
-        // at); losses landing mid-pass stay unabsorbed.
+        // at); losses landing mid-pass stay unabsorbed. Counted at entry so
+        // an aborted sweep still shows on the §7(d) counter.
+        self.sweeps += 1;
         let losses_at_start = self.feed.losses();
         let trust = self.trust_context(root);
         let (mut rels, mut offenders, fresh_dirs, listings) =
@@ -799,6 +869,7 @@ impl DomainCache {
         }
         rels.sort();
         let identities = member_identities(&root.0, &rels, PARALLEL_STAT_FLOOR)?;
+        self.member_stats += identities.len() as u64;
         let mut fresh: BTreeMap<PathBuf, LeafSeen> = BTreeMap::new();
         // Name-keyed rows (merkle-spec §4/§9 raw name bytes) — the shape every
         // consumer folds or compares in, built once here so no observation
@@ -812,17 +883,30 @@ impl DomainCache {
         // The resident tree follows the observed generation (merkle-spec
         // §6.1): removals first — a same-name kind swap across generations
         // must never compose a transient §4.4 collision — then idempotent
-        // set for the survivors (an unmoved member re-hashes nothing).
+        // set for the survivors (an unmoved member re-hashes nothing). Every
+        // absorbed change stamps its chain in the same act (§6.3): one
+        // clock read serves the pass — every stamped value is one past the
+        // tip as of the pass, which stays strictly greater than any token
+        // minted before the change was absorbed.
         let mut advanced = false;
         {
+            let stamp_seq = self.stamps.as_ref().map(|s| (s.clock)() + 1);
             let (leaves, tree) = (&self.leaves, &mut self.tree);
             for rel in leaves.keys() {
                 if !fresh.contains_key(rel) {
-                    advanced |= tree.remove_leaf(rel);
+                    let removed = tree.remove_leaf(rel);
+                    if removed && let Some(seq) = stamp_seq {
+                        tree.stamp_chain(rel, seq);
+                    }
+                    advanced |= removed;
                 }
             }
             for (rel, entry) in &fresh {
-                advanced |= tree.set_leaf(rel, entry.digest);
+                let set = tree.set_leaf(rel, entry.digest);
+                if set && let Some(seq) = stamp_seq {
+                    tree.stamp_chain(rel, seq);
+                }
+                advanced |= set;
             }
         }
         if advanced {
@@ -1118,6 +1202,7 @@ impl DomainCache {
         if !self.tree.set_leaf(rel, digest) {
             return Ok(false);
         }
+        self.stamp_advance(rel);
         self.leaves.insert(
             rel.to_path_buf(),
             LeafSeen {
@@ -1146,6 +1231,7 @@ impl DomainCache {
         if !self.tree.remove_leaf(rel) {
             return Ok(false);
         }
+        self.stamp_advance(rel);
         self.leaves.remove(rel);
         self.served = None;
         Ok(true)
@@ -1207,6 +1293,66 @@ impl DomainCache {
     #[must_use]
     pub fn resident_stats(&self) -> resident::ResidentStats {
         self.tree.stats()
+    }
+
+    /// Bind the §6.3 stamp plane to a journal epoch: `instance` is the tree
+    /// instance id (the workspace ring's B-01 epoch identity), `clock`
+    /// answers that ring's current tip. From this call on, every tree
+    /// advance stamps its touched chains with `clock() + 1`.
+    ///
+    /// Rebinding after an epoch change (idle-reap, restart) swaps the
+    /// binding and keeps existing stamp values: stamps are max-only, so a
+    /// dead epoch's leftovers can only read as "touched" against the young
+    /// chain — the compare degrades to the content-fold floor and heals as
+    /// the new chain grows past them. Nothing is reset, nothing false-passes.
+    pub fn bind_stamps(&mut self, instance: &str, clock: StampClock) {
+        self.stamps = Some(StampSource {
+            instance: instance.to_owned(),
+            clock,
+        });
+    }
+
+    /// The bound stamp epoch's tree instance id; `None` while the plane is
+    /// unbound (nothing stamps, every query degrades).
+    #[must_use]
+    pub fn stamp_instance(&self) -> Option<&str> {
+        self.stamps.as_ref().map(|s| s.instance.as_str())
+    }
+
+    /// The §6.3 fast-path fact for one scope against a stamp-bearing token:
+    /// `Some(true)` — no journaled change beneath `scope` after the token's
+    /// seq (untouched); `Some(false)` — the subtree moved (or a dead
+    /// epoch's conservative leftover says so); `None` — stamps cannot
+    /// answer: the plane is unbound, the token's instance is not the bound
+    /// epoch (restart or reap — §7 row), or the path holds no current node
+    /// or leaf (stamps never answer for the dead).
+    ///
+    /// A `Some(true)` is legal to ACT on only while the event stream can
+    /// vouch for this cache (merkle-spec §6.3/§6.4: cookie barrier returned,
+    /// dirty set applied, no collapse, [`Self::guard_currency`] trusted) —
+    /// that vouch is the caller's fact. Everything else is the
+    /// §6.2-governed extent refresh floor: re-derive, never trust a stamp.
+    #[must_use]
+    pub fn stamp_untouched(&self, instance: &str, seq: u64, scope: &Path) -> Option<bool> {
+        let source = self.stamps.as_ref()?;
+        if source.instance != instance {
+            return None;
+        }
+        let stamp = self.tree.stamp_at(scope)?;
+        Some(stamp <= seq)
+    }
+
+    /// Stamp one advanced leaf's ancestor chain, when the plane is bound
+    /// (§6.3): `clock() + 1` — one past the journal tip at this instant. For
+    /// a choke-point overlay that is exactly the seq the commit's frame
+    /// allocates; for an unjournaled advance (feed apply) it is strictly
+    /// greater than every token minted before the advance, so the compare
+    /// can only degrade, never false-pass.
+    fn stamp_advance(&mut self, rel: &Path) {
+        let Some(seq) = self.stamps.as_ref().map(|s| (s.clock)() + 1) else {
+            return;
+        };
+        self.tree.stamp_chain(rel, seq);
     }
 
     /// How many law-1 flat folds ([`model::merkle_root_of_leaves`]) this
@@ -1284,6 +1430,21 @@ impl DomainCache {
     #[must_use]
     pub fn fenced_reads(&self) -> u64 {
         self.fenced_reads
+    }
+
+    /// Corpus observation passes attempted over this memo's life — the §7(d)
+    /// quiet-workspace counter (codex gate 10): after baseline, a quiet
+    /// workspace advances neither this nor [`member_stats`](Self::member_stats).
+    #[must_use]
+    pub fn sweeps(&self) -> u64 {
+        self.sweeps
+    }
+
+    /// Member identities `stat`ed across all sweeps — the §7(d) counter
+    /// pair's other half. Counted per member per completed identity pass.
+    #[must_use]
+    pub fn member_stats(&self) -> u64 {
+        self.member_stats
     }
 
     /// The overlay's domain: the OBSERVED generation, refused when none has
@@ -2301,9 +2462,14 @@ pub fn is_write_conflict(e: &io::Error) -> bool {
 /// renames commit anything, the live destination is compared against this
 /// pre-image (and the receipt file against its stage-time read): a mismatch
 /// refuses with the typed [`write_conflict`] error and no file is touched. The
-/// residual window (verify → rename) is stated: cooperating engine writers are
-/// serialized by the write flock; out-of-band writers in that gap are a
-/// detectable-at-next-read lost update, never a torn or corrupted file.
+/// residual window (verify → rename) is stated. Under the ruled B authority
+/// (construction step 6) the write flock is not on the publish path: this
+/// pre-image compare is what refuses a second in-process writer inside the
+/// one authority, so the content+receipt pairing cannot become silent loss
+/// (`docs/laws.md` Amendment — the one state owner). Out-of-band writers
+/// (editors, git, bash) remain a detectable lost update, never a torn file.
+/// The live write door still holds the interim flock until the cutover; the
+/// verify is what stays load-bearing either way.
 ///
 /// # Commit discipline — the atomic-write law (§6.5 + §14)
 /// Every byte reaches disk via **tmp + fsync + rename**; no in-place write
@@ -2458,9 +2624,12 @@ pub fn append_line(root: &WorkspaceRoot, rel_path: &Path, line: &str) -> io::Res
 /// A two-file commit staged to temp files (written + fsync'd), awaiting the
 /// two renames. Separating staging from the renames is what lets the
 /// crash-honesty test drive a kill BETWEEN the renames deterministically
-/// (§6.5). Each staged file carries the pre-image its new bytes were derived
-/// from — the pre-rename verify compares the live destination against it.
-struct StagedCommit {
+/// (§6.5), and what lets the parallel-commits path insert one checksummed
+/// `O_EXCL` intent after verify and before the first visible rename
+/// (`crates/fs/src/intent.rs`). Each staged file carries the pre-image its
+/// new bytes were derived from — the pre-rename verify compares the live
+/// destination against it.
+pub struct StagedCommit {
     content: StagedFile,
     /// The content file's validated pre-image (read#2's bytes — what the
     /// sealed spans index). The live destination must still equal this at
@@ -2487,7 +2656,13 @@ struct StagedFile {
 /// a fsync'd temp beside the destination. No destination is touched here —
 /// staging is entirely off to the side, so a failure (or a crash) before
 /// [`StagedCommit::commit`] leaves every real file intact.
-fn stage_batch(
+///
+/// Public so the parallel-commits path can stage outside any exclusion, then
+/// reserve, reverify, write the intent, and rename.
+///
+/// # Errors
+/// The same seam-contract, candidate, and I/O failures [`apply_batch`] names.
+pub fn stage_batch(
     root: &WorkspaceRoot,
     content_path: &Path,
     receipt_path: Option<&Path>,
@@ -2666,10 +2841,10 @@ impl StagedCommit {
     /// pre-images (refuse [`write_conflict`] on drift, cleaning the staged
     /// temps), then rename the content file (which COMMITS it), then the
     /// receipt file. The gap between the two renames is the STATED §6.5 crash
-    /// window. The verify→rename gap is the stated residual window:
-    /// cooperating writers are serialized by the write flock; out-of-band
-    /// writers in that gap lose their update detectably (each file is still
-    /// fully-old-or-fully-new — never torn).
+    /// window. The verify→rename gap is the stated residual window: this
+    /// pre-image compare refuses a second in-process writer (under B the flock
+    /// is not on the publish path); out-of-band writers lose their update
+    /// detectably (each file is still fully-old-or-fully-new — never torn).
     fn commit(self) -> io::Result<()> {
         if let Err(conflict) = self.verify_pre_images() {
             self.discard();
@@ -2680,12 +2855,52 @@ impl StagedCommit {
         self.rename_receipt()
     }
 
+    /// The content destination this commit will rename onto.
+    #[must_use]
+    pub fn content_dst(&self) -> &Path {
+        &self.content.dst
+    }
+
+    /// The fsync'd temp holding the new content bytes.
+    #[must_use]
+    pub fn content_tmp(&self) -> &Path {
+        &self.content.tmp
+    }
+
+    /// The validated content pre-image (read#2's bytes).
+    #[must_use]
+    pub fn content_expected(&self) -> &[u8] {
+        &self.content_expected
+    }
+
+    /// The receipt destination, when this batch carries one.
+    #[must_use]
+    pub fn receipt_dst(&self) -> Option<&Path> {
+        self.receipt.as_ref().map(|s| s.dst.as_path())
+    }
+
+    /// The fsync'd receipt temp, when this batch carries one.
+    #[must_use]
+    pub fn receipt_tmp(&self) -> Option<&Path> {
+        self.receipt.as_ref().map(|s| s.tmp.as_path())
+    }
+
+    /// The receipt pre-image (absent file ⇒ empty), when this batch carries one.
+    #[must_use]
+    pub fn receipt_expected(&self) -> Option<&[u8]> {
+        self.receipt_expected.as_deref()
+    }
+
     /// The pre-rename verify: the content destination must still hold the validated
     /// pre-image (gone ⇒ conflict too — read#2 saw a real file), and the
     /// receipt destination must still hold its stage-time bytes (absent stays
     /// legal only while the pre-image is empty — the first append creates it).
     /// Both checks run BEFORE the first rename, so a refusal commits nothing.
-    fn verify_pre_images(&self) -> io::Result<()> {
+    ///
+    /// # Errors
+    /// [`write_conflict`] when a live destination drifted; any other I/O failure
+    /// reading a destination.
+    pub fn verify_pre_images(&self) -> io::Result<()> {
         let live = match fs::read(&self.content.dst) {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -2705,7 +2920,7 @@ impl StagedCommit {
     }
 
     /// Remove the staged temps (hygiene on a refused commit — no litter).
-    fn discard(&self) {
+    pub fn discard(&self) {
         let _ = fs::remove_file(&self.content.tmp);
         if let Some(staged) = &self.receipt {
             let _ = fs::remove_file(&staged.tmp);
@@ -2714,13 +2929,19 @@ impl StagedCommit {
 
     /// Rename the content temp onto its destination (atomic) and fsync the
     /// destination's directory so the rename itself is durable.
-    fn rename_content(&self) -> io::Result<()> {
+    ///
+    /// # Errors
+    /// I/O failure at rename or the parent-directory fsync.
+    pub fn rename_content(&self) -> io::Result<()> {
         commit_rename(&self.content)
     }
 
     /// Rename the receipt temp (when one was staged) onto its destination and
     /// fsync its directory. A batch without a receipt is a no-op here.
-    fn rename_receipt(&self) -> io::Result<()> {
+    ///
+    /// # Errors
+    /// I/O failure at rename or the parent-directory fsync.
+    pub fn rename_receipt(&self) -> io::Result<()> {
         match &self.receipt {
             Some(staged) => commit_rename(staged),
             None => Ok(()),
@@ -2743,6 +2964,38 @@ fn fsync_dir(dir: &Path) -> io::Result<()> {
         return Ok(());
     }
     File::open(dir)?.sync_all()
+}
+
+/// The ruled honest durability class (merged-plan §4.7): `F_FULLFSYNC` on
+/// macOS (platter, not drive-cache), `sync_all` elsewhere. The live
+/// [`apply_batch`] path keeps `sync_all` until the cutover; the parallel
+/// publish path uses this for intent, recovery images, and dest temps.
+///
+/// # Errors
+/// The underlying fcntl/fsync failure.
+pub fn honest_sync(file: &File) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: fcntl on a valid fd we own; F_FULLFSYNC takes no extra arg.
+        let rc = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_FULLFSYNC) };
+        if rc == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        file.sync_all()
+    }
+}
+
+/// [`honest_sync`] on a path. `File::open` works for files and directories
+/// alike on Unix; the fd is only used for the sync.
+///
+/// # Errors
+/// Open failure, or the underlying sync failure.
+pub fn honest_sync_path(path: &Path) -> io::Result<()> {
+    honest_sync(&File::open(path)?)
 }
 
 // ---------------------------------------------------------------------------
@@ -3942,6 +4195,61 @@ mod tests {
             "the deletion survives — the commit did not resurrect stale bytes"
         );
         assert!(!any_tmp_in(&dir.path().join("notes")));
+    }
+
+    /// Two in-process writers, same destinations, no flock: both stage against
+    /// the same pre-image; the first rename lands; the second verify refuses
+    /// `write_conflict`. Under B this pre-image compare is what refuses the
+    /// second writer inside the one authority — content+receipt cannot become
+    /// silent loss (merged-plan §4.7 crash honesty).
+    #[test]
+    fn pre_image_verify_refuses_the_second_in_process_writer() {
+        let (dir, root) = workspace();
+        let vb = validated(Some(receipt_append()));
+        let first = stage_batch(
+            &root,
+            &content_rel(),
+            Some(&receipt_rel()),
+            &vb,
+            PLAN_S0.as_bytes(),
+            &candidate(&vb),
+        )
+        .unwrap();
+        let second = stage_batch(
+            &root,
+            &content_rel(),
+            Some(&receipt_rel()),
+            &vb,
+            PLAN_S0.as_bytes(),
+            &candidate(&vb),
+        )
+        .unwrap();
+
+        first.commit().expect("first writer lands");
+        let err = second
+            .commit()
+            .expect_err("second writer must refuse the moved pre-image");
+        assert!(
+            is_write_conflict(&err),
+            "typed write-conflict is the second-writer refusal: {err}"
+        );
+
+        let content = fs::read(dir.path().join(content_rel())).unwrap();
+        let receipt = fs::read(dir.path().join(receipt_rel())).unwrap();
+        let expected_content = PLAN_S0.replace("ship by August", "ship by September");
+        assert_eq!(content, expected_content.as_bytes(), "exactly one landing");
+        assert!(
+            receipt_recorded(&receipt, RECEIPT_ANCHOR),
+            "the first writer's receipt landed; the second did not append another"
+        );
+        assert_eq!(
+            receipt
+                .windows(RECEIPT_LINE.len())
+                .filter(|w| *w == RECEIPT_LINE.as_bytes())
+                .count(),
+            1,
+            "the pairing is one content + one receipt row, never two"
+        );
     }
 
     /// Receipt moved before staging: the receipt file gained rows

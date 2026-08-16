@@ -43,7 +43,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub use checkpoint::CheckpointReceipt;
 pub use client::Client;
 pub use engine::{WarmOutcome, WorkspaceEngine};
-pub use feed::FeedStats;
+pub use feed::{FeedStats, RescanCause};
 pub use protocol::{DenyKind, Request, Response, WorkspaceEntry};
 pub use registry::{RegisterOutcome, Registry, ResolveOutcome};
 pub use server::{
