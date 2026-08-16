@@ -207,7 +207,7 @@ pub fn scan(root: &WorkspaceRoot) -> io::Result<Vec<Found>> {
             }),
         }
     }
-    out.sort_by(|a, b| a.txn_key().cmp(b.txn_key()));
+    out.sort_by(|a, b| a.txn_key().cmp(&b.txn_key()));
     Ok(out)
 }
 
@@ -517,8 +517,8 @@ fn hex32(bytes: &[u8; 32]) -> String {
     const H: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(64);
     for b in bytes {
-        out.push(H[(b >> 4) as usize] as char);
-        out.push(H[(b & 0xf) as usize] as char);
+        out.push(H[usize::from(b >> 4)] as char);
+        out.push(H[usize::from(b & 0x0f)] as char);
     }
     out
 }
@@ -531,7 +531,7 @@ fn unhex32(s: &str) -> Option<[u8; 32]> {
     for i in 0..32 {
         out[i] = u8::from_str_radix(s.get(i * 2..i * 2 + 2)?, 16).ok()?;
     }
-    Ok(out)
+    Some(out)
 }
 
 #[cfg(test)]
