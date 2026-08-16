@@ -17,15 +17,18 @@
 //! costs the new world nothing. rename(2) of the symlink over the lockfile is
 //! atomic within `.meridian/`, which gives the activation a single commit point.
 //!
-//! # Activation is a separate, explicit, durable act
+//! # Activation is a separate, explicit, durable act — and NEVER happens
 //!
-//! Nothing in this module runs on any read or write path. [`activate`] is
-//! invoked ONLY by the cutover state machine at the cutover's no-return
-//! boundary (merged plan §6 step 7). The tombstone is IRREVERSIBLE by design —
-//! there is no deactivate — and activating it early is the no-rollback error
-//! class, which is why activation exists as its own verb instead of riding any
-//! door. This crate's landing (card b03-downgrade-fence) ships the mechanism
-//! BUILT AND TESTED with zero callers of [`activate`] outside tests.
+//! Nothing in this module runs on any read or write path. **Amended
+//! 2026-08-16 (spec §4.2.5 amendment; ZT standing law 2026-08-15): the
+//! cutover does NOT activate this fence.** The no-return boundary is crossed
+//! by the durable B-04 cutover record alone; the fence's threat model is
+//! empty (no old-binary users — a leftover old binary is deleted, not
+//! fenced). The mechanism stays BUILT AND TESTED with zero production
+//! callers of [`activate`]; if a future implementer finds a non-downgrade
+//! reason it must activate, that is a new ZT question. The tombstone is
+//! IRREVERSIBLE by design — there is no deactivate — which is why activation
+//! exists as its own verb instead of riding any door.
 //!
 //! # The durable order, and why it is load-bearing
 //!
@@ -309,10 +312,13 @@ pub fn activate_until(root: &WorkspaceRoot, until: ActivationPhase) -> io::Resul
 
 /// Activate the downgrade fence on `root` — the IRREVERSIBLE tombstone.
 ///
-/// **Invoked only by the cutover state machine at the no-return boundary**
-/// (spec §4.2.5; merged plan §6 step 7). Activating it anywhere else is the
-/// no-rollback error class: there is no deactivation, and every pre-cutover
-/// binary loses write access to the workspace permanently.
+/// **No production path invokes this — amended 2026-08-16** (spec §4.2.5
+/// amendment; ZT standing law: never activate on downgrade grounds — old
+/// binaries are deleted, not fenced). The cutover state machine crosses its
+/// no-return boundary with the durable B-04 record alone and does not call
+/// this. Activating it anywhere is the no-rollback error class: there is no
+/// deactivation, and every pre-cutover binary loses write access to the
+/// workspace permanently.
 ///
 /// Holds the legacy exclusive flock across installation (contract §2.4:
 /// "Installation occurs while holding the old EX"), so concurrent old writers

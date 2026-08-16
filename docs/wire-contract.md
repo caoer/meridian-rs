@@ -626,6 +626,7 @@ Replay ≡ live (§7.3). A fingerprint range outside the retained history → `f
 - **Live subscribe:** `{"op":"sub"}` — no cursor → ack `{"root":…,"seq":N,"tree_instance":I}` — the baseline root, so the first push frame's `root_before` matches — then the connection converts to push and carries Notification frames, each one Delta batch, starting after the acked `seq`. The ack is where a client learns its resumption cursor: `{tree_instance, seq}`, `seq` advanced by each delivered frame.
 - **Resumption:** `{"op":"sub","tree_instance":I,"from_seq":N}` — instance is evaluated BEFORE any sequence compare. A dead instance (a daemon restart, an idle reap) refuses `root_unknown` with the diff-by-root remedy, sequence never consulted — a previous-epoch number can never anchor when the new ring's counter reaches it again. A live-instance `from_seq` outside the retained ring refuses `root_unknown` exactly as before.
 - **Upgrade-required:** `from_seq` without `tree_instance` — anchoring by number alone — refuses `bad_request` with the upgrade teaching; `tree_instance` without `from_seq` is half a cursor and refuses the same way. Neither anchors.
+- **The cutover epoch boundary (docs-first 2026-08-16; merkle spec §4.2.6).** The hash-law cutover ends the ring — it is not transformed. Every subscriber active at DRAINING receives ONE terminal `fingerprint_epoch_retired` control (old family, new family, cutover id, retired `tree_instance`, recovery `resync`), then the subscription closes — a labeled boundary, never a silent chain break, and never a content Delta. A later resumption whose `tree_instance` names the retired instance refuses `fingerprint_epoch_retired` with the same teaching when the boundary OBSERVED that instance (a live drain — the B-04 record remembers it); a cursor from an epoch no record can name (ring instances are RAM-only, so a prior daemon's die with it) refuses the ordinary dead-instance answer, and the labeled retirement reaches that client at its next use of a retired-family token — `diff` and every guard door answer `fingerprint_version_retired` before `fingerprint_unknown`, so the taught diff-by-root recovery cannot loop. Instance is still evaluated before sequence. A reconnect performs a fresh read and subscribes at the new instance/baseline. No Delta ever carries an old-family `root_before` and a new-family `root_after`.
 
 A refused `sub` leaves an ordinary request channel. The delta stream is not actor-scoped: identities, revs, and spans only.
 
@@ -908,15 +909,17 @@ Every error frame carries `code` + `recovery` from the CLOSED six-class enum; ea
 | class | meaning | codes |
 |---|---|---|
 | `fix` | your request is wrong; change it | `bad_request`, `unknown_op`, `bad_path`, `no_match`, `not_unique`, `would_corrupt{family,lost?,cause?,target?}`, `ambiguous_ref{candidates}`, `remove_refused{referrers}` (§ A.3 remove door — inbound references exist; unlink the named referrers, then resend), `scope_does_not_cover{uncovered}` (§5.5 — coverage failed; the extra names the uncovered target set), `scope_unresolved` (§5.6 — the path cannot hold a token) |
-| `env` | the world outside the workspace is wrong | `file_not_found`, `io_error{cause}`, `invalid_utf8{path,message}`, `daemon_only`, `mount_table_invalid{path,message}` |
+| `env` | the world outside the workspace is wrong | `file_not_found`, `io_error{cause}`, `invalid_utf8{path,message}`, `daemon_only`, `mount_table_invalid{path,message}`, `fingerprint_cutover_recovery_required` (§12.3, merkle spec §4.2.6 — the workspace's cutover record is unrecognized or corrupt; serving is blocked until an operator recovers the record; Markdown is preserved) |
 | `refresh` | your picture of a node is stale; re-read one thing | `cas_mismatch{expected,actual}`, `ref_not_found{stage,dest?}` |
 | `retry` | transient; same request may succeed | `lock_timeout`, `stale_view{required,as_of_fingerprint,live_fingerprint}` |
-| `resync` | your picture of the world is stale; re-plan | `fingerprint_mismatch{expected,actual,scope?}`, `fingerprint_unknown`, `fingerprint_version_retired` (§5.7, §12.3 — the token's hash-law family is retired; re-mint at the same scope), `fingerprint_version_unsupported` (§5.7 — the token's family is unknown and newer than the serving law) |
+| `resync` | your picture of the world is stale; re-plan | `fingerprint_mismatch{expected,actual,scope?}`, `fingerprint_unknown`, `fingerprint_version_retired` (§5.7, §12.3 — the token's hash-law family is retired; re-mint at the same scope), `fingerprint_version_unsupported` (§5.7 — the token's family is unknown and newer than the serving law), `fingerprint_epoch_retired` (§4.7 — the sub plane's view of the same cutover event: terminal control at the boundary, refusal for a cursor naming the retired instance) |
 | `respawn` | the channel itself is broken | `bad_frame`, `unsupported_proto`, `internal` |
 
 W4 dispositions: v1's `not_found` is **retired** — `file_not_found` (env: the file is gone) is distinct from `ref_not_found` (refresh: the name dangles), and `io_error` carries its cause. `ref_not_found.stage` makes the two-stage decomposition observable in every failure (1 = vault-namespace miss, no `dest`; 2 = subpath miss, `dest` present — §4.5). `budget_exceeded` is deliberately NOT here: it is a typed *finding* inside `verdicts` (§11), never a wire error. **`daemon_only`** (env class) is **RETIRED** (hosts ruling, §3.3, 2026-08-06): it named the one deployment gap — a corpus-class rules pack, one whose WHEN needs the resident corpus name index (e.g. `link_resolves`, §11.2), loaded against a sidecar-mode engine with no resident index (the `BudgetClass::Corpus` law, §11.3). With the sidecar host deleted, every wire door is daemon-backed and the resident index is always reachable, so the code is unmintable; the `BudgetClass::Corpus` law stands, now gating nothing at the wire. Null-id frames: §3.1. Three declared deltas from the ruled class table (previously undeclared, now fixed): `fingerprint_mismatch` rebound refresh→`resync` (a failed world guard invalidates the plan, not one node's picture — §5.1's split), `unsupported_proto` rebound fix→`respawn` (a protocol mismatch is a channel property; no request edit repairs it), and `bad_id` dropped (folded into `bad_request` + `id:null`/`id_raw`, §3.1 — one malformed-envelope code, not two). All three are behavior-preserving relabelings, now declared. Deviation-from-v1 rows: `not_found` retirement (this table), unknown-`kinds` rejection (§4.3) — each with its rationale at the cited section; the consolidated ledger is §18.
 
 *(Amended 2026-08-15 — the scoped-guard family, §5.4–§5.7.)* Four codes join the closed enum, each statically bound to exactly one class as the table now shows: `scope_does_not_cover{uncovered}` (fix), `scope_unresolved` (fix), `fingerprint_version_retired` (resync), `fingerprint_version_unsupported` (resync). The closed-enum law is unchanged — a client that doesn't recognize a code still dispatches on `recovery` alone. `fingerprint_mismatch` regains `scope` (optional; absent = the root premise, the exact v2 shape): §18 row 2's return clause FIRED — the scoped world guard arrived by amendment, and `scope` returns with it, as that row promised. The version split is law, not labeling: a retired-family token must NEVER answer `fingerprint_mismatch` — the premise did not move, the LAW moved (§5.7, §12.3).
+
+*(Amended 2026-08-16 — the cutover pair, docs-first; merkle spec §4.2.6.)* Two codes join the closed enum: `fingerprint_epoch_retired` (resync — the sub plane's view of the cutover event `fingerprint_version_retired` teaches on the guard plane; both carry the same cutover id and old/new version pair) and `fingerprint_cutover_recovery_required` (env — the per-workspace cutover record is unrecognized or corrupt, so which LAW may serve is unknown; the engine blocks serving loudly and never guesses old or new from surviving caches). Same closed-enum discipline: unrecognized codes dispatch on `recovery` alone.
 
 ### §8.1 The no-answer case — transport loss is not a class (RULED 2026-08-08)
 
@@ -990,6 +993,19 @@ source):
    keep (no-guard ruling). Drop the guard fields; to guard content
    writes, use splice, or script without effects (its commit premise is
    the engine-computed touch set)."
+fingerprint_epoch_retired (drafted here 2026-08-16 — no Appendix C
+source; the sub plane's view of the cutover event):
+  "this subscription's epoch ended at a hash-law cutover — the tree
+   instance it names is retired, not merely dead. Re-read the workspace
+   and subscribe fresh at the new instance; re-mint any held tokens at
+   their scopes and re-plan once (cutover <cutover_id>)."
+fingerprint_cutover_recovery_required (drafted here 2026-08-16 — no
+Appendix C source):
+  "this workspace's cutover record is unrecognized or corrupt, so which
+   hash law may serve is unknown. Serving is blocked; Markdown is
+   preserved and untouched. Recover or remove .meridian/cutover from a
+   known-good state — the engine never guesses a law from surviving
+   caches."
 ```
 
 ## §9 actor and now — wire inputs, never ambient

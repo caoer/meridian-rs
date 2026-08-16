@@ -292,6 +292,97 @@ plan §4.2) — the cutover is cheap NOW and a cliff later.
   (`decisions/2026-08-15-plan-rulings-final.md` § Amendment — B_cutover
   answered.)
 
+#### 4.2.6 The cutover record and state machine (B-04)
+
+The cutover needs durable authority state: deleting caches and then
+computing a new root has no crash semantics. The authority is a
+checksummed, fsynced per-workspace **cutover record** OUTSIDE the hash
+domain. It decides which LAW may serve; it is not a semantic snapshot and
+never substitutes for Markdown.
+
+**The record.** `.meridian/cutover` (a dot-segment path, outside the hash
+domain by §12.1 rule 2, beside `write.lock` and `run.lock`). Written
+tmp + fsync + rename with the parent directory synced, in the ruled
+plain-fsync class (`docs/laws.md` Amendment — the fsync class; never
+`F_FULLFSYNC`). Its bytes carry, integrity-checked as one unit:
+
+- a format version;
+- the cutover id — one opaque stable identifier per cutover event, the
+  same id every refusal and terminal control teaches;
+- the workspace identity the record governs;
+- the OLD serving identity (hash law, domain) and the NEW one;
+- the state: `NEW_BUILDING` or `NEW_COMMITTED`;
+- the OLD tree/journal instance (so a late resumption cursor naming it
+  gets the labeled epoch refusal, not a bare unknown) and the NEW
+  instance once minted.
+
+**Startup reads the record before anything serves.** Absent record =
+pre-cutover: law 1 serves (`ServingVersion` boundary 0 — retirement
+unreachable by construction). `NEW_BUILDING` = the no-return boundary
+was crossed: the engine never serves or computes the retired tree again;
+it resumes or restarts the new build. `NEW_COMMITTED` = the new law
+serves. An unrecognized or corrupt record **blocks serving loudly** —
+`fingerprint_cutover_recovery_required` — and preserves Markdown; the
+engine never guesses old or new from whatever cache happens to exist.
+
+**The state machine.** One cutover per workspace, behind the workspace
+authority (write-plane lease). There is no state that serves both laws.
+
+```text
+OLD_SERVING → DRAINING → [no-return] → NEW_BUILDING → NEW_COMMITTED → reopen
+```
+
+- **DRAINING:** admission closes for every write door; already-decided
+  governed transactions recover/finalize and pre-decision work finishes
+  or refuses; no live reservation or intent remains; the old ring closes
+  to new frames; every active subscriber receives ONE terminal
+  `fingerprint_epoch_retired` control (old family, new family, cutover
+  id, old tree instance, recovery instruction), then the subscription
+  closes. The terminal control is not a content Delta. A crash before
+  the no-return boundary resumes DRAINING or the old law — abort leaves
+  the old law serving.
+- **The no-return boundary** is ONE durable act: the cutover record
+  reaching disk at `NEW_BUILDING` (file and parent directory synced).
+  At or after this boundary the authority never serves `OLD_SERVING`
+  again; a crash resumes or restarts the new build. No fence tombstone
+  is installed (§4.2.5 amendment above).
+- **NEW_BUILDING:** all live old hash-derived state drops — nothing is
+  retained for fallback, and no old and new roots are computed in
+  parallel. One Markdown walk builds every leaf and radix vertex under
+  the new (hash law, domain) identity; external filesystem events during
+  the walk are included by ordered feed replay or cause one labeled
+  rebaseline — event loss never publishes a stale new tree. A fresh
+  tree/journal instance starts at sequence baseline 0; projections
+  rebuild against the new root; a new checkpoint is written; zero live
+  old-family state is verified before publication.
+- **NEW_COMMITTED:** one durable publication flips the record; only then
+  does the daemon publish ready, reopen admission, advertise only the
+  new current family, and accept new subscriptions at the fresh
+  instance/baseline.
+
+**What survives** is §4.2.5's survival law: only non-authoritative
+source and history — Markdown bytes and paths, non-hash metadata valid
+in both versions, historical receipts/traces/logs as byte-identical
+evidence. Everything hash-derived re-mints: leaves, radix vertices,
+subtree values, roots, held guard tokens, ring frames, stamps, cursors,
+checkpoint bindings, hash-keyed caches. An old fingerprint inside
+historical material survives only as an opaque version-labeled fact
+about the past; used as a current premise it refuses typed retirement.
+
+**What is not emitted:** the cutover changes an interpretation law, not
+Markdown — zero content Delta frames, zero write receipts, zero content
+effects, zero synthetic journal rows, zero rewrites of history. It emits
+the cutover record and the subscription terminal controls, which say the
+LAW changed and never pretend a file did.
+
+**The trigger.** The engine takes the cutover once per workspace at
+workspace open under a law-2 binary — there are no old-law users (ZT,
+2026-08-16: "we have no one using old law"), so no fleet scheduler
+exists; a workspace already serving cuts over through the same machine
+(drain first). The measured admission outage is recorded per component
+(drain, build, projections, checkpoint, publish) — the 1.45 s old-law
+cold-build receipt is never quoted for it (§4.2.5; price paper §8).
+
 ### 4.3 Domain tags — one table
 
 Every interior hash in law 2 begins with an 8-byte ASCII domain tag. The
