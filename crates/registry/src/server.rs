@@ -33,7 +33,9 @@ use wire_serve::rev::Rev;
 
 use crate::engine::WorkspaceEngine;
 use crate::protocol::{Request, Response};
-use crate::registry::{DOOR_COOKIE_TIMEOUT, PinOutcome, RegisterOutcome, Registry, ResolveOutcome};
+use crate::registry::{
+    ColdGate, DOOR_COOKIE_TIMEOUT, PinOutcome, RegisterOutcome, Registry, ResolveOutcome,
+};
 use crate::ring::SubGuard;
 use crate::state::StateStore;
 use crate::{
@@ -209,7 +211,7 @@ impl RunningServer {
 
         let store = StateStore::new(config.state_path.clone());
         let entries = store.load();
-        let registry = Arc::new(Registry::new(store, config.cache_root.clone(), entries));
+        let registry = Registry::new_shared(store, config.cache_root.clone(), entries);
 
         // We hold the singleton lock, so any existing socket is a stale leftover
         // from a crashed predecessor — remove it before binding.
@@ -1442,6 +1444,7 @@ fn dispatch_read(
         // § A.11 corpus SQL — v3-only; the resident engine owns the cache
         // file and this daemon is its one append actor.
         Op::Sql { query } if v3 => {
+            cold_gate_wire(registry, ws)?;
             registry.warm_or_build(ws).map_err(|e| warm_err_to_wire(&e))?;
             crate::sql_op::serve(registry, ws, &query)
         }
@@ -1632,6 +1635,7 @@ fn warm_engine_read<R>(
     canonical: &Path,
     f: impl FnOnce(&WorkspaceEngine) -> Result<R, Box<ErrorBody>>,
 ) -> Result<R, Box<ErrorBody>> {
+    cold_gate_wire(registry, canonical)?;
     registry
         .warm_or_build(canonical)
         .map_err(|e| warm_err_to_wire(&e))?;
@@ -1762,6 +1766,38 @@ fn doc_or_refusal<'e>(
 /// skips and reports it; [`doc_or_refusal`] mints its per-file refusal) — so
 /// the `InvalidData` arm survives for the decode failures that really are
 /// corpus-scoped, e.g. a domain config file that is itself not UTF-8.
+/// The §3.2 cold gate at a wire door: `Ok(())` ⇒ proceed to the inline
+/// currency pass. Cold ⇒ the drawer rebuild is kicked into the background
+/// and the door refuses `corpus_warming` (retry) at config cost; a failed
+/// background rebuild refuses `io_error{cause}` (env) once, then the next
+/// read kicks afresh.
+pub(crate) fn cold_gate_wire(registry: &Registry, ws: &Path) -> Result<(), Box<ErrorBody>> {
+    match registry.cold_gate(ws).map_err(|e| warm_err_to_wire(&e))? {
+        ColdGate::Serve => Ok(()),
+        ColdGate::Warming => {
+            let mut e = ErrorBody::new(ErrorCode::CorpusWarming);
+            e.message = Some(
+                "the drawer is still warming: this workspace has no resident corpus engine \
+                 yet (cold start), and the whole-corpus rebuild is running in the \
+                 background — transient; the same request serves once the rebuild lands. \
+                 `hello`/`mounts` staying green is config health, not corpus readiness."
+                    .to_owned(),
+            );
+            Err(Box::new(e))
+        }
+        ColdGate::Failed(cause) => {
+            let mut e = ErrorBody::new(ErrorCode::IoError);
+            e.cause = Some(cause);
+            e.message = Some(
+                "the background drawer rebuild failed — fix the cause; the next corpus \
+                 read kicks a fresh rebuild"
+                    .to_owned(),
+            );
+            Err(Box::new(e))
+        }
+    }
+}
+
 fn warm_err_to_wire(e: &io::Error) -> Box<ErrorBody> {
     if e.kind() == io::ErrorKind::InvalidData {
         let mut err = ErrorBody::new(ErrorCode::InvalidUtf8);
@@ -2228,6 +2264,25 @@ mod hello_config_grade_tests {
                 "workspace": ws.to_str().unwrap(),
             }))
         }
+
+        /// Retry `toc path` until the drawer lands — the §3.2 retry
+        /// discipline a client runs against `corpus_warming`. Bounded, loud
+        /// on expiry; any non-warming refusal fails immediately.
+        fn toc_until_warm(&mut self, path: &str) -> Value {
+            for _ in 0..400 {
+                let response = self.call(&json!({"op": "toc", "path": path}));
+                if response["ok"] == json!(true) {
+                    return response;
+                }
+                assert_eq!(
+                    response["error"]["code"],
+                    json!("corpus_warming"),
+                    "only the warming refusal is retryable here: {response}"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            panic!("drawer did not land within 2s");
+        }
     }
 
     #[test]
@@ -2244,19 +2299,23 @@ mod hello_config_grade_tests {
         let (release_tx, release_rx) = mpsc::channel();
         *server.registry().pause_before_insert.lock().unwrap() = Some((arrived_tx, release_rx));
 
-        // Connection A: hello binds at config cost; its `toc` pays the cold
-        // build and parks at the gate.
-        let socket = server.socket_path().to_path_buf();
-        let ws_a = ws.clone();
-        let a = std::thread::spawn(move || {
-            let mut conn = Conn::open(&socket);
-            let hi = conn.hello(&ws_a);
-            assert_eq!(hi["ok"], json!(true), "A's hello binds: {hi}");
-            conn.call(&json!({"op": "toc", "path": "a.md"}))
-        });
+        // Connection A: hello binds at config cost; its `toc` kicks the
+        // cold build into the BACKGROUND and refuses `corpus_warming`
+        // (§3.2) — the kicked build parks at the gate.
+        let mut a = Conn::open(server.socket_path());
+        a.set_read_timeout(Duration::from_secs(10));
+        let hi = a.hello(&ws);
+        assert_eq!(hi["ok"], json!(true), "A's hello binds: {hi}");
+        let toc = a.call(&json!({"op": "toc", "path": "a.md"}));
+        assert_eq!(toc["ok"], json!(false), "A's cold toc refuses: {toc}");
+        assert_eq!(
+            toc["error"]["code"],
+            json!("corpus_warming"),
+            "the refusal names the drawer's state, not a timeout guess: {toc}"
+        );
         arrived_rx.recv().expect("the cold build reached the gate");
 
-        // Connection B, same workspace, while A's build is parked: hello
+        // Connection B, same workspace, while the build is parked: hello
         // answers — and cold (nothing inserted yet), so no `fingerprint`.
         // Before the config-grade law this assertion failed two ways: a
         // second inline warm produced a fingerprint, and a hello serialized
@@ -2272,11 +2331,11 @@ mod hello_config_grade_tests {
         );
 
         release_tx.send(()).expect("release the parked build");
-        let toc = a.join().expect("connection A completes");
+        let toc = a.toc_until_warm("a.md");
         assert_eq!(
             toc["ok"],
             json!(true),
-            "A's read lands after release: {toc}"
+            "A's retried read lands after release: {toc}"
         );
 
         server.shutdown();
@@ -2302,13 +2361,11 @@ mod hello_config_grade_tests {
         std::fs::write(other.join("b.md"), "# B\n").unwrap();
         let server = RunningServer::start(test_config(&tmp)).unwrap();
 
-        // Warm ws so a resident engine exists to read.
+        // Warm ws so a resident engine exists to read (§3.2: the cold toc
+        // kicks a background build and refuses warming until it lands).
         let mut warmer = Conn::open(server.socket_path());
         assert_eq!(warmer.hello(&ws)["ok"], json!(true));
-        assert_eq!(
-            warmer.call(&json!({"op": "toc", "path": "a.md"}))["ok"],
-            json!(true)
-        );
+        assert_eq!(warmer.toc_until_warm("a.md")["ok"], json!(true));
 
         let registry = server.registry();
         let canonical = workspace::canonicalize(&ws).unwrap();
@@ -2355,5 +2412,118 @@ mod hello_config_grade_tests {
         });
 
         server.shutdown();
+    }
+}
+
+/// §3.2 cold-read law (post-promote-corpus-warm): a cold workspace's read
+/// door refuses `corpus_warming` at config cost while the drawer rebuilds in
+/// the background — a rebuilding drawer must never read as a hung product
+/// while `hello`/`mounts` stay green (dogfood 2026-08-16: post-install
+/// restart, every corpus read blocked 5–8 min; a `toc` timed out at 20 s
+/// twice while `roots` answered in milliseconds).
+#[cfg(test)]
+mod cold_read_door_tests {
+    use super::warm_engine_read;
+    use crate::registry::{ColdGate, Registry};
+    use crate::state::StateStore;
+    use std::fs::{create_dir_all, write};
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    /// Daemon-shaped registry: self-handle bound, background rebuilds live.
+    fn registry_shared_in(home: &Path) -> Arc<Registry> {
+        let cache_root = home.join("cache");
+        create_dir_all(&cache_root).unwrap();
+        Registry::new_shared(
+            StateStore::new(home.join("state.json")),
+            cache_root,
+            Vec::new(),
+        )
+    }
+
+    fn write_ws(home: &Path, files: &[(&str, &str)]) -> PathBuf {
+        let ws = home.join("ws");
+        create_dir_all(&ws).unwrap();
+        for (rel, content) in files {
+            let path = ws.join(rel);
+            if let Some(parent) = path.parent() {
+                create_dir_all(parent).unwrap();
+            }
+            write(path, content).unwrap();
+        }
+        ws
+    }
+
+    /// Bounded spin until the drawer lands; loud instead of hung on a bug.
+    fn wait_serve(reg: &Registry, ws: &Path) {
+        for _ in 0..400 {
+            if reg.cold_gate(ws).unwrap() == ColdGate::Serve {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("drawer rebuild did not land within 2s");
+    }
+
+    /// The dogfood shape, modeled without a live daemon: a rebuild too long
+    /// for the kicker's bounded wait (the parked builder stands in for the
+    /// 5–8 min build) REFUSES `corpus_warming`/retry instead of blocking;
+    /// once the drawer lands, the same read serves.
+    #[test]
+    fn cold_read_refuses_corpus_warming_then_serves() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_shared_in(home.path());
+        let ws = write_ws(home.path(), &[("a.md", "# A\n"), ("b.md", "# B\n")]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+
+        // Park the background builder: this drawer rebuild outlives the
+        // kicker's bounded wait, like the dogfood corpus did.
+        let (arrived_tx, arrived) = std::sync::mpsc::channel();
+        let (release, release_rx) = std::sync::mpsc::channel();
+        *reg.pause_before_insert.lock().unwrap() = Some((arrived_tx, release_rx));
+
+        let err = warm_engine_read(&reg, &canonical, |engine| Ok(engine.docs.len()))
+            .expect_err("a cold workspace's long rebuild refuses instead of blocking");
+        arrived.recv().expect("the kicked builder is mid-rebuild");
+        assert_eq!(
+            err.code,
+            wire::ErrorCode::CorpusWarming,
+            "the refusal names the drawer's state"
+        );
+        assert_eq!(
+            err.recovery,
+            wire::Recovery::Retry,
+            "warming is transient by construction — the same request serves once warm"
+        );
+
+        release.send(()).expect("release the parked builder");
+        wait_serve(&reg, &canonical);
+        let docs = warm_engine_read(&reg, &canonical, |engine| Ok(engine.docs.len()))
+            .expect("the drawer landed — the same read now serves");
+        assert_eq!(docs, 2, "the background build parsed the real corpus");
+    }
+
+    /// A failed rebuild reaches the door as `io_error{cause}` (env) — the
+    /// fast failure lands inside the kicker's bounded wait, so the kicking
+    /// read itself carries the cause. Warming never masks a broken corpus.
+    #[test]
+    fn failed_background_rebuild_surfaces_io_error_at_the_door() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_shared_in(home.path());
+        let ws = write_ws(home.path(), &[("a.md", "# A\n")]);
+        // Two domain configs present — the one deterministic warm refusal.
+        write(ws.join("mdfs_config.yaml"), "ignore: []\n").unwrap();
+        create_dir_all(ws.join("meridian")).unwrap();
+        write(ws.join("meridian/domain.md"), "# Domain\n").unwrap();
+        let canonical = workspace::canonicalize(&ws).unwrap();
+
+        let err = warm_engine_read(&reg, &canonical, |engine| Ok(engine.docs.len()))
+            .expect_err("the kicking read absorbs the fast failure");
+        assert_eq!(err.code, wire::ErrorCode::IoError);
+        assert!(
+            err.cause.as_deref().is_some_and(|cause| !cause.is_empty()),
+            "the refusal carries the rebuild's own cause"
+        );
     }
 }
