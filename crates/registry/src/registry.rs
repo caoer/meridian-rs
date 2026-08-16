@@ -1708,6 +1708,74 @@ mod engine_tests {
         );
     }
 
+    /// Card step 3 / quality gate (bug-cookie-newdir-false-seen): a member
+    /// created inside a brand-new directory in the admitted arming window
+    /// cannot produce a vouched stale overlay. `currency_refresh` must return
+    /// `vouched=false` and a root equal to a fresh-cache oracle.
+    ///
+    /// Quiet already-watched tree still `Seen` (the vouched baseline above
+    /// the mkdir) — the cookie law is unchanged for a tree the watch already
+    /// covers. Linux-only: this is the inotify arming gap (19/20 miss on
+    /// the unfixed tree); Darwin `FSEvents` did not exhibit it (0/20).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_new_directory_child_before_arm_cannot_vouch_a_stale_overlay() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(home.path(), &[("a.md", "# A\n"), ("b.md", "# B\n")]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.register(&canonical);
+
+        // Cold floor, then a quiet vouched baseline — Trusted overlay.
+        let (root_cold, vouched_cold) = reg
+            .currency_refresh(&canonical, Duration::from_secs(10))
+            .unwrap();
+        assert!(!vouched_cold);
+        let (root_quiet, vouched_quiet) = reg
+            .currency_refresh(&canonical, Duration::from_secs(10))
+            .unwrap();
+        assert!(vouched_quiet, "quiet already-watched tree still Sees");
+        assert_eq!(root_quiet, root_cold);
+
+        // The constructed failure: create new/ and immediately new/x.md
+        // before the sub-watch arms (notify 8.2.0 inotify `add_watch_by_event`
+        // collects, then the loop arms after the batch).
+        fs::create_dir(canonical.join("new")).unwrap();
+        fs::write(canonical.join("new/x.md"), "# X\n").unwrap();
+
+        // The parent create is delivered; the child may not be. Wait for
+        // the named doubt the parent must raise, then refresh.
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(10) {
+            if reg.feed_stats(&canonical).is_some_and(|s| s.all_dirty) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            reg.feed_stats(&canonical).is_some_and(|s| s.all_dirty),
+            "the directory create must mark doubt: {:?}",
+            reg.feed_stats(&canonical)
+        );
+
+        let (root, vouched) = reg
+            .currency_refresh(&canonical, Duration::from_secs(10))
+            .unwrap();
+        eprintln!(
+            "fixture vouched={vouched} root==quiet={}",
+            root == root_quiet
+        );
+        assert!(
+            !vouched,
+            "a new-directory arming gap is named doubt, never a vouched old root"
+        );
+        let oracle = ::fs::DomainCache::new()
+            .root(&::fs::WorkspaceRoot(canonical.clone()))
+            .unwrap();
+        assert_eq!(root, oracle, "the unvouched floor includes the new member");
+        assert_ne!(root, root_quiet, "the new member moved the root");
+    }
+
     /// The §6.3 instance binding across a reap (kimi D3): the borrow binds
     /// the stamp plane to the live ring epoch; the reap kills the ring; the
     /// next live epoch re-binds the plane under its OWN instance — so every
