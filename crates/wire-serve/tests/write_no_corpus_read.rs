@@ -136,7 +136,7 @@ fn assert_no_fold(label: &str, before: u64) {
     );
 }
 
-/// Every guarded door — create, splice, splice.set, lock_write, remove
+/// Every guarded door — create, splice, `splice.set`, `lock_write`, remove
 /// (cold and warm), domain-config — runs zero `domain_snapshot` passes.
 /// The oracle cross-check (an explicit `ambient_root` full fold) runs
 /// OUTSIDE the measured windows and proves the last served token still
