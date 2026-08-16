@@ -12,22 +12,38 @@
 //! - `actor` — every honest sync issued by the dedicated durability actor
 //!   (Team B's shape). Wired to `crates/fs` when the actor lands.
 //!
+//! The `real` family drives the ENGINE's publish path (`wire_serve::publish`)
+//! rather than a synthesized commit: `bench-real` measures one (destinations,
+//! writers) cell with the caller's staging sync, the receipt's durability
+//! interval, and its metadata interval reported as SEPARATE figures;
+//! `receipt-real` provides the `fs_usage` attach window so honest syncs per
+//! transaction are counted at the syscall boundary (the 6D+4 cross-check).
+//!
 //! Subcommands:
 //!   baseline <dir> [iters]            three sync classes, one 4 KiB file
-//!   bench <dir> <mode> <writers> <iters>   one matrix cell
+//!   bench <dir> <mode> <writers> <iters>   one synthesized-commit cell
 //!   receipt <dir> <mode> <iters>      pid + attach window for `fs_usage`
+//!   bench-real <dir> <dests> <writers> <iters>   one engine-path cell
+//!   receipt-real <dir> <dests> <iters>           engine-path count window
 //!
 //! Percentiles ride `perfsuite::measure::LatencyRun` — the one instrument.
 
 use std::fs::File;
 use std::io::Write as _;
 use std::os::fd::AsRawFd as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::Barrier;
+use std::sync::{Arc, Barrier};
 use std::time::{Duration, Instant};
 
+use ::fs::WorkspaceRoot;
+use ::fs::intent::Policy;
 use perfsuite::measure::LatencyRun;
+use wire::Root;
+use wire_serve::authority::AuthorityEpoch;
+use wire_serve::publish::{
+    DestImage, Region, RegionKind, ReservationTable, StagedTxn, StateOwner, TxnId, publish,
+};
 
 const WRITE_SIZE: usize = 4096;
 const WARMUP_ITERS: u32 = 20;
@@ -38,15 +54,27 @@ fn main() -> ExitCode {
     let result = match strs.as_slice() {
         ["baseline", dir] => baseline(Path::new(dir), 1000),
         ["baseline", dir, iters] => baseline(Path::new(dir), parse(iters)),
+        ["premise", dir, pairs] => premise(Path::new(dir), parse(pairs), WRITE_SIZE),
+        ["premise", dir, pairs, payload] => {
+            premise(Path::new(dir), parse(pairs), parse(payload) as usize)
+        }
         ["bench", dir, mode, writers, iters] => {
             bench(Path::new(dir), mode, parse(writers), parse(iters))
         }
         ["receipt", dir, mode, iters] => receipt(Path::new(dir), mode, parse(iters)),
+        ["bench-real", dir, dests, writers, iters] => {
+            bench_real(Path::new(dir), parse(dests), parse(writers), parse(iters))
+        }
+        ["receipt-real", dir, dests, iters] => {
+            receipt_real(Path::new(dir), parse(dests), parse(iters))
+        }
         _ => {
             eprintln!(
                 "usage: hdb-durability baseline <dir> [iters]\n       \
                  hdb-durability bench <dir> today|naive|actor <writers> <iters>\n       \
-                 hdb-durability receipt <dir> today|naive|actor <iters>"
+                 hdb-durability receipt <dir> today|naive|actor <iters>\n       \
+                 hdb-durability bench-real <dir> <dests> <writers> <iters>\n       \
+                 hdb-durability receipt-real <dir> <dests> <iters>"
             );
             return ExitCode::from(2);
         }
@@ -99,44 +127,182 @@ impl Mode {
 // baseline — the sync classes, single file, single thread
 // ---------------------------------------------------------------------------
 
-/// Re-measure the pinned probe on THIS host: 4 KiB overwrite then one sync,
-/// three classes — plain `fsync(2)` (drive-cache), `fs::honest_sync`
-/// (`F_FULLFSYNC` on macOS), and std `File::sync_all` (empirically the honest
-/// class on macOS too — the receipt run proves it at the kernel).
+/// Re-measure the pinned probe on THIS host, PAIRED (gate item 5 as amended):
+/// all three classes sampled inside ONE iteration, each on its own fd with a
+/// fresh 4 KiB write immediately before the measured call, order rotating per
+/// iteration so no class always goes first. Pairs share machine conditions,
+/// so the per-pair honest/cheap ratio survives host noise the absolute level
+/// does not (reference: results/instrument-evidence/paired_push.rs).
 fn baseline(dir: &Path, iters: u32) -> std::io::Result<()> {
-    let path = dir.join(format!("hdb-baseline-{}.dat", std::process::id()));
-    let mut file = File::create(&path)?;
-    let buf = vec![b'x'; WRITE_SIZE];
-
     let classes: [(&str, ContentSync); 3] = [
         ("fsync(2) direct", plain_fsync),
         ("fs::honest_sync", ::fs::honest_sync),
         ("File::sync_all", sync_all_file),
     ];
+    let mut files: Vec<File> = Vec::new();
+    let mut paths = Vec::new();
+    for i in 0..classes.len() {
+        let path = dir.join(format!("hdb-baseline-{}-{i}.dat", std::process::id()));
+        files.push(File::create(&path)?);
+        paths.push(path);
+    }
+    let buf = vec![b'x'; WRITE_SIZE];
+    let load_before = loadavg();
+
+    let mut runs: Vec<LatencyRun> = classes.iter().map(|_| LatencyRun::new()).collect();
+    // Per-pair honest/cheap ratios (x1000), computed inside the iteration —
+    // percentile by sorted index, mirroring the advisor's reference
+    // instrument (paired_push.rs), not a second latency instrument.
+    let mut ratios: Vec<u128> = Vec::with_capacity(iters as usize);
+    for iter in 0..(WARMUP_ITERS + iters) {
+        let mut elapsed = [0u128; 3];
+        for k in 0..classes.len() {
+            let c = (iter as usize + k) % classes.len(); // rotate order per iteration
+            files[c].write_all(&buf)?;
+            let t = Instant::now();
+            classes[c].1(&files[c])?;
+            elapsed[c] = t.elapsed().as_nanos();
+        }
+        if iter >= WARMUP_ITERS {
+            for (c, run) in runs.iter_mut().enumerate() {
+                run.record(Duration::from_nanos(
+                    u64::try_from(elapsed[c]).unwrap_or(u64::MAX),
+                ));
+            }
+            ratios.push(elapsed[1] * 1000 / elapsed[0].max(1)); // honest_sync / fsync(2)
+        }
+    }
+    let load_after = loadavg();
 
     println!(
-        "baseline: {iters} iters x {WRITE_SIZE} B overwrite+sync, file {}",
-        path.display()
+        "baseline PAIRED: {iters} iters x {WRITE_SIZE} B fresh write + sync per class per iteration, dir {}",
+        dir.display()
     );
+    println!("load_avg before {load_before} after {load_after}");
     println!(
         "{:<16} {:>10} {:>10} {:>10} {:>10} {:>8}",
         "class", "p50_ms", "p95_ms", "p99_ms", "max_ms", "samples"
     );
-    for (name, sync) in classes {
-        let mut run = LatencyRun::new();
-        for _ in 0..WARMUP_ITERS {
-            file.write_all(&buf)?;
-            sync(&file)?;
-        }
-        for _ in 0..iters {
-            file.write_all(&buf)?;
-            let t = Instant::now();
-            sync(&file)?;
-            run.record(t.elapsed());
-        }
-        let d = run.dist();
+    for (i, (name, _)) in classes.iter().enumerate() {
+        let d = runs[i].dist();
         println!(
             "{name:<16} {:>10.3} {:>10.3} {:>10.3} {:>10.3} {:>8}",
+            d.p50_us / 1000.0,
+            runs[i].percentile_us(0.95) / 1000.0,
+            d.p99_us / 1000.0,
+            d.max_us / 1000.0,
+            runs[i].samples()
+        );
+    }
+    ratios.sort_unstable();
+    println!(
+        "per_pair_ratio honest/fsync x1000: p50={} p90={} p99={} min={} max={}",
+        pct(&ratios, 50),
+        pct(&ratios, 90),
+        pct(&ratios, 99),
+        ratios.first().copied().unwrap_or(0),
+        ratios.last().copied().unwrap_or(0)
+    );
+    for p in paths {
+        std::fs::remove_file(p)?;
+    }
+    Ok(())
+}
+
+/// Sorted-index percentile for the per-pair ratio vectors — the advisor's
+/// reference method (`paired_push.rs` `nr`), kept for ratios only; latency
+/// percentiles all ride [`LatencyRun`].
+fn pct(v: &[u128], q: usize) -> u128 {
+    if v.is_empty() {
+        return 0;
+    }
+    v[((v.len() * q).div_ceil(100)).clamp(1, v.len()) - 1]
+}
+
+/// The 1/5/15-minute load averages, printed beside every measured table
+/// (gate item 5 as amended: report the load observed during the run).
+fn loadavg() -> String {
+    let mut avg = [0f64; 3];
+    // SAFETY: getloadavg fills up to 3 doubles of a valid, owned buffer.
+    let n = unsafe { libc::getloadavg(avg.as_mut_ptr(), 3) };
+    if n <= 0 {
+        return "unavailable".to_owned();
+    }
+    format!("{:.2} {:.2} {:.2}", avg[0], avg[1], avg[2])
+}
+
+/// The criterion-1 premise experiment: does a cheap `fsync(2)` push actually
+/// move bytes to the DEVICE, so a later barrier need not carry the writeout?
+/// Per pair, alternating order: arm P writes `payload`, cheap-pushes it, then
+/// times `F_FULLFSYNC`; arm D writes the same payload to its own fd and times
+/// `F_FULLFSYNC` directly (the barrier carries the writeout). Indistinguishable
+/// barriers would mean the cheap push buys nothing and the actor's
+/// group-commit premise fails — reported either way.
+fn premise(dir: &Path, pairs: u32, payload: usize) -> std::io::Result<()> {
+    let path_p = dir.join(format!("hdb-premise-p-{}.dat", std::process::id()));
+    let path_d = dir.join(format!("hdb-premise-d-{}.dat", std::process::id()));
+    let mut fp = File::create(&path_p)?;
+    let mut fd = File::create(&path_d)?;
+    let buf = vec![b'x'; payload];
+    let load_before = loadavg();
+
+    let mut push_run = LatencyRun::new();
+    let mut barrier_pushed_run = LatencyRun::new();
+    let mut settle_run = LatencyRun::new();
+    let mut barrier_dirty_run = LatencyRun::new();
+    let mut ratios: Vec<u128> = Vec::with_capacity(pairs as usize);
+
+    for iter in 0..(WARMUP_ITERS + pairs) {
+        let arm_p = |fp: &mut File| -> std::io::Result<(Duration, Duration)> {
+            fp.write_all(&buf)?;
+            let t0 = Instant::now();
+            plain_fsync(fp)?;
+            let push = t0.elapsed();
+            let t1 = Instant::now();
+            ::fs::honest_sync(fp)?;
+            Ok((push, t1.elapsed()))
+        };
+        let arm_d = |fd: &mut File| -> std::io::Result<Duration> {
+            fd.write_all(&buf)?;
+            let t = Instant::now();
+            ::fs::honest_sync(fd)?;
+            Ok(t.elapsed())
+        };
+        let ((push, barrier_pushed), barrier_dirty) = if iter % 2 == 0 {
+            let p = arm_p(&mut fp)?;
+            (p, arm_d(&mut fd)?)
+        } else {
+            let d = arm_d(&mut fd)?;
+            (arm_p(&mut fp)?, d)
+        };
+        if iter >= WARMUP_ITERS {
+            push_run.record(push);
+            barrier_pushed_run.record(barrier_pushed);
+            settle_run.record(push + barrier_pushed);
+            barrier_dirty_run.record(barrier_dirty);
+            ratios.push(barrier_dirty.as_nanos() * 1000 / barrier_pushed.as_nanos().max(1));
+        }
+    }
+    let load_after = loadavg();
+
+    println!(
+        "premise PAIRED: {pairs} pairs x {payload} B payload per arm per iteration, dir {}",
+        dir.display()
+    );
+    println!("load_avg before {load_before} after {load_after}");
+    println!(
+        "{:<24} {:>10} {:>10} {:>10} {:>10} {:>8}",
+        "figure", "p50_ms", "p95_ms", "p99_ms", "max_ms", "samples"
+    );
+    for (name, run) in [
+        ("cheap_push fsync(2)", &push_run),
+        ("barrier_after_push", &barrier_pushed_run),
+        ("batch_settle push+bar", &settle_run),
+        ("barrier_with_writeout", &barrier_dirty_run),
+    ] {
+        let d = run.dist();
+        println!(
+            "{name:<24} {:>10.3} {:>10.3} {:>10.3} {:>10.3} {:>8}",
             d.p50_us / 1000.0,
             run.percentile_us(0.95) / 1000.0,
             d.p99_us / 1000.0,
@@ -144,7 +310,17 @@ fn baseline(dir: &Path, iters: u32) -> std::io::Result<()> {
             run.samples()
         );
     }
-    std::fs::remove_file(&path)?;
+    ratios.sort_unstable();
+    println!(
+        "per_pair_ratio dirty/pushed x1000: p50={} p90={} p99={} min={} max={}",
+        pct(&ratios, 50),
+        pct(&ratios, 90),
+        pct(&ratios, 99),
+        ratios.first().copied().unwrap_or(0),
+        ratios.last().copied().unwrap_or(0)
+    );
+    std::fs::remove_file(&path_p)?;
+    std::fs::remove_file(&path_d)?;
     Ok(())
 }
 
@@ -321,5 +497,197 @@ fn receipt(dir: &Path, mode: &str, iters: u32) -> std::io::Result<()> {
         "done: {iters} commits, expected honest-class syncs on macOS = {iters} (content) + {iters} (dir)"
     );
     let _ = std::fs::remove_file(&dst);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// the real engine path — wire_serve::publish, D destinations per transaction
+// ---------------------------------------------------------------------------
+
+/// One transaction's timings on the real path, all reported separately:
+/// the caller's staging syncs, the receipt's durability interval (`decide`),
+/// its metadata interval (`rename_all`), and the whole-transaction wall.
+struct RealLatency {
+    stage: Vec<Duration>,
+    durability: Duration,
+    metadata: Duration,
+    wall: Duration,
+}
+
+/// A writer's private lane in the shared workspace: its destination files
+/// and the last bytes each is known to hold (`reverify` compares against
+/// these, so tracking them in memory keeps reads out of the timed window).
+struct Lane {
+    rels: Vec<String>,
+    cur: Vec<Vec<u8>>,
+}
+
+fn lane_setup(ws: &Path, writer: u32, dests: u32) -> std::io::Result<Lane> {
+    let sub = ws.join(format!("w{writer}"));
+    std::fs::create_dir_all(&sub)?;
+    let mut rels = Vec::new();
+    let mut cur = Vec::new();
+    for d in 0..dests {
+        let rel = format!("w{writer}/d{d}.md");
+        let initial = vec![b'0'; WRITE_SIZE];
+        std::fs::write(ws.join(&rel), &initial)?;
+        rels.push(rel);
+        cur.push(initial);
+    }
+    Ok(Lane { rels, cur })
+}
+
+/// Stage this iteration's D temps (each written then honest-synced, the
+/// caller's half of the publish contract), publish through the REAL
+/// `wire_serve::publish`, and return the separated timings.
+fn real_txn_once(
+    root: &WorkspaceRoot,
+    table: &Arc<ReservationTable>,
+    owner: &StateOwner,
+    lane: &mut Lane,
+    iter: u32,
+) -> std::io::Result<RealLatency> {
+    let t_wall = Instant::now();
+    let mut stage = Vec::with_capacity(lane.rels.len());
+    let mut dests = Vec::with_capacity(lane.rels.len());
+    let mut writes = Vec::with_capacity(lane.rels.len());
+    let new = vec![b'a' + u8::try_from(iter % 26).expect("mod 26 fits"); WRITE_SIZE];
+    for (d, rel) in lane.rels.iter().enumerate() {
+        let dst = root.0.join(rel);
+        let tmp = dst.with_extension("tmp-pub");
+        std::fs::write(&tmp, &new)?;
+        let t = Instant::now();
+        ::fs::honest_sync_path(&tmp)?;
+        stage.push(t.elapsed());
+        dests.push(DestImage {
+            rel: PathBuf::from(rel),
+            old: lane.cur[d].clone(),
+            new: new.clone(),
+            tmp,
+        });
+        writes.push(Region::file("c", rel.as_bytes(), RegionKind::Write));
+    }
+    let txn = StagedTxn {
+        txn: TxnId::mint()?,
+        epoch: AuthorityEpoch(1),
+        reads: Vec::new(),
+        writes,
+        dests,
+        files: Vec::new(),
+        actor: None,
+        now: None,
+        policy: Policy::Restore,
+        drop_tmp_after_decide: false,
+    };
+    let rec = publish(root, table, owner, txn, |r| Root(r.0.clone()))
+        .map_err(|e| std::io::Error::other(format!("publish: {e:?}")))?;
+    let wall = t_wall.elapsed();
+    for cur in &mut lane.cur {
+        cur.clone_from(&new);
+    }
+    Ok(RealLatency {
+        stage,
+        durability: rec.durability_end.duration_since(rec.durability_start),
+        metadata: rec.metadata_end.duration_since(rec.metadata_start),
+        wall,
+    })
+}
+
+/// One engine-path cell: `writers` concurrent threads, each publishing
+/// `iters` transactions of `dests` destinations through the shared
+/// reservation table and state owner. Staging sync, durability interval,
+/// metadata interval, and transaction wall are printed as separate figures.
+fn bench_real(dir: &Path, dests: u32, writers: u32, iters: u32) -> std::io::Result<()> {
+    let ws = dir.join(format!("hdb-real-{}", std::process::id()));
+    std::fs::create_dir_all(&ws)?;
+    let root = WorkspaceRoot(ws.clone());
+    let table = ReservationTable::new();
+    let owner = StateOwner::new(Root("hdb".into()));
+    let load_before = loadavg();
+
+    let start = Barrier::new(writers as usize);
+    let mut per_writer: Vec<Vec<RealLatency>> = Vec::new();
+    std::thread::scope(|scope| -> std::io::Result<()> {
+        let mut handles = Vec::new();
+        for w in 0..writers {
+            let (root, table, owner, start) = (&root, &table, &owner, &start);
+            handles.push(scope.spawn(move || -> std::io::Result<Vec<RealLatency>> {
+                let mut lane = lane_setup(&root.0, w, dests)?;
+                for i in 0..WARMUP_ITERS {
+                    real_txn_once(root, table, owner, &mut lane, i)?;
+                }
+                start.wait();
+                let mut out = Vec::with_capacity(iters as usize);
+                for i in 0..iters {
+                    out.push(real_txn_once(root, table, owner, &mut lane, i)?);
+                }
+                Ok(out)
+            }));
+        }
+        for h in handles {
+            per_writer.push(h.join().expect("writer thread panicked")?);
+        }
+        Ok(())
+    })?;
+    let load_after = loadavg();
+
+    let mut stage_run = LatencyRun::new();
+    let mut durability_run = LatencyRun::new();
+    let mut metadata_run = LatencyRun::new();
+    let mut wall_run = LatencyRun::new();
+    for txn in per_writer.iter().flatten() {
+        for s in &txn.stage {
+            stage_run.record(*s);
+        }
+        durability_run.record(txn.durability);
+        metadata_run.record(txn.metadata);
+        wall_run.record(txn.wall);
+    }
+    println!(
+        "cell-real dests={dests} writers={writers} iters={iters} txns={} load_before=[{load_before}] load_after=[{load_after}]",
+        wall_run.samples()
+    );
+    for (name, run) in [
+        ("stage_sync (per barrier)", &stage_run),
+        ("durability (decide)", &durability_run),
+        ("metadata (rename_all)", &metadata_run),
+        ("txn_wall", &wall_run),
+    ] {
+        let d = run.dist();
+        println!(
+            "  {name:<26} p50_ms={:.3} p99_ms={:.3} max_ms={:.3} samples={}",
+            d.p50_us / 1000.0,
+            d.p99_us / 1000.0,
+            d.max_us / 1000.0,
+            run.samples()
+        );
+    }
+    std::fs::remove_dir_all(&ws)?;
+    Ok(())
+}
+
+/// The engine-path count window: pid + 3 s attach for `fs_usage`, then
+/// `iters` single-writer transactions at `dests` destinations, so honest
+/// syncs per transaction are counted at the syscall boundary and
+/// cross-checked against the published 6D+4.
+fn receipt_real(dir: &Path, dests: u32, iters: u32) -> std::io::Result<()> {
+    let ws = dir.join(format!("hdb-real-receipt-{}", std::process::id()));
+    std::fs::create_dir_all(&ws)?;
+    let root = WorkspaceRoot(ws.clone());
+    let table = ReservationTable::new();
+    let owner = StateOwner::new(Root("hdb".into()));
+    println!("pid={} dests={dests} iters={iters}", std::process::id());
+    std::io::stdout().flush()?;
+    std::thread::sleep(Duration::from_secs(3));
+
+    let mut lane = lane_setup(&ws, 0, dests)?;
+    for i in 0..iters {
+        real_txn_once(&root, &table, &owner, &mut lane, i)?;
+    }
+    println!(
+        "done: {iters} transactions x {dests} dests, 6D+4 cross-check target = {} syncs/txn",
+        6 * dests + 4
+    );
+    std::fs::remove_dir_all(&ws)?;
     Ok(())
 }

@@ -2408,6 +2408,8 @@ dependencies = [
  "syntax",
  "toml",
  "transport",
+ "wire",
+ "wire-serve",
 ]
 
 [[package]]
