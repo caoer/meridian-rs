@@ -31,6 +31,7 @@ fn produce(root: &WorkspaceRoot, path: &str, body: &str) {
 /// write (flock, CAS, armed gate, receipt), which advances the tree root.
 fn splice_through_the_write_path(root: &WorkspaceRoot, path: &str, old: &str, new: &str) {
     let args = SpliceArgs {
+        premises: Vec::new(),
         id: None,
         origin: wire_serve::guard::Origin::InProcess,
         path: WirePath(path.to_string()),

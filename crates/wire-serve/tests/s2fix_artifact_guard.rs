@@ -38,6 +38,7 @@ fn workspace() -> (tempfile::TempDir, fs::WorkspaceRoot) {
 
 fn args_for(path: &str, actor: Option<&str>, edits: Vec<Edit>, pin: Option<PinSpec>) -> SpliceArgs {
     SpliceArgs {
+        premises: Vec::new(),
         id: None,
         origin: wire_serve::guard::Origin::InProcess,
         path: WPath(path.into()),

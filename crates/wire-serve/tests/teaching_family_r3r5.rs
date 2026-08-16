@@ -44,6 +44,7 @@ fn hpath(segs: &[&str]) -> SecRef {
 
 fn args_for(path: String, target: SecRef) -> SpliceArgs {
     SpliceArgs {
+        premises: Vec::new(),
         id: None,
         origin: wire_serve::guard::Origin::InProcess,
         path: WPath(path),

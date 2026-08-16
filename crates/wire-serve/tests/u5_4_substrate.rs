@@ -275,6 +275,7 @@ fn close_edits() -> Vec<Edit> {
 
 fn close_args(edits: Vec<Edit>) -> SpliceArgs {
     SpliceArgs {
+        premises: Vec::new(),
         id: Some(7),
         origin: wire_serve::guard::Origin::InProcess,
         path: WPath("card.md".to_string()),

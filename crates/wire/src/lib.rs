@@ -2149,6 +2149,19 @@ pub enum ErrorCode {
     /// past your token" demand different acts. Resync. Message:
     /// [`version_unsupported_teaching`].
     FingerprintVersionUnsupported,
+    /// §5.5/§8.2 (scoped-guard family, amended 2026-08-15): the write carries
+    /// premises and some caller-authored target has none whose scope is
+    /// ancestor-or-self of it. Distinct from `guard_required` (NO premise at
+    /// all — A.1). Extras: `path` + `uncovered` (the uncovered target set,
+    /// display form) + `message` (§8.2 register text). Fix class — add a
+    /// premise at each uncovered target's file or an ancestor.
+    ScopeDoesNotCover,
+    /// §5.6/§5.7 (scoped-guard family, amended 2026-08-15): the premise
+    /// cannot be evaluated at that path — it escapes the workspace, names a
+    /// file/dir kind conflict with an existing entry, or is not encodable.
+    /// Lawful absence is NEVER this error (it mints the reserved value
+    /// `absent`). Extras: `scope` + `message`. Fix class — fix the path.
+    ScopeUnresolved,
     /// v2 §8: transient lock contention — same request may succeed.
     LockTimeout,
     /// v2 §10.2: a `require_root` demand the current world does not meet —
@@ -2257,7 +2270,9 @@ impl ErrorCode {
             | ErrorCode::ReadMintRequired
             | ErrorCode::PinTargetMissing
             | ErrorCode::GuardRequired
-            | ErrorCode::RemoveRefused => Recovery::Fix,
+            | ErrorCode::RemoveRefused
+            | ErrorCode::ScopeDoesNotCover
+            | ErrorCode::ScopeUnresolved => Recovery::Fix,
             ErrorCode::FileNotFound
             | ErrorCode::IoError
             | ErrorCode::InvalidUtf8
@@ -2308,6 +2323,55 @@ pub fn version_unsupported_teaching(scope: &str) -> String {
          scope (fingerprint{{scope: \"{scope}\"}}) to proceed under the \
          serving law; to keep the newer tokens, upgrade the engine, not the \
          token."
+    )
+}
+
+/// The §8.2 register-law teaching for a SCOPED `fingerprint_mismatch` —
+/// Appendix C (k3's F-12 redrafted form) byte-for-byte, slots filled. The
+/// root-premise mismatch never uses this: its refusal stays byte-identical
+/// to v2 (§5.1).
+#[must_use]
+pub fn scoped_mismatch_teaching(scope: &str, expected: &str, actual: &str) -> String {
+    format!(
+        "the premise at {scope} moved — expected {expected}, live is {actual}. \
+         Re-read under {scope} and re-plan. This refusal is about this premise \
+         only; it says nothing about what else was or was not checked."
+    )
+}
+
+/// The §8.2 register-law teaching for a scoped `fingerprint_mismatch` whose
+/// LIVE side is lawful absence (`absent` as actual) — the scope had a token
+/// when the caller planned and has no node now.
+#[must_use]
+pub fn scoped_absent_actual_teaching(scope: &str) -> String {
+    format!(
+        "the scope {scope} had a token when you planned and has no node now — \
+         it was emptied or removed. Re-read the parent and re-plan."
+    )
+}
+
+/// The §8.2 register-law teaching for `scope_does_not_cover` — `uncovered`
+/// pre-joined in display form, `dir` the first uncovered target's parent (the
+/// fitted mint example).
+#[must_use]
+pub fn scope_does_not_cover_teaching(uncovered: &str, dir: &str) -> String {
+    format!(
+        "this write touches {uncovered} and no premise covers them — a \
+         premise must cover what it guards. Add a premise at each listed \
+         target's file or an ancestor (mint: fingerprint{{scope: \"{dir}\"}}); \
+         premises beyond the cover are legal and also checked."
+    )
+}
+
+/// The §8.2 register-law teaching for `scope_unresolved` — the premise
+/// cannot be evaluated at that path; lawful absence is never this error.
+#[must_use]
+pub fn scope_unresolved_teaching(scope: &str) -> String {
+    format!(
+        "{scope} cannot hold a token — it escapes the workspace, names a \
+         file/dir kind conflict with an existing entry, or is not encodable. \
+         A lawful path that simply has no node mints \"absent\" — that is a \
+         legal premise, not this error."
     )
 }
 
@@ -2503,6 +2567,16 @@ pub struct ErrorBody {
     /// edge kind and count, path-lex sorted — the caller's unlink worklist.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub referrers: Option<Vec<Referrer>>,
+    /// `fingerprint_mismatch` on a SCOPED premise, and `scope_unresolved`
+    /// (§5.7, scoped-guard family): the premise's scope, workspace-relative.
+    /// A root-premise mismatch omits it — the bare `if_fingerprint` refusal
+    /// stays byte-identical to v2 (§5.1).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    /// `scope_does_not_cover` (§5.5): the uncovered caller-authored target
+    /// set, display form, batch order — the §8.2 text names the same set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uncovered: Option<Vec<String>>,
 }
 
 impl ErrorBody {
@@ -2536,6 +2610,8 @@ impl ErrorBody {
             new_content: None,
             new_fingerprint: None,
             referrers: None,
+            scope: None,
+            uncovered: None,
         }
     }
 

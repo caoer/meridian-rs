@@ -60,6 +60,7 @@ fn replace(
         root,
         None,
         &SpliceArgs {
+            premises: Vec::new(),
             id: None,
             origin: wire_serve::guard::Origin::InProcess,
             path: wire::Path("page.md".into()),

@@ -268,6 +268,12 @@ pub struct SpliceArgs {
     pub receipt: Option<ReceiptAddr>,
     /// The optional §5.1 world guard: refuse if the ambient root differs.
     pub if_root: Option<Root>,
+    /// The §5.4 premise list (`guards[]` + the desugared scoped sugar):
+    /// scoped and root premises beyond `if_root`, checked widest-first
+    /// against the resident tree, counted by §5.5 coverage. Empty for every
+    /// caller until the `scoped-guards` cap lands the wire decode; in-process
+    /// callers (the script door's touch set, tests) construct them directly.
+    pub premises: Vec<crate::guard::Premise>,
     /// Dry run — everything except disk (no receipt, no root advance, no Delta).
     pub dry: bool,
     /// `--force`: escape an armed binding-break / block refusal. The skip is
@@ -495,7 +501,8 @@ pub fn splice_with_mints(
     // Fingerprint-or-force, mounted here and nowhere else — post-lowering is
     // the one point both write faces reach, so native `edits` cannot walk
     // around it. Per-edit, so an empty batch (`mrd pin`) has nothing to demand.
-    // See `crate::guard`.
+    // §5.5 coverage rides inside (admission — before any per-member
+    // validation). See `crate::guard`.
     let bypassed = crate::guard::guard_batch(
         args.origin,
         args.force,
@@ -503,8 +510,18 @@ pub fn splice_with_mints(
         &args.path,
         &args.plan_edits,
         &mut effective_edits,
+        &args.premises,
+        args.if_root.is_some(),
     )?;
     let effective_edits = &effective_edits[..];
+
+    // §5.1 amendment order: coverage (above) → every supplied premise —
+    // widest-first, first failure refuses the batch whole (§5.4; the root
+    // premise sugar `if_root` was honored at door entry, byte-identical v2).
+    // Per-edit `if_node_rev` follows in the model validate below. A supplied
+    // premise is checked under `force` too — force bypasses requiredness,
+    // never a claim the caller made (the world guard's own precedent).
+    premise_guard(&door, &args.premises, &root_before)?;
 
     let (model_edits, before_facts) =
         model_edits_and_before_facts(&doc, effective_edits, &args.path)?;
@@ -861,6 +878,11 @@ pub struct SpliceSetArgs {
     pub receipt: Option<ReceiptAddr>,
     /// The §5.1 world guard — world-grain, so it covers every member.
     pub if_root: Option<Root>,
+    /// The §5.4 premise list — §5.5's set-form natural cover is each target
+    /// file's own leaf token, one premise per file. Checked once, widest
+    /// first; coverage judged per member. Empty until the `scoped-guards`
+    /// cap lands the wire decode.
+    pub premises: Vec<crate::guard::Premise>,
     pub dry: bool,
     pub force: bool,
 }
@@ -952,6 +974,10 @@ pub fn splice_set_with_cache(
     // §5.1 order: the world guard first, once — world-grain covers every
     // member (if any domain file moved, the fingerprint moved).
     world_guard(args.if_root.as_ref(), &root_before)?;
+    // §5.4 premises next, once, widest-first — wider than every member's
+    // per-edit CAS, so a failing premise skips all member work. Per-member
+    // §5.5 coverage rides each member's guard step below.
+    premise_guard(&door, &args.premises, &root_before)?;
     // §6.6 pre-flight, once per set: the anchor is resolved before any byte.
     preflight_receipt_anchor(root, args.receipt.as_ref())?;
 
@@ -1104,6 +1130,8 @@ fn validate_set_member(
         &file.path,
         &file.plan_edits,
         &mut effective_edits,
+        &args.premises,
+        args.if_root.is_some(),
     )?;
     let (model_edits, before_facts) =
         model_edits_and_before_facts(&doc, &effective_edits, &file.path)?;
@@ -3537,6 +3565,149 @@ fn world_guard(if_root: Option<&Root>, root_before: &Root) -> Result<(), Box<Err
         return Err(Box::new(e));
     }
     Ok(())
+}
+
+/// The §5.4 premise checks, widest-first (merkle-spec §7 ordering: root
+/// premises, then folders shallowest-first, then file leaves) — the first
+/// failing premise refuses the batch whole, and a failing wider premise
+/// skips narrower work. Root premises (`scope: None`) compare against
+/// `root_before` and refuse in the v2 shape (no `scope` field); scoped
+/// premises resolve through the door's resident tree ([`fs::DomainCache::
+/// scope_token`]) and their refusal carries `scope` (§5.7).
+fn premise_guard(
+    door: &WriteCacheHandle,
+    premises: &[crate::guard::Premise],
+    root_before: &Root,
+) -> Result<(), Box<ErrorBody>> {
+    if premises.is_empty() {
+        return Ok(());
+    }
+    let mut ordered: Vec<&crate::guard::Premise> = premises.iter().collect();
+    ordered.sort_by_key(|p| p.scope.as_ref().map_or(0, |s| 1 + s.components().count()));
+    for premise in ordered {
+        match &premise.scope {
+            // The root premise as a list entry: the v2 world guard verbatim.
+            None => match &premise.value {
+                crate::guard::PremiseValue::Token(t) => {
+                    world_guard(Some(&Root(t.clone())), root_before)?;
+                }
+                // `absent` at the root can never hold — the workspace tree
+                // root always exists (merkle-spec §4.2.3). Honest mismatch:
+                // the premise names a value the world does not hold.
+                crate::guard::PremiseValue::Absent => {
+                    let mut e = ErrorBody::new(ErrorCode::RootMismatch);
+                    e.expected = Some(NodeRev("absent".to_owned()));
+                    e.actual = Some(NodeRev(root_before.0.clone()));
+                    return Err(Box::new(e));
+                }
+            },
+            Some(scope) => {
+                let scope_str = scope.to_string_lossy().into_owned();
+                // Address-layer confinement, the premise analog of
+                // `path_confined`: a scope that escapes the workspace cannot
+                // hold a token — `scope_unresolved` (§5.6), never a probe
+                // outside the root.
+                if scope.is_absolute()
+                    || scope
+                        .components()
+                        .any(|c| matches!(c, std::path::Component::ParentDir))
+                {
+                    return Err(scope_unresolved(&scope_str));
+                }
+                let outcome = {
+                    let mut cache = door.cache.lock().unwrap_or_else(PoisonError::into_inner);
+                    cache.scope_token(scope)
+                };
+                match outcome {
+                    Ok(fs::ScopeToken::Token(live)) => match &premise.value {
+                        crate::guard::PremiseValue::Token(t) if *t == live.0 => {}
+                        crate::guard::PremiseValue::Token(t) => {
+                            return Err(scoped_mismatch(&scope_str, t, &live.0));
+                        }
+                        crate::guard::PremiseValue::Absent => {
+                            return Err(scoped_mismatch(&scope_str, "absent", &live.0));
+                        }
+                    },
+                    Ok(fs::ScopeToken::Absent) => match &premise.value {
+                        crate::guard::PremiseValue::Absent => {}
+                        crate::guard::PremiseValue::Token(t) => {
+                            let mut e = scoped_mismatch(&scope_str, t, "absent");
+                            e.message = Some(wire::scoped_absent_actual_teaching(&scope_str));
+                            return Err(e);
+                        }
+                    },
+                    Err(fs::ScopeTokenError::Unresolved(refusal)) => {
+                        return Err(scope_unresolved(&refusal.path));
+                    }
+                    Err(fs::ScopeTokenError::NoBaseline) => {
+                        return Err(io_refusal(
+                            "premise check before any observation — caller-order defect".to_owned(),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A scoped `fingerprint_mismatch` (§5.7): expected/actual plus the premise's
+/// `scope`, with the §8.2 register teaching. The root premise never mints
+/// this shape — its refusal stays byte-identical to v2 (§5.1).
+fn scoped_mismatch(scope: &str, expected: &str, actual: &str) -> Box<ErrorBody> {
+    let mut e = ErrorBody::new(ErrorCode::RootMismatch);
+    e.expected = Some(NodeRev(expected.to_owned()));
+    e.actual = Some(NodeRev(actual.to_owned()));
+    e.scope = Some(scope.to_owned());
+    e.message = Some(wire::scoped_mismatch_teaching(scope, expected, actual));
+    Box::new(e)
+}
+
+/// A `scope_unresolved` refusal (§5.6/§5.7) with its §8.2 register teaching.
+fn scope_unresolved(scope: &str) -> Box<ErrorBody> {
+    let mut e = ErrorBody::new(ErrorCode::ScopeUnresolved);
+    e.scope = Some(scope.to_owned());
+    e.message = Some(wire::scope_unresolved_teaching(scope));
+    Box::new(e)
+}
+
+/// Mint the current §5.4 premise token at `scope` through the write plane's
+/// own cache — the one mint home every premise family accepts (§4.7's scoped
+/// arm serves through this). Observes the domain first (the same currency the
+/// door's own entry pays), then folds the scope. `None` scope mints the root.
+///
+/// # Errors
+/// Wire `io_error` on observation failure; `scope_unresolved` per §5.6.
+pub fn scope_token(
+    root: &fs::WorkspaceRoot,
+    supplied: Option<&WriteCache>,
+    scope: Option<&std::path::Path>,
+) -> Result<Option<String>, Box<ErrorBody>> {
+    let door = door_cache(root, supplied);
+    let mut cache = door.cache.lock().unwrap_or_else(PoisonError::into_inner);
+    // The observation both refreshes the resident tree and establishes the
+    // baseline `scope_token` demands.
+    let world = cache.root(root).map_err(|e| io_refusal(e.to_string()))?;
+    match scope {
+        None => Ok(Some(world.0)),
+        Some(s) => {
+            let scope_str = s.to_string_lossy().into_owned();
+            if s.is_absolute()
+                || s.components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
+                return Err(scope_unresolved(&scope_str));
+            }
+            match cache.scope_token(s) {
+                Ok(fs::ScopeToken::Token(t)) => Ok(Some(t.0)),
+                Ok(fs::ScopeToken::Absent) => Ok(None),
+                Err(fs::ScopeTokenError::Unresolved(r)) => Err(scope_unresolved(&r.path)),
+                Err(fs::ScopeTokenError::NoBaseline) => Err(io_refusal(
+                    "scope mint before any observation — caller-order defect".to_owned(),
+                )),
+            }
+        }
+    }
 }
 
 /// Build a path-stamped `model::Document` from raw body bytes — the birth/death
@@ -5984,6 +6155,7 @@ mod guarded_create_remove {
     /// A splice against a page under `root`, editing the `Alpha/Beta` section.
     fn splice_args(path: &str, old: &str, new: &str) -> SpliceArgs {
         SpliceArgs {
+            premises: Vec::new(),
             id: None,
             origin: crate::guard::Origin::InProcess,
             path: Path(path.into()),
@@ -6340,6 +6512,7 @@ mod resident_write_path {
 
     fn splice_args(path: &str, old: &str, new: &str) -> SpliceArgs {
         SpliceArgs {
+            premises: Vec::new(),
             id: None,
             origin: crate::guard::Origin::InProcess,
             path: Path(path.into()),
@@ -6617,6 +6790,7 @@ mod resident_write_path {
 
     fn set_args(files: Vec<wire::SpliceFile>) -> SpliceSetArgs {
         SpliceSetArgs {
+            premises: Vec::new(),
             id: None,
             files,
             origin: crate::guard::Origin::InProcess,

@@ -25,6 +25,7 @@ const TIMED_WRITES: usize = 20;
 
 fn splice_args(path: &str, old: &str, new: &str) -> SpliceArgs {
     SpliceArgs {
+        premises: Vec::new(),
         id: None,
         origin: wire_serve::guard::Origin::InProcess,
         path: Path(path.into()),

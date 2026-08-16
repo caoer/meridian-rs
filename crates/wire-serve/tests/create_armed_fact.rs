@@ -35,6 +35,7 @@ fn ws(files: &[(&str, &str)]) -> (tempfile::TempDir, fs::WorkspaceRoot) {
 
 fn args(plan_edits: Vec<PlanEdit>, receipt: bool) -> SpliceArgs {
     SpliceArgs {
+        premises: Vec::new(),
         id: None,
         origin: wire_serve::guard::Origin::InProcess,
         path: WPath("card.md".into()),
@@ -127,6 +128,7 @@ fn a_create_arms_the_born_section_not_the_parent() {
         &root,
         None,
         &SpliceArgs {
+            premises: Vec::new(),
             dry: true,
             ..args(vec![create("Fresh", "born body")], true)
         },
@@ -432,6 +434,7 @@ fn a_native_end_append_still_arms_the_parent() {
         &root,
         None,
         &SpliceArgs {
+            premises: Vec::new(),
             edits: vec![wire::Edit {
                 target: SecRef::Hpath { hpath: parent() },
                 edit: wire::EditShape::Put {

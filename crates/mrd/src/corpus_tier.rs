@@ -1310,6 +1310,7 @@ fn apply_production_edit(
     })?;
 
     let args = SpliceArgs {
+        premises: Vec::new(),
         id: None,
         origin: wire_serve::guard::Origin::InProcess,
         path: WirePath(path.to_owned()),
