@@ -22,6 +22,7 @@
 //! warm O(dirty)). Drawer sentinel (`cache` `registered.json`) drives 30-day
 //! last-use GC. Only `unregister` ends a registration — and the feed with it.
 
+mod checkpoint;
 mod client;
 mod delta_sink;
 mod engine;
@@ -39,6 +40,7 @@ mod walk_op;
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+pub use checkpoint::CheckpointReceipt;
 pub use client::Client;
 pub use engine::{WarmOutcome, WorkspaceEngine};
 pub use feed::{FeedStats, RescanCause};
