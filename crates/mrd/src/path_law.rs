@@ -49,14 +49,8 @@ pub(crate) fn bad_path_message(
          workspace-relative spellings (§1 path law: no absolute path, no `.`/`..`/empty \
          segment). {consequence}"
     );
-    if let Ok(canonical) = workspace::canonicalize(workspace) {
-        let root = fs::WorkspaceRoot(canonical);
-        if let Some(rel) = wire_serve::write::relative_respelling(&root, path) {
-            let _ = write!(
-                m,
-                " This path lies inside this workspace — respell it as `{rel}`."
-            );
-        }
+    if let Some(respell) = workspace_respell(workspace, path) {
+        m.push_str(&respell);
     }
     if crate::names_the_whole_corpus(path) {
         let _ = write!(
@@ -64,6 +58,57 @@ pub(crate) fn bad_path_message(
             " To list the corpus instead of one page, `mrd links --json` enumerates every file."
         );
     }
+    m
+}
+
+/// The workspace-respell suffix every family refusal shares: when the
+/// offending spelling is an absolute path lying inside THIS workspace, the
+/// relative respelling the one shipped computation produces
+/// ([`wire_serve::write::relative_respelling`]) — earned, never guessed.
+/// `None` for every other spelling.
+fn workspace_respell(workspace: &Path, path: &str) -> Option<String> {
+    let canonical = workspace::canonicalize(workspace).ok()?;
+    let root = fs::WorkspaceRoot(canonical);
+    let rel = wire_serve::write::relative_respelling(&root, path)?;
+    Some(format!(
+        " This path lies inside this workspace — respell it as `{rel}`."
+    ))
+}
+
+/// The `--scope` fitting of the family `bad_path` teaching (dogfood
+/// 88877785): the flag is named in the message because a put carries two
+/// caller-spelled paths and the empty spelling echoes nothing at all, so the
+/// bare wire echo cannot say what offended. Both legs state the §1 rule, the
+/// §5.4 premise role, the nothing-happened clause, and the recoveries that
+/// are always true: a scoped token binds the exact spelling the §4.7 mint
+/// echoed, and dropping `--scope` re-arms the §5.1 world-grain premise. The
+/// empty leg additionally names the measured cause — an unquoted shell
+/// variable that expanded to nothing.
+pub(crate) fn scope_bad_path_message(workspace: &Path, scope: &str) -> String {
+    let mut m = if scope.is_empty() {
+        "--scope is empty — it names no node, and an empty value is usually an \
+         unquoted shell variable that expanded to nothing. A scope is the \
+         workspace-relative path of the node the --if-fingerprint premise binds \
+         (§1 path law: no absolute path, no `.`/`..`/empty segment; wire-contract \
+         §5.4)."
+            .to_owned()
+    } else {
+        format!(
+            "--scope {scope} is not a workspace-relative path — the put door admits \
+             only workspace-relative spellings (§1 path law: no absolute path, no \
+             `.`/`..`/empty segment), and the scope names the node the \
+             --if-fingerprint premise binds (wire-contract §5.4)."
+        )
+    };
+    m.push_str(" Nothing was sent and nothing was written.");
+    if let Some(respell) = workspace_respell(workspace, scope) {
+        m.push_str(&respell);
+    }
+    m.push_str(
+        " A scoped token binds the exact spelling the §4.7 mint echoed — pass the \
+         `mint.scope` your `mrd read --json` answered beside the token. Without \
+         --scope, `--if-fingerprint` takes the §5.1 world fingerprint instead.",
+    );
     m
 }
 
