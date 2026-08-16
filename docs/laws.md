@@ -747,7 +747,13 @@ construction step 6; the lease half is `authority.rs`:
   creates one checksummed `O_EXCL` intent (`.meridian/intents/<txn>`,
   outside the hash domain). After that durable decision no error is a
   refusal: it is `commit_unknown` until recovery proves complete or
-  restores the complete declared set. A destination matching neither old
+  restores the complete declared set. **Amended by § Amendment —
+  epoch-batched honest durability:** the decision becomes durable when the
+  **phase-1 barrier returns**, not when `create_decided` returns. The
+  `O_EXCL` `create_new` is unchanged and stays exactly where it is — it is
+  the uniqueness fence, never a durability step; only the sync moved to the
+  barrier. Before that barrier returns no rename has happened, so a fault
+  there is still a clean refusal that changed no destination byte. A destination matching neither old
   nor new identity is `recovery_ambiguous` (quarantine, never guess).
   Group commit may share a durability flush only if per-member decision
   ordering and failure attribution survive — a member rejected before
@@ -788,11 +794,16 @@ code that implements it. Provisional, per ZT's standing reclassification.
 
 > **The trap, and the reason the push is spelled `libc::fsync` by hand.** Rust
 > std's `File::sync_all` **and** `File::sync_data` both issue
-> `fcntl(F_FULLFSYNC)` on macOS — verified four ways on two instruments
+> `fcntl(F_FULLFSYNC)` on **rustc/std 1.97.1, `8bab26f4f`, 2026-07-14,
+> `aarch64-apple-darwin`** — pinned to that build, not asserted as a general
+> macOS fact. Verified four ways on two instruments
 > (`results/instrument-evidence/fs_usage_syncall.txt`, `syncall_check.rs`,
 > `syncall_out2.txt`): a probe of 30 × `sync_all` + 30 × `sync_data` + 1
 > directory sync decodes as exactly 61 `FULLFSYNC` in `fs_usage`, at ~5.0 ms
-> median in-process. So the engine has never called plain `fsync(2)` on this
+> median in-process. Independently reproduced by timing on this worktree
+> (300 round-robin iterations, identical 4 KiB unit of work per class): raw
+> `fsync` p50 0.11 ms, `fcntl(F_FULLFSYNC)` p50 6.18 ms, std `sync_all` p50
+> 6.13 ms — std tracking the barrier, not the cheap class. So the engine has never called plain `fsync(2)` on this
 > platform, and the 0.019 ms figure — which came from a probe of raw
 > `fsync(2)` — describes a call class the engine did not use. Spelling the
 > push with std would silently cost every member a full barrier, N members
@@ -880,17 +891,44 @@ and never relies on a device-wide side effect. If the shared-barrier argument
 above is ever rejected, the fallback is a mode flip: still epoch-shaped, still
 one rendezvous, already shipped and already tested.
 
-### Two barriers per commit, one primitive
+### Two barriers per commit, one primitive — and the coverage is TOTAL
 
-A receipt that promises platter-durable must cover the dirent too, or the
-publish is honest about bytes and drive-cache class about visibility. So a
-commit awaits the epoch twice, through the same batcher:
+The measured baseline this replaces: a single-destination transaction pays
+**10 honest syncs, 52.6 ms of sync inside a 60.3 ms transaction** — 85–87% of
+wall time — and the effective per-barrier latency on this host is **5.0 ms**.
+At two destinations it is 16 syncs, of which only 2 are user content: 14 are
+intent bookkeeping and 8 are directory syncs, the same directory synced four
+times over.
 
-- **Phase 1 — content durability.** Stage, `data_push` every temp, await the
-  epoch. Runs **before the reservation is taken**: content durability is
-  outside every exclusion, which is the §4.7 sentence read literally.
-- **Phase 2 — metadata publish.** `O_EXCL` intent, rename, `data_push` each
-  parent directory, await the epoch. The dirent is then on platter.
+**The answer is to schedule those syncs, not to cut them.** Cutting the count
+is hygiene any implementation could do, and it still leaves ten-plus barriers.
+Scheduling makes the barrier count independent of how many syncs the path
+contains: every one of those syncs becomes a cheap push plus a shared barrier,
+so a two-destination commit goes from 16 barriers to 2. The headline figure is
+therefore **barriers per commit as a function of concurrent writers** —
+baseline 10 per commit (160 at 16 writers), this design approaching 2 for the
+whole epoch however many writers share it.
+
+Coverage must be total for that to hold. **Any sync left issuing its own
+`F_FULLFSYNC` on the publish path silently costs a full barrier and defeats
+the design** — content temps, recovery images, the intent record, `finalize`,
+and the directory syncs all take the two-tier treatment. A directory is no
+exception: a plain `fsync` on the dirfd is its cheap push (measured 0.0008 ms,
+against 5.13 ms for `F_FULLFSYNC` on the same dirfd) and the epoch barrier is
+what forces it to platter.
+
+So a commit awaits the epoch twice, through the same batcher:
+
+- **Phase 1 — the durable decision.** Content temps, recovery images, and the
+  `O_EXCL` intent record, all sealed by ONE barrier. It runs after the final
+  reverify and therefore inside the reservation, which is forced and not a
+  choice: a pre-decision conflict must leave no intent behind, so the intent
+  cannot be written before the premise is re-checked. What §4.7's "outside any
+  exclusion" buys is still bought — disjoint writers never wait on each other,
+  and overlapping writers were serialized by the OCC law regardless.
+- **Phase 2 — metadata publish.** The visible renames, each parent directory,
+  and the `Applied` record from `finalize`, sealed by the second barrier.
+  `finalize` only has to be durable before `reclaim`, so it rides here.
 - **Then the linearized step** assigns the frame. There is no sync of either
   class inside it, and the per-thread counters prove the delta is zero while
   other publishers are concurrently syncing.
