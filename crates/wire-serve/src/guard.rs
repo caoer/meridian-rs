@@ -100,6 +100,155 @@ impl Premise {
     }
 }
 
+/// Resolve the §4.7 mint pair to a filesystem path. `None` is the world
+/// mint (both spellings absent). Pair-both is a decode fault, not this
+/// function's.
+///
+/// # Errors
+/// `bad_request` on an undecodable `scope_bytes`.
+pub fn mint_scope_path(
+    scope: Option<&Path>,
+    scope_bytes: Option<&str>,
+) -> Result<Option<std::path::PathBuf>, Box<ErrorBody>> {
+    match (scope, scope_bytes) {
+        (None, None) => Ok(None),
+        (Some(p), None) => Ok(Some(std::path::PathBuf::from(&p.0))),
+        (None, Some(b64)) => Ok(Some(path_from_scope_bytes(b64)?)),
+        (Some(_), Some(_)) => Err(crate::bad_request(wire::mint_pair_teaching())),
+    }
+}
+
+/// Lower the wire sugar + list into the door's premise list.
+///
+/// `if_root` + no `scope` stays the v2 world guard (returned as the first
+/// of the pair so `SpliceArgs.if_root` / coverage's `root_premise` stay
+/// byte-identical). `if_root` + `scope` desugars to one scoped list entry
+/// and consumes the world slot. List entries append. Pair faults that
+/// escaped decode refuse here too (one function, every door).
+///
+/// # Errors
+/// `bad_request` on a broken pair or an undecodable `scope_bytes`.
+pub fn lower_premises(
+    if_root: Option<wire::Root>,
+    sugar_scope: Option<Path>,
+    guards: &[wire::GuardEntry],
+) -> Result<(Option<wire::Root>, Vec<Premise>), Box<ErrorBody>> {
+    if sugar_scope.is_some() && if_root.is_none() {
+        return Err(crate::bad_request(wire::broken_premise_pair_teaching(
+            "scope without if_fingerprint",
+        )));
+    }
+    let mut premises = Vec::with_capacity(guards.len() + usize::from(sugar_scope.is_some()));
+    for entry in guards {
+        premises.push(entry_to_premise(entry)?);
+    }
+    match (if_root, sugar_scope) {
+        (Some(token), Some(scope)) => {
+            premises.push(Premise {
+                scope: Some(std::path::PathBuf::from(&scope.0)),
+                value: premise_value(&token.0),
+            });
+            Ok((None, premises))
+        }
+        (if_root, None) => Ok((if_root, premises)),
+        (None, Some(_)) => unreachable!("pair checked above"),
+    }
+}
+
+fn entry_to_premise(entry: &wire::GuardEntry) -> Result<Premise, Box<ErrorBody>> {
+    if entry.scope.is_some() && entry.scope_bytes.is_some() {
+        return Err(crate::bad_request(wire::broken_premise_pair_teaching(
+            "both scope and scope_bytes in one premise",
+        )));
+    }
+    let scope = match (&entry.scope, &entry.scope_bytes) {
+        (Some(p), None) => Some(std::path::PathBuf::from(&p.0)),
+        (None, Some(b64)) => Some(path_from_scope_bytes(b64)?),
+        (None, None) => None,
+        (Some(_), Some(_)) => unreachable!("pair checked above"),
+    };
+    Ok(Premise {
+        scope,
+        value: premise_value(&entry.fingerprint),
+    })
+}
+
+fn premise_value(token: &str) -> PremiseValue {
+    if token == "absent" {
+        PremiseValue::Absent
+    } else {
+        PremiseValue::Token(token.to_owned())
+    }
+}
+
+/// Decode a §5.4 `scope_bytes` (base64url over raw path bytes) into a
+/// `PathBuf`. The bytes are the path as the OS stores it — not a UTF-8
+/// `Path` noun.
+fn path_from_scope_bytes(b64: &str) -> Result<std::path::PathBuf, Box<ErrorBody>> {
+    let bytes = decode_base64url(b64).ok_or_else(|| {
+        crate::bad_request(format!(
+            "`scope_bytes` is not base64url: `{b64}` — mint the pair again \
+             (fingerprint{{scope_bytes}}) and send the echoed spelling"
+        ))
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        Ok(std::path::PathBuf::from(std::ffi::OsString::from_vec(
+            bytes,
+        )))
+    }
+    #[cfg(not(unix))]
+    {
+        let s = String::from_utf8(bytes).map_err(|_| {
+            crate::bad_request(
+                "`scope_bytes` is not UTF-8 and this host cannot address raw \
+                 path bytes",
+            )
+        })?;
+        Ok(std::path::PathBuf::from(s))
+    }
+}
+
+/// Base64url (RFC 4648 §5), padding optional. None on any illegal input —
+/// the door refuses rather than guessing.
+fn decode_base64url(input: &str) -> Option<Vec<u8>> {
+    fn val(c: u8) -> Option<u8> {
+        match c {
+            b'A'..=b'Z' => Some(c - b'A'),
+            b'a'..=b'z' => Some(c - b'a' + 26),
+            b'0'..=b'9' => Some(c - b'0' + 52),
+            b'-' => Some(62),
+            b'_' => Some(63),
+            _ => None,
+        }
+    }
+    let stripped: Vec<u8> = input
+        .as_bytes()
+        .iter()
+        .copied()
+        .filter(|&c| c != b'=')
+        .collect();
+    if stripped.iter().any(|c| val(*c).is_none()) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(stripped.len() * 3 / 4);
+    for chunk in stripped.chunks(4) {
+        let a = val(chunk[0])?;
+        let b = val(*chunk.get(1)?)?;
+        out.push((a << 2) | (b >> 4));
+        if chunk.len() >= 3 {
+            let c = val(chunk[2])?;
+            out.push((b << 4) | (c >> 2));
+            if chunk.len() == 4 {
+                let d = val(chunk[3])?;
+                out.push((c << 6) | d);
+            }
+        }
+    }
+    Some(out)
+}
+
 /// One plane a forced write bypassed — rendered back to the caller so a `force`
 /// is never silent.
 #[derive(Debug, Clone)]

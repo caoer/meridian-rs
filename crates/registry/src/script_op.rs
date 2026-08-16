@@ -95,6 +95,8 @@ pub(crate) fn serve_line(
         effects,
         invocation,
         token_count_endpoint,
+        scope,
+        guards,
     } = op
     else {
         // decode() maps the "script" tag to Op::Script only; any other arm
@@ -115,6 +117,8 @@ pub(crate) fn serve_line(
         effects,
         invocation,
         token_count_endpoint,
+        scope,
+        guards,
     };
     match serve(registry, ws, &request) {
         Ok(trace) => {
@@ -165,6 +169,10 @@ struct ScriptArgs {
     /// one. The decode wall refuses it without the effect; absent with the
     /// effect declared is legal — the builtin then refuses "unbound".
     token_count_endpoint: Option<String>,
+    /// §5.4 sugar — widening only; the commit's authority is the touch set.
+    scope: Option<wire::Path>,
+    /// §5.4 list — widening only.
+    guards: Vec<wire::GuardEntry>,
 }
 
 /// The § A.7 literals-first refusal for an illegal `files[]` list, or `None`
@@ -821,7 +829,24 @@ fn commit(
     entry: &str,
 ) -> CommitLeg {
     let paths = eval.content_paths();
-    let premises = touch_premises(eval, world, entry);
+    let (if_root, extra) = match wire_serve::guard::lower_premises(
+        request.if_root.clone(),
+        request.scope.clone(),
+        &request.guards,
+    ) {
+        Ok(pair) => pair,
+        Err(error) => {
+            return CommitLeg::Refused(Refusal::minted(
+                Recovery::Fix,
+                error
+                    .message
+                    .clone()
+                    .unwrap_or_else(|| format!("{:?}", error.code)),
+            ));
+        }
+    };
+    let mut premises = touch_premises(eval, world, entry);
+    premises.extend(extra);
     // H1 order: the mint store and ring handles are taken outside any engine
     // borrow (none is held here — the entry world is an Arc, not a lock).
     let mints = registry.read_mints(ws);
@@ -848,8 +873,9 @@ fn commit(
                 now: request.now.clone(),
                 receipt: request.receipt.clone(),
                 // The caller's own token stays a widening premise (§4.6) —
-                // the engine's authority is the touch set above.
-                if_root: request.if_root.clone(),
+                // the engine's authority is the touch set above. Sugar
+                // `scope` has been desugared into `premises`.
+                if_root: if_root.clone(),
                 dry: request.dry,
                 force: false,
                 edits: Vec::new(),
@@ -880,7 +906,7 @@ fn commit(
                 now: request.now.clone(),
                 receipt: request.receipt.clone(),
                 // Caller widening only — the touch set is the authority.
-                if_root: request.if_root.clone(),
+                if_root: if_root.clone(),
                 dry: request.dry,
                 force: false,
             };
@@ -1523,6 +1549,8 @@ mod tests {
             effects: Vec::new(),
             invocation: None,
             token_count_endpoint: None,
+            scope: None,
+            guards: Vec::new(),
         }
     }
 

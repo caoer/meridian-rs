@@ -1211,16 +1211,10 @@ fn dispatch_read(
                 || Ok(live),
             )
         }),
-        Op::Root => warm_engine_read(registry, ws, |engine| {
-            // `tree_instance` absent for the same reason `seq` stays 0: this
-            // op does not read the ring, and a ring surface it did not read
-            // is not its fact to teach (B-01 identity rides the `sub` ack).
-            Ok(ResponseBody::Root {
-                root: engine_root(engine),
-                seq: 0,
-                tree_instance: None,
-            })
-        }),
+        Op::Root {
+            scope,
+            scope_bytes,
+        } => mint_fingerprint(registry, ws, scope, scope_bytes),
         Op::Diff { from_root, to_root } => warm_engine_read(registry, ws, |engine| {
             // `diff` does not read the ring: same-root ⇒ empty; else
             // `root_unknown` → resync. `root.seq` stays 0 for the same reason —
@@ -1258,10 +1252,14 @@ fn dispatch_read(
             edits,
             plan_edits,
             pin,
+            scope,
+            guards,
         } => {
+            let (if_root, premises) =
+                wire_serve::guard::lower_premises(if_root, scope, &guards)?;
             let ws_root = fs::WorkspaceRoot(ws.to_path_buf());
             let args = wire_serve::write::SpliceArgs {
-                premises: Vec::new(),
+                premises,
                 id,
                 // U10: wire door ⇒ fingerprint-or-force (every wire door).
                 origin: wire_serve::guard::Origin::Wire,
@@ -1319,10 +1317,14 @@ fn dispatch_read(
             if_root,
             dry,
             force,
+            scope,
+            guards,
         } if v3 => {
+            let (if_root, premises) =
+                wire_serve::guard::lower_premises(if_root, scope, &guards)?;
             let ws_root = fs::WorkspaceRoot(ws.to_path_buf());
             let args = wire_serve::write::SpliceSetArgs {
-                premises: Vec::new(),
+                premises,
                 id,
                 files,
                 origin: wire_serve::guard::Origin::Wire,
@@ -1523,6 +1525,8 @@ fn dispatch_read(
                 root,
                 seq,
                 tree_instance: Some(ring.instance()),
+                scope: None,
+                scope_bytes: None,
             })
         }
         // `Op::Mounts` is unreachable here (routed before the binding guard);
@@ -1549,6 +1553,40 @@ fn dispatch_read(
 /// (the reuse key), re-homed into the wire `Root` token.
 fn engine_root(engine: &WorkspaceEngine) -> Root {
     Root(engine.at_fingerprint.0.clone())
+}
+
+/// §4.7 mint: bare is the world token (v2-identical); a scope pair mints
+/// that node's token (or `absent`) and echoes the pair. Failure is LOUD —
+/// a cap-advertising hello that then cannot mint must not look dormant.
+fn mint_fingerprint(
+    registry: &Registry,
+    ws: &Path,
+    scope: Option<wire::Path>,
+    scope_bytes: Option<String>,
+) -> Result<ResponseBody, Box<ErrorBody>> {
+    match wire_serve::guard::mint_scope_path(scope.as_ref(), scope_bytes.as_deref())? {
+        None => warm_engine_read(registry, ws, |engine| {
+            Ok(ResponseBody::Root {
+                root: engine_root(engine),
+                seq: 0,
+                tree_instance: None,
+                scope: None,
+                scope_bytes: None,
+            })
+        }),
+        Some(path) => {
+            let ws_root = fs::WorkspaceRoot(ws.to_path_buf());
+            let cache = registry.domain_cache(ws);
+            let token = wire_serve::write::scope_token(&ws_root, Some(&cache), Some(&path))?;
+            Ok(ResponseBody::Root {
+                root: Root(token.unwrap_or_else(|| "absent".to_owned())),
+                seq: 0,
+                tree_instance: None,
+                scope,
+                scope_bytes,
+            })
+        }
+    }
 }
 
 /// Composed read over the warm engine: one borrow supplies doc, `file_rev`,
