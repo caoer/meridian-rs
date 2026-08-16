@@ -332,7 +332,7 @@ fn read_stdin_edits() -> Result<Value, Fail> {
             &raw,
         )
     })?;
-    if !value.as_array().is_some_and(|a| !a.is_empty()) {
+    if value.as_array().is_none_or(Vec::is_empty) {
         return Err(Fail::tool(format!(
             "put wants a non-empty edits array — a §4.4 batch like {WORKING_BATCH}"
         )));
