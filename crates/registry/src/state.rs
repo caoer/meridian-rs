@@ -10,7 +10,7 @@
 //! file loads as the empty set — the daemon starts with no warm registrations
 //! rather than refusing to start or adopting garbage.
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -84,9 +84,8 @@ impl StateStore {
     ///
     /// # Errors
     ///
-    /// Propagates I/O failures from the temp write or the rename. A failed dir
-    /// fsync only weakens durability and is swallowed (the rename already made
-    /// the new state visible).
+    /// Propagates I/O failures from the temp write, the rename, or the
+    /// directory fsync. A failed fsync is an error, not a log line.
     pub(crate) fn save(&self, entries: &[WorkspaceEntry]) -> io::Result<()> {
         let dir = self
             .path
@@ -103,7 +102,7 @@ impl StateStore {
         fs::rename(&tmp, &self.path).inspect_err(|_| {
             let _ = fs::remove_file(&tmp);
         })?;
-        fsync_dir(dir);
+        fsync_dir(dir)?;
         Ok(())
     }
 }
@@ -127,7 +126,7 @@ fn write_tmp(dir: &Path, data: &[u8]) -> io::Result<PathBuf> {
         {
             Ok(mut f) => {
                 f.write_all(data)?;
-                f.sync_all()?;
+                ::fs::honest_sync(&f)?;
                 return Ok(path);
             }
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => counter += 1,
@@ -136,12 +135,10 @@ fn write_tmp(dir: &Path, data: &[u8]) -> io::Result<PathBuf> {
     }
 }
 
-/// fsync a directory so a completed rename survives power loss. Best-effort: a
-/// failed dir sync must never turn a committed write into a reported failure.
-fn fsync_dir(dir: &Path) {
-    if let Ok(f) = File::open(dir) {
-        let _ = f.sync_all();
-    }
+/// fsync a directory so a completed rename survives a crash. A failed
+/// fsync is an error, not a log line.
+fn fsync_dir(dir: &Path) -> io::Result<()> {
+    ::fs::honest_sync_path(dir)
 }
 
 #[cfg(test)]

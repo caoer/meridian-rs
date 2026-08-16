@@ -2927,7 +2927,7 @@ fn stage_file(dst: &Path, bytes: &[u8]) -> io::Result<StagedFile> {
 fn write_fsync(tmp: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut f = File::create(tmp)?;
     f.write_all(bytes)?;
-    f.sync_all()
+    honest_sync(&f)
 }
 
 /// A staging path beside `dst`: `<dir>/.<name>.<pid>.<nanos>.<seq>.tmp`. Same
@@ -3091,21 +3091,28 @@ fn fsync_dir(dir: &Path) -> io::Result<()> {
     if dir.as_os_str().is_empty() {
         return Ok(());
     }
-    File::open(dir)?.sync_all()
+    honest_sync(&File::open(dir)?)
 }
 
-/// The ruled honest durability class (merged-plan §4.7): `F_FULLFSYNC` on
-/// macOS (platter, not drive-cache), `sync_all` elsewhere. The live
-/// [`apply_batch`] path keeps `sync_all` until the cutover; the parallel
-/// publish path uses this for intent, recovery images, and dest temps.
+/// The ruled durability class (2026-08-16 fsync-class ruling): plain
+/// `fsync(2)` on every platform. Drive cache is accepted. There is no
+/// power-loss or platter-safety claim.
+///
+/// On macOS, `File::sync_all` and `File::sync_data` both issue
+/// `fcntl(F_FULLFSYNC)` (std 1.97.1), so this path calls `libc::fsync`
+/// directly. Elsewhere `sync_all` is already `fsync(2)`. No
+/// `F_FULLFSYNC`, no `F_BARRIERFSYNC`, no background flush.
+///
+/// Local disk only. Network mounts are a known limit, not a fallback.
+/// A failed `fsync` is an error, never a log line.
 ///
 /// # Errors
-/// The underlying fcntl/fsync failure.
+/// The underlying fsync failure.
 pub fn honest_sync(file: &File) -> io::Result<()> {
     #[cfg(target_os = "macos")]
     {
-        // SAFETY: fcntl on a valid fd we own; F_FULLFSYNC takes no extra arg.
-        let rc = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_FULLFSYNC) };
+        // SAFETY: fsync on a valid fd we own.
+        let rc = unsafe { libc::fsync(file.as_raw_fd()) };
         if rc == -1 {
             return Err(io::Error::last_os_error());
         }

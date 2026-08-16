@@ -10,6 +10,8 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+#[cfg(target_os = "macos")]
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -164,7 +166,7 @@ pub fn register(drawer_dir: &Path, workspace: &Path) -> io::Result<Sentinel> {
     // exclusive-create and atomicity in one primitive.
     match fs::hard_link(&tmp, &sentinel_path) {
         Ok(()) => {
-            fsync_dir(drawer_dir);
+            fsync_dir(drawer_dir)?;
             let _ = fs::remove_file(&tmp);
             Ok(mine)
         }
@@ -184,7 +186,7 @@ pub fn register(drawer_dir: &Path, workspace: &Path) -> io::Result<Sentinel> {
             // the lock, so this is the single writer).
             SentinelState::Garbage | SentinelState::Absent => {
                 fs::rename(&tmp, &sentinel_path)?;
-                fsync_dir(drawer_dir);
+                fsync_dir(drawer_dir)?;
                 Ok(mine)
             }
         },
@@ -217,7 +219,7 @@ pub fn stamp_last_use(drawer_dir: &Path) -> io::Result<()> {
     let bytes = to_bytes(&sentinel)?;
     let tmp = write_tmp(drawer_dir, &bytes)?;
     fs::rename(&tmp, &sentinel_path)?;
-    fsync_dir(drawer_dir);
+    fsync_dir(drawer_dir)?;
     Ok(())
 }
 
@@ -246,7 +248,7 @@ pub fn supersede(drawer_dir: &Path, superseded_by: &str) -> io::Result<bool> {
     let bytes = to_bytes(&sentinel)?;
     let tmp = write_tmp(drawer_dir, &bytes)?;
     fs::rename(&tmp, &sentinel_path)?;
-    fsync_dir(drawer_dir);
+    fsync_dir(drawer_dir)?;
     Ok(true)
 }
 
@@ -271,7 +273,7 @@ fn write_tmp(dir: &Path, data: &[u8]) -> io::Result<PathBuf> {
         {
             Ok(mut f) => {
                 f.write_all(data)?;
-                f.sync_all()?;
+                sync_file(&f)?;
                 return Ok(path);
             }
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
@@ -282,13 +284,27 @@ fn write_tmp(dir: &Path, data: &[u8]) -> io::Result<PathBuf> {
     }
 }
 
-/// fsync a directory so a completed link/rename survives power loss. Best-effort:
-/// the entry is already visible to readers, so a failed dir sync only weakens
-/// durability — it must never turn a committed write into a reported failure.
-fn fsync_dir(dir: &Path) {
-    if let Ok(f) = File::open(dir) {
-        let _ = f.sync_all();
+/// Same class as `fs::honest_sync`. cache does not depend on the fs crate.
+fn sync_file(file: &File) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: fsync on a valid fd we own.
+        let rc = unsafe { libc::fsync(file.as_raw_fd()) };
+        if rc == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
     }
+    #[cfg(not(target_os = "macos"))]
+    {
+        file.sync_all()
+    }
+}
+
+/// fsync a directory so a completed link/rename survives a crash. A failed
+/// fsync is an error, not a log line.
+fn fsync_dir(dir: &Path) -> io::Result<()> {
+    sync_file(&File::open(dir)?)
 }
 
 /// Whole-nanosecond clock reading for temp-file name uniqueness.
