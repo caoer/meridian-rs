@@ -79,7 +79,7 @@ which laws it carries. In one line each:
 | `addr` | The agent-plane address: `[root:]path[#selector]` parsed into a fallible type carrying an optional canonical root name, plus the resolution-facing bound-name projection (`MountSet`) every plane resolves through. A `std`-only leaf UPSTREAM of `syntax` — it is where an address becomes a value, so nothing downstream re-splits a string. `Addr::parse` is the sole constructor and the path field carries no root prefix by construction; the colon law is root-wins with **no fallback to the literal reading**, because a fallback turns a typo'd root into a wrong success. Parse is not resolve: whether a named root is BOUND is the resolver's question and its answer is grey, never a parse error |
 | `syntax` | Markdown bytes → dialect node list with byte-exact spans; sole owner of the pulldown-cmark fork |
 | `model` | The governed node tree, resolve, CAS-splice validation, workspace fingerprints — non-serializable by design (Law 1); the frozen heading predicate (`gotext`), the single address law its two dependents share; and the content-identity plane: the `fp1.…` CID-token, `verify_content`'s four-arm verdict (carrying the whole `version.codec.hashfn` triple on `Unverifiable`, so a render names WHICH member is unknown), and the ONE reason-carrying `Color` model every drift surface computes through; and the frontmatter scalar codec (`scalar`) — the single owner of the § A.6 value law, decode for every read seam and the double-quoted encode every value-plane write door emits through |
-| `fs` | Disk read/walk/watch into the model; atomic tmp+fsync+rename splice execution. **And the `.base` membership walk** (`base-projection.md` §3): the hash domain's rules with the floor swapped from `*.md` to `*.base`, returning raw bytes per member plus the §6.2 `bf:` witness. It stays YAML-free — it hands bytes up, and `view` parses them |
+| `fs` | Disk read/walk/watch into the model; atomic tmp+fsync+rename splice execution. **And the `.base` membership walk** (`base-projection.md` §3): the hash domain's rules with the floor swapped from `*.md` to `*.base`, returning raw bytes per member plus the §6.2 `bf:` witness. It stays YAML-free — it hands bytes up, and `view` parses them. **And the durability plane's two named sync classes plus the epoch barrier (`epoch.rs`)** — see § Amendment — epoch-batched honest durability: `data_push` hands a file's bytes to the device, `honest_sync` is the ruled platter class, and `EpochBatcher` amortizes one honest seal across every writer that joined an epoch. Both classes carry call-site counters, so which class ran where is measured, never asserted |
 | `wire` | The serde-only wire vocabulary — the whole host-visible surface (Law 2) |
 | `wire-map` | The named model→wire projection seam, tested as a library function (Law 3) |
 | `git` | The git plumbing organ: shell-out content-addressing (blob object ids, the eager `-w` write) and object reachability against a `Repo` handle. git owns content-addressing — this crate asks git and reports what git said, and NEVER computes or guesses an oid. A `std`-only leaf: no production dependency, so `git`-invocation churn is a one-crate event |
@@ -764,3 +764,116 @@ construction step 6; the lease half is `authority.rs`:
   and assigns a contiguous `root`/`seq`/frame. There is no disk sync in
   that mutex. Staging, validation, and all durability I/O run outside it,
   in parallel across disjoint writers.
+
+## Amendment — epoch-batched honest durability (fs)
+
+Law: merged fingerprint-grain plan §4.7 (session `15-14-fingerprint-grain`,
+`results/pins-deliverable/merged-plan.md`) — *staging, validation, and ALL
+durability I/O run outside any exclusion, in parallel across writers; the ONLY
+linearized step is the µs in-memory root advance*. This amendment states HOW
+the honest class is paid without serializing writers, and it lands before the
+code that implements it. Provisional, per ZT's standing reclassification.
+
+> **Honest durability is bought once per epoch, not once per writer.** Each
+> writer hands its own bytes to the device with a cheap `data_push`; the epoch
+> then issues ONE honest seal, and no writer proceeds to its rename until the
+> seal that covers its bytes has returned.
+
+### The two sync classes are named, and never confused
+
+| Class | Call | What it promises |
+|---|---|---|
+| data push | `fs::data_push` (`sync_all`) | The file's bytes have left the OS for the **device**. On macOS this is drive-cache class — measured p50 0.019 ms, p99 0.037 ms. It is NOT the receipt's promise there |
+| honest sync | `fs::honest_sync` (`F_FULLFSYNC` on macOS, `sync_all` elsewhere) | The ruled platter class — measured p50 4.386 ms, p99 10.352 ms on Mac16,5 / APFS / internal NVMe |
+
+Both classes increment a call-site counter (`fs::honest_sync_count`,
+`fs::data_push_count`, and their per-thread readers). The counters are the
+instrument that makes "no sync inside the linearized step" and "one seal
+covers N writers" provable claims rather than asserted ones. They are
+instruments, not policy: nothing branches on them.
+
+### The epoch boundary is the completion of the previous seal
+
+There is no tick and no timer in the default configuration:
+
+- A writer arriving when **no seal is in flight** opens an epoch and seals it
+  immediately. It waits out nothing and pays exactly one barrier — which is
+  the structural answer to the lone-writer risk, not a mitigation of it.
+- A writer arriving **while a seal is in flight** joins the open epoch, which
+  seals when the in-flight one returns. Batching therefore emerges from the
+  barrier's own duration; the batch is as large as the barrier is slow.
+- `window: Duration` (default zero) is a **cap** on how long an open epoch
+  waits for more members, and `max_batch` seals early once that many members
+  joined. Both exist so the lone-writer cost is measured across a sweep rather
+  than argued.
+- The sealer is a **transient role** held by whichever writer opened the
+  current epoch. The batcher spawns no thread and owns no actor; a sealer goes
+  back to being a writer the moment its seal returns.
+- The barrier runs outside every exclusion — outside the reservation table's
+  mutex, outside the state-owner mutex, outside any flock.
+
+### Whose flush makes the receipt true — the argument, in full
+
+One honest sync issued on an anchor descriptor covers N writers' files. It
+does so by **ordering**, not by magic, and the ordering is the design:
+
+1. Each writer `data_push`es its own staged temp. That call is what transfers
+   the file's bytes from the OS page cache to the device.
+2. The epoch's seal issues `F_FULLFSYNC` on an anchor descriptor **on the same
+   volume**. On macOS/APFS that is a device-level cache flush
+   (`DKIOCSYNCHRONIZECACHE`), not a per-file operation: it forces everything
+   the device has already been handed onto the platter, whichever descriptor
+   wrote it.
+3. A member joins its epoch only **after** its own push has returned, and the
+   seal for that epoch starts only **after** the member joined. So the seal
+   that covers a member always starts after that member's bytes reached the
+   device.
+4. No writer proceeds to its rename before that seal has returned.
+
+Steps 3 and 4 are the load-bearing invariant, so they are enforced by the type
+and checked at runtime rather than left to prose: `data_push_all` mints a
+`Pushed` token stamped with the instant the push returned, `await_epoch`
+consumes that token, and the returned `Covered` stamp carries the instant its
+seal started. `await_epoch` refuses — it returns an error, it does not warn —
+if the seal it is about to certify started before the push it is covering.
+A member cannot await an epoch it never pushed for, because it has no token.
+
+**Platform truth, stated rather than hidden.** Nothing here is macOS-only at
+compile time. Where the honest class is plain `sync_all` (Linux and the CI
+runners), a writer's own push is *already* the platter class, so each member
+is independently honest and the epoch seal is a redundant device flush kept
+for identical shape and accounting. The amortization the design buys is
+therefore real on macOS and free-but-inert elsewhere; no promise is weaker on
+either.
+
+**The falsifier ships with the claim.** `SealMode::PerMember` issues one
+honest sync per member descriptor, in parallel across the members of an epoch,
+and never relies on a device-wide side effect. If the shared-barrier argument
+above is ever rejected, the fallback is a mode flip: still epoch-shaped, still
+one rendezvous, already shipped and already tested.
+
+### Two barriers per commit, one primitive
+
+A receipt that promises platter-durable must cover the dirent too, or the
+publish is honest about bytes and drive-cache class about visibility. So a
+commit awaits the epoch twice, through the same batcher:
+
+- **Phase 1 — content durability.** Stage, `data_push` every temp, await the
+  epoch. Runs **before the reservation is taken**: content durability is
+  outside every exclusion, which is the §4.7 sentence read literally.
+- **Phase 2 — metadata publish.** `O_EXCL` intent, rename, `data_push` each
+  parent directory, await the epoch. The dirent is then on platter.
+- **Then the linearized step** assigns the frame. There is no sync of either
+  class inside it, and the per-thread counters prove the delta is zero while
+  other publishers are concurrently syncing.
+
+The reservation is still held across phase 2 — the ratified contract holds it
+from final reverify through the visible renames and durable finalization — so
+the exclusion claim asserted at this seam is the exact one: **no sync of
+either class runs inside the reservation table's own critical section**, and
+phase 1 runs with no reservation held at all.
+
+`PublishReceipt` records the three intervals **separately** — content,
+publish, owner step — and they are never summed into one number. A single
+span covering both phases is an aggregate that hides which class was paid
+where, which is precisely what these counters and spans exist to expose.
