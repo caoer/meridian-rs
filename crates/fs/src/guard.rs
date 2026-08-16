@@ -322,7 +322,7 @@ impl StepGuard {
     pub fn pre_root(&self) -> model::MerkleRoot {
         let refs: Vec<(&[u8], [u8; 32])> =
             self.pre.iter().map(|(p, d)| (p.as_slice(), *d)).collect();
-        model::merkle_root_of_leaves(&refs, self.domain.version())
+        crate::served_root(&refs, self.domain.version())
     }
 
     /// Cross-step continuity (the bracket is mid-RUN, not just mid-step):
@@ -419,7 +419,7 @@ impl StepGuard {
             return Err(GuardError::OutOfBand(delta));
         }
         let refs: Vec<(&[u8], [u8; 32])> = actual.iter().map(|(p, d)| (p.as_slice(), *d)).collect();
-        Ok(model::merkle_root_of_leaves(&refs, self.domain.version()))
+        Ok(crate::served_root(&refs, self.domain.version()))
     }
 }
 

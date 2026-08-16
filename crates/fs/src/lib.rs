@@ -781,9 +781,7 @@ impl DomainCache {
     /// the memo cannot outlive its corpus.
     ///
     /// The root is byte-identical to [`domain_snapshot`]'s over the same tree —
-    /// both fold through [`model::merkle_root_of_leaves`], and a member whose
-    /// digest is not memoized is read and hashed by [`model::leaf_digest`], the
-    /// same leaf the other path uses.
+    /// both mint through [`served_root`] (hash-law 2, the only served law).
     ///
     /// # Errors
     /// I/O failure loading the domain config, traversing the root, `stat`ing a
@@ -794,23 +792,16 @@ impl DomainCache {
             .observe(root, &domain, ObserveLaw::Plain)
             .map_err(plain_refusal)?;
         let version = domain.version();
-        // The interim served-token law (merged plan §6 step 3): the served
-        // value stays law-1, derived from the resident structure's current
-        // leaves, recomputed only when the root advances. The observation
-        // above invalidated the cache iff the tree moved.
         if let Some((v, cached)) = &self.served
             && *v == version
         {
             return Ok(cached.clone());
         }
-        self.flat_folds += 1;
-        // Raw name bytes into the fold (merkle-spec §4/§9) — the same names
-        // `domain_snapshot` folds, so the byte-identity holds on any corpus.
         let leaves: Vec<(&[u8], [u8; 32])> = rows
             .iter()
             .map(|(name, digest)| (name.as_slice(), *digest))
             .collect();
-        let folded = model::merkle_root_of_leaves(&leaves, version);
+        let folded = served_root(&leaves, version);
         self.served = Some((version, folded.clone()));
         Ok(folded)
     }
@@ -1290,11 +1281,8 @@ impl DomainCache {
         Ok(changed)
     }
 
-    /// The served root over the current overlay state — the interim law-1
-    /// value (merged plan §6 step 3), folded from the resident structure's
-    /// current leaves with NO walk, NO stat, NO byte read. Recomputed only
-    /// when the tree advanced since the last serve (lane C class when it
-    /// did, a clone when it did not).
+    /// The served root over the current overlay state — hash-law 2, folded
+    /// from the resident leaves with no walk, no stat, no byte read.
     ///
     /// # Errors
     /// No observation has landed yet (as [`Self::overlay_leaf`]).
@@ -1305,22 +1293,19 @@ impl DomainCache {
         {
             return Ok(cached.clone());
         }
-        self.flat_folds += 1;
         let leaves: Vec<(&[u8], [u8; 32])> = self
             .leaves
             .iter()
             .map(|(rel, entry)| (hash_name(rel), entry.digest))
             .collect();
-        let folded = model::merkle_root_of_leaves(&leaves, version);
+        let folded = served_root(&leaves, version);
         self.served = Some((version, folded.clone()));
         Ok(folded)
     }
 
     /// Resolve one scope against the resident tree (merkle-spec §7 scope
     /// rows): root, folder, file leaf, `absent` — or the tree's two
-    /// `scope_unresolved` refusals (§4.4 collision, kind conflict). Law-2
-    /// values, engine-internal until the cutover: no wire surface mints or
-    /// serves from this before merged plan §6 step 7.
+    /// `scope_unresolved` refusals (§4.4 collision, kind conflict).
     ///
     /// # Errors
     /// [`resident::ScopeRefusal`] naming the refusing path.
@@ -1909,6 +1894,17 @@ pub fn fold_count() -> u64 {
 ///
 /// # Errors
 /// I/O failure loading the domain config, traversing the root, or reading a file.
+/// The only served workspace root: hash-law 2 (radix-256) over these
+/// already-hashed leaves. There is no dual-law window.
+#[must_use]
+pub fn served_root(leaves: &[(&[u8], [u8; 32])], domain: u32) -> model::MerkleRoot {
+    let mut tree = resident::ResidentTree::new();
+    for (name, digest) in leaves {
+        tree.set_leaf(Path::new(std::ffi::OsStr::from_bytes(name)), *digest);
+    }
+    model::RootVersion::law2(domain).token(tree.fingerprint())
+}
+
 pub fn domain_snapshot(root: &WorkspaceRoot) -> io::Result<(DomainFiles, model::MerkleRoot)> {
     let (files, _leaves, folded) = domain_snapshot_with_leaves(root)?;
     Ok((files, folded))
@@ -1938,7 +1934,7 @@ pub fn domain_snapshot_with_leaves(
     }
     let leaf_refs: Vec<(&[u8], [u8; 32])> =
         leaves.iter().map(|(rel, d)| (hash_name(rel), *d)).collect();
-    let folded = model::merkle_root_of_leaves(&leaf_refs, domain.version());
+    let folded = served_root(&leaf_refs, domain.version());
     Ok((files, leaves, folded))
 }
 
@@ -1957,9 +1953,7 @@ pub struct DomainLeaves {
 }
 
 impl DomainLeaves {
-    /// The fold of these leaves ([`model::merkle_root_of_leaves`] — the same
-    /// tree, encoding, and root as [`domain_snapshot`]'s over the same
-    /// bytes).
+    /// The served root of these leaves (same encoding as [`domain_snapshot`]).
     #[must_use]
     pub fn root(&self) -> model::MerkleRoot {
         let refs: Vec<(&[u8], [u8; 32])> = self
@@ -1967,7 +1961,7 @@ impl DomainLeaves {
             .iter()
             .map(|(n, d)| (n.as_slice(), *d))
             .collect();
-        model::merkle_root_of_leaves(&refs, self.domain.version())
+        served_root(&refs, self.domain.version())
     }
 
     /// Replace (or insert) one member's leaf digest. A path outside the hash
@@ -2139,11 +2133,11 @@ pub fn overlay_snapshot(
         }
     }
     let files: DomainFiles = keyed.into_values().collect();
-    let entries: Vec<(&str, &[u8])> = files
+    let leaf_refs: Vec<(&[u8], [u8; 32])> = files
         .iter()
-        .map(|(p, b)| (p.as_str(), b.as_slice()))
+        .map(|(p, b)| (p.as_bytes(), model::leaf_digest(b)))
         .collect();
-    let folded = model::merkle_root(&entries, domain.version());
+    let folded = served_root(&leaf_refs, domain.version());
     (files, folded)
 }
 
@@ -2433,7 +2427,7 @@ pub fn update_corpus(
     }
     let leaf_refs: Vec<(&[u8], [u8; 32])> =
         leaves.iter().map(|(rel, d)| (hash_name(rel), *d)).collect();
-    let folded = model::merkle_root_of_leaves(&leaf_refs, domain.version());
+    let folded = served_root(&leaf_refs, domain.version());
     Ok(CorpusUpdate {
         index: corpus_index_of(&docs),
         docs,
@@ -5058,7 +5052,7 @@ mod domain_cache_tests {
         ]
         .into_iter()
         .collect();
-        let expected = model::merkle_root_of_leaves(
+        let expected = super::served_root(
             &refs,
             super::domain::Domain::from_markdown(config).version(),
         );
@@ -5535,7 +5529,7 @@ mod stable_trust_tests {
                 .iter()
                 .map(|(rel, d)| (super::hash_name(rel), *d))
                 .collect();
-            model::merkle_root_of_leaves(
+            super::served_root(
                 &refs,
                 super::domain::Domain::load(&root)
                     .expect("domain")
