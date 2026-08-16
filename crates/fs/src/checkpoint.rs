@@ -351,6 +351,15 @@ pub fn restore(
     // overlay doors compose against the observed generation — it must not be
     // mistaken for an observation having landed.
     cache.restored_unobserved = true;
+    // The serving law rides the B-04 record, not the checkpoint (merkle-spec
+    // §4.2.6): resolve it here so the restored overlay door mints under the
+    // right law. A record that cannot answer (mid-build, corrupt) discards
+    // the checkpoint — the cold path re-adjudicates and a corrupt record
+    // still blocks loudly at the first observation.
+    cache.serving_law = Some(
+        crate::cutover::serving(&crate::WorkspaceRoot(workspace.to_path_buf()))
+            .map_err(|_| Discard::Format("cutover record unreadable — cold start"))?,
+    );
     Ok(Restored {
         cache,
         journal_instance,
