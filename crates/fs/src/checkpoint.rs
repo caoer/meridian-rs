@@ -311,6 +311,12 @@ pub fn restore(
         return Err(Discard::TreeRoot);
     }
     cache.domain_seen = Some(domain.clone());
+    // The rows are a previous process's evidence: guard-grade currency stays
+    // UNTRUSTED until a live observation re-verifies every member (§6.5's
+    // "cannot serve stale by construction"). `domain_seen` is set because the
+    // overlay doors compose against the observed generation — it must not be
+    // mistaken for an observation having landed.
+    cache.restored_unobserved = true;
     Ok(Restored {
         cache,
         journal_instance,
@@ -607,6 +613,30 @@ mod tests {
             restore_here(&forged, tmp.path()).unwrap_err(),
             Discard::TreeRoot
         );
+    }
+
+    /// **It cannot serve stale by construction.** A restored memo answers
+    /// guard-grade currency UNTRUSTED until a live observation re-verifies
+    /// every member — the rows are a previous process's evidence, and the
+    /// §6.4 watcher started after the gap, so nothing can vouch for what
+    /// changed while the daemon was down. Without this the first
+    /// `currency_refresh` after a restart would fold restored rows straight
+    /// into a guard answer.
+    #[test]
+    fn a_restored_memo_refuses_guard_currency_until_it_observes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_, bytes) = observed(tmp.path());
+        let mut back = restore_here(&bytes, tmp.path()).unwrap().cache;
+
+        let crate::stable::GuardCurrency::Untrusted { reason } = back.guard_currency() else {
+            panic!("a restored memo must not vouch for a gap it did not watch");
+        };
+        assert!(reason.contains("checkpoint"), "the reason names the cause");
+
+        // A live pass re-verifies every member — and only then may the memo
+        // answer a guard-grade question.
+        back.root(&WorkspaceRoot(tmp.path().to_path_buf())).unwrap();
+        assert_eq!(back.guard_currency(), crate::stable::GuardCurrency::Trusted);
     }
 
     /// An unbaselined memo has nothing sound to persist.
