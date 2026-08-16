@@ -797,6 +797,7 @@ impl DomainCache {
         {
             return Ok(cached.clone());
         }
+        self.flat_folds += 1;
         let leaves: Vec<(&[u8], [u8; 32])> = rows
             .iter()
             .map(|(name, digest)| (name.as_slice(), *digest))
@@ -1293,6 +1294,7 @@ impl DomainCache {
         {
             return Ok(cached.clone());
         }
+        self.flat_folds += 1;
         let leaves: Vec<(&[u8], [u8; 32])> = self
             .leaves
             .iter()
@@ -1894,6 +1896,11 @@ pub fn fold_count() -> u64 {
 ///
 /// # Errors
 /// I/O failure loading the domain config, traversing the root, or reading a file.
+pub fn domain_snapshot(root: &WorkspaceRoot) -> io::Result<(DomainFiles, model::MerkleRoot)> {
+    let (files, _leaves, folded) = domain_snapshot_with_leaves(root)?;
+    Ok((files, folded))
+}
+
 /// The only served workspace root: hash-law 2 (radix-256) over these
 /// already-hashed leaves. There is no dual-law window.
 #[must_use]
@@ -1903,11 +1910,6 @@ pub fn served_root(leaves: &[(&[u8], [u8; 32])], domain: u32) -> model::MerkleRo
         tree.set_leaf(Path::new(std::ffi::OsStr::from_bytes(name)), *digest);
     }
     model::RootVersion::law2(domain).token(tree.fingerprint())
-}
-
-pub fn domain_snapshot(root: &WorkspaceRoot) -> io::Result<(DomainFiles, model::MerkleRoot)> {
-    let (files, _leaves, folded) = domain_snapshot_with_leaves(root)?;
-    Ok((files, folded))
 }
 
 /// [`domain_snapshot`] with the per-member leaf set alongside the fold — the

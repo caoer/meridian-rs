@@ -6306,7 +6306,7 @@ mod resident_write_path {
             .iter()
             .map(|(n, b)| (n.as_bytes(), model::leaf_digest(b)))
             .collect();
-        Root(model::merkle_root_of_leaves(&leaves, version).0)
+        Root(fs::served_root(&leaves, version).0)
     }
 
     fn race_foreign(dir: &std::path::Path) {
@@ -6641,30 +6641,26 @@ mod resident_write_path {
         )
     }
 
-    /// Interim served-token law on every door: each served root equals the
-    /// independent old-law disk fold, and carries the law-1 prefix family.
+    /// Every door serves hash-law 2. No dual-law window.
     #[test]
-    fn served_tokens_stay_old_law_on_every_door() {
+    fn served_tokens_are_law2_on_every_door() {
         let (dir, root) = ws();
         page(&dir, "notes/plan.md", "August");
         page(&dir, "notes/second.md", "August");
 
-        let old_law = |label: &str, served: &Root| {
+        let law2 = |label: &str, served: &Root| {
             let oracle = ambient_root(&root).expect("oracle");
-            assert_eq!(
-                *served, oracle,
-                "{label}: served token == old-law disk fold"
-            );
+            assert_eq!(*served, oracle, "{label}: served token == disk fold");
             assert!(
-                served.0.starts_with("b3:"),
-                "{label}: the token stays in the law-1 prefix family: {}",
+                served.0.starts_with("b3a:"),
+                "{label}: the token is hash-law 2: {}",
                 served.0
             );
         };
 
         let born =
             create(&root, None, &create_args("notes/new.md", "# New\n"), &[]).expect("create");
-        old_law("create", born.root_after.as_ref().expect("root_after"));
+        law2("create", born.root_after.as_ref().expect("root_after"));
 
         let out = splice(
             &root,
@@ -6674,7 +6670,7 @@ mod resident_write_path {
             None,
         )
         .expect("splice");
-        old_law("splice", &out.committed.expect("frame").delta.root_after);
+        law2("splice", &out.committed.expect("frame").delta.root_after);
 
         let set = splice_set(
             &root,
@@ -6686,14 +6682,14 @@ mod resident_write_path {
             &[],
         )
         .expect("splice_set");
-        old_law(
+        law2(
             "splice.set",
             &set.committed.expect("set frame").delta.root_after,
         );
 
         let rev = live_rev(&root, "notes/plan.md");
         let locked = lock_write(&root, None, &lock_args("notes/plan.md", rev)).expect("lock_write");
-        old_law(
+        law2(
             "lock_write",
             locked.root_after.as_ref().expect("root_after"),
         );
@@ -6705,7 +6701,7 @@ mod resident_write_path {
             &[],
         )
         .expect("remove");
-        old_law("remove", dead.root_after.as_ref().expect("root_after"));
+        law2("remove", dead.root_after.as_ref().expect("root_after"));
     }
 
     /// The observation is LIVE: a foreign write between doors moves the served

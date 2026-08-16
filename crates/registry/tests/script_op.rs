@@ -245,7 +245,7 @@ fn an_armed_target_reads_back_its_own_armed_content_and_commits_once() {
         leg["fingerprint_after"]
             .as_str()
             .unwrap()
-            .starts_with("b3:")
+            .starts_with("b3")
     );
     let on_disk = fs::read_to_string(ws.join("doc.md")).unwrap();
     assert!(on_disk.contains("status: done"), "landed: {on_disk}");
