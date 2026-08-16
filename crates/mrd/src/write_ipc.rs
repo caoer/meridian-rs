@@ -90,13 +90,14 @@ pub(crate) fn call(door: &mut SocketDoor, request: &Value) -> Result<Value, Box<
         return Ok(body);
     }
     if let Some(raw) = frame.error {
-        serde_json::from_str(raw.get()).map_err(|e| {
+        let error: ErrorBody = serde_json::from_str(raw.get()).map_err(|e| {
             let mut err = ErrorBody::new(wire::ErrorCode::IoError);
             err.message = Some(format!(
                 "the daemon refused the write but the error frame would not parse: {e}"
             ));
             Box::new(err)
-        })
+        })?;
+        Err(Box::new(error))
     } else {
         let mut err = ErrorBody::new(wire::ErrorCode::IoError);
         err.message = Some(format!(
