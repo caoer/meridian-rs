@@ -1,6 +1,7 @@
 //! U6a gates — bash process supervision (#21/S3): the invocation cwd (U16),
 //! own process group, wall-clock timeout → group SIGKILL, step-end
-//! background-child reaping, env hygiene, and the shim-fd capture.
+//! background-child reaping, env passthrough + overlay, and the shim-fd
+//! capture.
 
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -77,10 +78,13 @@ fn the_project_root_is_exported_to_the_step() {
     assert_eq!(r.stdout, project.path().as_os_str().as_encoded_bytes());
 }
 
+/// Run-env ruling (2026-08-16, ZT: "run must not strip the daemon's
+/// environment") — the inversion of the retired `env_clear` law: the
+/// parent's env passes through undeclared, and the declared key arrives too.
 #[test]
-fn the_child_env_is_cleared_to_the_declared_set() {
-    // The parent's HOME must NOT leak; the declared key must arrive.
+fn the_daemon_env_passes_through_to_the_child() {
     let tmp = tempfile::tempdir().unwrap();
+    let home = std::env::var("HOME").expect("the test runner env carries HOME");
     let env = BTreeMap::from([("MRD_U6A_DECLARED".to_owned(), "yes".to_owned())]);
     let r = exec::exec(&spec_in(
         &tmp,
@@ -88,7 +92,17 @@ fn the_child_env_is_cleared_to_the_declared_set() {
         &env,
     ))
     .unwrap();
-    assert_eq!(r.stdout, b"unset:yes");
+    assert_eq!(r.stdout, format!("{home}:yes").into_bytes());
+}
+
+/// The declared contract env OVERLAYS the inherited environment — a declared
+/// pair shadows the daemon's value for the same key.
+#[test]
+fn declared_env_overlays_the_inherited_value() {
+    let tmp = tempfile::tempdir().unwrap();
+    let env = BTreeMap::from([("HOME".to_owned(), "/declared/home".to_owned())]);
+    let r = exec::exec(&spec_in(&tmp, r#"printf '%s' "$HOME""#, &env)).unwrap();
+    assert_eq!(r.stdout, b"/declared/home");
 }
 
 #[test]
