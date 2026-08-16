@@ -77,12 +77,15 @@ pub(crate) fn ensure(
 ) -> io::Result<Option<CutoverRun>> {
     match fs::cutover::status(root)? {
         CutoverStatus::Present(rec) if rec.state == CutoverState::NewCommitted => Ok(None),
-        CutoverStatus::Present(rec) => run(root, cache, cache_root, Resume::Record(rec)).map(Some),
+        CutoverStatus::Present(rec) => {
+            run(root, cache, cache_root, Resume::Record(rec), None).map(Some)
+        }
         CutoverStatus::Absent => run(
             root,
             cache,
             cache_root,
             Resume::Fresh { old_instance: None },
+            None,
         )
         .map(Some),
     }
@@ -102,23 +105,44 @@ pub(crate) enum Resume {
 }
 
 /// Walk the machine: drain → no-return → build → commit. See the module doc
-/// for what each phase is and is not.
+/// for what each phase is and is not. `live` is the workspace's ring when
+/// the cutover drains a SERVING workspace: its subscriptions END at the
+/// labeled boundary (one terminal `fingerprint_epoch_retired` control each,
+/// then close — card step 2: never a silent chain break) and the record
+/// remembers its retired instance. At-open cutovers have no ring.
 pub(crate) fn run(
     root: &fs::WorkspaceRoot,
     cache: &Arc<Mutex<fs::DomainCache>>,
     cache_root: &Path,
     resume: Resume,
+    live: Option<&crate::ring::WorkspaceRing>,
 ) -> io::Result<CutoverRun> {
     let t_total = Instant::now();
 
     // DRAINING (in-RAM by design — a crash here leaves no record and the
     // old law serving, the pre-boundary crash row): the interim EX is the
     // cross-process admission close; holding it proves no governed writer
-    // is in flight. Not durable: the record's two states are the only
+    // is in flight. Subscriptions end HERE, labeled (the paper's drain
+    // steps 6–7); a crash after the send and before the boundary closed
+    // subscribers spuriously, which is safe — they resync and the old law
+    // still serves. Not durable: the record's two states are the only
     // durable ones (merkle-spec §4.2.6).
     let t = Instant::now();
     let _ex = acquire_ex(root)?;
     settled_intents(root)?;
+    let domain = fs::domain::Domain::load(root)?.version();
+    let cutover_id = match &resume {
+        Resume::Fresh { .. } => fs::cutover::mint_cutover_id(),
+        Resume::Record(record) => record.cutover_id.clone(),
+    };
+    let observed_instance = live.map(|ring| {
+        ring.retire_epoch(crate::ring::RetiredEpoch {
+            cutover_id: cutover_id.clone(),
+            from: (model::HASH_LAW_FLAT, domain),
+            to: (model::HASH_LAW_RADIX, domain),
+        });
+        ring.instance()
+    });
     let drain_us = t.elapsed().as_micros();
 
     // The no-return boundary — ONE durable act — or the resumption of a
@@ -126,13 +150,12 @@ pub(crate) fn run(
     let t = Instant::now();
     let record = match resume {
         Resume::Fresh { old_instance } => {
-            let domain = fs::domain::Domain::load(root)?.version();
             let record = CutoverRecord {
                 state: CutoverState::NewBuilding,
-                cutover_id: fs::cutover::mint_cutover_id(),
+                cutover_id,
                 from: model::RootVersion::law1(domain),
                 to: model::RootVersion::law2(domain),
-                old_instance,
+                old_instance: observed_instance.or(old_instance),
                 started_unix_ms: unix_ms(),
                 committed_unix_ms: None,
             };

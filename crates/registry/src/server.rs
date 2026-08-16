@@ -751,6 +751,35 @@ fn push_loop(
     // R2b: zero frames written for this long ⇒ drop. Any frame resets it.
     let mut last_write = Instant::now();
     while !shutdown.load(Ordering::SeqCst) {
+        // The cutover's labeled epoch end (wire-contract §4.7): ONE terminal
+        // `fingerprint_epoch_retired` control, then the subscription closes —
+        // never a silent chain break, never a content Delta.
+        if let Some(retired) = ring.retired() {
+            let mut error = ErrorBody::epoch_retired(&retired.cutover_id);
+            error = error.with_cutover_facts(
+                wire::FingerprintVersion {
+                    hash_law: retired.from.0,
+                    domain: retired.from.1,
+                },
+                wire::FingerprintVersion {
+                    hash_law: retired.to.0,
+                    domain: retired.to.1,
+                },
+                &retired.cutover_id,
+            );
+            let line = wire_line(
+                &wire::Response {
+                    id: None,
+                    ok: false,
+                    payload: ResponsePayload::Error { error },
+                },
+                rev,
+                None,
+            );
+            writer.write_all(line.as_bytes())?;
+            writer.flush()?;
+            return Ok(());
+        }
         // Detection failure never ends the sub; log and retry next cycle.
         if let Err(e) = ring.detect(&ws_root) {
             eprintln!("registry: watch reconcile ({}): {e:?}", ws.display());

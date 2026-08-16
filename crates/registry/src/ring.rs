@@ -48,6 +48,23 @@ pub struct WorkspaceRing {
     fold: Mutex<fs::DomainCache>,
     /// Live subscriptions — drives detection and reaper exemption.
     subscribers: AtomicUsize,
+    /// The cutover's labeled epoch end (merkle-spec §4.2.6, wire-contract
+    /// §4.7): set ONCE by the machine's live drain; every push loop answers
+    /// it with one terminal `fingerprint_epoch_retired` control and closes.
+    /// Never unset — the ring it retires is never current again.
+    retired: std::sync::OnceLock<RetiredEpoch>,
+}
+
+/// What the terminal control teaches: the one cutover event's id and its
+/// old/new two-dimensional versions.
+#[derive(Debug, Clone)]
+pub struct RetiredEpoch {
+    /// The B-04 record's stable cutover id.
+    pub cutover_id: String,
+    /// The retiring `(hash_law, domain)`.
+    pub from: (u32, u32),
+    /// The serving `(hash_law, domain)`.
+    pub to: (u32, u32),
 }
 
 #[derive(Debug)]
@@ -96,7 +113,21 @@ impl WorkspaceRing {
             }),
             fold: Mutex::new(fs::DomainCache::new()),
             subscribers: AtomicUsize::new(0),
+            retired: std::sync::OnceLock::new(),
         }
+    }
+
+    /// End this epoch at the cutover's labeled boundary (DRAINING step): the
+    /// push loops deliver one terminal control each and close. Idempotent —
+    /// the first caller's facts stand.
+    pub fn retire_epoch(&self, info: RetiredEpoch) {
+        let _ = self.retired.set(info);
+    }
+
+    /// The labeled epoch end, when the cutover set one.
+    #[must_use]
+    pub fn retired(&self) -> Option<&RetiredEpoch> {
+        self.retired.get()
     }
 
     fn state(&self) -> MutexGuard<'_, RingState> {
