@@ -2380,7 +2380,14 @@ fn mint_pin(
     // request carries. The pre-promotion span serves because the token is
     // anchor-removal-normalized: the promotion below cannot move it.
     let live_fp = mint_fingerprint(&target_doc, &fact_span, &spelled, &selector_text)?;
-    pin_proof_gate(spec, actor, &spelled, &selector_text, &live_fp, &fact.sec_rev)?;
+    pin_proof_gate(
+        spec,
+        actor,
+        &spelled,
+        &selector_text,
+        &live_fp,
+        &fact.sec_rev,
+    )?;
     let slot = promotion_slot(&target_doc.raw, fact_span.start);
     // The occurrence ordinal of the pinned node itself — the canonical
     // selector's LEAF segment carries `n` exactly when siblings collide

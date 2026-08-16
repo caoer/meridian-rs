@@ -689,7 +689,8 @@ fn a_cli_supplied_token_is_still_verified() {
 
     let mut wrong = pin_args("Guide/Leader's Guideline");
     let pin = wrong.pin.as_mut().expect("pin");
-    pin.fingerprint = Some("fp1.b3:0000000000000000000000000000000000000000000000000000000000000000".into());
+    pin.fingerprint =
+        Some("fp1.b3:0000000000000000000000000000000000000000000000000000000000000000".into());
     let err = splice(&root, None, &wrong, &[], None)
         .expect_err("a wrong token refuses even on the trusted door");
     assert_eq!(err.code, ErrorCode::PinProofRequired);

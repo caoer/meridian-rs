@@ -113,11 +113,10 @@ fn fingerprints_in_this_fixture_differ() {
     );
 }
 
-/// Unread actor: gated pin and ordinary-edit forge both refuse.
+/// Unproven actor: gated pin and ordinary-edit forge both refuse.
 #[test]
-fn an_unread_actor_cannot_forge_a_pin_through_ordinary_edits() {
+fn an_unproven_actor_cannot_forge_a_pin_through_ordinary_edits() {
     let (dir, root) = workspace();
-    let store = receipt::read_mint::ReadMintStore::new();
     let mallory = Some("agent-mallory");
     let before = std::fs::read_to_string(dir.path().join("plan.md")).expect("read");
 
@@ -138,12 +137,12 @@ fn an_unread_actor_cannot_forge_a_pin_through_ordinary_edits() {
             }),
         ),
         &[],
-        Some(&store),
+        None,
     );
     assert_eq!(
         gated.as_ref().err().map(|e| e.code),
-        Some(ErrorCode::ReadMintRequired),
-        "the read-mint gate must refuse an un-read pin"
+        Some(ErrorCode::PinProofRequired),
+        "the proof gate must refuse an unproven pin"
     );
 
     // 2. Ungated door: same claim as page text (token would verify green).
@@ -161,22 +160,18 @@ fn an_unread_actor_cannot_forge_a_pin_through_ordinary_edits() {
             None,
         ),
         &[],
-        Some(&store),
+        None,
     );
 
     assert!(
         forged.is_err(),
-        "an actor with no receipt must not commit lock bytes through an ordinary edit — \
+        "an unproven actor must not commit lock bytes through an ordinary edit — \
          the ARTIFACT must be guarded, not just the pin verb"
     );
     assert_eq!(
         std::fs::read_to_string(dir.path().join("plan.md")).expect("read"),
         before,
         "a refused forge must leave the file byte-unchanged"
-    );
-    assert!(
-        store.is_empty(),
-        "no read was ever minted for this actor — the ledger must still be empty"
     );
     assert!(
         lock::find(&fs::load(&root, std::path::Path::new("plan.md")).expect("load"))
@@ -186,7 +181,7 @@ fn an_unread_actor_cannot_forge_a_pin_through_ordinary_edits() {
     );
 }
 
-/// CLI (`actor: None`, D16-trusted for pin) still cannot put lock bytes as text.
+/// CLI (`actor: None`, proof-trusted for pin) still cannot put lock bytes as text.
 #[test]
 fn the_local_operator_door_cannot_write_lock_bytes_as_page_text() {
     let (_dir, root) = workspace();
@@ -227,13 +222,7 @@ fn plan_edits_lowering_cannot_forge_a_lock() {
         body: lock_block("guide", &["Guide", "Leader's Guideline"], &token),
         rev: None,
     }];
-    let forged = splice(
-        &root,
-        None,
-        &args,
-        &[],
-        Some(&receipt::read_mint::ReadMintStore::new()),
-    );
+    let forged = splice(&root, None, &args, &[], None);
     assert!(forged.is_err(), "plan_edits is a door to the same artifact");
     assert!(
         !std::fs::read_to_string(dir.path().join("plan.md"))
@@ -388,7 +377,7 @@ fn the_minted_pin_still_lands_and_re_pins_idempotently() {
             None,
         ),
         &[],
-        Some(&receipt::read_mint::ReadMintStore::new()),
+        None,
     )
     .expect("an ordinary edit beside an untouched lock still commits");
 }
