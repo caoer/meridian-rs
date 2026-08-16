@@ -1352,10 +1352,8 @@ pub fn commit_set(
         let composed = compose_receipt(before_receipt.as_ref(), append);
         overlay_written(root, rp, composed.as_bytes()).map_err(CommitSetError::Env)?;
         overlay_membership_from(root, rp, &composed).map_err(CommitSetError::Env)?;
-        let after_receipt = model::candidate_of_body(rp, composed);
-        if let Some(fd) =
-            model::delta::file_delta(before_receipt.as_ref(), Some(after_receipt.document()))
-        {
+        let after_receipt = build_doc(&Path(rp.clone()), &composed);
+        if let Some(fd) = model::delta::file_delta(before_receipt.as_ref(), Some(&after_receipt)) {
             files.push(wire_map::project_file_delta(rp, &fd));
         }
     }
@@ -5083,7 +5081,7 @@ pub fn commit_batch(
             let composed = compose_receipt(before_receipt.as_ref(), append);
             overlay_written(root, rp, composed.as_bytes()).map_err(CommitError::Env)?;
             overlay_membership_from(root, rp, &composed).map_err(CommitError::Env)?;
-            Some(model::candidate_of_body(rp, composed))
+            Some(build_doc(&Path(rp.clone()), &composed))
         }
         None => None,
     };
@@ -5091,9 +5089,7 @@ pub fn commit_batch(
 
     // Change facts → wire projection, in §7.1 print order: content file first,
     // then the receipt file, then a promotion's own row.
-    let after_receipt_doc = after_receipt
-        .as_ref()
-        .map(model::CandidateDocument::document);
+    let after_receipt_doc = after_receipt.as_ref();
     let files = commit_delta_files(
         &req.content_path,
         &before_content,
