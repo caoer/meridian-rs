@@ -473,6 +473,7 @@ pub fn publish(
     let content_fsync = sync_content(&txn.dests)?;
 
     let _ = fs::take_thread_tally(); // the metadata half tallies from here
+    let _drain = TallyDrain; // ...and leaves nothing behind, however it exits
     let metadata_start = Instant::now();
     // Held to the end: releasing before finalize would let an overlapping
     // writer rename over these dests while this intent is still Decided, and
@@ -513,6 +514,24 @@ pub fn publish(
         group_wait,
         cohort_size: cohort.max(1),
     })
+}
+
+/// Empties this thread's instrumentation tally when the publish path leaves,
+/// by any exit. The tally is per-thread and threads are reused, so a return
+/// between the two reads would otherwise leave sync time on the thread.
+///
+/// Raised by the non-opus adversarial review at the landing gate. The reads
+/// in [`publish`] are already ordered so no figure it reports can carry
+/// another transaction's time — the drain at the top of the metadata half
+/// zeroes the tally before anything is measured — so this changes no number.
+/// What it buys is that the guarantee stops depending on one caller keeping
+/// two lines in the right order.
+struct TallyDrain;
+
+impl Drop for TallyDrain {
+    fn drop(&mut self) {
+        let _ = fs::take_thread_tally();
+    }
 }
 
 /// This writer's own honest sync on its own staged content, one destination

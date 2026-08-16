@@ -3188,6 +3188,31 @@ pub fn honest_sync_dir(dir: &Path) -> io::Result<()> {
     if !durability_coordination() {
         return honest_sync_path(dir);
     }
+    // Contention-triggered means exactly this: with no other writer inside a
+    // directory sync there is no cohort to form, so the lone writer syncs its
+    // own fd and pays none of the round bookkeeping. A writer arriving in the
+    // race window merely makes two writers each sync their own descriptor —
+    // correct, and only unamortized. The count is process-wide rather than
+    // per-directory on purpose: reading a per-directory flag would cost the
+    // registry lookup this path exists to skip, and being wrong about it can
+    // only cost amortization, never durability.
+    let others = DIR_SYNCERS.fetch_add(1, Ordering::AcqRel);
+    let outcome = if others == 0 {
+        honest_sync_path(dir)
+    } else {
+        grouped_sync_dir(dir)
+    };
+    DIR_SYNCERS.fetch_sub(1, Ordering::AcqRel);
+    outcome
+}
+
+/// Writers currently inside [`honest_sync_dir`] — the contention signal, and
+/// nothing else. Never a lock and never a policy.
+static DIR_SYNCERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// The round protocol, entered only when another writer is already syncing a
+/// directory (see [`honest_sync_dir`]).
+fn grouped_sync_dir(dir: &Path) -> io::Result<()> {
     let rounds = dir_rounds(dir);
     let mut state = rounds.state.lock().unwrap_or_else(PoisonError::into_inner);
     let arrival = state.started;
