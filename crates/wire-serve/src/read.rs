@@ -1292,7 +1292,7 @@ fn composed_sections(
 
 /// wire §10.2 the opt-in strictness guard for `links`: refuse when the caller
 /// pinned a `require_root` the world no longer meets. Checked before the corpus
-/// is built, so both hosts call this against the `as_of_root` they already
+/// is built, so the host calls this against the `as_of_root` it already
 /// hold, before handing the built corpus to [`links`].
 ///
 /// # Errors
@@ -1318,7 +1318,7 @@ pub fn require_root_check(
 /// The §52 per-file refusal for an UNSERVED corpus member (in the hash domain,
 /// not UTF-8 — node-rev-merkle-spec §3 per-file degradation): the typed
 /// `invalid_utf8` naming the member, its condition, and where its bytes stand.
-/// One mint for every read face on both hosts (`docs/laws.md` Law 3) — a face
+/// One mint for every read face (`docs/laws.md` Law 3) — a face
 /// that answers `file_not_found` for a member that exists on disk serves an
 /// answers-miss, not the ruled degradation.
 #[must_use]

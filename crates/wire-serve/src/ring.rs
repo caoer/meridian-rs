@@ -268,7 +268,7 @@ impl RootRing {
     }
 }
 
-/// Write one Notification frame — the one push serializer, both hosts.
+/// Write one Notification frame — the one push serializer, the serving host.
 ///
 /// The frame is the stored ring object serialized directly (`{"delta":{…}}`,
 /// no `id` key — §3.1 classification): there is no second place a Delta becomes
@@ -323,7 +323,7 @@ pub fn write_frame(output: &mut impl Write, frame: &DeltaFrame, v3: bool) -> io:
 
 /// Does a frozen v2 session need a demoted copy of this frame? Every
 /// post-v2 field is consulted through the registry (`rev::is_reserved` —
-/// Law 3: one table, both hosts); the `unattested` VALUE demotion is a
+/// Law 3: one table, one host); the `unattested` VALUE demotion is a
 /// vocabulary rule, not a field, so it is named here directly.
 fn v2_demotable(frame: &DeltaFrame) -> bool {
     (crate::rev::is_reserved("effects", Position::NotificationRoot) && !frame.effects.is_empty())

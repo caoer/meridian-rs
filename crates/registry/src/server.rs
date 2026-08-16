@@ -1635,7 +1635,7 @@ fn doc_or_refusal<'e>(
     }
     if let Some(condition) = engine.unserved.get(&path.0) {
         // One mint for the §52 per-file refusal, shared with the links doors
-        // on both hosts (`wire_serve::read::unserved_refusal`).
+        // (`wire_serve::read::unserved_refusal`).
         return Err(wire_serve::read::unserved_refusal(path, condition));
     }
     // Out-of-domain read: the same single-file load the write door and the
