@@ -86,6 +86,10 @@ pub struct StepGuard {
     /// merge under a lossy decode stay two entries, so the residual compare
     /// cannot be blinded by a hostile name. Values are §12.2 leaf digests.
     pre: BTreeMap<Vec<u8>, [u8; 32]>,
+    /// Captured at open from the B-04 cutover record, so the bracket's
+    /// [`StepGuard::pre_root`] and [`StepGuard::close`] folds mint under the
+    /// same law the serving plane does (merkle-spec §4.2.6).
+    serving_law: crate::cutover::ServingLaw,
 }
 
 /// The captured domain-config state: the raw bytes of both declaration
@@ -271,11 +275,13 @@ impl StepGuard {
         let config = read_config(root)?;
         let domain = config.parse_domain()?;
         let pre = strict_domain_digests(root, &domain, memo)?;
+        let serving_law = crate::cutover::serving(root).map_err(GuardError::Io)?;
         Ok(StepGuard {
             root: root.clone(),
             domain,
             config,
             pre,
+            serving_law,
         })
     }
 
@@ -297,11 +303,13 @@ impl StepGuard {
         let pre = cache
             .observe(root, &domain, crate::ObserveLaw::Guarded)
             .map_err(observe_refusal)?;
+        let serving_law = cache.serving_law(root).map_err(GuardError::Io)?;
         Ok(StepGuard {
             root: root.clone(),
             domain,
             config,
             pre,
+            serving_law,
         })
     }
 
@@ -322,7 +330,7 @@ impl StepGuard {
     pub fn pre_root(&self) -> model::MerkleRoot {
         let refs: Vec<(&[u8], [u8; 32])> =
             self.pre.iter().map(|(p, d)| (p.as_slice(), *d)).collect();
-        model::merkle_root_of_leaves(&refs, self.domain.version())
+        crate::serving_root_of_leaves(&refs, self.serving_law, self.domain.version())
     }
 
     /// Cross-step continuity (the bracket is mid-RUN, not just mid-step):
@@ -419,7 +427,11 @@ impl StepGuard {
             return Err(GuardError::OutOfBand(delta));
         }
         let refs: Vec<(&[u8], [u8; 32])> = actual.iter().map(|(p, d)| (p.as_slice(), *d)).collect();
-        Ok(model::merkle_root_of_leaves(&refs, self.domain.version()))
+        Ok(crate::serving_root_of_leaves(
+            &refs,
+            self.serving_law,
+            self.domain.version(),
+        ))
     }
 }
 

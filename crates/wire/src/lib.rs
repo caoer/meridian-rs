@@ -2149,6 +2149,19 @@ pub enum ErrorCode {
     /// past your token" demand different acts. Resync. Message:
     /// [`version_unsupported_teaching`].
     FingerprintVersionUnsupported,
+    /// §4.7 (the cutover pair, amended 2026-08-16): the sub plane's view of
+    /// the same cutover event `fingerprint_version_retired` teaches on the
+    /// guard plane — the terminal control ending every subscription at the
+    /// boundary, and the refusal for a resumption cursor naming the retired
+    /// tree instance. Carries the same `cutover_id` and old/new version pair.
+    /// Resync. Message: [`epoch_retired_teaching`].
+    FingerprintEpochRetired,
+    /// §8 (the cutover pair, amended 2026-08-16; merkle-spec §4.2.6): the
+    /// per-workspace cutover record is unrecognized or corrupt, so which
+    /// hash LAW may serve is unknown — the engine blocks serving loudly and
+    /// never guesses old or new from surviving caches. Markdown is
+    /// preserved. Env class. Message: [`cutover_recovery_teaching`].
+    FingerprintCutoverRecoveryRequired,
     /// v2 §8: transient lock contention — same request may succeed.
     LockTimeout,
     /// v2 §10.2: a `require_root` demand the current world does not meet —
@@ -2264,7 +2277,8 @@ impl ErrorCode {
             | ErrorCode::DaemonOnly
             | ErrorCode::ConventionFault
             | ErrorCode::MountTableInvalid
-            | ErrorCode::WalkCycle => Recovery::Env,
+            | ErrorCode::WalkCycle
+            | ErrorCode::FingerprintCutoverRecoveryRequired => Recovery::Env,
             ErrorCode::CasMismatch
             | ErrorCode::RefNotFound
             | ErrorCode::ArmedDrift
@@ -2276,7 +2290,8 @@ impl ErrorCode {
             ErrorCode::RootMismatch
             | ErrorCode::RootUnknown
             | ErrorCode::FingerprintVersionRetired
-            | ErrorCode::FingerprintVersionUnsupported => Recovery::Resync,
+            | ErrorCode::FingerprintVersionUnsupported
+            | ErrorCode::FingerprintEpochRetired => Recovery::Resync,
             ErrorCode::BadFrame | ErrorCode::UnsupportedProto | ErrorCode::Internal => {
                 Recovery::Respawn
             }
@@ -2309,6 +2324,30 @@ pub fn version_unsupported_teaching(scope: &str) -> String {
          serving law; to keep the newer tokens, upgrade the engine, not the \
          token."
     )
+}
+
+/// The §8.2 register-law teaching for `fingerprint_epoch_retired` (drafted
+/// 2026-08-16 — the cutover pair; wire-contract §4.7): the sub plane's view
+/// of the cutover event. `<cutover_id>` filled.
+#[must_use]
+pub fn epoch_retired_teaching(cutover_id: &str) -> String {
+    format!(
+        "this subscription's epoch ended at a hash-law cutover — the tree \
+         instance it names is retired, not merely dead. Re-read the \
+         workspace and subscribe fresh at the new instance; re-mint any held \
+         tokens at their scopes and re-plan once (cutover {cutover_id})."
+    )
+}
+
+/// The §8.2 register-law teaching for `fingerprint_cutover_recovery_required`
+/// (drafted 2026-08-16 — the cutover pair; merkle-spec §4.2.6).
+#[must_use]
+pub fn cutover_recovery_teaching() -> &'static str {
+    "this workspace's cutover record is unrecognized or corrupt, so which \
+     hash law may serve is unknown. Serving is blocked; Markdown is \
+     preserved and untouched. Recover or remove .meridian/cutover from a \
+     known-good state — the engine never guesses a law from surviving \
+     caches."
 }
 
 /// The B-01 register-law teaching for a `sub` that anchors by number alone
@@ -2503,6 +2542,29 @@ pub struct ErrorBody {
     /// edge kind and count, path-lex sorted — the caller's unlink worklist.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub referrers: Option<Vec<Referrer>>,
+    /// The cutover pair (`fingerprint_version_retired` /
+    /// `fingerprint_epoch_retired`, amended 2026-08-16): the held token's
+    /// two-dimensional version, as classified.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub received_fingerprint_version: Option<FingerprintVersion>,
+    /// The cutover pair: the serving two-dimensional version.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_fingerprint_version: Option<FingerprintVersion>,
+    /// The cutover pair: the stable id of the one cutover event — a client
+    /// memoizes it per workspace so repeated old premises reuse one re-plan.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cutover_id: Option<String>,
+}
+
+/// A two-dimensional fingerprint version on the wire (merkle-spec §4.2.5:
+/// hash law orthogonal to workspace domain) — the cutover pair's
+/// `received_fingerprint_version` / `current_fingerprint_version` extras.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FingerprintVersion {
+    /// The interior-encoding law (1 flat, 2 radix-256, …).
+    pub hash_law: u32,
+    /// The §12.3 workspace-domain version.
+    pub domain: u32,
 }
 
 impl ErrorBody {
@@ -2536,6 +2598,9 @@ impl ErrorBody {
             new_content: None,
             new_fingerprint: None,
             referrers: None,
+            received_fingerprint_version: None,
+            current_fingerprint_version: None,
+            cutover_id: None,
         }
     }
 
@@ -2556,6 +2621,42 @@ impl ErrorBody {
     pub fn version_unsupported(scope: &str) -> Self {
         let mut body = ErrorBody::new(ErrorCode::FingerprintVersionUnsupported);
         body.message = Some(version_unsupported_teaching(scope));
+        body
+    }
+
+    /// Attach the cutover pair's mandatory facts (gate 4: old/new
+    /// two-dimensional versions and the stable cutover id) to a retirement
+    /// or epoch refusal.
+    #[must_use]
+    pub fn with_cutover_facts(
+        mut self,
+        received: FingerprintVersion,
+        current: FingerprintVersion,
+        cutover_id: &str,
+    ) -> Self {
+        self.received_fingerprint_version = Some(received);
+        self.current_fingerprint_version = Some(current);
+        self.cutover_id = Some(cutover_id.to_owned());
+        self
+    }
+
+    /// The `fingerprint_epoch_retired` control/refusal with its teaching —
+    /// the sub plane's view of the cutover event (§4.7, amended 2026-08-16).
+    #[must_use]
+    pub fn epoch_retired(cutover_id: &str) -> Self {
+        let mut body = ErrorBody::new(ErrorCode::FingerprintEpochRetired);
+        body.message = Some(epoch_retired_teaching(cutover_id));
+        body.cutover_id = Some(cutover_id.to_owned());
+        body
+    }
+
+    /// The `fingerprint_cutover_recovery_required` refusal with its teaching
+    /// — an unrecognized or corrupt cutover record blocks serving loudly
+    /// (merkle-spec §4.2.6).
+    #[must_use]
+    pub fn cutover_recovery_required() -> Self {
+        let mut body = ErrorBody::new(ErrorCode::FingerprintCutoverRecoveryRequired);
+        body.message = Some(cutover_recovery_teaching().to_owned());
         body
     }
 }

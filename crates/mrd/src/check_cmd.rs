@@ -721,7 +721,11 @@ fn staged_interval(
         return Interval::Coincides;
     }
 
-    let (files, _fold) = fs::overlay_snapshot(worktree_files, &divergence, domain);
+    let serving_law = match fs::cutover::serving(root) {
+        Ok(law) => law,
+        Err(e) => return Interval::CannotAsk(e.to_string()),
+    };
+    let (files, _fold) = fs::overlay_snapshot(worktree_files, &divergence, domain, serving_law);
     let paths = divergence
         .iter()
         .filter(|(rel, _)| domain.contains(Path::new(rel)))

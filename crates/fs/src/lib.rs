@@ -626,10 +626,16 @@ pub struct DomainCache {
     /// the content-fold compare). Bound by the cache's owner
     /// ([`Self::bind_stamps`]); the write paths below stamp through it.
     stamps: Option<StampSource>,
-    /// The served law-1 root under the interim law (merged plan §6 step 3):
-    /// recomputed only when the tree advances or the domain version moves —
-    /// `(domain version, root)`.
-    served: Option<(u32, model::MerkleRoot)>,
+    /// The served root cache: recomputed only when the tree advances, the
+    /// domain version moves, or the serving law flips — keyed by the full
+    /// two-dimensional identity so a cutover inside one process can never
+    /// serve a stale old-law token (merkle-spec §4.2.6).
+    served: Option<(model::RootVersion, model::MerkleRoot)>,
+    /// The workspace's serving hash-law dimension, resolved from the B-04
+    /// cutover record at the first observation and cached for the life of
+    /// this memo. The cutover machine flips it in place
+    /// ([`Self::set_serving_law`]); absent record ⇒ law 1, boundary 0.
+    serving_law: Option<cutover::ServingLaw>,
     /// The domain as of the last observation or the last
     /// [`overlay_membership`](Self::overlay_membership) — the overlay's
     /// membership and version law. The overlay never composes against a
@@ -795,24 +801,38 @@ impl DomainCache {
             .observe(root, &domain, ObserveLaw::Plain)
             .map_err(plain_refusal)?;
         let version = domain.version();
-        // The interim served-token law (merged plan §6 step 3): the served
-        // value stays law-1, derived from the resident structure's current
-        // leaves, recomputed only when the root advances. The observation
-        // above invalidated the cache iff the tree moved.
+        // The served-token law (merkle-spec §4.2.5/§4.2.6): pre-cutover the
+        // served value is the law-1 flat fold from the resident structure's
+        // current leaves; past the boundary it is the law-2 radix
+        // fingerprint the resident tree already holds — O(1), no flat fold.
+        // Recomputed only when the root advances; the observation above
+        // invalidated the cache iff the tree moved.
+        let serving_law = self
+            .serving_law
+            .expect("observe resolved the serving law above");
+        let current = model::RootVersion {
+            hash_law: serving_law.hash_law,
+            domain: version,
+        };
         if let Some((v, cached)) = &self.served
-            && *v == version
+            && *v == current
         {
             return Ok(cached.clone());
         }
-        self.flat_folds += 1;
-        // Raw name bytes into the fold (merkle-spec §4/§9) — the same names
-        // `domain_snapshot` folds, so the byte-identity holds on any corpus.
-        let leaves: Vec<(&[u8], [u8; 32])> = rows
-            .iter()
-            .map(|(name, digest)| (name.as_slice(), *digest))
-            .collect();
-        let folded = model::merkle_root_of_leaves(&leaves, version);
-        self.served = Some((version, folded.clone()));
+        let folded = if serving_law.hash_law == model::HASH_LAW_RADIX {
+            current.token(self.tree.fingerprint())
+        } else {
+            self.flat_folds += 1;
+            // Raw name bytes into the fold (merkle-spec §4/§9) — the same
+            // names `domain_snapshot` folds, so the byte-identity holds on
+            // any corpus.
+            let leaves: Vec<(&[u8], [u8; 32])> = rows
+                .iter()
+                .map(|(name, digest)| (name.as_slice(), *digest))
+                .collect();
+            model::merkle_root_of_leaves(&leaves, version)
+        };
+        self.served = Some((current, folded.clone()));
         Ok(folded)
     }
 
@@ -831,7 +851,14 @@ impl DomainCache {
         let leaves = self
             .observe(root, &domain, ObserveLaw::Plain)
             .map_err(plain_refusal)?;
-        Ok(DomainLeaves { leaves, domain })
+        let serving_law = self
+            .serving_law
+            .expect("observe resolved the serving law above");
+        Ok(DomainLeaves {
+            leaves,
+            domain,
+            serving_law,
+        })
     }
 
     /// One observation of the domain through the resident memos — the shared
@@ -864,6 +891,13 @@ impl DomainCache {
         // at); losses landing mid-pass stay unabsorbed. Counted at entry so
         // an aborted sweep still shows on the §7(d) counter.
         self.sweeps += 1;
+        // Resolve the serving hash law once per memo (merkle-spec §4.2.6):
+        // the B-04 record decides which LAW every served token below mints
+        // under. Corrupt or mid-build records refuse loudly here — before a
+        // single row lands — and never guess.
+        if self.serving_law.is_none() {
+            self.serving_law = Some(cutover::serving(root).map_err(ObserveRefusal::Io)?);
+        }
         let losses_at_start = self.feed.losses();
         let trust = self.trust_context(root);
         let (mut rels, mut offenders, fresh_dirs, listings) =
@@ -1301,27 +1335,43 @@ impl DomainCache {
     /// No observation has landed yet (as [`Self::overlay_leaf`]).
     pub fn overlay_root(&mut self) -> io::Result<model::MerkleRoot> {
         let version = self.overlay_domain()?.version();
+        let Some(serving_law) = self.serving_law else {
+            // Unreachable through the door flow (an observation precedes
+            // every overlay) — refuse rather than mint under a guessed law.
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "overlay_root before any observation resolved the serving law",
+            ));
+        };
+        let current = model::RootVersion {
+            hash_law: serving_law.hash_law,
+            domain: version,
+        };
         if let Some((v, cached)) = &self.served
-            && *v == version
+            && *v == current
         {
             return Ok(cached.clone());
         }
-        self.flat_folds += 1;
-        let leaves: Vec<(&[u8], [u8; 32])> = self
-            .leaves
-            .iter()
-            .map(|(rel, entry)| (hash_name(rel), entry.digest))
-            .collect();
-        let folded = model::merkle_root_of_leaves(&leaves, version);
-        self.served = Some((version, folded.clone()));
+        let folded = if serving_law.hash_law == model::HASH_LAW_RADIX {
+            current.token(self.tree.fingerprint())
+        } else {
+            self.flat_folds += 1;
+            let leaves: Vec<(&[u8], [u8; 32])> = self
+                .leaves
+                .iter()
+                .map(|(rel, entry)| (hash_name(rel), entry.digest))
+                .collect();
+            model::merkle_root_of_leaves(&leaves, version)
+        };
+        self.served = Some((current, folded.clone()));
         Ok(folded)
     }
 
     /// Resolve one scope against the resident tree (merkle-spec §7 scope
     /// rows): root, folder, file leaf, `absent` — or the tree's two
     /// `scope_unresolved` refusals (§4.4 collision, kind conflict). Law-2
-    /// values, engine-internal until the cutover: no wire surface mints or
-    /// serves from this before merged plan §6 step 7.
+    /// values; the served token rides them once the workspace is past the
+    /// cutover boundary (§4.2.6 — before it, [`Self::root`] serves law 1).
     ///
     /// # Errors
     /// [`resident::ScopeRefusal`] naming the refusing path.
@@ -1329,9 +1379,51 @@ impl DomainCache {
         self.tree.fold_at(scope)
     }
 
+    /// The workspace's serving hash-law dimension — resolved from the B-04
+    /// cutover record at the first observation and cached
+    /// (merkle-spec §4.2.6). Resolves now if no observation has landed yet.
+    ///
+    /// # Errors
+    /// The record's typed refusals ([`cutover::serving`]).
+    pub fn serving_law(&mut self, root: &WorkspaceRoot) -> io::Result<cutover::ServingLaw> {
+        if let Some(law) = self.serving_law {
+            return Ok(law);
+        }
+        let law = cutover::serving(root)?;
+        self.serving_law = Some(law);
+        Ok(law)
+    }
+
+    /// The full two-dimensional serving identity at the live domain version —
+    /// what every guard-door family classification runs against
+    /// (`model::ServingVersion::classify`, wire-contract §5.7).
+    ///
+    /// # Errors
+    /// The record's typed refusals; I/O loading the domain config when no
+    /// observation has landed yet.
+    pub fn serving_version(&mut self, root: &WorkspaceRoot) -> io::Result<model::ServingVersion> {
+        let law = self.serving_law(root)?;
+        let domain = match &self.domain_seen {
+            Some(domain) => domain.version(),
+            None => domain::Domain::load(root)?.version(),
+        };
+        Ok(law.version(domain))
+    }
+
+    /// Flip the serving law in place — the cutover machine's act on the one
+    /// memo it drives, immediately after the B-04 record advances. Clears
+    /// the served-token cache so nothing minted under the old law survives
+    /// the flip (merkle-spec §4.2.6 survival law).
+    pub fn set_serving_law(&mut self, law: cutover::ServingLaw) {
+        self.serving_law = Some(law);
+        self.served = None;
+    }
+
     /// The law-2 workspace fingerprint of the resident tree (merkle-spec
-    /// §4.2.3). Engine-internal until the cutover — the interim SERVED value
-    /// is [`Self::root`] / [`Self::overlay_root`]'s law-1 token.
+    /// §4.2.3). Past the cutover boundary this IS the served value's digest
+    /// ([`Self::root`] / [`Self::overlay_root`] spell it under the law-2
+    /// prefix); before the boundary the served token stays law 1 and this
+    /// value backs the checkpoint binding only (§4.2.6).
     pub fn law2_fingerprint(&mut self) -> [u8; 32] {
         self.tree.fingerprint()
     }
@@ -1915,6 +2007,31 @@ pub fn domain_snapshot(root: &WorkspaceRoot) -> io::Result<(DomainFiles, model::
     Ok((files, folded))
 }
 
+/// The SERVED `Root`-family token of `leaves` under `serving_law` at
+/// `domain` — law 1: the flat interior fold ([`model::merkle_root_of_leaves`]);
+/// law 2: the fixed-256 radix fold, a scratch [`resident::ResidentTree`]
+/// build over the same leaves (merkle-spec §4.2). The ONE spelling every
+/// fs-side fold site shares, so the delta plane, the cold build, the run
+/// plane, and the write bracket cross the cutover boundary together — a site
+/// left on the old fold would mint a mixed-law chain no string compare
+/// catches.
+#[must_use]
+pub fn serving_root_of_leaves(
+    leaves: &[(&[u8], [u8; 32])],
+    serving_law: cutover::ServingLaw,
+    domain: u32,
+) -> model::MerkleRoot {
+    if serving_law.hash_law == model::HASH_LAW_RADIX {
+        let mut tree = resident::ResidentTree::new();
+        for (name, digest) in leaves {
+            tree.set_leaf(Path::new(std::ffi::OsStr::from_bytes(name)), *digest);
+        }
+        model::RootVersion::law2(domain).token(tree.fingerprint())
+    } else {
+        model::merkle_root_of_leaves(leaves, domain)
+    }
+}
+
 /// [`domain_snapshot`] with the per-member leaf set alongside the fold — the
 /// form a resident engine records so a later incremental pass
 /// ([`update_corpus`]) has a delta baseline. Same walk, same read, same fold;
@@ -1939,7 +2056,8 @@ pub fn domain_snapshot_with_leaves(
     }
     let leaf_refs: Vec<(&[u8], [u8; 32])> =
         leaves.iter().map(|(rel, d)| (hash_name(rel), *d)).collect();
-    let folded = model::merkle_root_of_leaves(&leaf_refs, domain.version());
+    let serving_law = cutover::serving(root)?;
+    let folded = serving_root_of_leaves(&leaf_refs, serving_law, domain.version());
     Ok((files, leaves, folded))
 }
 
@@ -1955,12 +2073,14 @@ pub fn domain_snapshot_with_leaves(
 pub struct DomainLeaves {
     leaves: BTreeMap<Vec<u8>, [u8; 32]>,
     domain: domain::Domain,
+    /// Captured at construction from the B-04 record, so overlay refolds
+    /// keep minting under the observation's own law (merkle-spec §4.2.6).
+    serving_law: cutover::ServingLaw,
 }
 
 impl DomainLeaves {
-    /// The fold of these leaves ([`model::merkle_root_of_leaves`] — the same
-    /// tree, encoding, and root as [`domain_snapshot`]'s over the same
-    /// bytes).
+    /// The fold of these leaves ([`serving_root_of_leaves`] — the same tree,
+    /// encoding, and root as [`domain_snapshot`]'s over the same bytes).
     #[must_use]
     pub fn root(&self) -> model::MerkleRoot {
         let refs: Vec<(&[u8], [u8; 32])> = self
@@ -1968,7 +2088,7 @@ impl DomainLeaves {
             .iter()
             .map(|(n, d)| (n.as_slice(), *d))
             .collect();
-        model::merkle_root_of_leaves(&refs, self.domain.version())
+        serving_root_of_leaves(&refs, self.serving_law, self.domain.version())
     }
 
     /// Replace (or insert) one member's leaf digest. A path outside the hash
@@ -2018,7 +2138,12 @@ pub fn domain_leaves_memoized(
         leaves.insert(hash_name(&rel).to_vec(), digest);
         memo.record(rel, key, digest);
     }
-    Ok(DomainLeaves { leaves, domain })
+    let serving_law = cutover::serving(root)?;
+    Ok(DomainLeaves {
+        leaves,
+        domain,
+        serving_law,
+    })
 }
 
 /// Below this member count the read+digest sweep stays serial: a fold that
@@ -2120,6 +2245,7 @@ pub fn overlay_snapshot(
     worktree: &DomainFiles,
     overlay: &[(String, Option<Vec<u8>>)],
     domain: &domain::Domain,
+    serving_law: cutover::ServingLaw,
 ) -> (DomainFiles, model::MerkleRoot) {
     let mut keyed: BTreeMap<PathBuf, (String, Vec<u8>)> = worktree
         .iter()
@@ -2140,11 +2266,11 @@ pub fn overlay_snapshot(
         }
     }
     let files: DomainFiles = keyed.into_values().collect();
-    let entries: Vec<(&str, &[u8])> = files
+    let leaves: Vec<(&[u8], [u8; 32])> = files
         .iter()
-        .map(|(p, b)| (p.as_str(), b.as_slice()))
+        .map(|(p, b)| (p.as_bytes(), model::leaf_digest(b)))
         .collect();
-    let folded = model::merkle_root(&entries, domain.version());
+    let folded = serving_root_of_leaves(&leaves, serving_law, domain.version());
     (files, folded)
 }
 
@@ -2361,8 +2487,8 @@ pub struct CorpusUpdate {
 /// refuses the pass whole — the Law A-3c posture, unchanged.
 ///
 /// The returned root folds the resulting leaf set through
-/// [`model::merkle_root_of_leaves`] — byte-identical to what
-/// [`domain_snapshot`] folds over the same tree state.
+/// [`serving_root_of_leaves`] — byte-identical to what [`domain_snapshot`]
+/// folds over the same tree state, under the same serving law.
 ///
 /// # Errors
 /// I/O failure loading the domain config or reading a moved member.
@@ -2434,7 +2560,8 @@ pub fn update_corpus(
     }
     let leaf_refs: Vec<(&[u8], [u8; 32])> =
         leaves.iter().map(|(rel, d)| (hash_name(rel), *d)).collect();
-    let folded = model::merkle_root_of_leaves(&leaf_refs, domain.version());
+    let serving_law = cutover::serving(root)?;
+    let folded = serving_root_of_leaves(&leaf_refs, serving_law, domain.version());
     Ok(CorpusUpdate {
         index: corpus_index_of(&docs),
         docs,

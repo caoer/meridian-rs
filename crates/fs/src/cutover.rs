@@ -193,15 +193,27 @@ pub fn serving(root: &WorkspaceRoot) -> io::Result<ServingLaw> {
             hash_law: model::HASH_LAW_FLAT,
             law_boundary: 0,
         }),
-        CutoverStatus::Present(rec) => match rec.state {
-            CutoverState::NewCommitted => Ok(ServingLaw {
-                hash_law: rec.to.hash_law,
-                law_boundary: rec.to.ladder_position(),
-            }),
-            CutoverState::NewBuilding => Err(io::Error::other(CutoverInProgress {
-                cutover_id: rec.cutover_id,
-            })),
-        },
+        CutoverStatus::Present(rec) => {
+            // Never-guess extends to the LAW dimension: a record naming a
+            // law this binary cannot mint blocks serving loudly — minting
+            // under a guessed encoding would be worse than not serving.
+            if rec.to.hash_law != model::HASH_LAW_RADIX {
+                return Err(state_error(format!(
+                    "record names serving hash law {} — this engine mints law {} only",
+                    rec.to.hash_law,
+                    model::HASH_LAW_RADIX
+                )));
+            }
+            match rec.state {
+                CutoverState::NewCommitted => Ok(ServingLaw {
+                    hash_law: rec.to.hash_law,
+                    law_boundary: rec.to.ladder_position(),
+                }),
+                CutoverState::NewBuilding => Err(io::Error::other(CutoverInProgress {
+                    cutover_id: rec.cutover_id,
+                })),
+            }
+        }
     }
 }
 
