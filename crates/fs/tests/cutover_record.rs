@@ -136,11 +136,27 @@ fn truncation_and_unknown_words_are_loud() {
     cutover::begin_new_building(&root, &building(0)).expect("begin");
     let path = root.0.join(".meridian/cutover");
     let full = std::fs::read(&path).expect("read");
-    for cut in [1, full.len() / 2, full.len() - 1] {
+    // Every truncation that LOSES DATA refuses: the checksum covers every
+    // preceding byte, so a short read can never decode.
+    for cut in [1, full.len() / 2, full.len() - 2] {
         std::fs::write(&path, &full[..cut]).expect("truncate");
         let err = cutover::status(&root).expect_err("truncated");
         assert!(is_cutover_state_error(&err), "cut={cut}: {err}");
     }
+
+    // The boundary, stated rather than left to a reader's assumption:
+    // dropping ONLY the record's trailing newline loses no information —
+    // every field line and the whole checksum survive — so it still decodes.
+    // This is the landed `intent` convention's behaviour (checksum is the
+    // last line, compared trimmed), inherited deliberately.
+    std::fs::write(&path, &full[..full.len() - 1]).expect("drop the newline");
+    assert!(
+        matches!(
+            cutover::status(&root).expect("a complete record still decodes"),
+            CutoverStatus::Present(_)
+        ),
+        "losing only the trailing newline loses no record data"
+    );
 
     // Unknown state word and unknown format line: loud, with the checksum
     // valid — the never-guess arm is semantic, not just integrity.

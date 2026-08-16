@@ -64,6 +64,32 @@ fn args(if_root: Option<Root>, old: &str, new: &str) -> SpliceArgs {
     }
 }
 
+/// The same wire request a real client sends AFTER its read: the world guard
+/// plus the node-grain token the § A.1 wire-origin demand requires for any
+/// edit that changes existing content (`guard.rs::guard_batch` — landed law,
+/// unrelated to the cutover). A fixture that omitted it would be driving the
+/// door in a shape production never uses.
+fn guarded(root: &fs::WorkspaceRoot, if_root: Option<Root>, old: &str, new: &str) -> SpliceArgs {
+    let doc = fs::load(root, std::path::Path::new("notes/plan.md")).expect("read the page");
+    let target = model::resolve(
+        &doc,
+        &model::Ref::Hpath(vec![
+            model::HpathSeg {
+                h: "Alpha".into(),
+                n: None,
+            },
+            model::HpathSeg {
+                h: "Beta".into(),
+                n: None,
+            },
+        ]),
+    )
+    .expect("the section resolves");
+    let mut args = args(if_root, old, new);
+    args.edits[0].if_node_rev = Some(wire::NodeRev(target.node_rev.0));
+    args
+}
+
 /// Cross the boundary the way the machine's durable acts do: the record is
 /// the authority (merkle-spec §4.2.6); the registry machine is orchestration
 /// around exactly these two writes.
@@ -100,7 +126,7 @@ fn three_errors_three_facts_through_the_real_splice_door() {
     splice(
         &root,
         None,
-        &args(Some(root0.clone()), "friday", "monday"),
+        &guarded(&root, Some(root0.clone()), "friday", "monday"),
         &[],
         None,
     )
@@ -185,7 +211,7 @@ fn three_errors_three_facts_through_the_real_splice_door() {
     splice(
         &root,
         None,
-        &args(Some(served.clone()), "monday", "tuesday"),
+        &guarded(&root, Some(served.clone()), "monday", "tuesday"),
         &[],
         None,
     )
