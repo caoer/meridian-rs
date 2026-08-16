@@ -494,6 +494,24 @@ impl Registry {
         engines.get(canonical).cloned()
     }
 
+    /// The resident engine's [`Arc`] for `canonical` — WITHOUT parking.
+    /// `None` when no engine is resident, and also when the engines lock is
+    /// not immediately free (a writer holds it, or queues behind a long
+    /// read). The hello door reports the resident fold through this: hello
+    /// is config-grade (wire-contract §3.2) and must never queue behind
+    /// corpus-scoped work — a links serve holds the engines read lock for
+    /// its whole corpus computation, so a rebuild insert queued behind it
+    /// walls every ordinary reader (measured on the live sessions corpus,
+    /// 2026-08-16: hello went from 20 ms to a 10 s timeout the moment the
+    /// resident engine landed and the links closure started). The fold is an
+    /// optional field; "not readable this instant" serves as absent, exactly
+    /// like cold.
+    #[must_use]
+    pub fn engine_snapshot_nowait(&self, canonical: &Path) -> Option<Arc<WorkspaceEngine>> {
+        let engines = self.engines.try_read().ok()?;
+        engines.get(canonical).cloned()
+    }
+
     /// The workspace's resident sql cache handle (§ A.11), opened in its
     /// storage drawer on first use — this daemon is the file's single owner.
     /// `workspace` must be canonical (the hello bind supplies it).

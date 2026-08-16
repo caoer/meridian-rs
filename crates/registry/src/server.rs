@@ -1050,7 +1050,14 @@ fn hello_body(
             PinOutcome::Pinned { workspace, drawer } => {
                 fs::domain::Domain::load(&fs::WorkspaceRoot(workspace.clone()))
                     .map_err(|e| warm_err_to_wire(&e))?;
-                let root = registry.with_engine(&workspace, |engine| engine.map(engine_root));
+                // try_read, never a parking read: a rebuild insert queued
+                // behind a long links closure walls ordinary readers, and
+                // hello must answer through that too
+                // (Registry::engine_snapshot_nowait). Absent-under-contention
+                // is the same honest answer as cold.
+                let root = registry
+                    .engine_snapshot_nowait(&workspace)
+                    .map(|engine| engine_root(&engine));
                 let bound = workspace.to_string_lossy().into_owned();
                 *attached = Some(workspace);
                 (
@@ -2213,6 +2220,81 @@ mod hello_config_grade_tests {
             json!(true),
             "A's read lands after release: {toc}"
         );
+
+        server.shutdown();
+    }
+
+    /// The second seam the live probe caught (2026-08-16, sessions corpus):
+    /// a `links` serve computes its whole map INSIDE the engines read lock,
+    /// a rebuild insert queues behind it, and from that moment every
+    /// ordinary reader parks behind the queued writer. hello reads the
+    /// resident fold with `try_read` and answers through that wall.
+    ///
+    /// The long read is driven through the public borrow (`with_engine`
+    /// parked in its closure — exactly the links shape); the writer is a
+    /// second workspace's cold build parked on its `engines` insert.
+    #[test]
+    fn hello_answers_while_a_long_read_holds_the_engines_lock_and_a_writer_queues() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(ws.join("a.md"), "# A\n").unwrap();
+        let other = tmp.path().join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join("b.md"), "# B\n").unwrap();
+        let server = RunningServer::start(test_config(&tmp)).unwrap();
+
+        // Warm ws so a resident engine exists to read.
+        let mut warmer = Conn::open(server.socket_path());
+        assert_eq!(warmer.hello(&ws)["ok"], json!(true));
+        assert_eq!(
+            warmer.call(&json!({"op": "toc", "path": "a.md"}))["ok"],
+            json!(true)
+        );
+
+        let registry = server.registry();
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        let (r_in_tx, r_in_rx) = mpsc::channel::<()>();
+        let (r_out_tx, r_out_rx) = mpsc::channel::<()>();
+        std::thread::scope(|scope| {
+            // Thread R: the long read — parks inside the engines read borrow.
+            let r_canonical = canonical.clone();
+            let r_handle = scope.spawn(move || {
+                registry.with_engine(&r_canonical, |engine| {
+                    assert!(engine.is_some(), "ws is warm");
+                    r_in_tx.send(()).unwrap();
+                    r_out_rx.recv().unwrap();
+                });
+            });
+            r_in_rx.recv().expect("the long read holds the borrow");
+
+            // Thread W: a cold build of ANOTHER workspace — its insert
+            // queues on the engines write lock behind R.
+            let w_other = other.clone();
+            let w_handle = scope.spawn(move || {
+                registry.warm_or_build(&w_other).unwrap();
+            });
+            // Let W finish its tiny build and reach the queued insert.
+            std::thread::sleep(Duration::from_millis(300));
+
+            // Connection B: hello answers through the wall. (Whether the
+            // fold rides along is platform lock policy — under a queued
+            // writer a try_read may refuse — so only the ANSWERING is
+            // pinned, with the read timeout as the loud failure.)
+            let mut b = Conn::open(server.socket_path());
+            b.set_read_timeout(Duration::from_secs(10));
+            let hi = b.hello(&ws);
+            assert_eq!(
+                hi["ok"],
+                json!(true),
+                "hello answers while a long read holds the engines lock and \
+                 a writer queues: {hi}"
+            );
+
+            r_out_tx.send(()).expect("release the long read");
+            r_handle.join().expect("long read completes");
+            w_handle.join().expect("queued build completes");
+        });
 
         server.shutdown();
     }
