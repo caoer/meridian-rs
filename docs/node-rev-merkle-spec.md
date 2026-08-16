@@ -2,7 +2,7 @@
 type: spec
 id: merkle
 status: standing
-updated: 2026-08-15
+updated: 2026-08-16
 description: Normative hash law for `node_rev` and the workspace merkle fingerprint (two law versions, radix-256 from the cutover), plus the resident tree that serves it, with worked examples.
 owns: [node_rev, merkle encoding, resident tree, event feed]
 ---
@@ -90,9 +90,9 @@ fixed-256 radix child map) is the law of the first scoped-token version.
 Exactly one law is current per workspace at any time — there is no dual-hash
 serving window. Rulings: `decisions/2026-08-15-width-sharding-now.md`
 (sharding-now, deferral rejected); cutover GO per
-`decisions/2026-08-15-plan-rulings-final.md` R1 (priced protocol, the
-pre-cutover code blockers first — B-01/B-02/B-04; B-03 is not a blocker,
-§4.2.5 amendment — pay-once accepted in its `B_cutover` amendment).
+`decisions/2026-08-15-plan-rulings-final.md` R1 (priced protocol,
+pre-cutover code blockers B-01 / B-02 / B-04 first — B-03 is not a
+blocker — pay-once accepted in its `B_cutover` amendment).
 
 ### 4.1 Merkle law 1 — the flat interior encoding (retiring at the cutover)
 
@@ -934,7 +934,7 @@ it.
 - Node objects / `resolve`: node_rev algorithm (§1–2) is the hash law for CAS tokens.
 - Caps advertise `fingerprint`, `diff`, `splice.if_fingerprint` (and related) — not a `guard` op.
 - Error codes: `fingerprint_mismatch`, `fingerprint_unknown`, `scope_unresolved`, `fingerprint_version_retired` (not `root_*`); the three-family split is §7's law.
-- Routine writes route through the daemon (RULED B, daemon-routed — `decisions/2026-08-15-pre-merge-rulings.md` ruling 4): the CLI rides the daemon's resident tree over IPC; direct writing retires; `LOCK_EX` on `write.lock` becomes takeover/recovery only. The write plane's own law (lease, intents, parallel disjoint commits, the ruled plain-fsync sync class — `docs/laws.md` Amendment, the fsync class) is the authority contract's, not this spec's. Construction step 6's publication half — reservation algebra, checksummed `O_EXCL` intents, the one state owner's contiguous root chain — lives in `crates/wire-serve/src/publish.rs` (disk primitives in `crates/fs/src/intent.rs`); the lease half is `authority.rs`. The live write door keeps its interim flock until the cutover flips routing. The `apply_batch` pre-image verify is the in-process second-writer refusal under B (`docs/laws.md` Amendment — the one state owner).
+- Routine writes route through the daemon (RULED B, daemon-routed — `decisions/2026-08-15-pre-merge-rulings.md` ruling 4): the CLI rides the daemon's resident tree over IPC; direct writing retires; `LOCK_EX` on `write.lock` becomes takeover/recovery only. The write plane's own law (lease, intents, parallel disjoint commits, the ruled plain-fsync class) is the authority contract's, not this spec's. Construction step 6's publication half — reservation algebra, checksummed `O_EXCL` intents, the one state owner's contiguous root chain — lives in `crates/wire-serve/src/publish.rs` (disk primitives in `crates/fs/src/intent.rs`); the lease half is `authority.rs`. The live write door keeps its interim flock until the cutover flips routing. The `apply_batch` pre-image verify is the in-process second-writer refusal under B (`docs/laws.md` Amendment — the one state owner).
 - The effects lane (`run`, script-with-effects) is UNGUARDED by ruling (`decisions/2026-08-15-no-guard-on-effects.md`; the normative paragraph lives in `run-plane.md`) — but guard-free never means fold-invisible: every effects write rides the same write choke-point and maintains the resident tree (leaf update, chain refold, §6.2 watermark discipline). That is tree maintenance, not a guard.
 - **File death mints no terminal hash (RULED, ZT 2026-08-15, card `engine-delete-door`: "No tombstone — death Delta is the record").** A guarded `remove` (`wire-contract.md` § A.3) unlinks the leaf; the next fold composes the tree without it under the current §4 encoding — removal is already in the diff shape (§0, "whole-subtree enumeration on add/remove") and no new hash law exists for it. Under law 2 this is the §4.2.2 delete rule: the child map re-canonicalizes as if the entry never existed. A rev is a function of bytes (§2); absent bytes mint nothing: the death's terminal facts are the removed file's LAST rev (`file_rev_before`, confirmed by the remove-what-you-read CAS) and the workspace fingerprint transition, both carried by the death Delta (`change:"deleted"`, `wire-contract.md` §7.1). No tombstone leaf, no on-disk marker — disk stays markdown only, and history past the ring re-derives to a world where the path is simply absent. The emptied path itself now mints `absent` (§7) — a legal premise, not an error.
 

@@ -2,7 +2,7 @@
 type: contract
 id: wire
 status: standing
-updated: 2026-08-15
+updated: 2026-08-16
 description: Standing wire constitution. One document. Docs define law; code may lag.
 owns: [the wire constitution — nouns, ops, guards, receipts, errors]
 ---

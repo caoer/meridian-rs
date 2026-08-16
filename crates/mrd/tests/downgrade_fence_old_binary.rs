@@ -1,21 +1,20 @@
 //! B-03 crash-phase × filesystem matrix — the pinned-old-binary process cells.
 //!
-//! The binary this file drives (`CARGO_BIN_EXE_mrd`, sha256 printed per run)
-//! drives the current `mrd` binary over its process boundary. CLI writes now
-//! route over IPC (card cli-ipc-routing); the fence still holds because the
-//! daemon publish path opens `.meridian/write.lock` (interim flock law until
-//! parallel-commits). Every cell proves the §4.7 amendment-3 obligation: past
-//! the commit point the write cannot take `write.lock` and cannot mint an
-//! old-law root (bytes unchanged, no receipt, typed refusal); before the
-//! commit point it still commits normally (no early activation — the
-//! no-rollback error class).
+//! The fence landed dormant (ZT 2026-08-15: not a cutover blocker; no
+//! old-binary users; leftover bin = delete it; never activate on downgrade
+//! grounds). These cells still prove the mechanism against the current `mrd`
+//! (`CARGO_BIN_EXE_mrd`, sha256 printed per run) over its process boundary.
+//! CLI writes route over IPC; the fence still holds because the daemon
+//! publish path opens `.meridian/write.lock` (interim flock until
+//! parallel-commits). When a test activates the fence past the commit point
+//! the write cannot take `write.lock` and cannot mint; before that point it
+//! still commits. Production doors activate nothing.
 //!
-//! The in-process half of the matrix (every rung, adversarial cells) lives in
+//! The in-process half of the matrix lives in
 //! `crates/fs/tests/downgrade_fence.rs`.
 //!
-//! Post-landing assertion (the card's second gate): a workspace that took a
-//! REAL commit through this binary reports `NotInstalled` — nothing on any
-//! door path activates a fence.
+//! Post-landing assertion: a workspace that took a REAL commit through this
+//! binary reports `NotInstalled` — nothing on any door path activates a fence.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};

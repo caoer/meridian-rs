@@ -1,5 +1,5 @@
 //! Contract-rev negotiation + v3 vocabulary projection (one implementation for
-//! both hosts). Frozen v2 wire types stay byte-for-byte; v3 is envelope re-key
+//! the serving host). Frozen v2 wire types stay byte-for-byte; v3 is envelope re-key
 //! (`root` ↔ `fingerprint`) so decode/arms stay v2-only. No dual-emit: one
 //! epoch, one rev.
 
@@ -511,8 +511,8 @@ pub struct ReservedField {
 }
 
 /// The table — append-only. Every field that postdates frozen v2, in one
-/// place, consulted by the v2 projection at both hosts (Law 3: one
-/// implementation, two hosts).
+/// place, consulted by the v2 projection at the serving host (Law 3: one
+/// implementation, one host).
 ///
 /// # The discipline
 /// A new v3-additive field ships with its row in the same commit. The key-set
