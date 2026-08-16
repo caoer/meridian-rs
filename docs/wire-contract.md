@@ -2647,8 +2647,16 @@ twenty-seven in all.
 wire arm drives the same runner seam as the CLI: capability resolution
 deny-by-default on starlark, the bash-fence convention refusals, the
 declaring root's configured timeout with process-group kill past deadline,
-the scrubbed task environment (`env_clear` + exactly the declared contract
-pairs and the plane's own variables). One stated amendment to U16: the CLI's
+the inherited task environment *(amended 2026-08-16, run-env ruling — ZT,
+verbatim: "run must not strip the daemon's environment". The superseded law
+read "the scrubbed task environment (`env_clear` + exactly the declared
+contract pairs and the plane's own variables)" — that strip was the defect,
+not this page: a task whose `^env` gate needs a daemon-held variable, e.g.
+`CCC_LLM_WIKI_PATH`, could never pass through the run face. The step now
+inherits the daemon's environment; declared contract pairs and the plane's
+own variables overlay it — declared pairs shadow inherited values, and the
+plane's own `MD_EFFECT_FD` / `MERIDIAN_PROJECT_ROOT` shadow everything)*.
+One stated amendment to U16: the CLI's
 "the step runs where `mrd` runs" was written for a local entry whose cwd is
 the caller's context; a daemon has no meaningful cwd, so ON THIS OP the task
 step's working directory IS the bound workspace root — deterministic, and
