@@ -72,13 +72,18 @@ pub(crate) fn call(door: &mut SocketDoor, request: &Value) -> Result<Value, Box<
         // A write reply names what it armed or removed. Hello/identity
         // bodies are ok:true too — treating those as a commit was the
         // silent-success class (pin printed "?" and exited 0).
-        if body.get("armed").is_none()
+        let armed_empty = body
+            .pointer("/armed/edits")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty);
+        if (body.get("armed").is_none()
             && body.get("file_rev_before").is_none()
-            && body.get("file_rev_after").is_none()
+            && body.get("file_rev_after").is_none())
+            || (armed_empty && request.get("pin").is_none())
         {
             let mut err = ErrorBody::new(wire::ErrorCode::IoError);
             err.message = Some(format!(
-                "the daemon answered ok but the body is not a write: {body}"
+                "the daemon answered ok but the body is not a write (request={request} body={body})"
             ));
             return Err(Box::new(err));
         }
