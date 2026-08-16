@@ -9,3 +9,4 @@
 /.meridian/
 # seat scratch: lives beside the worktree, never in the tree
 .scratch/
+/.scratch-*.yaml
