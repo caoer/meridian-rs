@@ -502,7 +502,7 @@ fn g14_versioned_domain_ephemeral_stamp_carries_the_domain_prefix() {
     assert_eq!(ephemeral["stale"], Value::Bool(false));
     let ephemeral_as_of = ephemeral["as_of_fingerprint"].as_str().unwrap();
     assert!(
-        ephemeral_as_of.starts_with("b3b:"),
+        ephemeral_as_of.starts_with("b3c:"),
         "the stamp carries the domain's version-2 prefix: {ephemeral_as_of}"
     );
     assert_eq!(

@@ -52,11 +52,11 @@ fn clean_step_close_returns_verified_root() {
         ])
         .unwrap();
 
-    let independent = model::merkle_root(
+    let independent = fs::served_root(
         &[
-            ("notes/new.md", b"born in the window\n".as_slice()),
-            ("notes/plan.md", b"# Plan v2\n".as_slice()),
-            ("receipts/log.md", b"# Receipts\n".as_slice()),
+            (b"notes/new.md".as_slice(), model::leaf_digest(b"born in the window\n")),
+            (b"notes/plan.md".as_slice(), model::leaf_digest(b"# Plan v2\n")),
+            (b"receipts/log.md".as_slice(), model::leaf_digest(b"# Receipts\n")),
         ],
         0,
     );
@@ -353,10 +353,10 @@ fn governed_edit_outside_domain_is_inert() {
     write(&root.0, "drafts/tmp.md", "scratch\n");
 
     let post = guard.close(&[edit("drafts/tmp.md", "scratch\n")]).unwrap();
-    let independent = model::merkle_root(
+    let independent = fs::served_root(
         &[
-            ("notes/plan.md", b"# Plan\n".as_slice()),
-            ("receipts/log.md", b"# Receipts\n".as_slice()),
+            (b"notes/plan.md".as_slice(), model::leaf_digest(b"# Plan\n")),
+            (b"receipts/log.md".as_slice(), model::leaf_digest(b"# Receipts\n")),
         ],
         1,
     );
