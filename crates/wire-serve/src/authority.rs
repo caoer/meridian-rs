@@ -790,8 +790,7 @@ fn wait_death(pid: libc::pid_t, budget: Duration) -> bool {
 fn unix_ms() -> u128 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_millis())
 }
 
 #[cfg(test)]
