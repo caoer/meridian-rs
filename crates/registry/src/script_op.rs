@@ -8,16 +8,18 @@
 //! entry generation alive for exactly this attempt), evaluates the program
 //! in-process under the kernel's own containment, threads each armed row's
 //! CAS token from the ENTRY world, and commits through the one write
-//! choke-point with `if_fingerprint` = the entry fingerprint. The trace is
-//! the response body.
+//! choke-point under the §4.6 TOUCH-SET premises (run-plane amendment,
+//! 2026-08-15): entry-vs-live at exactly the nodes the attempt touched,
+//! never the whole-corpus entry fingerprint. The trace is the response body.
 //!
 //! Laws held here, each pinned by a test in this module or in
 //! `tests/script_op.rs`:
 //!
 //! - **Entry world**: reads of hash-domain members serve the pinned entry
 //!   state — foreign mid-program changes to the domain are invisible; the
-//!   commit's §5.1 guard runs against the LIVE world unchanged, so a moved
-//!   world refuses and nothing lands. An out-of-domain path stays addressable
+//!   commit verifies entry-vs-live at the TOUCH SET (§4.6), so a moved
+//!   touched node refuses and nothing lands, while foreign motion outside
+//!   the touch set never refuses. An out-of-domain path stays addressable
 //!   (§12.1: hash domain ⊂ addressable domain) and serves from a live
 //!   single-file disk load, outside the pin exactly as the fingerprint never
 //!   covered its bytes — the wire lane serves what the CLI lane serves.
@@ -327,7 +329,7 @@ fn serve(
              reads that ran cost the budget",
         ))
     } else {
-        commit(registry, ws, request, &eval, &entry)
+        commit(registry, ws, request, &eval, &world, &entry)
     };
     Ok(ScriptTrace::assemble(entry, &eval, leg))
 }
@@ -715,18 +717,101 @@ fn token_count_dial(
         .ok_or_else(|| format!("the endpoint's answer carries no count: {}", line.trim()))
 }
 
+/// The §4.6 touch-set commit premises (run-plane amendment, 2026-08-15;
+/// wire-contract § A.7): entry-vs-live verified at exactly the nodes this
+/// attempt touched — every served read's file, every pattern expansion's
+/// matched member, every armed target. Each premise claims the ENTRY world's
+/// own leaf token, spelled under the entry fingerprint's identity, so the
+/// door's §5.4 premise check IS the entry-vs-live verify, O(touch set). An
+/// armed path absent at entry mints the `absent` premise (§5.6) — the birth
+/// refuses if anything was born there since entry.
+///
+/// Not premised, by law: reads served from OUTSIDE the entry hash domain —
+/// the fingerprint never covered those bytes (§12.1), exactly as before.
+/// Stated limit: a read the program made of an ABSENT path is not in the
+/// recording (only served faces are recorded), so foreign birth at a merely
+/// LOOKED-AT empty path cannot refuse; the touch-set floor — the armed
+/// writes — is always covered.
+fn touch_premises(
+    eval: &effects::ScriptEval,
+    world: &WorkspaceEngine,
+    entry: &str,
+) -> Vec<wire_serve::guard::Premise> {
+    use wire_serve::guard::{Premise, PremiseValue};
+    // The entry identity every premise token respells under: same hash law,
+    // same domain generation as the entry fingerprint itself.
+    let Some(identity) = model::parse_root(entry)
+        .and_then(|p| p.position.checked_sub(1))
+        .map(model::RootVersion::law2)
+    else {
+        // An unparseable entry token cannot mint premises; the commit then
+        // rides the per-row CAS + the caller's own widening guard alone.
+        return Vec::new();
+    };
+    let armed: Vec<String> = eval.content_paths();
+    let mut ordered: Vec<&str> = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for read in &eval.recording.reads {
+        if seen.insert(read.path.as_str()) {
+            ordered.push(&read.path);
+        }
+    }
+    for expansion in &eval.recording.expansions {
+        for member in &expansion.matched {
+            if seen.insert(member.as_str()) {
+                ordered.push(member);
+            }
+        }
+    }
+    for path in &armed {
+        if seen.insert(path.as_str()) {
+            ordered.push(path);
+        }
+    }
+    let mut premises = Vec::new();
+    for path in ordered {
+        let entry_bytes: Option<&[u8]> = world
+            .docs
+            .get(path)
+            .map(|d| d.raw.as_bytes())
+            .or_else(|| world.unserved.get(path).map(String::as_bytes));
+        match entry_bytes {
+            Some(bytes) => premises.push(Premise {
+                scope: Some(std::path::PathBuf::from(path)),
+                value: PremiseValue::Token(identity.token(model::leaf_digest(bytes)).0),
+            }),
+            None if armed.iter().any(|a| a == path) => premises.push(Premise {
+                scope: Some(std::path::PathBuf::from(path)),
+                value: PremiseValue::Absent,
+            }),
+            // A served read outside the entry hash domain: never covered by
+            // the fingerprint law, so it holds no premise.
+            None => {}
+        }
+    }
+    premises
+}
+
 /// The one guarded splice, issued daemon-side through the same choke-point
 /// every wire splice takes — `Origin::Wire`, the ring advanced on a real
 /// commit (this lane mints Deltas; the CLI put lane's row-12 gap does not
 /// extend here).
+///
+/// The commit's authority is the §4.6 TOUCH SET ([`touch_premises`]), not
+/// the whole-corpus entry fingerprint: a foreign write outside the touch set
+/// no longer refuses; inside it refuses `fingerprint_mismatch` naming the
+/// moved premise's scope (§5.7). The caller's own `if_fingerprint` rides
+/// through as a WIDENING premise — strictest wins, never sufficient alone.
 fn commit(
     registry: &Registry,
     ws: &Path,
     request: &ScriptArgs,
     eval: &effects::ScriptEval,
+    world: &WorkspaceEngine,
     entry: &str,
 ) -> CommitLeg {
     let paths = eval.content_paths();
+    let premises = touch_premises(eval, world, entry);
     // H1 order: the mint store and ring handles are taken outside any engine
     // borrow (none is held here — the entry world is an Arc, not a lock).
     let mints = registry.read_mints(ws);
@@ -744,14 +829,16 @@ fn commit(
     let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if let [path] = paths.as_slice() {
             let args = wire_serve::write::SpliceArgs {
-                premises: Vec::new(),
+                premises: premises.clone(),
                 id: request.id,
                 path: wire::Path(path.clone()),
                 origin: wire_serve::guard::Origin::Wire,
                 actor: request.actor.clone(),
                 now: request.now.clone(),
                 receipt: request.receipt.clone(),
-                if_root: Some(wire::Root(entry.to_owned())),
+                // The caller's own token stays a widening premise (§4.6) —
+                // the engine's authority is the touch set above.
+                if_root: request.if_root.clone(),
                 dry: request.dry,
                 force: false,
                 edits: Vec::new(),
@@ -771,14 +858,15 @@ fn commit(
             )
         } else {
             let args = wire_serve::write::SpliceSetArgs {
-                premises: Vec::new(),
+                premises: premises.clone(),
                 id: request.id,
                 files: set_files(&paths, &eval.armed),
                 origin: wire_serve::guard::Origin::Wire,
                 actor: request.actor.clone(),
                 now: request.now.clone(),
                 receipt: request.receipt.clone(),
-                if_root: Some(wire::Root(entry.to_owned())),
+                // Caller widening only — the touch set is the authority.
+                if_root: request.if_root.clone(),
                 dry: request.dry,
                 force: false,
             };
@@ -1400,6 +1488,254 @@ mod tests {
 
     fn ws_root_of(ws: &Path) -> fs::WorkspaceRoot {
         fs::WorkspaceRoot(ws.to_path_buf())
+    }
+
+    /// A minimal request for driving [`commit`] directly.
+    fn request_of(if_root: Option<wire::Root>) -> ScriptArgs {
+        ScriptArgs {
+            id: None,
+            source: String::new(),
+            args: std::collections::BTreeMap::new(),
+            files: Vec::new(),
+            actor: Some("agent:test".to_owned()),
+            now: None,
+            receipt: None,
+            if_root,
+            dry: false,
+            expect_armed: None,
+            effects: Vec::new(),
+            invocation: None,
+            token_count_endpoint: None,
+        }
+    }
+
+    /// One armed `set_property` on `doc.md`, threaded from the entry world —
+    /// the smallest committable armed set.
+    fn armed_on_doc(world: &Arc<WorkspaceEngine>, ws: &Path, root: &wire::Root) -> Vec<ArmedEdit> {
+        let armed = vec![ArmedEdit {
+            path: "doc.md".to_owned(),
+            edit: PlanEdit::SetProperty {
+                key: "status".to_owned(),
+                value: "done".to_owned(),
+                rev: None,
+            },
+            line: 1,
+            depth: 0,
+        }];
+        thread_entry(&armed, world, &ws_root_of(ws), root)
+    }
+
+    fn eval_of(armed: Vec<ArmedEdit>, recording: ScriptRecording) -> effects::ScriptEval {
+        effects::ScriptEval {
+            outcome: Ok(effects::ScriptFacts {
+                bindings: std::collections::BTreeMap::new(),
+            }),
+            armed,
+            recording,
+            telemetry: effects::ScriptTelemetry {
+                fuel_used: 0,
+                mem_used: 0,
+                reads_used: 0,
+                wall_ms: 0,
+            },
+        }
+    }
+
+    /// §4.6 touch premises: reads, expansion members and armed targets each
+    /// hold the ENTRY leaf token; an armed BIRTH path holds `absent`; and the
+    /// entry-value spelling is byte-identical to the door's own live mint —
+    /// the two instruments cannot drift.
+    #[test]
+    fn touch_premises_cover_reads_expansions_and_arms_at_entry_values() {
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = registry_in(tmp.path());
+        let ws = seeded_ws(tmp.path());
+        let (world, root) = pinned_world(&registry, &ws);
+        let mut host = host_of(&world, &root, &ws, Instant::now() + Duration::from_secs(7));
+        let face = host.toc("doc.md", &[]).expect("entry world serves");
+
+        let mut recording = ScriptRecording::default();
+        recording.reads.push(effects::ReadRecord {
+            path: "doc.md".to_owned(),
+            section: None,
+            line: 1,
+            position: effects::ReadPosition::Echo,
+            face: effects::ReadFace::Toc(face),
+        });
+        recording.expansions.push(effects::ExpansionRecord {
+            pattern: "*.md".to_owned(),
+            matched: vec!["doc.md".to_owned()],
+        });
+        let armed = vec![
+            ArmedEdit {
+                path: "doc.md".to_owned(),
+                edit: PlanEdit::SetProperty {
+                    key: "status".to_owned(),
+                    value: "done".to_owned(),
+                    rev: None,
+                },
+                line: 1,
+                depth: 0,
+            },
+            ArmedEdit {
+                path: "new/born.md".to_owned(),
+                edit: PlanEdit::Create {
+                    parent_hpath: Vec::new(),
+                    title: "Born".to_owned(),
+                    body: String::new(),
+                    rev: None,
+                },
+                line: 2,
+                depth: 0,
+            },
+        ];
+        let eval = eval_of(armed, recording);
+
+        let premises = touch_premises(&eval, &world, &root.0);
+        assert_eq!(
+            premises.len(),
+            2,
+            "doc.md deduplicated across the three sources"
+        );
+        let doc = &premises[0];
+        assert_eq!(doc.scope.as_deref(), Some(Path::new("doc.md")));
+        let wire_serve::guard::PremiseValue::Token(entry_token) = &doc.value else {
+            panic!("an existing member holds its entry token");
+        };
+        // Cross-instrument: the entry-value spelling equals the door's own
+        // live mint while nothing has moved.
+        let live =
+            wire_serve::write::scope_token(&ws_root_of(&ws), None, Some(Path::new("doc.md")))
+                .expect("mint")
+                .expect("token");
+        assert_eq!(*entry_token, live, "entry spelling ≡ door spelling");
+        assert_eq!(
+            premises[1],
+            wire_serve::guard::Premise {
+                scope: Some(PathBuf::from("new/born.md")),
+                value: wire_serve::guard::PremiseValue::Absent,
+            },
+            "an armed birth premises ABSENCE at entry (§5.6)"
+        );
+    }
+
+    /// The §4.6 headline: a foreign DISJOINT birth between entry and commit
+    /// no longer refuses the script commit — the touch set held.
+    #[test]
+    fn a_disjoint_foreign_birth_no_longer_refuses_the_commit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = registry_in(tmp.path());
+        let ws = seeded_ws(tmp.path());
+        let (world, root) = pinned_world(&registry, &ws);
+        let eval = eval_of(armed_on_doc(&world, &ws, &root), ScriptRecording::default());
+
+        // The disjoint foreign birth: a path the attempt never touched.
+        write(ws.join("mover.md"), "# Mover\n\ndisjoint.\n").unwrap();
+
+        // Absorb the foreign write into the door's instrument by a full
+        // observation — the daemon's event feed does this in production;
+        // the currency card (bug-trusted-overlay-unvouched) owns that
+        // wiring, so this test does not depend on it.
+        registry
+            .domain_cache(&ws)
+            .lock()
+            .unwrap()
+            .root(&ws_root_of(&ws))
+            .unwrap();
+
+        let leg = commit(&registry, &ws, &request_of(None), &eval, &world, &root.0);
+        assert!(
+            matches!(leg, CommitLeg::Response(_)),
+            "the touch set held — a disjoint birth must not refuse: {leg:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(ws.join("doc.md")).unwrap(),
+            DOC.replace("open", "done"),
+            "the armed edit landed"
+        );
+    }
+
+    /// The counter-proof: a foreign edit INSIDE the touch set still refuses,
+    /// and the refusal names the moved premise's scope (§5.7).
+    #[test]
+    fn a_foreign_edit_inside_the_touch_set_refuses_naming_the_scope() {
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = registry_in(tmp.path());
+        let ws = seeded_ws(tmp.path());
+        let (world, root) = pinned_world(&registry, &ws);
+        let eval = eval_of(armed_on_doc(&world, &ws, &root), ScriptRecording::default());
+
+        // The foreign edit lands on the ARMED file itself.
+        write(ws.join("doc.md"), DOC.replace("open", "parked")).unwrap();
+
+        // Absorb the foreign write into the door's instrument by a full
+        // observation — the daemon's event feed does this in production;
+        // the currency card (bug-trusted-overlay-unvouched) owns that
+        // wiring, so this test does not depend on it.
+        registry
+            .domain_cache(&ws)
+            .lock()
+            .unwrap()
+            .root(&ws_root_of(&ws))
+            .unwrap();
+
+        let leg = commit(&registry, &ws, &request_of(None), &eval, &world, &root.0);
+        let CommitLeg::Conflict(raw) = leg else {
+            panic!("a moved touched node refuses as a conflict: {leg:?}");
+        };
+        let frame: Value = serde_json::from_str(raw.get()).unwrap();
+        assert_eq!(
+            frame["code"], "fingerprint_mismatch",
+            "v3 spelling: {frame}"
+        );
+        assert_eq!(
+            frame["scope"], "doc.md",
+            "the refusal names the moved premise's scope: {frame}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(ws.join("doc.md")).unwrap(),
+            DOC.replace("open", "parked"),
+            "nothing landed — the foreign state stands"
+        );
+    }
+
+    /// The caller's own `if_fingerprint` stays a WIDENING premise at the
+    /// commit: strictest wins, so a moved WORLD refuses even when the touch
+    /// set held (§4.6 — the caller pinned the world and gets world grain).
+    #[test]
+    fn the_callers_own_token_stays_a_widening_premise_at_commit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = registry_in(tmp.path());
+        let ws = seeded_ws(tmp.path());
+        let (world, root) = pinned_world(&registry, &ws);
+        let eval = eval_of(armed_on_doc(&world, &ws, &root), ScriptRecording::default());
+
+        // Disjoint birth: the touch set holds; the WORLD moved.
+        write(ws.join("mover.md"), "# Mover\n\ndisjoint.\n").unwrap();
+
+        // Absorb the foreign write into the door's instrument by a full
+        // observation — the daemon's event feed does this in production;
+        // the currency card (bug-trusted-overlay-unvouched) owns that
+        // wiring, so this test does not depend on it.
+        registry
+            .domain_cache(&ws)
+            .lock()
+            .unwrap()
+            .root(&ws_root_of(&ws))
+            .unwrap();
+
+        let leg = commit(
+            &registry,
+            &ws,
+            &request_of(Some(root.clone())),
+            &eval,
+            &world,
+            &root.0,
+        );
+        assert!(
+            matches!(leg, CommitLeg::Conflict(_)),
+            "the caller pinned the world; the world moved; strictest wins: {leg:?}"
+        );
     }
 
     /// Wall site 2: the read builtin refuses on a lapsed clock — typed, in
