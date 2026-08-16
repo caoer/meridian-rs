@@ -1140,7 +1140,7 @@ fn run(args: &[String], writing: bool) -> Result<(), Fail> {
                 let body = write_ipc::call(&mut door, &request).map_err(|e| {
                     crate::engine::json_refusal(parsed.format, &resolved.workspace, &e)
                 })?;
-                let body = write_ipc::project_body(body);
+                let body = write_ipc::project_body(&body);
                 if let Some(fp) = body.get("fingerprint_after").and_then(Value::as_str) {
                     expected = Some(fp.to_owned());
                 }

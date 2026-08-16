@@ -70,28 +70,27 @@ pub(crate) fn call(door: &mut SocketDoor, request: &Value) -> Result<Value, Box<
             Box::new(err)
         });
     }
-    match frame.error {
-        Some(raw) => serde_json::from_str(raw.get()).map_err(|e| {
+    if let Some(raw) = frame.error {
+        serde_json::from_str(raw.get()).map_err(|e| {
             let mut err = ErrorBody::new(wire::ErrorCode::IoError);
             err.message = Some(format!(
                 "the daemon refused the write but the error frame would not parse: {e}"
             ));
             Box::new(err)
-        }),
-        None => {
-            let mut err = ErrorBody::new(wire::ErrorCode::IoError);
-            err.message = Some(format!(
-                "the daemon refused the write with no error body: {}",
-                line.trim()
-            ));
-            Err(Box::new(err))
-        }
+        })
+    } else {
+        let mut err = ErrorBody::new(wire::ErrorCode::IoError);
+        err.message = Some(format!(
+            "the daemon refused the write with no error body: {}",
+            line.trim()
+        ));
+        Err(Box::new(err))
     }
 }
 
 /// Lift a v2-shaped splice/remove body into the v3 vocabulary the CLI speaks.
 /// Idempotent on a body the daemon already projected.
-pub(crate) fn project_body(body: Value) -> Value {
+pub(crate) fn project_body(body: &Value) -> Value {
     let mut frame = serde_json::json!({ "body": body });
     wire_serve::rev::project_response(&mut frame);
     frame

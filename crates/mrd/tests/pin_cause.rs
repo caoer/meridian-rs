@@ -45,7 +45,7 @@ fn run(sb: &Sandbox, cwd: &Path, args: &[&str]) -> Output {
         .env("XDG_CACHE_HOME", &sb.cache_home)
         .env("HOME", &sb.home)
         // Spawn-impossible: no resident daemon ever starts.
-        .env("MERIDIAN_DAEMON_BIN", mrd_bin())
+        .env("MERIDIAN_DAEMON_BIN", env!("CARGO_BIN_EXE_mrd"))
         // The explicit anchor: this tree is the workspace, and it is not git.
         .env("MERIDIAN_WORKSPACE", cwd)
         .output()
