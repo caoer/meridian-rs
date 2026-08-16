@@ -120,7 +120,20 @@ fn mode_count(dests: usize) {
     let root = WorkspaceRoot(dir.path().to_path_buf());
     let table = ReservationTable::new();
     let owner = StateOwner::new(Root("tip".to_owned()));
-    let rels: Vec<String> = (0..dests).map(|i| format!("d{i}/f{i}.md")).collect();
+    // Destination LAYOUT changes the count: each distinct parent directory
+    // costs its own barrier after the renames. Separate directories is the
+    // worst case and the default here; HD_SAME_DIR puts every destination in
+    // one directory, which is what a multi-file edit in one folder looks like.
+    let same_dir = std::env::var("HD_SAME_DIR").is_ok();
+    let rels: Vec<String> = (0..dests)
+        .map(|i| {
+            if same_dir {
+                format!("d0/f{i}.md")
+            } else {
+                format!("d{i}/f{i}.md")
+            }
+        })
+        .collect();
 
     mark("stage-begin");
     let txn = staged_txn(&root, &rels, b"new payload");
