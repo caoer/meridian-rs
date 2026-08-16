@@ -143,7 +143,7 @@ pub(crate) struct WorkspaceFeed {
     state: Arc<Mutex<FeedState>>,
     /// The shared feed-generation cell — the same cell the workspace's
     /// resident memo brackets reads with and consults for guard currency.
-    gen: fs::stable::FeedGen,
+    feed_gen: fs::stable::FeedGen,
 }
 
 impl std::fmt::Debug for WorkspaceFeed {
@@ -167,7 +167,7 @@ struct FeedState {
     doubt: Option<RescanCause>,
     /// The shared feed-generation cell: advanced per accepted event, loss
     /// noted per collapse — the watcher half of the §6.2 fence.
-    gen: fs::stable::FeedGen,
+    feed_gen: fs::stable::FeedGen,
     /// The rescan record: every mark's cause, oldest dropped past
     /// [`RESCAN_RECORD_CAP`].
     rescans: Vec<RescanCause>,
@@ -233,7 +233,7 @@ pub(crate) enum Applied {
 
 impl WorkspaceFeed {
     /// Start the kernel watcher for `workspace` (a canonical root), reporting
-    /// into the shared feed-generation cell `gen` — the same cell the
+    /// into the shared feed-generation cell `feed_gen` — the same cell the
     /// workspace's resident memo fences reads with. The feed must exist
     /// BEFORE the first observation lands in the workspace's resident memo —
     /// an observation without gap coverage behind it would let a later
@@ -245,10 +245,10 @@ impl WorkspaceFeed {
     /// (its resident memo drops on every reap).
     pub(crate) fn start(
         workspace: &Path,
-        gen: fs::stable::FeedGen,
+        feed_gen: fs::stable::FeedGen,
     ) -> notify::Result<WorkspaceFeed> {
         let state = Arc::new(Mutex::new(FeedState {
-            gen: gen.clone(),
+            feed_gen: feed_gen.clone(),
             ..FeedState::default()
         }));
         let sink = Arc::clone(&state);
@@ -280,7 +280,7 @@ impl WorkspaceFeed {
         Ok(WorkspaceFeed {
             _watcher: watcher,
             state,
-            gen,
+            feed_gen,
         })
     }
 
@@ -325,8 +325,8 @@ impl WorkspaceFeed {
     /// The shared feed-generation cell — the registry hands this to the
     /// resident memo at its creation so watcher and observation fence ride
     /// one instrument.
-    pub(crate) fn gen(&self) -> fs::stable::FeedGen {
-        self.gen.clone()
+    pub(crate) fn feed_gen(&self) -> fs::stable::FeedGen {
+        self.feed_gen.clone()
     }
 
     /// The rescan record: every marked rescan's named cause, oldest first
@@ -361,7 +361,7 @@ impl FeedState {
             return;
         }
         self.events += 1;
-        self.gen.advance();
+        self.feed_gen.advance();
         if self.doubt.is_some() {
             return;
         }
@@ -387,7 +387,7 @@ impl FeedState {
             self.rescans.remove(0);
         }
         self.rescans.push(cause);
-        self.gen.note_loss(cause.name());
+        self.feed_gen.note_loss(cause.name());
     }
 }
 
@@ -563,13 +563,13 @@ mod tests {
             "past the cap everything is suspect, under a named cause"
         );
         assert_eq!(s.overflows, 1);
-        assert_eq!((s.rescans_total, s.rescans.as_slice()), (
-            1,
-            &[RescanCause::Overflow][..]
-        ));
+        assert_eq!(
+            (s.rescans_total, s.rescans.as_slice()),
+            (1, &[RescanCause::Overflow][..])
+        );
         assert!(s.dirty.is_empty(), "the enumeration is dropped, not kept");
-        assert_eq!(s.gen.generation(), DIRTY_CAP as u64 + 1);
-        assert_eq!(s.gen.losses(), 1, "the collapse is LOUD event loss");
+        assert_eq!(s.feed_gen.generation(), DIRTY_CAP as u64 + 1);
+        assert_eq!(s.feed_gen.losses(), 1, "the collapse is LOUD event loss");
         // Late arrivals during a collapse change nothing.
         s.insert(Path::new("late.md"));
         assert!(s.dirty.is_empty());
@@ -694,11 +694,7 @@ mod tests {
         // A change the (dead) stream never delivered.
         std::fs::write(dir.path().join("a.md"), "# A moved unseen\n").unwrap();
         assert_eq!(
-            apply(
-                &root,
-                &mut cache,
-                Pending::All(RescanCause::InstanceChange)
-            ),
+            apply(&root, &mut cache, Pending::All(RescanCause::InstanceChange)),
             Applied::Rebaselined(RescanCause::InstanceChange)
         );
         assert_eq!(
@@ -730,11 +726,7 @@ mod tests {
 
         let mut cold2 = fs::DomainCache::new();
         assert_eq!(
-            apply(
-                &root,
-                &mut cold2,
-                Pending::All(RescanCause::InstanceChange)
-            ),
+            apply(&root, &mut cold2, Pending::All(RescanCause::InstanceChange)),
             Applied::Rebaselined(RescanCause::InstanceChange)
         );
         assert_eq!(cold2.leaves_read(), 1);

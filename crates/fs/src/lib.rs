@@ -1253,6 +1253,21 @@ impl DomainCache {
         self.feed.clone()
     }
 
+    /// Adopt a NEW feed-generation cell, keeping every resident leaf — what a
+    /// watcher instance replacement needs (merkle-spec §6.4's re-baseline
+    /// rung): blanking the memo instead would expose an empty index, and
+    /// keeping the dead cell would fence reads against a stream nobody feeds.
+    ///
+    /// The absorbed-loss ledger resets to zero with the cell, so the new
+    /// cell's own loss (the instance change itself) reads as UNABSORBED —
+    /// guard currency stays untrusted until a full observation re-baselines.
+    /// Carrying the old count over would let a high old count vouch for a
+    /// fresh cell's open gap.
+    pub fn adopt_feed(&mut self, feed_gen: stable::FeedGen) {
+        self.feed = feed_gen;
+        self.acked_losses = 0;
+    }
+
     /// Guard currency as this cache can vouch for it (merkle-spec §6.2
     /// row 6): LOUD untrusted on no baseline, unknown capability
     /// (calibration unavailable), or unabsorbed event loss — never silent

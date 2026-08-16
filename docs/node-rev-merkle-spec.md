@@ -606,6 +606,18 @@ event-source question was adjudicated ENGINE-SIDE, five lanes unanimous
   a rebuilt index commits by swap. Self-echo — the engine's own writes
   re-arriving through the watcher — is deduped as a cost saving only: overlay
   idempotence is the correctness, masking is never load-bearing.
+- **The ladder's instruments.** The cause vocabulary is CLOSED — exactly the
+  five triggers of the idle re-check ruling below — and a rescan cannot be
+  marked without one, so no rescan is anonymous. Each mark reports event loss
+  (§6.2 row 6: guard currency untrusted until a full observation
+  re-baselines), lands in a bounded per-workspace RESCAN RECORD, and is
+  published with the feed's counters. The re-baseline rung keeps the old memo
+  resident while it rebuilds — that is what "commits by swap" means here: no
+  reader ever observes an empty or half-built index, and a failed rebuild
+  keeps the old memo with its loss still unabsorbed. Rescans execute by
+  piggybacking on the next resident-memo borrow; nothing schedules them. The
+  quiet-workspace counter pair the §7(d) acceptance gate reads — corpus
+  sweeps and member stats — is published by the resident memo itself.
 - **Idle re-check — RULED: SUSPICIOUS-ONLY, NO TIMER**
   (`decisions/2026-08-15-pre-merge-rulings.md` ruling 3). The engine
   re-checks files only on a named reason for doubt — a missed event, watcher

@@ -154,9 +154,10 @@ enum FeedSlot {
 }
 
 impl FeedSlot {
-    /// Start the workspace's kernel watcher; loud on failure, once.
-    fn start(workspace: &Path) -> FeedSlot {
-        match feed::WorkspaceFeed::start(workspace) {
+    /// Start the workspace's kernel watcher on the shared generation cell
+    /// `feed_gen`; loud on failure, once.
+    fn start(workspace: &Path, feed_gen: &fs::stable::FeedGen) -> FeedSlot {
+        match feed::WorkspaceFeed::start(workspace, feed_gen.clone()) {
             Ok(feed) => FeedSlot::Live(feed),
             Err(e) => {
                 eprintln!(
@@ -166,6 +167,16 @@ impl FeedSlot {
                 );
                 FeedSlot::Failed
             }
+        }
+    }
+
+    /// The slot's generation cell — the live feed's own, or a fresh quiet
+    /// cell for a failed slot (no watcher ⇒ no event, no loss ever reported,
+    /// which is the honest reading of "this workspace has no feed").
+    fn feed_gen(&self) -> fs::stable::FeedGen {
+        match self {
+            FeedSlot::Live(feed) => feed.feed_gen(),
+            FeedSlot::Failed => fs::stable::FeedGen::default(),
         }
     }
 }
@@ -535,22 +546,29 @@ impl Registry {
     /// door — reads through a memo the feed has already patched.
     #[must_use]
     pub fn domain_cache(&self, workspace: &Path) -> Arc<Mutex<fs::DomainCache>> {
+        // The feed comes FIRST: it owns the generation cell the memo is born
+        // sharing, so no memo can exist without the §6.2 fence behind it.
+        let (pending, feed_gen) = {
+            let mut feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
+            let slot = feeds
+                .entry(workspace.to_path_buf())
+                .or_insert_with(|| FeedSlot::start(workspace, &fs::stable::FeedGen::default()));
+            let pending = match slot {
+                FeedSlot::Live(feed) => feed.take(),
+                FeedSlot::Failed => feed::Pending::Clean,
+            };
+            (pending, slot.feed_gen())
+        };
         let cache = {
             let mut caches = self
                 .domain_caches
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            Arc::clone(caches.entry(workspace.to_path_buf()).or_default())
-        };
-        let pending = {
-            let mut feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
-            match feeds
-                .entry(workspace.to_path_buf())
-                .or_insert_with(|| FeedSlot::start(workspace))
-            {
-                FeedSlot::Live(feed) => feed.take(),
-                FeedSlot::Failed => feed::Pending::Clean,
-            }
+            Arc::clone(
+                caches
+                    .entry(workspace.to_path_buf())
+                    .or_insert_with(|| Arc::new(Mutex::new(fs::DomainCache::with_feed(feed_gen)))),
+            )
         };
         if pending != feed::Pending::Clean {
             let root = fs::WorkspaceRoot(workspace.to_path_buf());
@@ -570,9 +588,26 @@ impl Registry {
                         workspace.display()
                     );
                 }
+                // The rescan ladder's rungs — each one names its cause.
+                feed::Applied::Sweep(cause) => {
+                    eprintln!(
+                        "feed: rescan ({}) for {} — memo kept, the next observation is the \
+                         full stat sweep and absorbs the loss",
+                        cause.name(),
+                        workspace.display()
+                    );
+                }
+                feed::Applied::Rebaselined(cause) => {
+                    eprintln!(
+                        "feed: rescan ({}) for {} — resident memo re-baselined from disk, \
+                         committed by swap",
+                        cause.name(),
+                        workspace.display()
+                    );
+                }
                 feed::Applied::Reset => {
                     eprintln!(
-                        "feed: doubt collapse for {} — resident memo reset, next pass \
+                        "feed: apply failure for {} — resident memo reset, next pass \
                          re-reads the corpus",
                         workspace.display()
                     );
@@ -580,6 +615,88 @@ impl Registry {
             }
         }
         cache
+    }
+
+    /// The §6.4 suspicious-only rescan door (pre-merge ruling 3): mark this
+    /// workspace for a rescan under a NAMED cause — a missed event, a vouch
+    /// failure, a cookie timeout, an overflow the caller observed. The rescan
+    /// executes by piggybacking on the next [`domain_cache`] borrow; nothing
+    /// here schedules background work, and NO TIMER exists anywhere on this
+    /// ladder. `false` when the workspace has no live feed (nothing resident
+    /// to doubt).
+    ///
+    /// [`domain_cache`]: Self::domain_cache
+    pub fn rescan(&self, workspace: &Path, cause: feed::RescanCause) -> bool {
+        let feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(FeedSlot::Live(feed)) = feeds.get(workspace) {
+            feed.rescan(cause);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Replace this workspace's watcher instance — the ONE path that restarts
+    /// a watcher (the ladder itself never does: a rescan keeps the stream it
+    /// doubts). The new instance opens under a marked
+    /// [`RescanCause::InstanceChange`], so the next borrow re-baselines the
+    /// resident memo by swap: the stream's continuity broke, so the gap
+    /// reaches back to an unknown point and no dirty enumeration can cover
+    /// it. `false` when the new watcher could not start (loud; the old slot
+    /// is replaced by the failed one and the memo keeps pre-feed semantics).
+    ///
+    /// [`RescanCause::InstanceChange`]: feed::RescanCause::InstanceChange
+    pub fn restart_feed(&self, workspace: &Path) -> bool {
+        // A fresh cell: the old instance's generations and losses die with
+        // it, and the re-baseline is what re-establishes trust.
+        let slot = FeedSlot::start(workspace, &fs::stable::FeedGen::default());
+        // The mark rides the NEW instance, before anything can borrow it.
+        let started = match &slot {
+            FeedSlot::Live(new_feed) => {
+                new_feed.rescan(feed::RescanCause::InstanceChange);
+                Some(new_feed.feed_gen())
+            }
+            FeedSlot::Failed => None,
+        };
+        let old = {
+            let mut feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
+            feeds.insert(workspace.to_path_buf(), slot)
+        };
+        // The old kernel stream is released outside every map lock.
+        drop(old);
+        let Some(feed_gen) = started else {
+            return false;
+        };
+        // The memo adopts the NEW cell, keeping its leaves: blanking it here
+        // would expose an empty index, and the rebuilt index commits by swap
+        // at the next borrow, never before.
+        let cache = {
+            let caches = self
+                .domain_caches
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            caches.get(workspace).map(Arc::clone)
+        };
+        if let Some(cache) = cache {
+            cache
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .adopt_feed(feed_gen);
+        }
+        true
+    }
+
+    /// This workspace's rescan record: every marked rescan's named cause,
+    /// oldest first (`None`: no live feed). The record is what proves no
+    /// rescan is anonymous.
+    #[must_use]
+    pub fn rescan_record(&self, workspace: &Path) -> Option<Vec<feed::RescanCause>> {
+        let feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(FeedSlot::Live(feed)) = feeds.get(workspace) {
+            Some(feed.rescan_record())
+        } else {
+            None
+        }
     }
 
     /// The §6.4 ADDITIONAL-feed door: dirty-path hints from a secondary
@@ -1603,6 +1720,318 @@ mod engine_tests {
             reg.warm_or_build(&ws).unwrap(),
             WarmOutcome::Reused,
             "same bytes ⇒ same fold ⇒ reuse, whatever the clocks say"
+        );
+    }
+
+    // ---- The §6.4 rescan ladder's quality gates (card rescan-ladder) ----
+    //
+    // The instrument is the in-process registry — no socket, no reaper
+    // thread, no pre-warm thread — so what these gates measure is the
+    // LADDER, with no other plane's clock inside the window. That isolation
+    // is the point: the ladder is meant to hold no clock at all.
+
+    /// A workspace `home/ws` of `n` members, half of them one level down.
+    fn write_members(home: &Path, n: usize) -> PathBuf {
+        let ws = home.join("ws");
+        fs::create_dir_all(ws.join("sub")).unwrap();
+        for i in 0..n {
+            let rel = if i % 2 == 0 {
+                format!("m{i}.md")
+            } else {
+                format!("sub/m{i}.md")
+            };
+            fs::write(ws.join(rel), format!("# M{i}\n")).unwrap();
+        }
+        ws
+    }
+
+    /// The memo's §7(d) counter pair plus its byte-read counter, through the
+    /// borrowing door (so the ladder's own apply runs first, as it does for
+    /// every consumer).
+    fn counters(reg: &Registry, canonical: &Path) -> (u64, u64, u64) {
+        let cache = reg.domain_cache(canonical);
+        let memo = cache.lock().unwrap();
+        (memo.sweeps(), memo.member_stats(), memo.leaves_read())
+    }
+
+    /// Gate 1 (§7(d), codex gate 10 shape): a quiet workspace does ZERO work
+    /// after baseline — no corpus sweep, no member stat, no member read, no
+    /// event, no rescan.
+    ///
+    /// The card's bar is ten quiet minutes. The window here is short by
+    /// design and the claim holds for any length, because the ladder's answer
+    /// to "how long" is structural: it owns NO timer, so no elapsed quantity
+    /// can fire anything (pre-merge ruling 3 — suspicious-only; the periodic
+    /// idle sweep is DECLINED). A longer window would only add other planes'
+    /// clocks, which is exactly what this instrument excludes.
+    ///
+    /// The second assertion is the one that would break silently: the
+    /// engine's own `.meridian/` probe writes (a watermark touch per
+    /// observation — §6.2) must never re-enter the feed as dirt, or a healthy
+    /// workspace would rescan itself forever.
+    #[test]
+    fn a_quiet_workspace_sweeps_nothing_and_dirties_nothing() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_members(home.path(), 40);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.register(&canonical);
+        assert_eq!(
+            reg.warm_or_build(&ws).unwrap(),
+            WarmOutcome::Built { docs: 40 },
+            "baseline: the first warm reads the corpus once"
+        );
+        reg.currency_root(&canonical).unwrap();
+        let (sweeps, stats, reads) = counters(&reg, &canonical);
+
+        let window = std::time::Duration::from_secs(2);
+        std::thread::sleep(window);
+
+        let (sweeps_after, stats_after, reads_after) = counters(&reg, &canonical);
+        assert_eq!(
+            (sweeps_after, stats_after, reads_after),
+            (sweeps, stats, reads),
+            "a quiet workspace ran zero corpus sweeps, zero member stats and \
+             zero member reads across {window:?} — the ladder holds no timer"
+        );
+        let feed = reg.feed_stats(&canonical).expect("live feed");
+        assert_eq!(
+            (feed.events, feed.rescans, feed.pending, feed.all_dirty),
+            (0, 0, 0, false),
+            "no event, no rescan, nothing pending: the engine's own .meridian \
+             probe writes never feed themselves back as dirt"
+        );
+        eprintln!(
+            "gate 1 (quiet): window={window:?} members=40 sweeps=+{} \
+             member_stats=+{} reads=+{} events={} rescans={}",
+            sweeps_after - sweeps,
+            stats_after - stats,
+            reads_after - reads,
+            feed.events,
+            feed.rescans,
+        );
+    }
+
+    /// Gate 2 (chaos): every rescan carries a named cause, on every trigger
+    /// of the ruled suspicious-only set, and the corpus stays correct across
+    /// the whole storm.
+    ///
+    /// The unnamed-rescan bar is enforced two ways. Structurally: a
+    /// [`RescanCause`] is the only argument a collapse takes, so an anonymous
+    /// rescan does not compile. Dynamically: the number of doubt collapses
+    /// (`overflows`, incremented on EVERY collapse path — kernel or door)
+    /// must equal the number of RECORDED causes. A rescan reaching the set
+    /// through some future unnamed path would move the first counter and not
+    /// the second, and this gate would fail.
+    #[test]
+    fn every_rescan_in_the_chaos_fixture_carries_a_named_cause() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_members(home.path(), 24);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.register(&canonical);
+        reg.warm_or_build(&ws).unwrap();
+        reg.currency_root(&canonical).unwrap();
+
+        // The ruled trigger set, each injected, each interleaved with a real
+        // corpus mutation the stream never delivered.
+        let triggers = [
+            feed::RescanCause::Overflow,
+            feed::RescanCause::MissedEvent,
+            feed::RescanCause::VouchFailure,
+            feed::RescanCause::CookieTimeout,
+        ];
+        for (i, cause) in triggers.into_iter().enumerate() {
+            rewrite(
+                &canonical,
+                &format!("m{}.md", i * 2),
+                &format!("# M{} moved unseen under {}\n", i * 2, cause.name()),
+            );
+            assert!(
+                reg.rescan(&canonical, cause),
+                "the live feed takes the mark"
+            );
+            // The rescan piggybacks on the next borrow — nothing scheduled it.
+            reg.currency_root(&canonical).unwrap();
+        }
+
+        // The watcher-restart arm: the ONE path that replaces an instance.
+        // The ladder itself never restarts a watcher; this door does, and it
+        // opens under a marked instance change.
+        rewrite(&canonical, "sub/m1.md", "# M1 moved across the restart\n");
+        assert!(
+            reg.restart_feed(&canonical),
+            "the new watcher instance starts"
+        );
+        reg.currency_root(&canonical).unwrap();
+
+        let record = reg.rescan_record(&canonical).expect("live feed");
+        let feed_stats = reg.feed_stats(&canonical).expect("live feed");
+        assert_eq!(
+            record.len() as u64,
+            feed_stats.rescans,
+            "every rescan is in the record"
+        );
+        assert_eq!(
+            feed_stats.overflows, feed_stats.rescans,
+            "every doubt collapse went through a NAMED cause — an unnamed \
+             rescan would move `overflows` without landing in the record"
+        );
+        // The instance change is the last rung climbed, and it rode a feed
+        // the earlier causes never restarted.
+        assert_eq!(record.last(), Some(&feed::RescanCause::InstanceChange));
+        for cause in &record {
+            assert!(!cause.name().is_empty(), "{cause:?} names itself");
+        }
+
+        // Correctness after the storm — the ladder's whole job: every unseen
+        // mutation is folded in, and the resident root equals a from-scratch
+        // derivation of the same disk.
+        let root = reg.currency_root(&canonical).unwrap();
+        let scratch_home = tempfile::tempdir().unwrap();
+        let scratch = registry_in(scratch_home.path());
+        assert_eq!(
+            root,
+            scratch.currency_root(&canonical).unwrap(),
+            "the post-chaos root equals the from-scratch root"
+        );
+        eprintln!(
+            "gate 2 (chaos): rescans={} overflows={} record={:?}",
+            feed_stats.rescans,
+            feed_stats.overflows,
+            record.iter().map(|c| c.name()).collect::<Vec<_>>(),
+        );
+    }
+
+    /// Gate 3: the two rungs measured, with the operation counts the grades
+    /// rest on. Wall-clock at fixture scale is RECORDED, never asserted — a
+    /// 120-member tempdir cannot reproduce the production classes (lane B
+    /// 160 ms warm, 1.45 s cold), and a threshold on it would be a flake
+    /// generator on a loaded runner. What IS asserted is the invariant those
+    /// classes come from:
+    ///
+    /// - the SWEEP rung keeps the memo, so an unmoved corpus is re-verified
+    ///   by stat alone and reads ZERO member bytes;
+    /// - the REBASELINE rung rebuilds from disk, so it reads EVERY member —
+    ///   and commits by swap, so the served root never passes through an
+    ///   empty or torn index.
+    #[test]
+    fn the_rung_latencies_and_operation_counts_are_recorded() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let members = 120usize;
+        let ws = write_members(home.path(), members);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.register(&canonical);
+        reg.warm_or_build(&ws).unwrap();
+        let baseline_root = reg.currency_root(&canonical).unwrap();
+
+        // Rung 0 — the healthy borrow: nothing pending, nothing done.
+        let (sweeps0, stats0, reads0) = counters(&reg, &canonical);
+        let t_clean = std::time::Instant::now();
+        reg.currency_root(&canonical).unwrap();
+        let clean = t_clean.elapsed();
+        let (sweeps1, stats1, reads1) = counters(&reg, &canonical);
+        assert_eq!(reads1 - reads0, 0, "a healthy pass reads no member bytes");
+
+        // Rung 1 — SWEEP: the memo is kept, the pass is the full stat sweep.
+        assert!(reg.rescan(&canonical, feed::RescanCause::Overflow));
+        let t_sweep = std::time::Instant::now();
+        let swept_root = reg.currency_root(&canonical).unwrap();
+        let sweep = t_sweep.elapsed();
+        let (sweeps2, stats2, reads2) = counters(&reg, &canonical);
+        assert_eq!(
+            reads2 - reads1,
+            0,
+            "the sweep rung re-verifies an unmoved corpus by stat alone — the \
+             160 ms lane-B class, never the cold re-read"
+        );
+        assert_eq!(
+            stats2 - stats1,
+            members as u64,
+            "and it statted every member"
+        );
+        assert_eq!(swept_root, baseline_root, "the sweep changed no answer");
+
+        // Rung 2 — REBASELINE: a fresh memo built from disk, committed by
+        // swap.
+        assert!(reg.restart_feed(&canonical));
+        let t_rebase = std::time::Instant::now();
+        let rebased_root = reg.currency_root(&canonical).unwrap();
+        let rebaseline = t_rebase.elapsed();
+        let (sweeps3, stats3, reads3) = counters(&reg, &canonical);
+        assert_eq!(
+            reads3 - reads2,
+            members as u64,
+            "the re-baseline rung re-derives every member from disk"
+        );
+        assert_eq!(
+            rebased_root, baseline_root,
+            "the swapped-in index serves the same truth — never an empty or \
+             torn one"
+        );
+
+        eprintln!(
+            "gate 3 (rungs, members={members}): clean={clean:?} [reads=+0 \
+             stats=+{}] sweep={sweep:?} [reads=+0 stats=+{}] \
+             rebaseline={rebaseline:?} [reads=+{} stats=+{}]",
+            stats1 - stats0,
+            stats2 - stats1,
+            reads3 - reads2,
+            stats3 - stats2,
+        );
+        eprintln!(
+            "gate 3 (grades): sweep = lane B class (stat-only re-verify, no \
+             member read) · rebaseline = cold-build class (every member read, \
+             commit by swap) · sweeps counter {sweeps0}→{sweeps1}→{sweeps2}→{sweeps3}"
+        );
+    }
+
+    /// The ladder's guard-plane obligation: a marked rescan drops guard
+    /// currency LOUDLY (the collapse reports event loss), and only a
+    /// COMPLETED observation restores it. Nothing on the ladder vouches its
+    /// own way back.
+    #[test]
+    fn a_marked_rescan_refuses_to_vouch_until_a_full_observation_lands() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_members(home.path(), 8);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.register(&canonical);
+        reg.warm_or_build(&ws).unwrap();
+        reg.currency_root(&canonical).unwrap();
+        {
+            let cache = reg.domain_cache(&canonical);
+            let memo = cache.lock().unwrap();
+            assert_eq!(
+                memo.guard_currency(),
+                ::fs::stable::GuardCurrency::Trusted,
+                "a baselined, calibrated, loss-free memo vouches"
+            );
+        }
+
+        assert!(reg.rescan(&canonical, feed::RescanCause::CookieTimeout));
+        {
+            // This borrow applies the mark (sweep rung: memo kept) — and the
+            // loss it reported is still unabsorbed, so nothing vouches yet.
+            let cache = reg.domain_cache(&canonical);
+            let memo = cache.lock().unwrap();
+            let ::fs::stable::GuardCurrency::Untrusted { reason } = memo.guard_currency() else {
+                panic!("a marked rescan must refuse to vouch");
+            };
+            assert!(
+                reason.contains("event loss"),
+                "the refusal names the loss: {reason}"
+            );
+        }
+
+        reg.currency_root(&canonical).unwrap();
+        let cache = reg.domain_cache(&canonical);
+        let memo = cache.lock().unwrap();
+        assert_eq!(
+            memo.guard_currency(),
+            ::fs::stable::GuardCurrency::Trusted,
+            "the completed sweep re-baselined currency"
         );
     }
 }
