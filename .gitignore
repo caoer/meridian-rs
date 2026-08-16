@@ -5,3 +5,5 @@
 /.claude/agent-memory
 /.claude/settings.local.json
 /result
+# live drawer: the daemon writes this when meridian-rs is a bound workspace
+/.meridian/
