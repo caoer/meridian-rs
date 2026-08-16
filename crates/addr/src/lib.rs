@@ -285,7 +285,8 @@ pub const PATH_UNSEEABLE_REASON_WORD: &str = "path-unseeable";
 /// an answer. A parse-success predicate would drop every refusal silently.
 ///
 /// Lives in this leaf because the resolver's C-3 guard and the link plane's
-/// degrade must be the same test, not two that agree today.
+/// degrade must be the same test, not two that agree today. The degrade's
+/// SECOND, table-narrowed question is [`head_names_declared_root`] below.
 #[must_use]
 pub fn head_carries_root_separator(spelling: &str) -> bool {
     let trimmed = spelling.trim();
@@ -295,6 +296,32 @@ pub fn head_carries_root_separator(spelling: &str) -> bool {
         .next()
         .unwrap_or(before_frag)
         .contains(':')
+}
+
+/// Does this spelling's head name a root `set` DECLARES — the link plane's
+/// NARROWED degrade question: "would the address plane's answer differ from
+/// `unresolved` on a table THIS machine holds?".
+///
+/// [`head_carries_root_separator`] answers the wider lexical question, and an
+/// external URI trips it (`https://…` has `https:` in its head) — one
+/// `[[https://…]]` wikilink then costs a whole-corpus ephemeral rebuild for a
+/// spelling no mount table binds. This predicate takes the text before the
+/// head's FIRST `:` and asks [`MountSet::is_declared`]: declared-but-malformed
+/// remainders (`sessions:`, `sessions:a:b`) still answer `true` — the refusal
+/// is the address plane's to speak — while an undeclared or uncharsetted name
+/// (`https`, `MixedCase`) answers `false` and the ambient `unresolved` stands.
+///
+/// Lives in this leaf beside the wide predicate so the head-peeling stays one
+/// spelling of the colon law (§ 4.1), not two that agree today.
+#[must_use]
+pub fn head_names_declared_root(spelling: &str, set: &MountSet) -> bool {
+    let trimmed = spelling.trim();
+    let before_frag = trimmed.split_once('#').map_or(trimmed, |(left, _)| left);
+    let head = before_frag.split('/').next().unwrap_or(before_frag);
+    let Some((name, _)) = head.split_once(':') else {
+        return false;
+    };
+    MountName::parse(name).is_ok_and(|n| set.is_declared(&n))
 }
 
 /// The one lexical confinement predicate for a corpus-relative path.
@@ -789,6 +816,49 @@ mod tests {
             assert!(
                 !head_carries_root_separator(ambient),
                 "{ambient}: ambient spellings must stay out",
+            );
+        }
+    }
+
+    /// [`head_names_declared_root`] narrows the wide head test to the table's
+    /// own names: declared heads answer `true` — a malformed remainder after a
+    /// declared name included, that refusal is the address plane's — while
+    /// external schemes, undeclared roots, uncharsetted names, and the whole
+    /// ambient corpus stay out.
+    #[test]
+    fn the_declared_root_test_admits_the_tables_names_and_nothing_else() {
+        let sessions = MountName::parse("sessions").unwrap();
+        let vault = MountName::parse("vault").unwrap();
+        let set = MountSet::new([sessions]).with_unreachable(vault, "/gone", "unreadable");
+        for declared in [
+            "sessions:notes.md",       // bound, well-formed
+            "sessions:24-01/notes.md", // bound, subdirs
+            "sessions:a/b.md#Design",  // bound, fragment
+            "sessions:",               // bound name, EmptyPath — the refusal is the plane's
+            "sessions:a:b.md",         // bound name, AmbiguousColon — likewise
+            "vault:notes.md",          // declared-but-unreachable MUST refuse, never dangle
+            "  sessions:notes.md",     // leading space — the resolver trims
+        ] {
+            assert!(
+                head_names_declared_root(declared, &set),
+                "{declared}: the table declares this head, the address plane owns the answer",
+            );
+        }
+        for outside in [
+            "https://example.com", // external scheme — the URL-shaped wikilink
+            "meridian://x/y",      // external scheme, engine-flavored
+            "mailto:someone@host", // external scheme, no `//`
+            "elsewhere:notes.md",  // rooted spelling, nobody declares it
+            "Sessions:notes.md",   // uncharsetted name can never be declared
+            ":notes.md",           // EmptyMountName
+            "notes.md",            // ambient
+            "dir/a:b.md",          // a `:` AFTER the first `/` is a path byte (§ 4.1)
+            "page.md#a:b",         // a `:` inside the FRAGMENT is not a root separator
+            "",
+        ] {
+            assert!(
+                !head_names_declared_root(outside, &set),
+                "{outside}: no declared root in the head, the ambient answer stands",
             );
         }
     }
