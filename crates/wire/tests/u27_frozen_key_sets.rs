@@ -683,6 +683,15 @@ fn error_body_key_set_is_frozen_plus_the_v3_ladder_extras() {
             kind: wire::ReferrerKind::Wikilink,
             count: 1,
         }]),
+        received_fingerprint_version: Some(wire::FingerprintVersion {
+            hash_law: 1,
+            domain: 0,
+        }),
+        current_fingerprint_version: Some(wire::FingerprintVersion {
+            hash_law: 2,
+            domain: 0,
+        }),
+        cutover_id: Some("cut-1".into()),
     };
     pin_keys(
         &err,
@@ -692,6 +701,8 @@ fn error_body_key_set_is_frozen_plus_the_v3_ladder_extras() {
             "candidates",
             "cause",
             "code",
+            "current_fingerprint_version",
+            "cutover_id",
             "dest",
             "diff",
             "expected",
@@ -705,6 +716,7 @@ fn error_body_key_set_is_frozen_plus_the_v3_ladder_extras() {
             "new_fingerprint",
             "overlap",
             "path",
+            "received_fingerprint_version",
             "recovery",
             "referrers",
             "required",
