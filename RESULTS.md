@@ -44,7 +44,7 @@ path; the latency result is weak and is placed where its weight puts it.
    N=1 and N=2 with cohort size 1. Contention-triggered rather than
    timer-triggered is visible in that zero.
 4. **Latency at N=60: the median is a real effect post-fix, the tail is not.**
-   17 of 18 paired repetitions favour grouping at p = 0.00014, about 12.4%
+   17 of 18 paired repetitions favour grouping at p = 0.000145, about 12.4%
    better per-writer p50, at the same pre-declared config that gave p = 0.24
    before the fixes. p99 remains unseparated (12 of 18, p = 0.238). An earlier
    30% figure from three pairs was retracted before it shipped.
@@ -327,10 +327,10 @@ Re-run at `01142b7e1` after the two fixes, **identical pre-declared config**
 | set | pairs | p50 median | ON better | sign p | p99 median | ON better | sign p |
 |---|---|---|---|---|---|---|---|
 | PRE-FIX | 18 | 0.931 | 12/18 | 0.238 | 0.968 | 9/18 | 1.000 |
-| **POST-FIX** | 18 | **0.876** | **17/18** | **0.00014** | 0.921 | 12/18 | 0.238 |
+| **POST-FIX** | 18 | **0.876** | **17/18** | **0.000145** | 0.921 | 12/18 | 0.238 |
 
 **p50 clears noise for the first time in this card**: 17 of 18 pairs favour
-grouping at p = 0.00014, about 12.4% better per-writer end-to-end latency at
+grouping at p = 0.000145, about 12.4% better per-writer end-to-end latency at
 N=60 — at the same config that previously gave 12/18 and p = 0.24, so this is
 not a config hunted for after the fact.
 
@@ -378,7 +378,7 @@ filed; no expectation was re-baselined after seeing a number.
 | 3 | "Any plain `fsync` appearing on our durability path" | **NOT TRIGGERED.** Zero in the same three-column receipts |
 | 4 | "Overhead grows with D — measured count minus `D` minus `P` is not the constant 4" | **NOT TRIGGERED.** `count − D − P = 4` in all eight cells |
 | 5 | "Count grows with N" | **NOT TRIGGERED, both arms, both code states.** Pre-change 10.00 barriers/commit at N = 8–60; post-change the control arm holds exactly 6.000 across the same range while the shipped arm FALLS to 4.229. My filed prediction of "flat" was half wrong — see below |
-| 6 | "Grouping-ON shows no per-pair improvement over grouping-OFF at N ≥ 4" | **AMBIGUOUS on pre-fix code** — reported as ambiguous, not resolved in our favour. **CLEARED at N=60 on post-fix code** (17/18, p = 0.00014). The rest of the declared range, N = 4–16 post-fix, is **not yet measured**, so no claim is made there |
+| 6 | "Grouping-ON shows no per-pair improvement over grouping-OFF at N ≥ 4" | **AMBIGUOUS on pre-fix code** — reported as ambiguous, not resolved in our favour. **CLEARED at N=60 on post-fix code** (17/18, p = 0.000145). The rest of the declared range, N = 4–16 post-fix, is **not yet measured**, so no claim is made there |
 | 7 | "Bounded-at-16 shows worse p99 than unbounded at N=60" | **NOT TRIGGERED.** 18 pairs give no detectable p99 difference in either direction (9 of 18, p = 1.00) |
 
 ### Falsifier 6 is ambiguous, and that is the finding
@@ -483,12 +483,42 @@ cap cannot bound it and should not: a larger cohort is better amortization,
 and the two numbers cannot contradict each other because they count different
 objects. **Not a defect.**
 
-**Named honestly: the cap's own effectiveness is not instrumented.** Nothing
-records peak concurrent occupancy of `SYNC_SLOTS`, so no receipt in this file
-proves at most 16 content syncs were ever in flight. `cohort_size` cannot
-stand in for that — it measures the other quantity. The constant's
-justification is the device sweep below; its enforcement is code-read, not
-measured.
+### The cap is enforced AND binding — measured, with a control
+
+This was an open gap in an earlier draft of this file: the constant's
+justification was the device sweep, but its enforcement was code-read only,
+and `cohort_size` cannot stand in for it because it counts the other object.
+It is now measured, by an external receipt that required no instrumentation
+inside `crates/fs`.
+
+Method: each interposer line carries a start timestamp, which turns every
+barrier from a point into an interval; peak concurrent occupancy is then
+reconstructed offline by sweeping interval endpoints, with releases ordered
+before acquires at a tie so a touching pair is never miscounted as an overlap
+— a choice that makes the number conservative rather than inflated.
+Requalified against the positive control first (`qualify-interval.log`).
+
+N=60 writers, D=1, at `01142b7e1` (`occupancy-n60.log`, `occupancy-n60-OFF.log`):
+
+| arm | peak concurrent, all barriers | peak concurrent, CONTENT | calls |
+|---|---|---|---|
+| ON (shipped, capped) | **15** | **10** | 1525 |
+| OFF (control, uncapped) | 28 | 28 | 2160 |
+
+**Enforced:** peak 15 across all barrier classes and 10 for content, both under
+16, across 1525 barriers at 60 concurrent writers. No sample exceeded the cap.
+
+**Binding, which is the half that needed the control:** the uncapped arm
+reaches 28 concurrent content syncs on the identical workload. Without the OFF
+arm, "peak 15, under 16" would have been equally consistent with a cap that
+does nothing against low demand. And 28 lands inside exactly the region the
+bound was ruled to avoid — the device sweep saturates at N≈16–24 with the tail
+multiplying past it.
+
+**Stated limit:** the interposer writes a line per barrier, so this is peak
+occupancy *under instrumentation*, not of an unobserved run. The perturbation
+is microseconds against 5–15 ms barriers, and it would take a far larger one
+to turn 28 into 15.
 
 ## Why the queue is bounded at 16
 
@@ -551,6 +581,21 @@ was honest — but **stop paying for honesty more times than a transaction
 needs**. Every number above is reported against that corrected baseline.
 Nothing here was measured on another platform and nothing here claims
 anything about one.
+
+## Criterion 6 — internal audit, and what it does not settle
+
+A non-opus seat audited this diff specifically for invented permission layers,
+unrequested guard scaffolding and capability plumbing — the standing landing
+gate for an opus-implemented engine diff. Card `tasks/hd-a-crit6-audit.md`.
+
+Verdict: **none found**, with the search shown and the enumeration empty. It
+classified the three constructs a reviewer is most likely to stop on — the
+in-flight slot semaphore, the `TallyDrain` scope guard, and the test lock
+guards — as ordinary concurrency control rather than permission machinery.
+
+This is reported as an internal audit result, not as a gate outcome. **The
+gate reviewers score criterion 6 themselves**, and an internal pass is
+evidence for them to weigh rather than a conclusion they inherit.
 
 ## Scope: what these numbers describe
 
