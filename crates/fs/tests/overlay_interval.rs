@@ -43,7 +43,7 @@ fn an_empty_overlay_folds_to_the_same_root_as_the_worktree_snapshot() {
     let domain = Domain::new();
     let (files, fold) = domain_snapshot(&root).unwrap();
 
-    let (overlaid, overlaid_fold) = overlay_snapshot(&files, &[], &domain);
+    let (overlaid, overlaid_fold) = overlay_snapshot(&files, &[], &domain, fs::cutover::ServingLaw::pre_cutover());
     assert_eq!(
         overlaid_fold.0, fold.0,
         "the same bytes must fold to the same root, or the baseline compare refuses \
@@ -70,7 +70,7 @@ fn an_overlay_restating_the_same_bytes_changes_nothing() {
         .iter()
         .map(|(rel, bytes)| (rel.clone(), Some(bytes.clone())))
         .collect();
-    let (_, overlaid_fold) = overlay_snapshot(&files, &same, &domain);
+    let (_, overlaid_fold) = overlay_snapshot(&files, &same, &domain, fs::cutover::ServingLaw::pre_cutover());
     assert_eq!(overlaid_fold.0, fold.0, "restating bytes is not a change");
 }
 
@@ -87,9 +87,10 @@ fn replacing_one_path_folds_the_replacement_and_moves_the_root() {
 
     let (overlaid, overlaid_fold) = overlay_snapshot(
         &files,
-        &[("a/b.md".to_owned(), Some(b"# A/B FORGED\n".to_vec()))],
+        &[(("a/b.md".to_owned(), Some(b"# A/B FORGED\n".to_vec()))],
         &domain,
-    );
+        fs::cutover::ServingLaw::pre_cutover(),
+    ));
     assert_ne!(overlaid_fold.0, fold.0, "different bytes, different root");
     assert_eq!(
         overlaid
@@ -120,7 +121,12 @@ fn a_removal_drops_the_path_from_the_interval() {
     let domain = Domain::new();
     let (files, _) = domain_snapshot(&root).unwrap();
 
-    let (overlaid, overlaid_fold) = overlay_snapshot(&files, &[("a.md".to_owned(), None)], &domain);
+    let (overlaid, overlaid_fold) = overlay_snapshot(
+        &files,
+        &[("a.md".to_owned(), None)],
+        &domain,
+        fs::cutover::ServingLaw::pre_cutover(),
+    );
     assert!(
         !overlaid.iter().any(|(rel, _)| rel == "a.md"),
         "the removed path is gone from the snapshot"
@@ -153,6 +159,7 @@ fn paths_outside_the_hash_domain_are_ignored() {
             (".github/ci.md".to_owned(), Some(b"# dot path\n".to_vec())),
         ],
         &domain,
+        fs::cutover::ServingLaw::pre_cutover(),
     );
     assert_eq!(
         overlaid_fold.0, fold.0,

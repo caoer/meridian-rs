@@ -891,12 +891,22 @@ impl DomainCache {
         // at); losses landing mid-pass stay unabsorbed. Counted at entry so
         // an aborted sweep still shows on the §7(d) counter.
         self.sweeps += 1;
-        // Resolve the serving hash law once per memo (merkle-spec §4.2.6):
-        // the B-04 record decides which LAW every served token below mints
-        // under. Corrupt or mid-build records refuse loudly here — before a
-        // single row lands — and never guess.
-        if self.serving_law.is_none() {
-            self.serving_law = Some(cutover::serving(root).map_err(ObserveRefusal::Io)?);
+        // Resolve the serving hash law (merkle-spec §4.2.6): the B-04 record
+        // decides which LAW every served token below mints under. A law-2
+        // answer caches for the life of the memo (the record only ever
+        // advances, so it can never change again); a law-1 answer re-reads
+        // per observation — one ENOENT-class probe — so a memo that
+        // straddles another process's cutover can never keep minting the
+        // retired law. Corrupt or mid-build records refuse loudly here —
+        // before a single row lands — and never guess.
+        // (The served cache needs no explicit clear on a flip: it is keyed
+        // by the full two-dimensional identity, so a changed law can never
+        // answer from it.)
+        match self.serving_law {
+            Some(law) if law.hash_law != model::HASH_LAW_FLAT => {}
+            _ => {
+                self.serving_law = Some(cutover::serving(root).map_err(ObserveRefusal::Io)?);
+            }
         }
         let losses_at_start = self.feed.losses();
         let trust = self.trust_context(root);

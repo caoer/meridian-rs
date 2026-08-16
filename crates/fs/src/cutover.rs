@@ -231,6 +231,16 @@ pub struct ServingLaw {
 }
 
 impl ServingLaw {
+    /// The pre-cutover serving law: law 1 at boundary 0 — what an absent
+    /// record dictates.
+    #[must_use]
+    pub const fn pre_cutover() -> Self {
+        ServingLaw {
+            hash_law: model::HASH_LAW_FLAT,
+            law_boundary: 0,
+        }
+    }
+
     /// The full two-dimensional serving identity at the live `domain`
     /// version.
     #[must_use]
