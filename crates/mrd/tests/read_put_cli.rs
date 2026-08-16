@@ -75,12 +75,11 @@ impl Sandbox {
             .stderr(Stdio::piped())
             .spawn()
             .expect("spawn mrd");
-        child
-            .stdin
-            .as_mut()
-            .expect("stdin")
-            .write_all(stdin_bytes.as_bytes())
-            .expect("write stdin");
+        {
+            let mut pipe = child.stdin.take().expect("stdin");
+            pipe.write_all(stdin_bytes.as_bytes()).expect("write stdin");
+            pipe.flush().expect("flush stdin");
+        }
         child.wait_with_output().expect("wait mrd")
     }
 
@@ -1025,8 +1024,8 @@ fn put_validate_findings_exit_nonzero_with_the_refusal_body() {
     let ws = sb.workspace();
     let out = sb.run_stdin(
         &ws,
-        &["put", "doc.md", "--validate", "--force"],
-        &beta_match("nothing matches this", "x"),
+        &["put", "doc.md", "--validate"],
+        &beta_match_guarded(&sb, &ws, "nothing matches this", "x"),
     );
     assert_eq!(code(&out), 1, "a finding is the findings leg");
     assert_eq!(stdout(&out), "", "the refusal rides stderr, not stdout");
@@ -1093,8 +1092,8 @@ fn put_json_refusal_emits_the_error_envelope_on_stdout() {
     let ws = sb.workspace();
     let out = sb.run_stdin(
         &ws,
-        &["put", "doc.md", "--json", "--force"],
-        &beta_match("absent text", "anything"),
+        &["put", "doc.md", "--json"],
+        &beta_match_guarded(&sb, &ws, "absent text", "anything"),
     );
     assert_eq!(code(&out), 1, "no_match refuses: {}", stderr(&out));
     let v: Value = serde_json::from_str(&stdout(&out))
@@ -1153,8 +1152,8 @@ fn put_no_match_is_the_finding_leg() {
     let before = std::fs::read_to_string(ws.join("doc.md")).expect("read");
     let out = sb.run_stdin(
         &ws,
-        &["put", "doc.md", "--force"],
-        &beta_match("absent text", "anything"),
+        &["put", "doc.md"],
+        &beta_match_guarded(&sb, &ws, "absent text", "anything"),
     );
     assert_eq!(code(&out), 1, "no_match refusal: {}", stderr(&out));
     assert_eq!(
@@ -1747,8 +1746,8 @@ fn put_no_match_teaches_the_byte_exact_law() {
     let ws = sb.workspace();
     let out = sb.run_stdin(
         &ws,
-        &["put", "doc.md", "--force"],
-        &beta_match("absent text", "anything"),
+        &["put", "doc.md"],
+        &beta_match_guarded(&sb, &ws, "absent text", "anything"),
     );
     assert_eq!(code(&out), 1, "no_match refuses: {}", stderr(&out));
     let m = stderr(&out);
