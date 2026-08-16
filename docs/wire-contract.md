@@ -998,6 +998,18 @@ Appendix C source; dogfood break #7, 2026-08-16):
    NOT compared: fix the spelling, not the plan. Paste the token exactly
    as the engine served it, or re-mint it (fingerprint{scope: "<scope>"},
    §4.7) and send that."
+refused trace, recovery fix — script door, malformed entry pin (drafted
+here — no Appendix C source; dogfood break #7, script door, 2026-08-16;
+engine-minted, so it rides the trace's fault triple with no §8 code —
+§ A.7 response law):
+  "the script entry pin holds <raw bytes, debug-quoted>, which is not an
+   entry fingerprint — the pin holds an engine-minted b3…:<64-hex> token,
+   and the quoted spelling shows every byte, whitespace included. The
+   world was NOT compared: fix the spelling, not the plan. Paste the
+   entry fingerprint exactly as the engine served it, or re-mint it
+   (fingerprint{}, §4.7) and send that. The reserved "absent" is premise
+   vocabulary (§5.6, guards[]), never an entry pin — a script evaluates
+   against the world that exists."
 bad_request — guard family, effects door (drafted here — no Appendix C
 source):
   "<field> was supplied on an unguarded door: run and script-with-effects
@@ -2344,6 +2356,24 @@ tests are the implementation card's.*
   limits are the daemon's own (`EvalLimits` + the wall clock). If a lane ever
   needs an override, it arrives as a dotted `script.<field>` cap through the
   §3.2 evolution law, not by loosening this shape now.
+
+*(Amended 2026-08-16 — the malformed entry pin; dogfood break #7, script
+door.)* The pre-eval fast-fail inherits §5.7's malformed arm: a supplied
+`if_fingerprint` that is not a grammatical `Root`-family token (the
+merkle-spec §4.2 spelling) refuses as a REFUSED trace (recovery `fix`,
+engine-minted — the fault triple, no §8 code) **before any compare** — never
+`conflict`, which claims a WELL-FORMED pin was compared against the entry
+fingerprint and differed. The teaching quotes the raw bytes debug-quoted
+(§8.2), so damage the prose renders invisible — one leading space on an
+otherwise valid token, the measured case — shows as a byte; `guard_expected`
+stays absent because nothing was compared. The reserved `absent` (§5.6) is
+premise vocabulary — legal inside `guards[]`, never as the entry pin: a
+script evaluates against the world that exists, so an entry pin spells
+exactly an engine-minted token. Version families are untouched (§12.3): a
+grammatical retired/future token is never malformed. Both lanes refuse
+identically — the CLI entry's pre-eval check and this op's are one trace
+contract — and the wall is value grammar at the existing rung, never a
+permission plane.
 
 **Response** — `ok:true` with the run-plane `ScriptTrace` as the body,
 verbatim, whenever the entry RAN. A fault, a refusal, and a conflict are

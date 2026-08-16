@@ -820,6 +820,17 @@ pre-eval check is a fast-fail courtesy, **not** the authoritative one: the
 commit's splice still carries the guard and §5.1 still checks it first, which
 is what catches a world that moves *during* eval. Two checks, one value.
 
+*(Amended 2026-08-16 — the malformed arm; dogfood break #7, script door.)*
+Before the compare, the pin passes §5.7's grammar wall: a value that is not
+a grammatical `Root`-family token — the reserved `absent` included, which is
+§5.6 premise vocabulary (`guards[]`), never an entry pin — refuses as a
+REFUSED trace (recovery `fix`) with the raw bytes debug-quoted, so invisible
+damage (one leading space, the measured case) shows as a byte. Comparing a
+damaged spelling instead would answer `conflict` with an expected/live pair
+that can render character-identical and teach a re-read that loops. Both
+lanes — this CLI entry and the wire `script` op — refuse identically
+(wire-contract § A.7).
+
 The guarantee, stated exactly: *a committed script is consistent with exactly
 one workspace fingerprint — the world stood still, or the commit refused.*
 

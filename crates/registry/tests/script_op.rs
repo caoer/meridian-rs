@@ -470,6 +470,55 @@ fn a_stale_caller_guard_refuses_pre_eval_with_zero_reads() {
     assert!(trace.get("commit").is_none(), "no splice was issued");
 }
 
+/// § A.7's malformed arm (§5.7 family; dogfood break #7, script door): a pin
+/// that is not a `Root`-family token — one leading space on a valid token
+/// (the measured case), a short digest, prose, a bare prefix, or the
+/// reserved `absent` — refuses as INPUT on the wire lane too: `refused`,
+/// recovery `fix`, the raw bytes debug-quoted, zero reads, no commit leg,
+/// and NO `guard_expected` — the world was not compared. The well-formed
+/// stale pin above keeps its `conflict` meaning untouched.
+#[test]
+fn a_malformed_caller_pin_refuses_as_input_on_the_wire_lane() {
+    let tmp = TempDir::new().unwrap();
+    let ws = seeded(&tmp);
+    let _server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(&test_config(&tmp).socket_path);
+    conn.hello_v3(&ws);
+
+    let pins = [
+        " b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9",
+        "b3c:abcd",
+        "not-a-token",
+        "b3c:",
+        "absent",
+    ];
+    for (i, pin) in pins.iter().enumerate() {
+        let resp = conn.call(&json!({
+            "id": 20 + i as u64, "op": "script",
+            "source": "t = read(\"doc.md\")\n",
+            "if_fingerprint": pin,
+        }));
+        let trace = trace_of(&resp);
+        assert_eq!(trace["outcome"], json!("refused"), "{pin:?}: {trace}");
+        assert_eq!(trace["fault"]["recovery"], json!("fix"), "{pin:?}: {trace}");
+        let reason = trace["fault"]["reason"].as_str().expect("a reason rides");
+        assert!(
+            reason.contains(&format!("{pin:?}")),
+            "the teaching debug-quotes the bytes: {reason}"
+        );
+        assert!(
+            trace.get("guard_expected").is_none(),
+            "the world was not compared: {trace}"
+        );
+        assert_eq!(
+            trace["telemetry"]["reads_used"],
+            json!(0),
+            "zero evaluation"
+        );
+        assert!(trace.get("commit").is_none(), "no splice was issued");
+    }
+}
+
 /// An `expect_armed` mismatch refuses BEFORE the splice is issued: nothing
 /// lands, the fingerprint does not advance, and the class is `fix`.
 #[test]
