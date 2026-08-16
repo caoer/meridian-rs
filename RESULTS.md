@@ -37,9 +37,10 @@ path; the latency result is weak and is placed where its weight puts it.
 2. **Grouping amortizes shared work and NOTHING else — measured by target.**
    At N=60 across 240 transactions per arm, the four writer-local barriers are
    identical in both arms (240 each) and only the shared `.meridian/intents`
-   directory falls, 480 → 55. Criterion 1 demonstrated by attribution rather
-   than argued. Net 6.000 → 4.229 barriers per commit, against a hard floor of
-   4 that can never be amortized.
+   directory falls, 480 → 55. That is the CONTENT half of criterion 1 shown by
+   attribution rather than argued; the shared directory entry is answered YES
+   and defended separately. Net 6.000 → 4.229 barriers per commit, against a
+   hard floor of 4 that can never be amortized.
 3. **The uncontended writer never waits.** `group_wait` is exactly 0.00 ms at
    N=1 and N=2 with cohort size 1. Contention-triggered rather than
    timer-triggered is visible in that zero.
@@ -67,19 +68,76 @@ for nobody. No window, no timer, no epoch.
 
 ## Criterion 1 — whose flush makes a receipt true?
 
-**Its own. No writer's receipt rests on a flush issued on another writer's
-descriptor.** I wrote the code and I will defend the claim at the line level.
+**The answer is a split, and both halves are stated here rather than one up
+top and the other further down: NO for a writer's content bytes — every
+acked writer flushed those itself, on its own descriptor. YES for shared
+directory entries — one writer's `F_FULLFSYNC` on a directory descriptor is
+what makes another writer's rename into that directory durable.**
+
+An earlier draft of this file led with a flat "no". That was wrong. It was
+true of content and false of directory entries, and the disclosure sat three
+paragraphs below the headline — which is the evasion shape whatever the
+intent, because a reviewer reads the bolded sentence as the answer. The
+correction is mine and the finding was raised internally before any reviewer
+saw it.
+
+### The mechanism, as fact
+
+| | content bytes | shared directory entry |
+|---|---|---|
+| which call | `fcntl(fd, F_FULLFSYNC)` | `fcntl(dirfd, F_FULLFSYNC)` |
+| issued by | the writing thread itself | the round leader — possibly another writer's thread |
+| on which descriptor | one this thread opened on its own temp | one opened on the directory both writers renamed into |
+| covers | that writer's own bytes | every rename into that directory completed before the call began |
+| ack | after every call above returns, on the success path only | same |
+
+The arriving writer's code path is explicit about it: in `grouped_sync_dir`
+the coverage branch returns `Ok(())` **without issuing a sync on its own
+thread**, because a round that began after it arrived has already completed.
+Our own measurement says it more loudly than the code does — **55 shared
+directory barriers cover 240 transactions** at N=60.
+
+### Defending the NO half — content
 
 Content durability is `fs::honest_sync_path_capped(&d.tmp)`, called from
-`sync_content` in `crates/wire-serve/src/publish.rs`, one scoped thread per
-destination, on a descriptor that thread opened. It is not shareable by
-construction: there is no queue, no owner thread, and no barrier between a
-writer's content bytes and the platter.
+`sync_content`, one scoped thread per destination, on a descriptor that thread
+opened. It is not shareable by construction: no queue, no owner thread, no
+barrier between a writer's content bytes and the platter. Measured rather than
+asserted: content barriers are **240 in both arms** at N=60, identical with
+grouping on and off, while only the shared directory count moves. A design
+resting content on a peer's flush would show that row falling with N.
 
-One call in the transaction IS shared inside a cohort, and I disclose it
-rather than let a reviewer discover it: the `.meridian/intents` **directory**
-sync, and destination parent directory syncs. Three reasons I hold that this
-is not a peer flush standing in for a writer's own:
+### Defending the YES half — shared directory entries
+
+Per gate item A10, a "yes" names the guarantee, its scope, where it is
+documented, and the failure mode if it does not hold.
+
+- **Guarantee relied on.** `fsync` on a directory descriptor makes that
+  directory's already-completed entry changes durable; `F_FULLFSYNC` is the
+  variant that additionally forces the drive to flush, which is what makes it
+  survive power loss. The shared object and the synced object are the same
+  object — this is the documented meaning of the call, not a side effect of
+  one issued elsewhere.
+- **Scope.** Directory-scoped, and the flush unit beneath it is **probably the
+  APFS container rather than the whole device** — static extraction of the
+  shipped kext indicates `F_FULLFSYNC` commits the container transaction
+  shared by every file in it. Every writer this mechanism groups is inside one
+  workspace and therefore one container, so the scope we rely on is narrower
+  than the one we need. **Cross-container would break it**, and we design to
+  the narrower reading.
+- **Documented, not verified.** The directory-fsync semantics are the
+  documented contract; APFS itself is closed, and the container-scope finding
+  is agent-read disassembly — suggestive, not conclusive. We write
+  "documented" where we mean documented.
+- **Failure mode if it does not hold.** A crash could leave durable file data
+  behind a lost directory entry. For a destination parent that means the
+  rename is undone and recovery restores the complete old set — the handled
+  path. For `.meridian/intents` it is worse: the intent record becomes
+  unreachable and recovery has no account of a transaction whose renames
+  partly landed. That is the case this guarantee is load-bearing for, and it
+  is why the entry is flushed rather than merely ordered.
+
+Three properties keep this from being the shared-flush trick we declined:
 
 1. **The shared object and the synced object are the same object.** `fsync`
    on a directory making completed renames into that directory durable is the
@@ -93,14 +151,15 @@ is not a peer flush standing in for a writer's own:
    the in-flight round would be faster and would be resting on timing that
    nothing checks.
 3. **Content durability never depends on it.** A writer's content is already
-   platter-durable before it reaches any shared step.
+   platter-durable before it reaches any shared step, so the shared call
+   extends the promise to the entry and never carries the bytes.
 
-**And it is measured, not only reasoned.** Running the same workload with
-coordination off and on, the content barrier count is identical in both arms
-at N=60 — 240 against 240 — while only the shared directory falls, 480 → 55.
-A design resting a receipt on a peer's flush would show the content row
-falling with N. Ours does not move. The table is under "The criterion-1
-answer, proven by target attribution" below.
+**A failing covering flush does not ack.** The round records its outcome and
+every writer it covered returns that outcome, so a follower of a failed round
+receives the error rather than a silent success — `publish` then fails the
+transaction. The named evasion pattern here is issuing the honest class but
+leaving its result unchecked; the result is checked on both the leader and
+the follower path.
 
 The general form of the rejected trick is a cheap per-writer push plus one
 shared full barrier. I did not build a cheap tier at all, so there is no
@@ -443,9 +502,12 @@ not touch one byte of a writer's own durability. The entire difference is the
 one genuinely shared directory, amortized 8.7×. Totals reconcile exactly:
 240×4 + 480 = 1440, and 240×4 + 55 = 1015.
 
-That is the criterion-1 claim demonstrated by target rather than asserted by
-design intent. A design resting a receipt on a peer's flush would show the
-content row falling with N. Ours does not move.
+That is the CONTENT half of the criterion-1 answer demonstrated by target
+rather than asserted by design intent: a design resting content bytes on a
+peer's flush would show the content row falling with N, and ours does not
+move. It says nothing about the shared directory entry, which is the half
+answered YES — that row is exactly the one that falls, by design and by
+disclosure.
 
 The destination-directory row staying at 240 in both arms is the same property
 seen from the other side: in this workload each writer owns its own
