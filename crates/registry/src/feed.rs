@@ -129,10 +129,9 @@ impl RescanCause {
     const fn rung(self) -> Rung {
         match self {
             Self::InstanceChange => Rung::Rebaseline,
-            Self::MissedEvent
-            | Self::Overflow
-            | Self::VouchFailure
-            | Self::CookieTimeout => Rung::Sweep,
+            Self::MissedEvent | Self::Overflow | Self::VouchFailure | Self::CookieTimeout => {
+                Rung::Sweep
+            }
         }
     }
 }
@@ -562,7 +561,7 @@ mod tests {
             RescanCause::VouchFailure,
             RescanCause::CookieTimeout,
         ];
-        let mut names = std::collections::BTreeSet::new();
+        let mut names = BTreeSet::new();
         for cause in all {
             assert!(!cause.name().is_empty(), "{cause:?} must carry a name");
             assert!(
@@ -571,7 +570,11 @@ mod tests {
                 cause.name()
             );
         }
-        assert_eq!(all.len(), 5, "the suspicious-only set is exactly these five");
+        assert_eq!(
+            all.len(),
+            5,
+            "the suspicious-only set is exactly these five"
+        );
         assert_eq!(RescanCause::InstanceChange.rung(), Rung::Rebaseline);
         assert_eq!(RescanCause::Overflow.rung(), Rung::Sweep);
         assert_eq!(RescanCause::MissedEvent.rung(), Rung::Sweep);
@@ -737,11 +740,7 @@ mod tests {
         // A change the (dead) stream never delivered.
         std::fs::write(dir.path().join("a.md"), "# A moved unseen\n").unwrap();
         assert_eq!(
-            apply(
-                &root,
-                &mut cache,
-                Pending::All(RescanCause::InstanceChange)
-            ),
+            apply(&root, &mut cache, Pending::All(RescanCause::InstanceChange)),
             Applied::Rebaselined(RescanCause::InstanceChange)
         );
         assert_eq!(
@@ -773,11 +772,7 @@ mod tests {
 
         let mut cold2 = fs::DomainCache::new();
         assert_eq!(
-            apply(
-                &root,
-                &mut cold2,
-                Pending::All(RescanCause::InstanceChange)
-            ),
+            apply(&root, &mut cold2, Pending::All(RescanCause::InstanceChange)),
             Applied::Rebaselined(RescanCause::InstanceChange)
         );
         assert_eq!(cold2.leaves_read(), 1);
@@ -839,11 +834,7 @@ mod tests {
 
         let t2 = Instant::now();
         assert_eq!(
-            apply(
-                &root,
-                &mut cache,
-                Pending::All(RescanCause::InstanceChange)
-            ),
+            apply(&root, &mut cache, Pending::All(RescanCause::InstanceChange)),
             Applied::Rebaselined(RescanCause::InstanceChange)
         );
         let rebaseline = t2.elapsed();
