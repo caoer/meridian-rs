@@ -983,7 +983,8 @@ const CAPS: [&str; 16] = [
 ];
 
 /// Resident-engine handshake (§4): decode `hello` (unknown rev ⇒
-/// `bad_request`), pin + warm + bind the connection. Subsumes deleted `attach`.
+/// `bad_request`), pin + bind the connection at config cost (§3.2 — hello
+/// never walks the corpus). Subsumes deleted `attach`.
 fn hello(
     registry: &Registry,
     attached: &mut Option<PathBuf>,
@@ -1020,12 +1021,22 @@ fn hello(
     }
 }
 
-/// Pin + warm + bind for a `hello` declared workspace.
+/// Pin + bind for a `hello` declared workspace — config-grade (§3.2, ruled
+/// 2026-08-16, roots-hello-starved).
 ///
 /// Workspace-less hello: version handshake only (proto + caps). With a target:
-/// exact pin via [`Registry::pin_declared`] (never cwd-shaped widening), warm
-/// from disk, bind for subsequent ops. Response names the root that actually
-/// bound (canonicalization may rewrite the declared spelling).
+/// exact pin via [`Registry::pin_declared`] (never cwd-shaped widening),
+/// domain CONFIG validated (an ambiguous or unreadable config refuses
+/// `io_error{cause}` at the handshake, as it always has — the walk-free half
+/// of the old inline warm), bind for subsequent ops. Response names the root
+/// that actually bound (canonicalization may rewrite the declared spelling).
+///
+/// `hello` NEVER walks the corpus or builds the engine: the inline warm here
+/// let one client's cold whole-corpus build hold every other client's `hello`
+/// — and `mounts` behind it — past the face deadline (dogfood 2026-08-16).
+/// `root` is the RESIDENT engine's fold when one exists and absent on a cold
+/// workspace ("the engine may not have walked yet"); the first corpus read
+/// pays the warm ([`warm_engine_read`]).
 fn hello_body(
     registry: &Registry,
     attached: &mut Option<PathBuf>,
@@ -1037,10 +1048,16 @@ fn hello_body(
         None => (None, None, None),
         Some(target) => match registry.pin_declared(Path::new(&target)) {
             PinOutcome::Pinned { workspace, drawer } => {
-                registry
-                    .warm_or_build(&workspace)
+                fs::domain::Domain::load(&fs::WorkspaceRoot(workspace.clone()))
                     .map_err(|e| warm_err_to_wire(&e))?;
-                let root = registry.with_engine(&workspace, |engine| engine.map(engine_root));
+                // try_read, never a parking read: a rebuild insert queued
+                // behind a long links closure walls ordinary readers, and
+                // hello must answer through that too
+                // (Registry::engine_snapshot_nowait). Absent-under-contention
+                // is the same honest answer as cold.
+                let root = registry
+                    .engine_snapshot_nowait(&workspace)
+                    .map(|engine| engine_root(&engine));
                 let bound = workspace.to_string_lossy().into_owned();
                 *attached = Some(workspace);
                 (
@@ -2081,5 +2098,206 @@ mod arm_time_exemption_tests {
             "dropping the claim restores mortality (and proves the survival \
              above was the claim, not an unregistered workspace): {reaped:?}"
         );
+    }
+}
+
+/// The §3.2 config-grade hello law (ruled 2026-08-16, roots-hello-starved):
+/// one client's cold whole-corpus build must never hold another client's
+/// `hello`. Deterministic via the disclosed `pause_before_insert` seam — the
+/// build parks mid-flight (snapshot taken, insert pending), exactly the
+/// window the old inline warm serialized every other hello behind.
+#[cfg(test)]
+mod hello_config_grade_tests {
+    use super::{Config, RunningServer};
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+    use std::path::Path;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use serde_json::{Value, json};
+    use tempfile::TempDir;
+
+    /// Daemon config under `tmp` with horizons too large to interfere (the
+    /// `engine_rpc` precedent).
+    #[allow(clippy::duration_suboptimal_units)]
+    fn test_config(tmp: &TempDir) -> Config {
+        let forever = Duration::from_secs(365 * 24 * 60 * 60);
+        let dir = tmp.path().join("registry");
+        let mut config = Config::for_cache_root(tmp.path().join("cache"));
+        config.socket_path = dir.join("daemon.sock");
+        config.state_path = dir.join("state.json");
+        config.idle_threshold = forever;
+        config.reap_interval = forever;
+        config.prewarm_interval = forever;
+        config.prewarm_quiet_max = forever;
+        config.idle_exit = None;
+        config
+    }
+
+    struct Conn {
+        writer: UnixStream,
+        reader: BufReader<UnixStream>,
+    }
+
+    impl Conn {
+        fn open(socket: &Path) -> Self {
+            let stream = UnixStream::connect(socket).unwrap();
+            Conn {
+                writer: stream.try_clone().unwrap(),
+                reader: BufReader::new(stream),
+            }
+        }
+
+        /// A starved read fails loud at `timeout` instead of hanging the test.
+        fn set_read_timeout(&self, timeout: Duration) {
+            self.writer.set_read_timeout(Some(timeout)).unwrap();
+        }
+
+        fn call(&mut self, request: &Value) -> Value {
+            let mut line = serde_json::to_string(request).unwrap();
+            line.push('\n');
+            self.writer.write_all(line.as_bytes()).unwrap();
+            self.writer.flush().unwrap();
+            let mut response = String::new();
+            self.reader.read_line(&mut response).unwrap();
+            serde_json::from_str(&response).unwrap()
+        }
+
+        fn hello(&mut self, ws: &Path) -> Value {
+            self.call(&json!({
+                "op": "hello",
+                "proto": 1,
+                "contract": "v3",
+                "workspace": ws.to_str().unwrap(),
+            }))
+        }
+    }
+
+    #[test]
+    fn a_parked_cold_build_never_holds_another_connections_hello() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(ws.join("a.md"), "# A\n").unwrap();
+        let server = RunningServer::start(test_config(&tmp)).unwrap();
+
+        // Arm the one-shot pre-insert gate: the NEXT rebuild pass parks
+        // between its disk snapshot and its `engines` insert.
+        let (arrived_tx, arrived_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        *server.registry().pause_before_insert.lock().unwrap() = Some((arrived_tx, release_rx));
+
+        // Connection A: hello binds at config cost; its `toc` pays the cold
+        // build and parks at the gate.
+        let socket = server.socket_path().to_path_buf();
+        let ws_a = ws.clone();
+        let a = std::thread::spawn(move || {
+            let mut conn = Conn::open(&socket);
+            let hi = conn.hello(&ws_a);
+            assert_eq!(hi["ok"], json!(true), "A's hello binds: {hi}");
+            conn.call(&json!({"op": "toc", "path": "a.md"}))
+        });
+        arrived_rx.recv().expect("the cold build reached the gate");
+
+        // Connection B, same workspace, while A's build is parked: hello
+        // answers — and cold (nothing inserted yet), so no `fingerprint`.
+        // Before the config-grade law this assertion failed two ways: a
+        // second inline warm produced a fingerprint, and a hello serialized
+        // behind a real multi-minute build tripped the read timeout.
+        let mut b = Conn::open(server.socket_path());
+        b.set_read_timeout(Duration::from_secs(10));
+        let hi = b.hello(&ws);
+        assert_eq!(hi["ok"], json!(true), "B's hello answers mid-build: {hi}");
+        assert!(
+            !hi["body"].as_object().unwrap().contains_key("fingerprint"),
+            "B's hello answered at config cost — it neither ran nor waited on \
+             a corpus build: {hi}"
+        );
+
+        release_tx.send(()).expect("release the parked build");
+        let toc = a.join().expect("connection A completes");
+        assert_eq!(
+            toc["ok"],
+            json!(true),
+            "A's read lands after release: {toc}"
+        );
+
+        server.shutdown();
+    }
+
+    /// The second seam the live probe caught (2026-08-16, sessions corpus):
+    /// a `links` serve computes its whole map INSIDE the engines read lock,
+    /// a rebuild insert queues behind it, and from that moment every
+    /// ordinary reader parks behind the queued writer. hello reads the
+    /// resident fold with `try_read` and answers through that wall.
+    ///
+    /// The long read is driven through the public borrow (`with_engine`
+    /// parked in its closure — exactly the links shape); the writer is a
+    /// second workspace's cold build parked on its `engines` insert.
+    #[test]
+    fn hello_answers_while_a_long_read_holds_the_engines_lock_and_a_writer_queues() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(ws.join("a.md"), "# A\n").unwrap();
+        let other = tmp.path().join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join("b.md"), "# B\n").unwrap();
+        let server = RunningServer::start(test_config(&tmp)).unwrap();
+
+        // Warm ws so a resident engine exists to read.
+        let mut warmer = Conn::open(server.socket_path());
+        assert_eq!(warmer.hello(&ws)["ok"], json!(true));
+        assert_eq!(
+            warmer.call(&json!({"op": "toc", "path": "a.md"}))["ok"],
+            json!(true)
+        );
+
+        let registry = server.registry();
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        let (r_in_tx, r_in_rx) = mpsc::channel::<()>();
+        let (r_out_tx, r_out_rx) = mpsc::channel::<()>();
+        std::thread::scope(|scope| {
+            // Thread R: the long read — parks inside the engines read borrow.
+            let r_canonical = canonical.clone();
+            let r_handle = scope.spawn(move || {
+                registry.with_engine(&r_canonical, |engine| {
+                    assert!(engine.is_some(), "ws is warm");
+                    r_in_tx.send(()).unwrap();
+                    r_out_rx.recv().unwrap();
+                });
+            });
+            r_in_rx.recv().expect("the long read holds the borrow");
+
+            // Thread W: a cold build of ANOTHER workspace — its insert
+            // queues on the engines write lock behind R.
+            let w_other = other.clone();
+            let w_handle = scope.spawn(move || {
+                registry.warm_or_build(&w_other).unwrap();
+            });
+            // Let W finish its tiny build and reach the queued insert.
+            std::thread::sleep(Duration::from_millis(300));
+
+            // Connection B: hello answers through the wall. (Whether the
+            // fold rides along is platform lock policy — under a queued
+            // writer a try_read may refuse — so only the ANSWERING is
+            // pinned, with the read timeout as the loud failure.)
+            let mut b = Conn::open(server.socket_path());
+            b.set_read_timeout(Duration::from_secs(10));
+            let hi = b.hello(&ws);
+            assert_eq!(
+                hi["ok"],
+                json!(true),
+                "hello answers while a long read holds the engines lock and \
+                 a writer queues: {hi}"
+            );
+
+            r_out_tx.send(()).expect("release the long read");
+            r_handle.join().expect("long read completes");
+            w_handle.join().expect("queued build completes");
+        });
+
+        server.shutdown();
     }
 }

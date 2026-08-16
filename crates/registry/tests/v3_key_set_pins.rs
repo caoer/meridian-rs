@@ -251,6 +251,28 @@ fn the_frame_envelope_carries_exactly_one_payload() {
 #[test]
 fn the_hello_body_key_set_is_pinned() {
     let (fx, mut conn) = Fixture::start();
+    let cold = conn.call(&json!({
+        "op": "hello", "proto": 1, "contract": "v3",
+        "workspace": fx.ws.to_str().unwrap(), "client": "md-cli/0.3",
+    }));
+    // §3.2 config-grade law: a COLD hello carries no `fingerprint` — the
+    // engine has not walked yet.
+    pin_keys(
+        &cold["body"],
+        &[
+            "caps",
+            "contract",
+            "identity",
+            "proto",
+            "server",
+            "storage",
+            "workspace",
+        ],
+        "cold hello body",
+    );
+    // The first read pays the warm; a warm hello then carries the full set.
+    let toc = conn.call(&json!({"id": 2, "op": "toc", "path": "plan.md"}));
+    assert_eq!(toc["ok"], json!(true), "warming read ok: {toc}");
     let hi = conn.call(&json!({
         "op": "hello", "proto": 1, "contract": "v3",
         "workspace": fx.ws.to_str().unwrap(), "client": "md-cli/0.3",
@@ -267,7 +289,7 @@ fn the_hello_body_key_set_is_pinned() {
             "storage",
             "workspace",
         ],
-        "hello body",
+        "warm hello body",
     );
     fx.shutdown();
 }

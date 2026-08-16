@@ -355,9 +355,12 @@ fn the_mint_path_writes_nothing_to_disk() {
     let ws = write_ws(&tmp, &[("plan.md", PLAN)]);
     let server = RunningServer::start(test_config(&tmp)).unwrap();
     let mut conn = Conn::open(server.socket_path());
-    // Bind first: `hello` legitimately writes the drawer sentinel + state file,
-    // so the snapshot is taken after it.
+    // Bind first: `hello` legitimately writes the drawer sentinel + state file.
+    // Then warm with a read — hello is config-grade (§3.2), so the WARM (which
+    // legitimately writes the §6.2 stable-read probe) rides the first read.
+    // The snapshot is taken after both; what stays under test is the MINT.
     conn.hello(&ws);
+    conn.read_sections("plan.md", &["Alpha"], None);
 
     let before = file_tree(tmp.path());
     conn.read_sections("plan.md", &["Alpha", "Beta"], Some("agent-7"));
