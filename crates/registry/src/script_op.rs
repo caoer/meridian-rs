@@ -1826,9 +1826,9 @@ mod tests {
     /// Both legs are real engine machinery: client A is a real program (a
     /// recorded read plus an armed edit, `effects::eval_script` against the
     /// pinned world); client B is the resident wire door itself
-    /// (`splice_with_mints` with the registry's ring, ledger and vouched
-    /// cache — the exact call `server.rs` makes for a wire splice), taking
-    /// and releasing the flock. Never a bare disk write.
+    /// (`splice` with the registry's ring and vouched cache — the exact call
+    /// `server.rs` makes for a wire splice), taking and releasing the flock.
+    /// Never a bare disk write.
     #[test]
     fn two_clients_on_one_workspace_reach_the_touch_set_guard() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1863,7 +1863,6 @@ mod tests {
         // daemon's wire lane takes. The world has not moved for B, so B's
         // own §5.1 guard holds; the door flocks, commits, updates the
         // vouched cache, releases.
-        let mints = registry.read_mints(&ws);
         let ring = registry.ring(&ws);
         let cache = registry.domain_cache(&ws);
         let observe =
@@ -1887,15 +1886,11 @@ mod tests {
             }],
             pin: None,
         };
-        let out = wire_serve::write::splice_with_mints(
+        let out = wire_serve::write::splice(
             &ws_root_of(&ws),
             Some(&*ring),
             &b_args,
             &[],
-            wire_serve::write::Mints {
-                ambient: Some(&mints),
-                foreign: None,
-            },
             Some(wire_serve::write::ResidentDoor {
                 cache: &cache,
                 observe: &observe,
