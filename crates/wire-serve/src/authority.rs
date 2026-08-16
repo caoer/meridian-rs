@@ -19,7 +19,8 @@
 //! What this module is NOT (the other halves of step 6, and the cutover):
 //! IPC routing and the §2.1 authenticated handshake are the daemon face's,
 //! wired at the cutover — nothing here opens a socket. Reservations, durable
-//! intents, and the contiguous root chain are the parallel-commits half; the
+//! intents, and the contiguous root chain are the parallel-commits half
+//! ([`crate::publish`]); the
 //! recovery WORK between [`AuthorityLease::begin_takeover`] and
 //! [`Takeover::ready`] is the caller's, this machine enforces only its
 //! position in the order. The §2.4 downgrade fence is B-03's, activated at
