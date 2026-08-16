@@ -38,7 +38,7 @@
 use std::io::Read as _;
 
 use serde_json::{Value, json};
-use wire::{Edit, ErrorBody, ReceiptAddr};
+use wire::{Edit, ErrorBody, Path as WirePath, ReceiptAddr};
 
 use crate::{Fail, Format, current_dir, engine, write_ipc};
 
