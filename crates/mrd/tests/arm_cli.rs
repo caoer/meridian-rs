@@ -145,6 +145,22 @@ impl Sandbox {
             .expect("the winner's rev")
             .to_owned()
     }
+
+    /// The key-grain token the wire door compares for `fm_key: status`.
+    /// `--force` would also satisfy fingerprint-or-force, but it escapes the
+    /// armed block this trip exists to prove.
+    fn status_prop_rev(&self) -> String {
+        let raw = self.stdout(&["read", "tasks/card.md", "--json"]);
+        let json: serde_json::Value = serde_json::from_str(&raw).expect("read --json");
+        json["read"]["props"]
+            .as_array()
+            .expect("props plane")
+            .iter()
+            .find(|p| p["key"] == "status")
+            .and_then(|p| p["prop_rev"].as_str())
+            .expect("status prop_rev")
+            .to_owned()
+    }
 }
 
 fn sandbox() -> Sandbox {
@@ -210,9 +226,13 @@ fn the_arm_round_trip_ends_with_the_rule_refusing_a_violating_write() {
     );
 
     // The violating write: a bare status flip to closed, no verdict.
-    let violating =
-        r#"[{"target":{"fm_key":"status"},"edit":{"match":{"old":"todo","new":"closed"}}}]"#;
-    let out = s.run_stdin(&["put", "tasks/card.md", "--force"], violating);
+    // Guarded with the key-grain token so the wire door admits the edit
+    // and the armed block is what refuses — `--force` would skip that block.
+    let status_rev = s.status_prop_rev();
+    let violating = format!(
+        r#"[{{"target":{{"fm_key":"status"}},"edit":{{"match":{{"old":"todo","new":"closed"}}}},"if_node_rev":"{status_rev}"}}]"#
+    );
+    let out = s.run_stdin(&["put", "tasks/card.md"], &violating);
     let refusal = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
@@ -234,9 +254,12 @@ fn the_arm_round_trip_ends_with_the_rule_refusing_a_violating_write() {
     );
 
     // The legal path: the same close carrying its verdict — `at: upsert`
-    // births the key, exactly as the refusal above teaches.
-    let legal = r#"[{"target":{"fm_key":"status"},"edit":{"match":{"old":"todo","new":"closed"}}},{"target":{"fm_key":"verdict"},"edit":{"put":{"at":"upsert","text":"approve"}}}]"#;
-    let out = s.run_stdin(&["put", "tasks/card.md", "--force"], legal);
+    // births the key, exactly as the refusal above teaches. Birth is
+    // absence-guarded; the status match still carries the key-grain token.
+    let legal = format!(
+        r#"[{{"target":{{"fm_key":"status"}},"edit":{{"match":{{"old":"todo","new":"closed"}}}},"if_node_rev":"{status_rev}"}},{{"target":{{"fm_key":"verdict"}},"edit":{{"put":{{"at":"upsert","text":"approve"}}}}}}]"#
+    );
+    let out = s.run_stdin(&["put", "tasks/card.md"], &legal);
     assert_eq!(
         out.status.code(),
         Some(0),
