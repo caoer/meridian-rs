@@ -485,6 +485,7 @@ fn resend_by_the_book(root: &fs::WorkspaceRoot, err: &wire::ErrorBody, edit: ser
         edits,
         plan_edits,
         pin,
+        ..
     } = op
     else {
         panic!("a splice frame decodes as a splice")

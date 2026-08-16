@@ -109,10 +109,10 @@ impl Premise {
 pub fn mint_scope_path(
     scope: Option<&Path>,
     scope_bytes: Option<&str>,
-) -> Result<Option<std::path::PathBuf>, Box<ErrorBody>> {
+) -> Result<Option<PathBuf>, Box<ErrorBody>> {
     match (scope, scope_bytes) {
         (None, None) => Ok(None),
-        (Some(p), None) => Ok(Some(std::path::PathBuf::from(&p.0))),
+        (Some(p), None) => Ok(Some(PathBuf::from(&p.0))),
         (None, Some(b64)) => Ok(Some(path_from_scope_bytes(b64)?)),
         (Some(_), Some(_)) => Err(crate::bad_request(wire::mint_pair_teaching())),
     }
@@ -145,7 +145,7 @@ pub fn lower_premises(
     match (if_root, sugar_scope) {
         (Some(token), Some(scope)) => {
             premises.push(Premise {
-                scope: Some(std::path::PathBuf::from(&scope.0)),
+                scope: Some(PathBuf::from(&scope.0)),
                 value: premise_value(&token.0),
             });
             Ok((None, premises))
@@ -162,7 +162,7 @@ fn entry_to_premise(entry: &wire::GuardEntry) -> Result<Premise, Box<ErrorBody>>
         )));
     }
     let scope = match (&entry.scope, &entry.scope_bytes) {
-        (Some(p), None) => Some(std::path::PathBuf::from(&p.0)),
+        (Some(p), None) => Some(PathBuf::from(&p.0)),
         (None, Some(b64)) => Some(path_from_scope_bytes(b64)?),
         (None, None) => None,
         (Some(_), Some(_)) => unreachable!("pair checked above"),
@@ -184,7 +184,7 @@ fn premise_value(token: &str) -> PremiseValue {
 /// Decode a §5.4 `scope_bytes` (base64url over raw path bytes) into a
 /// `PathBuf`. The bytes are the path as the OS stores it — not a UTF-8
 /// `Path` noun.
-fn path_from_scope_bytes(b64: &str) -> Result<std::path::PathBuf, Box<ErrorBody>> {
+fn path_from_scope_bytes(b64: &str) -> Result<PathBuf, Box<ErrorBody>> {
     let bytes = decode_base64url(b64).ok_or_else(|| {
         crate::bad_request(format!(
             "`scope_bytes` is not base64url: `{b64}` — mint the pair again \
@@ -194,9 +194,7 @@ fn path_from_scope_bytes(b64: &str) -> Result<std::path::PathBuf, Box<ErrorBody>
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStringExt;
-        Ok(std::path::PathBuf::from(std::ffi::OsString::from_vec(
-            bytes,
-        )))
+        Ok(PathBuf::from(std::ffi::OsString::from_vec(bytes)))
     }
     #[cfg(not(unix))]
     {
@@ -206,7 +204,7 @@ fn path_from_scope_bytes(b64: &str) -> Result<std::path::PathBuf, Box<ErrorBody>
                  path bytes",
             )
         })?;
-        Ok(std::path::PathBuf::from(s))
+        Ok(PathBuf::from(s))
     }
 }
 
