@@ -207,7 +207,7 @@ fn join_edge(parent: &[u8], name: &[u8]) -> Vec<u8> {
     if parent.is_empty() {
         name.to_vec()
     } else {
-        [parent, &[b'/'], name].concat()
+        [parent, b"/", name].concat()
     }
 }
 
@@ -587,7 +587,7 @@ pub struct MemberRecovery {
 pub enum RecoveryOutcome {
     /// Already finalized; reclaimed.
     Clean,
-    /// All dests matched old (or AbsentOld); intent aborted.
+    /// All dests matched old (or `AbsentOld`); intent aborted.
     Aborted,
     /// Mixture or all-new; dests restored to the complete old set.
     Restored,
