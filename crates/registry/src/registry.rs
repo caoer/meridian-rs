@@ -980,6 +980,18 @@ impl Registry {
         self.last_request.store(now_secs(), Ordering::Relaxed);
     }
 
+    /// Park the G11 activity clock `extra_secs` into the future.
+    ///
+    /// Integration fixtures call this immediately after `RunningServer::start`
+    /// so a short idle-exit horizon cannot latch during handshake (pin +
+    /// `sub` arm). Production never calls this.
+    /// [`note_liveness`] starts the horizon at a known instant after the
+    /// subscriber is armed.
+    pub fn park_activity_clock(&self, extra_secs: u64) {
+        self.last_request
+            .store(now_secs().saturating_add(extra_secs), Ordering::Relaxed);
+    }
+
     /// Is any workspace subscribed? (G11 idle-exit: a subscribed daemon does
     /// not exit under its subscriber.)
     #[must_use]
