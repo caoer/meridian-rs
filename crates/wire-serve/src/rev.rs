@@ -412,6 +412,7 @@ mod tests {
                 "splice.plan_edits",
                 "splice.pin",
                 "pin-cross-root",
+                "splice.pin.proof",
                 "splice.set",
                 "splice.create_rev",
                 "create",
