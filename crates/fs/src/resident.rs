@@ -870,7 +870,11 @@ mod tests {
         tree.stamp_chain(&p("a/b/x.md"), 7);
         assert_eq!(tree.stamp_at(&p("a/b")), Some(41));
         tree.fingerprint();
-        assert_eq!(tree.stamp_at(&p("a/b")), Some(41), "refolds never touch stamps");
+        assert_eq!(
+            tree.stamp_at(&p("a/b")),
+            Some(41),
+            "refolds never touch stamps"
+        );
         // Never answers for the dead: no node, no leaf — no stamp.
         assert_eq!(tree.stamp_at(&p("missing")), None);
         assert_eq!(tree.stamp_at(&p("a/b/gone.md")), None);
