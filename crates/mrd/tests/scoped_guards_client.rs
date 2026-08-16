@@ -11,6 +11,12 @@
 //!   engine write — never a strict-wall `bad_request` from an un-negotiated
 //!   field.
 //! - `--scope` without `--if-fingerprint` is half a premise: refused at parse.
+//! - a `--scope` spelling the §1 path law refuses (`../escape.md`, an
+//!   absolute path, the empty string) refuses at the face with the family
+//!   teaching, exit 2 before any dial — dogfood 88877785 measured the bare
+//!   engine echo (`bad_path: ../escape.md`, and NOTHING after the colon for
+//!   the empty spelling): no rule, no law, no recovery. The `--json` face
+//!   keeps the `{workspace, error}` frame.
 //! - `mrd read --json` under a cap-serving hello captures the read file's
 //!   scoped token through the §4.7 mint arm — one extra `fingerprint {scope}`
 //!   exchange on the same connection — relayed verbatim as the house frame's
@@ -406,6 +412,194 @@ fn put_scope_without_if_fingerprint_is_half_a_premise() {
     assert!(
         err.contains("--if-fingerprint"),
         "the teaching names the missing half: {err}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// put --scope: the §1 path-law wall (dogfood 88877785)
+// ---------------------------------------------------------------------------
+
+/// A `--scope` spelling the §1 path law refuses is the CLI's own refusal:
+/// exit 2 with the family teaching and a recovery, and NO frame reaches the
+/// daemon. The dogfood measured `mrd: bad_path: ../escape.md` — no rule, no
+/// law, no recovery.
+#[test]
+fn put_scope_dotdot_refuses_taught_and_sends_nothing() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let log = Arc::new(Mutex::new(Vec::new()));
+    sb.fake_daemon(CAPS_WITH_FAMILY, &log);
+
+    let out = sb.run(
+        &ws,
+        &[
+            "put",
+            "doc.md",
+            "--if-fingerprint",
+            "b3:leaf-token",
+            "--scope",
+            "../escape.md",
+        ],
+        Some(EDIT),
+    );
+    let err = stderr_of(&out);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a path-law-violating scope is a bad invocation\nstdout: {}\nstderr: {err}",
+        stdout_of(&out)
+    );
+    assert!(
+        err.contains("--scope ../escape.md is not a workspace-relative path"),
+        "the teaching names the flag and speaks the family voice: {err}"
+    );
+    assert!(
+        err.contains("§1 path law"),
+        "the teaching names the law: {err}"
+    );
+    assert!(
+        err.contains("Nothing was sent and nothing was written"),
+        "the nothing-happened clause: {err}"
+    );
+    assert!(
+        err.contains("mint") && err.contains("Without --scope"),
+        "both recoveries: the §4.7 mint echo and the world-grain retry: {err}"
+    );
+
+    let log = log.lock().expect("log");
+    assert!(
+        ops_named(&log, "splice").is_empty(),
+        "no splice reached the daemon: {log:?}"
+    );
+}
+
+/// The empty `--scope` — the measured mistake is an unquoted shell variable
+/// that expanded to nothing — refuses taught before any dial (no daemon runs
+/// here). The dogfood measured `mrd: bad_path: ` with nothing after the
+/// colon: the wire echo of an empty spelling names nothing.
+#[test]
+fn put_scope_empty_refuses_taught_before_any_dial() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let out = sb.run(
+        &ws,
+        &[
+            "put",
+            "doc.md",
+            "--if-fingerprint",
+            "b3:leaf-token",
+            "--scope",
+            "",
+        ],
+        Some(EDIT),
+    );
+    let err = stderr_of(&out);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "an empty scope is a bad invocation\nstdout: {}\nstderr: {err}",
+        stdout_of(&out)
+    );
+    assert!(
+        err.contains("--scope is empty"),
+        "the teaching names the flag and the emptiness — the echo alone cannot: {err}"
+    );
+    assert!(
+        err.contains("§1 path law"),
+        "the teaching names the law: {err}"
+    );
+    assert!(
+        err.contains("shell variable"),
+        "the teaching names the measured cause: {err}"
+    );
+    assert!(
+        err.contains("Nothing was sent and nothing was written"),
+        "the nothing-happened clause: {err}"
+    );
+    assert!(
+        err.contains("mint") && err.contains("Without --scope"),
+        "both recoveries: the §4.7 mint echo and the world-grain retry: {err}"
+    );
+}
+
+/// Under `--json` the wall keeps the machine face: the `{workspace, error}`
+/// envelope on stdout, `bad_path` code and echoed path unchanged, the
+/// teaching riding the §8 `message` field.
+#[test]
+fn put_scope_bad_path_json_face_keeps_the_error_frame() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let out = sb.run(
+        &ws,
+        &[
+            "put",
+            "doc.md",
+            "--if-fingerprint",
+            "b3:leaf-token",
+            "--scope",
+            "../escape.md",
+            "--json",
+        ],
+        Some(EDIT),
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "the wall's triad is unchanged by --json\nstderr: {}",
+        stderr_of(&out)
+    );
+    let frame: Value = serde_json::from_str(&stdout_of(&out)).expect("--json frame");
+    assert!(
+        frame.get("workspace").is_some(),
+        "the envelope names the workspace: {frame}"
+    );
+    assert_eq!(
+        frame["error"]["code"],
+        json!("bad_path"),
+        "the code is unchanged: {frame}"
+    );
+    assert_eq!(
+        frame["error"]["path"],
+        json!("../escape.md"),
+        "the offending spelling is echoed unchanged: {frame}"
+    );
+    assert!(
+        frame["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("§1 path law"),
+        "the teaching rides the §8 message field: {frame}"
+    );
+}
+
+/// An absolute spelling that lies INSIDE the workspace earns the fitted
+/// respell — the one shipped computation, same as every family door.
+#[test]
+fn put_scope_absolute_inside_earns_the_respell() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let abs = ws.join("doc.md");
+    let out = sb.run(
+        &ws,
+        &[
+            "put",
+            "doc.md",
+            "--if-fingerprint",
+            "b3:leaf-token",
+            "--scope",
+            abs.to_str().expect("utf8 abs path"),
+        ],
+        Some(EDIT),
+    );
+    let err = stderr_of(&out);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "an absolute scope refuses at the wall\nstderr: {err}"
+    );
+    assert!(
+        err.contains("respell it as `doc.md`"),
+        "a spelling inside the workspace earns the fitted respell: {err}"
     );
 }
 
