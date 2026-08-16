@@ -276,6 +276,11 @@ fn run_arm(n: usize, iters: usize) -> ArmStats {
 }
 
 fn mode_sweep(ns: &[usize], iters: usize) {
+    // HD_COORD=0 runs the control arm, so a count sweep can be taken on either
+    // arm and the difference attributed to grouping rather than assumed.
+    if std::env::var("HD_COORD").as_deref() == Ok("0") {
+        fs::set_durability_coordination(false);
+    }
     let arm = if fs::durability_coordination() {
         "ON"
     } else {
