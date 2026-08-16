@@ -286,9 +286,9 @@ pub struct SpliceArgs {
     pub if_root: Option<Root>,
     /// The §5.4 premise list (`guards[]` + the desugared scoped sugar):
     /// scoped and root premises beyond `if_root`, checked widest-first
-    /// against the resident tree, counted by §5.5 coverage. Empty for every
-    /// caller until the `scoped-guards` cap lands the wire decode; in-process
-    /// callers (the script door's touch set, tests) construct them directly.
+    /// against the resident tree, counted by §5.5 coverage. The wire door
+    /// fills this from [`crate::guard::lower_premises`]; in-process callers
+    /// (the script door's touch set, tests) construct them directly.
     pub premises: Vec<crate::guard::Premise>,
     /// Dry run — everything except disk (no receipt, no root advance, no Delta).
     pub dry: bool,
@@ -897,8 +897,8 @@ pub struct SpliceSetArgs {
     pub if_root: Option<Root>,
     /// The §5.4 premise list — §5.5's set-form natural cover is each target
     /// file's own leaf token, one premise per file. Checked once, widest
-    /// first; coverage judged per member. Empty until the `scoped-guards`
-    /// cap lands the wire decode.
+    /// first; coverage judged per member. The wire door fills this from
+    /// [`crate::guard::lower_premises`].
     pub premises: Vec<crate::guard::Premise>,
     pub dry: bool,
     pub force: bool,
