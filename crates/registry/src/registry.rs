@@ -10,6 +10,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::time::Duration;
 
 use crate::engine::{WarmOutcome, WorkspaceEngine};
 use crate::feed;
@@ -147,9 +148,11 @@ pub struct Registry {
 
 /// One workspace's feed slot: live, or start-failed (sticky — recorded and
 /// logged once; the workspace then keeps the pre-feed reap semantics).
+/// [`Arc`] so a §6.4 cookie barrier parks on the FEED, never on the feeds
+/// map lock ([`Registry::currency_refresh`] clones the handle out first).
 #[derive(Debug)]
 enum FeedSlot {
-    Live(feed::WorkspaceFeed),
+    Live(Arc<feed::WorkspaceFeed>),
     Failed,
 }
 
@@ -157,7 +160,7 @@ impl FeedSlot {
     /// Start the workspace's kernel watcher; loud on failure, once.
     fn start(workspace: &Path, feed: fs::stable::FeedGen) -> FeedSlot {
         match feed::WorkspaceFeed::start(workspace, feed) {
-            Ok(feed) => FeedSlot::Live(feed),
+            Ok(feed) => FeedSlot::Live(Arc::new(feed)),
             Err(e) => {
                 eprintln!(
                     "feed: kernel watcher start failed for {} ({e}) — the resident memo \
@@ -535,6 +538,36 @@ impl Registry {
     /// door — reads through a memo the feed has already patched.
     #[must_use]
     pub fn domain_cache(&self, workspace: &Path) -> Arc<Mutex<fs::DomainCache>> {
+        self.patched_cache(workspace).0
+    }
+
+    /// [`Self::domain_cache`] plus the borrow's feed outcome (`None`:
+    /// nothing was pending). The currency fast path
+    /// ([`Self::currency_refresh`]) needs the distinction — a doubt collapse
+    /// (`Applied::Reset` / `Sweep` / `Rebaselined`) inside the borrow means
+    /// the memo just lost its vouched baseline, so no cookie may vouch for
+    /// it this pass.
+    ///
+    /// The borrow also keeps the §6.3 STAMP PLANE bound to the workspace's
+    /// LIVE ring epoch — when one exists. A cache borrow never mints a ring
+    /// (reap reporting stays truthful: only claims mint epochs); until the
+    /// workspace's first ring exists, stamp queries answer `None` and every
+    /// guard stays on the content-fold compare. When the memo's bound
+    /// instance is not the live ring's (first bind, or the ring died to an
+    /// idle-reap and a fresh epoch was minted), the plane is re-bound with
+    /// the ring's tip as the stamp clock. Old stamp values stay — max-only
+    /// leftovers from a dead epoch read "touched" against young tokens,
+    /// conservative and self-healing — and every cross-epoch stamp query
+    /// already degrades to the content-fold compare on the instance
+    /// mismatch (the §7 restart/reap row). Lock discipline: inside the memo
+    /// lock only two leaf mutexes are ever entered — the feed's state (the
+    /// atomic take) and the ring's state (bind check + stamp clock;
+    /// fold→state, the detector's own order) — and no path acquires a memo
+    /// while holding either.
+    fn patched_cache(
+        &self,
+        workspace: &Path,
+    ) -> (Arc<Mutex<fs::DomainCache>>, Option<feed::Applied>) {
         let cache = {
             let mut caches = self
                 .domain_caches
@@ -548,59 +581,132 @@ impl Registry {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .feed_gen();
-        let pending = {
+        let feed = {
             let mut feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
             match feeds
                 .entry(workspace.to_path_buf())
                 .or_insert_with(|| FeedSlot::start(workspace, feed_cell))
             {
-                FeedSlot::Live(feed) => feed.take(),
-                FeedSlot::Failed => feed::Pending::Clean,
+                FeedSlot::Live(feed) => Some(Arc::clone(feed)),
+                FeedSlot::Failed => None,
             }
         };
-        if pending != feed::Pending::Clean {
-            let root = fs::WorkspaceRoot(workspace.to_path_buf());
-            let outcome = {
-                let mut memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
-                feed::apply(&root, &mut memo, pending)
-            };
-            match outcome {
-                feed::Applied::Members(0) => {}
-                feed::Applied::Members(n) => {
-                    let feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
-                    if let Some(FeedSlot::Live(feed)) = feeds.get(workspace) {
-                        feed.note_applied(n);
+        let ring = {
+            let rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
+            rings.get(workspace).cloned()
+        };
+        // Take-and-apply is ATOMIC under the memo lock: a take that could
+        // sit un-applied while another borrower serves would let a §6.4
+        // vouched answer miss events its cookie vouches for. Every map lock
+        // above is released first; inside the memo lock only the feed's
+        // state mutex (take) and the ring's (clock, at stamp time) are
+        // touched — both leaf mutexes no path holds while acquiring a memo.
+        let mut applied = None;
+        {
+            let mut memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(feed) = &feed {
+                let pending = feed.take();
+                if pending != feed::Pending::Clean {
+                    let root = fs::WorkspaceRoot(workspace.to_path_buf());
+                    let outcome = feed::apply(&root, &mut memo, pending);
+                    match &outcome {
+                        feed::Applied::Members(0) => {}
+                        feed::Applied::Members(n) => {
+                            feed.note_applied(*n);
+                            eprintln!(
+                                "feed: applied {n} dirty member(s) into the resident memo for {}",
+                                workspace.display()
+                            );
+                        }
+                        feed::Applied::Reset => {
+                            eprintln!(
+                                "feed: apply-time I/O failure for {} — resident memo reset, next \
+                                 pass re-reads the corpus",
+                                workspace.display()
+                            );
+                        }
+                        feed::Applied::Sweep(cause) => {
+                            eprintln!(
+                                "feed: rescan {} for {} — memo kept, next observation is the full \
+                                 stat sweep",
+                                cause.name(),
+                                workspace.display()
+                            );
+                        }
+                        feed::Applied::Rebaselined(cause) => {
+                            eprintln!(
+                                "feed: rescan {} for {} — memo re-baselined by swap",
+                                cause.name(),
+                                workspace.display()
+                            );
+                        }
                     }
-                    eprintln!(
-                        "feed: applied {n} dirty member(s) into the resident memo for {}",
-                        workspace.display()
-                    );
+                    applied = Some(outcome);
                 }
-                feed::Applied::Reset => {
-                    eprintln!(
-                        "feed: apply-time I/O failure for {} — resident memo reset, next \
-                         pass re-reads the corpus",
-                        workspace.display()
-                    );
-                }
-                feed::Applied::Sweep(cause) => {
-                    eprintln!(
-                        "feed: rescan {} for {} — memo kept, next observation is the full \
-                         stat sweep",
-                        cause.name(),
-                        workspace.display()
-                    );
-                }
-                feed::Applied::Rebaselined(cause) => {
-                    eprintln!(
-                        "feed: rescan {} for {} — memo re-baselined by swap",
-                        cause.name(),
-                        workspace.display()
-                    );
+            }
+            if let Some(ring) = ring {
+                let instance = ring.instance();
+                if memo.stamp_instance() != Some(instance.as_str()) {
+                    memo.bind_stamps(&instance, Arc::new(move || ring.seq()));
                 }
             }
         }
-        cache
+        (cache, applied)
+    }
+
+    /// The workspace's current root at the cheapest lawful grain (merged
+    /// plan §4.3/§4.9; merkle-spec §6.3/§6.4): `(root, vouched)`.
+    ///
+    /// `vouched == true` is the O(1) fast path: the §6.4 cookie returned
+    /// through the ordered event stream (every foreign event before it is
+    /// in the dirty set), the set applied without a doubt collapse, the
+    /// §6.2 close holds the memo trusted, and the served root folds from
+    /// the resident overlay — NO walk, NO stat, NO byte read. Work done is
+    /// O(dirty), zero when quiet — never O(corpus).
+    ///
+    /// ANY miss — no live feed, cookie `Unproven`/`Refused`, a doubt
+    /// collapse, an untrusted memo, no baseline yet — falls to the
+    /// §6.2-governed extent-refresh floor ([`fs::DomainCache::root`]: the
+    /// full stat sweep), `vouched == false`. The floor re-derives; it never
+    /// silently trusts.
+    ///
+    /// # Errors
+    /// I/O failure on the floor pass (the vouched path does no I/O).
+    pub fn currency_refresh(
+        &self,
+        workspace: &Path,
+        timeout: Duration,
+    ) -> io::Result<(model::MerkleRoot, bool)> {
+        let feed = {
+            let feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(FeedSlot::Live(feed)) = feeds.get(workspace) {
+                Some(Arc::clone(feed))
+            } else {
+                None
+            }
+        };
+        // Barrier FIRST, take-and-apply second: `Seen` proves every event
+        // before the sentinel write was delivered, so the apply that
+        // follows folds in everything this question must see. The wait
+        // parks on the feed handle, outside every registry lock.
+        let seen = feed.is_some_and(|feed| {
+            feed.cookie_barrier(workspace, timeout) == feed::CookieOutcome::Seen
+        });
+        let (cache, applied) = self.patched_cache(workspace);
+        let mut memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
+        let collapse = matches!(
+            applied,
+            Some(feed::Applied::Reset | feed::Applied::Sweep(_) | feed::Applied::Rebaselined(_))
+        );
+        if seen
+            && !collapse
+            && matches!(memo.guard_currency(), fs::stable::GuardCurrency::Trusted)
+            && let Ok(root) = memo.overlay_root()
+        {
+            return Ok((root, true));
+        }
+        let root = memo.root(&fs::WorkspaceRoot(workspace.to_path_buf()))?;
+        Ok((root, false))
     }
 
     /// The §6.4 ADDITIONAL-feed door: dirty-path hints from a secondary
@@ -1268,6 +1374,180 @@ mod engine_tests {
         );
     }
 
+    /// THE card receipt (quality gate 3): a vouched world-guard refresh is
+    /// O(1) — cookie returned, dirty set applied, root served from the
+    /// resident overlay with zero listings, zero member reads, zero folds —
+    /// measured against the extent-refresh sweep floor on the same corpus.
+    /// A foreign write costs exactly the dirty members (O(dirty)), never
+    /// the corpus, and the vouched root equals a fresh-cache oracle.
+    /// Live kernel stream; generous timeout for CI inotify.
+    #[test]
+    fn a_vouched_currency_refresh_is_o1_against_the_sweep_floor() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(
+            home.path(),
+            &[
+                ("a.md", "# A\n"),
+                ("b.md", "# B\n"),
+                ("c.md", "# C\n"),
+                ("d.md", "# D\n"),
+                ("sub/e.md", "# E\n"),
+                ("sub/f.md", "# F\n"),
+            ],
+        );
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.register(&canonical);
+        let fs_root = ::fs::WorkspaceRoot(canonical.clone());
+
+        // The sweep baseline this gate measures against: a fresh memo's
+        // extent refresh walks every listing and reads every member.
+        let (sweep_listings, sweep_reads) = {
+            let mut oracle = ::fs::DomainCache::new();
+            oracle.root(&fs_root).unwrap();
+            (oracle.listings(), oracle.leaves_read())
+        };
+        assert_eq!(sweep_reads, 6, "the floor reads the whole corpus");
+        assert!(sweep_listings > 0, "the floor walks the listings");
+
+        // First refresh: cold memo, feed not yet live — the floor answers.
+        let (root_cold, vouched_cold) = reg
+            .currency_refresh(&canonical, Duration::from_secs(10))
+            .unwrap();
+        assert!(!vouched_cold, "a cold first refresh never vouches");
+
+        let counters = |reg: &Registry| {
+            let cache = reg.domain_cache(&canonical);
+            let memo = cache.lock().unwrap();
+            (memo.listings(), memo.leaves_read(), memo.flat_folds())
+        };
+
+        // Quiet corpus, vouched refresh: O(1) — every instrument frozen.
+        let (l0, r0, f0) = counters(&reg);
+        let (root_quiet, vouched_quiet) = reg
+            .currency_refresh(&canonical, Duration::from_secs(10))
+            .unwrap();
+        assert!(vouched_quiet, "live feed + returned cookie vouches");
+        assert_eq!(root_quiet, root_cold, "the vouched root is the served root");
+        let (l1, r1, f1) = counters(&reg);
+        assert_eq!(
+            (l1 - l0, r1 - r0, f1 - f0),
+            (0, 0, 0),
+            "vouched quiet refresh: 0 listings, 0 member reads, 0 folds — \
+             the sweep floor on this corpus costs {sweep_listings} listings \
+             and {sweep_reads} member reads"
+        );
+
+        // One foreign write: the vouched refresh pays O(dirty) — the one
+        // mover rides the feed's apply; the memo still walks and reads
+        // nothing on its own account.
+        rewrite(&canonical, "a.md", "# A moved\n");
+        let applied_before = reg.feed_stats(&canonical).expect("live feed").applied;
+        let (root_dirty, vouched_dirty) = reg
+            .currency_refresh(&canonical, Duration::from_secs(10))
+            .unwrap();
+        assert!(
+            vouched_dirty,
+            "the ordered stream vouches for the mover too"
+        );
+        let (l2, r2, f2) = counters(&reg);
+        assert_eq!(
+            (l2 - l1, r2 - r1),
+            (0, 0),
+            "no walk, no observation read — the apply's one byte-read is \
+             the whole I/O cost"
+        );
+        assert_eq!(f2 - f1, 1, "one refold serves the moved root");
+        let applied_after = reg.feed_stats(&canonical).expect("live feed").applied;
+        assert_eq!(
+            applied_after - applied_before,
+            1,
+            "O(dirty): exactly the one mover was applied"
+        );
+        let oracle_root = ::fs::DomainCache::new().root(&fs_root).unwrap();
+        assert_eq!(
+            root_dirty, oracle_root,
+            "the vouched root equals a fresh derivation of the same disk"
+        );
+        assert_ne!(root_dirty, root_quiet, "the mover moved the root");
+    }
+
+    /// A cold workspace's first refresh is the floor: no resident state, no
+    /// live feed, no proof — `vouched == false`, and the answer is the full
+    /// re-derivation, never a blind trust.
+    #[test]
+    fn the_cold_first_refresh_is_the_floor() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(home.path(), &[("a.md", "# A\n"), ("b.md", "# B\n")]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.register(&canonical);
+        let (root, vouched) = reg
+            .currency_refresh(&canonical, Duration::from_secs(10))
+            .unwrap();
+        assert!(
+            !vouched,
+            "nothing can vouch for a memo that does not exist yet"
+        );
+        let fs_root = ::fs::WorkspaceRoot(canonical.clone());
+        assert_eq!(
+            root,
+            ::fs::DomainCache::new().root(&fs_root).unwrap(),
+            "the floor answer is the full re-derivation"
+        );
+    }
+
+    /// The §6.3 instance binding across a reap (kimi D3): the borrow binds
+    /// the stamp plane to the live ring epoch; the reap kills the ring; the
+    /// next live epoch re-binds the plane under its OWN instance — so every
+    /// stamp token minted under the dead epoch degrades on the instance
+    /// mismatch instead of false-passing against a reset seq.
+    #[test]
+    fn a_reap_minted_ring_epoch_rebinds_the_stamp_plane() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(home.path(), &[("a.md", "# A\n")]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.register(&canonical);
+
+        // No ring yet: the borrow binds nothing — stamps cannot answer.
+        assert!(
+            reg.domain_cache(&canonical)
+                .lock()
+                .unwrap()
+                .stamp_instance()
+                .is_none(),
+            "a cache borrow never mints a ring epoch"
+        );
+
+        // A claim mints epoch A; the next borrow binds the plane to it.
+        let _ = reg.ring(&canonical);
+        let epoch_a = {
+            let cache = reg.domain_cache(&canonical);
+            let memo = cache.lock().unwrap();
+            memo.stamp_instance()
+                .expect("bound to the live epoch")
+                .to_owned()
+        };
+
+        // The reap kills the ring; the memo survives under its live feed.
+        assert!(reg.reap(u64::MAX, 0).contains(&canonical));
+
+        // A fresh epoch, a fresh binding — never the dead epoch's name.
+        let _ = reg.ring(&canonical);
+        let epoch_b = {
+            let cache = reg.domain_cache(&canonical);
+            let memo = cache.lock().unwrap();
+            memo.stamp_instance()
+                .expect("re-bound to the young epoch")
+                .to_owned()
+        };
+        assert_ne!(
+            epoch_a, epoch_b,
+            "a dead epoch's stamp tokens degrade on the instance mismatch"
+        );
+    }
+
     /// The feed's lifetime IS the registration: `unregister` ends both the
     /// feed and the resident memo. A hint for an unknown workspace is
     /// refused rather than buffered.
@@ -1468,7 +1748,7 @@ mod engine_tests {
     /// Write `bytes` to `rel`, past the filesystem's timestamp granularity —
     /// a same-tick rewrite would be testing the stat memo's blind spot.
     fn rewrite(ws: &Path, rel: &str, bytes: &str) {
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(10));
         fs::write(ws.join(rel), bytes).unwrap();
     }
 
@@ -1686,7 +1966,7 @@ mod engine_tests {
         );
         assert_matches_scratch(&reg, &ws, "remove");
 
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(10));
         fs::rename(ws.join("sub/c.md"), ws.join("sub/c2.md")).unwrap();
         assert_eq!(
             reg.warm_or_build(&ws).unwrap(),
@@ -1695,7 +1975,7 @@ mod engine_tests {
         );
         assert_matches_scratch(&reg, &ws, "rename");
 
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(10));
         fs::write(ws.join("d.md"), [0xff, 0xfe, 0x00, 0x01]).unwrap();
         assert_eq!(
             reg.warm_or_build(&ws).unwrap(),

@@ -592,6 +592,22 @@ impl StatKey {
 /// It is a cache of a pure function ([`model::leaf_digest`]) and holds exactly
 /// one generation. It retains no history and answers no as-of question: there
 /// is nothing here to select a version from.
+///
+/// # The §6.3 stamp plane
+/// Each resident directory node carries `last_seq` — the highest journal seq
+/// beneath it — maintained HERE, by the same guarded write path that
+/// maintains the digests, so the hash instrument audits the stamp instrument
+/// and the two cannot drift silently (the ZFS `hole_birth` lesson). Once
+/// [`bind_stamps`](Self::bind_stamps) installs a journal binding, every tree
+/// advance — own-write overlay, feed apply, an observation absorbing foreign
+/// change — stamps the touched ancestor chains with `clock() + 1`: one past
+/// the journal tip at the instant of the advance, which is exactly the seq a
+/// choke-point commit's frame will carry, and for an unjournaled advance a
+/// value strictly greater than every token minted before it — the compare
+/// can only degrade, never false-pass. [`stamp_untouched`](Self::stamp_untouched)
+/// answers the fast-path fact; the EVENT-STREAM vouch that makes a stamp
+/// answer legal (merkle-spec §6.3/§6.4 — cookie barrier, loss-free feed) is
+/// the caller's to establish, never assumed here.
 #[derive(Debug, Default)]
 pub struct DomainCache {
     leaves: BTreeMap<PathBuf, LeafSeen>,
@@ -601,6 +617,12 @@ pub struct DomainCache {
     /// own-write overlay; law-2 from birth, serving nothing before the
     /// cutover.
     tree: resident::ResidentTree,
+    /// The §6.3 stamp plane's journal binding: the tree instance id and the
+    /// journal tip clock every stamp mints against. `None` — the unbound
+    /// plane — stamps nothing and answers nothing (every query degrades to
+    /// the content-fold compare). Bound by the cache's owner
+    /// ([`Self::bind_stamps`]); the write paths below stamp through it.
+    stamps: Option<StampSource>,
     /// The served law-1 root under the interim law (merged plan §6 step 3):
     /// recomputed only when the tree advances or the domain version moves —
     /// `(domain version, root)`.
@@ -632,6 +654,33 @@ pub struct DomainCache {
     sweeps: u64,
     /// Member identities `stat`ed across all sweeps — the pair's other half.
     member_stats: u64,
+}
+
+/// The journal tip clock a stamp plane mints against: answers the current
+/// journal seq (the workspace ring's tip) at the instant of a tree advance.
+pub type StampClock = std::sync::Arc<dyn Fn() -> u64 + Send + Sync>;
+
+/// The §6.3 stamp binding: which journal epoch the tree's stamps belong to.
+///
+/// `instance` is the tree instance id (B-01 epoch identity — ring seq is
+/// per-daemon-epoch and rings are idle-reaped, so a seq is meaningful only
+/// within one instance). A query under any OTHER instance answers `None` —
+/// the degrade the §7 restart/reap row demands. Rebinding after an epoch
+/// change keeps old stamp values: max-only stamps from a dead epoch can only
+/// read as "touched" against a young chain's tokens — conservatism that
+/// heals as the new chain grows, never a false pass.
+struct StampSource {
+    instance: String,
+    clock: StampClock,
+}
+
+impl std::fmt::Debug for StampSource {
+    /// The clock is an opaque closure; the instance is the whole public truth.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StampSource")
+            .field("instance", &self.instance)
+            .finish_non_exhaustive()
+    }
 }
 
 /// One remembered leaf: the identity its digest was byte-derived under and
@@ -832,17 +881,30 @@ impl DomainCache {
         // The resident tree follows the observed generation (merkle-spec
         // §6.1): removals first — a same-name kind swap across generations
         // must never compose a transient §4.4 collision — then idempotent
-        // set for the survivors (an unmoved member re-hashes nothing).
+        // set for the survivors (an unmoved member re-hashes nothing). Every
+        // absorbed change stamps its chain in the same act (§6.3): one
+        // clock read serves the pass — every stamped value is one past the
+        // tip as of the pass, which stays strictly greater than any token
+        // minted before the change was absorbed.
         let mut advanced = false;
         {
+            let stamp_seq = self.stamps.as_ref().map(|s| (s.clock)() + 1);
             let (leaves, tree) = (&self.leaves, &mut self.tree);
             for rel in leaves.keys() {
                 if !fresh.contains_key(rel) {
-                    advanced |= tree.remove_leaf(rel);
+                    let removed = tree.remove_leaf(rel);
+                    if removed && let Some(seq) = stamp_seq {
+                        tree.stamp_chain(rel, seq);
+                    }
+                    advanced |= removed;
                 }
             }
             for (rel, entry) in &fresh {
-                advanced |= tree.set_leaf(rel, entry.digest);
+                let set = tree.set_leaf(rel, entry.digest);
+                if set && let Some(seq) = stamp_seq {
+                    tree.stamp_chain(rel, seq);
+                }
+                advanced |= set;
             }
         }
         if advanced {
@@ -1138,6 +1200,7 @@ impl DomainCache {
         if !self.tree.set_leaf(rel, digest) {
             return Ok(false);
         }
+        self.stamp_advance(rel);
         self.leaves.insert(
             rel.to_path_buf(),
             LeafSeen {
@@ -1166,6 +1229,7 @@ impl DomainCache {
         if !self.tree.remove_leaf(rel) {
             return Ok(false);
         }
+        self.stamp_advance(rel);
         self.leaves.remove(rel);
         self.served = None;
         Ok(true)
@@ -1227,6 +1291,66 @@ impl DomainCache {
     #[must_use]
     pub fn resident_stats(&self) -> resident::ResidentStats {
         self.tree.stats()
+    }
+
+    /// Bind the §6.3 stamp plane to a journal epoch: `instance` is the tree
+    /// instance id (the workspace ring's B-01 epoch identity), `clock`
+    /// answers that ring's current tip. From this call on, every tree
+    /// advance stamps its touched chains with `clock() + 1`.
+    ///
+    /// Rebinding after an epoch change (idle-reap, restart) swaps the
+    /// binding and keeps existing stamp values: stamps are max-only, so a
+    /// dead epoch's leftovers can only read as "touched" against the young
+    /// chain — the compare degrades to the content-fold floor and heals as
+    /// the new chain grows past them. Nothing is reset, nothing false-passes.
+    pub fn bind_stamps(&mut self, instance: &str, clock: StampClock) {
+        self.stamps = Some(StampSource {
+            instance: instance.to_owned(),
+            clock,
+        });
+    }
+
+    /// The bound stamp epoch's tree instance id; `None` while the plane is
+    /// unbound (nothing stamps, every query degrades).
+    #[must_use]
+    pub fn stamp_instance(&self) -> Option<&str> {
+        self.stamps.as_ref().map(|s| s.instance.as_str())
+    }
+
+    /// The §6.3 fast-path fact for one scope against a stamp-bearing token:
+    /// `Some(true)` — no journaled change beneath `scope` after the token's
+    /// seq (untouched); `Some(false)` — the subtree moved (or a dead
+    /// epoch's conservative leftover says so); `None` — stamps cannot
+    /// answer: the plane is unbound, the token's instance is not the bound
+    /// epoch (restart or reap — §7 row), or the path holds no current node
+    /// or leaf (stamps never answer for the dead).
+    ///
+    /// A `Some(true)` is legal to ACT on only while the event stream can
+    /// vouch for this cache (merkle-spec §6.3/§6.4: cookie barrier returned,
+    /// dirty set applied, no collapse, [`Self::guard_currency`] trusted) —
+    /// that vouch is the caller's fact. Everything else is the
+    /// §6.2-governed extent refresh floor: re-derive, never trust a stamp.
+    #[must_use]
+    pub fn stamp_untouched(&self, instance: &str, seq: u64, scope: &Path) -> Option<bool> {
+        let source = self.stamps.as_ref()?;
+        if source.instance != instance {
+            return None;
+        }
+        let stamp = self.tree.stamp_at(scope)?;
+        Some(stamp <= seq)
+    }
+
+    /// Stamp one advanced leaf's ancestor chain, when the plane is bound
+    /// (§6.3): `clock() + 1` — one past the journal tip at this instant. For
+    /// a choke-point overlay that is exactly the seq the commit's frame
+    /// allocates; for an unjournaled advance (feed apply) it is strictly
+    /// greater than every token minted before the advance, so the compare
+    /// can only degrade, never false-pass.
+    fn stamp_advance(&mut self, rel: &Path) {
+        let Some(seq) = self.stamps.as_ref().map(|s| (s.clock)() + 1) else {
+            return;
+        };
+        self.tree.stamp_chain(rel, seq);
     }
 
     /// How many law-1 flat folds ([`model::merkle_root_of_leaves`]) this

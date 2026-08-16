@@ -34,8 +34,11 @@
 //! filtered away the one event that mattered. Everything else (`.git`
 //! churn, build artifacts, the `.meridian/cookie` sentinel) can never move
 //! the root and never enters the set. Order is not kept: a spoil-set is
-//! order-insensitive by construction (the ORDERED stream consumers — the
-//! currency cookie — are the stamps card's, upstream of this filter).
+//! order-insensitive by construction. The one ORDERED consumer — the §6.4
+//! currency cookie — rides the raw stream UPSTREAM of this filter
+//! ([`WorkspaceFeed::cookie_barrier`]): a sighting of the sentinel proves
+//! every event before it was delivered, which is what makes the dirty set
+//! complete as of the write.
 //!
 //! # The rescan ladder — every cause NAMED, throttled (merkle-spec §6.4)
 //! Doubt — a kernel overflow, a watcher error, the set outgrowing
@@ -66,7 +69,9 @@
 
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use notify::event::{AccessKind, AccessMode};
 use notify::{EventKind, RecursiveMode, Watcher as _};
@@ -76,6 +81,13 @@ use notify::{EventKind, RecursiveMode, Watcher as _};
 /// 128 rows) and well below corpus scale, so a runaway producer degrades to
 /// the correct full re-read instead of holding an unbounded set.
 const DIRTY_CAP: usize = 4096;
+
+/// The §6.4 currency-cookie sentinel, workspace-relative. Dot-prefixed BY
+/// LAW (the standing `wire-contract.md` §12.1 floor): outside the hash
+/// domain, so writing it can never move the root or break a held token —
+/// which is what makes the barrier free to run on every guard-grade
+/// question.
+pub(crate) const COOKIE_REL: &str = ".meridian/cookie";
 
 /// The rescan record's bound: enough for any post-mortem window, dropped
 /// oldest-first past it (the lifetime total stays in [`FeedStats::rescans`]).
@@ -141,10 +153,22 @@ impl RescanCause {
 /// registry drops it only at `unregister` (or a labeled instance
 /// replacement), never at reap.
 pub(crate) struct WorkspaceFeed {
-    /// Keeps the kernel stream alive; the handler thread owns `state`'s
+    /// Keeps the kernel stream alive; the handler thread owns `sync`'s
     /// other [`Arc`]. Held, never spoken to after construction.
     _watcher: notify::RecommendedWatcher,
-    state: Arc<Mutex<FeedState>>,
+    sync: Arc<FeedSync>,
+    /// Serials this feed's cookie writes have minted ([`Self::cookie_barrier`]).
+    /// The next write carries `fetch_add + 1`; sightings max into
+    /// [`FeedState::cookie_seen`].
+    cookie_serial: AtomicU64,
+}
+
+/// The feed's shared state plus the §6.4 cookie condvar: barrier waiters
+/// park on `cookie`; the watcher handler notifies on every sighting of the
+/// sentinel.
+struct FeedSync {
+    state: Mutex<FeedState>,
+    cookie: Condvar,
 }
 
 impl std::fmt::Debug for WorkspaceFeed {
@@ -186,6 +210,10 @@ struct FeedState {
     overflows: u64,
     /// Dirty members applied into the resident memo, over the feed's life.
     applied: u64,
+    /// Highest cookie serial sighted through the ordered stream (§6.4).
+    /// Serials only grow, so a later sighting vouches for every earlier
+    /// barrier too.
+    cookie_seen: u64,
 }
 
 /// Published feed counters (the card's "counter published" receipt, probe
@@ -235,6 +263,23 @@ pub(crate) enum Applied {
     Rebaselined(RescanCause),
 }
 
+/// A [`WorkspaceFeed::cookie_barrier`] verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CookieOutcome {
+    /// The sentinel came back through the ordered stream: every event before
+    /// the write is delivered, so the dirty set is complete as of it — the
+    /// O(1) currency proof (watchman's shape).
+    Seen,
+    /// Timeout or I/O failure: no proof either way. The caller falls to the
+    /// extent-refresh floor — and a cookie timeout is a NAMED reason for
+    /// doubt (§6.4 suspicious-only ladder), never silent trust.
+    Unproven,
+    /// The rel would enter the hash domain — refused by construction (merged
+    /// plan §7 row): a member-candidate cookie would move the very root it
+    /// is supposed to vouch for.
+    Refused,
+}
+
 impl WorkspaceFeed {
     /// Start the kernel watcher for `workspace` (a canonical root), reporting
     /// into the shared feed-generation cell `feed` — the same cell the
@@ -251,15 +296,18 @@ impl WorkspaceFeed {
         workspace: &Path,
         feed: fs::stable::FeedGen,
     ) -> notify::Result<WorkspaceFeed> {
-        let state = Arc::new(Mutex::new(FeedState {
-            feed,
-            ..FeedState::default()
-        }));
-        let sink = Arc::clone(&state);
+        let sync = Arc::new(FeedSync {
+            state: Mutex::new(FeedState {
+                feed,
+                ..FeedState::default()
+            }),
+            cookie: Condvar::new(),
+        });
+        let sink = Arc::clone(&sync);
         let root = workspace.to_path_buf();
         let mut watcher =
             notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-                let mut s = sink.lock().unwrap_or_else(PoisonError::into_inner);
+                let mut s = sink.state.lock().unwrap_or_else(PoisonError::into_inner);
                 match event {
                     Ok(event) => {
                         if event.need_rescan() {
@@ -273,6 +321,19 @@ impl WorkspaceFeed {
                             let Ok(rel) = path.strip_prefix(&root) else {
                                 continue;
                             };
+                            // §6.4 cookie sighting — UPSTREAM of the member
+                            // filter: the sentinel is the ordered stream's
+                            // proof-of-delivery, never dirt. A torn or
+                            // vanished read proves nothing and skips (the
+                            // close event re-delivers; at worst a barrier
+                            // times out to its floor — never a false Seen).
+                            if rel == Path::new(COOKIE_REL) {
+                                if let Some(serial) = read_serial(path) {
+                                    s.cookie_seen = s.cookie_seen.max(serial);
+                                    sink.cookie.notify_all();
+                                }
+                                continue;
+                            }
                             s.insert(rel);
                         }
                     }
@@ -280,11 +341,88 @@ impl WorkspaceFeed {
                     Err(_) => s.collapse(RescanCause::MissedEvent),
                 }
             })?;
+        // The sentinel's directory must exist BEFORE the recursive watch is
+        // armed, so the initial walk covers it. notify's inotify backend
+        // arms a NEW directory only after delivering its create event —
+        // anything written into it before that arm is invisible forever
+        // (notify-8.2.0 inotify.rs, `add_watch_by_event` collects, the loop
+        // arms after the batch). A `.meridian` first created by a barrier
+        // could lose that race once and leave every later cookie unseen.
+        // Best-effort: on failure (read-only root) barriers answer
+        // `Unproven` and the caller keeps the extent-refresh floor.
+        if let Some(parent) = workspace.join(COOKIE_REL).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         watcher.watch(workspace, RecursiveMode::Recursive)?;
         Ok(WorkspaceFeed {
             _watcher: watcher,
-            state,
+            sync,
+            cookie_serial: AtomicU64::new(0),
         })
+    }
+
+    /// The §6.4 currency barrier: write the sentinel at [`COOKIE_REL`] and
+    /// wait (bounded) to see it return through the ordered event stream.
+    /// `Seen` proves every event before the write is already in the dirty
+    /// set — the O(1) currency proof. The caller takes and applies the set
+    /// AFTER a `Seen`, never before, so the applied memo is complete as of
+    /// the question.
+    ///
+    /// Precisely: `Seen` proves ORDERED DELIVERY of everything the kernel
+    /// stream captured. Capture itself has one known gap — files landing in
+    /// a brand-new directory before its watch arms (see the arming note in
+    /// [`Self::start`]; the sentinel's own directory is pre-created there
+    /// exactly so the cookie never sits in that gap). That residue is a
+    /// named reason for doubt on the §6.4 suspicious-only ladder, not this
+    /// barrier's to close.
+    pub(crate) fn cookie_barrier(&self, workspace: &Path, timeout: Duration) -> CookieOutcome {
+        self.cookie_barrier_at(workspace, Path::new(COOKIE_REL), timeout)
+    }
+
+    /// The barrier at an explicit rel — the refusal seam. A rel the member
+    /// filter would admit is REFUSED by construction (merged plan §7 row):
+    /// a cookie inside the hash domain would move the very root it vouches
+    /// for. [`COOKIE_REL`] can never trip this (dot-prefixed by the §12.1
+    /// floor); the seam exists so the law is a tested fact, not a comment.
+    pub(crate) fn cookie_barrier_at(
+        &self,
+        workspace: &Path,
+        rel: &Path,
+        timeout: Duration,
+    ) -> CookieOutcome {
+        if member_candidate(rel) {
+            return CookieOutcome::Refused;
+        }
+        let serial = self.cookie_serial.fetch_add(1, Ordering::Relaxed) + 1;
+        let abs = workspace.join(rel);
+        let write = abs
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(&abs, serial.to_string()));
+        if write.is_err() {
+            return CookieOutcome::Unproven;
+        }
+        let deadline = Instant::now() + timeout;
+        let mut s = self
+            .sync
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        loop {
+            if s.cookie_seen >= serial {
+                return CookieOutcome::Seen;
+            }
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                s.collapse(RescanCause::CookieTimeout);
+                return CookieOutcome::Unproven;
+            };
+            s = self
+                .sync
+                .cookie
+                .wait_timeout(s, left)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
     }
 
     /// The ADDITIONAL-feed door (§6.4): dirty-path hints from any secondary
@@ -292,7 +430,11 @@ impl WorkspaceFeed {
     /// Hints ride the same structural filter and the same conservative apply
     /// as kernel events; nothing anywhere depends on one arriving.
     pub(crate) fn note_dirty<'a>(&self, paths: impl IntoIterator<Item = &'a Path>) {
-        let mut s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut s = self
+            .sync
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         for path in paths {
             s.insert(path);
         }
@@ -302,19 +444,31 @@ impl WorkspaceFeed {
     /// under its named cause. The rescan executes by piggybacking on the
     /// next borrow — nothing here schedules work.
     pub(crate) fn rescan(&self, cause: RescanCause) {
-        let mut s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut s = self
+            .sync
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         s.collapse(cause);
     }
 
     /// Take whatever is pending, leaving the set clean.
     pub(crate) fn take(&self) -> Pending {
-        let mut s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut s = self
+            .sync
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         s.take()
     }
 
     /// Record members applied into the resident memo (the published counter).
     pub(crate) fn note_applied(&self, members: u64) {
-        let mut s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut s = self
+            .sync
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         s.applied += members;
     }
 
@@ -322,13 +476,21 @@ impl WorkspaceFeed {
     /// (bounded at [`RESCAN_RECORD_CAP`]; the lifetime total is
     /// [`FeedStats::rescans`]).
     pub(crate) fn rescan_record(&self) -> Vec<RescanCause> {
-        let s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let s = self
+            .sync
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         s.rescans.clone()
     }
 
     /// The published counters.
     pub(crate) fn stats(&self) -> FeedStats {
-        let s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let s = self
+            .sync
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         FeedStats {
             events: s.events,
             overflows: s.overflows,
@@ -416,6 +578,14 @@ fn member_candidate(rel: &Path) -> bool {
         && rel
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("md"))
+}
+
+/// Parse a sighted cookie's serial. `None` (torn or vanished mid-read) is
+/// benign: the write's close event re-delivers the path, and an unseen
+/// serial at worst times a barrier out to its floor — never a false `Seen`.
+fn read_serial(abs: &Path) -> Option<u64> {
+    let text = std::fs::read_to_string(abs).ok()?;
+    text.trim().parse().ok()
 }
 
 /// Which event kinds can carry a content change. `Access` is read-side noise
@@ -515,6 +685,83 @@ pub(crate) fn apply(
 mod tests {
     use super::*;
     use std::time::Instant;
+
+    /// The §7 gate row, refused by construction: a cookie rel the member
+    /// filter would admit can never be a barrier — it would move the very
+    /// root it vouches for. The lawful sentinel sits outside the hash domain
+    /// twice over: the feed's structural filter refuses it, and so does the
+    /// fs domain law itself.
+    #[test]
+    fn a_cookie_inside_the_hash_domain_is_refused_by_construction() {
+        let dir = tempfile::tempdir().unwrap();
+        // Canonical root, as the registry supplies (macOS tempdirs live
+        // behind a /var → /private/var symlink the kernel stream resolves).
+        let root = dir.path().canonicalize().unwrap();
+        let feed = WorkspaceFeed::start(&root, fs::stable::FeedGen::default()).expect("watcher");
+        assert_eq!(
+            feed.cookie_barrier_at(&root, Path::new("notes/plan.md"), Duration::from_millis(50)),
+            CookieOutcome::Refused,
+            "a member-candidate rel is refused before any byte lands"
+        );
+        assert!(
+            !root.join("notes/plan.md").exists(),
+            "the refusal wrote nothing"
+        );
+        assert!(!member_candidate(Path::new(COOKIE_REL)));
+        assert!(
+            !fs::domain::Domain::new().contains(Path::new(COOKIE_REL)),
+            "the sentinel is outside the hash domain by the §12.1 floor"
+        );
+    }
+
+    /// The barrier's proof arm, live kernel stream: the sentinel write comes
+    /// back through the ordered stream as `Seen`, and the sighting never
+    /// enters the dirty set (the cookie is proof-of-delivery, not dirt).
+    /// Generous timeout: CI inotify delivery can lag.
+    #[test]
+    fn the_cookie_returns_through_the_ordered_stream() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let feed = WorkspaceFeed::start(&root, fs::stable::FeedGen::default()).expect("watcher");
+        assert_eq!(
+            feed.cookie_barrier(&root, Duration::from_secs(10)),
+            CookieOutcome::Seen,
+            "the sentinel returned through the kernel stream"
+        );
+        let stats = feed.stats();
+        assert_eq!(
+            (stats.pending, stats.events, stats.all_dirty),
+            (0, 0, false),
+            "the sighting fed the barrier, never the dirty set"
+        );
+    }
+
+    /// The barrier's doubt arm: a sentinel the watched stream never carries
+    /// (written under a DIFFERENT root) proves nothing — `Unproven` at the
+    /// deadline, never a false `Seen`, never a hang.
+    #[test]
+    fn an_unwatched_cookie_write_times_out_unproven() {
+        let watched = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let feed = WorkspaceFeed::start(
+            &watched.path().canonicalize().unwrap(),
+            fs::stable::FeedGen::default(),
+        )
+        .expect("watcher");
+        assert_eq!(
+            feed.cookie_barrier(
+                &elsewhere.path().canonicalize().unwrap(),
+                Duration::from_millis(50)
+            ),
+            CookieOutcome::Unproven,
+            "no sighting by the deadline is doubt, not proof"
+        );
+        assert_eq!(
+            feed.rescan_record(),
+            vec![RescanCause::CookieTimeout],
+            "a timed-out barrier is the named CookieTimeout trigger"
+        );
+    }
 
     /// The structural filter: md-only, no dot segment, plain-relative shape.
     #[test]
