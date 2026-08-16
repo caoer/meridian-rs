@@ -256,8 +256,8 @@ mod tests {
     //! The §6.5 checkpoint gates, counters published on every assertion.
 
     use super::*;
+    use crate::Registry;
     use crate::state::StateStore;
-    use crate::{Registry, ring::WorkspaceRing};
 
     /// `home/ws` seeded with three members, and `home/cache` beside it (so
     /// the corpus walk never sees the drawer).
