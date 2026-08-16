@@ -238,6 +238,16 @@ impl Put {
 }
 
 impl Put {
+    /// The pinned CliArgv door for `put` (`crates/addr` ingress enumeration).
+    ///
+    /// HEADROOM IS SINGLE DIGITS: 92 non-comment lines against
+    /// `clippy::too_many_lines`' threshold of 100 (97 raw), measured
+    /// 2026-08-16. **A new flag arm extracts into its own function rather
+    /// than inlining here — and the extracted function gets its own row in
+    /// `PINNED` if it splits an address.** Inlining to keep the ingress list
+    /// short is the trap: it trips the lint (CI 738) exactly as extracting
+    /// without a pin trips the ingress guard (CI 732). See
+    /// [`parse_receipt`] for the worked example.
     fn parse(args: &[String]) -> Result<Self, Fail> {
         let mut positional: Option<String> = None;
         let mut actor: Option<String> = None;
