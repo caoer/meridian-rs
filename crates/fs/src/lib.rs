@@ -1399,6 +1399,17 @@ impl DomainCache {
         });
     }
 
+    /// Unbind the §6.3 stamp plane: the bound epoch's ring died (idle-reap)
+    /// and no live successor has rebound yet. A stamp must not answer
+    /// across a reap — with the plane unbound every query degrades to the
+    /// content-fold compare (the §7 restart/reap row) — and dropping the
+    /// binding drops the clock closure, so the cache never keeps a reaped
+    /// ring alive. Stamp values stay, exactly as on a rebind: max-only
+    /// leftovers read "touched" against a young epoch's tokens.
+    pub fn unbind_stamps(&mut self) {
+        self.stamps = None;
+    }
+
     /// The bound stamp epoch's tree instance id; `None` while the plane is
     /// unbound (nothing stamps, every query degrades).
     #[must_use]
