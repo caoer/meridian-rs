@@ -59,6 +59,15 @@ const PINNED: &[(&str, &str, Class)] = &[
     // ---- INGRESS 2: CLI argv (`String` in, `String` field out) -------------
     ("crates/mrd/src/pin_cmd.rs", "fn parse", Class::CliArgv),
     ("crates/mrd/src/put_cmd.rs", "fn parse", Class::CliArgv),
+    // `put --receipt PATH#ANCHOR`, split out of `fn parse` above: that door
+    // grew past `clippy::too_many_lines` once `--scope` landed, so the receipt
+    // address parse lives in its own function — classified here rather than
+    // hidden by inlining, which is what this list is for.
+    (
+        "crates/mrd/src/put_cmd.rs",
+        "fn parse_receipt",
+        Class::CliArgv,
+    ),
     ("crates/mrd/src/read_cmd.rs", "fn parse", Class::CliArgv),
     // `mrd script --receipt PATH#ANCHOR` — the same receipt-address door
     // `put_cmd` opens, on the verb that commits a script's arms.

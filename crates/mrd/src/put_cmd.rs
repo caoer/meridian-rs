@@ -288,31 +288,10 @@ impl Put {
                     scope = Some(value.clone());
                 }
                 "--receipt" => {
-                    // `--receipt PATH#ANCHOR` → the typed address, or the CLI's own
-                    // refusal (exit 2, before any engine contact). Both parts are
-                    // required: a half address names no anchor to pair a delivery
-                    // against. Kept INLINE deliberately — `crates/addr`'s ingress
-                    // enumeration pins hand-split address sites BY FUNCTION, and
-                    // `fn parse` is the pinned CliArgv door; extracting this into a
-                    // helper mints a new unpinned ingress (CI 732 caught exactly
-                    // that).
                     let value = it
                         .next()
                         .ok_or_else(|| Fail::tool("--receipt needs a value".to_owned()))?;
-                    let Some((rpath, anchor)) = value.split_once('#') else {
-                        return Err(Fail::tool(format!(
-                            "--receipt wants PATH#ANCHOR (a block anchor address): {value}"
-                        )));
-                    };
-                    if rpath.is_empty() || anchor.is_empty() {
-                        return Err(Fail::tool(format!(
-                            "--receipt wants PATH#ANCHOR (both parts non-empty): {value}"
-                        )));
-                    }
-                    receipt = Some(ReceiptAddr {
-                        path: WirePath(rpath.to_owned()),
-                        anchor: anchor.to_owned(),
-                    });
+                    receipt = Some(parse_receipt(value)?);
                 }
                 flag if flag.starts_with('-') => {
                     return Err(Fail::tool(format!("unknown flag: {flag}")));
@@ -356,6 +335,35 @@ impl Put {
             format: if json { Format::Json } else { Format::Human },
         })
     }
+}
+
+/// `--receipt PATH#ANCHOR` → the typed address, or the CLI's own refusal
+/// (exit 2, before any engine contact). Both parts are required: a half
+/// address names no anchor to pair a delivery against.
+///
+/// A SEPARATE FUNCTION ON PURPOSE, and it must stay pinned. `crates/addr`'s
+/// ingress enumeration lists every hand-split address site BY FUNCTION, so
+/// this one is registered as `("crates/mrd/src/put_cmd.rs", "fn parse_receipt",
+/// Class::CliArgv)`. Inlining it back into `fn parse` satisfies that guard by
+/// accident but pushes `fn parse` past `clippy::too_many_lines` (118 > 100) —
+/// the two invariants pull opposite ways, and this split plus the pin is the
+/// arrangement that satisfies both. CI 732 (unpinned ingress) and CI 738
+/// (over-long `fn parse`) are the two reds that mapped the vise.
+fn parse_receipt(value: &str) -> Result<ReceiptAddr, Fail> {
+    let Some((rpath, anchor)) = value.split_once('#') else {
+        return Err(Fail::tool(format!(
+            "--receipt wants PATH#ANCHOR (a block anchor address): {value}"
+        )));
+    };
+    if rpath.is_empty() || anchor.is_empty() {
+        return Err(Fail::tool(format!(
+            "--receipt wants PATH#ANCHOR (both parts non-empty): {value}"
+        )));
+    }
+    Ok(ReceiptAddr {
+        path: WirePath(rpath.to_owned()),
+        anchor: anchor.to_owned(),
+    })
 }
 
 /// The working batch every door teaches — ONE spelling shared by the empty-stdin refusal and
