@@ -1,7 +1,7 @@
 //! `mrd run` — the local run plane mounted on the CLI. The argv surface is locked:
 //!
 //! ```text
-//! mrd run <PAGE> [TASK] [-- ARGS] --env K=V --dry --list --json --fatal-preexec
+//! mrd run <PAGE> [TASK] [-- ARGS] --env K=V --dry --list --json
 //! ```
 //!
 //! No argv JSON: positional args ride verbatim after `--`, env rides as repeated
@@ -9,11 +9,13 @@
 //!
 //! # Exit triad
 //! - **0** — clean: `--list`, a completed `--dry`, a clean run. A foreign write landing
-//!   BEFORE the exec window is reported (`pre-exec delta:` line), not refused — the run
-//!   stands (card run-preexec-severity); `--fatal-preexec` opts back into the refusal.
+//!   BEFORE the exec window is reported (`pre-exec delta:` line), never refused — a
+//!   foreign advance re-derives and proceeds (2026-08-15 no-guard amendment,
+//!   `docs/run-plane.md`; the former `--fatal-preexec` opt-in is RETIRED with the
+//!   plane's premise refusals).
 //! - **1** — the run plane refused or failed: eval fault, a bash fence under a read-only
-//!   convention, foreign edit, workspace busy, in-window out-of-band delta, timeout, bash
-//!   nonzero exit, or a pre-exec divergence under `--fatal-preexec`.
+//!   convention, workspace busy, in-window out-of-band delta, timeout, bash nonzero
+//!   exit (the foreign-edit and root-mismatch legs are RETIRED — same amendment).
 //! - **2** — the invocation is wrong (usage, addressing, contract violation) or the tool failed
 //!   pre-run. TASK omitted with several declared tasks lists them and exits 2.
 //!
@@ -39,7 +41,6 @@ use run::exec::ExecStatus;
 use run::executor::{ExecError, ReceiptAddr};
 use run::fence::{GuaranteeClass, TaskLanguage};
 use run::runner::{self, CascadeError, RunSpec, RunnerError, TaskOutcome};
-use run::snapshot::OpenRefusal;
 use serde_json::json;
 
 use crate::{Fail, Format, current_dir};
@@ -123,16 +124,6 @@ fn fail_runner(e: &RunnerError) -> Fail {
         RunnerError::Caps(e) => fail_caps(e),
         RunnerError::Starlark(DispatchError::Exec(err))
         | RunnerError::Bash(BashError::Phase1(err)) => fail_exec(err),
-        // The fatal opt-in's own refusal (card run-preexec-severity): only
-        // `--fatal-preexec` mints this variant on the CLI path, so the
-        // recovery is measured, not guessed (face-honesty clause 3) — the
-        // same invocation without the flag proceeds and reports the delta.
-        RunnerError::Bash(BashError::Detection(refusal @ OpenRefusal::PreExecMismatch { .. })) => {
-            fail_run(format!(
-                "detection bracket: {refusal} — refused by --fatal-preexec; rerun without \
-                 the flag and the same run proceeds with this delta reported"
-            ))
-        }
         RunnerError::Cascade(CascadeError::Apply { error, .. }) => {
             let mut fail = fail_exec(error);
             fail.message = format!("cascade: {}", fail.message);
@@ -143,8 +134,8 @@ fn fail_runner(e: &RunnerError) -> Fail {
 }
 
 /// The parsed `mrd run` invocation.
-// Four independent argv switches ARE the surface: --json composes with all
-// three legs, so an enum would invent coupling the CLI does not have.
+// Three independent argv switches ARE the surface: --json composes with the
+// other legs, so an enum would invent coupling the CLI does not have.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug)]
 struct RunArgs {
@@ -157,9 +148,6 @@ struct RunArgs {
     dry: bool,
     list: bool,
     json: bool,
-    /// Opt back into refusing a pre-exec foreign write (exit 1, exec never
-    /// starts) instead of the default report-and-run posture.
-    fatal_preexec: bool,
 }
 
 impl RunArgs {
@@ -173,7 +161,6 @@ impl RunArgs {
         let mut dry = false;
         let mut list = false;
         let mut json = false;
-        let mut fatal_preexec = false;
         let mut i = 0;
         while i < tail.len() {
             match tail[i].as_str() {
@@ -184,7 +171,6 @@ impl RunArgs {
                 "--dry" => dry = true,
                 "--list" => list = true,
                 "--json" => json = true,
-                "--fatal-preexec" => fatal_preexec = true,
                 "--env" => {
                     i += 1;
                     let Some(pair) = tail.get(i) else {
@@ -211,10 +197,7 @@ impl RunArgs {
         }
         let Some(page) = page else {
             return Err(Fail::tool(
-                "usage: mrd run <PAGE> [TASK] [-- ARGS] --env K=V --dry --list --json \
-                 --fatal-preexec (refuse instead of report a foreign write landing just \
-                 before the exec window)"
-                    .to_owned(),
+                "usage: mrd run <PAGE> [TASK] [-- ARGS] --env K=V --dry --list --json".to_owned(),
             ));
         };
         if list && (task.is_some() || dry || !args.is_empty() || !env.is_empty()) {
@@ -232,7 +215,6 @@ impl RunArgs {
             dry,
             list,
             json,
-            fatal_preexec,
         })
     }
 
@@ -354,8 +336,6 @@ fn execute(
             path: RECEIPT_FILE.to_owned(),
             anchor: format!("p-{invocation_id}"),
         }),
-        takeover: false,
-        fatal_preexec: parsed.fatal_preexec,
         scratch: &scratch,
         timeout,
         declaring_root,
@@ -722,52 +702,23 @@ mod tests {
         assert_eq!(p.args, vec!["page", "--not-a-flag"]);
         assert_eq!(p.env.get("HOME_WIKI").map(String::as_str), Some("/w"));
         assert!(p.dry && p.json && !p.list);
-        assert!(!p.fatal_preexec, "report is the default posture");
     }
 
-    /// Card run-preexec-severity: the fatal opt-in parses, and it is
-    /// discoverable before it refuses — the usage line names it (face-honesty
-    /// clause 2).
+    /// The 2026-08-15 no-guard amendment retired the `--fatal-preexec`
+    /// opt-in with the plane's premise refusals: the flag no longer parses,
+    /// and the usage line no longer teaches it.
     #[test]
-    fn parse_fatal_preexec_opt_in() {
-        let p =
-            RunArgs::parse(&strings(&["notes.md", "census", "--fatal-preexec"])).expect("parse");
-        assert!(p.fatal_preexec);
+    fn fatal_preexec_flag_is_retired() {
+        let fail = RunArgs::parse(&strings(&["notes.md", "census", "--fatal-preexec"]))
+            .expect_err("a retired flag refuses as unknown");
+        assert_eq!(fail.code, 2);
+        assert!(fail.message.contains("unknown flag"), "{}", fail.message);
 
         let usage = RunArgs::parse(&[]).expect_err("no PAGE refuses");
         assert!(
-            usage.message.contains("--fatal-preexec"),
+            !usage.message.contains("--fatal-preexec"),
             "{}",
             usage.message
-        );
-    }
-
-    /// The fatal refusal carries its measured recovery (face-honesty clause
-    /// 3): only `--fatal-preexec` mints this variant on the CLI path, so the
-    /// teaching names the flag and the report-instead alternative.
-    #[test]
-    fn fatal_preexec_refusal_teaches_the_recovery() {
-        use run::snapshot::OpenRefusal;
-        let fail = fail_runner(&RunnerError::Bash(BashError::Detection(
-            OpenRefusal::PreExecMismatch {
-                expected: model::MerkleRoot("b3:aaaa".to_owned()),
-                observed: model::MerkleRoot("b3:bbbb".to_owned()),
-            },
-        )));
-        assert_eq!(fail.code, EXIT_RUN);
-        assert!(
-            fail.message
-                .contains("out-of-band change before exec window")
-        );
-        assert!(
-            fail.message.contains("refused by --fatal-preexec"),
-            "{}",
-            fail.message
-        );
-        assert!(
-            fail.message.contains("rerun without the flag"),
-            "{}",
-            fail.message
         );
     }
 
@@ -798,26 +749,10 @@ mod tests {
 
     #[test]
     fn triad_run_leg_mappings() {
-        // Foreign edit → exit 1, never exit 2.
-        let fe = fail_exec(&ExecError::ForeignEdit {
-            target: "fm:status".to_owned(),
-            last_governed: "aaaa".to_owned(),
-            current: "bbbb".to_owned(),
-        });
-        assert_eq!(fe.code, EXIT_RUN);
-        assert!(fe.message.contains("foreign edit"));
-
         // Workspace busy (LOCK_NB) → exit 1, named.
         let busy = fail_exec(&ExecError::WorkspaceBusy);
         assert_eq!(busy.code, EXIT_RUN);
         assert!(busy.message.contains("workspace busy"));
-
-        // Root mismatch (out-of-band change) → exit 1.
-        let rm = fail_exec(&ExecError::RootMismatch {
-            expected: "e".to_owned(),
-            actual: "a".to_owned(),
-        });
-        assert_eq!(rm.code, EXIT_RUN);
 
         // Bash fence under a read-only convention: the plane refuses → 1;
         // a malformed cap string is an authoring fault → 2.

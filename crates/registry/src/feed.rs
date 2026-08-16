@@ -1,5 +1,6 @@
-//! The §6.4 event feed — the engine owns its senses (merkle-spec, adjudicated
-//! engine-side, five lanes unanimous; merged plan §4.3).
+//! The §6.4 event feed and its rescan ladder — the engine owns its senses
+//! (merkle-spec, adjudicated engine-side, five lanes unanimous; merged plan
+//! §4.3).
 //!
 //! One kernel file watcher per workspace (notify: `FSEvents` on macOS, inotify
 //! on Linux), owned by this daemon — the engine process. Events accumulate
@@ -36,12 +37,32 @@
 //! order-insensitive by construction (the ORDERED stream consumers — the
 //! currency cookie — are the stamps card's, upstream of this filter).
 //!
-//! # Doubt collapses loudly
-//! A kernel overflow (rescan flag), a watcher error, or the set outgrowing
-//! [`DIRTY_CAP`] collapses the set to ALL-DIRTY: the next apply resets the
-//! resident memo, and the following pass re-reads the corpus — exactly the
-//! pre-feed baseline, correct and loud. The named-and-throttled rescan
-//! ladder above this floor is the sibling rescan card's.
+//! # The rescan ladder — every cause NAMED, throttled (merkle-spec §6.4)
+//! Doubt — a kernel overflow, a watcher error, the set outgrowing
+//! [`DIRTY_CAP`], or an explicit suspicious-only trigger through
+//! [`WorkspaceFeed::rescan`] — collapses the set to ALL-DIRTY under a named
+//! [`RescanCause`], recorded and reported as event loss
+//! ([`fs::stable::FeedGen::note_loss`], so guard currency is UNTRUSTED until
+//! a full observation re-baselines). The next borrow then climbs exactly one
+//! rung:
+//!
+//! - **Sweep** (overflow, missed event, vouch failure, cookie timeout): the
+//!   resident memo is KEPT — the next observation is already the full stat
+//!   sweep (lane B, 160 ms measured class: every member statted live, bytes
+//!   read only for movers), and it absorbs the loss. The watcher never
+//!   restarts across a rescan.
+//! - **Re-baseline** (watcher instance change): the gap reaches back to an
+//!   unknown point, so the memo is re-derived from disk into a FRESH memo
+//!   that commits by swap (1.45 s cold / 160 ms warm measured class) — never
+//!   a torn or empty index; a failed rebuild keeps the old memo and the
+//!   unabsorbed loss.
+//!
+//! There is NO TIMER anywhere on this ladder: rescans execute by piggybacking
+//! on the next borrow (pre-merge ruling 3 — suspicious-only; the periodic
+//! idle sweep is DECLINED, its price on the record). Zero background work
+//! when healthy. Self-echo (the engine's own writes re-arriving) is deduped
+//! as a cost saving only — overlay idempotence stays the correctness;
+//! masking is never load-bearing.
 
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
@@ -56,9 +77,69 @@ use notify::{EventKind, RecursiveMode, Watcher as _};
 /// the correct full re-read instead of holding an unbounded set.
 const DIRTY_CAP: usize = 4096;
 
+/// The rescan record's bound: enough for any post-mortem window, dropped
+/// oldest-first past it (the lifetime total stays in [`FeedStats::rescans`]).
+const RESCAN_RECORD_CAP: usize = 64;
+
+/// Why a rescan was marked — every rescan carries its cause into the log and
+/// the record; an anonymous rescan is unconstructible (merkle-spec §6.4,
+/// pre-merge ruling 3's suspicious-only trigger set).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RescanCause {
+    /// A watcher error: event loss until proven otherwise.
+    MissedEvent,
+    /// Kernel event-queue overflow (the rescan flag), or the registry-held
+    /// set outgrowing [`DIRTY_CAP`].
+    Overflow,
+    /// The watcher instance changed — the stream's continuity broke, so the
+    /// gap reaches back to an unknown point.
+    InstanceChange,
+    /// A spot check failed: a vouched answer disagreed with disk (the §6.3
+    /// stamps plane's trigger).
+    VouchFailure,
+    /// A currency cookie did not return through the event stream in time
+    /// (the §6.4 barrier's trigger).
+    CookieTimeout,
+}
+
+/// Which rung of the ladder a cause climbs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Rung {
+    /// Memo kept; the next observation is the full stat sweep.
+    Sweep,
+    /// Memo re-derived from disk, committed by swap.
+    Rebaseline,
+}
+
+impl RescanCause {
+    /// The cause's name — the word the log line and the record carry.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::MissedEvent => "missed-event",
+            Self::Overflow => "overflow",
+            Self::InstanceChange => "instance-change",
+            Self::VouchFailure => "vouch-failure",
+            Self::CookieTimeout => "cookie-timeout",
+        }
+    }
+
+    /// Only a broken stream continuity re-baselines; every other doubt is
+    /// covered by the stat sweep the next observation already is.
+    const fn rung(self) -> Rung {
+        match self {
+            Self::InstanceChange => Rung::Rebaseline,
+            Self::MissedEvent | Self::Overflow | Self::VouchFailure | Self::CookieTimeout => {
+                Rung::Sweep
+            }
+        }
+    }
+}
+
 /// One workspace's event feed: the kernel watcher and the dirty set it
 /// accumulates. Dropping it releases the kernel watch — which is why the
-/// registry drops it only at `unregister`, never at reap.
+/// registry drops it only at `unregister` (or a labeled instance
+/// replacement), never at reap.
 pub(crate) struct WorkspaceFeed {
     /// Keeps the kernel stream alive; the handler thread owns `state`'s
     /// other [`Arc`]. Held, never spoken to after construction.
@@ -78,16 +159,30 @@ impl std::fmt::Debug for WorkspaceFeed {
 }
 
 /// The registry-held dirty set plus its instrument counters.
+///
+/// No timer, no deadline, no interval: a doubt is sticky until the next
+/// borrow takes it. The idle sweep is DECLINED (pre-merge ruling 3).
 #[derive(Debug, Default)]
 struct FeedState {
     /// Member-candidate rel paths seen dirty since the last take.
     dirty: BTreeSet<PathBuf>,
-    /// Doubt collapse: overflow, watcher error, or cap breach. Sticky until
-    /// taken; applying it resets the resident memo.
-    all_dirty: bool,
+    /// Doubt collapse under its named cause. Sticky until taken; a second
+    /// cause landing on an open doubt keeps the higher rung.
+    doubt: Option<RescanCause>,
+    /// The shared feed-generation cell: advanced per accepted event, loss
+    /// noted per collapse — the watcher half of the §6.2 fence.
+    feed: fs::stable::FeedGen,
+    /// The rescan record: every mark's cause, oldest dropped past
+    /// [`RESCAN_RECORD_CAP`].
+    rescans: Vec<RescanCause>,
+    /// Rescans marked over the feed's life (monotonic; survives trimming).
+    rescans_total: u64,
     /// Kernel events accepted into the set (post-filter), over the feed's life.
     events: u64,
-    /// Doubt collapses over the feed's life (rescan flags, errors, cap).
+    /// Doubt collapses over the feed's life (rescan flags, errors, cap,
+    /// explicit triggers). Equal to [`Self::rescans_total`] by construction —
+    /// asserted apart in the chaos gate so an anonymous doubt path cannot
+    /// appear unnoticed.
     overflows: u64,
     /// Dirty members applied into the resident memo, over the feed's life.
     applied: u64,
@@ -99,8 +194,11 @@ struct FeedState {
 pub struct FeedStats {
     /// Kernel events accepted into the dirty set (post-filter).
     pub events: u64,
-    /// Doubt collapses (kernel rescan, watcher error, cap breach).
+    /// Doubt collapses (kernel rescan, watcher error, cap breach, explicit
+    /// rescan triggers).
     pub overflows: u64,
+    /// Rescans marked, each under a named cause (the record's total).
+    pub rescans: u64,
     /// Dirty members applied into the resident memo.
     pub applied: u64,
     /// Paths currently pending application.
@@ -116,8 +214,8 @@ pub(crate) enum Pending {
     Clean,
     /// These members were seen dirty since the last take.
     Paths(Vec<PathBuf>),
-    /// Doubt collapse: everything is suspect.
-    All,
+    /// Doubt collapse under its named cause: everything is suspect.
+    All(RescanCause),
 }
 
 /// One apply's outcome.
@@ -125,23 +223,38 @@ pub(crate) enum Pending {
 pub(crate) enum Applied {
     /// This many dirty members were re-derived against disk.
     Members(u64),
-    /// The resident memo was reset (all-dirty, or an apply-time I/O failure):
-    /// the next pass rebuilds from a full read — the pre-feed baseline.
+    /// The resident memo was reset (an apply-time I/O failure that is not
+    /// absence): the next pass rebuilds from a full read — the pre-feed
+    /// baseline.
     Reset,
+    /// Rescan, sweep rung: the memo is kept; the next observation is the
+    /// full stat sweep and absorbs the noted loss.
+    Sweep(RescanCause),
+    /// Rescan, re-baseline rung: the memo was re-derived from disk and
+    /// committed by swap.
+    Rebaselined(RescanCause),
 }
 
 impl WorkspaceFeed {
-    /// Start the kernel watcher for `workspace` (a canonical root). The feed
-    /// must exist BEFORE the first observation lands in the workspace's
-    /// resident memo — an observation without gap coverage behind it would
-    /// let a later re-warm trust the memo blind.
+    /// Start the kernel watcher for `workspace` (a canonical root), reporting
+    /// into the shared feed-generation cell `feed` — the same cell the
+    /// workspace's resident memo fences reads with. The feed must exist
+    /// BEFORE the first observation lands in the workspace's resident memo —
+    /// an observation without gap coverage behind it would let a later
+    /// re-warm trust the memo blind.
     ///
     /// # Errors
     /// The kernel watch could not be created or attached. The caller records
     /// the failure loudly; the workspace then keeps the pre-feed semantics
     /// (its resident memo drops on every reap).
-    pub(crate) fn start(workspace: &Path) -> notify::Result<WorkspaceFeed> {
-        let state = Arc::new(Mutex::new(FeedState::default()));
+    pub(crate) fn start(
+        workspace: &Path,
+        feed: fs::stable::FeedGen,
+    ) -> notify::Result<WorkspaceFeed> {
+        let state = Arc::new(Mutex::new(FeedState {
+            feed,
+            ..FeedState::default()
+        }));
         let sink = Arc::clone(&state);
         let root = workspace.to_path_buf();
         let mut watcher =
@@ -150,7 +263,7 @@ impl WorkspaceFeed {
                 match event {
                     Ok(event) => {
                         if event.need_rescan() {
-                            s.collapse();
+                            s.collapse(RescanCause::Overflow);
                             return;
                         }
                         if !relevant(event.kind) {
@@ -164,7 +277,7 @@ impl WorkspaceFeed {
                         }
                     }
                     // A watcher error is event loss until proven otherwise.
-                    Err(_) => s.collapse(),
+                    Err(_) => s.collapse(RescanCause::MissedEvent),
                 }
             })?;
         watcher.watch(workspace, RecursiveMode::Recursive)?;
@@ -185,18 +298,18 @@ impl WorkspaceFeed {
         }
     }
 
+    /// The suspicious-only trigger door (pre-merge ruling 3): mark a rescan
+    /// under its named cause. The rescan executes by piggybacking on the
+    /// next borrow — nothing here schedules work.
+    pub(crate) fn rescan(&self, cause: RescanCause) {
+        let mut s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        s.collapse(cause);
+    }
+
     /// Take whatever is pending, leaving the set clean.
     pub(crate) fn take(&self) -> Pending {
         let mut s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        if s.all_dirty {
-            s.all_dirty = false;
-            s.dirty.clear();
-            return Pending::All;
-        }
-        if s.dirty.is_empty() {
-            return Pending::Clean;
-        }
-        Pending::Paths(std::mem::take(&mut s.dirty).into_iter().collect())
+        s.take()
     }
 
     /// Record members applied into the resident memo (the published counter).
@@ -205,40 +318,77 @@ impl WorkspaceFeed {
         s.applied += members;
     }
 
+    /// The rescan record: every marked rescan's named cause, oldest first
+    /// (bounded at [`RESCAN_RECORD_CAP`]; the lifetime total is
+    /// [`FeedStats::rescans`]).
+    pub(crate) fn rescan_record(&self) -> Vec<RescanCause> {
+        let s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        s.rescans.clone()
+    }
+
     /// The published counters.
     pub(crate) fn stats(&self) -> FeedStats {
         let s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         FeedStats {
             events: s.events,
             overflows: s.overflows,
+            rescans: s.rescans_total,
             applied: s.applied,
             pending: s.dirty.len(),
-            all_dirty: s.all_dirty,
+            all_dirty: s.doubt.is_some(),
         }
     }
 }
 
 impl FeedState {
+    /// Take whatever is pending, leaving the set clean.
+    fn take(&mut self) -> Pending {
+        if let Some(cause) = self.doubt.take() {
+            self.dirty.clear();
+            return Pending::All(cause);
+        }
+        if self.dirty.is_empty() {
+            return Pending::Clean;
+        }
+        Pending::Paths(std::mem::take(&mut self.dirty).into_iter().collect())
+    }
+
     /// Admit one rel path through the structural filter; collapse at the cap.
+    /// Every accepted event advances the shared generation cell — the §6.2
+    /// fence's watcher half (an event landing inside a read bracket spoils
+    /// that read's record).
     fn insert(&mut self, rel: &Path) {
         if !member_candidate(rel) {
             return;
         }
         self.events += 1;
-        if self.all_dirty {
+        self.feed.advance();
+        if self.doubt.is_some() {
             return;
         }
         self.dirty.insert(rel.to_path_buf());
         if self.dirty.len() > DIRTY_CAP {
-            self.collapse();
+            self.collapse(RescanCause::Overflow);
         }
     }
 
-    /// Doubt: drop the enumeration, mark everything suspect.
-    fn collapse(&mut self) {
-        self.all_dirty = true;
+    /// Doubt under its named cause: drop the enumeration, mark everything
+    /// suspect, record the cause, and report the loss LOUDLY (guard currency
+    /// is untrusted until a full observation re-baselines — merkle-spec
+    /// §6.2 row 6). A cause landing on an open doubt keeps the higher rung.
+    fn collapse(&mut self, cause: RescanCause) {
+        self.doubt = Some(match self.doubt {
+            Some(open) if open.rung() >= cause.rung() => open,
+            _ => cause,
+        });
         self.dirty.clear();
         self.overflows += 1;
+        self.rescans_total += 1;
+        if self.rescans.len() == RESCAN_RECORD_CAP {
+            self.rescans.remove(0);
+        }
+        self.rescans.push(cause);
+        self.feed.note_loss(cause.name());
     }
 }
 
@@ -289,10 +439,14 @@ fn relevant(kind: EventKind) -> bool {
 /// never torn: no present member is ever transiently removed, so a
 /// concurrent `overlay_root` fold stays truthful at every instant.
 ///
-/// All-dirty — and any apply-time I/O failure other than absence — resets
-/// the memo instead: the next pass re-reads the corpus, the pre-feed
-/// baseline. A memo with no observation baseline yet applies nothing (the
-/// cold first pass reads everything anyway).
+/// All-dirty climbs the rescan ladder by cause (module doc): the sweep rung
+/// keeps the memo — the next observation is already the full stat sweep and
+/// absorbs the loss the collapse noted; the re-baseline rung re-derives a
+/// fresh memo from disk and commits it by swap, keeping the old memo (and
+/// the unabsorbed loss) when the rebuild fails. An apply-time I/O failure
+/// other than absence resets the memo instead: the next pass re-reads the
+/// corpus, the pre-feed baseline. A memo with no observation baseline yet
+/// applies nothing (the cold first pass reads everything anyway).
 pub(crate) fn apply(
     root: &fs::WorkspaceRoot,
     cache: &mut fs::DomainCache,
@@ -300,10 +454,28 @@ pub(crate) fn apply(
 ) -> Applied {
     let paths = match pending {
         Pending::Clean => return Applied::Members(0),
-        Pending::All => {
-            *cache = fs::DomainCache::new();
-            return Applied::Reset;
-        }
+        Pending::All(cause) => match cause.rung() {
+            Rung::Sweep => return Applied::Sweep(cause),
+            Rung::Rebaseline => {
+                // The fresh memo adopts the SAME generation cell, so the
+                // fence and the loss ledger survive the swap.
+                let mut fresh = fs::DomainCache::with_feed(cache.feed_gen());
+                return match fresh.root(root) {
+                    Ok(_) => {
+                        *cache = fresh;
+                        Applied::Rebaselined(cause)
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "feed: re-baseline for {} failed ({e}) — old memo kept, guard \
+                             currency stays untrusted until a full observation lands",
+                            root.0.display()
+                        );
+                        Applied::Sweep(cause)
+                    }
+                };
+            }
+        },
         Pending::Paths(paths) => paths,
     };
     let mut applied = 0u64;
@@ -328,9 +500,10 @@ pub(crate) fn apply(
                 }
             }
             // Unreadable ≠ absent: no digest can be derived and absence would
-            // be a lie — reset to the loud, correct baseline.
+            // be a lie — reset to the loud, correct baseline, keeping the
+            // shared generation cell so the fence survives.
             Err(_) => {
-                *cache = fs::DomainCache::new();
+                *cache = fs::DomainCache::with_feed(cache.feed_gen());
                 return Applied::Reset;
             }
         }
@@ -341,6 +514,7 @@ pub(crate) fn apply(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
 
     /// The structural filter: md-only, no dot segment, plain-relative shape.
     #[test]
@@ -377,33 +551,95 @@ mod tests {
         assert!(relevant(EventKind::Any));
     }
 
-    /// Cap breach collapses to all-dirty; the take drains it and the next
-    /// take is clean.
+    /// Every constructible cause is named; there is no anonymous variant.
+    #[test]
+    fn every_rescan_cause_is_named() {
+        let all = [
+            RescanCause::MissedEvent,
+            RescanCause::Overflow,
+            RescanCause::InstanceChange,
+            RescanCause::VouchFailure,
+            RescanCause::CookieTimeout,
+        ];
+        let mut names = BTreeSet::new();
+        for cause in all {
+            assert!(!cause.name().is_empty(), "{cause:?} must carry a name");
+            assert!(
+                names.insert(cause.name()),
+                "cause names are unique: {}",
+                cause.name()
+            );
+        }
+        assert_eq!(
+            all.len(),
+            5,
+            "the suspicious-only set is exactly these five"
+        );
+        assert_eq!(RescanCause::InstanceChange.rung(), Rung::Rebaseline);
+        assert_eq!(RescanCause::Overflow.rung(), Rung::Sweep);
+        assert_eq!(RescanCause::MissedEvent.rung(), Rung::Sweep);
+        assert_eq!(RescanCause::VouchFailure.rung(), Rung::Sweep);
+        assert_eq!(RescanCause::CookieTimeout.rung(), Rung::Sweep);
+    }
+
+    /// Cap breach collapses to all-dirty under the named overflow cause; the
+    /// take drains it and the next take is clean. Every accepted event
+    /// advanced the shared generation; the collapse noted exactly one loss.
     #[test]
     fn the_cap_collapses_to_all_dirty_and_take_drains() {
         let mut s = FeedState::default();
         for i in 0..=DIRTY_CAP {
             s.insert(Path::new(&format!("m{i}.md")));
         }
-        assert!(s.all_dirty, "past the cap everything is suspect");
+        assert_eq!(
+            s.doubt,
+            Some(RescanCause::Overflow),
+            "past the cap everything is suspect, under a named cause"
+        );
         assert_eq!(s.overflows, 1);
+        assert_eq!(
+            (s.rescans_total, s.rescans.as_slice()),
+            (1, &[RescanCause::Overflow][..])
+        );
         assert!(s.dirty.is_empty(), "the enumeration is dropped, not kept");
+        assert_eq!(s.feed.generation(), DIRTY_CAP as u64 + 1);
+        assert_eq!(s.feed.losses(), 1, "the collapse is LOUD event loss");
         // Late arrivals during a collapse change nothing.
         s.insert(Path::new("late.md"));
         assert!(s.dirty.is_empty());
+        assert_eq!(s.take(), Pending::All(RescanCause::Overflow));
+        assert_eq!(s.take(), Pending::Clean);
     }
 
-    /// A take empties the set; a second take is clean; all-dirty wins over
-    /// any path enumeration.
+    /// A doubt is sticky until taken; a lower-rung cause landing on an open
+    /// doubt never downgrades it; a higher rung upgrades; every mark stays
+    /// in the record.
     #[test]
-    fn takes_drain_and_all_dirty_wins() {
+    fn a_higher_rung_doubt_is_never_downgraded() {
         let mut s = FeedState::default();
         s.insert(Path::new("a.md"));
-        s.insert(Path::new("b.md"));
-        s.insert(Path::new("a.md")); // set semantics
-        assert_eq!(s.dirty.len(), 2);
-        s.collapse();
-        assert!(s.all_dirty && s.dirty.is_empty());
+        s.collapse(RescanCause::InstanceChange);
+        s.collapse(RescanCause::Overflow);
+        assert_eq!(
+            s.doubt,
+            Some(RescanCause::InstanceChange),
+            "the re-baseline rung outranks the sweep rung"
+        );
+        assert_eq!(
+            s.rescans.as_slice(),
+            &[RescanCause::InstanceChange, RescanCause::Overflow][..],
+        );
+        assert_eq!((s.rescans_total, s.overflows), (2, 2));
+        assert!(s.doubt.is_some() && s.dirty.is_empty());
+
+        let mut up = FeedState::default();
+        up.collapse(RescanCause::Overflow);
+        up.collapse(RescanCause::InstanceChange);
+        assert_eq!(
+            up.doubt,
+            Some(RescanCause::InstanceChange),
+            "a later instance-change upgrades an open sweep"
+        );
     }
 
     /// Apply, path arm: a changed member lands through the overlay (spoiled
@@ -439,34 +675,186 @@ mod tests {
         assert_eq!(after, fresh);
     }
 
-    /// Apply, doubt arms: all-dirty resets the memo (next pass re-reads the
-    /// corpus — the pre-feed baseline), and a cold memo applies nothing.
+    /// Apply, sweep rung: the memo is KEPT — the next observation re-verifies
+    /// every member by live stat and reads NOTHING on an unmoved corpus (the
+    /// lane-B 160 ms class, vs the 1.45 s full re-read a reset would force) —
+    /// and it re-baselines guard currency by absorbing the noted loss.
     #[test]
-    fn apply_resets_on_all_dirty_and_skips_a_cold_memo() {
+    fn a_sweep_rescan_keeps_the_memo_and_the_sweep_absorbs_the_loss() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::WorkspaceRoot(dir.path().to_path_buf());
+        std::fs::write(dir.path().join("a.md"), "# A\n").unwrap();
+        std::fs::write(dir.path().join("b.md"), "# B\n").unwrap();
+        let mut cache = fs::DomainCache::new();
+        let baseline = cache.root(&root).unwrap();
+        let reads = cache.leaves_read();
+        let sweeps = cache.sweeps();
+
+        // Mark the doubt the way the feed does: loss noted, then all-dirty.
+        cache.feed_gen().note_loss("overflow");
+        assert!(
+            matches!(
+                cache.guard_currency(),
+                fs::stable::GuardCurrency::Untrusted { .. }
+            ),
+            "an unabsorbed loss refuses vouching"
+        );
+        assert_eq!(
+            apply(&root, &mut cache, Pending::All(RescanCause::Overflow)),
+            Applied::Sweep(RescanCause::Overflow)
+        );
+        assert_eq!(
+            cache.leaves_read(),
+            reads,
+            "the memo survived the rescan mark"
+        );
+
+        // The piggybacked observation IS the full stat sweep: same root,
+        // zero byte reads on an unmoved corpus, loss absorbed.
+        assert_eq!(cache.root(&root).unwrap(), baseline);
+        assert_eq!(cache.sweeps(), sweeps + 1, "the sweep ran");
+        assert_eq!(
+            cache.leaves_read(),
+            reads,
+            "an unmoved corpus sweeps by stat alone — no member re-read"
+        );
+        assert_eq!(
+            cache.guard_currency(),
+            fs::stable::GuardCurrency::Trusted,
+            "the completed sweep re-baselined guard currency"
+        );
+    }
+
+    /// Apply, re-baseline rung: an instance change re-derives the memo from
+    /// disk into a fresh one committed by swap — the swapped memo equals a
+    /// from-scratch derivation and read the whole corpus.
+    #[test]
+    fn an_instance_change_rebaselines_by_swap() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::WorkspaceRoot(dir.path().to_path_buf());
+        std::fs::write(dir.path().join("a.md"), "# A\n").unwrap();
+        std::fs::write(dir.path().join("b.md"), "# B\n").unwrap();
+        let mut cache = fs::DomainCache::new();
+        cache.root(&root).unwrap();
+
+        // A change the (dead) stream never delivered.
+        std::fs::write(dir.path().join("a.md"), "# A moved unseen\n").unwrap();
+        assert_eq!(
+            apply(&root, &mut cache, Pending::All(RescanCause::InstanceChange)),
+            Applied::Rebaselined(RescanCause::InstanceChange)
+        );
+        assert_eq!(
+            cache.leaves_read(),
+            2,
+            "the swapped-in memo is fresh: it read the whole corpus"
+        );
+        let fresh = fs::DomainCache::new().root(&root).unwrap();
+        assert_eq!(cache.root(&root).unwrap(), fresh);
+    }
+
+    /// Apply, doubt arm on a cold memo: with no baseline the sweep rung is
+    /// moot by construction (the first pass reads everything), and the
+    /// re-baseline rung still lands a correct fresh memo.
+    #[test]
+    fn a_cold_memo_survives_both_rungs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::WorkspaceRoot(dir.path().to_path_buf());
+        std::fs::write(dir.path().join("a.md"), "# A\n").unwrap();
+
+        let mut cold = fs::DomainCache::new();
+        assert_eq!(
+            apply(&root, &mut cold, Pending::All(RescanCause::VouchFailure)),
+            Applied::Sweep(RescanCause::VouchFailure)
+        );
+        assert_eq!(cold.leaves_read(), 0, "nothing read at the mark");
+        cold.root(&root).unwrap();
+        assert_eq!(cold.leaves_read(), 1, "the cold first pass reads it all");
+
+        let mut cold2 = fs::DomainCache::new();
+        assert_eq!(
+            apply(&root, &mut cold2, Pending::All(RescanCause::InstanceChange)),
+            Applied::Rebaselined(RescanCause::InstanceChange)
+        );
+        assert_eq!(cold2.leaves_read(), 1);
+    }
+
+    /// An apply-time I/O failure that is not absence still resets, and the
+    /// shared generation cell survives the reset so the fence stays one
+    /// instrument.
+    #[test]
+    fn an_io_failure_resets_and_keeps_the_feed_cell() {
         let dir = tempfile::tempdir().unwrap();
         let root = fs::WorkspaceRoot(dir.path().to_path_buf());
         std::fs::write(dir.path().join("a.md"), "# A\n").unwrap();
         let mut cache = fs::DomainCache::new();
         cache.root(&root).unwrap();
-        assert_eq!(cache.leaves_read(), 1);
-
-        assert_eq!(apply(&root, &mut cache, Pending::All), Applied::Reset);
-        cache.root(&root).unwrap();
-        assert_eq!(
-            cache.leaves_read(),
-            1,
-            "the reset memo re-reads the corpus (fresh counter, one member)"
-        );
-
-        let mut cold = fs::DomainCache::new();
+        let handle = cache.feed_gen();
+        // A directory named like a member: read fails with IsADirectory, not
+        // NotFound — absence would be a lie, so the memo resets.
+        std::fs::create_dir(dir.path().join("ghost.md")).unwrap();
         assert_eq!(
             apply(
                 &root,
-                &mut cold,
-                Pending::Paths(vec![PathBuf::from("a.md")])
+                &mut cache,
+                Pending::Paths(vec![PathBuf::from("ghost.md")])
             ),
-            Applied::Members(0),
-            "no baseline — the cold first pass covers everything"
+            Applied::Reset
+        );
+        handle.advance();
+        assert_eq!(
+            cache.feed_gen().generation(),
+            handle.generation(),
+            "the reset memo still rides the same generation cell"
+        );
+    }
+
+    /// Ladder rung latencies on the fixture, recorded with grades. The 160 ms
+    /// / 1.45 s classes are the 29 k-member production numbers; this fixture
+    /// is two files, so the grades are the CLASS (O(1) mark / stat-sweep /
+    /// rebuild), not those wall times.
+    #[test]
+    fn ladder_rung_latencies_carry_grades() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::WorkspaceRoot(dir.path().to_path_buf());
+        std::fs::write(dir.path().join("a.md"), "# A\n").unwrap();
+        std::fs::write(dir.path().join("b.md"), "# B\n").unwrap();
+        let mut cache = fs::DomainCache::new();
+        cache.root(&root).unwrap();
+
+        let t0 = Instant::now();
+        assert_eq!(
+            apply(&root, &mut cache, Pending::All(RescanCause::Overflow)),
+            Applied::Sweep(RescanCause::Overflow)
+        );
+        let sweep_mark = t0.elapsed();
+
+        let t1 = Instant::now();
+        cache.root(&root).unwrap();
+        let sweep_observe = t1.elapsed();
+
+        let t2 = Instant::now();
+        assert_eq!(
+            apply(&root, &mut cache, Pending::All(RescanCause::InstanceChange)),
+            Applied::Rebaselined(RescanCause::InstanceChange)
+        );
+        let rebaseline = t2.elapsed();
+
+        eprintln!(
+            "ladder_rung sweep_mark={sweep_mark:?} grade=A-O(1)-no-io \
+             sweep_observe={sweep_observe:?} grade=B-stat-sweep \
+             rebaseline={rebaseline:?} grade=rebuild-by-swap"
+        );
+        assert!(
+            sweep_mark.as_millis() < 50,
+            "sweep mark is a return, not I/O: {sweep_mark:?}"
+        );
+        assert!(
+            sweep_observe.as_secs() < 2,
+            "two-file stat sweep stayed in the fixture envelope: {sweep_observe:?}"
+        );
+        assert!(
+            rebaseline.as_secs() < 2,
+            "two-file re-baseline stayed in the fixture envelope: {rebaseline:?}"
         );
     }
 }
