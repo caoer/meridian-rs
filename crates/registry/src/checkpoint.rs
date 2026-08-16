@@ -424,9 +424,8 @@ mod tests {
             0,
             "zero unchanged members read — the whole point of keeping the rows"
         );
-        assert_eq!(
+        assert!(
             path(&cache_root, &ws).exists(),
-            true,
             "the file survives too: only a COLD re-baseline removes it"
         );
     }
