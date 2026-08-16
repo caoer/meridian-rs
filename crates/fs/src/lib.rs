@@ -1732,7 +1732,7 @@ pub(crate) fn open_nofollow(path: &Path) -> io::Result<File> {
         } else {
             INTERMEDIATE
         };
-        let base = current.as_ref().map_or(libc::AT_FDCWD, |fd| fd.as_raw_fd());
+        let base = current.as_ref().map_or(libc::AT_FDCWD, AsRawFd::as_raw_fd);
         current = Some(openat_name(base, name, flags)?);
     }
     let Some(fd) = current else {

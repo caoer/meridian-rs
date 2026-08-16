@@ -67,6 +67,7 @@ const ESCALATION_SLEEPS_MS: [u64; 7] = [1, 2, 4, 8, 16, 32, 64];
 /// Upper bound a MEASURED granule may take in the test matrix: a tick
 /// observed inside the escalation ladder cannot exceed this. Not a fallback
 /// classification — no-tick is [`Calibration::Unavailable`].
+#[cfg(test)]
 const COARSE_GRANULE_NS: u64 = 2_000_000_000;
 
 /// How many times a read whose fd identity moved mid-read is retried before
