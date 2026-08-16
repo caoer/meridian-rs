@@ -232,15 +232,15 @@ impl Registry {
         }
     }
 
-    /// Certify the workspace's B-04 cutover record before its first serve,
-    /// running the machine when the record says pre-cutover or mid-build
-    /// (`crate::cutover` — the at-open trigger). Sticky per daemon lifetime.
+    /// Certify the workspace's B-04 cutover record before its first serve and
+    /// FINISH an interrupted cutover — never start one (`crate::cutover`).
+    /// Sticky per daemon lifetime.
     ///
     /// # Errors
     /// The record's typed refusals (corrupt ⇒
     /// `fingerprint_cutover_recovery_required` at the wire via
-    /// `warm_err_to_wire`); any machine failure.
-    fn ensure_cutover(
+    /// `warm_err_to_wire`); any failure finishing an interrupted build.
+    fn resume_cutover(
         &self,
         canonical: &Path,
         root: &fs::WorkspaceRoot,
@@ -255,9 +255,9 @@ impl Registry {
                 return Ok(());
             }
         }
-        if let Some(run) = crate::cutover::ensure(root, cache, &self.cache_root)? {
+        if let Some(run) = crate::cutover::resume_if_interrupted(root, cache, &self.cache_root)? {
             eprintln!(
-                "meridian: hash-law cutover {} at {}: drain {}us, no-return {}us, \
+                "meridian: hash-law cutover {} RESUMED at {}: drain {}us, no-return {}us, \
                  checkpoint-discard {}us, build {}us, commit {}us, total {}us",
                 run.record.cutover_id,
                 canonical.display(),
@@ -432,11 +432,12 @@ impl Registry {
         let mut parsed: Option<usize> = None;
 
         let cache = self.domain_cache(&canonical);
-        // The one-time hash-law cutover, at open (merkle-spec §4.2.6): before
-        // the first serve, certify the B-04 record — running the machine when
-        // it says pre-cutover or mid-build, refusing loudly when it cannot be
-        // read. One sticky-set probe on every later touch.
-        self.ensure_cutover(&canonical, &root, &cache)?;
+        // The B-04 record, certified before the first serve (merkle-spec
+        // §4.2.6): a corrupt record blocks serving loudly, and a cutover that
+        // crossed its boundary but never finished is FINISHED here. Opening a
+        // workspace never STARTS one — that is the operator's explicit act
+        // (`crate::cutover::start`). One sticky-set probe on every later touch.
+        self.resume_cutover(&canonical, &root, &cache)?;
         loop {
             // Cheap half (no parse, and no re-read of anything that did not
             // move): content hash from disk through the leaf memo.

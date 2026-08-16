@@ -1,14 +1,24 @@
 //! The per-workspace cutover state machine — merkle-spec §4.2.6, merged
 //! plan §6 step 7, behind the write-plane exclusion.
 //!
-//! The production trigger is AT WORKSPACE OPEN ([`super::registry::Registry`]
-//! calls [`ensure`] before the first serve): there are no old-law users (ZT,
-//! 2026-08-16), so no fleet scheduler exists — the first open under a law-2
-//! binary takes the one-time cutover, and a workspace already past it costs
-//! one sticky-set probe. A LIVE workspace drains through the same machine
-//! ([`run`] with the observed ring instance) — the test fixtures drive that
-//! path; production reaches the machine cold, where the drain is the
-//! interim-EX acquisition and an intents-empty proof.
+//! **Starting a cutover is an explicit act; the daemon only finishes one.**
+//! [`start`] crosses the no-return boundary and has exactly one production
+//! caller: the operator verb. At workspace open the registry calls
+//! [`resume_if_interrupted`], which finishes a build the boundary already
+//! committed to and does NOTHING to a workspace with no record — law 1 keeps
+//! serving.
+//!
+//! That split is a correction made on live evidence, and it is worth stating
+//! rather than merely doing: the first revision ran the machine at every
+//! workspace open, so opening ANY workspace — a user's, a fixture's — carried
+//! it irreversibly across the boundary with nobody deciding. A boundary with
+//! no rollback needs a named owner and a moment (price paper §9: per-workspace
+//! scheduling, canary, explicit recovery ownership), which is what an explicit
+//! verb is.
+//!
+//! A LIVE workspace drains through the same machine ([`run`] with the observed
+//! ring instance, so its subscriptions end labeled); a quiet one reaches the
+//! drain as the interim-EX acquisition plus an intents-empty proof.
 //!
 //! What the machine does NOT do, by ruling: activate the B-03 fence
 //! (spec §4.2.5 amendment — the record alone crosses the boundary), build a
@@ -70,29 +80,70 @@ pub(crate) struct CutoverRun {
 /// 25 ms probes is a generous bound, not a wait policy.
 const DRAIN_DEADLINE: Duration = Duration::from_secs(10);
 
-/// Take the workspace through the machine if its record says pre-cutover or
-/// mid-build; a `NEW_COMMITTED` record returns `None` (nothing to do).
-/// Corrupt records propagate their typed refusal — the caller spells
-/// `fingerprint_cutover_recovery_required` at the wire and serves nothing.
-pub(crate) fn ensure(
+/// RESUME an interrupted cutover at workspace open — and never START one.
+///
+/// **The trigger is an explicit operator act, never ambient** (corrected
+/// 2026-08-16 on live evidence): an earlier revision of this module ran the
+/// machine whenever a workspace opened without a record, which silently
+/// carried EVERY workspace — including throwaway fixtures — across the
+/// irreversible no-return boundary on first touch. Crossing a boundary with
+/// no rollback is a deliberate act with a named owner (price paper §9:
+/// per-workspace scheduling, canary, explicit recovery ownership), so
+/// starting a cutover is [`start`]'s job and this function's answer for a
+/// record-less workspace is: nothing to do, law 1 keeps serving.
+///
+/// A `NEW_BUILDING` record means the boundary was ALREADY crossed by such an
+/// act and the build did not finish — the engine must never serve the
+/// retired law again, so it finishes the build here. A `NEW_COMMITTED`
+/// record is nothing to do. A corrupt record propagates its typed refusal —
+/// the caller spells `fingerprint_cutover_recovery_required` and serves
+/// nothing.
+pub(crate) fn resume_if_interrupted(
     root: &fs::WorkspaceRoot,
     cache: &Arc<Mutex<fs::DomainCache>>,
     cache_root: &Path,
 ) -> io::Result<Option<CutoverRun>> {
     match fs::cutover::status(root)? {
-        CutoverStatus::Present(rec) if rec.state == CutoverState::NewCommitted => Ok(None),
-        CutoverStatus::Present(rec) => {
+        CutoverStatus::Present(rec) if rec.state == CutoverState::NewBuilding => {
             run(root, cache, cache_root, Resume::Record(rec), None).map(Some)
         }
-        CutoverStatus::Absent => run(
-            root,
-            cache,
-            cache_root,
-            Resume::Fresh { old_instance: None },
-            None,
-        )
-        .map(Some),
+        CutoverStatus::Present(_) | CutoverStatus::Absent => Ok(None),
     }
+}
+
+/// START the one-time cutover on a workspace that has never taken it — the
+/// explicit operator act. Refuses a workspace that already carries a record
+/// rather than crossing anything twice.
+///
+/// # Errors
+/// `AlreadyExists` when the workspace already has a cutover record; the
+/// drain's refusals (a live writer, unsettled intents); any I/O failure.
+pub fn start(
+    root: &fs::WorkspaceRoot,
+    cache: &Arc<Mutex<fs::DomainCache>>,
+    cache_root: &Path,
+    live: Option<&crate::ring::WorkspaceRing>,
+) -> io::Result<CutoverRun> {
+    if let CutoverStatus::Present(rec) = fs::cutover::status(root)? {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!(
+                "this workspace already carries cutover {} ({}) — the boundary is crossed once",
+                rec.cutover_id,
+                match rec.state {
+                    CutoverState::NewBuilding => "still building",
+                    CutoverState::NewCommitted => "committed",
+                }
+            ),
+        ));
+    }
+    run(
+        root,
+        cache,
+        cache_root,
+        Resume::Fresh { old_instance: None },
+        live,
+    )
 }
 
 /// Where the machine starts: a fresh boundary crossing (record absent), or
@@ -314,9 +365,7 @@ mod tests {
     fn the_machine_walks_once_and_ensure_is_then_a_no_op() {
         let (_d, root, cache_root) = ws();
         let cache = memo();
-        let run = ensure(&root, &cache, cache_root.path())
-            .expect("machine")
-            .expect("a fresh workspace cuts over");
+        let run = start(&root, &cache, cache_root.path(), None).expect("the operator act");
         assert_eq!(run.record.state, CutoverState::NewCommitted);
         assert!(run.record.committed_unix_ms.is_some());
         assert!(run.components.total_us > 0);
@@ -334,10 +383,14 @@ mod tests {
         assert!(served.0.starts_with("b3a:"), "{}", served.0);
         // Second entry: nothing to do.
         assert!(
-            ensure(&root, &cache, cache_root.path())
+            resume_if_interrupted(&root, &cache, cache_root.path())
                 .expect("machine")
-                .is_none()
+                .is_none(),
+            "a committed workspace has nothing to resume"
         );
+        let err = start(&root, &cache, cache_root.path(), None)
+            .expect_err("and the boundary is crossed once");
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
     }
 
     #[test]
@@ -356,7 +409,7 @@ mod tests {
         fs::cutover::begin_new_building(&root, &record).expect("begin");
 
         let cache = memo();
-        let run = ensure(&root, &cache, cache_root.path())
+        let run = resume_if_interrupted(&root, &cache, cache_root.path())
             .expect("machine")
             .expect("a NEW_BUILDING record resumes");
         assert_eq!(run.record.cutover_id, record.cutover_id);
@@ -415,9 +468,7 @@ mod tests {
         }
         let root = fs::WorkspaceRoot(dir.path().to_path_buf());
         let cache_root = tempfile::tempdir().expect("cache root");
-        let outcome = ensure(&root, &memo(), cache_root.path())
-            .expect("machine")
-            .expect("fresh cutover");
+        let outcome = start(&root, &memo(), cache_root.path(), None).expect("fresh cutover");
         let c = outcome.components;
         println!(
             "CUTOVER-MEASURE n={n}: drain_us={} record_begin_us={} \
@@ -442,7 +493,7 @@ mod tests {
         std::fs::create_dir_all(&intents).expect("mkdir");
         std::fs::write(intents.join("aa.intent"), b"x").expect("intent");
 
-        let err = ensure(&root, &memo(), cache_root.path()).expect_err("the drain refuses");
+        let err = start(&root, &memo(), cache_root.path(), None).expect_err("the drain refuses");
         assert!(err.to_string().contains("unsettled"), "{err}");
         // And the boundary was NOT crossed: the old law still serves.
         assert_eq!(

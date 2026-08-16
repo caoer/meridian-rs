@@ -376,13 +376,27 @@ effects, zero synthetic journal rows, zero rewrites of history. It emits
 the cutover record and the subscription terminal controls, which say the
 LAW changed and never pretend a file did.
 
-**The trigger.** The engine takes the cutover once per workspace at
-workspace open under a law-2 binary — there are no old-law users (ZT,
-2026-08-16: "we have no one using old law"), so no fleet scheduler
-exists; a workspace already serving cuts over through the same machine
-(drain first). The measured admission outage is recorded per component
-(drain, build, projections, checkpoint, publish) — the 1.45 s old-law
-cold-build receipt is never quoted for it (§4.2.5; price paper §8).
+**The trigger is an EXPLICIT act, never ambient.** Starting a cutover
+crosses a boundary with no rollback, so it is a deliberate operator act
+against a named workspace — never something a workspace suffers merely
+by being opened. Opening a workspace does exactly two cutover things:
+it certifies the record (an unrecognized one blocks serving loudly), and
+it FINISHES a build whose boundary was already crossed and whose process
+died mid-build. A workspace with no record keeps serving law 1 until
+someone starts its cutover.
+
+*Recorded because the opposite was tried and caught (2026-08-16):* an
+implementation that started the cutover at first open carried every
+workspace it touched — including throwaway fixtures — irreversibly across
+the boundary with nobody deciding. "No old-law users" (ZT, 2026-08-16:
+"we have no one using old law") retires the DUAL-COMPAT question; it does
+not make an irreversible act ambient. The price paper's own deployment
+section asks for the opposite: per-workspace scheduling, canary
+workspaces, explicit recovery ownership (§9).
+
+The measured admission outage is recorded per component (drain, build,
+projections, checkpoint, publish) — the 1.45 s old-law cold-build receipt
+is never quoted for it (§4.2.5; price paper §8).
 
 ### 4.3 Domain tags — one table
 
