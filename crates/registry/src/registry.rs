@@ -178,6 +178,66 @@ impl FeedSlot {
     }
 }
 
+/// How long a write door waits for the §6.4 cookie before it falls to the
+/// §6.2 extent-refresh floor. A healthy stream answers in single-digit
+/// milliseconds; the wait runs its full length only when the watcher is
+/// dead or badly behind — and the timeout is itself a named reason for
+/// doubt (the barrier collapses the memo), so the floor that follows
+/// re-derives instead of trusting. Two seconds bounds the stall a dead
+/// watcher adds to a write while staying far above delivery latency.
+pub(crate) const DOOR_COOKIE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Take-and-apply the feed's pending set into `memo` — the atomic §6.4
+/// apply every cache borrow ([`Registry::domain_cache`]) and every
+/// door-entry observation ([`Registry::door_observation`]) shares. The
+/// caller holds the memo lock; inside it only the feed's state mutex (the
+/// take) is entered. `None`: nothing was pending.
+fn apply_pending(
+    workspace: &Path,
+    memo: &mut fs::DomainCache,
+    feed: &feed::WorkspaceFeed,
+) -> Option<feed::Applied> {
+    let pending = feed.take();
+    if pending == feed::Pending::Clean {
+        return None;
+    }
+    let root = fs::WorkspaceRoot(workspace.to_path_buf());
+    let outcome = feed::apply(&root, memo, pending);
+    match &outcome {
+        feed::Applied::Members(0) => {}
+        feed::Applied::Members(n) => {
+            feed.note_applied(*n);
+            eprintln!(
+                "feed: applied {n} dirty member(s) into the resident memo for {}",
+                workspace.display()
+            );
+        }
+        feed::Applied::Reset => {
+            eprintln!(
+                "feed: apply-time I/O failure for {} — resident memo reset, next \
+                 pass re-reads the corpus",
+                workspace.display()
+            );
+        }
+        feed::Applied::Sweep(cause) => {
+            eprintln!(
+                "feed: rescan {} for {} — memo kept, next observation is the full \
+                 stat sweep",
+                cause.name(),
+                workspace.display()
+            );
+        }
+        feed::Applied::Rebaselined(cause) => {
+            eprintln!(
+                "feed: rescan {} for {} — memo re-baselined by swap",
+                cause.name(),
+                workspace.display()
+            );
+        }
+    }
+    Some(outcome)
+}
+
 impl Registry {
     /// Build a registry seeded with `entries` (loaded from the state file),
     /// persisting to `state` and writing drawer sentinels under `cache_root`.
@@ -642,44 +702,7 @@ impl Registry {
         {
             let mut memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(feed) = &feed {
-                let pending = feed.take();
-                if pending != feed::Pending::Clean {
-                    let root = fs::WorkspaceRoot(workspace.to_path_buf());
-                    let outcome = feed::apply(&root, &mut memo, pending);
-                    match &outcome {
-                        feed::Applied::Members(0) => {}
-                        feed::Applied::Members(n) => {
-                            feed.note_applied(*n);
-                            eprintln!(
-                                "feed: applied {n} dirty member(s) into the resident memo for {}",
-                                workspace.display()
-                            );
-                        }
-                        feed::Applied::Reset => {
-                            eprintln!(
-                                "feed: apply-time I/O failure for {} — resident memo reset, next \
-                                 pass re-reads the corpus",
-                                workspace.display()
-                            );
-                        }
-                        feed::Applied::Sweep(cause) => {
-                            eprintln!(
-                                "feed: rescan {} for {} — memo kept, next observation is the full \
-                                 stat sweep",
-                                cause.name(),
-                                workspace.display()
-                            );
-                        }
-                        feed::Applied::Rebaselined(cause) => {
-                            eprintln!(
-                                "feed: rescan {} for {} — memo re-baselined by swap",
-                                cause.name(),
-                                workspace.display()
-                            );
-                        }
-                    }
-                    applied = Some(outcome);
-                }
+                applied = apply_pending(workspace, &mut memo, feed);
             }
             if let Some(ring) = ring {
                 let instance = ring.instance();
@@ -744,6 +767,66 @@ impl Registry {
         }
         let root = memo.root(&fs::WorkspaceRoot(workspace.to_path_buf()))?;
         Ok((root, false))
+    }
+
+    /// The write door's §6.1 door-entry observation, made inside the door's
+    /// flock on the DOOR'S OWN memo handle (card
+    /// bug-trusted-overlay-unvouched): §6.4 cookie barrier first,
+    /// take-and-apply second, and the overlay serves as `root_before` only
+    /// on `Seen` + no doubt collapse + `Trusted` — the same vouch
+    /// [`Self::currency_refresh`] demands. A drained dirty set alone is
+    /// never a completeness proof. Any miss — no live feed (the sticky
+    /// `Failed` slot included), cookie `Unproven`/`Refused`, a doubt
+    /// collapse, an untrusted memo — falls to the §6.2 extent-refresh floor
+    /// on that same memo.
+    ///
+    /// The observation lands in the SUPPLIED handle, never a re-borrow: a
+    /// door that borrowed before an idle-reap must observe through the memo
+    /// its own-write overlay will land in, or `root_before` and
+    /// `root_after` would fold from two different trees.
+    ///
+    /// # Errors
+    /// I/O failure on the floor pass (the vouched path does no I/O).
+    pub fn door_observation(
+        &self,
+        workspace: &Path,
+        cache: &Arc<Mutex<fs::DomainCache>>,
+        timeout: Duration,
+    ) -> io::Result<model::MerkleRoot> {
+        let feed = {
+            let feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(FeedSlot::Live(feed)) = feeds.get(workspace) {
+                Some(Arc::clone(feed))
+            } else {
+                None
+            }
+        };
+        // Barrier FIRST, take-and-apply second (`currency_refresh`'s order):
+        // `Seen` proves every event before the sentinel is delivered, so the
+        // apply that follows folds in everything this door must guard
+        // against. The wait parks on the feed handle, outside every registry
+        // lock — the caller holds the write flock, which serializes
+        // cooperating writers only; the watcher thread it waits on never
+        // takes that flock.
+        let seen = feed.as_ref().is_some_and(|feed| {
+            feed.cookie_barrier(workspace, timeout) == feed::CookieOutcome::Seen
+        });
+        let mut memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
+        let applied = feed
+            .as_ref()
+            .and_then(|feed| apply_pending(workspace, &mut memo, feed));
+        let collapse = matches!(
+            applied,
+            Some(feed::Applied::Reset | feed::Applied::Sweep(_) | feed::Applied::Rebaselined(_))
+        );
+        if seen
+            && !collapse
+            && matches!(memo.guard_currency(), fs::stable::GuardCurrency::Trusted)
+            && let Ok(root) = memo.overlay_root()
+        {
+            return Ok(root);
+        }
+        memo.root(&fs::WorkspaceRoot(workspace.to_path_buf()))
     }
 
     /// Restore this workspace's §6.5 checkpoint, adjudicating its journal
@@ -2207,13 +2290,17 @@ mod engine_tests {
         );
 
         let fs_root = ::fs::WorkspaceRoot(canonical.clone());
+        let observe = || reg.door_observation(&canonical, &cache, Duration::from_secs(10));
         let out = wire_serve::write::splice_with_mints(
             &fs_root,
             None,
             &splice_args("notes/plan.md", "August", "w1"),
             &[],
             wire_serve::write::Mints::default(),
-            Some(&cache),
+            Some(wire_serve::write::ResidentDoor {
+                cache: &cache,
+                observe: &observe,
+            }),
         )
         .expect("daemon-cache splice");
         let frame = out.committed.expect("real splice commits");
@@ -2261,13 +2348,17 @@ mod engine_tests {
         let sweeps_before = cache.lock().unwrap().sweeps();
 
         let fs_root = ::fs::WorkspaceRoot(canonical.clone());
+        let observe = || reg.door_observation(&canonical, &cache, Duration::from_secs(10));
         wire_serve::write::splice_with_mints(
             &fs_root,
             None,
             &splice_args("notes/plan.md", "August", "w1"),
             &[],
             wire_serve::write::Mints::default(),
-            Some(&cache),
+            Some(wire_serve::write::ResidentDoor {
+                cache: &cache,
+                observe: &observe,
+            }),
         )
         .expect("degrade splice");
 
@@ -2319,13 +2410,17 @@ mod engine_tests {
         };
 
         let fs_root = ::fs::WorkspaceRoot(canonical.clone());
+        let observe = || reg.door_observation(&canonical, &cache, Duration::from_secs(10));
         wire_serve::write::splice_with_mints(
             &fs_root,
             None,
             &splice_args("notes/plan.md", "August", "w1"),
             &[],
             wire_serve::write::Mints::default(),
-            Some(&cache),
+            Some(wire_serve::write::ResidentDoor {
+                cache: &cache,
+                observe: &observe,
+            }),
         )
         .expect("warm splice");
 
@@ -2340,6 +2435,247 @@ mod engine_tests {
         assert_eq!(
             stats_after, stats_before,
             "untouched members are not re-stat'd"
+        );
+    }
+
+    /// The card's race fixture (bug-trusted-overlay-unvouched): foreign B
+    /// lands on disk AFTER the borrow's take and BEFORE the door's
+    /// observation. The door's own §6.4 barrier is written after B, so
+    /// `Seen` proves B's event was delivered and the vouched apply folds it
+    /// in — `root_before` moves off R0 and `if_root=R0` refuses.
+    /// Drain-and-hope served stale R0 here and accepted a write against a
+    /// world that was already B1.
+    #[test]
+    fn a_foreign_write_between_take_and_door_refuses_the_stale_world_guard() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let plan = plan_page("August");
+        let other = plan_page("still");
+        let ws = write_ws(
+            home.path(),
+            &[("notes/plan.md", &plan), ("notes/other.md", &other)],
+        );
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.warm_or_build(&ws).unwrap();
+
+        // R0: the baseline the stale guard will name.
+        let (r0, _) = reg
+            .currency_refresh(&canonical, Duration::from_secs(10))
+            .unwrap();
+
+        // The borrow's take runs first; then B lands, its event in flight.
+        let cache = reg.domain_cache(&canonical);
+        rewrite(&canonical, "notes/other.md", "# Notes\n\nmoved by B\n");
+
+        let fs_root = ::fs::WorkspaceRoot(canonical.clone());
+        let mut args = splice_args("notes/plan.md", "August", "w1");
+        args.if_root = Some(wire::Root(r0.0.clone()));
+        let observe = || reg.door_observation(&canonical, &cache, Duration::from_secs(10));
+        let err = wire_serve::write::splice_with_mints(
+            &fs_root,
+            None,
+            &args,
+            &[],
+            wire_serve::write::Mints::default(),
+            Some(wire_serve::write::ResidentDoor {
+                cache: &cache,
+                observe: &observe,
+            }),
+        )
+        .expect_err("a stale world guard must refuse once B is folded in");
+        assert_eq!(
+            err.code,
+            wire::ErrorCode::RootMismatch,
+            "the refusal is the world guard's: {err:?}"
+        );
+        assert_eq!(
+            err.expected.as_ref().map(|r| r.0.as_str()),
+            Some(r0.0.as_str()),
+            "the guard refused the caller's R0, not some other premise: {err:?}"
+        );
+        assert_ne!(
+            err.actual.as_ref().map(|r| r.0.as_str()),
+            Some(r0.0.as_str()),
+            "the door's observation absorbed B — root_before moved off R0: {err:?}"
+        );
+    }
+
+    /// The same race through the §4.4 SET door — the card's gate names
+    /// `splice` AND `splice.set`, and both ride one `observed_root` seam.
+    /// Driven rather than argued from the shared seam: a claim is bounded
+    /// by the instrument that produced it.
+    #[test]
+    fn the_set_door_refuses_a_stale_world_guard_after_a_foreign_write() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let plan = plan_page("August");
+        let second = plan_page("July");
+        let other = plan_page("still");
+        let ws = write_ws(
+            home.path(),
+            &[
+                ("notes/plan.md", &plan),
+                ("notes/second.md", &second),
+                ("notes/other.md", &other),
+            ],
+        );
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.warm_or_build(&ws).unwrap();
+
+        let (r0, _) = reg
+            .currency_refresh(&canonical, Duration::from_secs(10))
+            .unwrap();
+
+        let cache = reg.domain_cache(&canonical);
+        rewrite(&canonical, "notes/other.md", "# Notes\n\nmoved by B\n");
+
+        let fs_root = ::fs::WorkspaceRoot(canonical.clone());
+        let args = wire_serve::write::SpliceSetArgs {
+            premises: Vec::new(),
+            id: None,
+            files: vec![
+                wire::SpliceFile {
+                    path: wire::Path("notes/plan.md".into()),
+                    edits: vec![match_edit("August", "w1")],
+                    plan_edits: Vec::new(),
+                },
+                wire::SpliceFile {
+                    path: wire::Path("notes/second.md".into()),
+                    edits: vec![match_edit("July", "w2")],
+                    plan_edits: Vec::new(),
+                },
+            ],
+            origin: wire_serve::guard::Origin::InProcess,
+            actor: Some("alice".into()),
+            now: None,
+            receipt: None,
+            if_root: Some(wire::Root(r0.0.clone())),
+            dry: false,
+            force: false,
+        };
+        let observe = || reg.door_observation(&canonical, &cache, Duration::from_secs(10));
+        let err = wire_serve::write::splice_set_with_cache(
+            &fs_root,
+            None,
+            &args,
+            &[],
+            Some(wire_serve::write::ResidentDoor {
+                cache: &cache,
+                observe: &observe,
+            }),
+        )
+        .expect_err("the set door's world guard must refuse the stale R0");
+        assert_eq!(
+            err.code,
+            wire::ErrorCode::RootMismatch,
+            "the set refusal is the world guard's: {err:?}"
+        );
+        assert_ne!(
+            err.actual.as_ref().map(|r| r.0.as_str()),
+            Some(r0.0.as_str()),
+            "the set door's observation absorbed B too: {err:?}"
+        );
+        // Nothing committed: both members still carry their pre-image.
+        let plan_now = fs::read_to_string(canonical.join("notes/plan.md")).unwrap();
+        assert!(
+            plan_now.contains("August"),
+            "a refused set leaves every member byte-unchanged"
+        );
+    }
+
+    /// The sticky-`Failed` arm: no live feed means no vouch, so the door
+    /// observation floors to the live fold and a foreign edit is seen even
+    /// though no event will ever report it. Before the fix, `Trusted` alone
+    /// served the stale overlay — a dead feed was indistinguishable from a
+    /// quiet corpus.
+    #[test]
+    fn a_failed_feed_slot_floors_the_door_observation() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let plan = plan_page("August");
+        let other = plan_page("still");
+        let ws = write_ws(
+            home.path(),
+            &[("notes/plan.md", &plan), ("notes/other.md", &other)],
+        );
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.warm_or_build(&ws).unwrap();
+        let _ = reg.currency_root(&canonical).unwrap();
+
+        let cache = reg.domain_cache(&canonical);
+        let stale = cache.lock().unwrap().overlay_root().unwrap();
+        assert_eq!(
+            cache.lock().unwrap().guard_currency(),
+            ::fs::stable::GuardCurrency::Trusted,
+            "the memo itself still claims trust — that is the hole"
+        );
+        // The watcher dies sticky; the memo never hears about it.
+        reg.feeds
+            .lock()
+            .unwrap()
+            .insert(canonical.clone(), FeedSlot::Failed);
+        rewrite(
+            &canonical,
+            "notes/other.md",
+            "# Notes\n\nsilent foreign edit\n",
+        );
+
+        let observed = reg
+            .door_observation(&canonical, &cache, Duration::from_secs(10))
+            .unwrap();
+        let truth = ::fs::DomainCache::new()
+            .root(&::fs::WorkspaceRoot(canonical.clone()))
+            .unwrap();
+        assert_eq!(
+            observed.0, truth.0,
+            "no vouch: the floor re-derives the disk truth"
+        );
+        assert_ne!(
+            observed.0, stale.0,
+            "the stale Trusted overlay was not served"
+        );
+    }
+
+    /// The unproven-cookie arm: a barrier that cannot prove delivery within
+    /// its budget never authorizes the overlay. Either outcome of the
+    /// zero-budget race is lawful — `Unproven` collapses to the floor, a
+    /// lucky `Seen` applies everything before the sentinel — and both must
+    /// serve the fresh disk truth, never the pre-edit overlay.
+    #[test]
+    fn an_unproven_cookie_floors_the_door_observation() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let plan = plan_page("August");
+        let other = plan_page("still");
+        let ws = write_ws(
+            home.path(),
+            &[("notes/plan.md", &plan), ("notes/other.md", &other)],
+        );
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.warm_or_build(&ws).unwrap();
+        let _ = reg.currency_root(&canonical).unwrap();
+
+        let cache = reg.domain_cache(&canonical);
+        let stale = cache.lock().unwrap().overlay_root().unwrap();
+        rewrite(
+            &canonical,
+            "notes/other.md",
+            "# Notes\n\nlate-notify edit\n",
+        );
+
+        let observed = reg
+            .door_observation(&canonical, &cache, Duration::ZERO)
+            .unwrap();
+        let truth = ::fs::DomainCache::new()
+            .root(&::fs::WorkspaceRoot(canonical.clone()))
+            .unwrap();
+        assert_eq!(
+            observed.0, truth.0,
+            "no proof within budget: the door serves the disk truth"
+        );
+        assert_ne!(
+            observed.0, stale.0,
+            "the stale Trusted overlay was not served"
         );
     }
 }
