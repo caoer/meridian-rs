@@ -718,6 +718,28 @@ fn extras(error: &ErrorBody) -> String {
             content.trim_end()
         );
     }
+    // `remove_refused` (§ A.3): the message PROMISES "the referrers list" —
+    // the human face owes the rows the `--json` face already serves, or the
+    // promise dangles (dogfood #5).
+    if let Some(referrers) = &error.referrers
+        && !referrers.is_empty()
+    {
+        let _ = write!(out, "\n  referrers:");
+        for r in referrers {
+            let kind = match r.kind {
+                wire::ReferrerKind::Wikilink => "wikilink",
+                wire::ReferrerKind::Embed => "embed",
+                wire::ReferrerKind::Pin => "pin",
+            };
+            let _ = write!(
+                out,
+                "\n    {}  {kind}  {} edge{}",
+                r.path,
+                r.count,
+                if r.count == 1 { "" } else { "s" }
+            );
+        }
+    }
     out
 }
 
@@ -851,5 +873,69 @@ fn render_wire_error(error: &ErrorBody) -> String {
         (Some(message), _) => format!("{code}: {message}"),
         (None, Some(path)) => format!("{code}: {}", path.0),
         (None, None) => code,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use wire::{ErrorBody, ErrorCode, Referrer, ReferrerKind};
+
+    use super::refusal_text;
+
+    /// The human face keeps the message's promise: a `remove_refused` renders
+    /// the `referrers` rows the `--json` face serves — each referring file,
+    /// its edge kind, and its edge count (dogfood #5: the promise used to
+    /// dangle with no list under it).
+    #[test]
+    fn remove_refused_renders_the_referrers_list() {
+        let mut e = ErrorBody::new(ErrorCode::RemoveRefused);
+        e.message = Some("refused: notes/dead.md still has 4 inbound references".to_owned());
+        e.referrers = Some(vec![
+            Referrer {
+                path: "notes/fan.md".to_owned(),
+                kind: ReferrerKind::Wikilink,
+                count: 2,
+            },
+            Referrer {
+                path: "notes/gallery.md".to_owned(),
+                kind: ReferrerKind::Embed,
+                count: 1,
+            },
+            Referrer {
+                path: "notes/lock-holder.md".to_owned(),
+                kind: ReferrerKind::Pin,
+                count: 1,
+            },
+        ]);
+        let text = refusal_text(&e);
+        assert!(
+            text.contains("referrers:"),
+            "the list is announced under the message:\n{text}"
+        );
+        assert!(
+            text.contains("notes/fan.md  wikilink  2 edges"),
+            "each row names file, kind, count:\n{text}"
+        );
+        assert!(
+            text.contains("notes/gallery.md  embed  1 edge"),
+            "the singular count reads as one edge:\n{text}"
+        );
+        assert!(
+            text.contains("notes/lock-holder.md  pin  1 edge"),
+            "the ambient pin plane renders beside the link kinds:\n{text}"
+        );
+    }
+
+    /// A refusal with no `referrers` extra renders exactly as before — the
+    /// block is `remove_refused`'s alone.
+    #[test]
+    fn other_refusals_carry_no_referrers_block() {
+        let mut e = ErrorBody::new(ErrorCode::FileNotFound);
+        e.message = Some("file_not_found: no file at notes/gone.md".to_owned());
+        let text = refusal_text(&e);
+        assert!(
+            !text.contains("referrers"),
+            "no invented block on other codes:\n{text}"
+        );
     }
 }
