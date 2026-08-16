@@ -15,6 +15,7 @@ const PAGE: &str = "---\ntitle: Race\n---\n# Log\n\nseed line\n";
 /// Guardless racer: unique `put at:end` token (engine conflict only, not CAS).
 fn racer_args(i: usize) -> SpliceArgs {
     SpliceArgs {
+        premises: Vec::new(),
         id: None,
         origin: wire_serve::guard::Origin::InProcess,
         path: WPath("log.md".into()),

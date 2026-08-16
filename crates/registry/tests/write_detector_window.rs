@@ -44,6 +44,7 @@ fn a_detect_cycle_racing_a_splice_re_tells_nothing() {
     // The registry's own splice shape (server arm / script `put_live`): wire
     // door, forced guard, the workspace ring as the seq sink.
     let args = SpliceArgs {
+        premises: Vec::new(),
         id: None,
         path: wire::Path("plan.md".to_string()),
         origin: Origin::Wire,

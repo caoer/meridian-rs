@@ -49,6 +49,7 @@ fn args(anchor: &str, dry: bool) -> SpliceArgs {
 
 fn args_guarded(anchor: &str, dry: bool, if_node_rev: Option<NodeRev>) -> SpliceArgs {
     SpliceArgs {
+        premises: Vec::new(),
         id: Some(1),
         origin: wire_serve::guard::Origin::InProcess,
         path: WPath("plan.md".to_string()),

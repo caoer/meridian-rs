@@ -647,9 +647,11 @@ fn response_frame_key_sets_are_frozen() {
 /// code-specific extras beside them, never nested further. Maximal here, so a
 /// new extra appears in the list the moment it is declared.
 ///
-/// The last four — `rung`, `diff`, `new_content`, `new_fingerprint` — are the
-/// v3-additive mismatch-recovery ladder. `rung` is the authorship mark
-/// `rev::demote_v2` keys off to strip the authored slots from a v2 frame.
+/// `rung`, `diff`, `new_content`, `new_fingerprint` are the v3-additive
+/// mismatch-recovery ladder (`rung` is the authorship mark `rev::demote_v2`
+/// keys off to strip the authored slots from a v2 frame); `scope` and
+/// `uncovered` are the §5.4/§5.5 scoped-guard family's extras, reserved the
+/// same way.
 #[test]
 fn error_body_key_set_is_frozen_plus_the_v3_ladder_extras() {
     let err = ErrorBody {
@@ -683,6 +685,8 @@ fn error_body_key_set_is_frozen_plus_the_v3_ladder_extras() {
             kind: wire::ReferrerKind::Wikilink,
             count: 1,
         }]),
+        scope: Some("notes".into()),
+        uncovered: Some(vec!["section \"Goals\"".into()]),
     };
     pin_keys(
         &err,
@@ -709,9 +713,11 @@ fn error_body_key_set_is_frozen_plus_the_v3_ladder_extras() {
             "referrers",
             "required",
             "rung",
+            "scope",
             "stage",
             "supported",
             "target",
+            "uncovered",
             "unknown_kinds",
         ],
         "ErrorBody (maximal)",

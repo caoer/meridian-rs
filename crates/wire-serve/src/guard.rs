@@ -41,6 +41,8 @@
 //! in-process path ([`Origin::InProcess`] — `mrd`, the run plane, tests) is not
 //! a wire door, so the rule does not reach it: scope, not trust.
 
+use std::path::PathBuf;
+
 use wire::{
     Edit, EditShape, ErrorBody, ErrorCode, NodeRev, Path, PlanEdit, PutAt, SecRef, Severity, Span,
     Verdict,
@@ -59,6 +61,43 @@ pub enum Origin {
     /// An in-process call: `mrd`, the run plane, the test harness. Not a wire
     /// door, so the rule does not reach it.
     InProcess,
+}
+
+/// One §5.4 premise: an optional workspace-relative scope (`None` = the root
+/// premise — the v2 world guard as a list entry) and its claimed value.
+/// Constructed by in-process callers now (tests, the script door's touch
+/// set) and by the cap-gated wire decode when the family's cap lands;
+/// checked against the resident tree in `write.rs`, counted by the §5.5
+/// Coverage Law here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Premise {
+    /// Workspace-relative path node the premise names; `None` is the root.
+    pub scope: Option<PathBuf>,
+    pub value: PremiseValue,
+}
+
+/// A premise's claimed value: a spelled `Root`-family token, or lawful
+/// absence (§5.6 — the reserved non-hex `absent`, a value, not an error).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PremiseValue {
+    /// A spelled token (`b3…:<64hex>`) — equality-compared, opaque.
+    Token(String),
+    /// The reserved `absent` value: the premise holds iff no node exists at
+    /// the scope.
+    Absent,
+}
+
+impl Premise {
+    /// §5.5 coverage: is this premise's scope ancestor-or-self of `file`?
+    /// The root premise covers everything; comparison is component-wise,
+    /// never a string prefix (`a/b` must not cover `a/bc.md`).
+    #[must_use]
+    pub fn covers(&self, file: &Path) -> bool {
+        match &self.scope {
+            None => true,
+            Some(scope) => std::path::Path::new(&file.0).starts_with(scope),
+        }
+    }
 }
 
 /// One plane a forced write bypassed — rendered back to the caller so a `force`
@@ -122,6 +161,15 @@ struct Demand {
 /// changes existing content, absence for every birth, and a doc-root token for
 /// `set_properties` — or an explicit `force`.
 ///
+/// *(Amended per §5.5/A.1, 2026-08-15 law.)* The demand's satisfying set is
+/// the §5.4 premise vocabulary, judged by the Coverage Law: a batch premise
+/// whose scope is ancestor-or-self of this file (`premises`, or the sugar's
+/// root premise `root_premise`) covers every missing-token demand in it.
+/// `guard_required` keeps its exact meaning — a write carrying NO premise at
+/// all; a write carrying premises that fail coverage refuses
+/// `scope_does_not_cover` naming the uncovered target set. Validity demands
+/// (a STALE supplied token, an occupied birth) are never waived by coverage.
+///
 /// Under `force` the demands are still computed, so the response can name every
 /// bypassed plane, and `edits` has its node-grain tokens stripped: a forced
 /// write with a stale rev lands and says so, instead of refusing at a CAS rung
@@ -131,9 +179,12 @@ struct Demand {
 /// [`Origin::InProcess`], which is exempt.
 ///
 /// # Errors
-/// `guard_required` when a demanded guard is absent, or `cas_mismatch` when a
-/// file-grain token is stale or a birth's subject already exists. Nothing has
-/// been written when either returns.
+/// `guard_required` when a demanded guard is absent and the write carries no
+/// premise at all; `scope_does_not_cover` when supplied premises leave a
+/// caller-authored target uncovered; `cas_mismatch` when a file-grain token
+/// is stale or a birth's subject already exists. Nothing has been written
+/// when any returns.
+#[allow(clippy::too_many_arguments)]
 pub fn guard_batch(
     origin: Origin,
     force: bool,
@@ -141,6 +192,8 @@ pub fn guard_batch(
     path: &Path,
     plan_edits: &[PlanEdit],
     edits: &mut [Edit],
+    premises: &[Premise],
+    root_premise: bool,
 ) -> Result<Vec<Bypass>, Box<ErrorBody>> {
     if origin == Origin::InProcess {
         return Ok(Vec::new());
@@ -153,8 +206,26 @@ pub fn guard_batch(
         plan_demands(doc, plan_edits, &mut unmet);
     }
 
+    // §5.5 coverage: a batch premise at this file or an ancestor covers the
+    // missing-token demands (requiredness). Stale-token and occupied-birth
+    // demands are validity, not requiredness — never waived.
+    let covered = root_premise || premises.iter().any(|p| p.covers(path));
+    if covered {
+        unmet.retain(|d| !matches!(d.unmet, Unmet::NoGuard { .. }));
+    }
+
     if !force {
         if let Some(first) = unmet.first() {
+            // A.1's split: NO premise at all → `guard_required` with its
+            // teaching (today's refusal, byte-identical); premises present
+            // but not covering → `scope_does_not_cover` naming the set.
+            let any_premise = root_premise
+                || !premises.is_empty()
+                || edits.iter().any(|e| e.if_node_rev.is_some())
+                || plan_rows_carry_a_rev(plan_edits);
+            if matches!(first.unmet, Unmet::NoGuard { .. }) && any_premise {
+                return Err(coverage_refusal(path, &unmet));
+            }
             return Err(refusal(path, first));
         }
         return Ok(Vec::new());
@@ -181,6 +252,36 @@ pub fn guard_batch(
             subject: d.subject.clone(),
         })
         .collect())
+}
+
+/// Does any plan row carry its own rev token? One of A.1's "carries a
+/// premise" facts — a row's rev is an exact-section (or doc-root) premise.
+fn plan_rows_carry_a_rev(plan_edits: &[PlanEdit]) -> bool {
+    plan_edits.iter().any(|row| match row {
+        PlanEdit::SetProperty { rev, .. } => rev.is_some(),
+        PlanEdit::Create { rev, .. }
+        | PlanEdit::Match { rev, .. }
+        | PlanEdit::ReplaceSection { rev, .. }
+        | PlanEdit::Append { rev, .. } => rev.as_deref().is_some_and(|r| !r.is_empty()),
+    })
+}
+
+/// The §5.5 coverage refusal: `scope_does_not_cover` naming the UNCOVERED
+/// caller-authored target set (every missing-token demand), with the §8.2
+/// register text. One refusal for the whole set — the single-error shape
+/// names the set, not its first member.
+fn coverage_refusal(path: &Path, unmet: &[Demand]) -> Box<ErrorBody> {
+    let uncovered: Vec<String> = unmet
+        .iter()
+        .filter(|d| matches!(d.unmet, Unmet::NoGuard { .. }))
+        .map(|d| d.subject.clone())
+        .collect();
+    let joined = uncovered.join(", ");
+    let mut e = ErrorBody::new(ErrorCode::ScopeDoesNotCover);
+    e.path = Some(path.clone());
+    e.message = Some(wire::scope_does_not_cover_teaching(&joined, &path.0));
+    e.uncovered = Some(uncovered);
+    Box::new(e)
 }
 
 /// The native face: every edit is judged on the lowered/native `Edit` itself.

@@ -196,6 +196,8 @@ pub fn demote_v2(response: &wire::Response) -> Option<wire::Response> {
         ("diff", error.diff.is_some()),
         ("new_content", error.new_content.is_some()),
         ("new_fingerprint", error.new_fingerprint.is_some()),
+        ("scope", error.scope.is_some()),
+        ("uncovered", error.uncovered.is_some()),
     ]
     .iter()
     .any(|(key, present)| *present && is_reserved(key, Position::ErrorPayload));
@@ -215,6 +217,12 @@ pub fn demote_v2(response: &wire::Response) -> Option<wire::Response> {
         }
         if is_reserved("new_fingerprint", Position::ErrorPayload) {
             error.new_fingerprint = None;
+        }
+        if is_reserved("scope", Position::ErrorPayload) {
+            error.scope = None;
+        }
+        if is_reserved("uncovered", Position::ErrorPayload) {
+            error.uncovered = None;
         }
         if ladder_authored {
             error.message = None;
@@ -557,6 +565,25 @@ pub const V2_RESERVED_FIELDS: &[ReservedField] = &[
         author: "§ A.9 re-scope honesty",
         why: "the assembly-bound overflow marker; no frozen v2 frame bounded \
               its own enumeration",
+    },
+    // The scoped-guard family's two error extras (§5.5/§5.7, amended
+    // 2026-08-15). `scope` is v3-only-reachable (premises are cap-gated);
+    // `uncovered` can fire for a v2 mixed batch (A.1 amendment), where the
+    // §8.2 message names the same set — the demotion costs no fact.
+    ReservedField {
+        key: "scope",
+        position: Position::ErrorPayload,
+        author: "§5.4 scoped-guard family",
+        why: "the scoped premise's scope on fingerprint_mismatch and \
+              scope_unresolved; no frozen v2 refusal carries one",
+    },
+    ReservedField {
+        key: "uncovered",
+        position: Position::ErrorPayload,
+        author: "§5.5 Coverage Law",
+        why: "the uncovered caller-authored target set on \
+              scope_does_not_cover; postdates frozen v2 — the register-law \
+              message names the same set for demoted sessions",
     },
     // The ladder's four post-v2 slots; `message`/`path` are deliberately absent.
     ReservedField {

@@ -64,6 +64,7 @@ fn member(rel: &str, i: usize) -> wire::SpliceFile {
 
 fn set_args(files: Vec<wire::SpliceFile>, receipt: Option<ReceiptAddr>) -> SpliceSetArgs {
     SpliceSetArgs {
+        premises: Vec::new(),
         id: Some(7),
         files,
         origin: Origin::Wire,

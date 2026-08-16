@@ -672,6 +672,26 @@ pub struct DomainCache {
     member_stats: u64,
 }
 
+/// A spelled §5.4 premise token at one scope: the minted `Root`-family token,
+/// or lawful absence (§5.6 — a value, not an error).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScopeToken {
+    /// The scope holds a node; its fold, spelled under the serving identity.
+    Token(model::MerkleRoot),
+    /// The scope is a lawful path with no node (§5.6 `absent`).
+    Absent,
+}
+
+/// Why [`DomainCache::scope_token`] could not answer.
+#[derive(Debug)]
+pub enum ScopeTokenError {
+    /// §7's `scope_unresolved` facts: collision key or kind conflict.
+    Unresolved(resident::ScopeRefusal),
+    /// No observation has landed — the resident tree has no baseline (the
+    /// same caller-order defect [`DomainCache::overlay_leaf`] refuses).
+    NoBaseline,
+}
+
 /// The journal tip clock a stamp plane mints against: answers the current
 /// journal seq (the workspace ring's tip) at the instant of a tree advance.
 pub type StampClock = std::sync::Arc<dyn Fn() -> u64 + Send + Sync>;
@@ -1313,6 +1333,33 @@ impl DomainCache {
     /// [`resident::ScopeRefusal`] naming the refusing path.
     pub fn fold_at(&mut self, scope: &Path) -> Result<resident::ScopeFold, resident::ScopeRefusal> {
         self.tree.fold_at(scope)
+    }
+
+    /// The SPELLED §5.4 premise token at `scope` — [`Self::fold_at`]'s raw
+    /// value minted under the same (law-2, domain) identity the served root
+    /// spells ([`served_root`]), so a scoped premise token and the served
+    /// world token can never drift families. [`ScopeToken::Absent`] is
+    /// lawful absence (§5.6), never an error.
+    ///
+    /// # Errors
+    /// [`ScopeTokenError::Unresolved`] — §7's two `scope_unresolved` facts;
+    /// [`ScopeTokenError::NoBaseline`] — no observation has landed yet, the
+    /// same caller-order defect [`Self::overlay_leaf`] refuses.
+    pub fn scope_token(&mut self, scope: &Path) -> Result<ScopeToken, ScopeTokenError> {
+        let version = self
+            .overlay_domain()
+            .map_err(|_| ScopeTokenError::NoBaseline)?
+            .version();
+        match self
+            .tree
+            .fold_at(scope)
+            .map_err(ScopeTokenError::Unresolved)?
+        {
+            resident::ScopeFold::Value(raw) => Ok(ScopeToken::Token(
+                model::RootVersion::law2(version).token(raw),
+            )),
+            resident::ScopeFold::Absent => Ok(ScopeToken::Absent),
+        }
     }
 
     /// The law-2 workspace fingerprint of the resident tree (merkle-spec

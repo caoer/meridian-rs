@@ -30,6 +30,7 @@ fn workspace() -> (tempfile::TempDir, fs::WorkspaceRoot) {
 /// Pending write: native `fm_key` upsert `status: done` (same intent as pre-flight).
 fn splice_args(dry: bool) -> SpliceArgs {
     SpliceArgs {
+        premises: Vec::new(),
         id: None,
         origin: wire_serve::guard::Origin::InProcess,
         path: WPath("rec.md".into()),

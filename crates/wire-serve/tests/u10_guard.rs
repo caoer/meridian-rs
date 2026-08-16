@@ -24,6 +24,7 @@ fn ws() -> (tempfile::TempDir, fs::WorkspaceRoot) {
 
 fn args(origin: Origin) -> SpliceArgs {
     SpliceArgs {
+        premises: Vec::new(),
         id: None,
         origin,
         path: WPath("memo.md".into()),
@@ -130,6 +131,7 @@ fn assert_guard_contract(ctx: &str, message: &str, grain: &str) {
 fn wire_edit_on_existing_content_without_a_guard_is_refused() {
     let (_d, root) = ws();
     let a = SpliceArgs {
+        premises: Vec::new(),
         edits: vec![replace_edit(None)],
         ..args(Origin::Wire)
     };
@@ -156,6 +158,7 @@ fn wire_edit_with_the_right_if_node_rev_succeeds() {
     let (_d, root) = ws();
     let rev = sec_rev(&root, tasks());
     let a = SpliceArgs {
+        premises: Vec::new(),
         edits: vec![replace_edit(Some(rev))],
         ..args(Origin::Wire)
     };
@@ -171,6 +174,7 @@ fn wire_edit_with_the_right_if_node_rev_succeeds() {
 fn wire_edit_with_force_succeeds_and_names_the_bypassed_planes() {
     let (_d, root) = ws();
     let a = SpliceArgs {
+        premises: Vec::new(),
         edits: vec![replace_edit(None)],
         force: true,
         ..args(Origin::Wire)
@@ -206,6 +210,7 @@ fn wire_edit_with_force_succeeds_and_names_the_bypassed_planes() {
 fn s3_append_on_existing_content_is_guarded() {
     let (_d, root) = ws();
     let a = SpliceArgs {
+        premises: Vec::new(),
         edits: vec![append_edit(None)],
         ..args(Origin::Wire)
     };
@@ -215,6 +220,7 @@ fn s3_append_on_existing_content_is_guarded() {
     // And it lands with its fingerprint, like every other content change.
     let rev = sec_rev(&root, tasks());
     let ok = SpliceArgs {
+        premises: Vec::new(),
         edits: vec![append_edit(Some(rev))],
         ..args(Origin::Wire)
     };
@@ -228,6 +234,7 @@ fn a_plan_append_carrying_its_section_rev_lands() {
     let (_d, root) = ws();
     let rev = sec_rev(&root, tasks());
     let a = SpliceArgs {
+        premises: Vec::new(),
         plan_edits: vec![PlanEdit::Append {
             hpath: vec![
                 HpathSeg {
@@ -258,6 +265,7 @@ fn a_plan_append_carrying_its_section_rev_lands() {
 fn a_plan_append_without_a_rev_still_refuses() {
     let (_d, root) = ws();
     let a = SpliceArgs {
+        premises: Vec::new(),
         plan_edits: vec![PlanEdit::Append {
             hpath: vec![
                 HpathSeg {
@@ -290,6 +298,7 @@ fn a_plan_append_without_a_rev_still_refuses() {
 fn a_plan_append_with_a_stale_rev_does_not_write() {
     let (_d, root) = ws();
     let a = SpliceArgs {
+        premises: Vec::new(),
         plan_edits: vec![PlanEdit::Append {
             hpath: vec![
                 HpathSeg {
@@ -322,6 +331,7 @@ fn a_plan_append_with_a_stale_rev_does_not_write() {
 fn a_stale_fingerprint_still_refuses_at_cas() {
     let (_d, root) = ws();
     let a = SpliceArgs {
+        premises: Vec::new(),
         edits: vec![replace_edit(Some(NodeRev("not-this-documents-rev".into())))],
         ..args(Origin::Wire)
     };
@@ -334,6 +344,7 @@ fn a_stale_fingerprint_still_refuses_at_cas() {
 fn force_is_wired_to_cas() {
     let (_d, root) = ws();
     let a = SpliceArgs {
+        premises: Vec::new(),
         edits: vec![replace_edit(Some(NodeRev("not-this-documents-rev".into())))],
         force: true,
         ..args(Origin::Wire)
@@ -389,6 +400,7 @@ fn birth_is_guarded_by_absence_not_fingerprint() {
 fn plan_create_is_guarded_by_absence() {
     let (_d, root) = ws();
     let already = SpliceArgs {
+        premises: Vec::new(),
         plan_edits: vec![PlanEdit::Create {
             parent_hpath: vec![HpathSeg {
                 h: "Memo".into(),
@@ -409,6 +421,7 @@ fn plan_create_is_guarded_by_absence() {
     );
 
     let fresh = SpliceArgs {
+        premises: Vec::new(),
         plan_edits: vec![PlanEdit::Create {
             parent_hpath: vec![HpathSeg {
                 h: "Memo".into(),
@@ -428,6 +441,7 @@ fn plan_create_is_guarded_by_absence() {
 fn set_properties_demands_the_doc_root_token() {
     let (_d, root) = ws();
     let bare = SpliceArgs {
+        premises: Vec::new(),
         plan_edits: vec![PlanEdit::SetProperty {
             key: "status".into(),
             value: "closed".into(),
@@ -447,6 +461,7 @@ fn set_properties_demands_the_doc_root_token() {
 
     let token = file_rev(&root);
     let guarded = SpliceArgs {
+        premises: Vec::new(),
         plan_edits: vec![PlanEdit::SetProperty {
             key: "status".into(),
             value: "closed".into(),
@@ -466,6 +481,7 @@ fn set_properties_demands_the_doc_root_token() {
 fn set_properties_with_a_stale_doc_root_token_refuses() {
     let (_d, root) = ws();
     let stale = SpliceArgs {
+        premises: Vec::new(),
         plan_edits: vec![PlanEdit::SetProperty {
             key: "status".into(),
             value: "closed".into(),
@@ -496,6 +512,7 @@ fn an_empty_batch_is_unaffected() {
 fn the_in_process_path_is_outside_the_rulings_reach() {
     let (_d, root) = ws();
     let a = SpliceArgs {
+        premises: Vec::new(),
         edits: vec![replace_edit(None)],
         ..args(Origin::InProcess)
     };
@@ -515,6 +532,7 @@ fn the_fix_clause_names_the_slot_the_caller_actually_has() {
     let (_d, root) = ws();
 
     let plan_match = SpliceArgs {
+        premises: Vec::new(),
         plan_edits: vec![PlanEdit::Match {
             hpath: vec![
                 HpathSeg {
@@ -542,6 +560,7 @@ fn the_fix_clause_names_the_slot_the_caller_actually_has() {
     );
 
     let plan_append = SpliceArgs {
+        premises: Vec::new(),
         plan_edits: vec![PlanEdit::Append {
             hpath: vec![
                 HpathSeg {
@@ -581,6 +600,7 @@ fn the_field_rename_bypass_is_closed() {
     let (_d, root) = ws();
     // A payload that never touches `crate::plan::lower`: native `edits` only.
     let native = SpliceArgs {
+        premises: Vec::new(),
         edits: vec![replace_edit(None)],
         plan_edits: Vec::new(),
         ..args(Origin::Wire)
@@ -634,6 +654,7 @@ fn a_guardless_frame_is_still_a_legal_frame() {
 fn the_refusal_is_semantic_never_frame_illegality() {
     let (_d, root) = ws();
     let a = SpliceArgs {
+        premises: Vec::new(),
         edits: vec![replace_edit(None)],
         ..args(Origin::Wire)
     };
@@ -661,6 +682,7 @@ fn the_refusal_is_semantic_never_frame_illegality() {
 fn a_target_that_does_not_resolve_is_not_this_rungs_to_answer() {
     let (_d, root) = ws();
     let dangling = SpliceArgs {
+        premises: Vec::new(),
         edits: vec![Edit {
             target: SecRef::Anchor {
                 anchor: "no-such-anchor".into(),
@@ -683,6 +705,7 @@ fn a_target_that_does_not_resolve_is_not_this_rungs_to_answer() {
 
     // The same target, once it exists, IS the guard's to answer.
     let real = SpliceArgs {
+        premises: Vec::new(),
         edits: vec![replace_edit(None)],
         ..args(Origin::Wire)
     };
@@ -716,6 +739,7 @@ fn dup_ws() -> (tempfile::TempDir, fs::WorkspaceRoot) {
 
 fn dup_args() -> SpliceArgs {
     SpliceArgs {
+        premises: Vec::new(),
         path: WPath("dup.md".into()),
         ..args(Origin::Wire)
     }
@@ -763,6 +787,7 @@ fn occurrence_create(rev: Option<String>) -> PlanEdit {
 fn a_create_under_an_occurrence_parent_without_the_parent_rev_refuses() {
     let (_d, root) = dup_ws();
     let a = SpliceArgs {
+        premises: Vec::new(),
         plan_edits: vec![occurrence_create(None)],
         ..dup_args()
     };
@@ -810,6 +835,7 @@ fn a_create_under_an_occurrence_parent_with_the_parent_rev_lands() {
     let (_d, root) = dup_ws();
     let rev = dup_parent_rev(&root);
     let a = SpliceArgs {
+        premises: Vec::new(),
         plan_edits: vec![occurrence_create(Some(rev.0))],
         ..dup_args()
     };
@@ -831,6 +857,7 @@ fn a_create_under_an_occurrence_parent_with_the_parent_rev_lands() {
 fn a_create_under_an_occurrence_parent_with_a_stale_rev_refuses_at_cas() {
     let (_d, root) = dup_ws();
     let a = SpliceArgs {
+        premises: Vec::new(),
         plan_edits: vec![occurrence_create(Some("not-the-parents-rev".into()))],
         ..dup_args()
     };
@@ -854,6 +881,7 @@ fn a_create_at_a_unique_parent_honors_an_offered_rev() {
     };
     let fresh = sec_rev(&root, parent);
     let ok = SpliceArgs {
+        premises: Vec::new(),
         plan_edits: vec![PlanEdit::Create {
             parent_hpath: vec![seg("Memo"), seg("Tasks")],
             title: "Kid".into(),
@@ -870,6 +898,7 @@ fn a_create_at_a_unique_parent_honors_an_offered_rev() {
     );
 
     let stale = SpliceArgs {
+        premises: Vec::new(),
         plan_edits: vec![PlanEdit::Create {
             parent_hpath: vec![seg("Memo"), seg("Tasks")],
             title: "Another".into(),
@@ -889,6 +918,7 @@ fn a_create_at_a_unique_parent_honors_an_offered_rev() {
 fn force_bypasses_the_create_demand_and_names_the_parent() {
     let (_d, root) = dup_ws();
     let a = SpliceArgs {
+        premises: Vec::new(),
         plan_edits: vec![occurrence_create(None)],
         force: true,
         ..dup_args()

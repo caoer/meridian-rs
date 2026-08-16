@@ -584,6 +584,7 @@ mod scenarios {
     /// artifact-side binding break. `force` toggles the sanctioned bypass.
     fn forged_row(force: bool) -> SpliceArgs {
         SpliceArgs {
+            premises: Vec::new(),
             id: None,
             origin: crate::guard::Origin::InProcess,
             path: Path(fs::domain::ARMED_RULES_PATH.into()),
@@ -615,6 +616,7 @@ mod scenarios {
     /// A content splice at `path` by `actor` — the ordinary write the door judges.
     fn content_splice(path: &str, actor: &str, force: bool) -> SpliceArgs {
         SpliceArgs {
+            premises: Vec::new(),
             id: None,
             origin: crate::guard::Origin::InProcess,
             path: Path(path.into()),
@@ -682,6 +684,7 @@ mod scenarios {
         let (dir, root) = armed_block_ws();
         let before = std::fs::read_to_string(dir.path().join(RULE_PATH)).unwrap();
         let args = SpliceArgs {
+            premises: Vec::new(),
             edits: vec![Edit {
                 target: SecRef::Hpath {
                     hpath: vec![HpathSeg {
@@ -721,6 +724,7 @@ mod scenarios {
         let (dir, root) = armed_block_ws();
         write_page(&root, "rules/draft.md", DRAFT);
         let args = SpliceArgs {
+            premises: Vec::new(),
             edits: vec![Edit {
                 target: SecRef::Hpath {
                     hpath: vec![HpathSeg {

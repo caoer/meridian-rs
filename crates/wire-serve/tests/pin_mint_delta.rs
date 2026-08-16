@@ -73,6 +73,7 @@ fn workspace() -> (tempfile::TempDir, fs::WorkspaceRoot) {
 /// Pin-only splice from `pinner` onto guide.md, actor-attributed.
 fn pin_args(pinner: &str, selector: &str) -> SpliceArgs {
     SpliceArgs {
+        premises: Vec::new(),
         id: None,
         origin: wire_serve::guard::Origin::InProcess,
         path: WPath(pinner.into()),
