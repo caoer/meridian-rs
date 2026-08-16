@@ -25,6 +25,7 @@ use std::sync::PoisonError;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub mod base;
+pub mod checkpoint;
 pub mod digestmemo;
 pub mod domain;
 pub mod fence;
@@ -643,6 +644,18 @@ pub struct DomainCache {
     /// Feed losses absorbed by the last COMPLETED observation — a loss at or
     /// below this count has been re-derived by a full pass.
     acked_losses: u64,
+    /// These rows came from a §6.5 checkpoint and NO observation has landed
+    /// since ([`checkpoint::restore`] sets it; a completed [`Self::observe`]
+    /// clears it).
+    ///
+    /// The rows are evidence from a previous process, and the §6.4 watcher
+    /// that vouches for the event stream started AFTER the gap — so it can
+    /// say nothing about what changed while the daemon was down. Until a live
+    /// pass re-verifies every member, [`Self::guard_currency`] must answer
+    /// UNTRUSTED: a checkpoint that answered a guard-grade question on its own
+    /// word would be serving stale as truth, which is the object the §0 ban
+    /// targets (merkle-spec §6.5 — "it cannot serve stale by construction").
+    restored_unobserved: bool,
     reads: u64,
     listings: u64,
     flat_folds: u64,
@@ -914,6 +927,10 @@ impl DomainCache {
         self.domain_seen = Some(domain.clone());
         self.leaves = fresh;
         self.acked_losses = losses_at_start;
+        // This pass re-verified every member's identity against disk, so
+        // restored rows are no longer taking anything on a previous process's
+        // word (§6.5).
+        self.restored_unobserved = false;
         Ok(rows)
     }
 
@@ -1389,6 +1406,14 @@ impl DomainCache {
         if self.domain_seen.is_none() {
             return stable::GuardCurrency::Untrusted {
                 reason: "no observation has landed".to_owned(),
+            };
+        }
+        if self.restored_unobserved {
+            return stable::GuardCurrency::Untrusted {
+                reason: "restored from a §6.5 checkpoint and no observation has landed since — \
+                         the rows are a previous process's evidence and the event stream cannot \
+                         vouch for the gap"
+                    .to_owned(),
             };
         }
         if let Some(stable::Calibration::Unavailable { reason }) = &self.calibration {

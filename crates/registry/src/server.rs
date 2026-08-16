@@ -318,6 +318,11 @@ impl RunningServer {
         }
         // Capture in-memory last_use bumps that resolve made without persisting.
         self.registry.flush();
+        // Persist every resident memo as a §6.5 checkpoint: this is the moment
+        // the process — and the in-memory tree with it — dies, so it is the
+        // one hook that makes the next start O(changes while down) instead of
+        // a cold rebuild (merkle-spec §6.5).
+        self.registry.save_checkpoints();
         // Socket first, pidfile second — the kill handle outlives the last
         // pong (the boot order's mirror), so no reader holding a fresh pong
         // finds the file already gone.

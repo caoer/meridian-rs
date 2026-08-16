@@ -108,6 +108,11 @@ pub struct Registry {
     /// backoff and idle-exit both read this.
     requests: AtomicU64,
     last_request: AtomicU64,
+    /// The §6.5 checkpoint receipt of each workspace's last restore — what
+    /// the file delivered (rows adopted, members replayed, whether the cursor
+    /// anchored, the labeled re-baseline if it did not). The card's published
+    /// counters; empty for a workspace that started genuinely cold.
+    checkpoints: Mutex<HashMap<PathBuf, crate::checkpoint::CheckpointReceipt>>,
     /// § A.5 mount-table cache. Machine-scoped (not per-workspace): the
     /// binding file lives outside every workspace's hash domain, so no
     /// engine or ring can carry it.
@@ -201,6 +206,9 @@ impl Registry {
             // Cold: no open sql handles; first `sql` op opens (or cold-builds)
             // each workspace's file.
             sql_stores: Mutex::new(HashMap::new()),
+            // Cold: no restore has run; each workspace's first resident memo
+            // records its own receipt.
+            checkpoints: Mutex::new(HashMap::new()),
             requests: AtomicU64::new(0),
             // Clock starts at birth so idle-exit can age an unused daemon.
             last_request: AtomicU64::new(now_secs()),
@@ -573,7 +581,18 @@ impl Registry {
                 .domain_caches
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            Arc::clone(caches.entry(workspace.to_path_buf()).or_default())
+            if let Some(cache) = caches.get(workspace) {
+                Arc::clone(cache)
+            } else {
+                // Cold entry — the one door a §6.5 checkpoint can enter
+                // through. A restore that discards, or finds no file, yields
+                // the same empty memo this map always defaulted to, so the
+                // cold path is unchanged by construction.
+                let restored = self.restore_checkpoint(workspace);
+                let cache = Arc::new(Mutex::new(restored.unwrap_or_default()));
+                caches.insert(workspace.to_path_buf(), Arc::clone(&cache));
+                cache
+            }
         };
         // The feed reports into the memo's generation cell so the §6.2 fence
         // and the rescan-loss ledger are one instrument.
@@ -707,6 +726,77 @@ impl Registry {
         }
         let root = memo.root(&fs::WorkspaceRoot(workspace.to_path_buf()))?;
         Ok((root, false))
+    }
+
+    /// Restore this workspace's §6.5 checkpoint, adjudicating its journal
+    /// cursor against the LIVE ring — read without creating one, because no
+    /// ring is no journal and no cursor can anchor against a journal that
+    /// does not exist. `None` when there is no file or it was discarded (the
+    /// discard is loud and labeled at the source).
+    fn restore_checkpoint(&self, workspace: &Path) -> Option<fs::DomainCache> {
+        let ring = {
+            let rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
+            rings.get(workspace).map(Arc::clone)
+        };
+        let (cache, receipt) =
+            crate::checkpoint::restore(&self.cache_root, workspace, ring.as_deref())?;
+        eprintln!(
+            "checkpoint: {} — {} leaf row(s) adopted, {} member(s) replayed from the journal",
+            workspace.display(),
+            receipt.leaves,
+            receipt.replayed
+        );
+        self.checkpoints
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(workspace.to_path_buf(), receipt);
+        Some(cache)
+    }
+
+    /// What this workspace's last §6.5 checkpoint restore delivered — the
+    /// card's published counters. `None` when the workspace started cold.
+    #[must_use]
+    pub fn checkpoint_receipt(&self, workspace: &Path) -> Option<crate::CheckpointReceipt> {
+        self.checkpoints
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(workspace)
+            .cloned()
+    }
+
+    /// Persist every resident memo as a §6.5 checkpoint — the shutdown hook,
+    /// where the process (and the in-memory tree with it) is about to die. An
+    /// idle-reap needs no save: the §6.4 feed's registration lifetime already
+    /// retains the memo across it.
+    ///
+    /// The journal cursor is captured BEFORE the memo snapshot: under-claiming
+    /// only re-replays (the overlay is idempotent), over-claiming would skip a
+    /// change.
+    pub(crate) fn save_checkpoints(&self) {
+        let caches: Vec<(PathBuf, Arc<Mutex<fs::DomainCache>>)> = {
+            let caches = self
+                .domain_caches
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            caches
+                .iter()
+                .map(|(key, cache)| (key.clone(), Arc::clone(cache)))
+                .collect()
+        };
+        for (workspace, cache) in caches {
+            let journal = {
+                let rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
+                rings
+                    .get(&workspace)
+                    .map(|ring| (ring.instance(), ring.seq()))
+            };
+            // No ring is no journal: the cursor is recorded as unanchorable
+            // rather than invented, so a later restore takes the evidence arm
+            // instead of replaying against a numbering that never existed.
+            let (instance, seq) = journal.unwrap_or_else(|| (String::new(), 0));
+            let mut memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
+            crate::checkpoint::save(&self.cache_root, &workspace, &mut memo, instance, seq);
+        }
     }
 
     /// The §6.4 ADDITIONAL-feed door: dirty-path hints from a secondary
@@ -929,6 +1019,14 @@ impl Registry {
                 .unwrap_or_else(PoisonError::into_inner);
             caches.remove(&key)
         };
+        self.checkpoints
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&key);
+        // The §6.5 checkpoint is derived state OF the registration: it ends
+        // here too, or a re-register would adopt an index nothing has covered
+        // the gap for.
+        crate::checkpoint::discard(&self.cache_root, &key);
         // Kernel-stream release (the feed's Drop) runs outside every map lock.
         drop(feed);
         drop(cache);

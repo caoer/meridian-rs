@@ -629,11 +629,48 @@ class): the checkpoint.
   `domain_version` a checkpoint would survive a hash-law change (the §4.2
   cutover changes the interior encoding) and serve old-law nodes as current;
   without the journal cursor pair, O(changes-while-down) has no replay point.
-- **Restart replay** (codex gate 11, adopted as written): one journaled
-  change while down = exactly one file read and hashed, zero unchanged
-  members statted, no cold rebuild. An invalid journal instance = exactly one
-  labeled re-baseline. A cursor outside retained history is itself a
-  mismatch.
+- **Restart replay** (gate 11 re-cut by gap class —
+  `decisions/2026-08-16-gate11-stat-floor.md`, session
+  15-14-fingerprint-grain, as amended post-enactment): where a QUALIFYING
+  journal covers the whole gap — qualifying means all four conditions hold
+  for THIS gap: (1) coverage is complete from gap start to gap end; (2) the
+  instrument carries a loss signal and raised none — silence from an
+  instrument without loss signaling qualifies nothing; (3) per-file
+  granularity was in effect; (4) the instrument's own contract treats a
+  clean, loss-signal-free window as definitive — an instrument whose
+  documentation directs rescans regardless fails. Then: one journaled
+  change = exactly one file read and hashed, zero unchanged members
+  statted, no cold rebuild. Today exactly one instrument qualifies: the
+  live §6.4 watcher across an engine-cold, process-alive gap with no
+  overflow raised. No persisted instrument known qualifies — FSEvents fails
+  (2) and (4) by Apple's own guide; btrfs/ZFS fail portability and
+  enumeration. A journal qualifies by meeting the standard, never by being
+  called a journal.
+- **Where no qualifying journal covers the gap** (today, every process
+  death), a sound checkpoint restores every row UNTRUSTED; no restored row
+  may serve, and no answer may be derived from one, until exactly one
+  §6.2-governed verification pass has completed over the full member set.
+  The pass is: one stat per member as the floor — the 160 ms lane-B figure
+  at 29.7k measures THIS STAT PASS ALONE — plus the watermark law's
+  mandatory re-reads: any row racily clean at save (recorded mtime within
+  one calibrated granularity unit of the checkpoint's saved observation
+  watermark) is re-read or restored pre-spoiled, NEVER trusted on
+  stat-match; §6.2's identity-fence and suspect rules govern those reads.
+  Zero-byte cost holds for every row outside the watermark window; the
+  watermark-window re-reads are additional and their count is published.
+  The pass is a pre-serve BARRIER — lazy, deferred or post-first-serve
+  verification is refused by construction. Counter equation: reads = hashes
+  = movers + watermark-window re-reads; stats = member count, exactly once,
+  all before first serve. **Parses are NOT gated by this law:** the
+  checkpoint carries leaf digests and the tree, never parsed documents, so
+  these counters and the 160 ms govern the RESIDENT-TREE restore — the
+  guard/currency plane. The document plane's restart cost is a named open
+  residue awaiting a parse-cache persistence object, whose identity slot
+  this tuple's parse-cache generation field already reserves.
+- A soundness mismatch = one loud labeled cold re-baseline; a cursor that
+  cannot anchor = one labeled warm re-baseline — replay forfeited, object
+  retained. The residual stat term is recorded UNFIXED in the decision
+  record; requirement 1 is PARTIALLY SATISFIED there, never here.
 - **Markdown stays the sole truth, always.** The §0 ban on trusted snapshots
   is UNTOUCHED — that ban targets objects that can serve stale AS truth; this
   object is the opposite (it cannot serve stale by construction). The caution
@@ -644,6 +681,38 @@ class): the checkpoint.
 - **Format ordering:** the checkpoint format is downstream of the §4.2
   encoding — never persist what the next step replaces (merged plan §6
   step 10).
+- **Storage site:** one file per workspace in that workspace's cache drawer
+  (beside `sql.duckdb` and the run plane's digest memo), written atomically
+  and read whole. The drawer is outside every hash domain by construction, so
+  the checkpoint can never move a root or break a held token — the same floor
+  the §6.4 cookie stands on.
+- **Two questions, two instruments** (ruled: `results/checkpoint-design-ruling.md`
+  § I, session `15-14-fingerprint-grain`). A checkpoint is an observation record
+  from a dead epoch — a claim about the past, never about the present — and its
+  trust splits in two. **Lawfulness:** may these rows enter as HYPOTHESES?
+  Decided once at restore by the soundness fields — `workspace_uuid`,
+  `domain_version`, hash law, parse-cache generation, and the `tree_root`
+  binding. A mismatch means the rows are not lawful statements about this world
+  under today's law, so the object is discarded WHOLE, loudly, labeled per
+  field: the **COLD** re-baseline. **Currency:** may a row SERVE? Never
+  answered by the checkpoint, and never wholesale — every restored row serves
+  only through the §6.2 watermark trust close, the same live protocol that
+  governs a RAM-resident row. A restored row has exactly the trust class of a
+  resident row whose stat evidence is stale: none, until the live instrument
+  confirms it. That is "it cannot serve stale by construction", said
+  mechanically.
+- **The journal pair is neither — it is a CURSOR**, governed by §6.3's landed
+  cursor law ("hash tokens are epoch-free; cursors are not"). A cursor that
+  anchors buys REPLAY; a cursor that cannot anchor forfeits replay ONLY, and
+  the rows still enter as hypotheses — the **WARM** re-baseline, which
+  re-establishes currency from zero TRUST, not from zero BYTES. Trust never
+  rides the cursor in either direction. The two flavors carry distinct labels
+  on purpose: the cold event is rare and meaningful, while the warm event fires
+  on **every** ordinary process restart by design, because §7.1 persists no
+  epoch fact. Reading the pair as an identity FIELD collapses the two and makes
+  the object discard on every restart — the vacuity this naming exists to
+  prevent; the git-index class this section names discards nothing at a gap, it
+  re-verifies by stat.
 
 ### 6.6 Fingerprint history ring
 
