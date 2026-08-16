@@ -288,3 +288,118 @@ fn unix_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fs::cutover::{CutoverState, CutoverStatus};
+
+    fn ws() -> (tempfile::TempDir, fs::WorkspaceRoot, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("plan.md"), "# Plan\n\nship it\n").expect("page");
+        let root = fs::WorkspaceRoot(dir.path().to_path_buf());
+        let cache_root = tempfile::tempdir().expect("cache root");
+        (dir, root, cache_root)
+    }
+
+    fn memo() -> Arc<Mutex<fs::DomainCache>> {
+        Arc::new(Mutex::new(fs::DomainCache::new()))
+    }
+
+    #[test]
+    fn the_machine_walks_once_and_ensure_is_then_a_no_op() {
+        let (_d, root, cache_root) = ws();
+        let cache = memo();
+        let run = ensure(&root, &cache, cache_root.path())
+            .expect("machine")
+            .expect("a fresh workspace cuts over");
+        assert_eq!(run.record.state, CutoverState::NewCommitted);
+        assert!(run.record.committed_unix_ms.is_some());
+        assert!(run.components.total_us > 0);
+        // The measurement sidecar landed beside the record.
+        let receipt =
+            std::fs::read_to_string(root.0.join(".meridian/cutover.receipt")).expect("receipt");
+        assert!(receipt.contains("build_us="), "{receipt}");
+        assert!(receipt.contains("fence=never-activates"), "{receipt}");
+        // The served token is law 2 from the machine's own build.
+        let served = cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .overlay_root()
+            .expect("served");
+        assert!(served.0.starts_with("b3a:"), "{}", served.0);
+        // Second entry: nothing to do.
+        assert!(
+            ensure(&root, &cache, cache_root.path())
+                .expect("machine")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_crashed_build_resumes_and_never_serves_old() {
+        let (_d, root, cache_root) = ws();
+        // Crash state: the boundary is durable, the build never finished.
+        let record = fs::cutover::CutoverRecord {
+            state: CutoverState::NewBuilding,
+            cutover_id: fs::cutover::mint_cutover_id(),
+            from: model::RootVersion::law1(0),
+            to: model::RootVersion::law2(0),
+            old_instance: None,
+            started_unix_ms: 1,
+            committed_unix_ms: None,
+        };
+        fs::cutover::begin_new_building(&root, &record).expect("begin");
+
+        let cache = memo();
+        let run = ensure(&root, &cache, cache_root.path())
+            .expect("machine")
+            .expect("a NEW_BUILDING record resumes");
+        assert_eq!(run.record.cutover_id, record.cutover_id);
+        assert_eq!(run.record.state, CutoverState::NewCommitted);
+        match fs::cutover::status(&root).expect("status") {
+            CutoverStatus::Present(rec) => assert_eq!(rec.state, CutoverState::NewCommitted),
+            CutoverStatus::Absent => panic!("the record survives"),
+        }
+    }
+
+    #[test]
+    fn a_live_drain_ends_the_epoch_labeled_and_remembers_the_instance() {
+        let (_d, root, cache_root) = ws();
+        let ring = crate::ring::WorkspaceRing::new(&root);
+        let instance = ring.instance();
+        let cache = memo();
+        let outcome = run(
+            &root,
+            &cache,
+            cache_root.path(),
+            Resume::Fresh { old_instance: None },
+            Some(&ring),
+        )
+        .expect("live machine");
+        assert_eq!(
+            outcome.record.old_instance.as_deref(),
+            Some(instance.as_str())
+        );
+        let retired = ring.retired().expect("the epoch ended labeled");
+        assert_eq!(retired.cutover_id, outcome.record.cutover_id);
+        assert_eq!(retired.from, (model::HASH_LAW_FLAT, 0));
+        assert_eq!(retired.to, (model::HASH_LAW_RADIX, 0));
+    }
+
+    #[test]
+    fn unsettled_intents_hold_the_boundary_closed() {
+        let (_d, root, cache_root) = ws();
+        let intents = root.0.join(".meridian/intents");
+        std::fs::create_dir_all(&intents).expect("mkdir");
+        std::fs::write(intents.join("aa.intent"), b"x").expect("intent");
+
+        let err = ensure(&root, &memo(), cache_root.path()).expect_err("the drain refuses");
+        assert!(err.to_string().contains("unsettled"), "{err}");
+        // And the boundary was NOT crossed: the old law still serves.
+        assert_eq!(
+            fs::cutover::status(&root).expect("status"),
+            CutoverStatus::Absent
+        );
+    }
+}
