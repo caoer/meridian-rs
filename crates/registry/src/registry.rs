@@ -155,8 +155,8 @@ enum FeedSlot {
 
 impl FeedSlot {
     /// Start the workspace's kernel watcher; loud on failure, once.
-    fn start(workspace: &Path, gen: fs::stable::FeedGen) -> FeedSlot {
-        match feed::WorkspaceFeed::start(workspace, gen) {
+    fn start(workspace: &Path, feed: fs::stable::FeedGen) -> FeedSlot {
+        match feed::WorkspaceFeed::start(workspace, feed) {
             Ok(feed) => FeedSlot::Live(feed),
             Err(e) => {
                 eprintln!(
@@ -544,7 +544,7 @@ impl Registry {
         };
         // The feed reports into the memo's generation cell so the §6.2 fence
         // and the rescan-loss ledger are one instrument.
-        let gen = cache
+        let feed_cell = cache
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .feed_gen();
@@ -552,7 +552,7 @@ impl Registry {
             let mut feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
             match feeds
                 .entry(workspace.to_path_buf())
-                .or_insert_with(|| FeedSlot::start(workspace, gen))
+                .or_insert_with(|| FeedSlot::start(workspace, feed_cell))
             {
                 FeedSlot::Live(feed) => feed.take(),
                 FeedSlot::Failed => feed::Pending::Clean,
