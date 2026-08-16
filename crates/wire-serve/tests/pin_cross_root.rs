@@ -107,6 +107,7 @@ fn sandbox() -> Sandbox {
 
 fn pin_args(pinner: &str, target: &str, selector: &str, vibe: bool) -> SpliceArgs {
     SpliceArgs {
+        premises: Vec::new(),
         id: None,
         origin: wire_serve::guard::Origin::InProcess,
         path: WPath(pinner.into()),

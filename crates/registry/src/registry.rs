@@ -2137,6 +2137,7 @@ mod engine_tests {
 
     fn splice_args(path: &str, old: &str, new: &str) -> wire_serve::write::SpliceArgs {
         wire_serve::write::SpliceArgs {
+            premises: Vec::new(),
             id: None,
             origin: wire_serve::guard::Origin::InProcess,
             path: wire::Path(path.into()),

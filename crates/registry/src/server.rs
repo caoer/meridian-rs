@@ -1244,6 +1244,7 @@ fn dispatch_read(
         } => {
             let ws_root = fs::WorkspaceRoot(ws.to_path_buf());
             let args = wire_serve::write::SpliceArgs {
+                premises: Vec::new(),
                 id,
                 // U10: wire door ⇒ fingerprint-or-force (every wire door).
                 origin: wire_serve::guard::Origin::Wire,
@@ -1298,6 +1299,7 @@ fn dispatch_read(
         } if v3 => {
             let ws_root = fs::WorkspaceRoot(ws.to_path_buf());
             let args = wire_serve::write::SpliceSetArgs {
+                premises: Vec::new(),
                 id,
                 files,
                 origin: wire_serve::guard::Origin::Wire,

@@ -21,6 +21,7 @@ fn ws(files: &[(&str, &str)]) -> (tempfile::TempDir, fs::WorkspaceRoot) {
 
 fn plan_args(path: &str, plan_edits: Vec<PlanEdit>) -> SpliceArgs {
     SpliceArgs {
+        premises: Vec::new(),
         id: None,
         origin: wire_serve::guard::Origin::InProcess,
         path: WPath(path.into()),
@@ -38,6 +39,7 @@ fn plan_args(path: &str, plan_edits: Vec<PlanEdit>) -> SpliceArgs {
 
 fn native_args(path: &str, edits: Vec<Edit>) -> SpliceArgs {
     SpliceArgs {
+        premises: Vec::new(),
         edits,
         plan_edits: Vec::new(),
         pin: None,

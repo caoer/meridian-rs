@@ -34,6 +34,7 @@ fn bare_workspace() -> (tempfile::TempDir, fs::WorkspaceRoot) {
 /// Pin-only splice (lock block is the write).
 fn pin_args(selector: &str) -> SpliceArgs {
     SpliceArgs {
+        premises: Vec::new(),
         id: None,
         origin: wire_serve::guard::Origin::InProcess,
         path: WPath("plan.md".into()),
@@ -510,6 +511,7 @@ fn session_read(
 
 fn agent_pin_args(actor: &str, selector: &str) -> SpliceArgs {
     SpliceArgs {
+        premises: Vec::new(),
         actor: Some(actor.to_owned()),
         ..pin_args(selector)
     }

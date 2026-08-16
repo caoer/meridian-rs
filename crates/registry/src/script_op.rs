@@ -522,6 +522,7 @@ impl ScriptHost for LiveHost<'_> {
         self.within_deadline("a live put")?;
         let refuse = |reason: String| effects::EffectFault { reason };
         let args = wire_serve::write::SpliceArgs {
+            premises: Vec::new(),
             id: None,
             path: wire::Path(path.to_owned()),
             origin: wire_serve::guard::Origin::Wire,
@@ -743,6 +744,7 @@ fn commit(
     let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if let [path] = paths.as_slice() {
             let args = wire_serve::write::SpliceArgs {
+                premises: Vec::new(),
                 id: request.id,
                 path: wire::Path(path.clone()),
                 origin: wire_serve::guard::Origin::Wire,
@@ -769,6 +771,7 @@ fn commit(
             )
         } else {
             let args = wire_serve::write::SpliceSetArgs {
+                premises: Vec::new(),
                 id: request.id,
                 files: set_files(&paths, &eval.armed),
                 origin: wire_serve::guard::Origin::Wire,
@@ -1293,6 +1296,7 @@ mod tests {
 
         // Commit half: the §5.1 guard folds the LIVE world under the flock.
         let args = wire_serve::write::SpliceArgs {
+            premises: Vec::new(),
             id: None,
             path: wire::Path("doc.md".to_owned()),
             origin: wire_serve::guard::Origin::Wire,

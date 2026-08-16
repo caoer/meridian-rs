@@ -42,6 +42,7 @@ fn workspace() -> (tempfile::TempDir, fs::WorkspaceRoot) {
 /// Mint a real pin through production choke-point (S7) — not a hand-written lock fixture.
 fn mint_pin(root: &fs::WorkspaceRoot) {
     let args = SpliceArgs {
+        premises: Vec::new(),
         id: None,
         origin: wire_serve::guard::Origin::InProcess,
         path: WPath("plan.md".into()),
@@ -102,6 +103,7 @@ fn read_page(root: &fs::WorkspaceRoot, rel: &str) -> String {
 /// Empty splice frame — caller fills `edits` or `plan_edits`.
 fn pin_free_args(path: &str) -> SpliceArgs {
     SpliceArgs {
+        premises: Vec::new(),
         id: None,
         origin: wire_serve::guard::Origin::InProcess,
         path: WPath(path.into()),
@@ -120,6 +122,7 @@ fn pin_free_args(path: &str) -> SpliceArgs {
 /// `put at:end` — appends inside the section without rewriting existing content (lock block safe).
 fn put_end(path: &str, hpath: &str, text: &str) -> SpliceArgs {
     SpliceArgs {
+        premises: Vec::new(),
         edits: vec![Edit {
             target: SecRef::Hpath {
                 hpath: vec![wire::HpathSeg {
@@ -140,6 +143,7 @@ fn put_end(path: &str, hpath: &str, text: &str) -> SpliceArgs {
 /// Whole-section `Put{content}` replace.
 fn put_content(path: &str, hpath: &str, text: &str) -> SpliceArgs {
     SpliceArgs {
+        premises: Vec::new(),
         edits: vec![Edit {
             target: SecRef::Hpath {
                 hpath: vec![wire::HpathSeg {

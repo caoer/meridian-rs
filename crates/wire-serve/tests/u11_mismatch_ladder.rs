@@ -30,6 +30,7 @@ fn ws(body: &str) -> (tempfile::TempDir, fs::WorkspaceRoot) {
 
 fn args(edits: Vec<Edit>) -> SpliceArgs {
     SpliceArgs {
+        premises: Vec::new(),
         id: None,
         origin: Origin::Wire,
         path: WPath("memo.md".into()),
@@ -489,6 +490,7 @@ fn resend_by_the_book(root: &fs::WorkspaceRoot, err: &wire::ErrorBody, edit: ser
         panic!("a splice frame decodes as a splice")
     };
     let resend = SpliceArgs {
+        premises: Vec::new(),
         id: Some(7),
         origin: Origin::Wire,
         path,
