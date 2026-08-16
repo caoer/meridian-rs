@@ -1618,7 +1618,7 @@ mod engine_tests {
     /// Write `bytes` to `rel`, past the filesystem's timestamp granularity —
     /// a same-tick rewrite would be testing the stat memo's blind spot.
     fn rewrite(ws: &Path, rel: &str, bytes: &str) {
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(10));
         fs::write(ws.join(rel), bytes).unwrap();
     }
 
@@ -1836,7 +1836,7 @@ mod engine_tests {
         );
         assert_matches_scratch(&reg, &ws, "remove");
 
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(10));
         fs::rename(ws.join("sub/c.md"), ws.join("sub/c2.md")).unwrap();
         assert_eq!(
             reg.warm_or_build(&ws).unwrap(),
@@ -1845,7 +1845,7 @@ mod engine_tests {
         );
         assert_matches_scratch(&reg, &ws, "rename");
 
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(10));
         fs::write(ws.join("d.md"), [0xff, 0xfe, 0x00, 0x01]).unwrap();
         assert_eq!(
             reg.warm_or_build(&ws).unwrap(),
