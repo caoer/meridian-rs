@@ -228,6 +228,18 @@ impl WorkspaceFeed {
                     Err(_) => s.collapse(),
                 }
             })?;
+        // The sentinel's directory must exist BEFORE the recursive watch is
+        // armed, so the initial walk covers it. notify's inotify backend
+        // arms a NEW directory only after delivering its create event —
+        // anything written into it before that arm is invisible forever
+        // (notify-8.2.0 inotify.rs, `add_watch_by_event` collects, the loop
+        // arms after the batch). A `.meridian` first created by a barrier
+        // could lose that race once and leave every later cookie unseen.
+        // Best-effort: on failure (read-only root) barriers answer
+        // `Unproven` and the caller keeps the extent-refresh floor.
+        if let Some(parent) = workspace.join(COOKIE_REL).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         watcher.watch(workspace, RecursiveMode::Recursive)?;
         Ok(WorkspaceFeed {
             _watcher: watcher,
@@ -242,6 +254,14 @@ impl WorkspaceFeed {
     /// set — the O(1) currency proof. The caller takes and applies the set
     /// AFTER a `Seen`, never before, so the applied memo is complete as of
     /// the question.
+    ///
+    /// Precisely: `Seen` proves ORDERED DELIVERY of everything the kernel
+    /// stream captured. Capture itself has one known gap — files landing in
+    /// a brand-new directory before its watch arms (see the arming note in
+    /// [`Self::start`]; the sentinel's own directory is pre-created there
+    /// exactly so the cookie never sits in that gap). That residue is a
+    /// named reason for doubt on the §6.4 suspicious-only ladder, not this
+    /// barrier's to close.
     pub(crate) fn cookie_barrier(&self, workspace: &Path, timeout: Duration) -> CookieOutcome {
         self.cookie_barrier_at(workspace, Path::new(COOKIE_REL), timeout)
     }
