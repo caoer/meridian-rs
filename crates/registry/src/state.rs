@@ -10,7 +10,7 @@
 //! file loads as the empty set — the daemon starts with no warm registrations
 //! rather than refusing to start or adopting garbage.
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -127,7 +127,7 @@ fn write_tmp(dir: &Path, data: &[u8]) -> io::Result<PathBuf> {
         {
             Ok(mut f) => {
                 f.write_all(data)?;
-                f.sync_all()?;
+                ::fs::honest_sync(&f)?;
                 return Ok(path);
             }
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => counter += 1,
@@ -136,12 +136,11 @@ fn write_tmp(dir: &Path, data: &[u8]) -> io::Result<PathBuf> {
     }
 }
 
-/// fsync a directory so a completed rename survives power loss. Best-effort: a
-/// failed dir sync must never turn a committed write into a reported failure.
+/// fsync a directory (in the ruled class, [`::fs::honest_sync_path`]) so a
+/// completed rename survives power loss. Best-effort: a failed dir sync must
+/// never turn a committed write into a reported failure.
 fn fsync_dir(dir: &Path) {
-    if let Ok(f) = File::open(dir) {
-        let _ = f.sync_all();
-    }
+    let _ = ::fs::honest_sync_path(dir);
 }
 
 #[cfg(test)]

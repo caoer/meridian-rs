@@ -161,9 +161,9 @@ impl ArmSession {
             .create_new(true)
             .write(true)
             .open(&marker)?;
-        file.sync_all()?;
+        fs::honest_sync(&file)?;
         if let Some(parent) = marker.parent() {
-            std::fs::File::open(parent)?.sync_all()?;
+            fs::honest_sync_path(parent)?;
         }
         Ok(ArmLanding { first_arm: true })
     }
