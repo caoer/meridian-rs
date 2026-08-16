@@ -139,10 +139,12 @@ fn corpus_change_rebuilds_once_then_reuses() {
     let server = RunningServer::start(test_config(&tmp)).unwrap();
     let mut conn = Conn::open(server.socket_path());
 
-    // v3 session: the cursor is spelled `fingerprint`.
-    let before = conn.hello(&ws)["body"]["fingerprint"]
+    // Hello binds at config cost (§3.2); the `fingerprint` op is the warm
+    // cursor read (v3 spelling).
+    assert_eq!(conn.hello(&ws)["ok"], json!(true));
+    let before = conn.call(&json!({"op": "fingerprint"}))["body"]["fingerprint"]
         .as_str()
-        .expect("hello carries the warm fingerprint")
+        .expect("the fingerprint op carries the warm fingerprint")
         .to_string();
     assert_eq!(
         server.registry().warm_or_build(&ws).unwrap(),
@@ -152,9 +154,9 @@ fn corpus_change_rebuilds_once_then_reuses() {
 
     fs::write(ws.join("a.md"), "# A changed\n\nnew body\n").unwrap();
 
-    let after = conn.hello(&ws)["body"]["fingerprint"]
+    let after = conn.call(&json!({"op": "fingerprint"}))["body"]["fingerprint"]
         .as_str()
-        .expect("hello carries the warm fingerprint")
+        .expect("the fingerprint op carries the warm fingerprint")
         .to_string();
     assert_ne!(
         before, after,

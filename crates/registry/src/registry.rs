@@ -126,7 +126,7 @@ pub struct Registry {
     /// consumes it. `cfg(test)` excludes it from every release build by
     /// construction (disclosed; RC1-precedent seam).
     #[cfg(test)]
-    pause_before_insert:
+    pub(crate) pause_before_insert:
         Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
     /// Test-only pause gate for the warm→borrow window: when armed, the read
     /// pass in `server::warm_engine_read` announces itself on the first

@@ -83,7 +83,10 @@ fn reads_serve_from_the_entry_world_with_zero_byte_folds() {
     conn.call(&json!({
         "op": "hello", "proto": 1, "contract": "v3",
         "workspace": ws.to_str().unwrap(),
-    })); // warms the engine
+    })); // binds at config cost (§3.2)
+    // The first read pays the warm — done here so the program below runs on a
+    // warm engine, which is the property under test.
+    conn.call(&json!({"op": "toc", "path": "doc.md"}));
 
     let before = fs_fold_count();
     let resp = conn.call(&json!({
