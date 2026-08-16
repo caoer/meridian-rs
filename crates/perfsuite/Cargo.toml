@@ -16,6 +16,10 @@ serde_json = { workspace = true }
 toml = { workspace = true }
 rand_chacha = { workspace = true }
 hdrhistogram = { workspace = true }
+# hdb-durability harness only: the engine's honest sync under measurement,
+# and libc for the drive-cache-class fsync(2) no std API issues on macOS.
+fs = { workspace = true }
+libc = "0.2"
 
 [dev-dependencies]
 criterion = { workspace = true }
@@ -33,6 +37,10 @@ path = "src/bin/corpusgen.rs"
 [[bin]]
 name = "bench-report"
 path = "src/bin/bench-report.rs"
+
+[[bin]]
+name = "hdb-durability"
+path = "src/bin/hdb-durability.rs"
 
 [[bench]]
 name = "parse"
