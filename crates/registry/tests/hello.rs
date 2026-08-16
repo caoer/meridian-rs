@@ -1,8 +1,9 @@
 //! E2E gates for the resident-engine handshake (`[[0002-resident-daemon]]` §4).
 //! One `hello` round trip negotiates the contract rev, resolves the workspace,
-//! pins its storage, warms the engine, binds the connection, and lists the
-//! served caps. An unknown declared rev is a loud refusal; `hello` subsumes the
-//! deleted `attach` op — no parallel binding path (§5).
+//! pins its storage, binds the connection, and lists the served caps — at
+//! config cost (§3.2, ruled 2026-08-16: hello never walks the corpus; the
+//! first read pays the warm). An unknown declared rev is a loud refusal;
+//! `hello` subsumes the deleted `attach` op — no parallel binding path (§5).
 
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -440,6 +441,48 @@ fn a_declared_case_variant_binds_the_on_disk_casing_and_the_answer_names_it() {
         Path::new(bound).file_name().unwrap(),
         "MixedCase",
         "the answer names the ON-DISK casing, not the declared spelling: {hi}"
+    );
+
+    server.shutdown();
+}
+
+/// The §3.2 config-grade law (ruled 2026-08-16, roots-hello-starved): a COLD
+/// workspace's hello answers without walking the corpus — no `fingerprint` in
+/// the body ("the engine may not have walked yet"). The first read pays the
+/// warm, after which hello reports the resident engine's fold.
+#[test]
+fn a_cold_hello_answers_without_a_fingerprint_and_a_warm_one_reports_the_resident_fold() {
+    let tmp = TempDir::new().unwrap();
+    let ws = write_ws(&tmp, "ws", &[("a.md", "# A\n")]);
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(server.socket_path());
+
+    let cold = conn.hello(&ws);
+    assert_eq!(cold["ok"], json!(true), "cold hello ok: {cold}");
+    assert!(
+        !cold["body"]
+            .as_object()
+            .unwrap()
+            .contains_key("fingerprint"),
+        "a cold hello answers at config cost — the engine has not walked yet: {cold}"
+    );
+    assert!(
+        cold["body"]["workspace"].is_string(),
+        "cold or not, the bind names its root: {cold}"
+    );
+
+    // Bound for real: the first read serves, paying the warm itself.
+    let toc = conn.call(&json!({"op": "toc", "path": "a.md"}));
+    assert_eq!(
+        toc["ok"],
+        json!(true),
+        "the first read warms and serves: {toc}"
+    );
+
+    let warm = conn.hello(&ws);
+    assert!(
+        warm["body"]["fingerprint"].is_string(),
+        "a hello at a warm workspace reports the resident fold: {warm}"
     );
 
     server.shutdown();

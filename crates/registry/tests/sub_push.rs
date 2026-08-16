@@ -1008,6 +1008,12 @@ fn an_unsubscribed_workspace_is_still_reaped() {
 
     let mut conn = Conn::open(server.socket_path());
     assert_eq!(conn.hello(&ws)["ok"], json!(true));
+    // Hello binds at config cost (§3.2); the read warms — giving the reaper
+    // a resident engine to reap.
+    assert_eq!(
+        conn.call(&json!({"op": "toc", "path": "plan.md"}))["ok"],
+        json!(true)
+    );
     drop(conn);
 
     let reaped = server.registry().reap(u64::MAX, 0);

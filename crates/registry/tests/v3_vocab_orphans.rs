@@ -213,10 +213,12 @@ fn v3_links_require_fingerprint_is_a_real_guard() {
     let ws = write_ws(&tmp, &[("plan.md", PLAN), ("b.md", "# B\n")]);
     let server = RunningServer::start(test_config(&tmp)).unwrap();
     let mut conn = Conn::open(server.socket_path());
-    let hi = conn.hello(&ws, Some("v3"));
-    let live = hi["body"]["fingerprint"]
+    assert_eq!(conn.hello(&ws, Some("v3"))["ok"], json!(true));
+    // Hello binds at config cost (§3.2); the `fingerprint` op reads the live
+    // cursor.
+    let live = conn.call(&json!({"op": "fingerprint"}))["body"]["fingerprint"]
         .as_str()
-        .expect("hello fingerprint")
+        .expect("the fingerprint op carries the live cursor")
         .to_string();
 
     // Met: the demanded cursor is the world.
