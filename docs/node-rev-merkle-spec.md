@@ -501,9 +501,16 @@ the cached 32-byte fold, a dirty bit, and a `last_seq` stamp (§6.3).
   merged plan lane D). `root_after` / `fingerprint_after` derives from this
   overlay, NEVER from a second corpus read — the overlay is MORE correct than
   a re-read, because a foreign write racing the commit never silently enters
-  the folded baseline (`DomainLeaves::overlay`'s own doc law). Both
-  exclusion-held `ambient_root` corpus reads leave the write path. The splice
-  response keeps its `wire-contract.md` §4.4 transition fields.
+  the folded baseline (`DomainLeaves::overlay`'s own doc law). The overlay's
+  own bytes include the receipt append the engine composed (never a
+  post-apply reload). A domain-config write applies
+  `DomainCache::overlay_membership`: the new `Domain` is parsed from the
+  commit's own config bytes and imposed on the overlay's current leaves —
+  departed members drop, version and ignore rules update, no disk walk, no
+  newly admitted member is read. A remove calls `overlay_remove` then
+  `overlay_root`. There is no config/remove exception that re-observes.
+  Both exclusion-held `ambient_root` corpus reads leave the write path. The
+  splice response keeps its `wire-contract.md` §4.4 transition fields.
 - **Foreign changes arrive through the feed (§6.4)** and mark the touched
   nodes dirty; folds recompute lazily on demand — maintenance cost follows
   change, never corpus size (requirement 1).
