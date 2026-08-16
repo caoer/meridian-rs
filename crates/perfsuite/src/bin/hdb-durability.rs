@@ -573,6 +573,9 @@ fn real_txn_once(
         reads: Vec::new(),
         writes,
         dests,
+        // The harness stages with an inline settle (honest_sync_path), so no
+        // in-flight stage-time settles ride the txn.
+        pending: Vec::new(),
         files: Vec::new(),
         actor: None,
         now: None,
