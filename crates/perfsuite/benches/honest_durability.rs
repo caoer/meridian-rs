@@ -331,8 +331,12 @@ fn mode_ab(ns: &[usize], iters: usize, reps: usize) {
         "rep\tN\torder\ton_p50\ton_p99\toff_p50\toff_p99\tratio_p50\tratio_p99\t\
          on_wait_p50\ton_cohort\ton_txn_s\toff_txn_s"
     );
-    for &n in ns {
-        for rep in 1..=reps {
+    // Repetition is the OUTER loop so each repetition is a complete sweep over
+    // every N under shared machine conditions. Blocking by N instead would put
+    // minutes between the first N and the last, so slow host drift would land
+    // unevenly across the N values rather than affecting them alike.
+    for rep in 1..=reps {
+        for &n in ns {
             let on_first = rep % 2 == 1;
             let (on, off) = if on_first {
                 fs::set_durability_coordination(true);
