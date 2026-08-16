@@ -2425,4 +2425,154 @@ mod engine_tests {
             "untouched members are not re-stat'd"
         );
     }
+
+    /// The card's race fixture (bug-trusted-overlay-unvouched): foreign B
+    /// lands on disk AFTER the borrow's take and BEFORE the door's
+    /// observation. The door's own §6.4 barrier is written after B, so
+    /// `Seen` proves B's event was delivered and the vouched apply folds it
+    /// in — `root_before` moves off R0 and `if_root=R0` refuses.
+    /// Drain-and-hope served stale R0 here and accepted a write against a
+    /// world that was already B1.
+    #[test]
+    fn a_foreign_write_between_take_and_door_refuses_the_stale_world_guard() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let plan = plan_page("August");
+        let other = plan_page("still");
+        let ws = write_ws(
+            home.path(),
+            &[("notes/plan.md", &plan), ("notes/other.md", &other)],
+        );
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.warm_or_build(&ws).unwrap();
+
+        // R0: the baseline the stale guard will name.
+        let (r0, _) = reg
+            .currency_refresh(&canonical, Duration::from_secs(10))
+            .unwrap();
+
+        // The borrow's take runs first; then B lands, its event in flight.
+        let cache = reg.domain_cache(&canonical);
+        rewrite(&canonical, "notes/other.md", "# Notes\n\nmoved by B\n");
+
+        let fs_root = ::fs::WorkspaceRoot(canonical.clone());
+        let mut args = splice_args("notes/plan.md", "August", "w1");
+        args.if_root = Some(wire::Root(r0.0.clone()));
+        let observe = || reg.door_observation(&canonical, &cache, Duration::from_secs(10));
+        let err = wire_serve::write::splice_with_mints(
+            &fs_root,
+            None,
+            &args,
+            &[],
+            wire_serve::write::Mints::default(),
+            Some(wire_serve::write::ResidentDoor {
+                cache: &cache,
+                observe: &observe,
+            }),
+        )
+        .expect_err("a stale world guard must refuse once B is folded in");
+        assert_eq!(
+            err.code,
+            wire::ErrorCode::RootMismatch,
+            "the refusal is the world guard's: {err:?}"
+        );
+        assert_eq!(
+            err.expected.as_ref().map(|r| r.0.as_str()),
+            Some(r0.0.as_str()),
+            "the guard refused the caller's R0, not some other premise: {err:?}"
+        );
+        assert_ne!(
+            err.actual.as_ref().map(|r| r.0.as_str()),
+            Some(r0.0.as_str()),
+            "the door's observation absorbed B — root_before moved off R0: {err:?}"
+        );
+    }
+
+    /// The sticky-`Failed` arm: no live feed means no vouch, so the door
+    /// observation floors to the live fold and a foreign edit is seen even
+    /// though no event will ever report it. Before the fix, `Trusted` alone
+    /// served the stale overlay — a dead feed was indistinguishable from a
+    /// quiet corpus.
+    #[test]
+    fn a_failed_feed_slot_floors_the_door_observation() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let plan = plan_page("August");
+        let other = plan_page("still");
+        let ws = write_ws(
+            home.path(),
+            &[("notes/plan.md", &plan), ("notes/other.md", &other)],
+        );
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.warm_or_build(&ws).unwrap();
+        let _ = reg.currency_root(&canonical).unwrap();
+
+        let cache = reg.domain_cache(&canonical);
+        let stale = cache.lock().unwrap().overlay_root().unwrap();
+        assert_eq!(
+            cache.lock().unwrap().guard_currency(),
+            ::fs::stable::GuardCurrency::Trusted,
+            "the memo itself still claims trust — that is the hole"
+        );
+        // The watcher dies sticky; the memo never hears about it.
+        reg.feeds
+            .lock()
+            .unwrap()
+            .insert(canonical.clone(), FeedSlot::Failed);
+        rewrite(&canonical, "notes/other.md", "# Notes\n\nsilent foreign edit\n");
+
+        let observed = reg
+            .door_observation(&canonical, &cache, Duration::from_secs(10))
+            .unwrap();
+        let truth = ::fs::DomainCache::new()
+            .root(&::fs::WorkspaceRoot(canonical.clone()))
+            .unwrap();
+        assert_eq!(
+            observed.0, truth.0,
+            "no vouch: the floor re-derives the disk truth"
+        );
+        assert_ne!(
+            observed.0, stale.0,
+            "the stale Trusted overlay was not served"
+        );
+    }
+
+    /// The unproven-cookie arm: a barrier that cannot prove delivery within
+    /// its budget never authorizes the overlay. Either outcome of the
+    /// zero-budget race is lawful — `Unproven` collapses to the floor, a
+    /// lucky `Seen` applies everything before the sentinel — and both must
+    /// serve the fresh disk truth, never the pre-edit overlay.
+    #[test]
+    fn an_unproven_cookie_floors_the_door_observation() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let plan = plan_page("August");
+        let other = plan_page("still");
+        let ws = write_ws(
+            home.path(),
+            &[("notes/plan.md", &plan), ("notes/other.md", &other)],
+        );
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.warm_or_build(&ws).unwrap();
+        let _ = reg.currency_root(&canonical).unwrap();
+
+        let cache = reg.domain_cache(&canonical);
+        let stale = cache.lock().unwrap().overlay_root().unwrap();
+        rewrite(&canonical, "notes/other.md", "# Notes\n\nlate-notify edit\n");
+
+        let observed = reg
+            .door_observation(&canonical, &cache, Duration::ZERO)
+            .unwrap();
+        let truth = ::fs::DomainCache::new()
+            .root(&::fs::WorkspaceRoot(canonical.clone()))
+            .unwrap();
+        assert_eq!(
+            observed.0, truth.0,
+            "no proof within budget: the door serves the disk truth"
+        );
+        assert_ne!(
+            observed.0, stale.0,
+            "the stale Trusted overlay was not served"
+        );
+    }
 }
