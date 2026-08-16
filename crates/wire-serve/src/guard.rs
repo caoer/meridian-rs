@@ -195,8 +195,53 @@ pub fn guard_batch(
     premises: &[Premise],
     root_premise: bool,
 ) -> Result<Vec<Bypass>, Box<ErrorBody>> {
+    let demands = coverage_gate(
+        origin,
+        force,
+        doc,
+        path,
+        plan_edits,
+        edits,
+        premises,
+        root_premise,
+    )?;
+    validity_gate(force, path, demands, edits)
+}
+
+/// The demand set [`coverage_gate`] computed, carried to [`validity_gate`] —
+/// the two phases share one computation so the §5.1 order (coverage →
+/// premises → per-row validity) costs no second pass.
+pub struct BatchDemands {
+    unmet: Vec<Demand>,
+    exempt: bool,
+}
+
+/// Phase 1 — §5.5 coverage at ADMISSION, before any premise value is
+/// resolved and before any per-row token is compared. Refuses
+/// `guard_required` (A.1: no premise at all) or `scope_does_not_cover`
+/// (premises present, a target uncovered). Under `force` it only computes —
+/// requiredness is exactly what `force` bypasses — so the caller can still
+/// name every bypassed plane.
+///
+/// # Errors
+/// `guard_required` | `scope_does_not_cover`; nothing written when either
+/// returns.
+#[allow(clippy::too_many_arguments)]
+pub fn coverage_gate(
+    origin: Origin,
+    force: bool,
+    doc: &model::Document,
+    path: &Path,
+    plan_edits: &[PlanEdit],
+    edits: &[Edit],
+    premises: &[Premise],
+    root_premise: bool,
+) -> Result<BatchDemands, Box<ErrorBody>> {
     if origin == Origin::InProcess {
-        return Ok(Vec::new());
+        return Ok(BatchDemands {
+            unmet: Vec::new(),
+            exempt: true,
+        });
     }
 
     let mut unmet = Vec::new();
@@ -214,18 +259,55 @@ pub fn guard_batch(
         unmet.retain(|d| !matches!(d.unmet, Unmet::NoGuard { .. }));
     }
 
+    if !force
+        && let Some(first) = unmet
+            .iter()
+            .find(|d| matches!(d.unmet, Unmet::NoGuard { .. }))
+    {
+        // A.1's split: NO premise at all → `guard_required` with its
+        // teaching (today's refusal, byte-identical); premises present
+        // but not covering → `scope_does_not_cover` naming the set.
+        let any_premise = root_premise
+            || !premises.is_empty()
+            || edits.iter().any(|e| e.if_node_rev.is_some())
+            || plan_rows_carry_a_rev(plan_edits);
+        if any_premise {
+            return Err(coverage_refusal(path, &unmet));
+        }
+        return Err(refusal(path, first));
+    }
+    Ok(BatchDemands {
+        unmet,
+        exempt: false,
+    })
+}
+
+/// Phase 2 — the per-row VALIDITY rung, after every supplied premise was
+/// checked (§5.1 order): a stale supplied token or an occupied birth refuses
+/// `cas_mismatch`; under `force` the node-grain tokens are stripped (that is
+/// what makes `force` reach CAS) and every bypassed plane is named.
+///
+/// # Errors
+/// `cas_mismatch`; nothing written when it returns.
+pub fn validity_gate(
+    force: bool,
+    path: &Path,
+    demands: BatchDemands,
+    edits: &mut [Edit],
+) -> Result<Vec<Bypass>, Box<ErrorBody>> {
+    if demands.exempt {
+        return Ok(Vec::new());
+    }
+    let unmet = demands.unmet;
     if !force {
         if let Some(first) = unmet.first() {
-            // A.1's split: NO premise at all → `guard_required` with its
-            // teaching (today's refusal, byte-identical); premises present
-            // but not covering → `scope_does_not_cover` naming the set.
-            let any_premise = root_premise
-                || !premises.is_empty()
-                || edits.iter().any(|e| e.if_node_rev.is_some())
-                || plan_rows_carry_a_rev(plan_edits);
-            if matches!(first.unmet, Unmet::NoGuard { .. }) && any_premise {
-                return Err(coverage_refusal(path, &unmet));
-            }
+            // Coverage answered the NoGuard class in phase 1; what is left
+            // to refuse here is validity. (A NoGuard can still sit in the
+            // list on the force path, for naming.)
+            debug_assert!(
+                !matches!(first.unmet, Unmet::NoGuard { .. }),
+                "phase 1 refuses every NoGuard on the unforced path"
+            );
             return Err(refusal(path, first));
         }
         return Ok(Vec::new());
