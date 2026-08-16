@@ -12,7 +12,7 @@
 //!
 //! What the machine does NOT do, by ruling: activate the B-03 fence
 //! (spec §4.2.5 amendment — the record alone crosses the boundary), build a
-//! shadow (B_cutover answered — pay once), or eagerly rebuild the SQL
+//! shadow (`B_cutover` answered — pay once), or eagerly rebuild the SQL
 //! projection (the store is disposable BY LANDED DESIGN and recreates when
 //! its fingerprint prefix differs — `view::store`; rebuilding it inside the
 //! pause would manufacture downtime for no correctness gain). The fresh
@@ -38,6 +38,9 @@ use fs::cutover::{CutoverRecord, CutoverState, CutoverStatus, ServingLaw};
 /// `fence` is deliberately absent: the tombstone never activates (spec
 /// §4.2.5 amendment); `projection` is deliberately absent: the SQL store
 /// rebuilds lazily on first use by landed design, outside the pause.
+// The shared `_us` postfix IS the honest unit label on every field —
+// renaming to satisfy the lint would trade clarity for silence.
+#[allow(clippy::struct_field_names)]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Components {
     /// Interim-EX acquisition + the intents-empty proof.
@@ -341,7 +344,7 @@ mod tests {
     fn a_crashed_build_resumes_and_never_serves_old() {
         let (_d, root, cache_root) = ws();
         // Crash state: the boundary is durable, the build never finished.
-        let record = fs::cutover::CutoverRecord {
+        let record = CutoverRecord {
             state: CutoverState::NewBuilding,
             cutover_id: fs::cutover::mint_cutover_id(),
             from: model::RootVersion::law1(0),
@@ -390,7 +393,7 @@ mod tests {
 
     /// Gate 22/24 driver — run explicitly (`--ignored --nocapture`) on a
     /// measurement host: builds a corpus of `MERIDIAN_CUTOVER_MEASURE_N`
-    /// members (default 100_000) and reports every outage component
+    /// members (default `100_000`) and reports every outage component
     /// separately. The 1.45 s old-law receipt is never quoted; this run IS
     /// the number's source.
     #[test]

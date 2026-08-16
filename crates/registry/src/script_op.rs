@@ -199,6 +199,32 @@ fn member_order_refusal(files: &[String]) -> Option<Refusal> {
 /// A §8 frame ONLY for what never reached the entry: the entry pass itself
 /// failing (env class), or the reaper winning the warm→pin race (retry).
 /// Once an entry fingerprint exists, every exit is a trace.
+/// The script door's half of gate 3: classify a pinned `if_root`'s family
+/// against the serving identity and shape the refusal as the typed trace
+/// `Refusal` (code + resync + the re-mint teaching).
+fn pre_eval_family_refusal(
+    registry: &Registry,
+    ws: &Path,
+    pinned: &wire::Root,
+) -> Result<Option<Refusal>, Box<ErrorBody>> {
+    let ws_root = fs::WorkspaceRoot(ws.to_path_buf());
+    let serving = registry
+        .serving_version(ws)
+        .map_err(|e| crate::server::warm_err_to_wire(&e))?;
+    Ok(
+        wire_serve::classify::family_refusal(&ws_root, &pinned.0, "/", serving).map(|refusal| {
+            let code = serde_json::to_value(refusal.code)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_owned));
+            Refusal {
+                code,
+                recovery: Some(Recovery::Resync),
+                reason: refusal.message.clone().unwrap_or_default(),
+            }
+        }),
+    )
+}
+
 fn serve(
     registry: &Registry,
     ws: &Path,
@@ -227,24 +253,8 @@ fn serve(
     // or unknown-future token produces a TYPED refused trace carrying the
     // version fact and its resync teaching — never a generic conflict.
     if let Some(pinned) = &request.if_root {
-        let ws_root = fs::WorkspaceRoot(ws.to_path_buf());
-        let serving = registry
-            .serving_version(ws)
-            .map_err(|e| crate::server::warm_err_to_wire(&e))?;
-        if let Some(refusal) =
-            wire_serve::classify::family_refusal(&ws_root, &pinned.0, "/", serving)
-        {
-            let code = serde_json::to_value(refusal.code)
-                .ok()
-                .and_then(|v| v.as_str().map(str::to_owned));
-            return Ok(ScriptTrace::entry_refused(
-                entry,
-                Refusal {
-                    code,
-                    recovery: Some(wire::Recovery::Resync),
-                    reason: refusal.message.clone().unwrap_or_default(),
-                },
-            ));
+        if let Some(refusal) = pre_eval_family_refusal(registry, ws, pinned)? {
+            return Ok(ScriptTrace::entry_refused(entry, refusal));
         }
         if pinned.0 != entry {
             return Ok(ScriptTrace::guard_refused(entry, pinned.0.clone()));
