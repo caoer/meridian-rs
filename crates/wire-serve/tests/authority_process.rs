@@ -81,7 +81,7 @@ fn child_beat_then_hang(root: &fs::WorkspaceRoot) -> ! {
 
 fn park() -> ! {
     loop {
-        std::thread::sleep(Duration::from_secs(3600));
+        std::thread::sleep(Duration::from_hours(1));
     }
 }
 
@@ -288,7 +288,7 @@ fn gate_a_wedged_holder_is_terminated_and_a_successor_reaches_ready() {
     // "Never indefinite": the whole episode — declaration, enforcement,
     // recovery — completed inside one bounded budget.
     assert!(
-        started.elapsed() < Duration::from_secs(60),
+        started.elapsed() < Duration::from_mins(1),
         "the posture must bound the outage, took {:?}",
         started.elapsed()
     );
@@ -334,13 +334,16 @@ fn the_lease_unlock_is_explicit_and_survives_a_forked_fd_copy() {
         libc::kill(pid, libc::SIGKILL);
         libc::waitpid(pid, &raw mut status, 0);
     }
-    reacquired.map(drop).unwrap_or_else(|e| {
-        panic!(
-            "the lease was NOT released by its guard's drop ({e}) — a forked fd copy is \
-             holding the description, so the lease is releasing by fd close instead of \
-             an explicit LOCK_UN"
-        )
-    });
+    reacquired.map_or_else(
+        |e| {
+            panic!(
+                "the lease was NOT released by its guard's drop ({e}) — a forked fd copy is \
+                 holding the description, so the lease is releasing by fd close instead of \
+                 an explicit LOCK_UN"
+            )
+        },
+        drop,
+    );
 }
 
 /// Belt for the fork test's premise: the flock rides the authority
