@@ -501,27 +501,27 @@ pub fn splice_with_mints(
     // Fingerprint-or-force, mounted here and nowhere else — post-lowering is
     // the one point both write faces reach, so native `edits` cannot walk
     // around it. Per-edit, so an empty batch (`mrd pin`) has nothing to demand.
-    // §5.5 coverage rides inside (admission — before any per-member
-    // validation). See `crate::guard`.
-    let bypassed = crate::guard::guard_batch(
+    // The §5.1 amended order, phase by phase: §5.5 coverage at admission
+    // (phase 1) → every supplied premise, widest-first (§5.4; the root
+    // premise sugar `if_root` was honored at door entry, byte-identical v2)
+    // → the per-row validity rung (phase 2), with per-edit `if_node_rev`
+    // following in the model validate below. A supplied premise is checked
+    // under `force` too — force bypasses requiredness, never a claim the
+    // caller made (the world guard's own precedent). See `crate::guard`.
+    let demands = crate::guard::coverage_gate(
         args.origin,
         args.force,
         &doc,
         &args.path,
         &args.plan_edits,
-        &mut effective_edits,
+        &effective_edits,
         &args.premises,
         args.if_root.is_some(),
     )?;
-    let effective_edits = &effective_edits[..];
-
-    // §5.1 amendment order: coverage (above) → every supplied premise —
-    // widest-first, first failure refuses the batch whole (§5.4; the root
-    // premise sugar `if_root` was honored at door entry, byte-identical v2).
-    // Per-edit `if_node_rev` follows in the model validate below. A supplied
-    // premise is checked under `force` too — force bypasses requiredness,
-    // never a claim the caller made (the world guard's own precedent).
     premise_guard(&door, &args.premises, &root_before)?;
+    let bypassed =
+        crate::guard::validity_gate(args.force, &args.path, demands, &mut effective_edits)?;
+    let effective_edits = &effective_edits[..];
 
     let (model_edits, before_facts) =
         model_edits_and_before_facts(&doc, effective_edits, &args.path)?;
@@ -1123,16 +1123,21 @@ fn validate_set_member(
         let lowered = crate::plan::lower(&doc, &file.plan_edits)?;
         (lowered.edits, lowered.born)
     };
-    let bypassed = crate::guard::guard_batch(
+    // Set-form order note: the batch premises were checked ONCE before the
+    // member loop (wider than any member's rows); within each member the
+    // §5.1 phases hold — coverage, then the validity rung.
+    let demands = crate::guard::coverage_gate(
         args.origin,
         args.force,
         &doc,
         &file.path,
         &file.plan_edits,
-        &mut effective_edits,
+        &effective_edits,
         &args.premises,
         args.if_root.is_some(),
     )?;
+    let bypassed =
+        crate::guard::validity_gate(args.force, &file.path, demands, &mut effective_edits)?;
     let (model_edits, before_facts) =
         model_edits_and_before_facts(&doc, &effective_edits, &file.path)?;
     let mut batch = model::SpliceRequest {
