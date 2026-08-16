@@ -7,8 +7,9 @@
 //! Dispatch: `starlark` → hermetic kernel ([`dispatch_starlark`]); `bash` →
 //! `setsid` child under wall-clock timeout ([`exec`], [`dispatch_bash`]) with
 //! tree mutation only via the effect-shim fd ([`shim`]). Both converge on the
-//! shared executor ([`executor`]): caps at the choke point, one `if_root`-pinned
-//! splice batch, receipt in the same commit. [`gate`] refuses armed changes
+//! shared executor ([`executor`]): caps at the choke point, one unguarded
+//! splice batch (no world pin — no-guard-on-effects ruling, 2026-08-15),
+//! receipt in the same commit. [`gate`] refuses armed changes
 //! before commit; [`snapshot`] names residual delta around bash; [`record`]
 //! stores stdout out-of-tree, content-addressed.
 //!

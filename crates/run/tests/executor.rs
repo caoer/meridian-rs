@@ -1,6 +1,6 @@
-//! Executor gates (U4): choke-point cap validation, one atomic `if_root`
-//! batch, self-guards + flock, receipts, apply→event synthesis, and the
-//! decision-#26 foreign-edit law.
+//! Executor gates (U4): choke-point cap validation, one atomic unguarded
+//! batch (no world pin — no-guard-on-effects ruling, 2026-08-15), self-guards
+//! + flock, receipts, apply→event synthesis.
 
 use std::collections::BTreeMap;
 
@@ -75,10 +75,8 @@ fn receipt_addr(n: u64) -> ReceiptAddr {
 struct Req<'a> {
     effects: &'a [Effect],
     caps: CapSet,
-    pin: MerkleRoot,
-    live: MerkleRoot,
+    observed: MerkleRoot,
     receipt: Option<ReceiptAddr>,
-    takeover: bool,
 }
 
 fn apply(root: &fs::WorkspaceRoot, r: &Req<'_>) -> Result<executor::Applied, ExecError> {
@@ -92,10 +90,8 @@ fn apply(root: &fs::WorkspaceRoot, r: &Req<'_>) -> Result<executor::Applied, Exe
             now: Some("2026-07-22T01:00:00Z"),
             effects: r.effects,
             authority: &Authority::granted(r.caps.clone()),
-            pin_root: &r.pin,
-            live_root: &r.live,
+            observed_root: &r.observed,
             receipt: r.receipt.clone(),
-            takeover: r.takeover,
             exec: None,
             actor: None,
             depth: 0,
@@ -121,10 +117,8 @@ fn set_field_applies_receipts_and_synthesizes_the_event() {
         &Req {
             effects: &[set_field("status", "done", 0)],
             caps: write_caps(),
-            pin: now.clone(),
-            live: now,
+            observed: now,
             receipt: Some(receipt_addr(1)),
-            takeover: false,
         },
     )
     .unwrap();
@@ -158,10 +152,8 @@ fn append_section_lands_inside_the_section() {
         &Req {
             effects: &[append("Log", "- appended", 0)],
             caps: write_caps(),
-            pin: now.clone(),
-            live: now,
+            observed: now,
             receipt: Some(receipt_addr(1)),
-            takeover: false,
         },
     )
     .unwrap();
@@ -187,10 +179,8 @@ fn joint_field_and_section_batch_synthesizes_event_with_both_names() {
                 append("Log", "- appended", 1),
             ],
             caps: write_caps(),
-            pin: now.clone(),
-            live: now,
+            observed: now,
             receipt: Some(receipt_addr(1)),
-            takeover: false,
         },
     )
     .unwrap();
@@ -227,10 +217,8 @@ fn choke_point_denies_undeclared_kind_before_any_io() {
         &Req {
             effects: &[set_field("status", "done", 0)],
             caps: CapSet::none(),
-            pin: now.clone(),
-            live: now,
+            observed: now,
             receipt: Some(receipt_addr(1)),
-            takeover: false,
         },
     )
     .unwrap_err();
@@ -261,10 +249,8 @@ fn target_scoped_cap_binds_at_the_choke() {
         &Req {
             effects: &[set_field("status", "done", 0)],
             caps: caps.clone(),
-            pin: now.clone(),
-            live: now,
+            observed: now,
             receipt: None,
-            takeover: false,
         },
     )
     .unwrap();
@@ -275,10 +261,8 @@ fn target_scoped_cap_binds_at_the_choke() {
         &Req {
             effects: &[set_field("title", "X", 0)],
             caps,
-            pin: now.clone(),
-            live: now,
+            observed: now,
             receipt: None,
-            takeover: false,
         },
     )
     .unwrap_err();
@@ -295,10 +279,8 @@ fn one_denied_effect_refuses_the_whole_batch() {
         &Req {
             effects: &[set_field("status", "done", 0), append("Log", "- x", 1)],
             caps,
-            pin: now.clone(),
-            live: now,
+            observed: now,
             receipt: None,
-            takeover: false,
         },
     )
     .unwrap_err();
@@ -315,34 +297,32 @@ fn non_md_effect_is_a_dispatch_bug_refused_loud() {
         &Req {
             effects: &[effect(EffectKind::Notice, &[("message", "hi")], 0)],
             caps: write_caps(),
-            pin: now.clone(),
-            live: now,
+            observed: now,
             receipt: None,
-            takeover: false,
         },
     )
     .unwrap_err();
     assert!(matches!(err, ExecError::NonMdEffect { .. }));
 }
 
+/// The no-guard law at this seam (2026-08-15 ruling): a stale observation —
+/// the corpus advanced since the effects were produced — commits anyway.
+/// The former `root_mismatch` premise refusal is RETIRED; the full F3
+/// fixture lives in `tests/no_guard_on_effects.rs`.
 #[test]
-fn stale_pin_is_root_mismatch_nothing_applied() {
+fn a_stale_observation_commits_nothing_refuses() {
     let (_tmp, root) = workspace();
-    let live = current_root(&root);
-    let err = apply(
+    apply(
         &root,
         &Req {
             effects: &[set_field("status", "done", 0)],
             caps: write_caps(),
-            pin: MerkleRoot("b3:stale".to_owned()),
-            live,
+            observed: MerkleRoot("b3:stale".to_owned()),
             receipt: Some(receipt_addr(1)),
-            takeover: false,
         },
     )
-    .unwrap_err();
-    assert!(matches!(err, ExecError::RootMismatch { .. }));
-    assert_eq!(page_text(&root), PAGE);
+    .expect("no world pin exists on this door");
+    assert!(page_text(&root).contains("status: done"));
 }
 
 #[test]
@@ -354,10 +334,8 @@ fn missing_and_ambiguous_sections_are_typed() {
         &Req {
             effects: &[append("Nope", "- x", 0)],
             caps: write_caps(),
-            pin: now.clone(),
-            live: now.clone(),
+            observed: now.clone(),
             receipt: None,
-            takeover: false,
         },
     )
     .unwrap_err();
@@ -379,10 +357,8 @@ fn missing_and_ambiguous_sections_are_typed() {
         &Req {
             effects: &[append("Log", "- x", 0)],
             caps: write_caps(),
-            pin: now.clone(),
-            live: now,
+            observed: now,
             receipt: None,
-            takeover: false,
         },
     )
     .unwrap_err();
@@ -395,75 +371,12 @@ fn missing_and_ambiguous_sections_are_typed() {
     );
 }
 
+/// Two consecutive governed writes on the same target stay clean — the
+/// receipt history is attested record, compared by nothing (the former
+/// decision-#26 foreign-edit scan is retired; its positive case lives in
+/// `tests/no_guard_on_effects.rs`).
 #[test]
-fn foreign_edit_is_refused_with_the_three_way_frame() {
-    let (_tmp, root) = workspace();
-    let now = current_root(&root);
-    // Run 1: governed write, receipt anchors fm:status.
-    apply(
-        &root,
-        &Req {
-            effects: &[set_field("status", "done", 0)],
-            caps: write_caps(),
-            pin: now.clone(),
-            live: now,
-            receipt: Some(receipt_addr(1)),
-            takeover: false,
-        },
-    )
-    .unwrap();
-
-    // A HUMAN edits the field out-of-band. A re-run loads this state, so its
-    // CAS token matches — only the receipt anchor can see the divergence.
-    let edited = page_text(&root).replace("status: done", "status: human-truth");
-    std::fs::write(root.0.join("page.md"), edited).unwrap();
-
-    let now = current_root(&root);
-    let err = apply(
-        &root,
-        &Req {
-            effects: &[set_field("status", "auto", 0)],
-            caps: write_caps(),
-            pin: now.clone(),
-            live: now.clone(),
-            receipt: Some(receipt_addr(2)),
-            takeover: false,
-        },
-    )
-    .unwrap_err();
-    let ExecError::ForeignEdit {
-        target,
-        last_governed,
-        current,
-    } = err
-    else {
-        panic!("expected ForeignEdit, got {err:?}");
-    };
-    assert_eq!(target, "fm:status");
-    assert_ne!(last_governed, current, "the three-way frame is real");
-    assert!(
-        page_text(&root).contains("status: human-truth"),
-        "preserved"
-    );
-
-    // Explicit takeover overrides (decision #26).
-    apply(
-        &root,
-        &Req {
-            effects: &[set_field("status", "auto", 0)],
-            caps: write_caps(),
-            pin: now.clone(),
-            live: now,
-            receipt: Some(receipt_addr(2)),
-            takeover: true,
-        },
-    )
-    .unwrap();
-    assert!(page_text(&root).contains("status: auto"));
-}
-
-#[test]
-fn re_run_without_foreign_edit_is_clean() {
+fn a_re_run_over_its_own_receipt_history_is_clean() {
     let (_tmp, root) = workspace();
     let now = current_root(&root);
     apply(
@@ -471,24 +384,19 @@ fn re_run_without_foreign_edit_is_clean() {
         &Req {
             effects: &[set_field("status", "done", 0)],
             caps: write_caps(),
-            pin: now.clone(),
-            live: now,
+            observed: now,
             receipt: Some(receipt_addr(1)),
-            takeover: false,
         },
     )
     .unwrap();
-    // No human touched the target: current rev == last governed after-rev.
     let now = current_root(&root);
     apply(
         &root,
         &Req {
             effects: &[set_field("status", "review", 0)],
             caps: write_caps(),
-            pin: now.clone(),
-            live: now,
+            observed: now,
             receipt: Some(receipt_addr(2)),
-            takeover: false,
         },
     )
     .unwrap();
@@ -512,10 +420,8 @@ fn flock_serializes_two_concurrent_appliers() {
                         &Req {
                             effects: &[append("Log", &format!("- from thread {i}"), 0)],
                             caps: write_caps(),
-                            pin: now.clone(),
-                            live: now,
+                            observed: now,
                             receipt: Some(receipt_addr(u64::from(i) + 1)),
-                            takeover: false,
                         },
                     ) {
                         Ok(_) => break,
@@ -546,10 +452,8 @@ fn held_lock_is_a_fast_typed_refusal_never_a_wait() {
         &Req {
             effects: &[set_field("status", "x", 0)],
             caps: write_caps(),
-            pin: now.clone(),
-            live: now,
+            observed: now,
             receipt: Some(receipt_addr(1)),
-            takeover: false,
         },
     )
     .unwrap_err();
@@ -573,10 +477,8 @@ fn receipt_stamps_the_procedure_hash_and_adopts_the_exec_seam() {
         &Req {
             effects: &[set_field("status", "done", 0)],
             caps: write_caps(),
-            pin: now.clone(),
-            live: now,
+            observed: now,
             receipt: Some(receipt_addr(1)),
-            takeover: false,
         },
     )
     .unwrap();
@@ -637,10 +539,8 @@ fn receipt_commits_the_threaded_exec_facts() {
             now: Some("2026-07-22T03:00:00Z"),
             effects: &[set_field("status", "done", 0)],
             authority: &Authority::granted(write_caps()),
-            pin_root: &now,
-            live_root: &now,
+            observed_root: &now,
             receipt: Some(receipt_addr(9)),
-            takeover: false,
             exec: Some(&exec),
             actor: None,
             depth: 0,
@@ -691,10 +591,8 @@ fn the_run_plane_cannot_write_a_meridian_lock_block() {
                 0,
             )],
             caps: write_caps(),
-            pin: now.clone(),
-            live: now,
+            observed: now,
             receipt: None,
-            takeover: false,
         },
     );
     assert!(
@@ -724,10 +622,8 @@ fn the_run_plane_still_writes_beside_an_untouched_lock() {
         &Req {
             effects: &[append("Log", "- a run-plane line", 0)],
             caps: write_caps(),
-            pin: now.clone(),
-            live: now,
+            observed: now,
             receipt: None,
-            takeover: false,
         },
     )
     .expect("an ordinary apply on a pinned page still commits");
@@ -809,10 +705,8 @@ fn the_adapter_maps_canonical_intents_onto_the_production_batch() {
             now: None,
             effects: &[],
             authority: &Authority::granted(write_caps()),
-            pin_root: &now,
-            live_root: &now,
+            observed_root: &now,
             receipt: None,
-            takeover: false,
             exec: None,
             actor: None,
             depth: 0,
@@ -914,10 +808,8 @@ fn cap_denial_without_a_ceiling_teaches_the_caps_declaration() {
         &Req {
             effects: &[append("Log", "- x", 0)],
             caps: CapSet::parse("md.set_field:status").unwrap(),
-            pin: now.clone(),
-            live: now,
+            observed: now,
             receipt: None,
-            takeover: false,
         },
     )
     .unwrap_err();
@@ -947,10 +839,8 @@ fn cap_denial_on_an_empty_grant_says_the_task_declares_none() {
         &Req {
             effects: &[append("Log", "- x", 0)],
             caps: CapSet::none(),
-            pin: now.clone(),
-            live: now,
+            observed: now,
             receipt: None,
-            takeover: false,
         },
     )
     .unwrap_err();
