@@ -6,8 +6,9 @@
 //! One instance holds ONE workspace's directory nodes, keyed by
 //! workspace-relative path bytes. Per node (§6.1): the §4.2 child map (a
 //! [`RadixChildMap`], every vertex hash current), the cached 32-byte §4.2.3
-//! directory value, the dirty flag, and the `last_seq` slot (§6.3 — the slot
-//! ships here; its maintenance is the stamps-and-cookie card's, and the one
+//! directory value, the dirty flag, and the `last_seq` stamp (§6.3 —
+//! advanced by [`ResidentTree::stamp_chain`] from [`crate::DomainCache`]'s
+//! guarded write path, the same path that maintains the digests; the one
 //! state owner of `docs/laws.md` binds who may advance it).
 //!
 //! **This structure does no I/O and serves no wire.** `fs::DomainCache` owns
@@ -38,8 +39,9 @@ struct Node {
     map: RadixChildMap,
     /// Cached §4.2.3 directory value, current while the node is not dirty.
     fold: [u8; 32],
-    /// §6.3 stamp slot: highest journal seq beneath this node. A SLOT only —
-    /// nothing in this crate advances it (stamps-and-cookie card).
+    /// §6.3 stamp: highest journal seq beneath this node, advanced by
+    /// [`ResidentTree::stamp_chain`] (max-only, so cross-epoch leftovers can
+    /// only add conservatism) and read through [`ResidentTree::stamp_at`].
     last_seq: u64,
 }
 
@@ -408,24 +410,49 @@ impl ResidentTree {
         Ok(out)
     }
 
-    /// The `last_seq` slot at a directory scope (root = empty path); `None`
-    /// when no node lives there. Maintenance is the stamps card's.
-    #[must_use]
-    pub fn last_seq(&self, scope: &Path) -> Option<u64> {
-        self.nodes.get(crate::hash_name(scope)).map(|n| n.last_seq)
+    /// Advance the §6.3 stamp on every ancestor directory node of leaf
+    /// `rel`, the workspace root included: `last_seq = max(last_seq, seq)`.
+    /// Ancestors pruned out from under a removal are skipped — the surviving
+    /// chain still records that something died beneath it — and nothing is
+    /// ever composed just to carry a stamp.
+    pub fn stamp_chain(&mut self, rel: &Path, seq: u64) {
+        let path = crate::hash_name(rel);
+        let segs: Vec<&[u8]> = split_segments(path);
+        let Some((_, dirs)) = segs.split_last() else {
+            return;
+        };
+        let mut key: Vec<u8> = Vec::new();
+        let mut chain: Vec<Vec<u8>> = vec![key.clone()];
+        for seg in dirs {
+            push_segment(&mut key, seg);
+            chain.push(key.clone());
+        }
+        for key in chain {
+            if let Some(node) = self.nodes.get_mut(&key) {
+                node.last_seq = node.last_seq.max(seq);
+            }
+        }
     }
 
-    /// Write the `last_seq` slot at a directory scope; `false` when no node
-    /// lives there. A SLOT write only — the one-state-owner law
-    /// (`docs/laws.md`) binds who may call this and when.
-    pub fn set_last_seq(&mut self, scope: &Path, seq: u64) -> bool {
-        match self.nodes.get_mut(crate::hash_name(scope)) {
-            Some(node) => {
-                node.last_seq = seq;
-                true
-            }
-            None => false,
+    /// The §6.3 stamp answering for `scope`, or `None` when stamps cannot
+    /// answer there. A directory node answers its own `last_seq`; a live
+    /// file leaf answers its parent directory's (every change to the file
+    /// stamps that chain, so sibling churn only ever adds conservatism); a
+    /// deleted, renamed-away, or never-created path has no current node to
+    /// carry a stamp and never answers — stamps never answer for the dead.
+    #[must_use]
+    pub fn stamp_at(&self, scope: &Path) -> Option<u64> {
+        let key = crate::hash_name(scope);
+        let key: Vec<u8> = split_segments(key).join(&b'/');
+        if let Some(node) = self.nodes.get(&key) {
+            return Some(node.last_seq);
         }
+        let (parent, name) = split_parent(&key);
+        let parent = self.nodes.get(parent)?;
+        parent
+            .map
+            .get(name, ChildKind::File)
+            .map(|_| parent.last_seq)
     }
 
     /// Live §4.4 collision keys, display-spelled — the lint's queryable
@@ -823,20 +850,47 @@ mod tests {
         assert_eq!(tree.file_leaf(&p("gone.md")), None);
     }
 
-    /// The `last_seq` slot: readable, writable at directory scopes, absent
-    /// where no node lives, and untouched by refolds.
+    /// §6.3 stamps: a chain stamp advances every ancestor directory node
+    /// (root included), max-only, untouched by refolds; `stamp_at` answers a
+    /// directory's own stamp and a live file's parent stamp, and never
+    /// answers for a missing path.
     #[test]
-    fn last_seq_slot_holds() {
+    fn stamp_chain_advances_ancestors_max_only() {
         let mut tree = ResidentTree::new();
-        tree.set_leaf(&p("a/x.md"), h(1));
-        assert_eq!(tree.last_seq(&p("a")), Some(0));
-        assert!(tree.set_last_seq(&p("a"), 41));
-        assert!(tree.set_last_seq(Path::new(""), 41));
-        tree.set_leaf(&p("a/y.md"), h(2));
+        tree.set_leaf(&p("a/b/x.md"), h(1));
+        tree.set_leaf(&p("c/y.md"), h(2));
+        tree.stamp_chain(&p("a/b/x.md"), 41);
+        assert_eq!(tree.stamp_at(&p("a/b")), Some(41));
+        assert_eq!(tree.stamp_at(&p("a")), Some(41));
+        assert_eq!(tree.stamp_at(Path::new("")), Some(41));
+        assert_eq!(tree.stamp_at(&p("c")), Some(0), "sibling chain untouched");
+        // A file leaf answers its parent directory's stamp.
+        assert_eq!(tree.stamp_at(&p("a/b/x.md")), Some(41));
+        // Max-only: a lower stamp never regresses the chain.
+        tree.stamp_chain(&p("a/b/x.md"), 7);
+        assert_eq!(tree.stamp_at(&p("a/b")), Some(41));
         tree.fingerprint();
-        assert_eq!(tree.last_seq(&p("a")), Some(41));
-        assert_eq!(tree.last_seq(Path::new("")), Some(41));
-        assert!(!tree.set_last_seq(&p("missing"), 7));
-        assert_eq!(tree.last_seq(&p("missing")), None);
+        assert_eq!(
+            tree.stamp_at(&p("a/b")),
+            Some(41),
+            "refolds never touch stamps"
+        );
+        // Never answers for the dead: no node, no leaf — no stamp.
+        assert_eq!(tree.stamp_at(&p("missing")), None);
+        assert_eq!(tree.stamp_at(&p("a/b/gone.md")), None);
+    }
+
+    /// A removal's stamp lands on the surviving chain: pruned directories
+    /// are skipped (never re-composed), the root still records the death.
+    #[test]
+    fn stamp_chain_skips_pruned_directories() {
+        let mut tree = ResidentTree::new();
+        tree.set_leaf(&p("a/b/x.md"), h(1));
+        tree.set_leaf(&p("keep.md"), h(2));
+        assert!(tree.remove_leaf(&p("a/b/x.md")));
+        tree.stamp_chain(&p("a/b/x.md"), 9);
+        assert_eq!(tree.stamp_at(&p("a/b")), None, "pruned — no node revives");
+        assert_eq!(tree.stamp_at(&p("a")), None, "pruned too");
+        assert_eq!(tree.stamp_at(Path::new("")), Some(9), "the root records it");
     }
 }
