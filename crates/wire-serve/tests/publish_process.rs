@@ -11,8 +11,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
+use fs::WorkspaceRoot;
+use fs::durability;
 use fs::intent::Policy;
-use fs::{WorkspaceRoot, honest_sync_path};
 use wire::Root;
 use wire_serve::authority::AuthorityEpoch;
 use wire_serve::publish::{
@@ -44,13 +45,18 @@ fn child_first_rename_then_park(root: &WorkspaceRoot) -> ! {
             Region::file("c", b"receipts/log.md", RegionKind::Write),
         ],
         dests: vec![content, receipt],
+        pending: Vec::new(),
         files: Vec::new(),
         actor: None,
         now: None,
         policy: Policy::Restore,
         drop_tmp_after_decide: false,
     };
-    wire_serve::publish::decide(root, &staged).expect("durable decision");
+    let (_rec, phase1) =
+        wire_serve::publish::decide_submit(root, &staged).expect("durable decision");
+    for p in &phase1 {
+        p.wait().expect("phase-1 barrier returns before any rename");
+    }
     std::fs::rename(&staged.dests[0].tmp, root.0.join(&staged.dests[0].rel)).expect("first rename");
     std::fs::write(root.0.join(CHILD_UP_MARKER), staged.txn.hex()).expect("up marker");
     park()
@@ -64,7 +70,7 @@ fn dest(root: &WorkspaceRoot, rel: &str, old: &[u8], new: &[u8]) -> DestImage {
     std::fs::write(&dest, old).unwrap();
     let tmp = dest.with_extension("tmp-pub");
     std::fs::write(&tmp, new).unwrap();
-    honest_sync_path(&tmp).unwrap();
+    durability::settle_path(&root.0, &tmp).unwrap();
     DestImage {
         rel: PathBuf::from(rel),
         old: old.to_vec(),

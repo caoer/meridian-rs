@@ -27,6 +27,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub mod base;
 pub mod digestmemo;
 pub mod domain;
+pub mod durability;
 pub mod fence;
 pub mod forest;
 pub mod guard;
@@ -2560,10 +2561,10 @@ pub fn create_file(
     if let Some(parent) = dst.parent() {
         fs::create_dir_all(parent)?;
     }
-    commit_rename(&stage_file(&dst, candidate.raw().as_bytes())?)
+    commit_rename(&stage_file(&root.0, &dst, candidate.raw().as_bytes())?)
 }
 
-/// Death of one file: remove `rel_path`, then fsync its parent directory so
+/// Death of one file: remove `rel_path`, then settle its parent directory so
 /// the deletion survives a crash (the rename-durability discipline, applied
 /// to unlink). The rev-CAS (remove-what-you-read) is the CALLER's — it
 /// compares the read rev against the live file before calling; this only
@@ -2571,11 +2572,11 @@ pub fn create_file(
 ///
 /// # Errors
 /// [`io::ErrorKind::NotFound`] when the path is already gone; any other I/O
-/// failure at unlink or the parent fsync.
+/// failure at unlink or the parent settle.
 pub fn remove_file(root: &WorkspaceRoot, rel_path: &Path) -> io::Result<()> {
     let dst = root.0.join(rel_path);
     fs::remove_file(&dst)?;
-    fsync_dir(dst.parent().unwrap_or_else(|| Path::new(".")))
+    fsync_dir(&root.0, dst.parent().unwrap_or_else(|| Path::new(".")))
 }
 
 /// Overwrite one existing file's whole bytes with the sealed `candidate`'s,
@@ -2598,7 +2599,7 @@ pub fn replace_file(
     candidate: &model::CandidateDocument,
 ) -> io::Result<()> {
     let dst = root.0.join(rel_path);
-    commit_rename(&stage_file(&dst, candidate.raw().as_bytes())?)
+    commit_rename(&stage_file(&root.0, &dst, candidate.raw().as_bytes())?)
 }
 
 /// Append one already-rendered `line` at a page's EOF, atomically (tmp+fsync+
@@ -2617,11 +2618,12 @@ pub fn append_line(root: &WorkspaceRoot, rel_path: &Path, line: &str) -> io::Res
     let mut bytes = read_or_empty(&dst)?;
     bytes.extend_from_slice(line.as_bytes());
     bytes.push(b'\n');
-    commit_rename(&stage_file(&dst, &bytes)?)
+    commit_rename(&stage_file(&root.0, &dst, &bytes)?)
 }
 
-/// A two-file commit staged to temp files (written + fsync'd), awaiting the
-/// two renames. Separating staging from the renames is what lets the
+/// A two-file commit staged to temp files (written + submitted to the
+/// durability actor), awaiting the two renames. Separating staging from the
+/// renames is what lets the
 /// crash-honesty test drive a kill BETWEEN the renames deterministically
 /// (§6.5), and what lets the parallel-commits path insert one checksummed
 /// `O_EXCL` intent after verify and before the first visible rename
@@ -2641,18 +2643,23 @@ pub struct StagedCommit {
     receipt_expected: Option<Vec<u8>>,
 }
 
-/// One file staged for atomic replace: the temp path holding the new bytes
-/// (already fsync'd) and the destination it will be renamed onto.
+/// One file staged for atomic replace: the temp path holding the new bytes,
+/// the destination it will be renamed onto, the workspace root whose device
+/// the durability actor's barrier pins, and the in-flight settle submission.
+/// The bytes are rename-eligible only after `pending` is awaited.
 struct StagedFile {
     tmp: PathBuf,
     dst: PathBuf,
+    root: PathBuf,
+    pending: durability::Pending,
 }
 
 /// Stage both files: apply each file's validated span replacements to its
 /// PRE-IMAGE bytes (the content pre-image is the caller's `expected_content` —
 /// read#2's validated bytes, never a fresh disk read; the receipt pre-image is
 /// read here, reconciled against the append's EOF span) and write the result to
-/// a fsync'd temp beside the destination. No destination is touched here —
+/// a staged temp beside the destination, its settle submitted to the
+/// durability actor. No destination is touched here —
 /// staging is entirely off to the side, so a failure (or a crash) before
 /// [`StagedCommit::commit`] leaves every real file intact.
 ///
@@ -2707,7 +2714,7 @@ pub fn stage_batch(
         ));
     }
 
-    let content = stage_file(&content_dst, &content_new)?;
+    let content = stage_file(&root.0, &content_dst, &content_new)?;
 
     // Receipt file (when named): read pre-batch bytes (absent ⇒ empty, a create),
     // reconcile the append against them, stage. On any failure the already-staged
@@ -2715,7 +2722,7 @@ pub fn stage_batch(
     let (receipt, receipt_expected) = match (receipt_path, batch.receipt.as_ref()) {
         (Some(rp), Some(append)) => {
             let receipt_dst = root.0.join(rp);
-            match stage_receipt(&receipt_dst, append) {
+            match stage_receipt(&root.0, &receipt_dst, append) {
                 Ok((staged, old)) => (Some(staged), Some(old)),
                 Err(e) => {
                     let _ = fs::remove_file(&content.tmp);
@@ -2748,6 +2755,7 @@ pub fn stage_batch(
 /// never a blind splice that would misplace the row (or panic on a shrunk
 /// file).
 fn stage_receipt(
+    root: &Path,
     receipt_dst: &Path,
     append: &model::ReceiptAppend,
 ) -> io::Result<(StagedFile, Vec<u8>)> {
@@ -2762,7 +2770,7 @@ fn stage_receipt(
         return Err(write_conflict(receipt_dst));
     }
     let new = apply_spans(&old, std::iter::once((&append.span, append.text.as_str())));
-    let staged = stage_file(receipt_dst, &new)?;
+    let staged = stage_file(root, receipt_dst, &new)?;
     Ok((staged, old))
 }
 
@@ -2777,28 +2785,37 @@ fn read_or_empty(path: &Path) -> io::Result<Vec<u8>> {
 }
 
 /// Write `bytes` to a fresh temp file beside `dst` (same directory ⇒ same
-/// filesystem, so the eventual rename is atomic), fsync it, and hand back the
-/// staged handle. The temp name is non-`.md` and dot-prefixed so `walk` and the
-/// §12 hash domain both ignore it. This is the ENTIRE write path — nothing is
-/// ever written in place.
-fn stage_file(dst: &Path, bytes: &[u8]) -> io::Result<StagedFile> {
+/// filesystem, so the eventual rename is atomic), SUBMIT it to the
+/// durability actor, and hand back the staged handle carrying the in-flight
+/// submission. The bytes are durable only when that pending is awaited —
+/// every rename path waits first (the honesty line), so durability still
+/// precedes visibility while concurrent stagers share one barrier. The temp
+/// name is non-`.md` and dot-prefixed so `walk` and the §12 hash domain both
+/// ignore it. This is the ENTIRE write path — nothing is ever written in
+/// place.
+fn stage_file(root: &Path, dst: &Path, bytes: &[u8]) -> io::Result<StagedFile> {
     let tmp = temp_path_for(dst);
-    if let Err(e) = write_fsync(&tmp, bytes) {
-        let _ = fs::remove_file(&tmp); // hygiene: no orphan temp on a failed stage
-        return Err(e);
+    match write_submit(root, &tmp, bytes) {
+        Ok(pending) => Ok(StagedFile {
+            tmp,
+            dst: dst.to_path_buf(),
+            root: root.to_path_buf(),
+            pending,
+        }),
+        Err(e) => {
+            let _ = fs::remove_file(&tmp); // hygiene: no orphan temp on a failed stage
+            Err(e)
+        }
     }
-    Ok(StagedFile {
-        tmp,
-        dst: dst.to_path_buf(),
-    })
 }
 
-/// Create `tmp`, write all `bytes`, and fsync so the new bytes are durable
-/// BEFORE the rename makes them visible (the "fsync" of tmp+fsync+rename).
-fn write_fsync(tmp: &Path, bytes: &[u8]) -> io::Result<()> {
+/// Create `tmp`, write all `bytes`, and hand the file to the durability
+/// actor (non-blocking). The returned pending is the proof-of-durability
+/// hook: awaiting it (and only that) makes the bytes rename-eligible.
+fn write_submit(root: &Path, tmp: &Path, bytes: &[u8]) -> io::Result<durability::Pending> {
     let mut f = File::create(tmp)?;
     f.write_all(bytes)?;
-    f.sync_all()
+    durability::submit(root, &f)
 }
 
 /// A staging path beside `dst`: `<dir>/.<name>.<pid>.<nanos>.<seq>.tmp`. Same
@@ -2849,9 +2866,60 @@ impl StagedCommit {
             self.discard();
             return Err(conflict);
         }
-        self.rename_content()?;
+        // The honesty line: every staged byte settles through the actor
+        // BEFORE any rename makes it visible — both waits return first.
+        if let Err(e) = self.await_durability() {
+            self.discard();
+            return Err(e);
+        }
+        fs::rename(&self.content.tmp, &self.content.dst)?;
         // ┄┄ §6.5 crash window: a crash HERE lands content-without-receipt ┄┄
-        self.rename_receipt()
+        if let Some(staged) = &self.receipt {
+            fs::rename(&staged.tmp, &staged.dst)?;
+        }
+        // Metadata half: both parent-directory entries settle through the
+        // actor in one submitted set — deduped, so a same-directory receipt
+        // costs no second sync. Keeping the renames adjacent (no barrier
+        // between them) also shrinks the §6.5 window to the two renames.
+        let content_parent = durability::submit_path(
+            &self.content.root,
+            self.content.dst.parent().unwrap_or_else(|| Path::new(".")),
+        )?;
+        let receipt_parent = match &self.receipt {
+            Some(staged) => Some(durability::submit_path(
+                &staged.root,
+                staged.dst.parent().unwrap_or_else(|| Path::new(".")),
+            )?),
+            None => None,
+        };
+        content_parent.wait()?;
+        if let Some(p) = receipt_parent {
+            p.wait()?;
+        }
+        Ok(())
+    }
+
+    /// Await the staged files' in-flight settles: the proof that every byte
+    /// this commit will make visible is already durable.
+    fn await_durability(&self) -> io::Result<()> {
+        self.content.pending.wait()?;
+        if let Some(staged) = &self.receipt {
+            staged.pending.wait()?;
+        }
+        Ok(())
+    }
+
+    /// Consume the staged commit, handing back the in-flight durability
+    /// submissions (content first, then the receipt when one is staged). The
+    /// wire publish path awaits these inside its phase-1 barrier before any
+    /// rename; the temps stay on disk for the renames.
+    #[must_use]
+    pub fn into_pendings(self) -> Vec<durability::Pending> {
+        let mut out = vec![self.content.pending];
+        if let Some(staged) = self.receipt {
+            out.push(staged.pending);
+        }
+        out
     }
 
     /// The content destination this commit will rename onto.
@@ -2860,7 +2928,8 @@ impl StagedCommit {
         &self.content.dst
     }
 
-    /// The fsync'd temp holding the new content bytes.
+    /// The staged temp holding the new content bytes (settling through the
+    /// durability actor; durable once the pendings are awaited).
     #[must_use]
     pub fn content_tmp(&self) -> &Path {
         &self.content.tmp
@@ -2878,7 +2947,7 @@ impl StagedCommit {
         self.receipt.as_ref().map(|s| s.dst.as_path())
     }
 
-    /// The fsync'd receipt temp, when this batch carries one.
+    /// The staged receipt temp, when this batch carries one.
     #[must_use]
     pub fn receipt_tmp(&self) -> Option<&Path> {
         self.receipt.as_ref().map(|s| s.tmp.as_path())
@@ -2926,20 +2995,22 @@ impl StagedCommit {
         }
     }
 
-    /// Rename the content temp onto its destination (atomic) and fsync the
-    /// destination's directory so the rename itself is durable.
+    /// The full single-file discipline for the content half: await its
+    /// settle, rename the temp onto its destination (atomic), settle the
+    /// destination's directory. The §6.5 crash tests drive this and
+    /// [`Self::rename_receipt`] separately.
     ///
     /// # Errors
-    /// I/O failure at rename or the parent-directory fsync.
+    /// The settle failure, or I/O at rename / the parent-directory settle.
     pub fn rename_content(&self) -> io::Result<()> {
         commit_rename(&self.content)
     }
 
-    /// Rename the receipt temp (when one was staged) onto its destination and
-    /// fsync its directory. A batch without a receipt is a no-op here.
+    /// [`Self::rename_content`]'s discipline for the receipt temp (when one
+    /// was staged). A batch without a receipt is a no-op here.
     ///
     /// # Errors
-    /// I/O failure at rename or the parent-directory fsync.
+    /// The settle failure, or I/O at rename / the parent-directory settle.
     pub fn rename_receipt(&self) -> io::Result<()> {
         match &self.receipt {
             Some(staged) => commit_rename(staged),
@@ -2948,54 +3019,33 @@ impl StagedCommit {
     }
 }
 
-/// Rename a staged temp onto its destination (a POSIX-atomic replace) and fsync
-/// the parent directory so the rename survives a crash.
+/// The full single-file commit discipline: await the staged bytes' settle
+/// (durability before visibility — the honesty line), rename the temp onto
+/// its destination (POSIX-atomic replace), then settle the parent directory
+/// through the actor so the rename survives a crash. Both settles group with
+/// whatever else is in the actor's queue.
 fn commit_rename(staged: &StagedFile) -> io::Result<()> {
+    staged.pending.wait()?;
     fs::rename(&staged.tmp, &staged.dst)?;
-    fsync_dir(staged.dst.parent().unwrap_or_else(|| Path::new(".")))
+    fsync_dir(
+        &staged.root,
+        staged.dst.parent().unwrap_or_else(|| Path::new(".")),
+    )
 }
 
-/// Fsync a directory so a just-completed rename (a directory metadata change) is
-/// durable. An empty path means the destination carried no parent component (the
-/// current directory); there is nothing to sync.
-fn fsync_dir(dir: &Path) -> io::Result<()> {
+/// Settle a directory through the durability actor so a just-completed
+/// rename (a directory metadata change) is durable. An empty path means the
+/// destination carried no parent component (the current directory); there is
+/// nothing to sync.
+fn fsync_dir(root: &Path, dir: &Path) -> io::Result<()> {
     if dir.as_os_str().is_empty() {
         return Ok(());
     }
-    File::open(dir)?.sync_all()
+    durability::settle_path(root, dir)?;
+    Ok(())
 }
 
-/// The ruled honest durability class (merged-plan §4.7): `F_FULLFSYNC` on
-/// macOS (platter, not drive-cache), `sync_all` elsewhere. The live
-/// [`apply_batch`] path keeps `sync_all` until the cutover; the parallel
-/// publish path uses this for intent, recovery images, and dest temps.
-///
-/// # Errors
-/// The underlying fcntl/fsync failure.
-pub fn honest_sync(file: &File) -> io::Result<()> {
-    #[cfg(target_os = "macos")]
-    {
-        // SAFETY: fcntl on a valid fd we own; F_FULLFSYNC takes no extra arg.
-        let rc = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_FULLFSYNC) };
-        if rc == -1 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        file.sync_all()
-    }
-}
-
-/// [`honest_sync`] on a path. `File::open` works for files and directories
-/// alike on Unix; the fd is only used for the sync.
-///
-/// # Errors
-/// Open failure, or the underlying sync failure.
-pub fn honest_sync_path(path: &Path) -> io::Result<()> {
-    honest_sync(&File::open(path)?)
-}
+pub use durability::{honest_sync, honest_sync_path};
 
 // ---------------------------------------------------------------------------
 // The set commit (§4.4 set form): N content files + one receipt, sealed
@@ -3129,7 +3179,7 @@ fn stage_set(
                 ),
             ));
         }
-        match stage_file(&root.0.join(m.content_path), &new_bytes) {
+        match stage_file(&root.0, &root.0.join(m.content_path), &new_bytes) {
             Ok(staged) => contents.push((staged, m.expected_content.to_vec())),
             Err(e) => {
                 discard_staged(&contents);
@@ -3139,7 +3189,7 @@ fn stage_set(
     }
 
     let receipt = match receipt {
-        Some((rp, append)) => match stage_receipt(&root.0.join(rp), append) {
+        Some((rp, append)) => match stage_receipt(&root.0, &root.0.join(rp), append) {
             Ok((staged, old)) => Some((staged, old)),
             Err(e) => {
                 discard_staged(&contents);
@@ -3222,7 +3272,8 @@ impl StagedSet {
         let mut restored = Vec::new();
         let mut failed = Vec::new();
         for (staged, pre_image) in self.contents.iter().take(renamed).rev() {
-            let outcome = stage_file(&staged.dst, pre_image).and_then(|s| commit_rename(&s));
+            let outcome =
+                stage_file(&staged.root, &staged.dst, pre_image).and_then(|s| commit_rename(&s));
             match outcome {
                 Ok(()) => restored.push(staged.dst.display().to_string()),
                 Err(e) => failed.push(format!("{} ({e})", staged.dst.display())),

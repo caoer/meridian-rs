@@ -15,7 +15,8 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use crate::{WorkspaceRoot, honest_sync, honest_sync_path};
+use crate::WorkspaceRoot;
+use crate::durability::{self, Pending};
 
 /// Workspace-relative directory holding one file per transaction.
 pub const INTENTS_DIR: &str = ".meridian/intents";
@@ -97,11 +98,15 @@ pub fn empty_digest() -> [u8; 32] {
     digest(b"")
 }
 
-/// Write `bytes` to `path` via tmp + honest-sync + rename + parent sync.
+/// Write `bytes` to `path` via tmp + actor settle + rename + parent settle —
+/// the recovery-grade BLOCKING form (restore / forward / finalize /
+/// quarantine, all rare paths). The publish path uses the phased submit
+/// forms below instead, so a whole phase settles through one awaited
+/// barrier.
 ///
 /// # Errors
-/// I/O at any write, sync, or rename step.
-pub fn write_honest(path: &Path, bytes: &[u8]) -> io::Result<()> {
+/// I/O at any write, settle, or rename step.
+pub fn write_honest(root: &WorkspaceRoot, path: &Path, bytes: &[u8]) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -109,21 +114,24 @@ pub fn write_honest(path: &Path, bytes: &[u8]) -> io::Result<()> {
     {
         let mut f = File::create(&tmp)?;
         f.write_all(bytes)?;
-        honest_sync(&f)?;
+        durability::settle(&root.0, &f)?;
     }
     fs::rename(&tmp, path)?;
     if let Some(parent) = path.parent() {
-        honest_sync_path(parent)?;
+        durability::settle_path(&root.0, parent)?;
     }
     Ok(())
 }
 
-/// Persist recovery images and a `Decided` intent, `O_EXCL` on the intent
-/// file. After this returns, no error on this transaction is a refusal.
+/// Persist a `Decided` intent, `O_EXCL` on the intent file, SUBMITTING its
+/// settle and its directory's to the durability actor. The returned pendings
+/// are phase-1 members: the durable decision exists when the caller's waits
+/// on them RETURN (not when this call returns), and no rename may run
+/// before that.
 ///
 /// # Errors
-/// `AlreadyExists` when the txn id is reused; any I/O/sync failure.
-pub fn create_decided(root: &WorkspaceRoot, intent: &Intent) -> io::Result<()> {
+/// `AlreadyExists` when the txn id is reused; any I/O or submit failure.
+pub fn create_decided_submit(root: &WorkspaceRoot, intent: &Intent) -> io::Result<Vec<Pending>> {
     let dir = root.0.join(INTENTS_DIR).join(&intent.txn_hex);
     fs::create_dir_all(&dir)?;
     let path = intent_path(root, &intent.txn_hex);
@@ -133,23 +141,53 @@ pub fn create_decided(root: &WorkspaceRoot, intent: &Intent) -> io::Result<()> {
         .open(&path)?;
     let body = encode(intent);
     file.write_all(body.as_bytes())?;
-    honest_sync(&file)?;
-    honest_sync_path(path.parent().unwrap_or_else(|| Path::new(".")))?;
-    Ok(())
+    let mut pendings = Vec::with_capacity(2);
+    pendings.push(durability::submit(&root.0, &file)?);
+    pendings.push(durability::submit_path(
+        &root.0,
+        path.parent().unwrap_or_else(|| Path::new(".")),
+    )?);
+    Ok(pendings)
 }
 
-/// Rewrite the intent as `Applied` (tmp+honest-sync+rename) so a later
-/// recovery reclaims rather than re-applies.
+/// Rewrite the intent as `Applied` (tmp + settle + rename + parent settle,
+/// blocking) so a later recovery reclaims rather than re-applies. The
+/// recovery-path form; the publish path stages the flip with
+/// [`stage_applied`] instead.
 ///
 /// # Errors
-/// I/O/sync failure.
+/// I/O/settle failure.
 pub fn finalize(root: &WorkspaceRoot, intent: &Intent) -> io::Result<()> {
     let mut done = intent.clone();
     done.phase = Phase::Applied;
     write_honest(
+        root,
         &intent_path(root, &intent.txn_hex),
         encode(&done).as_bytes(),
     )
+}
+
+/// Stage the `Applied` flip without committing it: write the rewritten
+/// record to the intent's temp path and SUBMIT its settle. The caller awaits
+/// the pending (it rides the metadata-phase barrier), renames the temp onto
+/// the record, then settles the intents directory BEFORE reclaiming — the
+/// flip's dir entry must be durable before the recovery images are deleted,
+/// or a crash leaves a `Decided` record with its images gone.
+///
+/// # Errors
+/// I/O at write, or a submit failure.
+pub fn stage_applied(
+    root: &WorkspaceRoot,
+    intent: &Intent,
+) -> io::Result<(PathBuf, PathBuf, Pending)> {
+    let mut done = intent.clone();
+    done.phase = Phase::Applied;
+    let target = intent_path(root, &intent.txn_hex);
+    let tmp = target.with_extension("tmp-intent");
+    let mut f = File::create(&tmp)?;
+    f.write_all(encode(&done).as_bytes())?;
+    let pending = durability::submit(&root.0, &f)?;
+    Ok((tmp, target, pending))
 }
 
 /// Remove the intent file and its recovery-image directory.
@@ -274,41 +312,73 @@ pub fn restore_member(root: &WorkspaceRoot, member: &IntentMember) -> io::Result
             Err(e) => return Err(e),
         }
         if let Some(parent) = dest.parent() {
-            honest_sync_path(parent)?;
+            durability::settle_path(&root.0, parent)?;
         }
         return Ok(());
     }
     let bytes = fs::read(root.0.join(&member.old_store))?;
-    write_honest(&dest, &bytes)
+    verify_image(&bytes, member.old, &member.old_store, "restore")?;
+    write_honest(root, &dest, &bytes)
 }
 
 /// Write the recorded new image onto the destination.
 ///
 /// # Errors
-/// Missing new-store, or I/O at write.
+/// Missing new-store, an image failing its digest, or I/O at write.
 pub fn forward_member(root: &WorkspaceRoot, member: &IntentMember) -> io::Result<()> {
     let dest = root.0.join(&member.rel);
     let bytes = fs::read(root.0.join(&member.new_store))?;
-    write_honest(&dest, &bytes)
+    verify_image(&bytes, member.new, &member.new_store, "forward")?;
+    write_honest(root, &dest, &bytes)
 }
 
-/// Persist old/new recovery images for member `i` of `txn_hex`. Returns
-/// the workspace-relative store paths.
+/// Refuse to act on a recovery image whose bytes do not match the digest the
+/// checksummed record declares for it — a loud refusal, never a silent
+/// restore of corrupt bytes. Unreachable in crash worlds (images are behind
+/// the phase-1 barrier that gates every rename) but cheap insurance against
+/// the worlds that proof does not cover.
+fn verify_image(bytes: &[u8], recorded: [u8; 32], store: &Path, verb: &str) -> io::Result<()> {
+    if digest(bytes) == recorded {
+        return Ok(());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+            "recovery image `{}` does not match its recorded digest; refusing to {verb}",
+            store.display()
+        ),
+    ))
+}
+
+/// Persist old/new recovery images for member `i` of `txn_hex`, DIRECT —
+/// create + write + submit, no rename ceremony. Images are fresh files in
+/// the txn's fresh dot-directory: nothing reads them before the phase-1
+/// barrier has returned, so staged-then-rename buys nothing here. Returns
+/// the workspace-relative store paths plus the in-flight settles (two files
+/// and the images directory — the actor dedupes the directory across
+/// members).
 ///
 /// # Errors
-/// I/O at write/sync.
-pub fn store_images(
+/// I/O at mkdir/create/write, or a submit failure.
+pub fn store_images_submit(
     root: &WorkspaceRoot,
     txn_hex: &str,
     i: usize,
     old: &[u8],
     new: &[u8],
-) -> io::Result<(PathBuf, PathBuf)> {
+) -> io::Result<(PathBuf, PathBuf, Vec<Pending>)> {
+    let dir = root.0.join(INTENTS_DIR).join(txn_hex);
+    fs::create_dir_all(&dir)?;
     let old_rel = PathBuf::from(format!("{INTENTS_DIR}/{txn_hex}/{i}.old"));
     let new_rel = PathBuf::from(format!("{INTENTS_DIR}/{txn_hex}/{i}.new"));
-    write_honest(&root.0.join(&old_rel), old)?;
-    write_honest(&root.0.join(&new_rel), new)?;
-    Ok((old_rel, new_rel))
+    let mut pendings = Vec::with_capacity(3);
+    for (rel, bytes) in [(&old_rel, old), (&new_rel, new)] {
+        let mut f = File::create(root.0.join(rel))?;
+        f.write_all(bytes)?;
+        pendings.push(durability::submit(&root.0, &f)?);
+    }
+    pendings.push(durability::submit_path(&root.0, &dir)?);
+    Ok((old_rel, new_rel, pendings))
 }
 
 /// Write a group membership manifest, `O_EXCL`.
@@ -324,8 +394,8 @@ pub fn create_group(root: &WorkspaceRoot, group: &GroupManifest) -> io::Result<(
         .create_new(true)
         .open(&path)?;
     file.write_all(encode_group(group).as_bytes())?;
-    honest_sync(&file)?;
-    honest_sync_path(&dir)?;
+    durability::settle(&root.0, &file)?;
+    durability::settle_path(&root.0, &dir)?;
     Ok(())
 }
 
@@ -365,7 +435,7 @@ pub fn quarantine(root: &WorkspaceRoot, txn_hex: &str, paths: &[PathBuf]) -> io:
         body.push_str(&p.display().to_string());
         body.push('\n');
     }
-    write_honest(&root.0.join(rel), body.as_bytes())
+    write_honest(root, &root.0.join(rel), body.as_bytes())
 }
 
 fn intent_path(root: &WorkspaceRoot, txn_hex: &str) -> PathBuf {
@@ -548,7 +618,11 @@ mod tests {
     #[test]
     fn decided_round_trips_and_o_excl_refuses_a_duplicate() {
         let (_d, root) = ws();
-        let (old_store, new_store) = store_images(&root, "aa", 0, b"old", b"new").expect("stores");
+        let (old_store, new_store, image_pendings) =
+            store_images_submit(&root, "aa", 0, b"old", b"new").expect("stores");
+        for p in &image_pendings {
+            p.wait().expect("images settle");
+        }
         let intent = Intent {
             epoch_hex: "ee".into(),
             txn_hex: "aa".into(),
@@ -563,8 +637,10 @@ mod tests {
                 new_store,
             }],
         };
-        create_decided(&root, &intent).expect("first");
-        let err = create_decided(&root, &intent).expect_err("O_EXCL");
+        for p in &create_decided_submit(&root, &intent).expect("first") {
+            p.wait().expect("record settles");
+        }
+        let err = create_decided_submit(&root, &intent).expect_err("O_EXCL");
         assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
         let found = scan(&root).expect("scan");
         match &found[..] {

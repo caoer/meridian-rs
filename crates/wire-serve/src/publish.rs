@@ -31,8 +31,9 @@ use wire::{DeltaFile, DeltaFrame, Root};
 
 use crate::authority::AuthorityEpoch;
 use crate::write::assemble_delta;
+use fs::WorkspaceRoot;
+use fs::durability::{self, Pending};
 use fs::intent::{self, DestClass, Found, GroupManifest, Intent, IntentMember, Phase, Policy};
-use fs::{WorkspaceRoot, honest_sync_path};
 
 // ── identities ──────────────────────────────────────────────────────────────
 
@@ -379,7 +380,9 @@ pub struct DestImage {
     pub rel: PathBuf,
     pub old: Vec<u8>,
     pub new: Vec<u8>,
-    /// Already written + synced, same-directory as `rel`.
+    /// Already written, same-directory as `rel`, its settle either submitted
+    /// to the durability actor (riding [`StagedTxn::pending`]) or already
+    /// settled by the stager.
     pub tmp: PathBuf,
 }
 
@@ -390,6 +393,10 @@ pub struct StagedTxn {
     pub reads: Vec<Region>,
     pub writes: Vec<Region>,
     pub dests: Vec<DestImage>,
+    /// In-flight settles of the dest temps (submitted at stage time).
+    /// [`publish`] awaits these inside its phase-1 barrier, before any
+    /// rename. Empty when the stager already settled the temps itself.
+    pub pending: Vec<Pending>,
     pub files: Vec<DeltaFile>,
     pub actor: Option<String>,
     pub now: Option<String>,
@@ -436,13 +443,23 @@ impl From<io::Error> for PublishError {
     }
 }
 
-/// Stage → reserve → reverify → `O_EXCL` intent → rename → state-owner
-/// apply → finalize. Staging of `txn.dests` is the caller's (already
-/// done); this function is the rest of the path.
+/// Stage → reserve → reverify → phase-1 barrier (temps + images + `O_EXCL`
+/// intent) → renames → phase-2 barrier (parent dirs + the staged `Applied`
+/// flip) → state-owner apply → applied rename + its dir settle → reclaim.
+/// Staging of `txn.dests` is the caller's (already done); this function is
+/// the rest of the path.
+///
+/// THE HONESTY LINE, enforced by control flow: no rename runs before the
+/// wait on the barrier covering its bytes has RETURNED — the phase-1 waits
+/// complete before `rename_all`, and the applied flip's rename sits after
+/// the phase-2 waits. Three honest barriers per solo commit, flat in the
+/// destination count; the third is the price of reclaim safety (the
+/// `Applied` dir entry must be durable before the recovery images are
+/// deleted) — ruled residual, janitor declined.
 ///
 /// # Errors
-/// [`PublishError`] — conflict/I/O before the decision, or
-/// `commit_unknown` after it.
+/// [`PublishError`] — conflict/I/O before the durable decision (the phase-1
+/// waits returning), or `commit_unknown` after it.
 pub fn publish(
     root: &WorkspaceRoot,
     table: &Arc<ReservationTable>,
@@ -452,9 +469,20 @@ pub fn publish(
 ) -> Result<PublishReceipt, PublishError> {
     let _res = table.reserve(txn.txn, txn.reads.clone(), txn.writes.clone());
     reverify(root, &txn.dests)?;
+    // Phase 1: everything that must be durable before the first visible
+    // rename — the dest temps (submitted at stage time), the recovery
+    // images, the Decided intent, and their directory entries — settles
+    // through ONE awaited barrier. A failure here is a pre-decision
+    // refusal: nothing renamed, dests untouched, recovery reads all-old
+    // and aborts.
     let durability_start = Instant::now();
-    let intent = decide(root, &txn)?;
+    let (intent, phase1) = decide_submit(root, &txn)?;
+    for p in txn.pending.iter().chain(phase1.iter()) {
+        p.wait()?;
+    }
     let durability_end = Instant::now();
+    // The durable decision exists from here on: no error below is a
+    // refusal.
     if txn.drop_tmp_after_decide {
         for d in &txn.dests {
             let _ = std::fs::remove_file(&d.tmp);
@@ -467,14 +495,33 @@ pub fn publish(
             cause: e,
         });
     }
+    // Phase 2: the renames' parent-directory entries (deduped by the
+    // actor) plus the staged Applied flip, one awaited barrier.
+    let unknown = |e: io::Error| PublishError::CommitUnknown {
+        txn: txn.txn,
+        cause: e,
+    };
+    let mut phase2 = Vec::with_capacity(txn.dests.len() + 1);
+    for d in &txn.dests {
+        let dest = root.0.join(&d.rel);
+        let parent = dest.parent().unwrap_or_else(|| Path::new("."));
+        phase2.push(durability::submit_path(&root.0, parent).map_err(unknown)?);
+    }
+    let (applied_tmp, applied_dst, applied_pending) =
+        intent::stage_applied(root, &intent).map_err(unknown)?;
+    phase2.push(applied_pending);
+    for p in &phase2 {
+        p.wait().map_err(unknown)?;
+    }
     let metadata_end = Instant::now();
     let frame = owner.apply(txn.files, txn.actor, txn.now, fold);
-    if let Err(e) = intent::finalize(root, &intent) {
-        return Err(PublishError::CommitUnknown {
-            txn: txn.txn,
-            cause: e,
-        });
-    }
+    // The applied flip becomes the record, and its dir entry settles BEFORE
+    // reclaim deletes the recovery images (barrier three — the ruled
+    // residual: deferring it would let a crash leave a Decided record with
+    // its images already gone).
+    std::fs::rename(&applied_tmp, &applied_dst).map_err(unknown)?;
+    let applied_parent = applied_dst.parent().unwrap_or_else(|| Path::new("."));
+    durability::settle_path(&root.0, applied_parent).map_err(unknown)?;
     let _ = intent::reclaim(root, &txn.txn.hex());
     Ok(PublishReceipt {
         txn: txn.txn,
@@ -536,17 +583,26 @@ fn reverify(root: &WorkspaceRoot, dests: &[DestImage]) -> Result<(), PublishErro
     Ok(())
 }
 
-/// Persist recovery images and the `O_EXCL` decided intent. After this
-/// returns, no error on this transaction is a refusal.
+/// Write the recovery images and the `O_EXCL` decided intent, SUBMITTING
+/// every settle to the durability actor — the phase-1 members. The durable
+/// decision exists when the caller's waits on the returned pendings (plus
+/// the txn's own stage-time pendings) have RETURNED, and no rename may run
+/// before that. The dest temps are NOT re-synced here: their settles ride
+/// [`StagedTxn::pending`] from stage time.
 ///
 /// # Errors
-/// I/O at image write, intent create, or honest sync.
-pub fn decide(root: &WorkspaceRoot, txn: &StagedTxn) -> Result<Intent, PublishError> {
+/// I/O at image or intent write, or a submit failure — all pre-decision.
+pub fn decide_submit(
+    root: &WorkspaceRoot,
+    txn: &StagedTxn,
+) -> Result<(Intent, Vec<Pending>), PublishError> {
     let txn_hex = txn.txn.hex();
     let mut members = Vec::with_capacity(txn.dests.len());
+    let mut pendings = Vec::new();
     for (i, d) in txn.dests.iter().enumerate() {
-        honest_sync_path(&d.tmp)?;
-        let (old_store, new_store) = intent::store_images(root, &txn_hex, i, &d.old, &d.new)?;
+        let (old_store, new_store, image_pendings) =
+            intent::store_images_submit(root, &txn_hex, i, &d.old, &d.new)?;
+        pendings.extend(image_pendings);
         let tmp = d
             .tmp
             .strip_prefix(&root.0)
@@ -567,10 +623,13 @@ pub fn decide(root: &WorkspaceRoot, txn: &StagedTxn) -> Result<Intent, PublishEr
         policy: txn.policy,
         members,
     };
-    intent::create_decided(root, &rec)?;
-    Ok(rec)
+    pendings.extend(intent::create_decided_submit(root, &rec)?);
+    Ok((rec, pendings))
 }
 
+/// Rename every staged temp onto its destination — renames only. The
+/// parent-directory settles are the caller's phase 2, so the whole rename
+/// sequence runs with no barrier inside it.
 fn rename_all(root: &WorkspaceRoot, dests: &[DestImage]) -> io::Result<()> {
     for d in dests {
         let dest = root.0.join(&d.rel);
@@ -578,9 +637,6 @@ fn rename_all(root: &WorkspaceRoot, dests: &[DestImage]) -> io::Result<()> {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::rename(&d.tmp, &dest)?;
-        if let Some(parent) = dest.parent() {
-            honest_sync_path(parent)?;
-        }
     }
     Ok(())
 }
@@ -707,14 +763,16 @@ fn recover_one(root: &WorkspaceRoot, rec: Intent) -> io::Result<MemberRecovery> 
 // ── apply_batch seam ────────────────────────────────────────────────────────
 
 /// Build a [`StagedTxn`] from a staged two-file batch (the `apply_batch`
-/// split). The content dest is required; the receipt dest rides when present.
+/// split), CONSUMING it: the temps stay on disk for the renames, and the
+/// batch's in-flight settles move onto the txn for [`publish`]'s phase-1
+/// waits. The content dest is required; the receipt dest rides when present.
 ///
 /// # Errors
 /// Reading a staged temp, or minting a txn id.
 pub fn staged_from_batch(
     root: &WorkspaceRoot,
     epoch: AuthorityEpoch,
-    staged: &fs::StagedCommit,
+    staged: fs::StagedCommit,
     reads: Vec<Region>,
     writes: Vec<Region>,
 ) -> io::Result<StagedTxn> {
@@ -739,12 +797,14 @@ pub fn staged_from_batch(
             tmp: tmp.to_path_buf(),
         });
     }
+    let pending = staged.into_pendings();
     Ok(StagedTxn {
         txn,
         epoch,
         reads,
         writes,
         dests,
+        pending,
         files: Vec::new(),
         actor: None,
         now: None,
@@ -787,7 +847,7 @@ mod tests {
         std::fs::write(&dest, old).unwrap();
         let tmp = dest.with_extension("tmp-pub");
         std::fs::write(&tmp, new).unwrap();
-        honest_sync_path(&tmp).unwrap();
+        durability::settle_path(&root.0, &tmp).unwrap();
         DestImage {
             rel: PathBuf::from(rel),
             old: old.to_vec(),
@@ -803,6 +863,7 @@ mod tests {
             reads: Vec::new(),
             writes: vec![w],
             dests: vec![dest(root, rel, old, new)],
+            pending: Vec::new(),
             files: Vec::new(),
             actor: None,
             now: None,
@@ -1015,6 +1076,7 @@ mod tests {
                 Region::file("c", b"receipts/log.md", RegionKind::Write),
             ],
             dests: vec![content, receipt],
+            pending: Vec::new(),
             files: Vec::new(),
             actor: None,
             now: None,
@@ -1022,7 +1084,10 @@ mod tests {
             drop_tmp_after_decide: false,
         };
         reverify(&root, &staged.dests).unwrap();
-        decide(&root, &staged).unwrap();
+        let (_rec, phase1) = decide_submit(&root, &staged).unwrap();
+        for p in &phase1 {
+            p.wait().unwrap();
+        }
         // First rename only — the kill-after-first-rename window.
         std::fs::rename(&staged.dests[0].tmp, root.0.join(&staged.dests[0].rel)).unwrap();
         assert_eq!(
@@ -1064,13 +1129,17 @@ mod tests {
             reads: Vec::new(),
             writes: vec![Region::file("c", b"g/one.md", RegionKind::Write)],
             dests: vec![m1],
+            pending: Vec::new(),
             files: Vec::new(),
             actor: None,
             now: None,
             policy: Policy::Restore,
             drop_tmp_after_decide: false,
         };
-        decide(&root, &t1).unwrap();
+        let (_rec1, p1) = decide_submit(&root, &t1).unwrap();
+        for p in &p1 {
+            p.wait().unwrap();
+        }
         std::fs::rename(&t1.dests[0].tmp, root.0.join(&t1.dests[0].rel)).unwrap();
 
         let dir = root.0.join(intent::INTENTS_DIR);
@@ -1088,13 +1157,17 @@ mod tests {
             reads: Vec::new(),
             writes: vec![Region::file("c", b"g/three.md", RegionKind::Write)],
             dests: vec![m3],
+            pending: Vec::new(),
             files: Vec::new(),
             actor: None,
             now: None,
             policy: Policy::Restore,
             drop_tmp_after_decide: false,
         };
-        let rec3 = decide(&root, &t3).unwrap();
+        let (rec3, p3) = decide_submit(&root, &t3).unwrap();
+        for p in &p3 {
+            p.wait().unwrap();
+        }
         rename_all(&root, &t3.dests).unwrap();
         intent::finalize(&root, &rec3).unwrap();
 
