@@ -179,10 +179,8 @@ impl RunLog {
         let seal_err = |e: io::Error| RecordError::Seal {
             reason: e.to_string(),
         };
-        self.file.sync_all().map_err(seal_err)?;
-        File::open(&self.dir)
-            .and_then(|d| d.sync_all())
-            .map_err(seal_err)?;
+        fs::honest_sync(&self.file).map_err(seal_err)?;
+        fs::honest_sync_path(&self.dir).map_err(seal_err)?;
         Ok(StdoutRecord {
             invocation: self.invocation,
             log: self.rel_path,
