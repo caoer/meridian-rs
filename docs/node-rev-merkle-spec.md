@@ -644,6 +644,26 @@ class): the checkpoint.
 - **Format ordering:** the checkpoint format is downstream of the §4.2
   encoding — never persist what the next step replaces (merged plan §6
   step 10).
+- **Storage site:** one file per workspace in that workspace's cache drawer
+  (beside `sql.duckdb` and the run plane's digest memo), written atomically
+  and read whole. The drawer is outside every hash domain by construction, so
+  the checkpoint can never move a root or break a held token — the same floor
+  the §6.4 cookie stands on.
+- **The cursor's reach, stated:** the identity tuple's journal pair is the
+  REPLAY ANCHOR (this section's own words: without it "O(changes-while-down)
+  has no replay point"), and §4.9's law places it — "hash tokens are
+  epoch-free; cursors are not… cursors stay confined to the delta plane". So
+  the fields divide by what each can make WRONG: `workspace_uuid`,
+  `domain_version`, hash law, parse-cache generation and `tree_root` are
+  soundness and any mismatch discards the object whole; a journal pair that
+  cannot anchor costs the replay SHORTCUT, not the index, because every
+  restored row is re-verified against disk by the next observation under §6.2
+  before it can answer anything. Both outcomes are one loud labeled
+  re-baseline — of the index, or of the delta plane. **The engine's ring is
+  RAM-only (§7.1 late law: no epoch fact is ever persisted), so an ordinary
+  restart always takes the second arm today**: it saves the cold rebuild and
+  every unchanged member's byte read, and still pays one `stat` per member.
+  Gate 11's "zero unchanged members statted" is met on the replay arm only.
 
 ### 6.6 Fingerprint history ring
 
