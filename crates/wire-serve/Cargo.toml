@@ -10,6 +10,23 @@ publish.workspace = true
 [lints]
 workspace = true
 
+# Durability wall-time measurement, same convention as `crates/run`: the PERF
+# lane's, never the PR lane's. `required-features` is what makes that
+# mechanically true — `cargo test --workspace` skips the target, `ci.yml`'s
+# discovery loop lints it so it cannot bit-rot, and it is run by hand on the
+# macOS hardware whose numbers are reported. It MUST NOT run on CI: the honest
+# durability class here is `F_FULLFSYNC`, which exists only on macOS, so a
+# Linux run would report a different syscall's latency under the same heading —
+# the very defect this card corrects, reintroduced by the measurement.
+# Why the numbers matter: `tests/durability_walltime.rs` header.
+[features]
+perf-walltime = []
+
+[[test]]
+name = "durability_walltime"
+path = "tests/durability_walltime.rs"
+required-features = ["perf-walltime"]
+
 [dependencies]
 # the address grammar — the wire boundary constructs an address BY HAND (U10)
 addr = { workspace = true }
