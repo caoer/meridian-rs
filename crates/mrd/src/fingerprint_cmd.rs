@@ -59,8 +59,11 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     })?;
     admit_path(&parsed, &resolved.workspace)?;
 
-    let client = registry::Client::from_default()
-        .map_err(|e| Fail::tool(format!("{MINT_DAEMON_DOWN} (cannot resolve the daemon socket: {e})")))?;
+    let client = registry::Client::from_default().map_err(|e| {
+        Fail::tool(format!(
+            "{MINT_DAEMON_DOWN} (cannot resolve the daemon socket: {e})"
+        ))
+    })?;
     engine::ensure_daemon(&client).map_err(|e| {
         Fail::tool(format!(
             "{MINT_DAEMON_DOWN} ({e}). {}",
