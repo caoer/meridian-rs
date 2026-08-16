@@ -2397,7 +2397,9 @@ name = "perfsuite"
 version = "1.0.0"
 dependencies = [
  "criterion",
+ "fs",
  "hdrhistogram",
+ "libc",
  "model",
  "policy",
  "rand_chacha 0.9.0",
