@@ -56,6 +56,7 @@ pub(crate) struct Components {
 }
 
 /// One completed cutover: the durable record plus the measured pause.
+#[derive(Debug)]
 pub(crate) struct CutoverRun {
     pub record: CutoverRecord,
     pub components: Components,

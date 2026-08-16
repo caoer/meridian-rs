@@ -336,7 +336,7 @@ pub fn commit(root: &WorkspaceRoot, record: &CutoverRecord) -> io::Result<()> {
     write_record(&record_path(root), record)
 }
 
-/// tmp + honest_sync + rename + parent sync — the one write shape both
+/// tmp + `honest_sync` + rename + parent sync — the one write shape both
 /// state advances share.
 fn write_record(path: &std::path::Path, record: &CutoverRecord) -> io::Result<()> {
     let tmp = path.with_extension("tmp-cutover");

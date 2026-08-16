@@ -807,9 +807,7 @@ impl DomainCache {
         // fingerprint the resident tree already holds — O(1), no flat fold.
         // Recomputed only when the root advances; the observation above
         // invalidated the cache iff the tree moved.
-        let serving_law = self
-            .serving_law
-            .expect("observe resolved the serving law above");
+        let serving_law = self.serving_law(root)?;
         let current = model::RootVersion {
             hash_law: serving_law.hash_law,
             domain: version,
@@ -851,9 +849,7 @@ impl DomainCache {
         let leaves = self
             .observe(root, &domain, ObserveLaw::Plain)
             .map_err(plain_refusal)?;
-        let serving_law = self
-            .serving_law
-            .expect("observe resolved the serving law above");
+        let serving_law = self.serving_law(root)?;
         Ok(DomainLeaves {
             leaves,
             domain,
@@ -902,12 +898,7 @@ impl DomainCache {
         // (The served cache needs no explicit clear on a flip: it is keyed
         // by the full two-dimensional identity, so a changed law can never
         // answer from it.)
-        match self.serving_law {
-            Some(law) if law.hash_law != model::HASH_LAW_FLAT => {}
-            _ => {
-                self.serving_law = Some(cutover::serving(root).map_err(ObserveRefusal::Io)?);
-            }
-        }
+        self.serving_law(root).map_err(ObserveRefusal::Io)?;
         let losses_at_start = self.feed.losses();
         let trust = self.trust_context(root);
         let (mut rels, mut offenders, fresh_dirs, listings) =
@@ -1389,19 +1380,24 @@ impl DomainCache {
         self.tree.fold_at(scope)
     }
 
-    /// The workspace's serving hash-law dimension — resolved from the B-04
-    /// cutover record at the first observation and cached
-    /// (merkle-spec §4.2.6). Resolves now if no observation has landed yet.
+    /// The workspace's serving hash-law dimension — THE resolver
+    /// (merkle-spec §4.2.6). A law-2 answer caches for the life of this memo
+    /// (the record only ever advances, so it can never change again); a
+    /// law-1 answer re-reads the record — one ENOENT-class probe — so a memo
+    /// that straddles another process's cutover can never keep minting the
+    /// retired law.
     ///
     /// # Errors
     /// The record's typed refusals ([`cutover::serving`]).
     pub fn serving_law(&mut self, root: &WorkspaceRoot) -> io::Result<cutover::ServingLaw> {
-        if let Some(law) = self.serving_law {
-            return Ok(law);
+        match self.serving_law {
+            Some(law) if law.hash_law != model::HASH_LAW_FLAT => Ok(law),
+            _ => {
+                let law = cutover::serving(root)?;
+                self.serving_law = Some(law);
+                Ok(law)
+            }
         }
-        let law = cutover::serving(root)?;
-        self.serving_law = Some(law);
-        Ok(law)
     }
 
     /// The full two-dimensional serving identity at the live domain version —
