@@ -59,9 +59,10 @@ fingerprint diff sub create
 ```
 
 Also on the standing surface: `meta.duration_us` on dispatched responses;
-composed-read authz facts (`span` / `content_span` / `anchors[]`); read-mint
-into session memory when `actor` is present; pin/error codes as in
-`wire-contract.md` § A.
+composed-read authz facts (`span` / `content_span` / `anchors[]`); a
+`fingerprint` per served section row on sections-mode reads (the pin-proof
+token, wire-contract § A.3 — reads mint nothing and carry no `actor`);
+pin/error codes as in `wire-contract.md` § A.
 
 Residual host fields that still emit a **joined display string** are **debt,
 not address law**.
@@ -629,19 +630,22 @@ every other write uses: one flock, one rename (`wire-contract.md`
  projected splice response under a `pin` key; human output is a confirmation
  line plus the minted fingerprint, the anchor, the blob, and the new workspace
  fingerprint.
-- **No `--actor`.** The read-mint gate keys on a daemon-derived session
+- **No `--actor`.** Proof requiredness keys on a daemon-derived session
  identity, and a CLI invocation has no session: the bare `mrd pin` is
- local-operator-trusted and bypasses the gate, exactly as `mrd put` bypasses
+ local-operator-trusted and may pin proofless, exactly as `mrd put` bypasses
  the host's authz. An `--actor` flag here would either be a meaningless label
  or a way to spell an identity the process does not have.
 - **Exit triad:** 0 pinned (or `--dry` rehearsed) / 1 refused
- (`read_mint_required`, `pin_target_missing`, `write_conflict`,
+ (`pin_proof_required`, `pin_target_missing`, `write_conflict`,
  an armed gate refusal — the engine's verbatim message) / 2
  bad invocation (including a down daemon). The write is IPC, same as `mrd put`.
 
-A pin written through the resident daemon or MCP is gated: the actor must have
-read that exact selector in this session, in mode `sections`. "You cannot attest
-content that was never in your context."
+A pin written through the resident daemon or MCP carries its own proof: the
+`fingerprint` the caller's sections read served for that exact selector rides
+the pin, and the engine recomputes the live token under the write flock and
+compares (wire-contract § A.3, the proof law). "You cannot attest content that
+was never in your context" — proven by carrying the content's own token, not
+by a server-side record of the read; the engine keeps none.
 
 ### `mrd rules` — the effective law, shown
 
@@ -1315,7 +1319,8 @@ Accepted residuals (attestation surfaces) — documented, not prevented. Full st
  Accepted for the core loop because the promotion is rev-neutral; the fence and
  the authz tightening are stage-3.
 
-Also stage-3, and NOT shipped: the receipt / `predicate_type` representation
-unification (the read-mint ledger and the persisted `^receipt` projection are
-still two representations of one receipt family), the defsarm bridge-legs drop,
-and full-document re-attest.
+Also stage-3, and NOT shipped: the defsarm bridge-legs drop, and full-document
+re-attest. (The former third item here — unifying the read-mint ledger's
+representation with the persisted `^receipt` projection — is dead, not
+deferred: the ledger was deleted 2026-08-16 when pin proof moved onto the
+request, wire-contract § A.3.)
