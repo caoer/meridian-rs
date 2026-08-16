@@ -1,5 +1,0 @@
-+ git config --global --add safe.directory '*'
-+ cargo deny check
-2026-08-10 11:29:04 [ERROR] failed to fetch advisory database https://github.com/RustSec/advisory-db with cli: failed to fetch latest changes: ["-C", "/ci-cache/meridian-rs/cargo/advisory-dbs/advisory-db-3157b0e258782691", "fetch", "--depth=1", "-u", "origin", "+main:main"]
-fatal: shallow file has changed since we read it
-

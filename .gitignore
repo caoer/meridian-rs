@@ -7,3 +7,5 @@
 /result
 # live drawer: the daemon writes this when meridian-rs is a bound workspace
 /.meridian/
+# seat scratch: lives beside the worktree, never in the tree
+.scratch/
