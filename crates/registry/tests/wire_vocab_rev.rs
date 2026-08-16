@@ -158,18 +158,16 @@ fn v3_session_emits_fingerprint_and_zero_root_tokens() {
     let server = RunningServer::start(test_config(&tmp)).unwrap();
     let mut conn = Conn::open(server.socket_path());
 
-    // hello: caps carry the fingerprint spelling, never root; the binding echoes
-    // `fingerprint` (not `root`) and the negotiated `contract:v3`.
+    // hello: caps carry the fingerprint spelling, never root, and the
+    // negotiated `contract:v3` is echoed. (The binding-cursor spelling is
+    // asserted on a warm re-hello below — a cold hello carries no cursor at
+    // all, §3.2 config-grade law.)
     let hi = conn.hello(&ws, Some("v3"));
     assert_eq!(hi["ok"], json!(true), "v3 hello ok: {hi}");
     assert_eq!(
         hi["body"]["contract"],
         json!("v3"),
         "v3 echoes contract: {hi}"
-    );
-    assert!(
-        hi["body"]["fingerprint"].is_string(),
-        "the v3 hello binding is `fingerprint`, not `root`: {hi}"
     );
     let hi_caps = caps(&hi);
     for want in [
@@ -198,6 +196,14 @@ fn v3_session_emits_fingerprint_and_zero_root_tokens() {
     assert!(
         toc["body"]["fingerprint"].is_string(),
         "toc carries the ambient `fingerprint`: {toc}"
+    );
+
+    // The toc warmed the engine; a re-hello now carries the binding cursor —
+    // spelled `fingerprint`, never `root`.
+    let rehi = conn.hello(&ws, Some("v3"));
+    assert!(
+        rehi["body"]["fingerprint"].is_string(),
+        "the v3 hello binding is `fingerprint`, not `root`: {rehi}"
     );
 
     // `root` op in the v3 spelling is `fingerprint`; the response body is too.
@@ -254,7 +260,7 @@ fn v3_session_emits_fingerprint_and_zero_root_tokens() {
     );
 
     // The hard rule, mechanized: zero root-vocabulary keys in any v3 frame.
-    for frame in [&hi, &toc, &fp, &links, &diff, &splice] {
+    for frame in [&hi, &rehi, &toc, &fp, &links, &diff, &splice] {
         let frame_keys = all_keys(frame);
         for root_key in ROOT_KEYS {
             assert!(
@@ -282,10 +288,6 @@ fn v2_session_emits_root_and_never_fingerprint() {
         hi["body"].get("contract").is_none(),
         "a v2 hello echoes NO contract (frozen shape): {hi}"
     );
-    assert!(
-        hi["body"]["root"].is_string(),
-        "the v2 hello binding is `root`: {hi}"
-    );
     let hi_caps = caps(&hi);
     for want in ["root", "splice.if_root", "links.require_root"] {
         assert!(
@@ -309,6 +311,18 @@ fn v2_session_emits_root_and_never_fingerprint() {
     assert!(
         root["body"]["root"].is_string(),
         "root op answers `root`: {root}"
+    );
+    // The toc warmed the engine; a re-hello now carries the binding cursor —
+    // spelled `root` on the frozen v2 shape, never `fingerprint`. (A cold
+    // hello carries no cursor at all: §3.2 config-grade law.)
+    let rehi = conn.hello(&ws, Some("v2"));
+    assert!(
+        rehi["body"]["root"].is_string(),
+        "the v2 hello binding is `root`: {rehi}"
+    );
+    assert!(
+        rehi["body"].get("fingerprint").is_none(),
+        "a v2 hello never spells `fingerprint`: {rehi}"
     );
     assert!(
         links["body"]["as_of_root"].is_string() && links["body"]["live_root"].is_string(),
@@ -337,7 +351,7 @@ fn v2_session_emits_root_and_never_fingerprint() {
     );
 
     // Zero fingerprint-vocabulary keys in any v2 frame.
-    for frame in [&hi, &toc, &root, &links, &splice] {
+    for frame in [&hi, &rehi, &toc, &root, &links, &splice] {
         let frame_keys = all_keys(frame);
         for fp_key in FINGERPRINT_KEYS {
             assert!(

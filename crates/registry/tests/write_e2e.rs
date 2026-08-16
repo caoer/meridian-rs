@@ -109,7 +109,7 @@ fn splice_frame(conn: &mut Conn) -> Value {
     })
 }
 
-/// `hello` binds + warms; `splice` commits to disk with a bare `verdicts: []`;
+/// `hello` binds (config-grade, §3.2); the `fingerprint` op warms; `splice` commits to disk with a bare `verdicts: []`;
 /// the next `cat` over the socket serves the committed bytes.
 #[test]
 fn splice_lands_on_disk_and_the_next_read_reflects_it() {
@@ -118,12 +118,13 @@ fn splice_lands_on_disk_and_the_next_read_reflects_it() {
     let server = RunningServer::start(test_config(&tmp)).unwrap();
     let mut conn = Conn::open(server.socket_path());
 
-    // v3 session: the cursor is spelled `fingerprint`.
+    // Hello binds at config cost (§3.2); the `fingerprint` op reads the warm
+    // cursor (v3 spelling).
     let ack = conn.hello(&ws);
     assert_eq!(ack["ok"], json!(true), "hello ok: {ack}");
-    let fingerprint_before_hello = ack["body"]["fingerprint"]
+    let fingerprint_before_splice = conn.call(&json!({"op": "fingerprint"}))["body"]["fingerprint"]
         .as_str()
-        .expect("hello fingerprint")
+        .expect("the fingerprint op carries the ambient cursor")
         .to_string();
 
     let splice = {
@@ -139,7 +140,7 @@ fn splice_lands_on_disk_and_the_next_read_reflects_it() {
     let body = &splice["body"];
     assert_eq!(
         body["fingerprint_before"],
-        json!(fingerprint_before_hello),
+        json!(fingerprint_before_splice),
         "fingerprint_before is the pre-commit ambient cursor: {splice}"
     );
     assert!(
