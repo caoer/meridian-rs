@@ -54,9 +54,18 @@ fn clean_step_close_returns_verified_root() {
 
     let independent = fs::served_root(
         &[
-            (b"notes/new.md".as_slice(), model::leaf_digest(b"born in the window\n")),
-            (b"notes/plan.md".as_slice(), model::leaf_digest(b"# Plan v2\n")),
-            (b"receipts/log.md".as_slice(), model::leaf_digest(b"# Receipts\n")),
+            (
+                b"notes/new.md".as_slice(),
+                model::leaf_digest(b"born in the window\n"),
+            ),
+            (
+                b"notes/plan.md".as_slice(),
+                model::leaf_digest(b"# Plan v2\n"),
+            ),
+            (
+                b"receipts/log.md".as_slice(),
+                model::leaf_digest(b"# Receipts\n"),
+            ),
         ],
         0,
     );
@@ -356,7 +365,10 @@ fn governed_edit_outside_domain_is_inert() {
     let independent = fs::served_root(
         &[
             (b"notes/plan.md".as_slice(), model::leaf_digest(b"# Plan\n")),
-            (b"receipts/log.md".as_slice(), model::leaf_digest(b"# Receipts\n")),
+            (
+                b"receipts/log.md".as_slice(),
+                model::leaf_digest(b"# Receipts\n"),
+            ),
         ],
         1,
     );
