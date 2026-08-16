@@ -271,7 +271,7 @@ fn write_tmp(dir: &Path, data: &[u8]) -> io::Result<PathBuf> {
         {
             Ok(mut f) => {
                 f.write_all(data)?;
-                f.sync_all()?;
+                sync_file(&f)?;
                 return Ok(path);
             }
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
@@ -282,12 +282,35 @@ fn write_tmp(dir: &Path, data: &[u8]) -> io::Result<PathBuf> {
     }
 }
 
+/// Sync in the ruled durability class (`docs/laws.md` § Amendment — the
+/// fsync class): plain `fsync(2)`, never `F_FULLFSYNC`. On macOS std's
+/// `sync_all`/`sync_data` are `fcntl(F_FULLFSYNC)`, so the class needs
+/// `libc::fsync` directly; elsewhere `sync_all` IS `fsync(2)`. Local copy —
+/// this crate does not depend on `fs` (whose `honest_sync` is the shared
+/// form).
+fn sync_file(f: &File) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::fd::AsRawFd;
+        // SAFETY: fsync on a valid fd we own.
+        let rc = unsafe { libc::fsync(f.as_raw_fd()) };
+        if rc == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        f.sync_all()
+    }
+}
+
 /// fsync a directory so a completed link/rename survives power loss. Best-effort:
 /// the entry is already visible to readers, so a failed dir sync only weakens
 /// durability — it must never turn a committed write into a reported failure.
 fn fsync_dir(dir: &Path) {
     if let Ok(f) = File::open(dir) {
-        let _ = f.sync_all();
+        let _ = sync_file(&f);
     }
 }
 

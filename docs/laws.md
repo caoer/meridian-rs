@@ -2,7 +2,7 @@
 type: contract
 id: laws
 status: standing
-updated: 2026-08-15
+updated: 2026-08-16
 description: The three architecture laws, enforced as crate dependency edges rather than conventions, plus the charter of every crate.
 owns: [architecture laws, crate charters]
 ---
@@ -764,3 +764,36 @@ construction step 6; the lease half is `authority.rs`:
   and assigns a contiguous `root`/`seq`/frame. There is no disk sync in
   that mutex. Staging, validation, and all durability I/O run outside it,
   in parallel across disjoint writers.
+
+## Amendment — the fsync class (fingerprint grain)
+
+Law: ZT's fsync-class ruling
+(`decisions/2026-08-16-fsync-class-ruling-tournament-closed.md`, session
+`15-14-fingerprint-grain`), as amended by the implementing card
+(`tasks/macos-plain-fsync.md`): the ruling document's optional background
+flush is DECLINED on ZT's own words — *"I see. I do not need that."*
+Docs-first: this law lands before the code that implements it.
+
+> **Plain `fsync(2)` is the durability class of every sync site, on every
+> platform. `F_FULLFSYNC` is never issued — not on the ack path, not as a
+> background flush. Drive cache is accepted: the engine makes no power-loss
+> or platter-safety claim.**
+
+- **macOS pays the class via `libc::fsync`.** Rust std's `sync_all` and
+  `sync_data` both issue `fcntl(F_FULLFSYNC)` on macOS (measured, std 1.97.1,
+  aarch64), so no std call gives the ruled class there. `fs::honest_sync` /
+  `fs::honest_sync_path` are the shared primitive; a sync site routes through
+  them — or calls `libc::fsync` with a checked return where its crate does
+  not depend on `fs` — never `sync_all`/`sync_data`.
+- **Linux already complies and is unchanged.** `sync_all` is `fsync(2)`,
+  `sync_data` is `fdatasync(2)`, zero fcntl (measured, card
+  `verify-sync-class-linux`, sha `0af7058b`).
+- **No `F_BARRIERFSYNC` substitute.** It orders without promising durability
+  and is never a silent stand-in (ledger 23).
+- **Return values are checked.** A failed `fsync` is an `io::Error`, never a
+  dropped rc. Whether a site then propagates or stays best-effort (the
+  dir-sync-after-visible-rename sites, which must never turn a committed
+  write into a reported failure) is that site's stated policy.
+- **Scope: local disk only.** No NAS, no network mounts (ZT: *"we do not
+  need to support it"*). The `ENOTSUP`/`ENOTTY`-on-network-mount failure
+  mode is a recorded limit, not a built fallback.
