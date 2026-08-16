@@ -109,6 +109,54 @@ protocol): plumbing verified end-to-end — mode `today` ≈ mode `naive` as
 expected (syscall-identical on macOS), fsync/publish separation intact,
 receipt arithmetic closed exactly both modes.
 
+## 3b. The before numbers — required section, presented rather than superseded
+
+A result that only shows the good run has hidden the most informative thing
+that happened. The first counts against the landed actor disagreed with the
+pre-registration, and the prediction did not move: the filing holds at **3
+barriers per solo commit, constant in D** (`results/hdb-team-b-prediction.md`
+— "never explained away by adjusting the expectation").
+
+**Shakedown counts (fs_usage, syscall boundary).** Conditions: 10–50 txns,
+single writer, no warmup, tree `dc66998e9` predating both held fix commits,
+harness inline stage settle excluded, load >60 (counts are load-immune;
+latencies from these runs were discarded). Raw:
+`.scratch/fs_usage_real_shakedown-actor-d1*.txt`, `…-d3.txt`.
+
+| cell | actor barriers/txn | filed |
+|---|---|---|
+| D=1 (fit across 10- and 50-txn runs) | ~4.4 steady-state | 3 |
+| D=3 (10 txns) | ~8.4 | 3 |
+
+Count grew with D — the falsifier class named in the filing.
+
+**Hypothesis generated (leader):** eager drain — the actor's blocking recv
+returns on the FIRST submission, so a solo writer submitting sequentially
+gets many small batches instead of one per phase; signature would be
+barriers/txn tracking submits with ~1 object per barrier.
+
+**Discriminator (in-process counters, warmup excluded, 50 txns/cell, tree
+`dc66998e9` + held harness commits):**
+
+| cell | barriers/txn | objects/txn | objects/barrier |
+|---|---|---|---|
+| submitted D=1 | 5.86 | 9.0 | 1.54 |
+| submitted D=3 | 6.98 | 16.6 | 2.38 |
+| settled D=1 | 5.00 | 8.0 | — |
+| settled D=3 | 5.96 | 13.6 | — |
+
+**Strict eager drain is REFUTED** (barriers do not track submits 1:1; there
+is real grouping) — but phase batching is not achieved either: groups of
+1.5–2.4 instead of phase-sized, 5–7 barriers/txn against the filed 3, still
+growing mildly with D. Consistent with drains firing mid-phase and catching
+only what arrived before the barrier. Two clean side-findings: `honest_ops`
+== `actor_barriers` exactly in submitted mode (5860=5860, 6980=6980 ×1000) —
+zero actor bypass; and `F_BARRIERFSYNC` = 0 everywhere.
+
+**After (the ladder of record, post-fix):** PENDING. Either the count comes
+down to 3 constant-in-D, or the primary claim is reported FALSIFIED in those
+words. It is written here beside the before numbers when it runs.
+
 ## 4. Verdict on the named risk
 
 **PENDING the ladder of record.** The question as assigned: does the single
