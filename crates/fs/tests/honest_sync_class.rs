@@ -1,4 +1,4 @@
-//! The ruled durability class is plain fsync, not F_FULLFSYNC.
+//! The ruled durability class is plain fsync, not `F_FULLFSYNC`.
 //!
 //! macOS syscall counts (fsync vs fcntl) are a darwin probe, not this
 //! CI test. This file only checks that the helper succeeds on a file
