@@ -1270,6 +1270,8 @@ fn dispatch_read(
             // (`SeqSink::committed`), so no detect cycle can re-tell this
             // write as external between commit and record.
             let ring = registry.ring(ws);
+            // Same memo the feed patches — domain_cache applies pending dirt.
+            let cache = registry.domain_cache(ws);
             let out = wire_serve::write::splice_with_mints(
                 &ws_root,
                 Some(&*ring),
@@ -1279,6 +1281,7 @@ fn dispatch_read(
                     ambient: Some(&mints),
                     foreign: Some(&foreign),
                 },
+                Some(&cache),
             )?;
             Ok(out.body)
         }
@@ -1307,7 +1310,14 @@ fn dispatch_read(
             };
             // Sink records inside the flock (`SeqSink::committed`) — see `Op::Splice`.
             let ring = registry.ring(ws);
-            let out = wire_serve::write::splice_set(&ws_root, Some(&*ring), &args, &[])?;
+            let cache = registry.domain_cache(ws);
+            let out = wire_serve::write::splice_set_with_cache(
+                &ws_root,
+                Some(&*ring),
+                &args,
+                &[],
+                Some(&cache),
+            )?;
             Ok(out.body)
         }
         // Birth op — v3-only; the shared guarded door (`write::create`).
@@ -1333,7 +1343,14 @@ fn dispatch_read(
             // Birth is a root advance — owes the chain a seq. Sink records
             // inside the flock (`SeqSink::committed`) — see `Op::Splice`.
             let ring = registry.ring(ws);
-            let out = wire_serve::write::create(&ws_root, Some(&*ring), &args, &[])?;
+            let cache = registry.domain_cache(ws);
+            let out = wire_serve::write::create_with_cache(
+                &ws_root,
+                Some(&*ring),
+                &args,
+                &[],
+                Some(&cache),
+            )?;
             Ok(wire_serve::write::create_response(path, &out))
         }
         // Death op — v3-only; the shared guarded door (`write::remove`, § A.3):
@@ -1360,7 +1377,14 @@ fn dispatch_read(
             // Death is a root advance — owes the chain a seq. Sink records
             // inside the flock (`SeqSink::committed`) — see `Op::Splice`.
             let ring = registry.ring(ws);
-            let out = wire_serve::write::remove(&ws_root, Some(&*ring), &args, &[])?;
+            let cache = registry.domain_cache(ws);
+            let out = wire_serve::write::remove_with_cache(
+                &ws_root,
+                Some(&*ring),
+                &args,
+                &[],
+                Some(&cache),
+            )?;
             Ok(wire_serve::write::remove_response(path, &out))
         }
         // I4 def-conformance — v3-only, warm-engine doc, read-only.

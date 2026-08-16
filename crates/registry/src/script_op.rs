@@ -539,8 +539,19 @@ impl ScriptHost for LiveHost<'_> {
         };
         let mints = self.registry.read_mints(&self.ws_path);
         let ring = self.registry.ring(&self.ws_path);
-        let outcome = wire_serve::write::splice(&self.ws, Some(&*ring), &args, &[], Some(&mints))
-            .map_err(|e| refuse(format!("put: {}", error_text(&e))))?;
+        let cache = self.registry.domain_cache(&self.ws_path);
+        let outcome = wire_serve::write::splice_with_mints(
+            &self.ws,
+            Some(&*ring),
+            &args,
+            &[],
+            wire_serve::write::Mints {
+                ambient: Some(&mints),
+                foreign: None,
+            },
+            Some(&cache),
+        )
+        .map_err(|e| refuse(format!("put: {}", error_text(&e))))?;
         // The sink recorded the frame inside the flock (`SeqSink::committed`);
         // the outcome's frame is data here, never re-advanced.
         let fingerprint_after = outcome
@@ -728,6 +739,7 @@ fn commit(
     // One armed path is the single §4.4 splice; N paths are the §4.4 SET form
     // (`splice.set`) — one sealed commit under the entry guard, per
     // run-plane.md § One COMMIT per attempt.
+    let cache = registry.domain_cache(ws);
     let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if let [path] = paths.as_slice() {
             let args = wire_serve::write::SpliceArgs {
@@ -744,7 +756,17 @@ fn commit(
                 plan_edits: eval.armed.iter().map(|armed| armed.edit.clone()).collect(),
                 pin: None,
             };
-            wire_serve::write::splice(&ws_root, Some(&*ring), &args, &[], Some(&mints))
+            wire_serve::write::splice_with_mints(
+                &ws_root,
+                Some(&*ring),
+                &args,
+                &[],
+                wire_serve::write::Mints {
+                    ambient: Some(&mints),
+                    foreign: None,
+                },
+                Some(&cache),
+            )
         } else {
             let args = wire_serve::write::SpliceSetArgs {
                 id: request.id,
@@ -757,7 +779,13 @@ fn commit(
                 dry: request.dry,
                 force: false,
             };
-            wire_serve::write::splice_set(&ws_root, Some(&*ring), &args, &[])
+            wire_serve::write::splice_set_with_cache(
+                &ws_root,
+                Some(&*ring),
+                &args,
+                &[],
+                Some(&cache),
+            )
         }
     }));
     let Ok(outcome) = caught else {
