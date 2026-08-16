@@ -26,6 +26,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub mod base;
 pub mod checkpoint;
+pub mod cutover;
 pub mod digestmemo;
 pub mod domain;
 pub mod fence;
