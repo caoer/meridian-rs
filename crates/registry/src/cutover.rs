@@ -78,8 +78,13 @@ pub(crate) fn ensure(
     match fs::cutover::status(root)? {
         CutoverStatus::Present(rec) if rec.state == CutoverState::NewCommitted => Ok(None),
         CutoverStatus::Present(rec) => run(root, cache, cache_root, Resume::Record(rec)).map(Some),
-        CutoverStatus::Absent => run(root, cache, cache_root, Resume::Fresh { old_instance: None })
-            .map(Some),
+        CutoverStatus::Absent => run(
+            root,
+            cache,
+            cache_root,
+            Resume::Fresh { old_instance: None },
+        )
+        .map(Some),
     }
 }
 
@@ -237,12 +242,7 @@ fn settled_intents(root: &fs::WorkspaceRoot) -> io::Result<()> {
 /// Best-effort measurement sidecar — informational, never authority (the
 /// record is the authority; this file keeps gate-22/24 numbers where the
 /// cutover ran).
-fn write_receipt(
-    root: &fs::WorkspaceRoot,
-    record: &CutoverRecord,
-    c: Components,
-    served: &str,
-) {
+fn write_receipt(root: &fs::WorkspaceRoot, record: &CutoverRecord, c: Components, served: &str) {
     let body = format!(
         "cutover {}\nserved_after={served}\ndrain_us={}\nrecord_begin_us={}\n\
          checkpoint_discard_us={}\nbuild_us={}\ncommit_us={}\ntotal_us={}\n\

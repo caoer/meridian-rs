@@ -1179,7 +1179,19 @@ fn dispatch_read(
                 actor,
             },
         ),
-        Op::Links { path, require_root } => warm_engine_read(registry, ws, |engine| {
+        Op::Links { path, require_root } => {
+            // Retirement before `stale_view` (gate 3): a retired-family
+            // `require_root` names the law fact, never a staleness one.
+            if let Some(required) = &require_root {
+                let serving = registry.serving_version(ws).map_err(|e| warm_err_to_wire(&e))?;
+                let root = fs::WorkspaceRoot(ws.to_path_buf());
+                if let Some(refusal) =
+                    wire_serve::classify::family_refusal(&root, &required.0, "/", serving)
+                {
+                    return Err(refusal);
+                }
+            }
+            warm_engine_read(registry, ws, |engine| {
             let as_of = engine_root(engine);
             wire_serve::read::require_root_check(require_root.as_ref(), &as_of)?;
             let live = as_of.clone();
@@ -1193,7 +1205,8 @@ fn dispatch_read(
                 0,
                 || Ok(live),
             )
-        }),
+            })
+        }
         Op::Root => warm_engine_read(registry, ws, |engine| {
             // `tree_instance` absent for the same reason `seq` stays 0: this
             // op does not read the ring, and a ring surface it did not read
@@ -1204,19 +1217,35 @@ fn dispatch_read(
                 tree_instance: None,
             })
         }),
-        Op::Diff { from_root, to_root } => warm_engine_read(registry, ws, |engine| {
-            // `diff` does not read the ring: same-root ⇒ empty; else
-            // `root_unknown` → resync. `root.seq` stays 0 for the same reason —
-            // both surfaces read the ring together or neither does.
-            let current = engine_root(engine);
-            if from_root == current && to_root == current {
-                Ok(ResponseBody::Diff {
-                    batches: Vec::new(),
-                })
-            } else {
-                Err(Box::new(ErrorBody::new(ErrorCode::RootUnknown)))
+        Op::Diff { from_root, to_root } => {
+            // Retirement before unknown (gate 3; wire-contract §4.7): a
+            // retired-family endpoint refuses the labeled version fact, so
+            // the taught diff-by-root recovery can never loop on a bare
+            // `root_unknown` across the cutover boundary.
+            let serving = registry.serving_version(ws).map_err(|e| warm_err_to_wire(&e))?;
+            let root = fs::WorkspaceRoot(ws.to_path_buf());
+            for token in [&from_root, &to_root] {
+                if let Some(refusal) =
+                    wire_serve::classify::family_refusal(&root, &token.0, "/", serving)
+                {
+                    return Err(refusal);
+                }
             }
-        }),
+            warm_engine_read(registry, ws, |engine| {
+                // `diff` does not read the ring: same-root ⇒ empty; else
+                // `root_unknown` → resync. `root.seq` stays 0 for the same
+                // reason — both surfaces read the ring together or neither
+                // does.
+                let current = engine_root(engine);
+                if from_root == current && to_root == current {
+                    Ok(ResponseBody::Diff {
+                        batches: Vec::new(),
+                    })
+                } else {
+                    Err(Box::new(ErrorBody::new(ErrorCode::RootUnknown)))
+                }
+            })
+        }
         Op::Resolve {
             from,
             r#ref,
@@ -1453,6 +1482,21 @@ fn dispatch_read(
                 match ring.can_anchor(cursor) {
                     wire_serve::ring::Anchor::Anchored => {}
                     wire_serve::ring::Anchor::DeadInstance => {
+                        // The labeled cutover boundary (wire-contract §4.7):
+                        // a cursor naming the RETIRED instance the B-04
+                        // record remembers gets the epoch answer, never the
+                        // bare dead-instance one. A cursor from an epoch no
+                        // record can name (a prior daemon's RAM-only ring)
+                        // keeps the ordinary answer, and the labeled
+                        // retirement reaches that client at the diff/guard
+                        // doors.
+                        let root = fs::WorkspaceRoot(ws.to_path_buf());
+                        if let Ok(fs::cutover::CutoverStatus::Present(rec)) =
+                            fs::cutover::status(&root)
+                            && rec.old_instance.as_deref() == Some(cursor.tree_instance.as_str())
+                        {
+                            return Err(Box::new(ErrorBody::epoch_retired(&rec.cutover_id)));
+                        }
                         let mut e = ErrorBody::new(ErrorCode::RootUnknown);
                         e.message = Some(wire::sub_dead_instance_teaching(
                             &cursor.tree_instance,
@@ -1687,7 +1731,13 @@ fn doc_or_refusal<'e>(
 /// skips and reports it; [`doc_or_refusal`] mints its per-file refusal) — so
 /// the `InvalidData` arm survives for the decode failures that really are
 /// corpus-scoped, e.g. a domain config file that is itself not UTF-8.
-fn warm_err_to_wire(e: &io::Error) -> Box<ErrorBody> {
+pub(crate) fn warm_err_to_wire(e: &io::Error) -> Box<ErrorBody> {
+    // An unrecognized/corrupt B-04 cutover record blocks serving loudly with
+    // its own env-class code (merkle-spec §4.2.6) — checked before the
+    // generic InvalidData arm, which would mis-spell it `invalid_utf8`.
+    if fs::cutover::is_cutover_state_error(e) {
+        return Box::new(ErrorBody::cutover_recovery_required());
+    }
     if e.kind() == io::ErrorKind::InvalidData {
         let mut err = ErrorBody::new(ErrorCode::InvalidUtf8);
         if let Some(member) = fs::corpus_member_error(e) {

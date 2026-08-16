@@ -223,10 +223,32 @@ fn serve(
     let entry = world.at_fingerprint.0.clone();
 
     // The caller's own pre-eval guard: zero evaluation, zero reads.
-    if let Some(pinned) = &request.if_root
-        && pinned.0 != entry
-    {
-        return Ok(ScriptTrace::guard_refused(entry, pinned.0.clone()));
+    // Family classification first (gate 3; wire-contract §5.7): a retired
+    // or unknown-future token produces a TYPED refused trace carrying the
+    // version fact and its resync teaching — never a generic conflict.
+    if let Some(pinned) = &request.if_root {
+        let ws_root = fs::WorkspaceRoot(ws.to_path_buf());
+        let serving = registry
+            .serving_version(ws)
+            .map_err(|e| crate::server::warm_err_to_wire(&e))?;
+        if let Some(refusal) =
+            wire_serve::classify::family_refusal(&ws_root, &pinned.0, "/", serving)
+        {
+            let code = serde_json::to_value(refusal.code)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_owned));
+            return Ok(ScriptTrace::entry_refused(
+                entry,
+                Refusal {
+                    code,
+                    recovery: Some(wire::Recovery::Resync),
+                    reason: refusal.message.clone().unwrap_or_default(),
+                },
+            ));
+        }
+        if pinned.0 != entry {
+            return Ok(ScriptTrace::guard_refused(entry, pinned.0.clone()));
+        }
     }
 
     // § A.7 literals-first, checked before expansion so the illegal list is
