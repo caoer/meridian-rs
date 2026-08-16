@@ -1985,7 +1985,13 @@ fn inbound_referrers(target: &str, files: fs::DomainFiles) -> Vec<Referrer> {
 /// references, named one by one — reason first, then the fitted remedy.
 fn remove_refused(path: &Path, referrers: Vec<Referrer>) -> Box<ErrorBody> {
     let edges: u64 = referrers.iter().map(|r| r.count).sum();
-    let files = referrers.len();
+    // Rows aggregate per (path, kind): one file referring by two kinds spans
+    // two rows, so the files figure dedups paths rather than counting rows.
+    let files = referrers
+        .iter()
+        .map(|r| r.path.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
     let mut e = ErrorBody::new(ErrorCode::RemoveRefused);
     e.path = Some(path.clone());
     e.message = Some(format!(
@@ -5974,6 +5980,66 @@ mod guarded_create_remove {
                 referrers[0].count
             ),
             ("notes/pinner.md", ReferrerKind::Pin, 1)
+        );
+    }
+
+    /// § A.3 message figures: one file referring by TWO kinds (wikilink and
+    /// pin) spans two referrer rows — the message's edge figure sums every
+    /// edge, and its file figure counts DISTINCT referring files, not rows.
+    #[test]
+    fn remove_refusal_counts_distinct_files_not_referrer_rows() {
+        let (dir, root) = ws();
+        let born = create(
+            &root,
+            None,
+            &create_args("notes/victim.md", "# Victim\n"),
+            &[],
+        )
+        .unwrap();
+
+        // One referring file holding all three edges: two wikilinks plus an
+        // ambient pin (raw fixture write — the birth door refuses lock-bearing
+        // bodies, and the guard reads DISK).
+        let victim = model::build("# Victim\n".to_string(), syntax::parse("# Victim\n"));
+        let token = model::fingerprint::fingerprint(&victim, &victim.root)
+            .expect("the fixture page has content")
+            .into_string();
+        let mut l = lock::Lock::new();
+        l.upsert_pin(lock::PinEntry::new(
+            "victim",
+            "9ae3f1deadbeef",
+            lock::Selector::Path(Vec::new()),
+            &token,
+        ));
+        std::fs::write(
+            dir.path().join("notes/fan.md"),
+            format!(
+                "# Fan\n\nsee [[victim]], and [[victim]] again\n\n{}\n",
+                lock::render(&l)
+            ),
+        )
+        .unwrap();
+
+        let err = remove(
+            &root,
+            None,
+            &remove_args("notes/victim.md", &born.file_rev_after.0),
+            &[],
+        )
+        .expect_err("a referenced record must not die");
+        assert_eq!(err.code, ErrorCode::RemoveRefused);
+        let referrers = err.referrers.as_deref().unwrap();
+        assert_eq!(referrers.len(), 2, "two rows: one per (path, kind)");
+        assert!(
+            referrers.iter().all(|r| r.path == "notes/fan.md"),
+            "both rows name the one referring file"
+        );
+        assert!(
+            err.message
+                .as_deref()
+                .is_some_and(|m| m.contains("3 inbound references from 1 file —")),
+            "edges sum, files dedup distinct paths: {:?}",
+            err.message
         );
     }
 
