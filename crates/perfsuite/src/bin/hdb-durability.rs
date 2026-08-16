@@ -62,19 +62,53 @@ fn main() -> ExitCode {
             bench(Path::new(dir), mode, parse(writers), parse(iters))
         }
         ["receipt", dir, mode, iters] => receipt(Path::new(dir), mode, parse(iters)),
-        ["bench-real", dir, dests, writers, iters] => {
-            bench_real(Path::new(dir), parse(dests), parse(writers), parse(iters))
-        }
-        ["receipt-real", dir, dests, iters] => {
-            receipt_real(Path::new(dir), parse(dests), parse(iters))
-        }
+        ["bench-real", dir, dests, writers, iters] => bench_real(
+            Path::new(dir),
+            parse(dests),
+            parse(writers),
+            parse(iters),
+            Staging::Submitted,
+        ),
+        ["bench-real", dir, dests, writers, iters, staging] => bench_real(
+            Path::new(dir),
+            parse(dests),
+            parse(writers),
+            parse(iters),
+            parse_staging(staging),
+        ),
+        ["receipt-real", dir, dests, iters] => receipt_real(
+            Path::new(dir),
+            parse(dests),
+            parse(iters),
+            Staging::Submitted,
+        ),
+        ["receipt-real", dir, dests, iters, staging] => receipt_real(
+            Path::new(dir),
+            parse(dests),
+            parse(iters),
+            parse_staging(staging),
+        ),
+        ["loss-a", dir, max_offset_us, step_us, samples] => loss_a(
+            Path::new(dir),
+            parse(max_offset_us),
+            parse(step_us),
+            parse(samples),
+        ),
+        ["loss-b", dir, big_d, small_writers, iters] => loss_b(
+            Path::new(dir),
+            parse(big_d),
+            parse(small_writers),
+            parse(iters),
+        ),
         _ => {
             eprintln!(
                 "usage: hdb-durability baseline <dir> [iters]\n       \
                  hdb-durability bench <dir> today|naive|actor <writers> <iters>\n       \
                  hdb-durability receipt <dir> today|naive|actor <iters>\n       \
-                 hdb-durability bench-real <dir> <dests> <writers> <iters>\n       \
-                 hdb-durability receipt-real <dir> <dests> <iters>"
+                 hdb-durability bench-real <dir> <dests> <writers> <iters> [settled|submitted]\n       \
+                 hdb-durability receipt-real <dir> <dests> <iters> [settled|submitted]\n       \
+                 hdb-durability loss-a <dir> <max_offset_us> <step_us> <samples>\n       \
+                 hdb-durability loss-b <dir> <bigD> <small_writers> <iters>"
             );
             return ExitCode::from(2);
         }
@@ -350,26 +384,25 @@ struct CommitLatency {
 /// rename onto `dst`, make the rename durable (mode's class). Returns the
 /// two waits separately.
 type ContentSync = fn(&File) -> std::io::Result<()>;
-type DirSync = fn(&Path) -> std::io::Result<()>;
 
 fn commit_once(
     dst: &Path,
     tmp: &Path,
     buf: &[u8],
-    content_sync: ContentSync,
-    dir_sync: DirSync,
+    mode: Mode,
+    root: &Path,
 ) -> std::io::Result<CommitLatency> {
     let mut f = File::create(tmp)?;
     f.write_all(buf)?;
     let t0 = Instant::now();
-    content_sync(&f)?;
+    mode_content_sync(mode, root, &f)?;
     let fsync = t0.elapsed();
     drop(f);
 
     let parent = dst.parent().unwrap_or_else(|| Path::new("."));
     let t1 = Instant::now();
     std::fs::rename(tmp, dst)?;
-    dir_sync(parent)?;
+    mode_dir_sync(mode, root, parent)?;
     let publish = t1.elapsed();
     Ok(CommitLatency { fsync, publish })
 }
@@ -391,13 +424,6 @@ fn sync_all_path(p: &Path) -> std::io::Result<()> {
 /// publish percentiles separately.
 fn bench(dir: &Path, mode: &str, writers: u32, iters: u32) -> std::io::Result<()> {
     let mode = Mode::from_str(mode)?;
-    if mode == Mode::Actor {
-        return Err(std::io::Error::other(
-            "actor mode: the crates/fs durability actor has not landed on hd-team-b yet; \
-             this cell is wired when it does",
-        ));
-    }
-
     let start = Barrier::new(writers as usize);
     let mut cells: Vec<Vec<CommitLatency>> = Vec::new();
     std::thread::scope(|scope| -> std::io::Result<()> {
@@ -408,14 +434,13 @@ fn bench(dir: &Path, mode: &str, writers: u32, iters: u32) -> std::io::Result<()
                 let dst = dir.join(format!("w{w}.dat"));
                 let tmp = dir.join(format!(".w{w}.tmp"));
                 let buf = vec![b'x'; WRITE_SIZE];
-                let (content, dirsync) = sync_fns(mode);
                 for _ in 0..WARMUP_ITERS {
-                    commit_once(&dst, &tmp, &buf, content, dirsync)?;
+                    commit_once(&dst, &tmp, &buf, mode, dir)?;
                 }
                 start.wait();
                 let mut out = Vec::with_capacity(iters as usize);
                 for _ in 0..iters {
-                    out.push(commit_once(&dst, &tmp, &buf, content, dirsync)?);
+                    out.push(commit_once(&dst, &tmp, &buf, mode, dir)?);
                 }
                 Ok(out)
             }));
@@ -448,12 +473,22 @@ fn bench(dir: &Path, mode: &str, writers: u32, iters: u32) -> std::io::Result<()
     Ok(())
 }
 
-/// The two sync placements for an inline mode. `Actor` never reaches here.
-fn sync_fns(mode: Mode) -> (ContentSync, DirSync) {
+/// The content-sync placement per mode. `root` names the workspace whose
+/// device the actor's barrier handle pins; inline modes ignore it.
+fn mode_content_sync(mode: Mode, root: &Path, f: &File) -> std::io::Result<()> {
     match mode {
-        Mode::Today => (sync_all_file, sync_all_path),
-        Mode::Naive => (::fs::honest_sync, ::fs::honest_sync_path),
-        Mode::Actor => unreachable!("actor cells are wired when the actor lands"),
+        Mode::Today => f.sync_all(),
+        Mode::Naive => ::fs::honest_sync(f),
+        Mode::Actor => ::fs::durability::settle(root, f).map(|_| ()),
+    }
+}
+
+/// The dir-sync placement per mode (rename durability).
+fn mode_dir_sync(mode: Mode, root: &Path, p: &Path) -> std::io::Result<()> {
+    match mode {
+        Mode::Today => sync_all_path(p),
+        Mode::Naive => ::fs::honest_sync_path(p),
+        Mode::Actor => ::fs::durability::settle_path(root, p).map(|_| ()),
     }
 }
 
@@ -473,11 +508,6 @@ fn cleanup(dir: &Path, writers: u32) {
 /// the trace can be checked against it.
 fn receipt(dir: &Path, mode: &str, iters: u32) -> std::io::Result<()> {
     let mode = Mode::from_str(mode)?;
-    if mode == Mode::Actor {
-        return Err(std::io::Error::other(
-            "actor mode: the crates/fs durability actor has not landed on hd-team-b yet",
-        ));
-    }
     println!(
         "pid={} mode={} iters={iters}",
         std::process::id(),
@@ -489,15 +519,52 @@ fn receipt(dir: &Path, mode: &str, iters: u32) -> std::io::Result<()> {
     let dst = dir.join("receipt.dat");
     let tmp = dir.join(".receipt.tmp");
     let buf = vec![b'x'; WRITE_SIZE];
-    let (content, dirsync) = sync_fns(mode);
+    let c0 = counters();
     for _ in 0..iters {
-        commit_once(&dst, &tmp, &buf, content, dirsync)?;
+        commit_once(&dst, &tmp, &buf, mode, dir)?;
     }
+    let c1 = counters();
     println!(
         "done: {iters} commits, expected honest-class syncs on macOS = {iters} (content) + {iters} (dir)"
     );
+    print_counter_deltas(c0, c1, u64::from(iters));
     let _ = std::fs::remove_file(&dst);
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// in-process counters — the eager-drain discriminator
+// ---------------------------------------------------------------------------
+
+/// A snapshot of the actor's three counters (module `fs::durability`):
+/// process-wide honest ops, post-dedupe object pushes, actor barriers.
+#[derive(Clone, Copy)]
+struct Counters {
+    honest_ops: u64,
+    object_syncs: u64,
+    actor_barriers: u64,
+}
+
+fn counters() -> Counters {
+    Counters {
+        honest_ops: ::fs::durability::honest_ops(),
+        object_syncs: ::fs::durability::object_syncs(),
+        actor_barriers: ::fs::durability::actor_barriers(),
+    }
+}
+
+/// Per-txn counter deltas — printed x1000 so grouping shows without floats.
+fn print_counter_deltas(c0: Counters, c1: Counters, txns: u64) {
+    let t = txns.max(1);
+    println!(
+        "counters/txn x1000: honest_ops={} object_syncs={} actor_barriers={} (raw deltas {} {} {})",
+        (c1.honest_ops - c0.honest_ops) * 1000 / t,
+        (c1.object_syncs - c0.object_syncs) * 1000 / t,
+        (c1.actor_barriers - c0.actor_barriers) * 1000 / t,
+        c1.honest_ops - c0.honest_ops,
+        c1.object_syncs - c0.object_syncs,
+        c1.actor_barriers - c0.actor_barriers,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -537,8 +604,28 @@ fn lane_setup(ws: &Path, writer: u32, dests: u32) -> std::io::Result<Lane> {
     Ok(Lane { rels, cur })
 }
 
-/// Stage this iteration's D temps (each written then honest-synced, the
-/// caller's half of the publish contract), publish through the REAL
+/// How the harness stages dest temps: `Settled` syncs each inline before
+/// publish (`pending` stays empty); `Submitted` hands each temp to the
+/// durability actor at stage time and rides the [`Pending`]s into the txn —
+/// the shape the actor-wired engine stages in.
+#[derive(Clone, Copy, PartialEq)]
+enum Staging {
+    Settled,
+    Submitted,
+}
+
+fn parse_staging(s: &str) -> Staging {
+    match s {
+        "settled" => Staging::Settled,
+        "submitted" => Staging::Submitted,
+        other => {
+            eprintln!("unknown staging: {other}");
+            std::process::exit(2);
+        }
+    }
+}
+
+/// Stage this iteration's D temps (per `staging`), publish through the REAL
 /// `wire_serve::publish`, and return the separated timings.
 fn real_txn_once(
     root: &WorkspaceRoot,
@@ -546,18 +633,23 @@ fn real_txn_once(
     owner: &StateOwner,
     lane: &mut Lane,
     iter: u32,
+    staging: Staging,
 ) -> std::io::Result<RealLatency> {
     let t_wall = Instant::now();
     let mut stage = Vec::with_capacity(lane.rels.len());
     let mut dests = Vec::with_capacity(lane.rels.len());
     let mut writes = Vec::with_capacity(lane.rels.len());
+    let mut pending = Vec::new();
     let new = vec![b'a' + u8::try_from(iter % 26).expect("mod 26 fits"); WRITE_SIZE];
     for (d, rel) in lane.rels.iter().enumerate() {
         let dst = root.0.join(rel);
         let tmp = dst.with_extension("tmp-pub");
         std::fs::write(&tmp, &new)?;
         let t = Instant::now();
-        ::fs::honest_sync_path(&tmp)?;
+        match staging {
+            Staging::Settled => ::fs::honest_sync_path(&tmp)?,
+            Staging::Submitted => pending.push(::fs::durability::submit_path(&root.0, &tmp)?),
+        }
         stage.push(t.elapsed());
         dests.push(DestImage {
             rel: PathBuf::from(rel),
@@ -573,9 +665,7 @@ fn real_txn_once(
         reads: Vec::new(),
         writes,
         dests,
-        // The harness stages with an inline settle (honest_sync_path), so no
-        // in-flight stage-time settles ride the txn.
-        pending: Vec::new(),
+        pending,
         files: Vec::new(),
         actor: None,
         now: None,
@@ -600,16 +690,24 @@ fn real_txn_once(
 /// `iters` transactions of `dests` destinations through the shared
 /// reservation table and state owner. Staging sync, durability interval,
 /// metadata interval, and transaction wall are printed as separate figures.
-fn bench_real(dir: &Path, dests: u32, writers: u32, iters: u32) -> std::io::Result<()> {
+fn bench_real(
+    dir: &Path,
+    dests: u32,
+    writers: u32,
+    iters: u32,
+    staging: Staging,
+) -> std::io::Result<()> {
     let ws = dir.join(format!("hdb-real-{}", std::process::id()));
     std::fs::create_dir_all(&ws)?;
     let root = WorkspaceRoot(ws.clone());
     let table = ReservationTable::new();
     let owner = StateOwner::new(Root("hdb".into()));
     let load_before = loadavg();
+    let c0 = counters();
 
-    let start = Barrier::new(writers as usize);
+    let start = Barrier::new(writers as usize + 1);
     let mut per_writer: Vec<Vec<RealLatency>> = Vec::new();
+    let mut c_measured = c0;
     std::thread::scope(|scope| -> std::io::Result<()> {
         let mut handles = Vec::new();
         for w in 0..writers {
@@ -617,21 +715,24 @@ fn bench_real(dir: &Path, dests: u32, writers: u32, iters: u32) -> std::io::Resu
             handles.push(scope.spawn(move || -> std::io::Result<Vec<RealLatency>> {
                 let mut lane = lane_setup(&root.0, w, dests)?;
                 for i in 0..WARMUP_ITERS {
-                    real_txn_once(root, table, owner, &mut lane, i)?;
+                    real_txn_once(root, table, owner, &mut lane, i, staging)?;
                 }
                 start.wait();
                 let mut out = Vec::with_capacity(iters as usize);
                 for i in 0..iters {
-                    out.push(real_txn_once(root, table, owner, &mut lane, i)?);
+                    out.push(real_txn_once(root, table, owner, &mut lane, i, staging)?);
                 }
                 Ok(out)
             }));
         }
+        start.wait(); // warmups done on every lane: snapshot the counters
+        c_measured = counters();
         for h in handles {
             per_writer.push(h.join().expect("writer thread panicked")?);
         }
         Ok(())
     })?;
+    let c1 = counters();
     let load_after = loadavg();
 
     let mut stage_run = LatencyRun::new();
@@ -647,9 +748,15 @@ fn bench_real(dir: &Path, dests: u32, writers: u32, iters: u32) -> std::io::Resu
         wall_run.record(txn.wall);
     }
     println!(
-        "cell-real dests={dests} writers={writers} iters={iters} txns={} load_before=[{load_before}] load_after=[{load_after}]",
+        "cell-real dests={dests} writers={writers} iters={iters} staging={} txns={} load_before=[{load_before}] load_after=[{load_after}]",
+        if staging == Staging::Submitted {
+            "submitted"
+        } else {
+            "settled"
+        },
         wall_run.samples()
     );
+    print_counter_deltas(c_measured, c1, u64::from(writers) * u64::from(iters));
     for (name, run) in [
         ("stage_sync (per barrier)", &stage_run),
         ("durability (decide)", &durability_run),
@@ -673,24 +780,186 @@ fn bench_real(dir: &Path, dests: u32, writers: u32, iters: u32) -> std::io::Resu
 /// `iters` single-writer transactions at `dests` destinations, so honest
 /// syncs per transaction are counted at the syscall boundary and
 /// cross-checked against the published 6D+4.
-fn receipt_real(dir: &Path, dests: u32, iters: u32) -> std::io::Result<()> {
+fn receipt_real(dir: &Path, dests: u32, iters: u32, staging: Staging) -> std::io::Result<()> {
     let ws = dir.join(format!("hdb-real-receipt-{}", std::process::id()));
     std::fs::create_dir_all(&ws)?;
     let root = WorkspaceRoot(ws.clone());
     let table = ReservationTable::new();
     let owner = StateOwner::new(Root("hdb".into()));
+    // Warmups run BEFORE the attach window so one-time setup (dirs, actor
+    // spawn, intent scaffolding) never rides the counted region.
+    let mut lane = lane_setup(&ws, 0, dests)?;
+    for i in 0..WARMUP_ITERS {
+        real_txn_once(&root, &table, &owner, &mut lane, i, staging)?;
+    }
     println!("pid={} dests={dests} iters={iters}", std::process::id());
     std::io::stdout().flush()?;
     std::thread::sleep(Duration::from_secs(3));
 
-    let mut lane = lane_setup(&ws, 0, dests)?;
+    let c0 = counters();
     for i in 0..iters {
-        real_txn_once(&root, &table, &owner, &mut lane, i)?;
+        real_txn_once(&root, &table, &owner, &mut lane, i, staging)?;
     }
+    let c1 = counters();
     println!(
-        "done: {iters} transactions x {dests} dests, 6D+4 cross-check target = {} syncs/txn",
+        "done: {iters} transactions x {dests} dests (staging {}), 6D+4 cross-check target = {} syncs/txn",
+        if staging == Staging::Submitted {
+            "submitted"
+        } else {
+            "settled"
+        },
         6 * dests + 4
     );
+    print_counter_deltas(c0, c1, u64::from(iters));
     std::fs::remove_dir_all(&ws)?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// the pre-registered loss regimes (hdb-team-b-prediction.md §4b)
+// ---------------------------------------------------------------------------
+
+/// Loss A — adversarial arrival: writer 2 submits at a controlled offset
+/// after writer 1's drain begins, the offset sweeps the drain window, and the
+/// figure reported is the ARRIVING writer's wait, not batch throughput.
+/// Pre-registered: Team B loses this cell at roughly two barriers.
+fn loss_a(dir: &Path, max_offset_us: u32, step_us: u32, samples: u32) -> std::io::Result<()> {
+    let root = dir.to_path_buf();
+    let p1 = dir.join("loss-a-1.dat");
+    let p2 = dir.join("loss-a-2.dat");
+    let buf = vec![b'x'; WRITE_SIZE];
+    let load_before = loadavg();
+    println!(
+        "loss-a: offsets 0..={max_offset_us}us step {step_us}us, {samples} samples each, load [{load_before}]"
+    );
+    println!(
+        "{:>10} {:>12} {:>12} {:>12} {:>8}",
+        "offset_us", "wait_p50_ms", "wait_p99_ms", "wait_max_ms", "samples"
+    );
+    let mut offset = 0u32;
+    while offset <= max_offset_us {
+        let mut run = LatencyRun::new();
+        for _ in 0..samples {
+            let mut f1 = File::create(&p1)?;
+            f1.write_all(&buf)?;
+            let mut f2 = File::create(&p2)?;
+            f2.write_all(&buf)?;
+            let pend = ::fs::durability::submit(&root, &f1)?; // drain begins
+            std::thread::sleep(Duration::from_micros(u64::from(offset)));
+            let t = Instant::now();
+            ::fs::durability::settle(&root, &f2)?; // the arriving writer
+            run.record(t.elapsed());
+            pend.wait()
+                .map_err(|e| std::io::Error::other(format!("w1 settle: {e}")))?;
+        }
+        let d = run.dist();
+        println!(
+            "{offset:>10} {:>12.3} {:>12.3} {:>12.3} {:>8}",
+            d.p50_us / 1000.0,
+            d.p99_us / 1000.0,
+            d.max_us / 1000.0,
+            run.samples()
+        );
+        offset += step_us.max(1);
+    }
+    println!("load_after [{}]", loadavg());
+    let _ = std::fs::remove_file(&p1);
+    let _ = std::fs::remove_file(&p2);
+    Ok(())
+}
+
+/// Loss B — head-of-line: several D=1 writers, first ALONE, then MIXED into
+/// batches with one writer settling `big_d` files per round. The reported
+/// delta between the small writers' waits in the two phases is the
+/// head-of-line cost. Group sizes ride the settle receipts as evidence that
+/// batching actually happened.
+fn loss_b(dir: &Path, big_d: u32, small_writers: u32, iters: u32) -> std::io::Result<()> {
+    let root = dir.to_path_buf();
+    let load_before = loadavg();
+    println!(
+        "loss-b: {small_writers} small writers x {iters} iters, big writer D={big_d}, load [{load_before}]"
+    );
+    for mixed in [false, true] {
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let start = Barrier::new(small_writers as usize + usize::from(mixed));
+        let mut runs: Vec<(LatencyRun, u64, u64)> = Vec::new();
+        std::thread::scope(|scope| -> std::io::Result<()> {
+            let mut handles = Vec::new();
+            for w in 0..small_writers {
+                let (root, start) = (&root, &start);
+                handles.push(
+                    scope.spawn(move || -> std::io::Result<(LatencyRun, u64, u64)> {
+                        let path = dir.join(format!("loss-b-small-{w}.dat"));
+                        let buf = vec![b'x'; WRITE_SIZE];
+                        let mut run = LatencyRun::new();
+                        let (mut group_sum, mut group_n) = (0u64, 0u64);
+                        for _ in 0..WARMUP_ITERS {
+                            let mut f = File::create(&path)?;
+                            f.write_all(&buf)?;
+                            ::fs::durability::settle(root, &f)?;
+                        }
+                        start.wait();
+                        for _ in 0..iters {
+                            let mut f = File::create(&path)?;
+                            f.write_all(&buf)?;
+                            let t = Instant::now();
+                            let rec = ::fs::durability::settle(root, &f)?;
+                            run.record(t.elapsed());
+                            group_sum += u64::try_from(rec.group_len).unwrap_or(u64::MAX);
+                            group_n += 1;
+                        }
+                        Ok((run, group_sum, group_n))
+                    }),
+                );
+            }
+            if mixed {
+                let (root, start, stop) = (&root, &start, &stop);
+                scope.spawn(move || -> std::io::Result<()> {
+                    let buf = vec![b'x'; WRITE_SIZE];
+                    let paths: Vec<_> = (0..big_d)
+                        .map(|d| dir.join(format!("loss-b-big-{d}.dat")))
+                        .collect();
+                    start.wait();
+                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        let mut pend = Vec::with_capacity(paths.len());
+                        for p in &paths {
+                            let mut f = File::create(p)?;
+                            f.write_all(&buf)?;
+                            pend.push(::fs::durability::submit(root, &f)?);
+                        }
+                        for pd in pend {
+                            pd.wait()?;
+                        }
+                    }
+                    Ok(())
+                });
+            }
+            for h in handles {
+                runs.push(h.join().expect("small writer panicked")?);
+            }
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            Ok(())
+        })?;
+        // LatencyRun carries no merge, so per-writer runs stay separate:
+        // report the median writer's p50 and the WORST writer's p99 — the
+        // head-of-line question is about the worst-treated small writer.
+        let (mut gsum, mut gn) = (0u64, 0u64);
+        for (_, gs, n) in &runs {
+            gsum += gs;
+            gn += n;
+        }
+        let mut p50s: Vec<f64> = runs.iter().map(|(r, _, _)| r.percentile_us(0.50)).collect();
+        let mut p99s: Vec<f64> = runs.iter().map(|(r, _, _)| r.percentile_us(0.99)).collect();
+        p50s.sort_by(f64::total_cmp);
+        p99s.sort_by(f64::total_cmp);
+        println!(
+            "  phase={} writer-median p50_ms={:.3} worst-writer p99_ms={:.3} mean_group_len_x1000={}",
+            if mixed { "mixed" } else { "alone" },
+            p50s.get(p50s.len() / 2).copied().unwrap_or(0.0) / 1000.0,
+            p99s.last().copied().unwrap_or(0.0) / 1000.0,
+            (gsum * 1000).checked_div(gn).unwrap_or(0),
+        );
+    }
+    println!("load_after [{}]", loadavg());
     Ok(())
 }
