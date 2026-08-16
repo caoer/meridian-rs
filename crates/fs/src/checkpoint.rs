@@ -662,7 +662,7 @@ mod tests {
         let (_, bytes) = observed(tmp.path());
         let mut back = restore_here(&bytes, tmp.path()).unwrap().cache;
 
-        let crate::stable::GuardCurrency::Untrusted { reason } = back.guard_currency() else {
+        let stable::GuardCurrency::Untrusted { reason } = back.guard_currency() else {
             panic!("a restored memo must not vouch for a gap it did not watch");
         };
         assert!(reason.contains("checkpoint"), "the reason names the cause");
@@ -670,7 +670,7 @@ mod tests {
         // A live pass re-verifies every member — and only then may the memo
         // answer a guard-grade question.
         back.root(&WorkspaceRoot(tmp.path().to_path_buf())).unwrap();
-        assert_eq!(back.guard_currency(), crate::stable::GuardCurrency::Trusted);
+        assert_eq!(back.guard_currency(), stable::GuardCurrency::Trusted);
     }
 
     /// An unbaselined memo has nothing sound to persist.
