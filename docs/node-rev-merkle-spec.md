@@ -635,26 +635,37 @@ event-source question was adjudicated ENGINE-SIDE, five lanes unanimous
 - **The currency barrier (the cookie).** A guard-grade currency question
   writes a sentinel at `.meridian/cookie` and waits to see it return through
   the ordered event stream — an O(1) proof that everything before it is
-  already folded in (watchman's shape). The path is LAW, not convention:
-  dot-prefixed segments are outside the hash domain by the standing
-  `wire-contract.md` §12.1 floor, so the cookie can never move the root or
-  break a held token. A cookie inside the hash domain is refused by
-  construction (merged plan §7's gate row).
+  already folded in (watchman's shape). `Seen` proves ordered delivery of
+  what the kernel captured, AND that no capture-gap doubt is open. A
+  new directory (or any path that is not a member candidate but can hide
+  members) is a missed-event: the kernel may not have armed a watch before
+  a child landed, so those children can be invisible forever. `Seen` is
+  illegal while that doubt is open — the barrier returns unproven
+  immediately and does not spend the cookie timeout. The path is LAW, not
+  convention: dot-prefixed segments are outside the hash domain by the
+  standing `wire-contract.md` §12.1 floor, so the cookie can never move
+  the root or break a held token. A cookie inside the hash domain is
+  refused by construction (merged plan §7's gate row).
 - **The rescan ladder — every cause NAMED, throttled:** kernel event overflow
   → mark-all-dirty → the next pass is the full stat sweep (lane B, 160 ms
-  warm, measured); watcher instance change → one LABELED re-baseline (1.45 s
+  warm, measured); a new directory (or other hideable non-member) →
+  mark-all-dirty under missed-event → the same sweep (the child that
+  landed before the sub-watch armed is recovered by the walk, not by the
+  lost event); watcher instance change → one LABELED re-baseline (1.45 s
   cold / 160 ms warm, measured); the watcher never restarts across a rescan;
   a rebuilt index commits by swap. Self-echo — the engine's own writes
   re-arriving through the watcher — is deduped as a cost saving only: overlay
   idempotence is the correctness, masking is never load-bearing.
 - **Idle re-check — RULED: SUSPICIOUS-ONLY, NO TIMER**
   (`decisions/2026-08-15-pre-merge-rulings.md` ruling 3). The engine
-  re-checks files only on a named reason for doubt — a missed event, watcher
-  overflow, an instance change, a failed spot check (vouch failure), a cookie
-  timeout — and may piggyback on guard-path touches. Zero background work
-  when healthy (requirement 6, "no waste anywhere"). The periodic idle sweep
-  is DECLINED, its price on the record: a silent event-stream loss with no
-  named trigger goes uncaught until a guard touches its scope.
+  re-checks files only on a named reason for doubt — a missed event
+  (including a new directory, or any non-member path, that can hide
+  members before its watch arms), watcher overflow, an instance change, a
+  failed spot check (vouch failure), a cookie timeout — and may piggyback
+  on guard-path touches. Zero background work when healthy (requirement 6,
+  "no waste anywhere"). The periodic idle sweep is DECLINED, its price on
+  the record: a silent event-stream loss with no named trigger goes
+  uncaught until a guard touches its scope.
 
 ### 6.5 Restart — the disposable checkpoint
 

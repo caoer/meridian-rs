@@ -1715,7 +1715,9 @@ mod engine_tests {
     ///
     /// Quiet already-watched tree still `Seen` (the vouched baseline above
     /// the mkdir) — the cookie law is unchanged for a tree the watch already
-    /// covers.
+    /// covers. Linux-only: this is the inotify arming gap (19/20 miss on
+    /// the unfixed tree); Darwin FSEvents did not exhibit it (0/20).
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_new_directory_child_before_arm_cannot_vouch_a_stale_overlay() {
         let home = tempfile::tempdir().unwrap();
@@ -1741,9 +1743,28 @@ mod engine_tests {
         fs::create_dir(canonical.join("new")).unwrap();
         fs::write(canonical.join("new/x.md"), "# X\n").unwrap();
 
+        // The parent create is delivered; the child may not be. Wait for
+        // the named doubt the parent must raise, then refresh.
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(10) {
+            if reg.feed_stats(&canonical).is_some_and(|s| s.all_dirty) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            reg.feed_stats(&canonical).is_some_and(|s| s.all_dirty),
+            "the directory create must mark doubt: {:?}",
+            reg.feed_stats(&canonical)
+        );
+
         let (root, vouched) = reg
             .currency_refresh(&canonical, Duration::from_secs(10))
             .unwrap();
+        eprintln!(
+            "fixture vouched={vouched} root==quiet={}",
+            root == root_quiet
+        );
         assert!(
             !vouched,
             "a new-directory arming gap is named doubt, never a vouched old root"
