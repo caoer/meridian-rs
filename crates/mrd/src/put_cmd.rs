@@ -8,11 +8,14 @@
 //! `--scope` narrows the `--if-fingerprint` premise to the named node
 //! (wire-contract §5.4): FP is then that node's scoped token from the §4.7
 //! mint arm, not the world value, so a disjoint sibling's birth no longer
-//! refuses the put. Two walls guard it here, both exit 2 before any engine
+//! refuses the put. Three walls guard it here, all exit 2 before any engine
 //! write: `--scope` without `--if-fingerprint` is half a premise (the §5.4
-//! pair law, enforced at parse), and a daemon whose hello does not serve
-//! `scoped-guards` cannot check a scoped premise — the taught refusal fires
-//! instead of a strict-wall `bad_request` from a field it never negotiated.
+//! pair law, enforced at parse); a `--scope` spelling the §1 path law refuses
+//! teaches the family refusal before any dial ([`admit_scope`] — the engine
+//! would refuse the same shape message-less, echoing a path that cannot name
+//! the flag); and a daemon whose hello does not serve `scoped-guards` cannot
+//! check a scoped premise — the taught refusal fires instead of a
+//! strict-wall `bad_request` from a field it never negotiated.
 //!
 //! The two rehearsals are one run and two faces: both send `dry: true` through the same
 //! choke-point, so neither can validate anything the other would not. `--dry` is the daemon
@@ -66,6 +69,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
             cwd.display()
         ))
     })?;
+    admit_scope(&parsed, &resolved.workspace)?;
     let mut request = json!({
         "op": "splice",
         "path": parsed.path,
@@ -158,6 +162,27 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
 /// every `--json` face rather than for this verb alone.
 fn refusal(parsed: &Put, workspace: &std::path::Path, error: &ErrorBody) -> Fail {
     engine::json_refusal(parsed.format, workspace, error)
+}
+
+/// The §1 path-law wall for `--scope`, this face's half of the family
+/// admission (`crate::path_law`; dogfood 88877785): a violating spelling
+/// refuses exit 2 before any dial. The engine refuses the same shape but
+/// message-less — a bare `bad_path` echo that cannot name the flag, and the
+/// empty spelling echoes nothing at all. The `--json` face keeps the
+/// `{workspace, error}` frame, exactly as the links door's admission
+/// publishes it.
+fn admit_scope(parsed: &Put, workspace: &std::path::Path) -> Result<(), Fail> {
+    let Some(scope) = &parsed.scope else {
+        return Ok(());
+    };
+    if !crate::path_law::violates_path_law(scope) {
+        return Ok(());
+    }
+    let mut error = ErrorBody::new(wire::ErrorCode::BadPath);
+    error.path = Some(WirePath(scope.clone()));
+    error.message = Some(crate::path_law::scope_bad_path_message(workspace, scope));
+    engine::json_error_frame(parsed.format, workspace, &error);
+    Err(Fail::tool(engine::render_wire_error(&error)))
 }
 
 /// The human summary: what landed (or was rehearsed), at which fingerprint — and one line per
