@@ -523,7 +523,7 @@ mod tests {
     }
 
     /// Queue `n` requests over fresh files, then run ONE drain cycle exactly
-    /// as `actor_loop` would: recv one, try_recv the rest, settle as one
+    /// as `actor_loop` would: recv one, `try_recv` the rest, settle as one
     /// batch. Returns the per-member outcomes.
     fn drain_once(
         dir: &tempfile::TempDir,

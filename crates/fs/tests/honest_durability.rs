@@ -26,7 +26,7 @@ fn ws() -> (tempfile::TempDir, WorkspaceRoot) {
 }
 
 /// The staging door routes through the actor: one `append_line` (stage +
-/// commit_rename) performs its content submit + wait and its parent-dir
+/// `commit_rename`) performs its content submit + wait and its parent-dir
 /// settle on the calling thread — four thread-local durability ops, no
 /// writer-issued honest sync anywhere in the door.
 #[test]
