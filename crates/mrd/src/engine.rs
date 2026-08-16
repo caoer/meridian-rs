@@ -873,8 +873,10 @@ fn in_process_links(
 }
 
 /// Render a wire error body as a one-line diagnostic (the code plus its message
-/// or echoed path) for the CLI's stderr.
-fn render_wire_error(error: &ErrorBody) -> String {
+/// or echoed path) for the CLI's stderr. `pub(crate)` for the door admissions
+/// that refuse as TOOL failures with a composed `ErrorBody` (the links leg
+/// above, the put `--scope` wall) — `refusal_text` is the findings-leg twin.
+pub(crate) fn render_wire_error(error: &ErrorBody) -> String {
     let code = serde_json::to_value(error.code)
         .ok()
         .and_then(|v| v.as_str().map(str::to_owned))

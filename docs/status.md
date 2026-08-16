@@ -123,6 +123,16 @@ mrd put <PATH> [--dry | --validate] [--force] [--actor A] [--now T]
  value — a disjoint sibling's birth no longer refuses
  the put. The pair law is the CLI's own wall: `--scope`
  without `--if-fingerprint` is half a premise, exit 2.
+ The §1 path law is the same wall: a `--scope` spelling
+ the law refuses (absolute, `.`/`..`/empty segment, or
+ empty — the unquoted-shell-variable mistake) refuses
+ at exit 2 before any dial, teaching the law, naming
+ the flag, the respell when the spelling lies inside
+ the workspace, and the recoveries: a scoped token
+ binds the exact spelling the §4.7 mint echoed
+ (`mint.scope`), and without `--scope` the premise is
+ the §5.1 world fingerprint. Under `--json` this wall
+ answers the `{workspace, error}` envelope on stdout.
  Cap-aware: when the connected daemon's hello does not
  serve `scoped-guards`, a scoped put refuses with a
  teaching at exit 2 before any engine write — the
