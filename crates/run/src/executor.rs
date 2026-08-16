@@ -1,28 +1,29 @@
 //! Shared executor — the ONE write path both dispatch paths converge on
 //! (decision #4; verdict ruling 2). md.* descriptors → cap validation at the
-//! choke point → one atomic `if_root`-pinned splice batch → receipt in the
-//! same commit → apply→event synthesis with real post-apply fingerprints.
+//! choke point → one atomic splice batch → receipt in the same commit →
+//! apply→event synthesis with real post-apply fingerprints.
 //!
 //! # Laws
 //! - **Choke point (#13):** every descriptor validated against the block's
 //!   [`CapSet`] before any I/O; one violation refuses the whole batch.
 //! - **One batch (ruling 2):** all edits + receipt ride one
 //!   `validate_batch` → `apply_batch`; no rollback path.
-//! - **`if_root` pin (#19):** batch pins `pin_root` and validates against
-//!   `live_root`; both required so silent enforcement-off is unrepresentable.
-//!   Caller threads the COMPUTED root — never re-read around bash.
-//! - **Self-guards (#9):** every edit carries `if_node_rev`; load→validate→
-//!   commit under workspace flock ([`WorkspaceLock`], `LOCK_NB`).
-//! - **Foreign-edit (#26):** if target has a prior run receipt and current rev
-//!   is not that receipt's after-rev, refuse [`ExecError::ForeignEdit`].
-//!   Overwrite only via explicit `takeover`.
+//! - **No guard on this door** (no-guard-on-effects ruling, 2026-08-15;
+//!   `docs/run-plane.md` § the no-guard amendment): no world pin, no CAS
+//!   premise, no per-target pin-and-verify. The former `if_root` self-pin
+//!   (#19) and the foreign-edit law (#26) are RETIRED — a foreign advance
+//!   re-derives and proceeds, and no refusal on this door is a premise
+//!   refusal. [`ApplyRequest::observed_root`] is receipt provenance only.
+//! - **Self-guards (#9):** every edit carries `if_node_rev` planned from the
+//!   same locked load the batch validates against; load→validate→commit
+//!   under workspace flock ([`WorkspaceLock`], `LOCK_NB`).
 //! - **§9:** `invocation_id` and `now` are caller-supplied; no clock here.
 
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::unix::io::AsRawFd;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use effects::{ArgValue, ChangeEvent, Domain, Effect, EffectKind, EventFacts, Provenance};
@@ -74,18 +75,14 @@ pub struct ApplyRequest<'a> {
     /// exactly this. An unsandboxed shell admits every descriptor, because
     /// there is no gate to apply, not because everything was granted.
     pub authority: &'a Authority,
-    /// The root the effects were produced against — pinned as the batch's
-    /// `if_root` (root-at-eval, or `root_after_phase1` on the bash path).
-    pub pin_root: &'a MerkleRoot,
-    /// The current computed corpus root the pin validates against (gate #19:
-    /// required, never `None`, never re-read around a bash step).
-    pub live_root: &'a MerkleRoot,
-    /// Receipt address; `None` skips the receipt AND the foreign-edit anchor
-    /// (no provenance to check against — dispatch paths always pass one).
+    /// The corpus root the effects were produced against (root-at-eval, or
+    /// the window baseline on the bash path) — RECEIPT PROVENANCE ONLY
+    /// (observation honesty). Never validated: this door holds no world pin
+    /// (no-guard-on-effects ruling, 2026-08-15).
+    pub observed_root: &'a MerkleRoot,
+    /// Receipt address; `None` skips the receipt (dispatch paths always
+    /// pass one).
     pub receipt: Option<ReceiptAddr>,
-    /// Explicit foreign-edit takeover (decision #26): overwrite a target whose
-    /// current rev diverged from its last governed after-rev.
-    pub takeover: bool,
     /// The bash step's exec facts (U13), threaded at render so the COMMITTED
     /// receipt line carries them — `render_receipt` commits internally, so a
     /// post-hoc `fill_exec` cannot reach the committed line. `None` on the
@@ -284,10 +281,8 @@ impl IntentApply {
             now: base.now,
             effects: &self.effects,
             authority: base.authority,
-            pin_root: base.pin_root,
-            live_root: base.live_root,
+            observed_root: base.observed_root,
             receipt: Some(self.receipt.clone()),
-            takeover: base.takeover,
             exec: base.exec,
             actor: base.actor,
             depth: base.depth,
@@ -386,20 +381,9 @@ pub enum ExecError {
     SectionNotFound { section: String },
     /// `md.append_section` names a heading appearing more than once.
     SectionAmbiguous { section: String, count: usize },
-    /// Decision #26: the target was edited outside the run plane since its
-    /// last governed write — the three-way frame (target, last governed
-    /// after-rev, current rev). Overwrite requires `takeover`.
-    ForeignEdit {
-        target: String,
-        last_governed: String,
-        current: String,
-    },
     /// Another run holds the workspace lock (decision #9: `LOCK_NB` — a fast
     /// typed refusal, never a wait; a hung holder can never make callers hang).
     WorkspaceBusy,
-    /// The pinned root does not match the live root — out-of-band change;
-    /// the declared effects refuse (ruling 2).
-    RootMismatch { expected: String, actual: String },
     /// Any other typed validation refusal (CAS, no-match, would-corrupt,
     /// overlap, …) — carried as the verdict's debug shape.
     Refused { verdict: String },
@@ -480,36 +464,9 @@ impl std::fmt::Display for ExecError {
             ExecError::SectionAmbiguous { section, count } => {
                 write!(f, "section '{section}' appears {count} times (ambiguous)")
             }
-            ExecError::ForeignEdit {
-                target,
-                last_governed,
-                current,
-            } => write!(
-                f,
-                "foreign edit on {target}: last governed rev {last_governed}, current \
-                 {current} — refusing to overwrite. Nothing was written; the run stopped \
-                 at this effect. The value changed outside the run plane, so the engine \
-                 cannot tell an intended edit from a stale overwrite. Fix: restore \
-                 {target} to the bytes the engine last wrote (rev {last_governed}) and \
-                 re-run — the guard compares exactly those two revs. `mrd run` mounts no \
-                 override flag today."
-            ),
             ExecError::WorkspaceBusy => write!(
                 f,
                 "workspace busy: another run holds the lock — retry when it exits"
-            ),
-            // The recovery line is fitted to the ONE thing this refusal
-            // knows: the corpus moved, and the caller's own request was
-            // never at fault (the pin is often the plane's own, not
-            // theirs). Class per §8's `root_mismatch` binding — `resync`,
-            // not `refresh`: a merkle root is not invertible, so the door
-            // cannot name which files drifted and cannot promise that
-            // re-reading one node is enough.
-            ExecError::RootMismatch { expected, actual } => write!(
-                f,
-                "root mismatch: pinned {expected}, live {actual} — out-of-band change, nothing applied\n  \
-                 → the corpus moved between the guard and this call, and nothing you named is wrong — \
-                 re-read what this run touches, then re-issue the call (recovery: resync)"
             ),
             ExecError::Refused { verdict } => write!(f, "batch refused: {verdict}"),
             ExecError::Page { path, reason } => write!(f, "page {path}: {reason}"),
@@ -583,10 +540,9 @@ impl WorkspaceLock {
     }
 }
 
-/// The machine-re-readable body of one run receipt line — what the
-/// decision-#26 check parses back. Serialized as one compact JSON object
-/// inside the markdown line (`- run {json} ^anchor`); the format is
-/// run-plane-local (review S10), not the wire receipt.
+/// The machine-re-readable body of one run receipt line. Serialized as one
+/// compact JSON object inside the markdown line (`- run {json} ^anchor`);
+/// the format is run-plane-local (review S10), not the wire receipt.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReceiptFacts {
     /// The page the batch applied to.
@@ -600,7 +556,10 @@ pub struct ReceiptFacts {
     /// Caller-supplied time fact; absent stays absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub now: Option<String>,
-    /// The root the batch was pinned to.
+    /// The corpus root the effects were produced against — an OBSERVATION
+    /// the receipt attests, never a validated pin (no-guard-on-effects
+    /// ruling, 2026-08-15). The JSON key keeps its historical spelling so
+    /// every receipt byte stands.
     pub root_pin: String,
     /// The addressed task block's `node_rev` — the procedure-hash (attestation
     /// roadmap): the receipt names WHICH code ran, not just the mutable task
@@ -625,15 +584,16 @@ impl ExecRecordSink for ReceiptFacts {
     }
 }
 
-/// One edit's receipt fact: which node, and its rev transition. `after` is
-/// the foreign-edit anchor the NEXT run compares against.
+/// One edit's receipt fact: which node, and its rev transition — attested
+/// history, compared by nothing (the former decision-#26 foreign-edit scan
+/// is RETIRED with the no-guard-on-effects ruling, 2026-08-15).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReceiptEdit {
     /// The target's identity.
     pub target: EditTarget,
     /// The node rev the edit was validated against.
     pub before: String,
-    /// The node rev after the commit — the decision-#26 anchor.
+    /// The node rev after the commit.
     pub after: String,
 }
 
@@ -650,13 +610,6 @@ pub enum EditTarget {
 }
 
 impl EditTarget {
-    fn describe(&self) -> String {
-        match self {
-            EditTarget::FmKey(k) => format!("fm:{k}"),
-            EditTarget::Section(segs) => format!("section:{}", segs.join("#")),
-        }
-    }
-
     /// This target with its identifier strings rendered for a receipt line.
     /// A field name or heading chain arrives as arbitrary bytes, and
     /// `serde_json` escapes neither `[` nor `@` — an undecorated pass-through
@@ -685,9 +638,8 @@ struct PlannedEdit {
 
 /// Apply one generation of md.* effects to `page` as ONE atomic batch. See the
 /// module docs for the full law set; the flow is: choke-point cap validation →
-/// flock → load → plan edits (self-guarded) → foreign-edit check (#26) →
-/// validate (`if_root` pinned) → receipt → the single `fs::apply_batch`
-/// commit → apply→event synthesis.
+/// flock → load → plan edits (self-guarded) → validate → receipt → the single
+/// `fs::apply_batch` commit → apply→event synthesis.
 ///
 /// # Errors
 /// [`ExecError`] — in every case NOTHING was applied.
@@ -768,14 +720,7 @@ pub fn apply_under(
         planned.push(plan_edit(&doc, effect)?);
     }
 
-    // 4. Foreign-edit law (#26): receipt-anchored, refused unless takeover.
-    if let Some(addr) = &req.receipt
-        && !req.takeover
-    {
-        check_foreign_edits(root, addr, req.page, &planned)?;
-    }
-
-    // 5-6. Seal the batch and the bytes it will write, `@fp`-stripped.
+    // 4-6. Seal the batch and the bytes it will write, `@fp`-stripped.
     let (batch, after_doc) = seal_stripped_candidate(&doc, &planned, req)?;
 
     // Each target's post-apply rev, read off the (post-strip) reparse.
@@ -811,7 +756,7 @@ pub fn apply_under(
     let receipt_line = receipt.as_ref().map(|(_, _, line)| line.clone());
     let sealed = match model::validate_batch(
         &doc,
-        Some(req.live_root),
+        None,
         &batch,
         receipt.as_ref().map(|(_, append, _)| append.clone()),
     ) {
@@ -970,39 +915,33 @@ fn load_receipt_before(root: &fs::WorkspaceRoot, rel: &str) -> Result<Option<Doc
     }
 }
 
-/// Steps 5-6: mint the sealed batch and the candidate document it will write,
+/// Steps 4-6: mint the sealed batch and the candidate document it will write,
 /// with the `@fp` strip already applied — the request batch, its seal, and the
 /// bytes, all three agreeing.
 ///
-/// The `if_root` pin runs against the REQUIRED live root (gate #19). The
-/// candidate is then dry-applied in memory (the SAME bytes `fs` will write) and
-/// the `@fp` strip (R32 (3)) rewrites the REQUEST batch: this door
+/// The batch carries NO `if_root`: this door holds no world pin (no-guard
+/// ruling). The candidate is dry-applied in memory (the SAME bytes `fs` will
+/// write) and the `@fp` strip (R32 (3)) rewrites the REQUEST batch: this door
 /// bypasses the wire choke-point, so it carries the choke-point's law itself, and
 /// every judgment after it — the post-apply revs the receipt commits, the lock
 /// artifact guard, the armed gate — reads the bytes that actually land.
 ///
 /// # Errors
-/// [`ExecError::RootMismatch`] / [`ExecError::Refused`] from validation, or
-/// [`ExecError::FpClaim`] from a claim token the strip cannot place. Nothing has
-/// been applied at this point in any case.
+/// [`ExecError::Refused`] from validation, or [`ExecError::FpClaim`] from a
+/// claim token the strip cannot place. Nothing has been applied at this point
+/// in any case.
 fn seal_stripped_candidate(
     doc: &Document,
     planned: &[PlannedEdit],
     req: &ApplyRequest<'_>,
 ) -> Result<(SpliceRequest, model::CandidateDocument), ExecError> {
     let mut batch = SpliceRequest {
-        if_root: Some(req.pin_root.clone()),
+        if_root: None,
         edits: planned.iter().map(|p| p.edit.clone()).collect(),
         engine: None,
     };
-    let mut sealed = match model::validate_batch(doc, Some(req.live_root), &batch, None) {
+    let mut sealed = match model::validate_batch(doc, None, &batch, None) {
         SpliceVerdict::Validated(b) => b,
-        SpliceVerdict::RootMismatch { expected, actual } => {
-            return Err(ExecError::RootMismatch {
-                expected: expected.0,
-                actual: actual.0,
-            });
-        }
         refused => {
             return Err(ExecError::Refused {
                 verdict: format!("{refused:?}"),
@@ -1015,7 +954,6 @@ fn seal_stripped_candidate(
         doc,
         &before_facts,
         req.page,
-        req.live_root,
         &mut batch,
         &mut sealed,
         &mut after_doc,
@@ -1175,89 +1113,6 @@ fn find_section(
     }
 }
 
-/// Decision #26: refuse any planned target whose current rev diverged from its
-/// last governed after-rev (per the newest matching receipt line).
-fn check_foreign_edits(
-    root: &fs::WorkspaceRoot,
-    addr: &ReceiptAddr,
-    page: &str,
-    planned: &[PlannedEdit],
-) -> Result<(), ExecError> {
-    let anchors = last_governed_revs(root, addr, page)?;
-    for p in planned {
-        // Keyed on the RENDERED identity — what the receipt stores — else the
-        // lookup would miss exactly the names that motivated the guard.
-        let key = p.identity.rendered().describe();
-        if let Some(last) = anchors.get(&key)
-            && *last != p.before.node_rev.0
-        {
-            return Err(ExecError::ForeignEdit {
-                target: key,
-                last_governed: last.clone(),
-                current: p.before.node_rev.0.clone(),
-            });
-        }
-    }
-    Ok(())
-}
-
-/// The newest governed after-rev per target for `page`, scanned from every
-/// receipt file beside the addressed one (receipts roll by date — the prior
-/// run's line may sit in an older file). Later files and later lines win.
-fn last_governed_revs(
-    root: &fs::WorkspaceRoot,
-    addr: &ReceiptAddr,
-    page: &str,
-) -> Result<BTreeMap<String, String>, ExecError> {
-    let io_err = |e: io::Error| ExecError::Io {
-        reason: format!("receipt scan: {e}"),
-    };
-    let abs = root.0.join(&addr.path);
-    let dir: PathBuf = abs
-        .parent()
-        .map_or_else(|| root.0.clone(), Path::to_path_buf);
-    // The receipt stores the RENDERED page, so the scan matches the rendered
-    // spelling (identical for every path that is already an identifier).
-    let page = receipt::render_field(page);
-    let mut out = BTreeMap::new();
-    let entries = match std::fs::read_dir(&dir) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(out),
-        Err(e) => return Err(io_err(e)),
-    };
-    let mut files: Vec<PathBuf> = entries
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("md")))
-        .collect();
-    files.sort();
-    for file in files {
-        let text = std::fs::read_to_string(&file).map_err(io_err)?;
-        for line in text.lines() {
-            let Some(facts) = parse_receipt_line(line) else {
-                continue;
-            };
-            if facts.page != page {
-                continue;
-            }
-            for edit in facts.edits {
-                out.insert(edit.target.describe(), edit.after);
-            }
-        }
-    }
-    Ok(out)
-}
-
-/// Parse one `- run {json} ^anchor` receipt line; `None` for any other line.
-fn parse_receipt_line(line: &str) -> Option<ReceiptFacts> {
-    let body = line.strip_prefix("- run ")?;
-    let json = match body.rsplit_once(" ^") {
-        Some((json, _anchor)) => json,
-        None => body,
-    };
-    serde_json::from_str(json).ok()
-}
-
 /// Render the receipt line and its EOF append for this batch.
 fn render_receipt(
     root: &fs::WorkspaceRoot,
@@ -1283,7 +1138,7 @@ fn render_receipt(
             .actor
             .map_or_else(|| format!("run:{}", req.task), str::to_owned),
         now: req.now.map(str::to_owned),
-        root_pin: req.pin_root.0.clone(),
+        root_pin: req.observed_root.0.clone(),
         task_rev: req.task_rev.to_owned(),
         edits: planned
             .iter()

@@ -242,10 +242,6 @@ fn execute_row(
             path: RECEIPT_FILE.to_owned(),
             anchor: format!("p-{invocation}"),
         }),
-        takeover: false,
-        // Wire runs keep the default posture: a pre-exec foreign write is
-        // reported, never refused (card run-preexec-severity).
-        fatal_preexec: false,
         scratch: &scratch,
         timeout,
         declaring_root: Some(ws),

@@ -1,12 +1,14 @@
-//! On-disk gates for the U6b exec-window bracket (`run::snapshot`): the #19
-//! pre-exec cross-check, the always-rendered detection verdict, and the
-//! fail-closed gate phase 2 rides on. Windows are simulated — the bracket is
-//! independent of the exec mechanics; the test plays the attacker between
-//! `open` and `close`.
+//! On-disk gates for the U6b exec-window bracket (`run::snapshot`): the
+//! observing open (no judging — the no-guard ruling retired the comparing
+//! `open` with the plane's premise refusals), the always-rendered detection
+//! verdict, and the fail-closed gate phase 2 rides on. Windows are simulated
+//! — the bracket is independent of the exec mechanics; the test plays the
+//! attacker between open and close.
 
 use std::path::Path;
 
 use fs::WorkspaceRoot;
+use fs::digestmemo::DigestMemo;
 use model::MerkleRoot;
 use run::snapshot::{Detection, ExecBracket, OpenRefusal};
 
@@ -31,15 +33,21 @@ fn computed_root(root: &WorkspaceRoot) -> MerkleRoot {
     fs::domain_snapshot(root).unwrap().1
 }
 
-/// A clean window: open against the computed root, nothing happens, close
-/// verifies — and the verified root IS `root_after_phase1` (what phase 2
-/// pins against).
+/// Open the bracket the production way (observing, memoized).
+fn open(root: &WorkspaceRoot) -> (ExecBracket, MerkleRoot) {
+    ExecBracket::open_observing(root, &mut DigestMemo::new()).unwrap()
+}
+
+/// A clean window: the observed open matches the computed root, nothing
+/// happens, close verifies — and the verified root IS `root_after_phase1`
+/// (the observation phase 2's receipt attests).
 #[test]
 fn clean_window_verifies_the_computed_root() {
     let (_tmp, root) = workspace();
     let after_phase1 = computed_root(&root);
 
-    let bracket = ExecBracket::open(&root, &after_phase1).unwrap();
+    let (bracket, observed) = open(&root);
+    assert_eq!(observed, after_phase1, "quiet gap: observed == computed");
     let detection = bracket.close();
 
     assert!(detection.is_clean());
@@ -49,32 +57,12 @@ fn clean_window_verifies_the_computed_root() {
     }
 }
 
-/// #19 addendum: the computed root is the authority. A tree that moved
-/// between the phase-1 commit and the bracket opening refuses BEFORE exec —
-/// distinct from the in-window delta (nothing ran; nothing to accuse).
-#[test]
-fn pre_exec_mismatch_refuses_before_exec() {
-    let (_tmp, root) = workspace();
-    let after_phase1 = computed_root(&root);
-
-    // out-of-band write BETWEEN the flock window and the bracket opening
-    write(&root.0, "notes/plan.md", "moved underfoot\n");
-
-    match ExecBracket::open(&root, &after_phase1) {
-        Err(OpenRefusal::PreExecMismatch { expected, observed }) => {
-            assert_eq!(expected, after_phase1);
-            assert_ne!(observed, after_phase1);
-        }
-        other => panic!("expected PreExecMismatch, got {other:?}"),
-    }
-}
-
 /// An in-window ungoverned write renders `OutOfBand` with the S4 wording and
 /// the exact path — and the verdict is not clean, so phase 2 gates shut.
 #[test]
 fn in_window_write_is_out_of_band() {
     let (_tmp, root) = workspace();
-    let bracket = ExecBracket::open(&root, &computed_root(&root)).unwrap();
+    let (bracket, _observed) = open(&root);
 
     write(&root.0, "notes/rogue.md", "written during the window\n");
 
@@ -93,7 +81,7 @@ fn in_window_write_is_out_of_band() {
 #[test]
 fn in_window_config_change_is_detected() {
     let (_tmp, root) = workspace();
-    let bracket = ExecBracket::open(&root, &computed_root(&root)).unwrap();
+    let (bracket, _observed) = open(&root);
 
     write(&root.0, "mdfs_config.yaml", "ignore:\n  - \"notes/**\"\n");
     write(&root.0, "notes/rogue.md", "hidden by the new ignore?\n");
@@ -109,7 +97,7 @@ fn in_window_config_change_is_detected() {
 fn in_window_symlink_is_detected() {
     let (tmp, root) = workspace();
     std::fs::write(tmp.path().join("secret.md"), "out of tree\n").unwrap();
-    let bracket = ExecBracket::open(&root, &computed_root(&root)).unwrap();
+    let (bracket, _observed) = open(&root);
 
     std::os::unix::fs::symlink(tmp.path().join("secret.md"), root.0.join("notes/x.md")).unwrap();
 
@@ -122,13 +110,14 @@ fn in_window_symlink_is_detected() {
 }
 
 /// S3 escape window — WHERE it lands (gate F1): a write after close escapes
-/// THAT bracket, and is caught at the NEXT bracket's open as
-/// `PreExecMismatch` against the previously verified root. Detection holds
-/// across brackets even though the window itself has closed.
+/// THAT bracket, and surfaces at the NEXT bracket's open as a divergence
+/// between the observed root and the previously verified one — the caller's
+/// report fact, never a refusal (no-guard ruling). Detection holds across
+/// brackets even though the window itself has closed.
 #[test]
 fn the_escape_window_lands_in_the_next_brackets_open() {
     let (_tmp, root) = workspace();
-    let b1 = ExecBracket::open(&root, &computed_root(&root)).unwrap();
+    let (b1, _observed) = open(&root);
     let Detection::Clean { root: verified } = b1.close() else {
         panic!("clean window expected");
     };
@@ -136,35 +125,34 @@ fn the_escape_window_lands_in_the_next_brackets_open() {
     // the S3 escape: a straggler write AFTER the close snapshot
     write(&root.0, "notes/late.md", "after the bracket\n");
 
-    match ExecBracket::open(&root, &verified) {
-        Err(OpenRefusal::PreExecMismatch { expected, observed }) => {
-            assert_eq!(expected, verified);
-            assert_ne!(observed, verified);
-        }
-        other => panic!("the escape must land in the next open, got {other:?}"),
-    }
+    let (_b2, observed) = open(&root);
+    assert_ne!(
+        observed, verified,
+        "the escape surfaces as the next open's observed divergence"
+    );
 }
 
 /// #20 mid-RUN via the bracket (gate F2): step N opened with `open_pinned`
 /// against step 1's config refuses when the config moved between steps —
-/// even though each window's own bracket was clean and the new computed
-/// root matches the new on-disk state.
+/// even though each window's own bracket was clean. The config bracket is
+/// governed-change law, not a world premise, so it survives the no-guard
+/// ruling; the root is handed back observed, never judged.
 #[test]
 fn open_pinned_refuses_a_config_that_moved_between_steps() {
     let (_tmp, root) = workspace();
-    let b1 = ExecBracket::open(&root, &computed_root(&root)).unwrap();
+    let (b1, _observed) = open(&root);
     let pinned = b1.config_state().clone();
     let step1 = b1.close();
     assert!(step1.is_clean());
 
     // unmoved config: open_pinned passes (the positive arm)
-    let b2 = ExecBracket::open_pinned(&root, &computed_root(&root), &pinned).unwrap();
+    let (b2, _observed) = ExecBracket::open_pinned(&root, &pinned).unwrap();
     assert!(b2.close().is_clean());
 
     // between steps: the domain moves — each window still clean on its own
     write(&root.0, "mdfs_config.yaml", "ignore:\n  - \"notes/**\"\n");
 
-    match ExecBracket::open_pinned(&root, &computed_root(&root), &pinned) {
+    match ExecBracket::open_pinned(&root, &pinned) {
         Err(OpenRefusal::Guard(fs::guard::GuardError::ConfigChanged)) => {}
         other => panic!("expected ConfigChanged, got {other:?}"),
     }
@@ -181,11 +169,10 @@ fn bracket_guarantee_class_is_detected() {
     assert_eq!(ExecBracket::GUARANTEE_CLASS.as_str(), "detected");
 }
 
-/// Card run-preexec-severity: the DEFAULT path observes instead of judging.
-/// The same moved-underfoot tree that `open` refuses hands back a usable
-/// bracket plus the observed root — the caller reports the divergence, the
-/// window is detected against the observed tree, and a clean window closes
-/// on exactly that baseline.
+/// The observing open never judges: a moved-underfoot tree hands back a
+/// usable bracket plus the observed root — the caller reports the
+/// divergence, the window is detected against the observed tree, and a
+/// clean window closes on exactly that baseline.
 #[test]
 fn open_observing_hands_back_the_observed_root_without_judging() {
     let (_tmp, root) = workspace();
@@ -195,9 +182,7 @@ fn open_observing_hands_back_the_observed_root_without_judging() {
     // blameless by construction: no block ran.
     write(&root.0, "notes/plan.md", "moved underfoot\n");
 
-    let (bracket, observed) =
-        ExecBracket::open_observing(&root, &mut fs::digestmemo::DigestMemo::new())
-            .expect("observing open never judges the root");
+    let (bracket, observed) = open(&root);
     assert_ne!(
         observed, after_phase1,
         "the divergence is the caller's fact"
