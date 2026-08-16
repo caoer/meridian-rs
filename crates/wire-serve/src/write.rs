@@ -6568,8 +6568,9 @@ mod resident_write_path {
     }
 
     /// Race fixture: a foreign rewrite of B between door observe and commit
-    /// must not enter root_after. Overlay(door-entry leaves, own writes) wins;
-    /// ambient_root after the racer does not.
+    /// must not enter `root_after`. Overlay(door-entry leaves, own writes) wins;
+    /// `ambient_root` after the racer does not.
+    #[allow(clippy::too_many_lines)]
     #[test]
     fn root_after_ignores_a_foreign_racer_on_every_door() {
         let b0 = page_body("bystander").into_bytes();
