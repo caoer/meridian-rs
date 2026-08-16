@@ -626,6 +626,12 @@ pub struct DomainCache {
     watermark_rereads: u64,
     suspect_reads: u64,
     fenced_reads: u64,
+    /// Corpus observation passes attempted — one half of the §7(d)
+    /// quiet-workspace counter pair (codex gate 10). A quiet workspace after
+    /// baseline leaves this unmoved, which is what proves no timer exists.
+    sweeps: u64,
+    /// Member identities `stat`ed across all sweeps — the pair's other half.
+    member_stats: u64,
 }
 
 /// One remembered leaf: the identity its digest was byte-derived under and
@@ -677,6 +683,18 @@ impl DomainCache {
     #[must_use]
     pub fn new() -> DomainCache {
         DomainCache::default()
+    }
+
+    /// An empty memo sharing an existing feed-generation cell: the registry
+    /// rebuilds a memo through this so the event-feed watcher and the
+    /// observation fence ride ONE instrument — the watcher's `advance` /
+    /// `note_loss` land on the cell this cache brackets reads with.
+    #[must_use]
+    pub fn with_feed(feed: stable::FeedGen) -> DomainCache {
+        DomainCache {
+            feed,
+            ..DomainCache::default()
+        }
     }
 
     /// How many domain members this memo has READ (not `stat`ed) for their
@@ -777,7 +795,9 @@ impl DomainCache {
     ) -> Result<BTreeMap<Vec<u8>, [u8; 32]>, ObserveRefusal> {
         // Losses counted before the pass are re-derived by the pass (a
         // completed observation IS the full sweep the rescan ladder floors
-        // at); losses landing mid-pass stay unabsorbed.
+        // at); losses landing mid-pass stay unabsorbed. Counted at entry so
+        // an aborted sweep still shows on the §7(d) counter.
+        self.sweeps += 1;
         let losses_at_start = self.feed.losses();
         let trust = self.trust_context(root);
         let (mut rels, mut offenders, fresh_dirs, listings) =
@@ -798,6 +818,7 @@ impl DomainCache {
         }
         rels.sort();
         let identities = member_identities(&root.0, &rels, PARALLEL_STAT_FLOOR)?;
+        self.member_stats += identities.len() as u64;
         let mut fresh: BTreeMap<PathBuf, LeafSeen> = BTreeMap::new();
         // Name-keyed rows (merkle-spec §4/§9 raw name bytes) — the shape every
         // consumer folds or compares in, built once here so no observation
@@ -1283,6 +1304,21 @@ impl DomainCache {
     #[must_use]
     pub fn fenced_reads(&self) -> u64 {
         self.fenced_reads
+    }
+
+    /// Corpus observation passes attempted over this memo's life — the §7(d)
+    /// quiet-workspace counter (codex gate 10): after baseline, a quiet
+    /// workspace advances neither this nor [`member_stats`](Self::member_stats).
+    #[must_use]
+    pub fn sweeps(&self) -> u64 {
+        self.sweeps
+    }
+
+    /// Member identities `stat`ed across all sweeps — the §7(d) counter
+    /// pair's other half. Counted per member per completed identity pass.
+    #[must_use]
+    pub fn member_stats(&self) -> u64 {
+        self.member_stats
     }
 
     /// The overlay's domain: the OBSERVED generation, refused when none has
