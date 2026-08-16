@@ -238,7 +238,10 @@ impl Put {
 }
 
 impl Put {
-    /// The pinned CliArgv door for `put` (`crates/addr` ingress enumeration).
+    /// `put`'s argv parse. It holds NO hand-split address of its own any
+    /// more — the `--receipt` split moved to [`parse_receipt`], and the
+    /// `crates/addr` ingress row moved with it, because that scanner
+    /// attributes a needle to its enclosing function.
     ///
     /// HEADROOM IS SINGLE DIGITS: 92 non-comment lines against
     /// `clippy::too_many_lines`' threshold of 100 (97 raw), measured
