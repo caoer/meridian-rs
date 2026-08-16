@@ -33,8 +33,11 @@
 //! filtered away the one event that mattered. Everything else (`.git`
 //! churn, build artifacts, the `.meridian/cookie` sentinel) can never move
 //! the root and never enters the set. Order is not kept: a spoil-set is
-//! order-insensitive by construction (the ORDERED stream consumers — the
-//! currency cookie — are the stamps card's, upstream of this filter).
+//! order-insensitive by construction. The one ORDERED consumer — the §6.4
+//! currency cookie — rides the raw stream UPSTREAM of this filter
+//! ([`WorkspaceFeed::cookie_barrier`]): a sighting of the sentinel proves
+//! every event before it was delivered, which is what makes the dirty set
+//! complete as of the write.
 //!
 //! # Doubt collapses loudly
 //! A kernel overflow (rescan flag), a watcher error, or the set outgrowing
