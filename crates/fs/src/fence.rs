@@ -234,10 +234,11 @@ pub fn status(root: &WorkspaceRoot) -> io::Result<FenceStatus> {
     }
 }
 
-/// Fsync a directory so its entries are durable — the same discipline the
-/// splice path applies to destination parents.
+/// Fsync a directory so its entries are durable — the same discipline (and
+/// the same ruled fsync class) the splice path applies to destination
+/// parents.
 fn sync_dir(path: &Path) -> io::Result<()> {
-    File::open(path)?.sync_all()
+    crate::honest_sync_path(path)
 }
 
 /// Run the activation ladder up to and including `until`, WITHOUT taking the
@@ -271,7 +272,7 @@ pub fn activate_until(root: &WorkspaceRoot, until: ActivationPhase) -> io::Resul
     let marker = tomb.join(TOMBSTONE_MARKER);
     let mut f = File::create(&marker)?;
     io::Write::write_all(&mut f, TOMBSTONE_TEXT.as_bytes())?;
-    f.sync_all()?;
+    crate::honest_sync(&f)?;
     sync_dir(&tomb)?;
     if until == ActivationPhase::TombstoneBuilt {
         return Ok(());
