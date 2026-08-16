@@ -11,11 +11,32 @@
 //!
 //! # The identity tuple, every field load-bearing
 //! `(workspace, domain_version, hash_law, parse-cache generation,
-//! journal_instance, journal_seq)` plus the law-2 `tree_root` binding. ANY
-//! mismatch is a [`Discard`] naming the field — the caller performs exactly
-//! one loud, labeled re-baseline. The caution IS the law: a checkpoint
-//! trusted after a mismatch, or outliving a `domain_version` / hash-law
-//! change, is the banned trusted snapshot wearing the allowed object's name.
+//! journal_instance, journal_seq)` plus the law-2 `tree_root` binding. The
+//! caution IS the law: a checkpoint trusted after a mismatch, or outliving a
+//! `domain_version` / hash-law change, is the banned trusted snapshot wearing
+//! the allowed object's name.
+//!
+//! The tuple splits by WHAT EACH FIELD CAN MAKE WRONG, which is merged plan
+//! §4.9's law — "hash tokens are epoch-free; cursors are not… cursors stay
+//! confined to the delta plane":
+//!
+//! - **Soundness fields, enforced HERE, whole-object [`Discard`]:** format
+//!   and checksum, `workspace`, `domain_version`, `hash_law`, parse-cache
+//!   generation, and the `tree_root` binding. Each one can make a restored
+//!   row WRONG — a hash-law change re-spells every interior value, a domain
+//!   bump re-cuts membership — so any mismatch discards the object whole and
+//!   the caller re-baselines loudly, exactly once. Partial adoption does not
+//!   exist.
+//! - **Replay authority, adjudicated by the CALLER:** `journal_instance` and
+//!   `journal_seq`. The pair exists to name the replay point (§6.5: "without
+//!   the journal cursor pair, O(changes-while-down) has no replay point"), so
+//!   a pair that cannot anchor costs the caller its replay SHORTCUT, not the
+//!   index: the restored rows carry the same evidence grade a live memo holds
+//!   and every one is re-verified against disk by the next observation
+//!   (§6.2). That re-verification is why this object cannot serve stale by
+//!   construction — the epoch-free `tree_root` is what binds it, exactly as
+//!   §4.9 requires. [`restore`] returns the stored pair; the caller compares
+//!   it against the live journal and logs its own labeled re-baseline.
 //!
 //! # Trust standing of what restores
 //! Restored rows carry the same evidence grade a live memo holds: digests
@@ -79,16 +100,22 @@ pub struct SaveIdentity {
     pub journal_seq: u64,
 }
 
-/// A restored checkpoint: the rebuilt memo plus the replay cursor.
+/// A restored checkpoint: the rebuilt memo plus the replay cursor the caller
+/// must adjudicate (see the module docs' tuple split).
 #[derive(Debug)]
 pub struct Restored {
     /// The rebuilt resident memo: leaf rows, radix tree re-composed and
     /// verified against the stored `tree_root`, observed domain installed.
     /// Calibration, feed generation, and counters start fresh.
     pub cache: DomainCache,
+    /// The journal instance the cursor was numbered under. The caller
+    /// compares it against the LIVE journal: equal ⇒ the cursor anchors and
+    /// replay is legal; different ⇒ the numbering died (restart, reap) and
+    /// the caller logs its one labeled re-baseline of the delta plane.
+    pub journal_instance: String,
     /// Replay from here: the caller re-derives every journaled change after
-    /// this seq (a cursor outside retained history is itself a mismatch —
-    /// the caller's journal owns that verdict).
+    /// this seq. A cursor outside retained history cannot anchor — the
+    /// caller's journal owns that verdict.
     pub journal_seq: u64,
     /// Leaf rows restored (receipt surface).
     pub leaves: usize,
@@ -116,10 +143,6 @@ pub enum Discard {
     },
     /// The stored parse/derived-cache generation is not this engine's.
     ParseCache { stored: String, current: String },
-    /// The stored journal instance is not the live journal's numbering —
-    /// the replay cursor died with it (merkle-spec §6.5: invalid journal
-    /// instance = exactly one labeled re-baseline).
-    JournalInstance { stored: String, current: String },
     /// The rebuilt tree's law-2 fingerprint is not the stored `tree_root`.
     TreeRoot,
 }
@@ -140,10 +163,6 @@ impl fmt::Display for Discard {
             Discard::ParseCache { stored, current } => write!(
                 f,
                 "parse-cache generation mismatch (stored '{stored}', current '{current}')"
-            ),
-            Discard::JournalInstance { stored, current } => write!(
-                f,
-                "journal instance mismatch (stored '{stored}', live '{current}')"
             ),
             Discard::TreeRoot => write!(f, "tree-root binding failed (rebuilt fold differs)"),
         }
@@ -207,13 +226,17 @@ pub fn serialize(cache: &mut DomainCache, identity: &SaveIdentity) -> Option<Vec
     Some(out)
 }
 
-/// Restore a serialized checkpoint against the CURRENT identity: `workspace`
-/// and `parse_cache` and `journal_instance` as the caller serves them now,
-/// `domain` freshly loaded (its `version()` is the current domain dimension;
-/// the current hash law is the resident encoding's constant). On success the
+/// Restore a serialized checkpoint against the CURRENT soundness identity:
+/// `workspace` and `parse_cache` as the caller serves them now, `domain`
+/// freshly loaded (its `version()` is the current domain dimension; the
+/// current hash law is the resident encoding's constant). On success the
 /// rebuilt tree is verified against the stored `tree_root` and `domain` is
 /// installed as the observed generation, so the overlay doors are open for
 /// the caller's journal replay.
+///
+/// The stored journal pair rides out on [`Restored`] unjudged — replay
+/// authority is the caller's adjudication, never this module's (module docs,
+/// the tuple split).
 ///
 /// # Errors
 /// [`Discard`] naming the refusing fact. The caller re-baselines loudly,
@@ -222,7 +245,6 @@ pub fn restore(
     bytes: &[u8],
     workspace: &Path,
     parse_cache: &str,
-    journal_instance: &str,
     domain: &Domain,
 ) -> Result<Restored, Discard> {
     let rest = bytes
@@ -268,14 +290,8 @@ pub fn restore(
             current: parse_cache.to_owned(),
         });
     }
-    let (journal_seq, stored_instance) =
+    let (journal_seq, journal_instance) =
         parse_journal(journal_line).ok_or(Discard::Format("bad journal line"))?;
-    if stored_instance != journal_instance {
-        return Err(Discard::JournalInstance {
-            stored: stored_instance,
-            current: journal_instance.to_owned(),
-        });
-    }
     let tree_root = parse_hex32(tree_root_hex).ok_or(Discard::Format("bad tree-root value"))?;
 
     let mut cache = DomainCache::default();
@@ -297,6 +313,7 @@ pub fn restore(
     cache.domain_seen = Some(domain.clone());
     Ok(Restored {
         cache,
+        journal_instance,
         journal_seq,
         leaves: rows,
     })
@@ -439,7 +456,7 @@ mod tests {
 
     fn restore_here(bytes: &[u8], dir: &Path) -> Result<Restored, Discard> {
         let domain = Domain::load(&WorkspaceRoot(dir.to_path_buf())).unwrap();
-        restore(bytes, dir, "s7", "aa.bb.0", &domain)
+        restore(bytes, dir, "s7", &domain)
     }
 
     /// Round trip: the restored memo carries the same leaves, binds the same
@@ -451,6 +468,10 @@ mod tests {
         let (mut cache, bytes) = observed(tmp.path());
         let mut back = restore_here(&bytes, tmp.path()).expect("identity matches");
         assert_eq!(back.journal_seq, 41);
+        assert_eq!(
+            back.journal_instance, "aa.bb.0",
+            "the cursor rides out unjudged for the caller to adjudicate"
+        );
         assert_eq!(back.leaves, 3);
         assert_eq!(back.cache.leaf_digests(), cache.leaf_digests());
         assert_eq!(back.cache.law2_fingerprint(), cache.law2_fingerprint());
@@ -489,26 +510,23 @@ mod tests {
         );
     }
 
-    /// Every identity field refuses with its own labeled arm.
+    /// Every SOUNDNESS field refuses with its own labeled arm — the fields
+    /// that can make a restored row wrong.
     #[test]
-    fn each_identity_field_discards() {
+    fn each_soundness_field_discards() {
         let tmp = tempfile::tempdir().unwrap();
         let (_, bytes) = observed(tmp.path());
         let domain = Domain::load(&WorkspaceRoot(tmp.path().to_path_buf())).unwrap();
         assert!(matches!(
-            restore(&bytes, Path::new("/else/where"), "s7", "aa.bb.0", &domain),
+            restore(&bytes, Path::new("/else/where"), "s7", &domain),
             Err(Discard::Workspace { .. })
         ));
         assert!(matches!(
-            restore(&bytes, tmp.path(), "s8", "aa.bb.0", &domain),
+            restore(&bytes, tmp.path(), "s8", &domain),
             Err(Discard::ParseCache { .. })
         ));
-        assert!(matches!(
-            restore(&bytes, tmp.path(), "s7", "cc.dd.1", &domain),
-            Err(Discard::JournalInstance { .. })
-        ));
         // Domain-version bump: the config declares a new version — the
-        // checkpoint must not outlive it.
+        // checkpoint must not outlive it (§12.1 membership is re-cut).
         std::fs::create_dir_all(tmp.path().join("meridian")).unwrap();
         std::fs::write(
             tmp.path().join("meridian/domain.md"),
@@ -518,7 +536,7 @@ mod tests {
         let bumped = Domain::load(&WorkspaceRoot(tmp.path().to_path_buf())).unwrap();
         assert_eq!(bumped.version(), 2);
         assert!(matches!(
-            restore(&bytes, tmp.path(), "s7", "aa.bb.0", &bumped),
+            restore(&bytes, tmp.path(), "s7", &bumped),
             Err(Discard::Version {
                 stored: (0, model::HASH_LAW_RADIX),
                 current: (2, model::HASH_LAW_RADIX),
@@ -585,7 +603,10 @@ mod tests {
             text.replace(&digest, &format!("{}{}", &digest[2..], &digest[..2]))
                 .as_bytes(),
         );
-        assert_eq!(restore_here(&forged, tmp.path()).unwrap_err(), Discard::TreeRoot);
+        assert_eq!(
+            restore_here(&forged, tmp.path()).unwrap_err(),
+            Discard::TreeRoot
+        );
     }
 
     /// An unbaselined memo has nothing sound to persist.
