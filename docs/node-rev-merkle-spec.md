@@ -530,14 +530,21 @@ the cached 32-byte fold, a dirty bit, and a `last_seq` stamp (§6.3).
   splice response keeps its `wire-contract.md` §4.4 transition fields.
 - **Write doors ride the same `DomainCache` the feed patches.** The daemon
   passes `Registry::domain_cache` into every write door (an argument, not a
-  process-wide hook) so a splice and a currency pass lock one address.
-  `observed_root` consults `guard_currency`: Trusted on that supplied cache
-  serves the overlay — the applied dirty set retired the stat-sweep;
-  Untrusted degrades to a full observation that absorbs the loss (§6.2
-  row 6). In-process callers with no registry keep a process-local fallback
-  map and still live-observe every door entry (no feed covers their gap).
-  The watcher already advances and notes loss on that cache's `FeedGen`
-  cell, so a mid-read fence can fire.
+  process-wide hook) so a splice and a currency pass lock one address — and
+  the door-entry observation is the registry's, made inside the door's
+  flock on that same memo: the §6.4 cookie barrier first, take-and-apply
+  second, and the overlay serves as `root_before` only on `Seen` + no
+  doubt collapse + `Trusted` — the same vouch `currency_refresh` demands.
+  A drained dirty set alone is never a completeness proof: `Trusted` says
+  the last observation landed whole and no loss is unabsorbed, not that
+  the stream has delivered everything disk holds (without the cookie, a
+  silent-dead watcher and a sticky failed feed are indistinguishable from
+  a quiet corpus). ANY miss — no live feed, cookie `Unproven`/`Refused`,
+  a doubt collapse, an untrusted memo — degrades to the full observation
+  that absorbs the loss (§6.2 row 6). In-process callers with no registry
+  keep a process-local fallback map and still live-observe every door
+  entry (no feed covers their gap). The watcher already advances and notes
+  loss on that cache's `FeedGen` cell, so a mid-read fence can fire.
 - **Foreign changes arrive through the feed (§6.4)** and mark the touched
   nodes dirty; folds recompute lazily on demand — maintenance cost follows
   change, never corpus size (requirement 1).

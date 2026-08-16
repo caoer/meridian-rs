@@ -80,15 +80,31 @@ pub type WriteCache = Arc<Mutex<fs::DomainCache>>;
 static WRITE_CACHES: LazyLock<Mutex<HashMap<PathBuf, WriteCache>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// One door call's cache: either the caller-supplied daemon memo or the
-/// process-local fallback.
-struct WriteCacheHandle {
+/// The daemon's write-door currency instrument (card
+/// bug-trusted-overlay-unvouched; merkle-spec §6.1/§6.4): the registry memo
+/// the write plane shares with the feed, PLUS the observation that makes
+/// its overlay servable. The two travel together by construction — a
+/// resident door cannot exist without the vouch, because a drained dirty
+/// set alone never authorizes the overlay.
+pub struct ResidentDoor<'a> {
+    /// `Registry::domain_cache` — the same memo the feed patches; the
+    /// commit's own-write overlay lands here.
+    pub cache: &'a WriteCache,
+    /// The door-entry observation on that SAME memo, run inside the door's
+    /// flock at `observed_root` time (`Registry::door_observation`): cookie
+    /// barrier, take-and-apply, overlay only on a vouched memo — otherwise
+    /// the live-fold floor.
+    pub observe: &'a dyn Fn() -> std::io::Result<model::MerkleRoot>,
+}
+
+/// One door call's cache: either the caller-supplied daemon memo (with its
+/// vouched observation) or the process-local fallback.
+struct WriteCacheHandle<'a> {
     cache: WriteCache,
-    /// `true` when the caller supplied the registry memo. `Trusted` door-entry
-    /// then serves the overlay (the feed retired the stat-sweep); `Untrusted`
-    /// degrades to a full observe that absorbs the loss. The fallback has no
-    /// feed, so it always live-observes.
-    resident: bool,
+    /// Present when the caller supplied the registry memo; the door-entry
+    /// observation is then the registry's. The fallback has no feed, so it
+    /// always live-observes.
+    observe: Option<&'a dyn Fn() -> std::io::Result<model::MerkleRoot>>,
 }
 
 /// The workspace's write-plane fallback cache, created on first use.
@@ -98,47 +114,47 @@ fn write_cache(root: &fs::WorkspaceRoot) -> WriteCache {
     Arc::clone(map.entry(key).or_default())
 }
 
-fn door_cache(root: &fs::WorkspaceRoot, supplied: Option<&WriteCache>) -> WriteCacheHandle {
+fn door_cache<'a>(
+    root: &fs::WorkspaceRoot,
+    supplied: Option<ResidentDoor<'a>>,
+) -> WriteCacheHandle<'a> {
     match supplied {
-        Some(cache) => WriteCacheHandle {
-            cache: Arc::clone(cache),
-            resident: true,
+        Some(door) => WriteCacheHandle {
+            cache: Arc::clone(door.cache),
+            observe: Some(door.observe),
         },
         None => WriteCacheHandle {
             cache: write_cache(root),
-            resident: false,
+            observe: None,
         },
     }
 }
 
 /// `root_before` through the wrapper seam.
 ///
-/// A supplied (daemon) cache that is `GuardCurrency::Trusted` serves the
-/// overlay — the feed already patched dirty members, so this door does not
-/// stat-sweep untouched ones. `Untrusted` degrades to a full observation,
-/// which absorbs the loss. The in-process fallback always live-observes:
-/// nothing fences its gap.
+/// A supplied (daemon) door observes through the registry's currency
+/// instrument: the §6.4 cookie vouches the overlay, and any miss degrades
+/// to the full observation that absorbs the loss — on the door's own memo
+/// either way. The in-process fallback always live-observes: nothing
+/// fences its gap.
 ///
 /// # Errors
 /// Wire `io_error` when the domain config or the observation fails — the
 /// same envelope the retired corpus read refused with.
 fn observed_root(
     root: &fs::WorkspaceRoot,
-    door: &WriteCacheHandle,
+    door: &WriteCacheHandle<'_>,
 ) -> Result<Root, Box<ErrorBody>> {
-    let result = {
+    let result = if let Some(observe) = door.observe {
+        observe()
+            .map(|folded| Root(folded.0))
+            .map_err(|e| io_refusal(e.to_string()))
+    } else {
         let mut cache = door.cache.lock().unwrap_or_else(PoisonError::into_inner);
-        let folded = if door.resident
-            && matches!(cache.guard_currency(), fs::stable::GuardCurrency::Trusted)
-        {
-            match cache.overlay_root() {
-                Ok(folded) => folded,
-                Err(_) => cache.root(root).map_err(|e| io_refusal(e.to_string()))?,
-            }
-        } else {
-            cache.root(root).map_err(|e| io_refusal(e.to_string()))?
-        };
-        Ok(Root(folded.0))
+        cache
+            .root(root)
+            .map(|folded| Root(folded.0))
+            .map_err(|e| io_refusal(e.to_string()))
     };
     #[cfg(test)]
     if result.is_ok() {
@@ -387,9 +403,10 @@ pub fn splice(
 
 /// [`splice`] with the full ledger surface: the ambient store plus the
 /// per-workspace foreign resolver a cross-root pin gate needs (D-C), plus
-/// the optional daemon [`WriteCache`]. The resident registry calls this
-/// with `Registry::domain_cache`; [`splice`] wraps it for every caller
-/// whose host has one ledger or none and no registry memo.
+/// the optional daemon [`ResidentDoor`]. The resident registry calls this
+/// with `Registry::domain_cache` and its vouched observation; [`splice`]
+/// wraps it for every caller whose host has one ledger or none and no
+/// registry memo.
 ///
 /// # Errors
 /// As [`splice`].
@@ -400,7 +417,7 @@ pub fn splice_with_mints(
     args: &SpliceArgs,
     rulesets: &[policy::CompiledRuleset],
     mints: Mints<'_>,
-    supplied: Option<&WriteCache>,
+    supplied: Option<ResidentDoor<'_>>,
 ) -> Result<SpliceOutcome, Box<ErrorBody>> {
     // Workspace-root confinement: `Path::join` with an absolute path discards
     // the root, so an absolute or `..`-bearing splice path would read and write
@@ -923,8 +940,8 @@ pub fn splice_set(
     splice_set_with_cache(root, seq, args, rulesets, None)
 }
 
-/// [`splice_set`] riding a caller-supplied cache (the daemon's
-/// `Registry::domain_cache`).
+/// [`splice_set`] riding a caller-supplied [`ResidentDoor`] (the daemon's
+/// `Registry::domain_cache` plus its vouched observation).
 ///
 /// # Errors
 /// As [`splice_set`].
@@ -934,7 +951,7 @@ pub fn splice_set_with_cache(
     seq: Option<&dyn crate::seq::SeqSink>,
     args: &SpliceSetArgs,
     rulesets: &[policy::CompiledRuleset],
-    supplied: Option<&WriteCache>,
+    supplied: Option<ResidentDoor<'_>>,
 ) -> Result<SpliceOutcome, Box<ErrorBody>> {
     // The set walls, enforced here as well as at decode — in-process callers
     // reach this door without the decode pass.
@@ -1602,8 +1619,8 @@ pub fn create(
     create_with_cache(root, seq, args, rulesets, None)
 }
 
-/// [`create`] riding a caller-supplied cache (the daemon's
-/// `Registry::domain_cache`).
+/// [`create`] riding a caller-supplied [`ResidentDoor`] (the daemon's
+/// `Registry::domain_cache` plus its vouched observation).
 ///
 /// # Errors
 /// As [`create`].
@@ -1613,7 +1630,7 @@ pub fn create_with_cache(
     seq: Option<&dyn crate::seq::SeqSink>,
     args: &CreateArgs,
     rulesets: &[policy::CompiledRuleset],
-    supplied: Option<&WriteCache>,
+    supplied: Option<ResidentDoor<'_>>,
 ) -> Result<CreateOutcome, Box<ErrorBody>> {
     let fs_path = FsPath::new(&args.path.0);
     path_confined(root, &args.path)?;
@@ -1776,8 +1793,8 @@ pub fn remove(
     remove_with_cache(root, seq, args, rulesets, None)
 }
 
-/// [`remove`] riding a caller-supplied cache (the daemon's
-/// `Registry::domain_cache`).
+/// [`remove`] riding a caller-supplied [`ResidentDoor`] (the daemon's
+/// `Registry::domain_cache` plus its vouched observation).
 ///
 /// # Errors
 /// As [`remove`].
@@ -1787,7 +1804,7 @@ pub fn remove_with_cache(
     seq: Option<&dyn crate::seq::SeqSink>,
     args: &RemoveArgs,
     rulesets: &[policy::CompiledRuleset],
-    supplied: Option<&WriteCache>,
+    supplied: Option<ResidentDoor<'_>>,
 ) -> Result<RemoveOutcome, Box<ErrorBody>> {
     let fs_path = FsPath::new(&args.path.0);
     path_confined(root, &args.path)?;
@@ -2080,8 +2097,8 @@ pub fn lock_write(
     lock_write_with_cache(root, seq, args, None)
 }
 
-/// [`lock_write`] riding a caller-supplied cache (the daemon's
-/// `Registry::domain_cache`).
+/// [`lock_write`] riding a caller-supplied [`ResidentDoor`] (the daemon's
+/// `Registry::domain_cache` plus its vouched observation).
 ///
 /// # Errors
 /// As [`lock_write`].
@@ -2090,7 +2107,7 @@ pub fn lock_write_with_cache(
     root: &fs::WorkspaceRoot,
     seq: Option<&dyn crate::seq::SeqSink>,
     args: &LockWriteArgs,
-    supplied: Option<&WriteCache>,
+    supplied: Option<ResidentDoor<'_>>,
 ) -> Result<LockWriteOutcome, Box<ErrorBody>> {
     let fs_path = FsPath::new(&args.path.0);
     path_confined(root, &args.path)?;
@@ -3575,7 +3592,7 @@ fn world_guard(if_root: Option<&Root>, root_before: &Root) -> Result<(), Box<Err
 /// premises resolve through the door's resident tree ([`fs::DomainCache::
 /// scope_token`]) and their refusal carries `scope` (§5.7).
 fn premise_guard(
-    door: &WriteCacheHandle,
+    door: &WriteCacheHandle<'_>,
     premises: &[crate::guard::Premise],
     root_before: &Root,
 ) -> Result<(), Box<ErrorBody>> {
@@ -3683,8 +3700,10 @@ pub fn scope_token(
     supplied: Option<&WriteCache>,
     scope: Option<&std::path::Path>,
 ) -> Result<Option<String>, Box<ErrorBody>> {
-    let door = door_cache(root, supplied);
-    let mut cache = door.cache.lock().unwrap_or_else(PoisonError::into_inner);
+    // A bare cache, no vouch: the mint below live-observes unconditionally,
+    // so the overlay-serve law the [`ResidentDoor`] carries has no arm here.
+    let cache = supplied.map_or_else(|| write_cache(root), Arc::clone);
+    let mut cache = cache.lock().unwrap_or_else(PoisonError::into_inner);
     // The observation both refreshes the resident tree and establishes the
     // baseline `scope_token` demands.
     let world = cache.root(root).map_err(|e| io_refusal(e.to_string()))?;
@@ -6452,8 +6471,9 @@ mod resident_write_path {
     use crate::ambient_root;
 
     use super::{
-        CreateArgs, LockWriteArgs, Mints, RemoveArgs, SpliceArgs, SpliceSetArgs, create,
-        lock_write, remove, splice, splice_set, splice_with_mints, write_cache,
+        CreateArgs, LockWriteArgs, Mints, PoisonError, RemoveArgs, ResidentDoor, SpliceArgs,
+        SpliceSetArgs, create, lock_write, remove, splice, splice_set, splice_with_mints,
+        write_cache,
     };
 
     fn ws() -> (tempfile::TempDir, fs::WorkspaceRoot) {
@@ -6621,13 +6641,28 @@ mod resident_write_path {
         );
         let sweeps_before = cache.lock().unwrap().sweeps();
 
+        // A registry-shaped observation double: overlay when the memo is
+        // vouchable, the live-fold floor otherwise (the production decision
+        // is `Registry::door_observation`, tested in the registry crate).
+        let observe = || {
+            let mut memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
+            if matches!(memo.guard_currency(), fs::stable::GuardCurrency::Trusted)
+                && let Ok(folded) = memo.overlay_root()
+            {
+                return Ok(folded);
+            }
+            memo.root(&root)
+        };
         let out = splice_with_mints(
             &root,
             None,
             &splice_args("notes/plan.md", "August", "w1"),
             &[],
             Mints::default(),
-            Some(&cache),
+            Some(ResidentDoor {
+                cache: &cache,
+                observe: &observe,
+            }),
         )
         .expect("supplied-cache splice");
         let frame = out.committed.expect("real splice commits");
@@ -6679,13 +6714,28 @@ mod resident_write_path {
         );
         let sweeps_before = cache.lock().unwrap().sweeps();
 
+        // The same registry-shaped observation double as
+        // `a_supplied_cache_is_the_tree_the_door_overlays`: Untrusted takes
+        // the floor arm, which absorbs the loss.
+        let observe = || {
+            let mut memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
+            if matches!(memo.guard_currency(), fs::stable::GuardCurrency::Trusted)
+                && let Ok(folded) = memo.overlay_root()
+            {
+                return Ok(folded);
+            }
+            memo.root(&root)
+        };
         splice_with_mints(
             &root,
             None,
             &splice_args("notes/plan.md", "August", "w1"),
             &[],
             Mints::default(),
-            Some(&cache),
+            Some(ResidentDoor {
+                cache: &cache,
+                observe: &observe,
+            }),
         )
         .expect("degrade splice");
 
