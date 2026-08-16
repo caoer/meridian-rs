@@ -87,7 +87,7 @@ fn run_with_stdin(sb: &Sandbox, cwd: &Path, args: &[&str], stdin: &str) -> Outpu
         .env("HOME", &sb.home)
         // Spawn-impossible: no resident daemon ever starts, so the engine under test is the
         // binary this suite built and nothing else can answer.
-        .env("MERIDIAN_DAEMON_BIN", mrd_bin())
+        .env("MERIDIAN_DAEMON_BIN", env!("CARGO_BIN_EXE_mrd"))
         .env("MERIDIAN_WORKSPACE", cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
