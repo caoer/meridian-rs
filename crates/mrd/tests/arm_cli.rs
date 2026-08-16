@@ -11,6 +11,8 @@
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
+mod common;
+
 /// The binary every drive goes through — the real CLI, never a library call.
 fn mrd_bin() -> PathBuf {
     std::env::var_os("MRD_BIN")
@@ -60,6 +62,12 @@ struct Sandbox {
     ws: PathBuf,
 }
 
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        common::reap_daemon(&self.cache_home);
+    }
+}
+
 impl Sandbox {
     fn write(&self, rel: &str, bytes: &str) {
         let path = self.ws.join(rel);
@@ -84,7 +92,7 @@ impl Sandbox {
             .env("XDG_CACHE_HOME", &self.cache_home)
             .env_remove("MERIDIAN_CONFIG")
             .env_remove("MERIDIAN_WORKSPACE")
-            .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
+            .env("MERIDIAN_DAEMON_BIN", mrd_bin())
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -135,6 +143,22 @@ impl Sandbox {
         row["chain"][0]["rev"]
             .as_str()
             .expect("the winner's rev")
+            .to_owned()
+    }
+
+    /// The key-grain token the wire door compares for `fm_key: status`.
+    /// `--force` would also satisfy fingerprint-or-force, but it escapes the
+    /// armed block this trip exists to prove.
+    fn status_prop_rev(&self) -> String {
+        let raw = self.stdout(&["read", "tasks/card.md", "--json"]);
+        let json: serde_json::Value = serde_json::from_str(&raw).expect("read --json");
+        json["read"]["props"]
+            .as_array()
+            .expect("props plane")
+            .iter()
+            .find(|p| p["key"] == "status")
+            .and_then(|p| p["prop_rev"].as_str())
+            .expect("status prop_rev")
             .to_owned()
     }
 }
@@ -202,9 +226,13 @@ fn the_arm_round_trip_ends_with_the_rule_refusing_a_violating_write() {
     );
 
     // The violating write: a bare status flip to closed, no verdict.
-    let violating =
-        r#"[{"target":{"fm_key":"status"},"edit":{"match":{"old":"todo","new":"closed"}}}]"#;
-    let out = s.run_stdin(&["put", "tasks/card.md"], violating);
+    // Guarded with the key-grain token so the wire door admits the edit
+    // and the armed block is what refuses — `--force` would skip that block.
+    let status_rev = s.status_prop_rev();
+    let violating = format!(
+        r#"[{{"target":{{"fm_key":"status"}},"edit":{{"match":{{"old":"todo","new":"closed"}}}},"if_node_rev":"{status_rev}"}}]"#
+    );
+    let out = s.run_stdin(&["put", "tasks/card.md"], &violating);
     let refusal = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
@@ -226,9 +254,12 @@ fn the_arm_round_trip_ends_with_the_rule_refusing_a_violating_write() {
     );
 
     // The legal path: the same close carrying its verdict — `at: upsert`
-    // births the key, exactly as the refusal above teaches.
-    let legal = r#"[{"target":{"fm_key":"status"},"edit":{"match":{"old":"todo","new":"closed"}}},{"target":{"fm_key":"verdict"},"edit":{"put":{"at":"upsert","text":"approve"}}}]"#;
-    let out = s.run_stdin(&["put", "tasks/card.md"], legal);
+    // births the key, exactly as the refusal above teaches. Birth is
+    // absence-guarded; the status match still carries the key-grain token.
+    let legal = format!(
+        r#"[{{"target":{{"fm_key":"status"}},"edit":{{"match":{{"old":"todo","new":"closed"}}}},"if_node_rev":"{status_rev}"}},{{"target":{{"fm_key":"verdict"}},"edit":{{"put":{{"at":"upsert","text":"approve"}}}}}}]"#
+    );
+    let out = s.run_stdin(&["put", "tasks/card.md"], &legal);
     assert_eq!(
         out.status.code(),
         Some(0),

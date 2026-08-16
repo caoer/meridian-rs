@@ -11,6 +11,8 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
+mod common;
+
 fn mrd_bin() -> &'static str {
     env!("CARGO_BIN_EXE_mrd")
 }
@@ -19,6 +21,12 @@ struct Sandbox {
     tmp: tempfile::TempDir,
     cache_home: PathBuf,
     home: PathBuf,
+}
+
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        common::reap_daemon(&self.cache_home);
+    }
 }
 
 fn sandbox() -> Sandbox {
@@ -44,7 +52,7 @@ impl Sandbox {
             .env("HOME", &self.home)
             // Spawn-impossible: the write path runs in-process,
             // deterministically — no resident daemon ever starts.
-            .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
+            .env("MERIDIAN_DAEMON_BIN", mrd_bin())
             .env_remove("MERIDIAN_WORKSPACE");
         cmd
     }
@@ -111,7 +119,7 @@ fn a_batch_overlap_is_the_engines_refusal_at_exit_1() {
         },
     ]))
     .expect("edits json");
-    let out = sb.run_stdin(&ws, &["put", "doc.md"], &edits);
+    let out = sb.run_stdin(&ws, &["put", "doc.md", "--force"], &edits);
     let err = stderr(&out);
     assert!(
         err.contains("edits["),
@@ -141,7 +149,7 @@ fn a_multi_line_upsert_value_is_the_engines_refusal_at_exit_1() {
         "edit": {"put": {"at": "upsert", "text": "line one\nline two"}},
     }]))
     .expect("edits json");
-    let out = sb.run_stdin(&ws, &["put", "doc.md"], &edits);
+    let out = sb.run_stdin(&ws, &["put", "doc.md", "--force"], &edits);
     assert_eq!(
         code(&out),
         1,

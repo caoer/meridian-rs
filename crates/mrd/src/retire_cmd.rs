@@ -39,10 +39,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use serde_json::{Value, json};
-use wire::{Edit, EditShape, HpathSeg, Path as WirePath, Root, SecRef};
-use wire_serve::write::{SpliceArgs, splice};
+use wire::{Edit, EditShape, HpathSeg, Root, SecRef};
 
-use crate::{Fail, Format};
+use crate::{Fail, Format, write_ipc};
 
 /// The declaration block's fence language. Reserved in the `meridian-*` namespace
 /// ([`lock::is_meridian_lang`]) and deliberately not registered as engine-emitted.
@@ -905,8 +904,8 @@ impl Parsed {
 #[allow(clippy::too_many_lines)]
 fn run(args: &[String], writing: bool) -> Result<(), Fail> {
     let parsed = Parsed::parse(args, writing)?;
-    // The sweep carries a file-set-grain CAS — `splice`'s existing world guard;
-    // the verb stays `Origin::InProcess`.
+    // The sweep carries a file-set-grain CAS — splice's existing world guard,
+    // sent over IPC as `if_fingerprint`.
     if writing && !parsed.dry_run && parsed.expect_root.is_none() {
         return Err(Fail::tool(format!(
             "`mrd retire mark` writes without a world guard unless one is stated — a vault moves under a sweep whenever the fleet is not quiesced, and a half-swept vault is what the pre-sweep commit exists to undo. {NO_MARK_CLAUSE} Fix: run `mrd retire report --json` for the current `fingerprint`, quiesce the fleet, commit the vault, then re-run with `--expect-root <fingerprint>`; or use `--dry-run`."
@@ -1098,8 +1097,11 @@ fn run(args: &[String], writing: bool) -> Result<(), Fail> {
 
     // 3 · write, or not.
     let mut wrote = 0usize;
-    if writing && refusals.is_empty() {
-        let mut expected = parsed.expect_root.clone().map(Root);
+    let any_plans = per_decl.iter().any(|(_, _, plans)| !plans.is_empty());
+    if writing && refusals.is_empty() && any_plans {
+        // One door for the whole sweep: hello once, then one splice per plan.
+        let mut door = write_ipc::connect(&resolved.workspace)?;
+        let mut expected = parsed.expect_root.clone();
         for (_decl, _counts, plans) in &per_decl {
             for plan in plans {
                 let edits = vec![Edit {
@@ -1119,31 +1121,28 @@ fn run(args: &[String], writing: bool) -> Result<(), Fail> {
                     },
                     if_node_rev: None,
                 }];
-                let args = SpliceArgs {
-                    id: None,
-                    origin: wire_serve::guard::Origin::InProcess,
-                    path: WirePath(plan.path.clone()),
-                    actor: None,
-                    now: None,
-                    receipt: None,
-                    // The guard chains across the sweep: each splice guards on the
-                    // root the previous one produced, so anything else writing
-                    // mid-sweep refuses `root_mismatch` rather than landing a
-                    // half-swept vault.
-                    if_root: expected.clone(),
-                    dry: parsed.dry_run,
-                    force: false,
-                    edits,
-                    plan_edits: Vec::new(),
-                    pin: None,
-                };
-                // `mrd` is a CLI client and mints no notification sequence, so no
-                // `SeqSink` is passed.
-                let outcome = splice(&root, None, &args, &[], None).map_err(|e| {
+                // Engine-authored replacements: `--force` is the local-operator
+                // refuse→rewrite so the wire guard does not demand a node rev the
+                // sweep never held. The world guard still chains via
+                // `if_fingerprint`.
+                let mut request = json!({
+                    "op": "splice",
+                    "path": plan.path,
+                    "edits": edits,
+                    "force": true,
+                });
+                if let Some(fp) = &expected {
+                    request["if_fingerprint"] = json!(fp);
+                }
+                if parsed.dry_run {
+                    request["dry"] = json!(true);
+                }
+                let body = write_ipc::call(&mut door, &request).map_err(|e| {
                     crate::engine::json_refusal(parsed.format, &resolved.workspace, &e)
                 })?;
-                if let wire::ResponseBody::Splice { root_after, .. } = &outcome.body {
-                    expected.clone_from(root_after);
+                let body = write_ipc::project_body(&body);
+                if let Some(fp) = body.get("fingerprint_after").and_then(Value::as_str) {
+                    expected = Some(fp.to_owned());
                 }
                 wrote += 1;
             }

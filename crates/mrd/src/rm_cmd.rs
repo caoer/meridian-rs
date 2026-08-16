@@ -13,10 +13,8 @@
 //! naming every referring file, its edge kind, and its edge count. There is
 //! no `--force` — the door has none.
 //!
-//! Routes through the production death choke-point
-//! ([`wire_serve::write::remove`]) in-process, inheriting the CAS guards, the
-//! armed-plane gate (index-integrity floor included), and the cross-process
-//! write flock.
+//! Routes as a wire `remove` to the running daemon ([`crate::write_ipc`]). There
+//! is no in-process publication path.
 //!
 //! Exit triad: 0 removed (or a dry rehearsal that passed) / 1 refused (EVERY
 //! engine refusal — `remove_refused`, `cas_mismatch`, `root_mismatch`,
@@ -28,10 +26,8 @@
 //! empty stdout a machine consumer cannot branch on.
 
 use serde_json::{Value, json};
-use wire::{NodeRev, Path as WirePath, Root};
-use wire_serve::write::{RemoveArgs, remove, remove_response};
 
-use crate::{Fail, Format, current_dir, engine};
+use crate::{Fail, Format, current_dir, engine, write_ipc};
 
 /// Run `mrd rm <PAGE> --rev <FILE_REV> [flags]`. Errors [`Fail`] — exit 2 on a
 /// bad invocation (bad flags, a missing `--rev`, a malformed `--now`); exit 1
@@ -45,38 +41,28 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
             cwd.display()
         ))
     })?;
-    let canonical = workspace::canonicalize(&resolved.workspace).map_err(|e| {
-        Fail::tool(format!(
-            "cannot resolve workspace {} ({e})",
-            resolved.workspace.display()
-        ))
-    })?;
-    let root = fs::WorkspaceRoot(canonical);
+    let mut request = json!({
+        "op": "remove",
+        "path": parsed.path,
+        "if_file_rev": parsed.rev,
+    });
+    if let Some(actor) = &parsed.actor {
+        request["actor"] = json!(actor);
+    }
+    if let Some(now) = &parsed.now {
+        request["now"] = json!(now);
+    }
+    if let Some(fp) = &parsed.if_fingerprint {
+        request["if_fingerprint"] = json!(fp);
+    }
+    if parsed.dry {
+        request["dry"] = json!(true);
+    }
 
-    let remove_args = RemoveArgs {
-        id: None,
-        path: WirePath(parsed.path.clone()),
-        if_file_rev: Some(NodeRev(parsed.rev.clone())),
-        actor: parsed.actor.clone(),
-        now: parsed.now.clone(),
-        if_root: parsed.if_fingerprint.clone().map(Root),
-        dry: parsed.dry,
-    };
-    // seq 0, like the resident daemon (no epoch ring); the emitted DeltaFrame
-    // has no subscriber here, so it is dropped with the outcome.
-    let outcome = remove(&root, None, &remove_args, &[])
+    let mut door = write_ipc::connect(&resolved.workspace)?;
+    let body = write_ipc::call(&mut door, &request)
         .map_err(|e| engine::json_refusal(parsed.format, &resolved.workspace, &e))?;
-
-    let body = serde_json::to_value(remove_response(WirePath(parsed.path.clone()), &outcome))
-        .map_err(|e| Fail::tool(format!("cannot render the answer: {e}")))?;
-    // The CLI speaks the v3 vocabulary (`fingerprint`, never bare `root`) —
-    // the same lifted projection the daemon applies for a v3 session.
-    let mut frame = json!({ "body": body });
-    wire_serve::rev::project_response(&mut frame);
-    let body = frame
-        .as_object_mut()
-        .and_then(|obj| obj.remove("body"))
-        .unwrap_or(Value::Null);
+    let body = write_ipc::project_body(&body);
 
     match parsed.format {
         Format::Json => {

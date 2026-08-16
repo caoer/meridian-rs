@@ -5,10 +5,18 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+mod common;
+
 struct Sandbox {
     tmp: tempfile::TempDir,
     cache_home: PathBuf,
     home: PathBuf,
+}
+
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        common::reap_daemon(&self.cache_home);
+    }
 }
 
 /// A workspace that is deliberately NOT a git repository, anchored explicitly so the resolution
@@ -37,7 +45,7 @@ fn run(sb: &Sandbox, cwd: &Path, args: &[&str]) -> Output {
         .env("XDG_CACHE_HOME", &sb.cache_home)
         .env("HOME", &sb.home)
         // Spawn-impossible: no resident daemon ever starts.
-        .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
+        .env("MERIDIAN_DAEMON_BIN", env!("CARGO_BIN_EXE_mrd"))
         // The explicit anchor: this tree is the workspace, and it is not git.
         .env("MERIDIAN_WORKSPACE", cwd)
         .output()

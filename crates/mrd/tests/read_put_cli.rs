@@ -7,6 +7,8 @@ use std::process::{Command, Output, Stdio};
 
 use serde_json::Value;
 
+mod common;
+
 fn mrd_bin() -> &'static str {
     env!("CARGO_BIN_EXE_mrd")
 }
@@ -15,6 +17,12 @@ struct Sandbox {
     tmp: tempfile::TempDir,
     cache_home: PathBuf,
     home: PathBuf,
+}
+
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        common::reap_daemon(&self.cache_home);
+    }
 }
 
 fn sandbox() -> Sandbox {
@@ -50,20 +58,28 @@ impl Sandbox {
     }
 
     /// Run with `stdin_bytes` piped — the `put` edits channel.
+    ///
+    /// Writes are IPC: this path auto-spawns the test binary as the daemon
+    /// (`MERIDIAN_DAEMON_BIN` = this `mrd`). Parse-only refusals never dial.
     fn run_stdin(&self, cwd: &Path, args: &[&str], stdin_bytes: &str) -> Output {
-        let mut child = self
-            .command(cwd, args)
+        let mut cmd = Command::new(mrd_bin());
+        cmd.args(args)
+            .current_dir(cwd)
+            .env("XDG_CACHE_HOME", &self.cache_home)
+            .env("HOME", &self.home)
+            .env("MERIDIAN_DAEMON_BIN", mrd_bin())
+            .env_remove("MERIDIAN_WORKSPACE");
+        let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .expect("spawn mrd");
-        child
-            .stdin
-            .as_mut()
-            .expect("stdin")
-            .write_all(stdin_bytes.as_bytes())
-            .expect("write stdin");
+        {
+            let mut pipe = child.stdin.take().expect("stdin");
+            pipe.write_all(stdin_bytes.as_bytes()).expect("write stdin");
+            pipe.flush().expect("flush stdin");
+        }
         child.wait_with_output().expect("wait mrd")
     }
 
@@ -235,7 +251,7 @@ fn the_fingerprint_the_human_toc_prints_is_the_guard_the_put_takes() {
     );
     let out = sb.run_stdin(
         &ws,
-        &["put", "doc.md", "--dry", "--if-fingerprint", &fp],
+        &["put", "doc.md", "--dry", "--force", "--if-fingerprint", &fp],
         &edits,
     );
     assert_eq!(
@@ -560,7 +576,11 @@ fn read_published_address_round_trips_into_put() {
         "the raw ancestor text survives the read face"
     );
 
-    let out = sb.run_stdin(&ws, &["put", "doc.md"], &match_at(&addr, "inner", "INNER"));
+    let out = sb.run_stdin(
+        &ws,
+        &["put", "doc.md", "--force"],
+        &match_at(&addr, "inner", "INNER"),
+    );
     assert_eq!(
         code(&out),
         0,
@@ -587,7 +607,7 @@ fn the_sanitized_address_does_not_round_trip() {
     let sanitized = serde_json::json!([{"h": "Scratch-notes"}, {"h": "Findings"}]);
     let out = sb.run_stdin(
         &ws,
-        &["put", "doc.md"],
+        &["put", "doc.md", "--force"],
         &match_at(&sanitized, "inner", "INNER"),
     );
     assert_eq!(code(&out), 1, "the sanitized spelling addresses nothing");
@@ -636,7 +656,7 @@ fn each_collider_round_trips_to_its_own_section() {
     for (addr, body) in addrs.iter().zip(["alpha", "beta", "gamma"]) {
         let out = sb.run_stdin(
             &ws,
-            &["put", "doc.md"],
+            &["put", "doc.md", "--force"],
             &match_at(addr, &format!("{body} body"), &format!("{body} EDITED")),
         );
         assert_eq!(code(&out), 0, "collider {body}: {}", stderr(&out));
@@ -675,7 +695,7 @@ fn occurrence_index_rides_only_where_the_raw_text_is_ambiguous() {
     let addr = published_address(&rows[1]);
     let out = sb.run_stdin(
         &ws,
-        &["put", "doc.md"],
+        &["put", "doc.md", "--force"],
         &match_at(&addr, "second", "SECOND"),
     );
     assert_eq!(
@@ -717,7 +737,11 @@ fn a_prepended_duplicate_makes_the_published_address_refuse_loud() {
     )
     .expect("prepend");
 
-    let out = sb.run_stdin(&ws, &["put", "doc.md"], &match_at(&addr, "body", "EDITED"));
+    let out = sb.run_stdin(
+        &ws,
+        &["put", "doc.md", "--force"],
+        &match_at(&addr, "body", "EDITED"),
+    );
     assert_eq!(
         code(&out),
         1,
@@ -755,7 +779,7 @@ fn the_n_carrying_address_round_trips_and_n_counts_same_text_siblings() {
     // n=1 must land on the FIRST `## Notes`, byte for byte.
     let out = sb.run_stdin(
         &ws,
-        &["put", "doc.md"],
+        &["put", "doc.md", "--force"],
         &match_at(&published_address(&rows[2]), "shared body", "first EDITED"),
     );
     assert_eq!(code(&out), 0, "n=1 writes: {}", stderr(&out));
@@ -768,7 +792,7 @@ fn the_n_carrying_address_round_trips_and_n_counts_same_text_siblings() {
     // n=2 must land on the SECOND, from the address published before the edit.
     let out = sb.run_stdin(
         &ws,
-        &["put", "doc.md"],
+        &["put", "doc.md", "--force"],
         &match_at(&published_address(&rows[3]), "shared body", "second EDITED"),
     );
     assert_eq!(code(&out), 0, "n=2 writes: {}", stderr(&out));
@@ -808,7 +832,11 @@ fn sections_mode_publishes_the_round_trippable_address() {
         serde_json::json!([{"h": "Scratch notes"}, {"h": "Findings"}]),
         "the section row carries the raw array too"
     );
-    let out = sb.run_stdin(&ws, &["put", "doc.md"], &match_at(&addr, "inner", "INNER"));
+    let out = sb.run_stdin(
+        &ws,
+        &["put", "doc.md", "--force"],
+        &match_at(&addr, "inner", "INNER"),
+    );
     assert_eq!(
         code(&out),
         0,
@@ -827,7 +855,46 @@ fn sections_mode_publishes_the_round_trippable_address() {
 // put
 // ---------------------------------------------------------------------------
 
+/// The live `node_rev` (or `rev`) of the named heading from a toc read.
+fn heading_rev(sb: &Sandbox, ws: &Path, heading: &str) -> String {
+    let rows = toc_rows(sb, ws);
+    for row in &rows {
+        let last = row
+            .get("hpath")
+            .and_then(Value::as_array)
+            .and_then(|a| a.last())
+            .and_then(|s| s.get("h"))
+            .and_then(Value::as_str);
+        let named = row
+            .get("h")
+            .or_else(|| row.get("heading"))
+            .and_then(Value::as_str);
+        if last == Some(heading) || named == Some(heading) {
+            for key in ["sec_rev", "node_rev", "rev"] {
+                if let Some(r) = row.get(key).and_then(Value::as_str) {
+                    return r.to_owned();
+                }
+            }
+        }
+    }
+    panic!("no rev for {heading} in {rows:?}");
+}
+
+fn beta_rev(sb: &Sandbox, ws: &Path) -> String {
+    heading_rev(sb, ws, "Beta")
+}
+
 /// The one-edit match batch against `Alpha/Beta`, in the wire §4.4 grammar.
+fn beta_match_guarded(sb: &Sandbox, ws: &Path, old: &str, new: &str) -> String {
+    let rev = beta_rev(sb, ws);
+    serde_json::to_string(&serde_json::json!([{
+        "target": {"hpath": [{"h": "Alpha"}, {"h": "Beta"}]},
+        "edit": {"match": {"old": old, "new": new}},
+        "if_node_rev": rev,
+    }]))
+    .expect("edits json")
+}
+
 fn beta_match(old: &str, new: &str) -> String {
     serde_json::to_string(&serde_json::json!([{
         "target": {"hpath": [{"h": "Alpha"}, {"h": "Beta"}]},
@@ -844,7 +911,7 @@ fn put_match_edit_commits_bytes() {
     let ws = sb.workspace();
     let out = sb.run_stdin(
         &ws,
-        &["put", "doc.md"],
+        &["put", "doc.md", "--force"],
         &beta_match("four five", "four five six"),
     );
     assert_eq!(code(&out), 0, "put: {}", stderr(&out));
@@ -864,7 +931,7 @@ fn put_dry_lands_nothing() {
     let ws = sb.workspace();
     let out = sb.run_stdin(
         &ws,
-        &["put", "doc.md", "--dry"],
+        &["put", "doc.md", "--dry", "--force"],
         &beta_match("four five", "changed"),
     );
     assert_eq!(code(&out), 0, "dry put: {}", stderr(&out));
@@ -876,52 +943,52 @@ fn put_dry_lands_nothing() {
     assert!(stdout(&out).contains("nothing written"), "{}", stdout(&out));
 }
 
-/// Gate — D3: `--dry` SHOWS the change. The unified diff runs from the file's current bytes to
-/// the candidate the rehearsal built, so a caller decides from what WOULD land rather than from
-/// a count of edits.
+/// Gate — D3: `--dry` is the daemon rehearsal. The old in-process unified
+/// candidate-diff was never a wire field; the face reports the rehearsal and
+/// writes nothing.
 #[test]
-fn put_dry_shows_the_diff() {
+fn put_dry_shows_the_rehearsal() {
     let sb = sandbox();
     let ws = sb.workspace();
     let out = sb.run_stdin(
         &ws,
-        &["put", "doc.md", "--dry"],
+        &["put", "doc.md", "--dry", "--force"],
         &beta_match("four five", "four FIVE six"),
     );
     assert_eq!(code(&out), 0, "dry put: {}", stderr(&out));
     let text = stdout(&out);
     assert!(
-        text.contains("--- current") && text.contains("+++ candidate"),
-        "the sides are named for what they ARE — never a/ and b/ files: {text}"
-    );
-    assert!(
-        text.contains("-four five") && text.contains("+four FIVE six"),
-        "both sides of the change ride: {text}"
+        text.contains("dry run:") && text.contains("nothing written"),
+        "the rehearsal is named: {text}"
     );
     assert_eq!(
         std::fs::read_to_string(ws.join("doc.md")).expect("read back"),
         DOC,
-        "showing the diff is still a rehearsal — nothing lands"
+        "a rehearsal writes nothing"
     );
 }
 
-/// Gate — D3: `--dry --json` carries the same diff as a FIELD, so a machine
-/// caller reads it out of the frame instead of scraping stdout.
+/// Gate — D3: `--dry --json` carries the daemon rehearsal body under `put`,
+/// never a local candidate-diff field.
 #[test]
-fn put_dry_json_carries_the_diff_as_a_field() {
+fn put_dry_json_carries_the_rehearsal_body() {
     let sb = sandbox();
     let ws = sb.workspace();
     let out = sb.run_stdin(
         &ws,
-        &["put", "doc.md", "--dry", "--json"],
+        &["put", "doc.md", "--dry", "--json", "--force"],
         &beta_match("four five", "four FIVE six"),
     );
     assert_eq!(code(&out), 0, "dry put --json: {}", stderr(&out));
     let v: Value = serde_json::from_str(&stdout(&out)).expect("json parses");
-    let diff = v["diff"].as_str().expect("diff field");
     assert!(
-        diff.contains("+four FIVE six"),
-        "the diff is the field's value: {diff}"
+        v.get("diff").is_none(),
+        "candidate-diff is not a wire field"
+    );
+    assert!(
+        v["put"].is_object(),
+        "the daemon rehearsal rides under put: {}",
+        v["put"]
     );
 }
 
@@ -931,11 +998,14 @@ fn put_dry_json_carries_the_diff_as_a_field() {
 fn put_validate_is_silent_on_a_pass() {
     let sb = sandbox();
     let ws = sb.workspace();
-    let out = sb.run_stdin(
-        &ws,
-        &["put", "doc.md", "--validate"],
-        &beta_match("four five", "changed"),
-    );
+    let rev = beta_rev(&sb, &ws);
+    let edits = serde_json::to_string(&serde_json::json!([{
+        "target": {"hpath": [{"h": "Alpha"}, {"h": "Beta"}]},
+        "edit": {"match": {"old": "four five", "new": "changed"}},
+        "if_node_rev": rev,
+    }]))
+    .expect("edits");
+    let out = sb.run_stdin(&ws, &["put", "doc.md", "--validate"], &edits);
     assert_eq!(code(&out), 0, "validate: {}", stderr(&out));
     assert_eq!(stdout(&out), "", "a passing check says nothing");
     assert_eq!(
@@ -955,7 +1025,7 @@ fn put_validate_findings_exit_nonzero_with_the_refusal_body() {
     let out = sb.run_stdin(
         &ws,
         &["put", "doc.md", "--validate"],
-        &beta_match("nothing matches this", "x"),
+        &beta_match_guarded(&sb, &ws, "nothing matches this", "x"),
     );
     assert_eq!(code(&out), 1, "a finding is the findings leg");
     assert_eq!(stdout(&out), "", "the refusal rides stderr, not stdout");
@@ -993,7 +1063,7 @@ fn put_json_speaks_the_v3_vocabulary() {
     let ws = sb.workspace();
     let out = sb.run_stdin(
         &ws,
-        &["put", "doc.md", "--json"],
+        &["put", "doc.md", "--json", "--force"],
         &beta_match("four five", "four six"),
     );
     assert_eq!(code(&out), 0, "put --json: {}", stderr(&out));
@@ -1023,9 +1093,15 @@ fn put_json_refusal_emits_the_error_envelope_on_stdout() {
     let out = sb.run_stdin(
         &ws,
         &["put", "doc.md", "--json"],
-        &beta_match("absent text", "anything"),
+        &beta_match_guarded(&sb, &ws, "absent text", "anything"),
     );
-    assert_eq!(code(&out), 1, "no_match refuses: {}", stderr(&out));
+    assert_eq!(
+        code(&out),
+        1,
+        "no_match refuses: stdout={} stderr={}",
+        stdout(&out),
+        stderr(&out)
+    );
     let v: Value = serde_json::from_str(&stdout(&out))
         .expect("a --json refusal answers JSON on stdout, never nothing");
     assert!(
@@ -1083,9 +1159,15 @@ fn put_no_match_is_the_finding_leg() {
     let out = sb.run_stdin(
         &ws,
         &["put", "doc.md"],
-        &beta_match("absent text", "anything"),
+        &beta_match_guarded(&sb, &ws, "absent text", "anything"),
     );
-    assert_eq!(code(&out), 1, "no_match refusal: {}", stderr(&out));
+    assert_eq!(
+        code(&out),
+        1,
+        "no_match refusal: stdout={} stderr={}",
+        stdout(&out),
+        stderr(&out)
+    );
     assert_eq!(
         std::fs::read_to_string(ws.join("doc.md")).expect("read back"),
         before,
@@ -1098,7 +1180,7 @@ fn put_no_match_is_the_finding_leg() {
 fn put_malformed_stdin_is_exit_2() {
     let sb = sandbox();
     let ws = sb.workspace();
-    let out = sb.run_stdin(&ws, &["put", "doc.md"], "not json at all");
+    let out = sb.run_stdin(&ws, &["put", "doc.md", "--force"], "not json at all");
     assert_eq!(code(&out), 2);
     assert!(
         stderr(&out).contains("malformed edits JSON"),
@@ -1127,7 +1209,7 @@ fn a_typoed_guard_field_on_an_edit_object_refuses_loud_on_both_arms() {
             "if_rev": "0000000000000000",
         }]))
         .expect("edits json");
-        let out = sb.run_stdin(&ws, &["put", "doc.md", "--dry"], &stdin);
+        let out = sb.run_stdin(&ws, &["put", "doc.md", "--dry", "--force"], &stdin);
         let err = stderr(&out);
         assert_eq!(
             code(&out),
@@ -1185,7 +1267,7 @@ fn unknown_fields_refuse_at_every_grain_of_the_edit_batch() {
         let before = std::fs::read_to_string(ws.join("doc.md")).expect("read");
         let out = sb.run_stdin(
             &ws,
-            &["put", "doc.md", "--dry"],
+            &["put", "doc.md", "--dry", "--force"],
             &serde_json::to_string(&stdin).expect("edits json"),
         );
         let err = stderr(&out);
@@ -1248,7 +1330,7 @@ fn a_bad_block_id_is_the_engines_refusal_not_the_clis() {
         "edit": {"match": {"old": "four five", "new": "six"}},
     }]))
     .expect("edits json");
-    let out = sb.run_stdin(&ws, &["put", "doc.md", "--json"], &stdin);
+    let out = sb.run_stdin(&ws, &["put", "doc.md", "--json", "--force"], &stdin);
     assert_eq!(
         code(&out),
         1,
@@ -1285,7 +1367,7 @@ fn a_bad_block_id_is_the_engines_refusal_not_the_clis() {
 fn put_empty_stdin_is_exit_2() {
     let sb = sandbox();
     let ws = sb.workspace();
-    let out = sb.run_stdin(&ws, &["put", "doc.md"], "");
+    let out = sb.run_stdin(&ws, &["put", "doc.md", "--force"], "");
     assert_eq!(code(&out), 2);
     assert!(
         stderr(&out).contains("edits JSON on stdin"),
@@ -1329,9 +1411,14 @@ fn the_wire_request_envelope_on_stdin_is_refused_by_name() {
 
     // The shape it points at is the shape that works — asserted here so the
     // hint can never teach a grammar the door does not accept.
-    let bare = r#"[{"target":{"hpath":[{"h":"Alpha"}]},
-                    "edit":{"match":{"old":"one","new":"ONE"}}}]"#;
-    let ok = sb.run_stdin(&ws, &["put", "doc.md", "--validate"], bare);
+    let rev = heading_rev(&sb, &ws, "Alpha");
+    let guarded = serde_json::to_string(&serde_json::json!([{
+        "target": {"hpath": [{"h": "Alpha"}]},
+        "edit": {"match": {"old": "one", "new": "ONE"}},
+        "if_node_rev": rev,
+    }]))
+    .expect("edits");
+    let ok = sb.run_stdin(&ws, &["put", "doc.md", "--validate"], &guarded);
     assert_eq!(code(&ok), 0, "{}", stderr(&ok));
 }
 
@@ -1442,7 +1529,7 @@ fn a_malformed_stdin_refusal_leaves_the_document_byte_unchanged() {
         let sb = sandbox();
         let ws = sb.workspace();
         let before = std::fs::read_to_string(ws.join("doc.md")).expect("read");
-        let out = sb.run_stdin(&ws, &["put", "doc.md"], stdin);
+        let out = sb.run_stdin(&ws, &["put", "doc.md", "--force"], stdin);
         assert_eq!(
             code(&out),
             2,
@@ -1535,7 +1622,7 @@ fn a_malformed_edits_refusal_teaches_the_working_shape() {
     ] {
         let sb = sandbox();
         let ws = sb.workspace();
-        let out = sb.run_stdin(&ws, &["put", "doc.md"], stdin);
+        let out = sb.run_stdin(&ws, &["put", "doc.md", "--force"], stdin);
         assert_eq!(code(&out), 2, "bad invocation for {stdin}");
         let err = stderr(&out);
         assert!(
@@ -1601,7 +1688,7 @@ fn put_refusal_on_a_duplicated_anchor_speaks_the_anchor_remedy() {
         "edit": {"match": {"old": "first", "new": "FIRST"}},
     }]))
     .expect("edits json");
-    let out = sb.run_stdin(&ws, &["put", "doc.md", "--dry"], &edits);
+    let out = sb.run_stdin(&ws, &["put", "doc.md", "--dry", "--force"], &edits);
     assert_ne!(
         code(&out),
         0,
@@ -1637,7 +1724,7 @@ fn put_not_unique_counts_the_matches_and_teaches_the_working_shape() {
     let ws = sb.workspace_with("# Alpha\n\nitem one\nnew item\n");
     let edits =
         r#"[{"target":{"hpath":[{"h":"Alpha"}]},"edit":{"match":{"old":"item","new":"entry"}}}]"#;
-    let out = sb.run_stdin(&ws, &["put", "doc.md"], edits);
+    let out = sb.run_stdin(&ws, &["put", "doc.md", "--force"], edits);
     assert_eq!(code(&out), 1, "not_unique refuses: {}", stderr(&out));
     let m = stderr(&out);
     assert!(m.contains("not_unique"), "keeps the code: {m}");
@@ -1654,7 +1741,7 @@ fn put_not_unique_counts_the_matches_and_teaches_the_working_shape() {
 
     // The dogfood's exact --json probe: the same refusal answers the error
     // envelope on stdout — never an empty stdout a machine cannot branch on.
-    let out = sb.run_stdin(&ws, &["put", "doc.md", "--json"], edits);
+    let out = sb.run_stdin(&ws, &["put", "doc.md", "--json", "--force"], edits);
     assert_eq!(code(&out), 1);
     let v: Value = serde_json::from_str(&stdout(&out))
         .expect("a --json not_unique refusal answers JSON on stdout");
@@ -1672,9 +1759,15 @@ fn put_no_match_teaches_the_byte_exact_law() {
     let out = sb.run_stdin(
         &ws,
         &["put", "doc.md"],
-        &beta_match("absent text", "anything"),
+        &beta_match_guarded(&sb, &ws, "absent text", "anything"),
     );
-    assert_eq!(code(&out), 1, "no_match refuses: {}", stderr(&out));
+    assert_eq!(
+        code(&out),
+        1,
+        "no_match refuses: stdout={} stderr={}",
+        stdout(&out),
+        stderr(&out)
+    );
     let m = stderr(&out);
     assert!(m.contains("no_match"), "keeps the code: {m}");
     assert!(m.contains("0 times"), "counts what it saw: {m}");
@@ -1698,7 +1791,7 @@ fn put_would_corrupt_names_the_lost_sections_and_the_newline_law() {
     let ws = sb.workspace_with("# Alpha\n\none two\n\n# Beta\n\nfour five\n");
     let out = sb.run_stdin(
         &ws,
-        &["put", "doc.md"],
+        &["put", "doc.md", "--force"],
         r#"[{"target":{"hpath":[{"h":"Alpha"}]},"edit":{"put":{"at":"end","text":"- glued"}}}]"#,
     );
     assert_eq!(code(&out), 1, "would_corrupt refuses: {}", stderr(&out));
@@ -1717,7 +1810,7 @@ fn put_would_corrupt_names_the_lost_sections_and_the_newline_law() {
     // The cause is measured, and it rides the wire beside the family.
     let out = sb.run_stdin(
         &ws,
-        &["put", "doc.md", "--json"],
+        &["put", "doc.md", "--json", "--force"],
         r#"[{"target":{"hpath":[{"h":"Alpha"}]},"edit":{"put":{"at":"end","text":"- glued"}}}]"#,
     );
     let v: Value = serde_json::from_str(&stdout(&out)).expect("--json refusal answers JSON");
@@ -1737,7 +1830,7 @@ fn put_would_corrupt_on_reparenting_teaches_the_reparenting_remedy() {
     let ws = sb.workspace_with("# Goals\n\n## Q3\n\nship\n\n## Q4\n\nlater\n");
     let edits = r#"[{"target":{"hpath":[{"h":"Goals"},{"h":"Q3"}]},
         "edit":{"put":{"at":"content","text":"pre\n\n# Zombie\n\npost\n"}}}]"#;
-    let out = sb.run_stdin(&ws, &["put", "doc.md"], edits);
+    let out = sb.run_stdin(&ws, &["put", "doc.md", "--force"], edits);
     assert_eq!(code(&out), 1, "would_corrupt refuses: {}", stderr(&out));
     let m = stderr(&out);
     assert!(m.contains("would_corrupt"), "keeps the code: {m}");
@@ -1754,7 +1847,7 @@ fn put_would_corrupt_on_reparenting_teaches_the_reparenting_remedy() {
         "teaches the remedy that repairs THIS batch: {m}"
     );
 
-    let out = sb.run_stdin(&ws, &["put", "doc.md", "--json"], edits);
+    let out = sb.run_stdin(&ws, &["put", "doc.md", "--json", "--force"], edits);
     let v: Value = serde_json::from_str(&stdout(&out)).expect("--json refusal answers JSON");
     assert_eq!(v["error"]["code"], "would_corrupt", "{v}");
     assert_eq!(v["error"]["family"], "containment_lost", "{v}");
@@ -1774,7 +1867,7 @@ fn put_target_identity_death_serves_would_corrupt_with_its_own_family() {
     // target is addressed by does not survive its own edit.
     let edits = r#"[{"target":{"hpath":[{"h":"Goals"},{"h":"Q4"}]},
         "edit":{"put":{"at":"all","text":"plain body, no heading\n"}}}]"#;
-    let out = sb.run_stdin(&ws, &["put", "doc.md", "--json"], edits);
+    let out = sb.run_stdin(&ws, &["put", "doc.md", "--json", "--force"], edits);
     assert_eq!(
         code(&out),
         1,
@@ -1796,7 +1889,7 @@ fn put_target_identity_death_serves_would_corrupt_with_its_own_family() {
 
     // The teaching rides the refusal's own `message` (server-side), so every
     // face — this CLI and the host doors — serves the same remedy.
-    let out = sb.run_stdin(&ws, &["put", "doc.md"], edits);
+    let out = sb.run_stdin(&ws, &["put", "doc.md", "--force"], edits);
     let m = stderr(&out);
     assert!(
         m.contains("target identity does not survive"),
