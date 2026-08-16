@@ -2,8 +2,17 @@
 //!
 //! ```text
 //! mrd put <PATH> [--dry | --validate] [--force] [--actor A] [--now T]
-//!         [--if-fingerprint FP] [--receipt PATH#ANCHOR] [--json]  < edits.json
+//!         [--if-fingerprint FP] [--scope PATH] [--receipt PATH#ANCHOR] [--json]  < edits.json
 //! ```
+//!
+//! `--scope` narrows the `--if-fingerprint` premise to the named node
+//! (wire-contract §5.4): FP is then that node's scoped token from the §4.7
+//! mint arm, not the world value, so a disjoint sibling's birth no longer
+//! refuses the put. Two walls guard it here, both exit 2 before any engine
+//! write: `--scope` without `--if-fingerprint` is half a premise (the §5.4
+//! pair law, enforced at parse), and a daemon whose hello does not serve
+//! `scoped-guards` cannot check a scoped premise — the taught refusal fires
+//! instead of a strict-wall `bad_request` from a field it never negotiated.
 //!
 //! The two rehearsals are one run and two faces: both send `dry: true` through the same
 //! choke-point, so neither can validate anything the other would not. `--dry` is the daemon
@@ -71,6 +80,9 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     if let Some(fp) = &parsed.if_fingerprint {
         request["if_fingerprint"] = json!(fp);
     }
+    if let Some(scope) = &parsed.scope {
+        request["scope"] = json!(scope);
+    }
     if let Some(receipt) = &parsed.receipt {
         request["receipt"] = json!({"path": receipt.path.0, "anchor": receipt.anchor});
     }
@@ -82,6 +94,30 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     }
 
     let mut door = write_ipc::connect(&resolved.workspace)?;
+    // The cap wall, client half (§3.2): a scoped premise rides only when the
+    // connect-time hello advertised the family. Refusing HERE — before any
+    // engine write — is the taught refusal; sending anyway would draw the
+    // strict wall's `bad_request` for a field this daemon never negotiated.
+    if parsed.scope.is_some() && !door.has_cap(engine::SCOPED_GUARDS_CAP) {
+        return Err(Fail::tool(format!(
+            "--scope names a scoped premise (wire-contract §5.4), but this daemon's hello \
+             does not serve the `{}` cap, so it cannot check a premise at that grain — \
+             nothing was sent and nothing was written.\n\
+             Why: the cap is family-whole discovery honesty (§3.2): a daemon either serves \
+             the whole scoped-premise family or refuses every guard-family field at its \
+             strict wall; the client refuses first, with this teaching, instead of drawing \
+             that `bad_request`.\n\
+             Fixes — run whichever fits your case:\n\
+               - retry without --scope: `--if-fingerprint` alone is the world-grain premise \
+             this daemon does check.\n\
+               - when the daemon should serve the family: restart it so a build that \
+             advertises `{}` binds the socket, then mint the scoped token again \
+             (`fingerprint {{scope}}`, §4.7) — a world token does not become scoped by \
+             renaming the flag.",
+            engine::SCOPED_GUARDS_CAP,
+            engine::SCOPED_GUARDS_CAP,
+        )));
+    }
     let body = write_ipc::call(&mut door, &request)
         .map_err(|e| refusal(&parsed, &resolved.workspace, &e))?;
     let body = write_ipc::project_body(&body);
@@ -183,6 +219,9 @@ struct Put {
     now: Option<String>,
     receipt: Option<ReceiptAddr>,
     if_fingerprint: Option<String>,
+    /// `--scope`: the node the `--if-fingerprint` premise binds (§5.4). The
+    /// pair law holds at parse: present only beside `if_fingerprint`.
+    scope: Option<String>,
     /// `--dry`: rehearse and show the diff.
     dry: bool,
     /// `--validate`: rehearse and say nothing.
@@ -205,6 +244,7 @@ impl Put {
         let mut now: Option<String> = None;
         let mut receipt: Option<ReceiptAddr> = None;
         let mut if_fingerprint: Option<String> = None;
+        let mut scope: Option<String> = None;
         let mut dry = false;
         let mut validate = false;
         let mut force = false;
@@ -241,24 +281,17 @@ impl Put {
                         .ok_or_else(|| Fail::tool("--if-fingerprint needs a value".to_owned()))?;
                     if_fingerprint = Some(value.clone());
                 }
+                "--scope" => {
+                    let value = it
+                        .next()
+                        .ok_or_else(|| Fail::tool("--scope needs a value".to_owned()))?;
+                    scope = Some(value.clone());
+                }
                 "--receipt" => {
                     let value = it
                         .next()
                         .ok_or_else(|| Fail::tool("--receipt needs a value".to_owned()))?;
-                    let Some((rpath, anchor)) = value.split_once('#') else {
-                        return Err(Fail::tool(format!(
-                            "--receipt wants PATH#ANCHOR (a block anchor address): {value}"
-                        )));
-                    };
-                    if rpath.is_empty() || anchor.is_empty() {
-                        return Err(Fail::tool(format!(
-                            "--receipt wants PATH#ANCHOR (both parts non-empty): {value}"
-                        )));
-                    }
-                    receipt = Some(ReceiptAddr {
-                        path: WirePath(rpath.to_owned()),
-                        anchor: anchor.to_owned(),
-                    });
+                    receipt = Some(parse_receipt(value)?);
                 }
                 flag if flag.starts_with('-') => {
                     return Err(Fail::tool(format!("unknown flag: {flag}")));
@@ -277,18 +310,51 @@ impl Put {
                     .to_owned(),
             ));
         }
+        // The §5.4 pair law, this face's own wall: a scope names WHERE a
+        // premise binds and carries no token, so alone it is half a premise.
+        // The engine would refuse the same shape; this refusal costs no dial.
+        if scope.is_some() && if_fingerprint.is_none() {
+            return Err(Fail::tool(
+                "--scope names the premise's node but carries no token — pair it with \
+                 --if-fingerprint holding that node's scoped token (minted by the §4.7 \
+                 `fingerprint {scope}` arm; wire-contract §5.4). A scope with no \
+                 fingerprint is half a premise."
+                    .to_owned(),
+            ));
+        }
         Ok(Put {
             path,
             actor,
             now,
             receipt,
             if_fingerprint,
+            scope,
             dry,
             validate,
             force,
             format: if json { Format::Json } else { Format::Human },
         })
     }
+}
+
+/// `--receipt PATH#ANCHOR` → the typed address, or the CLI's own refusal
+/// (exit 2, before any engine contact). Both parts are required: a half
+/// address names no anchor to pair a delivery against.
+fn parse_receipt(value: &str) -> Result<ReceiptAddr, Fail> {
+    let Some((rpath, anchor)) = value.split_once('#') else {
+        return Err(Fail::tool(format!(
+            "--receipt wants PATH#ANCHOR (a block anchor address): {value}"
+        )));
+    };
+    if rpath.is_empty() || anchor.is_empty() {
+        return Err(Fail::tool(format!(
+            "--receipt wants PATH#ANCHOR (both parts non-empty): {value}"
+        )));
+    }
+    Ok(ReceiptAddr {
+        path: WirePath(rpath.to_owned()),
+        anchor: anchor.to_owned(),
+    })
 }
 
 /// The working batch every door teaches — ONE spelling shared by the empty-stdin refusal and

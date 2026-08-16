@@ -243,10 +243,14 @@ usage:
                            with its own words, so pick what fits before asking.
                            Repeated identical selectors are served ONCE and the
                            collapse is stated. The section map itself is never
-                           word-bounded — it is the way back in. Exits: 0 served
+                           word-bounded — it is the way back in. Under the
+                           scoped-guards cap a --json read also captures the
+                           file's scoped token (fingerprint {scope} on the
+                           same connection) as the frame's mint key; the
+                           body's fingerprint stays the world token. Exits: 0 served
                            / 1 engine refused / 2 bad invocation.
 ! mrd put <PATH> [--dry | --validate] [--force] [--actor A] [--now T]
-          [--if-fingerprint FP] [--receipt PATH#ANCHOR] [--json]
+          [--if-fingerprint FP] [--scope PATH] [--receipt PATH#ANCHOR] [--json]
                            batch write. STDIN = BARE JSON array
                            [{target, edit, if_node_rev?}] — the VALUE of
                            wire §4.4 edits, NEVER the full request object
@@ -270,7 +274,10 @@ usage:
                            the rehearsal summary; --validate is exit-only.
                            --force escapes armed binding-break/block and
                            the wire guard (skip shown in verdict).
-                           --if-fingerprint = world-grain guard. --json
+                           --if-fingerprint = world-grain guard.
+                           --scope PATH pairs it to that node (sent only
+                           when hello serves scoped-guards; taught
+                           refusal otherwise, nothing sent). --json
                            machine face on both legs: commit
                            {workspace,put}; refusal {workspace,error} on
                            stdout. Exits: 0 committed|rehearsal-ok / 1
@@ -511,6 +518,9 @@ options:
                            args dict.
   --if-fingerprint FP      (script, put, pin) world-grain guard: refuse unless
                            the workspace still stands at FP.
+  --scope PATH             (put) narrows --if-fingerprint to PATH; pair
+                           required. Sent only when hello serves scoped-guards;
+                           otherwise taught refusal, nothing sent.
   --expect-armed DIGEST    (script) refuse BEFORE splice unless this run's
                            armed set hashes to DIGEST. Hosts that gate write
                            sets run --dry first and pass the trace's

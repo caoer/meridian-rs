@@ -92,6 +92,21 @@ pub(crate) fn hello_identity_skew(body: Option<&Value>, socket: &Path) -> Result
     ))
 }
 
+/// The `scoped-guards` behavior cap (wire-contract §3.2/§5.4) — ONE spelling
+/// for every client lane. The cap is family-whole: a daemon serving it decodes
+/// the whole scoped-premise family (splice/script `scope`+`guards[]` and the
+/// §4.7 mint arm); a daemon not serving it refuses every guard-family field at
+/// the strict wall, so the client half stays dormant until the hello says so.
+pub(crate) const SCOPED_GUARDS_CAP: &str = "scoped-guards";
+
+/// Does a parsed hello body advertise `cap`? Absent body, absent `caps`, or a
+/// non-array all answer `false` — the dormant default, never a guess.
+pub(crate) fn hello_has_cap(body: Option<&Value>, cap: &str) -> bool {
+    body.and_then(|b| b.get("caps"))
+        .and_then(Value::as_array)
+        .is_some_and(|caps| caps.iter().filter_map(Value::as_str).any(|c| c == cap))
+}
+
 /// The `sockaddr_un.sun_path` capacity, NUL terminator included: 108 on Linux,
 /// 104 on the BSDs (macOS). A socket path that does not fit cannot be bound OR
 /// dialled, so the daemon is unreachable however healthy it is — and the

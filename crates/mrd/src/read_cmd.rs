@@ -48,16 +48,24 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
             cwd.display()
         ))
     })?;
-    let (source, mut body) = answer_read(&resolved.workspace, &cwd, &parsed)?;
+    let (source, mut body, mint) = answer_read(&resolved.workspace, &cwd, &parsed)?;
 
     match parsed.format {
         Format::Json => {
             drop_duplicated_map(&mut body);
-            let value = json!({
+            let mut value = json!({
                 "workspace": resolved.workspace.display().to_string(),
                 "source": source.label(),
                 "read": body,
             });
+            // The §4.7 mint body, relayed verbatim beside `read` — present
+            // exactly when the daemon advertised `scoped-guards` and the
+            // capture ran. The `read` body's own `fingerprint` stays the
+            // ambient world token (§5.1): the scoped token is REQUESTED,
+            // never a reinterpretation of the existing field.
+            if let Some(mint) = mint {
+                value["mint"] = mint;
+            }
             println!("{}", serde_json::to_string_pretty(&value).expect("json"));
         }
         Format::Human => {
@@ -143,8 +151,9 @@ impl Read {
 /// recovery) — while `Unavailable` means the question never reached an engine
 /// at all, the one case where the in-process degrade answers instead.
 enum DaemonRead {
-    /// `ok:true` — the wire success body.
-    Served(Value),
+    /// `ok:true` — the wire success body, plus the §4.7 scoped-mint capture
+    /// when it ran (`--json` under a `scoped-guards` hello; `None` otherwise).
+    Served { body: Value, mint: Option<Value> },
     /// `ok:false` with a well-formed §8 error envelope — the engine's typed
     /// refusal, surfaced verbatim. Degrading past it would remint from a
     /// single-file load that cannot know what the corpus-holding engine said
@@ -164,17 +173,25 @@ enum DaemonRead {
 /// Answer the composed read: dial the resident daemon (auto-spawning it) and serve its answer —
 /// success or typed refusal alike. Only when the daemon is unreachable degrade to the
 /// in-process engine — the same leaves, the same projection, only the reported source differs.
-fn answer_read(workspace: &Path, cwd: &Path, r: &Read) -> Result<(EngineSource, Value), Fail> {
+fn answer_read(
+    workspace: &Path,
+    cwd: &Path,
+    r: &Read,
+) -> Result<(EngineSource, Value, Option<Value>), Fail> {
     match try_daemon_read(workspace, r) {
-        DaemonRead::Served(body) => Ok((EngineSource::Daemon, body)),
+        DaemonRead::Served { body, mint } => Ok((EngineSource::Daemon, body, mint)),
         DaemonRead::Refused(mut error) => {
             teach_bad_path(workspace, &mut error);
             teach_cwd_respelling(workspace, cwd, &mut error);
             Err(engine::json_refusal(r.format, workspace, &error))
         }
-        DaemonRead::Unavailable => {
-            Ok((EngineSource::Ephemeral, in_process_read(workspace, cwd, r)?))
-        }
+        // The degrade never mints: capture is a resident-daemon fact — the
+        // in-process path has no hello and so no negotiated family.
+        DaemonRead::Unavailable => Ok((
+            EngineSource::Ephemeral,
+            in_process_read(workspace, cwd, r)?,
+            None,
+        )),
         DaemonRead::Skew(message) => Err(Fail::tool(message)),
     }
 }
@@ -251,12 +268,70 @@ fn daemon_read(workspace: &Path, r: &Read) -> Option<DaemonRead> {
 
     let response = engine::call(&mut writer, &mut reader, &r.request()).ok()?;
     if response.get("ok").and_then(Value::as_bool) == Some(true) {
-        return Some(DaemonRead::Served(response.get("body")?.clone()));
+        let body = response.get("body")?.clone();
+        let mint = match mint_scoped_token(&mut writer, &mut reader, greeted.get("body"), r) {
+            Ok(mint) => mint,
+            Err(error) => return Some(DaemonRead::Refused(error)),
+        };
+        return Some(DaemonRead::Served { body, mint });
     }
     // A refusal frame that does not parse as the §8 envelope is a broken
     // channel, not a refusal — that one degrades.
     let error: ErrorBody = serde_json::from_value(response.get("error")?.clone()).ok()?;
     Some(DaemonRead::Refused(Box::new(error)))
+}
+
+/// The §4.7 scoped-mint capture riding a served `--json` read: when the
+/// connect-time hello advertised `scoped-guards`, one more exchange on the
+/// SAME connection — `fingerprint {scope: <the read path>}` — and the mint
+/// body is relayed verbatim as the house frame's `mint` key.
+///
+/// `Ok(None)` is the dormant default: the human face (no capture consumer),
+/// or a hello without the cap — today's builds, so the frame stays
+/// byte-identical until the family flips.
+///
+/// Failure is LOUD, never a silent omission and never a degrade: the read
+/// already served warm, so a daemon that advertised the family and then
+/// refused its own mint (or dropped the connection between the two calls) is
+/// an anomaly the caller must see — a quietly absent `mint` key would read as
+/// dormancy and hide it.
+fn mint_scoped_token(
+    writer: &mut UnixStream,
+    reader: &mut BufReader<UnixStream>,
+    hello_body: Option<&Value>,
+    r: &Read,
+) -> Result<Option<Value>, Box<ErrorBody>> {
+    if !matches!(r.format, Format::Json)
+        || !engine::hello_has_cap(hello_body, engine::SCOPED_GUARDS_CAP)
+    {
+        return Ok(None);
+    }
+    let request = json!({ "op": "fingerprint", "scope": r.path });
+    let response = engine::call(writer, reader, &request).map_err(|e| {
+        let mut err = ErrorBody::new(wire::ErrorCode::IoError);
+        err.message = Some(format!(
+            "the daemon served the read but dropped the §4.7 scoped-mint exchange \
+             that rides it under `scoped-guards`: {e}"
+        ));
+        err.cause = Some(e.to_string());
+        Box::new(err)
+    })?;
+    if response.get("ok").and_then(Value::as_bool) == Some(true) {
+        return Ok(Some(response.get("body").cloned().unwrap_or(Value::Null)));
+    }
+    let error: ErrorBody = response
+        .get("error")
+        .cloned()
+        .and_then(|e| serde_json::from_value(e).ok())
+        .unwrap_or_else(|| {
+            let mut err = ErrorBody::new(wire::ErrorCode::IoError);
+            err.message = Some(format!(
+                "the daemon refused the §4.7 scoped mint with a frame that is not \
+                 the §8 envelope: {response}"
+            ));
+            err
+        });
+    Err(Box::new(error))
 }
 
 /// The two selector inputs routed to their wire fields — the CLI's half of the
