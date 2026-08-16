@@ -52,7 +52,7 @@ use fs::cutover::{CutoverRecord, CutoverState, CutoverStatus, ServingLaw};
 // renaming to satisfy the lint would trade clarity for silence.
 #[allow(clippy::struct_field_names)]
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Components {
+pub struct Components {
     /// Interim-EX acquisition + the intents-empty proof.
     pub drain_us: u128,
     /// The no-return act: the record durable at `NEW_BUILDING`.
@@ -70,7 +70,7 @@ pub(crate) struct Components {
 
 /// One completed cutover: the durable record plus the measured pause.
 #[derive(Debug)]
-pub(crate) struct CutoverRun {
+pub struct CutoverRun {
     pub record: CutoverRecord,
     pub components: Components,
 }
@@ -148,7 +148,7 @@ pub fn start(
 
 /// Where the machine starts: a fresh boundary crossing (record absent), or
 /// a resume of a crashed build (`NEW_BUILDING` found durable at open).
-pub(crate) enum Resume {
+pub enum Resume {
     Fresh {
         /// The retired ring instance when a LIVE drain observed one — the
         /// record remembers it so a late resumption cursor naming it gets
@@ -165,7 +165,12 @@ pub(crate) enum Resume {
 /// labeled boundary (one terminal `fingerprint_epoch_retired` control each,
 /// then close — card step 2: never a silent chain break) and the record
 /// remembers its retired instance. At-open cutovers have no ring.
-pub(crate) fn run(
+///
+/// # Errors
+/// The drain's refusals (a writer holds the workspace past the deadline, an
+/// unsettled intent), the record's write failures, or any I/O failure in the
+/// build.
+pub fn run(
     root: &fs::WorkspaceRoot,
     cache: &Arc<Mutex<fs::DomainCache>>,
     cache_root: &Path,
@@ -390,7 +395,7 @@ mod tests {
         );
         let err = start(&root, &cache, cache_root.path(), None)
             .expect_err("and the boundary is crossed once");
-        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
     }
 
     #[test]

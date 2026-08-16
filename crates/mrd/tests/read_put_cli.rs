@@ -1138,7 +1138,7 @@ fn put_json_refusal_envelope_speaks_the_v3_vocabulary() {
             "doc.md",
             "--json",
             "--if-fingerprint",
-            "b3b:0000000000000000000000000000000000000000000000000000000000000000",
+            "b3:0000000000000000000000000000000000000000000000000000000000000000",
         ],
         &beta_match("four five", "six"),
     );
@@ -1147,6 +1147,41 @@ fn put_json_refusal_envelope_speaks_the_v3_vocabulary() {
     assert_eq!(
         v["error"]["code"], "fingerprint_mismatch",
         "projected exactly as the daemon projects it for a v3 session: {v}"
+    );
+}
+
+/// The third fact of §5.7, at the CLI door: a token whose ladder position is
+/// PAST the serving one is an UNKNOWN FUTURE family and refuses on its own
+/// fact — `fingerprint_version_unsupported`, taught apart from a mismatch
+/// (wire-contract §12.3 amendment 2026-08-15; the code landed with B-02 and
+/// is wired at the doors by the cutover card).
+#[test]
+fn a_future_family_token_refuses_its_own_fact_not_a_mismatch() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let before = std::fs::read_to_string(ws.join("doc.md")).expect("read");
+    let out = sb.run_stdin(
+        &ws,
+        &[
+            "put",
+            "doc.md",
+            "--json",
+            "--if-fingerprint",
+            "b3b:0000000000000000000000000000000000000000000000000000000000000000",
+        ],
+        &beta_match("four five", "six"),
+    );
+    assert_eq!(code(&out), 1, "the guard refuses: {}", stderr(&out));
+    let v: Value = serde_json::from_str(&stdout(&out)).expect("json on stdout");
+    assert_eq!(
+        v["error"]["code"], "fingerprint_version_unsupported",
+        "its own code, never fingerprint_mismatch: {v}"
+    );
+    assert_eq!(v["error"]["recovery"], "resync", "the ruled class: {v}");
+    assert_eq!(
+        std::fs::read_to_string(ws.join("doc.md")).expect("read back"),
+        before,
+        "nothing was written"
     );
 }
 
@@ -1485,7 +1520,10 @@ fn root_mismatch_names_the_failure_and_gives_a_fix() {
             "put",
             "doc.md",
             "--if-fingerprint",
-            "b3b:0000000000000000000000000000000000000000000000000000000000000000",
+            // Current-family, wrong digest — the ONLY token that reaches the
+            // digest compare (§5.7: a retired or future family refuses on its
+            // own fact first).
+            "b3:0000000000000000000000000000000000000000000000000000000000000000",
         ],
         &beta_match("four five", "six"),
     );
