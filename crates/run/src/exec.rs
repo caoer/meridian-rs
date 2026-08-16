@@ -43,7 +43,9 @@ pub struct ExecSpec<'a> {
     pub source: &'a str,
     /// Contract-validated positional args (`$1`…).
     pub args: &'a [String],
-    /// Contract-validated declared env — the ONLY caller env the child sees.
+    /// Contract-validated declared env — overlays the inherited daemon
+    /// environment (run-env ruling, 2026-08-16: the child inherits the
+    /// process environment; declared pairs shadow inherited values).
     pub env: &'a BTreeMap<String, String>,
     /// The caller-created out-of-tree scratch directory — the artifact
     /// location. NOT the cwd (U16): the step inherits the invocation cwd.
@@ -142,11 +144,11 @@ where
         .arg(spec.source)
         .arg("mrd-task")
         .args(spec.args)
-        .env_clear()
-        .env(
-            "PATH",
-            std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into()),
-        )
+        // Run-env ruling (2026-08-16): the child INHERITS the daemon's
+        // environment — no `env_clear`. A task whose `^env` gate needs a
+        // daemon-held variable must see it without redeclaring it.
+        // LC_ALL=C is a framing default (the shim emitter idiom counts
+        // BYTES via `${#p}`); before `envs`, so a declared pair overrides.
         .env("LC_ALL", "C")
         .envs(spec.env)
         .env("MD_EFFECT_FD", SHIM_FD.to_string())
