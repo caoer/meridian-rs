@@ -385,7 +385,11 @@ impl Put {
                     .to_owned(),
             ));
         }
-        premise_flag_walls(scope.as_deref(), scope_bytes.as_deref(), if_fingerprint.as_deref())?;
+        premise_flag_walls(
+            scope.as_deref(),
+            scope_bytes.as_deref(),
+            if_fingerprint.as_deref(),
+        )?;
         Ok(Put {
             path,
             actor,

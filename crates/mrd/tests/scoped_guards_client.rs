@@ -808,11 +808,14 @@ fn put_scope_refuses_when_the_scope_itself_moved() {
 /// RFC 4648 §5 base64url, unpadded — the test's own encoder, so the engine's
 /// decoder is not the instrument proving itself.
 fn base64url(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut out = String::new();
     for chunk in bytes.chunks(3) {
-        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
         let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
         let sextets = [n >> 18, (n >> 12) & 63, (n >> 6) & 63, n & 63];
         for &s in sextets.iter().take(1 + chunk.len() * 4 / 3) {
@@ -862,7 +865,11 @@ fn put_scope_bytes_rides_as_one_guards_entry() {
 
     let log = log.lock().expect("log");
     let splices = ops_named(&log, "splice");
-    assert_eq!(splices.len(), 1, "exactly one splice rode the wire: {log:?}");
+    assert_eq!(
+        splices.len(),
+        1,
+        "exactly one splice rode the wire: {log:?}"
+    );
     assert_eq!(
         splices[0]["guards"],
         json!([{ "scope_bytes": DOC_B64, "fingerprint": "b3:leaf-token" }]),
@@ -887,7 +894,11 @@ fn put_scope_bytes_rides_as_one_guards_entry() {
 fn put_scope_bytes_without_if_fingerprint_is_half_a_premise() {
     let sb = sandbox();
     let ws = sb.workspace();
-    let out = sb.run(&ws, &["put", "doc.md", "--scope-bytes", DOC_B64], Some(EDIT));
+    let out = sb.run(
+        &ws,
+        &["put", "doc.md", "--scope-bytes", DOC_B64],
+        Some(EDIT),
+    );
     let err = stderr_of(&out);
     assert_eq!(
         out.status.code(),
@@ -895,7 +906,10 @@ fn put_scope_bytes_without_if_fingerprint_is_half_a_premise() {
         "half a premise is a bad invocation\nstdout: {}\nstderr: {err}",
         stdout_of(&out)
     );
-    assert!(err.contains("half a premise"), "the pair-law teaching: {err}");
+    assert!(
+        err.contains("half a premise"),
+        "the pair-law teaching: {err}"
+    );
     assert!(
         err.contains("--if-fingerprint"),
         "the teaching names the missing half: {err}"
@@ -1108,7 +1122,11 @@ fn fingerprint_scope_bytes_rides_the_raw_byte_arm() {
     let log = Arc::new(Mutex::new(Vec::new()));
     sb.fake_daemon(CAPS_WITH_FAMILY, &log);
 
-    let out = sb.run(&ws, &["fingerprint", "--scope-bytes", DOC_B64, "--json"], None);
+    let out = sb.run(
+        &ws,
+        &["fingerprint", "--scope-bytes", DOC_B64, "--json"],
+        None,
+    );
     assert_eq!(
         out.status.code(),
         Some(0),
@@ -1145,7 +1163,11 @@ fn fingerprint_scope_bytes_rides_the_raw_byte_arm() {
 fn fingerprint_path_and_scope_bytes_refuse_the_mint_pair() {
     let sb = sandbox();
     let ws = sb.workspace();
-    let out = sb.run(&ws, &["fingerprint", "doc.md", "--scope-bytes", DOC_B64], None);
+    let out = sb.run(
+        &ws,
+        &["fingerprint", "doc.md", "--scope-bytes", DOC_B64],
+        None,
+    );
     let err = stderr_of(&out);
     assert_eq!(
         out.status.code(),
@@ -1153,10 +1175,7 @@ fn fingerprint_path_and_scope_bytes_refuse_the_mint_pair() {
         "two spellings of one mint is a bad invocation\nstdout: {}\nstderr: {err}",
         stdout_of(&out)
     );
-    assert!(
-        err.contains("ONE node"),
-        "the mint-pair teaching: {err}"
-    );
+    assert!(err.contains("ONE node"), "the mint-pair teaching: {err}");
 }
 
 /// A scoped mint against a cap-less daemon refuses taught, before any mint
@@ -1223,7 +1242,11 @@ fn fingerprint_help_names_both_spellings_and_the_cap() {
         .args(["fingerprint", "--help"])
         .output()
         .expect("mrd fingerprint --help");
-    assert_eq!(out.status.code(), Some(0), "fingerprint --help is a success");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "fingerprint --help is a success"
+    );
     let text = stdout_of(&out);
     assert!(
         text.contains("--scope-bytes"),
