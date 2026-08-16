@@ -1489,12 +1489,18 @@ card):**
   world guard adds convergence cost, not safety (the scope-key law: node-grain
   wherever a node token exists).
 - **The referential guard — refuse while referenced.** Under the same write
-  flock that performs the unlink, the engine snapshots the domain
-  (one `domain_snapshot`: the fingerprint, the file set, and the corpus the
-  check reads are ONE read), builds the corpus, and enumerates every inbound
-  reference to the record: wikilinks and embeds (link-plane resolution, the
-  walk plane's stage 1) and ambient `meridian-lock` pins (the walk plane's
-  Down direction, `to_path` = the record). Any inbound edge refuses
+  flock that performs the unlink, after the door-entry observation
+  (`root_before` / the world guard), the engine enumerates inbound
+  references through the existing query instruments — never a new index,
+  never a merkle fold. Wikilinks and embeds go through `query::backlinks`
+  (link-plane resolution, walk stage 1). Ambient `meridian-lock` pins go
+  through `query::lock_pin_referrers` (the walk plane's Down predicate at
+  corpus grain). Those instruments read parsed documents: the door lists
+  the hash domain (`fs::hash_domain`) and reads member bytes for
+  `fs::build_corpus` only. It does not call `domain_snapshot` — the
+  fingerprint and the referential parse are different reads (card
+  `bug-remove-corpus-snapshot`; the leftover that kept the retired ~1.5 s
+  two-read mechanism on this door). Any inbound edge refuses
   `remove_refused` (fix) — the unlink never runs. Self-edges are excluded (a
   record cannot hold itself alive); a dangling inbound spelling resolves to
   nothing and does not block.
