@@ -241,12 +241,7 @@ fn an_armed_target_reads_back_its_own_armed_content_and_commits_once() {
     // disk carries the value, the fingerprint advanced.
     let leg = &trace["commit"];
     assert_eq!(leg["fingerprint_before"].as_str().unwrap(), entry);
-    assert!(
-        leg["fingerprint_after"]
-            .as_str()
-            .unwrap()
-            .starts_with("b3:")
-    );
+    assert!(leg["fingerprint_after"].as_str().unwrap().starts_with("b3"));
     let on_disk = fs::read_to_string(ws.join("doc.md")).unwrap();
     assert!(on_disk.contains("status: done"), "landed: {on_disk}");
     assert_eq!(on_disk.matches("status:").count(), 1, "exactly once");

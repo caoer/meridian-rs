@@ -116,8 +116,8 @@ fn main() {
         .collect();
     assert_eq!(
         served,
-        model::merkle_root_of_leaves(&leaf_refs, version),
-        "served root diverged from model::merkle_root_of_leaves"
+        fs::served_root(&leaf_refs, version),
+        "served root diverged from fs::served_root"
     );
     println!("byte_identity  served == merkle_root_of_leaves  OK");
 

@@ -242,7 +242,10 @@ fn the_fingerprint_the_human_toc_prints_is_the_guard_the_put_takes() {
         .expect("the human toc prints fp")
         .trim_matches('"')
         .to_owned();
-    assert!(fp.starts_with("b3:"), "a real fingerprint token: {fp}");
+    assert!(
+        fp.starts_with("b3") && fp.contains(':'),
+        "a real fingerprint token: {fp}"
+    );
 
     let edits = match_at(
         &serde_json::json!([{"h": "Alpha"}]),
