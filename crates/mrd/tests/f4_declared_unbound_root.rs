@@ -108,8 +108,14 @@ impl Sandbox {
     }
 
     fn put(&self, args: &[&str], edits: &str) -> Output {
+        // Wire-origin put demands fingerprint-or-force. These arms test
+        // declared-but-unbound roots, not the guard.
+        let mut owned: Vec<&str> = args.to_vec();
+        if !owned.iter().any(|a| *a == "--force") {
+            owned.push("--force");
+        }
         let mut child = self
-            .command(args)
+            .command(&owned)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
