@@ -18,36 +18,29 @@
 //! - **Delete** at `unregister` (the registration ended, and the feed with it)
 //!   and on any discard, so one bad file cannot refuse twice.
 //!
-//! # Replay authority, and what it costs when absent
-//! [`fs::checkpoint`] enforces the SOUNDNESS half of the identity tuple and
-//! hands back the stored journal pair unjudged. This module adjudicates it
-//! against the live delta ring:
+//! # The cursor, adjudicated here
+//! [`fs::checkpoint`] settles LAWFULNESS — may these rows enter as hypotheses —
+//! and hands the CURSOR back unjudged. Replay authority is this module's, and
+//! trust rides the cursor in neither direction (design ruling § I; §6.3's
+//! landed cursor law):
 //!
-//! - **Instance matches and the cursor anchors** ⇒ replay every frame after
-//!   the cursor through [`crate::feed::apply`] — exactly the changed members
-//!   are read and hashed, no unchanged member is statted, no cold rebuild
-//!   (codex gate 11's shape).
-//! - **Instance differs, or the cursor cannot anchor** ⇒ ONE loud, labeled
-//!   re-baseline of the delta plane. The restored rows survive as EVIDENCE:
-//!   every one is re-verified against disk by the next observation's live
-//!   `stat` (§6.2), which is the floor that makes this sound. Merged plan §4.9
-//!   is the authority — "hash tokens are epoch-free; cursors are not ...
-//!   cursors stay confined to the delta plane" — so a dead cursor costs the
-//!   replay SHORTCUT, never the index's soundness, which rests on the
-//!   epoch-free `tree_root` binding.
+//! - **The cursor anchors** (same epoch, seq inside retained history) ⇒ replay
+//!   every frame after it through [`crate::feed::apply`]: exactly the movers
+//!   are read and hashed, no unchanged member is touched, no cold rebuild.
+//! - **The cursor cannot anchor** ⇒ the **WARM** re-baseline: replay is
+//!   forfeited and NOTHING ELSE IS. The rows enter as hypotheses and the §6.2
+//!   watermark trust close re-verifies each one before it can serve — the same
+//!   instrument that governs a RAM-resident row whose stat evidence is stale.
+//!   Re-establishing currency from zero TRUST, never from zero BYTES.
 //!
-//! # Stated limit, not a silent one
-//! The delta ring is RAM-only by landed law (`wire_serve::ring` — "no epoch
-//! fact is ever persisted"), so across an ORDINARY DAEMON RESTART no live
-//! instance can match a stored one: the replay arm serves in-process
-//! adjudication (and any future durable journal), while a real restart takes
-//! the evidence arm. What the restart then saves is the COLD REBUILD (1.45 s
-//! measured) and every unchanged member's byte read and re-hash; what it still
-//! pays is one `stat` per member (the ~160 ms warm sweep, lane B). Gate 11's
-//! "zero unchanged members statted" clause is therefore NOT met on a restart
-//! and is not claimed anywhere — detecting an in-place content edit without a
-//! durable kernel change journal requires that live `stat`, and Linux has no
-//! such journal.
+//! A cursor mismatch is CERTAIN across process death — `wire_serve::ring`'s
+//! §7.1 law persists no epoch fact — so the warm event fires on every ordinary
+//! restart BY DESIGN. That is why it carries its own label and its own receipt
+//! field, apart from the cold alarm: reading the cursor as an identity field
+//! instead would condemn the object on every restart and it would never once
+//! fire. What the restart saves is the cold rebuild (1.45 s measured) and every
+//! unchanged member's byte read and re-hash; what it still pays is the §6.2
+//! metadata sweep, one `stat` per member and zero bytes (~160 ms, lane B).
 
 use std::path::{Path, PathBuf};
 
@@ -182,11 +175,19 @@ pub(crate) fn restore(
             // names. One read and one hash per changed member, zero unchanged
             // members statted, no cold rebuild.
             let paths = replay_paths(ring, cursor.seq);
-            let replayed = match feed::apply(&root, &mut cache, paths) {
-                feed::Applied::Members(n) => n,
+            match feed::apply(&root, &mut cache, paths) {
+                feed::Applied::Members(replayed) => CheckpointReceipt {
+                    leaves,
+                    replayed,
+                    anchored: true,
+                    warm_rebaseline: None,
+                },
                 feed::Applied::Reset => {
+                    // A member the journal NAMED could not be derived, and
+                    // absence would be a lie. The rows can no longer be
+                    // reconciled with disk, so this is the COLD event.
                     eprintln!(
-                        "checkpoint: RE-BASELINE for {} — replay could not derive a named \
+                        "checkpoint: COLD RE-BASELINE for {} — replay could not derive a named \
                          member; the resident memo is reset and the next pass re-reads the \
                          corpus",
                         workspace.display()
@@ -194,12 +195,28 @@ pub(crate) fn restore(
                     let _ = std::fs::remove_file(&file);
                     return None;
                 }
-            };
-            CheckpointReceipt {
-                leaves,
-                replayed,
-                anchored: true,
-                warm_rebaseline: None,
+                // The rescan ladder's rungs answer `Pending::All` only, and
+                // this call site builds `Clean`/`Paths` from journal frames —
+                // so these are defensive, not expected. Both leave the memo in
+                // a valid state (Sweep keeps it for the next full stat sweep;
+                // Rebaselined already swapped in a fresh full derivation), so
+                // the safe report is the truth: the ladder re-established
+                // currency and this replay claims nothing.
+                feed::Applied::Sweep(cause) | feed::Applied::Rebaselined(cause) => {
+                    eprintln!(
+                        "checkpoint: warm re-baseline for {} — the rescan ladder ({}) took over \
+                         during replay; no replay is claimed and currency comes from the \
+                         ladder's own rung",
+                        workspace.display(),
+                        cause.name()
+                    );
+                    CheckpointReceipt {
+                        leaves,
+                        replayed: 0,
+                        anchored: true,
+                        warm_rebaseline: Some(format!("rescan ladder took over: {}", cause.name())),
+                    }
+                }
             }
         }
         (verdict, _) => {
