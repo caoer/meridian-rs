@@ -573,7 +573,9 @@ fingerprint, verified against the live target) and the RETRIEVAL plane (its
 no longer verifies the fingerprint AND git no longer holds the recorded blob, so
 nothing in the workspace can answer *what did this pin cover?*. A red pin whose
 blob is still held is ordinary drift with its evidence intact, and this verb does
-not touch it.
+not touch it. Only a pin minted at an uncommitted file state can get here —
+a committed-state pin's blob is gc-safe by construction (§ `mrd pin`, the
+recorded-blob bullet).
 
 - **The walk** is ONE `git log` plus ONE `cat-file --batch` for the whole run,
  never a spawn per pin or per commit. Each recorded version of a lost target is
@@ -587,7 +589,9 @@ not touch it.
  `object`, `selector` and `fingerprint` are never touched. A target that
  genuinely drifted is STILL RED after a successful repair, and that is the
  correct outcome — rewriting the claim to fit what history held would be forgery
- wearing a repair.
+ wearing a repair. `walk` therefore stays red content-drifted after a
+ successful repair of a drifted target: repair restores the RETRIEVAL plane
+ (the evidence), never the CLAIM verdict — drift is never faked green.
 - **TRUE LOSS** — no version in that path's history carries the pinned content —
  is reported and never auto-fixed. The engine invents no evidence.
 - **Jurisdiction:** the ambient root only. A pin naming another root names
@@ -621,6 +625,16 @@ every other write uses: one flock, one rename (`wire-contract.md`
  canonical write address when the lock stores path arrays / segment form.
  Receipts and armed wire facts are normative (design stance); do not paste a
  display-joined string into a later `put`.
+- **The recorded blob is the whole target FILE at pin time, never a
+ section-grain blob.** The fingerprint covers the pinned section; the `hash`
+ anchors the file bytes that carried it. That grain split is what makes
+ § `mrd repair` recovery possible. A pin minted at a **committed** file state
+ is gc-safe by construction — some commit reaches that blob, and a reachable
+ object survives `git gc`. Only a pin minted at an **uncommitted** state can
+ be LOST: no commit reaches its blob, so git may prune it past
+ `gc.pruneExpire`, and once the live section has also drifted, nothing in the
+ workspace can answer what the pin covered. Committing the file is the only
+ durable anchor.
 - **`--vibe`** additionally writes the target's blob into git's object store
  (`git hash-object -w`), so the pin is retrievable before any commit references
  it. Without it, the oid is computed read-only. When git cannot answer, the
