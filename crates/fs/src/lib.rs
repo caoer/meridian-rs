@@ -5551,11 +5551,10 @@ mod stable_trust_tests {
     #[test]
     fn intermediate_symlink_swap_does_not_fold_outside_bytes() {
         let outside = tempfile::tempdir().expect("outside");
-        const OUTSIDE: &[u8] = b"# OUTSIDE\n";
-        const INSIDE: &[u8] = b"# INSIDE\n";
-        std::fs::write(outside.path().join("x.md"), OUTSIDE).expect("outside bytes");
+        let outside_bytes: &[u8] = b"# OUTSIDE\n";
+        std::fs::write(outside.path().join("x.md"), outside_bytes).expect("outside bytes");
 
-        let (_tmp, root) = workspace(&[("notes/x.md", INSIDE)]);
+        let (_tmp, root) = workspace(&[("notes/x.md", b"# INSIDE\n")]);
         let mut cache = DomainCache::new();
         cache.root(&root).expect("baseline");
 
@@ -5588,16 +5587,13 @@ mod stable_trust_tests {
             },
         );
 
-        let outside_digest = model::leaf_digest(OUTSIDE);
-        match cache.root(&root) {
-            Ok(_) => {
-                assert_ne!(
-                    cache.leaf_digests().get(Path::new("notes/x.md")).copied(),
-                    Some(outside_digest),
-                    "outside bytes must not enter the fold"
-                );
-            }
-            Err(_) => {}
+        let outside_digest = model::leaf_digest(outside_bytes);
+        if cache.root(&root).is_ok() {
+            assert_ne!(
+                cache.leaf_digests().get(Path::new("notes/x.md")).copied(),
+                Some(outside_digest),
+                "outside bytes must not enter the fold"
+            );
         }
     }
 
