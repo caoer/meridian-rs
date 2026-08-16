@@ -10,6 +10,7 @@
 //! `O_EXCL` (`create_new`) prevents duplicate txn ids. It is not the
 //! publisher fence — the authority lease plus reservations are.
 
+use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -207,7 +208,7 @@ pub fn scan(root: &WorkspaceRoot) -> io::Result<Vec<Found>> {
             }),
         }
     }
-    out.sort_by(|a, b| a.txn_key().cmp(&b.txn_key()));
+    out.sort_by_key(Found::txn_key);
     Ok(out)
 }
 
@@ -234,7 +235,7 @@ impl Found {
 /// Classify one live destination against the recorded identities.
 ///
 /// # Errors
-/// I/O other than NotFound.
+/// I/O other than `NotFound`.
 pub fn classify(root: &WorkspaceRoot, member: &IntentMember) -> io::Result<DestClass> {
     let dest = root.0.join(&member.rel);
     match fs::read(&dest) {
@@ -332,7 +333,7 @@ pub fn create_group(root: &WorkspaceRoot, group: &GroupManifest) -> io::Result<(
 /// recovered from the intents themselves).
 ///
 /// # Errors
-/// Directory I/O failure other than NotFound.
+/// Directory I/O failure other than `NotFound`.
 pub fn scan_groups(root: &WorkspaceRoot) -> io::Result<Vec<GroupManifest>> {
     let dir = root.0.join(INTENTS_DIR).join("groups");
     let rd = match fs::read_dir(&dir) {
@@ -373,35 +374,36 @@ fn intent_path(root: &WorkspaceRoot, txn_hex: &str) -> PathBuf {
 
 fn encode(intent: &Intent) -> String {
     let mut body = String::new();
-    body.push_str(FORMAT);
-    body.push('\n');
-    body.push_str(&format!("epoch={}\n", intent.epoch_hex));
-    body.push_str(&format!("txn={}\n", intent.txn_hex));
-    body.push_str(&format!(
-        "phase={}\n",
+    let _ = writeln!(body, "{FORMAT}");
+    let _ = writeln!(body, "epoch={}", intent.epoch_hex);
+    let _ = writeln!(body, "txn={}", intent.txn_hex);
+    let _ = writeln!(
+        body,
+        "phase={}",
         match intent.phase {
             Phase::Decided => "decided",
             Phase::Applied => "applied",
         }
-    ));
-    body.push_str(&format!(
-        "policy={}\n",
+    );
+    let _ = writeln!(
+        body,
+        "policy={}",
         match intent.policy {
             Policy::Restore => "restore",
             Policy::Forward => "forward",
         }
-    ));
-    body.push_str(&format!("n={}\n", intent.members.len()));
+    );
+    let _ = writeln!(body, "n={}", intent.members.len());
     for (i, m) in intent.members.iter().enumerate() {
-        body.push_str(&format!("m{i}.path={}\n", m.rel.display()));
-        body.push_str(&format!("m{i}.old={}\n", hex32(&m.old)));
-        body.push_str(&format!("m{i}.new={}\n", hex32(&m.new)));
-        body.push_str(&format!("m{i}.tmp={}\n", m.tmp.display()));
-        body.push_str(&format!("m{i}.old_store={}\n", m.old_store.display()));
-        body.push_str(&format!("m{i}.new_store={}\n", m.new_store.display()));
+        let _ = writeln!(body, "m{i}.path={}", m.rel.display());
+        let _ = writeln!(body, "m{i}.old={}", hex32(&m.old));
+        let _ = writeln!(body, "m{i}.new={}", hex32(&m.new));
+        let _ = writeln!(body, "m{i}.tmp={}", m.tmp.display());
+        let _ = writeln!(body, "m{i}.old_store={}", m.old_store.display());
+        let _ = writeln!(body, "m{i}.new_store={}", m.new_store.display());
     }
     let sum = hex32(&digest(body.as_bytes()));
-    body.push_str(&format!("checksum={sum}\n"));
+    let _ = writeln!(body, "checksum={sum}");
     body
 }
 
@@ -425,8 +427,8 @@ fn decode(bytes: &[u8]) -> Option<Intent> {
     for line in lines {
         let (k, v) = line.split_once('=')?;
         match k {
-            "epoch" => epoch_hex = v.to_owned(),
-            "txn" => txn_hex = v.to_owned(),
+            "epoch" => v.clone_into(&mut epoch_hex),
+            "txn" => v.clone_into(&mut txn_hex),
             "phase" => {
                 phase = match v {
                     "decided" => Phase::Decided,
@@ -472,12 +474,11 @@ fn decode(bytes: &[u8]) -> Option<Intent> {
 
 fn encode_group(g: &GroupManifest) -> String {
     let mut body = String::new();
-    body.push_str(GROUP_FORMAT);
-    body.push('\n');
-    body.push_str(&format!("gid={}\n", g.gid_hex));
-    body.push_str(&format!("members={}\n", g.members.join(",")));
+    let _ = writeln!(body, "{GROUP_FORMAT}");
+    let _ = writeln!(body, "gid={}", g.gid_hex);
+    let _ = writeln!(body, "members={}", g.members.join(","));
     let sum = hex32(&digest(body.as_bytes()));
-    body.push_str(&format!("checksum={sum}\n"));
+    let _ = writeln!(body, "checksum={sum}");
     body
 }
 
@@ -496,7 +497,7 @@ fn decode_group(bytes: &[u8]) -> Option<GroupManifest> {
     for line in lines {
         let (k, v) = line.split_once('=')?;
         match k {
-            "gid" => gid_hex = v.to_owned(),
+            "gid" => v.clone_into(&mut gid_hex),
             "members" => {
                 members = if v.is_empty() {
                     Vec::new()
@@ -528,8 +529,8 @@ fn unhex32(s: &str) -> Option<[u8; 32]> {
         return None;
     }
     let mut out = [0u8; 32];
-    for i in 0..32 {
-        out[i] = u8::from_str_radix(s.get(i * 2..i * 2 + 2)?, 16).ok()?;
+    for (i, slot) in out.iter_mut().enumerate() {
+        *slot = u8::from_str_radix(s.get(i * 2..i * 2 + 2)?, 16).ok()?;
     }
     Some(out)
 }
