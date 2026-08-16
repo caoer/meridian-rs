@@ -1055,6 +1055,59 @@ mod tests {
         );
     }
 
+    /// Measurement, not a gate: how often does mkdir+child lose the child
+    /// event on THIS backend? Run with `--ignored --nocapture` on each OS.
+    /// Unfixed code: `collapsed` stays 0; `missed` vs `captured` is the gap
+    /// rate. Inherited comments are not a measurement.
+    #[test]
+    #[ignore = "measurement probe; run on each watch backend"]
+    fn measure_newdir_child_capture() {
+        const TRIALS: u32 = 20;
+        let mut captured = 0u32;
+        let mut missed = 0u32;
+        let mut collapsed = 0u32;
+        for i in 0..TRIALS {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().canonicalize().unwrap();
+            let feed =
+                WorkspaceFeed::start(&root, fs::stable::FeedGen::default()).expect("watcher");
+            assert_eq!(
+                feed.cookie_barrier(&root, Duration::from_secs(5)),
+                CookieOutcome::Seen,
+                "trial {i}: watch must be live before the mkdir"
+            );
+            let new = root.join("new");
+            std::fs::create_dir(&new).unwrap();
+            std::fs::write(new.join("x.md"), "# X\n").unwrap();
+            let start = Instant::now();
+            let mut saw_member = false;
+            let mut saw_collapse = false;
+            while start.elapsed() < Duration::from_secs(2) {
+                let s = feed.stats();
+                if s.all_dirty {
+                    saw_collapse = true;
+                    break;
+                }
+                if s.events > 0 || s.pending > 0 {
+                    saw_member = true;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            if saw_collapse {
+                collapsed += 1;
+            } else if saw_member {
+                captured += 1;
+            } else {
+                missed += 1;
+            }
+        }
+        eprintln!(
+            "newdir arming measurement backend={} captured={captured} missed={missed} collapsed={collapsed} trials={TRIALS}",
+            std::env::consts::OS
+        );
+    }
+
     /// Ladder rung latencies on the fixture, recorded with grades. The 160 ms
     /// / 1.45 s classes are the 29 k-member production numbers; this fixture
     /// is two files, so the grades are the CLASS (O(1) mark / stat-sweep /
