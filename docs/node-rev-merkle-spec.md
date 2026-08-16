@@ -631,18 +631,44 @@ class): the checkpoint.
   without the journal cursor pair, O(changes-while-down) has no replay point.
 - **Restart replay** (gate 11 re-cut by gap class —
   `decisions/2026-08-16-gate11-stat-floor.md`, session
-  15-14-fingerprint-grain): where a live journal covers the whole gap
-  (engine cold, process alive — §6.4 registration lifetime; any future
-  durable journal), one journaled change = exactly one file read and
-  hashed, zero unchanged members statted, no cold rebuild. Where no
-  durable journal covers the gap (today every platform), a sound
-  checkpoint restores every row UNTRUSTED; no restored row may serve until
-  exactly one §6.2-governed metadata sweep completes over the full member
-  set (pre-serve barrier — lazy or post-first-serve verification refused
-  by construction); zero unchanged members read, hashed, or parsed; each
-  mover pays exactly one read+hash; counters published. A soundness
-  mismatch = one loud labeled cold re-baseline; a cursor that cannot
-  anchor = one labeled warm re-baseline — replay forfeited, object
+  15-14-fingerprint-grain, as amended post-enactment): where a QUALIFYING
+  journal covers the whole gap — qualifying means all four conditions hold
+  for THIS gap: (1) coverage is complete from gap start to gap end; (2) the
+  instrument carries a loss signal and raised none — silence from an
+  instrument without loss signaling qualifies nothing; (3) per-file
+  granularity was in effect; (4) the instrument's own contract treats a
+  clean, loss-signal-free window as definitive — an instrument whose
+  documentation directs rescans regardless fails. Then: one journaled
+  change = exactly one file read and hashed, zero unchanged members
+  statted, no cold rebuild. Today exactly one instrument qualifies: the
+  live §6.4 watcher across an engine-cold, process-alive gap with no
+  overflow raised. No persisted instrument known qualifies — FSEvents fails
+  (2) and (4) by Apple's own guide; btrfs/ZFS fail portability and
+  enumeration. A journal qualifies by meeting the standard, never by being
+  called a journal.
+- **Where no qualifying journal covers the gap** (today, every process
+  death), a sound checkpoint restores every row UNTRUSTED; no restored row
+  may serve, and no answer may be derived from one, until exactly one
+  §6.2-governed verification pass has completed over the full member set.
+  The pass is: one stat per member as the floor — the 160 ms lane-B figure
+  at 29.7k measures THIS STAT PASS ALONE — plus the watermark law's
+  mandatory re-reads: any row racily clean at save (recorded mtime within
+  one calibrated granularity unit of the checkpoint's saved observation
+  watermark) is re-read or restored pre-spoiled, NEVER trusted on
+  stat-match; §6.2's identity-fence and suspect rules govern those reads.
+  Zero-byte cost holds for every row outside the watermark window; the
+  watermark-window re-reads are additional and their count is published.
+  The pass is a pre-serve BARRIER — lazy, deferred or post-first-serve
+  verification is refused by construction. Counter equation: reads = hashes
+  = movers + watermark-window re-reads; stats = member count, exactly once,
+  all before first serve. **Parses are NOT gated by this law:** the
+  checkpoint carries leaf digests and the tree, never parsed documents, so
+  these counters and the 160 ms govern the RESIDENT-TREE restore — the
+  guard/currency plane. The document plane's restart cost is a named open
+  residue awaiting a parse-cache persistence object, whose identity slot
+  this tuple's parse-cache generation field already reserves.
+- A soundness mismatch = one loud labeled cold re-baseline; a cursor that
+  cannot anchor = one labeled warm re-baseline — replay forfeited, object
   retained. The residual stat term is recorded UNFIXED in the decision
   record; requirement 1 is PARTIALLY SATISFIED there, never here.
 - **Markdown stays the sole truth, always.** The §0 ban on trusted snapshots
