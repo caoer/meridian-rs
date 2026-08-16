@@ -533,13 +533,12 @@ pub fn decide(root: &WorkspaceRoot, txn: &StagedTxn) -> Result<Intent, PublishEr
     let txn_hex = txn.txn.hex();
     let mut members = Vec::with_capacity(txn.dests.len());
     for (i, d) in txn.dests.iter().enumerate() {
-        honest_sync_path(&d.tmp).map_err(PublishError::Io)?;
-        let (old_store, new_store) =
-            intent::store_images(root, &txn_hex, i, &d.old, &d.new).map_err(PublishError::Io)?;
+        honest_sync_path(&d.tmp)?;
+        let (old_store, new_store) = intent::store_images(root, &txn_hex, i, &d.old, &d.new)?;
         let tmp = d
             .tmp
             .strip_prefix(&root.0)
-            .map_or_else(|| d.tmp.clone(), Path::to_path_buf);
+            .map_or_else(|_| d.tmp.clone(), Path::to_path_buf);
         members.push(IntentMember {
             rel: d.rel.clone(),
             old: intent::digest(&d.old),
@@ -556,7 +555,7 @@ pub fn decide(root: &WorkspaceRoot, txn: &StagedTxn) -> Result<Intent, PublishEr
         policy: txn.policy,
         members,
     };
-    intent::create_decided(root, &rec).map_err(PublishError::Io)?;
+    intent::create_decided(root, &rec)?;
     Ok(rec)
 }
 
@@ -744,7 +743,7 @@ pub fn staged_from_batch(
 
 fn strip_root(root: &WorkspaceRoot, path: &Path) -> PathBuf {
     path.strip_prefix(&root.0)
-        .map_or_else(|| path.to_path_buf(), Path::to_path_buf)
+        .map_or_else(|_| path.to_path_buf(), Path::to_path_buf)
 }
 
 // ── tests ───────────────────────────────────────────────────────────────────
