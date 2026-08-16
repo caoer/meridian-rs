@@ -2260,6 +2260,12 @@ pub enum ErrorCode {
     /// request re-derives from the current world. Extras: `path` (the
     /// vanished member, when one is named) + `message`. Retry class.
     CorpusRace,
+    /// The workspace has no resident engine and the drawer rebuild is
+    /// running in the background (§3.2 cold-read law): a cold whole-corpus
+    /// build never blocks the read door, so corpus-scoped ops answer this
+    /// refusal in milliseconds while the drawer warms. Extras: `message`.
+    /// Retry class — the same request serves once the rebuild lands.
+    CorpusWarming,
     /// A `splice.pin` from a real session actor whose selector no receipt
     /// covers — you cannot attest content that was never in your context.
     /// Extras: `path` + `message`. Fix class — read the exact selector in
@@ -2341,7 +2347,8 @@ impl ErrorCode {
             ErrorCode::LockTimeout
             | ErrorCode::StaleView
             | ErrorCode::WorkspaceBusy
-            | ErrorCode::CorpusRace => Recovery::Retry,
+            | ErrorCode::CorpusRace
+            | ErrorCode::CorpusWarming => Recovery::Retry,
             ErrorCode::RootMismatch
             | ErrorCode::RootUnknown
             | ErrorCode::FingerprintVersionRetired
