@@ -2171,7 +2171,7 @@ mod engine_tests {
         let cache = reg.domain_cache(&canonical);
         let currency = reg.domain_cache(&canonical);
         assert!(
-            std::sync::Arc::ptr_eq(&cache, &currency),
+            Arc::ptr_eq(&cache, &currency),
             "currency and splice resolve one DomainCache"
         );
 
@@ -2189,7 +2189,7 @@ mod engine_tests {
 
         let again = reg.domain_cache(&canonical);
         assert!(
-            std::sync::Arc::ptr_eq(&cache, &again),
+            Arc::ptr_eq(&cache, &again),
             "the resident memo is still the same Arc after the splice"
         );
         let overlaid = {
@@ -2250,7 +2250,7 @@ mod engine_tests {
         );
         assert_eq!(currency, ::fs::stable::GuardCurrency::Trusted);
         assert!(
-            std::sync::Arc::ptr_eq(&cache, &reg.domain_cache(&canonical)),
+            Arc::ptr_eq(&cache, &reg.domain_cache(&canonical)),
             "the absorb landed on the same cache currency still holds"
         );
     }
