@@ -12,6 +12,7 @@ const PAGE: &str = "---\ntitle: Flock\n---\n# Log\n\nseed line\n";
 
 fn splice_args(text: &str) -> SpliceArgs {
     SpliceArgs {
+        premises: Vec::new(),
         id: None,
         origin: wire_serve::guard::Origin::InProcess,
         path: WPath("log.md".into()),
@@ -135,6 +136,7 @@ fn dry_splice_also_refuses_busy() {
     let root = fs::WorkspaceRoot(dir.path().to_path_buf());
     let _held = fs::WriteLock::acquire(&root).expect("held");
     let args = SpliceArgs {
+        premises: Vec::new(),
         dry: true,
         ..splice_args("dry\n")
     };

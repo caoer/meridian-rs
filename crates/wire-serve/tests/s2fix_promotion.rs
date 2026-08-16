@@ -34,6 +34,7 @@ fn workspace(pinner: &str, target: &str) -> (tempfile::TempDir, fs::WorkspaceRoo
 
 fn pin_args(pinning_page: &str, selector: &str) -> SpliceArgs {
     SpliceArgs {
+        premises: Vec::new(),
         id: None,
         origin: wire_serve::guard::Origin::InProcess,
         path: WPath(pinning_page.into()),

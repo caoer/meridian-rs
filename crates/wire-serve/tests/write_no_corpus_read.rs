@@ -62,6 +62,7 @@ fn match_edit(old: &str, new: &str) -> Edit {
 
 fn splice_args(path: &str, old: &str, new: &str) -> SpliceArgs {
     SpliceArgs {
+        premises: Vec::new(),
         id: None,
         origin: wire_serve::guard::Origin::InProcess,
         path: WirePath(path.into()),
@@ -116,6 +117,7 @@ fn lock_args(path: &str, if_file_rev: NodeRev) -> LockWriteArgs {
 
 fn set_args(files: Vec<wire::SpliceFile>) -> SpliceSetArgs {
     SpliceSetArgs {
+        premises: Vec::new(),
         id: None,
         files,
         origin: wire_serve::guard::Origin::InProcess,

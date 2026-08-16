@@ -737,6 +737,7 @@ fn session_read(
 
 fn vibe_pin_args(actor: &str, selector: &str, vibe: bool) -> SpliceArgs {
     SpliceArgs {
+        premises: Vec::new(),
         id: None,
         origin: wire_serve::guard::Origin::InProcess,
         path: WPath("plan.md".into()),
@@ -1210,6 +1211,7 @@ fn path_c_create_title() {
         &root,
         None,
         &SpliceArgs {
+            premises: Vec::new(),
             id: None,
             origin: wire_serve::guard::Origin::InProcess,
             path: WPath("plan.md".into()),

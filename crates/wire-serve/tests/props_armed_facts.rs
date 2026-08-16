@@ -30,6 +30,7 @@ fn ws(files: &[(&str, &str)]) -> (tempfile::TempDir, fs::WorkspaceRoot) {
 
 fn args(plan_edits: Vec<PlanEdit>) -> SpliceArgs {
     SpliceArgs {
+        premises: Vec::new(),
         id: None,
         origin: wire_serve::guard::Origin::InProcess,
         path: WPath("card.md".into()),

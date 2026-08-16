@@ -23,6 +23,7 @@ const PAGE: &str = "---\ntitle: Race\n---\n# Log\n\nseed line\n";
 /// every probe here refuses before any edit applies).
 fn args_for(path: String, target: SecRef) -> SpliceArgs {
     SpliceArgs {
+        premises: Vec::new(),
         id: None,
         origin: wire_serve::guard::Origin::InProcess,
         path: WPath(path),
