@@ -54,6 +54,8 @@ fn pin_args(target: &str, selector: &str) -> SpliceArgs {
             target: WPath(target.into()),
             selector: wire::ReadSel::parse(selector),
             vibe: None,
+            fingerprint: None,
+            sec_rev: None,
         }),
     }
 }

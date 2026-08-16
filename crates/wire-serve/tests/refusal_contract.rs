@@ -28,7 +28,6 @@ fn both_selector_planes_refuses_at_the_exemplar_bar() {
             display_path: Some("notes.md".into()),
             ..ReadParams::default()
         },
-        None,
         &NO_DECORATIONS,
     )
     .expect_err("passing both selector planes refuses");

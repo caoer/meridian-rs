@@ -26,7 +26,6 @@ fn read_doc(
             display_path: Some("card.md".into()),
             ..ReadParams::default()
         },
-        None,
         &NO_DECORATIONS,
     )
 }

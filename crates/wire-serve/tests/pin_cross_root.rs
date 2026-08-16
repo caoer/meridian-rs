@@ -123,6 +123,8 @@ fn pin_args(pinner: &str, target: &str, selector: &str, vibe: bool) -> SpliceArg
             target: WPath(target.into()),
             selector: wire::ReadSel::parse(selector),
             vibe: vibe.then_some(true),
+            fingerprint: None,
+            sec_rev: None,
         }),
     }
 }

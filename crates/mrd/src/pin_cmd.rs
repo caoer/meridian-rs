@@ -16,11 +16,11 @@
 //! block land in one commit. There is no in-process publication path.
 //!
 //! # No `--actor`
-//! The read-mint gate keys on a daemon-derived session identity, and a CLI
+//! Pin-proof requiredness keys on a daemon-derived session identity, and a CLI
 //! invocation has no session: the bare `mrd pin` is local-operator-trusted and
-//! the gate is bypassed, exactly as `mrd put` bypasses the host's authz.
+//! may pin proofless, exactly as `mrd put` bypasses the host's authz.
 //!
-//! Exit triad: 0 pinned (or `--dry` rehearsed) / 1 refused (`read_mint_required`,
+//! Exit triad: 0 pinned (or `--dry` rehearsed) / 1 refused (`pin_proof_required`,
 //! `pin_target_missing`, `write_conflict`, an armed gate refusal — the engine's
 //! verbatim message) / 2 bad invocation (including a down daemon).
 
@@ -42,13 +42,16 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         ))
     })?;
     // The CLI stamps no provenance: an absent actor is the local-operator trust
-    // door the read-mint gate reads. A pin is the whole batch. `--force` is
-    // the local-operator refuse→rewrite so the wire guard does not demand a
-    // node rev the pin verb never held (the lock-block edit is engine-authored).
+    // door, so proof is not required of it (§ A.3 proof law) and none is sent.
+    // A pin is the whole batch. `--force` is the local-operator refuse→rewrite
+    // so the wire guard does not demand a node rev the pin verb never held
+    // (the lock-block edit is engine-authored).
     let pin = PinSpec {
         target: WirePath(parsed.target.clone()),
         selector: wire::ReadSel::parse(&parsed.selector),
         vibe: parsed.vibe.then_some(true),
+        fingerprint: None,
+        sec_rev: None,
     };
     let mut request = json!({
         "op": "splice",

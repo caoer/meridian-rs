@@ -58,6 +58,8 @@ fn mint_pin(root: &fs::WorkspaceRoot) {
             target: WPath("guide.md".into()),
             selector: wire::ReadSel::parse("Guide/Leader's Guideline"),
             vibe: None,
+            fingerprint: None,
+            sec_rev: None,
         }),
     };
     splice(root, None, &args, &[], None).expect("the pin commits");

@@ -30,7 +30,6 @@ fn read(sections: Option<Vec<ReadSel>>) -> Result<ResponseBody, Box<wire::ErrorB
             display_path: Some("card.md".into()),
             ..ReadParams::default()
         },
-        None,
         &NO_DECORATIONS,
     )
 }
@@ -236,7 +235,6 @@ fn read_raw(raw: &str, sel: &str) -> Result<ResponseBody, Box<wire::ErrorBody>> 
             display_path: Some("card.md".into()),
             ..ReadParams::default()
         },
-        None,
         &NO_DECORATIONS,
     )
 }
@@ -324,7 +322,6 @@ fn read_toc(sel: ReadSel) -> Result<ResponseBody, Box<wire::ErrorBody>> {
             display_path: Some("card.md".into()),
             ..ReadParams::default()
         },
-        None,
         &NO_DECORATIONS,
     )
 }

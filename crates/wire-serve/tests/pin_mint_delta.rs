@@ -89,6 +89,8 @@ fn pin_args(pinner: &str, selector: &str) -> SpliceArgs {
             target: WPath("guide.md".into()),
             selector: wire::ReadSel::parse(selector),
             vibe: None,
+            fingerprint: None,
+            sec_rev: None,
         }),
     }
 }
