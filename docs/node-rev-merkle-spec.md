@@ -252,19 +252,35 @@ plan §4.2) — the cutover is cheap NOW and a cliff later.
   read."); `sub` re-baselines at a labeled epoch boundary, never a silent
   chain break.
 - **The cutover boundary, stated as law (R1: GO — the priced protocol;
-  amended 2026-08-15, bounce-1 closure).** The cutover runs behind the four
-  pre-cutover blockers — B-01 cursor identity, B-02 this section's second
-  version dimension, B-03 the downgrade fence BUILT AND TESTED early, B-04
-  durable cutover authority state — then walks
-  `OLD_SERVING → DRAINING → no-return boundary → new law serves`. The
-  downgrade-fence tombstone (B-03's tested mechanism) ACTIVATES at the
-  no-return boundary and ONLY there; activating it earlier is the
-  no-rollback error class. Retirement precedence rides the same boundary:
-  before no-return the old law is still serving and answers guards
-  normally — nothing refuses `fingerprint_version_retired` yet; once the
-  new law serves, old-family tokens refuse exactly that, with re-mint
-  teaching. (`decisions/2026-08-15-plan-rulings-final.md` R1; merged plan
-  §6 steps 5–7.)
+  amended 2026-08-15, bounce-1 closure; amended 2026-08-16, B-03
+  activation retired — see below).** The cutover runs behind the
+  pre-cutover code blockers — B-01 cursor identity, B-02 this section's
+  second version dimension, B-04 durable cutover authority state — then
+  walks `OLD_SERVING → DRAINING → no-return boundary → NEW_BUILDING →
+  NEW_COMMITTED → reopen`. The no-return boundary is crossed by ONE
+  durable act: making the B-04 cutover record's `NEW_BUILDING` state
+  durable. Retirement precedence rides the same boundary: before
+  no-return the old law is still serving and answers guards normally —
+  nothing refuses `fingerprint_version_retired` yet; once the record is
+  durable, old-family tokens refuse exactly that, with re-mint teaching.
+  (`decisions/2026-08-15-plan-rulings-final.md` R1; merged plan §6 steps
+  5–7.)
+- **Amendment 2026-08-16 — the B-03 tombstone never activates.** This
+  section previously read: "The downgrade-fence tombstone (B-03's tested
+  mechanism) ACTIVATES at the no-return boundary and ONLY there;
+  activating it earlier is the no-rollback error class." That sentence is
+  SUPERSEDED by ZT's standing law (2026-08-15, verbatim: "B-03 standing
+  law: not a cutover blocker. No old-binary users. Mechanism may land if
+  already green; no more matrix; never activate for this reason. Leftover
+  bin = delete it. Broken tool = bash. Do not hold radix/L2 for B-03.").
+  The fence mechanism (`crates/fs/src/fence.rs`) landed dormant —
+  `activate` has no production caller — and is never activated on
+  downgrade grounds: its threat model is empty (no old-binary users; a
+  leftover old binary is deleted, not fenced). The axis that died is
+  old-BINARY fencing; the axis that lives is old-TOKEN refusal
+  (`fingerprint_version_retired`, above). If a future implementer finds a
+  non-downgrade reason the fence must activate, that is a new ZT
+  question — no such reason exists today.
 - **The shadow-build fallback is NOT BUILT (`B_cutover` answered).** ZT
   accepted the one-time per-workspace pause, so the bounded NON-SERVING
   shadow — whose only purpose was to shrink that pause — stays on paper,
