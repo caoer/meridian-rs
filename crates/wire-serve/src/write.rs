@@ -3672,10 +3672,14 @@ fn premise_guard(
                     },
                     Ok(fs::ScopeToken::Absent) => match &premise.value {
                         crate::guard::PremiseValue::Absent => {}
-                        crate::guard::PremiseValue::Token(t) => {
-                            let mut e = scoped_mismatch(&scope_str, t, "absent");
-                            e.message = Some(wire::scoped_absent_actual_teaching(&scope_str));
-                            return Err(e);
+                        // §5.7's amended arm (dogfood break #6): a token
+                        // premise at a node-less scope is bad input, never a
+                        // narrated deletion — `(token, absent)` cannot
+                        // distinguish a post-mint removal from a pairing that
+                        // never held, and a `resync` here re-reads a path
+                        // that serves nothing.
+                        crate::guard::PremiseValue::Token(_) => {
+                            return Err(token_at_absent_scope(&scope_str));
                         }
                     },
                     Err(fs::ScopeTokenError::Unresolved(refusal)) => {
@@ -3716,6 +3720,19 @@ fn scoped_mismatch(scope: &str, expected: &str, actual: &str) -> Box<ErrorBody> 
     e.actual = Some(NodeRev(actual.to_owned()));
     e.scope = Some(scope.to_owned());
     e.message = Some(wire::scoped_mismatch_teaching(scope, expected, actual));
+    Box::new(e)
+}
+
+/// The §5.7 amended-arm refusal (dogfood break #6): a token premise at a
+/// node-less scope — `scope_does_not_cover`, recovery `fix`, carrying `scope`
+/// alone (`uncovered` stays §5.5's target-set extra; this mint home names no
+/// target set). Never `fingerprint_mismatch`: the engine cannot know whether
+/// the node was removed or never existed, and the retired absent-actual text
+/// stated the first as fact.
+fn token_at_absent_scope(scope: &str) -> Box<ErrorBody> {
+    let mut e = ErrorBody::new(ErrorCode::ScopeDoesNotCover);
+    e.scope = Some(scope.to_owned());
+    e.message = Some(wire::token_at_absent_scope_teaching(scope));
     Box::new(e)
 }
 
