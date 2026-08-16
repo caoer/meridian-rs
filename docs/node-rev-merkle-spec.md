@@ -629,11 +629,22 @@ class): the checkpoint.
   `domain_version` a checkpoint would survive a hash-law change (the §4.2
   cutover changes the interior encoding) and serve old-law nodes as current;
   without the journal cursor pair, O(changes-while-down) has no replay point.
-- **Restart replay** (codex gate 11, adopted as written): one journaled
-  change while down = exactly one file read and hashed, zero unchanged
-  members statted, no cold rebuild. An invalid journal instance = exactly one
-  labeled re-baseline. A cursor outside retained history is itself a
-  mismatch.
+- **Restart replay** (gate 11 re-cut by gap class —
+  `decisions/2026-08-16-gate11-stat-floor.md`, session
+  15-14-fingerprint-grain): where a live journal covers the whole gap
+  (engine cold, process alive — §6.4 registration lifetime; any future
+  durable journal), one journaled change = exactly one file read and
+  hashed, zero unchanged members statted, no cold rebuild. Where no
+  durable journal covers the gap (today every platform), a sound
+  checkpoint restores every row UNTRUSTED; no restored row may serve until
+  exactly one §6.2-governed metadata sweep completes over the full member
+  set (pre-serve barrier — lazy or post-first-serve verification refused
+  by construction); zero unchanged members read, hashed, or parsed; each
+  mover pays exactly one read+hash; counters published. A soundness
+  mismatch = one loud labeled cold re-baseline; a cursor that cannot
+  anchor = one labeled warm re-baseline — replay forfeited, object
+  retained. The residual stat term is recorded UNFIXED in the decision
+  record; requirement 1 is PARTIALLY SATISFIED there, never here.
 - **Markdown stays the sole truth, always.** The §0 ban on trusted snapshots
   is UNTOUCHED — that ban targets objects that can serve stale AS truth; this
   object is the opposite (it cannot serve stale by construction). The caution
