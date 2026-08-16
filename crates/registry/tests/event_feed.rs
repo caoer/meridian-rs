@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use registry::{Config, Registry, WarmOutcome, in_process_registry};
+use registry::{Config, Registry, RescanCause, WarmOutcome, in_process_registry};
 
 /// An in-process registry rooted under `tmp` (no socket, no reaper thread).
 fn registry_in(tmp: &Path) -> Registry {
@@ -131,5 +131,140 @@ fn a_kernel_event_reaches_the_pending_set() {
         }),
         "the edit reached the feed: {:?}",
         reg.feed_stats(&canonical)
+    );
+}
+
+/// Chaos fixture (card gate): overflow injection and a labeled instance
+/// change each land in the rescan record under their named cause; unnamed
+/// rescans are unconstructible. The watcher is NOT restarted across either
+/// rescan — a later kernel edit still reaches the pending set.
+#[test]
+fn chaos_rescans_carry_named_causes_and_the_watcher_stays_up() {
+    let tmp = tempfile::tempdir().unwrap();
+    let reg = registry_in(tmp.path());
+    let ws = write_ws(
+        tmp.path(),
+        &[("plan.md", "# Plan\n"), ("notes.md", "# N\n")],
+    );
+    let canonical = workspace::canonicalize(&ws).unwrap();
+    reg.warm_or_build(&ws).unwrap();
+
+    // Overflow injection (the kernel's need_rescan / cap-breach class).
+    assert!(reg.rescan(&canonical, RescanCause::Overflow));
+    // Labeled instance change — the cause the chaos "watcher restart"
+    // scenario must carry; the watcher handle itself is not replaced.
+    assert!(reg.rescan(&canonical, RescanCause::InstanceChange));
+    // The rest of the suspicious-only set, so the record names every cause.
+    assert!(reg.rescan(&canonical, RescanCause::MissedEvent));
+    assert!(reg.rescan(&canonical, RescanCause::VouchFailure));
+    assert!(reg.rescan(&canonical, RescanCause::CookieTimeout));
+
+    let record = reg.rescan_record(&canonical).expect("live feed");
+    assert_eq!(
+        record,
+        [
+            RescanCause::Overflow,
+            RescanCause::InstanceChange,
+            RescanCause::MissedEvent,
+            RescanCause::VouchFailure,
+            RescanCause::CookieTimeout,
+        ],
+        "every rescan in the chaos fixture carries its named cause"
+    );
+    for cause in &record {
+        assert!(!cause.name().is_empty(), "unnamed rescans fail the test");
+    }
+    let stats = reg.feed_stats(&canonical).expect("live feed");
+    assert_eq!(
+        stats.rescans, stats.overflows,
+        "an anonymous collapse would desync the two counters"
+    );
+    assert_eq!(stats.rescans, 5);
+
+    // Drain the open instance-change (highest rung) so the next kernel
+    // event is not swallowed by an all-dirty take.
+    let _ = reg.currency_root(&canonical).unwrap();
+
+    let baseline = reg.feed_stats(&canonical).expect("live feed").events;
+    std::fs::write(ws.join("plan.md"), "# Plan\n\nafter rescans\n").unwrap();
+    assert!(
+        wait_until(Duration::from_secs(10), || {
+            let s = reg.feed_stats(&canonical).expect("live feed");
+            s.events > baseline || s.all_dirty
+        }),
+        "the watcher survived both rescans: {:?}",
+        reg.feed_stats(&canonical)
+    );
+}
+
+/// §7(d) / codex gate 10 shape, hermetic: after baseline, a quiet workspace
+/// advances neither sweeps nor member_stats. There is no timer on the
+/// ladder — a live watcher sitting idle does not schedule work. The live
+/// ten-minute / 100k-member bar is the acceptance run of these same
+/// counters ([`ten_quiet_minutes_moves_no_sweep_counters`]).
+#[test]
+fn a_quiet_workspace_does_not_sweep() {
+    let tmp = tempfile::tempdir().unwrap();
+    let reg = registry_in(tmp.path());
+    let ws = write_ws(tmp.path(), &[("a.md", "# A\n"), ("b.md", "# B\n")]);
+    let canonical = workspace::canonicalize(&ws).unwrap();
+    reg.warm_or_build(&ws).unwrap();
+    // Drain any start-up dirt so the quiet window starts from a clean
+    // baseline observation.
+    let _ = reg.currency_root(&canonical).unwrap();
+    let (sweeps0, stats0) = {
+        let cache = reg.domain_cache(&canonical);
+        let g = cache.lock().unwrap();
+        (g.sweeps(), g.member_stats())
+    };
+    assert!(sweeps0 >= 1, "baseline observed the corpus");
+    assert!(stats0 >= 2, "baseline statted the members");
+
+    std::thread::sleep(Duration::from_millis(1500));
+
+    let (sweeps1, stats1) = {
+        let cache = reg.domain_cache(&canonical);
+        let g = cache.lock().unwrap();
+        (g.sweeps(), g.member_stats())
+    };
+    assert_eq!(
+        (sweeps1, stats1),
+        (sweeps0, stats0),
+        "a quiet live feed schedules no corpus sweep and no member stat"
+    );
+    let feed = reg.feed_stats(&canonical).expect("feed stays live");
+    assert!(
+        !feed.all_dirty,
+        "quiet did not collapse the set: {feed:?}"
+    );
+}
+
+/// Live §7(d) bar: ten quiet minutes, zero extra sweeps, zero extra member
+/// stats. Ignored in CI — run on the acceptance host against a 100k
+/// fixture; the hermetic proof is [`a_quiet_workspace_does_not_sweep`].
+#[test]
+#[ignore = "live §7(d) 10-minute bar — run on acceptance, not in CI"]
+fn ten_quiet_minutes_moves_no_sweep_counters() {
+    let tmp = tempfile::tempdir().unwrap();
+    let reg = registry_in(tmp.path());
+    let ws = write_ws(tmp.path(), &[("a.md", "# A\n")]);
+    let canonical = workspace::canonicalize(&ws).unwrap();
+    reg.warm_or_build(&ws).unwrap();
+    let _ = reg.currency_root(&canonical).unwrap();
+    let (sweeps0, stats0) = {
+        let cache = reg.domain_cache(&canonical);
+        let g = cache.lock().unwrap();
+        (g.sweeps(), g.member_stats())
+    };
+    std::thread::sleep(Duration::from_secs(10 * 60));
+    let (sweeps1, stats1) = {
+        let cache = reg.domain_cache(&canonical);
+        let g = cache.lock().unwrap();
+        (g.sweeps(), g.member_stats())
+    };
+    assert_eq!(
+        (sweeps1, stats1),
+        (sweeps0, stats0),
+        "ten quiet minutes = 0 corpus sweeps, 0 member stats after baseline"
     );
 }
