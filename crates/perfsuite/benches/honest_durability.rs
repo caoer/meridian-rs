@@ -145,15 +145,17 @@ fn mode_count(dests: usize) {
 }
 
 struct Sample {
-    fsync: Duration,
-    metadata: Duration,
+    content_fsync: Duration,
+    metadata_publish: Duration,
+    group_wait: Duration,
+    cohort_size: usize,
     wall: Duration,
 }
 
-/// One writer's transaction, timed. `content_fsync` / `metadata_publish` are
-/// read from the receipt when the implementation exposes them; until then the
-/// receipt's disk-stage pair bounds the durable half and the remainder is
-/// metadata publish.
+/// One writer's transaction. The four durability figures are read straight
+/// off the receipt — never re-derived here, and `group_wait` is never folded
+/// into either durability figure (a writer that waited for a cohort did not
+/// spend that time on durability).
 fn one_txn(
     root: &WorkspaceRoot,
     table: &Arc<ReservationTable>,
@@ -169,93 +171,180 @@ fn one_txn(
     })
     .expect("publish");
     let wall = t0.elapsed();
-    let disk = rec.disk_end.duration_since(rec.disk_start);
     Sample {
-        fsync: disk,
-        metadata: wall.saturating_sub(disk),
+        content_fsync: rec.content_fsync,
+        metadata_publish: rec.metadata_publish,
+        group_wait: rec.group_wait,
+        cohort_size: rec.cohort_size,
         wall,
     }
 }
 
+/// One arm's measured sample set. Percentile vectors are already sorted.
+struct ArmStats {
+    fsync_ms: Vec<f64>,
+    meta_ms: Vec<f64>,
+    wait_ms: Vec<f64>,
+    wall_ms: Vec<f64>,
+    burst_ms: f64,
+    peak_cohort: usize,
+}
+
+impl ArmStats {
+    fn txn_per_s(&self) -> f64 {
+        self.wall_ms.len() as f64 / (self.burst_ms / 1e3)
+    }
+}
+
 /// N concurrent writers over disjoint destinations, released together.
+/// Whichever arm `fs::set_durability_coordination` has in force is the arm
+/// measured — this function never sets it, so a caller pairing two arms
+/// controls the order.
+fn run_arm(n: usize, iters: usize) -> ArmStats {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = WorkspaceRoot(dir.path().to_path_buf());
+    let table = ReservationTable::new();
+    let owner = Arc::new(StateOwner::new(Root("tip".to_owned())));
+    let payload = vec![b'x'; 4096];
+
+    let arrived = Arc::new(AtomicUsize::new(0));
+    let go = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    let mut handles = Vec::with_capacity(n);
+    for w in 0..n {
+        let root = WorkspaceRoot(root.0.clone());
+        let table = Arc::clone(&table);
+        let owner = Arc::clone(&owner);
+        let payload = payload.clone();
+        let arrived = Arc::clone(&arrived);
+        let go = Arc::clone(&go);
+        handles.push(std::thread::spawn(move || {
+            arrived.fetch_add(1, Ordering::SeqCst);
+            while !go.load(Ordering::SeqCst) {
+                std::hint::spin_loop();
+            }
+            let mut out = Vec::with_capacity(iters);
+            for i in 0..iters {
+                let rel = format!("w{w}/f{i}.md");
+                out.push(one_txn(&root, &table, &owner, &rel, &payload));
+            }
+            out
+        }));
+    }
+    while arrived.load(Ordering::SeqCst) < n {
+        std::hint::spin_loop();
+    }
+    let started = Instant::now();
+    go.store(true, Ordering::SeqCst);
+
+    let mut st = ArmStats {
+        fsync_ms: Vec::new(),
+        meta_ms: Vec::new(),
+        wait_ms: Vec::new(),
+        wall_ms: Vec::new(),
+        burst_ms: 0.0,
+        peak_cohort: 0,
+    };
+    for h in handles {
+        for s in h.join().expect("writer thread") {
+            st.fsync_ms.push(s.content_fsync.as_secs_f64() * 1e3);
+            st.meta_ms.push(s.metadata_publish.as_secs_f64() * 1e3);
+            st.wait_ms.push(s.group_wait.as_secs_f64() * 1e3);
+            st.wall_ms.push(s.wall.as_secs_f64() * 1e3);
+            st.peak_cohort = st.peak_cohort.max(s.cohort_size);
+        }
+    }
+    st.burst_ms = started.elapsed().as_secs_f64() * 1e3;
+    sort_ms(&mut st.fsync_ms);
+    sort_ms(&mut st.meta_ms);
+    sort_ms(&mut st.wait_ms);
+    sort_ms(&mut st.wall_ms);
+    st
+}
+
 fn mode_sweep(ns: &[usize], iters: usize) {
+    let arm = if fs::durability_coordination() {
+        "ON"
+    } else {
+        "OFF"
+    };
     println!(
-        "sweep: iters_per_writer={iters} payload_bytes=4096 volume=APFS-internal-NVMe \
-         instrument=receipt-timers"
+        "sweep: arm={arm} iters_per_writer={iters} payload_bytes=4096 \
+         volume=APFS-internal-NVMe instrument=receipt-fields"
     );
     for &n in ns {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let root = WorkspaceRoot(dir.path().to_path_buf());
-        let table = ReservationTable::new();
-        let owner = Arc::new(StateOwner::new(Root("tip".to_owned())));
-        let payload = vec![b'x'; 4096];
-
-        let arrived = Arc::new(AtomicUsize::new(0));
-        let go = Arc::new(std::sync::atomic::AtomicBool::new(false));
-
-        let wall0 = Arc::new(std::sync::Mutex::new(None::<Instant>));
-        let mut handles = Vec::with_capacity(n);
-        for w in 0..n {
-            let root = WorkspaceRoot(root.0.clone());
-            let table = Arc::clone(&table);
-            let owner = Arc::clone(&owner);
-            let payload = payload.clone();
-            let arrived = Arc::clone(&arrived);
-            let go = Arc::clone(&go);
-            handles.push(std::thread::spawn(move || {
-                arrived.fetch_add(1, Ordering::SeqCst);
-                while !go.load(Ordering::SeqCst) {
-                    std::hint::spin_loop();
-                }
-                let mut out = Vec::with_capacity(iters);
-                for i in 0..iters {
-                    let rel = format!("w{w}/f{i}.md");
-                    out.push(one_txn(&root, &table, &owner, &rel, &payload));
-                }
-                out
-            }));
-        }
-        while arrived.load(Ordering::SeqCst) < n {
-            std::hint::spin_loop();
-        }
-        *wall0.lock().expect("wall0") = Some(Instant::now());
-        go.store(true, Ordering::SeqCst);
-
-        let mut fsync_ms = Vec::new();
-        let mut meta_ms = Vec::new();
-        let mut wall_ms = Vec::new();
-        for h in handles {
-            for s in h.join().expect("writer thread") {
-                fsync_ms.push(s.fsync.as_secs_f64() * 1e3);
-                meta_ms.push(s.metadata.as_secs_f64() * 1e3);
-                wall_ms.push(s.wall.as_secs_f64() * 1e3);
-            }
-        }
-        let burst_ms = wall0
-            .lock()
-            .expect("wall0")
-            .expect("start stamped")
-            .elapsed()
-            .as_secs_f64()
-            * 1e3;
-
-        sort_ms(&mut fsync_ms);
-        sort_ms(&mut meta_ms);
-        sort_ms(&mut wall_ms);
-        let total = wall_ms.len();
+        let st = run_arm(n, iters);
         println!(
-            "N={n} txns={total} burst_wall_ms={burst_ms:.2} txn_per_s={:.1} | \
+            "arm={arm} N={n} txns={} burst_wall_ms={:.2} txn_per_s={:.1} | \
              fsync_p50={:.3} fsync_p99={:.3} | meta_p50={:.3} meta_p99={:.3} | \
-             txn_p50={:.3} txn_p99={:.3}",
-            total as f64 / (burst_ms / 1e3),
-            pct(&fsync_ms, 500),
-            pct(&fsync_ms, 990),
-            pct(&meta_ms, 500),
-            pct(&meta_ms, 990),
-            pct(&wall_ms, 500),
-            pct(&wall_ms, 990),
+             wait_p50={:.3} wait_p99={:.3} | txn_p50={:.3} txn_p99={:.3} | \
+             cohort_peak={}",
+            st.wall_ms.len(),
+            st.burst_ms,
+            st.txn_per_s(),
+            pct(&st.fsync_ms, 500),
+            pct(&st.fsync_ms, 990),
+            pct(&st.meta_ms, 500),
+            pct(&st.meta_ms, 990),
+            pct(&st.wait_ms, 500),
+            pct(&st.wait_ms, 990),
+            pct(&st.wall_ms, 500),
+            pct(&st.wall_ms, 990),
+            st.peak_cohort,
         );
     }
+}
+
+/// Config L2 — BOUND COST, the A/B control, PAIRED.
+///
+/// Both arms run inside one repetition under shared machine conditions, and
+/// the order alternates per repetition so neither arm holds a favoured
+/// position. This host is not quiescent (load average 46–110 observed), so
+/// running one arm now and the other later would measure sampling luck and
+/// could report it as an architecture win — a false positive in our own
+/// favour, which is worse than a disproof.
+///
+/// The reported figure is **per-writer end-to-end** p50/p99 and the per-pair
+/// ratio. Aggregate throughput is printed for context only: it would hide
+/// exactly the late-arriving writer this config exists to find.
+fn mode_ab(ns: &[usize], iters: usize, reps: usize) {
+    println!("L2 bound cost — paired A/B, iters_per_writer={iters} reps={reps} payload_bytes=4096");
+    println!(
+        "rep\tN\torder\ton_p50\ton_p99\toff_p50\toff_p99\tratio_p50\tratio_p99\t\
+         on_wait_p50\ton_cohort\ton_txn_s\toff_txn_s"
+    );
+    for &n in ns {
+        for rep in 1..=reps {
+            let on_first = rep % 2 == 1;
+            let (on, off) = if on_first {
+                fs::set_durability_coordination(true);
+                let a = run_arm(n, iters);
+                fs::set_durability_coordination(false);
+                let b = run_arm(n, iters);
+                (a, b)
+            } else {
+                fs::set_durability_coordination(false);
+                let b = run_arm(n, iters);
+                fs::set_durability_coordination(true);
+                let a = run_arm(n, iters);
+                (a, b)
+            };
+            let (on50, on99) = (pct(&on.wall_ms, 500), pct(&on.wall_ms, 990));
+            let (off50, off99) = (pct(&off.wall_ms, 500), pct(&off.wall_ms, 990));
+            println!(
+                "{rep}\t{n}\t{}\t{on50:.2}\t{on99:.2}\t{off50:.2}\t{off99:.2}\t\
+                 {:.3}\t{:.3}\t{:.2}\t{}\t{:.1}\t{:.1}",
+                if on_first { "on-first" } else { "off-first" },
+                on50 / off50,
+                on99 / off99,
+                pct(&on.wait_ms, 500),
+                on.peak_cohort,
+                on.txn_per_s(),
+                off.txn_per_s(),
+            );
+        }
+    }
+    fs::set_durability_coordination(true);
 }
 
 fn main() {
@@ -291,6 +380,15 @@ fn main() {
         Some("count") => {
             let dests = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(2);
             mode_count(dests);
+        }
+        Some("ab") => {
+            let ns: Vec<usize> = args.get(1).map_or_else(
+                || vec![60],
+                |s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect(),
+            );
+            let iters = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(10);
+            let reps = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(6);
+            mode_ab(&ns, iters, reps);
         }
         Some("sweep") => {
             let ns: Vec<usize> = args.get(1).map_or_else(
