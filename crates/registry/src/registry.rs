@@ -155,8 +155,8 @@ enum FeedSlot {
 
 impl FeedSlot {
     /// Start the workspace's kernel watcher; loud on failure, once.
-    fn start(workspace: &Path) -> FeedSlot {
-        match feed::WorkspaceFeed::start(workspace) {
+    fn start(workspace: &Path, feed: fs::stable::FeedGen) -> FeedSlot {
+        match feed::WorkspaceFeed::start(workspace, feed) {
             Ok(feed) => FeedSlot::Live(feed),
             Err(e) => {
                 eprintln!(
@@ -542,11 +542,17 @@ impl Registry {
                 .unwrap_or_else(PoisonError::into_inner);
             Arc::clone(caches.entry(workspace.to_path_buf()).or_default())
         };
+        // The feed reports into the memo's generation cell so the §6.2 fence
+        // and the rescan-loss ledger are one instrument.
+        let feed_cell = cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .feed_gen();
         let pending = {
             let mut feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
             match feeds
                 .entry(workspace.to_path_buf())
-                .or_insert_with(|| FeedSlot::start(workspace))
+                .or_insert_with(|| FeedSlot::start(workspace, feed_cell))
             {
                 FeedSlot::Live(feed) => feed.take(),
                 FeedSlot::Failed => feed::Pending::Clean,
@@ -572,8 +578,23 @@ impl Registry {
                 }
                 feed::Applied::Reset => {
                     eprintln!(
-                        "feed: doubt collapse for {} — resident memo reset, next pass \
-                         re-reads the corpus",
+                        "feed: apply-time I/O failure for {} — resident memo reset, next \
+                         pass re-reads the corpus",
+                        workspace.display()
+                    );
+                }
+                feed::Applied::Sweep(cause) => {
+                    eprintln!(
+                        "feed: rescan {} for {} — memo kept, next observation is the full \
+                         stat sweep",
+                        cause.name(),
+                        workspace.display()
+                    );
+                }
+                feed::Applied::Rebaselined(cause) => {
+                    eprintln!(
+                        "feed: rescan {} for {} — memo re-baselined by swap",
+                        cause.name(),
                         workspace.display()
                     );
                 }
@@ -604,6 +625,32 @@ impl Registry {
         let feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(FeedSlot::Live(feed)) = feeds.get(workspace) {
             Some(feed.stats())
+        } else {
+            None
+        }
+    }
+
+    /// The suspicious-only trigger door (pre-merge ruling 3): mark a named
+    /// rescan on a live feed. The rescan executes on the next
+    /// [`domain_cache`](Self::domain_cache) borrow — nothing here schedules
+    /// work. `false` when the workspace has no live feed.
+    pub fn rescan(&self, workspace: &Path, cause: crate::RescanCause) -> bool {
+        let feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(FeedSlot::Live(feed)) = feeds.get(workspace) {
+            feed.rescan(cause);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// The rescan record for a live feed (`None`: no live feed). Every entry
+    /// carries a named cause; an unnamed rescan is unconstructible.
+    #[must_use]
+    pub fn rescan_record(&self, workspace: &Path) -> Option<Vec<crate::RescanCause>> {
+        let feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(FeedSlot::Live(feed)) = feeds.get(workspace) {
+            Some(feed.rescan_record())
         } else {
             None
         }
@@ -1246,6 +1293,84 @@ mod engine_tests {
         assert!(
             !reg.note_dirty(&canonical, &[PathBuf::from("a.md")]),
             "a hint for an unregistered workspace is refused"
+        );
+    }
+
+    /// The suspicious-only door piggybacks on the next borrow: a named
+    /// overflow marks all-dirty, the next `domain_cache` climb is the sweep
+    /// rung (memo kept), and the record names the cause. No timer fires.
+    #[test]
+    fn a_named_rescan_piggybacks_on_the_next_borrow() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(home.path(), &[("a.md", "# A\n"), ("b.md", "# B\n")]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.warm_or_build(&ws).unwrap();
+        let (reads_before, sweeps_before) = {
+            let cache = reg.domain_cache(&canonical);
+            let g = cache.lock().unwrap();
+            (g.leaves_read(), g.sweeps())
+        };
+
+        assert!(
+            reg.rescan(&canonical, crate::RescanCause::Overflow),
+            "a live feed accepts a named rescan"
+        );
+        let stats = reg.feed_stats(&canonical).expect("live feed");
+        assert!(stats.all_dirty, "the mark is sticky until the next borrow");
+        assert_eq!(stats.rescans, 1);
+        assert_eq!(stats.overflows, 1);
+        assert_eq!(
+            reg.rescan_record(&canonical).as_deref(),
+            Some(&[crate::RescanCause::Overflow][..]),
+            "the record names the cause"
+        );
+
+        // The borrow climbs the sweep rung; the observation is the stat
+        // sweep — unmoved corpus, zero extra reads.
+        let _ = reg.currency_root(&canonical).unwrap();
+        let stats = reg.feed_stats(&canonical).expect("live feed");
+        assert!(!stats.all_dirty, "the take drained the mark");
+        let (reads_after, sweeps_after) = {
+            let cache = reg.domain_cache(&canonical);
+            let g = cache.lock().unwrap();
+            (g.leaves_read(), g.sweeps())
+        };
+        assert_eq!(
+            reads_after, reads_before,
+            "the sweep kept the memo and re-read nothing"
+        );
+        assert!(
+            sweeps_after > sweeps_before,
+            "the piggybacked observation was the sweep"
+        );
+    }
+
+    /// An instance-change mark climbs the re-baseline rung on the next
+    /// borrow: the swapped memo equals a from-scratch derivation of a change
+    /// the (injected) stream never delivered.
+    #[test]
+    fn an_instance_change_rebaselines_on_the_next_borrow() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(home.path(), &[("a.md", "# A\n"), ("b.md", "# B\n")]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.warm_or_build(&ws).unwrap();
+
+        rewrite(&canonical, "a.md", "# A moved unseen\n");
+        assert!(reg.rescan(&canonical, crate::RescanCause::InstanceChange));
+        let root = reg.currency_root(&canonical).unwrap();
+        assert_eq!(
+            reg.rescan_record(&canonical).as_deref(),
+            Some(&[crate::RescanCause::InstanceChange][..])
+        );
+
+        let scratch_home = tempfile::tempdir().unwrap();
+        let scratch = registry_in(scratch_home.path());
+        assert_eq!(
+            root,
+            scratch.currency_root(&canonical).unwrap(),
+            "the swapped memo equals a from-scratch derivation"
         );
     }
 

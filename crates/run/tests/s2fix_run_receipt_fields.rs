@@ -48,13 +48,11 @@ fn receipt_after_apply(page_name: &str, seed: &str, effects: &[Effect]) -> Strin
             authority: &Authority::granted(
                 CapSet::parse("md.set_field md.append_section").unwrap(),
             ),
-            pin_root: &live,
-            live_root: &live,
+            observed_root: &live,
             receipt: Some(ReceiptAddr {
                 path: RECEIPT_PATH.to_owned(),
                 anchor: "r-000001".to_owned(),
             }),
-            takeover: false,
             exec: None,
             actor: None,
             depth: 0,

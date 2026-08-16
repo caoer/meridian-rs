@@ -35,15 +35,14 @@ pub struct StarlarkDispatch<'a> {
     /// Caller-supplied time fact.
     pub now: Option<&'a str>,
     /// The corpus root the caller computed at eval time — stamped as Run
-    /// provenance AND pinned as the batch's `if_root`.
+    /// provenance and attested by the receipt (observation honesty). Never
+    /// validated: this door holds no world pin (no-guard ruling, 2026-08-15).
     pub root_at_eval: &'a MerkleRoot,
     /// The block's resolved authority (the executor's choke input) — always a
     /// real capability grant on this path.
     pub authority: &'a Authority,
     /// Receipt address for the commit.
     pub receipt: Option<ReceiptAddr>,
-    /// Decision-#26 explicit foreign-edit takeover.
-    pub takeover: bool,
     /// Kernel eval limits.
     pub limits: EvalLimits,
     /// Caller-supplied identity (§9, § A.8): threads into the receipt actor.
@@ -79,8 +78,6 @@ pub enum DispatchError {
     /// The executor refused the md.* batch (typed [`ExecError`]) — nothing
     /// was applied.
     Exec(ExecError),
-    /// Computing the live corpus root for the apply failed.
-    Root { reason: String },
 }
 
 impl std::fmt::Display for DispatchError {
@@ -88,7 +85,6 @@ impl std::fmt::Display for DispatchError {
         match self {
             DispatchError::Eval(e) => write!(f, "eval: {e}"),
             DispatchError::Exec(e) => write!(f, "apply: {e}"),
-            DispatchError::Root { reason } => write!(f, "live root: {reason}"),
         }
     }
 }
@@ -113,12 +109,13 @@ pub fn evaluate(d: &StarlarkDispatch<'_>) -> Result<Vec<Effect>, EvalError> {
 }
 
 /// The full hermetic dispatch: evaluate, split by domain, apply the md.*
-/// subset through the executor's one batch. The live root is computed HERE,
-/// immediately before the apply — the pin (`root_at_eval`) against it detects
-/// out-of-band change across the eval window.
+/// subset through the executor's one batch. No live root is computed and no
+/// pin is compared — a foreign advance across the eval window re-derives and
+/// proceeds (no-guard ruling); the receipt attests `root_at_eval` as the
+/// observation the effects were produced against.
 ///
 /// # Errors
-/// [`DispatchError`] — eval fault, executor refusal, or root computation.
+/// [`DispatchError`] — eval fault or executor refusal.
 pub fn dispatch(
     root: &fs::WorkspaceRoot,
     d: &StarlarkDispatch<'_>,
@@ -132,11 +129,6 @@ pub fn dispatch(
     let applied = if md.is_empty() {
         None
     } else {
-        let live = fs::domain_snapshot(root)
-            .map(|(_, r)| r)
-            .map_err(|e| DispatchError::Root {
-                reason: e.to_string(),
-            })?;
         Some(
             executor::apply(
                 root,
@@ -148,10 +140,8 @@ pub fn dispatch(
                     now: d.now,
                     effects: &md,
                     authority: d.authority,
-                    pin_root: d.root_at_eval,
-                    live_root: &live,
+                    observed_root: d.root_at_eval,
                     receipt: d.receipt.clone(),
-                    takeover: d.takeover,
                     exec: None, // hermetic: no child process
                     actor: d.actor,
                     depth: 0,
