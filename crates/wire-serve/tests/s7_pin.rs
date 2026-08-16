@@ -1142,12 +1142,14 @@ fn a_trailing_whitespace_heading_promotes_rev_neutrally() {
     assert_eq!(fact.fingerprint, before);
 }
 
-/// Stale `if_root` refuses before promotion.
+/// Stale `if_root` refuses before promotion. The token is grammatical on
+/// purpose — an ungrammatical value is `bad_request` at §5.7's malformed
+/// arm, never this staleness verdict.
 #[test]
 fn a_stale_world_guard_refuses_before_the_promotion() {
     let (_dir, root) = workspace();
     let mut args = pin_args("Guide/Leader's Guideline");
-    args.if_root = Some(wire::Root("b3:deadbeef".into()));
+    args.if_root = Some(wire::Root(format!("b3:{}", "deadbeef".repeat(8))));
 
     let err = splice(&root, None, &args, &[], None).expect_err("stale plan refuses");
     assert_eq!(err.code, ErrorCode::RootMismatch);
