@@ -163,7 +163,7 @@ impl Corpus {
         // Wire-origin put demands fingerprint-or-force. These arms test
         // stored-form translation, not the guard.
         let mut owned: Vec<&str> = args.to_vec();
-        if !owned.iter().any(|a| *a == "--force") {
+        if !owned.contains(&"--force") {
             owned.push("--force");
         }
         let mut child = self
