@@ -69,35 +69,76 @@ use crate::{bad_request, load_doc};
 // observation and its overlay. (Cache mutex nests inside the flock; nothing
 // outside this seam locks it.)
 
-/// The write plane's resident domain caches — one per workspace, keyed by
-/// the root's canonical path so two spellings of one workspace share one
-/// tree. Each entry is its own `Arc<Mutex<…>>`: a door locks one workspace's
-/// cache, never the map.
-static WRITE_CACHES: LazyLock<Mutex<HashMap<PathBuf, Arc<Mutex<fs::DomainCache>>>>> =
+/// The DomainCache a write door rides. The daemon passes
+/// `Registry::domain_cache` so the write plane and the feed patch one tree.
+/// In-process callers omit it and fall back to [`WRITE_CACHES`].
+pub type WriteCache = Arc<Mutex<fs::DomainCache>>;
+
+/// Fallback only: in-process callers with no registry (CLI, tests, library
+/// doors). Daemon writes must not land here — they pass [`WriteCache`] so
+/// event loss and the dirty set reach the cache `observed_root` locks.
+static WRITE_CACHES: LazyLock<Mutex<HashMap<PathBuf, WriteCache>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// The workspace's write-plane cache, created on first use.
-fn write_cache(root: &fs::WorkspaceRoot) -> Arc<Mutex<fs::DomainCache>> {
+/// One door call's cache: either the caller-supplied daemon memo or the
+/// process-local fallback.
+struct WriteCacheHandle {
+    cache: WriteCache,
+    /// `true` when the caller supplied the registry memo. Trusted door-entry
+    /// then serves the overlay (the feed retired the stat-sweep); Untrusted
+    /// degrades to a full observe that absorbs the loss. The fallback has no
+    /// feed, so it always live-observes.
+    resident: bool,
+}
+
+/// The workspace's write-plane fallback cache, created on first use.
+fn write_cache(root: &fs::WorkspaceRoot) -> WriteCache {
     let key = std::fs::canonicalize(&root.0).unwrap_or_else(|_| root.0.clone());
     let mut map = WRITE_CACHES.lock().unwrap_or_else(PoisonError::into_inner);
     Arc::clone(map.entry(key).or_default())
 }
 
-/// `root_before` through the wrapper seam: one live observation. Warm, this
-/// costs a stat sweep and reads only members whose identity moved; the served
-/// token is the cached law-1 value unless the tree advanced.
+fn door_cache(root: &fs::WorkspaceRoot, supplied: Option<&WriteCache>) -> WriteCacheHandle {
+    match supplied {
+        Some(cache) => WriteCacheHandle {
+            cache: Arc::clone(cache),
+            resident: true,
+        },
+        None => WriteCacheHandle {
+            cache: write_cache(root),
+            resident: false,
+        },
+    }
+}
+
+/// `root_before` through the wrapper seam.
+///
+/// A supplied (daemon) cache that is `GuardCurrency::Trusted` serves the
+/// overlay — the feed already patched dirty members, so this door does not
+/// stat-sweep untouched ones. `Untrusted` degrades to a full observation,
+/// which absorbs the loss. The in-process fallback always live-observes:
+/// nothing fences its gap.
 ///
 /// # Errors
 /// Wire `io_error` when the domain config or the observation fails — the
 /// same envelope the retired corpus read refused with.
-fn observed_root(root: &fs::WorkspaceRoot) -> Result<Root, Box<ErrorBody>> {
-    let cache = write_cache(root);
+fn observed_root(
+    root: &fs::WorkspaceRoot,
+    door: &WriteCacheHandle,
+) -> Result<Root, Box<ErrorBody>> {
     let result = {
-        let mut cache = cache.lock().unwrap_or_else(PoisonError::into_inner);
-        cache
-            .root(root)
-            .map(|folded| Root(folded.0))
-            .map_err(|e| io_refusal(e.to_string()))
+        let mut cache = door.cache.lock().unwrap_or_else(PoisonError::into_inner);
+        let folded = if door.resident
+            && matches!(cache.guard_currency(), fs::stable::GuardCurrency::Trusted)
+        {
+            match cache.overlay_root() {
+                Ok(folded) => folded,
+                Err(_) => cache.root(root).map_err(|e| io_refusal(e.to_string()))?,
+            }
+        } else {
+            cache.root(root).map_err(|e| io_refusal(e.to_string()))?
+        };
+        Ok(Root(folded.0))
     };
     #[cfg(test)]
     if result.is_ok() {
@@ -116,8 +157,7 @@ fn observed_root(root: &fs::WorkspaceRoot) -> Result<Root, Box<ErrorBody>> {
 /// # Errors
 /// Wire `io_error` — only reachable as a caller-order defect (an overlay
 /// before any observation), refused rather than guessed around.
-fn overlaid_root(root: &fs::WorkspaceRoot) -> Result<Root, Box<ErrorBody>> {
-    let cache = write_cache(root);
+fn overlaid_root(cache: &WriteCache) -> Result<Root, Box<ErrorBody>> {
     let mut cache = cache.lock().unwrap_or_else(PoisonError::into_inner);
     cache
         .overlay_root()
@@ -145,12 +185,7 @@ pub fn after_door_observe(hook: impl FnOnce() + 'static) {
 ///
 /// # Errors
 /// As [`overlaid_root`] (an overlay needs an observed baseline).
-fn overlay_written(
-    root: &fs::WorkspaceRoot,
-    rel: &str,
-    bytes: &[u8],
-) -> Result<bool, Box<ErrorBody>> {
-    let cache = write_cache(root);
+fn overlay_written(cache: &WriteCache, rel: &str, bytes: &[u8]) -> Result<bool, Box<ErrorBody>> {
     let mut cache = cache.lock().unwrap_or_else(PoisonError::into_inner);
     cache
         .overlay_leaf(FsPath::new(rel), model::leaf_digest(bytes))
@@ -178,14 +213,13 @@ fn domain_from_own_bytes(rel: &str, bytes: &str) -> Option<fs::domain::Domain> {
 /// ([`fs::DomainCache::overlay_membership`]): new Domain from those bytes,
 /// imposed on the overlay's current leaves. Never a second observation.
 fn overlay_membership_from(
-    root: &fs::WorkspaceRoot,
+    cache: &WriteCache,
     rel: &str,
     bytes: &str,
 ) -> Result<bool, Box<ErrorBody>> {
     let Some(domain) = domain_from_own_bytes(rel, bytes) else {
         return Ok(false);
     };
-    let cache = write_cache(root);
     let mut cache = cache.lock().unwrap_or_else(PoisonError::into_inner);
     cache
         .overlay_membership(domain)
@@ -193,8 +227,7 @@ fn overlay_membership_from(
 }
 
 /// Own-write overlay, removal half.
-fn overlay_unlinked(root: &fs::WorkspaceRoot, rel: &str) -> Result<bool, Box<ErrorBody>> {
-    let cache = write_cache(root);
+fn overlay_unlinked(cache: &WriteCache, rel: &str) -> Result<bool, Box<ErrorBody>> {
     let mut cache = cache.lock().unwrap_or_else(PoisonError::into_inner);
     cache
         .overlay_remove(FsPath::new(rel))
@@ -342,13 +375,15 @@ pub fn splice(
             ambient: mints,
             foreign: None,
         },
+        None,
     )
 }
 
 /// [`splice`] with the full ledger surface: the ambient store plus the
-/// per-workspace foreign resolver a cross-root pin gate needs (D-C). The
-/// resident registry calls this; [`splice`] wraps it for every caller whose
-/// host has one ledger or none.
+/// per-workspace foreign resolver a cross-root pin gate needs (D-C), plus
+/// the optional daemon [`WriteCache`]. The resident registry calls this
+/// with `Registry::domain_cache`; [`splice`] wraps it for every caller
+/// whose host has one ledger or none and no registry memo.
 ///
 /// # Errors
 /// As [`splice`].
@@ -359,6 +394,7 @@ pub fn splice_with_mints(
     args: &SpliceArgs,
     rulesets: &[policy::CompiledRuleset],
     mints: Mints<'_>,
+    supplied: Option<&WriteCache>,
 ) -> Result<SpliceOutcome, Box<ErrorBody>> {
     // Workspace-root confinement: `Path::join` with an absolute path discards
     // the root, so an absolute or `..`-bearing splice path would read and write
@@ -373,9 +409,10 @@ pub fn splice_with_mints(
     // read→rename. Dry runs take it too: a rehearsal refuses `workspace_busy`
     // exactly where the real write would. Released on drop.
     let flock = acquire_write_lock(root)?;
+    let door = door_cache(root, supplied);
 
     let mut doc = load_doc(root, &args.path)?;
-    let root_before = observed_root(root)?;
+    let root_before = observed_root(root, &door)?;
 
     // §5.1 order: the world guard first — so a stale plan refuses before any
     // per-target resolution can answer for it, and before this splice's own
@@ -684,11 +721,11 @@ pub fn splice_with_mints(
             let frame_path = promotion_frame_path(root, &p);
             let advanced = match frame_path.as_deref() {
                 Some(rel) => {
-                    overlay_written(root, rel, p.candidate.raw().as_bytes())?;
-                    overlay_membership_from(root, rel, p.candidate.raw())?;
-                    overlaid_root(root)?
+                    overlay_written(&door.cache, rel, p.candidate.raw().as_bytes())?;
+                    overlay_membership_from(&door.cache, rel, p.candidate.raw())?;
+                    overlaid_root(&door.cache)?
                 }
-                None => overlaid_root(root)?,
+                None => overlaid_root(&door.cache)?,
             };
             if advanced != root_before
                 && let Some(path) = frame_path
@@ -737,6 +774,7 @@ pub fn splice_with_mints(
             now: args.now.clone(),
             promotion: promotion_row,
         },
+        &door.cache,
     )
     .map_err(|e| match e {
         CommitError::Refused(v) => verdict_to_wire(&v, effective_edits, &doc, &args.path),
@@ -861,6 +899,21 @@ pub fn splice_set(
     args: &SpliceSetArgs,
     rulesets: &[policy::CompiledRuleset],
 ) -> Result<SpliceOutcome, Box<ErrorBody>> {
+    splice_set_with_cache(root, seq, args, rulesets, None)
+}
+
+/// [`splice_set`] riding a caller-supplied cache (the daemon's
+/// `Registry::domain_cache`).
+///
+/// # Errors
+/// As [`splice_set`].
+pub fn splice_set_with_cache(
+    root: &fs::WorkspaceRoot,
+    seq: Option<&dyn crate::seq::SeqSink>,
+    args: &SpliceSetArgs,
+    rulesets: &[policy::CompiledRuleset],
+    supplied: Option<&WriteCache>,
+) -> Result<SpliceOutcome, Box<ErrorBody>> {
     // The set walls, enforced here as well as at decode — in-process callers
     // reach this door without the decode pass.
     if args.files.len() < 2 {
@@ -893,8 +946,9 @@ pub fn splice_set(
     // One flock spans the whole critical section: every read#1, every
     // validation, and the commit's read#2 → verify → renames (§3 one bracket).
     let flock = acquire_write_lock(root)?;
+    let door = door_cache(root, supplied);
 
-    let root_before = observed_root(root)?;
+    let root_before = observed_root(root, &door)?;
     // §5.1 order: the world guard first, once — world-grain covers every
     // member (if any domain file moved, the fingerprint moved).
     world_guard(args.if_root.as_ref(), &root_before)?;
@@ -959,6 +1013,7 @@ pub fn splice_set(
             actor: args.actor.clone(),
             now: args.now.clone(),
         },
+        &door.cache,
     )
     .map_err(|e| match e {
         CommitSetError::Refused { index, verdict } => {
@@ -1273,11 +1328,12 @@ pub fn commit_set(
     seq: Option<&dyn crate::seq::SeqSink>,
     flock: &fs::WriteLock,
     req: &CommitSetRequest,
+    cache: &WriteCache,
 ) -> Result<DeltaFrame, CommitSetError> {
     let root = flock.root();
     // Door-entry baseline still sitting in the cache — never a second live
     // observe (merkle-spec §6.1).
-    let root_before = overlaid_root(root).map_err(CommitSetError::Env)?;
+    let root_before = overlaid_root(cache).map_err(CommitSetError::Env)?;
 
     // Read#2 + re-validate every member before any byte moves.
     let mut befores: Vec<model::Document> = Vec::with_capacity(req.entries.len());
@@ -1340,9 +1396,9 @@ pub fn commit_set(
     // domain-config surface. One advanced root serves the whole set.
     let mut files: Vec<DeltaFile> = Vec::new();
     for (entry, (before, (_, candidate))) in req.entries.iter().zip(befores.iter().zip(&owned)) {
-        overlay_written(root, &entry.content_path, candidate.raw().as_bytes())
+        overlay_written(cache, &entry.content_path, candidate.raw().as_bytes())
             .map_err(CommitSetError::Env)?;
-        overlay_membership_from(root, &entry.content_path, candidate.raw())
+        overlay_membership_from(cache, &entry.content_path, candidate.raw())
             .map_err(CommitSetError::Env)?;
         if let Some(fd) = model::delta::file_delta(Some(before), Some(candidate.document())) {
             files.push(wire_map::project_file_delta(&entry.content_path, &fd));
@@ -1350,14 +1406,14 @@ pub fn commit_set(
     }
     if let Some((rp, append)) = &req.receipt {
         let composed = compose_receipt(before_receipt.as_ref(), append);
-        overlay_written(root, rp, composed.as_bytes()).map_err(CommitSetError::Env)?;
-        overlay_membership_from(root, rp, &composed).map_err(CommitSetError::Env)?;
+        overlay_written(cache, rp, composed.as_bytes()).map_err(CommitSetError::Env)?;
+        overlay_membership_from(cache, rp, &composed).map_err(CommitSetError::Env)?;
         let after_receipt = build_doc(&Path(rp.clone()), &composed);
         if let Some(fd) = model::delta::file_delta(before_receipt.as_ref(), Some(&after_receipt)) {
             files.push(wire_map::project_file_delta(rp, &fd));
         }
     }
-    let root_after = overlaid_root(root).map_err(CommitSetError::Env)?;
+    let root_after = overlaid_root(cache).map_err(CommitSetError::Env)?;
 
     let seq = crate::seq::allocate(seq, flock, &root_before, &root_after, &files);
     Ok(assemble_delta(
@@ -1515,14 +1571,30 @@ pub fn create(
     args: &CreateArgs,
     rulesets: &[policy::CompiledRuleset],
 ) -> Result<CreateOutcome, Box<ErrorBody>> {
+    create_with_cache(root, seq, args, rulesets, None)
+}
+
+/// [`create`] riding a caller-supplied cache (the daemon's
+/// `Registry::domain_cache`).
+///
+/// # Errors
+/// As [`create`].
+pub fn create_with_cache(
+    root: &fs::WorkspaceRoot,
+    seq: Option<&dyn crate::seq::SeqSink>,
+    args: &CreateArgs,
+    rulesets: &[policy::CompiledRuleset],
+    supplied: Option<&WriteCache>,
+) -> Result<CreateOutcome, Box<ErrorBody>> {
     let fs_path = FsPath::new(&args.path.0);
     path_confined(root, &args.path)?;
 
     // D9: births serialize on the same write flock as every meridian writer —
     // this also closes the `if_absent` check→rename window for cooperators.
     let flock = acquire_write_lock(root)?;
+    let door = door_cache(root, supplied);
 
-    let root_before = observed_root(root)?;
+    let root_before = observed_root(root, &door)?;
     world_guard(args.if_root.as_ref(), &root_before)?;
 
     // The payload IS the candidate document here, so `strip_fp` over the whole
@@ -1616,9 +1688,9 @@ pub fn create(
     }
     // The birth is this commit's own write: overlay the born leaf, and if
     // it is a domain config, impose that membership on current leaves.
-    overlay_written(root, &args.path.0, after_doc.raw().as_bytes())?;
-    overlay_membership_from(root, &args.path.0, after_doc.raw())?;
-    let root_after = overlaid_root(root)?;
+    overlay_written(&door.cache, &args.path.0, after_doc.raw().as_bytes())?;
+    overlay_membership_from(&door.cache, &args.path.0, after_doc.raw())?;
+    let root_after = overlaid_root(&door.cache)?;
 
     let committed = birth_death_delta(
         seq,
@@ -1672,6 +1744,21 @@ pub fn remove(
     args: &RemoveArgs,
     rulesets: &[policy::CompiledRuleset],
 ) -> Result<RemoveOutcome, Box<ErrorBody>> {
+    remove_with_cache(root, seq, args, rulesets, None)
+}
+
+/// [`remove`] riding a caller-supplied cache (the daemon's
+/// `Registry::domain_cache`).
+///
+/// # Errors
+/// As [`remove`].
+pub fn remove_with_cache(
+    root: &fs::WorkspaceRoot,
+    seq: Option<&dyn crate::seq::SeqSink>,
+    args: &RemoveArgs,
+    rulesets: &[policy::CompiledRuleset],
+    supplied: Option<&WriteCache>,
+) -> Result<RemoveOutcome, Box<ErrorBody>> {
     let fs_path = FsPath::new(&args.path.0);
     path_confined(root, &args.path)?;
 
@@ -1679,11 +1766,12 @@ pub fn remove(
     // referential check → unlink is ONE critical section like any other
     // write).
     let flock = acquire_write_lock(root)?;
+    let door = door_cache(root, supplied);
 
     // Door-entry observation seeds the cache and answers root_before / the
     // world guard. The referential check is a different read (query
     // instruments over hash-domain bytes), never a second fold.
-    let root_before = observed_root(root)?;
+    let root_before = observed_root(root, &door)?;
     world_guard(args.if_root.as_ref(), &root_before)?;
 
     // Load what is there — you cannot remove nothing (`file_not_found`, env).
@@ -1752,14 +1840,13 @@ pub fn remove(
     // the domain config reverts membership to the default Domain against
     // current leaves.
     if touches_domain_config(&args.path.0) {
-        let cache = write_cache(root);
-        let mut cache = cache.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut cache = door.cache.lock().unwrap_or_else(PoisonError::into_inner);
         cache
             .overlay_membership(fs::domain::Domain::new())
             .map_err(|e| io_refusal(e.to_string()))?;
     }
-    overlay_unlinked(root, &args.path.0)?;
-    let root_after = overlaid_root(root)?;
+    overlay_unlinked(&door.cache, &args.path.0)?;
+    let root_after = overlaid_root(&door.cache)?;
 
     let committed = birth_death_delta(
         seq,
@@ -1960,16 +2047,31 @@ pub fn lock_write(
     seq: Option<&dyn crate::seq::SeqSink>,
     args: &LockWriteArgs,
 ) -> Result<LockWriteOutcome, Box<ErrorBody>> {
+    lock_write_with_cache(root, seq, args, None)
+}
+
+/// [`lock_write`] riding a caller-supplied cache (the daemon's
+/// `Registry::domain_cache`).
+///
+/// # Errors
+/// As [`lock_write`].
+pub fn lock_write_with_cache(
+    root: &fs::WorkspaceRoot,
+    seq: Option<&dyn crate::seq::SeqSink>,
+    args: &LockWriteArgs,
+    supplied: Option<&WriteCache>,
+) -> Result<LockWriteOutcome, Box<ErrorBody>> {
     let fs_path = FsPath::new(&args.path.0);
     path_confined(root, &args.path)?;
 
     // D9: the lock write serializes on the same write flock as every writer.
     let flock = acquire_write_lock(root)?;
+    let door = door_cache(root, supplied);
 
     let before_doc = load_doc(root, &args.path)?;
     let file_rev_before = NodeRev(before_doc.root.node_rev.0.clone());
 
-    let root_before = observed_root(root)?;
+    let root_before = observed_root(root, &door)?;
     world_guard(args.if_root.as_ref(), &root_before)?;
 
     // write-what-you-read CAS: the page must still carry the rev the caller
@@ -2010,9 +2112,9 @@ pub fn lock_write(
     }
 
     fs::replace_file(root, fs_path, &after_doc).map_err(|e| io_to_wire(&e))?;
-    overlay_written(root, &args.path.0, after_doc.raw().as_bytes())?;
-    overlay_membership_from(root, &args.path.0, after_doc.raw())?;
-    let root_after = overlaid_root(root)?;
+    overlay_written(&door.cache, &args.path.0, after_doc.raw().as_bytes())?;
+    overlay_membership_from(&door.cache, &args.path.0, after_doc.raw())?;
+    let root_after = overlaid_root(&door.cache)?;
 
     let files = model::delta::file_delta(Some(&before_doc), Some(after_doc.document()))
         .map(|fd| vec![wire_map::project_file_delta(&args.path.0, &fd)])
@@ -5039,6 +5141,7 @@ pub fn commit_batch(
     seq: Option<&dyn crate::seq::SeqSink>,
     flock: &fs::WriteLock,
     req: &CommitRequest,
+    cache: &WriteCache,
 ) -> Result<DeltaFrame, CommitError> {
     // The workspace comes from the lock, and that is the guard: the daemon holds
     // many workspace roots at once, so a separately-passed root could name a
@@ -5053,7 +5156,7 @@ pub fn commit_batch(
     };
     // Door-entry baseline still sitting in the cache — never a second live
     // observe (merkle-spec §6.1).
-    let root_before = overlaid_root(root).map_err(CommitError::Env)?;
+    let root_before = overlaid_root(cache).map_err(CommitError::Env)?;
     // Read#2 of the content file above is CAS, not a corpus observation.
 
     // Validate (§5.1 order) — mints the sealed batch, the only path to fs.
@@ -5095,19 +5198,19 @@ pub fn commit_batch(
     .map_err(CommitError::Io)?;
 
     // Overlay from the engine's own bytes — never a post-apply reload.
-    overlay_written(root, &req.content_path, candidate.raw().as_bytes())
+    overlay_written(cache, &req.content_path, candidate.raw().as_bytes())
         .map_err(CommitError::Env)?;
-    overlay_membership_from(root, &req.content_path, candidate.raw()).map_err(CommitError::Env)?;
+    overlay_membership_from(cache, &req.content_path, candidate.raw()).map_err(CommitError::Env)?;
     let after_receipt = match &req.receipt {
         Some((rp, append)) => {
             let composed = compose_receipt(before_receipt.as_ref(), append);
-            overlay_written(root, rp, composed.as_bytes()).map_err(CommitError::Env)?;
-            overlay_membership_from(root, rp, &composed).map_err(CommitError::Env)?;
+            overlay_written(cache, rp, composed.as_bytes()).map_err(CommitError::Env)?;
+            overlay_membership_from(cache, rp, &composed).map_err(CommitError::Env)?;
             Some(build_doc(&Path(rp.clone()), &composed))
         }
         None => None,
     };
-    let root_after = overlaid_root(root).map_err(CommitError::Env)?;
+    let root_after = overlaid_root(cache).map_err(CommitError::Env)?;
 
     // Change facts → wire projection, in §7.1 print order: content file first,
     // then the receipt file, then a promotion's own row.
@@ -6174,8 +6277,8 @@ mod resident_write_path {
     use crate::ambient_root;
 
     use super::{
-        CreateArgs, LockWriteArgs, RemoveArgs, SpliceArgs, SpliceSetArgs, create, lock_write,
-        remove, splice, splice_set, write_cache,
+        CreateArgs, LockWriteArgs, Mints, RemoveArgs, SpliceArgs, SpliceSetArgs, create,
+        lock_write, remove, splice, splice_set, splice_with_mints, write_cache,
     };
 
     fn ws() -> (tempfile::TempDir, fs::WorkspaceRoot) {
@@ -6318,6 +6421,107 @@ mod resident_write_path {
             ambient_root(&root).expect("oracle"),
             "root_after == the independent full-corpus law-1 fold"
         );
+    }
+
+    /// A caller-supplied cache is the tree the door overlays: Trusted
+    /// door-entry serves the overlay (no new sweep), and root_after lands
+    /// on that same Arc — not on WRITE_CACHES.
+    #[test]
+    fn a_supplied_cache_is_the_tree_the_door_overlays() {
+        let (dir, root) = ws();
+        for i in 0..8 {
+            page(&dir, &format!("notes/bystander{i}.md"), "nothing");
+        }
+        page(&dir, "notes/plan.md", "August");
+
+        let cache = std::sync::Arc::new(std::sync::Mutex::new({
+            let mut cache = fs::DomainCache::new();
+            cache.root(&root).expect("baseline");
+            cache
+        }));
+        assert_eq!(
+            cache.lock().unwrap().guard_currency(),
+            fs::stable::GuardCurrency::Trusted
+        );
+        let sweeps_before = cache.lock().unwrap().sweeps();
+
+        let out = splice_with_mints(
+            &root,
+            None,
+            &splice_args("notes/plan.md", "August", "w1"),
+            &[],
+            Mints::default(),
+            Some(&cache),
+        )
+        .expect("supplied-cache splice");
+        let frame = out.committed.expect("real splice commits");
+
+        let (sweeps_after, overlaid) = {
+            let mut cache = cache.lock().unwrap();
+            (cache.sweeps(), cache.overlay_root().expect("overlay"))
+        };
+        assert_eq!(
+            sweeps_after, sweeps_before,
+            "Trusted supplied cache serves overlay — no door-entry sweep"
+        );
+        assert_eq!(
+            overlaid.0, frame.delta.root_after.0,
+            "the supplied cache carries the commit's own overlay"
+        );
+        assert_ne!(
+            std::sync::Arc::as_ptr(&cache),
+            std::sync::Arc::as_ptr(&write_cache(&root)),
+            "the door did not fall back to WRITE_CACHES"
+        );
+    }
+
+    /// Injected loss on a supplied cache makes the next guarded write
+    /// re-observe (the Untrusted degrade) and absorb the loss on that
+    /// same cache.
+    #[test]
+    fn untrusted_supplied_cache_reobserves_and_absorbs() {
+        let (dir, root) = ws();
+        page(&dir, "notes/plan.md", "August");
+        page(&dir, "notes/other.md", "still");
+
+        let cache = std::sync::Arc::new(std::sync::Mutex::new({
+            let mut cache = fs::DomainCache::new();
+            cache.root(&root).expect("baseline");
+            cache
+        }));
+        cache
+            .lock()
+            .unwrap()
+            .feed_gen()
+            .note_loss("fixture-induced overflow");
+        assert!(
+            matches!(
+                cache.lock().unwrap().guard_currency(),
+                fs::stable::GuardCurrency::Untrusted { .. }
+            ),
+            "loss drops guard currency before the door"
+        );
+        let sweeps_before = cache.lock().unwrap().sweeps();
+
+        splice_with_mints(
+            &root,
+            None,
+            &splice_args("notes/plan.md", "August", "w1"),
+            &[],
+            Mints::default(),
+            Some(&cache),
+        )
+        .expect("degrade splice");
+
+        let (sweeps_after, currency) = {
+            let cache = cache.lock().unwrap();
+            (cache.sweeps(), cache.guard_currency())
+        };
+        assert!(
+            sweeps_after > sweeps_before,
+            "Untrusted degrades to a full observe that absorbs the loss"
+        );
+        assert_eq!(currency, fs::stable::GuardCurrency::Trusted);
     }
 
     /// Quality gate: a warm remove of an unreferenced file on a 16+ member

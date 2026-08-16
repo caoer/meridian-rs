@@ -2108,4 +2108,207 @@ mod engine_tests {
             "same bytes ⇒ same fold ⇒ reuse, whatever the clocks say"
         );
     }
+
+    fn plan_page(word: &str) -> String {
+        format!("# Alpha\n\n## Beta\n\nship by {word}\n")
+    }
+
+    fn match_edit(old: &str, new: &str) -> wire::Edit {
+        wire::Edit {
+            target: wire::SecRef::Hpath {
+                hpath: vec![
+                    wire::HpathSeg {
+                        h: "Alpha".into(),
+                        n: None,
+                    },
+                    wire::HpathSeg {
+                        h: "Beta".into(),
+                        n: None,
+                    },
+                ],
+            },
+            edit: wire::EditShape::Match {
+                old: old.into(),
+                new: new.into(),
+            },
+            if_node_rev: None,
+        }
+    }
+
+    fn splice_args(path: &str, old: &str, new: &str) -> wire_serve::write::SpliceArgs {
+        wire_serve::write::SpliceArgs {
+            id: None,
+            origin: wire_serve::guard::Origin::InProcess,
+            path: wire::Path(path.into()),
+            actor: Some("alice".into()),
+            now: None,
+            receipt: None,
+            if_root: None,
+            dry: false,
+            force: false,
+            edits: vec![match_edit(old, new)],
+            plan_edits: Vec::new(),
+            pin: None,
+        }
+    }
+
+    /// Quality gate: a daemon splice and a daemon currency pass lock the
+    /// same DomainCache address — the write overlays that memo, not WRITE_CACHES.
+    #[test]
+    fn a_daemon_splice_and_currency_pass_lock_the_same_cache() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let plan = plan_page("August");
+        let other = plan_page("still");
+        let ws = write_ws(
+            home.path(),
+            &[("notes/plan.md", &plan), ("notes/other.md", &other)],
+        );
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.warm_or_build(&ws).unwrap();
+        let _ = reg.currency_root(&canonical).unwrap();
+
+        let cache = reg.domain_cache(&canonical);
+        let currency = reg.domain_cache(&canonical);
+        assert!(
+            std::sync::Arc::ptr_eq(&cache, &currency),
+            "currency and splice resolve one DomainCache"
+        );
+
+        let fs_root = ::fs::WorkspaceRoot(canonical.clone());
+        let out = wire_serve::write::splice_with_mints(
+            &fs_root,
+            None,
+            &splice_args("notes/plan.md", "August", "w1"),
+            &[],
+            wire_serve::write::Mints::default(),
+            Some(&cache),
+        )
+        .expect("daemon-cache splice");
+        let frame = out.committed.expect("real splice commits");
+
+        let again = reg.domain_cache(&canonical);
+        assert!(
+            std::sync::Arc::ptr_eq(&cache, &again),
+            "the resident memo is still the same Arc after the splice"
+        );
+        let overlaid = {
+            let mut memo = cache.lock().unwrap();
+            memo.overlay_root().expect("overlay after splice")
+        };
+        assert_eq!(
+            overlaid.0, frame.delta.root_after.0,
+            "the currency memo carries the commit's own overlay"
+        );
+    }
+
+    /// Quality gate: injected watcher overflow makes the next guarded write
+    /// see Untrusted and full-reobserve (absorb) on that same cache.
+    #[test]
+    fn overflow_makes_the_next_guarded_write_reobserve_on_the_same_cache() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let plan = plan_page("August");
+        let other = plan_page("still");
+        let ws = write_ws(
+            home.path(),
+            &[("notes/plan.md", &plan), ("notes/other.md", &other)],
+        );
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.warm_or_build(&ws).unwrap();
+        let _ = reg.currency_root(&canonical).unwrap();
+
+        assert!(reg.rescan(&canonical, crate::RescanCause::Overflow));
+        let cache = reg.domain_cache(&canonical);
+        assert!(
+            matches!(
+                cache.lock().unwrap().guard_currency(),
+                ::fs::stable::GuardCurrency::Untrusted { .. }
+            ),
+            "the sweep-rung apply leaves the loss unabsorbed"
+        );
+        let sweeps_before = cache.lock().unwrap().sweeps();
+
+        let fs_root = ::fs::WorkspaceRoot(canonical.clone());
+        wire_serve::write::splice_with_mints(
+            &fs_root,
+            None,
+            &splice_args("notes/plan.md", "August", "w1"),
+            &[],
+            wire_serve::write::Mints::default(),
+            Some(&cache),
+        )
+        .expect("degrade splice");
+
+        let (sweeps_after, currency) = {
+            let memo = cache.lock().unwrap();
+            (memo.sweeps(), memo.guard_currency())
+        };
+        assert!(
+            sweeps_after > sweeps_before,
+            "Untrusted degrades to a full observe on the daemon cache"
+        );
+        assert_eq!(currency, ::fs::stable::GuardCurrency::Trusted);
+        assert!(
+            std::sync::Arc::ptr_eq(&cache, &reg.domain_cache(&canonical)),
+            "the absorb landed on the same cache currency still holds"
+        );
+    }
+
+    /// Quality gate: a warm splice after a feed-patched dirty set does not
+    /// stat-sweep untouched members.
+    #[test]
+    fn a_warm_splice_after_a_feed_patch_does_not_stat_sweep() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let plan = plan_page("August");
+        let other = plan_page("still");
+        let ws = write_ws(
+            home.path(),
+            &[
+                ("notes/plan.md", &plan),
+                ("notes/other.md", &other),
+                ("notes/a.md", "# A\n"),
+                ("notes/b.md", "# B\n"),
+                ("notes/c.md", "# C\n"),
+                ("notes/d.md", "# D\n"),
+            ],
+        );
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.warm_or_build(&ws).unwrap();
+        let _ = reg.currency_root(&canonical).unwrap();
+
+        rewrite(&canonical, "notes/a.md", "# A moved\n");
+        assert!(reg.note_dirty(&canonical, &[PathBuf::from("notes/a.md")]));
+        let cache = reg.domain_cache(&canonical);
+        let (sweeps_before, stats_before) = {
+            let memo = cache.lock().unwrap();
+            assert_eq!(memo.guard_currency(), ::fs::stable::GuardCurrency::Trusted);
+            (memo.sweeps(), memo.member_stats())
+        };
+
+        let fs_root = ::fs::WorkspaceRoot(canonical.clone());
+        wire_serve::write::splice_with_mints(
+            &fs_root,
+            None,
+            &splice_args("notes/plan.md", "August", "w1"),
+            &[],
+            wire_serve::write::Mints::default(),
+            Some(&cache),
+        )
+        .expect("warm splice");
+
+        let (sweeps_after, stats_after) = {
+            let memo = cache.lock().unwrap();
+            (memo.sweeps(), memo.member_stats())
+        };
+        assert_eq!(
+            sweeps_after, sweeps_before,
+            "Trusted overlay after a feed patch does not start a door-entry sweep"
+        );
+        assert_eq!(
+            stats_after, stats_before,
+            "untouched members are not re-stat'd"
+        );
+    }
 }
