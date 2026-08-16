@@ -3577,14 +3577,19 @@ pub fn relative_respelling(root: &fs::WorkspaceRoot, path: &str) -> Option<Strin
 
 /// The §5.1 world guard, shared by `create`/`remove`: refuse `root_mismatch` if
 /// a supplied `if_root` no longer matches the ambient root (the plan is stale).
+/// A value that is not a premise token at all refuses `bad_request` first
+/// (§5.7's malformed arm) — comparing it would claim the world moved.
 fn world_guard(if_root: Option<&Root>, root_before: &Root) -> Result<(), Box<ErrorBody>> {
-    if let Some(expected) = if_root
-        && *expected != *root_before
-    {
-        let mut e = ErrorBody::new(ErrorCode::RootMismatch);
-        e.expected = Some(NodeRev(expected.0.clone()));
-        e.actual = Some(NodeRev(root_before.0.clone()));
-        return Err(Box::new(e));
+    if let Some(expected) = if_root {
+        if let Some(refusal) = malformed_value(None, &expected.0) {
+            return Err(refusal);
+        }
+        if *expected != *root_before {
+            let mut e = ErrorBody::new(ErrorCode::RootMismatch);
+            e.expected = Some(NodeRev(expected.0.clone()));
+            e.actual = Some(NodeRev(root_before.0.clone()));
+            return Err(Box::new(e));
+        }
     }
     Ok(())
 }
@@ -3592,7 +3597,9 @@ fn world_guard(if_root: Option<&Root>, root_before: &Root) -> Result<(), Box<Err
 /// The §5.4 premise checks, widest-first (merkle-spec §7 ordering: root
 /// premises, then folders shallowest-first, then file leaves) — the first
 /// failing premise refuses the batch whole, and a failing wider premise
-/// skips narrower work. Root premises (`scope: None`) compare against
+/// skips narrower work. Before any compare, every supplied value passes
+/// §5.7's grammar wall ([`malformed_value`]) — input faults answer first,
+/// like the §5.4 pair faults. Root premises (`scope: None`) compare against
 /// `root_before` and refuse in the v2 shape (no `scope` field); scoped
 /// premises resolve through the door's resident tree ([`fs::DomainCache::
 /// scope_token`]) and their refusal carries `scope` (§5.7).
@@ -3606,6 +3613,19 @@ fn premise_guard(
     }
     let mut ordered: Vec<&crate::guard::Premise> = premises.iter().collect();
     ordered.sort_by_key(|p| p.scope.as_ref().map_or(0, |s| 1 + s.components().count()));
+    // §5.7's malformed arm, whole-list first: an ungrammatical premise VALUE
+    // is an input fault — like the §5.4 pair faults it refuses before any
+    // fold is compared, or token inequality would tell a moved-world story
+    // about a damaged spelling (one leading space renders invisible in the
+    // expected/live pair — dogfood break #7).
+    for premise in &ordered {
+        if let crate::guard::PremiseValue::Token(t) = &premise.value {
+            let scope = premise.scope.as_ref().map(|s| s.to_string_lossy());
+            if let Some(refusal) = malformed_value(scope.as_deref(), t) {
+                return Err(refusal);
+            }
+        }
+    }
     for premise in ordered {
         match &premise.scope {
             // The root premise as a list entry: the v2 world guard verbatim.
@@ -3671,6 +3691,20 @@ fn premise_guard(
         }
     }
     Ok(())
+}
+
+/// §5.7's malformed arm: `Some(bad_request)` when a premise VALUE is neither
+/// the reserved `absent` (§5.6) nor a grammatical `Root`-family token
+/// ([`model::parse_root`]). The teaching debug-quotes the raw bytes so
+/// invisible damage — a leading space, the measured case — shows; version
+/// families are untouched (a grammatical retired/future token parses).
+fn malformed_value(scope: Option<&str>, raw: &str) -> Option<Box<ErrorBody>> {
+    if raw == "absent" || model::parse_root(raw).is_some() {
+        return None;
+    }
+    Some(bad_request(wire::malformed_premise_value_teaching(
+        scope, raw,
+    )))
 }
 
 /// A scoped `fingerprint_mismatch` (§5.7): expected/actual plus the premise's

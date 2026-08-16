@@ -80,7 +80,10 @@ pub struct Premise {
 /// absence (§5.6 — the reserved non-hex `absent`, a value, not an error).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PremiseValue {
-    /// A spelled token (`b3…:<64hex>`) — equality-compared, opaque.
+    /// A spelled token (`b3…:<64hex>`) — equality-compared, after §5.7's
+    /// grammar wall in `write.rs`: a value that parses as neither a
+    /// `Root`-family token nor `absent` refuses `bad_request` there, never
+    /// `fingerprint_mismatch`.
     Token(String),
     /// The reserved `absent` value: the premise holds iff no node exists at
     /// the scope.

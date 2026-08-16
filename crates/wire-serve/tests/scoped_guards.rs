@@ -389,6 +389,11 @@ fn a_spaced_token_refuses_as_bad_input_not_as_a_moved_premise() {
         ErrorCode::BadRequest,
         "an input defect, not a moved premise: {err:?}"
     );
+    assert_eq!(
+        err.recovery,
+        wire::Recovery::Fix,
+        "recovery is fix — never the re-read/re-plan loop"
+    );
     let message = err.message.expect("teaching");
     assert!(
         message.contains(&format!("{spaced:?}")),
