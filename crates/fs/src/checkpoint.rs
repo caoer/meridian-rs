@@ -80,7 +80,7 @@ use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 
 use crate::domain::Domain;
-use crate::stable::FsStamp;
+use crate::stable::{self, FsStamp};
 use crate::{DomainCache, LeafSeen, StatKey};
 
 /// The format tag. Bump on any shape change: an alien tag is a
@@ -187,6 +187,25 @@ impl fmt::Display for Discard {
 #[must_use]
 pub fn serialize(cache: &mut DomainCache, identity: &SaveIdentity) -> Option<Vec<u8>> {
     let domain_version = cache.domain_seen.as_ref()?.version();
+    // The §6.2 smudge (`decisions/2026-08-16-gate11-stat-floor.md` Repair 2,
+    // format consequence). `StatKey` alone can miss a same-instant, same-size,
+    // in-place write, so a row that is RACILY CLEAN at save — its recorded
+    // stamps inside one calibrated granularity unit of its own observation
+    // watermark — must never be trusted on a stat-match after restore.
+    //
+    // Of the two mechanisms the law allows, this format takes the SMUDGE
+    // (git's): such rows serialize with their watermark spoiled, so the
+    // restored memo re-reads them whatever the restoring process measures.
+    // The alternative — persisting the watermark plus the granularity unit —
+    // would leave the decision to a granule measured by a different process;
+    // spoiling decides it here, with the evidence that produced the row.
+    //
+    // No calibration means no granule to judge racy-ness with, so every row
+    // spoils: the §6.2 floor is never silent trust.
+    let granule = match &cache.calibration {
+        Some(stable::Calibration::Measured { granule_ns }) => Some(*granule_ns),
+        _ => None,
+    };
     let tree_root = cache.law2_fingerprint();
     let mut payload: Vec<u8> = Vec::with_capacity(256 + cache.leaves.len() * 128);
     payload.extend_from_slice(b"workspace ");
@@ -211,9 +230,13 @@ pub fn serialize(cache: &mut DomainCache, identity: &SaveIdentity) -> Option<Vec
             return None;
         }
         let (dev, ino, size, mtime, ctime) = entry.key.raw_parts();
+        // Spoil on save when the row is racily clean, or when nothing
+        // calibrated says otherwise (see the smudge note above).
         let seen = match entry.seen {
-            Some((s, ns)) => format!("{s}.{ns}"),
-            None => "-".to_owned(),
+            Some(stamp) if granule.is_some_and(|g| !stable::racy(&entry.key, stamp, g)) => {
+                format!("{}.{}", stamp.0, stamp.1)
+            }
+            _ => "-".to_owned(),
         };
         payload.extend_from_slice(
             format!(

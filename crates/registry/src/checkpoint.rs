@@ -76,11 +76,21 @@ pub struct CheckpointReceipt {
     /// set — and is 0 on the journal-covered arm, where the law demands zero
     /// unchanged members statted.
     pub stats_before_serve: u64,
-    /// Member byte reads paid before this memo was published: the movers, and
-    /// nothing else. Each read is hashed exactly once by construction
-    /// (`model::leaf_digest` on the bytes just read), so this is the hash
-    /// count too.
+    /// Member byte reads paid before this memo was published. Each read is
+    /// hashed exactly once by construction (`model::leaf_digest` on the bytes
+    /// just read), so this is the hash count too. The law's equation
+    /// (`decisions/2026-08-16-gate11-stat-floor.md`, Repair 2):
+    /// `reads = hashes = movers + watermark-window re-reads`.
     pub reads_before_serve: u64,
+    /// Rows re-read because the §6.2 watermark refused them even though their
+    /// `StatKey` matched — the watermark-window term of the equation above,
+    /// published because the law requires it (typically zero: it is bounded by
+    /// writes landing in the final granularity instant before the save).
+    ///
+    /// These are the rows this format PRE-SPOILED at save (`fs::checkpoint`'s
+    /// smudge), which is how a same-instant same-size in-place write cannot
+    /// slip through a stat-match after a restore.
+    pub watermark_rereads_before_serve: u64,
 }
 
 /// The checkpoint file for `workspace`'s drawer.
@@ -194,6 +204,7 @@ pub(crate) fn restore(
                     warm_rebaseline: None,
                     stats_before_serve: 0,
                     reads_before_serve: replayed,
+                    watermark_rereads_before_serve: 0,
                 },
                 feed::Applied::Reset => {
                     // A member the journal NAMED could not be derived, and
@@ -230,6 +241,7 @@ pub(crate) fn restore(
                         warm_rebaseline: Some(format!("rescan ladder took over: {}", cause.name())),
                         stats_before_serve: 0,
                         reads_before_serve: 0,
+                        watermark_rereads_before_serve: 0,
                     }
                 }
             }
@@ -261,6 +273,7 @@ pub(crate) fn restore(
                 warm_rebaseline: Some(label.to_owned()),
                 stats_before_serve: 0,
                 reads_before_serve: 0,
+                watermark_rereads_before_serve: 0,
             }
         }
     };
@@ -309,12 +322,15 @@ fn barrier(
     }
     receipt.stats_before_serve = cache.member_stats();
     receipt.reads_before_serve = cache.leaves_read();
+    receipt.watermark_rereads_before_serve = cache.watermark_rereads();
     eprintln!(
-        "checkpoint: pre-serve sweep complete for {} — {} member stat(s), {} mover(s) read \
-         and hashed, zero unchanged members read; the rows may now serve",
+        "checkpoint: pre-serve sweep complete for {} — {} member stat(s), {} read+hash \
+         ({} of them watermark-window re-reads); every other row cost zero bytes, and the \
+         rows may now serve",
         workspace.display(),
         receipt.stats_before_serve,
-        receipt.reads_before_serve
+        receipt.reads_before_serve,
+        receipt.watermark_rereads_before_serve
     );
     Some((cache, receipt))
 }
@@ -509,12 +525,16 @@ mod tests {
             receipt.stats_before_serve, 3,
             "one stat per member, and the sweep completed BEFORE this memo was reachable"
         );
-        // reads = hashes = movers; zero unchanged members read or hashed.
-        // (Each read is hashed exactly once by construction — the digest is
-        // taken from the bytes just read — so one counter gates both.)
+        // reads = hashes = movers + watermark-window re-reads (Repair 2).
+        // Each read is hashed exactly once by construction, so one counter
+        // gates both. The EQUATION is asserted rather than a bare number
+        // because the re-read term is real, not hypothetical: a row written in
+        // the final granularity instant before the save is pre-spoiled by the
+        // smudge and re-read here, and a coarse backend makes that reachable.
         assert_eq!(
-            receipt.reads_before_serve, 1,
-            "only the mover paid a read+hash; the two unchanged members paid none"
+            receipt.reads_before_serve,
+            1 + receipt.watermark_rereads_before_serve,
+            "exactly one mover, plus whatever the watermark window forced — and nothing else"
         );
 
         // No cold rebuild: the sweep re-derived nothing it did not have to,
