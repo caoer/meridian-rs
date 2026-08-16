@@ -198,7 +198,7 @@ fn chaos_rescans_carry_named_causes_and_the_watcher_stays_up() {
 }
 
 /// §7(d) / codex gate 10 shape, hermetic: after baseline, a quiet workspace
-/// advances neither sweeps nor member_stats. There is no timer on the
+/// advances neither sweeps nor `member_stats`. There is no timer on the
 /// ladder — a live watcher sitting idle does not schedule work. The live
 /// ten-minute / 100k-member bar is the acceptance run of these same
 /// counters ([`ten_quiet_minutes_moves_no_sweep_counters`]).
@@ -253,7 +253,7 @@ fn ten_quiet_minutes_moves_no_sweep_counters() {
         let g = cache.lock().unwrap();
         (g.sweeps(), g.member_stats())
     };
-    std::thread::sleep(Duration::from_secs(10 * 60));
+    std::thread::sleep(Duration::from_mins(10));
     let (sweeps1, stats1) = {
         let cache = reg.domain_cache(&canonical);
         let g = cache.lock().unwrap();
