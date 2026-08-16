@@ -5620,10 +5620,13 @@ mod stable_trust_tests {
         std::os::unix::fs::symlink(outside.path(), &notes).expect("symlink");
         let err = super::open_nofollow(&tmp.path().join("notes/x.md"))
             .expect_err("intermediate symlink must refuse");
-        assert_eq!(
-            err.raw_os_error(),
-            Some(libc::ELOOP),
-            "directory-fd openat walk refuses a symlink component with ELOOP: {err}"
+        // Linux: O_DIRECTORY|O_NOFOLLOW on a symlink is ENOTDIR (the
+        // symlink inode is not a directory). Darwin: ELOOP. Either is a
+        // refusal — the walk did not follow.
+        let errno = err.raw_os_error();
+        assert!(
+            errno == Some(libc::ELOOP) || errno == Some(libc::ENOTDIR),
+            "directory-fd openat walk refuses a symlink component (ELOOP or ENOTDIR): {err}"
         );
 
         std::fs::write(tmp.path().join("real.md"), b"ok\n").expect("real");
