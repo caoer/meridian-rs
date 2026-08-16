@@ -92,9 +92,21 @@ mrd read <PATH>[#FRAG] [--section SEL]
  with repeated selectors collapsed and the collapse
  stated. The section map is never word-bounded — it
  prices every section (`words`) before you ask for one,
- and it is the way back in from a refusal
+ and it is the way back in from a refusal. When the
+ daemon's hello serves the `scoped-guards` cap
+ (wire-contract §5.4 family), a `--json` read also
+ captures the read file's scoped token through the
+ §4.7 mint arm — one extra `fingerprint {scope}`
+ exchange on the same connection — and carries the
+ mint body as the frame's `mint` key beside `read`;
+ the wire `read` body's own `fingerprint` stays the
+ ambient world token (§5.1, unchanged). No cap, the
+ human face, or the in-process degrade: no mint call,
+ frame byte-identical to before. A mint the daemon
+ refuses after advertising the family is a loud
+ refusal, never a silent omission
 mrd put <PATH> [--dry | --validate] [--force] [--actor A] [--now T]
- [--if-fingerprint FP] [--receipt PATH#ANCHOR] [--json]
+ [--if-fingerprint FP] [--scope PATH] [--receipt PATH#ANCHOR] [--json]
  the batch write: the edits ride stdin as a BARE JSON
  array — the VALUE of the wire §4.4 `edits` field, not
  the request object around it (id / op / path are
@@ -104,7 +116,18 @@ mrd put <PATH> [--dry | --validate] [--force] [--actor A] [--now T]
  the next call auto-spawns it). Scripts that used to
  write with no daemon now need the daemon up. A
  guardless put is a wire client: fingerprint-or-force
- applies (`--force` or `if_node_rev`). The face teaches
+ applies (`--force` or `if_node_rev`). `--scope PATH`
+ narrows the `--if-fingerprint` premise to the named
+ node (wire-contract §5.4): FP is then that node's
+ scoped token from the §4.7 mint arm, not the world
+ value — a disjoint sibling's birth no longer refuses
+ the put. The pair law is the CLI's own wall: `--scope`
+ without `--if-fingerprint` is half a premise, exit 2.
+ Cap-aware: when the connected daemon's hello does not
+ serve `scoped-guards`, a scoped put refuses with a
+ teaching at exit 2 before any engine write — the
+ daemon cannot check the premise, so nothing is sent.
+ The face teaches
  the grammar itself: `--help` states the target
  shapes ({"hpath":[…]} / {"anchor":"…"} / {"fm_key":"…"})
  and the nested edit shapes ({"match":{"old","new"}} /

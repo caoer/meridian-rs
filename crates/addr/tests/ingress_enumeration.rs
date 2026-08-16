@@ -58,7 +58,18 @@ const PINNED: &[(&str, &str, Class)] = &[
     ),
     // ---- INGRESS 2: CLI argv (`String` in, `String` field out) -------------
     ("crates/mrd/src/pin_cmd.rs", "fn parse", Class::CliArgv),
-    ("crates/mrd/src/put_cmd.rs", "fn parse", Class::CliArgv),
+    // `put --receipt PATH#ANCHOR`. This door used to live in `put_cmd`'s
+    // `fn parse`; it moved into its own function when `fn parse` grew past
+    // `clippy::too_many_lines` on the `--scope` arm. The row moved WITH it —
+    // the scanner attributes a needle to its enclosing function, so naming
+    // both would claim a door that no longer exists (this list fails in that
+    // direction too, which is what makes a pin a classification rather than
+    // a silencer).
+    (
+        "crates/mrd/src/put_cmd.rs",
+        "fn parse_receipt",
+        Class::CliArgv,
+    ),
     ("crates/mrd/src/read_cmd.rs", "fn parse", Class::CliArgv),
     // `mrd script --receipt PATH#ANCHOR` — the same receipt-address door
     // `put_cmd` opens, on the verb that commits a script's arms.
