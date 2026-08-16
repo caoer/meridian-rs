@@ -502,6 +502,21 @@ pub struct SpliceFile {
     pub plan_edits: Vec<PlanEdit>,
 }
 
+/// One §5.4 premise-list entry: `{scope?, scope_bytes?, fingerprint}`.
+/// Exactly one of `scope`/`scope_bytes`, or neither for the root premise;
+/// `fingerprint` is required (a token or the reserved `absent`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GuardEntry {
+    /// UTF-8 `Path` noun. Mutually exclusive with [`Self::scope_bytes`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<Path>,
+    /// Base64url over the raw path bytes. Mutually exclusive with [`Self::scope`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_bytes: Option<String>,
+    /// A spelled `Root`-family token, or the reserved non-hex `absent`.
+    pub fingerprint: String,
+}
+
 /// The op vocabulary. Tag field is `op` (v2 §3.1).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -604,6 +619,15 @@ pub enum Op {
         /// skips it, so the frozen v2 request bytes never change.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pin: Option<PinSpec>,
+        /// §5.4 one-premise sugar: narrows `if_root` to this PATH node.
+        /// Pair with `if_root`; `scope` without the token is `bad_request`.
+        /// `scope_bytes` is not a top-level splice field (§5.4 matrix).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<Path>,
+        /// §5.4 premise list. Sugar + list is legal: the sugar desugars to
+        /// one more entry. Empty serializes away so frozen v2 bytes stand.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        guards: Vec<GuardEntry>,
     },
     /// The §4.4 SET form (dotted cap `splice.set`, v3-only at decode): the
     /// same `"op":"splice"` tag carrying `files[]` instead of `path` +
@@ -640,6 +664,14 @@ pub enum Op {
         dry: Option<bool>,
         #[serde(skip_serializing_if = "Option::is_none")]
         force: Option<bool>,
+        /// §5.4 one-premise sugar on the set form — same pair law as the
+        /// single form. World-grain `if_root` without `scope` covers every
+        /// member; a scoped sugar is one more list entry.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<Path>,
+        /// §5.4 premise list on the set form.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        guards: Vec<GuardEntry>,
     },
     /// The birth op (v3-only at dispatch): births one file through the same
     /// guarded door every in-process caller uses
@@ -733,10 +765,17 @@ pub enum Op {
         query: String,
     },
     /// v2 §4.7 integrity read: the current workspace root cursor + `seq`.
-    /// No parameters — the root is world-grain (the only root guard is
-    /// `splice.if_root`, §5.1; the v1 scoped/`path` variant is gone with
-    /// `guard`).
-    Root,
+    /// Bare (both scope fields absent) is the world mint, byte-identical to
+    /// v2. Under the `scoped-guards` cap the same tag takes optional `scope`
+    /// (a [`Path`]) or `scope_bytes` (base64url raw path) — exactly one; both
+    /// is `bad_request` (§4.7 mint-pair). The v1 `path`-on-root guard is
+    /// still gone; this is the mint arm, not a write guard.
+    Root {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<Path>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope_bytes: Option<String>,
+    },
     /// v2 §4.7 replay. The response carries Delta batches byte-identical to
     /// the live notification frames (§7.3).
     Diff { from_root: Root, to_root: Root },
@@ -889,6 +928,14 @@ pub enum Op {
         /// holds no default (no endpoint = the builtin refuses "unbound").
         #[serde(skip_serializing_if = "Option::is_none")]
         token_count_endpoint: Option<String>,
+        /// §5.4 one-premise sugar on `script`. Inapplicable in effects mode
+        /// (the no-guard ruling). Pair law matches splice.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<Path>,
+        /// §5.4 premise list on `script`. Caller premises are widening only
+        /// (run-plane §4.6); the commit's authority is the touch set.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        guards: Vec<GuardEntry>,
     },
     /// Page-task execution over the wire (§ A.8, v3-only at dispatch): a
     /// LIST of targets on the bound workspace, run sequentially in list
@@ -1684,6 +1731,13 @@ pub enum ResponseBody {
         seq: u64,
         #[serde(skip_serializing_if = "Option::is_none")]
         tree_instance: Option<String>,
+        /// Echo of a scoped mint's `scope` (§4.7 desync guard). Absent on the
+        /// world mint so the frozen `{root, seq}` body stays byte-identical.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<Path>,
+        /// Echo of a scoped mint's `scope_bytes`. Absent on the world mint.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope_bytes: Option<String>,
     },
     /// v2 §4.7/§7.3 replay: the byte-identical Delta objects that were (or
     /// would have been) emitted as live notifications between the two roots —
@@ -2395,6 +2449,56 @@ pub fn sub_half_cursor_teaching() -> &'static str {
     "this sub carries tree_instance without from_seq — half a cursor names \
      no position. Send both to resume, or neither to anchor live at the \
      acked tip."
+}
+
+/// The §8.2 register-law teaching for an un-negotiated guard-family field
+/// (`scope` / `guards` / `scope_bytes` on a session that did not take
+/// `scoped-guards`). `<field>` filled.
+#[must_use]
+pub fn unnegotiated_family_teaching(field: &str) -> String {
+    format!(
+        "this session did not negotiate scoped-guards, so {field} cannot ride \
+         this request. Reconnect and negotiate the scoped-guards cap in hello, \
+         or drop the field — the v2 forms (root if_fingerprint, if_node_rev) \
+         are fully served without it."
+    )
+}
+
+/// The §8.2 register-law teaching for a broken premise pair. `detail` is
+/// one of the three named faults (no fingerprint; both spellings; sugar
+/// `scope` without `if_fingerprint`).
+#[must_use]
+pub fn broken_premise_pair_teaching(detail: &str) -> String {
+    format!(
+        "{detail}. A premise is a token plus at most ONE scope spelling — \
+         the token is required, the spelling is not: a bare {{fingerprint}} \
+         is the legal root premise. To scope a premise, mint the pair \
+         together (fingerprint{{scope: \"<scope>\"}}) and send both; to \
+         guard the world, send the token alone."
+    )
+}
+
+/// The §8.2 register-law teaching for both mint spellings on one
+/// `fingerprint` request (bounce-2 closure).
+#[must_use]
+pub fn mint_pair_teaching() -> &'static str {
+    "this mint names its node twice — scope and scope_bytes in one \
+     fingerprint request. A mint names ONE node: keep the one spelling \
+     that names your path (scope for UTF-8 names, scope_bytes for raw \
+     bytes) and re-send; both absent mints the root."
+}
+
+/// The §8.2 register-law teaching for a guard-family field on an
+/// unguarded door (`run`, script-with-effects).
+#[must_use]
+pub fn effects_door_teaching(field: &str) -> String {
+    format!(
+        "{field} was supplied on an unguarded door: run and script-with-effects \
+         hold no premise — a guard here would promise what execution cannot \
+         keep (no-guard ruling). Drop the guard fields; to guard content \
+         writes, use splice, or script without effects (its commit premise is \
+         the engine-computed touch set)."
+    )
 }
 
 /// The B-01 register-law teaching for a dead-instance cursor —

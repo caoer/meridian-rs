@@ -3,7 +3,7 @@
 //! with `flatten` — a dropped CAS guard corrupts data. Unarmed ops → `unknown_op`.
 
 use serde_json::{Map, Value};
-use wire::{ErrorBody, ErrorCode, HpathSeg, Op, Path, PlanEdit, SecRef};
+use wire::{ErrorBody, ErrorCode, GuardEntry, HpathSeg, Op, Path, PlanEdit, SecRef};
 
 use crate::bad_request;
 use crate::rev::Rev;
@@ -17,7 +17,9 @@ pub(crate) const SPLICE_V2_FIELDS: [&str; 8] = [
 ];
 
 /// v3 `splice` fields: one owner of the set; amendments = V3 \\ V2.
-pub(crate) const SPLICE_V3_FIELDS: [&str; 11] = [
+/// `scope` + `guards` ride the `scoped-guards` family cap (§5.4), not
+/// dotted `splice.scope` / `splice.guards` (one family, one flag).
+pub(crate) const SPLICE_V3_FIELDS: [&str; 13] = [
     "path",
     "actor",
     "now",
@@ -29,7 +31,14 @@ pub(crate) const SPLICE_V3_FIELDS: [&str; 11] = [
     "plan_edits",
     "pin",
     "files",
+    "scope",
+    "guards",
 ];
+
+/// Guard-family fields that refuse un-negotiated on a frozen v2 session
+/// (§3.2 / §5.4 / §8.2). `scope_bytes` is top-level on the mint door only;
+/// on splice/script it rides a `guards[]` entry.
+const FAMILY_FIELDS: [&str; 3] = ["scope", "guards", "scope_bytes"];
 
 /// Which laws one decode pass enforces.
 ///
@@ -130,9 +139,22 @@ pub fn decode(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody>> 
             })
         }
         "root" => {
-            // v2 §4.7: no parameters — root is world-grain.
-            check_fields(obj, op, &[])?;
-            Ok(Op::Root)
+            // Bare = world mint (v2, no parameters). Under v3 the mint arm
+            // admits `scope` / `scope_bytes` (§4.7). Un-negotiated use on a
+            // frozen v2 session refuses with the family teaching, not
+            // "unknown field" — the field is known law, not a typo.
+            refuse_unnegotiated_family(obj, rev)?;
+            if rev == Rev::V3 {
+                check_fields(obj, op, &["scope", "scope_bytes"])?;
+            } else {
+                check_fields(obj, op, &[])?;
+            }
+            let scope = opt_path(obj, op, "scope")?;
+            let scope_bytes = opt_str(obj, op, "scope_bytes")?;
+            if scope.is_some() && scope_bytes.is_some() {
+                return Err(bad_request(wire::mint_pair_teaching()));
+            }
+            Ok(Op::Root { scope, scope_bytes })
         }
         "links" => {
             // v2 §4.6: both optional; absent path = whole-corpus edges.
@@ -216,7 +238,7 @@ fn decode_walk(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
 /// (2026-08-13); `token_count_endpoint` is the `token_count` ruling's leg-B
 /// field (same day) — the harness measuring endpoint, riding exactly when
 /// the `token_count` effect is declared.
-pub(crate) const SCRIPT_FIELDS: [&str; 12] = [
+pub(crate) const SCRIPT_FIELDS: [&str; 14] = [
     "source",
     "args",
     "files",
@@ -229,6 +251,8 @@ pub(crate) const SCRIPT_FIELDS: [&str; 12] = [
     "effects",
     "invocation",
     "token_count_endpoint",
+    "scope",
+    "guards",
 ];
 
 /// The closed effect-builtin set (§ A.7 effects paragraph). `mutex` is
@@ -341,6 +365,13 @@ fn decode_script(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
     let dry = opt_bool(obj, op, "dry")?;
     let if_root = opt_str(obj, op, "if_root")?.map(wire::Root);
     let expect_armed = opt_str(obj, op, "expect_armed")?;
+    let scope = opt_path(obj, op, "scope")?;
+    let guards = decode_guards(obj.get("guards"))?;
+    if scope.is_some() && if_root.is_none() {
+        return Err(bad_request(wire::broken_premise_pair_teaching(
+            "scope without if_fingerprint",
+        )));
+    }
     if !effects.is_empty() {
         if dry == Some(true) {
             return Err(bad_request(
@@ -349,10 +380,13 @@ fn decode_script(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
             ));
         }
         if if_root.is_some() {
-            return Err(bad_request(
-                "`if_fingerprint` has no meaning in effects mode — a live \
-                 program reads its own present; there is no premise to guard",
-            ));
+            return Err(bad_request(wire::effects_door_teaching("if_fingerprint")));
+        }
+        if scope.is_some() {
+            return Err(bad_request(wire::effects_door_teaching("scope")));
+        }
+        if !guards.is_empty() {
+            return Err(bad_request(wire::effects_door_teaching("guards")));
         }
         if expect_armed.is_some() {
             return Err(bad_request(
@@ -417,6 +451,8 @@ fn decode_script(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
         effects,
         invocation,
         token_count_endpoint,
+        scope,
+        guards,
     })
 }
 
@@ -733,6 +769,7 @@ fn decode_remove(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
 /// `now` RFC 3339 validated, never generated (§9).
 fn decode_splice(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody>> {
     let op = "splice";
+    refuse_unnegotiated_family(obj, rev)?;
     if rev == Rev::V3 {
         check_fields(obj, op, &SPLICE_V3_FIELDS)?;
     } else {
@@ -784,17 +821,27 @@ fn decode_splice(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody
         }
         None => Vec::new(),
     };
+    let if_root = opt_str(obj, op, "if_root")?.map(wire::Root);
+    let scope = opt_path(obj, op, "scope")?;
+    let guards = decode_guards(obj.get("guards"))?;
+    if scope.is_some() && if_root.is_none() {
+        return Err(bad_request(wire::broken_premise_pair_teaching(
+            "scope without if_fingerprint",
+        )));
+    }
     Ok(Op::Splice {
         path: req_path(obj, op, "path")?,
         actor: opt_str(obj, op, "actor")?,
         now,
         receipt: obj.get("receipt").map(decode_receipt).transpose()?,
-        if_root: opt_str(obj, op, "if_root")?.map(wire::Root),
+        if_root,
         dry: opt_bool(obj, op, "dry")?,
         force: opt_bool(obj, op, "force")?,
         edits,
         plan_edits,
         pin,
+        scope,
+        guards,
     })
 }
 
@@ -859,14 +906,24 @@ fn decode_splice_set(
             plan_edits,
         });
     }
+    let if_root = opt_str(obj, "splice", "if_root")?.map(wire::Root);
+    let scope = opt_path(obj, "splice", "scope")?;
+    let guards = decode_guards(obj.get("guards"))?;
+    if scope.is_some() && if_root.is_none() {
+        return Err(bad_request(wire::broken_premise_pair_teaching(
+            "scope without if_fingerprint",
+        )));
+    }
     Ok(Op::SpliceSet {
         files,
         actor: opt_str(obj, "splice", "actor")?,
         now,
         receipt: obj.get("receipt").map(decode_receipt).transpose()?,
-        if_root: opt_str(obj, "splice", "if_root")?.map(wire::Root),
+        if_root,
         dry: opt_bool(obj, "splice", "dry")?,
         force: opt_bool(obj, "splice", "force")?,
+        scope,
+        guards,
     })
 }
 
@@ -1173,6 +1230,63 @@ fn decode_edit_shape(v: &Value) -> Result<wire::EditShape, Box<ErrorBody>> {
             "`edit` must carry exactly one of `match`/`put` as an object",
         )),
     }
+}
+
+/// Frozen-v2 sessions never negotiate `scoped-guards`. A family field on
+/// that session is un-negotiated use, not an unknown typo — the teaching
+/// names the cap, not the field-wall list.
+fn refuse_unnegotiated_family(obj: &Map<String, Value>, rev: Rev) -> Result<(), Box<ErrorBody>> {
+    if rev == Rev::V3 {
+        return Ok(());
+    }
+    for field in FAMILY_FIELDS {
+        if obj.contains_key(field) {
+            return Err(bad_request(wire::unnegotiated_family_teaching(field)));
+        }
+    }
+    Ok(())
+}
+
+/// Decode `guards[]`: each entry `{scope?, scope_bytes?, fingerprint}`.
+/// `fingerprint` is required; exactly one scope spelling, or neither for
+/// the root premise. Both spellings refuse the broken-pair teaching.
+fn decode_guards(v: Option<&Value>) -> Result<Vec<GuardEntry>, Box<ErrorBody>> {
+    let Some(v) = v else {
+        return Ok(Vec::new());
+    };
+    let Value::Array(items) = v else {
+        return Err(bad_request(
+            "`guards` must be an array of `{fingerprint, scope?, scope_bytes?}` entries",
+        ));
+    };
+    let mut out = Vec::with_capacity(items.len());
+    for (i, item) in items.iter().enumerate() {
+        let Value::Object(entry) = item else {
+            return Err(bad_request(format!(
+                "`guards[{i}]` must be an object with `fingerprint` and at most one scope spelling"
+            )));
+        };
+        check_fields(entry, "guards[]", &["scope", "scope_bytes", "fingerprint"])?;
+        let fingerprint = req_str(entry, "guards[]", "fingerprint")?;
+        if fingerprint.is_empty() {
+            return Err(bad_request(wire::broken_premise_pair_teaching(
+                format!("guards[{i}] carries no fingerprint").as_str(),
+            )));
+        }
+        let scope = opt_path(entry, "guards[]", "scope")?;
+        let scope_bytes = opt_str(entry, "guards[]", "scope_bytes")?;
+        if scope.is_some() && scope_bytes.is_some() {
+            return Err(bad_request(wire::broken_premise_pair_teaching(
+                "both scope and scope_bytes in one premise",
+            )));
+        }
+        out.push(GuardEntry {
+            scope,
+            scope_bytes,
+            fingerprint,
+        });
+    }
+    Ok(out)
 }
 
 /// Strict field wall: any key outside the op's set (+ envelope) refuses by name.

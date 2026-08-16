@@ -1,5 +1,6 @@
-//! The mrd CLIENT half of the `scoped-guards` family (fp-grain PR-3) —
-//! cap-aware and DORMANT until the family flips engine-side.
+//! The mrd CLIENT half of the `scoped-guards` family (fp-grain PR-3 +
+//! PR-4 flip). Cap-aware: `--scope` and the §4.7 mint ride only when
+//! hello advertised the family.
 //!
 //! Law under test (wire-contract §3.2/§5.4/§4.7; ruling
 //! `decisions/2026-08-16-fp-grain-ruling.md` items 3 and 6):
@@ -16,17 +17,10 @@
 //!   `mint` key. The human face never mints; a cap-less hello never mints; the
 //!   `read` body's own `fingerprint` stays the ambient world token (§5.1).
 //!
-//! Harness: the cap-PRESENT half runs against a canned-frame fake daemon (a
-//! `UnixListener` at the sandbox's derived socket path answering the control
-//! protocol and the wire ops, publishing this build's own identity so the 0025
-//! skew law passes) — the REAL engine does not decode the family until the
-//! flip PR, so these tests pin the client's wire behavior, not the engine's.
-//! The DORMANCY half runs against the real in-process `RunningServer`.
-//!
-//! ⚠ Deliberate PR-4 tripwire: when the engine starts advertising
-//! `scoped-guards`, [`put_scope_against_a_capless_daemon_is_taught_exit_2`]
-//! and [`read_json_against_a_capless_daemon_stays_bare`] fail by design —
-//! the flip PR replaces them with the dogfood-verbatim e2e.
+//! Harness: the cap-PRESENT client-shape half still runs against a canned
+//! fake daemon (identity-matched so the 0025 skew law passes). The
+//! dogfood-verbatim acceptance half runs against the real in-process
+//! `RunningServer`, which now advertises `scoped-guards`.
 
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -89,8 +83,7 @@ impl Sandbox {
         std::fs::canonicalize(&ws).expect("canonical ws")
     }
 
-    /// The real in-process daemon, publishing this build's identity — the
-    /// dormancy half: the real engine does not advertise `scoped-guards`.
+    /// The real in-process daemon, publishing this build's identity.
     #[allow(clippy::duration_suboptimal_units)]
     fn real_daemon(&self) -> RunningServer {
         let forever = Duration::from_secs(365 * 24 * 60 * 60);
@@ -491,78 +484,117 @@ fn read_human_never_mints_even_under_the_cap() {
 }
 
 // ---------------------------------------------------------------------------
-// Dormancy against the REAL engine (pre-flip builds)
+// Dogfood against the REAL engine (PR-4 flip)
 // ---------------------------------------------------------------------------
 
-/// ⚠ PR-4 tripwire. Today's real daemon does not advertise `scoped-guards`,
-/// so the scoped put refuses taught and writes nothing. When the family flips
-/// engine-side this test fails by design — the flip PR replaces it with the
-/// dogfood-verbatim e2e (ruling item 4).
+/// Ruling item 4 through adopted mrd: capture the file token, birth a
+/// disjoint sibling, put the untouched file pinned on that token — commits.
 #[test]
-fn put_scope_against_a_capless_daemon_is_taught_exit_2() {
+fn put_scope_survives_a_disjoint_sibling_birth() {
     let sb = sandbox();
     let ws = sb.workspace();
+    std::fs::create_dir_all(ws.join("a")).expect("mkdir");
+    std::fs::write(ws.join("a/target.md"), DOC).expect("seed");
     let _daemon = sb.real_daemon();
-    let before = std::fs::read_to_string(ws.join("doc.md")).expect("before");
 
-    let out = sb.run(
+    let read = sb.run(&ws, &["read", "a/target.md", "--json"], None);
+    assert_eq!(
+        read.status.code(),
+        Some(0),
+        "the capture read serves\nstderr: {}",
+        stderr_of(&read)
+    );
+    let frame: Value = serde_json::from_str(&stdout_of(&read)).expect("--json frame");
+    let token = frame["mint"]["fingerprint"]
+        .as_str()
+        .expect("the serving daemon mints the file token")
+        .to_owned();
+    assert_eq!(
+        frame["mint"]["scope"],
+        json!("a/target.md"),
+        "the mint echoes the read path: {frame}"
+    );
+    assert_ne!(
+        frame["read"]["fingerprint"].as_str(),
+        Some(token.as_str()),
+        "the read body's fingerprint stays the world token (§5.1): {frame}"
+    );
+
+    std::fs::create_dir_all(ws.join("b")).expect("mkdir");
+    std::fs::write(ws.join("b/mover.md"), "# Mover\n\ndisjoint.\n").expect("birth");
+
+    let put = sb.run(
         &ws,
         &[
             "put",
-            "doc.md",
+            "a/target.md",
             "--if-fingerprint",
-            "b3:anything",
+            &token,
             "--scope",
-            "doc.md",
+            "a/target.md",
         ],
         Some(EDIT),
     );
-    let err = stderr_of(&out);
     assert_eq!(
-        out.status.code(),
-        Some(2),
-        "the real pre-flip daemon draws the taught refusal\nstdout: {}\nstderr: {err}",
-        stdout_of(&out)
+        put.status.code(),
+        Some(0),
+        "a disjoint sibling must not refuse a file-scoped put\nstdout: {}\nstderr: {}",
+        stdout_of(&put),
+        stderr_of(&put)
     );
+    let bytes = std::fs::read_to_string(ws.join("a/target.md")).expect("after");
     assert!(
-        err.contains("scoped-guards"),
-        "the teaching names the cap: {err}"
-    );
-    assert_eq!(
-        std::fs::read_to_string(ws.join("doc.md")).expect("after"),
-        before,
-        "nothing was written"
+        bytes.contains("one two three four"),
+        "the edit reached disk: {bytes}"
     );
 }
 
-/// ⚠ PR-4 tripwire, read half: no cap ⇒ no mint call and no `mint` key — the
-/// `--json` frame stays byte-compatible with pre-family builds.
+/// The counter-proof through adopted mrd: a write that moves the planned
+/// scope still refuses, naming the scope.
 #[test]
-fn read_json_against_a_capless_daemon_stays_bare() {
+fn put_scope_refuses_when_the_scope_itself_moved() {
     let sb = sandbox();
     let ws = sb.workspace();
+    std::fs::create_dir_all(ws.join("a")).expect("mkdir");
+    std::fs::write(ws.join("a/target.md"), DOC).expect("seed");
     let _daemon = sb.real_daemon();
 
-    let out = sb.run(&ws, &["read", "doc.md", "--json"], None);
+    let read = sb.run(&ws, &["read", "a/target.md", "--json"], None);
+    assert_eq!(read.status.code(), Some(0), "{}", stderr_of(&read));
+    let frame: Value = serde_json::from_str(&stdout_of(&read)).expect("--json frame");
+    let token = frame["mint"]["fingerprint"]
+        .as_str()
+        .expect("minted")
+        .to_owned();
+
+    std::fs::write(
+        ws.join("a/target.md"),
+        format!("{DOC}\nout-of-band tail.\n"),
+    )
+    .expect("move the scope");
+
+    let put = sb.run(
+        &ws,
+        &[
+            "put",
+            "a/target.md",
+            "--if-fingerprint",
+            &token,
+            "--scope",
+            "a/target.md",
+        ],
+        Some(EDIT),
+    );
     assert_eq!(
-        out.status.code(),
-        Some(0),
-        "the warm read serves\nstderr: {}",
-        stderr_of(&out)
+        put.status.code(),
+        Some(1),
+        "the moved scope refuses at the engine\nstdout: {}\nstderr: {}",
+        stdout_of(&put),
+        stderr_of(&put)
     );
-    let frame: Value = serde_json::from_str(&stdout_of(&out)).expect("--json frame");
+    let err = format!("{}{}", stdout_of(&put), stderr_of(&put));
     assert!(
-        frame.get("mint").is_none(),
-        "no cap, no mint key — dormant: {frame}"
-    );
-    // The token's PRESENCE is this test's fact, never its spelling: the
-    // interior encoding is moving under the width ruling
-    // (`node-rev-merkle-spec.md`), and a served value this file pinned would
-    // fail on a law it has no stake in.
-    assert!(
-        frame["read"]["fingerprint"]
-            .as_str()
-            .is_some_and(|fp| !fp.is_empty()),
-        "the read still serves the world token: {frame}"
+        err.contains("fingerprint_mismatch") || err.contains("the premise at a/target.md moved"),
+        "the refusal names the scoped mismatch: {err}"
     );
 }

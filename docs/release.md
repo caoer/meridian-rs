@@ -69,7 +69,8 @@ specifies, at `hello` with `contract:"v3"`.
 |---|---|---|
 | `splice` | §4.4 | the ONLY write op; batch-only; one response shape; atomic through one reparse |
 | `splice.if_node_rev` | §5.1 | node-grain CAS re-derived at execution from the pre-batch state |
-| `splice.if_fingerprint` | §5.1 | world-grain CAS, checked FIRST, failing the whole batch |
+| `splice.if_fingerprint` | §5.1, §5.4 | world-grain CAS when bare (the v2 root premise, checked FIRST); with `scope` under `scoped-guards` it is the one-premise sugar at that node |
+| `scoped-guards` | §5.4–§5.7, §4.7 | the whole scoped-premise family: `guards[]`, sugar `scope` on splice/script, mint arm `fingerprint {scope}` / `{scope_bytes}`; a frozen v2 session is never pushed it |
 | `splice.dry` | §4.4 | everything except disk — same response shape, `fingerprint_after:null`, no receipt |
 | `splice.receipt` | §6.1 | the receipt entry committed in the SAME batch as the content edit |
 | `splice.verdicts` | §11.1 | the field is always present with the §11.1 row shape (see §4.2 on packs) |
@@ -83,7 +84,7 @@ specifies, at `hello` with `contract:"v3"`.
 
 | Cap | Law | A caller may rely on |
 |---|---|---|
-| `fingerprint` | §4.7 | the workspace content hash plus `seq` |
+| `fingerprint` | §4.7 | the workspace content hash plus `seq`; under `scoped-guards`, optional `scope` / `scope_bytes` mints that node's token and echoes the pair (`absent` is a value) |
 | `diff` | §4.7, §7.3 | replay ≡ live — the byte-identical Delta objects the live stream carried |
 | `sub` | §4.7 | ack-then-push at the daemon door, one Notification frame per Delta batch |
 

@@ -140,6 +140,10 @@ pub fn project_response(frame: &mut Value) {
                 // Corpus SQL at op grain (§ A.11, the same precedent — no
                 // dotted sql.<field> at birth).
                 caps.push(Value::String("sql".to_string()));
+                // The scoped-premise family, LAST and family-whole (§3.2 /
+                // §5.4): decode, coverage, scoped fold, mint arm, refusal
+                // `scope` are all served when this string is present.
+                caps.push(Value::String("scoped-guards".to_string()));
             }
             body.insert("contract".to_string(), Value::String("v3".to_string()));
         }
@@ -360,14 +364,15 @@ mod tests {
             .collect();
 
         for field in &amendments {
-            // `files` is the §4.4 SET FORM — a form amendment riding one
-            // field, advertised under its ruled name `splice.set` (Draft A,
-            // 2026-08-14), not the mechanical `splice.files`. Every other
-            // amendment stays a field-only cap per R23.
-            let want = if *field == "files" {
-                "splice.set".to_owned()
-            } else {
-                format!("splice.{field}")
+            let want = match *field {
+                // `files` is the §4.4 SET FORM — a form amendment riding one
+                // field, advertised under its ruled name `splice.set` (Draft A,
+                // 2026-08-14), not the mechanical `splice.files`.
+                "files" => "splice.set".to_owned(),
+                // `scope` + `guards` are the §5.4 family — one flag, not
+                // dotted field caps (ruling item 6; contract §3.2).
+                "scope" | "guards" => "scoped-guards".to_owned(),
+                other => format!("splice.{other}"),
             };
             assert!(
                 caps.contains(&want.as_str()),
@@ -412,7 +417,8 @@ mod tests {
                 "script",
                 "run",
                 "walk",
-                "sql"
+                "sql",
+                "scoped-guards"
             ])
         );
     }

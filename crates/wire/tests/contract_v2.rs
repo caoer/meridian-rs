@@ -358,7 +358,13 @@ fn sec_ref_three_mint_forms_roundtrip() {
 #[test]
 fn worked_root_frames_match_contract() {
     let request: wire::Request = serde_json::from_value(json!({"id":90,"op":"root"})).unwrap();
-    assert_eq!(request.op, wire::Op::Root);
+    assert_eq!(
+        request.op,
+        wire::Op::Root {
+            scope: None,
+            scope_bytes: None
+        }
+    );
     assert_eq!(
         serde_json::to_value(&request).unwrap(),
         json!({"id":90,"op":"root"})
@@ -374,6 +380,8 @@ fn worked_root_frames_match_contract() {
                 ),
                 seq: 2,
                 tree_instance: None,
+                scope: None,
+                scope_bytes: None,
             },
         },
     };
@@ -750,6 +758,8 @@ fn absent_actor_now_absent_on_the_wire() {
             plan_edits: Vec::new(),
             // same law for `pin` — absent, so it never reaches the wire
             pin: None,
+            scope: None,
+            guards: Vec::new(),
         },
     };
     let v = serde_json::to_value(&request).unwrap();
