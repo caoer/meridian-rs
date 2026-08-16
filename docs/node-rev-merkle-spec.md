@@ -824,12 +824,17 @@ wave. **No separate `guard` op** (dropped; integrity = mint + premise +
   `absent`.
 
 **`fingerprint` op** — mint the current cursor (root default; scoped form per
-the wire card):
+the wire card). Bare is the world mint. Under `scoped-guards`:
 
 ```jsonc
 → {"id":7,"op":"fingerprint"}
 ← {"id":7,"ok":true,"body":{"fingerprint":"b3:807b69c6…","seq":N}}
+→ {"id":8,"op":"fingerprint","scope":"a/target.md"}
+← {"id":8,"ok":true,"body":{"fingerprint":"b3:…","seq":N,"scope":"a/target.md"}}
 ```
+
+A lawful empty path answers `fingerprint: "absent"` and still echoes the
+scope pair. Both `scope` and `scope_bytes` on one request refuse `bad_request`.
 
 **Three errors, three facts, never flattened** (merged plan §4.2/§4.4; the
 register-law refusal texts are drafted in the plan's Appendix C):
