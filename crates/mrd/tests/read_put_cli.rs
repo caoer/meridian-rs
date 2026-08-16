@@ -1095,7 +1095,13 @@ fn put_json_refusal_emits_the_error_envelope_on_stdout() {
         &["put", "doc.md", "--json"],
         &beta_match_guarded(&sb, &ws, "absent text", "anything"),
     );
-    assert_eq!(code(&out), 1, "no_match refuses: {}", stderr(&out));
+    assert_eq!(
+        code(&out),
+        1,
+        "no_match refuses: stdout={} stderr={}",
+        stdout(&out),
+        stderr(&out)
+    );
     let v: Value = serde_json::from_str(&stdout(&out))
         .expect("a --json refusal answers JSON on stdout, never nothing");
     assert!(
@@ -1155,7 +1161,13 @@ fn put_no_match_is_the_finding_leg() {
         &["put", "doc.md"],
         &beta_match_guarded(&sb, &ws, "absent text", "anything"),
     );
-    assert_eq!(code(&out), 1, "no_match refusal: {}", stderr(&out));
+    assert_eq!(
+        code(&out),
+        1,
+        "no_match refusal: stdout={} stderr={}",
+        stdout(&out),
+        stderr(&out)
+    );
     assert_eq!(
         std::fs::read_to_string(ws.join("doc.md")).expect("read back"),
         before,
@@ -1749,7 +1761,13 @@ fn put_no_match_teaches_the_byte_exact_law() {
         &["put", "doc.md"],
         &beta_match_guarded(&sb, &ws, "absent text", "anything"),
     );
-    assert_eq!(code(&out), 1, "no_match refuses: {}", stderr(&out));
+    assert_eq!(
+        code(&out),
+        1,
+        "no_match refuses: stdout={} stderr={}",
+        stdout(&out),
+        stderr(&out)
+    );
     let m = stderr(&out);
     assert!(m.contains("no_match"), "keeps the code: {m}");
     assert!(m.contains("0 times"), "counts what it saw: {m}");
