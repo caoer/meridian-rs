@@ -2488,6 +2488,89 @@ mod engine_tests {
         );
     }
 
+    /// The same race through the §4.4 SET door — the card's gate names
+    /// `splice` AND `splice.set`, and both ride one `observed_root` seam.
+    /// Driven rather than argued from the shared seam: a claim is bounded
+    /// by the instrument that produced it.
+    #[test]
+    fn the_set_door_refuses_a_stale_world_guard_after_a_foreign_write() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let plan = plan_page("August");
+        let second = plan_page("July");
+        let other = plan_page("still");
+        let ws = write_ws(
+            home.path(),
+            &[
+                ("notes/plan.md", &plan),
+                ("notes/second.md", &second),
+                ("notes/other.md", &other),
+            ],
+        );
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.warm_or_build(&ws).unwrap();
+
+        let (r0, _) = reg
+            .currency_refresh(&canonical, Duration::from_secs(10))
+            .unwrap();
+
+        let cache = reg.domain_cache(&canonical);
+        rewrite(&canonical, "notes/other.md", "# Notes\n\nmoved by B\n");
+
+        let fs_root = ::fs::WorkspaceRoot(canonical.clone());
+        let args = wire_serve::write::SpliceSetArgs {
+            premises: Vec::new(),
+            id: None,
+            files: vec![
+                wire::SpliceFile {
+                    path: wire::Path("notes/plan.md".into()),
+                    edits: vec![match_edit("August", "w1")],
+                    plan_edits: Vec::new(),
+                },
+                wire::SpliceFile {
+                    path: wire::Path("notes/second.md".into()),
+                    edits: vec![match_edit("July", "w2")],
+                    plan_edits: Vec::new(),
+                },
+            ],
+            origin: wire_serve::guard::Origin::InProcess,
+            actor: Some("alice".into()),
+            now: None,
+            receipt: None,
+            if_root: Some(wire::Root(r0.0.clone())),
+            dry: false,
+            force: false,
+        };
+        let observe = || reg.door_observation(&canonical, &cache, Duration::from_secs(10));
+        let err = wire_serve::write::splice_set_with_cache(
+            &fs_root,
+            None,
+            &args,
+            &[],
+            Some(wire_serve::write::ResidentDoor {
+                cache: &cache,
+                observe: &observe,
+            }),
+        )
+        .expect_err("the set door's world guard must refuse the stale R0");
+        assert_eq!(
+            err.code,
+            wire::ErrorCode::RootMismatch,
+            "the set refusal is the world guard's: {err:?}"
+        );
+        assert_ne!(
+            err.actual.as_ref().map(|r| r.0.as_str()),
+            Some(r0.0.as_str()),
+            "the set door's observation absorbed B too: {err:?}"
+        );
+        // Nothing committed: both members still carry their pre-image.
+        let plan_now = fs::read_to_string(canonical.join("notes/plan.md")).unwrap();
+        assert!(
+            plan_now.contains("August"),
+            "a refused set leaves every member byte-unchanged"
+        );
+    }
+
     /// The sticky-`Failed` arm: no live feed means no vouch, so the door
     /// observation floors to the live fold and a foreign edit is seen even
     /// though no event will ever report it. Before the fix, `Trusted` alone
