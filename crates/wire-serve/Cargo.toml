@@ -62,6 +62,10 @@ policy = { workspace = true }
 # Decode-time JSON: the strict-decode pass validates the raw request object by
 # hand (serde's `deny_unknown_fields` does not compose with `flatten`).
 serde_json = { workspace = true }
+# The authority lease's flock(2) + getentropy + signal posture (contract pin
+# 95f7c248…): no std wrapper exists for any of the three. Already a graph
+# dependency (fs/cache/run declare it the same way); no new crate enters.
+libc = "0.2"
 
 [dev-dependencies]
 # canonical reaction receipt assertion
