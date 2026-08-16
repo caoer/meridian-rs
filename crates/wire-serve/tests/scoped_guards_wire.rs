@@ -12,7 +12,10 @@ use wire_serve::guard::lower_premises;
 use wire_serve::rev::Rev;
 
 fn obj(v: Value) -> Map<String, Value> {
-    v.as_object().expect("object").clone()
+    match v {
+        Value::Object(m) => m,
+        other => panic!("fixture must be an object, got {other}"),
+    }
 }
 
 fn splice_edit() -> Value {
