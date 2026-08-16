@@ -845,27 +845,43 @@ One honest sync issued on an anchor descriptor covers N writers' files. It
 does so by **ordering**, not by magic, and the ordering is the design:
 
 1. Each writer `data_push`es its own staged temp — raw `fsync(2)`, the cheap
-   class, measured at 19 µs. **What that call hands the bytes to is not
-   established.** 19 µs is consistent with a device handoff and equally
-   consistent with the bytes never leaving memory, and the number alone does
-   not decide between them. This step is therefore stated as what it is
-   measured to be, not as what it would be convenient for it to be.
+   class. By **Apple's documented contract** a successful `fsync` on APFS
+   reaches the device; it does not return with the bytes still in host
+   memory. **Documented, not verified:** APFS's `VNOP_FSYNC` is closed and
+   absent from the public XNU tree, so nobody outside Apple can audit the
+   mechanics. This design builds on the contract — that is what a contract is
+   for — and never writes *verified* where it means *documented*.
+   **This step supplies ordering, not power-loss durability.** The cheap push
+   makes the bytes available to the barrier; it does not make them survive a
+   power cut, and nothing acks on it.
 2. The epoch's seal issues `F_FULLFSYNC` on an anchor descriptor **on the same
    volume**. On macOS/APFS that is a device-level cache flush
    (`DKIOCSYNCHRONIZECACHE`), not a per-file operation: it forces what the
-   device holds onto the platter, whichever descriptor wrote it.
+   device holds onto the platter, whichever descriptor wrote it. **This step,
+   and only this step, supplies power-loss durability, so the receipt acks
+   here and nowhere earlier.** A design that acked on the cheap push would be
+   the banned object wearing the allowed name.
 3. A member joins its epoch only **after** its own push has returned, and the
    seal for that epoch starts only **after** the member joined. So the seal
    that covers a member always starts after that member's push completed.
 4. No writer proceeds to its rename before that seal has returned.
 
-**The open question, named rather than buried.** Step 1 is the architecture's
-single point of failure: if raw `fsync(2)` on APFS parks bytes in an in-memory
-checkpoint instead of handing them to the device, the barrier in step 2 sweeps
-nothing and the shared seal is worthless. That question is under research and
-is not settled by this document. If it resolves negative, `SealMode::PerMember`
-becomes the default — a mode flip, not a rebuild, which is the whole reason
-the falsifier ships alongside the claim.
+**The sharpest evidence for step 1 is the rung this design DECLINED.**
+`F_BARRIERFSYNC` is a documented third rung on APFS: it performs an `fsync`
+and then issues a device barrier ordering the I/O that `fsync` flushed on that
+device. That contract would be **incoherent** if APFS could leave `fsync`-ed
+I/O parked in an in-memory checkpoint — the barrier would have nothing at the
+device to order. So the existence of the rung we do not use is the best
+available argument that our push does what the chain needs.
+
+**And it stays declined, deliberately.** As a push it is `fsync` *plus* a
+barrier — strictly more work than needed, since the ordering here comes from
+the push returning and the `Pushed` token stamped at that instant, not from a
+device-level ordering primitive. As a seal it does not claim durability at
+return, so acking on it would make the receipt false — precisely the object
+criterion 1 exists to catch. **`F_BARRIERFSYNC` must therefore be exactly zero
+in every measurement of this design, at every D and every N**; a nonzero count
+is a defect to trace by descriptor and report by path, never to rationalize.
 
 Steps 3 and 4 are the load-bearing invariant, so they are enforced by the type
 and checked at runtime rather than left to prose: `data_push_all` mints a
