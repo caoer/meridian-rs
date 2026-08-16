@@ -42,7 +42,9 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         ))
     })?;
     // The CLI stamps no provenance: an absent actor is the local-operator trust
-    // door the read-mint gate reads. A pin is the whole batch.
+    // door the read-mint gate reads. A pin is the whole batch. `--force` is
+    // the local-operator refuse→rewrite so the wire guard does not demand a
+    // node rev the pin verb never held (the lock-block edit is engine-authored).
     let pin = PinSpec {
         target: WirePath(parsed.target.clone()),
         selector: wire::ReadSel::parse(&parsed.selector),
@@ -52,6 +54,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         "op": "splice",
         "path": parsed.page,
         "pin": pin,
+        "force": true,
     });
     if parsed.dry {
         request["dry"] = json!(true);
