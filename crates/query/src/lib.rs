@@ -303,9 +303,11 @@ fn backlinks_with(
 ///   that root's own corpus.
 ///
 /// The same predicate gates all three sites (`resolve_linkpath`'s guard, this
-/// split, the CLI's in-process degrade); two predicates that merely agree
-/// drift the moment either is edited. The guard is what stops a basename
-/// fallback answering the ambient root's file for a rooted address.
+/// split, the CLI's in-process degrade — which then narrows further by the
+/// mount table's own names, `addr::head_names_declared_root`); two predicates
+/// that merely agree drift the moment either is edited. The guard is what
+/// stops a basename fallback answering the ambient root's file for a rooted
+/// address.
 ///
 /// An empty linkpath is the source itself (stage-1 parity, a self-reference).
 fn resolve_edge(

@@ -1356,13 +1356,14 @@ pub fn links(
     };
     let live = live_root()?;
     let domain = fs::domain::Domain::load(root).unwrap_or_default();
+    let probe = fs::domain::LinkTargetProbe::new(root, &domain);
     Ok(ResponseBody::Links {
         as_of_root,
         live_root: live,
         changes_seq,
         files: map
             .into_iter()
-            .map(|(p, e)| (p, into_wire_with_reasons(root, &domain, e)))
+            .map(|(p, e)| (p, into_wire_with_reasons(&probe, e)))
             .collect(),
         excluded: excluded_members(root, docs, unserved, path),
     })
@@ -1431,13 +1432,14 @@ pub fn links_rooted(
     };
     let live = live_root()?;
     let domain = fs::domain::Domain::load(root).unwrap_or_default();
+    let probe = fs::domain::LinkTargetProbe::new(root, &domain);
     Ok(ResponseBody::Links {
         as_of_root,
         live_root: live,
         changes_seq,
         files: map
             .into_iter()
-            .map(|(p, e)| (p, into_wire_with_reasons(root, &domain, e)))
+            .map(|(p, e)| (p, into_wire_with_reasons(&probe, e)))
             .collect(),
         excluded: excluded_members(root, docs, unserved, path),
     })
@@ -1448,13 +1450,14 @@ pub fn links_rooted(
 ///
 /// The classification is `fs::domain::LinkTargetProbe` — the one mint the
 /// `sql link` projection also asks through, so the two planes cannot name
-/// one rule differently. Nothing is decided here.
+/// one rule differently. Nothing is decided here. The probe is the caller's,
+/// minted ONCE per serve: its lazy fallback index is a whole-tree walk, and a
+/// per-file mint re-walked the tree for every file with a bare-name miss
+/// (measured 571 walks ≈ 88 s on an 11.5k-file vault; `sql_op.rs` precedent).
 fn unresolved_reasons(
-    root: &fs::WorkspaceRoot,
-    domain: &fs::domain::Domain,
+    probe: &fs::domain::LinkTargetProbe<'_>,
     edges: &query::FileLinks,
 ) -> BTreeMap<String, String> {
-    let probe = fs::domain::LinkTargetProbe::new(root, domain);
     edges
         .unresolved
         .keys()
@@ -1472,11 +1475,10 @@ fn unresolved_reasons(
 /// link doors use, so the ambient and the rooted answer can never disagree
 /// about why one edge is unresolved.
 fn into_wire_with_reasons(
-    root: &fs::WorkspaceRoot,
-    domain: &fs::domain::Domain,
+    probe: &fs::domain::LinkTargetProbe<'_>,
     edges: query::FileLinks,
 ) -> wire::FileLinks {
-    let reasons = unresolved_reasons(root, domain, &edges);
+    let reasons = unresolved_reasons(probe, &edges);
     let mut out = into_wire(edges);
     out.unresolved_reason = reasons;
     out

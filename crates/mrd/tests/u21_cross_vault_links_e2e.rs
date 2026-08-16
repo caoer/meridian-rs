@@ -264,6 +264,15 @@ fn a_cross_vault_link_resolves_into_the_target_root() {
 /// State the two worlds, run both, diff them: with `sessions` bound and unbound
 /// the two answers must DIFFER, and each must be separately correct. Identical
 /// bytes across the arms is the instrument being blind to the mount table.
+///
+/// The unbound arm's correct answer changed with the [[links-probe-hoist]]
+/// narrowing: the degrade gate asks `addr::head_names_declared_root`, and a
+/// table that no longer declares `sessions` has no standing to refuse the
+/// spelling — the daemon's ambient `unresolved` stands, verbatim, at exit 0.
+/// The old grey(`unmounted`) refusal cost a whole-corpus ephemeral rebuild for
+/// every table-external head — `[[https://…]]` included — which is the exact
+/// cost the narrowing removes. Declared-root refusals live on: the bound arm
+/// here, and [`an_absent_cross_vault_target_refuses_with_its_own_reason_word`].
 #[test]
 fn the_link_plane_distinguishes_a_bound_root_from_an_unbound_one() {
     let sb = sandbox();
@@ -288,22 +297,21 @@ fn the_link_plane_distinguishes_a_bound_root_from_an_unbound_one() {
         "bound arm: {bound_answer}"
     );
 
-    // Unbound: GREY `unmounted` (R-3). An unmounted root is outside sight, so
-    // claiming absence there would be a false negative.
+    // Unbound: the table declares nothing, so nothing here may judge the
+    // spelling — the ambient answer stands, unrefused, an ordinary authoring
+    // state at exit 0.
     assert_eq!(
-        unbound_entry["refused"]["sessions:notes.md"]["color"], "grey",
-        "unbound arm is grey, never red: {unbound_answer}"
-    );
-    assert_eq!(
-        unbound_entry["refused"]["sessions:notes.md"]["reason"], "unmounted",
-        "unbound arm names the unmounted class: {unbound_answer}"
+        unbound_entry["unresolved"]["sessions:notes.md"], 1,
+        "unbound arm: the ambient `unresolved` stands verbatim: {unbound_answer}"
     );
     assert!(
-        unbound_entry["refused"]["sessions:notes.md"]["message"]
-            .as_str()
-            .is_some_and(|m| m.contains("sessions")),
-        "the refusal names WHICH root is missing, or it teaches nothing: \
-         {unbound_answer}"
+        unbound_entry["refused"]["sessions:notes.md"].is_null(),
+        "an undeclared head earns no invented refusal: {unbound_answer}"
+    );
+    assert_eq!(
+        unbound_out.status.code(),
+        Some(0),
+        "a spelling outside the table is not a finding: {unbound_answer}"
     );
 }
 
@@ -410,30 +418,44 @@ fn a_page_carrying_a_rooted_spelling_is_never_served_by_the_daemon() {
 }
 
 /// The slip fixture: `Sessions:notes.md` — capital `S`, so `MountName` refuses
-/// it and `Addr::parse` fails. A degrade gate built on parse-SUCCESS would let
-/// the daemon serve the page and answer `unresolved` at exit 0.
+/// it and no table can ever declare it. Under the [[links-probe-hoist]]
+/// narrowing that head is table-external — exactly like `[[https://…]]` — so
+/// the warm answer STANDS: served by the daemon, reported `unresolved`
+/// verbatim, exit 0. The old posture degraded here to speak a `bad-ref`
+/// refusal, and that rebuild-per-typo is the cost the narrowing removes; the
+/// address plane still refuses the spelling on every door that consults it
+/// (`walk`, pins, a NAMED read).
 #[test]
-fn a_malformed_rooted_spelling_also_degrades_and_refuses() {
+fn a_malformed_rooted_spelling_stays_on_the_daemon() {
     let sb = sandbox();
     sb.page("claim.md", "# Claim\n\n[[Sessions:notes.md]]\n");
+
+    // Warm the daemon on an ordinary page first, so `source` below measures
+    // the gate and not a spawn failure.
+    sb.page("plain.md", "# Plain\n\n[[local.md]]\n");
+    let (_, plain) = sb.links("plain.md");
+    assert_eq!(plain["source"], "daemon", "control: the daemon is up");
 
     let (out, v) = sb.links("claim.md");
     let answer = whole_answer(&out);
     assert_eq!(
-        v["source"], "ephemeral",
-        "an unparseable rooted spelling still degrades: {answer}"
+        v["source"], "daemon",
+        "a head no table can declare keeps the warm answer: {answer}"
     );
 
     let entry = v["links"]["files"]["claim.md"].clone();
+    assert_eq!(
+        entry["unresolved"]["Sessions:notes.md"], 1,
+        "reported unresolved, verbatim: {answer}"
+    );
     assert!(
-        entry["refused"]["Sessions:notes.md"].is_object(),
-        "and the address plane REFUSES it rather than reporting it unresolved \
-         at exit 0: {answer}"
+        entry["refused"]["Sessions:notes.md"].is_null(),
+        "no refusal is invented for a name outside the table: {answer}"
     );
     assert_eq!(
         out.status.code(),
-        Some(1),
-        "a refusal rides exit 1: {answer}"
+        Some(0),
+        "an ordinary authoring state never rides exit 1: {answer}"
     );
 }
 

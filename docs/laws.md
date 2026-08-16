@@ -308,6 +308,20 @@ page carrying a cross-vault link pays a cold corpus build. Stated here rather
 than smoothed, on the same discipline as the exit-code asymmetry in
 `address-grammar.md`.
 
+**Narrowed (2026-08-16, card links-probe-hoist):** the degrade fires only when
+an unresolved head names a root the mount table DECLARES
+(`addr::head_names_declared_root` — bound or declared-but-unreachable), no
+longer on any `:`-bearing head. An external URI parses as a root
+(`https://…` → head `https`), so under the wide lexical gate one
+`[[https://…]]` wikilink bought the whole corpus a cold rebuild to say
+"https is not a mounted root" (measured 137 s on an 11.5k-file vault over 6
+such links, session 15-14-fingerprint-grain, card links-warm-enumeration-cost).
+A table-external head — external scheme, undeclared root, or a name outside
+the `[a-z0-9-]` charset — now keeps the daemon's ambient `unresolved`,
+verbatim, exit 0; the address plane still refuses those spellings on every
+door that consults it (`walk`, pins, a NAMED read). A mount table that will
+not resolve or bind keeps the old posture and degrades.
+
 > **THE NAMED SUCCESSOR — option (A): the daemon holds mounted corpora.** That
 > is the correct end state and it was deferred DELIBERATELY, not overlooked. It
 > needs per-root fingerprint invalidation, residency and reap — a designed

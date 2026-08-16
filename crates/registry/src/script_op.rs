@@ -1812,6 +1812,121 @@ mod tests {
         );
     }
 
+    /// The reachability answer for two clients on one workspace (dogfood
+    /// be74ba9b D-04/R3 follow-up): the touch-set commit guard IS reachable —
+    /// `.meridian/write.lock` serializes only the COMMITS, never the script's
+    /// eval, which runs outside the flock against the pinned entry world. A
+    /// second client's guarded door commit landing inside that window moves a
+    /// touched node, and the script's commit then refuses
+    /// `fingerprint_mismatch` naming the moved scope. The racing dogfood could
+    /// not instrument the window (60 two-process runs, zero touch-set
+    /// conflicts — the interleave point does not exist over one socket);
+    /// module grain sequences it deterministically.
+    ///
+    /// Both legs are real engine machinery: client A is a real program (a
+    /// recorded read plus an armed edit, `effects::eval_script` against the
+    /// pinned world); client B is the resident wire door itself
+    /// (`splice_with_mints` with the registry's ring, ledger and vouched
+    /// cache — the exact call `server.rs` makes for a wire splice), taking
+    /// and releasing the flock. Never a bare disk write.
+    #[test]
+    fn two_clients_on_one_workspace_reach_the_touch_set_guard() {
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = registry_in(tmp.path());
+        let ws = seeded_ws(tmp.path());
+
+        // Client A, entry half: pin the entry world and evaluate a real
+        // program — the read is recorded, the put arms one edit; both put
+        // `doc.md` in the touch set.
+        let (world, root) = pinned_world(&registry, &ws);
+        let ctx = ScriptCtx {
+            id: "script".to_owned(),
+            args: std::collections::BTreeMap::new(),
+            files: Vec::new(),
+            effects: Vec::new(),
+        };
+        let mut host = host_of(&world, &root, &ws, Instant::now() + Duration::from_secs(7));
+        let mut eval = effects::eval_script(
+            "doc = read(\"doc.md\")\nput(\"doc.md\", props={\"status\": \"done\"})\n",
+            &ctx,
+            ScriptLimits::default(),
+            &mut host,
+        );
+        assert!(eval.outcome.is_ok(), "{:?}", eval.outcome);
+        assert!(
+            eval.recording.reads.iter().any(|r| r.path == "doc.md"),
+            "the read is recorded — it is what premises doc.md"
+        );
+        eval.armed = thread_entry(&eval.armed, &world, &ws_root_of(&ws), &root);
+
+        // Client B: a guarded splice through the SAME resident door the
+        // daemon's wire lane takes. The world has not moved for B, so B's
+        // own §5.1 guard holds; the door flocks, commits, updates the
+        // vouched cache, releases.
+        let mints = registry.read_mints(&ws);
+        let ring = registry.ring(&ws);
+        let cache = registry.domain_cache(&ws);
+        let observe =
+            || registry.door_observation(&ws, &cache, crate::registry::DOOR_COOKIE_TIMEOUT);
+        let b_args = wire_serve::write::SpliceArgs {
+            premises: Vec::new(),
+            id: None,
+            path: wire::Path("doc.md".to_owned()),
+            origin: wire_serve::guard::Origin::Wire,
+            actor: Some("agent:client-b".to_owned()),
+            now: None,
+            receipt: None,
+            if_root: Some(root.clone()),
+            dry: false,
+            force: false,
+            edits: Vec::new(),
+            plan_edits: vec![PlanEdit::SetProperty {
+                key: "status".to_owned(),
+                value: "parked".to_owned(),
+                rev: None,
+            }],
+            pin: None,
+        };
+        let out = wire_serve::write::splice_with_mints(
+            &ws_root_of(&ws),
+            Some(&*ring),
+            &b_args,
+            &[],
+            wire_serve::write::Mints {
+                ambient: Some(&mints),
+                foreign: None,
+            },
+            Some(wire_serve::write::ResidentDoor {
+                cache: &cache,
+                observe: &observe,
+            }),
+        )
+        .expect("client B's guarded commit lands — the world had not moved for B");
+        assert!(out.committed.is_some(), "a real commit, not a rehearsal");
+
+        // Client A, commit half: the flock is free again, so `workspace_busy`
+        // cannot answer — only the touch set can, and it names the node B
+        // moved.
+        let leg = commit(&registry, &ws, &request_of(None), &eval, &world, &root.0);
+        let CommitLeg::Conflict(raw) = leg else {
+            panic!("a touched node moved by a second client refuses: {leg:?}");
+        };
+        let frame: Value = serde_json::from_str(raw.get()).unwrap();
+        assert_eq!(
+            frame["code"], "fingerprint_mismatch",
+            "the touch-set guard, not lock contention: {frame}"
+        );
+        assert_eq!(
+            frame["scope"], "doc.md",
+            "the refusal names the moved premise's scope: {frame}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(ws.join("doc.md")).unwrap(),
+            DOC.replace("open", "parked"),
+            "client B's state stands; client A landed nothing"
+        );
+    }
+
     /// Wall site 2: the read builtin refuses on a lapsed clock — typed, in
     /// the entry's own vocabulary, before any serve.
     #[test]
