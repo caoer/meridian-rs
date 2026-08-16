@@ -204,7 +204,7 @@ fn overlay_unlinked(root: &fs::WorkspaceRoot, rel: &str) -> Result<bool, Box<Err
 /// Engine-composed receipt bytes: the pre-image plus the sealed append.
 /// Never a post-apply reload.
 fn compose_receipt(before: Option<&model::Document>, append: &model::ReceiptAppend) -> String {
-    let old = before.map(|d| d.raw.as_str()).unwrap_or("");
+    let old = before.map_or("", |d| d.raw.as_str());
     let start = append.span.start.min(old.len());
     let end = append.span.end.min(old.len());
     let mut out = String::with_capacity(old.len() + append.text.len());
@@ -1650,7 +1650,7 @@ pub fn create(
 /// change surface.
 ///
 /// Order: path confinement → the write flock (D9) → door-entry observation
-/// (root_before / world guard) → a domain snapshot for the referential-check
+/// (`root_before` / world guard) → a domain snapshot for the referential-check
 /// corpus only → world guard (§5.1) → load the live file (absent ⇒)
 /// `file_not_found`) → the `if_file_rev` demand (absent ⇒ `guard_required`;
 /// deletion has no recovery, so the token is a precondition from EVERY
@@ -5091,7 +5091,9 @@ pub fn commit_batch(
 
     // Change facts → wire projection, in §7.1 print order: content file first,
     // then the receipt file, then a promotion's own row.
-    let after_receipt_doc = after_receipt.as_ref().map(|c| c.document());
+    let after_receipt_doc = after_receipt
+        .as_ref()
+        .map(model::CandidateDocument::document);
     let files = commit_delta_files(
         &req.content_path,
         &before_content,
