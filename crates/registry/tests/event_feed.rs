@@ -183,7 +183,7 @@ fn chaos_rescans_carry_named_causes_and_the_watcher_stays_up() {
 
     // Drain the open instance-change (highest rung) so the next kernel
     // event is not swallowed by an all-dirty take.
-    let _ = reg.currency_root(&canonical).unwrap();
+    let _ = reg.warm_or_build(&ws).unwrap();
 
     let baseline = reg.feed_stats(&canonical).expect("live feed").events;
     std::fs::write(ws.join("plan.md"), "# Plan\n\nafter rescans\n").unwrap();
@@ -211,7 +211,7 @@ fn a_quiet_workspace_does_not_sweep() {
     reg.warm_or_build(&ws).unwrap();
     // Drain any start-up dirt so the quiet window starts from a clean
     // baseline observation.
-    let _ = reg.currency_root(&canonical).unwrap();
+    let _ = reg.warm_or_build(&ws).unwrap();
     let (sweeps0, stats0) = {
         let cache = reg.domain_cache(&canonical);
         let g = cache.lock().unwrap();
@@ -247,7 +247,7 @@ fn ten_quiet_minutes_moves_no_sweep_counters() {
     let ws = write_ws(tmp.path(), &[("a.md", "# A\n")]);
     let canonical = workspace::canonicalize(&ws).unwrap();
     reg.warm_or_build(&ws).unwrap();
-    let _ = reg.currency_root(&canonical).unwrap();
+    let _ = reg.warm_or_build(&ws).unwrap();
     let (sweeps0, stats0) = {
         let cache = reg.domain_cache(&canonical);
         let g = cache.lock().unwrap();
