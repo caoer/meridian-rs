@@ -649,21 +649,33 @@ class): the checkpoint.
   and read whole. The drawer is outside every hash domain by construction, so
   the checkpoint can never move a root or break a held token — the same floor
   the §6.4 cookie stands on.
-- **The cursor's reach, stated:** the identity tuple's journal pair is the
-  REPLAY ANCHOR (this section's own words: without it "O(changes-while-down)
-  has no replay point"), and §4.9's law places it — "hash tokens are
-  epoch-free; cursors are not… cursors stay confined to the delta plane". So
-  the fields divide by what each can make WRONG: `workspace_uuid`,
-  `domain_version`, hash law, parse-cache generation and `tree_root` are
-  soundness and any mismatch discards the object whole; a journal pair that
-  cannot anchor costs the replay SHORTCUT, not the index, because every
-  restored row is re-verified against disk by the next observation under §6.2
-  before it can answer anything. Both outcomes are one loud labeled
-  re-baseline — of the index, or of the delta plane. **The engine's ring is
-  RAM-only (§7.1 late law: no epoch fact is ever persisted), so an ordinary
-  restart always takes the second arm today**: it saves the cold rebuild and
-  every unchanged member's byte read, and still pays one `stat` per member.
-  Gate 11's "zero unchanged members statted" is met on the replay arm only.
+- **Two questions, two instruments** (ruled: `results/checkpoint-design-ruling.md`
+  § I, session `15-14-fingerprint-grain`). A checkpoint is an observation record
+  from a dead epoch — a claim about the past, never about the present — and its
+  trust splits in two. **Lawfulness:** may these rows enter as HYPOTHESES?
+  Decided once at restore by the soundness fields — `workspace_uuid`,
+  `domain_version`, hash law, parse-cache generation, and the `tree_root`
+  binding. A mismatch means the rows are not lawful statements about this world
+  under today's law, so the object is discarded WHOLE, loudly, labeled per
+  field: the **COLD** re-baseline. **Currency:** may a row SERVE? Never
+  answered by the checkpoint, and never wholesale — every restored row serves
+  only through the §6.2 watermark trust close, the same live protocol that
+  governs a RAM-resident row. A restored row has exactly the trust class of a
+  resident row whose stat evidence is stale: none, until the live instrument
+  confirms it. That is "it cannot serve stale by construction", said
+  mechanically.
+- **The journal pair is neither — it is a CURSOR**, governed by §6.3's landed
+  cursor law ("hash tokens are epoch-free; cursors are not"). A cursor that
+  anchors buys REPLAY; a cursor that cannot anchor forfeits replay ONLY, and
+  the rows still enter as hypotheses — the **WARM** re-baseline, which
+  re-establishes currency from zero TRUST, not from zero BYTES. Trust never
+  rides the cursor in either direction. The two flavors carry distinct labels
+  on purpose: the cold event is rare and meaningful, while the warm event fires
+  on **every** ordinary process restart by design, because §7.1 persists no
+  epoch fact. Reading the pair as an identity FIELD collapses the two and makes
+  the object discard on every restart — the vacuity this naming exists to
+  prevent; the git-index class this section names discards nothing at a gap, it
+  re-verifies by stat.
 
 ### 6.6 Fingerprint history ring
 

@@ -9,34 +9,44 @@
 //! the registry's (the crate charter's "no snapshot files" stands here —
 //! bytes in, bytes out; the §0 scoping note governs the object itself).
 //!
-//! # The identity tuple, every field load-bearing
-//! `(workspace, domain_version, hash_law, parse-cache generation,
-//! journal_instance, journal_seq)` plus the law-2 `tree_root` binding. The
-//! caution IS the law: a checkpoint trusted after a mismatch, or outliving a
-//! `domain_version` / hash-law change, is the banned trusted snapshot wearing
-//! the allowed object's name.
+//! # Two questions, two instruments — the ratified identity law
+//! **A checkpoint is an observation record from a dead epoch: a claim about
+//! the past, never about the present** (`results/checkpoint-design-ruling.md`
+//! § I). Its trust splits into two independent questions, and conflating them
+//! is the exact hazard the §6.5 caution names.
 //!
-//! The tuple splits by WHAT EACH FIELD CAN MAKE WRONG, which is merged plan
-//! §4.9's law — "hash tokens are epoch-free; cursors are not… cursors stay
-//! confined to the delta plane":
+//! - **Lawfulness — may these rows enter the memo as HYPOTHESES?** Decided
+//!   once, here, at restore, by the SOUNDNESS fields: format and checksum,
+//!   `workspace`, `domain_version`, `hash_law`, parse-cache generation, and
+//!   the `tree_root` binding over the restored rows. A mismatch means the rows
+//!   are not lawful statements about this world under today's law — a hash-law
+//!   change re-spells every interior value, a domain bump re-cuts membership, a
+//!   failed binding is tampering. Any mismatch discards the object WHOLE,
+//!   loudly, exactly once, labeled per field ([`Discard`]). Partial adoption
+//!   does not exist. This is the **COLD** re-baseline.
+//! - **Currency — may a row SERVE?** Never answered here, and never answered
+//!   wholesale. Every restored row serves only through the §6.2 watermark
+//!   trust close — the SAME live protocol that governs a RAM-resident row. A
+//!   restored row has exactly the trust class of a resident row whose stat
+//!   evidence is stale: none, until the live instrument confirms it. That is
+//!   "cannot serve stale by construction" said mechanically, and it is why
+//!   [`restore`] marks the memo unobserved (`DomainCache::guard_currency`
+//!   answers UNTRUSTED until a completed observation).
 //!
-//! - **Soundness fields, enforced HERE, whole-object [`Discard`]:** format
-//!   and checksum, `workspace`, `domain_version`, `hash_law`, parse-cache
-//!   generation, and the `tree_root` binding. Each one can make a restored
-//!   row WRONG — a hash-law change re-spells every interior value, a domain
-//!   bump re-cuts membership — so any mismatch discards the object whole and
-//!   the caller re-baselines loudly, exactly once. Partial adoption does not
-//!   exist.
-//! - **Replay authority, adjudicated by the CALLER:** `journal_instance` and
-//!   `journal_seq`. The pair exists to name the replay point (§6.5: "without
-//!   the journal cursor pair, O(changes-while-down) has no replay point"), so
-//!   a pair that cannot anchor costs the caller its replay SHORTCUT, not the
-//!   index: the restored rows carry the same evidence grade a live memo holds
-//!   and every one is re-verified against disk by the next observation
-//!   (§6.2). That re-verification is why this object cannot serve stale by
-//!   construction — the epoch-free `tree_root` is what binds it, exactly as
-//!   §4.9 requires. [`restore`] returns the stored pair; the caller compares
-//!   it against the live journal and logs its own labeled re-baseline.
+//! **The journal pair is neither — it is a CURSOR.** The landed cursor law
+//! governs it (§6.3, from plan §4.9): "hash tokens are epoch-free; cursors are
+//! not… instance mismatch degrades to the content-fold compare". A cursor that
+//! anchors buys REPLAY; a cursor that cannot anchor — certain across process
+//! death, since §7.1 persists no epoch fact — forfeits replay ONLY, and the
+//! rows still enter as hypotheses. Trust never rides the cursor in either
+//! direction, so a cursor mismatch is the **WARM** re-baseline: re-establishing
+//! currency from zero TRUST, not from zero BYTES. [`restore`] returns the
+//! cursor unjudged; the caller adjudicates it against the live journal.
+//!
+//! The vacuity trap the name caused, recorded so it is not re-derived:
+//! reading the pair as an identity FIELD makes the object discard on every
+//! ordinary restart, so it never fires. The plan never does that — the
+//! git-index class it named discards nothing at a gap, it re-verifies by stat.
 //!
 //! # Trust standing of what restores
 //! Restored rows carry the same evidence grade a live memo holds: digests
@@ -100,18 +110,19 @@ pub struct SaveIdentity {
     pub journal_seq: u64,
 }
 
-/// A restored checkpoint: the rebuilt memo plus the replay cursor the caller
-/// must adjudicate (see the module docs' tuple split).
+/// A restored checkpoint: the rebuilt memo plus the CURSOR the caller must
+/// adjudicate (module docs — lawfulness is settled here, replay is not).
 #[derive(Debug)]
 pub struct Restored {
     /// The rebuilt resident memo: leaf rows, radix tree re-composed and
-    /// verified against the stored `tree_root`, observed domain installed.
+    /// verified against the stored `tree_root`, observed domain installed,
+    /// marked unobserved so nothing serves before the §6.2 floor runs.
     /// Calibration, feed generation, and counters start fresh.
     pub cache: DomainCache,
-    /// The journal instance the cursor was numbered under. The caller
-    /// compares it against the LIVE journal: equal ⇒ the cursor anchors and
-    /// replay is legal; different ⇒ the numbering died (restart, reap) and
-    /// the caller logs its one labeled re-baseline of the delta plane.
+    /// The epoch the cursor was numbered under. The caller compares it
+    /// against the LIVE journal: equal ⇒ the cursor may anchor and replay is
+    /// legal; different ⇒ the numbering died (restart, reap) and the caller
+    /// logs the WARM re-baseline — replay forfeited, rows retained.
     pub journal_instance: String,
     /// Replay from here: the caller re-derives every journaled change after
     /// this seq. A cursor outside retained history cannot anchor — the
