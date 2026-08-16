@@ -96,7 +96,7 @@ impl Sandbox {
     }
 
     fn start_daemon(&self) -> Child {
-        let child = Command::new(mrd_bin())
+        let mut child = Command::new(mrd_bin())
             .arg("daemon")
             .env("XDG_CACHE_HOME", &self.cache_home)
             .env("HOME", &self.home)
@@ -119,6 +119,8 @@ impl Sandbox {
             }
             std::thread::sleep(Duration::from_millis(25));
         }
+        let _ = child.kill();
+        let _ = child.wait();
         panic!("daemon did not answer a ping");
     }
 }
@@ -214,7 +216,7 @@ fn migration_teaching_is_on_the_face_and_in_docs() {
 }
 
 /// Gate — a routine CLI write through a live daemon lands, and is not
-/// `workspace_busy` (the CLI process no longer takes LOCK_NB).
+/// `workspace_busy` (the CLI process no longer takes `LOCK_NB`).
 #[test]
 fn live_put_commits_and_is_not_workspace_busy() {
     let sb = sandbox();
@@ -240,7 +242,7 @@ fn live_put_commits_and_is_not_workspace_busy() {
 }
 
 /// Gate — two sequential CLI writes through one daemon never mint
-/// `workspace_busy` from the CLI path. (Overlapping daemon-side LOCK_NB
+/// `workspace_busy` from the CLI path. (Overlapping daemon-side `LOCK_NB`
 /// during parallel publish is the parallel-commits half of step 6.)
 #[test]
 fn sequential_cli_writes_are_not_workspace_busy() {
