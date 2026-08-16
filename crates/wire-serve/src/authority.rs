@@ -23,9 +23,10 @@
 //! ([`crate::publish`]); the
 //! recovery WORK between [`AuthorityLease::begin_takeover`] and
 //! [`Takeover::ready`] is the caller's, this machine enforces only its
-//! position in the order. The §2.4 downgrade fence is B-03's, activated at
-//! the cutover. Until that cutover the live write door keeps its interim
-//! flock law — nothing here rewires it.
+//! position in the order. The §2.4 downgrade fence (B-03) landed dormant
+//! and is never activated on downgrade grounds — leftover old binaries
+//! are deleted, not fenced. Until cutover the live write door keeps its
+//! interim flock law — nothing here rewires it.
 //!
 //! Contract law 11, claimed exactly: the lease excludes COOPERATING Meridian
 //! publishers only. Editors, git, and arbitrary bash do not honor it and

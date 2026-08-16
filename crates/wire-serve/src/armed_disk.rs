@@ -73,7 +73,7 @@ impl PageSource for DiskPages<'_> {
 }
 
 /// Resolve the armed law governing a write at `at_path`, reading the marker,
-/// the artifact, and the pinned pages from disk. The one call both hosts make.
+/// the artifact, and the pinned pages from disk. The one call the serve path makes.
 #[must_use]
 pub fn resolve_at(root: &fs::WorkspaceRoot, at_path: &str) -> policy::ArmedLaw {
     let pages = DiskPages::new(root);

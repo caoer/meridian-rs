@@ -1,13 +1,12 @@
 //! B-03 crash-phase × filesystem matrix — the in-process cells.
 //!
-//! The §4.7 amendment-3 obligation (authority contract §2.4, carried as a
-//! GATE): the downgrade fence proven per supported filesystem, through every
-//! crash phase, against the pinned old binary. This file proves the LOCK-PATH
-//! half in-process: [`fs::WriteLock::acquire`] in this tree IS the legacy
-//! open §2.4 cites (create/write `OpenOptions` then flock — unchanged by this
-//! card), so driving it against every activation rung drives the old binary's
-//! exact lock path. The process-boundary half (the pinned `mrd` binary
-//! refusing a real `put`) lives in `crates/mrd/tests/downgrade_fence_old_binary.rs`.
+//! The fence is dormant (ZT: not a cutover blocker; no old-binary users;
+//! tombstone never activates; no-return is B-04). This file keeps the
+//! mechanism proven: [`fs::WriteLock::acquire`] in this tree is the
+//! create/write `OpenOptions` then flock that the fence is built against, so
+//! driving it against every activation rung is the lock-path half. The
+//! process-boundary half lives in
+//! `crates/mrd/tests/downgrade_fence_old_binary.rs`.
 //!
 //! Filesystem axis: every cell runs on each discovered fixture root — the
 //! default tempdir (CI: the pipeline workspace; mac: APFS), `/dev/shm` when
@@ -16,8 +15,7 @@
 //! CI log carries the matrix, not a claim.
 //!
 //! NOTHING in this file leaves a fence active anywhere: every fixture is a
-//! throwaway tempdir (the post-landing no-active-fence assertion rides the
-//! mrd-side test and the fleet scan receipt).
+//! throwaway tempdir.
 
 use std::path::Path;
 
@@ -100,7 +98,7 @@ fn fixture_roots() -> Vec<(String, tempfile::TempDir)> {
 }
 
 /// A fresh workspace under `base` whose `write.lock` already exists as a
-/// regular file — the realistic pre-cutover state (a prior writer created
+/// regular file — the realistic unfenced state (a prior writer created
 /// it). `with_lockfile=false` gives the never-written workspace instead.
 fn workspace(base: &Path, with_lockfile: bool) -> WorkspaceRoot {
     let ws = tempfile::tempdir_in(base).expect("workspace dir").keep();
@@ -135,8 +133,8 @@ fn pre_commit_rungs_do_not_fence_and_complete() {
                     WriteLock::acquire(&root)
                         .expect("the legacy open must still succeed before the commit point"),
                 );
-                // Crash recovery: the cutover machine re-runs activation over
-                // its own leftovers and must reach Active.
+                // Crash recovery: re-run activation over its own leftovers
+                // and must reach Active.
                 let held = fence::activate(&root).expect("re-run completes from the crash state");
                 assert_eq!(
                     fence::status(&root).expect("legal state"),

@@ -88,7 +88,7 @@ fn hpath_segment_key_set_is_frozen() {
 /// more: `storage` and `workspace`, the resident-daemon binding facts populated
 /// by the daemon host only (no `docs/` amendment declares them — their standing
 /// on a v2 handshake rests on the type's own doc); and `identity`, the v3-only
-/// build identity from `docs/wire-contract.md`, which both hosts populate under
+/// build identity from `docs/wire-contract.md`, which the daemon populates under
 /// a negotiated v3 session only.
 #[test]
 fn hello_body_key_set_is_frozen_plus_the_two_daemon_binding_fields_and_identity() {

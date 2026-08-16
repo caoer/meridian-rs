@@ -1,6 +1,6 @@
 //! Reaction-mode evaluation for one landed document change.
 //!
-//! Shared feeder leaf for both hosts (Law 3): resolves armed hooks for a landed
+//! Shared feeder leaf (Law 3): resolves armed hooks for a landed
 //! change from the same before/after model states, evaluates them, and reports
 //! faults. Does not interpret `how:`, deliver an intent, or claim delivery.
 //! Resolution is one call (`resolve_armed_law`); the once-armed marker is the
