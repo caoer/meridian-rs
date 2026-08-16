@@ -425,16 +425,58 @@ pub(crate) fn answer_links(
 
 /// Does this answer depend on a question the daemon cannot ask? The daemon's warm state is one
 /// workspace corpus with no mount authority, so it reports every rooted spelling `unresolved` —
-/// wrong for a bound target, a silent non-refusal for an unbound one. The in-process path holds
-/// the mount table, so it answers both correctly. Gates on the answer, not a pre-flight scan.
+/// wrong for a bound target, a silent non-refusal for a declared-but-unreachable one. The
+/// in-process path holds the mount table, so it answers both correctly. Gates on the answer,
+/// not a pre-flight scan.
+///
+/// Gated on the table's OWN names ([`addr::head_names_declared_root`]), never the bare lexical
+/// `:` — an external URI trips the lexical test too (`[[https://…]]` has `https:` in its head),
+/// and one such wikilink then threw away the whole warm answer for a full ephemeral rebuild
+/// that only says "https is not a mounted root" (measured 137 s on an 11.5k-file vault over
+/// 6 URL-shaped wikilinks). A head the table does not declare stays `unresolved` exactly as
+/// the daemon reported it — the ambient answer for a spelling no address here can reach.
 fn daemon_answer_needs_the_address_plane(body: &Value) -> bool {
+    needs_address_plane(body, declared_mount_set)
+}
+
+/// [`daemon_answer_needs_the_address_plane`] with the table load injectable. The table is
+/// loaded once, and only when at least one unresolved head carries a `:` (the common body has
+/// none, and pays nothing); `None` — the config would not resolve or the table would not
+/// bind — keeps the OLD posture and degrades, so a broken config never silently widens what
+/// the daemon may answer.
+fn needs_address_plane(body: &Value, table: impl FnOnce() -> Option<addr::MountSet>) -> bool {
+    let mut rooted = unresolved_keys(body)
+        .filter(|link| addr::head_carries_root_separator(link))
+        .peekable();
+    if rooted.peek().is_none() {
+        return false;
+    }
+    let Some(set) = table() else {
+        return true;
+    };
+    rooted.any(|link| addr::head_names_declared_root(link, &set))
+}
+
+/// Every `unresolved` key across the body's files — the spellings the daemon could not
+/// resolve, verbatim.
+fn unresolved_keys(body: &Value) -> impl Iterator<Item = &str> {
     body.get("files")
         .and_then(Value::as_object)
         .into_iter()
         .flatten()
         .filter_map(|(_, edges)| edges.get("unresolved").and_then(Value::as_object))
         .flat_map(serde_json::Map::keys)
-        .any(|link| addr::head_carries_root_separator(link))
+        .map(String::as_str)
+}
+
+/// The mount table's name projection, table-only: a config parse — no per-root corpus is
+/// built (`load_mounts_for` narrows the corpora; this needs none at all). `None` when the
+/// config will not resolve or the table will not bind; the caller degrades rather than guess
+/// at a table it cannot read.
+fn declared_mount_set() -> Option<addr::MountSet> {
+    let resolution = config::resolve(&config::Env::from_process()).ok()?;
+    let table = resolution.bind().ok()?;
+    Some(table.projection())
 }
 
 /// Try the whole daemon path: resolve the socket, ensure a daemon is up (auto-spawn if not),
@@ -895,9 +937,62 @@ pub(crate) fn render_wire_error(error: &ErrorBody) -> String {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
     use wire::{ErrorBody, ErrorCode, Referrer, ReferrerKind};
 
-    use super::refusal_text;
+    use super::{needs_address_plane, refusal_text};
+
+    /// A body whose one file leaves `links` unresolved.
+    fn body_with_unresolved(links: &[&str]) -> serde_json::Value {
+        let unresolved: serde_json::Map<String, serde_json::Value> =
+            links.iter().map(|l| ((*l).to_owned(), json!(1))).collect();
+        json!({ "files": { "notes/a.md": { "unresolved": unresolved } } })
+    }
+
+    /// URL-shaped wikilinks no table declares keep the daemon's answer — the
+    /// exact bodies that used to cost a whole-corpus ephemeral rebuild.
+    #[test]
+    fn undeclared_url_heads_keep_the_daemon_answer() {
+        let body = body_with_unresolved(&[
+            "https://example.com",
+            "meridian://x/y",
+            "mailto:someone@host",
+        ]);
+        assert!(
+            !needs_address_plane(&body, || Some(addr::MountSet::new([]))),
+            "no declared root in any head — the ambient `unresolved` stands",
+        );
+    }
+
+    /// A head the table declares still degrades: the daemon's `unresolved` is
+    /// wrong for a bound target and hides the refusal for an unreachable one.
+    #[test]
+    fn declared_heads_still_take_the_address_plane() {
+        let sessions = addr::MountName::parse("sessions").unwrap();
+        let body = body_with_unresolved(&["https://example.com", "sessions:24-01/notes.md"]);
+        assert!(
+            needs_address_plane(&body, || Some(addr::MountSet::new([sessions]))),
+            "a declared head is the address plane's to answer",
+        );
+    }
+
+    /// An unreadable table keeps the OLD posture: any rooted head degrades.
+    /// A broken config must never silently widen what the daemon may answer.
+    #[test]
+    fn an_unreadable_table_degrades_every_rooted_head() {
+        let body = body_with_unresolved(&["https://example.com"]);
+        assert!(needs_address_plane(&body, || None));
+    }
+
+    /// No rooted head anywhere: served from the daemon, and the table is
+    /// never loaded at all.
+    #[test]
+    fn ambient_bodies_never_load_the_table() {
+        let body = body_with_unresolved(&["plain-page", "a/b.md"]);
+        assert!(!needs_address_plane(&body, || {
+            panic!("no rooted head — the table load must not run")
+        }));
+    }
 
     /// The human face keeps the message's promise: a `remove_refused` renders
     /// the `referrers` rows the `--json` face serves — each referring file,
