@@ -6,6 +6,8 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
+mod common;
+
 fn mrd_bin() -> &'static str {
     env!("CARGO_BIN_EXE_mrd")
 }
@@ -18,6 +20,12 @@ struct Sandbox {
     home: PathBuf,
     ws: PathBuf,
     config: PathBuf,
+}
+
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        common::reap_daemon(&self.cache_home);
+    }
 }
 
 /// A `MERIDIAN.md` mount table binding `sessions` to `dir` under the Obsidian
@@ -83,7 +91,7 @@ impl Sandbox {
             .env("XDG_CACHE_HOME", &self.cache_home)
             .env("HOME", &self.home)
             .env("MERIDIAN_CONFIG", &self.config)
-            .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
+            .env("MERIDIAN_DAEMON_BIN", mrd_bin())
             .env_remove("MERIDIAN_WORKSPACE");
         cmd
     }
@@ -93,8 +101,12 @@ impl Sandbox {
     }
 
     fn put(&self, args: &[&str], edits: &str) -> Output {
+        let mut owned: Vec<&str> = args.to_vec();
+        if !owned.iter().any(|a| *a == "--force") {
+            owned.push("--force");
+        }
         let mut child = self
-            .command(args)
+            .command(&owned)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

@@ -98,9 +98,14 @@ mrd put <PATH> [--dry | --validate] [--force] [--actor A] [--now T]
  the batch write: the edits ride stdin as a BARE JSON
  array — the VALUE of the wire §4.4 `edits` field, not
  the request object around it (id / op / path are
- argv's here) — through the production splice
- choke-point (CAS + armed gate + write flock). The face
- teaches the grammar itself: `--help` states the target
+ argv's here) — as a wire `splice` to the running
+ daemon (authenticated IPC; no direct-publication
+ fallback). The daemon must come up (`mrd daemon`, or
+ the next call auto-spawns it). Scripts that used to
+ write with no daemon now need the daemon up. A
+ guardless put is a wire client: fingerprint-or-force
+ applies (`--force` or `if_node_rev`). The face teaches
+ the grammar itself: `--help` states the target
  shapes ({"hpath":[…]} / {"anchor":"…"} / {"fm_key":"…"})
  and the nested edit shapes ({"match":{"old","new"}} /
  {"put":{"at","text"}}) with a working batch, and a
@@ -122,9 +127,9 @@ mrd rm <PAGE> --rev <FILE_REV> [--if-fingerprint FP] [--dry] [--actor A]
  [--now T] [--json]
  guarded file death (wire-contract § A.3 remove door):
  the write model's third mutation beside `new` (birth)
- and `put` (edit), through the production death
- choke-point (remove-what-you-read CAS + in-flock
- referential check + armed gate + write flock). `--rev`
+ and `put` (edit), through the daemon `remove` door over IPC
+ (remove-what-you-read CAS + referential check + armed
+ gate; no direct-write fallback). `--rev`
  is the page's whole-file rev from a prior read,
  REQUIRED — the engine demands it from every origin and
  there is no `--force` on this door. A page with inbound
@@ -390,15 +395,19 @@ law (a `frag` scopes the subtree; it is not a content selector), but the usage
 line above spells `<PATH>[#FRAG]` beside `[--section SEL]` without separating
 them, so an agent reaching for `#FRAG` to read a section gets a map at exit 0.
 
-**`mrd put` here is IN-PROCESS, so two wire demands do not reach it.** A
-guardless `--dry` returns the armed diff and never `guard_required`: § A.1's
-fingerprint-or-force demand binds WIRE doors, and this face is outside its
-scope by §3.3 (one wire door). And an in-process commit rides no daemon epoch,
-so it serves `seq:0` — §7.1's `seq` is per-daemon-epoch, and there is no epoch
-here to count within. Neither is a CLI defect and neither is a general
-statement about the engine: **the wire-door guard demand and the `seq` ladder
-are untested at this face and belong to the MCP phase.** Do not carry a `seq`
-expectation from this face onto a daemon-backed one.
+**`mrd put` / `mrd pin` / `mrd rm` / `mrd retire mark` are wire clients.**
+They talk to the running daemon over authenticated IPC (the same hello +
+socket-law identity check the script entry already uses). There is no
+direct-publication fallback: a down daemon is a taught refusal (exit 2),
+never a local write. Auto-spawn still runs; if the daemon cannot come up
+the face names that fact and the recovery (`mrd daemon`, shorten
+`XDG_CACHE_HOME` when sun_path is the cause). A guardless put is now
+inside § A.1's fingerprint-or-force demand — pass `--force` or
+`if_node_rev`. `--dry` is the daemon rehearsal; the old in-process
+unified candidate-diff was never a wire field and does not ride. The
+old `workspace_busy` class (LOCK_EX|LOCK_NB on the CLI process) left
+this path with the direct lane. A commit now rides the daemon epoch, so
+`seq` is the ring's, not `0`.
 
 **A `--json` face answers `{workspace, error}` on EVERY leg that can refuse
 (settled 2026-08-09; was an open asymmetry).** `mrd put --json` already did;
@@ -556,8 +565,8 @@ every other write uses: one flock, one rename (`wire-contract.md`
  or a way to spell an identity the process does not have.
 - **Exit triad:** 0 pinned (or `--dry` rehearsed) / 1 refused
  (`read_mint_required`, `pin_target_missing`, `write_conflict`,
- `workspace_busy`, an armed gate refusal — the engine's verbatim message) / 2
- bad invocation.
+ an armed gate refusal — the engine's verbatim message) / 2
+ bad invocation (including a down daemon). The write is IPC, same as `mrd put`.
 
 A pin written through the resident daemon or MCP is gated: the actor must have
 read that exact selector in this session, in mode `sections`. "You cannot attest

@@ -229,7 +229,7 @@ impl Sandbox {
         assert!(init.status.success(), "mrd init: {}", said(&init));
         let put = self.run_stdin(
             &self.ws,
-            &["put", "plan.md"],
+            &["put", "plan.md", "--force"],
             "[{\"target\":{\"hpath\":[{\"h\":\"Plan\"},{\"h\":\"Goals\"}]},\
               \"edit\":{\"match\":{\"old\":\"alpha\",\"new\":\"alpha prime\"}}}]",
         );

@@ -1,15 +1,14 @@
 //! B-03 crash-phase × filesystem matrix — the pinned-old-binary process cells.
 //!
 //! The binary this file drives (`CARGO_BIN_EXE_mrd`, sha256 printed per run)
-//! IS the old direct-writer shape the authority contract §2.4 fences: `mrd
-//! put` invokes the writer in-process and takes `.meridian/write.lock` with
-//! create/write semantics — the daemon-routed B write plane does not exist in
-//! this tree yet (merged plan §6 step 6 lands after this card). Every cell
-//! runs that real binary over its process boundary against a fence rung and
-//! proves the §4.7 amendment-3 obligation: past the commit point it cannot
-//! take `write.lock` and cannot mint an old-law root (bytes unchanged, no
-//! receipt, typed refusal); before the commit point it still commits normally
-//! (no early activation — the no-rollback error class).
+//! drives the current `mrd` binary over its process boundary. CLI writes now
+//! route over IPC (card cli-ipc-routing); the fence still holds because the
+//! daemon publish path opens `.meridian/write.lock` (interim flock law until
+//! parallel-commits). Every cell proves the §4.7 amendment-3 obligation: past
+//! the commit point the write cannot take `write.lock` and cannot mint an
+//! old-law root (bytes unchanged, no receipt, typed refusal); before the
+//! commit point it still commits normally (no early activation — the
+//! no-rollback error class).
 //!
 //! The in-process half of the matrix (every rung, adversarial cells) lives in
 //! `crates/fs/tests/downgrade_fence.rs`.
@@ -23,6 +22,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use fs::fence::{self, ActivationPhase, FenceStatus};
+
+mod common;
 
 fn mrd_bin() -> &'static str {
     env!("CARGO_BIN_EXE_mrd")
@@ -125,6 +126,12 @@ struct Sandbox {
     home: PathBuf,
 }
 
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        common::reap_daemon(&self.cache_home);
+    }
+}
+
 impl Sandbox {
     fn new(base: &Path) -> Self {
         let cache_home = base.join("xdg-cache");
@@ -133,9 +140,8 @@ impl Sandbox {
         Self { cache_home, home }
     }
 
-    /// A marked workspace holding `doc.md`. The daemon is spawn-impossible on
-    /// purpose: the write degrades in-process — the exact legacy direct shape
-    /// the fence targets.
+    /// A marked workspace holding `doc.md`. Writes go through the live daemon
+    /// (CLI is IPC); the fence still trips on the daemon's lock acquire.
     fn workspace(&self, base: &Path, name: &str) -> PathBuf {
         let ws = base.join(name);
         std::fs::create_dir_all(&ws).expect("mkdir");
@@ -155,7 +161,7 @@ impl Sandbox {
             .current_dir(cwd)
             .env("XDG_CACHE_HOME", &self.cache_home)
             .env("HOME", &self.home)
-            .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
+            .env("MERIDIAN_DAEMON_BIN", mrd_bin())
             .env_remove("MERIDIAN_WORKSPACE");
         let Some(body) = stdin_bytes else {
             return cmd.output().expect("spawn mrd");
@@ -214,7 +220,7 @@ fn old_binary_matrix_across_fence_rungs() {
         let ws = sb.workspace(base.path(), "pre-commit");
         let root = fs::WorkspaceRoot(std::fs::canonicalize(&ws).expect("canonical"));
         fence::activate_until(&root, ActivationPhase::Staged).expect("stage");
-        let out = sb.run(&ws, &["put", "doc.md"], Some(EDIT_FIRST));
+        let out = sb.run(&ws, &["put", "doc.md", "--force"], Some(EDIT_FIRST));
         assert!(
             out.status.success(),
             "pre-commit rung must not fence on {fs_kind}: {}",
@@ -237,7 +243,7 @@ fn old_binary_matrix_across_fence_rungs() {
             assert_eq!(fence::status(&root).expect("legal"), FenceStatus::Active);
 
             let before = visible_bytes(&ws);
-            let out = sb.run(&ws, &["put", "doc.md"], Some(EDIT_FENCED));
+            let out = sb.run(&ws, &["put", "doc.md", "--force"], Some(EDIT_FENCED));
             assert!(!out.status.success(), "the fenced put must refuse");
             assert_eq!(
                 out.status.code(),
@@ -272,7 +278,7 @@ fn no_door_path_activates_a_fence() {
     let base = tempfile::tempdir().expect("tempdir");
     let sb = Sandbox::new(base.path());
     let ws = sb.workspace(base.path(), "clean");
-    let out = sb.run(&ws, &["put", "doc.md"], Some(EDIT_FIRST));
+    let out = sb.run(&ws, &["put", "doc.md", "--force"], Some(EDIT_FIRST));
     assert!(
         out.status.success(),
         "put: {}",

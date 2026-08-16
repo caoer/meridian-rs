@@ -18,6 +18,8 @@ use std::process::{Command, Output, Stdio};
 
 use serde_json::Value;
 
+mod common;
+
 /// Four top-level keys, so the block grain and the key grain cannot coincide.
 const DOC: &str =
     "---\ntype: note\nstatus: seeded\nowner: zt\ntags: [a, b]\n---\n\n# Alpha\n\nbody\n";
@@ -30,6 +32,12 @@ struct Sandbox {
     tmp: tempfile::TempDir,
     cache_home: PathBuf,
     home: PathBuf,
+}
+
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        common::reap_daemon(&self.cache_home);
+    }
 }
 
 fn sandbox() -> Sandbox {
@@ -51,7 +59,7 @@ impl Sandbox {
             .current_dir(cwd)
             .env("XDG_CACHE_HOME", &self.cache_home)
             .env("HOME", &self.home)
-            .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
+            .env("MERIDIAN_DAEMON_BIN", mrd_bin())
             .env_remove("MERIDIAN_WORKSPACE");
         cmd
     }

@@ -39,6 +39,7 @@ struct Sandbox {
     tmp: tempfile::TempDir,
     cache_home: PathBuf,
     home: PathBuf,
+    daemon: std::sync::Mutex<Option<registry::RunningServer>>,
 }
 
 fn sandbox() -> Sandbox {
@@ -50,6 +51,7 @@ fn sandbox() -> Sandbox {
         tmp,
         cache_home,
         home,
+        daemon: std::sync::Mutex::new(None),
     }
 }
 
@@ -98,13 +100,32 @@ impl Sandbox {
         registry::RunningServer::start(config).expect("the resident daemon starts")
     }
 
+    fn ensure_live(&self) {
+        let mut slot = self.daemon.lock().expect("daemon mutex");
+        if slot.is_none() {
+            *slot = Some(self.start_daemon());
+        }
+    }
+
     fn run(&self, cwd: &Path, args: &[&str]) -> Output {
+        if args
+            .first()
+            .is_some_and(|a| matches!(*a, "put" | "pin" | "rm" | "retire"))
+        {
+            self.ensure_live();
+        }
         self.command(cwd, args).output().expect("spawn mrd")
     }
 
     /// Run with the `put` edits channel on stdin.
     fn run_stdin(&self, cwd: &Path, args: &[&str], stdin_bytes: &str) -> Output {
         use std::io::Write as _;
+        if args
+            .first()
+            .is_some_and(|a| matches!(*a, "put" | "pin" | "rm" | "retire"))
+        {
+            self.ensure_live();
+        }
         let mut child = self
             .command(cwd, args)
             .stdin(Stdio::piped())
@@ -1010,7 +1031,11 @@ fn criterion_4_the_decorate_strip_round_trip_lands_clean_through_the_cli() {
         }}
     }]))
     .expect("edits json");
-    let out = sb.run_stdin(&ws, &["put", "plan.md", "--actor", "agent-scribe"], &edits);
+    let out = sb.run_stdin(
+        &ws,
+        &["put", "plan.md", "--force", "--actor", "agent-scribe"],
+        &edits,
+    );
     assert_eq!(code(&out), 0, "put: {}", said(&out));
 
     let landed = read(&ws, "plan.md");
@@ -1073,7 +1098,7 @@ fn path_a_label_absorption(sb: &Sandbox) {
     assert_eq!(code(&out), 0, "pin: {}", said(&out));
 
     // ── DECORATE: `mrd read` through the ONE host that decorates ─────────────
-    let _daemon = sb.start_daemon();
+    // The pin already started the resident daemon (ensure_live).
     let out = sb.run(
         &ws,
         &["read", "plan.md", "--section", "Plan/Body", "--json"],
@@ -1110,7 +1135,11 @@ fn path_a_label_absorption(sb: &Sandbox) {
         "edit": {"match": {"old": PROSE, "new": format!("draws from {decorated}.")}}
     }]))
     .expect("edits json");
-    let out = sb.run_stdin(&ws, &["put", "plan.md", "--actor", "agent-scribe"], &edits);
+    let out = sb.run_stdin(
+        &ws,
+        &["put", "plan.md", "--force", "--actor", "agent-scribe"],
+        &edits,
+    );
     assert_eq!(code(&out), 0, "put: {}", said(&out));
     for rel in ["plan.md", "guide.md"] {
         let text = read(&ws, rel);
@@ -1149,7 +1178,11 @@ fn path_b_doubled_token(sb: &Sandbox) {
         }}
     }]))
     .expect("edits json");
-    let out = sb.run_stdin(&ws, &["put", "plan.md", "--actor", "agent-scribe"], &edits);
+    let out = sb.run_stdin(
+        &ws,
+        &["put", "plan.md", "--force", "--actor", "agent-scribe"],
+        &edits,
+    );
     assert_eq!(code(&out), 0, "put: {}", said(&out));
     let landed = read(&ws, "plan.md");
     assert!(
@@ -1302,7 +1335,7 @@ fn f4_the_artifact_guard_refuses_a_forged_lock_through_the_ordinary_edit_door() 
     .expect("edits json");
     let out = sb.run_stdin(
         &ws,
-        &["put", "claim.md", "--actor", "agent-mallory"],
+        &["put", "claim.md", "--force", "--actor", "agent-mallory"],
         &edits,
     );
 
