@@ -186,10 +186,16 @@ fn serve_connection(stream: &UnixStream, caps: &[&str], log: &Arc<Mutex<Vec<Valu
             }
             "fingerprint" => {
                 log.lock().expect("log").push(frame.clone());
-                json!({"ok":true,"body":{
-                    "fingerprint":"b3:leaf-token",
-                    "scope": frame.get("scope").cloned().unwrap_or(Value::Null),
-                    "seq":1}})
+                // The §4.7 desync guard: the request's scope pair is echoed
+                // beside the token, whichever spelling rode (absent on the
+                // world mint).
+                let mut body = json!({"fingerprint":"b3:leaf-token","seq":1});
+                for spelling in ["scope", "scope_bytes"] {
+                    if let Some(value) = frame.get(spelling) {
+                        body[spelling] = value.clone();
+                    }
+                }
+                json!({"ok":true,"body": body})
             }
             "splice" => {
                 log.lock().expect("log").push(frame.clone());
@@ -789,6 +795,595 @@ fn put_scope_refuses_when_the_scope_itself_moved() {
     let err = format!("{}{}", stdout_of(&put), stderr_of(&put));
     assert!(
         err.contains("fingerprint_mismatch") || err.contains("the premise at a/target.md moved"),
+        "the refusal names the scoped mismatch: {err}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// scope_bytes: the §5.4 raw-byte spelling on both doors (card
+// scope-bytes-unexposed — before this, no client could send the field the
+// contract advertises)
+// ---------------------------------------------------------------------------
+
+/// RFC 4648 §5 base64url, unpadded — the test's own encoder, so the engine's
+/// decoder is not the instrument proving itself.
+fn base64url(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        let sextets = [n >> 18, (n >> 12) & 63, (n >> 6) & 63, n & 63];
+        for &s in sextets.iter().take(1 + chunk.len() * 4 / 3) {
+            out.push(char::from(ALPHABET[usize::try_from(s).expect("sextet")]));
+        }
+    }
+    out
+}
+
+/// `doc.md` in the raw-byte spelling. §5.4 binds the ENCODING, not the bytes'
+/// UTF-8 validity, so the loop is provable on every filesystem this suite
+/// runs on — APFS refuses to create the non-UTF-8 names the spelling exists
+/// for, but the wire cannot tell where the bytes came from.
+const DOC_B64: &str = "ZG9jLm1k";
+
+/// Under a cap-serving hello the raw-byte premise rides as ONE `guards[]`
+/// entry carrying its token — `scope_bytes` is a top-level field on NO write
+/// door, and no world-grain `if_fingerprint` rides beside it (that second
+/// premise would hold a token minted for the scoped node).
+#[test]
+fn put_scope_bytes_rides_as_one_guards_entry() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let log = Arc::new(Mutex::new(Vec::new()));
+    sb.fake_daemon(CAPS_WITH_FAMILY, &log);
+
+    let out = sb.run(
+        &ws,
+        &[
+            "put",
+            "doc.md",
+            "--if-fingerprint",
+            "b3:leaf-token",
+            "--scope-bytes",
+            DOC_B64,
+            "--json",
+        ],
+        Some(EDIT),
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a raw-byte-scoped put against a cap-serving daemon commits\nstdout: {}\nstderr: {}",
+        stdout_of(&out),
+        stderr_of(&out)
+    );
+
+    let log = log.lock().expect("log");
+    let splices = ops_named(&log, "splice");
+    assert_eq!(
+        splices.len(),
+        1,
+        "exactly one splice rode the wire: {log:?}"
+    );
+    assert_eq!(
+        splices[0]["guards"],
+        json!([{ "scope_bytes": DOC_B64, "fingerprint": "b3:leaf-token" }]),
+        "the premise rides as one guards[] entry: {:?}",
+        splices[0]
+    );
+    assert!(
+        splices[0].get("if_fingerprint").is_none(),
+        "no world-grain premise rides beside the entry: {:?}",
+        splices[0]
+    );
+    assert!(
+        splices[0].get("scope_bytes").is_none() && splices[0].get("scope").is_none(),
+        "scope_bytes is a top-level field on NO write door (§5.4 matrix): {:?}",
+        splices[0]
+    );
+}
+
+/// The §5.4 pair law covers the raw-byte spelling identically: a scope with
+/// no fingerprint is half a premise, refused at parse before any dial.
+#[test]
+fn put_scope_bytes_without_if_fingerprint_is_half_a_premise() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let out = sb.run(
+        &ws,
+        &["put", "doc.md", "--scope-bytes", DOC_B64],
+        Some(EDIT),
+    );
+    let err = stderr_of(&out);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "half a premise is a bad invocation\nstdout: {}\nstderr: {err}",
+        stdout_of(&out)
+    );
+    assert!(
+        err.contains("half a premise"),
+        "the pair-law teaching: {err}"
+    );
+    assert!(
+        err.contains("--if-fingerprint"),
+        "the teaching names the missing half: {err}"
+    );
+    assert!(
+        err.contains("scope_bytes"),
+        "the teaching speaks the raw-byte mint arm: {err}"
+    );
+}
+
+/// One premise, one spelling: both flags refuse at parse — the engine's
+/// premise-pair wall, paid before any dial.
+#[test]
+fn put_scope_and_scope_bytes_are_two_spellings_of_one_node() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let out = sb.run(
+        &ws,
+        &[
+            "put",
+            "doc.md",
+            "--if-fingerprint",
+            "b3:leaf-token",
+            "--scope",
+            "doc.md",
+            "--scope-bytes",
+            DOC_B64,
+        ],
+        Some(EDIT),
+    );
+    let err = stderr_of(&out);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "two spellings of one node is a bad invocation\nstdout: {}\nstderr: {err}",
+        stdout_of(&out)
+    );
+    assert!(
+        err.contains("two spellings"),
+        "the teaching names the fault: {err}"
+    );
+    assert!(
+        err.contains("exactly one"),
+        "the teaching states the §5.4 rule: {err}"
+    );
+}
+
+/// The cap wall covers the raw-byte spelling identically: no
+/// `scoped-guards`, no premise sent, taught refusal at exit 2.
+#[test]
+fn put_scope_bytes_without_the_cap_refuses_taught_and_sends_no_splice() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let log = Arc::new(Mutex::new(Vec::new()));
+    sb.fake_daemon(CAPS_WITHOUT_FAMILY, &log);
+
+    let out = sb.run(
+        &ws,
+        &[
+            "put",
+            "doc.md",
+            "--if-fingerprint",
+            "b3:leaf-token",
+            "--scope-bytes",
+            DOC_B64,
+        ],
+        Some(EDIT),
+    );
+    let err = stderr_of(&out);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "cap-less raw-byte-scoped put is the CLI's own refusal (exit 2)\nstdout: {}\nstderr: {err}",
+        stdout_of(&out)
+    );
+    assert!(
+        err.contains("scoped-guards"),
+        "the teaching names the missing cap: {err}"
+    );
+    assert!(
+        err.contains("--scope-bytes"),
+        "the teaching names the flag that was passed: {err}"
+    );
+    assert!(
+        err.contains("without --scope-bytes"),
+        "the world-grain retry suggestion names the flag: {err}"
+    );
+
+    let log = log.lock().expect("log");
+    assert!(
+        ops_named(&log, "splice").is_empty(),
+        "no splice reached the daemon: {log:?}"
+    );
+}
+
+/// The empty `--scope-bytes` — the unquoted-shell-variable mistake — refuses
+/// taught at parse, before any dial (no daemon runs here).
+#[test]
+fn put_scope_bytes_empty_refuses_taught_before_any_dial() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let out = sb.run(
+        &ws,
+        &[
+            "put",
+            "doc.md",
+            "--if-fingerprint",
+            "b3:leaf-token",
+            "--scope-bytes",
+            "",
+        ],
+        Some(EDIT),
+    );
+    let err = stderr_of(&out);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "an empty scope_bytes is a bad invocation\nstdout: {}\nstderr: {err}",
+        stdout_of(&out)
+    );
+    assert!(
+        err.contains("--scope-bytes is empty"),
+        "the teaching names the flag and the emptiness: {err}"
+    );
+    assert!(
+        err.contains("shell variable"),
+        "the teaching names the measured cause: {err}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// mrd fingerprint: the standalone §4.7 mint door
+// ---------------------------------------------------------------------------
+
+/// The bare mint is the v2-identical base arm: it needs no cap and carries
+/// no spelling.
+#[test]
+fn fingerprint_bare_mints_the_world_token_without_the_cap() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let log = Arc::new(Mutex::new(Vec::new()));
+    sb.fake_daemon(CAPS_WITHOUT_FAMILY, &log);
+
+    let out = sb.run(&ws, &["fingerprint", "--json"], None);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the world mint rides without the cap\nstdout: {}\nstderr: {}",
+        stdout_of(&out),
+        stderr_of(&out)
+    );
+    let frame: Value = serde_json::from_str(&stdout_of(&out)).expect("--json frame");
+    assert_eq!(
+        frame["mint"]["fingerprint"],
+        json!("b3:leaf-token"),
+        "the mint body rides the frame verbatim: {frame}"
+    );
+
+    let log = log.lock().expect("log");
+    let mints = ops_named(&log, "fingerprint");
+    assert_eq!(mints.len(), 1, "exactly one mint exchange: {log:?}");
+    assert!(
+        mints[0].get("scope").is_none() && mints[0].get("scope_bytes").is_none(),
+        "the world mint carries no spelling: {:?}",
+        mints[0]
+    );
+}
+
+/// `mrd fingerprint PATH` rides the §4.7 UTF-8 arm verbatim.
+#[test]
+fn fingerprint_path_rides_the_scope_arm() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let log = Arc::new(Mutex::new(Vec::new()));
+    sb.fake_daemon(CAPS_WITH_FAMILY, &log);
+
+    let out = sb.run(&ws, &["fingerprint", "doc.md", "--json"], None);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the scoped mint serves\nstdout: {}\nstderr: {}",
+        stdout_of(&out),
+        stderr_of(&out)
+    );
+    let frame: Value = serde_json::from_str(&stdout_of(&out)).expect("--json frame");
+    assert_eq!(
+        frame["mint"]["scope"],
+        json!("doc.md"),
+        "the mint echoes the scope it bound (§4.7 desync guard): {frame}"
+    );
+
+    let log = log.lock().expect("log");
+    let mints = ops_named(&log, "fingerprint");
+    assert_eq!(mints.len(), 1, "exactly one mint exchange: {log:?}");
+    assert_eq!(
+        mints[0]["scope"],
+        json!("doc.md"),
+        "the UTF-8 arm rides `scope`: {:?}",
+        mints[0]
+    );
+}
+
+/// `mrd fingerprint --scope-bytes` rides the §4.7 raw-byte arm verbatim —
+/// `scope_bytes` IS a top-level field on the mint door (the one door the
+/// §5.4 matrix admits it on).
+#[test]
+fn fingerprint_scope_bytes_rides_the_raw_byte_arm() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let log = Arc::new(Mutex::new(Vec::new()));
+    sb.fake_daemon(CAPS_WITH_FAMILY, &log);
+
+    let out = sb.run(
+        &ws,
+        &["fingerprint", "--scope-bytes", DOC_B64, "--json"],
+        None,
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the raw-byte mint serves\nstdout: {}\nstderr: {}",
+        stdout_of(&out),
+        stderr_of(&out)
+    );
+    let frame: Value = serde_json::from_str(&stdout_of(&out)).expect("--json frame");
+    assert_eq!(
+        frame["mint"]["scope_bytes"],
+        json!(DOC_B64),
+        "the mint echoes the spelling it bound (§4.7 desync guard): {frame}"
+    );
+
+    let log = log.lock().expect("log");
+    let mints = ops_named(&log, "fingerprint");
+    assert_eq!(mints.len(), 1, "exactly one mint exchange: {log:?}");
+    assert_eq!(
+        mints[0]["scope_bytes"],
+        json!(DOC_B64),
+        "the raw-byte arm rides `scope_bytes` top-level: {:?}",
+        mints[0]
+    );
+    assert!(
+        mints[0].get("scope").is_none(),
+        "one spelling per mint: {:?}",
+        mints[0]
+    );
+}
+
+/// A mint names ONE node: PATH and --scope-bytes together refuse at parse,
+/// before any dial (no daemon runs here).
+#[test]
+fn fingerprint_path_and_scope_bytes_refuse_the_mint_pair() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let out = sb.run(
+        &ws,
+        &["fingerprint", "doc.md", "--scope-bytes", DOC_B64],
+        None,
+    );
+    let err = stderr_of(&out);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "two spellings of one mint is a bad invocation\nstdout: {}\nstderr: {err}",
+        stdout_of(&out)
+    );
+    assert!(err.contains("ONE node"), "the mint-pair teaching: {err}");
+}
+
+/// A scoped mint against a cap-less daemon refuses taught, before any mint
+/// reaches the wire; the world arm is the suggested retry.
+#[test]
+fn fingerprint_scoped_without_the_cap_refuses_taught() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let log = Arc::new(Mutex::new(Vec::new()));
+    sb.fake_daemon(CAPS_WITHOUT_FAMILY, &log);
+
+    let out = sb.run(&ws, &["fingerprint", "doc.md"], None);
+    let err = stderr_of(&out);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a cap-less scoped mint is the CLI's own refusal (exit 2)\nstdout: {}\nstderr: {err}",
+        stdout_of(&out)
+    );
+    assert!(
+        err.contains("scoped-guards"),
+        "the teaching names the missing cap: {err}"
+    );
+    assert!(
+        err.contains("no token was minted"),
+        "the nothing-happened clause: {err}"
+    );
+
+    let log = log.lock().expect("log");
+    assert!(
+        ops_named(&log, "fingerprint").is_empty(),
+        "no mint reached the daemon: {log:?}"
+    );
+}
+
+/// A PATH spelling the §1 path law refuses is the CLI's own refusal, taught,
+/// before any dial (no daemon runs here).
+#[test]
+fn fingerprint_dotdot_refuses_taught_before_any_dial() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let out = sb.run(&ws, &["fingerprint", "../escape.md"], None);
+    let err = stderr_of(&out);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a path-law-violating mint PATH is a bad invocation\nstdout: {}\nstderr: {err}",
+        stdout_of(&out)
+    );
+    assert!(
+        err.contains("§1 path law"),
+        "the teaching names the law: {err}"
+    );
+    assert!(
+        err.contains("no token was minted"),
+        "the nothing-happened clause: {err}"
+    );
+}
+
+/// `--help` is the face the status.md paragraphs claim to teach from.
+#[test]
+fn fingerprint_help_names_both_spellings_and_the_cap() {
+    let out = Command::new(mrd_bin())
+        .args(["fingerprint", "--help"])
+        .output()
+        .expect("mrd fingerprint --help");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "fingerprint --help is a success"
+    );
+    let text = stdout_of(&out);
+    assert!(
+        text.contains("--scope-bytes"),
+        "the fingerprint synopsis names --scope-bytes: {text}"
+    );
+    assert!(
+        text.contains("scoped-guards"),
+        "the fingerprint page names the cap that arms the scoped arms: {text}"
+    );
+}
+
+#[test]
+fn put_help_names_scope_bytes() {
+    let out = Command::new(mrd_bin())
+        .args(["put", "--help"])
+        .output()
+        .expect("mrd put --help");
+    assert_eq!(out.status.code(), Some(0), "put --help is a success");
+    let text = stdout_of(&out);
+    assert!(
+        text.contains("--scope-bytes B64"),
+        "the put synopsis names --scope-bytes: {text}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// scope_bytes against the REAL engine: the full mint → premise loop
+// ---------------------------------------------------------------------------
+
+/// The card's gate, engine as witness: mint a token through the raw-byte
+/// arm, birth a disjoint sibling, put pinned on that token through a
+/// raw-byte guards[] entry — commits.
+#[test]
+fn scope_bytes_full_loop_survives_a_disjoint_sibling_birth() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    std::fs::create_dir_all(ws.join("a")).expect("mkdir");
+    std::fs::write(ws.join("a/target.md"), DOC).expect("seed");
+    let _daemon = sb.real_daemon();
+
+    let b64 = base64url(b"a/target.md");
+    let mint = sb.run(&ws, &["fingerprint", "--scope-bytes", &b64, "--json"], None);
+    assert_eq!(
+        mint.status.code(),
+        Some(0),
+        "the raw-byte mint serves\nstdout: {}\nstderr: {}",
+        stdout_of(&mint),
+        stderr_of(&mint)
+    );
+    let frame: Value = serde_json::from_str(&stdout_of(&mint)).expect("--json frame");
+    let token = frame["mint"]["fingerprint"]
+        .as_str()
+        .expect("the serving daemon mints the node token")
+        .to_owned();
+    assert_ne!(token, "absent", "the seeded node exists: {frame}");
+    assert_eq!(
+        frame["mint"]["scope_bytes"],
+        json!(b64),
+        "the mint echoes the raw-byte spelling it bound: {frame}"
+    );
+
+    std::fs::create_dir_all(ws.join("b")).expect("mkdir");
+    std::fs::write(ws.join("b/mover.md"), "# Mover\n\ndisjoint.\n").expect("birth");
+
+    let put = sb.run(
+        &ws,
+        &[
+            "put",
+            "a/target.md",
+            "--if-fingerprint",
+            &token,
+            "--scope-bytes",
+            &b64,
+        ],
+        Some(EDIT),
+    );
+    assert_eq!(
+        put.status.code(),
+        Some(0),
+        "a disjoint sibling must not refuse a raw-byte-scoped put\nstdout: {}\nstderr: {}",
+        stdout_of(&put),
+        stderr_of(&put)
+    );
+    let bytes = std::fs::read_to_string(ws.join("a/target.md")).expect("after");
+    assert!(
+        bytes.contains("one two three four"),
+        "the edit reached disk: {bytes}"
+    );
+}
+
+/// The counter-proof: a write that moves the raw-byte premise's node still
+/// refuses at the engine.
+#[test]
+fn scope_bytes_premise_refuses_when_the_scope_itself_moved() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    std::fs::create_dir_all(ws.join("a")).expect("mkdir");
+    std::fs::write(ws.join("a/target.md"), DOC).expect("seed");
+    let _daemon = sb.real_daemon();
+
+    let b64 = base64url(b"a/target.md");
+    let mint = sb.run(&ws, &["fingerprint", "--scope-bytes", &b64, "--json"], None);
+    assert_eq!(mint.status.code(), Some(0), "{}", stderr_of(&mint));
+    let frame: Value = serde_json::from_str(&stdout_of(&mint)).expect("--json frame");
+    let token = frame["mint"]["fingerprint"]
+        .as_str()
+        .expect("minted")
+        .to_owned();
+
+    std::fs::write(
+        ws.join("a/target.md"),
+        format!("{DOC}\nout-of-band tail.\n"),
+    )
+    .expect("move the scope");
+
+    let put = sb.run(
+        &ws,
+        &[
+            "put",
+            "a/target.md",
+            "--if-fingerprint",
+            &token,
+            "--scope-bytes",
+            &b64,
+        ],
+        Some(EDIT),
+    );
+    assert_eq!(
+        put.status.code(),
+        Some(1),
+        "the moved premise refuses at the engine\nstdout: {}\nstderr: {}",
+        stdout_of(&put),
+        stderr_of(&put)
+    );
+    let err = format!("{}{}", stdout_of(&put), stderr_of(&put));
+    assert!(
+        err.contains("fingerprint_mismatch") || err.contains("moved"),
         "the refusal names the scoped mismatch: {err}"
     );
 }
