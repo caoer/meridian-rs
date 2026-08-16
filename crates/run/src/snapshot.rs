@@ -14,8 +14,9 @@ use crate::fence::GuaranteeClass;
 /// carried as a report fact: the computed authority and what the guarded
 /// snapshot observed. No block had run when it landed, so there is nothing
 /// to accuse — the run plane reports it exactly like an in-window delta and
-/// refuses only under the caller's fatal opt-in ([`ExecBracket::open`]).
-/// The change itself stands as external change, never rolled back (ruling 2).
+/// never refuses it (no-guard ruling, 2026-08-15: a foreign advance
+/// re-derives and proceeds). The change itself stands as external change,
+/// never rolled back (ruling 2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreExecDivergence {
     /// The flock-computed `root_after_phase1` (#19 — the authority for what
@@ -50,21 +51,12 @@ pub struct ExecBracket {
 
 /// Why the bracket refused to open — the exec never starts. Nothing ran; a
 /// committed phase-1 pre-exec receipt stands and the orphan lint finds it.
+/// Every variant is about the OBSERVATION itself, never a premise: the
+/// former `PreExecMismatch` refusal retired with the plane's world pin
+/// (no-guard ruling, 2026-08-15) — a divergence is handed back as a report
+/// fact by [`ExecBracket::open_observing`] instead.
 #[derive(Debug)]
 pub enum OpenRefusal {
-    /// The observed pre-exec tree does not fold to the flock-computed
-    /// `root_after_phase1`: an out-of-band change landed BETWEEN the phase-1
-    /// commit and the bracket opening. Distinct from the in-window delta by
-    /// construction — and no block ran, so there is nothing to accuse. Since
-    /// card run-preexec-severity this refusal is minted only under the
-    /// caller's fatal opt-in ([`ExecBracket::open`]); the default path
-    /// observes and reports instead ([`ExecBracket::open_observing`]).
-    PreExecMismatch {
-        /// The computed authority (#19).
-        expected: MerkleRoot,
-        /// What the guarded snapshot observed on disk.
-        observed: MerkleRoot,
-    },
     /// The guarded snapshot refused (symlink, #25) or failed (I/O).
     Guard(GuardError),
 }
@@ -72,11 +64,6 @@ pub enum OpenRefusal {
 impl std::fmt::Display for OpenRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            OpenRefusal::PreExecMismatch { expected, observed } => write!(
-                f,
-                "out-of-band change before exec window: computed root_after_phase1 {} != observed pre-exec root {}",
-                expected.0, observed.0,
-            ),
             OpenRefusal::Guard(e) => e.fmt(f),
         }
     }
@@ -163,34 +150,12 @@ impl ExecBracket {
     /// never from the language alone).
     pub const GUARANTEE_CLASS: GuaranteeClass = GuaranteeClass::Detected;
 
-    /// Open the bracket against the flock-computed `root_after_phase1`.
-    ///
-    /// # Errors
-    /// [`OpenRefusal::PreExecMismatch`] when the observed tree does not fold
-    /// to the computed root; [`OpenRefusal::Guard`] when the guarded
-    /// snapshot refuses (symlink) or fails (I/O). Either way the exec must
-    /// not start.
-    pub fn open(
-        root: &fs::WorkspaceRoot,
-        root_after_phase1: &MerkleRoot,
-    ) -> Result<ExecBracket, OpenRefusal> {
-        let (bracket, observed) = Self::open_observing(root, &mut DigestMemo::new())?;
-        if observed != *root_after_phase1 {
-            return Err(OpenRefusal::PreExecMismatch {
-                expected: root_after_phase1.clone(),
-                observed,
-            });
-        }
-        Ok(bracket)
-    }
-
     /// Open the bracket against whatever tree is actually on disk, handing
-    /// back the observed pre-exec root instead of judging it. The DEFAULT
-    /// severity path (card run-preexec-severity): the caller compares the
+    /// back the observed pre-exec root instead of judging it — the ONLY
+    /// posture on this door (no-guard ruling): the caller compares the
     /// observed root against the flock-computed `root_after_phase1` and
-    /// REPORTS a divergence as [`PreExecDivergence`] — same trust posture as
-    /// the in-window delta, refusal only under the fatal opt-in (which rides
-    /// [`ExecBracket::open`], where the compare still refuses).
+    /// REPORTS a divergence as [`PreExecDivergence`], same trust posture as
+    /// the in-window delta.
     ///
     /// Byte reads are served through `memo` (see [`fs::digestmemo`]).
     ///
@@ -228,23 +193,24 @@ impl ExecBracket {
     /// clean windows must refuse step N even though each window's own
     /// bracket was clean. Multi-step activation (the U7 #23 checklist) MUST
     /// open every bracket after the first through this form, with step 1's
-    /// [`ExecBracket::config_state`].
+    /// [`ExecBracket::config_state`]. The observed root is handed back, not
+    /// judged (no-guard ruling) — the config bracket is governed-change law,
+    /// not a world premise.
     ///
     /// # Errors
-    /// Everything [`ExecBracket::open`] refuses, plus
+    /// Everything [`ExecBracket::open_observing`] refuses, plus
     /// [`OpenRefusal::Guard`] carrying [`GuardError::ConfigChanged`] when
     /// the captured config differs from `run_config`.
     pub fn open_pinned(
         root: &fs::WorkspaceRoot,
-        root_after_phase1: &MerkleRoot,
         run_config: &ConfigState,
-    ) -> Result<ExecBracket, OpenRefusal> {
-        let bracket = Self::open(root, root_after_phase1)?;
+    ) -> Result<(ExecBracket, MerkleRoot), OpenRefusal> {
+        let (bracket, observed) = Self::open_observing(root, &mut DigestMemo::new())?;
         bracket
             .guard
             .verify_config(run_config)
             .map_err(OpenRefusal::Guard)?;
-        Ok(bracket)
+        Ok((bracket, observed))
     }
 
     /// The captured config state — pin step 1's state and open every later

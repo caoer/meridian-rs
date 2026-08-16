@@ -5,9 +5,7 @@
 
 use std::ops::Range;
 
-use model::{
-    CandidateDocument, Document, EditKind, MerkleRoot, PutAt, SpliceRequest, Target, ValidatedBatch,
-};
+use model::{CandidateDocument, Document, EditKind, PutAt, SpliceRequest, Target, ValidatedBatch};
 
 use crate::executor::ExecError;
 
@@ -173,7 +171,6 @@ pub(crate) fn strip_candidate(
     doc: &Document,
     before_facts: &[Target],
     page: &str,
-    live_root: &MerkleRoot,
     batch: &mut SpliceRequest,
     sealed: &mut ValidatedBatch,
     after_doc: &mut CandidateDocument,
@@ -230,7 +227,7 @@ pub(crate) fn strip_candidate(
         *payload = remove_ranges(payload, ranges);
     }
 
-    *sealed = match model::validate_batch(doc, Some(live_root), batch, None) {
+    *sealed = match model::validate_batch(doc, None, batch, None) {
         model::SpliceVerdict::Validated(b) => b,
         refused => {
             return Err(ExecError::FpClaim {
