@@ -46,7 +46,6 @@ fn dispatch_of<'a>(
             path: "receipts/2026-07-22.md".to_owned(),
             anchor: "r-000001".to_owned(),
         }),
-        takeover: false,
         limits: EvalLimits::default(),
         actor: None,
         delta: None,

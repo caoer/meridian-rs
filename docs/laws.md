@@ -725,3 +725,42 @@ implements it; the merkle-spec half is `node-rev-merkle-spec.md` §6.3.
   compare — hash tokens stay epoch-free, cursors do not.
 - **The home is the implementing card's to fix** (the registry/serve seam);
   the LAW binds whichever home: no second place may advance any of the four.
+
+Construction of the linearized step (card `parallel-commits`, contract pin
+`95f7c248101e6ff6…` §3–§6 / §11 / §15) — the publication half of
+construction step 6; the lease half is `authority.rs`:
+
+- **Reservation algebra.** Admission atomically reserves the complete
+  premise/read region set `R` and the complete physical write region set
+  `W`. Compatibility is conventional OCC: `R/R` is compatible; `W/W`,
+  `R/W`, and `W/R` conflict on a spatial intersection. A root read
+  intersects every write; a folder premise intersects writes at or under
+  it; a point-file premise does not block a disjoint folder; an absence
+  premise reserves the exact parent/name edge. Target-only reservation is
+  insufficient when a root, ancestor, absence, enumeration, selector, or
+  sql premise influenced the plan. Overlapping callers wait inside the
+  authority (never `workspace_busy`); disjoint callers never wait.
+  Staging may precede the reservation; the reservation is held from final
+  reverify through visible renames, the state-owner step, and durable
+  finalization.
+- **Durable intent.** Before the first visible rename, each transaction
+  creates one checksummed `O_EXCL` intent (`.meridian/intents/<txn>`,
+  outside the hash domain). After that durable decision no error is a
+  refusal: it is `commit_unknown` until recovery proves complete or
+  restores the complete declared set. A destination matching neither old
+  nor new identity is `recovery_ambiguous` (quarantine, never guess).
+  Group commit may share a durability flush only if per-member decision
+  ordering and failure attribution survive — a member rejected before
+  the group manifest is a clean individual refusal; an indeterminate
+  member is `commit_unknown` under its own id; one member's semantic
+  error never lands on a neighbor.
+- **Pre-image verify is the second-writer refusal.** Under B the write
+  flock is not on the publish path. The `apply_batch` pre-image compare
+  (content + receipt) is what refuses a second in-process writer inside
+  the one authority, so the two-file pairing cannot become silent loss.
+  Editors, git, and bash remain the stated external-race residual.
+- **The µs step.** The state owner applies each settled path delta to
+  the then-current authenticated tree (never the planning `root_before`)
+  and assigns a contiguous `root`/`seq`/frame. There is no disk sync in
+  that mutex. Staging, validation, and all durability I/O run outside it,
+  in parallel across disjoint writers.

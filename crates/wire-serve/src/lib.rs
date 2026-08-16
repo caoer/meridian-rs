@@ -10,6 +10,7 @@
 //! cycle — the one wire door since the sidecar's DROP, §3.3) — never the classification.
 
 pub mod armed_disk;
+pub mod authority;
 pub mod check_write;
 pub mod decode;
 pub mod gate;
@@ -18,6 +19,7 @@ pub mod ladder;
 pub mod mount_corpus;
 pub mod plan;
 pub(crate) mod positions;
+pub mod publish;
 pub mod reaction;
 pub mod read;
 pub mod rev;
