@@ -748,6 +748,8 @@ The version vocabulary inside the cursor family stays split (§12.3): a token fr
 
 *(Amended 2026-08-16 — the malformed premise value; dogfood break #7.)* A fourth fact is the REQUEST, not the world: a supplied premise value that is neither the reserved `absent` (§5.6) nor a grammatical `Root`-family token (the merkle-spec §4.2 spelling — `b3` + bijective-base-26 suffix + `:` + 64 lowercase hex) refuses `bad_request` (recovery `fix`) at the premise rung, before any fold is compared. The teaching quotes the raw bytes debug-quoted, so damage the prose renders invisible — one leading space on an otherwise valid token, the measured case — shows as a byte. Comparing a damaged spelling instead would answer `fingerprint_mismatch` with an expected/live pair that can render character-identical and a re-read remedy that loops: the re-read returns the same value the caller already holds. `fingerprint_mismatch` therefore claims exactly one thing: a WELL-FORMED token was compared against the live fold and differed. This wall touches no version family (§12.3) — a grammatical token from a retired or future family is never malformed — and it is value grammar at the existing rung, never a permission plane.
 
+*(Amended 2026-08-16 — the token premise at a node-less scope; dogfood break #6.)* A WELL-FORMED token premise whose scope holds no live node refuses `scope_does_not_cover` (recovery `fix`; the refusal carries `scope`, and `uncovered` stays §5.5's target-set extra — this mint home names no target set) — never `fingerprint_mismatch`, and never `scope_unresolved` (§5.6 bars it: lawful absence is not an unresolvable path). From `(token, absent)` the engine cannot tell "the node was removed since the mint" from "the caller paired a real token with a scope that never held one" — the measured break was the second — and the retired absent-actual teaching narrated the first as fact ("it was emptied or removed") with a `resync` remedy that re-reads a path that serves nothing, so the recovery could not terminate. What the engine KNOWS is coverage vocabulary: no node lives at the scope, so no token premise can hold there — a node-less scope's one lawful premise is `absent` (§5.6). The remedy is the mint, and it serves both worlds: `fingerprint{scope}` answers what the scope holds NOW (`absent` for lawful emptiness), and the caller re-pairs the premise or fixes the scope — one act, terminating whether the node was removed or never existed. A door that would narrate removal must actually know the history; no door today does, so a genuine post-mint removal draws this same refusal (register text: §8.2). The reverse seam is untouched: an `absent` premise against a live node stays `fingerprint_mismatch` (§5.6's creation-guard collision) — there both compared facts are live, and the re-read the teaching orders serves a node that exists.
+
 ## §6 Receipts — outcome as fact
 
 ### §6.1 The law
@@ -913,7 +915,7 @@ Every error frame carries `code` + `recovery` from the CLOSED six-class enum; ea
 
 | class | meaning | codes |
 |---|---|---|
-| `fix` | your request is wrong; change it | `bad_request`, `unknown_op`, `bad_path`, `no_match`, `not_unique`, `would_corrupt{family,lost?,cause?,target?}`, `ambiguous_ref{candidates}`, `remove_refused{referrers}` (§ A.3 remove door — inbound references exist; unlink the named referrers, then resend), `scope_does_not_cover{uncovered}` (§5.5 — coverage failed; the extra names the uncovered target set), `scope_unresolved` (§5.6 — the path cannot hold a token) |
+| `fix` | your request is wrong; change it | `bad_request`, `unknown_op`, `bad_path`, `no_match`, `not_unique`, `would_corrupt{family,lost?,cause?,target?}`, `ambiguous_ref{candidates}`, `remove_refused{referrers}` (§ A.3 remove door — inbound references exist; unlink the named referrers, then resend), `scope_does_not_cover{uncovered}` (§5.5 — coverage failed; the extra names the uncovered target set. §5.7's amended arm mints it too — a token premise at a node-less scope — carrying `scope` alone, no target set), `scope_unresolved` (§5.6 — the path cannot hold a token) |
 | `env` | the world outside the workspace is wrong | `file_not_found`, `io_error{cause}`, `invalid_utf8{path,message}`, `daemon_only`, `mount_table_invalid{path,message}` |
 | `refresh` | your picture of a node is stale; re-read one thing | `cas_mismatch{expected,actual}`, `ref_not_found{stage,dest?}` |
 | `retry` | transient; same request may succeed | `lock_timeout`, `stale_view{required,as_of_fingerprint,live_fingerprint}`, `corpus_warming` (§3.2 — the drawer is rebuilding after a cold start; reads serve once it lands) |
@@ -939,7 +941,7 @@ Reads are idempotent: after a lost answer, re-send freely.
 
 ### §8.2 Register-law refusal texts — the scoped-guard family (docs-first, 2026-08-15)
 
-Refusal teaching speaks the register law: **reason first, fitted remedy, never session rules.** The texts below are carried from the fingerprint-grain merged plan's Appendix C (k3's F-12 redrafted form) byte-for-byte; the additions are `fingerprint_version_unsupported` and the three `bad_request` guard-family texts (bounce-1 closure, 2026-08-15), each drafted HERE in the same register because Appendix C carried no text for them — recorded, not slipped in. Bounce-2 closure (2026-08-15), same drafted-here provenance: the mint-pair text joins, and the broken-premise-pair remedy is re-worded — its old teaching ("one scope spelling PLUS its token — exactly one spelling") contradicted the LEGAL bare-root premise `{"fingerprint": …}` with no scope spelling (§5.4).
+Refusal teaching speaks the register law: **reason first, fitted remedy, never session rules.** The texts below are carried from the fingerprint-grain merged plan's Appendix C (k3's F-12 redrafted form) byte-for-byte; the additions are `fingerprint_version_unsupported` and the three `bad_request` guard-family texts (bounce-1 closure, 2026-08-15), each drafted HERE in the same register because Appendix C carried no text for them — recorded, not slipped in. Bounce-2 closure (2026-08-15), same drafted-here provenance: the mint-pair text joins, and the broken-premise-pair remedy is re-worded — its old teaching ("one scope spelling PLUS its token — exactly one spelling") contradicted the LEGAL bare-root premise `{"fingerprint": …}` with no scope spelling (§5.4). Break #6 closure (2026-08-16), recorded, not slipped in: the Appendix-C absent-actual `fingerprint_mismatch` entry is RETIRED and its slot re-minted under `scope_does_not_cover` — the retired text stated as fact a deletion ("it was emptied or removed") the engine cannot know, and it contradicted `scope_unresolved`'s own entry two rows below: a lawful path with no node mints "absent", a legal premise, not a deletion (§5.6, §5.7's amended arm).
 
 ```
 fingerprint_mismatch (scoped):
@@ -956,9 +958,20 @@ scope_unresolved:
    file/dir kind conflict with an existing entry, or is not encodable.
    A lawful path that simply has no node mints "absent" — that is a
    legal premise, not this error."
-absent (as actual, inside fingerprint_mismatch):
-  "the scope <scope> had a token when you planned and has no node now —
-   it was emptied or removed. Re-read the parent and re-plan."
+scope_does_not_cover — token premise at a node-less scope (re-minted
+2026-08-16, dogfood break #6; supersedes the RETIRED absent-actual
+fingerprint_mismatch entry that stood here, whose text stated as fact a
+deletion — "it was emptied or removed" — the engine cannot know, and
+whose resync remedy re-read a path that serves nothing; §5.7's amended
+arm):
+  "the premise at <scope> holds a token, but no node lives at <scope> —
+   a token premise cannot hold where there is no node (a node-less
+   scope's one lawful premise is "absent", §5.6), so this premise covers
+   nothing. Whether a node was removed since your mint or <scope> never
+   held one, this refusal does not say — it cannot know. Mint at the
+   scope (fingerprint{scope: "<scope>"}) to see what it holds now — a
+   lawful empty scope answers "absent" — or fix <scope> if the token was
+   minted elsewhere; then re-plan."
 fingerprint_version_retired:
   "this token was minted under a retired hash law. The premise did not
    move — the law did. Re-mint at the same scope
