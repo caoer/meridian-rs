@@ -397,8 +397,7 @@ them, so an agent reaching for `#FRAG` to read a section gets a map at exit 0.
 
 **`mrd put` / `mrd pin` / `mrd rm` / `mrd retire mark` are wire clients.**
 They talk to the running daemon over authenticated IPC (the same hello +
-socket-law identity check the script entry already uses). There is no
-direct-publication fallback: a down daemon is a taught refusal (exit 2),
+socket-law identity check the script entry already uses). There is no direct-publication fallback: a down daemon is a taught refusal (exit 2),
 never a local write. Auto-spawn still runs; if the daemon cannot come up
 the face names that fact and the recovery (`mrd daemon`, shorten
 `XDG_CACHE_HOME` when sun_path is the cause). A guardless put is now

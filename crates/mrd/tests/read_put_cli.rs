@@ -7,6 +7,8 @@ use std::process::{Command, Output, Stdio};
 
 use serde_json::Value;
 
+mod common;
+
 fn mrd_bin() -> &'static str {
     env!("CARGO_BIN_EXE_mrd")
 }
@@ -19,15 +21,7 @@ struct Sandbox {
 
 impl Drop for Sandbox {
     fn drop(&mut self) {
-        let pidfile = self.cache_home.join("registry").join("daemon.pid");
-        if let Ok(text) = std::fs::read_to_string(pidfile)
-            && let Ok(pid) = text.trim().parse::<i32>()
-        {
-            // SAFETY: pid came from this sandbox's own pidfile.
-            unsafe {
-                libc::kill(pid, libc::SIGTERM);
-            }
-        }
+        common::reap_daemon(&self.cache_home);
     }
 }
 
@@ -877,7 +871,7 @@ fn heading_rev(sb: &Sandbox, ws: &Path, heading: &str) -> String {
             .or_else(|| row.get("heading"))
             .and_then(Value::as_str);
         if last == Some(heading) || named == Some(heading) {
-            for key in ["node_rev", "rev"] {
+            for key in ["sec_rev", "node_rev", "rev"] {
                 if let Some(r) = row.get(key).and_then(Value::as_str) {
                     return r.to_owned();
                 }
@@ -1396,8 +1390,6 @@ fn the_wire_request_envelope_on_stdin_is_refused_by_name() {
 
     // The shape it points at is the shape that works — asserted here so the
     // hint can never teach a grammar the door does not accept.
-    let bare = r#"[{"target":{"hpath":[{"h":"Alpha"}]},
-                    "edit":{"match":{"old":"one","new":"ONE"}}}]"#;
     let rev = heading_rev(&sb, &ws, "Alpha");
     let guarded = serde_json::to_string(&serde_json::json!([{
         "target": {"hpath": [{"h": "Alpha"}]},

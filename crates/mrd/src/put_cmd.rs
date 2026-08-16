@@ -38,7 +38,7 @@
 use std::io::Read as _;
 
 use serde_json::{Value, json};
-use wire::{Edit, ErrorBody, Path as WirePath, ReceiptAddr};
+use wire::{ErrorBody, Path as WirePath, ReceiptAddr};
 
 use crate::{Fail, Format, current_dir, engine, write_ipc};
 
@@ -48,6 +48,8 @@ use crate::{Fail, Format, current_dir, engine, write_ipc};
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let parsed = Put::parse(args)?;
     let edits = read_stdin_edits()?;
+    // The stdin Value is what rides the wire — re-serializing the decoded
+    // Vec<Edit> is a second shape. Decode already proved the §4.4 wall.
     let cwd = current_dir()?;
     let resolved = crate::resolve::resolve_runtime(&cwd).map_err(|e| {
         Fail::tool(format!(
@@ -294,7 +296,7 @@ impl Put {
 const WORKING_BATCH: &str = "[{\"target\":{\"hpath\":[{\"h\":\"Title\"}]},\"edit\":{\"match\":{\"old\":\"a\",\"new\":\"b\"}}}]";
 
 /// Read and strict-decode the edits array from stdin (the wire §4.4 grammar).
-fn read_stdin_edits() -> Result<Vec<Edit>, Fail> {
+fn read_stdin_edits() -> Result<Value, Fail> {
     let mut raw = String::new();
     std::io::stdin()
         .read_to_string(&mut raw)
@@ -321,19 +323,16 @@ fn read_stdin_edits() -> Result<Vec<Edit>, Fail> {
     // refusal is exit 2, and a VALUE law (§2.4's block-id charset) is not this
     // seam's to judge — the engine refuses that one at exit 1 with its
     // structured frame, which is the exit triad `docs/status.md` states.
-    let edits: Vec<Edit> =
-        wire_serve::decode::decode_edits(&value, wire_serve::decode::Laws::ShapeOnly).map_err(
-            |e| {
-                refuse_stdin(
-                    "the edits on stdin are not the §4.4 batch shape",
-                    e.message
-                        .as_deref()
-                        .unwrap_or("the §4.4 edit grammar was not met"),
-                    &raw,
-                )
-            },
-        )?;
-    Ok(edits)
+    wire_serve::decode::decode_edits(&value, wire_serve::decode::Laws::ShapeOnly).map_err(|e| {
+        refuse_stdin(
+            "the edits on stdin are not the §4.4 batch shape",
+            e.message
+                .as_deref()
+                .unwrap_or("the §4.4 edit grammar was not met"),
+            &raw,
+        )
+    })?;
+    Ok(value)
 }
 
 /// The one stdin-refusal shape, shared by the JSON-syntax leg and the
