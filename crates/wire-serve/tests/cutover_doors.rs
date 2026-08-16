@@ -43,6 +43,7 @@ fn edit(old: &str, new: &str) -> Edit {
             old: old.into(),
             new: new.into(),
         },
+        if_node_rev: None,
     }
 }
 
