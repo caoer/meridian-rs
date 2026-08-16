@@ -233,10 +233,7 @@ fn a_quiet_workspace_does_not_sweep() {
         "a quiet live feed schedules no corpus sweep and no member stat"
     );
     let feed = reg.feed_stats(&canonical).expect("feed stays live");
-    assert!(
-        !feed.all_dirty,
-        "quiet did not collapse the set: {feed:?}"
-    );
+    assert!(!feed.all_dirty, "quiet did not collapse the set: {feed:?}");
 }
 
 /// Live §7(d) bar: ten quiet minutes, zero extra sweeps, zero extra member

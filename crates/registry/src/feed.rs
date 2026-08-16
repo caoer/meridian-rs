@@ -172,7 +172,7 @@ struct FeedState {
     doubt: Option<RescanCause>,
     /// The shared feed-generation cell: advanced per accepted event, loss
     /// noted per collapse — the watcher half of the §6.2 fence.
-    gen: fs::stable::FeedGen,
+    feed: fs::stable::FeedGen,
     /// The rescan record: every mark's cause, oldest dropped past
     /// [`RESCAN_RECORD_CAP`].
     rescans: Vec<RescanCause>,
@@ -238,7 +238,7 @@ pub(crate) enum Applied {
 
 impl WorkspaceFeed {
     /// Start the kernel watcher for `workspace` (a canonical root), reporting
-    /// into the shared feed-generation cell `gen` — the same cell the
+    /// into the shared feed-generation cell `feed` — the same cell the
     /// workspace's resident memo fences reads with. The feed must exist
     /// BEFORE the first observation lands in the workspace's resident memo —
     /// an observation without gap coverage behind it would let a later
@@ -250,10 +250,10 @@ impl WorkspaceFeed {
     /// (its resident memo drops on every reap).
     pub(crate) fn start(
         workspace: &Path,
-        gen: fs::stable::FeedGen,
+        feed: fs::stable::FeedGen,
     ) -> notify::Result<WorkspaceFeed> {
         let state = Arc::new(Mutex::new(FeedState {
-            gen,
+            feed,
             ..FeedState::default()
         }));
         let sink = Arc::clone(&state);
@@ -363,7 +363,7 @@ impl FeedState {
             return;
         }
         self.events += 1;
-        self.gen.advance();
+        self.feed.advance();
         if self.doubt.is_some() {
             return;
         }
@@ -389,7 +389,7 @@ impl FeedState {
             self.rescans.remove(0);
         }
         self.rescans.push(cause);
-        self.gen.note_loss(cause.name());
+        self.feed.note_loss(cause.name());
     }
 }
 
@@ -599,8 +599,8 @@ mod tests {
             (1, &[RescanCause::Overflow][..])
         );
         assert!(s.dirty.is_empty(), "the enumeration is dropped, not kept");
-        assert_eq!(s.gen.generation(), DIRTY_CAP as u64 + 1);
-        assert_eq!(s.gen.losses(), 1, "the collapse is LOUD event loss");
+        assert_eq!(s.feed.generation(), DIRTY_CAP as u64 + 1);
+        assert_eq!(s.feed.losses(), 1, "the collapse is LOUD event loss");
         // Late arrivals during a collapse change nothing.
         s.insert(Path::new("late.md"));
         assert!(s.dirty.is_empty());
