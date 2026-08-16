@@ -141,13 +141,10 @@ pub fn create_decided_submit(root: &WorkspaceRoot, intent: &Intent) -> io::Resul
         .open(&path)?;
     let body = encode(intent);
     file.write_all(body.as_bytes())?;
-    let mut pendings = Vec::with_capacity(2);
-    pendings.push(durability::submit(&root.0, &file)?);
-    pendings.push(durability::submit_path(
-        &root.0,
-        path.parent().unwrap_or_else(|| Path::new(".")),
-    )?);
-    Ok(pendings)
+    Ok(vec![
+        durability::submit(&root.0, &file)?,
+        durability::submit_path(&root.0, path.parent().unwrap_or_else(|| Path::new(".")))?,
+    ])
 }
 
 /// Rewrite the intent as `Applied` (tmp + settle + rename + parent settle,

@@ -82,6 +82,9 @@ use std::collections::hash_map::Entry;
 use std::fs::File;
 use std::io;
 use std::os::unix::fs::MetadataExt;
+// The raw-fd calls (fcntl F_FULLFSYNC, libc::fsync) exist only in the macOS
+// arms; on other targets the import would be unused.
+#[cfg(target_os = "macos")]
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::sync::OnceLock;
