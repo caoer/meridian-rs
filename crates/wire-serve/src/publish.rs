@@ -22,6 +22,7 @@
 //! external-race residual; the `apply_batch` pre-image verify is what
 //! refuses a second in-process writer.
 
+use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
@@ -407,22 +408,31 @@ pub struct StagedTxn {
     pub drop_tmp_after_decide: bool,
 }
 
-/// Success: the assigned frame, plus the two gate-12 intervals, recorded at
-/// their two distinct call sites and never summed into one figure. The full
-/// disk-stage window (`durability_start..metadata_end`) is the overlap
-/// instrument for §7(b)/(f).
+/// Success: the assigned frame, plus the THREE gate-12 intervals (rulings
+/// ledger, ruling 18): content durability, metadata publish, and the
+/// state-owner apply — each marked at its own call site, pairwise disjoint
+/// by construction (sequential marks), and none derived by subtraction from
+/// a blended total. The full disk-stage window
+/// (`durability_start..metadata_end`) is the overlap instrument for
+/// §7(b)/(f).
 #[derive(Debug, Clone)]
 pub struct PublishReceipt {
     pub txn: TxnId,
     pub frame: DeltaFrame,
-    /// Durability wait — [`decide`]: recovery images, the `O_EXCL` intent,
-    /// and the honest settling of this txn's staged bytes.
+    /// Content durability — the phase-1 waits: staged temps, recovery
+    /// images, the `O_EXCL` intent, and their directory entries, one
+    /// awaited barrier.
     pub durability_start: Instant,
     pub durability_end: Instant,
-    /// Metadata publish — [`rename_all`]: the renames plus each destination's
-    /// parent-directory sync.
+    /// Metadata publish — the renames plus the phase-2 waits (destination
+    /// parent directories, with the staged `Applied` flip riding the same
+    /// barrier at ~zero marginal cost).
     pub metadata_start: Instant,
     pub metadata_end: Instant,
+    /// State-owner apply — the one linearized step, timed at its own call
+    /// site (proven I/O-free by the linearized-step test).
+    pub apply_start: Instant,
+    pub apply_end: Instant,
 }
 
 /// Failures on the publish path. After a durable decision the only
@@ -495,26 +505,32 @@ pub fn publish(
             cause: e,
         });
     }
-    // Phase 2: the renames' parent-directory entries (deduped by the
-    // actor) plus the staged Applied flip, one awaited barrier.
+    // Phase 2 as ONE enqueue: the renames' parent-directory entries
+    // (deduped by the actor) plus the staged Applied flip share one drain —
+    // a drain beginning mid-phase was the measured 5–7-barriers defect.
     let unknown = |e: io::Error| PublishError::CommitUnknown {
         txn: txn.txn,
         cause: e,
     };
-    let mut phase2 = Vec::with_capacity(txn.dests.len() + 1);
+    let mut phase2_files = Vec::with_capacity(txn.dests.len() + 1);
     for d in &txn.dests {
         let dest = root.0.join(&d.rel);
         let parent = dest.parent().unwrap_or_else(|| Path::new("."));
-        phase2.push(durability::submit_path(&root.0, parent).map_err(unknown)?);
+        phase2_files.push(File::open(parent).map_err(unknown)?);
     }
-    let (applied_tmp, applied_dst, applied_pending) =
-        intent::stage_applied(root, &intent).map_err(unknown)?;
-    phase2.push(applied_pending);
+    let (applied_tmp, applied_dst, applied_file) =
+        intent::stage_applied_prepare(root, &intent).map_err(unknown)?;
+    phase2_files.push(applied_file);
+    let phase2 = durability::submit_set(&root.0, phase2_files).map_err(unknown)?;
     for p in &phase2 {
         p.wait().map_err(unknown)?;
     }
     let metadata_end = Instant::now();
+    // The third gate-12 interval (ruling 18): the linearized step, timed at
+    // its own call site, disjoint from both disk intervals.
+    let apply_start = Instant::now();
     let frame = owner.apply(txn.files, txn.actor, txn.now, fold);
+    let apply_end = Instant::now();
     // The applied flip becomes the record, and its dir entry settles BEFORE
     // reclaim deletes the recovery images (barrier three — the ruled
     // residual: deferring it would let a crash leave a Decided record with
@@ -530,6 +546,8 @@ pub fn publish(
         durability_end,
         metadata_start,
         metadata_end,
+        apply_start,
+        apply_end,
     })
 }
 
@@ -583,26 +601,29 @@ fn reverify(root: &WorkspaceRoot, dests: &[DestImage]) -> Result<(), PublishErro
     Ok(())
 }
 
-/// Write the recovery images and the `O_EXCL` decided intent, SUBMITTING
-/// every settle to the durability actor — the phase-1 members. The durable
-/// decision exists when the caller's waits on the returned pendings (plus
-/// the txn's own stage-time pendings) have RETURNED, and no rename may run
-/// before that. The dest temps are NOT re-synced here: their settles ride
-/// [`StagedTxn::pending`] from stage time.
+/// Write the recovery images and the `O_EXCL` decided intent, then hand the
+/// WHOLE phase-1 set to the actor as ONE enqueue: every dest temp (opened
+/// by path — durability before rename must not depend on what the stager
+/// did), every image, the intent record, and their directories, atomically
+/// co-drained so no drain can begin mid-phase. The durable decision exists
+/// when the caller's waits on the returned pendings have RETURNED, and no
+/// rename may run before that.
 ///
 /// # Errors
-/// I/O at image or intent write, or a submit failure — all pre-decision.
+/// I/O at image or intent write, temp open, or the enqueue — all
+/// pre-decision.
 pub fn decide_submit(
     root: &WorkspaceRoot,
     txn: &StagedTxn,
 ) -> Result<(Intent, Vec<Pending>), PublishError> {
     let txn_hex = txn.txn.hex();
     let mut members = Vec::with_capacity(txn.dests.len());
-    let mut pendings = Vec::new();
+    let mut phase1_files = Vec::new();
     for (i, d) in txn.dests.iter().enumerate() {
-        let (old_store, new_store, image_pendings) =
-            intent::store_images_submit(root, &txn_hex, i, &d.old, &d.new)?;
-        pendings.extend(image_pendings);
+        phase1_files.push(File::open(&d.tmp)?);
+        let (old_store, new_store, images) =
+            intent::store_images_prepare(root, &txn_hex, i, &d.old, &d.new)?;
+        phase1_files.extend(images);
         let tmp = d
             .tmp
             .strip_prefix(&root.0)
@@ -616,6 +637,8 @@ pub fn decide_submit(
             new_store,
         });
     }
+    // The images directory once per txn, not once per member.
+    phase1_files.push(File::open(root.0.join(intent::INTENTS_DIR).join(&txn_hex))?);
     let rec = Intent {
         epoch_hex: txn.epoch.hex(),
         txn_hex,
@@ -623,7 +646,8 @@ pub fn decide_submit(
         policy: txn.policy,
         members,
     };
-    pendings.extend(intent::create_decided_submit(root, &rec)?);
+    phase1_files.extend(intent::create_decided_prepare(root, &rec)?);
+    let pendings = durability::submit_set(&root.0, phase1_files)?;
     Ok((rec, pendings))
 }
 

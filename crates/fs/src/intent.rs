@@ -16,7 +16,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use crate::WorkspaceRoot;
-use crate::durability::{self, Pending};
+use crate::durability;
 
 /// Workspace-relative directory holding one file per transaction.
 pub const INTENTS_DIR: &str = ".meridian/intents";
@@ -123,15 +123,16 @@ pub fn write_honest(root: &WorkspaceRoot, path: &Path, bytes: &[u8]) -> io::Resu
     Ok(())
 }
 
-/// Persist a `Decided` intent, `O_EXCL` on the intent file, SUBMITTING its
-/// settle and its directory's to the durability actor. The returned pendings
-/// are phase-1 members: the durable decision exists when the caller's waits
-/// on them RETURN (not when this call returns), and no rename may run
-/// before that.
+/// Persist a `Decided` intent, `O_EXCL` on the intent file, WITHOUT
+/// submitting anything: returns the written intent file plus its directory
+/// handle for the caller's atomic phase-1 enqueue (`durability::submit_set`
+/// — the whole phase must reach the actor as one message, or a drain can
+/// begin mid-phase). The durable decision exists when the caller's waits on
+/// the set RETURN, and no rename may run before that.
 ///
 /// # Errors
-/// `AlreadyExists` when the txn id is reused; any I/O or submit failure.
-pub fn create_decided_submit(root: &WorkspaceRoot, intent: &Intent) -> io::Result<Vec<Pending>> {
+/// `AlreadyExists` when the txn id is reused; any I/O failure.
+pub fn create_decided_prepare(root: &WorkspaceRoot, intent: &Intent) -> io::Result<Vec<File>> {
     let dir = root.0.join(INTENTS_DIR).join(&intent.txn_hex);
     fs::create_dir_all(&dir)?;
     let path = intent_path(root, &intent.txn_hex);
@@ -141,10 +142,8 @@ pub fn create_decided_submit(root: &WorkspaceRoot, intent: &Intent) -> io::Resul
         .open(&path)?;
     let body = encode(intent);
     file.write_all(body.as_bytes())?;
-    Ok(vec![
-        durability::submit(&root.0, &file)?,
-        durability::submit_path(&root.0, path.parent().unwrap_or_else(|| Path::new(".")))?,
-    ])
+    let parent = File::open(path.parent().unwrap_or_else(|| Path::new(".")))?;
+    Ok(vec![file, parent])
 }
 
 /// Rewrite the intent as `Applied` (tmp + settle + rename + parent settle,
@@ -164,27 +163,27 @@ pub fn finalize(root: &WorkspaceRoot, intent: &Intent) -> io::Result<()> {
     )
 }
 
-/// Stage the `Applied` flip without committing it: write the rewritten
-/// record to the intent's temp path and SUBMIT its settle. The caller awaits
-/// the pending (it rides the metadata-phase barrier), renames the temp onto
-/// the record, then settles the intents directory BEFORE reclaiming — the
-/// flip's dir entry must be durable before the recovery images are deleted,
-/// or a crash leaves a `Decided` record with its images gone.
+/// Stage the `Applied` flip without committing or submitting it: write the
+/// rewritten record to the intent's temp path and return the written file
+/// for the caller's atomic phase-2 enqueue. The caller awaits the set,
+/// renames the temp onto the record, then settles the intents directory
+/// BEFORE reclaiming — the flip's dir entry must be durable before the
+/// recovery images are deleted, or a crash leaves a `Decided` record with
+/// its images gone.
 ///
 /// # Errors
-/// I/O at write, or a submit failure.
-pub fn stage_applied(
+/// I/O at write.
+pub fn stage_applied_prepare(
     root: &WorkspaceRoot,
     intent: &Intent,
-) -> io::Result<(PathBuf, PathBuf, Pending)> {
+) -> io::Result<(PathBuf, PathBuf, File)> {
     let mut done = intent.clone();
     done.phase = Phase::Applied;
     let target = intent_path(root, &intent.txn_hex);
     let tmp = target.with_extension("tmp-intent");
     let mut f = File::create(&tmp)?;
     f.write_all(encode(&done).as_bytes())?;
-    let pending = durability::submit(&root.0, &f)?;
-    Ok((tmp, target, pending))
+    Ok((tmp, target, f))
 }
 
 /// Remove the intent file and its recovery-image directory.
@@ -348,34 +347,33 @@ fn verify_image(bytes: &[u8], recorded: [u8; 32], store: &Path, verb: &str) -> i
 }
 
 /// Persist old/new recovery images for member `i` of `txn_hex`, DIRECT —
-/// create + write + submit, no rename ceremony. Images are fresh files in
-/// the txn's fresh dot-directory: nothing reads them before the phase-1
-/// barrier has returned, so staged-then-rename buys nothing here. Returns
-/// the workspace-relative store paths plus the in-flight settles (two files
-/// and the images directory — the actor dedupes the directory across
-/// members).
+/// create + write, no rename ceremony, NO submission. Images are fresh
+/// files in the txn's fresh dot-directory: nothing reads them before the
+/// phase-1 barrier has returned, so staged-then-rename buys nothing here.
+/// Returns the workspace-relative store paths plus the written files for
+/// the caller's atomic phase-1 enqueue (the caller adds the images
+/// directory once per txn, not once per member).
 ///
 /// # Errors
-/// I/O at mkdir/create/write, or a submit failure.
-pub fn store_images_submit(
+/// I/O at mkdir/create/write.
+pub fn store_images_prepare(
     root: &WorkspaceRoot,
     txn_hex: &str,
     i: usize,
     old: &[u8],
     new: &[u8],
-) -> io::Result<(PathBuf, PathBuf, Vec<Pending>)> {
+) -> io::Result<(PathBuf, PathBuf, Vec<File>)> {
     let dir = root.0.join(INTENTS_DIR).join(txn_hex);
     fs::create_dir_all(&dir)?;
     let old_rel = PathBuf::from(format!("{INTENTS_DIR}/{txn_hex}/{i}.old"));
     let new_rel = PathBuf::from(format!("{INTENTS_DIR}/{txn_hex}/{i}.new"));
-    let mut pendings = Vec::with_capacity(3);
+    let mut files = Vec::with_capacity(2);
     for (rel, bytes) in [(&old_rel, old), (&new_rel, new)] {
         let mut f = File::create(root.0.join(rel))?;
         f.write_all(bytes)?;
-        pendings.push(durability::submit(&root.0, &f)?);
+        files.push(f);
     }
-    pendings.push(durability::submit_path(&root.0, &dir)?);
-    Ok((old_rel, new_rel, pendings))
+    Ok((old_rel, new_rel, files))
 }
 
 /// Write a group membership manifest, `O_EXCL`.
@@ -615,9 +613,9 @@ mod tests {
     #[test]
     fn decided_round_trips_and_o_excl_refuses_a_duplicate() {
         let (_d, root) = ws();
-        let (old_store, new_store, image_pendings) =
-            store_images_submit(&root, "aa", 0, b"old", b"new").expect("stores");
-        for p in &image_pendings {
+        let (old_store, new_store, images) =
+            store_images_prepare(&root, "aa", 0, b"old", b"new").expect("stores");
+        for p in &durability::submit_set(&root.0, images).expect("one enqueue") {
             p.wait().expect("images settle");
         }
         let intent = Intent {
@@ -634,10 +632,11 @@ mod tests {
                 new_store,
             }],
         };
-        for p in &create_decided_submit(&root, &intent).expect("first") {
+        let record_files = create_decided_prepare(&root, &intent).expect("first");
+        for p in &durability::submit_set(&root.0, record_files).expect("one enqueue") {
             p.wait().expect("record settles");
         }
-        let err = create_decided_submit(&root, &intent).expect_err("O_EXCL");
+        let err = create_decided_prepare(&root, &intent).expect_err("O_EXCL");
         assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
         let found = scan(&root).expect("scan");
         match &found[..] {

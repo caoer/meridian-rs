@@ -28,14 +28,25 @@
 //!    member is acked — in that order, visible in [`settle_batch`].
 //!
 //! **Falsifier:** the premise requires every batch member to sit on the same
-//! physical device as the barrier handle. A member on a different device
-//! would be acked without its device ever flushing. This process serves one
-//! workspace (merged-plan §4.7: one daemon, one workspace authority), so the
-//! premise is a deployment fact, tested — not guarded at runtime — by the
-//! `st_dev` test in `tests/honest_durability.rs`. A second falsifier is a
-//! device that lies about `F_FULLFSYNC` (some external enclosures ignore the
-//! flush); that falsifies every honest-durability design on such hardware,
-//! not this placement.
+//! device as the barrier handle. A member on a different device would be
+//! acked without its device ever flushing — so the batch loop REFUSES any
+//! member whose `st_dev` differs from the barrier handle's (the premise is
+//! enforced, not assumed; `tests/honest_durability.rs` additionally pins
+//! the deployment fact). The durability unit on macOS is likely the APFS
+//! CONTAINER rather than the raw device; the boundary here is already the
+//! narrower one by construction — `st_dev` identifies a mounted volume, and
+//! an APFS volume lives in exactly one container, so `st_dev` equality
+//! implies same container. A second falsifier is a device that lies about
+//! `F_FULLFSYNC` (some external enclosures ignore the flush); that
+//! falsifies every honest-durability design on such hardware, not this
+//! placement.
+//!
+//! **On sync failure we REFUSE, never degrade** — a deliberate divergence:
+//! Go, the JDK, libuv, LevelDB and SQLite all fall back to a weaker sync
+//! when `F_FULLFSYNC` reports `ENOTSUP`. Degrading returns success wearing
+//! durability's name — exactly the success-shaped failure criterion 1
+//! exists to catch — so [`honest_sync`] propagates the raw OS error and a
+//! failed barrier refuses every pushed member.
 //!
 //! The cheap tier itself is DOCUMENTED, not verified (APFS `VNOP_FSYNC` is
 //! closed source): Apple documents plain `fsync(2)` as forcing bytes to the
@@ -127,10 +138,13 @@ thread_local! {
     static THREAD_OPS: Cell<u64> = const { Cell::new(0) };
 }
 
-/// One queued settle: the dup'd fd to push, and where to ack.
+/// One enqueue: a SET of files that must share a drain. A multi-member set
+/// reaches the queue as one message, so no drain can begin mid-set — the
+/// mechanism behind [`submit_set`]'s one-barrier-per-phase guarantee. The
+/// actor itself never waits for members (no timer, no window): atomicity
+/// lives in the enqueue, not in the drain.
 struct Req {
-    file: File,
-    ack: Sender<io::Result<SettleReceipt>>,
+    members: Vec<(File, Ack)>,
 }
 
 /// Proof of settlement. Members sharing a `batch` id settled through the
@@ -181,9 +195,37 @@ pub fn submit(root_dir: &Path, file: &File) -> io::Result<Pending> {
     let tx = actor(root_dir)?;
     let dup = file.try_clone()?;
     let (ack, rx) = channel();
-    tx.send(Req { file: dup, ack })
-        .map_err(|_| io::Error::other("durability actor is gone; nothing was settled"))?;
+    tx.send(Req {
+        members: vec![(dup, ack)],
+    })
+    .map_err(|_| io::Error::other("durability actor is gone; nothing was settled"))?;
     Ok(Pending { rx })
+}
+
+/// Hand a whole phase's files to the actor as ONE enqueue, consuming them.
+/// The set cannot be split across drains — a drain that begins mid-phase
+/// was the measured 5–7-barriers-per-txn defect; one enqueue makes the
+/// phase share one drain (macOS: one barrier). Returns one [`Pending`] per
+/// member, in order; all resolve from the same drain cycle.
+///
+/// # Errors
+/// A dead actor thread, or opening the root handle on the first call.
+pub fn submit_set(root_dir: &Path, files: Vec<File>) -> io::Result<Vec<Pending>> {
+    if files.is_empty() {
+        return Ok(Vec::new());
+    }
+    THREAD_OPS.with(|c| c.set(c.get() + 1));
+    let tx = actor(root_dir)?;
+    let mut members = Vec::with_capacity(files.len());
+    let mut pendings = Vec::with_capacity(files.len());
+    for file in files {
+        let (ack, rx) = channel();
+        members.push((file, ack));
+        pendings.push(Pending { rx });
+    }
+    tx.send(Req { members })
+        .map_err(|_| io::Error::other("durability actor is gone; nothing was settled"))?;
+    Ok(pendings)
 }
 
 /// Submit and wait: the blocking settle. What a writer that needs the bytes
@@ -327,7 +369,8 @@ type Ack = Sender<io::Result<SettleReceipt>>;
 /// once.
 fn settle_batch(barrier_handle: &File, batch: Vec<Req>, tallies: &BatchTallies<'_>) {
     let batch_id = BATCH_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
-    let group_len = batch.len();
+    let members: Vec<(File, Ack)> = batch.into_iter().flat_map(|req| req.members).collect();
+    let group_len = members.len();
     let receipt = SettleReceipt {
         batch: batch_id,
         group_len,
@@ -337,27 +380,53 @@ fn settle_batch(barrier_handle: &File, batch: Vec<Req>, tallies: &BatchTallies<'
     //    all requests naming the object. A member whose object cannot be
     //    identified is refused loudly, never guessed at.
     let mut keyed: HashMap<(u64, u64), (File, Vec<Ack>)> = HashMap::new();
-    for req in batch {
-        match req.file.metadata() {
+    for (file, ack) in members {
+        match file.metadata() {
             Ok(m) => match keyed.entry((m.dev(), m.ino())) {
-                Entry::Occupied(mut o) => o.get_mut().1.push(req.ack),
+                Entry::Occupied(mut o) => o.get_mut().1.push(ack),
                 Entry::Vacant(v) => {
-                    v.insert((req.file, vec![req.ack]));
+                    v.insert((file, vec![ack]));
                 }
             },
             Err(e) => {
-                let _ = req.ack.send(Err(e));
+                let _ = ack.send(Err(e));
             }
         }
     }
 
     #[cfg(target_os = "macos")]
     {
+        // PREMISE GUARD — the module-doc falsifier, enforced at runtime: a
+        // member on a different device than the barrier handle would be
+        // acked without its device ever flushing. Refuse it loudly instead
+        // (the same class as the recovery-image digest check: enforcing a
+        // stated premise, not policy).
+        let barrier_dev = match barrier_handle.metadata() {
+            Ok(m) => m.dev(),
+            Err(e) => {
+                let msg = format!("durability barrier handle cannot be identified: {e}");
+                for (_, (_, acks)) in keyed {
+                    for ack in acks {
+                        let _ = ack.send(Err(io::Error::new(e.kind(), msg.clone())));
+                    }
+                }
+                return;
+            }
+        };
         // 1. PUSH — byte transfer only: plain fsync moves each object's
         //    bytes into the device. libc::fsync direct; sync_all would be
         //    F_FULLFSYNC here (module doc step 1).
         let mut pushed: Vec<Vec<Ack>> = Vec::with_capacity(keyed.len());
-        for (_, (file, acks)) in keyed {
+        for ((dev, _), (file, acks)) in keyed {
+            if dev != barrier_dev {
+                let msg = "member is on a different device than the durability \
+                           barrier; its bytes would never be settled by the \
+                           barrier — refused (module-doc falsifier)";
+                for ack in acks {
+                    let _ = ack.send(Err(io::Error::new(io::ErrorKind::Unsupported, msg)));
+                }
+                continue;
+            }
             // SAFETY: fsync on a valid fd we own for the call's duration.
             let rc = unsafe { libc::fsync(file.as_raw_fd()) };
             if rc == -1 {
@@ -469,7 +538,10 @@ mod tests {
             let mut f = File::create(&path).expect("create");
             f.write_all(b"bytes").expect("write");
             let (ack, ack_rx) = channel();
-            tx.send(Req { file: f, ack }).expect("queue");
+            tx.send(Req {
+                members: vec![(f, ack)],
+            })
+            .expect("queue");
             acks.push(ack_rx);
         }
         let first = rx.recv().expect("first");
@@ -512,34 +584,31 @@ mod tests {
         assert_eq!(barriers, 8, "per-object honest sync off macOS");
     }
 
-    /// The ack sits on the BARRIER, never on a cheap push: when the barrier
-    /// fails, every member whose push succeeded is refused. No waiter is
-    /// ever released on push-only durability. Driven by handing the actor a
-    /// barrier handle that cannot `F_FULLFSYNC` (a devfs node).
+    /// The premise guard, driven: a barrier handle on a DIFFERENT device
+    /// (a devfs node) than the members refuses every member loudly — no
+    /// push happens, no barrier is issued, and no waiter is ever released
+    /// on durability its device never received. This is the module-doc
+    /// falsifier enforced at runtime; the ack-strictly-after-barrier
+    /// ordering for the same-device path is settle_batch's visible
+    /// structure (one barrier call site, ack loop after it).
     #[cfg(target_os = "macos")]
     #[test]
-    fn a_failed_barrier_refuses_every_pushed_member() {
+    fn a_cross_device_barrier_refuses_every_member() {
         let devnull = File::open("/dev/null").expect("devnull");
-        if honest_sync(&devnull).is_ok() {
-            // This host's devfs accepts F_FULLFSYNC, so the failure cannot
-            // be forced here; the ordering stays visible in settle_batch
-            // (the ack loop sits strictly after the barrier call).
-            return;
-        }
         let dir = tempfile::tempdir().expect("tempdir");
+        let dir_dev = std::fs::metadata(dir.path()).expect("meta").dev();
+        let null_dev = devnull.metadata().expect("meta").dev();
+        assert_ne!(dir_dev, null_dev, "devfs and the tempdir must differ");
         let tallies = LocalTallies::new();
         let outcomes = drain_once(&dir, &devnull, 3, &tallies);
         assert_eq!(outcomes.len(), 3);
         for outcome in outcomes {
-            assert!(
-                outcome.is_err(),
-                "a member must never be released on a push alone when the \
-                 covering barrier failed"
-            );
+            let err = outcome.expect_err("cross-device member must be refused");
+            assert_eq!(err.kind(), io::ErrorKind::Unsupported);
         }
         let (objects, barriers) = tallies.counts();
-        assert_eq!(objects, 3, "the pushes themselves succeeded");
-        assert_eq!(barriers, 0, "no barrier returned, so none is tallied");
+        assert_eq!(objects, 0, "nothing was pushed for a refused member");
+        assert_eq!(barriers, 0, "no barrier covers a refused member");
     }
 
     /// Four requests naming two distinct objects sync each object ONCE:
@@ -559,8 +628,7 @@ mod tests {
         for _ in 0..2 {
             let (ack, ack_rx) = channel();
             tx.send(Req {
-                file: f.try_clone().expect("dup"),
-                ack,
+                members: vec![(f.try_clone().expect("dup"), ack)],
             })
             .expect("queue");
             acks.push(ack_rx);
@@ -568,8 +636,7 @@ mod tests {
         for _ in 0..2 {
             let (ack, ack_rx) = channel();
             tx.send(Req {
-                file: File::open(dir.path()).expect("dir fd"),
-                ack,
+                members: vec![(File::open(dir.path()).expect("dir fd"), ack)],
             })
             .expect("queue");
             acks.push(ack_rx);
@@ -608,6 +675,32 @@ mod tests {
             ops_on_this_thread() - t0,
             2,
             "one submit + one wait on this thread"
+        );
+    }
+
+    /// An atomic set shares ONE drain by construction: a multi-member
+    /// `submit_set` reaches the queue as one message, so every member's
+    /// receipt carries the same batch id even when the actor was idle and
+    /// draining eagerly — the mid-phase-drain defect cannot split it.
+    #[test]
+    fn an_atomic_set_cannot_be_split_across_drains() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut files = Vec::new();
+        for i in 0..5 {
+            let path = dir.path().join(format!("s{i}.md"));
+            let mut f = File::create(&path).expect("create");
+            f.write_all(b"bytes").expect("write");
+            files.push(f);
+        }
+        let pendings = submit_set(dir.path(), files).expect("one enqueue");
+        let receipts: Vec<SettleReceipt> = pendings
+            .iter()
+            .map(|p| p.wait().expect("settled"))
+            .collect();
+        assert_eq!(receipts.len(), 5);
+        assert!(
+            receipts.iter().all(|r| r.batch == receipts[0].batch),
+            "one enqueue, one drain, one batch id: {receipts:?}"
         );
     }
 }
