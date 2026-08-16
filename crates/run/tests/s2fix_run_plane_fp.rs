@@ -80,10 +80,8 @@ fn apply(root: &fs::WorkspaceRoot, effects: &[Effect]) -> Result<executor::Appli
             authority: &Authority::granted(
                 CapSet::parse("md.set_field md.append_section").unwrap(),
             ),
-            pin_root: &now,
-            live_root: &now,
+            observed_root: &now,
             receipt: None,
-            takeover: false,
             exec: None,
             actor: None,
             depth: 0,
