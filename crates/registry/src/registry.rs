@@ -2519,7 +2519,11 @@ mod engine_tests {
             .lock()
             .unwrap()
             .insert(canonical.clone(), FeedSlot::Failed);
-        rewrite(&canonical, "notes/other.md", "# Notes\n\nsilent foreign edit\n");
+        rewrite(
+            &canonical,
+            "notes/other.md",
+            "# Notes\n\nsilent foreign edit\n",
+        );
 
         let observed = reg
             .door_observation(&canonical, &cache, Duration::from_secs(10))
@@ -2558,7 +2562,11 @@ mod engine_tests {
 
         let cache = reg.domain_cache(&canonical);
         let stale = cache.lock().unwrap().overlay_root().unwrap();
-        rewrite(&canonical, "notes/other.md", "# Notes\n\nlate-notify edit\n");
+        rewrite(
+            &canonical,
+            "notes/other.md",
+            "# Notes\n\nlate-notify edit\n",
+        );
 
         let observed = reg
             .door_observation(&canonical, &cache, Duration::ZERO)
