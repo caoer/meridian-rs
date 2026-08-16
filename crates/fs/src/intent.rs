@@ -15,7 +15,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use crate::{WorkspaceRoot, honest_sync, honest_sync_path};
+use crate::{WorkspaceRoot, honest_sync, honest_sync_dir};
 
 /// Workspace-relative directory holding one file per transaction.
 pub const INTENTS_DIR: &str = ".meridian/intents";
@@ -41,20 +41,27 @@ pub enum Policy {
     Forward,
 }
 
-/// One destination the intent covers.
+/// One destination the intent covers, recovery images included.
+///
+/// The images are the member's own bytes, not paths to side files. The
+/// contract's word is that a transaction durably creates ONE checksummed
+/// `O_EXCL` record; a record plus four side files it references is further
+/// from that than a self-contained record is, and it carries a failure mode
+/// this shape does not have — a crash cannot leave a partial image set
+/// behind a record that names it, because the record is atomically complete
+/// or absent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IntentMember {
     /// Workspace-relative destination.
     pub rel: PathBuf,
-    pub old: [u8; 32],
-    pub new: [u8; 32],
+    /// Recovery image of the pre-image bytes; empty means the destination
+    /// was absent (the first-append / create case).
+    pub old: Vec<u8>,
+    /// Recovery image of the bytes this transaction publishes.
+    pub new: Vec<u8>,
     /// Workspace-relative (or absolute) staging temp holding the new bytes
     /// at decision time — may be gone after a successful rename.
     pub tmp: PathBuf,
-    /// Recovery image of the old bytes, workspace-relative.
-    pub old_store: PathBuf,
-    /// Recovery image of the new bytes, workspace-relative.
-    pub new_store: PathBuf,
 }
 
 /// The checksummed per-transaction record.
@@ -91,13 +98,9 @@ pub fn digest(bytes: &[u8]) -> [u8; 32] {
     *blake3::hash(bytes).as_bytes()
 }
 
-/// Digest of the empty byte string (absent-file pre-image).
-#[must_use]
-pub fn empty_digest() -> [u8; 32] {
-    digest(b"")
-}
-
-/// Write `bytes` to `path` via tmp + honest-sync + rename + parent sync.
+/// Write `bytes` to `path` via tmp + honest-sync + rename + parent sync. The
+/// parent sync is grouped ([`honest_sync_dir`]) — it is the half concurrent
+/// writers into the same directory can share.
 ///
 /// # Errors
 /// I/O at any write, sync, or rename step.
@@ -112,20 +115,24 @@ pub fn write_honest(path: &Path, bytes: &[u8]) -> io::Result<()> {
         honest_sync(&f)?;
     }
     fs::rename(&tmp, path)?;
-    if let Some(parent) = path.parent() {
-        honest_sync_path(parent)?;
+    match path.parent() {
+        Some(parent) => honest_sync_dir(parent),
+        None => Ok(()),
     }
-    Ok(())
 }
 
-/// Persist recovery images and a `Decided` intent, `O_EXCL` on the intent
-/// file. After this returns, no error on this transaction is a refusal.
+/// Persist the `Decided` intent — recovery images inside it — `O_EXCL` on
+/// the intent file. After this returns, no error on this transaction is a
+/// refusal.
+///
+/// Two honest syncs, the record's own and the directory's, both before the
+/// caller's first visible rename: the record has to be durable before any
+/// destination changes, and that ordering is the contract.
 ///
 /// # Errors
 /// `AlreadyExists` when the txn id is reused; any I/O/sync failure.
 pub fn create_decided(root: &WorkspaceRoot, intent: &Intent) -> io::Result<()> {
-    let dir = root.0.join(INTENTS_DIR).join(&intent.txn_hex);
-    fs::create_dir_all(&dir)?;
+    fs::create_dir_all(root.0.join(INTENTS_DIR))?;
     let path = intent_path(root, &intent.txn_hex);
     let mut file = OpenOptions::new()
         .write(true)
@@ -133,8 +140,12 @@ pub fn create_decided(root: &WorkspaceRoot, intent: &Intent) -> io::Result<()> {
         .open(&path)?;
     let body = encode(intent);
     file.write_all(body.as_bytes())?;
+    // The one honest sync that must sit inside the reservation: the decision
+    // follows the reverify. Uncapped for exactly that reason — a slot wait
+    // taken under a reservation is a deadlock against a writer holding a
+    // slot and waiting for that reservation.
     honest_sync(&file)?;
-    honest_sync_path(path.parent().unwrap_or_else(|| Path::new(".")))?;
+    honest_sync_dir(path.parent().unwrap_or_else(|| Path::new(".")))?;
     Ok(())
 }
 
@@ -152,19 +163,13 @@ pub fn finalize(root: &WorkspaceRoot, intent: &Intent) -> io::Result<()> {
     )
 }
 
-/// Remove the intent file and its recovery-image directory.
+/// Remove the intent file. The record carries its own recovery images, so
+/// there is nothing else of the transaction's to remove.
 ///
 /// # Errors
 /// I/O failure other than a missing path.
 pub fn reclaim(root: &WorkspaceRoot, txn_hex: &str) -> io::Result<()> {
-    let path = intent_path(root, txn_hex);
-    match fs::remove_file(&path) {
-        Ok(()) => {}
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e),
-    }
-    let dir = root.0.join(INTENTS_DIR).join(txn_hex);
-    match fs::remove_dir_all(&dir) {
+    match fs::remove_file(intent_path(root, txn_hex)) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e),
@@ -241,16 +246,16 @@ pub fn classify(root: &WorkspaceRoot, member: &IntentMember) -> io::Result<DestC
     match fs::read(&dest) {
         Ok(bytes) => {
             let d = digest(&bytes);
-            if d == member.old {
+            if d == digest(&member.old) {
                 Ok(DestClass::Old)
-            } else if d == member.new {
+            } else if d == digest(&member.new) {
                 Ok(DestClass::New)
             } else {
                 Ok(DestClass::Neither)
             }
         }
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            if member.old == empty_digest() {
+            if member.old.is_empty() {
                 Ok(DestClass::AbsentOld)
             } else {
                 Ok(DestClass::Neither)
@@ -264,51 +269,29 @@ pub fn classify(root: &WorkspaceRoot, member: &IntentMember) -> io::Result<DestC
 /// or unlink when the old identity is empty.
 ///
 /// # Errors
-/// Missing old-store, or I/O at write/unlink.
+/// I/O at write/unlink.
 pub fn restore_member(root: &WorkspaceRoot, member: &IntentMember) -> io::Result<()> {
     let dest = root.0.join(&member.rel);
-    if member.old == empty_digest() {
+    if member.old.is_empty() {
         match fs::remove_file(&dest) {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
             Err(e) => return Err(e),
         }
         if let Some(parent) = dest.parent() {
-            honest_sync_path(parent)?;
+            honest_sync_dir(parent)?;
         }
         return Ok(());
     }
-    let bytes = fs::read(root.0.join(&member.old_store))?;
-    write_honest(&dest, &bytes)
+    write_honest(&dest, &member.old)
 }
 
 /// Write the recorded new image onto the destination.
 ///
 /// # Errors
-/// Missing new-store, or I/O at write.
+/// I/O at write.
 pub fn forward_member(root: &WorkspaceRoot, member: &IntentMember) -> io::Result<()> {
-    let dest = root.0.join(&member.rel);
-    let bytes = fs::read(root.0.join(&member.new_store))?;
-    write_honest(&dest, &bytes)
-}
-
-/// Persist old/new recovery images for member `i` of `txn_hex`. Returns
-/// the workspace-relative store paths.
-///
-/// # Errors
-/// I/O at write/sync.
-pub fn store_images(
-    root: &WorkspaceRoot,
-    txn_hex: &str,
-    i: usize,
-    old: &[u8],
-    new: &[u8],
-) -> io::Result<(PathBuf, PathBuf)> {
-    let old_rel = PathBuf::from(format!("{INTENTS_DIR}/{txn_hex}/{i}.old"));
-    let new_rel = PathBuf::from(format!("{INTENTS_DIR}/{txn_hex}/{i}.new"));
-    write_honest(&root.0.join(&old_rel), old)?;
-    write_honest(&root.0.join(&new_rel), new)?;
-    Ok((old_rel, new_rel))
+    write_honest(&root.0.join(&member.rel), &member.new)
 }
 
 /// Write a group membership manifest, `O_EXCL`.
@@ -325,7 +308,7 @@ pub fn create_group(root: &WorkspaceRoot, group: &GroupManifest) -> io::Result<(
         .open(&path)?;
     file.write_all(encode_group(group).as_bytes())?;
     honest_sync(&file)?;
-    honest_sync_path(&dir)?;
+    honest_sync_dir(&dir)?;
     Ok(())
 }
 
@@ -396,13 +379,14 @@ fn encode(intent: &Intent) -> String {
     let _ = writeln!(body, "n={}", intent.members.len());
     for (i, m) in intent.members.iter().enumerate() {
         let _ = writeln!(body, "m{i}.path={}", m.rel.display());
-        let _ = writeln!(body, "m{i}.old={}", hex32(&m.old));
-        let _ = writeln!(body, "m{i}.new={}", hex32(&m.new));
         let _ = writeln!(body, "m{i}.tmp={}", m.tmp.display());
-        let _ = writeln!(body, "m{i}.old_store={}", m.old_store.display());
-        let _ = writeln!(body, "m{i}.new_store={}", m.new_store.display());
+        // The recovery images ride the record. Hex keeps the whole record one
+        // checksummed line-oriented text, so a truncated write stays
+        // indeterminate instead of decoding into half a member.
+        let _ = writeln!(body, "m{i}.old={}", hex(&m.old));
+        let _ = writeln!(body, "m{i}.new={}", hex(&m.new));
     }
-    let sum = hex32(&digest(body.as_bytes()));
+    let sum = hex(&digest(body.as_bytes()));
     let _ = writeln!(body, "checksum={sum}");
     body
 }
@@ -411,7 +395,7 @@ fn decode(bytes: &[u8]) -> Option<Intent> {
     let text = std::str::from_utf8(bytes).ok()?;
     let (body, checksum_line) = text.rsplit_once("checksum=")?;
     let want = checksum_line.trim();
-    if hex32(&digest(body.as_bytes())) != want {
+    if hex(&digest(body.as_bytes())) != want {
         return None;
     }
     let mut lines = body.lines();
@@ -456,11 +440,9 @@ fn decode(bytes: &[u8]) -> Option<Intent> {
     for i in 0..n {
         members.push(IntentMember {
             rel: PathBuf::from(fields.get(&format!("m{i}.path"))?),
-            old: unhex32(fields.get(&format!("m{i}.old"))?)?,
-            new: unhex32(fields.get(&format!("m{i}.new"))?)?,
             tmp: PathBuf::from(fields.get(&format!("m{i}.tmp"))?),
-            old_store: PathBuf::from(fields.get(&format!("m{i}.old_store"))?),
-            new_store: PathBuf::from(fields.get(&format!("m{i}.new_store"))?),
+            old: unhex(fields.get(&format!("m{i}.old"))?)?,
+            new: unhex(fields.get(&format!("m{i}.new"))?)?,
         });
     }
     Some(Intent {
@@ -477,7 +459,7 @@ fn encode_group(g: &GroupManifest) -> String {
     let _ = writeln!(body, "{GROUP_FORMAT}");
     let _ = writeln!(body, "gid={}", g.gid_hex);
     let _ = writeln!(body, "members={}", g.members.join(","));
-    let sum = hex32(&digest(body.as_bytes()));
+    let sum = hex(&digest(body.as_bytes()));
     let _ = writeln!(body, "checksum={sum}");
     body
 }
@@ -485,7 +467,7 @@ fn encode_group(g: &GroupManifest) -> String {
 fn decode_group(bytes: &[u8]) -> Option<GroupManifest> {
     let text = std::str::from_utf8(bytes).ok()?;
     let (body, checksum_line) = text.rsplit_once("checksum=")?;
-    if hex32(&digest(body.as_bytes())) != checksum_line.trim() {
+    if hex(&digest(body.as_bytes())) != checksum_line.trim() {
         return None;
     }
     let mut lines = body.lines();
@@ -514,9 +496,9 @@ fn decode_group(bytes: &[u8]) -> Option<GroupManifest> {
     Some(GroupManifest { gid_hex, members })
 }
 
-fn hex32(bytes: &[u8; 32]) -> String {
+fn hex(bytes: &[u8]) -> String {
     const H: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(64);
+    let mut out = String::with_capacity(bytes.len() * 2);
     for b in bytes {
         out.push(H[usize::from(b >> 4)] as char);
         out.push(H[usize::from(b & 0x0f)] as char);
@@ -524,13 +506,13 @@ fn hex32(bytes: &[u8; 32]) -> String {
     out
 }
 
-fn unhex32(s: &str) -> Option<[u8; 32]> {
-    if s.len() != 64 {
+fn unhex(s: &str) -> Option<Vec<u8>> {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
-    let mut out = [0u8; 32];
-    for (i, slot) in out.iter_mut().enumerate() {
-        *slot = u8::from_str_radix(s.get(i * 2..i * 2 + 2)?, 16).ok()?;
+    let mut out = Vec::with_capacity(s.len() / 2);
+    for i in 0..s.len() / 2 {
+        out.push(u8::from_str_radix(s.get(i * 2..i * 2 + 2)?, 16).ok()?);
     }
     Some(out)
 }
@@ -548,7 +530,6 @@ mod tests {
     #[test]
     fn decided_round_trips_and_o_excl_refuses_a_duplicate() {
         let (_d, root) = ws();
-        let (old_store, new_store) = store_images(&root, "aa", 0, b"old", b"new").expect("stores");
         let intent = Intent {
             epoch_hex: "ee".into(),
             txn_hex: "aa".into(),
@@ -556,11 +537,9 @@ mod tests {
             policy: Policy::Restore,
             members: vec![IntentMember {
                 rel: PathBuf::from("notes/a.md"),
-                old: digest(b"old"),
-                new: digest(b"new"),
                 tmp: PathBuf::from("notes/.a.md.tmp"),
-                old_store,
-                new_store,
+                old: b"old".to_vec(),
+                new: b"new".to_vec(),
             }],
         };
         create_decided(&root, &intent).expect("first");

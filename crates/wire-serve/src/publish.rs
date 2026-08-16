@@ -22,17 +22,18 @@
 //! external-race residual; the `apply_batch` pre-image verify is what
 //! refuses a second in-process writer.
 
+use std::collections::BTreeSet;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use wire::{DeltaFile, DeltaFrame, Root};
 
 use crate::authority::AuthorityEpoch;
 use crate::write::assemble_delta;
+use fs::WorkspaceRoot;
 use fs::intent::{self, DestClass, Found, GroupManifest, Intent, IntentMember, Phase, Policy};
-use fs::{WorkspaceRoot, honest_sync_path};
 
 // ── identities ──────────────────────────────────────────────────────────────
 
@@ -400,14 +401,35 @@ pub struct StagedTxn {
     pub drop_tmp_after_decide: bool,
 }
 
-/// Success: the assigned frame, plus when disk-stage I/O ran (the overlap
-/// instrument for §7(b)/(f)).
+/// Success: the assigned frame, when disk-stage I/O ran (the overlap
+/// instrument for §7(b)/(f)), and the durability figures kept apart.
+///
+/// `content_fsync` and `metadata_publish` are separate on purpose (gate 12):
+/// one aggregate covering both is exactly the number nobody may call the
+/// tree cost. `group_wait` is folded into neither — a writer that waited
+/// 3 ms for a cohort did not spend 3 ms on durability.
 #[derive(Debug, Clone)]
 pub struct PublishReceipt {
     pub txn: TxnId,
     pub frame: DeltaFrame,
     pub disk_start: Instant,
     pub disk_end: Instant,
+    /// Writer-local content durability: this writer's own `F_FULLFSYNC` on
+    /// its own staged bytes and recovery images, outside every exclusion.
+    /// Wall clock across a parallel stage, so with several destinations it
+    /// is the critical path rather than the sum, and it carries any wait for
+    /// an in-flight sync slot — a cost that can only make this figure look
+    /// worse, never better.
+    pub content_fsync: Duration,
+    /// Metadata publish: reserve → reverify → decided intent → rename →
+    /// frame assignment → finalize, with the time inside honest sync calls
+    /// and the time parked on a cohort both subtracted.
+    pub metadata_publish: Duration,
+    /// Time this writer spent parked on another writer's shared sync round.
+    pub group_wait: Duration,
+    /// The largest cohort one shared round covered for this transaction;
+    /// 1 when it shared no round with anyone.
+    pub cohort_size: usize,
 }
 
 /// Failures on the publish path. After a durable decision the only
@@ -442,9 +464,21 @@ pub fn publish(
     txn: StagedTxn,
     fold: impl FnOnce(&Root) -> Root,
 ) -> Result<PublishReceipt, PublishError> {
+    let txn_hex = txn.txn.hex();
+    let disk_start = Instant::now();
+    // Writer-local durability first, outside every exclusion: this writer's
+    // own F_FULLFSYNC on its own fd, one per destination, in parallel. The
+    // staged bytes are settled at this point, so none of this has to wait
+    // for a reservation — and no other writer's flush ever stands in for it.
+    let content_fsync = sync_content(&txn.dests)?;
+
+    let _ = fs::take_thread_tally(); // the metadata half tallies from here
+    let metadata_start = Instant::now();
+    // Held to the end: releasing before finalize would let an overlapping
+    // writer rename over these dests while this intent is still Decided, and
+    // recovery would then classify them as neither identity and quarantine.
     let _res = table.reserve(txn.txn, txn.reads.clone(), txn.writes.clone());
     reverify(root, &txn.dests)?;
-    let disk_start = Instant::now();
     let intent = decide(root, &txn)?;
     if txn.drop_tmp_after_decide {
         for d in &txn.dests {
@@ -465,18 +499,65 @@ pub fn publish(
             cause: e,
         });
     }
-    let _ = intent::reclaim(root, &txn.txn.hex());
+    let _ = intent::reclaim(root, &txn_hex);
+    let (sync_time, group_wait, cohort) = fs::take_thread_tally();
     Ok(PublishReceipt {
         txn: txn.txn,
         frame,
         disk_start,
         disk_end,
+        content_fsync,
+        metadata_publish: metadata_start
+            .elapsed()
+            .saturating_sub(sync_time + group_wait),
+        group_wait,
+        cohort_size: cohort.max(1),
     })
 }
 
-/// Group commit: one checksummed manifest, then each member independently.
+/// This writer's own honest sync on its own staged content, one destination
+/// per thread, under the in-flight cap. Never delegated to another thread's
+/// fd or another writer's barrier: what a committed receipt promises is that
+/// THIS writer's bytes reached the platter.
+///
+/// Returns the longest time any destination spent INSIDE its sync call — the
+/// critical path of this writer's content durability. A scoped thread starts
+/// with a zero tally, so what it reads back is its own sync and not the wait
+/// for a slot around it: nothing is called content fsync that is not content
+/// fsync.
+fn sync_content(dests: &[DestImage]) -> io::Result<Duration> {
+    std::thread::scope(|scope| {
+        let jobs: Vec<_> = dests
+            .iter()
+            .map(|d| {
+                scope.spawn(|| {
+                    fs::honest_sync_path_capped(&d.tmp).map(|()| fs::take_thread_tally().0)
+                })
+            })
+            .collect();
+        let mut outcome = Ok(Duration::ZERO);
+        for job in jobs {
+            let joined = job
+                .join()
+                .unwrap_or_else(|_| Err(io::Error::other("content sync panicked")));
+            outcome = match (outcome, joined) {
+                (Err(e), _) | (Ok(_), Err(e)) => Err(e),
+                (Ok(longest), Ok(inside)) => Ok(longest.max(inside)),
+            };
+        }
+        outcome
+    })
+}
+
+/// Group commit: one checksummed manifest, then every member CONCURRENTLY.
 /// A member that never joined (not in `members`) is a clean individual
 /// refusal the caller already holds — it is not in the return vec.
+///
+/// Members run in parallel because that is the only thing that makes a group
+/// cheaper than N individual commits: their content syncs overlap and their
+/// shared directory syncs fall into one round. Running them one after
+/// another would pay every member's durability end to end and call it a
+/// group. Results stay in member order.
 ///
 /// # Errors
 /// Per-member. A failure to write the group manifest (no durable
@@ -488,7 +569,7 @@ pub fn publish_group(
     owner: &StateOwner,
     gid: TxnId,
     members: Vec<StagedTxn>,
-    mut fold: impl FnMut(&Root) -> Root,
+    fold: impl Fn(&Root) -> Root + Sync,
 ) -> Vec<Result<PublishReceipt, PublishError>> {
     let manifest = GroupManifest {
         gid_hex: gid.hex(),
@@ -501,10 +582,21 @@ pub fn publish_group(
             .map(|_| Err(PublishError::Io(io::Error::new(e.kind(), e.to_string()))))
             .collect();
     }
-    members
-        .into_iter()
-        .map(|m| publish(root, table, owner, m, &mut fold))
-        .collect()
+    std::thread::scope(|scope| {
+        let jobs: Vec<_> = members
+            .into_iter()
+            .map(|m| scope.spawn(|| publish(root, table, owner, m, &fold)))
+            .collect();
+        jobs.into_iter()
+            .map(|job| {
+                job.join().unwrap_or_else(|_| {
+                    Err(PublishError::Io(io::Error::other(
+                        "member publish panicked",
+                    )))
+                })
+            })
+            .collect()
+    })
 }
 
 fn reverify(root: &WorkspaceRoot, dests: &[DestImage]) -> Result<(), PublishError> {
@@ -524,33 +616,30 @@ fn reverify(root: &WorkspaceRoot, dests: &[DestImage]) -> Result<(), PublishErro
     Ok(())
 }
 
-/// Persist recovery images and the `O_EXCL` decided intent. After this
-/// returns, no error on this transaction is a refusal.
+/// Persist the `O_EXCL` decided intent, recovery images carried inside it.
+/// After this returns, no error on this transaction is a refusal.
+///
+/// The writer's content durability is NOT here: it is settled before the
+/// reservation is taken ([`publish`]). What is left is the one record whose
+/// write must follow the reverify, which is why it is the only honest sync
+/// this path issues under an exclusion.
 ///
 /// # Errors
-/// I/O at image write, intent create, or honest sync.
+/// I/O at intent create or honest sync.
 pub fn decide(root: &WorkspaceRoot, txn: &StagedTxn) -> Result<Intent, PublishError> {
-    let txn_hex = txn.txn.hex();
-    let mut members = Vec::with_capacity(txn.dests.len());
-    for (i, d) in txn.dests.iter().enumerate() {
-        honest_sync_path(&d.tmp)?;
-        let (old_store, new_store) = intent::store_images(root, &txn_hex, i, &d.old, &d.new)?;
-        let tmp = d
-            .tmp
-            .strip_prefix(&root.0)
-            .map_or_else(|_| d.tmp.clone(), Path::to_path_buf);
-        members.push(IntentMember {
+    let members = txn
+        .dests
+        .iter()
+        .map(|d| IntentMember {
             rel: d.rel.clone(),
-            old: intent::digest(&d.old),
-            new: intent::digest(&d.new),
-            tmp,
-            old_store,
-            new_store,
-        });
-    }
+            tmp: strip_root(root, &d.tmp),
+            old: d.old.clone(),
+            new: d.new.clone(),
+        })
+        .collect();
     let rec = Intent {
         epoch_hex: txn.epoch.hex(),
-        txn_hex,
+        txn_hex: txn.txn.hex(),
         phase: Phase::Decided,
         policy: txn.policy,
         members,
@@ -560,15 +649,20 @@ pub fn decide(root: &WorkspaceRoot, txn: &StagedTxn) -> Result<Intent, PublishEr
 }
 
 fn rename_all(root: &WorkspaceRoot, dests: &[DestImage]) -> io::Result<()> {
+    let mut parents = BTreeSet::new();
     for d in dests {
         let dest = root.0.join(&d.rel);
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)?;
+            parents.insert(parent.to_path_buf());
         }
         std::fs::rename(&d.tmp, &dest)?;
-        if let Some(parent) = dest.parent() {
-            honest_sync_path(parent)?;
-        }
+    }
+    // One sync per DISTINCT parent: two dests in one folder are one
+    // directory, so they are one sync — and each sync groups with the
+    // concurrent writers renaming into that same directory.
+    for parent in &parents {
+        fs::honest_sync_dir(parent)?;
     }
     Ok(())
 }
@@ -775,7 +869,7 @@ mod tests {
         std::fs::write(&dest, old).unwrap();
         let tmp = dest.with_extension("tmp-pub");
         std::fs::write(&tmp, new).unwrap();
-        honest_sync_path(&tmp).unwrap();
+        fs::honest_sync_path(&tmp).unwrap();
         DestImage {
             rel: PathBuf::from(rel),
             old: old.to_vec(),

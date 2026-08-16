@@ -2965,14 +2965,34 @@ fn fsync_dir(dir: &Path) -> io::Result<()> {
     File::open(dir)?.sync_all()
 }
 
-/// The ruled honest durability class (merged-plan §4.7): `F_FULLFSYNC` on
-/// macOS (platter, not drive-cache), `sync_all` elsewhere. The live
-/// [`apply_batch`] path keeps `sync_all` until the cutover; the parallel
-/// publish path uses this for intent, recovery images, and dest temps.
+/// The ruled honest durability class (merged-plan §4.7): `fcntl`
+/// `F_FULLFSYNC` on macOS (platter, not drive-cache), `sync_all` elsewhere.
+/// The publish path uses this for the intent record and the dest temps.
+///
+/// ⚠️ On macOS `sync_all` and `sync_data` are NOT a lesser class: Rust's
+/// implementations issue `fcntl(F_FULLFSYNC)` too — measured four ways
+/// (`decisions/2026-08-16-sync-class-platform-scope.md`, evidence at
+/// `results/instrument-evidence/fs_usage_syncall.txt`). So the
+/// [`apply_batch`] staging path, which still calls `sync_all`, already pays
+/// platter-class durability on this platform; what this function adds is
+/// that the class is EXPLICIT rather than an implementation detail of the
+/// standard library. Never assume a cheap sync tier exists here.
+///
+/// Every call is counted ([`honest_sync_count`]) and timed into this
+/// thread's tally ([`take_thread_tally`]) — the bare instruments the
+/// durability gates read.
 ///
 /// # Errors
 /// The underlying fcntl/fsync failure.
 pub fn honest_sync(file: &File) -> io::Result<()> {
+    let started = std::time::Instant::now();
+    let outcome = raw_honest_sync(file);
+    SYNC_TIME.with(|c| c.set(c.get().saturating_add(started.elapsed())));
+    HONEST_SYNCS.fetch_add(1, Ordering::Relaxed);
+    outcome
+}
+
+fn raw_honest_sync(file: &File) -> io::Result<()> {
     #[cfg(target_os = "macos")]
     {
         // SAFETY: fcntl on a valid fd we own; F_FULLFSYNC takes no extra arg.
@@ -2995,6 +3015,200 @@ pub fn honest_sync(file: &File) -> io::Result<()> {
 /// Open failure, or the underlying sync failure.
 pub fn honest_sync_path(path: &Path) -> io::Result<()> {
     honest_sync(&File::open(path)?)
+}
+
+// ── honest durability: instruments, the in-flight cap, grouped syncs ────────
+
+/// Honest syncs issued process-wide.
+static HONEST_SYNCS: AtomicU64 = AtomicU64::new(0);
+
+thread_local! {
+    /// Time this thread spent INSIDE honest sync calls — never the waiting
+    /// around them, so a caller can subtract it from a wall clock and get a
+    /// metadata figure that carries no fsync time.
+    static SYNC_TIME: std::cell::Cell<std::time::Duration> =
+        const { std::cell::Cell::new(std::time::Duration::ZERO) };
+    /// Time this thread spent parked on another writer's sync round.
+    static GROUP_WAIT: std::cell::Cell<std::time::Duration> =
+        const { std::cell::Cell::new(std::time::Duration::ZERO) };
+    /// The largest cohort one shared round covered for this thread.
+    static COHORT_PEAK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Honest syncs issued since process start. The gate instrument: a delta
+/// across a publish witnesses that the content destination was honest-synced
+/// (gate 2), and a delta of zero across the linearized state-owner step
+/// witnesses that nothing synced inside it (gate 3).
+#[must_use]
+pub fn honest_sync_count() -> u64 {
+    HONEST_SYNCS.load(Ordering::Relaxed)
+}
+
+/// This thread's tally, reset by the read: time inside honest sync calls,
+/// time parked on another writer's sync round, and the largest cohort a
+/// shared round covered (0 = this thread shared no round). The three are
+/// disjoint, so a caller subtracts the first two from its wall clock and
+/// keeps the fsync figure and the metadata figure apart.
+#[must_use]
+pub fn take_thread_tally() -> (std::time::Duration, std::time::Duration, usize) {
+    (
+        SYNC_TIME.replace(std::time::Duration::ZERO),
+        GROUP_WAIT.replace(std::time::Duration::ZERO),
+        COHORT_PEAK.replace(0),
+    )
+}
+
+/// Honest syncs allowed in flight at once on the pre-reservation path.
+///
+/// Measured on this fleet mac (Mac16,5 / M4 Max / internal `NVMe` / APFS,
+/// 2026-08-16 raw-device sweep): concurrent `F_FULLFSYNC` only PARTIALLY
+/// coalesces — throughput climbs to a ~900 syncs/s ceiling at N≈16–24 and
+/// then stops, while p99 keeps multiplying (10 ms at N=1, 65–147 ms at N=16,
+/// 241–259 ms at N=60). 16 captures 3.6× of the 4.9× ceiling at about a
+/// third of N=60's tail; the last 1.3× would cost 4× that tail.
+const HONEST_SYNC_SLOTS: usize = 16;
+
+static SYNC_SLOTS: std::sync::Mutex<usize> = std::sync::Mutex::new(HONEST_SYNC_SLOTS);
+static SYNC_SLOT_FREED: std::sync::Condvar = std::sync::Condvar::new();
+
+/// [`honest_sync`] under the in-flight cap — the form for durability a
+/// writer issues BEFORE it takes any reservation (its staged content, its
+/// recovery images).
+///
+/// ⛔ Never call this while holding a reservation. A writer waiting for a
+/// slot while holding a reservation, against a writer holding a slot while
+/// waiting for that reservation, is a deadlock. The one in-reservation sync
+/// (the `O_EXCL` intent record) uses the uncapped [`honest_sync`] and, being
+/// one per transaction, can exhaust nothing.
+///
+/// # Errors
+/// The underlying sync failure.
+fn honest_sync_capped(file: &File) -> io::Result<()> {
+    let mut free = SYNC_SLOTS.lock().unwrap_or_else(PoisonError::into_inner);
+    while *free == 0 {
+        free = SYNC_SLOT_FREED
+            .wait(free)
+            .unwrap_or_else(PoisonError::into_inner);
+    }
+    *free -= 1;
+    drop(free);
+    let outcome = honest_sync(file);
+    *SYNC_SLOTS.lock().unwrap_or_else(PoisonError::into_inner) += 1;
+    SYNC_SLOT_FREED.notify_one();
+    outcome
+}
+
+/// [`honest_sync_capped`] on a path — same cap, same rule against holding a
+/// reservation across it.
+///
+/// # Errors
+/// Open failure, or the underlying sync failure.
+pub fn honest_sync_path_capped(path: &Path) -> io::Result<()> {
+    honest_sync_capped(&File::open(path)?)
+}
+
+/// One shared directory's honest-sync rounds.
+#[derive(Default)]
+struct DirRounds {
+    state: std::sync::Mutex<RoundState>,
+    idle: std::sync::Condvar,
+}
+
+#[derive(Default)]
+struct RoundState {
+    /// Rounds begun. A round whose index is at or above a writer's arrival
+    /// snapshot began after that writer's rename, so it covers it.
+    started: u64,
+    /// Rounds completed; `finished > arrival` is the coverage test.
+    finished: u64,
+    in_flight: bool,
+    waiting: usize,
+    /// Writers the last completed round covered — the cohort instrument.
+    members: usize,
+    /// The last completed round's failure. A follower reports it rather than
+    /// reading success into a round that failed.
+    failure: Option<(io::ErrorKind, String)>,
+}
+
+static DIR_ROUNDS: std::sync::Mutex<BTreeMap<PathBuf, std::sync::Arc<DirRounds>>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
+/// Honest-sync a directory that concurrent writers SHARE, grouping only when
+/// contention is observed: a writer that finds the directory quiet syncs it
+/// at once and waits for nobody, and a writer that arrives while a round is
+/// in flight waits for the NEXT round — one sync covering every writer
+/// queued behind it. There is no window, no timer and no epoch; the queue
+/// exists only while writers are in it.
+///
+/// A writer cannot ride the round already in flight: that round may have
+/// begun before its rename, and only a round that STARTS afterwards carries
+/// the entry. This costs one extra round on arrival and is the whole reason
+/// the grouping stays honest.
+///
+/// Only for directories several transactions write into (the intent store,
+/// destination parents). A directory one transaction owns is synced through
+/// [`honest_sync_path`] — grouping it would buy nothing and would keep a
+/// coordinator entry alive per transaction.
+///
+/// # Errors
+/// The underlying open/sync failure — a follower reports the failure of the
+/// round that covered it.
+pub fn honest_sync_dir(dir: &Path) -> io::Result<()> {
+    let rounds = dir_rounds(dir);
+    let mut state = rounds.state.lock().unwrap_or_else(PoisonError::into_inner);
+    let arrival = state.started;
+    let mut parked = std::time::Duration::ZERO;
+    loop {
+        if state.finished > arrival {
+            let outcome = match &state.failure {
+                Some((kind, msg)) => Err(io::Error::new(*kind, msg.clone())),
+                None => Ok(()),
+            };
+            let members = state.members;
+            drop(state);
+            note_group(parked, members);
+            return outcome;
+        }
+        if !state.in_flight {
+            let round = state.started;
+            state.started = round + 1;
+            state.in_flight = true;
+            // Everyone parked right now arrived before this round starts, so
+            // this round is exactly their cover.
+            let members = state.waiting + 1;
+            drop(state);
+            let outcome = honest_sync_path(dir);
+            let mut done = rounds.state.lock().unwrap_or_else(PoisonError::into_inner);
+            done.in_flight = false;
+            done.finished = round + 1;
+            done.members = members;
+            done.failure = outcome.as_ref().err().map(|e| (e.kind(), e.to_string()));
+            drop(done);
+            rounds.idle.notify_all();
+            note_group(parked, members);
+            return outcome;
+        }
+        state.waiting += 1;
+        let since = std::time::Instant::now();
+        state = rounds
+            .idle
+            .wait(state)
+            .unwrap_or_else(PoisonError::into_inner);
+        state.waiting -= 1;
+        parked += since.elapsed();
+    }
+}
+
+fn dir_rounds(dir: &Path) -> std::sync::Arc<DirRounds> {
+    let mut all = DIR_ROUNDS.lock().unwrap_or_else(PoisonError::into_inner);
+    std::sync::Arc::clone(all.entry(dir.to_path_buf()).or_default())
+}
+
+fn note_group(parked: std::time::Duration, members: usize) {
+    GROUP_WAIT.with(|c| c.set(c.get().saturating_add(parked)));
+    if members > 1 {
+        COHORT_PEAK.with(|c| c.set(c.get().max(members)));
+    }
 }
 
 // ---------------------------------------------------------------------------
