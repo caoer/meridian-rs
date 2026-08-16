@@ -30,6 +30,7 @@ pub mod domain;
 pub mod fence;
 pub mod forest;
 pub mod guard;
+pub mod intent;
 pub mod radix;
 pub mod resident;
 pub mod stable;
@@ -2460,9 +2461,14 @@ pub fn is_write_conflict(e: &io::Error) -> bool {
 /// renames commit anything, the live destination is compared against this
 /// pre-image (and the receipt file against its stage-time read): a mismatch
 /// refuses with the typed [`write_conflict`] error and no file is touched. The
-/// residual window (verify → rename) is stated: cooperating engine writers are
-/// serialized by the write flock; out-of-band writers in that gap are a
-/// detectable-at-next-read lost update, never a torn or corrupted file.
+/// residual window (verify → rename) is stated. Under the ruled B authority
+/// (construction step 6) the write flock is not on the publish path: this
+/// pre-image compare is what refuses a second in-process writer inside the
+/// one authority, so the content+receipt pairing cannot become silent loss
+/// (`docs/laws.md` Amendment — the one state owner). Out-of-band writers
+/// (editors, git, bash) remain a detectable lost update, never a torn file.
+/// The live write door still holds the interim flock until the cutover; the
+/// verify is what stays load-bearing either way.
 ///
 /// # Commit discipline — the atomic-write law (§6.5 + §14)
 /// Every byte reaches disk via **tmp + fsync + rename**; no in-place write
@@ -2617,9 +2623,12 @@ pub fn append_line(root: &WorkspaceRoot, rel_path: &Path, line: &str) -> io::Res
 /// A two-file commit staged to temp files (written + fsync'd), awaiting the
 /// two renames. Separating staging from the renames is what lets the
 /// crash-honesty test drive a kill BETWEEN the renames deterministically
-/// (§6.5). Each staged file carries the pre-image its new bytes were derived
-/// from — the pre-rename verify compares the live destination against it.
-struct StagedCommit {
+/// (§6.5), and what lets the parallel-commits path insert one checksummed
+/// `O_EXCL` intent after verify and before the first visible rename
+/// (`crates/fs/src/intent.rs`). Each staged file carries the pre-image its
+/// new bytes were derived from — the pre-rename verify compares the live
+/// destination against it.
+pub struct StagedCommit {
     content: StagedFile,
     /// The content file's validated pre-image (read#2's bytes — what the
     /// sealed spans index). The live destination must still equal this at
@@ -2646,7 +2655,13 @@ struct StagedFile {
 /// a fsync'd temp beside the destination. No destination is touched here —
 /// staging is entirely off to the side, so a failure (or a crash) before
 /// [`StagedCommit::commit`] leaves every real file intact.
-fn stage_batch(
+///
+/// Public so the parallel-commits path can stage outside any exclusion, then
+/// reserve, reverify, write the intent, and rename.
+///
+/// # Errors
+/// The same seam-contract, candidate, and I/O failures [`apply_batch`] names.
+pub fn stage_batch(
     root: &WorkspaceRoot,
     content_path: &Path,
     receipt_path: Option<&Path>,
@@ -2825,10 +2840,10 @@ impl StagedCommit {
     /// pre-images (refuse [`write_conflict`] on drift, cleaning the staged
     /// temps), then rename the content file (which COMMITS it), then the
     /// receipt file. The gap between the two renames is the STATED §6.5 crash
-    /// window. The verify→rename gap is the stated residual window:
-    /// cooperating writers are serialized by the write flock; out-of-band
-    /// writers in that gap lose their update detectably (each file is still
-    /// fully-old-or-fully-new — never torn).
+    /// window. The verify→rename gap is the stated residual window: this
+    /// pre-image compare refuses a second in-process writer (under B the flock
+    /// is not on the publish path); out-of-band writers lose their update
+    /// detectably (each file is still fully-old-or-fully-new — never torn).
     fn commit(self) -> io::Result<()> {
         if let Err(conflict) = self.verify_pre_images() {
             self.discard();
@@ -2839,12 +2854,52 @@ impl StagedCommit {
         self.rename_receipt()
     }
 
+    /// The content destination this commit will rename onto.
+    #[must_use]
+    pub fn content_dst(&self) -> &Path {
+        &self.content.dst
+    }
+
+    /// The fsync'd temp holding the new content bytes.
+    #[must_use]
+    pub fn content_tmp(&self) -> &Path {
+        &self.content.tmp
+    }
+
+    /// The validated content pre-image (read#2's bytes).
+    #[must_use]
+    pub fn content_expected(&self) -> &[u8] {
+        &self.content_expected
+    }
+
+    /// The receipt destination, when this batch carries one.
+    #[must_use]
+    pub fn receipt_dst(&self) -> Option<&Path> {
+        self.receipt.as_ref().map(|s| s.dst.as_path())
+    }
+
+    /// The fsync'd receipt temp, when this batch carries one.
+    #[must_use]
+    pub fn receipt_tmp(&self) -> Option<&Path> {
+        self.receipt.as_ref().map(|s| s.tmp.as_path())
+    }
+
+    /// The receipt pre-image (absent file ⇒ empty), when this batch carries one.
+    #[must_use]
+    pub fn receipt_expected(&self) -> Option<&[u8]> {
+        self.receipt_expected.as_deref()
+    }
+
     /// The pre-rename verify: the content destination must still hold the validated
     /// pre-image (gone ⇒ conflict too — read#2 saw a real file), and the
     /// receipt destination must still hold its stage-time bytes (absent stays
     /// legal only while the pre-image is empty — the first append creates it).
     /// Both checks run BEFORE the first rename, so a refusal commits nothing.
-    fn verify_pre_images(&self) -> io::Result<()> {
+    ///
+    /// # Errors
+    /// [`write_conflict`] when a live destination drifted; any other I/O failure
+    /// reading a destination.
+    pub fn verify_pre_images(&self) -> io::Result<()> {
         let live = match fs::read(&self.content.dst) {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -2864,7 +2919,7 @@ impl StagedCommit {
     }
 
     /// Remove the staged temps (hygiene on a refused commit — no litter).
-    fn discard(&self) {
+    pub fn discard(&self) {
         let _ = fs::remove_file(&self.content.tmp);
         if let Some(staged) = &self.receipt {
             let _ = fs::remove_file(&staged.tmp);
@@ -2873,13 +2928,19 @@ impl StagedCommit {
 
     /// Rename the content temp onto its destination (atomic) and fsync the
     /// destination's directory so the rename itself is durable.
-    fn rename_content(&self) -> io::Result<()> {
+    ///
+    /// # Errors
+    /// I/O failure at rename or the parent-directory fsync.
+    pub fn rename_content(&self) -> io::Result<()> {
         commit_rename(&self.content)
     }
 
     /// Rename the receipt temp (when one was staged) onto its destination and
     /// fsync its directory. A batch without a receipt is a no-op here.
-    fn rename_receipt(&self) -> io::Result<()> {
+    ///
+    /// # Errors
+    /// I/O failure at rename or the parent-directory fsync.
+    pub fn rename_receipt(&self) -> io::Result<()> {
         match &self.receipt {
             Some(staged) => commit_rename(staged),
             None => Ok(()),
@@ -2902,6 +2963,38 @@ fn fsync_dir(dir: &Path) -> io::Result<()> {
         return Ok(());
     }
     File::open(dir)?.sync_all()
+}
+
+/// The ruled honest durability class (merged-plan §4.7): `F_FULLFSYNC` on
+/// macOS (platter, not drive-cache), `sync_all` elsewhere. The live
+/// [`apply_batch`] path keeps `sync_all` until the cutover; the parallel
+/// publish path uses this for intent, recovery images, and dest temps.
+///
+/// # Errors
+/// The underlying fcntl/fsync failure.
+pub fn honest_sync(file: &File) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: fcntl on a valid fd we own; F_FULLFSYNC takes no extra arg.
+        let rc = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_FULLFSYNC) };
+        if rc == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        file.sync_all()
+    }
+}
+
+/// [`honest_sync`] on a path. `File::open` works for files and directories
+/// alike on Unix; the fd is only used for the sync.
+///
+/// # Errors
+/// Open failure, or the underlying sync failure.
+pub fn honest_sync_path(path: &Path) -> io::Result<()> {
+    honest_sync(&File::open(path)?)
 }
 
 // ---------------------------------------------------------------------------
@@ -4101,6 +4194,61 @@ mod tests {
             "the deletion survives — the commit did not resurrect stale bytes"
         );
         assert!(!any_tmp_in(&dir.path().join("notes")));
+    }
+
+    /// Two in-process writers, same destinations, no flock: both stage against
+    /// the same pre-image; the first rename lands; the second verify refuses
+    /// `write_conflict`. Under B this pre-image compare is what refuses the
+    /// second writer inside the one authority — content+receipt cannot become
+    /// silent loss (merged-plan §4.7 crash honesty).
+    #[test]
+    fn pre_image_verify_refuses_the_second_in_process_writer() {
+        let (dir, root) = workspace();
+        let vb = validated(Some(receipt_append()));
+        let first = stage_batch(
+            &root,
+            &content_rel(),
+            Some(&receipt_rel()),
+            &vb,
+            PLAN_S0.as_bytes(),
+            &candidate(&vb),
+        )
+        .unwrap();
+        let second = stage_batch(
+            &root,
+            &content_rel(),
+            Some(&receipt_rel()),
+            &vb,
+            PLAN_S0.as_bytes(),
+            &candidate(&vb),
+        )
+        .unwrap();
+
+        first.commit().expect("first writer lands");
+        let err = second
+            .commit()
+            .expect_err("second writer must refuse the moved pre-image");
+        assert!(
+            is_write_conflict(&err),
+            "typed write-conflict is the second-writer refusal: {err}"
+        );
+
+        let content = fs::read(dir.path().join(content_rel())).unwrap();
+        let receipt = fs::read(dir.path().join(receipt_rel())).unwrap();
+        let expected_content = PLAN_S0.replace("ship by August", "ship by September");
+        assert_eq!(content, expected_content.as_bytes(), "exactly one landing");
+        assert!(
+            receipt_recorded(&receipt, RECEIPT_ANCHOR),
+            "the first writer's receipt landed; the second did not append another"
+        );
+        assert_eq!(
+            receipt
+                .windows(RECEIPT_LINE.len())
+                .filter(|w| *w == RECEIPT_LINE.as_bytes())
+                .count(),
+            1,
+            "the pairing is one content + one receipt row, never two"
+        );
     }
 
     /// Receipt moved before staging: the receipt file gained rows
