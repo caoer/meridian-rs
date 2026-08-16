@@ -2,7 +2,8 @@
 //!
 //! ```text
 //! mrd put <PATH> [--dry | --validate] [--force] [--actor A] [--now T]
-//!         [--if-fingerprint FP] [--scope PATH] [--receipt PATH#ANCHOR] [--json]  < edits.json
+//!         [--if-fingerprint FP] [--scope PATH | --scope-bytes B64]
+//!         [--receipt PATH#ANCHOR] [--json]  < edits.json
 //! ```
 //!
 //! `--scope` narrows the `--if-fingerprint` premise to the named node
@@ -16,6 +17,19 @@
 //! the flag); and a daemon whose hello does not serve `scoped-guards` cannot
 //! check a scoped premise — the taught refusal fires instead of a
 //! strict-wall `bad_request` from a field it never negotiated.
+//!
+//! `--scope-bytes B64` is the same premise for a node whose name the UTF-8
+//! `Path` noun cannot carry: B64 is base64url over the raw path bytes, and FP
+//! is the token the §4.7 `fingerprint {scope_bytes}` mint echoed. On the wire
+//! the pair rides as ONE `guards[]` entry — `scope_bytes` is a top-level
+//! field on NO write door (the §5.4 field matrix), and a top-level
+//! `if_fingerprint` beside the entry would arm a second, world-grain premise
+//! with a token minted for the scoped node. Exactly one of
+//! `--scope`/`--scope-bytes` per put ([`premise_flag_walls`]); the pair law
+//! and the cap wall hold identically; the §1 path-law wall does not apply
+//! (raw bytes are the names that law's noun cannot spell), so the face
+//! refuses only the empty spelling and an undecodable base64url is the
+//! engine's taught refusal at exit 1.
 //!
 //! The two rehearsals are one run and two faces: both send `dry: true` through the same
 //! choke-point, so neither can validate anything the other would not. `--dry` is the daemon
@@ -81,11 +95,21 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     if let Some(now) = &parsed.now {
         request["now"] = json!(now);
     }
-    if let Some(fp) = &parsed.if_fingerprint {
-        request["if_fingerprint"] = json!(fp);
-    }
-    if let Some(scope) = &parsed.scope {
-        request["scope"] = json!(scope);
+    // The raw-byte premise rides as ONE guards[] entry carrying its token:
+    // `scope_bytes` is a top-level field on NO write door (§5.4 matrix), and
+    // top-level `if_fingerprint` beside the entry would arm a SECOND,
+    // world-grain premise with a token minted for the scoped node. The parse
+    // walls guarantee the pairing: scope_bytes never rides fingerprint-less
+    // and never beside `scope`.
+    if let (Some(b64), Some(fp)) = (&parsed.scope_bytes, &parsed.if_fingerprint) {
+        request["guards"] = json!([{ "scope_bytes": b64, "fingerprint": fp }]);
+    } else {
+        if let Some(fp) = &parsed.if_fingerprint {
+            request["if_fingerprint"] = json!(fp);
+        }
+        if let Some(scope) = &parsed.scope {
+            request["scope"] = json!(scope);
+        }
     }
     if let Some(receipt) = &parsed.receipt {
         request["receipt"] = json!({"path": receipt.path.0, "anchor": receipt.anchor});
@@ -102,9 +126,16 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     // connect-time hello advertised the family. Refusing HERE — before any
     // engine write — is the taught refusal; sending anyway would draw the
     // strict wall's `bad_request` for a field this daemon never negotiated.
-    if parsed.scope.is_some() && !door.has_cap(engine::SCOPED_GUARDS_CAP) {
+    let scoped_flag = match (&parsed.scope, &parsed.scope_bytes) {
+        (Some(_), _) => Some(("--scope", "scope")),
+        (None, Some(_)) => Some(("--scope-bytes", "scope_bytes")),
+        (None, None) => None,
+    };
+    if let Some((flag, arm)) = scoped_flag
+        && !door.has_cap(engine::SCOPED_GUARDS_CAP)
+    {
         return Err(Fail::tool(format!(
-            "--scope names a scoped premise (wire-contract §5.4), but this daemon's hello \
+            "{flag} names a scoped premise (wire-contract §5.4), but this daemon's hello \
              does not serve the `{}` cap, so it cannot check a premise at that grain — \
              nothing was sent and nothing was written.\n\
              Why: the cap is family-whole discovery honesty (§3.2): a daemon either serves \
@@ -112,11 +143,11 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
              strict wall; the client refuses first, with this teaching, instead of drawing \
              that `bad_request`.\n\
              Fixes — run whichever fits your case:\n\
-               - retry without --scope: `--if-fingerprint` alone is the world-grain premise \
+               - retry without {flag}: `--if-fingerprint` alone is the world-grain premise \
              this daemon does check.\n\
                - when the daemon should serve the family: restart it so a build that \
              advertises `{}` binds the socket, then mint the scoped token again \
-             (`fingerprint {{scope}}`, §4.7) — a world token does not become scoped by \
+             (`fingerprint {{{arm}}}`, §4.7) — a world token does not become scoped by \
              renaming the flag.",
             engine::SCOPED_GUARDS_CAP,
             engine::SCOPED_GUARDS_CAP,
@@ -247,6 +278,10 @@ struct Put {
     /// `--scope`: the node the `--if-fingerprint` premise binds (§5.4). The
     /// pair law holds at parse: present only beside `if_fingerprint`.
     scope: Option<String>,
+    /// `--scope-bytes`: the same premise node as base64url over the raw path
+    /// bytes (§5.4). Pair law at parse; mutually exclusive with `scope`;
+    /// rides the wire as one `guards[]` entry, never top-level.
+    scope_bytes: Option<String>,
     /// `--dry`: rehearse and show the diff.
     dry: bool,
     /// `--validate`: rehearse and say nothing.
@@ -283,6 +318,7 @@ impl Put {
         let mut receipt: Option<ReceiptAddr> = None;
         let mut if_fingerprint: Option<String> = None;
         let mut scope: Option<String> = None;
+        let mut scope_bytes: Option<String> = None;
         let mut dry = false;
         let mut validate = false;
         let mut force = false;
@@ -325,6 +361,7 @@ impl Put {
                         .ok_or_else(|| Fail::tool("--scope needs a value".to_owned()))?;
                     scope = Some(value.clone());
                 }
+                "--scope-bytes" => scope_bytes = Some(flag_value(&mut it, "--scope-bytes")?),
                 "--receipt" => {
                     let value = it
                         .next()
@@ -348,18 +385,7 @@ impl Put {
                     .to_owned(),
             ));
         }
-        // The §5.4 pair law, this face's own wall: a scope names WHERE a
-        // premise binds and carries no token, so alone it is half a premise.
-        // The engine would refuse the same shape; this refusal costs no dial.
-        if scope.is_some() && if_fingerprint.is_none() {
-            return Err(Fail::tool(
-                "--scope names the premise's node but carries no token — pair it with \
-                 --if-fingerprint holding that node's scoped token (minted by the §4.7 \
-                 `fingerprint {scope}` arm; wire-contract §5.4). A scope with no \
-                 fingerprint is half a premise."
-                    .to_owned(),
-            ));
-        }
+        premise_flag_walls(scope.as_deref(), scope_bytes.as_deref(), if_fingerprint.as_deref())?;
         Ok(Put {
             path,
             actor,
@@ -367,12 +393,71 @@ impl Put {
             receipt,
             if_fingerprint,
             scope,
+            scope_bytes,
             dry,
             validate,
             force,
             format: if json { Format::Json } else { Format::Human },
         })
     }
+}
+
+/// One flag's value pulled from argv — the extracted arm the `fn parse`
+/// headroom note commands. No address split, so no `PINNED` row.
+fn flag_value(it: &mut std::slice::Iter<'_, String>, flag: &str) -> Result<String, Fail> {
+    it.next()
+        .cloned()
+        .ok_or_else(|| Fail::tool(format!("{flag} needs a value")))
+}
+
+/// The §5.4 premise-flag walls, this face's own (exit 2, before stdin and
+/// before any dial): two spellings name one premise's node twice; a scope
+/// names WHERE a premise binds and carries no token, so alone it is half a
+/// premise; an empty `--scope-bytes` names nothing (the empty `--scope`
+/// refuses at [`admit_scope`], which owns the §1 path-law voice). The engine
+/// would refuse every one of these shapes; refusing here costs no dial.
+fn premise_flag_walls(
+    scope: Option<&str>,
+    scope_bytes: Option<&str>,
+    if_fingerprint: Option<&str>,
+) -> Result<(), Fail> {
+    if scope.is_some() && scope_bytes.is_some() {
+        return Err(Fail::tool(
+            "--scope and --scope-bytes are two spellings of one premise's node \
+             (wire-contract §5.4: exactly one per premise) — pass the one that names \
+             your path: --scope for a UTF-8 name, --scope-bytes for raw path bytes."
+                .to_owned(),
+        ));
+    }
+    if scope.is_some() && if_fingerprint.is_none() {
+        return Err(Fail::tool(
+            "--scope names the premise's node but carries no token — pair it with \
+             --if-fingerprint holding that node's scoped token (minted by the §4.7 \
+             `fingerprint {scope}` arm; wire-contract §5.4). A scope with no \
+             fingerprint is half a premise."
+                .to_owned(),
+        ));
+    }
+    if scope_bytes.is_some() && if_fingerprint.is_none() {
+        return Err(Fail::tool(
+            "--scope-bytes names the premise's node but carries no token — pair it \
+             with --if-fingerprint holding that node's scoped token (minted by the \
+             §4.7 `fingerprint {scope_bytes}` arm; wire-contract §5.4). A scope with \
+             no fingerprint is half a premise."
+                .to_owned(),
+        ));
+    }
+    if scope_bytes == Some("") {
+        return Err(Fail::tool(
+            "--scope-bytes is empty — it names no node, and an empty value is \
+             usually an unquoted shell variable that expanded to nothing. It takes \
+             the base64url spelling the §4.7 mint echoed (`fingerprint \
+             {scope_bytes}`; wire-contract §5.4). Nothing was sent and nothing was \
+             written."
+                .to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 /// `--receipt PATH#ANCHOR` → the typed address, or the CLI's own refusal
