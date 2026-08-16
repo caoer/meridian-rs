@@ -187,97 +187,106 @@ pub(crate) fn restore(
         tree_instance: restored.journal_instance,
         seq: restored.journal_seq,
     };
+    let receipt = adjudicate(&root, workspace, &file, &mut cache, &cursor, ring, leaves)?;
+    barrier(&root, workspace, &file, cache, receipt)
+}
+
+/// Adjudicate the CURSOR against the live journal and produce the receipt.
+///
+/// Anchored ⇒ replay the frames the journal names. Not anchored ⇒ the WARM
+/// re-baseline: replay forfeited, rows retained as hypotheses. `None` is the
+/// COLD event — the rows cannot be reconciled with disk, so the caller
+/// discards the object.
+fn adjudicate(
+    root: &fs::WorkspaceRoot,
+    workspace: &Path,
+    file: &Path,
+    cache: &mut fs::DomainCache,
+    cursor: &wire_serve::ring::Cursor,
+    ring: Option<&WorkspaceRing>,
+    leaves: usize,
+) -> Option<CheckpointReceipt> {
     let anchor = ring.map_or(wire_serve::ring::Anchor::DeadInstance, |ring| {
-        ring.can_anchor(&cursor)
+        ring.can_anchor(cursor)
     });
-    let receipt = match (anchor, ring) {
-        (wire_serve::ring::Anchor::Anchored, Some(ring)) => {
-            // The cursor anchors: replay exactly the members the journal
-            // names. One read and one hash per changed member, zero unchanged
-            // members statted, no cold rebuild.
-            let paths = replay_paths(ring, cursor.seq);
-            match feed::apply(&root, &mut cache, paths) {
-                feed::Applied::Members(replayed) => CheckpointReceipt {
-                    leaves,
-                    replayed,
-                    anchored: true,
-                    warm_rebaseline: None,
-                    stats_before_serve: 0,
-                    reads_before_serve: replayed,
-                    watermark_rereads_before_serve: 0,
-                },
-                feed::Applied::Reset => {
-                    // A member the journal NAMED could not be derived, and
-                    // absence would be a lie. The rows can no longer be
-                    // reconciled with disk, so this is the COLD event.
-                    eprintln!(
-                        "checkpoint: COLD RE-BASELINE for {} — replay could not derive a named \
-                         member; the resident memo is reset and the next pass re-reads the \
-                         corpus",
-                        workspace.display()
-                    );
-                    let _ = std::fs::remove_file(&file);
-                    return None;
-                }
-                // The rescan ladder's rungs answer `Pending::All` only, and
-                // this call site builds `Clean`/`Paths` from journal frames —
-                // so these are defensive, not expected. Both leave the memo in
-                // a valid state (Sweep keeps it for the next full stat sweep;
-                // Rebaselined already swapped in a fresh full derivation), so
-                // the safe report is the truth: the ladder re-established
-                // currency and this replay claims nothing.
-                feed::Applied::Sweep(cause) | feed::Applied::Rebaselined(cause) => {
-                    eprintln!(
-                        "checkpoint: warm re-baseline for {} — the rescan ladder ({}) took over \
-                         during replay; no replay is claimed and currency comes from the \
-                         ladder's own rung",
-                        workspace.display(),
-                        cause.name()
-                    );
-                    CheckpointReceipt {
-                        leaves,
-                        replayed: 0,
-                        anchored: true,
-                        warm_rebaseline: Some(format!("rescan ladder took over: {}", cause.name())),
-                        stats_before_serve: 0,
-                        reads_before_serve: 0,
-                        watermark_rereads_before_serve: 0,
-                    }
-                }
+    let (wire_serve::ring::Anchor::Anchored, Some(ring)) = (anchor, ring) else {
+        // WARM re-baseline: the cursor cannot anchor, so REPLAY is forfeited —
+        // and nothing else is. The rows enter as hypotheses and the §6.2 floor
+        // re-verifies each one before it can serve. Trust never rode the
+        // cursor in either direction, so this is not an alarm: it fires on
+        // every ordinary process restart by design (§7.1 persists no epoch
+        // fact), which is exactly why it is labeled apart from the cold event.
+        let label = match anchor {
+            wire_serve::ring::Anchor::DeadInstance => {
+                "cursor epoch died (restart or reap) — no frame can be replayed"
             }
-        }
-        (verdict, _) => {
-            // WARM re-baseline: the cursor cannot anchor, so REPLAY is
-            // forfeited — and nothing else is. The rows enter as hypotheses
-            // and the §6.2 floor re-verifies each one before it can serve.
-            // Trust never rode the cursor in either direction, so this is not
-            // an alarm: it fires on every ordinary process restart by design
-            // (§7.1 persists no epoch fact), which is exactly why it is
-            // labeled apart from the cold event.
-            let label = match verdict {
-                wire_serve::ring::Anchor::DeadInstance => {
-                    "cursor epoch died (restart or reap) — no frame can be replayed"
-                }
-                _ => "cursor is outside retained history",
-            };
+            _ => "cursor is outside retained history",
+        };
+        eprintln!(
+            "checkpoint: warm re-baseline for {} — {label}; {leaves} leaf row(s) adopted as \
+             hypotheses, each re-verified against disk by the §6.2 trust close before it serves",
+            workspace.display()
+        );
+        return Some(CheckpointReceipt {
+            leaves,
+            replayed: 0,
+            anchored: false,
+            warm_rebaseline: Some(label.to_owned()),
+            stats_before_serve: 0,
+            reads_before_serve: 0,
+            watermark_rereads_before_serve: 0,
+        });
+    };
+    // The cursor anchors: replay exactly the members the journal names. One
+    // read and one hash per changed member, zero unchanged members statted,
+    // no cold rebuild.
+    let paths = replay_paths(ring, cursor.seq);
+    match feed::apply(root, cache, paths) {
+        feed::Applied::Members(replayed) => Some(CheckpointReceipt {
+            leaves,
+            replayed,
+            anchored: true,
+            warm_rebaseline: None,
+            stats_before_serve: 0,
+            reads_before_serve: replayed,
+            watermark_rereads_before_serve: 0,
+        }),
+        feed::Applied::Reset => {
+            // A member the journal NAMED could not be derived, and absence
+            // would be a lie. The rows can no longer be reconciled with disk,
+            // so this is the COLD event.
             eprintln!(
-                "checkpoint: warm re-baseline for {} — {label}; {leaves} leaf row(s) adopted \
-                 as hypotheses, each re-verified against disk by the §6.2 trust close before \
-                 it serves",
+                "checkpoint: COLD RE-BASELINE for {} — replay could not derive a named member; \
+                 the resident memo is reset and the next pass re-reads the corpus",
                 workspace.display()
             );
-            CheckpointReceipt {
+            let _ = std::fs::remove_file(file);
+            None
+        }
+        // The rescan ladder's rungs answer `Pending::All` only, and this call
+        // site builds `Clean`/`Paths` from journal frames — so these are
+        // defensive, not expected. Both leave the memo in a valid state (Sweep
+        // keeps it for the next full stat sweep; Rebaselined already swapped in
+        // a fresh full derivation), so the safe report is the truth: the ladder
+        // re-established currency and this replay claims nothing.
+        feed::Applied::Sweep(cause) | feed::Applied::Rebaselined(cause) => {
+            eprintln!(
+                "checkpoint: warm re-baseline for {} — the rescan ladder ({}) took over during \
+                 replay; no replay is claimed and currency comes from the ladder's own rung",
+                workspace.display(),
+                cause.name()
+            );
+            Some(CheckpointReceipt {
                 leaves,
                 replayed: 0,
-                anchored: false,
-                warm_rebaseline: Some(label.to_owned()),
+                anchored: true,
+                warm_rebaseline: Some(format!("rescan ladder took over: {}", cause.name())),
                 stats_before_serve: 0,
                 reads_before_serve: 0,
                 watermark_rereads_before_serve: 0,
-            }
+            })
         }
-    };
-    barrier(&root, workspace, &file, cache, receipt)
+    }
 }
 
 /// **The pre-serve barrier** (`decisions/2026-08-16-gate11-stat-floor.md`).
