@@ -387,6 +387,50 @@ mod tests {
         assert_eq!(retired.to, (model::HASH_LAW_RADIX, 0));
     }
 
+    /// Gate 22/24 driver — run explicitly (`--ignored --nocapture`) on a
+    /// measurement host: builds a corpus of `MERIDIAN_CUTOVER_MEASURE_N`
+    /// members (default 100_000) and reports every outage component
+    /// separately. The 1.45 s old-law receipt is never quoted; this run IS
+    /// the number's source.
+    #[test]
+    #[ignore = "measurement driver, not a gate — run with --ignored on the measurement host"]
+    fn measure_cutover_components() {
+        let n: usize = std::env::var("MERIDIAN_CUTOVER_MEASURE_N")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(100_000);
+        let dir = tempfile::tempdir().expect("tempdir");
+        for i in 0..n {
+            let sub = dir.path().join(format!("d{:03}", i % 428));
+            std::fs::create_dir_all(&sub).expect("mkdir");
+            std::fs::write(
+                sub.join(format!("m{i}.md")),
+                format!("# M{i}\n\nmember {i} of the measurement corpus\n"),
+            )
+            .expect("member");
+        }
+        let root = fs::WorkspaceRoot(dir.path().to_path_buf());
+        let cache_root = tempfile::tempdir().expect("cache root");
+        let outcome = ensure(&root, &memo(), cache_root.path())
+            .expect("machine")
+            .expect("fresh cutover");
+        let c = outcome.components;
+        println!(
+            "CUTOVER-MEASURE n={n}: drain_us={} record_begin_us={} \
+             checkpoint_discard_us={} build_us={} commit_us={} total_us={}",
+            c.drain_us,
+            c.record_begin_us,
+            c.checkpoint_discard_us,
+            c.build_us,
+            c.commit_us,
+            c.total_us
+        );
+        println!(
+            "CUTOVER-MEASURE receipt:\n{}",
+            std::fs::read_to_string(root.0.join(".meridian/cutover.receipt")).expect("receipt")
+        );
+    }
+
     #[test]
     fn unsettled_intents_hold_the_boundary_closed() {
         let (_d, root, cache_root) = ws();
