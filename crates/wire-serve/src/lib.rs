@@ -12,6 +12,7 @@
 pub mod armed_disk;
 pub mod authority;
 pub mod check_write;
+pub mod classify;
 pub mod decode;
 pub mod gate;
 pub mod guard;

@@ -417,7 +417,12 @@ pub fn splice_with_mints(
     // §5.1 order: the world guard first — so a stale plan refuses before any
     // per-target resolution can answer for it, and before this splice's own
     // promotion can advance the root it guards on.
-    world_guard(args.if_root.as_ref(), &root_before)?;
+    world_guard(
+        root,
+        args.if_root.as_ref(),
+        &root_before,
+        serving_version(root, &door)?,
+    )?;
 
     // §6.6 pre-flight: the requested receipt anchor is resolved against the
     // receipt file BEFORE any byte moves, so a collision refuses the batch
@@ -951,7 +956,12 @@ pub fn splice_set_with_cache(
     let root_before = observed_root(root, &door)?;
     // §5.1 order: the world guard first, once — world-grain covers every
     // member (if any domain file moved, the fingerprint moved).
-    world_guard(args.if_root.as_ref(), &root_before)?;
+    world_guard(
+        root,
+        args.if_root.as_ref(),
+        &root_before,
+        serving_version(root, &door)?,
+    )?;
     // §6.6 pre-flight, once per set: the anchor is resolved before any byte.
     preflight_receipt_anchor(root, args.receipt.as_ref())?;
 
@@ -1596,7 +1606,12 @@ pub fn create_with_cache(
     let door = door_cache(root, supplied);
 
     let root_before = observed_root(root, &door)?;
-    world_guard(args.if_root.as_ref(), &root_before)?;
+    world_guard(
+        root,
+        args.if_root.as_ref(),
+        &root_before,
+        serving_version(root, &door)?,
+    )?;
 
     // The payload IS the candidate document here, so `strip_fp` over the whole
     // body runs at document grain — the same grammar `strip_fp_candidate`
@@ -1774,7 +1789,12 @@ pub fn remove_with_cache(
     // world guard. The referential check is a different read (query
     // instruments over hash-domain bytes), never a second fold.
     let root_before = observed_root(root, &door)?;
-    world_guard(args.if_root.as_ref(), &root_before)?;
+    world_guard(
+        root,
+        args.if_root.as_ref(),
+        &root_before,
+        serving_version(root, &door)?,
+    )?;
 
     // Load what is there — you cannot remove nothing (`file_not_found`, env).
     let before_doc = load_doc(root, &args.path)?;
@@ -2075,7 +2095,12 @@ pub fn lock_write_with_cache(
     let file_rev_before = NodeRev(before_doc.root.node_rev.0.clone());
 
     let root_before = observed_root(root, &door)?;
-    world_guard(args.if_root.as_ref(), &root_before)?;
+    world_guard(
+        root,
+        args.if_root.as_ref(),
+        &root_before,
+        serving_version(root, &door)?,
+    )?;
 
     // write-what-you-read CAS: the page must still carry the rev the caller
     // read (drift means the lock's facts were computed against stale bytes).
@@ -3527,16 +3552,50 @@ pub fn relative_respelling(root: &fs::WorkspaceRoot, path: &str) -> Option<Strin
 
 /// The §5.1 world guard, shared by `create`/`remove`: refuse `root_mismatch` if
 /// a supplied `if_root` no longer matches the ambient root (the plan is stale).
-fn world_guard(if_root: Option<&Root>, root_before: &Root) -> Result<(), Box<ErrorBody>> {
-    if let Some(expected) = if_root
-        && *expected != *root_before
-    {
+fn world_guard(
+    root: &fs::WorkspaceRoot,
+    if_root: Option<&Root>,
+    root_before: &Root,
+    serving: model::ServingVersion,
+) -> Result<(), Box<ErrorBody>> {
+    let Some(expected) = if_root else {
+        return Ok(());
+    };
+    // §5.7 three errors, three facts (wire-contract §12.3): family
+    // classification precedes the digest compare, so a retired token
+    // refuses `fingerprint_version_retired` even when its digest would also
+    // compare unequal, and an unknown FUTURE family refuses
+    // `fingerprint_version_unsupported` — its own fact, never a fallthrough
+    // to retired. Only a current-family token (or an older-domain one,
+    // whose prefix differs by construction) reaches the equality compare
+    // and the ordinary mismatch.
+    if let Some(refusal) = crate::classify::family_refusal(root, &expected.0, "/", serving) {
+        return Err(refusal);
+    }
+    if *expected != *root_before {
         let mut e = ErrorBody::new(ErrorCode::RootMismatch);
         e.expected = Some(NodeRev(expected.0.clone()));
         e.actual = Some(NodeRev(root_before.0.clone()));
         return Err(Box::new(e));
     }
     Ok(())
+}
+
+/// The two-dimensional serving identity from the door's cache (the B-04
+/// record's law at the live domain version) — what [`world_guard`]
+/// classifies against. Typed record refusals map to their wire spellings.
+fn serving_version(
+    root: &fs::WorkspaceRoot,
+    door: &WriteCacheHandle,
+) -> Result<model::ServingVersion, Box<ErrorBody>> {
+    let mut cache = door.cache.lock().unwrap_or_else(PoisonError::into_inner);
+    cache.serving_version(root).map_err(|e| {
+        if fs::cutover::is_cutover_state_error(&e) {
+            Box::new(ErrorBody::cutover_recovery_required())
+        } else {
+            io_refusal(e.to_string())
+        }
+    })
 }
 
 /// Build a path-stamped `model::Document` from raw body bytes — the birth/death

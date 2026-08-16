@@ -117,6 +117,11 @@ pub struct Registry {
     /// binding file lives outside every workspace's hash domain, so no
     /// engine or ring can carry it.
     mounts: crate::mounts::MountsCache,
+    /// Workspaces whose B-04 record this process has already certified
+    /// `NEW_COMMITTED` — one record read per workspace per daemon lifetime;
+    /// the cutover machine runs behind a miss (merkle-spec §4.2.6, the
+    /// at-open trigger).
+    cutover_done: Mutex<std::collections::HashSet<PathBuf>>,
     state: StateStore,
     cache_root: PathBuf,
     /// Test-only pause gate for the rebuild race window. When armed, the next
@@ -214,6 +219,8 @@ impl Registry {
             last_request: AtomicU64::new(now_secs()),
             // Cold: the first `mounts` call derives the table.
             mounts: crate::mounts::MountsCache::default(),
+            // Cold: each workspace's first touch re-certifies its record.
+            cutover_done: Mutex::new(std::collections::HashSet::new()),
             state,
             cache_root,
             #[cfg(test)]
@@ -223,6 +230,65 @@ impl Registry {
             #[cfg(test)]
             pause_in_reap_window: Mutex::new(None),
         }
+    }
+
+    /// Certify the workspace's B-04 cutover record before its first serve,
+    /// running the machine when the record says pre-cutover or mid-build
+    /// (`crate::cutover` — the at-open trigger). Sticky per daemon lifetime.
+    ///
+    /// # Errors
+    /// The record's typed refusals (corrupt ⇒
+    /// `fingerprint_cutover_recovery_required` at the wire via
+    /// `warm_err_to_wire`); any machine failure.
+    fn ensure_cutover(
+        &self,
+        canonical: &Path,
+        root: &fs::WorkspaceRoot,
+        cache: &Arc<Mutex<fs::DomainCache>>,
+    ) -> io::Result<()> {
+        {
+            let done = self
+                .cutover_done
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if done.contains(canonical) {
+                return Ok(());
+            }
+        }
+        if let Some(run) = crate::cutover::ensure(root, cache, &self.cache_root)? {
+            eprintln!(
+                "meridian: hash-law cutover {} at {}: drain {}us, no-return {}us, \
+                 checkpoint-discard {}us, build {}us, commit {}us, total {}us",
+                run.record.cutover_id,
+                canonical.display(),
+                run.components.drain_us,
+                run.components.record_begin_us,
+                run.components.checkpoint_discard_us,
+                run.components.build_us,
+                run.components.commit_us,
+                run.components.total_us,
+            );
+        }
+        self.cutover_done
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(canonical.to_path_buf());
+        Ok(())
+    }
+
+    /// The workspace's two-dimensional serving identity (B-04 record law at
+    /// the live domain version) — what the read-plane doors classify held
+    /// tokens against (wire-contract §5.7).
+    ///
+    /// # Errors
+    /// The record's typed refusals; I/O loading the domain config.
+    pub(crate) fn serving_version(&self, workspace: &Path) -> io::Result<model::ServingVersion> {
+        let canonical = workspace::canonicalize(workspace)
+            .map_err(|e| io::Error::new(io::ErrorKind::NotFound, e))?;
+        let root = fs::WorkspaceRoot(canonical.clone());
+        let cache = self.domain_cache(&canonical);
+        let mut cache = cache.lock().unwrap_or_else(PoisonError::into_inner);
+        cache.serving_version(&root)
     }
 
     /// The machine-scoped mount-table cache the `mounts` op serves through
@@ -366,6 +432,11 @@ impl Registry {
         let mut parsed: Option<usize> = None;
 
         let cache = self.domain_cache(&canonical);
+        // The one-time hash-law cutover, at open (merkle-spec §4.2.6): before
+        // the first serve, certify the B-04 record — running the machine when
+        // it says pre-cutover or mid-build, refusing loudly when it cannot be
+        // read. One sticky-set probe on every later touch.
+        self.ensure_cutover(&canonical, &root, &cache)?;
         loop {
             // Cheap half (no parse, and no re-read of anything that did not
             // move): content hash from disk through the leaf memo.

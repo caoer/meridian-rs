@@ -24,6 +24,7 @@
 
 mod checkpoint;
 mod client;
+mod cutover;
 mod delta_sink;
 mod engine;
 mod feed;
