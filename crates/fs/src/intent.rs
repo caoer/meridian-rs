@@ -541,7 +541,8 @@ mod tests {
 
     fn ws() -> (tempfile::TempDir, WorkspaceRoot) {
         let dir = tempfile::tempdir().expect("tempdir");
-        (dir, WorkspaceRoot(dir.path().to_path_buf()))
+        let root = WorkspaceRoot(dir.path().to_path_buf());
+        (dir, root)
     }
 
     #[test]
