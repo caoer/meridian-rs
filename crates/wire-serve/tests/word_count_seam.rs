@@ -25,7 +25,6 @@ fn read_toc(raw: &str) -> ResponseBody {
             display_path: Some("deep.md".into()),
             ..ReadParams::default()
         },
-        None,
         &NO_DECORATIONS,
     )
     .expect("the toc serves")
@@ -85,7 +84,6 @@ fn the_section_face_and_the_toc_face_report_one_number() {
             display_path: Some("deep.md".into()),
             ..ReadParams::default()
         },
-        None,
         &NO_DECORATIONS,
     )
     .expect("the section serves");

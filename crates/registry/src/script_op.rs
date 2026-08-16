@@ -574,7 +574,6 @@ impl ScriptHost for LiveHost<'_> {
             plan_edits: items.clone(),
             pin: None,
         };
-        let mints = self.registry.read_mints(&self.ws_path);
         let ring = self.registry.ring(&self.ws_path);
         let cache = self.registry.domain_cache(&self.ws_path);
         let observe = || {
@@ -584,15 +583,11 @@ impl ScriptHost for LiveHost<'_> {
                 crate::registry::DOOR_COOKIE_TIMEOUT,
             )
         };
-        let outcome = wire_serve::write::splice_with_mints(
+        let outcome = wire_serve::write::splice(
             &self.ws,
             Some(&*ring),
             &args,
             &[],
-            wire_serve::write::Mints {
-                ambient: Some(&mints),
-                foreign: None,
-            },
             Some(wire_serve::write::ResidentDoor {
                 cache: &cache,
                 observe: &observe,
@@ -886,9 +881,8 @@ fn commit(
         Ok(pair) => pair,
         Err(leg) => return leg,
     };
-    // H1 order: the mint store and ring handles are taken outside any engine
-    // borrow (none is held here — the entry world is an Arc, not a lock).
-    let mints = registry.read_mints(ws);
+    // H1 order: the ring handle is taken outside any engine borrow (none is
+    // held here — the entry world is an Arc, not a lock).
     let ring = registry.ring(ws);
     let ws_root = fs::WorkspaceRoot(ws.to_path_buf());
     // The splice is a function call here, so a lost answer cannot happen —
@@ -921,15 +915,11 @@ fn commit(
                 plan_edits: eval.armed.iter().map(|armed| armed.edit.clone()).collect(),
                 pin: None,
             };
-            wire_serve::write::splice_with_mints(
+            wire_serve::write::splice(
                 &ws_root,
                 Some(&*ring),
                 &args,
                 &[],
-                wire_serve::write::Mints {
-                    ambient: Some(&mints),
-                    foreign: None,
-                },
                 Some(wire_serve::write::ResidentDoor {
                     cache: &cache,
                     observe: &observe,

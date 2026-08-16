@@ -753,6 +753,8 @@ fn vibe_pin_args(actor: &str, selector: &str, vibe: bool) -> SpliceArgs {
             target: WPath("guide.md".into()),
             selector: wire::ReadSel::parse(selector),
             vibe: vibe.then_some(true),
+            fingerprint: None,
+            sec_rev: None,
         }),
     }
 }

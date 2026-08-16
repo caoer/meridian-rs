@@ -4,8 +4,8 @@
 //! Owns: rendering one batch's armed facts as one markdown list-item block —
 //! the shipped default template (replaceable, D-C10 §6.4: the armed-fact set
 //! is normative, the presentation is not) — and the receipt block-anchor mint
-//! format (`r-NNNNNN`, decision 011). Stage-2 S6 adds the read-is-the-mint
-//! ledger ([`read_mint`]).
+//! format (`r-NNNNNN`, decision 011). No read-side state: pin proof rides
+//! the request (wire-contract § A.3), and the engine records no reads.
 //!
 //! Never does: I/O, batching, validation, span math. Rendered bytes join the
 //! batch before validation (§6.1) and ride the sealed batch's single root
@@ -36,7 +36,6 @@ use std::borrow::Cow;
 use std::fmt::Write;
 
 pub mod anchor;
-pub mod read_mint;
 
 /// May `c` stand verbatim in a receipt line — a byte that cannot become
 /// markdown structure or a token boundary?

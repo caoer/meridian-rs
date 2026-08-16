@@ -28,7 +28,6 @@ fn read_toc(sel: ReadSel) -> Result<ResponseBody, Box<wire::ErrorBody>> {
             display_path: Some("card.md".into()),
             ..ReadParams::default()
         },
-        None,
         &NO_DECORATIONS,
     )
 }
@@ -165,7 +164,6 @@ fn toc_beside_sections_refuses_pass_one() {
             display_path: Some("card.md".into()),
             ..ReadParams::default()
         },
-        None,
         &NO_DECORATIONS,
     )
     .expect_err("two planes, one call");
