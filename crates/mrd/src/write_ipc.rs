@@ -64,11 +64,25 @@ pub(crate) fn call(door: &mut SocketDoor, request: &Value) -> Result<Value, Box<
         Box::new(err)
     })?;
     if frame.ok {
-        return frame.body_value("write").map_err(|e| {
+        let body = frame.body_value("write").map_err(|e| {
             let mut err = ErrorBody::new(wire::ErrorCode::IoError);
             err.message = Some(e.to_string());
             Box::new(err)
-        });
+        })?;
+        // A write reply names what it armed or removed. Hello/identity
+        // bodies are ok:true too — treating those as a commit was the
+        // silent-success class (pin printed "?" and exited 0).
+        if body.get("armed").is_none()
+            && body.get("file_rev_before").is_none()
+            && body.get("file_rev_after").is_none()
+        {
+            let mut err = ErrorBody::new(wire::ErrorCode::IoError);
+            err.message = Some(format!(
+                "the daemon answered ok but the body is not a write: {body}"
+            ));
+            return Err(Box::new(err));
+        }
+        return Ok(body);
     }
     if let Some(raw) = frame.error {
         serde_json::from_str(raw.get()).map_err(|e| {

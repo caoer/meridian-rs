@@ -886,6 +886,16 @@ fn beta_rev(sb: &Sandbox, ws: &Path) -> String {
 }
 
 /// The one-edit match batch against `Alpha/Beta`, in the wire §4.4 grammar.
+fn beta_match_guarded(sb: &Sandbox, ws: &Path, old: &str, new: &str) -> String {
+    let rev = beta_rev(sb, ws);
+    serde_json::to_string(&serde_json::json!([{
+        "target": {"hpath": [{"h": "Alpha"}, {"h": "Beta"}]},
+        "edit": {"match": {"old": old, "new": new}},
+        "if_node_rev": rev,
+    }]))
+    .expect("edits json")
+}
+
 fn beta_match(old: &str, new: &str) -> String {
     serde_json::to_string(&serde_json::json!([{
         "target": {"hpath": [{"h": "Alpha"}, {"h": "Beta"}]},
