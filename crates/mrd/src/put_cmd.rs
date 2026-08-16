@@ -6,10 +6,10 @@
 //! ```
 //!
 //! The two rehearsals are one run and two faces: both send `dry: true` through the same
-//! choke-point, so neither can validate anything the other would not. `--dry` shows the change —
-//! a unified diff from the file's current bytes to the candidate. `--validate` is the silent
-//! check: nothing on stdout and exit 0 when the rehearsal passes, the engine's verbatim refusal
-//! at exit 1 when it does not. Passing both is a contradiction (exit 2).
+//! choke-point, so neither can validate anything the other would not. `--dry` is the daemon
+//! rehearsal (nothing written). `--validate` is the silent check: nothing on stdout and exit 0
+//! when the rehearsal passes, the engine's verbatim refusal at exit 1 when it does not. Passing
+//! both is a contradiction (exit 2).
 //!
 //! The edits ride stdin in the wire §4.4 grammar — a bare JSON array of
 //! `{target, edit, if_node_rev?}` where `target` is `{"hpath":[…]}` / `{"anchor":"…"}` /
@@ -18,15 +18,18 @@
 //! §4.4's `edits` field, not the request object around it: `id`/`op`/`path` are argv's here, so
 //! sending the whole envelope is a type error [`read_stdin_edits`] names explicitly.
 //!
-//! Every put routes through the production splice choke-point ([`wire_serve::write::splice`])
-//! in-process, inheriting the CAS guards, the armed-plane gate (the workspace's own law, never
-//! caller packs), and the cross-process write flock. Rule packs are the empty set, so `verdicts`
-//! stay `[]`.
+//! Every put is a wire `splice` to the running daemon ([`crate::write_ipc`]). There is
+//! no in-process publication path: a down daemon is a taught refusal, never a local
+//! write. The daemon inherits the CAS guards and the armed-plane gate. A guardless
+//! put is a wire client, so fingerprint-or-force applies (`--force` or `if_node_rev`).
+//! Rule packs are the empty set, so `verdicts` stay `[]` unless `--force` names a
+//! bypass.
 //!
 //! Exit triad: 0 committed (or a rehearsal that passed) / 1 refused (EVERY engine
 //! refusal — `no_match`, `not_unique`, `cas_mismatch`, `root_mismatch`,
-//! `workspace_busy`, `bad_request`, an armed gate refusal — the engine's verbatim
-//! message) / 2 bad invocation (the CLI's own refusals, before any engine contact).
+//! `guard_required`, `bad_request`, an armed gate refusal — the engine's verbatim
+//! message) / 2 bad invocation (the CLI's own refusals, including a down daemon,
+//! before any engine write).
 //!
 //! Under `--json` BOTH legs answer on stdout: a commit the `{workspace, put}`
 //! frame, an engine refusal the `{workspace, error}` envelope ([`refusal`]) —
@@ -35,10 +38,9 @@
 use std::io::Read as _;
 
 use serde_json::{Value, json};
-use wire::{Edit, ErrorBody, Path as WirePath, ReceiptAddr, Root};
-use wire_serve::write::{SpliceArgs, splice};
+use wire::{ErrorBody, Path as WirePath, ReceiptAddr};
 
-use crate::{Fail, Format, current_dir, engine};
+use crate::{Fail, Format, current_dir, engine, write_ipc};
 
 /// Run `mrd put <PATH> [flags] < edits.json`. Errors [`Fail`] — exit 2 on a bad invocation (bad
 /// flags, malformed stdin JSON, a malformed `--now` — the CLI's own refusals, before any engine
@@ -46,6 +48,8 @@ use crate::{Fail, Format, current_dir, engine};
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let parsed = Put::parse(args)?;
     let edits = read_stdin_edits()?;
+    // The stdin Value is what rides the wire — re-serializing the decoded
+    // Vec<Edit> is a second shape. Decode already proved the §4.4 wall.
     let cwd = current_dir()?;
     let resolved = crate::resolve::resolve_runtime(&cwd).map_err(|e| {
         Fail::tool(format!(
@@ -53,53 +57,34 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
             cwd.display()
         ))
     })?;
-    let canonical = workspace::canonicalize(&resolved.workspace).map_err(|e| {
-        Fail::tool(format!(
-            "cannot resolve workspace {} ({e})",
-            resolved.workspace.display()
-        ))
-    })?;
-    let root = fs::WorkspaceRoot(canonical);
+    let mut request = json!({
+        "op": "splice",
+        "path": parsed.path,
+        "edits": edits,
+    });
+    if let Some(actor) = &parsed.actor {
+        request["actor"] = json!(actor);
+    }
+    if let Some(now) = &parsed.now {
+        request["now"] = json!(now);
+    }
+    if let Some(fp) = &parsed.if_fingerprint {
+        request["if_fingerprint"] = json!(fp);
+    }
+    if let Some(receipt) = &parsed.receipt {
+        request["receipt"] = json!({"path": receipt.path.0, "anchor": receipt.anchor});
+    }
+    if parsed.rehearsal() {
+        request["dry"] = json!(true);
+    }
+    if parsed.force {
+        request["force"] = json!(true);
+    }
 
-    let splice_args = SpliceArgs {
-        id: None,
-        origin: wire_serve::guard::Origin::InProcess,
-        path: WirePath(parsed.path.clone()),
-        actor: parsed.actor.clone(),
-        now: parsed.now.clone(),
-        receipt: parsed.receipt.clone(),
-        if_root: parsed.if_fingerprint.clone().map(Root),
-        dry: parsed.rehearsal(),
-        force: parsed.force,
-        edits,
-        plan_edits: Vec::new(),
-        // `mrd put` writes content; the pin verb is `mrd pin`.
-        pin: None,
-    };
-    // seq 0, like the resident daemon (no epoch ring); the emitted DeltaFrame
-    // has no subscriber here, so it is dropped with the outcome.
-    let outcome = splice(&root, None, &splice_args, &[], None)
+    let mut door = write_ipc::connect(&resolved.workspace)?;
+    let body = write_ipc::call(&mut door, &request)
         .map_err(|e| refusal(&parsed, &resolved.workspace, &e))?;
-
-    // The rehearsal preview renders the candidate the choke-point already built (§4.4 one-reparse
-    // law); the CLI holds no second implementation of what a batch does to a document.
-    let diff = if parsed.dry {
-        rehearsal_diff(&root, &parsed.path, outcome.candidate.as_deref())
-            .map_err(|e| refusal(&parsed, &resolved.workspace, &e))?
-    } else {
-        None
-    };
-
-    let body = serde_json::to_value(&outcome.body)
-        .map_err(|e| Fail::tool(format!("cannot render the answer: {e}")))?;
-    // The CLI speaks the v3 vocabulary (`fingerprint`, never bare `root`) —
-    // the same lifted projection the daemon applies for a v3 session.
-    let mut frame = json!({ "body": body });
-    wire_serve::rev::project_response(&mut frame);
-    let body = frame
-        .as_object_mut()
-        .and_then(|obj| obj.remove("body"))
-        .unwrap_or(Value::Null);
+    let body = write_ipc::project_body(&body);
 
     // The findings leg of the silent check: a passing rehearsal says nothing, so anything the
     // engine found has to leave through a non-zero exit or it is lost.
@@ -120,18 +105,15 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
 
     match parsed.format {
         Format::Json => {
-            let mut value = json!({
+            let value = json!({
                 "workspace": resolved.workspace.display().to_string(),
                 "put": body,
             });
-            if let Some(diff) = &diff {
-                value["diff"] = json!(diff);
-            }
             println!("{}", serde_json::to_string_pretty(&value).expect("json"));
         }
         // `--validate` says nothing: the exit code is the whole answer.
         Format::Human if parsed.validate => {}
-        Format::Human => print_human(&parsed, &body, diff.as_deref()),
+        Format::Human => print_human(&parsed, &body),
     }
     Ok(())
 }
@@ -142,33 +124,16 @@ fn refusal(parsed: &Put, workspace: &std::path::Path, error: &ErrorBody) -> Fail
     engine::json_refusal(parsed.format, workspace, error)
 }
 
-/// The `--dry` diff: the file's current bytes → the candidate the rehearsal built, through the
-/// one line-diff renderer in the tree ([`wire_serve::ladder::unified_diff`]). `None` when the
-/// batch changes no line. Errors the engine's refusal body, so the caller keeps both faces.
-fn rehearsal_diff(
-    root: &fs::WorkspaceRoot,
-    path: &str,
-    candidate: Option<&str>,
-) -> Result<Option<String>, Box<ErrorBody>> {
-    let Some(candidate) = candidate else {
-        return Ok(None);
-    };
-    let doc = wire_serve::load_doc(root, &WirePath(path.to_owned()))?;
-    Ok(wire_serve::ladder::unified_diff(
-        "current",
-        "candidate",
-        &doc.raw,
-        candidate,
-    ))
-}
-
 /// The human summary: what landed (or was rehearsed), at which fingerprint — and one line per
 /// FIRED intent. Without those lines an armed workspace commits identically to an unarmed one
 /// on this face, and the operator who armed the plane can only see it fire through `--json`
 /// (`put.armed.effects[]`). The line speaks the engine's vocabulary: what the write armed,
 /// never that anything was delivered, and the receipt address VERBATIM — it is the pairing key
 /// the delivery faces echo as `correlation`.
-fn print_human(parsed: &Put, body: &Value, diff: Option<&str>) {
+///
+/// `--dry` no longer prints a local unified candidate-diff: that field was
+/// in-process-only and never a wire fact. The daemon rehearsal is the authority.
+fn print_human(parsed: &Put, body: &Value) {
     let edits = body
         .pointer("/armed/edits")
         .and_then(Value::as_array)
@@ -178,10 +143,6 @@ fn print_human(parsed: &Put, body: &Value, diff: Option<&str>) {
             "dry run: {} ({edits} edit(s)), nothing written",
             parsed.path
         );
-        match diff {
-            Some(diff) => print!("{diff}"),
-            None => println!("no change: the candidate is byte-identical"),
-        }
         return;
     }
     let after = body
@@ -335,7 +296,7 @@ impl Put {
 const WORKING_BATCH: &str = "[{\"target\":{\"hpath\":[{\"h\":\"Title\"}]},\"edit\":{\"match\":{\"old\":\"a\",\"new\":\"b\"}}}]";
 
 /// Read and strict-decode the edits array from stdin (the wire §4.4 grammar).
-fn read_stdin_edits() -> Result<Vec<Edit>, Fail> {
+fn read_stdin_edits() -> Result<Value, Fail> {
     let mut raw = String::new();
     std::io::stdin()
         .read_to_string(&mut raw)
@@ -362,19 +323,21 @@ fn read_stdin_edits() -> Result<Vec<Edit>, Fail> {
     // refusal is exit 2, and a VALUE law (§2.4's block-id charset) is not this
     // seam's to judge — the engine refuses that one at exit 1 with its
     // structured frame, which is the exit triad `docs/status.md` states.
-    let edits: Vec<Edit> =
-        wire_serve::decode::decode_edits(&value, wire_serve::decode::Laws::ShapeOnly).map_err(
-            |e| {
-                refuse_stdin(
-                    "the edits on stdin are not the §4.4 batch shape",
-                    e.message
-                        .as_deref()
-                        .unwrap_or("the §4.4 edit grammar was not met"),
-                    &raw,
-                )
-            },
-        )?;
-    Ok(edits)
+    wire_serve::decode::decode_edits(&value, wire_serve::decode::Laws::ShapeOnly).map_err(|e| {
+        refuse_stdin(
+            "the edits on stdin are not the §4.4 batch shape",
+            e.message
+                .as_deref()
+                .unwrap_or("the §4.4 edit grammar was not met"),
+            &raw,
+        )
+    })?;
+    if value.as_array().is_none_or(Vec::is_empty) {
+        return Err(Fail::tool(format!(
+            "put wants a non-empty edits array — a §4.4 batch like {WORKING_BATCH}"
+        )));
+    }
+    Ok(value)
 }
 
 /// The one stdin-refusal shape, shared by the JSON-syntax leg and the

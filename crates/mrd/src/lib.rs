@@ -1,6 +1,7 @@
 //! The `mrd` CLI. Owns hand-rolled subcommand parsing (no clap), the per-invocation resolution
 //! flow ([`resolve`]), and the client side of the resident daemon ([`engine`]: auto-spawn on
-//! first use, degrade to an in-process ephemeral engine — decision 0002 §3).
+//! first use; reads degrade to an in-process ephemeral engine — decision 0002 §3; writes
+//! never degrade — [`write_ipc`]).
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -48,6 +49,9 @@ mod test_cmd;
 mod unfold_cmd;
 mod unregister;
 mod walk_cmd;
+/// Routine CLI writes: authenticated IPC to the workspace authority. No
+/// direct-publication fallback.
+mod write_ipc;
 
 /// Exit code: a clean success.
 const EXIT_OK: u8 = 0;
@@ -256,16 +260,21 @@ usage:
                            \"text\":\"…\"}}. A working batch, whole:
                            [{\"target\":{\"hpath\":[{\"h\":\"Title\"}]},
                              \"edit\":{\"match\":{\"old\":\"a\",\"new\":\"b\"}}}]
-                           Production splice only (CAS + armed gate + write
-                           flock). --dry and --validate = one rehearsal (no
-                           disk): --dry prints unified diff; --validate is
-                           exit-only. --force escapes armed binding-break/
-                           block (skip shown in verdict). --if-fingerprint
-                           = world-grain guard. --json machine face on both
-                           legs: commit {workspace,put}; refusal
-                           {workspace,error} on stdout. Exits: 0
-                           committed|rehearsal-ok / 1 refused / 2 bad
-                           invocation.
+                           Routed to the running daemon over authenticated
+                           IPC (CAS + armed gate). No direct-write
+                           fallback — the daemon must come up (auto-spawn,
+                           or `mrd daemon`). A guardless put is a wire
+                           client: fingerprint-or-force applies (pass
+                           --force or if_node_rev). --dry and --validate =
+                           one daemon rehearsal (no disk): --dry prints
+                           the rehearsal summary; --validate is exit-only.
+                           --force escapes armed binding-break/block and
+                           the wire guard (skip shown in verdict).
+                           --if-fingerprint = world-grain guard. --json
+                           machine face on both legs: commit
+                           {workspace,put}; refusal {workspace,error} on
+                           stdout. Exits: 0 committed|rehearsal-ok / 1
+                           refused / 2 bad invocation.
 ! mrd rm <PAGE> --rev <FILE_REV> [--if-fingerprint FP] [--dry] [--actor A]
          [--now T] [--json]
                            guarded file death (§ A.3 remove door) — the write
@@ -275,24 +284,25 @@ usage:
                            engine demands it from every origin). Refuses while
                            anything still references the page: inbound
                            wikilinks, embeds, and ambient meridian-lock pins,
-                           checked inside the write flock; the refusal names
+                           checked by the daemon; the refusal names
                            every referring file, edge kind, and count. NO
                            --force exists on this door. --if-fingerprint =
                            optional world-grain guard. --dry rehearses
-                           everything except disk. Exits: 0 removed|dry / 1
-                           refused / 2 bad invocation.
+                           everything except disk. Routed over IPC like
+                           put — no direct-write fallback. Exits: 0
+                           removed|dry / 1 refused / 2 bad invocation.
 ! mrd pin <PAGE> <TARGET>#<SELECTOR> [--vibe] [--dry] [--json]
                            attest: record in PAGE's meridian-lock that it draws
                            from TARGET#SELECTOR at that section's content
                            fingerprint, and mint a stable ^block-id on the
                            target. PAGE draws (A pins B); SELECTOR is a
                            sanitized heading path or ^id (same grammar as mrd
-                           read). Lock write rides the production splice with
-                           the page content (one flocked commit). --vibe also
-                           writes the target blob into git's object store so
-                           the pin is retrievable before any commit references
-                           it. Exits: 0 pinned|dry / 1 refused / 2 bad
-                           invocation.
+                           read). Lock write rides the daemon splice (IPC,
+                           no direct-write fallback) with the page content
+                           (one commit). --vibe also writes the target blob
+                           into git's object store so the pin is retrievable
+                           before any commit references it. Exits: 0
+                           pinned|dry / 1 refused / 2 bad invocation.
 ! mrd repair [PAGE] [--dry] [--json]
                            lost-pin repair via git history. LOST = live target
                            no longer verifies the fingerprint AND git no longer

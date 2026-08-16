@@ -25,6 +25,8 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
+mod common;
+
 /// The binary every drive goes through — the real CLI, never a library call.
 fn mrd_bin() -> PathBuf {
     std::env::var_os("MRD_BIN")
@@ -62,6 +64,12 @@ fn sandbox() -> Sandbox {
     }
 }
 
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        common::reap_daemon(&self.cache_home);
+    }
+}
+
 impl Sandbox {
     fn command(&self, cwd: &Path, args: &[&str]) -> Command {
         let mut c = Command::new(mrd_bin());
@@ -69,6 +77,7 @@ impl Sandbox {
             .current_dir(cwd)
             .env("XDG_CACHE_HOME", &self.cache_home)
             .env("HOME", &self.home)
+            .env("MERIDIAN_DAEMON_BIN", mrd_bin())
             .env_remove("MERIDIAN_WORKSPACE");
         c
     }
@@ -78,8 +87,14 @@ impl Sandbox {
     }
 
     fn run_stdin(&self, cwd: &Path, args: &[&str], stdin_bytes: &str) -> Output {
+        // Wire-origin put demands fingerprint-or-force. These arms test the
+        // commit fence, not the guard, so the helper supplies `--force`.
+        let mut owned: Vec<&str> = args.to_vec();
+        if owned.first().is_some_and(|a| *a == "put") && !owned.contains(&"--force") {
+            owned.push("--force");
+        }
         let mut child = self
-            .command(cwd, args)
+            .command(cwd, &owned)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

@@ -11,6 +11,8 @@ use std::process::{Command, Output, Stdio};
 
 use serde_json::Value;
 
+mod common;
+
 // ── the engine under test ───────────────────────────────────────────────────
 
 /// The binary every drive goes through; `MRD_BIN` selects the installed
@@ -50,6 +52,12 @@ struct Corpus {
     sessions: PathBuf,
     /// `$HOME/MERIDIAN.md`, the default rung's file.
     config: PathBuf,
+}
+
+impl Drop for Corpus {
+    fn drop(&mut self) {
+        common::reap_daemon(&self.cache_home);
+    }
 }
 
 /// Write a root's own self-declaration (INV-5). Without it the bind renders
@@ -133,7 +141,7 @@ impl Corpus {
             .env("XDG_CACHE_HOME", &self.cache_home)
             // The producer-side isolation: this engine may not become the host's
             // resident daemon.
-            .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
+            .env("MERIDIAN_DAEMON_BIN", mrd_bin())
             .env_remove("MERIDIAN_CONFIG")
             .env_remove("MERIDIAN_WORKSPACE")
             // The bridge period's variables are cleared so the bridge section
@@ -152,8 +160,14 @@ impl Corpus {
     }
 
     fn put(&self, args: &[&str], edits: &str) -> Output {
+        // Wire-origin put demands fingerprint-or-force. These arms test
+        // stored-form translation, not the guard.
+        let mut owned: Vec<&str> = args.to_vec();
+        if !owned.contains(&"--force") {
+            owned.push("--force");
+        }
         let mut child = self
-            .command(args)
+            .command(&owned)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
