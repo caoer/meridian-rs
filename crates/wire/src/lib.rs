@@ -2495,6 +2495,30 @@ pub fn mint_pair_teaching() -> &'static str {
      bytes) and re-send; both absent mints the root."
 }
 
+/// The §8.2 register-law teaching for a malformed premise VALUE (§5.7,
+/// dogfood break #7) — neither the reserved `absent` nor a grammatical
+/// `Root`-family token. The raw bytes ride debug-quoted so damage the prose
+/// renders invisible (one leading space, the measured case) shows as a
+/// byte; the world was not compared. `None` scope is the world premise.
+#[must_use]
+pub fn malformed_premise_value_teaching(scope: Option<&str>, raw: &str) -> String {
+    let (premise, mint) = match scope {
+        Some(s) => (
+            format!("the premise at {s}"),
+            format!("fingerprint{{scope: \"{s}\"}}"),
+        ),
+        None => ("the world premise".to_owned(), "fingerprint{}".to_owned()),
+    };
+    format!(
+        "{premise} holds {raw:?}, which is not a premise token — a premise \
+         holds an engine-minted b3…:<64-hex> token or the reserved \
+         \"absent\", and the quoted spelling shows every byte, whitespace \
+         included. The world was NOT compared: fix the spelling, not the \
+         plan. Paste the token exactly as the engine served it, or re-mint \
+         it ({mint}, §4.7) and send that."
+    )
+}
+
 /// The §8.2 register-law teaching for a guard-family field on an
 /// unguarded door (`run`, script-with-effects).
 #[must_use]

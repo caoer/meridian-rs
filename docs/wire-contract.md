@@ -746,6 +746,8 @@ Never one word for two facts. Three states, three recoveries:
 
 The version vocabulary inside the cursor family stays split (§12.3): a token from a KNOWN RETIRED hash-law family refuses `fingerprint_version_retired` with re-mint teaching — never `fingerprint_mismatch`, which would lie (the premise did not move; the LAW moved). A token from an UNKNOWN FUTURE family refuses `fingerprint_version_unsupported` — distinct, because "your token is past my law" and "the law moved past your token" demand different acts. Register-law texts for the whole family: §8.2.
 
+*(Amended 2026-08-16 — the malformed premise value; dogfood break #7.)* A fourth fact is the REQUEST, not the world: a supplied premise value that is neither the reserved `absent` (§5.6) nor a grammatical `Root`-family token (the merkle-spec §4.2 spelling — `b3` + bijective-base-26 suffix + `:` + 64 lowercase hex) refuses `bad_request` (recovery `fix`) at the premise rung, before any fold is compared. The teaching quotes the raw bytes debug-quoted, so damage the prose renders invisible — one leading space on an otherwise valid token, the measured case — shows as a byte. Comparing a damaged spelling instead would answer `fingerprint_mismatch` with an expected/live pair that can render character-identical and a re-read remedy that loops: the re-read returns the same value the caller already holds. `fingerprint_mismatch` therefore claims exactly one thing: a WELL-FORMED token was compared against the live fold and differed. This wall touches no version family (§12.3) — a grammatical token from a retired or future family is never malformed — and it is value grammar at the existing rung, never a permission plane.
+
 ## §6 Receipts — outcome as fact
 
 ### §6.1 The law
@@ -987,6 +989,15 @@ bad_request — mint pair, both spellings on one fingerprint request
    fingerprint request. A mint names ONE node: keep the one spelling
    that names your path (scope for UTF-8 names, scope_bytes for raw
    bytes) and re-send; both absent mints the root."
+bad_request — guard family, malformed premise value (drafted here — no
+Appendix C source; dogfood break #7, 2026-08-16):
+  "<the premise at <scope> | the world premise> holds <raw bytes,
+   debug-quoted>, which is not a premise token — a premise holds an
+   engine-minted b3…:<64-hex> token or the reserved "absent", and the
+   quoted spelling shows every byte, whitespace included. The world was
+   NOT compared: fix the spelling, not the plan. Paste the token exactly
+   as the engine served it, or re-mint it (fingerprint{scope: "<scope>"},
+   §4.7) and send that."
 bad_request — guard family, effects door (drafted here — no Appendix C
 source):
   "<field> was supplied on an unguarded door: run and script-with-effects
