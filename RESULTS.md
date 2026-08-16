@@ -34,14 +34,20 @@ path; the latency result is weak and is placed where its weight puts it.
    layouts, with `F_BARRIERFSYNC` and plain `fsync` zero in every one. At D=2
    that is 16 → 7 sharing a parent, 16 → 8 in split parents. Structural, not
    statistical: no sampling artifact produces the same integer twice.
-2. **The uncontended writer never waits.** `group_wait` is exactly 0.00 ms at
+2. **Grouping amortizes shared work and NOTHING else — measured by target.**
+   At N=60 across 240 transactions per arm, the four writer-local barriers are
+   identical in both arms (240 each) and only the shared `.meridian/intents`
+   directory falls, 480 → 55. Criterion 1 demonstrated by attribution rather
+   than argued. Net 6.000 → 4.229 barriers per commit, against a hard floor of
+   4 that can never be amortized.
+3. **The uncontended writer never waits.** `group_wait` is exactly 0.00 ms at
    N=1 and N=2 with cohort size 1. Contention-triggered rather than
    timer-triggered is visible in that zero.
-3. **The N=60 latency result is weak, and one headline was retracted.** At 18
+4. **The N=60 latency result is weak, and one headline was retracted.** At 18
    paired repetitions the p99 effect is a NULL (9 of 18, p = 1.00) and p50 is
    about 7% with p = 0.24. An earlier 30% figure from three pairs was withdrawn
    before it shipped.
-4. **The uncontended regression stands, reported unsoftened.** Grouping cost
+5. **The uncontended regression stands, reported unsoftened.** Grouping cost
    12–17% per writer at N=1–2 before the fast-path fix. Both states are in this
    file.
 
@@ -86,6 +92,13 @@ is not a peer flush standing in for a writer's own:
    nothing checks.
 3. **Content durability never depends on it.** A writer's content is already
    platter-durable before it reaches any shared step.
+
+**And it is measured, not only reasoned.** Running the same workload with
+coordination off and on, the content barrier count is identical in both arms
+at N=60 — 240 against 240 — while only the shared directory falls, 480 → 55.
+A design resting a receipt on a peer's flush would show the content row
+falling with N. Ours does not move. The table is under "The criterion-1
+answer, proven by target attribution" below.
 
 The general form of the rejected trick is a cheap per-writer push plus one
 shared full barrier. I did not build a cheap tier at all, so there is no
@@ -315,7 +328,7 @@ filed; no expectation was re-baselined after seeing a number.
 | 2 | "Any `F_BARRIERFSYNC > 0` on our path" | **NOT TRIGGERED.** Zero in all eight layout cells and at every N of the saturation run |
 | 3 | "Any plain `fsync` appearing on our durability path" | **NOT TRIGGERED.** Zero in the same three-column receipts |
 | 4 | "Overhead grows with D — measured count minus `D` minus `P` is not the constant 4" | **NOT TRIGGERED.** `count − D − P = 4` in all eight cells |
-| 5 | "Count grows with N" | **NOT TRIGGERED pre-change** — 10.00 barriers/commit at N = 8, 16, 32, 60. **Post-change this is not yet re-measured** (see the gap named below) |
+| 5 | "Count grows with N" | **NOT TRIGGERED, both arms, both code states.** Pre-change 10.00 barriers/commit at N = 8–60; post-change the control arm holds exactly 6.000 across the same range while the shipped arm FALLS to 4.229. My filed prediction of "flat" was half wrong — see below |
 | 6 | "Grouping-ON shows no per-pair improvement over grouping-OFF at N ≥ 4" | **AMBIGUOUS — reported as ambiguous, not resolved in our favour** |
 | 7 | "Bounded-at-16 shows worse p99 than unbounded at N=60" | **NOT TRIGGERED.** 18 pairs give no detectable p99 difference in either direction (9 of 18, p = 1.00) |
 
@@ -333,15 +346,72 @@ Weak improvement and absent improvement are different findings, and the
 difference is exactly what a team is tempted to collapse in its own favour. We
 do not collapse it. A reviewer should score falsifier 6 as ambiguous.
 
-### An outstanding gap we name rather than leave for the audit
+### Falsifier 5, closed by measurement — and my prediction was half wrong
 
-Falsifier 5 — "count grows with N" — is cleared only against the PRE-change
-code, where the saturation run held 10.00 barriers/commit across N = 8 to 60.
-The post-change law `D + P + 4` has been measured per transaction at four
-destination counts and two layouts, but **not yet swept across N**. Grouping
-changes which writer issues a shared sync, never how many a transaction needs,
-so the count should stay flat in N — but that is a prediction here, not a
-measurement, and it is labelled as one until the after arm sweeps it.
+I filed this prediction, and it is kept verbatim because a prediction that is
+quietly rewritten after the data is worth nothing:
+
+> Grouping changes which writer issues a shared sync, never how many a
+> transaction needs, so the count should stay flat in N.
+
+**Flat is what the CONTROL arm does. The SHIPPED arm falls.** Measured at
+`01142b7e1`, D=1, load 28.9–30.3, three columns every run with
+`F_BARRIERFSYNC` and plain `fsync` zero throughout
+(`postfix-count-vs-n.txt`, `postfix-count-vs-n-OFF.txt`):
+
+| barriers per commit, D=1 | N=8 | N=16 | N=32 | N=60 |
+|---|---|---|---|---|
+| coordination OFF (control) | 6.000 | 6.000 | 6.000 | 6.000 |
+| coordination ON (shipped) | 5.375 | 4.818 | 4.442 | **4.229** |
+
+Falsifier 5 is **refuted on both arms** — the count never grows with N on
+either. The control arm sitting at exactly 6.000 across a 7.5× range of N is
+also the cleanest confirmation that `D + P + 4` is per-transaction and
+concurrency-independent: D=1, P=1, `1 + 1 + 4 = 6`, four times, no drift.
+
+Where my prediction went wrong is instructive rather than embarrassing:
+grouping does not change how many syncs a transaction *needs*, but it does
+change how many a transaction *issues*, because the shared one is paid by one
+writer on behalf of the cohort. Averaged per commit, that is a fall.
+
+### The criterion-1 answer, proven by target attribution
+
+This is the strongest evidence in this file, and it is a measurement rather
+than an argument. At N=60, 240 transactions per arm, barriers broken down by
+the target they were issued against:
+
+| target | OFF (control) | ON (shipped) |
+|---|---|---|
+| per-txn CONTENT | 240 | **240** |
+| per-txn destination directory | 240 | **240** |
+| per-txn intent record | 240 | **240** |
+| per-txn finalize tmp | 240 | **240** |
+| SHARED `.meridian/intents` | 480 | **55** |
+| total | 1440 | 1015 |
+
+**The four writer-local barriers are identical in both arms.** Grouping does
+not touch one byte of a writer's own durability. The entire difference is the
+one genuinely shared directory, amortized 8.7×. Totals reconcile exactly:
+240×4 + 480 = 1440, and 240×4 + 55 = 1015.
+
+That is the criterion-1 claim demonstrated by target rather than asserted by
+design intent. A design resting a receipt on a peer's flush would show the
+content row falling with N. Ours does not move.
+
+The destination-directory row staying at 240 in both arms is the same property
+seen from the other side: in this workload each writer owns its own
+destination directory, so there is nothing to share and grouping correctly
+amortizes nothing. Only what is actually shared is amortized.
+
+Net at N=60: 6.000 → 4.229 barriers per commit, a 29.5% reduction in device
+work **on top of** the count-law reduction from `6D + 4`. The floor is 4 —
+the four writer-local barriers, which by construction can never be amortized —
+so at 4.229 the shared work is nearly fully amortized already.
+
+**Attributable by control, not by assumption.** The measurement worker added a
+switch so a count sweep can run on either arm. Without the OFF arm this fall
+would have been a grouping win by assumption; with it, the attribution is
+measured.
 
 ### `cohort_size` 45 against a cap of 16 — two different quantities
 
