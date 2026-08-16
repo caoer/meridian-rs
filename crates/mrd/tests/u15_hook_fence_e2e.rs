@@ -90,7 +90,7 @@ impl Sandbox {
         // Wire-origin put demands fingerprint-or-force. These arms test the
         // commit fence, not the guard, so the helper supplies `--force`.
         let mut owned: Vec<&str> = args.to_vec();
-        if owned.first().is_some_and(|a| *a == "put") && !owned.iter().any(|a| *a == "--force") {
+        if owned.first().is_some_and(|a| *a == "put") && !owned.contains(&"--force") {
             owned.push("--force");
         }
         let mut child = self
