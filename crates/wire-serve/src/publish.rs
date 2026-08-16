@@ -400,14 +400,22 @@ pub struct StagedTxn {
     pub drop_tmp_after_decide: bool,
 }
 
-/// Success: the assigned frame, plus when disk-stage I/O ran (the overlap
-/// instrument for §7(b)/(f)).
+/// Success: the assigned frame, plus the two gate-12 intervals, recorded at
+/// their two distinct call sites and never summed into one figure. The full
+/// disk-stage window (`durability_start..metadata_end`) is the overlap
+/// instrument for §7(b)/(f).
 #[derive(Debug, Clone)]
 pub struct PublishReceipt {
     pub txn: TxnId,
     pub frame: DeltaFrame,
-    pub disk_start: Instant,
-    pub disk_end: Instant,
+    /// Durability wait — [`decide`]: recovery images, the `O_EXCL` intent,
+    /// and the honest settling of this txn's staged bytes.
+    pub durability_start: Instant,
+    pub durability_end: Instant,
+    /// Metadata publish — [`rename_all`]: the renames plus each destination's
+    /// parent-directory sync.
+    pub metadata_start: Instant,
+    pub metadata_end: Instant,
 }
 
 /// Failures on the publish path. After a durable decision the only
@@ -444,20 +452,22 @@ pub fn publish(
 ) -> Result<PublishReceipt, PublishError> {
     let _res = table.reserve(txn.txn, txn.reads.clone(), txn.writes.clone());
     reverify(root, &txn.dests)?;
-    let disk_start = Instant::now();
+    let durability_start = Instant::now();
     let intent = decide(root, &txn)?;
+    let durability_end = Instant::now();
     if txn.drop_tmp_after_decide {
         for d in &txn.dests {
             let _ = std::fs::remove_file(&d.tmp);
         }
     }
+    let metadata_start = Instant::now();
     if let Err(e) = rename_all(root, &txn.dests) {
         return Err(PublishError::CommitUnknown {
             txn: txn.txn,
             cause: e,
         });
     }
-    let disk_end = Instant::now();
+    let metadata_end = Instant::now();
     let frame = owner.apply(txn.files, txn.actor, txn.now, fold);
     if let Err(e) = intent::finalize(root, &intent) {
         return Err(PublishError::CommitUnknown {
@@ -469,8 +479,10 @@ pub fn publish(
     Ok(PublishReceipt {
         txn: txn.txn,
         frame,
-        disk_start,
-        disk_end,
+        durability_start,
+        durability_end,
+        metadata_start,
+        metadata_end,
     })
 }
 
@@ -908,7 +920,7 @@ mod tests {
                     fold_mark("t"),
                 )
                 .expect("disjoint publish");
-                tx.send((rec.disk_start, rec.disk_end)).unwrap();
+                tx.send((rec.durability_start, rec.metadata_end)).unwrap();
             });
         }
         drop(tx);
