@@ -2978,6 +2978,14 @@ fn fsync_dir(dir: &Path) -> io::Result<()> {
 /// that the class is EXPLICIT rather than an implementation detail of the
 /// standard library. Never assume a cheap sync tier exists here.
 ///
+/// `F_BARRIERFSYNC` is considered and refused everywhere: it orders writes
+/// against the drive but does not promise them durable at return. Every sync
+/// on this path exists because something must be DURABLE, not merely
+/// ordered — content bytes a receipt vouches for, an intent record that must
+/// survive a crash the renames survived, a directory entry without which
+/// durable file data is unreachable. The expected `F_BARRIERFSYNC` count
+/// here is zero, and a non-zero one is a falsifier, never an optimization.
+///
 /// Every call is counted ([`honest_sync_count`]) and timed into this
 /// thread's tally ([`take_thread_tally`]) — the bare instruments the
 /// durability gates read.
@@ -3071,6 +3079,26 @@ const HONEST_SYNC_SLOTS: usize = 16;
 static SYNC_SLOTS: std::sync::Mutex<usize> = std::sync::Mutex::new(HONEST_SYNC_SLOTS);
 static SYNC_SLOT_FREED: std::sync::Condvar = std::sync::Condvar::new();
 
+static COORDINATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// The A/B arm the durability sweep runs. `true` — the default and the
+/// shipped path — is contention-triggered grouping plus the in-flight cap.
+/// `false` is the control: every writer fully independent, no rounds and no
+/// cap, so a measured difference between the arms is the coordination and
+/// nothing else.
+///
+/// Process-wide and deliberately blunt: the sweep runs one arm at a time in
+/// one binary. Nothing in production ever calls this.
+pub fn set_durability_coordination(on: bool) {
+    COORDINATED.store(on, Ordering::Relaxed);
+}
+
+/// The arm currently in force (see [`set_durability_coordination`]).
+#[must_use]
+pub fn durability_coordination() -> bool {
+    COORDINATED.load(Ordering::Relaxed)
+}
+
 /// [`honest_sync`] under the in-flight cap — the form for durability a
 /// writer issues BEFORE it takes any reservation (its staged content, its
 /// recovery images).
@@ -3084,6 +3112,9 @@ static SYNC_SLOT_FREED: std::sync::Condvar = std::sync::Condvar::new();
 /// # Errors
 /// The underlying sync failure.
 fn honest_sync_capped(file: &File) -> io::Result<()> {
+    if !durability_coordination() {
+        return honest_sync(file);
+    }
     let mut free = SYNC_SLOTS.lock().unwrap_or_else(PoisonError::into_inner);
     while *free == 0 {
         free = SYNC_SLOT_FREED
@@ -3154,6 +3185,9 @@ static DIR_ROUNDS: std::sync::Mutex<BTreeMap<PathBuf, std::sync::Arc<DirRounds>>
 /// The underlying open/sync failure — a follower reports the failure of the
 /// round that covered it.
 pub fn honest_sync_dir(dir: &Path) -> io::Result<()> {
+    if !durability_coordination() {
+        return honest_sync_path(dir);
+    }
     let rounds = dir_rounds(dir);
     let mut state = rounds.state.lock().unwrap_or_else(PoisonError::into_inner);
     let arrival = state.started;
