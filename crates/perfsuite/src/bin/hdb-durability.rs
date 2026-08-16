@@ -88,6 +88,22 @@ fn main() -> ExitCode {
             parse(iters),
             parse_staging(staging),
         ),
+        ["sweep-real", dir, dests, rounds, iters, levels] => sweep_real(
+            Path::new(dir),
+            parse(dests),
+            parse(rounds),
+            parse(iters),
+            levels,
+            Staging::Submitted,
+        ),
+        ["sweep-real", dir, dests, rounds, iters, levels, staging] => sweep_real(
+            Path::new(dir),
+            parse(dests),
+            parse(rounds),
+            parse(iters),
+            levels,
+            parse_staging(staging),
+        ),
         ["loss-a", dir, max_offset_us, step_us, samples] => loss_a(
             Path::new(dir),
             parse(max_offset_us),
@@ -107,6 +123,7 @@ fn main() -> ExitCode {
                  hdb-durability receipt <dir> today|naive|actor <iters>\n       \
                  hdb-durability bench-real <dir> <dests> <writers> <iters> [settled|submitted]\n       \
                  hdb-durability receipt-real <dir> <dests> <iters> [settled|submitted]\n       \
+                 hdb-durability sweep-real <dir> <dests> <rounds> <iters_per_visit> <n1,n2,..> [staging]\n       \
                  hdb-durability loss-a <dir> <max_offset_us> <step_us> <samples>\n       \
                  hdb-durability loss-b <dir> <bigD> <small_writers> <iters>"
             );
@@ -571,13 +588,15 @@ fn print_counter_deltas(c0: Counters, c1: Counters, txns: u64) {
 // the real engine path — wire_serve::publish, D destinations per transaction
 // ---------------------------------------------------------------------------
 
-/// One transaction's timings on the real path, all reported separately:
-/// the caller's staging syncs, the receipt's durability interval (`decide`),
-/// its metadata interval (`rename_all`), and the whole-transaction wall.
+/// One transaction's timings on the real path, all reported separately —
+/// ruling 18: three DISJOINT receipt intervals (content durability, metadata
+/// publish, state-owner apply), none derived by subtraction, plus the
+/// caller's staging syncs and the whole-transaction wall.
 struct RealLatency {
     stage: Vec<Duration>,
     durability: Duration,
     metadata: Duration,
+    apply: Duration,
     wall: Duration,
 }
 
@@ -682,6 +701,7 @@ fn real_txn_once(
         stage,
         durability: rec.durability_end.duration_since(rec.durability_start),
         metadata: rec.metadata_end.duration_since(rec.metadata_start),
+        apply: rec.apply_end.duration_since(rec.apply_start),
         wall,
     })
 }
@@ -738,6 +758,7 @@ fn bench_real(
     let mut stage_run = LatencyRun::new();
     let mut durability_run = LatencyRun::new();
     let mut metadata_run = LatencyRun::new();
+    let mut apply_run = LatencyRun::new();
     let mut wall_run = LatencyRun::new();
     for txn in per_writer.iter().flatten() {
         for s in &txn.stage {
@@ -745,6 +766,7 @@ fn bench_real(
         }
         durability_run.record(txn.durability);
         metadata_run.record(txn.metadata);
+        apply_run.record(txn.apply);
         wall_run.record(txn.wall);
     }
     println!(
@@ -761,6 +783,7 @@ fn bench_real(
         ("stage_sync (per barrier)", &stage_run),
         ("durability (decide)", &durability_run),
         ("metadata (rename_all)", &metadata_run),
+        ("owner_apply", &apply_run),
         ("txn_wall", &wall_run),
     ] {
         let d = run.dist();
@@ -961,5 +984,186 @@ fn loss_b(dir: &Path, big_d: u32, small_writers: u32, iters: u32) -> std::io::Re
         );
     }
     println!("load_after [{}]", loadavg());
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// sweep-real — round-robin interleaved writer-count sweep (ruling 17)
+// ---------------------------------------------------------------------------
+
+/// Per-level accumulator for the interleaved sweep: the level's lanes stay
+/// warm across rounds and every round appends into the same runs, so device
+/// drift over the sweep spreads across ALL levels instead of being reported
+/// as a concurrency effect.
+struct Level {
+    writers: u32,
+    lanes: Vec<Lane>,
+    stage: LatencyRun,
+    durability: LatencyRun,
+    metadata: LatencyRun,
+    apply: LatencyRun,
+    wall: LatencyRun,
+    honest_ops: u64,
+    object_syncs: u64,
+    actor_barriers: u64,
+    txns: u64,
+}
+
+/// One chunk: this level's writers each run `iters` transactions.
+fn sweep_chunk(
+    root: &WorkspaceRoot,
+    table: &Arc<ReservationTable>,
+    owner: &StateOwner,
+    level: &mut Level,
+    iters: u32,
+    staging: Staging,
+    round: u32,
+) -> std::io::Result<()> {
+    let c0 = counters();
+    let start = Barrier::new(level.writers as usize);
+    let mut per_writer: Vec<Vec<RealLatency>> = Vec::new();
+    std::thread::scope(|scope| -> std::io::Result<()> {
+        let mut handles = Vec::new();
+        for lane in &mut level.lanes {
+            let (root, table, owner, start) = (root, table, owner, &start);
+            handles.push(scope.spawn(move || -> std::io::Result<Vec<RealLatency>> {
+                start.wait();
+                let mut out = Vec::with_capacity(iters as usize);
+                for i in 0..iters {
+                    out.push(real_txn_once(
+                        root,
+                        table,
+                        owner,
+                        lane,
+                        round * iters + i,
+                        staging,
+                    )?);
+                }
+                Ok(out)
+            }));
+        }
+        for h in handles {
+            per_writer.push(h.join().expect("sweep writer panicked")?);
+        }
+        Ok(())
+    })?;
+    let c1 = counters();
+    for txn in per_writer.iter().flatten() {
+        for st in &txn.stage {
+            level.stage.record(*st);
+        }
+        level.durability.record(txn.durability);
+        level.metadata.record(txn.metadata);
+        level.apply.record(txn.apply);
+        level.wall.record(txn.wall);
+    }
+    level.honest_ops += c1.honest_ops - c0.honest_ops;
+    level.object_syncs += c1.object_syncs - c0.object_syncs;
+    level.actor_barriers += c1.actor_barriers - c0.actor_barriers;
+    level.txns += u64::from(level.writers) * u64::from(iters);
+    Ok(())
+}
+
+/// The writer-count sweep of record: `rounds` passes, each visiting every
+/// level once (round-robin), `iters_per_visit` txns per writer per visit.
+/// Levels are fixed and pre-declared; nothing is re-run after results are
+/// seen (rulings 17 and the conduct standard).
+fn sweep_real(
+    dir: &Path,
+    dests: u32,
+    rounds: u32,
+    iters_per_visit: u32,
+    levels_arg: &str,
+    staging: Staging,
+) -> std::io::Result<()> {
+    let ws = dir.join(format!("hdb-sweep-{}", std::process::id()));
+    std::fs::create_dir_all(&ws)?;
+    let root = WorkspaceRoot(ws.clone());
+    let table = ReservationTable::new();
+    let owner = StateOwner::new(Root("hdb".into()));
+    let load_before = loadavg();
+
+    let mut levels: Vec<Level> = Vec::new();
+    for part in levels_arg.split(',') {
+        let writers: u32 = part
+            .parse()
+            .map_err(|_| std::io::Error::other(format!("bad level: {part}")))?;
+        let mut lanes = Vec::new();
+        for w in 0..writers {
+            // Disjoint namespaces per (level, writer): level prefix in the id.
+            lanes.push(lane_setup(&ws, writers * 1000 + w, dests)?);
+        }
+        levels.push(Level {
+            writers,
+            lanes,
+            stage: LatencyRun::new(),
+            durability: LatencyRun::new(),
+            metadata: LatencyRun::new(),
+            apply: LatencyRun::new(),
+            wall: LatencyRun::new(),
+            honest_ops: 0,
+            object_syncs: 0,
+            actor_barriers: 0,
+            txns: 0,
+        });
+    }
+    // Warm every lane once, before any counted chunk.
+    for level in &mut levels {
+        for lane in &mut level.lanes {
+            for i in 0..WARMUP_ITERS {
+                real_txn_once(&root, &table, &owner, lane, i, staging)?;
+            }
+        }
+    }
+    for round in 0..rounds {
+        for level in &mut levels {
+            sweep_chunk(
+                &root,
+                &table,
+                &owner,
+                level,
+                iters_per_visit,
+                staging,
+                round,
+            )?;
+        }
+    }
+    let load_after = loadavg();
+
+    println!(
+        "sweep-real dests={dests} rounds={rounds} iters_per_visit={iters_per_visit} staging={} interleaved=round-robin load_before=[{load_before}] load_after=[{load_after}]",
+        if staging == Staging::Submitted {
+            "submitted"
+        } else {
+            "settled"
+        },
+    );
+    for level in &levels {
+        println!("level writers={} txns={}", level.writers, level.txns);
+        for (name, run) in [
+            ("stage_sync (per barrier)", &level.stage),
+            ("durability (decide)", &level.durability),
+            ("metadata (rename_all)", &level.metadata),
+            ("owner_apply", &level.apply),
+            ("txn_wall", &level.wall),
+        ] {
+            let d = run.dist();
+            println!(
+                "  {name:<26} p50_ms={:.3} p99_ms={:.3} max_ms={:.3} samples={}",
+                d.p50_us / 1000.0,
+                d.p99_us / 1000.0,
+                d.max_us / 1000.0,
+                run.samples()
+            );
+        }
+        let t = level.txns.max(1);
+        println!(
+            "  counters/txn x1000: honest_ops={} object_syncs={} actor_barriers={}",
+            level.honest_ops * 1000 / t,
+            level.object_syncs * 1000 / t,
+            level.actor_barriers * 1000 / t,
+        );
+    }
+    std::fs::remove_dir_all(&ws)?;
     Ok(())
 }
