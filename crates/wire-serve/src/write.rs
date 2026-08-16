@@ -1913,7 +1913,13 @@ fn inbound_referrers(target: &str, files: fs::DomainFiles) -> Vec<Referrer> {
 /// references, named one by one — reason first, then the fitted remedy.
 fn remove_refused(path: &Path, referrers: Vec<Referrer>) -> Box<ErrorBody> {
     let edges: u64 = referrers.iter().map(|r| r.count).sum();
-    let files = referrers.len();
+    // Rows aggregate per (path, kind): one file referring by two kinds spans
+    // two rows, so the files figure dedups paths rather than counting rows.
+    let files = referrers
+        .iter()
+        .map(|r| r.path.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
     let mut e = ErrorBody::new(ErrorCode::RemoveRefused);
     e.path = Some(path.clone());
     e.message = Some(format!(
@@ -3592,10 +3598,14 @@ fn premise_guard(
                     },
                     Ok(fs::ScopeToken::Absent) => match &premise.value {
                         crate::guard::PremiseValue::Absent => {}
-                        crate::guard::PremiseValue::Token(t) => {
-                            let mut e = scoped_mismatch(&scope_str, t, "absent");
-                            e.message = Some(wire::scoped_absent_actual_teaching(&scope_str));
-                            return Err(e);
+                        // §5.7's amended arm (dogfood break #6): a token
+                        // premise at a node-less scope is bad input, never a
+                        // narrated deletion — `(token, absent)` cannot
+                        // distinguish a post-mint removal from a pairing that
+                        // never held, and a `resync` here re-reads a path
+                        // that serves nothing.
+                        crate::guard::PremiseValue::Token(_) => {
+                            return Err(token_at_absent_scope(&scope_str));
                         }
                     },
                     Err(fs::ScopeTokenError::Unresolved(refusal)) => {
@@ -3636,6 +3646,19 @@ fn scoped_mismatch(scope: &str, expected: &str, actual: &str) -> Box<ErrorBody> 
     e.actual = Some(NodeRev(actual.to_owned()));
     e.scope = Some(scope.to_owned());
     e.message = Some(wire::scoped_mismatch_teaching(scope, expected, actual));
+    Box::new(e)
+}
+
+/// The §5.7 amended-arm refusal (dogfood break #6): a token premise at a
+/// node-less scope — `scope_does_not_cover`, recovery `fix`, carrying `scope`
+/// alone (`uncovered` stays §5.5's target-set extra; this mint home names no
+/// target set). Never `fingerprint_mismatch`: the engine cannot know whether
+/// the node was removed or never existed, and the retired absent-actual text
+/// stated the first as fact.
+fn token_at_absent_scope(scope: &str) -> Box<ErrorBody> {
+    let mut e = ErrorBody::new(ErrorCode::ScopeDoesNotCover);
+    e.scope = Some(scope.to_owned());
+    e.message = Some(wire::token_at_absent_scope_teaching(scope));
     Box::new(e)
 }
 
@@ -5894,6 +5917,66 @@ mod guarded_create_remove {
                 referrers[0].count
             ),
             ("notes/pinner.md", ReferrerKind::Pin, 1)
+        );
+    }
+
+    /// § A.3 message figures: one file referring by TWO kinds (wikilink and
+    /// pin) spans two referrer rows — the message's edge figure sums every
+    /// edge, and its file figure counts DISTINCT referring files, not rows.
+    #[test]
+    fn remove_refusal_counts_distinct_files_not_referrer_rows() {
+        let (dir, root) = ws();
+        let born = create(
+            &root,
+            None,
+            &create_args("notes/victim.md", "# Victim\n"),
+            &[],
+        )
+        .unwrap();
+
+        // One referring file holding all three edges: two wikilinks plus an
+        // ambient pin (raw fixture write — the birth door refuses lock-bearing
+        // bodies, and the guard reads DISK).
+        let victim = model::build("# Victim\n".to_string(), syntax::parse("# Victim\n"));
+        let token = model::fingerprint::fingerprint(&victim, &victim.root)
+            .expect("the fixture page has content")
+            .into_string();
+        let mut l = lock::Lock::new();
+        l.upsert_pin(lock::PinEntry::new(
+            "victim",
+            "9ae3f1deadbeef",
+            lock::Selector::Path(Vec::new()),
+            &token,
+        ));
+        std::fs::write(
+            dir.path().join("notes/fan.md"),
+            format!(
+                "# Fan\n\nsee [[victim]], and [[victim]] again\n\n{}\n",
+                lock::render(&l)
+            ),
+        )
+        .unwrap();
+
+        let err = remove(
+            &root,
+            None,
+            &remove_args("notes/victim.md", &born.file_rev_after.0),
+            &[],
+        )
+        .expect_err("a referenced record must not die");
+        assert_eq!(err.code, ErrorCode::RemoveRefused);
+        let referrers = err.referrers.as_deref().unwrap();
+        assert_eq!(referrers.len(), 2, "two rows: one per (path, kind)");
+        assert!(
+            referrers.iter().all(|r| r.path == "notes/fan.md"),
+            "both rows name the one referring file"
+        );
+        assert!(
+            err.message
+                .as_deref()
+                .is_some_and(|m| m.contains("3 inbound references from 1 file —")),
+            "edges sum, files dedup distinct paths: {:?}",
+            err.message
         );
     }
 

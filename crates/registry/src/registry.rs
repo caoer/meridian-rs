@@ -825,20 +825,26 @@ impl Registry {
     ///
     /// The borrow also keeps the §6.3 STAMP PLANE bound to the workspace's
     /// LIVE ring epoch — when one exists. A cache borrow never mints a ring
-    /// (reap reporting stays truthful: only claims mint epochs); until the
-    /// workspace's first ring exists, stamp queries answer `None` and every
-    /// guard stays on the content-fold compare. When the memo's bound
+    /// (reap reporting stays truthful: only claims mint epochs); with no
+    /// live ring — before the workspace's first, or after an idle-reap with
+    /// no successor epoch yet — the borrow UNBINDS the plane, stamp queries
+    /// answer `None`, and every guard stays on the content-fold compare (a
+    /// stamp must never answer across a reap). When the memo's bound
     /// instance is not the live ring's (first bind, or the ring died to an
     /// idle-reap and a fresh epoch was minted), the plane is re-bound with
     /// the ring's tip as the stamp clock. Old stamp values stay — max-only
     /// leftovers from a dead epoch read "touched" against young tokens,
     /// conservative and self-healing — and every cross-epoch stamp query
     /// already degrades to the content-fold compare on the instance
-    /// mismatch (the §7 restart/reap row). Lock discipline: inside the memo
-    /// lock only two leaf mutexes are ever entered — the feed's state (the
-    /// atomic take) and the ring's state (bind check + stamp clock;
-    /// fold→state, the detector's own order) — and no path acquires a memo
-    /// while holding either.
+    /// mismatch (the §7 restart/reap row). One acknowledged sliver: a
+    /// borrow that fetched the ring just before a reap removed it can
+    /// re-install the dead binding for the width of its own borrow — the
+    /// very next borrow finds no ring and unbinds, the same
+    /// one-extra-borrow shape as the in-flight private memo above. Lock
+    /// discipline: inside the memo lock only two leaf mutexes are ever
+    /// entered — the feed's state (the atomic take) and the ring's state
+    /// (bind check + stamp clock; fold→state, the detector's own order) —
+    /// and no path acquires a memo while holding either.
     fn patched_cache(
         &self,
         workspace: &Path,
@@ -893,11 +899,18 @@ impl Registry {
             if let Some(feed) = &feed {
                 applied = apply_pending(workspace, &mut memo, feed);
             }
-            if let Some(ring) = ring {
-                let instance = ring.instance();
-                if memo.stamp_instance() != Some(instance.as_str()) {
-                    memo.bind_stamps(&instance, Arc::new(move || ring.seq()));
+            match ring {
+                Some(ring) => {
+                    let instance = ring.instance();
+                    if memo.stamp_instance() != Some(instance.as_str()) {
+                        memo.bind_stamps(&instance, Arc::new(move || ring.seq()));
+                    }
                 }
+                // No live ring: a binding left here would name a dead epoch
+                // and keep answering for it (the reap false-pass §6.3
+                // outlaws). Unbind — queries degrade to the content-fold
+                // compare until a live epoch rebinds.
+                None => memo.unbind_stamps(),
             }
         }
         (cache, applied)
@@ -1338,6 +1351,11 @@ impl Registry {
     /// corpus re-read (merkle-spec §6.4, kimi D1 — "an idle-reaped engine
     /// keeps its watcher"). A workspace with no LIVE feed has no gap
     /// coverage, so its memo still drops exactly as it always did.
+    /// Either way the memo's §6.3 stamp plane is UNBOUND here: its binding
+    /// names the ring this sweep kills, and a stamp must not answer across
+    /// a reap (dead-instance queries degrade to the content-fold compare
+    /// until a live epoch rebinds) — unbinding also drops the clock
+    /// closure, the one owner that would keep the reaped ring alive.
     /// Injectable clock for tests. Returns the workspaces that actually shed
     /// state — an already-cold workspace is not re-reported.
     ///
@@ -1400,20 +1418,37 @@ impl Registry {
             // §6.4 point: memo + dirty set make the re-warm O(dirty). With no
             // live feed there is no gap coverage, so the memo dies here as it
             // did before the feed existed.
-            {
+            let stale: Vec<Arc<Mutex<fs::DomainCache>>> = {
                 let feeds = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
                 let mut caches = self
                     .domain_caches
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner);
+                let mut stale = Vec::new();
                 for key in &candidates {
                     if matches!(feeds.get(key), Some(FeedSlot::Live(_))) {
+                        stale.extend(caches.get(key).map(Arc::clone));
                         continue;
                     }
-                    if caches.remove(key).is_some() {
+                    if let Some(cache) = caches.remove(key) {
                         demoted.insert(key.clone());
+                        stale.push(cache);
                     }
                 }
+                stale
+            };
+            // Every candidate memo's §6.3 stamp plane names the ring this
+            // sweep just killed, and its clock closure OWNS that ring.
+            // Unbind them all — the survivor in the map, and the removed one
+            // an in-flight holder may still borrow privately — so no stamp
+            // answers across the reap and the dead ring drops with its
+            // closure. Outside the map locks: no path takes a memo lock
+            // while holding one (the patched_cache discipline).
+            for cache in stale {
+                cache
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .unbind_stamps();
             }
             // The sql handle rides the same horizon; the FILE stays (its pin
             // is content-derived, re-warm re-compares before serving).
@@ -2109,6 +2144,95 @@ mod engine_tests {
         assert_ne!(
             epoch_a, epoch_b,
             "a dead epoch's stamp tokens degrade on the instance mismatch"
+        );
+    }
+
+    /// The dead-I / no-B interval the rebind test above skips (§6.3, merged
+    /// plan §4.9): after the reap kills epoch A and BEFORE any claim mints
+    /// a successor, a token minted under A gets `None` — never a seq
+    /// compare across the reap. The reap itself unbinds the surviving
+    /// memo's stamp plane and thereby drops the clock closure — the one
+    /// owner that would keep the reaped ring alive — and a later borrow
+    /// finds no live ring and stays unbound. Once epoch B lands, dead-I
+    /// still answers `None` and A's max-only leftovers read "touched"
+    /// against B's seq-0 tokens.
+    #[test]
+    fn a_stamp_never_answers_across_a_reap() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(home.path(), &[("a.md", "# A\n")]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.register(&canonical);
+
+        // Epoch A: the borrow binds the plane; the baseline observation
+        // stamps the root chain at tip + 1.
+        let ring_a = reg.ring(&canonical);
+        let epoch_a = ring_a.instance();
+        let tip_a = ring_a.seq();
+        let ring_watch = Arc::downgrade(&ring_a);
+        drop(ring_a);
+        let cache = reg.domain_cache(&canonical);
+        {
+            let mut memo = cache.lock().unwrap();
+            memo.root(&::fs::WorkspaceRoot(canonical.clone())).unwrap();
+            assert_eq!(
+                memo.stamp_untouched(&epoch_a, tip_a + 1, Path::new("")),
+                Some(true),
+                "the live epoch vouches for the quiet root"
+            );
+        }
+        assert!(
+            reg.feed_stats(&canonical).is_some(),
+            "precondition: a live feed, so the memo survives the reap"
+        );
+
+        // The reap kills the ring. No successor epoch is minted.
+        assert!(reg.reap(u64::MAX, 0).contains(&canonical));
+
+        // The borrow held from BEFORE the reap was unbound by the reap
+        // itself — no fresh borrow heals this probe.
+        assert_eq!(
+            cache
+                .lock()
+                .unwrap()
+                .stamp_untouched(&epoch_a, tip_a + 1, Path::new("")),
+            None,
+            "a stamp must not answer across a reap"
+        );
+        assert!(
+            ring_watch.upgrade().is_none(),
+            "the unbind dropped the clock closure, the reaped ring's last owner"
+        );
+        // A fresh borrow finds no live ring and stays unbound — it never
+        // resurrects the dead epoch.
+        assert!(
+            reg.domain_cache(&canonical)
+                .lock()
+                .unwrap()
+                .stamp_instance()
+                .is_none(),
+            "no live ring, no binding"
+        );
+
+        // Epoch B: dead-I still degrades, and A's leftover stamps read
+        // "touched" against B's seq-0 token — conservative, never untouched.
+        let _ = reg.ring(&canonical);
+        let cache = reg.domain_cache(&canonical);
+        let memo = cache.lock().unwrap();
+        let epoch_b = memo
+            .stamp_instance()
+            .expect("re-bound to the young epoch")
+            .to_owned();
+        assert_ne!(epoch_a, epoch_b);
+        assert_eq!(
+            memo.stamp_untouched(&epoch_a, u64::MAX, Path::new("")),
+            None,
+            "the dead epoch never answers, whatever the seq"
+        );
+        assert_eq!(
+            memo.stamp_untouched(&epoch_b, 0, Path::new("")),
+            Some(false),
+            "dead-epoch leftovers read touched against the young chain"
         );
     }
 

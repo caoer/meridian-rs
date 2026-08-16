@@ -2425,14 +2425,22 @@ pub fn scoped_mismatch_teaching(scope: &str, expected: &str, actual: &str) -> St
     )
 }
 
-/// The §8.2 register-law teaching for a scoped `fingerprint_mismatch` whose
-/// LIVE side is lawful absence (`absent` as actual) — the scope had a token
-/// when the caller planned and has no node now.
+/// The §8.2 register-law teaching for a token premise at a node-less scope —
+/// `scope_does_not_cover`, §5.7's amended arm (dogfood break #6). From
+/// `(token, absent)` the engine cannot tell a post-mint removal from a pairing
+/// that never held, so the text names both worlds and narrates neither; the
+/// mint remedy serves both, so the recovery terminates either way.
 #[must_use]
-pub fn scoped_absent_actual_teaching(scope: &str) -> String {
+pub fn token_at_absent_scope_teaching(scope: &str) -> String {
     format!(
-        "the scope {scope} had a token when you planned and has no node now — \
-         it was emptied or removed. Re-read the parent and re-plan."
+        "the premise at {scope} holds a token, but no node lives at {scope} — \
+         a token premise cannot hold where there is no node (a node-less \
+         scope's one lawful premise is \"absent\", §5.6), so this premise \
+         covers nothing. Whether a node was removed since your mint or \
+         {scope} never held one, this refusal does not say — it cannot know. \
+         Mint at the scope (fingerprint{{scope: \"{scope}\"}}) to see what it \
+         holds now — a lawful empty scope answers \"absent\" — or fix {scope} \
+         if the token was minted elsewhere; then re-plan."
     )
 }
 
