@@ -114,25 +114,25 @@ enum Rung {
 impl RescanCause {
     /// The cause's name — the word the log line and the record carry.
     #[must_use]
-    pub fn name(self) -> &'static str {
+    pub const fn name(self) -> &'static str {
         match self {
-            RescanCause::MissedEvent => "missed-event",
-            RescanCause::Overflow => "overflow",
-            RescanCause::InstanceChange => "instance-change",
-            RescanCause::VouchFailure => "vouch-failure",
-            RescanCause::CookieTimeout => "cookie-timeout",
+            Self::MissedEvent => "missed-event",
+            Self::Overflow => "overflow",
+            Self::InstanceChange => "instance-change",
+            Self::VouchFailure => "vouch-failure",
+            Self::CookieTimeout => "cookie-timeout",
         }
     }
 
     /// Only a broken stream continuity re-baselines; every other doubt is
     /// covered by the stat sweep the next observation already is.
-    fn rung(self) -> Rung {
+    const fn rung(self) -> Rung {
         match self {
-            RescanCause::InstanceChange => Rung::Rebaseline,
-            RescanCause::MissedEvent
-            | RescanCause::Overflow
-            | RescanCause::VouchFailure
-            | RescanCause::CookieTimeout => Rung::Sweep,
+            Self::InstanceChange => Rung::Rebaseline,
+            Self::MissedEvent
+            | Self::Overflow
+            | Self::VouchFailure
+            | Self::CookieTimeout => Rung::Sweep,
         }
     }
 }
@@ -253,7 +253,7 @@ impl WorkspaceFeed {
         gen: fs::stable::FeedGen,
     ) -> notify::Result<WorkspaceFeed> {
         let state = Arc::new(Mutex::new(FeedState {
-            gen: gen.clone(),
+            gen,
             ..FeedState::default()
         }));
         let sink = Arc::clone(&state);
