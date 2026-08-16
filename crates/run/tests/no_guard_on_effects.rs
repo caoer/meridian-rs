@@ -14,7 +14,7 @@
 use std::collections::BTreeMap;
 
 use effects::{ArgValue, Effect, EffectKind, Provenance};
-use run::caps::{Authority, CapSet};
+use run::caps::Authority;
 use run::executor::{self, ApplyRequest, ReceiptAddr};
 
 const PAGE: &str = "\

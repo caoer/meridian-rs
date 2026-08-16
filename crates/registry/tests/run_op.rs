@@ -741,10 +741,11 @@ fn a_supplied_guard_field_on_run_is_rejected_as_inapplicable() {
             json!("bad_request"),
             "`{field}` is inapplicable on `run`: {resp}"
         );
-        assert!(
-            resp["error"]["message"].as_str().unwrap().contains(field),
-            "the wall names the inapplicable field: {resp}"
-        );
+        let msg = resp["error"]["message"].as_str().unwrap();
+        // v3 remaps `if_fingerprint` → `if_root` (wire-serve rev.rs) before
+        // the field wall, so that one names the internal key.
+        let named = msg.contains(field) || (field == "if_fingerprint" && msg.contains("if_root"));
+        assert!(named, "the wall names the inapplicable field: {resp}");
     }
 
     // Target grain: the same wall.
@@ -795,18 +796,15 @@ fn an_effects_write_advances_the_folds_other_writers_premises_compare_against() 
     let rows = rows_of(&resp);
     assert!(rows[0].get("refusal").is_none(), "the apply landed: {resp}");
 
-    // The stale premise refuses: the effects write moved the compared folds.
-    let splice = |token: &str, new: &str| {
-        json!({
-            "id": 51, "op": "splice", "path": "plan.md",
-            "if_fingerprint": token,
-            "edits": [{
-                "target": {"hpath": [{"h": "Goals"}]},
-                "edit": {"match": {"old": "ship by August", "new": new}},
-            }],
-        })
-    };
-    let refused = conn.call(&splice(&pre_run, "ship by September"));
+    // The stale world premise refuses: the effects write moved the compared folds.
+    let refused = conn.call(&json!({
+        "id": 51, "op": "splice", "path": "plan.md",
+        "if_fingerprint": pre_run,
+        "edits": [{
+            "target": {"hpath": [{"h": "Goals"}]},
+            "edit": {"match": {"old": "ship by August", "new": "ship by September"}},
+        }],
+    }));
     assert_eq!(refused["ok"], json!(false), "{refused}");
     assert_eq!(
         refused["error"]["code"],
@@ -814,10 +812,29 @@ fn an_effects_write_advances_the_folds_other_writers_premises_compare_against() 
         "the pre-run premise compares against folds the run moved: {refused}"
     );
 
-    // Control: the re-derived premise commits.
+    // Control: the re-derived world premise plus the section's live node
+    // token (A.1 node-grain requiredness) commits.
     let current = conn.fingerprint();
     assert_ne!(pre_run, current, "the effects write advanced the fold");
-    let committed = conn.call(&splice(&current, "ship by October"));
+    let toc = conn.call(&json!({"id": 52, "op": "toc", "path": "plan.md"}));
+    let rev = toc["body"]["nodes"]
+        .as_array()
+        .expect("toc nodes")
+        .iter()
+        .find(|n| n["hpath"][0]["h"] == json!("Goals"))
+        .unwrap_or_else(|| panic!("Goals in toc: {toc}"))["node_rev"]
+        .as_str()
+        .expect("node_rev")
+        .to_string();
+    let committed = conn.call(&json!({
+        "id": 53, "op": "splice", "path": "plan.md",
+        "if_fingerprint": current,
+        "edits": [{
+            "target": {"hpath": [{"h": "Goals"}]},
+            "edit": {"match": {"old": "ship by August", "new": "ship by October"}},
+            "if_node_rev": rev,
+        }],
+    }));
     assert_eq!(committed["ok"], json!(true), "{committed}");
     server.shutdown();
 }
