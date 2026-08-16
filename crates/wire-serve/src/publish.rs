@@ -25,7 +25,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use wire::{DeltaFile, DeltaFrame, Root};
 
@@ -400,14 +400,40 @@ pub struct StagedTxn {
     pub drop_tmp_after_decide: bool,
 }
 
-/// Success: the assigned frame, plus when disk-stage I/O ran (the overlap
-/// instrument for §7(b)/(f)).
+/// A measured interval. The publish path records its three intervals
+/// SEPARATELY and never sums them: one span covering both durability phases
+/// is an aggregate that hides which sync class was paid where (`docs/laws.md`
+/// § Amendment — epoch-batched honest durability).
+#[derive(Debug, Clone, Copy)]
+pub struct Span {
+    pub start: Instant,
+    pub end: Instant,
+}
+
+impl Span {
+    /// How long the interval took. Never add two of these together.
+    #[must_use]
+    pub fn duration(&self) -> Duration {
+        self.end.saturating_duration_since(self.start)
+    }
+}
+
+/// Success: the assigned frame, plus the three intervals the publish path is
+/// measured by. They are three figures, not three summands.
 #[derive(Debug, Clone)]
 pub struct PublishReceipt {
     pub txn: TxnId,
     pub frame: DeltaFrame,
-    pub disk_start: Instant,
-    pub disk_end: Instant,
+    /// Phase 1 — content durability: every staged temp handed to the device,
+    /// then the barrier that covers those bytes. Held under NO exclusion, so
+    /// this is also the overlap instrument for §7(b)/(f).
+    pub content: Span,
+    /// Phase 2 — metadata publish: the `O_EXCL` intent, the visible renames,
+    /// and the dirent barrier. Held under the reservation.
+    pub publish: Span,
+    /// The linearized state-owner step. No disk I/O of any class runs inside
+    /// it; the per-thread sync counters are what prove that.
+    pub owner_step: Span,
 }
 
 /// Failures on the publish path. After a durable decision the only
@@ -442,9 +468,20 @@ pub fn publish(
     txn: StagedTxn,
     fold: impl FnOnce(&Root) -> Root,
 ) -> Result<PublishReceipt, PublishError> {
+    // Phase 1 — content durability, before any exclusion is taken (§4.7:
+    // staging, validation and ALL durability I/O run outside every exclusion).
+    let c0 = Instant::now();
+    content_durability(&txn.dests)?;
+    let content = Span {
+        start: c0,
+        end: Instant::now(),
+    };
+
     let _res = table.reserve(txn.txn, txn.reads.clone(), txn.writes.clone());
     reverify(root, &txn.dests)?;
-    let disk_start = Instant::now();
+
+    // Phase 2 — metadata publish: durable decision, visible renames, dirent.
+    let p0 = Instant::now();
     let intent = decide(root, &txn)?;
     if txn.drop_tmp_after_decide {
         for d in &txn.dests {
@@ -457,8 +494,18 @@ pub fn publish(
             cause: e,
         });
     }
-    let disk_end = Instant::now();
+    let publish = Span {
+        start: p0,
+        end: Instant::now(),
+    };
+
+    let o0 = Instant::now();
     let frame = owner.apply(txn.files, txn.actor, txn.now, fold);
+    let owner_step = Span {
+        start: o0,
+        end: Instant::now(),
+    };
+
     if let Err(e) = intent::finalize(root, &intent) {
         return Err(PublishError::CommitUnknown {
             txn: txn.txn,
@@ -469,9 +516,23 @@ pub fn publish(
     Ok(PublishReceipt {
         txn: txn.txn,
         frame,
-        disk_start,
-        disk_end,
+        content,
+        publish,
+        owner_step,
     })
+}
+
+/// Phase 1: make every staged temp's bytes durable at the ruled honest class.
+/// Runs under no exclusion, and must return before any rename makes those
+/// bytes visible.
+///
+/// # Errors
+/// I/O at open or sync.
+fn content_durability(dests: &[DestImage]) -> Result<(), PublishError> {
+    for d in dests {
+        honest_sync_path(&d.tmp)?;
+    }
+    Ok(())
 }
 
 /// Group commit: one checksummed manifest, then each member independently.
@@ -527,13 +588,16 @@ fn reverify(root: &WorkspaceRoot, dests: &[DestImage]) -> Result<(), PublishErro
 /// Persist recovery images and the `O_EXCL` decided intent. After this
 /// returns, no error on this transaction is a refusal.
 ///
+/// Content durability is NOT this function's job: phase 1 already made the
+/// staged temps durable before any exclusion was taken, and a temp whose
+/// bytes are not yet on stable storage must never reach a rename.
+///
 /// # Errors
-/// I/O at image write, intent create, or honest sync.
+/// I/O at image write or intent create.
 pub fn decide(root: &WorkspaceRoot, txn: &StagedTxn) -> Result<Intent, PublishError> {
     let txn_hex = txn.txn.hex();
     let mut members = Vec::with_capacity(txn.dests.len());
     for (i, d) in txn.dests.iter().enumerate() {
-        honest_sync_path(&d.tmp)?;
         let (old_store, new_store) = intent::store_images(root, &txn_hex, i, &d.old, &d.new)?;
         let tmp = d
             .tmp
@@ -908,7 +972,7 @@ mod tests {
                     fold_mark("t"),
                 )
                 .expect("disjoint publish");
-                tx.send((rec.disk_start, rec.disk_end)).unwrap();
+                tx.send((rec.content.start, rec.content.end)).unwrap();
             });
         }
         drop(tx);
