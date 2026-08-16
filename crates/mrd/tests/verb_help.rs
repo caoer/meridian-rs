@@ -86,7 +86,7 @@ fn address_of(synopsis: &str) -> Vec<&str> {
 fn every_verb_in_the_listing_answers_its_own_help() {
     let listing = listing();
     let verbs = verb_lines(&listing);
-    assert_eq!(verbs.len(), 29, "verbs in the listing:\n{listing}");
+    assert_eq!(verbs.len(), 30, "verbs in the listing:\n{listing}");
 
     for (_, synopsis) in &verbs {
         let address = address_of(synopsis);
@@ -402,11 +402,11 @@ fn the_write_classification_is_sixteen_of_twenty_nine() {
     );
     assert_eq!(
         readers.len(),
-        13,
+        14,
         "the rest are reads: {:?}",
         named(&readers)
     );
-    assert_eq!(writers.len() + readers.len(), 29, "the whole surface");
+    assert_eq!(writers.len() + readers.len(), 30, "the whole surface");
 }
 
 /// `mrd test` writes only into temporary directories, and `mrd sql` queries an

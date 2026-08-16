@@ -12,6 +12,7 @@ mod config_cmd;
 mod corpus_tier;
 mod daemon;
 mod engine;
+mod fingerprint_cmd;
 mod gc;
 mod history_cmd;
 // The commit-fence READ plane. Public because the design tests for `mrd skill hook` hold the
@@ -249,8 +250,27 @@ usage:
                            same connection) as the frame's mint key; the
                            body's fingerprint stays the world token. Exits: 0 served
                            / 1 engine refused / 2 bad invocation.
+  mrd fingerprint [PATH | --scope-bytes B64] [--json]
+                           the standalone §4.7 mint door. Bare: the §5.1
+                           world token (v2-identical, no cap needed). PATH:
+                           the named node's scoped token — workspace root,
+                           folder, or file leaf (nodes `mrd read` cannot
+                           serve mint here). --scope-bytes B64 = base64url
+                           over the raw path bytes, for names the UTF-8
+                           Path noun cannot carry (§5.4). Exactly one
+                           spelling — a mint names ONE node; both refuse at
+                           parse. Scoped arms ride only when hello serves
+                           scoped-guards (taught refusal otherwise, nothing
+                           sent). Answers {fingerprint, seq,
+                           scope|scope_bytes}, the request's spelling echoed
+                           beside the token; a lawful path with no node
+                           answers the reserved token `absent` (§5.6).
+                           --json: {workspace, mint} served, {workspace,
+                           error} refused. Exits: 0 minted / 1 engine
+                           refused / 2 bad invocation.
 ! mrd put <PATH> [--dry | --validate] [--force] [--actor A] [--now T]
-          [--if-fingerprint FP] [--scope PATH] [--receipt PATH#ANCHOR] [--json]
+          [--if-fingerprint FP] [--scope PATH | --scope-bytes B64]
+          [--receipt PATH#ANCHOR] [--json]
                            batch write. STDIN = BARE JSON array
                            [{target, edit, if_node_rev?}] — the VALUE of
                            wire §4.4 edits, NEVER the full request object
@@ -277,7 +297,13 @@ usage:
                            --if-fingerprint = world-grain guard.
                            --scope PATH pairs it to that node (sent only
                            when hello serves scoped-guards; taught
-                           refusal otherwise, nothing sent). --json
+                           refusal otherwise, nothing sent).
+                           --scope-bytes B64 = the same premise for a
+                           raw-byte node name (base64url over the raw
+                           path bytes, §5.4); rides the wire as one
+                           guards[] entry carrying the token — never a
+                           top-level splice field. Exactly one of
+                           --scope/--scope-bytes. --json
                            machine face on both legs: commit
                            {workspace,put}; refusal {workspace,error} on
                            stdout. Exits: 0 committed|rehearsal-ok / 1
@@ -469,7 +495,11 @@ usage:
                            {kind, line, path, face}, so a read-only script is
                            read THERE. There is no print(); a script that only
                            reads exits `no_effect`, which reports that it armed
-                           nothing, NOT that it did nothing.
+                           nothing, NOT that it did nothing. BY DESIGN (D-04)
+                           this door has no --scope/--scope-bytes: the
+                           caller's --if-fingerprint stays the world-grain
+                           entry token; the finer grain is the run plane's
+                           own automatic touch-set premises (PR-2).
                            Exits: 0 committed|nothing-armed / 1
                            conflict|fault|refusal / 2 bad invocation.
 ! mrd new <KIND> <ID> [--dry] [--actor A] [--now T]
@@ -521,6 +551,14 @@ options:
   --scope PATH             (put) narrows --if-fingerprint to PATH; pair
                            required. Sent only when hello serves scoped-guards;
                            otherwise taught refusal, nothing sent.
+  --scope-bytes B64        (put, fingerprint) the raw-byte node spelling:
+                           base64url over the raw path bytes, for names the
+                           UTF-8 Path noun cannot carry (§5.4). On put it
+                           pairs with --if-fingerprint and rides as one
+                           guards[] entry; on fingerprint it is the mint's
+                           node. Exactly one of --scope/--scope-bytes (put),
+                           PATH/--scope-bytes (fingerprint). Cap-gated like
+                           --scope.
   --expect-armed DIGEST    (script) refuse BEFORE splice unless this run's
                            armed set hashes to DIGEST. Hosts that gate write
                            sets run --dry first and pass the trace's
@@ -687,6 +725,7 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
             engine::run_command(p.positional.as_deref(), p.format())
         }
         "read" => read_cmd::dispatch(&args[1..]),
+        "fingerprint" => fingerprint_cmd::dispatch(&args[1..]),
         "put" => put_cmd::dispatch(&args[1..]),
         "rm" => rm_cmd::dispatch(&args[1..]),
         "pin" => pin_cmd::dispatch(&args[1..]),
@@ -1093,7 +1132,7 @@ mod help {
                 "marked as writers:\n{}",
                 marked.join("\n")
             );
-            assert_eq!(blocks().len(), 29, "verb blocks in the listing");
+            assert_eq!(blocks().len(), 30, "verb blocks in the listing");
         }
 
         /// Every option that names an owner names a verb that exists.

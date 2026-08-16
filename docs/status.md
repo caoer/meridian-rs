@@ -104,9 +104,29 @@ mrd read <PATH>[#FRAG] [--section SEL]
  human face, or the in-process degrade: no mint call,
  frame byte-identical to before. A mint the daemon
  refuses after advertising the family is a loud
- refusal, never a silent omission
+ refusal, never a silent omission. The standalone door
+ is `mrd fingerprint` — folders and raw-byte names
+ mint there, no read required
+mrd fingerprint [PATH | --scope-bytes B64] [--json]
+ the standalone §4.7 mint door: bare, the §5.1 world
+ token (v2-identical, no cap needed); PATH, the named
+ node's scoped token — workspace root, folder, or file
+ leaf; `--scope-bytes B64` (base64url over the raw
+ path bytes), a node whose name the UTF-8 `Path` noun
+ cannot carry. Exactly one spelling — a mint names ONE
+ node (§4.7); both refuse at parse, exit 2. Scoped
+ arms ride only when the daemon's hello serves
+ `scoped-guards` (taught refusal at exit 2 otherwise,
+ nothing sent). The answer is {fingerprint, seq,
+ scope|scope_bytes} with the request's spelling echoed
+ beside the token (the §4.7 desync guard); a lawful
+ path with no node answers the reserved token `absent`
+ (§5.6). `--json` answers {workspace, mint} on the
+ served leg and {workspace, error} on a refusal. Exit
+ triad: 0 minted / 1 engine refusal / 2 bad invocation
 mrd put <PATH> [--dry | --validate] [--force] [--actor A] [--now T]
- [--if-fingerprint FP] [--scope PATH] [--receipt PATH#ANCHOR] [--json]
+ [--if-fingerprint FP] [--scope PATH | --scope-bytes B64]
+ [--receipt PATH#ANCHOR] [--json]
  the batch write: the edits ride stdin as a BARE JSON
  array — the VALUE of the wire §4.4 `edits` field, not
  the request object around it (id / op / path are
@@ -133,6 +153,20 @@ mrd put <PATH> [--dry | --validate] [--force] [--actor A] [--now T]
  (`mint.scope`), and without `--scope` the premise is
  the §5.1 world fingerprint. Under `--json` this wall
  answers the `{workspace, error}` envelope on stdout.
+ `--scope-bytes B64` is the same premise for a node
+ whose name the UTF-8 `Path` noun cannot carry: B64 is
+ base64url over the raw path bytes (§5.4), FP is the
+ token the §4.7 `fingerprint {scope_bytes}` mint
+ echoed, and the pair rides the wire as one `guards[]`
+ entry — `scope_bytes` is a top-level field on NO
+ write door (the §5.4 field matrix). Exactly one of
+ `--scope`/`--scope-bytes`: two spellings of one
+ premise refuse at parse, exit 2. The pair law and the
+ cap wall hold for it exactly as for `--scope`; the §1
+ path-law wall does not apply (raw bytes are the names
+ that law's noun cannot spell), so the face refuses
+ only the empty spelling, and an undecodable base64url
+ is the engine's taught refusal at exit 1.
  Cap-aware: when the connected daemon's hello does not
  serve `scoped-guards`, a scoped put refuses with a
  teaching at exit 2 before any engine write — the
@@ -228,7 +262,12 @@ mrd script [--json] [--expect-armed DIGEST]
  face is non-normative — see `run-plane.md`).
  `--expect-armed` refuses BEFORE the splice unless what
  this run armed hashes to DIGEST — the commit half of
- the arm/commit split a gating host runs
+ the arm/commit split a gating host runs. BY DESIGN
+ (D-04) this door carries no `--scope`/`--scope-bytes`:
+ the caller's `--if-fingerprint` stays the world-grain
+ entry token, and the finer grain is the run plane's
+ own automatic touch-set premises (PR-2); wire callers
+ may still send `guards[]` on the `script` op (§5.4)
 mrd new <KIND> <ID> file birth: fill the def's template, validate, birth
  the first rev through the guarded create
 mrd unfold <PRESET> materialize a preset's declared scaffold
