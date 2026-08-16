@@ -70,6 +70,17 @@ pub struct CheckpointReceipt {
     /// fires on every process restart BY DESIGN, so it must not share the
     /// cold event's alarm channel).
     pub warm_rebaseline: Option<String>,
+    /// Member `stat`s paid by the PRE-SERVE sweep, before this memo was
+    /// published (`decisions/2026-08-16-gate11-stat-floor.md`). Equals the
+    /// member count on the unjournaled arm — exactly one sweep over the full
+    /// set — and is 0 on the journal-covered arm, where the law demands zero
+    /// unchanged members statted.
+    pub stats_before_serve: u64,
+    /// Member byte reads paid before this memo was published: the movers, and
+    /// nothing else. Each read is hashed exactly once by construction
+    /// (`model::leaf_digest` on the bytes just read), so this is the hash
+    /// count too.
+    pub reads_before_serve: u64,
 }
 
 /// The checkpoint file for `workspace`'s drawer.
@@ -181,6 +192,8 @@ pub(crate) fn restore(
                     replayed,
                     anchored: true,
                     warm_rebaseline: None,
+                    stats_before_serve: 0,
+                    reads_before_serve: replayed,
                 },
                 feed::Applied::Reset => {
                     // A member the journal NAMED could not be derived, and
@@ -215,6 +228,8 @@ pub(crate) fn restore(
                         replayed: 0,
                         anchored: true,
                         warm_rebaseline: Some(format!("rescan ladder took over: {}", cause.name())),
+                        stats_before_serve: 0,
+                        reads_before_serve: 0,
                     }
                 }
             }
@@ -244,9 +259,63 @@ pub(crate) fn restore(
                 replayed: 0,
                 anchored: false,
                 warm_rebaseline: Some(label.to_owned()),
+                stats_before_serve: 0,
+                reads_before_serve: 0,
             }
         }
     };
+    barrier(&root, workspace, &file, cache, receipt)
+}
+
+/// **The pre-serve barrier** (`decisions/2026-08-16-gate11-stat-floor.md`).
+///
+/// Restored rows are HYPOTHESES, never state. Across an unjournaled gap — any
+/// process death today, since §7.1 persists no epoch fact — no restored row
+/// may serve, and no answer may be derived from one, until exactly one
+/// §6.2-governed metadata sweep has completed over the FULL member set: one
+/// `stat` per member, zero bytes for anything that did not move.
+///
+/// It runs HERE, inside the restore, which is what makes the barrier
+/// structural rather than disciplinary: an unswept memo never leaves this
+/// module, so no caller can publish one, borrow one, or answer from one. Lazy,
+/// deferred, or post-first-serve verification is refused BY CONSTRUCTION —
+/// there is no code path that hands back rows the sweep has not covered.
+///
+/// On the journal-covered arm the sweep does NOT run: the law demands zero
+/// unchanged members statted there, and the replay already reconciled every
+/// member the journal named.
+///
+/// A sweep that fails is the COLD event — the rows cannot be reconciled with
+/// disk, so the object is discarded and the corpus rebuilds.
+fn barrier(
+    root: &fs::WorkspaceRoot,
+    workspace: &Path,
+    file: &Path,
+    mut cache: fs::DomainCache,
+    mut receipt: CheckpointReceipt,
+) -> Option<(fs::DomainCache, CheckpointReceipt)> {
+    if receipt.anchored {
+        return Some((cache, receipt));
+    }
+    if let Err(e) = cache.root(root) {
+        eprintln!(
+            "checkpoint: COLD RE-BASELINE for {} — the pre-serve sweep failed ({e}); the \
+             restored rows can never serve, so the checkpoint is discarded and the corpus \
+             rebuilds cold",
+            workspace.display()
+        );
+        let _ = std::fs::remove_file(file);
+        return None;
+    }
+    receipt.stats_before_serve = cache.member_stats();
+    receipt.reads_before_serve = cache.leaves_read();
+    eprintln!(
+        "checkpoint: pre-serve sweep complete for {} — {} member stat(s), {} mover(s) read \
+         and hashed, zero unchanged members read; the rows may now serve",
+        workspace.display(),
+        receipt.stats_before_serve,
+        receipt.reads_before_serve
+    );
     Some((cache, receipt))
 }
 
@@ -385,6 +454,82 @@ mod tests {
             fs::DomainCache::new().root(&root).unwrap(),
             "the replayed tree equals a full re-derivation"
         );
+    }
+
+    /// **Gate 11, unjournaled arm** — the behavioral acceptance gate of
+    /// `decisions/2026-08-16-gate11-stat-floor.md`, encoded.
+    ///
+    /// Across a gap no journal covers (any process death today), restored rows
+    /// serve ONLY after the pre-serve §6.2 sweep completes. Counters published
+    /// and gated: `stats = member count`, exactly once, ALL BEFORE FIRST
+    /// SERVE; `reads = hashes = movers`; zero unchanged members read or
+    /// hashed.
+    ///
+    /// **This test fails a lazy implementation, not merely an incorrect one.**
+    /// The counters are read from the receipt the restore hands back — the
+    /// same instant the memo first becomes reachable — so a build that
+    /// deferred the sweep to the first serve, or ran it in the background,
+    /// reports `stats_before_serve == 0` here and fails, even though its
+    /// eventual answers would be identical.
+    #[test]
+    fn gate_11_unjournaled_gap_sweeps_before_any_row_serves() {
+        let home = tempfile::tempdir().unwrap();
+        let (ws, cache_root) = workspace(home.path());
+        let root = fs::WorkspaceRoot(ws.clone());
+
+        let mut memo = observed(&ws);
+        let dead = WorkspaceRing::new(&root);
+        assert!(save(
+            &cache_root,
+            &ws,
+            &mut memo,
+            dead.instance(),
+            dead.seq()
+        ));
+
+        // The gap no journal covers: the process dies, one member moves, and
+        // the new epoch's ring cannot anchor the stored cursor.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(ws.join("notes/b.md"), "# B moved while down\n").unwrap();
+        let restarted = WorkspaceRing::new(&root);
+
+        let (mut back, receipt) =
+            restore(&cache_root, &ws, Some(&restarted)).expect("rows survive an unjournaled gap");
+
+        // One labeled warm re-baseline on cursor no-anchor, object retained.
+        assert!(!receipt.anchored);
+        assert!(
+            receipt.warm_rebaseline.is_some(),
+            "the warm event is labeled"
+        );
+        assert_eq!(receipt.leaves, 3, "the object is retained, whole");
+
+        // stats = member count, exactly once, all before first serve.
+        assert_eq!(
+            receipt.stats_before_serve, 3,
+            "one stat per member, and the sweep completed BEFORE this memo was reachable"
+        );
+        // reads = hashes = movers; zero unchanged members read or hashed.
+        // (Each read is hashed exactly once by construction — the digest is
+        // taken from the bytes just read — so one counter gates both.)
+        assert_eq!(
+            receipt.reads_before_serve, 1,
+            "only the mover paid a read+hash; the two unchanged members paid none"
+        );
+
+        // No cold rebuild: the sweep re-derived nothing it did not have to,
+        // and the answer is the disk's truth.
+        assert_eq!(
+            back.root(&root).unwrap(),
+            fs::DomainCache::new().root(&root).unwrap()
+        );
+        // Gate 10 is untouched because the sweep IS the new epoch's baseline
+        // event: having completed it, the memo vouches for its own currency,
+        // which is the precondition the quiet path stands on. (Gate 10's own
+        // quiet-window assertions belong to the rescan-ladder card; what this
+        // card owes is that a restored memo reaches that state at all, rather
+        // than sitting untrusted and forcing a sweep on every later question.)
+        assert_eq!(back.guard_currency(), fs::stable::GuardCurrency::Trusted);
     }
 
     /// **The anti-vacuity gate** (design ruling § I): a cursor mismatch ALONE
