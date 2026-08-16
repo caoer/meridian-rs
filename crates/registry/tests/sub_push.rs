@@ -841,27 +841,49 @@ fn an_armed_sub_defers_idle_exit_and_releasing_it_restores_mortality() {
     config.idle_exit = Some(Duration::from_secs(2));
     config.reap_interval = Duration::from_millis(100);
     let server = RunningServer::start(config).unwrap();
+    // The idle-exit clock is unix whole seconds from birth. A 2s horizon can
+    // latch in 1–2s of wall time, during start→sub, before the subscriber is
+    // visible — and the reaper then returns, so a later subscribe cannot
+    // retract (CI 677 on 46caf36b3). Park past the first reap tick
+    // (REAP_TICK = 200ms) so the hold measures the armed sub, not handshake
+    // scheduling.
+    server.registry().park_activity_clock(365 * 24 * 60 * 60);
 
     let mut sub = Conn::open(server.socket_path());
     assert_eq!(sub.hello(&ws)["ok"], json!(true));
     assert_eq!(sub.sub()["ok"], json!(true));
 
-    // Well past the horizon with no request traffic at all: only the armed sub
-    // holds the daemon.
-    std::thread::sleep(Duration::from_secs(4));
+    let canonical = workspace::canonicalize(&ws).unwrap();
+    let ring = server.registry().ring(&canonical);
+    let armed_deadline = Instant::now() + PUSH_WAIT;
+    while !ring.has_subscribers() && Instant::now() < armed_deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        ring.has_subscribers(),
+        "control: the subscription is armed before the hold clock starts"
+    );
     assert!(
         !server.idle_exit_requested(),
-        "a daemon with a live subscriber must not exit under it — the subscriber \
-         sends no requests, so the request clock alone would kill it"
+        "parking the birth clock must keep idle-exit from latching during handshake"
     );
+    // Horizon starts now. No further request traffic: only the armed sub holds.
+    server.registry().note_liveness();
+
+    let hold = Instant::now() + Duration::from_secs(4);
+    while Instant::now() < hold {
+        assert!(
+            !server.idle_exit_requested(),
+            "a daemon with a live subscriber must not exit under it — the subscriber \
+             sends no requests, so the request clock alone would kill it"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 
     // The counterweight: the subscriber goes away as a dead owner process does
     // (the kernel closes the socket), and the push plane observes that EOF even
     // on a quiet workspace where no frame is ever written.
     drop(sub);
-
-    let canonical = workspace::canonicalize(&ws).unwrap();
-    let ring = server.registry().ring(&canonical);
     let deadline = Instant::now() + PUSH_WAIT;
     while ring.has_subscribers() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));

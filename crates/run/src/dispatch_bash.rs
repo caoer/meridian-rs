@@ -105,7 +105,8 @@ pub struct BashDispatch<'a> {
     pub source: &'a str,
     /// Contract-validated positional args.
     pub args: Vec<String>,
-    /// Contract-validated env — the only caller env the block sees.
+    /// Contract-validated env — overlays the inherited daemon environment
+    /// (run-env ruling, 2026-08-16).
     pub env: BTreeMap<String, String>,
     /// Caller-supplied invocation id (also names the stdout log).
     pub invocation_id: &'a str,
