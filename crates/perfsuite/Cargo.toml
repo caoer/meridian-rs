@@ -25,6 +25,11 @@ syntax = { workspace = true }
 model = { workspace = true }
 policy = { workspace = true }
 transport = { workspace = true }
+# The honest-durability lane drives the real publish path on disk.
+wire = { workspace = true }
+wire-serve = { workspace = true }
+fs = { workspace = true }
+tempfile = "3"
 
 [[bin]]
 name = "corpusgen"
@@ -60,4 +65,12 @@ harness = false
 [[bench]]
 name = "cold-ingest"
 path = "benches/cold_ingest.rs"
+harness = false
+
+# Not criterion: hand-written main driving real disk transactions (see the file
+# header). macOS-only figures — F_FULLFSYNC is the honest class there and the
+# ruling baseline is a mac number; the Linux CI lane is the compile gate only.
+[[bench]]
+name = "honest-durability"
+path = "benches/honest_durability.rs"
 harness = false

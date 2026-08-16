@@ -2397,6 +2397,7 @@ name = "perfsuite"
 version = "1.0.0"
 dependencies = [
  "criterion",
+ "fs",
  "hdrhistogram",
  "model",
  "policy",
@@ -2404,8 +2405,11 @@ dependencies = [
  "serde",
  "serde_json",
  "syntax",
+ "tempfile",
  "toml",
  "transport",
+ "wire",
+ "wire-serve",
 ]
 
 [[package]]
