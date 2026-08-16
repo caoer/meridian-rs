@@ -22,7 +22,10 @@
 //! A caller may pin its own `--if-fingerprint`. It is checked against the minted
 //! entry fingerprint before evaluation — a fast-fail courtesy, refusing with
 //! zero reads and nothing armed — and the SAME value still rides the commit, so
-//! a world that moves during eval is still caught. Two checks, one value.
+//! a world that moves during eval is still caught. Two checks, one value. A pin
+//! that is not a `Root`-family token at all refuses BEFORE the compare, as a
+//! REFUSED trace with the raw bytes debug-quoted (§ A.7's malformed arm;
+//! `run-plane.md` § the pre-eval caller guard) — never as a moved world.
 //!
 //! A caller may also pin `--expect-armed <digest>`: the digest of the armed set
 //! it authorized. It is checked after rev threading and BEFORE the splice is
@@ -140,10 +143,25 @@ pub(crate) fn run(door: &mut dyn Door, parsed: &Script, source: &str) -> Result<
     let entry = fingerprint(door)?;
 
     // 2. The caller's own guard, checked pre-eval: zero reads, nothing armed.
-    if let Some(pinned) = &parsed.if_fingerprint
-        && *pinned != entry
-    {
-        return Ok(ScriptTrace::guard_refused(entry, pinned));
+    //    § A.7's malformed arm first (§5.7 family; dogfood break #7, script
+    //    door): a pin that is not a `Root`-family token refuses as INPUT
+    //    (`fix`), never as a moved world — comparing it would render an
+    //    expected/live pair that can look character-identical (one leading
+    //    space) under a `conflict` whose re-read remedy loops.
+    //    `model::parse_root` is the grammar authority; version families
+    //    untouched. The entry pin never admits the reserved `absent` (§5.6
+    //    premise vocabulary): a script evaluates against the world that
+    //    exists.
+    if let Some(pinned) = &parsed.if_fingerprint {
+        if model::parse_root(pinned).is_none() {
+            return Ok(ScriptTrace::entry_refused(
+                entry,
+                Refusal::minted(Recovery::Fix, wire::malformed_entry_pin_teaching(pinned)),
+            ));
+        }
+        if *pinned != entry {
+            return Ok(ScriptTrace::guard_refused(entry, pinned));
+        }
     }
 
     // 3. Evaluate. Reads lower to `toc`/`cat` through the same door.

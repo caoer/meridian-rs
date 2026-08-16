@@ -2519,6 +2519,27 @@ pub fn malformed_premise_value_teaching(scope: Option<&str>, raw: &str) -> Strin
     )
 }
 
+/// The §8.2 register-law teaching for a malformed script ENTRY PIN
+/// (§ A.7's malformed arm; dogfood break #7, script door) — not a
+/// grammatical `Root`-family token. Unlike a §5.4 premise value, the entry
+/// pin never admits the reserved `absent`: a script evaluates against the
+/// world that exists. The raw bytes ride debug-quoted so damage the prose
+/// renders invisible (one leading space, the measured case) shows as a
+/// byte; the world was not compared.
+#[must_use]
+pub fn malformed_entry_pin_teaching(raw: &str) -> String {
+    format!(
+        "the script entry pin holds {raw:?}, which is not an entry \
+         fingerprint — the pin holds an engine-minted b3…:<64-hex> token, \
+         and the quoted spelling shows every byte, whitespace included. The \
+         world was NOT compared: fix the spelling, not the plan. Paste the \
+         entry fingerprint exactly as the engine served it, or re-mint it \
+         (fingerprint{{}}, §4.7) and send that. The reserved \"absent\" is \
+         premise vocabulary (§5.6, guards[]), never an entry pin — a script \
+         evaluates against the world that exists."
+    )
+}
+
 /// The §8.2 register-law teaching for a guard-family field on an
 /// unguarded door (`run`, script-with-effects).
 #[must_use]
