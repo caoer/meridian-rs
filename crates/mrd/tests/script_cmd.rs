@@ -10,7 +10,7 @@ use std::io;
 
 use effects::ReadFace;
 use mrd::script::cmd::attempt;
-use mrd::script::{Door, ScriptOutcome, TraceEntry};
+use mrd::script::{Door, FaultClass, ScriptOutcome, TraceEntry};
 use serde_json::{Value, json};
 use wire::Recovery;
 
@@ -350,6 +350,41 @@ fn a_stale_caller_guard_performs_zero_reads_and_zero_splices() {
     assert_eq!(trace.guard_expected.as_deref(), Some(MOVED), "expected");
     let json: Value = serde_json::to_value(&trace).expect("the contract serializes");
     assert_eq!(json["guard_expected"], json!(MOVED));
+}
+
+/// § A.7's malformed arm (§5.7 family; dogfood break #7, script door): a pin
+/// that is not a `Root`-family token — one leading space on the entry's own
+/// value (the measured case), a short digest, prose, a bare prefix, or the
+/// reserved `absent` — refuses as INPUT: `refused`, recovery `fix`, the raw
+/// bytes debug-quoted, zero reads, no splice. Never `conflict`, and
+/// `guard_expected` stays absent, because the world was NOT compared.
+#[test]
+fn a_malformed_caller_pin_refuses_as_input_never_as_a_moved_world() {
+    let spaced = format!(" {ENTRY}");
+    for pin in [spaced.as_str(), "b3c:abcd", "not-a-token", "b3c:", "absent"] {
+        let mut door = Fake::new();
+        let trace = claim(&mut door, &["--if-fingerprint", pin]);
+
+        assert_eq!(door.ops, ["fingerprint"], "refused pre-eval: {pin:?}");
+        assert_eq!(trace.outcome, ScriptOutcome::Refused, "{pin:?}");
+        assert!(
+            trace.guard_expected.is_none(),
+            "the world was not compared: {pin:?}"
+        );
+        let fault = trace
+            .fault
+            .as_ref()
+            .expect("the refusal rides the fault triple");
+        assert_eq!(fault.class, FaultClass::Refused, "{pin:?}");
+        assert_eq!(fault.recovery, Some(Recovery::Fix), "{pin:?}");
+        assert!(
+            fault.reason.contains(&format!("{pin:?}")),
+            "the teaching debug-quotes the bytes: {}",
+            fault.reason
+        );
+        assert!(trace.commit.is_none(), "no splice was issued: {pin:?}");
+        assert_eq!(trace.telemetry.reads_used, 0, "zero evaluation: {pin:?}");
+    }
 }
 
 /// `guard_expected` is present EXACTLY on a pre-eval guard refusal — it is the

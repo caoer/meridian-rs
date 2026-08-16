@@ -238,11 +238,29 @@ fn serve(
     };
     let entry = world.at_fingerprint.0.clone();
 
-    // The caller's own pre-eval guard: zero evaluation, zero reads.
-    if let Some(pinned) = &request.if_root
-        && pinned.0 != entry
-    {
-        return Ok(ScriptTrace::guard_refused(entry, pinned.0.clone()));
+    // The caller's own pre-eval guard: zero evaluation, zero reads. § A.7's
+    // malformed arm first (§5.7 family; dogfood break #7, script door): a pin
+    // that is not a `Root`-family token refuses as INPUT (`fix`), never as a
+    // moved world — comparing it would render an expected/live pair that can
+    // look character-identical (one leading space) under a `conflict` whose
+    // re-read remedy loops. `model::parse_root` is the grammar authority;
+    // version families untouched — a grammatical retired/future token is
+    // never malformed. The entry pin never admits the reserved `absent`
+    // (§5.6 premise vocabulary): a script evaluates against the world that
+    // exists.
+    if let Some(pinned) = &request.if_root {
+        if model::parse_root(&pinned.0).is_none() {
+            return Ok(ScriptTrace::entry_refused(
+                entry,
+                Refusal::minted(
+                    Recovery::Fix,
+                    wire::malformed_entry_pin_teaching(&pinned.0),
+                ),
+            ));
+        }
+        if pinned.0 != entry {
+            return Ok(ScriptTrace::guard_refused(entry, pinned.0.clone()));
+        }
     }
 
     // § A.7 literals-first, checked before expansion so the illegal list is
