@@ -6,11 +6,19 @@
 //!
 //! What this module IS: reservation algebra (complete `R` + complete `W`,
 //! atomic acquire, OCC compatibility); the publish path that stages,
-//! syncs, renames, and finalizes outside any exclusion; one checksummed
+//! renames, and finalizes outside any exclusion; one checksummed
 //! `O_EXCL` intent before the first visible rename; `commit_unknown`
 //! after the durable decision; recovery that finishes or restores the
 //! complete declared set; the one state owner that assigns a contiguous
 //! `root`/`seq`/frame with no disk I/O in the mutex.
+//!
+//! Durability is SCHEDULED, not paid inline (`docs/laws.md` § Amendment —
+//! epoch-batched honest durability). The path pays exactly TWO honest syncs
+//! however many files it touches, and shares both with every other writer in
+//! the same epoch: phase 1 seals content temps + recovery images + the intent
+//! record — that barrier IS the durable decision — and phase 2 seals the
+//! dirents + the `Applied` record. No door on this path syncs on its own; one
+//! that did would silently cost a full barrier.
 //!
 //! What this module is NOT: it does not acquire `write.lock`, open a
 //! socket, activate the downgrade fence, or rewire the live splice door
@@ -31,8 +39,9 @@ use wire::{DeltaFile, DeltaFrame, Root};
 
 use crate::authority::AuthorityEpoch;
 use crate::write::assemble_delta;
+use fs::WorkspaceRoot;
+use fs::epoch::{Covered, EpochBatcher, data_push_all};
 use fs::intent::{self, DestClass, Found, GroupManifest, Intent, IntentMember, Phase, Policy};
-use fs::{WorkspaceRoot, honest_sync_path};
 
 // ── identities ──────────────────────────────────────────────────────────────
 
@@ -465,30 +474,52 @@ pub fn publish(
     root: &WorkspaceRoot,
     table: &Arc<ReservationTable>,
     owner: &StateOwner,
+    batcher: &EpochBatcher,
     txn: StagedTxn,
     fold: impl FnOnce(&Root) -> Root,
 ) -> Result<PublishReceipt, PublishError> {
-    // Phase 1 — content durability, before any exclusion is taken (§4.7:
-    // staging, validation and ALL durability I/O run outside every exclusion).
+    let _res = table.reserve(txn.txn, txn.reads.clone(), txn.writes.clone());
+    reverify(root, &txn.dests)?;
+
+    // ── Phase 1 — the durable decision ──────────────────────────────────
+    // Content temps, recovery images and the O_EXCL intent, sealed by ONE
+    // barrier shared with every other writer in this epoch. Nothing below
+    // syncs on its own: a stray honest sync here silently costs a full
+    // barrier and defeats the batching.
     let c0 = Instant::now();
-    content_durability(&txn.dests)?;
+    let mut seal: Vec<PathBuf> = txn.dests.iter().map(|d| d.tmp.clone()).collect();
+    let intent = decide(root, &txn, &mut seal)?;
+    // The decision becomes durable HERE, not at create_decided. No rename has
+    // happened yet, so a fault on this barrier is still a clean refusal.
+    barrier(batcher, seal)?;
     let content = Span {
         start: c0,
         end: Instant::now(),
     };
 
-    let _res = table.reserve(txn.txn, txn.reads.clone(), txn.writes.clone());
-    reverify(root, &txn.dests)?;
-
-    // Phase 2 — metadata publish: durable decision, visible renames, dirent.
-    let p0 = Instant::now();
-    let intent = decide(root, &txn)?;
     if txn.drop_tmp_after_decide {
         for d in &txn.dests {
             let _ = std::fs::remove_file(&d.tmp);
         }
     }
-    if let Err(e) = rename_all(root, &txn.dests) {
+
+    // ── Phase 2 — metadata publish ──────────────────────────────────────
+    // Visible renames, their parent dirents, and the Applied record.
+    let p0 = Instant::now();
+    let mut seal2: Vec<PathBuf> = Vec::new();
+    if let Err(e) = rename_all(root, &txn.dests, &mut seal2) {
+        return Err(PublishError::CommitUnknown {
+            txn: txn.txn,
+            cause: e,
+        });
+    }
+    if let Err(e) = intent::finalize(root, &intent, &mut seal2) {
+        return Err(PublishError::CommitUnknown {
+            txn: txn.txn,
+            cause: e,
+        });
+    }
+    if let Err(e) = barrier(batcher, seal2) {
         return Err(PublishError::CommitUnknown {
             txn: txn.txn,
             cause: e,
@@ -506,12 +537,6 @@ pub fn publish(
         end: Instant::now(),
     };
 
-    if let Err(e) = intent::finalize(root, &intent) {
-        return Err(PublishError::CommitUnknown {
-            txn: txn.txn,
-            cause: e,
-        });
-    }
     let _ = intent::reclaim(root, &txn.txn.hex());
     Ok(PublishReceipt {
         txn: txn.txn,
@@ -522,17 +547,20 @@ pub fn publish(
     })
 }
 
-/// Phase 1: make every staged temp's bytes durable at the ruled honest class.
-/// Runs under no exclusion, and must return before any rename makes those
-/// bytes visible.
+/// Push every recorded path and await the epoch that covers them — the one
+/// place a publish pays the honest class.
 ///
-/// # Errors
-/// I/O at open or sync.
-fn content_durability(dests: &[DestImage]) -> Result<(), PublishError> {
-    for d in dests {
-        honest_sync_path(&d.tmp)?;
-    }
-    Ok(())
+/// The dedupe is safe for a structural reason, not an arithmetic one: `dedup`
+/// removes only EXACT duplicates of a path already in the set, so no distinct
+/// path can lose its push. That argument holds at any destination count and
+/// any folder layout, where comparing totals would not. It does make the
+/// cheap-push count corpus-dependent — `5D + Ddir + 6` per commit, in the
+/// number of distinct destination directories — which is why the test states
+/// the formula rather than a constant.
+fn barrier(batcher: &EpochBatcher, mut seal: Vec<PathBuf>) -> io::Result<Covered> {
+    seal.sort();
+    seal.dedup();
+    batcher.await_epoch(data_push_all(seal)?)
 }
 
 /// Group commit: one checksummed manifest, then each member independently.
@@ -547,6 +575,7 @@ pub fn publish_group(
     root: &WorkspaceRoot,
     table: &Arc<ReservationTable>,
     owner: &StateOwner,
+    batcher: &EpochBatcher,
     gid: TxnId,
     members: Vec<StagedTxn>,
     mut fold: impl FnMut(&Root) -> Root,
@@ -555,7 +584,12 @@ pub fn publish_group(
         gid_hex: gid.hex(),
         members: members.iter().map(|m| m.txn.hex()).collect(),
     };
-    if let Err(e) = intent::create_group(root, &manifest) {
+    // The manifest rides the epoch like everything else, so the group stops
+    // paying its own serial pair of honest syncs before the members start.
+    let mut seal = Vec::new();
+    let wrote = intent::create_group(root, &manifest, &mut seal)
+        .and_then(|()| barrier(batcher, seal).map(|_| ()));
+    if let Err(e) = wrote {
         // No member has a durable decision yet.
         return members
             .into_iter()
@@ -564,7 +598,7 @@ pub fn publish_group(
     }
     members
         .into_iter()
-        .map(|m| publish(root, table, owner, m, &mut fold))
+        .map(|m| publish(root, table, owner, batcher, m, &mut fold))
         .collect()
 }
 
@@ -588,17 +622,22 @@ fn reverify(root: &WorkspaceRoot, dests: &[DestImage]) -> Result<(), PublishErro
 /// Persist recovery images and the `O_EXCL` decided intent. After this
 /// returns, no error on this transaction is a refusal.
 ///
-/// Content durability is NOT this function's job: phase 1 already made the
-/// staged temps durable before any exclusion was taken, and a temp whose
-/// bytes are not yet on stable storage must never reach a rename.
+/// Nothing here syncs. Every path this writes — both recovery images and the
+/// intent record — is recorded in `seal`, and the caller's phase-1 barrier
+/// makes the whole set durable in one honest sync. The decision is complete
+/// when that barrier returns.
 ///
 /// # Errors
 /// I/O at image write or intent create.
-pub fn decide(root: &WorkspaceRoot, txn: &StagedTxn) -> Result<Intent, PublishError> {
+pub fn decide(
+    root: &WorkspaceRoot,
+    txn: &StagedTxn,
+    seal: &mut Vec<PathBuf>,
+) -> Result<Intent, PublishError> {
     let txn_hex = txn.txn.hex();
     let mut members = Vec::with_capacity(txn.dests.len());
     for (i, d) in txn.dests.iter().enumerate() {
-        let (old_store, new_store) = intent::store_images(root, &txn_hex, i, &d.old, &d.new)?;
+        let (old_store, new_store) = intent::store_images(root, &txn_hex, i, &d.old, &d.new, seal)?;
         let tmp = d
             .tmp
             .strip_prefix(&root.0)
@@ -619,11 +658,18 @@ pub fn decide(root: &WorkspaceRoot, txn: &StagedTxn) -> Result<Intent, PublishEr
         policy: txn.policy,
         members,
     };
-    intent::create_decided(root, &rec)?;
+    intent::create_decided(root, &rec, seal)?;
     Ok(rec)
 }
 
-fn rename_all(root: &WorkspaceRoot, dests: &[DestImage]) -> io::Result<()> {
+/// Make every staged temp visible. The temps' bytes are already on platter —
+/// the phase-1 barrier returned before this runs — so each rename only owes
+/// its parent dirent, which is recorded for the phase-2 barrier.
+fn rename_all(
+    root: &WorkspaceRoot,
+    dests: &[DestImage],
+    seal: &mut Vec<PathBuf>,
+) -> io::Result<()> {
     for d in dests {
         let dest = root.0.join(&d.rel);
         if let Some(parent) = dest.parent() {
@@ -631,7 +677,7 @@ fn rename_all(root: &WorkspaceRoot, dests: &[DestImage]) -> io::Result<()> {
         }
         std::fs::rename(&d.tmp, &dest)?;
         if let Some(parent) = dest.parent() {
-            honest_sync_path(parent)?;
+            seal.push(parent.to_path_buf());
         }
     }
     Ok(())
@@ -746,7 +792,11 @@ fn recover_one(root: &WorkspaceRoot, rec: Intent) -> io::Result<MemberRecovery> 
             for m in &rec.members {
                 intent::forward_member(root, m)?;
             }
-            intent::finalize(root, &rec)?;
+            // Recovery runs once after a crash and shares no epoch: it seals
+            // synchronously rather than batching.
+            let mut seal = Vec::new();
+            intent::finalize(root, &rec, &mut seal)?;
+            intent::seal_now(&seal)?;
             let _ = intent::reclaim(root, &rec.txn_hex);
             Ok(MemberRecovery {
                 txn_hex: rec.txn_hex,
@@ -827,6 +877,10 @@ mod tests {
         (dir, root)
     }
 
+    fn batcher(root: &WorkspaceRoot) -> EpochBatcher {
+        EpochBatcher::for_workspace(root).expect("batcher")
+    }
+
     fn fold_mark(tag: &'static str) -> impl Fn(&Root) -> Root {
         move |before| Root(format!("{}+{tag}", before.0))
     }
@@ -839,7 +893,7 @@ mod tests {
         std::fs::write(&dest, old).unwrap();
         let tmp = dest.with_extension("tmp-pub");
         std::fs::write(&tmp, new).unwrap();
-        honest_sync_path(&tmp).unwrap();
+        fs::data_push_path(&tmp).unwrap();
         DestImage {
             rel: PathBuf::from(rel),
             old: old.to_vec(),
@@ -968,6 +1022,7 @@ mod tests {
                     &root,
                     &table,
                     &StateOwner::new(Root("t".into())),
+                    &batcher(&root),
                     staged,
                     fold_mark("t"),
                 )
@@ -1039,7 +1094,15 @@ mod tests {
             Region::file("c", b"n/b.md", RegionKind::Write),
         );
         staged.drop_tmp_after_decide = true;
-        let err = publish(&root, &table, &owner, staged, fold_mark("x")).expect_err("unknown");
+        let err = publish(
+            &root,
+            &table,
+            &owner,
+            &batcher(&root),
+            staged,
+            fold_mark("x"),
+        )
+        .expect_err("unknown");
         assert!(
             matches!(err, PublishError::CommitUnknown { .. }),
             "after decision the fault is commit_unknown, got {err:?}"
@@ -1074,7 +1137,9 @@ mod tests {
             drop_tmp_after_decide: false,
         };
         reverify(&root, &staged.dests).unwrap();
-        decide(&root, &staged).unwrap();
+        let mut seal = Vec::new();
+        decide(&root, &staged, &mut seal).unwrap();
+        intent::seal_now(&seal).unwrap();
         // First rename only — the kill-after-first-rename window.
         std::fs::rename(&staged.dests[0].tmp, root.0.join(&staged.dests[0].rel)).unwrap();
         assert_eq!(
@@ -1122,7 +1187,9 @@ mod tests {
             policy: Policy::Restore,
             drop_tmp_after_decide: false,
         };
-        decide(&root, &t1).unwrap();
+        let mut seal = Vec::new();
+        decide(&root, &t1, &mut seal).unwrap();
+        intent::seal_now(&seal).unwrap();
         std::fs::rename(&t1.dests[0].tmp, root.0.join(&t1.dests[0].rel)).unwrap();
 
         let dir = root.0.join(intent::INTENTS_DIR);
@@ -1146,10 +1213,13 @@ mod tests {
             policy: Policy::Restore,
             drop_tmp_after_decide: false,
         };
-        let rec3 = decide(&root, &t3).unwrap();
-        rename_all(&root, &t3.dests).unwrap();
-        intent::finalize(&root, &rec3).unwrap();
+        let mut seal3 = Vec::new();
+        let rec3 = decide(&root, &t3, &mut seal3).unwrap();
+        rename_all(&root, &t3.dests, &mut seal3).unwrap();
+        intent::finalize(&root, &rec3, &mut seal3).unwrap();
+        intent::seal_now(&seal3).unwrap();
 
+        let mut gseal = Vec::new();
         intent::create_group(
             &root,
             &GroupManifest {
@@ -1160,8 +1230,10 @@ mod tests {
                     t3.txn.hex(),
                 ],
             },
+            &mut gseal,
         )
         .unwrap();
+        intent::seal_now(&gseal).unwrap();
 
         let report = recover(&root).expect("recover");
         let mut by = std::collections::BTreeMap::new();
@@ -1197,13 +1269,289 @@ mod tests {
             Region::file("c", b"p.md", RegionKind::Write),
         );
         std::fs::write(root.0.join("p.md"), b"moved").unwrap();
-        let err = publish(&root, &table, &owner, staged, fold_mark("x")).expect_err("conflict");
+        let err = publish(
+            &root,
+            &table,
+            &owner,
+            &batcher(&root),
+            staged,
+            fold_mark("x"),
+        )
+        .expect_err("conflict");
         assert!(matches!(err, PublishError::Conflict { .. }));
         assert_eq!(std::fs::read(root.0.join("p.md")).unwrap(), b"moved");
         assert!(
             intent::scan(&root).unwrap().is_empty(),
             "a clean refusal writes no intent"
         );
+    }
+
+    /// The pre-registered gate, both classes named because two exist.
+    ///
+    /// **Honest barriers must be exactly 2 at every D** — constant in
+    /// destination count, against a `6D + 4` baseline. Anything above 2 is a
+    /// straggler issuing its own `F_FULLFSYNC`.
+    ///
+    /// **Cheap pushes must be exactly `5D + Ddir + 6`**, where `Ddir` is the
+    /// number of DISTINCT destination directories. The count is
+    /// corpus-dependent because `barrier` dedupes the seal set, and dedupe
+    /// collapses by directory: a fixture with every destination in one folder
+    /// measures `5D + 7`, one with a folder each measures `6D + 6`. Predicting
+    /// a single constant would be predicting the fixture, not the design.
+    ///
+    /// The dedupe is honest for a structural reason, not an arithmetic one:
+    /// `dedup` removes only EXACT duplicates of an already-present path, so no
+    /// distinct path ever loses its push. That argument holds at any D and any
+    /// layout, where comparing totals does not.
+    ///
+    /// An exact count is also what makes the accumulator safe: a path
+    /// collected into a seal vector and never drained shows up here as a
+    /// count BELOW the formula, which is the honesty failure (bytes riding a
+    /// barrier that never had them handed over) rather than a slow number.
+    #[test]
+    fn barrier_count_is_constant_in_d_and_pushes_follow_the_formula() {
+        // `true` puts every destination in one folder, `false` gives each its
+        // own — the two layouts that make the corpus dependence visible.
+        let mut seen = Vec::new();
+        for one_folder in [true, false] {
+            let name = if one_folder {
+                "one folder"
+            } else {
+                "folder each"
+            };
+            let rel_of = |i: usize| {
+                if one_folder {
+                    format!("shared/f{i}.md")
+                } else {
+                    format!("d{i}/f{i}.md")
+                }
+            };
+            for d in 1..=3usize {
+                let (_dir, root) = ws();
+                let table = ReservationTable::new();
+                let owner = StateOwner::new(Root("g0".into()));
+                let b = batcher(&root);
+                let dests: Vec<DestImage> = (0..d)
+                    .map(|i| dest(&root, &rel_of(i), b"old", b"new"))
+                    .collect();
+                let writes = (0..d)
+                    .map(|i| Region::file("c", rel_of(i).as_bytes(), RegionKind::Write))
+                    .collect();
+                let staged = StagedTxn {
+                    txn: TxnId::mint().unwrap(),
+                    epoch: AuthorityEpoch(1),
+                    reads: Vec::new(),
+                    writes,
+                    dests,
+                    files: Vec::new(),
+                    actor: None,
+                    now: None,
+                    policy: Policy::Restore,
+                    drop_tmp_after_decide: false,
+                };
+                let honest0 = fs::honest_sync_count_thread();
+                let push0 = fs::data_push_count_thread();
+                publish(&root, &table, &owner, &b, staged, fold_mark("x")).expect("publish");
+                let honest = fs::honest_sync_count_thread() - honest0;
+                let pushes = fs::data_push_count_thread() - push0;
+                let dirs = if one_folder { 1 } else { d };
+                let want_pushes = 5 * d as u64 + dirs as u64 + 6;
+                assert_eq!(
+                    honest, 2,
+                    "{name} D={d}: honest barriers must be exactly 2, got {honest} — \
+                     a straggler is issuing its own F_FULLFSYNC"
+                );
+                assert_eq!(
+                    pushes, want_pushes,
+                    "{name} D={d} Ddir={dirs}: cheap pushes must be 5D+Ddir+6 = \
+                     {want_pushes}, got {pushes}. Below it means a path was collected \
+                     into a seal set and never drained — bytes riding a barrier that \
+                     never had them handed over."
+                );
+                seen.push((name, d, dirs, honest, pushes));
+            }
+        }
+        let barriers: Vec<u64> = seen.iter().map(|r| r.3).collect();
+        assert!(
+            barriers.iter().all(|b| *b == 2),
+            "the load-bearing prediction is that barrier count does not grow with D \
+             or with layout: {seen:?}"
+        );
+    }
+
+    /// Gate: NO sync of either class runs inside the linearized step, proved
+    /// while other publishers are concurrently syncing. Per-thread counters
+    /// are the only well-formed instrument for this — the process-wide
+    /// counter is moving by design, and the test asserts that it moved, so
+    /// "the delta was zero" cannot pass by nothing happening at all.
+    #[test]
+    fn the_linearized_step_and_the_reservation_table_issue_no_sync() {
+        let (_dir, root) = ws();
+        let table = ReservationTable::new();
+        let owner = Arc::new(StateOwner::new(Root("g0".into())));
+        let b = Arc::new(batcher(&root));
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        // Background publishers, hammering the honest class on other threads.
+        // Each signals after its FIRST publish, and the measured region opens
+        // only once all three have — otherwise a thread can observe `stop`
+        // before it ever publishes and the "it moved" assertion races.
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let mut noise = Vec::new();
+        for i in 0..3 {
+            let root = WorkspaceRoot(root.0.clone());
+            let table = Arc::clone(&table);
+            let owner = Arc::clone(&owner);
+            let b = Arc::clone(&b);
+            let stop = Arc::clone(&stop);
+            let ready_tx = ready_tx.clone();
+            noise.push(thread::spawn(move || {
+                let mut n = 0u32;
+                loop {
+                    let rel = format!("noise{i}/n{n}.md");
+                    let staged = txn(
+                        &root,
+                        &rel,
+                        b"old",
+                        b"new",
+                        Region::file("c", rel.as_bytes(), RegionKind::Write),
+                    );
+                    publish(&root, &table, &owner, &b, staged, fold_mark("n"))
+                        .expect("noise publish");
+                    if n == 0 {
+                        ready_tx.send(()).expect("ready");
+                    }
+                    n += 1;
+                    if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        break;
+                    }
+                }
+            }));
+        }
+        drop(ready_tx);
+        for _ in 0..3 {
+            ready_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("a background publisher started");
+        }
+
+        let global_before = fs::honest_sync_count();
+
+        // The reservation table's own critical section.
+        let h0 = fs::honest_sync_count_thread();
+        let p0 = fs::data_push_count_thread();
+        let res = table.reserve(
+            TxnId::mint().unwrap(),
+            Vec::new(),
+            vec![Region::file("c", b"quiet/q.md", RegionKind::Write)],
+        );
+        assert_eq!(
+            (fs::honest_sync_count_thread(), fs::data_push_count_thread()),
+            (h0, p0),
+            "acquiring a reservation must issue no sync of either class"
+        );
+
+        // The linearized step.
+        let h1 = fs::honest_sync_count_thread();
+        let p1 = fs::data_push_count_thread();
+        let frame = owner.apply(Vec::new(), None, None, fold_mark("q"));
+        assert_eq!(
+            fs::honest_sync_count_thread() - h1,
+            0,
+            "the state-owner step must issue no honest sync"
+        );
+        assert_eq!(
+            fs::data_push_count_thread() - p1,
+            0,
+            "the state-owner step must issue no data push either"
+        );
+        assert!(frame.delta.seq >= 1);
+        drop(res);
+
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        for j in noise {
+            j.join().expect("thread");
+        }
+        assert!(
+            fs::honest_sync_count() > global_before,
+            "the zero delta must be measured against LIVE concurrent syncing, \
+             not against an idle process"
+        );
+    }
+
+    /// Gate: a crash before the phase-1 barrier returns changes nothing. No
+    /// rename has happened, so every destination is still Old — including the
+    /// ugly case where the intent record itself is torn and decodes as
+    /// `Unknown`. A torn decision with zero renames must leave the workspace
+    /// clean, not quarantined.
+    #[test]
+    fn a_crash_before_the_phase_one_barrier_leaves_the_workspace_untouched() {
+        let (_dir, root) = ws();
+        let staged = txn(
+            &root,
+            "pre/b.md",
+            b"OLD",
+            b"NEW",
+            Region::file("c", b"pre/b.md", RegionKind::Write),
+        );
+        // Everything phase 1 writes, and then the process dies: the seal is
+        // built but never drained, so nothing was sealed and nothing renamed.
+        let mut seal = Vec::new();
+        decide(&root, &staged, &mut seal).expect("decision written");
+        assert!(!seal.is_empty(), "phase 1 must declare a seal set");
+        assert_eq!(
+            std::fs::read(root.0.join("pre/b.md")).unwrap(),
+            b"OLD",
+            "no rename precedes the phase-1 barrier, so the dest is untouched"
+        );
+
+        // The ugly case: truncate the intent so it decodes as indeterminate.
+        let intent_file = root
+            .0
+            .join(intent::INTENTS_DIR)
+            .join(format!("{}.intent", staged.txn.hex()));
+        std::fs::write(&intent_file, b"MRD-INTENT/1\n").expect("truncate");
+
+        let report = recover(&root).expect("recover");
+        assert_eq!(report.len(), 1);
+        assert_eq!(
+            report[0].outcome,
+            RecoveryOutcome::Unknown,
+            "a torn record is Unknown — recovery never guesses"
+        );
+        assert_eq!(
+            std::fs::read(root.0.join("pre/b.md")).unwrap(),
+            b"OLD",
+            "Unknown with zero renames must still leave the workspace clean"
+        );
+        assert!(
+            !root.0.join("quarantine").exists(),
+            "nothing to quarantine: no destination ever changed"
+        );
+    }
+
+    /// Gate: durability is not weakened. Every committed destination is
+    /// covered by a seal that RETURNED before its rename — asserted as an
+    /// ordering fact, never as a wall-clock one.
+    #[test]
+    fn every_committed_dest_is_covered_by_a_seal_that_returned_before_its_rename() {
+        let (_dir, root) = ws();
+        let b = batcher(&root);
+        let tmp = dest(&root, "ord/c.md", b"old", b"new");
+        let pushed = data_push_all(vec![tmp.tmp.clone()]).expect("push");
+        let pushed_at = pushed.at();
+        let covered = b.await_epoch(pushed).expect("seal");
+        // The seal covering these bytes started after their push returned...
+        assert!(covered.seal_started >= pushed_at);
+        // ...and returned before the rename that makes them visible.
+        let renamed_at = Instant::now();
+        std::fs::rename(&tmp.tmp, root.0.join(&tmp.rel)).expect("rename");
+        assert!(
+            covered.seal_returned <= renamed_at,
+            "no writer may proceed to its rename before the barrier covering \
+             its bytes has returned"
+        );
+        assert_eq!(std::fs::read(root.0.join("ord/c.md")).unwrap(), b"new");
     }
 
     #[test]

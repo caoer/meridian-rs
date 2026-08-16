@@ -50,7 +50,12 @@ fn child_first_rename_then_park(root: &WorkspaceRoot) -> ! {
         policy: Policy::Restore,
         drop_tmp_after_decide: false,
     };
-    wire_serve::publish::decide(root, &staged).expect("durable decision");
+    // A real crash test: the decision must be on stable storage before the
+    // rename, and this child shares no epoch with anyone — so it seals
+    // synchronously, exactly as the recovery doors do.
+    let mut seal = Vec::new();
+    wire_serve::publish::decide(root, &staged, &mut seal).expect("durable decision");
+    fs::intent::seal_now(&seal).expect("seal the decision");
     std::fs::rename(&staged.dests[0].tmp, root.0.join(&staged.dests[0].rel)).expect("first rename");
     std::fs::write(root.0.join(CHILD_UP_MARKER), staged.txn.hex()).expect("up marker");
     park()

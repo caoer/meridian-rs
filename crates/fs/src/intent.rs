@@ -8,14 +8,40 @@
 //! the COMPLETE declared set.
 //!
 //! `O_EXCL` (`create_new`) prevents duplicate txn ids. It is not the
-//! publisher fence — the authority lease plus reservations are.
+//! publisher fence — the authority lease plus reservations are, and it is not
+//! a durability step either.
+//!
+//! # Durability is scheduled here, not paid here
+//!
+//! Every write door in this module used to issue its own honest sync — four
+//! per destination through [`store_images`], two in [`create_decided`], two in
+//! [`finalize`]. On the measured host that is 10 honest syncs and 52.6 ms of a
+//! 60.3 ms single-destination transaction, at 5.0 ms per barrier.
+//!
+//! The publish doors therefore no longer sync: they do the cheap push where
+//! write ordering demands one, and they RECORD what must be sealed into a
+//! caller-supplied `seal` vector. The caller pays one shared
+//! [`crate::epoch::EpochBatcher`] barrier for the whole set — and for every
+//! other writer in the same epoch. The law sentence moves with it: the durable
+//! decision is complete when the **phase-1 barrier returns**, not when
+//! [`create_decided`] returns. No rename may precede that barrier, so a fault
+//! before it is still a clean refusal.
+//!
+//! The `seal` parameter is a plain `Vec<PathBuf>` on purpose: it is a list of
+//! work, not a capability, and nothing here asks permission to sync.
+//!
+//! **Recovery stays synchronous.** [`restore_member`], [`forward_member`],
+//! [`quarantine`] and [`reclaim`] run once after a crash, where batching buys
+//! nothing and risks the recovery contract; they keep [`write_honest`] and
+//! their inline syncs. [`seal_now`] is their honest seal for the doors that
+//! defer.
 
 use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use crate::{WorkspaceRoot, honest_sync, honest_sync_path};
+use crate::{WorkspaceRoot, data_push, honest_sync, honest_sync_path};
 
 /// Workspace-relative directory holding one file per transaction.
 pub const INTENTS_DIR: &str = ".meridian/intents";
@@ -97,7 +123,44 @@ pub fn empty_digest() -> [u8; 32] {
     digest(b"")
 }
 
-/// Write `bytes` to `path` via tmp + honest-sync + rename + parent sync.
+/// Write `bytes` to `path` via tmp + cheap push + rename, recording the
+/// destination and its parent directory in `seal` for the caller's barrier.
+///
+/// The push before the rename is ordering, not durability: it is what keeps a
+/// dirent from naming bytes that were never written. Platter durability is
+/// the barrier's job, once, for every path in `seal`.
+///
+/// # Errors
+/// I/O at any write, push, or rename step.
+pub fn write_staged(path: &Path, bytes: &[u8], seal: &mut Vec<PathBuf>) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("tmp-intent");
+    {
+        let mut f = File::create(&tmp)?;
+        f.write_all(bytes)?;
+        data_push(&f)?;
+    }
+    fs::rename(&tmp, path)?;
+    seal.push(path.to_path_buf());
+    if let Some(parent) = path.parent() {
+        seal.push(parent.to_path_buf());
+    }
+    Ok(())
+}
+
+/// Pay the honest class on every path, one sync each — the synchronous seal
+/// the recovery doors use, where there is no epoch to share.
+///
+/// # Errors
+/// Open failure, or the underlying sync failure.
+pub fn seal_now(paths: &[PathBuf]) -> io::Result<()> {
+    paths.iter().try_for_each(|p| honest_sync_path(p))
+}
+
+/// Write `bytes` to `path` via tmp + honest-sync + rename + parent sync. The
+/// synchronous door, kept for the recovery paths that run once after a crash.
 ///
 /// # Errors
 /// I/O at any write, sync, or rename step.
@@ -118,12 +181,21 @@ pub fn write_honest(path: &Path, bytes: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-/// Persist recovery images and a `Decided` intent, `O_EXCL` on the intent
-/// file. After this returns, no error on this transaction is a refusal.
+/// Write the `Decided` intent, `O_EXCL` on the intent file, and record what
+/// the caller's barrier must seal.
+///
+/// The `create_new` fence is unchanged and stays exactly here: it is what
+/// makes a reused txn id fail loud, and it is not a durability step. Only the
+/// sync moved — the decision is durable when the caller's phase-1 barrier
+/// returns, and no rename may precede that barrier.
 ///
 /// # Errors
-/// `AlreadyExists` when the txn id is reused; any I/O/sync failure.
-pub fn create_decided(root: &WorkspaceRoot, intent: &Intent) -> io::Result<()> {
+/// `AlreadyExists` when the txn id is reused; any I/O failure.
+pub fn create_decided(
+    root: &WorkspaceRoot,
+    intent: &Intent,
+    seal: &mut Vec<PathBuf>,
+) -> io::Result<()> {
     let dir = root.0.join(INTENTS_DIR).join(&intent.txn_hex);
     fs::create_dir_all(&dir)?;
     let path = intent_path(root, &intent.txn_hex);
@@ -133,22 +205,32 @@ pub fn create_decided(root: &WorkspaceRoot, intent: &Intent) -> io::Result<()> {
         .open(&path)?;
     let body = encode(intent);
     file.write_all(body.as_bytes())?;
-    honest_sync(&file)?;
-    honest_sync_path(path.parent().unwrap_or_else(|| Path::new(".")))?;
+    seal.push(path.clone());
+    seal.push(
+        path.parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf(),
+    );
     Ok(())
 }
 
-/// Rewrite the intent as `Applied` (tmp+honest-sync+rename) so a later
-/// recovery reclaims rather than re-applies.
+/// Rewrite the intent as `Applied` so a later recovery reclaims rather than
+/// re-applies, recording what the caller's barrier must seal. `finalize` only
+/// has to be durable before [`reclaim`], so it rides the phase-2 barrier.
+///
+/// The rewrite is tmp + rename, so the intent path always names a COMPLETE
+/// record — the pre-barrier crash window reads as either the old `Decided`
+/// record or the new `Applied` one, never a torn third thing.
 ///
 /// # Errors
-/// I/O/sync failure.
-pub fn finalize(root: &WorkspaceRoot, intent: &Intent) -> io::Result<()> {
+/// I/O failure.
+pub fn finalize(root: &WorkspaceRoot, intent: &Intent, seal: &mut Vec<PathBuf>) -> io::Result<()> {
     let mut done = intent.clone();
     done.phase = Phase::Applied;
-    write_honest(
+    write_staged(
         &intent_path(root, &intent.txn_hex),
         encode(&done).as_bytes(),
+        seal,
     )
 }
 
@@ -303,11 +385,12 @@ pub fn store_images(
     i: usize,
     old: &[u8],
     new: &[u8],
+    seal: &mut Vec<PathBuf>,
 ) -> io::Result<(PathBuf, PathBuf)> {
     let old_rel = PathBuf::from(format!("{INTENTS_DIR}/{txn_hex}/{i}.old"));
     let new_rel = PathBuf::from(format!("{INTENTS_DIR}/{txn_hex}/{i}.new"));
-    write_honest(&root.0.join(&old_rel), old)?;
-    write_honest(&root.0.join(&new_rel), new)?;
+    write_staged(&root.0.join(&old_rel), old, seal)?;
+    write_staged(&root.0.join(&new_rel), new, seal)?;
     Ok((old_rel, new_rel))
 }
 
@@ -315,7 +398,11 @@ pub fn store_images(
 ///
 /// # Errors
 /// `AlreadyExists` on a reused group id; any I/O/sync failure.
-pub fn create_group(root: &WorkspaceRoot, group: &GroupManifest) -> io::Result<()> {
+pub fn create_group(
+    root: &WorkspaceRoot,
+    group: &GroupManifest,
+    seal: &mut Vec<PathBuf>,
+) -> io::Result<()> {
     let dir = root.0.join(INTENTS_DIR).join("groups");
     fs::create_dir_all(&dir)?;
     let path = dir.join(format!("{}.manifest", group.gid_hex));
@@ -324,8 +411,8 @@ pub fn create_group(root: &WorkspaceRoot, group: &GroupManifest) -> io::Result<(
         .create_new(true)
         .open(&path)?;
     file.write_all(encode_group(group).as_bytes())?;
-    honest_sync(&file)?;
-    honest_sync_path(&dir)?;
+    seal.push(path);
+    seal.push(dir);
     Ok(())
 }
 
@@ -548,7 +635,9 @@ mod tests {
     #[test]
     fn decided_round_trips_and_o_excl_refuses_a_duplicate() {
         let (_d, root) = ws();
-        let (old_store, new_store) = store_images(&root, "aa", 0, b"old", b"new").expect("stores");
+        let mut seal = Vec::new();
+        let (old_store, new_store) =
+            store_images(&root, "aa", 0, b"old", b"new", &mut seal).expect("stores");
         let intent = Intent {
             epoch_hex: "ee".into(),
             txn_hex: "aa".into(),
@@ -563,8 +652,9 @@ mod tests {
                 new_store,
             }],
         };
-        create_decided(&root, &intent).expect("first");
-        let err = create_decided(&root, &intent).expect_err("O_EXCL");
+        create_decided(&root, &intent, &mut seal).expect("first");
+        seal_now(&seal).expect("seal");
+        let err = create_decided(&root, &intent, &mut seal).expect_err("O_EXCL");
         assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
         let found = scan(&root).expect("scan");
         match &found[..] {

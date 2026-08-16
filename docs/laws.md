@@ -874,6 +874,33 @@ I/O parked in an in-memory checkpoint — the barrier would have nothing at the
 device to order. So the existence of the rung we do not use is the best
 available argument that our push does what the chain needs.
 
+**The coverage unit is the APFS CONTAINER, and the anchor must live in it.**
+Apple's man page draws the line at the device. A better mechanism explanation
+draws it narrower: agent-reported static extraction of the closed `apfs.kext`
+finds `apfs_fsync_internal_ext` carrying no `tx_finish`, while `F_FULLFSYNC`
+calls `tx_finish` — which commits the CONTAINER transaction shared by every
+file in that container. That explains metadata reachability as well as data,
+which the pure device-cache story does not. *(Disassembly of a closed
+component, reported by an agent: suggestive, not conclusive — recorded as a
+stated limit rather than as a finding.)* Since it can only move the line
+inward — two containers on one physical device would not share the flush —
+**the narrower rule is the one this design documents and requires: the epoch
+anchor MUST live in the same APFS container as every file its seals cover.**
+`EpochBatcher::for_workspace` derives the anchor from the workspace root and
+so satisfies it by construction, but that is a precondition of the primitive,
+not an incidental property of one constructor; callers of `EpochBatcher::new`
+owe it.
+
+**A failed seal fails EVERY member of its epoch — by design, not by
+accident.** `F_FULLFSYNC` can return `ENOTSUP` or `ENOTTY` on SMB, network
+mounts and some external devices, and neither errno is documented in Apple's
+man page; Rust's `File::sync_all` has no fallback where Go, the JDK, libuv and
+SQLite all degrade. So a barrier failure is recorded in the epoch's stamp and
+returned to every waiter, and no member is told it is durable. The alternative
+— log the failure and continue — would leave every cheap push in that epoch
+undurable while the transaction looked successful, which is the honesty
+failure this whole amendment exists to prevent.
+
 **And it stays declined, deliberately.** As a push it is `fsync` *plus* a
 barrier — strictly more work than needed, since the ordering here comes from
 the push returning and the `Pushed` token stamped at that instant, not from a

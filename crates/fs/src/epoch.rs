@@ -14,11 +14,15 @@
 //!
 //! - [`crate::data_push`] is the cheap class — raw `fsync(2)`, measured on
 //!   Mac16,5 / APFS / internal `NVMe`, 1000 × 4 KiB: p50 0.019 ms, p99
-//!   0.037 ms. **What it hands the bytes to is not established.** 19 µs is
-//!   consistent with a device handoff and equally consistent with the bytes
-//!   never leaving memory; the number alone does not decide it. It is
-//!   therefore stated as measured, never as inferred, and the receipt never
-//!   rests on it.
+//!   0.037 ms. By Apple's **documented contract** a successful `fsync` on
+//!   APFS reaches the device rather than returning with the bytes in host
+//!   memory. **Documented, not verified:** APFS's `VNOP_FSYNC` is closed and
+//!   absent from the public XNU tree, so nobody outside Apple can audit the
+//!   mechanics — build on the contract, but never write *verified* here where
+//!   you mean *documented*.
+//!
+//!   **This step supplies ordering, not power-loss durability.** It makes the
+//!   bytes available to the barrier. Nothing acks on it.
 //!
 //!   It is spelled `libc::fsync` by hand for a reason worth more than the
 //!   number: std's `File::sync_all` AND `File::sync_data` both issue
@@ -32,18 +36,51 @@
 //!   (`DKIOCSYNCHRONIZECACHE`), so it forces what the device holds onto the
 //!   platter, whichever descriptor wrote it. Measured on the same hardware:
 //!   p50 4.386 ms, p99 10.352 ms — 230× the cheap class, which is exactly why
-//!   it is worth buying once for many.
+//!   it is worth buying once for many. **This step, and only this step,
+//!   supplies power-loss durability. The receipt acks here and nowhere
+//!   earlier** — a design that acked on the cheap push would be the banned
+//!   object wearing the allowed name.
 //! - The two facts compose only under an ORDERING, and the ordering is the
 //!   design: a member's push returns, THEN the seal that covers it starts,
 //!   THEN the seal returns, and only then may the member rename. A seal that
 //!   started before a member's push proves nothing about that member.
 //!
-//! **The single point of failure, named rather than buried.** If raw
-//! `fsync(2)` on APFS parks bytes in an in-memory checkpoint instead of
-//! handing them to the device, the seal sweeps nothing and the shared barrier
-//! is worthless. That question is open. If it resolves negative,
-//! [`SealMode::PerMember`] becomes the default — a mode flip, not a rebuild,
-//! which is the whole reason the falsifier ships beside the claim.
+//! **The sharpest evidence for the cheap step is the rung this module
+//! DECLINES.** `F_BARRIERFSYNC` is a documented third rung on APFS: it
+//! performs an `fsync` and then issues a device barrier ordering the I/O that
+//! `fsync` flushed on that device. That contract would be *incoherent* if
+//! APFS could leave `fsync`-ed I/O parked in an in-memory checkpoint — the
+//! barrier would have nothing at the device to order. The rung we do not use
+//! is therefore the best argument that the rung we do use works.
+//!
+//! **The coverage unit is the APFS container, and the anchor must live in
+//! it.** Apple's man page draws the line at the device; agent-reported static
+//! extraction of the closed `apfs.kext` draws it narrower — `F_FULLFSYNC`
+//! calls `tx_finish`, committing the CONTAINER transaction shared by every
+//! file in that container, while `apfs_fsync_internal_ext` carries no
+//! `tx_finish`. (Disassembly of a closed component: suggestive, not
+//! conclusive, recorded as a stated limit.) It can only move the line inward,
+//! so this module documents and requires the narrower rule: **the anchor MUST
+//! live in the same APFS container as every file its seals cover.**
+//! [`EpochBatcher::for_workspace`] satisfies that by construction;
+//! [`EpochBatcher::new`] callers owe it.
+//!
+//! **A failed seal fails EVERY member of its epoch, by design.**
+//! `F_FULLFSYNC` returns `ENOTSUP` or `ENOTTY` on SMB, network mounts and
+//! some external devices — neither errno documented — and `File::sync_all`
+//! has no fallback where Go, the JDK, libuv and `SQLite` all degrade. The
+//! failure is recorded in the epoch stamp and handed to every waiter, so no
+//! member is ever told it is durable when it is not. Logging it and
+//! continuing would leave every cheap push in that epoch undurable while the
+//! transaction looked successful.
+//!
+//! It stays declined on purpose. As a push it is `fsync` plus a barrier,
+//! strictly more work than needed: the ordering here comes from the push
+//! returning and the [`Pushed`] stamp taken at that instant, not from a
+//! device-level ordering primitive. As a seal it does not claim durability at
+//! return, so acking on it would make the receipt false. **This module issues
+//! `F_BARRIERFSYNC` nowhere, so a nonzero count of it in any measurement is a
+//! defect to trace by descriptor, never to rationalize.**
 //!
 //! That ordering is enforced structurally rather than by comment.
 //! [`data_push_all`] mints a [`Pushed`] token stamped at the instant the push
@@ -174,7 +211,8 @@ impl Covered {
     /// How long the covering seal took.
     #[must_use]
     pub fn seal_duration(&self) -> Duration {
-        self.seal_returned.saturating_duration_since(self.seal_started)
+        self.seal_returned
+            .saturating_duration_since(self.seal_started)
     }
 }
 
@@ -411,7 +449,8 @@ impl EpochBatcher {
     /// from the barrier's own duration, never from an artificial wait.
     fn ready_to_seal(&self, g: &Inner) -> bool {
         g.open_members >= self.max_batch
-            || g.open_since.is_none_or(|since| since.elapsed() >= self.window)
+            || g.open_since
+                .is_none_or(|since| since.elapsed() >= self.window)
     }
 
     /// Park until something can change: the in-flight seal returning, or this
@@ -562,7 +601,10 @@ mod tests {
                 covered
             }));
         }
-        let covered: Vec<Covered> = joins.into_iter().map(|j| j.join().expect("thread")).collect();
+        let covered: Vec<Covered> = joins
+            .into_iter()
+            .map(|j| j.join().expect("thread"))
+            .collect();
         assert_eq!(covered.len(), 8);
     }
 
@@ -626,7 +668,10 @@ mod tests {
                 b.await_epoch(pushed).expect("seal")
             }));
         }
-        let covered: Vec<Covered> = joins.into_iter().map(|j| j.join().expect("thread")).collect();
+        let covered: Vec<Covered> = joins
+            .into_iter()
+            .map(|j| j.join().expect("thread"))
+            .collect();
         let s = b.stats();
         assert_eq!(s.members, 8);
         assert!(
@@ -675,8 +720,8 @@ mod tests {
     fn per_member_mode_is_epoch_shaped_and_needs_no_shared_barrier() {
         let d = tempfile::tempdir().expect("tempdir");
         let b = batcher(d.path()).with_mode(SealMode::PerMember);
-        let pushed = data_push_all(vec![staged(d.path(), "p"), staged(d.path(), "q")])
-            .expect("push");
+        let pushed =
+            data_push_all(vec![staged(d.path(), "p"), staged(d.path(), "q")]).expect("push");
         let at = pushed.at();
         let covered = b.await_epoch(pushed).expect("seal");
         assert_eq!(covered.members, 1, "each member is its own epoch here");
@@ -699,6 +744,47 @@ mod tests {
         let pushed = data_push_all(vec![sub]).expect("push a directory");
         let covered = b.await_epoch(pushed).expect("seal");
         assert_eq!(covered.epoch, 1);
+    }
+
+    /// The most important test in this file: a seal that fails must fail
+    /// EVERY member of its epoch. `F_FULLFSYNC` returns `ENOTSUP`/`ENOTTY` on
+    /// SMB, network mounts and some external devices, and a design that
+    /// logged the failure and continued would leave every cheap push in that
+    /// epoch undurable while the transaction looked successful.
+    #[test]
+    fn a_failed_seal_errors_every_member_of_its_epoch() {
+        let d = tempfile::tempdir().expect("tempdir");
+        let anchor = d.path().join("anchor");
+        let b = Arc::new(
+            EpochBatcher::new(&anchor, Duration::from_millis(120), usize::MAX).expect("batcher"),
+        );
+        // Make the seal fail for a reason the batcher cannot paper over: the
+        // anchor it seals against is gone.
+        std::fs::remove_file(&anchor).expect("remove anchor");
+
+        let mut joins = Vec::new();
+        for i in 0..6 {
+            let b = Arc::clone(&b);
+            let path = staged(d.path(), &format!("f{i}"));
+            joins.push(thread::spawn(move || {
+                let pushed = data_push_all(vec![path]).expect("push");
+                b.await_epoch(pushed)
+            }));
+        }
+        let results: Vec<io::Result<Covered>> = joins
+            .into_iter()
+            .map(|j| j.join().expect("thread"))
+            .collect();
+        assert_eq!(results.len(), 6);
+        assert!(
+            results.iter().all(Result::is_err),
+            "every member of a failed epoch must be told it failed"
+        );
+
+        // And the batcher recovers: a later epoch on a restored anchor seals.
+        std::fs::write(&anchor, b"").expect("restore anchor");
+        let pushed = data_push_all(vec![staged(d.path(), "after")]).expect("push");
+        b.await_epoch(pushed).expect("a later epoch still seals");
     }
 
     #[test]
