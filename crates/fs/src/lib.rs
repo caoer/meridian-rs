@@ -1662,16 +1662,83 @@ fn read_member(
     }
 }
 
-/// `O_NOFOLLOW` open (unix): opening a symlink fails (`ELOOP`) instead of
-/// reading through it. The guarded read primitive, shared by the strict walk
-/// ([`guard`]) and the guarded cached observation ([`DomainCache::observe`]).
+/// Open `path` without following any symlink component. The walk is a
+/// directory-fd `openat` per component (`O_NOFOLLOW` on every step,
+/// `O_DIRECTORY` on intermediates) — not `openat2`/`RESOLVE_NO_SYMLINKS`.
+/// A symlink at any component refuses (`ELOOP`) instead of redirecting
+/// the read. Shared by the strict walk ([`guard`]) and the cached
+/// observation ([`DomainCache::observe`]).
 #[cfg(unix)]
 pub(crate) fn open_nofollow(path: &Path) -> io::Result<File> {
-    use std::os::unix::fs::OpenOptionsExt;
-    fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
+    use std::ffi::CString;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Component;
+
+    const INTERMEDIATE: libc::c_int =
+        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+    const LEAF: libc::c_int = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+
+    fn openat_name(dirfd: libc::c_int, name: &[u8], flags: libc::c_int) -> io::Result<OwnedFd> {
+        let cname = CString::new(name).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "path component contains NUL")
+        })?;
+        // SAFETY: `cname` is a NUL-terminated component. A non-negative fd is owned.
+        let fd = unsafe { libc::openat(dirfd, cname.as_ptr(), flags) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+    }
+
+    let mut rest = path.components().peekable();
+    let mut current: Option<OwnedFd> = None;
+    if matches!(rest.peek(), Some(Component::RootDir)) {
+        rest.next();
+        // SAFETY: "/" is a valid C string. A non-negative fd is owned.
+        let fd = unsafe {
+            libc::open(
+                c"/".as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        current = Some(unsafe { OwnedFd::from_raw_fd(fd) });
+    }
+
+    if rest.peek().is_none() {
+        return match current {
+            Some(fd) => Ok(File::from(fd)),
+            None => Err(io::Error::new(io::ErrorKind::NotFound, "empty path")),
+        };
+    }
+
+    while let Some(comp) = rest.next() {
+        let name: &[u8] = match comp {
+            Component::CurDir => b".",
+            Component::ParentDir => b"..",
+            Component::Normal(n) => n.as_bytes(),
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "unexpected path component in the directory-fd walk",
+                ));
+            }
+        };
+        let flags = if rest.peek().is_none() {
+            LEAF
+        } else {
+            INTERMEDIATE
+        };
+        let base = current.as_ref().map_or(libc::AT_FDCWD, AsRawFd::as_raw_fd);
+        current = Some(openat_name(base, name, flags)?);
+    }
+    let Some(fd) = current else {
+        return Err(io::Error::new(io::ErrorKind::NotFound, "empty path"));
+    };
+    Ok(File::from(fd))
 }
 
 /// Off unix there is no `O_NOFOLLOW`; the guarded walk has already refused
@@ -5438,6 +5505,133 @@ mod stable_trust_tests {
         // Restore write access so the tempdir can clean up.
         std::fs::set_permissions(&meridian, std::fs::Permissions::from_mode(0o755))
             .expect("chmod back");
+    }
+
+    /// Codex F8 fixture: inject an all-equal stamp ladder. Calibration is
+    /// `Unavailable` (not `Measured`), `guard_currency` is `Untrusted`, and
+    /// the next observe re-reads every member.
+    #[test]
+    fn an_all_equal_calibration_ladder_is_unavailable_and_never_trusts() {
+        let (_tmp, root) = workspace(&[("a.md", b"# A\n"), ("b.md", b"# B\n")]);
+        let _guard = stable::inject_stamp_ladder(vec![(10, 0); 24]);
+        let mut cache = DomainCache::new();
+        let r1 = cache.root(&root).expect("serving continues");
+        assert!(
+            matches!(
+                cache.calibration(),
+                Some(stable::Calibration::Unavailable { .. })
+            ),
+            "no-tick must be Unavailable, not Measured: {:?}",
+            cache.calibration()
+        );
+        assert!(
+            matches!(
+                cache.guard_currency(),
+                stable::GuardCurrency::Untrusted { .. }
+            ),
+            "no-tick capability is untrusted for the whole open"
+        );
+        let reads_cold = cache.leaves_read();
+        let r2 = cache.root(&root).expect("quiet pass");
+        assert_eq!(r1, r2);
+        assert_eq!(
+            cache.leaves_read(),
+            reads_cold * 2,
+            "an uncalibrated backend trusts no stat identity"
+        );
+    }
+
+    /// Codex F7 fixture: list `notes/x.md`, swap `notes` for an out-of-tree
+    /// symlink, observe. The open walk is directory-fd `openat` per
+    /// component (`O_NOFOLLOW` on every step, `O_DIRECTORY` on
+    /// intermediates) — not `openat2`/`RESOLVE_NO_SYMLINKS`. Outside bytes
+    /// must not enter the fold: the observe refuses, or it re-walks and
+    /// drops the member.
+    #[cfg(unix)]
+    #[test]
+    fn intermediate_symlink_swap_does_not_fold_outside_bytes() {
+        let outside = tempfile::tempdir().expect("outside");
+        let outside_bytes: &[u8] = b"# OUTSIDE\n";
+        std::fs::write(outside.path().join("x.md"), outside_bytes).expect("outside bytes");
+
+        let (_tmp, root) = workspace(&[("notes/x.md", b"# INSIDE\n")]);
+        let mut cache = DomainCache::new();
+        cache.root(&root).expect("baseline");
+
+        // Pin the parent listing against the post-swap root identity so the
+        // next walk still descends into `notes` as a directory — the
+        // walk-then-swap hole. `notes/` itself is left unpinned: `scan_dir`
+        // re-enumerates through the symlink and lists `x.md`.
+        let root_entries = cache
+            .dirs
+            .get(Path::new(""))
+            .expect("root listing")
+            .entries
+            .clone();
+        let notes = root.0.join("notes");
+        std::fs::remove_dir_all(&notes).expect("remove notes");
+        std::os::unix::fs::symlink(outside.path(), &notes).expect("symlink notes");
+        let root_key = StatKey::of_path(&root.0)
+            .expect("stat")
+            .expect("root present");
+        let far = {
+            let (_, _, _, mtime, _) = root_key.raw_parts();
+            Some((mtime.0 + 1_000_000, mtime.1))
+        };
+        cache.dirs.insert(
+            PathBuf::new(),
+            super::DirSeen {
+                key: root_key,
+                seen: far,
+                entries: root_entries,
+            },
+        );
+
+        let outside_digest = model::leaf_digest(outside_bytes);
+        if cache.root(&root).is_ok() {
+            assert_ne!(
+                cache.leaf_digests().get(Path::new("notes/x.md")).copied(),
+                Some(outside_digest),
+                "outside bytes must not enter the fold"
+            );
+        }
+    }
+
+    /// The directory-fd `openat` walk named above: an intermediate symlink
+    /// is `ELOOP`, a real nested file still opens, a basename symlink still
+    /// refuses.
+    #[cfg(unix)]
+    #[test]
+    fn open_nofollow_directory_fd_openat_refuses_intermediate_symlink() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let outside = tempfile::tempdir().expect("outside");
+        std::fs::write(outside.path().join("x.md"), b"# OUTSIDE\n").expect("outside");
+        let notes = tmp.path().join("notes");
+        std::fs::create_dir(&notes).expect("mkdir");
+        let nested = notes.join("x.md");
+        std::fs::write(&nested, b"# INSIDE\n").expect("inside");
+        super::open_nofollow(&nested).expect("real nested file opens");
+
+        std::fs::remove_dir_all(&notes).expect("remove notes");
+        std::os::unix::fs::symlink(outside.path(), &notes).expect("symlink");
+        let err = super::open_nofollow(&tmp.path().join("notes/x.md"))
+            .expect_err("intermediate symlink must refuse");
+        // Linux: O_DIRECTORY|O_NOFOLLOW on a symlink is ENOTDIR (the
+        // symlink inode is not a directory). Darwin: ELOOP. Either is a
+        // refusal — the walk did not follow.
+        let errno = err.raw_os_error();
+        assert!(
+            errno == Some(libc::ELOOP) || errno == Some(libc::ENOTDIR),
+            "directory-fd openat walk refuses a symlink component (ELOOP or ENOTDIR): {err}"
+        );
+
+        std::fs::write(tmp.path().join("real.md"), b"ok\n").expect("real");
+        std::os::unix::fs::symlink(tmp.path().join("real.md"), tmp.path().join("link.md"))
+            .expect("basename symlink");
+        let err = super::open_nofollow(&tmp.path().join("link.md"))
+            .expect_err("basename symlink must refuse");
+        assert_eq!(err.raw_os_error(), Some(libc::ELOOP));
+        super::open_nofollow(&tmp.path().join("real.md")).expect("real file still opens");
     }
 
     /// The dir-listing memo rides the same trust close: a listing recorded
