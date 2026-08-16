@@ -612,7 +612,7 @@ mod tests {
     #[test]
     fn tree_root_binding_catches_a_tampered_row() {
         let tmp = tempfile::tempdir().unwrap();
-        let (mut cache, bytes) = observed(tmp.path());
+        let (cache, bytes) = observed(tmp.path());
         let digest = hex(&cache.leaf_digests()[Path::new("a.md")]);
         let text = String::from_utf8(bytes).unwrap();
         assert!(text.contains(&digest));

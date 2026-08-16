@@ -581,18 +581,17 @@ impl Registry {
                 .domain_caches
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            match caches.get(workspace) {
-                Some(cache) => Arc::clone(cache),
-                None => {
-                    // Cold entry — the one door a §6.5 checkpoint can enter
-                    // through. A restore that discards, or finds no file,
-                    // yields the same empty memo this map always defaulted
-                    // to, so the cold path is unchanged by construction.
-                    let restored = self.restore_checkpoint(workspace);
-                    let cache = Arc::new(Mutex::new(restored.unwrap_or_default()));
-                    caches.insert(workspace.to_path_buf(), Arc::clone(&cache));
-                    cache
-                }
+            if let Some(cache) = caches.get(workspace) {
+                Arc::clone(cache)
+            } else {
+                // Cold entry — the one door a §6.5 checkpoint can enter
+                // through. A restore that discards, or finds no file, yields
+                // the same empty memo this map always defaulted to, so the
+                // cold path is unchanged by construction.
+                let restored = self.restore_checkpoint(workspace);
+                let cache = Arc::new(Mutex::new(restored.unwrap_or_default()));
+                caches.insert(workspace.to_path_buf(), Arc::clone(&cache));
+                cache
             }
         };
         // The feed reports into the memo's generation cell so the §6.2 fence
