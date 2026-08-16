@@ -217,10 +217,62 @@ fn an_absence_premise_holds_until_the_path_is_born() {
     assert_eq!(err.expected.expect("expected").0, "absent");
 }
 
-/// The inverse: a token premise whose scope was emptied refuses with the
-/// absent-actual teaching (§8.2) — `actual` is the reserved value.
+/// The measured break #6 shape: the write is covered (the file's own
+/// premise stands in for the MCP face's per-edit revs), and a WIDENING
+/// premise pairs a real token with a scope that NEVER existed. §5.7's
+/// amended arm: `scope_does_not_cover` / `fix` naming the scope — never
+/// `fingerprint_mismatch`, whose retired teaching invented a deletion
+/// ("it was emptied or removed") and whose resync re-read a path that
+/// serves nothing.
 #[test]
-fn a_deleted_scope_refuses_with_the_absent_actual_teaching() {
+fn a_token_premise_at_a_never_existed_scope_is_bad_input_not_a_deleted_node() {
+    let (_dir, root) = ws();
+    let covering = file_premise(&root);
+    // A real mint token — the covered file's own — paired with a scope
+    // that has never held a node (nothing at c/ was ever created).
+    let never_existed = Premise {
+        scope: Some(PathBuf::from("c/never-existed.md")),
+        value: PremiseValue::Token(match covering.value.clone() {
+            PremiseValue::Token(t) => t,
+            PremiseValue::Absent => unreachable!("file_premise mints a token"),
+        }),
+    };
+
+    let err = run(&root, &args(vec![never_existed, covering])).expect_err("bad pairing");
+    assert_eq!(
+        err.code,
+        ErrorCode::ScopeDoesNotCover,
+        "wire: scope_does_not_cover, recovery fix — not a moved world: {err:?}"
+    );
+    assert_eq!(
+        err.scope.as_deref(),
+        Some("c/never-existed.md"),
+        "the refusal names the premise's scope (§5.7)"
+    );
+    assert!(
+        err.uncovered.is_none(),
+        "`uncovered` stays §5.5's target-set extra — this mint home names no target set"
+    );
+    let message = err.message.expect("teaching");
+    assert!(
+        message.contains("no node lives at c/never-existed.md"),
+        "the §8.2 register text speaks: {message}"
+    );
+    assert!(
+        message.contains("fingerprint{scope: \"c/never-existed.md\"}"),
+        "the mint remedy is named — the recovery that terminates: {message}"
+    );
+    assert!(
+        !message.contains("emptied or removed"),
+        "no invented deletion history: {message}"
+    );
+}
+
+/// Gate 3: a GENUINE post-mint delete draws the SAME refusal — the engine
+/// cannot know the history from `(token, absent)`, so it must not tell the
+/// two cases apart with a deletion story it cannot ground.
+#[test]
+fn a_genuinely_deleted_scope_draws_the_same_refusal_without_invented_history() {
     let (_dir, root) = ws();
     std::fs::create_dir_all(root.0.join("c")).expect("mkdir");
     std::fs::write(root.0.join("c/aux.md"), "# Aux\n").expect("seed");
@@ -235,13 +287,16 @@ fn a_deleted_scope_refuses_with_the_absent_actual_teaching() {
     std::fs::remove_file(root.0.join("c/aux.md")).expect("empty the scope");
 
     let err = run(&root, &args(vec![aux, file_premise(&root)])).expect_err("the scope was emptied");
-    assert_eq!(err.code, ErrorCode::RootMismatch);
+    assert_eq!(err.code, ErrorCode::ScopeDoesNotCover);
     assert_eq!(err.scope.as_deref(), Some("c/aux.md"));
-    assert_eq!(err.actual.expect("actual").0, "absent");
     let message = err.message.expect("teaching");
     assert!(
-        message.contains("has no node now"),
-        "the absent-actual register text speaks: {message}"
+        message.contains("Whether a node was removed since your mint or c/aux.md never held one"),
+        "both worlds named, neither narrated: {message}"
+    );
+    assert!(
+        !message.contains("emptied or removed"),
+        "no invented deletion history: {message}"
     );
 }
 
