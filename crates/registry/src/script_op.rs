@@ -206,14 +206,20 @@ fn member_order_refusal(files: &[String]) -> Option<Refusal> {
 /// The attempt: entry pass → pin → eval → thread → gate → commit → trace.
 ///
 /// # Errors
-/// A §8 frame ONLY for what never reached the entry: the entry pass itself
-/// failing (env class), or the reaper winning the warm→pin race (retry).
-/// Once an entry fingerprint exists, every exit is a trace.
+/// A §8 frame ONLY for what never reached the entry: a cold workspace whose
+/// drawer is rebuilding in the background (`corpus_warming`, retry — §3.2),
+/// the entry pass itself failing (env class), or the reaper winning the
+/// warm→pin race (retry). Once an entry fingerprint exists, every exit is a
+/// trace.
 fn serve(
     registry: &Registry,
     ws: &Path,
     request: &ScriptArgs,
 ) -> Result<ScriptTrace, Box<ErrorBody>> {
+    // §3.2 cold gate first: a cold workspace's entry pass would be the
+    // whole-corpus build — it rebuilds in the background and the entry
+    // never begins (`corpus_warming`, retry).
+    crate::server::cold_gate_wire(registry, ws)?;
     // ONE currency pass, at entry (Law A-3c scope unchanged, moved in time).
     registry.warm_or_build(ws).map_err(|e| {
         let mut error = ErrorBody::new(ErrorCode::IoError);
