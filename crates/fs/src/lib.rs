@@ -27,6 +27,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub mod base;
 pub mod digestmemo;
 pub mod domain;
+pub mod epoch;
 pub mod fence;
 pub mod forest;
 pub mod guard;
@@ -2965,14 +2966,107 @@ fn fsync_dir(dir: &Path) -> io::Result<()> {
     File::open(dir)?.sync_all()
 }
 
+// ---------------------------------------------------------------------------
+// The durability plane's two sync classes, and the counters that tell them
+// apart (`docs/laws.md` § Amendment — epoch-batched honest durability)
+// ---------------------------------------------------------------------------
+
+static HONEST_SYNCS: AtomicU64 = AtomicU64::new(0);
+static DATA_PUSHES: AtomicU64 = AtomicU64::new(0);
+
+thread_local! {
+    static HONEST_SYNCS_HERE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static DATA_PUSHES_HERE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Every [`honest_sync`] this process has issued. `Relaxed`: an instrument,
+/// never a fence — nothing in the engine branches on it.
+#[must_use]
+pub fn honest_sync_count() -> u64 {
+    HONEST_SYNCS.load(Ordering::Relaxed)
+}
+
+/// Every [`data_push`] this process has issued. The ratio against
+/// [`honest_sync_count`] IS the batching claim, readable straight off the
+/// instrument.
+#[must_use]
+pub fn data_push_count() -> u64 {
+    DATA_PUSHES.load(Ordering::Relaxed)
+}
+
+/// [`honest_sync_count`] for the calling thread only. "This region issued no
+/// sync" is a well-formed claim only per-thread: the process-wide counter is
+/// moving under concurrent publishers by design, so a before/after delta
+/// around a linearized step can only be read here.
+#[must_use]
+pub fn honest_sync_count_thread() -> u64 {
+    HONEST_SYNCS_HERE.with(std::cell::Cell::get)
+}
+
+/// [`data_push_count`] for the calling thread only.
+#[must_use]
+pub fn data_push_count_thread() -> u64 {
+    DATA_PUSHES_HERE.with(std::cell::Cell::get)
+}
+
+/// The cheap sync class — raw `fsync(2)`, measured p50 0.019 ms / p99
+/// 0.037 ms on Mac16,5 / APFS / internal `NVMe`, against 4.386 ms for the
+/// honest class.
+///
+/// **Spelled `libc::fsync` by hand on macOS, on purpose.** Rust std's
+/// `File::sync_all` AND `File::sync_data` both issue `fcntl(F_FULLFSYNC)`
+/// there — verified four ways on two instruments, session evidence
+/// `results/instrument-evidence/fs_usage_syncall.txt`. Spelling this call
+/// with std would make every member of an epoch pay a full barrier, so N
+/// members would cost N barriers plus the seal and the batching would be
+/// inert while looking correct. Elsewhere `sync_all` already IS `fsync(2)`,
+/// so std is the right call there.
+///
+/// What this call hands the bytes to is deliberately NOT claimed: 19 µs is
+/// consistent with a device handoff and equally consistent with an in-memory
+/// checkpoint. The receipt rests on [`honest_sync`] — the epoch barrier — and
+/// never on this call. Whether the barrier can cover another descriptor's
+/// pushed bytes is the open question `epoch::SealMode::PerMember` exists to
+/// answer.
+///
+/// # Errors
+/// The underlying fsync failure.
+pub fn data_push(file: &File) -> io::Result<()> {
+    DATA_PUSHES.fetch_add(1, Ordering::Relaxed);
+    DATA_PUSHES_HERE.with(|c| c.set(c.get() + 1));
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: fsync on a valid fd we own; the fd outlives the call.
+        if unsafe { libc::fsync(file.as_raw_fd()) } == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        file.sync_all()
+    }
+}
+
+/// [`data_push`] on a path. `File::open` works for files and directories
+/// alike on Unix; the fd is only used for the sync.
+///
+/// # Errors
+/// Open failure, or the underlying sync failure.
+pub fn data_push_path(path: &Path) -> io::Result<()> {
+    data_push(&File::open(path)?)
+}
+
 /// The ruled honest durability class (merged-plan §4.7): `F_FULLFSYNC` on
 /// macOS (platter, not drive-cache), `sync_all` elsewhere. The live
 /// [`apply_batch`] path keeps `sync_all` until the cutover; the parallel
-/// publish path uses this for intent, recovery images, and dest temps.
+/// publish path uses this for intent, recovery images, and the epoch seal.
 ///
 /// # Errors
 /// The underlying fcntl/fsync failure.
 pub fn honest_sync(file: &File) -> io::Result<()> {
+    HONEST_SYNCS.fetch_add(1, Ordering::Relaxed);
+    HONEST_SYNCS_HERE.with(|c| c.set(c.get() + 1));
     #[cfg(target_os = "macos")]
     {
         // SAFETY: fcntl on a valid fd we own; F_FULLFSYNC takes no extra arg.
