@@ -311,44 +311,41 @@ impl WorkspaceFeed {
         let mut watcher =
             notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
                 let mut s = sink.state.lock().unwrap_or_else(PoisonError::into_inner);
-                match event {
-                    Ok(event) => {
-                        if event.need_rescan() {
-                            s.collapse(RescanCause::Overflow);
-                            sink.cookie.notify_all();
-                            return;
-                        }
-                        if !relevant(event.kind) {
-                            return;
-                        }
-                        for path in &event.paths {
-                            let Ok(rel) = path.strip_prefix(&root) else {
-                                continue;
-                            };
-                            // §6.4 cookie sighting — UPSTREAM of the member
-                            // filter: the sentinel is the ordered stream's
-                            // proof-of-delivery, never dirt. A torn or
-                            // vanished read proves nothing and skips (the
-                            // close event re-delivers; at worst a barrier
-                            // times out to its floor — never a false Seen).
-                            if rel == Path::new(COOKIE_REL) {
-                                if let Some(serial) = read_serial(path) {
-                                    s.cookie_seen = s.cookie_seen.max(serial);
-                                    sink.cookie.notify_all();
-                                }
-                                continue;
-                            }
-                            s.admit(rel, path, event.kind);
-                        }
-                        if s.doubt.is_some() {
-                            sink.cookie.notify_all();
-                        }
+                if let Ok(event) = event {
+                    if event.need_rescan() {
+                        s.collapse(RescanCause::Overflow);
+                        sink.cookie.notify_all();
+                        return;
                     }
-                    // A watcher error is event loss until proven otherwise.
-                    Err(_) => {
-                        s.collapse(RescanCause::MissedEvent);
+                    if !relevant(event.kind) {
+                        return;
+                    }
+                    for path in &event.paths {
+                        let Ok(rel) = path.strip_prefix(&root) else {
+                            continue;
+                        };
+                        // §6.4 cookie sighting — UPSTREAM of the member
+                        // filter: the sentinel is the ordered stream's
+                        // proof-of-delivery, never dirt. A torn or
+                        // vanished read proves nothing and skips (the
+                        // close event re-delivers; at worst a barrier
+                        // times out to its floor — never a false Seen).
+                        if rel == Path::new(COOKIE_REL) {
+                            if let Some(serial) = read_serial(path) {
+                                s.cookie_seen = s.cookie_seen.max(serial);
+                                sink.cookie.notify_all();
+                            }
+                            continue;
+                        }
+                        s.admit(rel, path, event.kind);
+                    }
+                    if s.doubt.is_some() {
                         sink.cookie.notify_all();
                     }
+                } else {
+                    // A watcher error is event loss until proven otherwise.
+                    s.collapse(RescanCause::MissedEvent);
+                    sink.cookie.notify_all();
                 }
             })?;
         // The sentinel's directory must exist BEFORE the recursive watch is
