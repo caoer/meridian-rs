@@ -13,9 +13,9 @@
 //! `root`/`seq`/frame with no disk I/O in the mutex.
 //!
 //! What this module is NOT: it does not acquire `write.lock`, open a
-//! socket, activate the downgrade fence, or rewire the live splice door
-//! (that door keeps its interim flock until the cutover). Dry never
-//! enters here — the existing dry planner publishes nothing.
+//! socket, or activate the downgrade fence (B-03 stays dormant). The
+//! live splice door keeps its interim flock until cutover rewires it.
+//! Dry never enters here — the existing dry planner publishes nothing.
 //!
 //! Contract law 11, claimed exactly: reservations exclude cooperating
 //! Meridian publishers only. Editors, git, and bash remain the stated

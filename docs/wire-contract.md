@@ -2,7 +2,7 @@
 type: contract
 id: wire
 status: standing
-updated: 2026-08-15
+updated: 2026-08-16
 description: Standing wire constitution. One document. Docs define law; code may lag.
 owns: [the wire constitution — nouns, ops, guards, receipts, errors]
 ---
@@ -1133,11 +1133,14 @@ Two laws read straight off the table. **The prefix tracks the domain RULES, neve
 - Only a current-family unequal digest is the normal scoped mismatch.
 
 **When retirement begins is the cutover's no-return boundary** (stated as law
-in `node-rev-merkle-spec.md` §4.2.5, bounce-1 closure): before the boundary
-the old law is still serving and nothing refuses
-`fingerprint_version_retired`; the downgrade-fence tombstone activates at
-that boundary and only there, and the non-serving shadow build is not
-implemented (`B_cutover` answered — pay once).
+in `node-rev-merkle-spec.md` §4.2.5, bounce-1 closure; amended 2026-08-16):
+before the boundary the old law is still serving and nothing refuses
+`fingerprint_version_retired`; the boundary is crossed by the durable B-04
+cutover record alone — the downgrade-fence tombstone NEVER activates (ZT
+standing law 2026-08-15: no old-binary users, the fence landed dormant;
+`node-rev-merkle-spec.md` §4.2.5 amendment carries the verbatim law) — and
+the non-serving shadow build is not implemented (`B_cutover` answered — pay
+once).
 
 **No dual-hash serving window exists**: the engine never serves two hash laws at once — the honest price is one typed, taught re-plan event per workspace at cutover, not permanent double maintenance. `sub` re-baselines at the cutover with a labeled epoch boundary, never a silent chain break.
 

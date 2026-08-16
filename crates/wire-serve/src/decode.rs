@@ -54,7 +54,7 @@ pub enum Laws {
     ShapeOnly,
 }
 
-/// Strict-decode one request into [`wire::Op`] by hand (§3.2). Shared by both hosts.
+/// Strict-decode one request into [`wire::Op`] by hand (§3.2). Shared by every serve door.
 ///
 /// `rev` gates only `splice`'s field list (`plan_edits` under v3); other ops are
 /// rev-agnostic (v3-only ops gate at dispatch).

@@ -2,7 +2,7 @@
 type: spec
 id: merkle
 status: standing
-updated: 2026-08-15
+updated: 2026-08-16
 description: Normative hash law for `node_rev` and the workspace merkle fingerprint (two law versions, radix-256 from the cutover), plus the resident tree that serves it, with worked examples.
 owns: [node_rev, merkle encoding, resident tree, event feed]
 ---
@@ -90,8 +90,9 @@ fixed-256 radix child map) is the law of the first scoped-token version.
 Exactly one law is current per workspace at any time — there is no dual-hash
 serving window. Rulings: `decisions/2026-08-15-width-sharding-now.md`
 (sharding-now, deferral rejected); cutover GO per
-`decisions/2026-08-15-plan-rulings-final.md` R1 (priced protocol, four
-pre-cutover blockers first, pay-once accepted in its `B_cutover` amendment).
+`decisions/2026-08-15-plan-rulings-final.md` R1 (priced protocol,
+pre-cutover code blockers B-01 / B-02 / B-04 first — B-03 is not a
+blocker — pay-once accepted in its `B_cutover` amendment).
 
 ### 4.1 Merkle law 1 — the flat interior encoding (retiring at the cutover)
 
@@ -252,19 +253,35 @@ plan §4.2) — the cutover is cheap NOW and a cliff later.
   read."); `sub` re-baselines at a labeled epoch boundary, never a silent
   chain break.
 - **The cutover boundary, stated as law (R1: GO — the priced protocol;
-  amended 2026-08-15, bounce-1 closure).** The cutover runs behind the four
-  pre-cutover blockers — B-01 cursor identity, B-02 this section's second
-  version dimension, B-03 the downgrade fence BUILT AND TESTED early, B-04
-  durable cutover authority state — then walks
-  `OLD_SERVING → DRAINING → no-return boundary → new law serves`. The
-  downgrade-fence tombstone (B-03's tested mechanism) ACTIVATES at the
-  no-return boundary and ONLY there; activating it earlier is the
-  no-rollback error class. Retirement precedence rides the same boundary:
-  before no-return the old law is still serving and answers guards
-  normally — nothing refuses `fingerprint_version_retired` yet; once the
-  new law serves, old-family tokens refuse exactly that, with re-mint
-  teaching. (`decisions/2026-08-15-plan-rulings-final.md` R1; merged plan
-  §6 steps 5–7.)
+  amended 2026-08-15, bounce-1 closure; amended 2026-08-16, B-03
+  activation retired — see below).** The cutover runs behind the
+  pre-cutover code blockers — B-01 cursor identity, B-02 this section's
+  second version dimension, B-04 durable cutover authority state — then
+  walks `OLD_SERVING → DRAINING → no-return boundary → NEW_BUILDING →
+  NEW_COMMITTED → reopen`. The no-return boundary is crossed by ONE
+  durable act: making the B-04 cutover record's `NEW_BUILDING` state
+  durable. Retirement precedence rides the same boundary: before
+  no-return the old law is still serving and answers guards normally —
+  nothing refuses `fingerprint_version_retired` yet; once the record is
+  durable, old-family tokens refuse exactly that, with re-mint teaching.
+  (`decisions/2026-08-15-plan-rulings-final.md` R1; merged plan §6 steps
+  5–7.)
+- **Amendment 2026-08-16 — the B-03 tombstone never activates.** This
+  section previously read: "The downgrade-fence tombstone (B-03's tested
+  mechanism) ACTIVATES at the no-return boundary and ONLY there;
+  activating it earlier is the no-rollback error class." That sentence is
+  SUPERSEDED by ZT's standing law (2026-08-15, verbatim: "B-03 standing
+  law: not a cutover blocker. No old-binary users. Mechanism may land if
+  already green; no more matrix; never activate for this reason. Leftover
+  bin = delete it. Broken tool = bash. Do not hold radix/L2 for B-03.").
+  The fence mechanism (`crates/fs/src/fence.rs`) landed dormant —
+  `activate` has no production caller — and is never activated on
+  downgrade grounds: its threat model is empty (no old-binary users; a
+  leftover old binary is deleted, not fenced). The axis that died is
+  old-BINARY fencing; the axis that lives is old-TOKEN refusal
+  (`fingerprint_version_retired`, above). If a future implementer finds a
+  non-downgrade reason the fence must activate, that is a new ZT
+  question — no such reason exists today.
 - **The shadow-build fallback is NOT BUILT (`B_cutover` answered).** ZT
   accepted the one-time per-workspace pause, so the bounded NON-SERVING
   shadow — whose only purpose was to shrink that pause — stays on paper,
@@ -826,7 +843,7 @@ it.
 - Node objects / `resolve`: node_rev algorithm (§1–2) is the hash law for CAS tokens.
 - Caps advertise `fingerprint`, `diff`, `splice.if_fingerprint` (and related) — not a `guard` op.
 - Error codes: `fingerprint_mismatch`, `fingerprint_unknown`, `scope_unresolved`, `fingerprint_version_retired` (not `root_*`); the three-family split is §7's law.
-- Routine writes route through the daemon (RULED B, daemon-routed — `decisions/2026-08-15-pre-merge-rulings.md` ruling 4): the CLI rides the daemon's resident tree over IPC; direct writing retires; `LOCK_EX` on `write.lock` becomes takeover/recovery only. The write plane's own law (lease, intents, parallel disjoint commits, honest durability) is the authority contract's, not this spec's. Construction step 6's publication half — reservation algebra, checksummed `O_EXCL` intents, the one state owner's contiguous root chain — lives in `crates/wire-serve/src/publish.rs` (disk primitives in `crates/fs/src/intent.rs`); the lease half is `authority.rs`. The live write door keeps its interim flock until the cutover flips routing. The `apply_batch` pre-image verify is the in-process second-writer refusal under B (`docs/laws.md` Amendment — the one state owner).
+- Routine writes route through the daemon (RULED B, daemon-routed — `decisions/2026-08-15-pre-merge-rulings.md` ruling 4): the CLI rides the daemon's resident tree over IPC; direct writing retires; `LOCK_EX` on `write.lock` becomes takeover/recovery only. The write plane's own law (lease, intents, parallel disjoint commits, the ruled plain-fsync class) is the authority contract's, not this spec's. Construction step 6's publication half — reservation algebra, checksummed `O_EXCL` intents, the one state owner's contiguous root chain — lives in `crates/wire-serve/src/publish.rs` (disk primitives in `crates/fs/src/intent.rs`); the lease half is `authority.rs`. The live write door keeps its interim flock until the cutover flips routing. The `apply_batch` pre-image verify is the in-process second-writer refusal under B (`docs/laws.md` Amendment — the one state owner).
 - The effects lane (`run`, script-with-effects) is UNGUARDED by ruling (`decisions/2026-08-15-no-guard-on-effects.md`; the normative paragraph lives in `run-plane.md`) — but guard-free never means fold-invisible: every effects write rides the same write choke-point and maintains the resident tree (leaf update, chain refold, §6.2 watermark discipline). That is tree maintenance, not a guard.
 - **File death mints no terminal hash (RULED, ZT 2026-08-15, card `engine-delete-door`: "No tombstone — death Delta is the record").** A guarded `remove` (`wire-contract.md` § A.3) unlinks the leaf; the next fold composes the tree without it under the current §4 encoding — removal is already in the diff shape (§0, "whole-subtree enumeration on add/remove") and no new hash law exists for it. Under law 2 this is the §4.2.2 delete rule: the child map re-canonicalizes as if the entry never existed. A rev is a function of bytes (§2); absent bytes mint nothing: the death's terminal facts are the removed file's LAST rev (`file_rev_before`, confirmed by the remove-what-you-read CAS) and the workspace fingerprint transition, both carried by the death Delta (`change:"deleted"`, `wire-contract.md` §7.1). No tombstone leaf, no on-disk marker — disk stays markdown only, and history past the ring re-derives to a world where the path is simply absent. The emptied path itself now mints `absent` (§7) — a legal premise, not an error.
 

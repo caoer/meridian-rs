@@ -1,4 +1,4 @@
-//! External-change classifier, shared by both hosts.
+//! External-change classifier, shared by the serving host.
 //! `WatchState` tracks the world at ring tip; each reconcile is three-way:
 //!
 //! - snapshot root == watch root → nothing;

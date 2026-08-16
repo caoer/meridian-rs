@@ -305,9 +305,11 @@ fn sync_file(f: &File) -> io::Result<()> {
     }
 }
 
-/// fsync a directory so a completed link/rename survives power loss. Best-effort:
-/// the entry is already visible to readers, so a failed dir sync only weakens
-/// durability — it must never turn a committed write into a reported failure.
+/// fsync a directory so a completed link/rename is durable at the ruled
+/// fsync class (plain `fsync(2)`; drive cache accepted — no power-loss
+/// claim). Best-effort: the entry is already visible to readers, so a failed
+/// dir sync only weakens durability — it must never turn a committed write
+/// into a reported failure.
 fn fsync_dir(dir: &Path) {
     if let Ok(f) = File::open(dir) {
         let _ = sync_file(&f);
