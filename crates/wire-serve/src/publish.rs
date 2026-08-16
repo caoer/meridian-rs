@@ -1000,6 +1000,43 @@ mod tests {
         let _ = owner;
     }
 
+    /// Gate: the linearized state-owner step issues NO durability
+    /// operation. The instrument is the thread-local op count — any submit
+    /// or wait inside `apply` (or its fold, which runs INSIDE the owner
+    /// mutex) would bump it on this thread — so the proof is deterministic
+    /// under fully parallel tests. The instrument is proven live on the
+    /// same thread first, so a flat reading cannot be a dead counter.
+    #[test]
+    fn no_durability_op_inside_the_linearized_state_owner_step() {
+        let (_d, root) = ws();
+        let probe = root.0.join("probe.md");
+        std::fs::write(&probe, b"x").unwrap();
+        let t0 = durability::ops_on_this_thread();
+        durability::settle_path(&root.0, &probe).expect("probe settles");
+        assert_eq!(
+            durability::ops_on_this_thread() - t0,
+            2,
+            "instrument live: one submit + one wait for the probe settle"
+        );
+
+        let owner = StateOwner::new(Root("g0".into()));
+        let before = durability::ops_on_this_thread();
+        let frame = owner.apply(Vec::new(), None, None, |root_before| {
+            assert_eq!(
+                durability::ops_on_this_thread(),
+                before,
+                "no durability op may run inside the linearized step"
+            );
+            Root(format!("{}+x", root_before.0))
+        });
+        assert_eq!(
+            durability::ops_on_this_thread(),
+            before,
+            "the whole apply issued zero durability ops on this thread"
+        );
+        assert_eq!(frame.delta.seq, 1);
+    }
+
     #[test]
     fn the_state_owner_assigns_a_contiguous_chain_under_shuffled_completion() {
         let owner = Arc::new(StateOwner::new(Root("g0".into())));
