@@ -9,7 +9,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::sync::{Arc, Condvar, Mutex, PoisonError, RwLock, Weak};
 use std::time::Duration;
 
 use crate::engine::{WarmOutcome, WorkspaceEngine};
@@ -117,6 +117,20 @@ pub struct Registry {
     /// binding file lives outside every workspace's hash domain, so no
     /// engine or ring can carry it.
     mounts: crate::mounts::MountsCache,
+    /// §3.2 cold-read law: background drawer rebuilds in flight plus the
+    /// cause of the last rebuild that failed, per workspace. One mutex so
+    /// the kick / finish / fail transitions stay atomic.
+    cold_builds: Mutex<ColdBuilds>,
+    /// Signaled by every background rebuild exit (landed, failed, or
+    /// panicked) — what the kicking read's bounded wait parks on.
+    cold_builds_done: Condvar,
+    /// Self-handle for the background rebuild thread the cold gate spawns.
+    /// Dead (`Weak::new()`) on a bare [`Registry::new`] — the in-process
+    /// lane (`in_process_registry`: the CLI direct lane and fixtures), where
+    /// [`Registry::cold_gate`] answers `Serve` and the caller builds inline;
+    /// with no daemon and no deadline on the other end, blocking is the
+    /// honest answer there. [`Registry::new_shared`] (the daemon) binds it.
+    myself: Weak<Registry>,
     state: StateStore,
     cache_root: PathBuf,
     /// Test-only pause gate for the rebuild race window. When armed, the next
@@ -149,6 +163,44 @@ pub struct Registry {
     #[cfg(test)]
     pub(crate) pause_in_reap_window:
         Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+}
+
+/// §3.2: how long the READ THAT KICKED a cold rebuild absorbs it before
+/// refusing `corpus_warming`. Small drawers land inside this and first
+/// contact serves; a drawer still rebuilding past it is the long kind the
+/// refusal exists for. Engine-internal on purpose — the contract publishes
+/// the bound's ORDER, never its value: well under any sane host op deadline
+/// (ccc-statusd's D4 floor is 10 s), well over a small corpus build.
+const COLD_BUILD_WAIT: Duration = Duration::from_secs(2);
+
+/// §3.2 cold-read state: which workspaces have a background drawer rebuild
+/// running, and the cause of the last rebuild that failed.
+#[derive(Debug, Default)]
+struct ColdBuilds {
+    /// Workspaces with a background rebuild in flight — the single-flight
+    /// key: however many callers ask, one rebuild runs per workspace.
+    in_flight: BTreeSet<PathBuf>,
+    /// The last background rebuild failure per workspace. Served (and
+    /// cleared) by the next cold read as `io_error{cause}` — warming never
+    /// masks a broken corpus; the read after that kicks a fresh rebuild.
+    failed: HashMap<PathBuf, String>,
+}
+
+/// What the §3.2 cold gate tells a serving door to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ColdGate {
+    /// Proceed to the inline pass: a resident engine exists (the currency
+    /// pass is incremental), or this registry has no background substrate
+    /// (in-process lane — build inline, today's behavior).
+    Serve,
+    /// No resident engine; the drawer rebuild is running in the background
+    /// and did not land inside the kicker's bounded wait (non-kicking reads
+    /// answer this in milliseconds). Refuse `corpus_warming` (retry).
+    Warming,
+    /// The rebuild failed — inside the kicker's wait, or recorded by an
+    /// earlier one. Refuse `io_error` with this cause (env). The slot is
+    /// cleared — a later cold read kicks afresh.
+    Failed(String),
 }
 
 /// One workspace's feed slot: live, or start-failed (sticky — recorded and
@@ -274,6 +326,11 @@ impl Registry {
             last_request: AtomicU64::new(now_secs()),
             // Cold: the first `mounts` call derives the table.
             mounts: crate::mounts::MountsCache::default(),
+            // Cold: no rebuild in flight, no recorded failure.
+            cold_builds: Mutex::new(ColdBuilds::default()),
+            cold_builds_done: Condvar::new(),
+            // Dead on the in-process lane; `new_shared` (the daemon) binds it.
+            myself: Weak::new(),
             state,
             cache_root,
             #[cfg(test)]
@@ -283,6 +340,20 @@ impl Registry {
             #[cfg(test)]
             pause_in_reap_window: Mutex::new(None),
         }
+    }
+
+    /// The daemon's constructor: [`Registry::new`] with the self-handle
+    /// bound, so the §3.2 cold gate can spawn background drawer rebuilds.
+    pub(crate) fn new_shared(
+        state: StateStore,
+        cache_root: PathBuf,
+        entries: Vec<WorkspaceEntry>,
+    ) -> Arc<Self> {
+        Arc::new_cyclic(|weak| {
+            let mut registry = Registry::new(state, cache_root, entries);
+            registry.myself = weak.clone();
+            registry
+        })
     }
 
     /// The machine-scoped mount-table cache the `mounts` op serves through
@@ -373,6 +444,128 @@ impl Registry {
         };
         let drawer = cache::drawer_dir(&self.cache_root, &workspace);
         PinOutcome::Pinned { workspace, drawer }
+    }
+
+    /// The §3.2 cold gate, called by every serving door BEFORE its inline
+    /// [`warm_or_build`](Self::warm_or_build): proceed, refuse
+    /// `corpus_warming`, or refuse with the failed rebuild's cause. A
+    /// workspace with no resident engine gets its drawer rebuild KICKED
+    /// HERE, on a background thread, and the kicking read absorbs it for at
+    /// most [`COLD_BUILD_WAIT`] — a small drawer lands inside the wait and
+    /// first contact SERVES; a drawer still rebuilding past it refuses,
+    /// and every non-kicking read during the rebuild refuses in
+    /// milliseconds, instead of blocking behind minutes of parse (dogfood
+    /// 2026-08-16: post-install restart, every corpus read blocked 5–8 min
+    /// while `roots` answered — a rebuilding drawer must never read as a
+    /// hung product). Single-flight per workspace. A failed rebuild
+    /// surfaces its cause to the kicking read when the failure lands inside
+    /// the wait, else to the next read (`Failed`, slot cleared); a later
+    /// read kicks afresh. On a registry with no self-handle (the in-process
+    /// lane) the gate always answers `Serve`.
+    ///
+    /// # Errors
+    /// Canonicalize failure only — the gate itself does no corpus I/O.
+    pub fn cold_gate(&self, workspace: &Path) -> io::Result<ColdGate> {
+        let canonical = workspace::canonicalize(workspace)
+            .map_err(|e| io::Error::new(io::ErrorKind::NotFound, e))?;
+        {
+            let engines = self.engines.read().unwrap_or_else(PoisonError::into_inner);
+            if engines.contains_key(&canonical) {
+                return Ok(ColdGate::Serve);
+            }
+        }
+        let mut builds = self
+            .cold_builds
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if builds.in_flight.contains(&canonical) {
+            // Non-kicking read: the kicker already absorbed the bounded
+            // wait for this rebuild — refuse in milliseconds.
+            return Ok(ColdGate::Warming);
+        }
+        if let Some(cause) = builds.failed.remove(&canonical) {
+            return Ok(ColdGate::Failed(cause));
+        }
+        // No substrate to build on: the in-process lane serves inline.
+        let Some(registry) = self.myself.upgrade() else {
+            return Ok(ColdGate::Serve);
+        };
+        builds.in_flight.insert(canonical.clone());
+        drop(builds);
+        let key = canonical.clone();
+        let spawned = std::thread::Builder::new()
+            .name("drawer-rebuild".into())
+            .spawn(move || {
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    registry.warm_or_build(&canonical)
+                }));
+                {
+                    let mut builds = registry
+                        .cold_builds
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner);
+                    builds.in_flight.remove(&canonical);
+                    match &outcome {
+                        Ok(Ok(_)) => {}
+                        Ok(Err(e)) => {
+                            builds.failed.insert(canonical.clone(), e.to_string());
+                        }
+                        // A panicking rebuild must not wedge the workspace
+                        // in a warming state no thread will ever end.
+                        Err(_) => {
+                            builds.failed.insert(
+                                canonical.clone(),
+                                "the background drawer rebuild panicked".to_owned(),
+                            );
+                        }
+                    }
+                }
+                registry.cold_builds_done.notify_all();
+                match outcome {
+                    Ok(Ok(outcome)) => eprintln!(
+                        "registry: drawer warm for {} ({outcome:?})",
+                        canonical.display()
+                    ),
+                    Ok(Err(e)) => eprintln!(
+                        "registry: background drawer rebuild failed for {} ({e})",
+                        canonical.display()
+                    ),
+                    Err(_) => eprintln!(
+                        "registry: background drawer rebuild panicked for {}",
+                        canonical.display()
+                    ),
+                }
+            });
+        if spawned.is_err() {
+            // Could not spawn the builder: clear the flag and serve inline
+            // rather than wedging every read in a warming state no thread
+            // will ever end.
+            let mut builds = self
+                .cold_builds
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            builds.in_flight.remove(&key);
+            return Ok(ColdGate::Serve);
+        }
+        // The kicker's bounded wait: absorb a small drawer's build so first
+        // contact serves; a long one refuses at the bound.
+        let builds = self
+            .cold_builds
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let (mut builds, timeout) = self
+            .cold_builds_done
+            .wait_timeout_while(builds, COLD_BUILD_WAIT, |builds| {
+                builds.in_flight.contains(&key)
+            })
+            .unwrap_or_else(PoisonError::into_inner);
+        if timeout.timed_out() {
+            return Ok(ColdGate::Warming);
+        }
+        if let Some(cause) = builds.failed.remove(&key) {
+            return Ok(ColdGate::Failed(cause));
+        }
+        Ok(ColdGate::Serve)
     }
 
     /// Warm the resident engine for `workspace`; rebuild only when the corpus
@@ -1368,6 +1561,128 @@ mod engine_tests {
             reg.warm_or_build(&ws).unwrap(),
             WarmOutcome::Reused,
             "the rebuild is once, not a storm"
+        );
+    }
+
+    /// Daemon-shaped registry (self-handle bound) under `home` — the §3.2
+    /// cold gate can spawn background rebuilds.
+    fn registry_shared_in(home: &Path) -> Arc<Registry> {
+        let cache_root = home.join("cache");
+        fs::create_dir_all(&cache_root).unwrap();
+        Registry::new_shared(
+            StateStore::new(home.join("state.json")),
+            cache_root,
+            Vec::new(),
+        )
+    }
+
+    /// Bounded spin until the cold gate reports `Serve` (the drawer landed).
+    /// The builder runs on its own thread, so completion needs a poll; the
+    /// bound keeps a wedged builder loud instead of hung.
+    fn wait_serve(reg: &Registry, ws: &Path) {
+        for _ in 0..400 {
+            if reg.cold_gate(ws).unwrap() == ColdGate::Serve {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("drawer rebuild did not land within 2s");
+    }
+
+    /// §3.2 cold gate: the first ask kicks ONE background rebuild and
+    /// answers `Warming`; every ask while it runs answers `Warming`; the
+    /// landed drawer is the real engine (the inline pass reuses it).
+    #[test]
+    fn cold_gate_kicks_one_background_build_and_refuses_warming() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_shared_in(home.path());
+        let ws = write_ws(home.path(), &[("a.md", "# A\n"), ("b.md", "# B\n")]);
+
+        // Park the background builder between its parse and its insert.
+        let (arrived_tx, arrived) = std::sync::mpsc::channel();
+        let (release, release_rx) = std::sync::mpsc::channel();
+        *reg.pause_before_insert
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some((arrived_tx, release_rx));
+
+        assert_eq!(
+            reg.cold_gate(&ws).unwrap(),
+            ColdGate::Warming,
+            "the first ask kicks the rebuild and refuses at the bounded wait"
+        );
+        arrived
+            .recv()
+            .expect("the background builder is mid-rebuild");
+        // Single-flight: were a second builder racing the parked one, it
+        // would sail past the consumed one-shot gate and insert the engine,
+        // and these asks would answer `Serve` instead.
+        assert_eq!(reg.cold_gate(&ws).unwrap(), ColdGate::Warming);
+        assert_eq!(reg.cold_gate(&ws).unwrap(), ColdGate::Warming);
+
+        release
+            .send(())
+            .expect("the builder parked on the release gate");
+        wait_serve(&reg, &ws);
+        assert_eq!(
+            reg.warm_or_build(&ws).unwrap(),
+            WarmOutcome::Reused,
+            "the background build landed the real engine at the current fingerprint"
+        );
+    }
+
+    /// §3.2: a fast-failing rebuild surfaces its cause TO THE KICKING ASK
+    /// (the failure lands inside the bounded wait) — warming never masks a
+    /// broken corpus — and every later ask kicks afresh and learns the same.
+    #[test]
+    fn cold_gate_failed_build_surfaces_cause_to_the_kicker() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_shared_in(home.path());
+        let ws = write_ws(home.path(), &[("a.md", "# A\n")]);
+        // Two domain configs present — the one deterministic warm refusal.
+        fs::write(ws.join("mdfs_config.yaml"), "ignore: []\n").unwrap();
+        fs::create_dir_all(ws.join("meridian")).unwrap();
+        fs::write(ws.join("meridian/domain.md"), "# Domain\n").unwrap();
+
+        let ColdGate::Failed(cause) = reg.cold_gate(&ws).unwrap() else {
+            panic!("the kicking ask absorbs the fast failure and serves its cause");
+        };
+        assert!(!cause.is_empty(), "the refusal names what broke");
+        let ColdGate::Failed(again) = reg.cold_gate(&ws).unwrap() else {
+            panic!("a later ask kicks afresh and learns the same cause");
+        };
+        assert!(!again.is_empty());
+    }
+
+    /// §3.2: a small drawer lands inside the kicker's bounded wait — first
+    /// contact SERVES; the refusal is for the long rebuilds only.
+    #[test]
+    fn small_drawer_first_contact_serves_inside_the_bounded_wait() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_shared_in(home.path());
+        let ws = write_ws(home.path(), &[("a.md", "# A\n")]);
+        assert_eq!(reg.cold_gate(&ws).unwrap(), ColdGate::Serve);
+        assert_eq!(
+            reg.warm_or_build(&ws).unwrap(),
+            WarmOutcome::Reused,
+            "the background build already landed the engine"
+        );
+    }
+
+    /// The in-process lane (bare `Registry::new`, no self-handle): the gate
+    /// answers `Serve` and the caller builds inline — today's behavior.
+    #[test]
+    fn in_process_cold_gate_serves_inline() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(home.path(), &[("a.md", "# A\n")]);
+        assert_eq!(
+            reg.cold_gate(&ws).unwrap(),
+            ColdGate::Serve,
+            "no background substrate — the CLI lane blocks inline, honestly"
+        );
+        assert_eq!(
+            reg.warm_or_build(&ws).unwrap(),
+            WarmOutcome::Built { docs: 1 }
         );
     }
 
