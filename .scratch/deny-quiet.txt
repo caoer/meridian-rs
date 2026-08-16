@@ -1,4 +1,0 @@
- advisories ok: 0 errors, 0 warnings, 8 notes
-       bans ok: 0 errors, 12 warnings, 0 notes
-   licenses ok: 0 errors, 0 warnings, 384 notes
-    sources ok: 0 errors, 0 warnings, 2 notes
