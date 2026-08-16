@@ -43,13 +43,15 @@ path; the latency result is weak and is placed where its weight puts it.
 3. **The uncontended writer never waits.** `group_wait` is exactly 0.00 ms at
    N=1 and N=2 with cohort size 1. Contention-triggered rather than
    timer-triggered is visible in that zero.
-4. **The N=60 latency result is weak, and one headline was retracted.** At 18
-   paired repetitions the p99 effect is a NULL (9 of 18, p = 1.00) and p50 is
-   about 7% with p = 0.24. An earlier 30% figure from three pairs was withdrawn
-   before it shipped.
-5. **The uncontended regression stands, reported unsoftened.** Grouping cost
-   12–17% per writer at N=1–2 before the fast-path fix. Both states are in this
-   file.
+4. **Latency at N=60: the median is a real effect post-fix, the tail is not.**
+   17 of 18 paired repetitions favour grouping at p = 0.00014, about 12.4%
+   better per-writer p50, at the same pre-declared config that gave p = 0.24
+   before the fixes. p99 remains unseparated (12 of 18, p = 0.238). An earlier
+   30% figure from three pairs was retracted before it shipped.
+5. **The uncontended regression stands, reported unsoftened, and closed only
+   partly.** Grouping cost 12–17% per writer at N=1–2 before the fast-path
+   fix; after it, N=2 is closed and N=1 is no longer detectable rather than
+   fixed. Both states are in this file.
 
 ## The architecture
 
@@ -258,6 +260,26 @@ low-N regression is real and consistent across three pairs at each N, and
 the coordination path itself: a registry lookup and a lock per shared
 directory sync that a lone writer could never amortize.
 
+**The regression after the fix: closed at N=2, no longer detectable at N=1.**
+
+| N | arm | pairs | median | ON better | sign p | range |
+|---|---|---|---|---|---|---|
+| 1 | pre-fix | 3 | 1.125 | 1/3 | 1.000 | 0.981–1.170 |
+| 1 | **post-fix** | 12 | **1.068** | 4/12 | 0.388 | 0.760–1.221 |
+| 2 | pre-fix | 3 | 1.169 | 0/3 | 0.250 | 1.002–1.174 |
+| 2 | **post-fix** | 12 | **0.944** | 9/12 | 0.146 | 0.831–1.157 |
+
+N=2 is closed — the 17% is gone. N=1 is **partial**: 12.5% → 6.8%, but at
+4/12 and p = 0.388 the residual is no longer measurable in either direction.
+That is "no longer detectable", which is not the same claim as "fixed", and it
+is written as the former. The comparison also sets a 3-pair pre-fix median
+against a 12-pair post-fix one, so the direction is credible and the magnitude
+is not precise.
+
+`group_wait` is 0.00 ms at N=1 and N=2 post-fix and **now also at N=4**, where
+it was 4.26 ms before — the fast path widened the range in which a writer pays
+nothing for coordination it cannot use.
+
 **That regression was a code-versus-filing gap, and it is now fixed.** The
 spec assigns this team "a shared queue forms a group commit only when
 contention is detected"; a lone writer paying coordination it can never
@@ -297,6 +319,33 @@ method exists to catch, and it caught it — in our own favour, which is the
 direction that matters. The 0.696 figure appears nowhere in this file's
 conclusions.
 
+### Post-fix, same config: the median becomes a real effect, the tail does not
+
+Re-run at `01142b7e1` after the two fixes, **identical pre-declared config**
+(18 pairs, iters=6, order alternated), `postfix-n60-18.txt`:
+
+| set | pairs | p50 median | ON better | sign p | p99 median | ON better | sign p |
+|---|---|---|---|---|---|---|---|
+| PRE-FIX | 18 | 0.931 | 12/18 | 0.238 | 0.968 | 9/18 | 1.000 |
+| **POST-FIX** | 18 | **0.876** | **17/18** | **0.00014** | 0.921 | 12/18 | 0.238 |
+
+**p50 clears noise for the first time in this card**: 17 of 18 pairs favour
+grouping at p = 0.00014, about 12.4% better per-writer end-to-end latency at
+N=60 — at the same config that previously gave 12/18 and p = 0.24, so this is
+not a config hunted for after the fact.
+
+**p99 still does not separate.** 0.921 and 12 of 18 is directionally better
+than the pre-fix null but p = 0.238. The honest line: **grouping improves the
+median measurably and does not demonstrably change the tail.**
+
+**The caveat that cuts against our own good news, stated by the worker who
+produced the number.** Each set is internally paired, so ON-versus-OFF *within*
+a set is sound. The PRE-versus-POST axis is **not** paired — the sets were
+collected at different times on a host whose load moved (120→30, then 33→49).
+So: "post-fix, grouping beats no-grouping at N=60" is strongly defensible;
+"the fixes are what changed it" is plausible and consistent with the mechanism,
+but rests on an unpaired comparison and is written that way.
+
 **The win in this card is the count, not the scheduling.** Cutting 16 calls to
 8 removes about half the device time from every transaction unconditionally.
 Grouping redistributes a fixed budget and returns a low-N penalty plus a
@@ -329,7 +378,7 @@ filed; no expectation was re-baselined after seeing a number.
 | 3 | "Any plain `fsync` appearing on our durability path" | **NOT TRIGGERED.** Zero in the same three-column receipts |
 | 4 | "Overhead grows with D — measured count minus `D` minus `P` is not the constant 4" | **NOT TRIGGERED.** `count − D − P = 4` in all eight cells |
 | 5 | "Count grows with N" | **NOT TRIGGERED, both arms, both code states.** Pre-change 10.00 barriers/commit at N = 8–60; post-change the control arm holds exactly 6.000 across the same range while the shipped arm FALLS to 4.229. My filed prediction of "flat" was half wrong — see below |
-| 6 | "Grouping-ON shows no per-pair improvement over grouping-OFF at N ≥ 4" | **AMBIGUOUS — reported as ambiguous, not resolved in our favour** |
+| 6 | "Grouping-ON shows no per-pair improvement over grouping-OFF at N ≥ 4" | **AMBIGUOUS on pre-fix code** — reported as ambiguous, not resolved in our favour. **CLEARED at N=60 on post-fix code** (17/18, p = 0.00014). The rest of the declared range, N = 4–16 post-fix, is **not yet measured**, so no claim is made there |
 | 7 | "Bounded-at-16 shows worse p99 than unbounded at N=60" | **NOT TRIGGERED.** 18 pairs give no detectable p99 difference in either direction (9 of 18, p = 1.00) |
 
 ### Falsifier 6 is ambiguous, and that is the finding
