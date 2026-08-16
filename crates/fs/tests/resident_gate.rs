@@ -458,16 +458,16 @@ fn restart_or_reap_degrades_to_the_fold_compare() {
             oracle.law2_fingerprint(),
         )
     };
-    cache.bind_stamps(
-        "epoch-b",
-        std::sync::Arc::new(|| 0),
-    );
+    cache.bind_stamps("epoch-b", std::sync::Arc::new(|| 0));
     assert_eq!(
         cache.stamp_untouched("epoch-b", 0, Path::new("tasks")),
         Some(false),
         "dead-epoch leftovers read touched against the young chain"
     );
-    assert_eq!(cache.fold_at(Path::new("tasks")).expect("floor"), tasks_before);
+    assert_eq!(
+        cache.fold_at(Path::new("tasks")).expect("floor"),
+        tasks_before
+    );
     assert_eq!(cache.law2_fingerprint(), fingerprint_before);
 }
 
@@ -489,7 +489,9 @@ fn stamps_never_answer_for_the_dead() {
         "a live leaf answers through its parent chain"
     );
 
-    cache.overlay_remove(Path::new("a/dead.md")).expect("remove");
+    cache
+        .overlay_remove(Path::new("a/dead.md"))
+        .expect("remove");
     assert_eq!(
         cache.stamp_untouched("epoch-a", u64::MAX, Path::new("a/dead.md")),
         None,

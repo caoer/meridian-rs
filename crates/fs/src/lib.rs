@@ -597,7 +597,7 @@ impl StatKey {
 /// Each resident directory node carries `last_seq` — the highest journal seq
 /// beneath it — maintained HERE, by the same guarded write path that
 /// maintains the digests, so the hash instrument audits the stamp instrument
-/// and the two cannot drift silently (the ZFS hole_birth lesson). Once
+/// and the two cannot drift silently (the ZFS `hole_birth` lesson). Once
 /// [`bind_stamps`](Self::bind_stamps) installs a journal binding, every tree
 /// advance — own-write overlay, feed apply, an observation absorbing foreign
 /// change — stamps the touched ancestor chains with `clock() + 1`: one past
