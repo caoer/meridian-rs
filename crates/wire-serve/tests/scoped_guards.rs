@@ -366,3 +366,67 @@ fn a_disjoint_birth_moves_the_world_token_and_not_the_file_token() {
     assert_ne!(world_before, world_after, "the world token moved");
     assert_ne!(file_before, world_before, "two grains, two tokens");
 }
+
+// ── Malformed premise values — input, never a moved world ──────────────────
+
+/// Dogfood break #7 (88877785): a valid mint token with ONE LEADING SPACE is
+/// a damaged spelling, not a moved world. The refusal is `bad_request`
+/// quoting the raw bytes so the space is visible — never a
+/// `fingerprint_mismatch` whose expected/live render character-identical.
+#[test]
+fn a_spaced_token_refuses_as_bad_input_not_as_a_moved_premise() {
+    let (_dir, root) = ws();
+    let mut premise = file_premise(&root);
+    let PremiseValue::Token(token) = premise.value.clone() else {
+        panic!("file_premise mints a token");
+    };
+    let spaced = format!(" {token}");
+    premise.value = PremiseValue::Token(spaced.clone());
+
+    let err = run(&root, &args(vec![premise])).expect_err("a damaged spelling refuses");
+    assert_eq!(
+        err.code,
+        ErrorCode::BadRequest,
+        "an input defect, not a moved premise: {err:?}"
+    );
+    let message = err.message.expect("teaching");
+    assert!(
+        message.contains(&format!("{spaced:?}")),
+        "the raw bytes are quoted so the space is visible: {message}"
+    );
+    assert!(
+        !message.contains("moved"),
+        "no moved-premise story for damaged input: {message}"
+    );
+}
+
+/// The same law at the root grain: a spaced world token on the sugar slot
+/// (`if_root`) is bad input, not a stale world.
+#[test]
+fn a_spaced_root_token_on_if_root_refuses_as_bad_input() {
+    let (_dir, root) = ws();
+    let world = scope_token(&root, None, None).expect("mint").expect("root");
+    let mut a = args(Vec::new());
+    a.if_root = Some(wire::Root(format!(" {world}")));
+
+    let err = run(&root, &a).expect_err("a damaged spelling refuses");
+    assert_eq!(err.code, ErrorCode::BadRequest, "{err:?}");
+}
+
+/// Garbage that never was a token (not `b3…:<64hex>`, not `absent`) is the
+/// same input class — and the quoted spelling makes truncation visible.
+#[test]
+fn a_truncated_token_refuses_as_bad_input() {
+    let (_dir, root) = ws();
+    let premise = Premise {
+        scope: Some(PathBuf::from("a/target.md")),
+        value: PremiseValue::Token("b3c:7affb769".into()),
+    };
+    let err = run(&root, &args(vec![premise])).expect_err("not a token");
+    assert_eq!(err.code, ErrorCode::BadRequest, "{err:?}");
+    let message = err.message.expect("teaching");
+    assert!(
+        message.contains("\"b3c:7affb769\""),
+        "the raw spelling is quoted: {message}"
+    );
+}
