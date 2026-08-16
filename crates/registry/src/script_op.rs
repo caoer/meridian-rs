@@ -810,6 +810,33 @@ fn touch_premises(
     premises
 }
 
+/// Touch-set premises plus the caller's own sugar/list as widening.
+/// Pair faults that escaped decode refuse here, same teaching.
+fn commit_premises(
+    request: &ScriptArgs,
+    eval: &effects::ScriptEval,
+    world: &WorkspaceEngine,
+    entry: &str,
+) -> Result<(Option<wire::Root>, Vec<wire_serve::guard::Premise>), CommitLeg> {
+    let (if_root, extra) = wire_serve::guard::lower_premises(
+        request.if_root.clone(),
+        request.scope.clone(),
+        &request.guards,
+    )
+    .map_err(|error| {
+        CommitLeg::Refused(Refusal::minted(
+            Recovery::Fix,
+            error
+                .message
+                .clone()
+                .unwrap_or_else(|| format!("{:?}", error.code)),
+        ))
+    })?;
+    let mut premises = touch_premises(eval, world, entry);
+    premises.extend(extra);
+    Ok((if_root, premises))
+}
+
 /// The one guarded splice, issued daemon-side through the same choke-point
 /// every wire splice takes — `Origin::Wire`, the ring advanced on a real
 /// commit (this lane mints Deltas; the CLI put lane's row-12 gap does not
@@ -829,24 +856,10 @@ fn commit(
     entry: &str,
 ) -> CommitLeg {
     let paths = eval.content_paths();
-    let (if_root, extra) = match wire_serve::guard::lower_premises(
-        request.if_root.clone(),
-        request.scope.clone(),
-        &request.guards,
-    ) {
+    let (if_root, premises) = match commit_premises(request, eval, world, entry) {
         Ok(pair) => pair,
-        Err(error) => {
-            return CommitLeg::Refused(Refusal::minted(
-                Recovery::Fix,
-                error
-                    .message
-                    .clone()
-                    .unwrap_or_else(|| format!("{:?}", error.code)),
-            ));
-        }
+        Err(leg) => return leg,
     };
-    let mut premises = touch_premises(eval, world, entry);
-    premises.extend(extra);
     // H1 order: the mint store and ring handles are taken outside any engine
     // borrow (none is held here — the entry world is an Arc, not a lock).
     let mints = registry.read_mints(ws);
