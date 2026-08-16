@@ -1,56 +1,59 @@
-//! The mechanical downgrade fence — pre-cutover blocker B-03.
+//! The mechanical downgrade fence — dormant B-03 mechanism.
 //!
-//! Law: `docs/node-rev-merkle-spec.md` §4.2.5 (the cutover boundary) and the
-//! authority contract §2.4 (the frozen pin `solve-codex-cross-process-authority.md`,
-//! sha256 `95f7c248…`). After the hash-law cutover, an OLD direct binary must be
-//! unable to take `.meridian/write.lock` and mint an old-law root. Teaching new
-//! clients is not a fence; this module is the mechanical one.
+//! Standing law (ZT on the b03 card, 2026-08-15): B-03 is not a cutover
+//! blocker. There are no old-binary users. The tombstone never activates.
+//! No-return is the durable B-04 record. This module ships the mechanism
+//! built and tested; [`activate`] has no production caller.
 //!
-//! # The shape (§2.4's candidate, proven by the B-03 harness)
+//! The mechanism's own citations: `docs/node-rev-merkle-spec.md` §4.2.5 and
+//! the authority contract §2.4 (frozen pin
+//! `solve-codex-cross-process-authority.md`, sha256 `95f7c248…`).
 //!
-//! The legacy writer opens the lockfile with create/write semantics
+//! # The shape (what the tests prove)
+//!
+//! The live writer opens the lockfile with create/write semantics
 //! ([`crate::WriteLock::acquire`]) and then flocks it. The fence replaces the
 //! `write.lock` PATHNAME with a symlink whose target is a directory
-//! (`.meridian/fence.tombstone.d`): the legacy `open(O_CREAT|O_WRONLY)` follows
-//! the symlink, hits a directory, and fails (`EISDIR`) — before any flock, before
-//! any staging. Post-cutover (v2) code never opens that pathname, so the fence
-//! costs the new world nothing. rename(2) of the symlink over the lockfile is
-//! atomic within `.meridian/`, which gives the activation a single commit point.
+//! (`.meridian/fence.tombstone.d`): `open(O_CREAT|O_WRONLY)` follows the
+//! symlink, hits a directory, and fails (`EISDIR`) — before any flock, before
+//! any staging. The serving write door still uses this pathname today, which
+//! is why the fence stays unactivated: flipping it would refuse the current
+//! writer too. rename(2) of the symlink over the lockfile is atomic within
+//! `.meridian/`, which gives the (test-only) activation a single commit point.
 //!
-//! # Activation is a separate, explicit, durable act
+//! # Activation is dormant
 //!
 //! Nothing in this module runs on any read or write path. [`activate`] is
-//! invoked ONLY by the cutover state machine at the cutover's no-return
-//! boundary (merged plan §6 step 7). The tombstone is IRREVERSIBLE by design —
-//! there is no deactivate — and activating it early is the no-rollback error
-//! class, which is why activation exists as its own verb instead of riding any
-//! door. This crate's landing (card b03-downgrade-fence) ships the mechanism
-//! BUILT AND TESTED with zero callers of [`activate`] outside tests.
+//! invoked only from tests. A cutover does not call it: the no-return record
+//! is B-04, not this tombstone. The tombstone is irreversible by construction
+//! — there is no deactivate — which is why activation is its own verb instead
+//! of riding any door, and why it stays uncalled.
 //!
-//! # The durable order, and why it is load-bearing
+//! # The durable order, and why the tests keep it
 //!
 //! The activation ladder ([`ActivationPhase`]) makes the tombstone directory
 //! durable BEFORE the symlink is renamed over the lockfile. The order is not
-//! style: the legacy open carries `O_CREAT`, so a DANGLING symlink at
-//! `write.lock` would let the old binary create the missing target through the
-//! link and take the lock — the fence would be a hole exactly when it must
-//! hold. Sequencing dir-durability before the rename makes that state
-//! unreachable through any crash: after a crash, either the rename is absent
-//! (fence inactive, activation idempotently re-runnable) or the rename is
-//! present and its target directory is already durable (fence active). The
-//! harness constructs the dangling state directly as a counterexample cell.
+//! style: the live open carries `O_CREAT`, so a DANGLING symlink at
+//! `write.lock` would let a later `WriteLock::acquire` create the missing
+//! target through the link and take the lock — the fence would be a hole
+//! exactly when a test expected it to hold. Sequencing dir-durability before
+//! the rename makes that state unreachable through any crash: after a crash,
+//! either the rename is absent (fence inactive, activation idempotently
+//! re-runnable) or the rename is present and its target directory is already
+//! durable (fence active). The harness constructs the dangling state directly
+//! as a counterexample cell.
 //!
 //! # The stated residual window
 //!
-//! [`activate`] holds the legacy exclusive flock across installation, so any
-//! old binary whose `flock()` lands during activation refuses `WouldBlock`
-//! exactly as it would against a concurrent writer. The residual: an old
-//! binary that called `open()` before the rename, was descheduled across the
-//! ENTIRE activation, and calls `flock()` only after the activation holder's
-//! fd closes could still lock the orphaned inode. [`ActivatedFence`] therefore
-//! keeps that fd open; the cutover machine holds it for the life of the
-//! process. This is the same class as the contract's stated external-race
-//! residual (editors, git, arbitrary bash) — stated, bounded, not silent.
+//! [`activate`] holds the exclusive flock across installation, so any
+//! concurrent `WriteLock::acquire` whose `flock()` lands during activation
+//! refuses `WouldBlock` exactly as it would against a concurrent writer. The
+//! residual: a caller that called `open()` before the rename, was descheduled
+//! across the ENTIRE activation, and calls `flock()` only after the activation
+//! holder's fd closes could still lock the orphaned inode. [`ActivatedFence`]
+//! therefore keeps that fd open for the life of the process. This is the same
+//! class as the contract's stated external-race residual (editors, git,
+//! arbitrary bash) — stated, bounded, not silent.
 
 use std::fs::{self, File};
 use std::io;
@@ -83,7 +86,7 @@ const STAGED_LINK: &str = "write.lock.fence-staged";
 /// (the same posture B-04 mandates for the cutover record).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FenceStatus {
-    /// `write.lock` is absent or a regular file — the pre-cutover world. A
+    /// `write.lock` is absent or a regular file — the unfenced world. A
     /// staged-but-unrenamed symlink also reports this: staging commits nothing.
     NotInstalled,
     /// `write.lock` is a symlink to the durable tombstone directory with the
@@ -94,8 +97,8 @@ pub enum FenceStatus {
 /// The activation ladder, in commit order. Each phase names the on-disk state
 /// AFTER that step completes; a crash inside a step leaves the previous
 /// phase's state or a prefix of the current one. [`activate_until`] constructs
-/// each state exactly — the crash-phase harness runs the pinned old binary
-/// against every rung, and the cutover card rehearses the same ladder.
+/// each state exactly — the crash-phase harness drives
+/// [`crate::WriteLock::acquire`] against every rung.
 ///
 /// The commit point is [`ActivationPhase::Renamed`]: every phase before it
 /// leaves the fence INACTIVE (the legacy writer is unaffected and activation
@@ -120,9 +123,9 @@ pub enum ActivationPhase {
 }
 
 /// A completed activation. Holds the legacy exclusive flock taken before the
-/// rename (see the module doc's residual window) — the cutover machine keeps
-/// this alive for the rest of the process; dropping it merely closes the fd
-/// on the orphaned lockfile inode.
+/// rename (see the module doc's residual window) — a caller that invoked
+/// [`activate`] keeps this alive for the rest of the process; dropping it
+/// merely closes the fd on the orphaned lockfile inode.
 #[derive(Debug)]
 pub struct ActivatedFence {
     /// `None` when [`activate`] found the fence already active (idempotent
@@ -171,7 +174,7 @@ fn state_error(found: impl Into<String>) -> io::Error {
 }
 
 /// Certify the fence state of `root`. Answers [`FenceStatus::NotInstalled`]
-/// for every legal pre-cutover state (no `.meridian`, no lockfile, a regular
+/// for every legal unfenced state (no `.meridian`, no lockfile, a regular
 /// lockfile, staging leftovers) and [`FenceStatus::Active`] only for the exact
 /// shape [`activate`] commits. Anything else errors loud ([`FenceStateError`])
 /// — a fence check that guesses is worse than none.
@@ -242,10 +245,9 @@ fn sync_dir(path: &Path) -> io::Result<()> {
 }
 
 /// Run the activation ladder up to and including `until`, WITHOUT taking the
-/// legacy flock and WITHOUT completing the remaining rungs. This exists for
-/// exactly two callers: the crash-phase harness (each rung is a post-crash
-/// state — a crashed process holds no flock, so the harness must not either)
-/// and the cutover card's rehearsal. Production activation is [`activate`].
+/// exclusive flock and WITHOUT completing the remaining rungs. Test-only:
+/// each rung is a post-crash state — a crashed process holds no flock, so the
+/// harness must not either. There is no production activation.
 ///
 /// Idempotent per rung: re-running a prefix over its own leftovers is legal —
 /// that is what crash recovery does.
@@ -307,22 +309,21 @@ pub fn activate_until(root: &WorkspaceRoot, until: ActivationPhase) -> io::Resul
     sync_dir(&dir)
 }
 
-/// Activate the downgrade fence on `root` — the IRREVERSIBLE tombstone.
+/// Install the downgrade fence on `root` — the irreversible tombstone.
 ///
-/// **Invoked only by the cutover state machine at the no-return boundary**
-/// (spec §4.2.5; merged plan §6 step 7). Activating it anywhere else is the
-/// no-rollback error class: there is no deactivation, and every pre-cutover
-/// binary loses write access to the workspace permanently.
+/// Dormant: no production caller. Tests only. The hash-law cutover does not
+/// invoke this; no-return is the B-04 record. Kept so the mechanism stays
+/// proven. There is no deactivate.
 ///
-/// Holds the legacy exclusive flock across installation (contract §2.4:
-/// "Installation occurs while holding the old EX"), so concurrent old writers
-/// refuse `workspace_busy` rather than race the rename. Idempotent: an
-/// already-active fence returns `Ok` without touching anything.
+/// Holds the exclusive flock across installation, so a concurrent
+/// [`crate::WriteLock::acquire`] refuses `WouldBlock` rather than racing the
+/// rename. Idempotent: an already-active fence returns `Ok` without touching
+/// anything.
 ///
 /// # Errors
-/// [`io::ErrorKind::WouldBlock`] when an old writer currently holds the
-/// legacy lock (retry after it exits); [`FenceStateError`] when `write.lock`
-/// holds a state this mechanism did not make; any other I/O failure.
+/// [`io::ErrorKind::WouldBlock`] when a writer currently holds the lock
+/// (retry after it exits); [`FenceStateError`] when `write.lock` holds a
+/// state this mechanism did not make; any other I/O failure.
 pub fn activate(root: &WorkspaceRoot) -> io::Result<ActivatedFence> {
     if status(root)? == FenceStatus::Active {
         return Ok(ActivatedFence { _legacy_lock: None });
