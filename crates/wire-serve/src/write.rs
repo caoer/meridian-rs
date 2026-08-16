@@ -1648,15 +1648,16 @@ pub fn create(
 /// change surface.
 ///
 /// Order: path confinement → the write flock (D9) → door-entry observation
-/// (`root_before` / world guard) → a domain snapshot for the referential-check
-/// corpus only → world guard (§5.1) → load the live file (absent ⇒)
-/// `file_not_found`) → the `if_file_rev` demand (absent ⇒ `guard_required`;
-/// deletion has no recovery, so the token is a precondition from EVERY
-/// origin) → the remove-what-you-read CAS → the referential check (any
-/// inbound wikilink/embed/ambient-pin ⇒ `remove_refused{referrers}`) → the
-/// gate seam over the death's before-state → unlink → root advance → death
-/// Delta. Check and unlink share the flock: a cooperating writer cannot land
-/// a link between them.
+/// (`root_before` / world guard) → world guard (§5.1) → load the live file
+/// (absent ⇒ `file_not_found`) → the `if_file_rev` demand (absent ⇒
+/// `guard_required`; deletion has no recovery, so the token is a
+/// precondition from EVERY origin) → the remove-what-you-read CAS → the
+/// referential check (`query::backlinks` + `query::lock_pin_referrers` over
+/// hash-domain file bytes; never `domain_snapshot`) → any inbound
+/// wikilink/embed/ambient-pin ⇒ `remove_refused{referrers}` → the gate seam
+/// over the death's before-state → unlink → `overlay_remove` +
+/// `overlay_root` → death Delta. Check and unlink share the flock: a
+/// cooperating writer cannot land a link between them.
 ///
 /// # Errors
 /// `bad_path`, `root_mismatch`, `file_not_found` (nothing to remove),
@@ -1680,11 +1681,10 @@ pub fn remove(
     let flock = acquire_write_lock(root)?;
 
     // Door-entry observation seeds the cache and answers root_before / the
-    // world guard. The referential check still reads a domain snapshot
-    // (owned by bug-remove-corpus-snapshot — this card does not retire it).
+    // world guard. The referential check is a different read (query
+    // instruments over hash-domain bytes), never a second fold.
     let root_before = observed_root(root)?;
     world_guard(args.if_root.as_ref(), &root_before)?;
-    let (domain_files, _snapshot_root) = crate::domain_snapshot(root)?;
 
     // Load what is there — you cannot remove nothing (`file_not_found`, env).
     let before_doc = load_doc(root, &args.path)?;
@@ -1707,8 +1707,10 @@ pub fn remove(
     // The referential check, inside the same critical section as the unlink
     // (§ A.3: checking outside the lock is a TOCTOU hole — a link landed
     // between check and unlink would be stranded by a door that just
-    // certified nothing pointed at the file).
-    let referrers = inbound_referrers(&args.path.0, domain_files);
+    // certified nothing pointed at the file). Existing instruments:
+    // query::backlinks and query::lock_pin_referrers. Their input is
+    // hash-domain bytes, not a domain_snapshot fold.
+    let referrers = inbound_referrers(&args.path.0, referential_files(root)?);
     if !referrers.is_empty() {
         return Err(remove_refused(&args.path, referrers));
     }
@@ -1779,6 +1781,26 @@ pub fn remove(
         verdicts,
         dry: false,
     })
+}
+
+/// Hash-domain file bytes for the referential check — list via
+/// [`fs::hash_domain`], read each UTF-8-named member, do not digest or fold.
+///
+/// The inbound instruments are [`query::backlinks`] and
+/// [`query::lock_pin_referrers`]; this is only their corpus input. A new
+/// reverse-link index is a different card. Not counted by [`fs::fold_count`].
+fn referential_files(root: &fs::WorkspaceRoot) -> Result<fs::DomainFiles, Box<ErrorBody>> {
+    let domain = fs::domain::Domain::load(root).map_err(|e| io_refusal(e.to_string()))?;
+    let rels = fs::hash_domain(root, &domain).map_err(|e| io_refusal(e.to_string()))?;
+    let mut files = Vec::with_capacity(rels.len());
+    for rel in rels {
+        let Some(rel_str) = rel.to_str() else {
+            continue;
+        };
+        let bytes = std::fs::read(root.0.join(&rel)).map_err(|e| io_refusal(e.to_string()))?;
+        files.push((rel_str.to_owned(), bytes));
+    }
+    Ok(files)
 }
 
 /// Every inbound reference to `target` in the corpus, aggregated to the
@@ -6295,6 +6317,49 @@ mod resident_write_path {
             frame.delta.root_after,
             ambient_root(&root).expect("oracle"),
             "root_after == the independent full-corpus law-1 fold"
+        );
+    }
+
+    /// Quality gate: a warm remove of an unreferenced file on a 16+ member
+    /// corpus does not increment `leaves_read` by the corpus size. Referential
+    /// I/O is `hash_domain` + byte reads, not a cache-backed merkle fold.
+    #[test]
+    fn remove_of_unreferenced_file_does_not_reread_the_corpus_through_the_cache() {
+        let (dir, root) = ws();
+        for i in 0..16 {
+            page(&dir, &format!("notes/bystander{i}.md"), "nothing");
+        }
+        page(&dir, "notes/plan.md", "August");
+        page(&dir, "notes/victim.md", "gone");
+
+        splice(
+            &root,
+            None,
+            &splice_args("notes/plan.md", "August", "w1"),
+            &[],
+            None,
+        )
+        .expect("cold splice observes the corpus");
+        // Settle the spoiled member so the measured window is a warm observe.
+        let mut settle = splice_args("notes/plan.md", "w1", "w2");
+        settle.dry = true;
+        splice(&root, None, &settle, &[], None).expect("settling dry splice");
+
+        let cache = write_cache(&root);
+        let reads_before = cache.lock().unwrap().leaves_read();
+        let rev = live_rev(&root, "notes/victim.md");
+        remove(&root, None, &remove_args("notes/victim.md", rev), &[])
+            .expect("unreferenced victim dies");
+        let reads_after = cache.lock().unwrap().leaves_read();
+        assert_eq!(
+            reads_after - reads_before,
+            0,
+            "a warm remove must not re-read the corpus through the cache \
+             (referential I/O is not leaves_read)"
+        );
+        assert!(
+            !dir.path().join("notes/victim.md").exists(),
+            "the unreferenced file is gone"
         );
     }
 
