@@ -62,7 +62,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let mut door = write_ipc::connect(&resolved.workspace)?;
     let body = write_ipc::call(&mut door, &request)
         .map_err(|e| engine::json_refusal(parsed.format, &resolved.workspace, &e))?;
-    let body = write_ipc::project_body(body);
+    let body = write_ipc::project_body(&body);
 
     match parsed.format {
         Format::Json => {

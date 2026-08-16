@@ -3,7 +3,7 @@
 use std::path::Path;
 
 /// SIGTERM the resident daemon whose pidfile lives under this cache home.
-pub fn reap_daemon(cache_home: &Path) {
+pub(crate) fn reap_daemon(cache_home: &Path) {
     let pidfile = cache_home.join("registry").join("daemon.pid");
     let Ok(text) = std::fs::read_to_string(pidfile) else {
         return;

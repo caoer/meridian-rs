@@ -82,7 +82,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let mut door = write_ipc::connect(&resolved.workspace)?;
     let body = write_ipc::call(&mut door, &request)
         .map_err(|e| refusal(&parsed, &resolved.workspace, &e))?;
-    let body = write_ipc::project_body(body);
+    let body = write_ipc::project_body(&body);
 
     // The findings leg of the silent check: a passing rehearsal says nothing, so anything the
     // engine found has to leave through a non-zero exit or it is lost.
