@@ -38,7 +38,10 @@ impl Drop for Sandbox {
 }
 
 fn reap_daemon(cache_home: &Path) {
-    let pidfile = cache_home.join("registry").join("daemon.pid");
+    let pidfile = cache_home
+        .join("meridian")
+        .join("registry")
+        .join("daemon.pid");
     let Ok(text) = std::fs::read_to_string(pidfile) else {
         return;
     };
@@ -103,7 +106,11 @@ impl Sandbox {
             .stderr(Stdio::null())
             .spawn()
             .expect("spawn daemon");
-        let socket = self.cache_home.join("registry").join("daemon.sock");
+        let socket = self
+            .cache_home
+            .join("meridian")
+            .join("registry")
+            .join("daemon.sock");
         let client = registry::Client::new(socket);
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {

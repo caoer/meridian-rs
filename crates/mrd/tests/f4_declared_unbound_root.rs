@@ -108,12 +108,8 @@ impl Sandbox {
     }
 
     fn put(&self, args: &[&str], edits: &str) -> Output {
-        let mut owned: Vec<&str> = args.to_vec();
-        if !owned.iter().any(|a| *a == "--force") {
-            owned.push("--force");
-        }
         let mut child = self
-            .command(&owned)
+            .command(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
