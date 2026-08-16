@@ -41,8 +41,9 @@
 //! complete as of the write.
 //!
 //! # The rescan ladder — every cause NAMED, throttled (merkle-spec §6.4)
-//! Doubt — a kernel overflow, a watcher error, the set outgrowing
-//! [`DIRTY_CAP`], or an explicit suspicious-only trigger through
+//! Doubt — a kernel overflow, a watcher error, a new directory (or any
+//! non-member path that can hide members before its watch arms), the set
+//! outgrowing [`DIRTY_CAP`], or an explicit suspicious-only trigger through
 //! [`WorkspaceFeed::rescan`] — collapses the set to ALL-DIRTY under a named
 //! [`RescanCause`], recorded and reported as event loss
 //! ([`fs::stable::FeedGen::note_loss`], so guard currency is UNTRUSTED until
@@ -73,7 +74,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use notify::event::{AccessKind, AccessMode};
+use notify::event::{AccessKind, AccessMode, CreateKind};
 use notify::{EventKind, RecursiveMode, Watcher as _};
 
 /// The dirty set's size floor for the all-dirty collapse. Sized well above
@@ -98,7 +99,9 @@ const RESCAN_RECORD_CAP: usize = 64;
 /// pre-merge ruling 3's suspicious-only trigger set).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RescanCause {
-    /// A watcher error: event loss until proven otherwise.
+    /// Event loss until proven otherwise: a watcher error, or a new
+    /// directory (or other non-member path) that can hide members before
+    /// its watch arms.
     MissedEvent,
     /// Kernel event-queue overflow (the rescan flag), or the registry-held
     /// set outgrowing [`DIRTY_CAP`].
@@ -308,37 +311,41 @@ impl WorkspaceFeed {
         let mut watcher =
             notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
                 let mut s = sink.state.lock().unwrap_or_else(PoisonError::into_inner);
-                match event {
-                    Ok(event) => {
-                        if event.need_rescan() {
-                            s.collapse(RescanCause::Overflow);
-                            return;
-                        }
-                        if !relevant(event.kind) {
-                            return;
-                        }
-                        for path in &event.paths {
-                            let Ok(rel) = path.strip_prefix(&root) else {
-                                continue;
-                            };
-                            // §6.4 cookie sighting — UPSTREAM of the member
-                            // filter: the sentinel is the ordered stream's
-                            // proof-of-delivery, never dirt. A torn or
-                            // vanished read proves nothing and skips (the
-                            // close event re-delivers; at worst a barrier
-                            // times out to its floor — never a false Seen).
-                            if rel == Path::new(COOKIE_REL) {
-                                if let Some(serial) = read_serial(path) {
-                                    s.cookie_seen = s.cookie_seen.max(serial);
-                                    sink.cookie.notify_all();
-                                }
-                                continue;
-                            }
-                            s.insert(rel);
-                        }
+                if let Ok(event) = event {
+                    if event.need_rescan() {
+                        s.collapse(RescanCause::Overflow);
+                        sink.cookie.notify_all();
+                        return;
                     }
+                    if !relevant(event.kind) {
+                        return;
+                    }
+                    for path in &event.paths {
+                        let Ok(rel) = path.strip_prefix(&root) else {
+                            continue;
+                        };
+                        // §6.4 cookie sighting — UPSTREAM of the member
+                        // filter: the sentinel is the ordered stream's
+                        // proof-of-delivery, never dirt. A torn or
+                        // vanished read proves nothing and skips (the
+                        // close event re-delivers; at worst a barrier
+                        // times out to its floor — never a false Seen).
+                        if rel == Path::new(COOKIE_REL) {
+                            if let Some(serial) = read_serial(path) {
+                                s.cookie_seen = s.cookie_seen.max(serial);
+                                sink.cookie.notify_all();
+                            }
+                            continue;
+                        }
+                        s.admit(rel, path, event.kind);
+                    }
+                    if s.doubt.is_some() {
+                        sink.cookie.notify_all();
+                    }
+                } else {
                     // A watcher error is event loss until proven otherwise.
-                    Err(_) => s.collapse(RescanCause::MissedEvent),
+                    s.collapse(RescanCause::MissedEvent);
+                    sink.cookie.notify_all();
                 }
             })?;
         // The sentinel's directory must exist BEFORE the recursive watch is
@@ -363,18 +370,22 @@ impl WorkspaceFeed {
 
     /// The §6.4 currency barrier: write the sentinel at [`COOKIE_REL`] and
     /// wait (bounded) to see it return through the ordered event stream.
-    /// `Seen` proves every event before the write is already in the dirty
-    /// set — the O(1) currency proof. The caller takes and applies the set
-    /// AFTER a `Seen`, never before, so the applied memo is complete as of
-    /// the question.
+    /// `Seen` proves every captured event before the write is already in
+    /// the dirty set, and that no capture-gap doubt is open — the O(1)
+    /// currency proof. The caller takes and applies the set AFTER a
+    /// `Seen`, never before, so the applied memo is complete as of the
+    /// question.
     ///
     /// Precisely: `Seen` proves ORDERED DELIVERY of everything the kernel
-    /// stream captured. Capture itself has one known gap — files landing in
-    /// a brand-new directory before its watch arms (see the arming note in
-    /// [`Self::start`]; the sentinel's own directory is pre-created there
-    /// exactly so the cookie never sits in that gap). That residue is a
-    /// named reason for doubt on the §6.4 suspicious-only ladder, not this
-    /// barrier's to close.
+    /// stream captured, AND that no capture-gap doubt is open. Capture has
+    /// one known gap — files landing in a brand-new directory before its
+    /// watch arms (see the arming note in [`Self::start`]). The watcher
+    /// collapses that path as [`RescanCause::MissedEvent`]. `Seen` is
+    /// illegal while that doubt is open: the barrier returns
+    /// [`CookieOutcome::Unproven`] immediately and does not spend
+    /// `timeout` (the write-path cookie budget is unchanged). The
+    /// sentinel's own directory is still pre-created so the cookie itself
+    /// never sits in the gap.
     pub(crate) fn cookie_barrier(&self, workspace: &Path, timeout: Duration) -> CookieOutcome {
         self.cookie_barrier_at(workspace, Path::new(COOKIE_REL), timeout)
     }
@@ -393,6 +404,16 @@ impl WorkspaceFeed {
         if member_candidate(rel) {
             return CookieOutcome::Refused;
         }
+        {
+            let s = self
+                .sync
+                .state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if s.doubt.is_some() {
+                return CookieOutcome::Unproven;
+            }
+        }
         let serial = self.cookie_serial.fetch_add(1, Ordering::Relaxed) + 1;
         let abs = workspace.join(rel);
         let write = abs
@@ -409,6 +430,9 @@ impl WorkspaceFeed {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         loop {
+            if s.doubt.is_some() {
+                return CookieOutcome::Unproven;
+            }
             if s.cookie_seen >= serial {
                 return CookieOutcome::Seen;
             }
@@ -515,6 +539,20 @@ impl FeedState {
         Pending::Paths(std::mem::take(&mut self.dirty).into_iter().collect())
     }
 
+    /// Admit one kernel path: a member candidate dirties the set; a
+    /// hideable non-member (a new directory, a renamed-in directory)
+    /// collapses under [`RescanCause::MissedEvent`] so a later cookie
+    /// cannot `Seen` a capture gap.
+    fn admit(&mut self, rel: &Path, abs: &Path, kind: EventKind) {
+        if member_candidate(rel) {
+            self.insert(rel);
+            return;
+        }
+        if can_hide_members(rel, abs, kind) {
+            self.collapse(RescanCause::MissedEvent);
+        }
+    }
+
     /// Admit one rel path through the structural filter; collapse at the cap.
     /// Every accepted event advances the shared generation cell — the §6.2
     /// fence's watcher half (an event landing inside a read bracket spoils
@@ -578,6 +616,30 @@ fn member_candidate(rel: &Path) -> bool {
         && rel
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("md"))
+}
+
+/// A non-member path whose children would be member candidates — a new
+/// directory, or a rename that lands one. Dot-prefixed trees cannot hide
+/// members (the structural filter already excludes them).
+fn hideable_prefix(rel: &Path) -> bool {
+    let mut any_segment = false;
+    for component in rel.components() {
+        let Component::Normal(seg) = component else {
+            return false;
+        };
+        let Some(seg) = seg.to_str() else {
+            return false;
+        };
+        if fs::domain::dot_segment(seg) {
+            return false;
+        }
+        any_segment = true;
+    }
+    any_segment
+}
+
+fn can_hide_members(rel: &Path, abs: &Path, kind: EventKind) -> bool {
+    hideable_prefix(rel) && (matches!(kind, EventKind::Create(CreateKind::Folder)) || abs.is_dir())
 }
 
 /// Parse a sighted cookie's serial. `None` (torn or vanished mid-read) is
@@ -777,6 +839,70 @@ mod tests {
         assert!(!member_candidate(Path::new("")));
     }
 
+    /// A hideable directory is named doubt, not a silent drop. A non-md
+    /// file and a dot-prefixed directory cannot hide members.
+    #[test]
+    fn a_hideable_directory_collapses_as_missed_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join("new")).unwrap();
+        std::fs::write(root.join("data.json"), "{}\n").unwrap();
+        std::fs::create_dir(root.join(".git")).unwrap();
+
+        let mut s = FeedState::default();
+        s.admit(
+            Path::new("new"),
+            &root.join("new"),
+            EventKind::Create(CreateKind::Folder),
+        );
+        assert_eq!(s.doubt, Some(RescanCause::MissedEvent));
+        assert_eq!(s.rescans.as_slice(), &[RescanCause::MissedEvent][..]);
+        assert!(s.dirty.is_empty());
+
+        let mut file = FeedState::default();
+        file.admit(
+            Path::new("data.json"),
+            &root.join("data.json"),
+            EventKind::Create(CreateKind::File),
+        );
+        assert_eq!(file.doubt, None);
+        assert!(file.dirty.is_empty());
+
+        let mut dot = FeedState::default();
+        dot.admit(
+            Path::new(".git"),
+            &root.join(".git"),
+            EventKind::Create(CreateKind::Folder),
+        );
+        assert_eq!(dot.doubt, None, "dot-prefixed trees cannot hide members");
+    }
+
+    /// `Seen` is illegal while a capture-gap doubt is open: the barrier
+    /// returns `Unproven` without minting `CookieTimeout` (the cookie is
+    /// not what failed).
+    #[test]
+    fn seen_is_illegal_while_new_directory_doubt_is_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let feed = WorkspaceFeed::start(&root, fs::stable::FeedGen::default()).expect("watcher");
+        assert_eq!(
+            feed.cookie_barrier(&root, Duration::from_secs(5)),
+            CookieOutcome::Seen,
+            "quiet already-watched tree still Sees"
+        );
+        feed.rescan(RescanCause::MissedEvent);
+        assert_eq!(
+            feed.cookie_barrier(&root, Duration::from_secs(5)),
+            CookieOutcome::Unproven,
+            "open doubt cannot produce Seen"
+        );
+        assert_eq!(
+            feed.rescan_record(),
+            vec![RescanCause::MissedEvent],
+            "an already-open doubt does not spend the cookie timeout"
+        );
+    }
+
     /// Read-side kinds never feed the set — the engine's own observation
     /// reads must not dirty what they read — except close-after-write.
     #[test]
@@ -793,7 +919,7 @@ mod tests {
             AccessMode::Write
         ))));
         assert!(relevant(EventKind::Modify(notify::event::ModifyKind::Any)));
-        assert!(relevant(EventKind::Create(notify::event::CreateKind::Any)));
+        assert!(relevant(EventKind::Create(CreateKind::Any)));
         assert!(relevant(EventKind::Remove(notify::event::RemoveKind::Any)));
         assert!(relevant(EventKind::Any));
     }
@@ -1052,6 +1178,59 @@ mod tests {
             cache.feed_gen().generation(),
             handle.generation(),
             "the reset memo still rides the same generation cell"
+        );
+    }
+
+    /// Measurement, not a gate: how often does mkdir+child lose the child
+    /// event on THIS backend? Run with `--ignored --nocapture` on each OS.
+    /// Unfixed code: `collapsed` stays 0; `missed` vs `captured` is the gap
+    /// rate. Inherited comments are not a measurement.
+    #[test]
+    #[ignore = "measurement probe; run on each watch backend"]
+    fn measure_newdir_child_capture() {
+        const TRIALS: u32 = 20;
+        let mut captured = 0u32;
+        let mut missed = 0u32;
+        let mut collapsed = 0u32;
+        for i in 0..TRIALS {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().canonicalize().unwrap();
+            let feed =
+                WorkspaceFeed::start(&root, fs::stable::FeedGen::default()).expect("watcher");
+            assert_eq!(
+                feed.cookie_barrier(&root, Duration::from_secs(5)),
+                CookieOutcome::Seen,
+                "trial {i}: watch must be live before the mkdir"
+            );
+            let new = root.join("new");
+            std::fs::create_dir(&new).unwrap();
+            std::fs::write(new.join("x.md"), "# X\n").unwrap();
+            let start = Instant::now();
+            let mut saw_member = false;
+            let mut saw_collapse = false;
+            while start.elapsed() < Duration::from_secs(2) {
+                let s = feed.stats();
+                if s.all_dirty {
+                    saw_collapse = true;
+                    break;
+                }
+                if s.events > 0 || s.pending > 0 {
+                    saw_member = true;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            if saw_collapse {
+                collapsed += 1;
+            } else if saw_member {
+                captured += 1;
+            } else {
+                missed += 1;
+            }
+        }
+        eprintln!(
+            "newdir arming measurement backend={} captured={captured} missed={missed} collapsed={collapsed} trials={TRIALS}",
+            std::env::consts::OS
         );
     }
 
