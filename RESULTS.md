@@ -7,6 +7,11 @@ it lands. Cells marked PENDING are empty by design, not omission. Everything
 else on this page (receipts, counts, instrument validation, the premise
 probe) is already-measured evidence and cited to raw output on disk.
 
+Binding rulings live in `results/rulings-ledger.md` (advisor-owned,
+append-only, later entries win) — this page conforms to rulings 15–19 as of
+2026-08-16: counts primary, paired sampling, interleaved sweeps, three
+disjoint receipt intervals, pre-registration including the loss regimes.
+
 ## 1. What was built
 
 `crates/perfsuite/src/bin/hdb-durability` measures the durability placement:
@@ -65,13 +70,23 @@ the real publish path pays 6D+4 per transaction. What settles the finding is
 the direct zero-BARRIERFSYNC check plus the closing count arithmetic on THIS
 host — not a claim about Rust in general.
 
-PENDING (actor-gated): engine content-path receipt through the actor —
-`fs_usage` count on `receipt-real`, the in-process `fs::honest_sync` call-site
-counter assert, and the per-path cheap-push enumeration from the trace
-(pre-registration §2: every distinct `(dev, ino)` durable at a barrier
-received exactly one cheap push in the preceding batch). The counter proves
-which call site ran; the trace and the latency signature prove which syscall
-class ran; together they answer gate item 2.
+**Headline gate artifact — measured no-bypass proof.** In the discriminator
+run (50 txns/cell, warmup excluded, submitted staging), the process-wide
+honest-op counter and the actor-barrier counter were EXACTLY equal in both
+cells: raw deltas 293 = 293 (D=1) and 349 = 349 (D=3). Every honest-class
+sync in the process was issued by the actor: no writer-issued honest sync,
+no bypass path, no forgotten call site. Paired with `F_BARRIERFSYNC` = 0 in
+every trace (declared in advance, § three-column discipline), this is direct
+measured evidence for criterion 1 and gate item 2 — stronger than any
+argument we could write.
+
+PENDING (actor-gated): engine content-path receipt through the actor on the
+green tree — `fs_usage` count on `receipt-real`, and the per-path cheap-push
+enumeration from the trace (`.scratch/push-enum.py`; pre-registration §2:
+every distinct `(dev, ino)` durable at a barrier received exactly one cheap
+push in the preceding batch). The counter proves which call site ran; the
+trace and the latency signature prove which syscall class ran; together they
+answer gate item 2.
 
 ## 3. Measured tables
 
@@ -91,18 +106,32 @@ transaction. Team B prediction (`results/hdb-team-b-prediction.md`, amended
 to 3 before data): **3 barriers per solo commit, CONSTANT IN D** — the
 load-bearing claim is constant-in-D, not the number 3.
 
-- PENDING: paired baseline (`hdb-durability baseline`, 1000 iters).
-- PENDING: honest syncs per commit, before/after, D=1/2/3 (headline column).
-- PENDING: engine-path ladder — D × {1,2,3}, writers × {1,2,4,8,16,32};
-  stage sync, durability interval, metadata interval, txn wall as separate
-  figures, p50/p99 each; fsync-class and metadata-publish figures never
-  summed (gate 12).
-- PENDING: Loss A — adversarial arrival, offset swept across the drain
-  window, arriving writer's wait reported. Pre-registered: we lose ~2× a
-  barrier.
-- PENDING: Loss B — mixed-size batch (one high-D writer + several D=1),
-  D=1 writers' latency in-batch vs alone; the delta is the head-of-line
-  cost. Whole-batch settle p99 reported, never the barrier alone.
+**Pre-declared ladder of record** (conduct standard: config and rep counts
+declared BEFORE the run; run once on the green pushed tree; no cell re-run
+after seeing its result; quiet-host check pasted beside the numbers):
+
+1. Quiet-host check — no cargo/rustc processes, load averages recorded.
+2. Paired baseline: `baseline <dir> 1000` — three classes, per-pair ratio.
+3. Premise corroboration slot: `premise <dir> 200 4096` and `… 200 1048576`.
+4. Counts of record (HEAD binary): `receipt-real` D∈{1,2,3} × 50 txns,
+   submitted staging, under `fs_usage` — three columns, per-path enumeration
+   (`push-enum.py`), in-process counters beside. Headline: honest syncs per
+   commit, prediction 3 constant-in-D.
+5. Before-binary row (pre-actor engine `45b040d66` + commit-A harness,
+   built in `.scratch/before45`, labeled cross-binary, same host + session):
+   `receipt-real` D∈{1,2,3} × 50 (6D+4 cross-check) and `bench-real` D=1
+   solo × 200 (the 52.6 ms cross-check).
+6. Concurrency sweep (ruling 17, round-robin interleaved): `sweep-real`
+   D=1, submitted, rounds=8, iters_per_visit=25, levels 1,2,4,8,16,32 —
+   five figures per level, all disjoint (stage, durability, metadata,
+   owner-apply, wall), counters per level.
+7. D-axis solo: `sweep-real` D∈{2,3}, submitted, rounds=8, iters=25,
+   levels "1" (D=1 comes from step 6's level 1).
+8. Synthesized control cells: `bench` today|naive|actor × N∈{1,16} × 100.
+9. Loss A: `loss-a` offsets 0–12000 µs, step 1000 µs, 30 samples each —
+   arriving writer's wait. Pre-registered: we lose at ~2× a barrier.
+10. Loss B: `loss-b` bigD=16, small_writers=4, iters=100 — alone vs mixed,
+    worst small-writer p99, group sizes from settle receipts.
 
 Shakedown runs (harness validation under load 64+, absolutes discarded per
 protocol): plumbing verified end-to-end — mode `today` ≈ mode `naive` as
@@ -145,17 +174,26 @@ barriers/txn tracking submits with ~1 object per barrier.
 | settled D=1 | 5.00 | 8.0 | — |
 | settled D=3 | 5.96 | 13.6 | — |
 
-**Strict eager drain is REFUTED** (barriers do not track submits 1:1; there
-is real grouping) — but phase batching is not achieved either: groups of
-1.5–2.4 instead of phase-sized, 5–7 barriers/txn against the filed 3, still
-growing mildly with D. Consistent with drains firing mid-phase and catching
-only what arrived before the barrier. Two clean side-findings: `honest_ops`
-== `actor_barriers` exactly in submitted mode (5860=5860, 6980=6980 ×1000) —
-zero actor bypass; and `F_BARRIERFSYNC` = 0 everywhere.
+**Outcome, in three parts.** The leader predicted eager drain. The counters
+refuted it in its strict form: barriers do not track submits 1:1 — there is
+real grouping at 1.5–2.4 objects per barrier — but phase batching is not
+achieved either (filed design needs phase-sized groups and 3 barriers/txn;
+measured 5–7, creeping with D). The remedy was unchanged by the refutation,
+because the root cause is still submission granularity: the phase set must
+arrive at the actor as ONE enqueue so no drain can start mid-phase.
+
+The two before-measurements above are different instruments under different
+conditions and are labeled as such, never blended: the fs_usage table is
+tree `dc66998e9`-pre-fix, 10–50 txns, no warmup, syscall boundary; the
+counter table is tree `dc66998e9` + held harness commits, 50 txns/cell,
+warmup excluded, in-process.
 
 **After (the ladder of record, post-fix):** PENDING. Either the count comes
 down to 3 constant-in-D, or the primary claim is reported FALSIFIED in those
-words. It is written here beside the before numbers when it runs.
+words. It is written here beside the before numbers when it runs. (Ledger
+ruling 15 note: the earlier "grows with D = unsolved" wording is struck
+fleet-wide; the D term is settled under criterion 1. Team B's own filing of
+3-constant-in-D predates data and does not move.)
 
 ## 4. Verdict on the named risk
 
@@ -198,7 +236,32 @@ sound.**
 - **Falsifier:** every batch member must sit on the same physical device as
   the barrier handle; a mount or firmlink inside the workspace root breaks
   the premise. The peer seat's `st_dev` test covers it (cited here when it
-  lands).
+  lands). The boundary is in fact the narrower one: the durability unit is
+  likely the APFS CONTAINER rather than the device, and since `st_dev`
+  identifies a mounted volume and an APFS volume lives in exactly one
+  container, `st_dev` keying implies same-container by construction.
+- **Stated limits of the evidence class (adopted fleet-wide, literally):**
+  (a) `F_FULLFSYNC` is BEST-EFFORT — Apple's own "Reducing Disk Writes"
+  hedges that data can still be lost on sudden power loss, and roughly half
+  of consumer NVMe drives tested discard FLUSH-confirmed data, with no such
+  study on Apple internal storage. Orthogonal to our cross-file property;
+  fatal to the end goal if firmware lies. (b) NO published experiment has
+  ever isolated the cross-fd claim — not ALICE, not CrashMonkey, not the
+  arXiv APFS paper (which explicitly disclaims power-loss testing) — and no
+  public macOS power-loss rig exists. The claim rests on documented contract
+  plus mechanism, never on an experiment. (c) Git's durability documentation
+  is NOT independent confirmation for APFS — it reasons from a journal and
+  names NTFS, HFS+ and XFS; APFS has no journal and is not in its list.
+- **A failed barrier is FATAL to our batch** (verified by the leader reading
+  the code, not a test name): barrier failure sends `Err` to every
+  already-pushed member and returns without acking anyone; a push failure
+  refuses that object's waiters; an unstattable member is refused rather
+  than guessed. This answers the failure mode where a barrier silently never
+  happens and every cheap fsync in the batch is undurable.
+- **Refusal over degradation, as a deliberate choice:** Go, the JDK, libuv,
+  LevelDB and SQLite all DEGRADE on `ENOTSUP`; Rust's `sync_all` has no
+  fallback; Team B REFUSES. Degrading would be the success-shaped failure
+  criterion 1 exists to catch.
 
 **Premise probe (corroboration, not verification** — the question was
 settled cross-model by the advisor; a confirmation proves nothing new, an
