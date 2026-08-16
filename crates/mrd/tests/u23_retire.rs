@@ -9,6 +9,8 @@ use std::process::{Command, Output};
 
 use serde_json::Value;
 
+mod common;
+
 fn mrd_bin() -> &'static str {
     env!("CARGO_BIN_EXE_mrd")
 }
@@ -17,6 +19,12 @@ struct Sandbox {
     tmp: tempfile::TempDir,
     cache_home: PathBuf,
     home: PathBuf,
+}
+
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        common::reap_daemon(&self.cache_home);
+    }
 }
 
 fn sandbox() -> Sandbox {
@@ -40,7 +48,7 @@ impl Sandbox {
             .env("HOME", &self.home)
             // Spawn-impossible: deterministic in-process answers, no resident
             // daemon ever starts.
-            .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
+            .env("MERIDIAN_DAEMON_BIN", mrd_bin())
             .env_remove("MERIDIAN_WORKSPACE");
         cmd.output().expect("spawn mrd")
     }

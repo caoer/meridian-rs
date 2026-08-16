@@ -11,11 +11,9 @@
 //! the same `<PATH>[#FRAG]` grammar `mrd read` takes; the selector is a
 //! sanitized heading path (`Notes/Q3`) or a block anchor (`^id`).
 //!
-//! The write routes through the production splice choke-point
-//! ([`wire_serve::write::splice`]) in-process with the pin riding as a
-//! Splice-sibling field, so the page's content and its lock block land in one
-//! `commit_batch` — one flock, one rename — inheriting the CAS guards, the
-//! armed gate, and the write flock.
+//! The write is a wire `splice` to the running daemon ([`crate::write_ipc`]) with
+//! the pin riding as a Splice-sibling field, so the page's content and its lock
+//! block land in one commit. There is no in-process publication path.
 //!
 //! # No `--actor`
 //! The read-mint gate keys on a daemon-derived session identity, and a CLI
@@ -23,14 +21,13 @@
 //! the gate is bypassed, exactly as `mrd put` bypasses the host's authz.
 //!
 //! Exit triad: 0 pinned (or `--dry` rehearsed) / 1 refused (`read_mint_required`,
-//! `pin_target_missing`, `write_conflict`, `workspace_busy`, an armed gate
-//! refusal — the engine's verbatim message) / 2 bad invocation.
+//! `pin_target_missing`, `write_conflict`, an armed gate refusal — the engine's
+//! verbatim message) / 2 bad invocation (including a down daemon).
 
 use serde_json::{Value, json};
 use wire::{Path as WirePath, PinSpec};
-use wire_serve::write::{SpliceArgs, splice};
 
-use crate::{Fail, Format, current_dir, engine};
+use crate::{Fail, Format, current_dir, engine, write_ipc};
 
 /// Run `mrd pin <PAGE> <TARGET><SELECTOR> [flags]`. Errors [`Fail`] — exit 2 on a bad
 /// invocation (missing or malformed positionals, unknown flags, a `bad_request` refusal); exit
@@ -44,59 +41,26 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
             cwd.display()
         ))
     })?;
-    let canonical = workspace::canonicalize(&resolved.workspace).map_err(|e| {
-        Fail::tool(format!(
-            "cannot resolve workspace {} ({e})",
-            resolved.workspace.display()
-        ))
-    })?;
-    let root = fs::WorkspaceRoot(canonical);
-
-    let splice_args = SpliceArgs {
-        id: None,
-        origin: wire_serve::guard::Origin::InProcess,
-        path: WirePath(parsed.page.clone()),
-        // The CLI stamps no provenance, and an absent actor is the local-operator trust door
-        // the read-mint gate reads.
-        actor: None,
-        now: None,
-        receipt: None,
-        if_root: None,
-        dry: parsed.dry,
-        force: false,
-        // A pin is the whole batch: the lock block rides as the engine-minted
-        // edit, so there is nothing for the caller to edit.
-        edits: Vec::new(),
-        plan_edits: Vec::new(),
-        pin: Some(PinSpec {
-            target: WirePath(parsed.target.clone()),
-            // The wire carries a tagged selector; this is the only place the human string a
-            // person typed becomes one.
-            selector: wire::ReadSel::parse(&parsed.selector),
-            vibe: parsed.vibe.then_some(true),
-        }),
+    // The CLI stamps no provenance: an absent actor is the local-operator trust
+    // door the read-mint gate reads. A pin is the whole batch.
+    let pin = PinSpec {
+        target: WirePath(parsed.target.clone()),
+        selector: wire::ReadSel::parse(&parsed.selector),
+        vibe: parsed.vibe.then_some(true),
     };
-    // seq 0, like the resident daemon (no epoch ring); no read-mint ledger
-    // exists in a CLI process, which is why the gate is bypassed above.
-    // The face's own helper, exactly as `read` and `put` reach it. `pin` used to wrap it and
-    // append ` ({cause})`, because the shared helper once dropped the cause; it no longer does —
-    // `engine::spelled` inlines an `io_error` cause and CONSUMES a `would_corrupt` one to pick
-    // its remedy sentence, and those are the only two codes wire-serve sets a cause on. The
-    // wrapper had become one renderer too many: it printed the io_error cause a second time, and
-    // on `would_corrupt` it would have appended a bare machine token to a sentence that already
-    // teaches what the token means.
-    let outcome = splice(&root, None, &splice_args, &[], None)
-        .map_err(|e| engine::json_refusal(parsed.format, &resolved.workspace, &e))?;
+    let mut request = json!({
+        "op": "splice",
+        "path": parsed.page,
+        "pin": pin,
+    });
+    if parsed.dry {
+        request["dry"] = json!(true);
+    }
 
-    let body = serde_json::to_value(&outcome.body)
-        .map_err(|e| Fail::tool(format!("cannot render the answer: {e}")))?;
-    // The CLI speaks the v3 vocabulary (`fingerprint`, never bare `root`).
-    let mut frame = json!({ "body": body });
-    wire_serve::rev::project_response(&mut frame);
-    let body = frame
-        .as_object_mut()
-        .and_then(|obj| obj.remove("body"))
-        .unwrap_or(Value::Null);
+    let mut door = write_ipc::connect(&resolved.workspace)?;
+    let body = write_ipc::call(&mut door, &request)
+        .map_err(|e| engine::json_refusal(parsed.format, &resolved.workspace, &e))?;
+    let body = write_ipc::project_body(body);
 
     match parsed.format {
         Format::Json => {

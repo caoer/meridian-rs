@@ -40,6 +40,8 @@ use std::process::{Command, Output, Stdio};
 
 use std::io::Write;
 
+mod common;
+
 /// A fingerprint no workspace can be standing at, so a guarded write refuses on the world guard.
 const BOGUS_ROOT: &str = "b3:0000000000000000000000000000000000000000000000000000000000000000";
 
@@ -47,6 +49,12 @@ struct Sandbox {
     tmp: tempfile::TempDir,
     cache_home: PathBuf,
     home: PathBuf,
+}
+
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        common::reap_daemon(&self.cache_home);
+    }
 }
 
 /// One workspace, born per test. `MERIDIAN_WORKSPACE` anchors it explicitly so the resolution
@@ -79,7 +87,7 @@ fn run_with_stdin(sb: &Sandbox, cwd: &Path, args: &[&str], stdin: &str) -> Outpu
         .env("HOME", &sb.home)
         // Spawn-impossible: no resident daemon ever starts, so the engine under test is the
         // binary this suite built and nothing else can answer.
-        .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
+        .env("MERIDIAN_DAEMON_BIN", mrd_bin())
         .env("MERIDIAN_WORKSPACE", cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

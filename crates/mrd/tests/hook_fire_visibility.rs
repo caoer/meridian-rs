@@ -13,6 +13,8 @@
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
+mod common;
+
 /// The binary every drive goes through — the real CLI, never a library call.
 fn mrd_bin() -> PathBuf {
     std::env::var_os("MRD_BIN")
@@ -68,6 +70,12 @@ struct Sandbox {
     ws: PathBuf,
 }
 
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        common::reap_daemon(&self.cache_home);
+    }
+}
+
 impl Sandbox {
     fn write(&self, rel: &str, bytes: &str) {
         let path = self.ws.join(rel);
@@ -84,7 +92,7 @@ impl Sandbox {
             .env("XDG_CACHE_HOME", &self.cache_home)
             .env_remove("MERIDIAN_CONFIG")
             .env_remove("MERIDIAN_WORKSPACE")
-            .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
+            .env("MERIDIAN_DAEMON_BIN", mrd_bin())
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -197,7 +205,7 @@ fn armed() -> Sandbox {
 #[test]
 fn the_human_face_prints_one_line_per_fired_intent() {
     let s = armed();
-    let stdout = s.stdout(&["put", "tasks/card.md"], MOVE_TO_REVIEW);
+    let stdout = s.stdout(&["put", "tasks/card.md", "--force"], MOVE_TO_REVIEW);
     let fired: Vec<&str> = stdout
         .lines()
         .filter(|line| line.starts_with("  fired: "))
@@ -229,7 +237,7 @@ fn the_human_face_prints_one_line_per_fired_intent() {
 #[test]
 fn a_no_hook_workspace_output_is_unchanged() {
     let s = sandbox();
-    let stdout = s.stdout(&["put", "tasks/card.md"], MOVE_TO_REVIEW);
+    let stdout = s.stdout(&["put", "tasks/card.md", "--force"], MOVE_TO_REVIEW);
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(
         lines.len(),

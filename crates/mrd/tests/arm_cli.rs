@@ -11,6 +11,8 @@
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
+mod common;
+
 /// The binary every drive goes through — the real CLI, never a library call.
 fn mrd_bin() -> PathBuf {
     std::env::var_os("MRD_BIN")
@@ -60,6 +62,12 @@ struct Sandbox {
     ws: PathBuf,
 }
 
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        common::reap_daemon(&self.cache_home);
+    }
+}
+
 impl Sandbox {
     fn write(&self, rel: &str, bytes: &str) {
         let path = self.ws.join(rel);
@@ -84,7 +92,7 @@ impl Sandbox {
             .env("XDG_CACHE_HOME", &self.cache_home)
             .env_remove("MERIDIAN_CONFIG")
             .env_remove("MERIDIAN_WORKSPACE")
-            .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
+            .env("MERIDIAN_DAEMON_BIN", mrd_bin())
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -204,7 +212,7 @@ fn the_arm_round_trip_ends_with_the_rule_refusing_a_violating_write() {
     // The violating write: a bare status flip to closed, no verdict.
     let violating =
         r#"[{"target":{"fm_key":"status"},"edit":{"match":{"old":"todo","new":"closed"}}}]"#;
-    let out = s.run_stdin(&["put", "tasks/card.md"], violating);
+    let out = s.run_stdin(&["put", "tasks/card.md", "--force"], violating);
     let refusal = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
@@ -228,7 +236,7 @@ fn the_arm_round_trip_ends_with_the_rule_refusing_a_violating_write() {
     // The legal path: the same close carrying its verdict — `at: upsert`
     // births the key, exactly as the refusal above teaches.
     let legal = r#"[{"target":{"fm_key":"status"},"edit":{"match":{"old":"todo","new":"closed"}}},{"target":{"fm_key":"verdict"},"edit":{"put":{"at":"upsert","text":"approve"}}}]"#;
-    let out = s.run_stdin(&["put", "tasks/card.md"], legal);
+    let out = s.run_stdin(&["put", "tasks/card.md", "--force"], legal);
     assert_eq!(
         out.status.code(),
         Some(0),
