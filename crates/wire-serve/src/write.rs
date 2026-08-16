@@ -69,7 +69,7 @@ use crate::{bad_request, load_doc};
 // observation and its overlay. (Cache mutex nests inside the flock; nothing
 // outside this seam locks it.)
 
-/// The DomainCache a write door rides. The daemon passes
+/// The `DomainCache` a write door rides. The daemon passes
 /// `Registry::domain_cache` so the write plane and the feed patch one tree.
 /// In-process callers omit it and fall back to [`WRITE_CACHES`].
 pub type WriteCache = Arc<Mutex<fs::DomainCache>>;
@@ -84,8 +84,8 @@ static WRITE_CACHES: LazyLock<Mutex<HashMap<PathBuf, WriteCache>>> =
 /// process-local fallback.
 struct WriteCacheHandle {
     cache: WriteCache,
-    /// `true` when the caller supplied the registry memo. Trusted door-entry
-    /// then serves the overlay (the feed retired the stat-sweep); Untrusted
+    /// `true` when the caller supplied the registry memo. `Trusted` door-entry
+    /// then serves the overlay (the feed retired the stat-sweep); `Untrusted`
     /// degrades to a full observe that absorbs the loss. The fallback has no
     /// feed, so it always live-observes.
     resident: bool,
@@ -892,7 +892,6 @@ struct SetEntryState {
 /// Any single-form refusal, stamped with the measuring member's path and the
 /// whole-set clause; in every error case nothing was committed and no Delta
 /// exists.
-#[allow(clippy::too_many_lines)]
 pub fn splice_set(
     root: &fs::WorkspaceRoot,
     seq: Option<&dyn crate::seq::SeqSink>,
@@ -907,6 +906,7 @@ pub fn splice_set(
 ///
 /// # Errors
 /// As [`splice_set`].
+#[allow(clippy::too_many_lines)]
 pub fn splice_set_with_cache(
     root: &fs::WorkspaceRoot,
     seq: Option<&dyn crate::seq::SeqSink>,
@@ -1579,6 +1579,7 @@ pub fn create(
 ///
 /// # Errors
 /// As [`create`].
+#[allow(clippy::too_many_lines)]
 pub fn create_with_cache(
     root: &fs::WorkspaceRoot,
     seq: Option<&dyn crate::seq::SeqSink>,
@@ -1752,6 +1753,7 @@ pub fn remove(
 ///
 /// # Errors
 /// As [`remove`].
+#[allow(clippy::too_many_lines)]
 pub fn remove_with_cache(
     root: &fs::WorkspaceRoot,
     seq: Option<&dyn crate::seq::SeqSink>,
@@ -2055,6 +2057,7 @@ pub fn lock_write(
 ///
 /// # Errors
 /// As [`lock_write`].
+#[allow(clippy::too_many_lines)]
 pub fn lock_write_with_cache(
     root: &fs::WorkspaceRoot,
     seq: Option<&dyn crate::seq::SeqSink>,
@@ -6423,9 +6426,9 @@ mod resident_write_path {
         );
     }
 
-    /// A caller-supplied cache is the tree the door overlays: Trusted
-    /// door-entry serves the overlay (no new sweep), and root_after lands
-    /// on that same Arc — not on WRITE_CACHES.
+    /// A caller-supplied cache is the tree the door overlays: `Trusted`
+    /// door-entry serves the overlay (no new sweep), and `root_after` lands
+    /// on that same `Arc` — not on `WRITE_CACHES`.
     #[test]
     fn a_supplied_cache_is_the_tree_the_door_overlays() {
         let (dir, root) = ws();
@@ -6476,7 +6479,7 @@ mod resident_write_path {
     }
 
     /// Injected loss on a supplied cache makes the next guarded write
-    /// re-observe (the Untrusted degrade) and absorb the loss on that
+    /// re-observe (the `Untrusted` degrade) and absorb the loss on that
     /// same cache.
     #[test]
     fn untrusted_supplied_cache_reobserves_and_absorbs() {

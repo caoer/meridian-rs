@@ -2153,7 +2153,7 @@ mod engine_tests {
     }
 
     /// Quality gate: a daemon splice and a daemon currency pass lock the
-    /// same DomainCache address — the write overlays that memo, not WRITE_CACHES.
+    /// same `DomainCache` address — the write overlays that memo, not `WRITE_CACHES`.
     #[test]
     fn a_daemon_splice_and_currency_pass_lock_the_same_cache() {
         let home = tempfile::tempdir().unwrap();
@@ -2203,7 +2203,7 @@ mod engine_tests {
     }
 
     /// Quality gate: injected watcher overflow makes the next guarded write
-    /// see Untrusted and full-reobserve (absorb) on that same cache.
+    /// see `Untrusted` and full-reobserve (absorb) on that same cache.
     #[test]
     fn overflow_makes_the_next_guarded_write_reobserve_on_the_same_cache() {
         let home = tempfile::tempdir().unwrap();
