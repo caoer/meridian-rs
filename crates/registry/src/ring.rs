@@ -1,7 +1,7 @@
 //! Resident daemon delta plane: one ring per workspace, and the detector that
 //! feeds it.
 //!
-//! Ring + change classifier live in `wire-serve` (one law, two hosts). Here:
+//! Ring + change classifier live in `wire-serve` (one law, one host). Here:
 //! shared-state wrapping (N connection threads) and a detector — a subscriber
 //! sends no lines, so nothing else would drive reconcile on its behalf.
 //!

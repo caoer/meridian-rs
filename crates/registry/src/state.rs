@@ -136,9 +136,10 @@ fn write_tmp(dir: &Path, data: &[u8]) -> io::Result<PathBuf> {
     }
 }
 
-/// fsync a directory (in the ruled class, [`::fs::honest_sync_path`]) so a
-/// completed rename survives power loss. Best-effort: a failed dir sync must
-/// never turn a committed write into a reported failure.
+/// fsync a directory in the ruled class ([`::fs::honest_sync_path`]).
+/// Drive cache is accepted: this is not a power-loss or platter-safety claim.
+/// Best-effort: a failed dir sync must never turn a committed write into a
+/// reported failure.
 fn fsync_dir(dir: &Path) {
     let _ = ::fs::honest_sync_path(dir);
 }

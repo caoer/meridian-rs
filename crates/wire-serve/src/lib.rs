@@ -30,7 +30,7 @@ pub mod write;
 
 use wire::{ErrorBody, ErrorCode, Path, Root};
 
-/// Protocol both hosts speak (wire §3.2, proto-1). Strict decode validates `hello`'s `proto` against this.
+/// Protocol the serving host speaks (wire §3.2, proto-1). Strict decode validates `hello`'s `proto` against this.
 pub const PROTO: u32 = 1;
 
 /// The build sha a host publishes when its build could not name a commit — the
@@ -133,7 +133,7 @@ pub fn display_hpath(hpath: &[wire::HpathSeg]) -> String {
 pub const NO_PARTIAL_WRITE_CLAUSE: &str = "No edit was applied; the batch is refused whole.";
 
 /// `fs::load` with §8 error split: `file_not_found` / `invalid_utf8` / `io_error{cause}`.
-/// Shared fs→wire mapper for both hosts' reads and the write path.
+/// Shared fs→wire mapper for the host's reads and the write path.
 ///
 /// # Errors
 /// Wire envelope for missing file, non-UTF-8, or I/O failure.
