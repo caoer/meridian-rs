@@ -26,7 +26,6 @@ fn both_selector_planes_refuses_at_the_exemplar_bar() {
             toc: Some(wire::ReadSel::parse("Scratch notes")),
             sections: Some(vec![wire::ReadSel::parse("Scratch notes/Findings")]),
             display_path: Some("notes.md".into()),
-            ..ReadParams::default()
         },
         &NO_DECORATIONS,
     )

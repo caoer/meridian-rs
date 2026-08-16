@@ -92,7 +92,6 @@ fn read_decorated(root: &fs::WorkspaceRoot, rel: &str, sel: &str) -> ResponseBod
             sections: Some(vec![wire::ReadSel::parse(sel)]),
             ..ReadParams::default()
         },
-        None,
         &decorations,
     )
     .expect("the read serves")

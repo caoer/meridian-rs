@@ -5,10 +5,11 @@
 //! `object` receives it verbatim minus `.md`. D-B (round 2): anchor promotion
 //! is one-call and engine-internal — the marker lands in the TARGET root under
 //! that root's own write flock (`LOCK_NB`, so a busy target refuses
-//! `workspace_busy` and no hold-and-wait cycle can form). D-C: the read-mint
-//! gate consults the TARGET workspace's ledger — a receipt on the ambient
-//! root's same-named file must NOT gate a cross-root pin (the §8.2 read-mint
-//! bypass shape, arrived at through the ledger). D-D: `--vibe` writes the
+//! `workspace_busy` and no hold-and-wait cycle can form). D-C, translated to
+//! the § A.3 proof law: the proof compare runs against the TARGET root's live
+//! bytes — a token from the ambient root's same-named (different-content)
+//! file must NOT pass a cross-root pin (the §8.2 bypass shape, arrived at
+//! through the compare instead of the dead ledger). D-D: `--vibe` writes the
 //! loose blob into the TARGET root's object store, where the history that
 //! diffs it lives.
 //!
@@ -17,12 +18,8 @@
 //! in [`cross_root_pin_lifecycle`]. The parse-grain refusals below it consult
 //! no table and stay ordinary parallel tests.
 
-use std::collections::BTreeMap;
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-
 use wire::{ErrorCode, Path as WPath, PinSpec, ResponseBody};
-use wire_serve::write::{Mints, SpliceArgs, splice, splice_with_mints};
+use wire_serve::write::{SpliceArgs, splice};
 
 /// The pinning page in the ambient root.
 const PINNER: &str = "---\ntitle: Plan\n---\n\n# Plan\n\ndraws from the other root.\n";
@@ -153,56 +150,36 @@ fn store_holds(root: &fs::WorkspaceRoot, oid: &str) -> bool {
         .success()
 }
 
-/// A per-workspace foreign-ledger map — the registry's `read_mints` shape.
-struct Ledgers {
-    stores: Mutex<BTreeMap<PathBuf, Arc<receipt::read_mint::ReadMintStore>>>,
-}
-
-impl Ledgers {
-    fn new() -> Self {
-        Ledgers {
-            stores: Mutex::new(BTreeMap::new()),
-        }
-    }
-    fn ledger(&self, ws: &std::path::Path) -> Arc<receipt::read_mint::ReadMintStore> {
-        Arc::clone(
-            self.stores
-                .lock()
-                .expect("ledgers")
-                .entry(ws.to_path_buf())
-                .or_default(),
-        )
-    }
-}
-
-/// Production-arm read into a workspace's own session store (H1 shape).
-fn session_read(
-    root: &fs::WorkspaceRoot,
-    store: &receipt::read_mint::ReadMintStore,
-    actor: &str,
-    rel: &str,
-    selector: &str,
-) {
+/// Production-arm sections read against ONE root, returning the served
+/// section's proof token — which root a token came from is the whole D-C
+/// question.
+fn proof_read(root: &fs::WorkspaceRoot, rel: &str, selector: &str) -> String {
     let doc = fs::load(root, std::path::Path::new(rel)).expect("load");
     let params = wire_serve::read::ReadParams {
         sections: Some(vec![wire::ReadSel::parse(selector)]),
-        actor: Some(actor.to_owned()),
         ..Default::default()
     };
-    wire_serve::read::composed_read(
+    let body = wire_serve::read::composed_read(
         &doc,
         &WPath(rel.into()),
         &wire::Root("r0".into()),
         &params,
-        Some(store),
         &wire_serve::read::NO_DECORATIONS,
     )
     .expect("the read serves");
+    let ResponseBody::Read { sections, .. } = body else {
+        panic!("read body");
+    };
+    sections.expect("sections mode")[0]
+        .fingerprint
+        .clone()
+        .expect("a served section carries its proof token")
 }
 
 /// The one mount-table-reading lifecycle: mint, blob home, promotion home,
-/// idempotent re-pin, target-flock refusal, the D-C ledger gate both ways,
-/// the D16 refresh, unbound-root refusal, and same-root normalization.
+/// idempotent re-pin, target-flock refusal, the D-C proof compare both ways,
+/// the promotion-stable token, unbound-root refusal, and same-root
+/// normalization.
 #[test]
 #[allow(clippy::too_many_lines)] // one sequential lifecycle script by design
 fn cross_root_pin_lifecycle() {
@@ -291,42 +268,45 @@ fn cross_root_pin_lifecycle() {
         );
     }
 
-    // — D-C: a receipt on the AMBIENT root's same-named file must not gate a
-    //   cross-root pin. `ws/doc.md` exists with the same bytes; agent-7 read
-    //   THAT file, never `other:doc.md`.
-    std::fs::write(sb.ws.0.join("doc.md"), TARGET).expect("ambient twin");
-    let ledgers = Ledgers::new();
-    let ambient_store = ledgers.ledger(&sb.ws.0);
-    session_read(&sb.ws, &ambient_store, "agent-7", "doc.md", "Doc/Design");
-    let foreign = |ws: &std::path::Path| ledgers.ledger(ws);
-    let mints = Mints {
-        ambient: Some(&ambient_store),
-        foreign: Some(&foreign),
-    };
+    // — D-C (proof form): a token read off the AMBIENT root's same-named,
+    //   different-content file must not pass a cross-root pin — the compare
+    //   runs against the TARGET root's live bytes (§8.2 bypass shape).
+    //   `ws/doc.md` shares the path and the section name, not the content.
+    std::fs::write(
+        sb.ws.0.join("doc.md"),
+        TARGET.replace(
+            "the target root's real design note.",
+            "an ambient twin that merely shares the name.",
+        ),
+    )
+    .expect("ambient twin");
+    let twin_token = proof_read(&sb.ws, "doc.md", "Doc/Design");
     let mut args = pin_args("plan.md", "other:doc.md", "Doc/Design", true);
     args.actor = Some("agent-7".into());
-    let err = splice_with_mints(&sb.ws, None, &args, &[], mints, None)
-        .expect_err("the ambient twin's receipt is a different fact — the gate fails closed");
+    args.pin.as_mut().expect("pin").fingerprint = Some(twin_token);
+    let err = splice(&sb.ws, None, &args, &[], None)
+        .expect_err("the ambient twin's token is a different fact — the compare fails closed");
     assert_eq!(
         err.code,
-        ErrorCode::ReadMintRequired,
-        "peel-and-lookup would have admitted this — the bypass shape: {:?}",
+        ErrorCode::PinProofRequired,
+        "peel-and-compare-ambient would have admitted this — the bypass shape: {:?}",
         err.message
     );
 
-    // — D-C green half: reading the selector THROUGH the target root's own
-    //   session admits the same pin, and the D16 refresh after promotion keys
-    //   the same ledger (a promotion-fresh re-pin passes without re-reading).
-    let target_store = ledgers.ledger(&sb.other.0);
-    session_read(&sb.other, &target_store, "agent-7", "doc.md", "Doc/Design");
-    let out = splice_with_mints(&sb.ws, None, &args, &[], mints, None)
-        .expect("the target-ledger receipt admits the pin");
+    // — D-C green half: the token read off the TARGET root's own file admits
+    //   the same pin — and keeps admitting it across the earlier promotion
+    //   (the marker line is anchor-removed from the token), which is what
+    //   replaced the dead D16 ledger refresh.
+    let target_token = proof_read(&sb.other, "doc.md", "Doc/Design");
+    args.pin.as_mut().expect("pin").fingerprint = Some(target_token.clone());
+    let out =
+        splice(&sb.ws, None, &args, &[], None).expect("the target root's own token admits the pin");
     assert!(
         !pin_fact(&out.body).promoted,
         "the earlier promotion's anchor is reused"
     );
-    let out = splice_with_mints(&sb.ws, None, &args, &[], mints, None)
-        .expect("the refreshed receipt still covers the selector (D16 refresh, target ledger)");
+    let out = splice(&sb.ws, None, &args, &[], None)
+        .expect("the same token still covers the selector across the promotion");
     assert!(!pin_fact(&out.body).promoted);
 
     // — An unbound root refuses at the door, naming what IS bound.

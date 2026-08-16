@@ -162,7 +162,6 @@ fn toc_beside_sections_refuses_pass_one() {
             toc: Some(ReadSel::parse("Top/Beta")),
             sections: Some(vec![ReadSel::parse("Top/Beta")]),
             display_path: Some("card.md".into()),
-            ..ReadParams::default()
         },
         &NO_DECORATIONS,
     )
