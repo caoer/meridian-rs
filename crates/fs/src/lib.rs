@@ -628,9 +628,11 @@ pub struct DomainCache {
     /// recomputed only when the tree advances or the domain version moves —
     /// `(domain version, root)`.
     served: Option<(u32, model::MerkleRoot)>,
-    /// The domain as of the last observation — the overlay's membership and
-    /// version law (the overlay composes against the OBSERVED generation,
-    /// never a fresher config read).
+    /// The domain as of the last observation or the last
+    /// [`overlay_membership`](Self::overlay_membership) — the overlay's
+    /// membership and version law. The overlay never composes against a
+    /// fresher config read from disk; a config write applies the commit's
+    /// own bytes through `overlay_membership`.
     domain_seen: Option<domain::Domain>,
     /// The §6.2 timestamp-granularity calibration, probed lazily at the
     /// first observation (the cache's workspace open). `None` = not yet
@@ -1182,8 +1184,10 @@ impl DomainCache {
     /// ([`DomainLeaves::overlay`]'s own doc law — that overlay stays the
     /// correctness law; this is the same law through the resident structure).
     ///
-    /// Membership follows the OBSERVED domain generation: a path outside it
-    /// is ignored (`Ok(false)`), exactly [`DomainLeaves::overlay`]'s filter.
+    /// Membership follows the current domain generation (last observation
+    /// or last [`overlay_membership`](Self::overlay_membership)): a path
+    /// outside it is ignored (`Ok(false)`), exactly
+    /// [`DomainLeaves::overlay`]'s filter.
     /// The path's memo entry is deliberately spoiled (§6.2's own word): the
     /// next observation re-reads that member once instead of trusting a stat
     /// raced by the write that minted it.
@@ -1234,6 +1238,39 @@ impl DomainCache {
         self.leaves.remove(rel);
         self.served = None;
         Ok(true)
+    }
+
+    /// Own-write overlay, membership half (merkle-spec §6.1): a domain-config
+    /// write knows the Domain it just wrote — impose that generation on the
+    /// overlay's current leaves. Departed members drop; version and ignore
+    /// rules update; no disk walk; a path the new Domain admits but the
+    /// overlay does not already hold is not read (the next observation
+    /// picks it up). A foreign rewrite of a remaining member stays out.
+    ///
+    /// Returns whether the tree advanced (leaf set or domain generation
+    /// moved).
+    ///
+    /// # Errors
+    /// No observation has landed yet (as [`Self::overlay_leaf`]).
+    pub fn overlay_membership(&mut self, domain: domain::Domain) -> io::Result<bool> {
+        let _ = self.overlay_domain()?;
+        let departed: Vec<PathBuf> = self
+            .leaves
+            .keys()
+            .filter(|rel| !domain.contains(rel))
+            .cloned()
+            .collect();
+        for rel in &departed {
+            let _ = self.tree.remove_leaf(rel);
+            self.leaves.remove(rel);
+            self.stamp_advance(rel);
+        }
+        let changed = self.domain_seen.as_ref() != Some(&domain) || !departed.is_empty();
+        self.domain_seen = Some(domain);
+        if changed {
+            self.served = None;
+        }
+        Ok(changed)
     }
 
     /// The served root over the current overlay state — the interim law-1
@@ -4928,6 +4965,77 @@ mod domain_cache_tests {
             domain_snapshot(&root).unwrap().1,
             "and it agrees with the byte fold"
         );
+    }
+
+    /// `overlay_membership` imposes the commit's own Domain on current leaves:
+    /// departed members drop, a foreign rewrite of a remaining member stays
+    /// out, and no member is read.
+    #[test]
+    fn overlay_membership_filters_current_leaves_without_a_disk_walk() {
+        let (_tmp, root) = workspace(&[
+            ("a.md", b"# A\n".as_slice()),
+            ("drafts/x.md", b"# X\n".as_slice()),
+            ("notes/b.md", b"# B\n".as_slice()),
+        ]);
+        let mut cache = DomainCache::new();
+        cache.root(&root).unwrap();
+        let reads_before = cache.leaves_read();
+
+        // A foreign racer of a remaining member — a re-observe would absorb it.
+        fs::write(root.0.join("notes/b.md"), b"# B raced\n").unwrap();
+
+        let config = "---\nignore:\n  - \"drafts/**\"\n---\n# Domain\n";
+        assert!(
+            cache
+                .overlay_leaf(
+                    std::path::Path::new("meridian/domain.md"),
+                    model::leaf_digest(config.as_bytes()),
+                )
+                .unwrap()
+        );
+        assert!(
+            cache
+                .overlay_membership(super::domain::Domain::from_markdown(config))
+                .unwrap()
+        );
+        assert_eq!(
+            cache.leaves_read(),
+            reads_before,
+            "membership overlay reads no member"
+        );
+
+        let leaves = cache.leaf_digests();
+        assert!(
+            !leaves.contains_key(std::path::Path::new("drafts/x.md")),
+            "the new ignore law drops drafts/"
+        );
+        assert_eq!(
+            leaves.get(std::path::Path::new("notes/b.md")),
+            Some(&model::leaf_digest(b"# B\n")),
+            "a foreign racer of a remaining member stays out"
+        );
+
+        let refs: Vec<(&[u8], [u8; 32])> = [
+            (
+                super::hash_name(std::path::Path::new("a.md")),
+                model::leaf_digest(b"# A\n"),
+            ),
+            (
+                super::hash_name(std::path::Path::new("notes/b.md")),
+                model::leaf_digest(b"# B\n"),
+            ),
+            (
+                super::hash_name(std::path::Path::new("meridian/domain.md")),
+                model::leaf_digest(config.as_bytes()),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let expected = model::merkle_root_of_leaves(
+            &refs,
+            super::domain::Domain::from_markdown(config).version(),
+        );
+        assert_eq!(cache.overlay_root().unwrap(), expected);
     }
 }
 

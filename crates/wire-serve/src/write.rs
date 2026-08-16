@@ -92,11 +92,22 @@ fn write_cache(root: &fs::WorkspaceRoot) -> Arc<Mutex<fs::DomainCache>> {
 /// same envelope the retired corpus read refused with.
 fn observed_root(root: &fs::WorkspaceRoot) -> Result<Root, Box<ErrorBody>> {
     let cache = write_cache(root);
-    let mut cache = cache.lock().unwrap_or_else(PoisonError::into_inner);
-    cache
-        .root(root)
-        .map(|folded| Root(folded.0))
-        .map_err(|e| io_refusal(e.to_string()))
+    let result = {
+        let mut cache = cache.lock().unwrap_or_else(PoisonError::into_inner);
+        cache
+            .root(root)
+            .map(|folded| Root(folded.0))
+            .map_err(|e| io_refusal(e.to_string()))
+    };
+    #[cfg(test)]
+    if result.is_ok() {
+        AFTER_DOOR_OBSERVE.with(|slot| {
+            if let Some(hook) = slot.borrow_mut().take() {
+                hook();
+            }
+        });
+    }
+    result
 }
 
 /// `root_after` from the commit's own overlay — no walk, no stat, no byte
@@ -112,6 +123,20 @@ fn overlaid_root(root: &fs::WorkspaceRoot) -> Result<Root, Box<ErrorBody>> {
         .overlay_root()
         .map(|folded| Root(folded.0))
         .map_err(|e| io_refusal(e.to_string()))
+}
+
+#[cfg(test)]
+thread_local! {
+    static AFTER_DOOR_OBSERVE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Install a one-shot hook that runs after the next successful door-entry
+/// observation on this thread — the race-fixture seam (card
+/// bug-overlay-reread). Production has no hook.
+#[cfg(test)]
+pub fn after_door_observe(hook: impl FnOnce() + 'static) {
+    AFTER_DOOR_OBSERVE.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
 }
 
 /// Apply one landed write to the resident tree (own-write overlay, insert
@@ -132,28 +157,61 @@ fn overlay_written(
         .map_err(|e| io_refusal(e.to_string()))
 }
 
-/// Does a write at `rel` move the DOMAIN itself? A domain-config write
-/// changes membership law, which the overlay — composed against the
-/// OBSERVED generation — cannot re-evaluate. `root_after` for such a write
-/// comes from a fresh observation ([`observed_root`]) instead: the live walk
-/// under the new config reads only what it has not already digested, so the
-/// fallback is still never a full-corpus re-read on a warm cache.
+/// Does a write at `rel` move the DOMAIN itself?
 fn touches_domain_config(rel: &str) -> bool {
     rel == fs::domain::DOMAIN_CONFIG_PATH || rel == fs::domain::CONFIG_FILE_NAME
 }
 
-/// The post-write root for a door whose writes are already overlaid:
-/// [`overlaid_root`] on the ordinary path, [`observed_root`] when any landed
-/// write touched a domain-config surface.
-fn root_after_landed(
-    root: &fs::WorkspaceRoot,
-    config_touched: bool,
-) -> Result<Root, Box<ErrorBody>> {
-    if config_touched {
-        observed_root(root)
+/// Parse the Domain the commit just wrote. `None` when `rel` is not a
+/// domain-config surface.
+fn domain_from_own_bytes(rel: &str, bytes: &str) -> Option<fs::domain::Domain> {
+    if rel == fs::domain::DOMAIN_CONFIG_PATH {
+        Some(fs::domain::Domain::from_markdown(bytes))
+    } else if rel == fs::domain::CONFIG_FILE_NAME {
+        Some(fs::domain::Domain::from_config(bytes))
     } else {
-        overlaid_root(root)
+        None
     }
+}
+
+/// Apply the commit's own domain-config bytes as a membership overlay
+/// ([`fs::DomainCache::overlay_membership`]): new Domain from those bytes,
+/// imposed on the overlay's current leaves. Never a second observation.
+fn overlay_membership_from(
+    root: &fs::WorkspaceRoot,
+    rel: &str,
+    bytes: &str,
+) -> Result<bool, Box<ErrorBody>> {
+    let Some(domain) = domain_from_own_bytes(rel, bytes) else {
+        return Ok(false);
+    };
+    let cache = write_cache(root);
+    let mut cache = cache.lock().unwrap_or_else(PoisonError::into_inner);
+    cache
+        .overlay_membership(domain)
+        .map_err(|e| io_refusal(e.to_string()))
+}
+
+/// Own-write overlay, removal half.
+fn overlay_unlinked(root: &fs::WorkspaceRoot, rel: &str) -> Result<bool, Box<ErrorBody>> {
+    let cache = write_cache(root);
+    let mut cache = cache.lock().unwrap_or_else(PoisonError::into_inner);
+    cache
+        .overlay_remove(FsPath::new(rel))
+        .map_err(|e| io_refusal(e.to_string()))
+}
+
+/// Engine-composed receipt bytes: the pre-image plus the sealed append.
+/// Never a post-apply reload.
+fn compose_receipt(before: Option<&model::Document>, append: &model::ReceiptAppend) -> String {
+    let old = before.map(|d| d.raw.as_str()).unwrap_or("");
+    let start = append.span.start.min(old.len());
+    let end = append.span.end.min(old.len());
+    let mut out = String::with_capacity(old.len() + append.text.len());
+    out.push_str(&old[..start]);
+    out.push_str(&append.text);
+    out.push_str(&old[end..]);
+    out
 }
 
 /// One splice request's decoded fields. Both hosts build this from the decoded
@@ -621,15 +679,16 @@ pub fn splice_with_mints(
             // leaf it replaced, and serve the advanced root from the overlay
             // (merkle-spec §6.1 — never a corpus re-read). A target with no
             // spelling under this root (degenerate canonicalization) leaves
-            // the row untold as before; the root is then re-OBSERVED so the
-            // batch re-guard below cannot self-refuse on our own write.
+            // the row untold; re-guard against the door-entry overlay rather
+            // than a second live observe.
             let frame_path = promotion_frame_path(root, &p);
             let advanced = match frame_path.as_deref() {
                 Some(rel) => {
                     overlay_written(root, rel, p.candidate.raw().as_bytes())?;
-                    root_after_landed(root, touches_domain_config(rel))?
+                    overlay_membership_from(root, rel, p.candidate.raw())?;
+                    overlaid_root(root)?
                 }
-                None => observed_root(root)?,
+                None => overlaid_root(root)?,
             };
             if advanced != root_before
                 && let Some(path) = frame_path
@@ -1216,7 +1275,9 @@ pub fn commit_set(
     req: &CommitSetRequest,
 ) -> Result<DeltaFrame, CommitSetError> {
     let root = flock.root();
-    let root_before = observed(root).map_err(commit_set_env)?;
+    // Door-entry baseline still sitting in the cache — never a second live
+    // observe (merkle-spec §6.1).
+    let root_before = overlaid_root(root).map_err(CommitSetError::Env)?;
 
     // Read#2 + re-validate every member before any byte moves.
     let mut befores: Vec<model::Document> = Vec::with_capacity(req.entries.len());
@@ -1274,34 +1335,31 @@ pub fn commit_set(
     .map_err(CommitSetError::Io)?;
 
     // The set's own overlay (§6.1): every member's landed leaf is its
-    // candidate's own bytes; the receipt leaf rides the landed bytes its
-    // Delta row re-loads. One advanced root serves the whole set — never a
-    // corpus re-read.
-    let mut config_touched = false;
-    for (entry, (_, candidate)) in req.entries.iter().zip(&owned) {
+    // candidate's own bytes; the receipt leaf is the engine-composed
+    // append, never a reload. Membership overlay when a member is a
+    // domain-config surface. One advanced root serves the whole set.
+    let mut files: Vec<DeltaFile> = Vec::new();
+    for (entry, (before, (_, candidate))) in req.entries.iter().zip(befores.iter().zip(&owned)) {
         overlay_written(root, &entry.content_path, candidate.raw().as_bytes())
             .map_err(CommitSetError::Env)?;
-        config_touched |= touches_domain_config(&entry.content_path);
-    }
-    let mut files: Vec<DeltaFile> = Vec::new();
-    for (entry, before) in req.entries.iter().zip(&befores) {
-        let after = fs::load(root, FsPath::new(&entry.content_path)).map_err(CommitSetError::Io)?;
-        if let Some(fd) = model::delta::file_delta(Some(before), Some(&after)) {
+        overlay_membership_from(root, &entry.content_path, candidate.raw())
+            .map_err(CommitSetError::Env)?;
+        if let Some(fd) = model::delta::file_delta(Some(before), Some(candidate.document())) {
             files.push(wire_map::project_file_delta(&entry.content_path, &fd));
         }
     }
-    if let Some((rp, _)) = &req.receipt {
-        let after_receipt = load_optional_set(root, rp)?;
-        if let Some(after) = &after_receipt {
-            overlay_written(root, rp, after.raw.as_bytes()).map_err(CommitSetError::Env)?;
-        }
-        config_touched |= touches_domain_config(rp);
-        if let Some(fd) = model::delta::file_delta(before_receipt.as_ref(), after_receipt.as_ref())
+    if let Some((rp, append)) = &req.receipt {
+        let composed = compose_receipt(before_receipt.as_ref(), append);
+        overlay_written(root, rp, composed.as_bytes()).map_err(CommitSetError::Env)?;
+        overlay_membership_from(root, rp, &composed).map_err(CommitSetError::Env)?;
+        let after_receipt = model::candidate_of_body(rp, composed);
+        if let Some(fd) =
+            model::delta::file_delta(before_receipt.as_ref(), Some(after_receipt.document()))
         {
             files.push(wire_map::project_file_delta(rp, &fd));
         }
     }
-    let root_after = root_after_landed(root, config_touched).map_err(CommitSetError::Env)?;
+    let root_after = overlaid_root(root).map_err(CommitSetError::Env)?;
 
     let seq = crate::seq::allocate(seq, flock, &root_before, &root_after, &files);
     Ok(assemble_delta(
@@ -1323,16 +1381,6 @@ fn load_optional_set(
         Ok(doc) => Ok(Some(doc)),
         Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
         Err(e) => Err(CommitSetError::Io(e)),
-    }
-}
-
-/// The observed root on the set seam's error type.
-fn commit_set_env(e: CommitError) -> CommitSetError {
-    match e {
-        CommitError::Env(err) => CommitSetError::Env(err),
-        CommitError::Refused(_) | CommitError::Io(_) => {
-            unreachable!("observed() answers Env only")
-        }
     }
 }
 
@@ -1568,11 +1616,11 @@ pub fn create(
             _ => io_to_wire(&e),
         });
     }
-    // The birth is this commit's own write: overlay the born leaf, serve the
-    // advanced root from the overlay (a born domain config re-observes —
-    // membership law moved with it).
+    // The birth is this commit's own write: overlay the born leaf, and if
+    // it is a domain config, impose that membership on current leaves.
     overlay_written(root, &args.path.0, after_doc.raw().as_bytes())?;
-    let root_after = root_after_landed(root, touches_domain_config(&args.path.0))?;
+    overlay_membership_from(root, &args.path.0, after_doc.raw())?;
+    let root_after = overlaid_root(root)?;
 
     let committed = birth_death_delta(
         seq,
@@ -1601,9 +1649,9 @@ pub fn create(
 /// under remove-what-you-read + the referential check, emitting the `deleted`
 /// change surface.
 ///
-/// Order: path confinement → the write flock (D9) → ONE domain snapshot (the
-/// world cursor, the world guard, and the corpus the referential check reads
-/// are one read) → world guard (§5.1) → load the live file (absent ⇒
+/// Order: path confinement → the write flock (D9) → door-entry observation
+/// (root_before / world guard) → a domain snapshot for the referential-check
+/// corpus only → world guard (§5.1) → load the live file (absent ⇒)
 /// `file_not_found`) → the `if_file_rev` demand (absent ⇒ `guard_required`;
 /// deletion has no recovery, so the token is a precondition from EVERY
 /// origin) → the remove-what-you-read CAS → the referential check (any
@@ -1633,11 +1681,12 @@ pub fn remove(
     // write).
     let flock = acquire_write_lock(root)?;
 
-    // One in-flock snapshot answers three questions: the world cursor the
-    // response reports, the §5.1 world guard, and the corpus the referential
-    // check reads — the same bytes the root folded, no second read.
-    let (domain_files, root_before) = crate::domain_snapshot(root)?;
+    // Door-entry observation seeds the cache and answers root_before / the
+    // world guard. The referential check still reads a domain snapshot
+    // (owned by bug-remove-corpus-snapshot — this card does not retire it).
+    let root_before = observed_root(root)?;
     world_guard(args.if_root.as_ref(), &root_before)?;
+    let (domain_files, _snapshot_root) = crate::domain_snapshot(root)?;
 
     // Load what is there — you cannot remove nothing (`file_not_found`, env).
     let before_doc = load_doc(root, &args.path)?;
@@ -1699,16 +1748,18 @@ pub fn remove(
     }
 
     fs::remove_file(root, fs_path).map_err(|e| io_to_wire(&e))?;
-    // The death lands in the resident tree through a live observation: the
-    // member set is observed now, so the dead leaf leaves the fold and only
-    // moved members are re-read — the corpus-wide `root_after` re-READ dies
-    // (§6.1). An observation rather than `overlay_remove`, deliberately:
-    // this door's `root_before` rides the referential-check snapshot above,
-    // not a cache observation, so the resident baseline here may predate
-    // foreign edits the snapshot already saw — an overlay against it could
-    // serve a stale world. The observation is always current, and it seeds
-    // the baseline the other doors' overlays compose against.
-    let root_after = observed_root(root)?;
+    // Death lands through overlay_remove, never a second observe. Removing
+    // the domain config reverts membership to the default Domain against
+    // current leaves.
+    if touches_domain_config(&args.path.0) {
+        let cache = write_cache(root);
+        let mut cache = cache.lock().unwrap_or_else(PoisonError::into_inner);
+        cache
+            .overlay_membership(fs::domain::Domain::new())
+            .map_err(|e| io_refusal(e.to_string()))?;
+    }
+    overlay_unlinked(root, &args.path.0)?;
+    let root_after = overlaid_root(root)?;
 
     let committed = birth_death_delta(
         seq,
@@ -1939,10 +1990,9 @@ pub fn lock_write(
     }
 
     fs::replace_file(root, fs_path, &after_doc).map_err(|e| io_to_wire(&e))?;
-    // The lock write is this commit's own write: overlay the replaced leaf,
-    // serve the advanced root from the overlay (§6.1).
     overlay_written(root, &args.path.0, after_doc.raw().as_bytes())?;
-    let root_after = root_after_landed(root, touches_domain_config(&args.path.0))?;
+    overlay_membership_from(root, &args.path.0, after_doc.raw())?;
+    let root_after = overlaid_root(root)?;
 
     let files = model::delta::file_delta(Some(&before_doc), Some(after_doc.document()))
         .map(|fd| vec![wire_map::project_file_delta(&args.path.0, &fd)])
@@ -4981,7 +5031,10 @@ pub fn commit_batch(
         Some((rp, _)) => load_optional(root, rp)?,
         None => None,
     };
-    let root_before = observed(root)?;
+    // Door-entry baseline still sitting in the cache — never a second live
+    // observe (merkle-spec §6.1).
+    let root_before = overlaid_root(root).map_err(CommitError::Env)?;
+    // Read#2 of the content file above is CAS, not a corpus observation.
 
     // Validate (§5.1 order) — mints the sealed batch, the only path to fs.
     let sealed = match model::validate_batch(
@@ -5021,38 +5074,31 @@ pub fn commit_batch(
     )
     .map_err(CommitError::Io)?;
 
-    // Post-state: single-file re-loads for the Delta rows' after tense.
-    let after_content = fs::load(root, FsPath::new(&req.content_path)).map_err(CommitError::Io)?;
-    let after_receipt = match &req.receipt {
-        Some((rp, _)) => load_optional(root, rp)?,
-        None => None,
-    };
-    // The advanced root from the commit's own overlay (§6.1): the content
-    // leaf is the candidate's own bytes (what this commit wrote — a racer's
-    // bytes never silently enter the folded baseline); the receipt leaf rides
-    // the landed bytes the Delta row already re-loaded. A write that touched
-    // a domain-config surface re-observes instead — membership law moved.
+    // Overlay from the engine's own bytes — never a post-apply reload.
     overlay_written(root, &req.content_path, candidate.raw().as_bytes())
         .map_err(CommitError::Env)?;
-    if let (Some((rp, _)), Some(after)) = (&req.receipt, &after_receipt) {
-        overlay_written(root, rp, after.raw.as_bytes()).map_err(CommitError::Env)?;
-    }
-    let config_touched = touches_domain_config(&req.content_path)
-        || req
-            .receipt
-            .as_ref()
-            .is_some_and(|(rp, _)| touches_domain_config(rp));
-    let root_after = root_after_landed(root, config_touched).map_err(CommitError::Env)?;
+    overlay_membership_from(root, &req.content_path, candidate.raw()).map_err(CommitError::Env)?;
+    let after_receipt = match &req.receipt {
+        Some((rp, append)) => {
+            let composed = compose_receipt(before_receipt.as_ref(), append);
+            overlay_written(root, rp, composed.as_bytes()).map_err(CommitError::Env)?;
+            overlay_membership_from(root, rp, &composed).map_err(CommitError::Env)?;
+            Some(model::candidate_of_body(rp, composed))
+        }
+        None => None,
+    };
+    let root_after = overlaid_root(root).map_err(CommitError::Env)?;
 
     // Change facts → wire projection, in §7.1 print order: content file first,
     // then the receipt file, then a promotion's own row.
+    let after_receipt_doc = after_receipt.as_ref().map(|c| c.document());
     let files = commit_delta_files(
         &req.content_path,
         &before_content,
-        &after_content,
+        candidate.document(),
         req.receipt
             .as_ref()
-            .map(|(rp, _)| (rp.as_str(), before_receipt.as_ref(), after_receipt.as_ref())),
+            .map(|(rp, _)| (rp.as_str(), before_receipt.as_ref(), after_receipt_doc)),
         req.promotion.as_ref(),
     );
 
@@ -5161,13 +5207,6 @@ fn load_optional(
         Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
         Err(e) => Err(CommitError::Io(e)),
     }
-}
-
-/// The observed root as a [`CommitError`] (the commit seam's envelope shape):
-/// [`observed_root`] through the wrapper seam — a live observation, never a
-/// flock-held corpus read.
-fn observed(root: &fs::WorkspaceRoot) -> Result<Root, CommitError> {
-    observed_root(root).map_err(CommitError::Env)
 }
 
 /// The write path's one production `policy::evaluate` call site: run every
@@ -6126,10 +6165,29 @@ mod resident_write_path {
     }
 
     /// One in-domain page under `Alpha/Beta` whose body a Match edit can move.
+    fn page_body(word: &str) -> String {
+        format!("# Alpha\n\n## Beta\n\nship by {word}\n")
+    }
+
     fn page(dir: &tempfile::TempDir, rel: &str, word: &str) {
         let abs = dir.path().join(rel);
         std::fs::create_dir_all(abs.parent().expect("parent")).expect("mkdir");
-        std::fs::write(abs, format!("# Alpha\n\n## Beta\n\nship by {word}\n")).expect("write");
+        std::fs::write(abs, page_body(word)).expect("write");
+    }
+
+    fn fold_owned(version: u32, files: &[(&str, Vec<u8>)]) -> Root {
+        let leaves: Vec<(&[u8], [u8; 32])> = files
+            .iter()
+            .map(|(n, b)| (n.as_bytes(), model::leaf_digest(b)))
+            .collect();
+        Root(model::merkle_root_of_leaves(&leaves, version).0)
+    }
+
+    fn race_foreign(dir: &std::path::Path) {
+        let path = dir.join("notes/foreign.md");
+        super::after_door_observe(move || {
+            std::fs::write(&path, page_body("RACED")).expect("foreign racer");
+        });
     }
 
     fn match_edit(old: &str, new: &str) -> Edit {
@@ -6419,11 +6477,10 @@ mod resident_write_path {
         splice(&root, None, &fresh, &[], None).expect("a fresh world guard passes");
     }
 
-    /// A write that moves the DOMAIN itself (the config page) re-observes
-    /// membership instead of trusting the overlay: the served root reflects
-    /// the new ignore law immediately, on the config write and after it.
+    /// A write that moves the DOMAIN itself overlays membership from the
+    /// commit's own config bytes against current leaves — no second observe.
     #[test]
-    fn domain_config_write_reobserves_membership() {
+    fn domain_config_write_overlays_membership() {
         let (dir, root) = ws();
         page(&dir, "notes/plan.md", "August");
         page(&dir, "drafts/scratch.md", "August");
@@ -6510,5 +6567,176 @@ mod resident_write_path {
         };
         assert_eq!(reads_after - reads_before, 0, "a dry run reads no member");
         assert_eq!(folds_after - folds_before, 0, "a dry run refolds nothing");
+    }
+
+    /// Race fixture: a foreign rewrite of B between door observe and commit
+    /// must not enter root_after. Overlay(door-entry leaves, own writes) wins;
+    /// ambient_root after the racer does not.
+    #[test]
+    fn root_after_ignores_a_foreign_racer_on_every_door() {
+        let b0 = page_body("bystander").into_bytes();
+        let raced = page_body("RACED").into_bytes();
+        assert_ne!(b0, raced, "the racer must move B's digest");
+
+        // splice
+        {
+            let (dir, root) = ws();
+            page(&dir, "notes/plan.md", "August");
+            page(&dir, "notes/foreign.md", "bystander");
+            race_foreign(dir.path());
+            let out = splice(
+                &root,
+                None,
+                &splice_args("notes/plan.md", "August", "w1"),
+                &[],
+                None,
+            )
+            .expect("splice");
+            let served = out.committed.expect("frame").delta.root_after;
+            let expected = fold_owned(
+                0,
+                &[
+                    ("notes/foreign.md", b0.clone()),
+                    ("notes/plan.md", page_body("w1").into_bytes()),
+                ],
+            );
+            assert_eq!(served, expected, "splice root_after stays A1+B0");
+            assert_ne!(
+                served,
+                ambient_root(&root).expect("oracle"),
+                "splice ambient absorbed the racer"
+            );
+        }
+
+        // splice.set
+        {
+            let (dir, root) = ws();
+            page(&dir, "notes/plan.md", "August");
+            page(&dir, "notes/second.md", "August");
+            page(&dir, "notes/foreign.md", "bystander");
+            race_foreign(dir.path());
+            let set = splice_set(
+                &root,
+                None,
+                &set_args(vec![
+                    set_member("notes/plan.md", "August", "w1"),
+                    set_member("notes/second.md", "August", "w1"),
+                ]),
+                &[],
+            )
+            .expect("splice_set");
+            let served = set.committed.expect("set frame").delta.root_after;
+            let expected = fold_owned(
+                0,
+                &[
+                    ("notes/foreign.md", b0.clone()),
+                    ("notes/plan.md", page_body("w1").into_bytes()),
+                    ("notes/second.md", page_body("w1").into_bytes()),
+                ],
+            );
+            assert_eq!(served, expected, "splice.set root_after stays own+B0");
+            assert_ne!(served, ambient_root(&root).expect("oracle"));
+        }
+
+        // create
+        {
+            let (dir, root) = ws();
+            page(&dir, "notes/plan.md", "August");
+            page(&dir, "notes/foreign.md", "bystander");
+            race_foreign(dir.path());
+            let born =
+                create(&root, None, &create_args("notes/new.md", "# New\n"), &[]).expect("create");
+            let served = born.root_after.expect("root_after");
+            let newborn = std::fs::read(dir.path().join("notes/new.md")).expect("new");
+            let expected = fold_owned(
+                0,
+                &[
+                    ("notes/foreign.md", b0.clone()),
+                    ("notes/new.md", newborn),
+                    ("notes/plan.md", page_body("August").into_bytes()),
+                ],
+            );
+            assert_eq!(served, expected, "create root_after stays own+B0");
+            assert_ne!(served, ambient_root(&root).expect("oracle"));
+        }
+
+        // lock_write
+        {
+            let (dir, root) = ws();
+            page(&dir, "notes/plan.md", "August");
+            page(&dir, "notes/foreign.md", "bystander");
+            let rev = live_rev(&root, "notes/plan.md");
+            race_foreign(dir.path());
+            let locked =
+                lock_write(&root, None, &lock_args("notes/plan.md", rev)).expect("lock_write");
+            let served = locked.root_after.expect("root_after");
+            let plan = std::fs::read(dir.path().join("notes/plan.md")).expect("plan after lock");
+            let expected = fold_owned(
+                0,
+                &[("notes/foreign.md", b0.clone()), ("notes/plan.md", plan)],
+            );
+            assert_eq!(served, expected, "lock_write root_after stays own+B0");
+            assert_ne!(served, ambient_root(&root).expect("oracle"));
+        }
+
+        // remove
+        {
+            let (dir, root) = ws();
+            page(&dir, "notes/plan.md", "August");
+            page(&dir, "notes/foreign.md", "bystander");
+            let born =
+                create(&root, None, &create_args("notes/new.md", "# New\n"), &[]).expect("birth");
+            race_foreign(dir.path());
+            let dead = remove(
+                &root,
+                None,
+                &remove_args("notes/new.md", born.file_rev_after.clone()),
+                &[],
+            )
+            .expect("remove");
+            let served = dead.root_after.expect("root_after");
+            let expected = fold_owned(
+                0,
+                &[
+                    ("notes/foreign.md", b0.clone()),
+                    ("notes/plan.md", page_body("August").into_bytes()),
+                ],
+            );
+            assert_eq!(served, expected, "remove root_after stays remaining+B0");
+            assert_ne!(served, ambient_root(&root).expect("oracle"));
+        }
+
+        // domain-config write
+        {
+            let (dir, root) = ws();
+            page(&dir, "notes/plan.md", "August");
+            page(&dir, "notes/foreign.md", "bystander");
+            page(&dir, "drafts/scratch.md", "August");
+            let config = "---\nignore:\n  - \"drafts/**\"\n---\n# Domain\n";
+            race_foreign(dir.path());
+            let born = create(
+                &root,
+                None,
+                &create_args(fs::domain::DOMAIN_CONFIG_PATH, config),
+                &[],
+            )
+            .expect("config birth");
+            let served = born.root_after.expect("root_after");
+            let domain = std::fs::read(dir.path().join(fs::domain::DOMAIN_CONFIG_PATH))
+                .expect("landed config");
+            let expected = fold_owned(
+                0,
+                &[
+                    ("meridian/domain.md", domain),
+                    ("notes/foreign.md", b0),
+                    ("notes/plan.md", page_body("August").into_bytes()),
+                ],
+            );
+            assert_eq!(
+                served, expected,
+                "config write overlays membership + B0, drops drafts"
+            );
+            assert_ne!(served, ambient_root(&root).expect("oracle"));
+        }
     }
 }
