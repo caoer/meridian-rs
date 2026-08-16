@@ -146,6 +146,7 @@ pub struct SettleReceipt {
 /// A submitted, not-yet-awaited settle. Durability is established only when
 /// [`Pending::wait`] returns `Ok` — a rename that makes staged bytes visible
 /// must wait first. Await once; a second wait reports the actor gone.
+#[derive(Debug)]
 pub struct Pending {
     rx: Receiver<io::Result<SettleReceipt>>,
 }
