@@ -90,7 +90,29 @@ pub(crate) fn call(door: &mut SocketDoor, request: &Value) -> Result<Value, Box<
         return Ok(body);
     }
     if let Some(raw) = frame.error {
-        let error: ErrorBody = serde_json::from_str(raw.get()).map_err(|e| {
+        // The daemon's v3 session projects error codes (root_mismatch →
+        // fingerprint_mismatch). ErrorBody is the v2 enum; unproject before
+        // decode so a world-guard refusal is not an io_error parse miss.
+        let mut raw_val: Value = serde_json::from_str(raw.get()).map_err(|e| {
+            let mut err = ErrorBody::new(wire::ErrorCode::IoError);
+            err.message = Some(format!(
+                "the daemon refused the write but the error frame would not parse: {e}"
+            ));
+            Box::new(err)
+        })?;
+        if let Some(obj) = raw_val.as_object_mut()
+            && let Some(Value::String(code)) = obj.get("code")
+        {
+            let v2 = match code.as_str() {
+                "fingerprint_mismatch" => Some("root_mismatch"),
+                "fingerprint_unknown" => Some("root_unknown"),
+                _ => None,
+            };
+            if let Some(v2) = v2 {
+                obj.insert("code".into(), Value::String(v2.into()));
+            }
+        }
+        let error: ErrorBody = serde_json::from_value(raw_val).map_err(|e| {
             let mut err = ErrorBody::new(wire::ErrorCode::IoError);
             err.message = Some(format!(
                 "the daemon refused the write but the error frame would not parse: {e}"
