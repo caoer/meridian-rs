@@ -106,18 +106,21 @@ const DOORS: &[DoorPin] = &[
     },
     DoorPin {
         file: WRITE_RS,
-        door_fn: "create",
-        mint_fn: "create",
-        guard_fn: Some("create"),
-        label: "create (the birth door)",
+        // Thin coat `create` delegates here so the daemon can pass
+        // `Registry::domain_cache`. Census follows the body that mints
+        // and discharges (same shape as `splice` → `splice_with_mints`).
+        door_fn: "create_with_cache",
+        mint_fn: "create_with_cache",
+        guard_fn: Some("create_with_cache"),
+        label: "create_with_cache (the birth door)",
         class: Door::TranslatedAndGuarded,
     },
     DoorPin {
         file: WRITE_RS,
-        door_fn: "lock_write",
-        mint_fn: "lock_write",
-        guard_fn: Some("lock_write"),
-        label: "lock_write",
+        door_fn: "lock_write_with_cache",
+        mint_fn: "lock_write_with_cache",
+        guard_fn: Some("lock_write_with_cache"),
+        label: "lock_write_with_cache",
         class: Door::Guarded,
     },
     DoorPin {

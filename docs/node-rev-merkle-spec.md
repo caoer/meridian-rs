@@ -511,6 +511,16 @@ the cached 32-byte fold, a dirty bit, and a `last_seq` stamp (§6.3).
   `overlay_root`. There is no config/remove exception that re-observes.
   Both exclusion-held `ambient_root` corpus reads leave the write path. The
   splice response keeps its `wire-contract.md` §4.4 transition fields.
+- **Write doors ride the same `DomainCache` the feed patches.** The daemon
+  passes `Registry::domain_cache` into every write door (an argument, not a
+  process-wide hook) so a splice and a currency pass lock one address.
+  `observed_root` consults `guard_currency`: Trusted on that supplied cache
+  serves the overlay — the applied dirty set retired the stat-sweep;
+  Untrusted degrades to a full observation that absorbs the loss (§6.2
+  row 6). In-process callers with no registry keep a process-local fallback
+  map and still live-observe every door entry (no feed covers their gap).
+  The watcher already advances and notes loss on that cache's `FeedGen`
+  cell, so a mid-read fence can fire.
 - **Foreign changes arrive through the feed (§6.4)** and mark the touched
   nodes dirty; folds recompute lazily on demand — maintenance cost follows
   change, never corpus size (requirement 1).

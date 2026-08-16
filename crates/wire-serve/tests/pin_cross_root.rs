@@ -302,7 +302,7 @@ fn cross_root_pin_lifecycle() {
     };
     let mut args = pin_args("plan.md", "other:doc.md", "Doc/Design", true);
     args.actor = Some("agent-7".into());
-    let err = splice_with_mints(&sb.ws, None, &args, &[], mints)
+    let err = splice_with_mints(&sb.ws, None, &args, &[], mints, None)
         .expect_err("the ambient twin's receipt is a different fact — the gate fails closed");
     assert_eq!(
         err.code,
@@ -316,13 +316,13 @@ fn cross_root_pin_lifecycle() {
     //   the same ledger (a promotion-fresh re-pin passes without re-reading).
     let target_store = ledgers.ledger(&sb.other.0);
     session_read(&sb.other, &target_store, "agent-7", "doc.md", "Doc/Design");
-    let out = splice_with_mints(&sb.ws, None, &args, &[], mints)
+    let out = splice_with_mints(&sb.ws, None, &args, &[], mints, None)
         .expect("the target-ledger receipt admits the pin");
     assert!(
         !pin_fact(&out.body).promoted,
         "the earlier promotion's anchor is reused"
     );
-    let out = splice_with_mints(&sb.ws, None, &args, &[], mints)
+    let out = splice_with_mints(&sb.ws, None, &args, &[], mints, None)
         .expect("the refreshed receipt still covers the selector (D16 refresh, target ledger)");
     assert!(!pin_fact(&out.body).promoted);
 
