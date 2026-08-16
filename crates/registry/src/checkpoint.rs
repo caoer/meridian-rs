@@ -67,12 +67,16 @@ pub struct CheckpointReceipt {
     /// Members re-derived by journal replay (the changed-while-down set).
     pub replayed: u64,
     /// Whether the stored cursor anchored against the live journal. `false`
-    /// means the evidence arm ran: rows adopted, replay skipped, the next
-    /// observation re-verifies every member.
+    /// means replay was forfeited: rows adopted as hypotheses, and the §6.2
+    /// floor re-verifies every one before anything serves.
     pub anchored: bool,
-    /// The labeled reason the delta plane re-baselined, `None` when the cursor
-    /// anchored. This is the loud half, recorded rather than only printed.
-    pub rebaseline: Option<String>,
+    /// The label of the WARM re-baseline — replay forfeited, object retained —
+    /// or `None` when the cursor anchored. A COLD re-baseline never reaches a
+    /// receipt: the object is gone and the restore answers `None`, which is
+    /// what keeps "exactly one loud re-baseline" auditable (the warm event
+    /// fires on every process restart BY DESIGN, so it must not share the
+    /// cold event's alarm channel).
+    pub warm_rebaseline: Option<String>,
 }
 
 /// The checkpoint file for `workspace`'s drawer.
@@ -149,11 +153,12 @@ pub(crate) fn restore(
     let restored = match fs::checkpoint::restore(&bytes, workspace, cache::SCHEMA_SALT, &domain) {
         Ok(restored) => restored,
         Err(discard) => {
-            // The one loud, labeled re-baseline (merkle-spec §6.5): a
-            // checkpoint trusted after a mismatch is the banned object
-            // wearing the allowed object's name.
+            // COLD re-baseline: the rows are not lawful statements about this
+            // world under today's law, so nothing survives. Rare and
+            // meaningful — this is the alarm channel, and it stays quiet
+            // precisely because the warm event below does not share it.
             eprintln!(
-                "checkpoint: RE-BASELINE for {} — {discard}; the checkpoint is discarded \
+                "checkpoint: COLD RE-BASELINE for {} — {discard}; the checkpoint is discarded \
                      and the corpus rebuilds cold",
                 workspace.display()
             );
@@ -194,30 +199,34 @@ pub(crate) fn restore(
                 leaves,
                 replayed,
                 anchored: true,
-                rebaseline: None,
+                warm_rebaseline: None,
             }
         }
         (verdict, _) => {
-            // Cursor dead or outside retained history. The delta plane
-            // re-baselines loudly; the leaf rows survive as evidence and the
-            // next observation re-verifies every one against disk (§6.2).
+            // WARM re-baseline: the cursor cannot anchor, so REPLAY is
+            // forfeited — and nothing else is. The rows enter as hypotheses
+            // and the §6.2 floor re-verifies each one before it can serve.
+            // Trust never rode the cursor in either direction, so this is not
+            // an alarm: it fires on every ordinary process restart by design
+            // (§7.1 persists no epoch fact), which is exactly why it is
+            // labeled apart from the cold event.
             let label = match verdict {
                 wire_serve::ring::Anchor::DeadInstance => {
-                    "journal instance died (restart or reap) — no frame can be replayed"
+                    "cursor epoch died (restart or reap) — no frame can be replayed"
                 }
-                _ => "journal cursor is outside retained history",
+                _ => "cursor is outside retained history",
             };
             eprintln!(
-                "checkpoint: RE-BASELINE of the delta plane for {} — {label}; {leaves} leaf \
-                 row(s) adopted as EVIDENCE only, every member re-verified against disk by \
-                 the next observation (merkle-spec §6.2)",
+                "checkpoint: warm re-baseline for {} — {label}; {leaves} leaf row(s) adopted \
+                 as hypotheses, each re-verified against disk by the §6.2 trust close before \
+                 it serves",
                 workspace.display()
             );
             CheckpointReceipt {
                 leaves,
                 replayed: 0,
                 anchored: false,
-                rebaseline: Some(label.to_owned()),
+                warm_rebaseline: Some(label.to_owned()),
             }
         }
     };
@@ -361,11 +370,53 @@ mod tests {
         );
     }
 
-    /// The evidence arm: a cursor that cannot anchor — the ordinary restart,
-    /// where the RAM-only ring mints a fresh instance — costs the replay
-    /// shortcut, never the index. Rows are adopted as evidence, the delta
-    /// plane re-baselines loudly and exactly once, and the next observation
-    /// re-verifies every member against disk (§6.2).
+    /// **The anti-vacuity gate** (design ruling § I): a cursor mismatch ALONE
+    /// must not discard the object. Read as an identity field the cursor would
+    /// condemn the checkpoint on every ordinary restart — §7.1 persists no
+    /// epoch fact, so the mismatch is CERTAIN — and the object would never
+    /// once fire. Restore across that restart must reach the memo with its
+    /// rows intact, the file still on disk, and zero unchanged members read.
+    #[test]
+    fn a_cursor_mismatch_alone_never_discards_the_object() {
+        let home = tempfile::tempdir().unwrap();
+        let (ws, cache_root) = workspace(home.path());
+        let root = fs::WorkspaceRoot(ws.clone());
+
+        let mut memo = observed(&ws);
+        let dead = WorkspaceRing::new(&root);
+        assert!(save(
+            &cache_root,
+            &ws,
+            &mut memo,
+            dead.instance(),
+            dead.seq()
+        ));
+
+        // The ordinary restart: a new epoch, so the stored cursor is certain
+        // to mismatch.
+        let restarted = WorkspaceRing::new(&root);
+        assert_ne!(dead.instance(), restarted.instance());
+
+        let (back, receipt) = restore(&cache_root, &ws, Some(&restarted))
+            .expect("a cursor mismatch forfeits replay, never the object");
+
+        assert_eq!(receipt.leaves, 3, "every row survives the warm re-baseline");
+        assert!(receipt.warm_rebaseline.is_some(), "and it is labeled warm");
+        assert_eq!(
+            back.leaves_read(),
+            0,
+            "zero unchanged members read — the whole point of keeping the rows"
+        );
+        assert_eq!(
+            path(&cache_root, &ws).exists(),
+            true,
+            "the file survives too: only a COLD re-baseline removes it"
+        );
+    }
+
+    /// The warm arm end to end: rows adopted as hypotheses, and the §6.2 floor
+    /// re-verifies every one — the changed member is re-read, the unchanged
+    /// ones are not, and the answer is the disk's truth.
     #[test]
     fn a_dead_cursor_keeps_the_rows_as_evidence_and_re_baselines_once() {
         let home = tempfile::tempdir().unwrap();
@@ -395,10 +446,10 @@ mod tests {
         assert_eq!(receipt.leaves, 3, "the rows are adopted as evidence");
         assert!(
             receipt
-                .rebaseline
+                .warm_rebaseline
                 .as_deref()
-                .is_some_and(|label| label.contains("journal instance died")),
-            "the re-baseline is labeled, not silent"
+                .is_some_and(|label| label.contains("cursor epoch died")),
+            "the warm re-baseline is labeled, not silent"
         );
 
         // The floor that makes the evidence arm sound: a live observation
