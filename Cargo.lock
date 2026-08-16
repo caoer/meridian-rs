@@ -4498,6 +4498,7 @@ dependencies = [
  "effects",
  "fs",
  "git",
+ "libc",
  "lock",
  "model",
  "policy",
