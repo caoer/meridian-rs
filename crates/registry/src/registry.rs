@@ -1716,7 +1716,7 @@ mod engine_tests {
     /// Quiet already-watched tree still `Seen` (the vouched baseline above
     /// the mkdir) — the cookie law is unchanged for a tree the watch already
     /// covers. Linux-only: this is the inotify arming gap (19/20 miss on
-    /// the unfixed tree); Darwin FSEvents did not exhibit it (0/20).
+    /// the unfixed tree); Darwin `FSEvents` did not exhibit it (0/20).
     #[cfg(target_os = "linux")]
     #[test]
     fn a_new_directory_child_before_arm_cannot_vouch_a_stale_overlay() {
