@@ -374,9 +374,6 @@ pub(crate) fn meridian_dir(root: &crate::WorkspaceRoot) -> PathBuf {
     root.0.join(".meridian")
 }
 
-/// Thread-local stamp-ladder injection for the all-equal calibration fixture.
-/// The next [`measure_granule`] on this thread consumes the ladder; the guard
-/// also clears it on drop so parallel tests cannot leak a scripted ladder.
 #[cfg(test)]
 thread_local! {
     static STAMP_LADDER: std::cell::RefCell<Option<Vec<FsStamp>>> =
@@ -394,8 +391,10 @@ impl Drop for StampLadderGuard {
     }
 }
 
-/// Script the next calibration probe on this thread. Used by the all-equal
-/// fixture: a ladder that never ticks must be [`Calibration::Unavailable`].
+/// Script the next calibration probe on this thread. The next
+/// [`measure_granule`] consumes the ladder; the guard also clears it on
+/// drop so parallel tests cannot leak a scripted ladder. A ladder that
+/// never ticks must be [`Calibration::Unavailable`].
 #[cfg(test)]
 pub(crate) fn inject_stamp_ladder(stamps: Vec<FsStamp>) -> StampLadderGuard {
     STAMP_LADDER.with(|slot| *slot.borrow_mut() = Some(stamps));
