@@ -49,6 +49,11 @@ pub trait Door: Send {
 pub struct SocketDoor {
     writer: UnixStream,
     reader: BufReader<UnixStream>,
+    /// The caps the daemon's hello advertised, retained at connect — the
+    /// client half of §3.2 discovery honesty. A write verb consults these
+    /// before sending a field the daemon never negotiated (the strict wall
+    /// would refuse it; the client refuses first, with a teaching).
+    caps: Vec<String>,
 }
 
 impl SocketDoor {
@@ -73,7 +78,11 @@ impl SocketDoor {
         stream.set_write_timeout(Some(super::cmd::WALL_CLOCK))?;
         let writer = stream.try_clone()?;
         let reader = BufReader::new(stream);
-        let mut door = Self { writer, reader };
+        let mut door = Self {
+            writer,
+            reader,
+            caps: Vec::new(),
+        };
         let hello = json!({
             "op": "hello",
             "proto": 1,
@@ -103,7 +112,24 @@ impl SocketDoor {
         if let Err(message) = crate::engine::hello_identity_skew(body.as_ref(), socket) {
             return Err(io::Error::other(message));
         }
+        door.caps = body
+            .as_ref()
+            .and_then(|b| b.get("caps"))
+            .and_then(Value::as_array)
+            .map(|caps| {
+                caps.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
         Ok(door)
+    }
+
+    /// Did the connect-time hello advertise `cap` (§3.2 discovery honesty)?
+    #[must_use]
+    pub fn has_cap(&self, cap: &str) -> bool {
+        self.caps.iter().any(|c| c == cap)
     }
 }
 
