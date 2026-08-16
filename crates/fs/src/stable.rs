@@ -59,13 +59,14 @@ pub const PROBE_FILE: &str = "stable-read.probe";
 const BURST_WRITES: u32 = 16;
 
 /// Escalation sleeps after an all-equal burst, longest last. A backend that
-/// shows no stamp movement across the whole ladder is classified into the
-/// coarsest known stamp class ([`COARSE_GRANULE_NS`]) — still measured
-/// ("no tick within the ladder"), never assumed fine.
+/// shows no stamp movement across the whole ladder is unknown capability
+/// ([`Calibration::Unavailable`]) — the comparison unit is measured, never
+/// assumed.
 const ESCALATION_SLEEPS_MS: [u64; 7] = [1, 2, 4, 8, 16, 32, 64];
 
-/// The coarsest known real filesystem stamp quantum (FAT's 2 s). Declared
-/// when the probe observes no movement inside the escalation ladder.
+/// Upper bound a MEASURED granule may take in the test matrix: a tick
+/// observed inside the escalation ladder cannot exceed this. Not a fallback
+/// classification — no-tick is [`Calibration::Unavailable`].
 const COARSE_GRANULE_NS: u64 = 2_000_000_000;
 
 /// How many times a read whose fd identity moved mid-read is retried before
@@ -78,10 +79,9 @@ const SETTLE_RETRIES: u32 = 4;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Calibration {
     /// The watermark's comparison unit, in nanoseconds — an upper bound on
-    /// the backend's stamp quantum.
+    /// the backend's stamp quantum. Only a probe that SAW a tick lands here.
     Measured {
-        /// Smallest observed stamp movement (ns), or the coarse-class
-        /// ceiling when the ladder saw none.
+        /// Smallest observed stamp movement (ns).
         granule_ns: u64,
     },
     /// The probe could not run (unwritable `.meridian/`, alien I/O failure):
@@ -237,8 +237,9 @@ pub(crate) fn racy(key: &StatKey, watermark: FsStamp, granule_ns: u64) -> bool {
 /// escalate with short sleeps if the burst never saw a tick. The smallest
 /// observed movement is the granule — an upper bound on the backend quantum
 /// (distinct stamps differ by at least one quantum), so measurement error
-/// only ever widens the racy window. A ladder with no movement classifies
-/// the backend into the coarsest known class ([`COARSE_GRANULE_NS`]).
+/// only ever widens the racy window. A ladder with no movement is an error
+/// — [`calibrate`] wraps it as [`Calibration::Unavailable`], never a silent
+/// `Measured { 2s }`.
 ///
 /// Failure is [`Calibration::Unavailable`] and LOUD here — the caller keeps
 /// serving, re-reading everything (never silent trust).
@@ -257,6 +258,10 @@ pub(crate) fn calibrate(meridian_dir: &Path) -> Calibration {
 }
 
 fn measure_granule(meridian_dir: &Path) -> io::Result<u64> {
+    #[cfg(test)]
+    if let Some(injected) = take_injected_stamps() {
+        return granule_from_stamps(&injected);
+    }
     std::fs::create_dir_all(meridian_dir)?;
     let probe = meridian_dir.join(PROBE_FILE);
     let mut stamps: Vec<FsStamp> = Vec::with_capacity(BURST_WRITES as usize + 8);
@@ -272,9 +277,19 @@ fn measure_granule(meridian_dir: &Path) -> io::Result<u64> {
             }
         }
     }
-    match smallest_tick(&stamps) {
-        Some(tick) => Ok(u64::try_from(tick).unwrap_or(COARSE_GRANULE_NS)),
-        None => Ok(COARSE_GRANULE_NS),
+    granule_from_stamps(&stamps)
+}
+
+/// Classify a stamp ladder: the smallest positive consecutive movement, or
+/// an error when no tick was observed (unknown capability — never assumed).
+fn granule_from_stamps(stamps: &[FsStamp]) -> io::Result<u64> {
+    match smallest_tick(stamps) {
+        Some(tick) => u64::try_from(tick).map_err(|_| {
+            io::Error::other("observed stamp tick does not fit a u64 nanosecond count")
+        }),
+        None => Err(io::Error::other(
+            "no timestamp tick observed across the calibration ladder",
+        )),
     }
 }
 
@@ -357,6 +372,39 @@ pub(crate) fn read_settled(abs: &Path) -> io::Result<SettledRead> {
 /// The `.meridian` directory of `root` — where the probe file lives.
 pub(crate) fn meridian_dir(root: &crate::WorkspaceRoot) -> PathBuf {
     root.0.join(".meridian")
+}
+
+/// Thread-local stamp-ladder injection for the all-equal calibration fixture.
+/// The next [`measure_granule`] on this thread consumes the ladder; the guard
+/// also clears it on drop so parallel tests cannot leak a scripted ladder.
+#[cfg(test)]
+thread_local! {
+    static STAMP_LADDER: std::cell::RefCell<Option<Vec<FsStamp>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Clears [`STAMP_LADDER`] on drop.
+#[cfg(test)]
+pub(crate) struct StampLadderGuard;
+
+#[cfg(test)]
+impl Drop for StampLadderGuard {
+    fn drop(&mut self) {
+        STAMP_LADDER.with(|slot| *slot.borrow_mut() = None);
+    }
+}
+
+/// Script the next calibration probe on this thread. Used by the all-equal
+/// fixture: a ladder that never ticks must be [`Calibration::Unavailable`].
+#[cfg(test)]
+pub(crate) fn inject_stamp_ladder(stamps: Vec<FsStamp>) -> StampLadderGuard {
+    STAMP_LADDER.with(|slot| *slot.borrow_mut() = Some(stamps));
+    StampLadderGuard
+}
+
+#[cfg(test)]
+fn take_injected_stamps() -> Option<Vec<FsStamp>> {
+    STAMP_LADDER.with(|slot| slot.borrow_mut().take())
 }
 
 #[cfg(test)]
@@ -453,6 +501,38 @@ mod tests {
         // The watermark rides the same file and the same clock.
         let w = watermark(&tmp.path().join(".meridian")).expect("watermark");
         assert!(stamp_ns(w) > 0);
+    }
+
+    /// Codex F8: an all-equal stamp ladder is unknown capability, never a
+    /// silent `Measured { 2s }`. `calibrate` wraps that error as
+    /// [`Calibration::Unavailable`] and emits the existing eprintln.
+    #[test]
+    fn an_all_equal_stamp_ladder_is_unavailable() {
+        let stamps = vec![(10, 0), (10, 0), (10, 0), (10, 0)];
+        let err = granule_from_stamps(&stamps).expect_err("no tick");
+        assert!(
+            err.to_string().contains("no timestamp tick"),
+            "the error names the missing tick: {err}"
+        );
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let _guard = inject_stamp_ladder(stamps);
+        let calibration = calibrate(&tmp.path().join(".meridian"));
+        let Calibration::Unavailable { reason } = calibration else {
+            panic!("no-tick must be Unavailable, not {calibration:?}");
+        };
+        assert!(
+            reason.contains("no timestamp tick"),
+            "Unavailable names the missing tick: {reason}"
+        );
+    }
+
+    /// A ladder that does tick yields the smallest positive movement — the
+    /// no-tick arm above is not "always Unavailable".
+    #[test]
+    fn a_ticking_stamp_ladder_is_the_smallest_movement() {
+        let stamps = vec![(10, 0), (10, 0), (10, 5), (10, 50)];
+        assert_eq!(granule_from_stamps(&stamps).expect("tick"), 5);
     }
 
     /// A settled read over a quiet file answers the fd-true identity.
