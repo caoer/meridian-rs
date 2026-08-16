@@ -417,12 +417,7 @@ pub fn splice_with_mints(
     // §5.1 order: the world guard first — so a stale plan refuses before any
     // per-target resolution can answer for it, and before this splice's own
     // promotion can advance the root it guards on.
-    world_guard(
-        root,
-        args.if_root.as_ref(),
-        &root_before,
-        serving_version(root, &door)?,
-    )?;
+    world_guard(root, args.if_root.as_ref(), &root_before, &door)?;
 
     // §6.6 pre-flight: the requested receipt anchor is resolved against the
     // receipt file BEFORE any byte moves, so a collision refuses the batch
@@ -956,12 +951,7 @@ pub fn splice_set_with_cache(
     let root_before = observed_root(root, &door)?;
     // §5.1 order: the world guard first, once — world-grain covers every
     // member (if any domain file moved, the fingerprint moved).
-    world_guard(
-        root,
-        args.if_root.as_ref(),
-        &root_before,
-        serving_version(root, &door)?,
-    )?;
+    world_guard(root, args.if_root.as_ref(), &root_before, &door)?;
     // §6.6 pre-flight, once per set: the anchor is resolved before any byte.
     preflight_receipt_anchor(root, args.receipt.as_ref())?;
 
@@ -1606,12 +1596,7 @@ pub fn create_with_cache(
     let door = door_cache(root, supplied);
 
     let root_before = observed_root(root, &door)?;
-    world_guard(
-        root,
-        args.if_root.as_ref(),
-        &root_before,
-        serving_version(root, &door)?,
-    )?;
+    world_guard(root, args.if_root.as_ref(), &root_before, &door)?;
 
     // The payload IS the candidate document here, so `strip_fp` over the whole
     // body runs at document grain — the same grammar `strip_fp_candidate`
@@ -1789,12 +1774,7 @@ pub fn remove_with_cache(
     // world guard. The referential check is a different read (query
     // instruments over hash-domain bytes), never a second fold.
     let root_before = observed_root(root, &door)?;
-    world_guard(
-        root,
-        args.if_root.as_ref(),
-        &root_before,
-        serving_version(root, &door)?,
-    )?;
+    world_guard(root, args.if_root.as_ref(), &root_before, &door)?;
 
     // Load what is there — you cannot remove nothing (`file_not_found`, env).
     let before_doc = load_doc(root, &args.path)?;
@@ -2095,12 +2075,7 @@ pub fn lock_write_with_cache(
     let file_rev_before = NodeRev(before_doc.root.node_rev.0.clone());
 
     let root_before = observed_root(root, &door)?;
-    world_guard(
-        root,
-        args.if_root.as_ref(),
-        &root_before,
-        serving_version(root, &door)?,
-    )?;
+    world_guard(root, args.if_root.as_ref(), &root_before, &door)?;
 
     // write-what-you-read CAS: the page must still carry the rev the caller
     // read (drift means the lock's facts were computed against stale bytes).
@@ -3556,11 +3531,14 @@ fn world_guard(
     root: &fs::WorkspaceRoot,
     if_root: Option<&Root>,
     root_before: &Root,
-    serving: model::ServingVersion,
+    door: &WriteCacheHandle,
 ) -> Result<(), Box<ErrorBody>> {
     let Some(expected) = if_root else {
+        // No premise, no classification: an unguarded write must not pay a
+        // cutover-record read it has no question for.
         return Ok(());
     };
+    let serving = serving_version(root, door)?;
     // §5.7 three errors, three facts (wire-contract §12.3): family
     // classification precedes the digest compare, so a retired token
     // refuses `fingerprint_version_retired` even when its digest would also
