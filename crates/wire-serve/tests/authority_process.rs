@@ -112,8 +112,17 @@ impl HolderChild {
     }
 
     /// Reap after something ELSE (the watchdog) killed it.
+    ///
+    /// The watchdog's `wait_death` waitpid's this process's child — same as
+    /// a supervisor would — so the kernel may already have reaped the pid
+    /// slot. `ECHILD` is that case, not a leak.
     fn reap(mut self) {
-        self.0.wait().expect("reap the watchdog-killed holder");
+        if let Err(e) = self.0.wait() {
+            assert!(
+                e.raw_os_error() == Some(libc::ECHILD),
+                "reap the watchdog-killed holder: {e}"
+            );
+        }
     }
 }
 
