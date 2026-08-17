@@ -1014,31 +1014,39 @@ fn plan_edit(doc: &Document, effect: &Effect) -> Result<PlannedEdit, ExecError> 
             let field = str_arg(effect, "field")?;
             let value = str_arg(effect, "value")?;
             let before = model::fm_upsert_before(doc, &field);
-            // ⑤-F2 (2026-08-17): a SINGLE-LINE value passes the ONE § A.6.3c
-            // encoder the wire's upsert door already writes through — a
-            // value-identical write keeps the STORED spelling (quotes
-            // included), so its bytes, and with them the field hash and
-            // `prop_rev`, do not move. The raw pass-through this replaces
-            // re-composed `{key}: {value}` unquoted: the parsed value
+            // ⑤-F2 (2026-08-17): PRESERVATION ONLY. A value-identical write —
+            // the stored spelling already decodes (§ A.6.1) to exactly the
+            // caller's string — keeps the STORED spelling, quotes included,
+            // so its bytes, and with them the field hash and `prop_rev`, do
+            // not move. The raw re-composition this replaces dropped the
+            // quotes the wire door had written: the parsed value
             // round-tripped while every value-identical `md.set_field` moved
-            // the line's bytes (quote drop), defeating idempotence-on-hash
-            // and littering git.
+            // the line's bytes, defeating idempotence-on-hash and littering
+            // git with no-op diffs.
             //
-            // A MULTI-LINE value still lands RAW, deliberately: the
-            // fence-close window is pinned run-plane behavior
-            // (s2fix_run_plane_fp — the fp strip's COMPOSED arm guards the
-            // claim-forgery through it, and its anti-vacuity control asserts
-            // the window is genuinely open). Closing or escaping it is a
-            // semantic decision this quoting fix does not own.
-            let stored_line = (before.span.start < before.span.end)
-                .then(|| doc.raw[before.span.clone()].to_string());
-            let text = if value.contains(['\n', '\r']) {
-                value
-            } else {
-                policy::defs::yaml_preserve_or_encode(stored_line.as_deref(), &value)
-                    .unwrap_or_else(|_| {
-                        unreachable!("the § A.6.3c encoder refuses only multi-line values")
-                    })
+            // Everything else still lands VERBATIM, deliberately — this
+            // plane's contract is raw-grain ("whole-value grains that must
+            // land as sent", the wire door's own words), and
+            // s2fix_run_plane_fp pins both raw edges: a pre-quoted claim-link
+            // value lands as sent, and the multi-line fence-close window
+            // stays genuinely open (the fp strip's COMPOSED arm guards the
+            // forgery through it). Encoding fresh values here (the wire
+            // door's yaml_safe_value arm) would break both pins; the ONE
+            // preservation predicate is shared instead
+            // (policy::defs::fm_spelling_preserves), with the same
+            // one-leading-space colon split fm_index reads a key line by.
+            let stored_value = (before.span.start < before.span.end)
+                .then(|| doc.raw[before.span.clone()].to_string())
+                .and_then(|line| {
+                    let colon = line.find(':')?;
+                    let rest = &line[colon + 1..];
+                    Some(rest.strip_prefix(' ').unwrap_or(rest).to_string())
+                });
+            let text = match &stored_value {
+                Some(stored) if policy::defs::fm_spelling_preserves(stored, &value) => {
+                    stored.trim().to_string()
+                }
+                _ => value,
             };
             Ok(PlannedEdit {
                 edit: Edit {
