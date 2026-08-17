@@ -1,0 +1,116 @@
+# TAG lane — darwin/arm64. The mac half of the release: same commit, same pin
+# vocabulary, a binary no Linux agent can produce.
+#
+# Law: docs/release.md §5.4 (what the tag publishes). Keying, the 409
+# first-writer property, and the no-`latest` rule are ruled there, not here.
+#
+# WHERE THIS RUNS, and what follows from it. The `platform` label selects a
+# darwin/arm64 agent — today `zmax`, a workstation running the agent with the
+# LOCAL backend (hosts/zmax/woodpecker.nix in osfiles). Consequences, none of
+# them optional:
+#   - `image:` names the SHELL, not a container. `bash` runs bash.
+#   - steps execute as a real user on a real machine, with that user's PATH,
+#     HOME and caches. Nothing here may assume a clean container, and nothing
+#     here writes outside the workspace or the agent's own cache dir.
+#   - the label is the requirement (a mac artifact needs a mac), not the
+#     machine's name: a second darwin agent picks this lane up unchanged.
+when:
+  # RELEASE-SHAPED TAGS ONLY (docs/release.md §5.2) — the repo's component and
+  # snapshot tags must not publish a release.
+  - event: tag
+    ref: refs/tags/v*
+  # manual keeps the lane provable and re-runnable without minting a tag; it
+  # publishes under the commit key like every other route.
+  - event: manual
+
+labels:
+  platform: darwin/arm64
+
+steps:
+  - name: publish mrd (darwin-arm64, keyed by commit)
+    image: bash
+    environment:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+      # Target dir OUTSIDE the workspace, which is a fresh clone per run: this
+      # is the only cross-run reuse this lane has (no sccache on the mac), and
+      # the agent takes one workflow at a time, so nothing else writes it.
+      CARGO_TARGET_DIR: /var/lib/woodpecker-agent/cache/mrd-target
+      FORGEJO_TOKEN:
+        from_secret: forgejo_token
+    commands:
+      # ASK THE REGISTRY FIRST — the .sha256 sidecar answers "published?" and
+      # "which digest?" in one request. Scratch lives in the workspace, never
+      # in /tmp: this is a workstation whose /tmp is swept.
+      - |
+        set -eu
+        mkdir -p "$${CI_WORKSPACE}/.ci" "$${CARGO_TARGET_DIR}"
+        rev="$${CI_COMMIT_SHA}"
+        base="https://git.0xdao.app/api/packages/caoer115/generic/mrd/$${rev}"
+        code="$(curl -s -o "$${CI_WORKSPACE}/.ci/have.sha256" -w '%{http_code}' \
+          -H "Authorization: token $${FORGEJO_TOKEN}" "$${base}/mrd-darwin-arm64.sha256")"
+        if [ "$${code}" = "200" ]; then
+          echo "already published for $${rev} — the FIRST bytes stay authoritative (append-only)"
+          echo "SKIP_BUILD=1" > "$${CI_WORKSPACE}/.ci/lane.env"
+        else
+          echo "not published for $${rev} (HTTP $${code}) — building"
+          echo "SKIP_BUILD=0" > "$${CI_WORKSPACE}/.ci/lane.env"
+        fi
+      # Identity, MEASURED not invented (docs/release.md §5.1). The clone is
+      # this user's own, so the probe reads a tree it owns — no safe.directory
+      # dance, and a divergence here would be a real one.
+      - |
+        set -eu
+        . "$${CI_WORKSPACE}/.ci/lane.env"
+        [ "$${SKIP_BUILD}" = "0" ] || exit 0
+        if [ -n "$(git status --porcelain)" ]; then
+          echo "MRD_BUILD_SHA=$${CI_COMMIT_SHA}-dirty" > "$${CI_WORKSPACE}/.ci/stamp.env"
+          echo "WARNING workspace diverges from $${CI_COMMIT_SHA} — stamping -dirty"
+          git status --porcelain
+        else
+          echo "MRD_BUILD_SHA=$${CI_COMMIT_SHA}" > "$${CI_WORKSPACE}/.ci/stamp.env"
+        fi
+        cat "$${CI_WORKSPACE}/.ci/stamp.env"
+        env $(cat "$${CI_WORKSPACE}/.ci/stamp.env") cargo build --locked --release -p mrd
+      # ASK THE ARTIFACT what it is. A binary that cannot name its tree, or
+      # names a different one, must never reach a pin.
+      - |
+        set -eu
+        . "$${CI_WORKSPACE}/.ci/lane.env"
+        [ "$${SKIP_BUILD}" = "0" ] || exit 0
+        ver="$($${CARGO_TARGET_DIR}/release/mrd --version)"
+        echo "$${ver}"
+        case "$${ver}" in
+          *unknown*) echo "this build cannot name the tree it came from — refusing to publish it"; exit 1 ;;
+        esac
+        echo "$${ver}" | grep -q "$${CI_COMMIT_SHA}" || {
+          echo "the stamp does not name $${CI_COMMIT_SHA} — the pin would lie about what it is"; exit 1; }
+      - |
+        set -eu
+        . "$${CI_WORKSPACE}/.ci/lane.env"
+        rev="$${CI_COMMIT_SHA}"
+        base="https://git.0xdao.app/api/packages/caoer115/generic/mrd/$${rev}"
+        if [ "$${SKIP_BUILD}" = "0" ]; then
+          # shasum, not sha256sum: the latter is not on every mac's PATH.
+          sha="$(shasum -a 256 "$${CARGO_TARGET_DIR}/release/mrd" | cut -d' ' -f1)"
+          echo "$${sha}  mrd-darwin-arm64" > "$${CI_WORKSPACE}/.ci/mrd-darwin-arm64.sha256"
+          put() {
+            code="$(curl -s -o "$${CI_WORKSPACE}/.ci/put.out" -w '%{http_code}' -X PUT \
+              -H "Authorization: token $${FORGEJO_TOKEN}" \
+              --upload-file "$$1" "$${base}/$$2")"
+            case "$${code}" in
+              201) echo "published $$2" ;;
+              409) echo "$$2 already published for this commit — keeping the FIRST bytes (append-only)" ;;
+              *)   echo "publish $$2 failed: HTTP $${code}"; cat "$${CI_WORKSPACE}/.ci/put.out"; exit 1 ;;
+            esac
+          }
+          put "$${CARGO_TARGET_DIR}/release/mrd" mrd-darwin-arm64
+          put "$${CI_WORKSPACE}/.ci/mrd-darwin-arm64.sha256" mrd-darwin-arm64.sha256
+        fi
+        # Read the pin back from the REGISTRY: on the 409 path the
+        # authoritative bytes are someone else's, and that is the digest a
+        # consumer must record.
+        echo ''
+        echo 'pin for downstream .mrd-pin (darwin-arm64):'
+        echo "  MRD_COMMIT=$${rev}"
+        echo "  MRD_SHA256=$$(curl -fsSL -H "Authorization: token $${FORGEJO_TOKEN}" "$${base}/mrd-darwin-arm64.sha256" | cut -d' ' -f1)"

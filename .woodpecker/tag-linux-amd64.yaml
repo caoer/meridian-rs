@@ -1,0 +1,123 @@
+# TAG lane — linux/amd64. Ensures the engine binary for the tagged COMMIT
+# exists in the append-only registry, then prints the pin.
+#
+# Law: docs/release.md §5.4 (what the tag publishes) — read it before editing
+# this file. The keying decision (commit, never tag name, never `latest`) and
+# the 409 first-writer property are ruled there, not here.
+#
+# Why this lane exists at all when ci.yaml already publishes linux-amd64 on
+# every main push: a tag may point at a commit that never took that path (a
+# tag on a branch, a re-tag after a revert), and a release must not depend on
+# which route the commit arrived by. The registry probe below makes the common
+# case — a tag on an already-published main commit — a seconds-long no-op that
+# re-prints the pin instead of rebuilding it.
+#
+# Separate FILE, not a step in ci.yaml, because `labels` selects the agent per
+# WORKFLOW: the darwin sibling cannot live in the same file.
+when:
+  # RELEASE-SHAPED TAGS ONLY (docs/release.md §5.2 — `v<MAJOR>.<MINOR>.<PATCH>`).
+  # The repo also carries component and snapshot tags (`sidecar-v0.1.0`,
+  # `stage2-pin`); an unfiltered `event: tag` would publish a release for those.
+  - event: tag
+    ref: refs/tags/v*
+  # manual keeps the lane provable and re-runnable without minting a tag. It
+  # publishes under the commit key like every other route, so a manual run can
+  # only ever ADD the artifact this commit was always going to have.
+  - event: manual
+
+labels:
+  hostname: workstation-nyc-2
+
+steps:
+  - name: publish mrd (linux-amd64, keyed by commit)
+    image: "meridian-ci:2026-08-10"
+    pull: false
+    environment:
+      CARGO_HOME: /ci-cache/meridian-rs/cargo
+      CARGO_BUILD_JOBS: "8"
+      CARGO_INCREMENTAL: "0"
+      RUSTC_WRAPPER: sccache
+      SCCACHE_DIR: /ci-cache/sccache/publish
+      SCCACHE_CACHE_SIZE: 30G
+      CC: "sccache cc"
+      CXX: "sccache c++"
+      RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+      CARGO_TERM_COLOR: always
+      FORGEJO_TOKEN:
+        from_secret: forgejo_token
+    commands:
+      # ASK THE REGISTRY FIRST. The .sha256 sidecar is the probe: it is tiny,
+      # it is written after the binary, and reading it answers both questions
+      # at once — is this commit published, and with which digest.
+      - |
+        set -eu
+        rev="$${CI_COMMIT_SHA}"
+        base="https://git.0xdao.app/api/packages/caoer115/generic/mrd/$${rev}"
+        code="$(curl -s -o /tmp/have.sha256 -w '%{http_code}' \
+          -H "Authorization: token $${FORGEJO_TOKEN}" "$${base}/mrd-linux-amd64.sha256")"
+        if [ "$${code}" = "200" ]; then
+          echo "already published for $${rev} — the FIRST bytes stay authoritative (append-only)"
+          echo "SKIP_BUILD=1" > /tmp/lane.env
+        else
+          echo "not published for $${rev} (HTTP $${code}) — building"
+          echo "SKIP_BUILD=0" > /tmp/lane.env
+        fi
+      # Identity, MEASURED not invented — the same rule ci.yaml's publish step
+      # follows: this container's git probe cannot trust a workspace other
+      # uids write, so CI supplies the sha it checked out plus `-dirty` if the
+      # tree actually diverges from it (docs/release.md §5.1).
+      - |
+        set -eu
+        . /tmp/lane.env
+        [ "$${SKIP_BUILD}" = "0" ] || exit 0
+        git config --global --add safe.directory "$${CI_WORKSPACE}"
+        if [ -n "$(git status --porcelain)" ]; then
+          echo "MRD_BUILD_SHA=$${CI_COMMIT_SHA}-dirty" > /tmp/stamp.env
+          echo "WARNING workspace diverges from $${CI_COMMIT_SHA} — stamping -dirty"
+          git status --porcelain
+        else
+          echo "MRD_BUILD_SHA=$${CI_COMMIT_SHA}" > /tmp/stamp.env
+        fi
+        cat /tmp/stamp.env
+        env $(cat /tmp/stamp.env) cargo build -q --locked --release -p mrd
+      # The artifact must be the thing consumers run, so ASK it. A build that
+      # cannot name the tree it came from must never reach a pin.
+      - |
+        set -eu
+        . /tmp/lane.env
+        [ "$${SKIP_BUILD}" = "0" ] || exit 0
+        ver="$(./target/release/mrd --version)"
+        echo "$${ver}"
+        case "$${ver}" in
+          *unknown*) echo "this build cannot name the tree it came from — refusing to publish it"; exit 1 ;;
+        esac
+        echo "$${ver}" | grep -q "$${CI_COMMIT_SHA}" || {
+          echo "the stamp does not name $${CI_COMMIT_SHA} — the pin would lie about what it is"; exit 1; }
+      - |
+        set -eu
+        . /tmp/lane.env
+        rev="$${CI_COMMIT_SHA}"
+        base="https://git.0xdao.app/api/packages/caoer115/generic/mrd/$${rev}"
+        if [ "$${SKIP_BUILD}" = "0" ]; then
+          sha="$(sha256sum target/release/mrd | cut -d' ' -f1)"
+          echo "$${sha}  mrd-linux-amd64" > /tmp/mrd-linux-amd64.sha256
+          put() {
+            code="$(curl -s -o /tmp/put.out -w '%{http_code}' -X PUT \
+              -H "Authorization: token $${FORGEJO_TOKEN}" \
+              --upload-file "$$1" "$${base}/$$2")"
+            case "$${code}" in
+              201) echo "published $$2" ;;
+              409) echo "$$2 already published for this commit — keeping the FIRST bytes (append-only)" ;;
+              *)   echo "publish $$2 failed: HTTP $${code}"; cat /tmp/put.out; exit 1 ;;
+            esac
+          }
+          put target/release/mrd mrd-linux-amd64
+          put /tmp/mrd-linux-amd64.sha256 mrd-linux-amd64.sha256
+        fi
+        # The pin is read back from the REGISTRY, never from the local build:
+        # on the 409 path the authoritative bytes are someone else's, and this
+        # is the number a consumer must record.
+        echo ''
+        echo 'pin for downstream .mrd-pin (linux-amd64):'
+        echo "  MRD_COMMIT=$${rev}"
+        echo "  MRD_SHA256=$$(curl -fsSL -H "Authorization: token $${FORGEJO_TOKEN}" "$${base}/mrd-linux-amd64.sha256" | cut -d' ' -f1)"
