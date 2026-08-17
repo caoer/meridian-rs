@@ -97,8 +97,10 @@ mrd read <PATH>[#FRAG] [--section SEL]
  with the bound names enumerated (the pin door's
  refusal family, exit 1, {workspace,error} under
  --json) instead of degrading into an ambient lookup.
- The rooted lane is read-only reach: every other CLI
- door keeps its workspace-relative grammar. SEL is a
+ The rooted lane spans the read and mint doors —
+ `mrd fingerprint` resolves `[root:]path` through the
+ same seam — while every other CLI door keeps its
+ workspace-relative grammar. SEL is a
  heading chain, a `^id`, or a dewey ordinal — the
  chain joins on `/` and that delimiter is dead for
  heading text (§ the joined selector coat). A section
@@ -128,7 +130,27 @@ mrd fingerprint [PATH | --scope-bytes B64] [--json]
  node's scoped token — workspace root, folder, or file
  leaf; `--scope-bytes B64` (base64url over the raw
  path bytes), a node whose name the UTF-8 `Path` noun
- cannot carry. Exactly one spelling — a mint names ONE
+ cannot carry. PATH takes the agent-plane `[root:]path`
+ spelling (address-grammar §4.1 colon law, the read
+ door's own rooted lane, one resolution seam): a
+ rooted ref binds to the named root's workspace from
+ the machine mount table and mints the rel half's node
+ THERE — the token that root's own workspace mints,
+ never an `absent` minted against the ambient
+ workspace's literal string. The root reading wins
+ unconditionally: a typo'd or unbound root refuses as
+ a root problem with the bound names enumerated (exit
+ 1, {workspace,error} under --json), never `absent` —
+ an `absent` for a misspelled root is a permanently
+ true premise whose guard can never fire. A genuinely
+ missing path inside a BOUND root still mints `absent`
+ (§5.6 lawful absence). On a rooted mint the scope
+ echo is the caller's rooted spelling and {workspace}
+ names the root's bound workspace — token and address
+ stay paired in the caller's own frame (the §4.7
+ desync guard); the wire carries the rel half only.
+ `--scope-bytes` stays ambient — raw bytes carry no
+ root head. Exactly one spelling — a mint names ONE
  node (§4.7); both refuse at parse, exit 2. Scoped
  arms ride only when the daemon's hello serves
  `scoped-guards` (taught refusal at exit 2 otherwise,
