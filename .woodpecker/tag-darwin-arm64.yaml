@@ -45,7 +45,17 @@ steps:
       - |
         set -eu
         mkdir -p "$${CI_WORKSPACE}/.ci" "$${CARGO_TARGET_DIR}"
-        rev="$${CI_COMMIT_SHA}"
+        # PEEL THE SHA TO A COMMIT. On a `tag` event CI_COMMIT_SHA is the
+        # ANNOTATED TAG OBJECT, not the commit — measured 2026-08-17, pipeline
+        # 848: `2358c5007e13…` for tag v0.0.0-ci-probe whose commit is
+        # `ef7c15e6b590…`. Keying on it would publish bytes at an address no
+        # consumer can reach (`git rev-list -n 1 <tag>` answers the COMMIT,
+        # docs/release.md §5.4) and would stamp the binary with a sha that is
+        # not a commit at all (§5.1). `^{commit}` peels a tag object and is a
+        # no-op on a commit sha, so both event shapes agree afterwards.
+        rev="$(git rev-parse "$${CI_COMMIT_SHA}^{commit}")"
+        echo "$${rev}" > "$${CI_WORKSPACE}/.ci/rev"
+        echo "publishing under commit $${rev} (CI sha: $${CI_COMMIT_SHA})"
         base="https://git.0xdao.app/api/packages/caoer115/generic/mrd/$${rev}"
         code="$(curl -s -o "$${CI_WORKSPACE}/.ci/have.sha256" -w '%{http_code}' \
           -H "Authorization: token $${FORGEJO_TOKEN}" "$${base}/mrd-darwin-arm64.sha256")"
@@ -73,12 +83,13 @@ steps:
         set -eu
         . "$${CI_WORKSPACE}/.ci/lane.env"
         [ "$${SKIP_BUILD}" = "0" ] || exit 0
+        rev="$(cat "$${CI_WORKSPACE}/.ci/rev")"
         if [ -n "$(git --no-optional-locks status --porcelain --untracked-files=no)" ]; then
-          echo "MRD_BUILD_SHA=$${CI_COMMIT_SHA}-dirty" > "$${CI_WORKSPACE}/.ci/stamp.env"
-          echo "WARNING tracked content diverges from $${CI_COMMIT_SHA} — stamping -dirty"
+          echo "MRD_BUILD_SHA=$${rev}-dirty" > "$${CI_WORKSPACE}/.ci/stamp.env"
+          echo "WARNING tracked content diverges from $${rev} — stamping -dirty"
           git --no-optional-locks status --porcelain --untracked-files=no
         else
-          echo "MRD_BUILD_SHA=$${CI_COMMIT_SHA}" > "$${CI_WORKSPACE}/.ci/stamp.env"
+          echo "MRD_BUILD_SHA=$${rev}" > "$${CI_WORKSPACE}/.ci/stamp.env"
         fi
         cat "$${CI_WORKSPACE}/.ci/stamp.env"
         env $(cat "$${CI_WORKSPACE}/.ci/stamp.env") cargo build --locked --release -p mrd
@@ -88,17 +99,18 @@ steps:
         set -eu
         . "$${CI_WORKSPACE}/.ci/lane.env"
         [ "$${SKIP_BUILD}" = "0" ] || exit 0
+        rev="$(cat "$${CI_WORKSPACE}/.ci/rev")"
         ver="$($${CARGO_TARGET_DIR}/release/mrd --version)"
         echo "$${ver}"
         case "$${ver}" in
           *unknown*) echo "this build cannot name the tree it came from — refusing to publish it"; exit 1 ;;
         esac
-        echo "$${ver}" | grep -q "$${CI_COMMIT_SHA}" || {
-          echo "the stamp does not name $${CI_COMMIT_SHA} — the pin would lie about what it is"; exit 1; }
+        echo "$${ver}" | grep -q "$${rev}" || {
+          echo "the stamp does not name $${rev} — the pin would lie about what it is"; exit 1; }
       - |
         set -eu
         . "$${CI_WORKSPACE}/.ci/lane.env"
-        rev="$${CI_COMMIT_SHA}"
+        rev="$(cat "$${CI_WORKSPACE}/.ci/rev")"
         base="https://git.0xdao.app/api/packages/caoer115/generic/mrd/$${rev}"
         if [ "$${SKIP_BUILD}" = "0" ]; then
           # shasum, not sha256sum: the latter is not on every mac's PATH.
