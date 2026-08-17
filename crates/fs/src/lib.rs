@@ -3191,14 +3191,31 @@ pub fn honest_sync_path(path: &Path) -> io::Result<()> {
 /// The same per-file contract as [`apply_batch`]'s content half; the receipt
 /// never rides a member — it is set-level (one receipt entry names every file).
 pub struct SetMember<'a> {
-    /// The content file this member edits (workspace-relative).
+    /// The content file this member lands (workspace-relative).
     pub content_path: &'a Path,
-    /// The sealed batch — `receipt` MUST be `None` (set-level receipt only).
-    pub batch: &'a model::ValidatedBatch,
-    /// The exact pre-image bytes the batch's spans index (read#2's bytes).
-    pub expected_content: &'a [u8],
-    /// The sealed candidate — must BE this member's splice result.
-    pub candidate: &'a model::CandidateDocument,
+    /// What this member does: edit an existing file, or birth a new one.
+    pub payload: SetPayload<'a>,
+}
+
+/// One set member's write shape (armed-plane Part A2: births ride the same
+/// sealed set as edits — validate-all-then-apply covers both).
+pub enum SetPayload<'a> {
+    /// Edit an existing file: splice the sealed batch over its pre-image.
+    Edit {
+        /// The sealed batch — `receipt` MUST be `None` (set-level receipt only).
+        batch: &'a model::ValidatedBatch,
+        /// The exact pre-image bytes the batch's spans index (read#2's bytes).
+        expected_content: &'a [u8],
+        /// The sealed candidate — must BE this member's splice result.
+        candidate: &'a model::CandidateDocument,
+    },
+    /// Birth a new file: the destination must be ABSENT at verify (occupied ⇒
+    /// the whole set refuses `write_conflict`), and rollback of a renamed
+    /// birth is removal (its pre-image is absence).
+    Birth {
+        /// The newborn's full bytes.
+        candidate: &'a model::CandidateDocument,
+    },
 }
 
 /// Commit a SET of content files plus one optional receipt append in one
@@ -3242,9 +3259,17 @@ pub fn apply_set(
 /// and each rename deterministically (the [`StagedCommit`] precedent).
 struct StagedSet {
     /// `(staged file, validated pre-image)` per member, in member order.
-    contents: Vec<(StagedFile, Vec<u8>)>,
+    contents: Vec<(StagedFile, StagedPreImage)>,
     /// The receipt temp and its stage-time pre-image (absent file ⇒ empty).
     receipt: Option<(StagedFile, Vec<u8>)>,
+}
+
+/// One staged member's validated pre-image: the exact bytes an edit splices
+/// over, or ABSENCE for a birth (occupied at verify ⇒ conflict; rollback of a
+/// renamed birth is removal).
+enum StagedPreImage {
+    Bytes(Vec<u8>),
+    Absent,
 }
 
 /// Stage a whole set: seam contract first, then apply each member's sealed
@@ -3263,7 +3288,9 @@ fn stage_set(
         ));
     }
     for (i, m) in members.iter().enumerate() {
-        if m.batch.receipt.is_some() {
+        if let SetPayload::Edit { batch, .. } = &m.payload
+            && batch.receipt.is_some()
+        {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "a set member's batch must not carry a receipt append: the set receipt is \
@@ -3292,30 +3319,49 @@ fn stage_set(
         }
     }
 
-    let mut contents: Vec<(StagedFile, Vec<u8>)> = Vec::with_capacity(members.len());
-    let discard_staged = |contents: &[(StagedFile, Vec<u8>)]| {
+    let mut contents: Vec<(StagedFile, StagedPreImage)> = Vec::with_capacity(members.len());
+    let discard_staged = |contents: &[(StagedFile, StagedPreImage)]| {
         for (staged, _) in contents {
             let _ = fs::remove_file(&staged.tmp);
         }
     };
     for m in members {
-        let new_bytes = apply_spans(
-            m.expected_content,
-            m.batch.edits.iter().map(|e| (&e.span, e.text.as_str())),
-        );
-        if new_bytes != m.candidate.raw().as_bytes() {
-            discard_staged(&contents);
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "candidate document is not this batch's splice result for `{}`: the gated \
-                     document and the landing bytes must be the same object",
-                    m.content_path.display()
-                ),
-            ));
-        }
+        let (new_bytes, pre_image) = match &m.payload {
+            SetPayload::Edit {
+                batch,
+                expected_content,
+                candidate,
+            } => {
+                let new_bytes = apply_spans(
+                    expected_content,
+                    batch.edits.iter().map(|e| (&e.span, e.text.as_str())),
+                );
+                if new_bytes != candidate.raw().as_bytes() {
+                    discard_staged(&contents);
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "candidate document is not this batch's splice result for `{}`: the gated \
+                             document and the landing bytes must be the same object",
+                            m.content_path.display()
+                        ),
+                    ));
+                }
+                (new_bytes, StagedPreImage::Bytes(expected_content.to_vec()))
+            }
+            SetPayload::Birth { candidate } => {
+                // A birth stages into a possibly fresh subtree.
+                if let Some(parent) = root.0.join(m.content_path).parent()
+                    && let Err(e) = fs::create_dir_all(parent)
+                {
+                    discard_staged(&contents);
+                    return Err(e);
+                }
+                (candidate.raw().as_bytes().to_vec(), StagedPreImage::Absent)
+            }
+        };
         match stage_file(&root.0.join(m.content_path), &new_bytes) {
-            Ok(staged) => contents.push((staged, m.expected_content.to_vec())),
+            Ok(staged) => contents.push((staged, pre_image)),
             Err(e) => {
                 discard_staged(&contents);
                 return Err(e);
@@ -3380,15 +3426,26 @@ impl StagedSet {
     /// BEFORE the first rename, so a refusal commits nothing.
     fn verify_pre_images(&self) -> io::Result<()> {
         for (staged, expected) in &self.contents {
-            let live = match fs::read(&staged.dst) {
-                Ok(bytes) => bytes,
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                    return Err(write_conflict(&staged.dst));
+            match expected {
+                StagedPreImage::Bytes(expected) => {
+                    let live = match fs::read(&staged.dst) {
+                        Ok(bytes) => bytes,
+                        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                            return Err(write_conflict(&staged.dst));
+                        }
+                        Err(e) => return Err(e),
+                    };
+                    if live != *expected {
+                        return Err(write_conflict(&staged.dst));
+                    }
                 }
-                Err(e) => return Err(e),
-            };
-            if live != *expected {
-                return Err(write_conflict(&staged.dst));
+                // A birth's pre-image is absence: anything at the destination
+                // (file, dir, symlink) is a conflict — never a clobber.
+                StagedPreImage::Absent => {
+                    if fs::symlink_metadata(&staged.dst).is_ok() {
+                        return Err(write_conflict(&staged.dst));
+                    }
+                }
             }
         }
         if let Some((staged, expected)) = &self.receipt
@@ -3407,7 +3464,13 @@ impl StagedSet {
         let mut restored = Vec::new();
         let mut failed = Vec::new();
         for (staged, pre_image) in self.contents.iter().take(renamed).rev() {
-            let outcome = stage_file(&staged.dst, pre_image).and_then(|s| commit_rename(&s));
+            let outcome = match pre_image {
+                StagedPreImage::Bytes(bytes) => {
+                    stage_file(&staged.dst, bytes).and_then(|s| commit_rename(&s))
+                }
+                // A birth's pre-image is absence — restore is removal.
+                StagedPreImage::Absent => fs::remove_file(&staged.dst),
+            };
             match outcome {
                 Ok(()) => restored.push(staged.dst.display().to_string()),
                 Err(e) => failed.push(format!("{} ({e})", staged.dst.display())),
@@ -3545,7 +3608,7 @@ impl Watcher {
 #[cfg(test)]
 mod tests {
     use super::{
-        SetMember, TEMP_SEQ, USER_RULES_DIR, WorkspaceRoot, apply_batch, apply_set,
+        SetMember, SetPayload, TEMP_SEQ, USER_RULES_DIR, WorkspaceRoot, apply_batch, apply_set,
         is_write_conflict, stage_batch, stage_set, temp_path_for, user_rule_pages, walk,
     };
     use std::fs;
@@ -3734,9 +3797,11 @@ mod tests {
             .zip(owned)
             .map(|(rel, (vb, cand))| SetMember {
                 content_path: rel,
-                batch: vb,
-                expected_content: SET_S0.as_bytes(),
-                candidate: cand,
+                payload: SetPayload::Edit {
+                    batch: vb,
+                    expected_content: SET_S0.as_bytes(),
+                    candidate: cand,
+                },
             })
             .collect()
     }
@@ -3918,15 +3983,19 @@ mod tests {
         let bad = vec![
             SetMember {
                 content_path: &rels[0],
-                batch: &with_receipt,
-                expected_content: PLAN_S0.as_bytes(),
-                candidate: &cand,
+                payload: SetPayload::Edit {
+                    batch: &with_receipt,
+                    expected_content: PLAN_S0.as_bytes(),
+                    candidate: &cand,
+                },
             },
             SetMember {
                 content_path: &rels[1],
-                batch: &owned[1].0,
-                expected_content: SET_S0.as_bytes(),
-                candidate: &owned[1].1,
+                payload: SetPayload::Edit {
+                    batch: &owned[1].0,
+                    expected_content: SET_S0.as_bytes(),
+                    candidate: &owned[1].1,
+                },
             },
         ];
         let err = apply_set(&root, &bad, None).expect_err("member-level receipt refuses");

@@ -38,6 +38,7 @@ fn splice_response(effects: Vec<EffectEnvelope>) -> Response {
                         span_after: Span(49, 75),
                     }],
                     effects,
+                    intents: None,
                 },
                 receipt: None,
                 root_before: Root("b3:a".into()),

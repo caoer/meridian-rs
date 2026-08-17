@@ -142,9 +142,49 @@ const DOORS: &[DoorPin] = &[
     DoorPin {
         file: WRITE_RS,
         door_fn: "commit_set",
-        mint_fn: "commit_set",
-        guard_fn: Some("commit_set"),
-        label: "commit_set (the §4.4 set-form commit seam)",
+        mint_fn: "validate_set_entries",
+        guard_fn: Some("validate_set_entries"),
+        label: "commit_set (the §4.4 set-form commit seam, via validate_set_entries)",
+        class: Door::Guarded,
+    },
+    // ---- the middleware door (armed-plane Part A2, § A.2.1) ----
+    // A middleware birth: the driver mints the newborn's candidate through
+    // `birth_candidate` and discharges its stored-form guard in its own body
+    // (one discharge site); `commit_set`'s unified per-entry discharge
+    // re-checks the same bytes at the seam through the SAME site pinned on
+    // the commit_set row.
+    DoorPin {
+        file: WRITE_RS,
+        door_fn: "run_door_middleware",
+        mint_fn: "birth_candidate",
+        guard_fn: Some("run_door_middleware"),
+        label: "middleware birth (via birth_candidate)",
+        class: Door::Guarded,
+    },
+    // The middleware overlay re-seal: a member's pending after-state, minted
+    // only to be READ — it feeds the `ctx.sql`/`ctx.read` world and is
+    // dropped. No path from this mint to a write exists: the member's
+    // LANDING candidate is re-minted at `commit_set` from read#2 under that
+    // row's own guard, which is what makes this class honest.
+    DoorPin {
+        file: WRITE_RS,
+        door_fn: "run_door_middleware",
+        mint_fn: "member_overlay_candidate",
+        guard_fn: None,
+        label: "middleware member overlay (via member_overlay_candidate)",
+        class: Door::ReadOnly,
+    },
+    // The birth door's middleware transform: `create_with_cache` hands its
+    // pre-middleware candidate in, and each self `set_field` re-seals the
+    // born bytes here. The transformed candidate IS the landing candidate,
+    // so this site discharges its own stored-form guard over every re-seal
+    // (the door's pre-middleware discharge stays on the create row).
+    DoorPin {
+        file: WRITE_RS,
+        door_fn: "create_with_cache",
+        mint_fn: "run_birth_middleware",
+        guard_fn: Some("run_birth_middleware"),
+        label: "create-door middleware transform (via run_birth_middleware)",
         class: Door::Guarded,
     },
     // ---- outside U12's named files ----
@@ -531,11 +571,15 @@ fn the_arithmetic_closes_and_no_class_is_empty() {
 
     assert_eq!(translated, 2, "splice and create carry user-supplied bytes");
     assert_eq!(
-        guarded, 4,
-        "lock_write, the promotion, commit_batch and commit_set land \
-         engine-composed bytes (commit_set joined 2026-08-14 — the §4.4 \
-         set-form commit seam, commit_batch's N-file twin, guard discharged \
-         per member inside the same function). \
+        guarded, 6,
+        "lock_write, the promotion, commit_batch, commit_set, the middleware \
+         birth and the create-door middleware transform land engine-composed \
+         bytes (the two middleware doors joined 2026-08-17 with armed-plane \
+         Part A2: `birth_candidate` guarded in `run_door_middleware`, the \
+         create-door re-seal guarded in `run_birth_middleware`; commit_set \
+         joined 2026-08-14 — the §4.4 set-form commit seam, commit_batch's \
+         N-file twin, guard now discharged ONCE per entry at its unified \
+         site, births included). \
          Before commit_set this was 3; and WAS 4 once before: \
          U9b's v1→v2 lock migration door lived here too, until DECISION 26 \
          (ZT 2026-08-04) deleted it with its crate — the two field locks were \
@@ -556,8 +600,11 @@ fn the_arithmetic_closes_and_no_class_is_empty() {
          when it lands; the journal owes none, because nothing replaces it",
     );
     assert_eq!(
-        read_only, 2,
-        "the two lands-nothing mints: the reaction feeder's path-carrying read, \
+        read_only, 3,
+        "the three lands-nothing mints (the middleware overlay re-seal joined \
+         2026-08-17: `member_overlay_candidate` feeds the ctx.sql/ctx.read \
+         world and is dropped — the landing member bytes are re-minted at \
+         commit_set under that row's guard): the reaction feeder's path-carrying read, \
          and the § A.7 overlay serve (read-your-own-writes) — each mints, and \
          each lands nothing",
     );

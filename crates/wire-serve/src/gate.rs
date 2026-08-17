@@ -259,6 +259,7 @@ mod scenarios {
     //! Merge-gate scenarios, exercised through the real write path
     //! (`crate::write::{create, splice, remove}`) on an on-disk workspace.
 
+    use std::collections::BTreeMap;
     use std::path::Path as FsPath;
 
     use policy::armed::Mode;
@@ -364,6 +365,7 @@ mod scenarios {
             now: None,
             if_root: None,
             dry: false,
+            fields: BTreeMap::default(),
         }
     }
 
@@ -610,6 +612,7 @@ mod scenarios {
             }],
             plan_edits: Vec::new(),
             pin: None,
+            fields: BTreeMap::default(),
         }
     }
 
@@ -641,6 +644,7 @@ mod scenarios {
             }],
             plan_edits: Vec::new(),
             pin: None,
+            fields: BTreeMap::default(),
         }
     }
 

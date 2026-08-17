@@ -1,14 +1,14 @@
-//! Hook-fire visibility on the `mrd put` human face — the card's gate, driven
-//! through the real binary over its process boundary.
+//! Intent visibility on the `mrd put` human face — driven through the real
+//! binary over its process boundary.
 //!
-//! The measured asymmetry this file pins shut: CHECK refusals were loud on
-//! both faces, REACTIONS were silent on the human face — a workspace with an
-//! armed notification plane committed identically to an unarmed one, and the
-//! operator who armed it could only see it fire through `--json`
-//! (`put.armed.effects[]`). The gate re-runs the dogfood move that surfaced it
-//! (a status move to `review` firing the status-notify hook) WITHOUT `--json`
-//! and reads the fired intent off stdout; the control run proves a workspace
-//! with no armed hooks prints exactly what it always did.
+//! REDESIGNED with the middleware door (armed-plane Part A2, wire-contract
+//! § A.2.1): the put-path HOOK feed is retired — a put against an armed
+//! `rules/hook` workspace prints NO `fired:` line, because the write response
+//! carries no reaction envelope any more. What the human face shows instead
+//! is the middleware plane: an armed `rules/middleware` page emitting `send`
+//! prints ONE `intent:` line per intent (armed, host-realized — never a
+//! delivery claim). The control run proves an unarmed workspace prints
+//! exactly what it always did.
 
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -197,36 +197,75 @@ fn armed() -> Sandbox {
     s
 }
 
-/// **The card's gate, firing half.** The dogfood move re-run WITHOUT `--json`:
-/// the human commit face shows the fired intent on ONE line — rule id, action,
-/// target, and the canonical receipt address VERBATIM (the pairing key the
-/// delivery faces echo as `correlation`) — beside the fingerprint it already
-/// printed.
+/// **The retirement half (§ A.2.1).** The dogfood move against the armed
+/// HOOK workspace now prints NO fired line: the put-path hook feed is dead,
+/// and the commit face is exactly the unarmed face. The hook plane survives
+/// on the external-change detector only.
 #[test]
-fn the_human_face_prints_one_line_per_fired_intent() {
+fn an_armed_hook_prints_no_fired_line_on_the_put_face() {
     let s = armed();
     let stdout = s.stdout(&["put", "tasks/card.md", "--force"], MOVE_TO_REVIEW);
-    let fired: Vec<&str> = stdout
-        .lines()
-        .filter(|line| line.starts_with("  fired: "))
-        .collect();
-    assert_eq!(
-        fired.len(),
-        1,
-        "one fired intent, one line — stdout:\n{stdout}"
-    );
     assert!(
-        fired[0].starts_with("  fired: task-status-notify notify → zt (receipt tasks/card.md#^r-")
-            && fired[0].ends_with(')'),
-        "the line names rule, action, target and the verbatim receipt address: {}",
-        fired[0]
+        !stdout.contains("fired:"),
+        "the put-path hook feed is retired — no fired line: {stdout}"
     );
     assert!(
         stdout.contains("committed tasks/card.md (1 edit(s))"),
-        "the commit line is unchanged beside it: {stdout}"
+        "the commit line is unchanged: {stdout}"
+    );
+}
+
+/// The middleware page that replaces the dogfood hook on the door: on the
+/// status flip to `review`, send to the card's declared reviewer.
+const STATUS_NOTIFY_MW: &str = r#"---
+tags: [type/rule, rules/middleware]
+id: status-notify-mw
+paths: ["tasks/*.md"]
+---
+
+# status-notify-mw
+
+```starlark
+def middleware(ctx):
+    if ctx.after.frontmatter.get("status") == "review":
+        send(to = [ctx.after.frontmatter.get("reviewer")], body = "status -> review")
+```
+"#;
+
+/// **The firing half, redesigned.** The same move through an armed
+/// MIDDLEWARE page prints ONE `intent:` line — rule id, kind, targets — and
+/// still claims no delivery.
+#[test]
+fn the_human_face_prints_one_line_per_middleware_intent() {
+    let s = sandbox();
+    s.write("rules/status-notify-mw.md", STATUS_NOTIFY_MW);
+    let rev = s.reviewed_rev("status-notify-mw");
+    let out = s.run_stdin(
+        &["arm", "status-notify-mw", "--mode", "block", "--rev", &rev],
+        "",
     );
     assert!(
-        !stdout.contains("delivered") && !stdout.contains("sent"),
+        out.status.success(),
+        "the middleware fixture arms: {}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = s.stdout(&["put", "tasks/card.md", "--force"], MOVE_TO_REVIEW);
+    let intents: Vec<&str> = stdout
+        .lines()
+        .filter(|line| line.starts_with("  intent: "))
+        .collect();
+    assert_eq!(
+        intents.len(),
+        1,
+        "one armed intent, one line — stdout:\n{stdout}"
+    );
+    assert_eq!(
+        intents[0], "  intent: status-notify-mw send → zt (host realizes)",
+        "the line names rule, kind and target, and says who realizes"
+    );
+    assert!(
+        !stdout.contains("delivered") && !stdout.contains(" sent"),
         "the engine face claims no delivery: {stdout}"
     );
 }

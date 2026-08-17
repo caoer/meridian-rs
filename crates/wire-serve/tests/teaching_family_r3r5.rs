@@ -12,6 +12,7 @@
 //!
 //! Pins properties, not bytes. Codes stay frozen.
 
+use std::collections::BTreeMap;
 use wire::{Edit, EditShape, ErrorCode, HpathSeg, Path as WPath, SecRef};
 use wire_serve::write::{SpliceArgs, splice};
 
@@ -64,6 +65,7 @@ fn args_for(path: String, target: SecRef) -> SpliceArgs {
         }],
         plan_edits: Vec::new(),
         pin: None,
+        fields: BTreeMap::default(),
     }
 }
 

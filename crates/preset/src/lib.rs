@@ -17,6 +17,7 @@
 
 use model::{Document, NodeKind, Ref, YamlMap};
 use serde::Serialize;
+use std::collections::BTreeMap;
 use wire::{ErrorBody, ErrorCode};
 
 /// The default root record a session preset instantiates and pins the preset
@@ -1382,6 +1383,7 @@ fn birth(
         now: opts.now.clone(),
         if_root: None,
         dry: opts.dry,
+        fields: BTreeMap::default(),
     };
     match wire_serve::write::create(root, None, &args, &[]) {
         Ok(_) => Ok(BirthResult::Born),

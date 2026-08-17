@@ -645,6 +645,12 @@ pub enum Op {
         /// one more entry. Empty serializes away so frozen v2 bytes stand.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         guards: Vec<GuardEntry>,
+        /// § A.2.1 opaque passthrough (cap `splice.fields`, v3-only at
+        /// decode): string keys to string values, delivered to middleware
+        /// verbatim as `ctx.fields`. The engine interprets NO key. Empty
+        /// serializes away so frozen v2 request bytes stand.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        fields: BTreeMap<String, String>,
     },
     /// The §4.4 SET form (dotted cap `splice.set`, v3-only at decode): the
     /// same `"op":"splice"` tag carrying `files[]` instead of `path` +
@@ -723,6 +729,10 @@ pub enum Op {
         /// advance. A dry birth still refuses a would-be clobber.
         #[serde(skip_serializing_if = "Option::is_none")]
         dry: Option<bool>,
+        /// § A.2.1 opaque passthrough on the birth door (cap `splice.fields`,
+        /// v3-only at decode) — same law as the splice field.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        fields: BTreeMap<String, String>,
     },
     /// § A.3 remove door (v3-only, cap `remove`): guarded file death — the
     /// birth op's twin. The record's whole-file rev is the mandatory guard
@@ -1718,6 +1728,12 @@ pub enum ResponseBody {
         /// The §11 rules-as-data surface over the birth's after-state — the
         /// same shape `splice` carries, `[]` on an unarmed workspace.
         verdicts: Vec<Verdict>,
+        /// § A.2.1 middleware intents the birth armed. The birth reply has no
+        /// `armed` group, so intents ride top-level here — `Some` (possibly
+        /// empty) on every non-dry successful birth, absent on dry, exactly
+        /// the splice-side law. The engine never marks one delivered.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        intents: Option<Vec<MwIntent>>,
     },
     /// The death reply (the `remove` op, v3-only): what died — the removed
     /// path, its confirmed whole-file rev, and the root transition. Never a
@@ -1875,6 +1891,27 @@ pub struct Armed {
     /// pre-reaction response bytes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub effects: Vec<EffectEnvelope>,
+    /// § A.2.1 middleware intents this write armed. `Some` — an array,
+    /// possibly empty, never absent — on every non-dry successful write
+    /// through a door that evaluates middleware; `None` (absent bytes)
+    /// elsewhere, so pre-middleware response bytes stand. The engine never
+    /// marks an intent delivered; realization is the host's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intents: Option<Vec<MwIntent>>,
+}
+
+/// One § A.2.1 middleware intent — the V1 frozen item shape. Inert data the
+/// host realizes; delivery state is intentionally unrepresentable here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MwIntent {
+    /// The closed intent kind — V1: `"send"` only.
+    pub kind: String,
+    /// Seat or channel names, verbatim from the middleware program.
+    pub to: Vec<String>,
+    /// The message body, verbatim.
+    pub body: String,
+    /// The armed middleware id that emitted this intent.
+    pub rule_id: String,
 }
 
 /// One armed edit: target identity echoed in the §2.1 grammar, rev

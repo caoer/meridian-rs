@@ -573,6 +573,7 @@ impl ScriptHost for LiveHost<'_> {
             edits: Vec::new(),
             plan_edits: items.clone(),
             pin: None,
+            fields: std::collections::BTreeMap::default(),
         };
         let ring = self.registry.ring(&self.ws_path);
         let cache = self.registry.domain_cache(&self.ws_path);
@@ -914,6 +915,7 @@ fn commit(
                 edits: Vec::new(),
                 plan_edits: eval.armed.iter().map(|armed| armed.edit.clone()).collect(),
                 pin: None,
+                fields: std::collections::BTreeMap::default(),
             };
             wire_serve::write::splice(
                 &ws_root,
@@ -1473,6 +1475,7 @@ mod tests {
                 rev: Some(face.rev.clone()),
             }],
             pin: None,
+            fields: std::collections::BTreeMap::default(),
         };
         let ws_root = fs::WorkspaceRoot(ws.clone());
         let refused = wire_serve::write::splice(&ws_root, None, &args, &[], None)
@@ -1885,6 +1888,7 @@ mod tests {
                 rev: None,
             }],
             pin: None,
+            fields: std::collections::BTreeMap::default(),
         };
         let out = wire_serve::write::splice(
             &ws_root_of(&ws),

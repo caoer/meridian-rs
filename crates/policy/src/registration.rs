@@ -42,6 +42,10 @@ pub enum RuleKind {
     Check,
     /// `rules/hook` — the reaction leg. A hook may never veto or mutate.
     Hook,
+    /// `rules/middleware` — the door leg (armed-plane Part A2). Evaluates ON
+    /// the write door and may refuse, transform this file, transform other
+    /// files, birth files, and emit `send` intents.
+    Middleware,
 }
 
 impl RuleKind {
@@ -51,6 +55,7 @@ impl RuleKind {
         match self {
             RuleKind::Check => "check",
             RuleKind::Hook => "hook",
+            RuleKind::Middleware => "middleware",
         }
     }
 
@@ -65,6 +70,7 @@ impl RuleKind {
         match suffix {
             "check" => Some(RuleKind::Check),
             "hook" => Some(RuleKind::Hook),
+            "middleware" => Some(RuleKind::Middleware),
             _ => None,
         }
     }

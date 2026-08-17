@@ -125,7 +125,7 @@ pub struct CheckTelemetry {
 /// eval must run here so pathologically nested source cannot overflow the native
 /// stack and abort the process. Scoped, so borrowed data needs no `'static` bound;
 /// the thread always joins before return.
-fn on_eval_stack<T, F>(f: F) -> T
+pub(crate) fn on_eval_stack<T, F>(f: F) -> T
 where
     F: FnOnce() -> T + Send,
     T: Send,
@@ -144,7 +144,7 @@ where
 /// The CHECK dialect: the standard grammar with `load` DISABLED — a CHECK is a
 /// single self-contained `check_change` definition; module loading would let it
 /// pull external symbols, a capability the ceiling does not grant.
-fn check_dialect() -> Dialect {
+pub(crate) fn check_dialect() -> Dialect {
     Dialect {
         enable_load: false,
         ..Dialect::Standard
@@ -326,12 +326,12 @@ fn eval_check(
 
 /// Whether a Starlark eval error is a call-stack-depth overflow (the recursion
 /// guard tripping) — classified as budget, not a CHECK fault.
-fn is_depth_overflow(e: &starlark::Error) -> bool {
+pub(crate) fn is_depth_overflow(e: &starlark::Error) -> bool {
     matches!(e.kind(), starlark::ErrorKind::StackOverflow(_))
 }
 
 /// The budget-exhaustion error for these limits.
-fn budget(limits: CheckLimits) -> CheckError {
+pub(crate) fn budget(limits: CheckLimits) -> CheckError {
     CheckError::Budget {
         fuel: limits.fuel,
         mem: limits.mem,
@@ -339,7 +339,7 @@ fn budget(limits: CheckLimits) -> CheckError {
 }
 
 /// A runtime fault carrying the engine's message.
-fn runtime(e: impl std::fmt::Display) -> CheckError {
+pub(crate) fn runtime(e: impl std::fmt::Display) -> CheckError {
     CheckError::Runtime {
         reason: e.to_string(),
     }
@@ -347,7 +347,7 @@ fn runtime(e: impl std::fmt::Display) -> CheckError {
 
 /// Refuse a CHECK whose source exceeds the parse-DoS byte cap before it reaches the
 /// parser.
-fn check_source_size(source: &str, limits: CheckLimits) -> Result<(), CheckError> {
+pub(crate) fn check_source_size(source: &str, limits: CheckLimits) -> Result<(), CheckError> {
     if source.len() > limits.max_source_bytes {
         return Err(CheckError::SourceTooLarge {
             bytes: source.len(),
@@ -363,7 +363,7 @@ fn check_source_size(source: &str, limits: CheckLimits) -> Result<(), CheckError
 /// comment-content and tracks bracket-nesting depth and the length of a consecutive
 /// unary-operator run (the deep `not not …` vector). Over-approximation is safe: it
 /// can only reject the pathological, never a real shallow CHECK.
-fn check_nesting_depth(source: &str) -> Result<(), CheckError> {
+pub(crate) fn check_nesting_depth(source: &str) -> Result<(), CheckError> {
     let bytes = source.as_bytes();
     let n = bytes.len();
     let mut i = 0;
@@ -477,7 +477,7 @@ fn is_word_byte(b: u8) -> bool {
 
 /// Peak eval-heap bytes as `u64` (saturating). Peak (not current) is monotonic and
 /// matches the quantity `set_max_heap_size` guards.
-fn heap_bytes(heap: Heap<'_>) -> u64 {
+pub(crate) fn heap_bytes(heap: Heap<'_>) -> u64 {
     u64::try_from(heap.peak_allocated_bytes()).unwrap_or(u64::MAX)
 }
 
@@ -519,7 +519,7 @@ fn check_api(builder: &mut GlobalsBuilder) {
 // ── Change injection (the rulepack-api@2 surface) ─────────────────────────────
 
 /// An optional string as a Starlark value: the string, or `None`.
-fn opt_str<'v>(heap: Heap<'v>, o: Option<&str>) -> Value<'v> {
+pub(crate) fn opt_str<'v>(heap: Heap<'v>, o: Option<&str>) -> Value<'v> {
     match o {
         Some(s) => heap.alloc(s),
         None => Value::new_none(),
@@ -562,7 +562,7 @@ fn alloc_change<'v>(heap: Heap<'v>, change: &Change) -> Value<'v> {
 }
 
 /// Allocate one `DocFacts` value: `{path, nodes, frontmatter, edges}`.
-fn alloc_docfacts<'v>(heap: Heap<'v>, facts: &DocFacts) -> Value<'v> {
+pub(crate) fn alloc_docfacts<'v>(heap: Heap<'v>, facts: &DocFacts) -> Value<'v> {
     let nodes: Vec<Value<'v>> = facts.nodes.iter().map(|n| alloc_node(heap, n)).collect();
     let frontmatter = heap.alloc(AllocDict(
         facts
@@ -594,7 +594,7 @@ fn alloc_node<'v>(heap: Heap<'v>, node: &NodeFact) -> Value<'v> {
 
 /// Allocate one resolved target fact `{reference, node_rev}` (`node_rev` is `None`
 /// when the target was absent before the write — a create).
-fn alloc_target<'v>(heap: Heap<'v>, target: &TargetFact) -> Value<'v> {
+pub(crate) fn alloc_target<'v>(heap: Heap<'v>, target: &TargetFact) -> Value<'v> {
     heap.alloc(AllocStruct([
         ("reference", heap.alloc(target.reference.as_str())),
         ("node_rev", opt_str(heap, target.node_rev.as_deref())),
@@ -602,7 +602,7 @@ fn alloc_target<'v>(heap: Heap<'v>, target: &TargetFact) -> Value<'v> {
 }
 
 /// Allocate one edit op-shape fact `{target, kind, at}`.
-fn alloc_edit<'v>(heap: Heap<'v>, edit: &EditFact) -> Value<'v> {
+pub(crate) fn alloc_edit<'v>(heap: Heap<'v>, edit: &EditFact) -> Value<'v> {
     let at = match edit.at {
         Some(a) => heap.alloc(a),
         None => Value::new_none(),

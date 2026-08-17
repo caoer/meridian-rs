@@ -16,6 +16,7 @@
 
 use std::time::Instant;
 
+use std::collections::BTreeMap;
 use wire::{Edit, EditShape, HpathSeg, Path, SecRef};
 use wire_serve::write::{SpliceArgs, splice};
 
@@ -56,6 +57,7 @@ fn splice_args(path: &str, old: &str, new: &str) -> SpliceArgs {
         }],
         plan_edits: Vec::new(),
         pin: None,
+        fields: BTreeMap::default(),
     }
 }
 

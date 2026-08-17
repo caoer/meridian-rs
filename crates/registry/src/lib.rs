@@ -28,6 +28,7 @@ mod delta_sink;
 mod engine;
 mod feed;
 mod mounts;
+pub mod mw_sql;
 mod protocol;
 mod registry;
 pub mod ring;

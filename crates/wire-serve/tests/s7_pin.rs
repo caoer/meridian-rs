@@ -3,6 +3,7 @@
 //! slug promotion (D15), content+lock in one `commit_batch` (D7). Drives
 //! `write::splice` on a real workspace; gate tests are in-process read-then-pin.
 
+use std::collections::BTreeMap;
 use wire::{Edit, EditShape, ErrorCode, Path as WPath, PinSpec, PutAt, Recovery, ResponseBody};
 use wire_serve::write::{SpliceArgs, splice};
 
@@ -53,6 +54,7 @@ fn pin_args(selector: &str) -> SpliceArgs {
             fingerprint: None,
             sec_rev: None,
         }),
+        fields: BTreeMap::default(),
     }
 }
 

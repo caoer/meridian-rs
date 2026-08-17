@@ -12,6 +12,7 @@
 
 use std::path::PathBuf;
 
+use std::collections::BTreeMap;
 use wire::{HpathSeg, Path as WPath, PlanEdit, ReceiptAddr, ResponseBody, SecRef};
 use wire_serve::write::{SpliceArgs, splice};
 
@@ -46,6 +47,7 @@ fn args(plan_edits: Vec<PlanEdit>) -> SpliceArgs {
         edits: Vec::new(),
         plan_edits,
         pin: None,
+        fields: BTreeMap::default(),
     }
 }
 

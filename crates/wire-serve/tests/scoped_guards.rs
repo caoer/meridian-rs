@@ -10,6 +10,7 @@
 
 use std::path::{Path, PathBuf};
 
+use std::collections::BTreeMap;
 use wire::{Edit, EditShape, ErrorBody, ErrorCode, HpathSeg, Path as WPath, SecRef};
 use wire_serve::guard::{Origin, Premise, PremiseValue};
 use wire_serve::write::{SpliceArgs, SpliceOutcome, scope_token, splice};
@@ -62,6 +63,7 @@ fn args(premises: Vec<Premise>) -> SpliceArgs {
         edits: vec![unguarded_edit()],
         plan_edits: Vec::new(),
         pin: None,
+        fields: BTreeMap::default(),
     }
 }
 

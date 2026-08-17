@@ -118,6 +118,9 @@ pub fn project_response(frame: &mut Value) {
                 // The §4.4 set form: `files[]` on `splice`, sealed across the
                 // set (validate-all-then-apply, one fingerprint advance).
                 caps.push(Value::String("splice.set".to_string()));
+                // The middleware door (§ A.2.1): the `fields` passthrough on
+                // splice + create, and `armed.intents` on their responses.
+                caps.push(Value::String("splice.fields".to_string()));
                 // Law A-1 at the create door: the plan `create` row honors a
                 // parent-section `rev` (§ A.3).
                 caps.push(Value::String("splice.create_rev".to_string()));
@@ -414,6 +417,7 @@ mod tests {
                 "pin-cross-root",
                 "splice.pin.proof",
                 "splice.set",
+                "splice.fields",
                 "splice.create_rev",
                 "create",
                 "remove",
