@@ -335,7 +335,8 @@ usage:
                            everything except disk. Routed over IPC like
                            put — no direct-write fallback. Exits: 0
                            removed|dry / 1 refused / 2 bad invocation.
-! mrd pin <PAGE> <TARGET>#<SELECTOR> [--vibe] [--dry] [--json]
+! mrd pin <PAGE> <TARGET>#<SELECTOR> [--fingerprint TOKEN] [--vibe] [--dry]
+          [--json]
                            attest: record in PAGE's meridian-lock that it draws
                            from TARGET#SELECTOR at that section's content
                            fingerprint, and mint a stable ^block-id on the
@@ -345,8 +346,11 @@ usage:
                            no direct-write fallback) with the page content
                            (one commit). --vibe also writes the target blob
                            into git's object store so the pin is retrievable
-                           before any commit references it. Exits: 0
-                           pinned|dry / 1 refused / 2 bad invocation.
+                           before any commit references it. --fingerprint =
+                           the § A.3 proof of read; a supplied token is
+                           always verified (trust excuses absence, never a
+                           wrong token). Exits: 0 pinned|dry / 1 refused /
+                           2 bad invocation.
 ! mrd repair [PAGE] [--dry] [--json]
                            lost-pin repair via git history. LOST = live target
                            no longer verifies the fingerprint AND git no longer
@@ -557,6 +561,11 @@ options:
                            is data, not a refusal).
   --args JSON              (script) JSON object of strings, bound inert as the
                            args dict.
+  --fingerprint TOKEN      (pin) proof of read (§ A.3): the pinned section's
+                           own fp1.… token, from a sections read. Optional on
+                           the trusted CLI door — a supplied token is still
+                           verified against the live bytes; a wrong one
+                           refuses pin_proof_required, nothing written.
   --if-fingerprint FP      (script, put, pin) world-grain guard: refuse unless
                            the workspace still stands at FP.
   --scope PATH             (put) narrows --if-fingerprint to PATH; pair
