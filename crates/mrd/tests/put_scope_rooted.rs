@@ -26,7 +26,14 @@
 //!   `--json`), before any dial, never the coverage refusal;
 //! - the fingerprint echo is UNCHANGED (the rooted spelling stays the §4.7
 //!   desync guard's echo — this lane makes it pasteable instead of moving
-//!   it).
+//!   it);
+//! - the blind-strip trap stays closed (safety constraint, dogfood
+//!   f483c7da): a leaf token is CONTENT-only — byte-identical files mint one
+//!   token — so `--scope` is the only thing binding a premise to a node. A
+//!   foreign bound root over a basename that ALSO EXISTS LOCALLY, guarded by
+//!   the LOCAL file's own leaf token, is the exact pair a
+//!   strip-the-root-and-proceed implementation would accept; it must refuse
+//!   on both legs with the disk untouched.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -107,36 +114,20 @@ impl Sandbox {
     /// `stdin` — the write door has no in-process degrade, so every served
     /// leg below is daemon-backed by construction.
     fn run_warm(&self, cwd: &Path, args: &[&str], stdin: &str) -> Output {
-        self.spawn_with_stdin(self.base().args(args).current_dir(cwd), stdin)
+        spawn_with_stdin(self.base().args(args).current_dir(cwd), stdin)
     }
 
     /// Run spawn-impossible. The rooted-scope walls answer BEFORE any dial,
     /// so anything that refuses here refused on the address plane — the
     /// refusal-precedes-daemon half of the lane.
     fn run_undaemoned(&self, cwd: &Path, args: &[&str], stdin: &str) -> Output {
-        self.spawn_with_stdin(
+        spawn_with_stdin(
             self.base()
                 .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
                 .args(args)
                 .current_dir(cwd),
             stdin,
         )
-    }
-
-    fn spawn_with_stdin(&self, cmd: &mut Command, stdin: &str) -> Output {
-        let mut child = cmd
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn mrd");
-        child
-            .stdin
-            .take()
-            .expect("piped stdin")
-            .write_all(stdin.as_bytes())
-            .expect("write stdin");
-        child.wait_with_output().expect("wait mrd")
     }
 
     fn daemon_pidfile(&self) -> PathBuf {
@@ -169,6 +160,24 @@ impl Sandbox {
         }
         pid
     }
+}
+
+/// One `mrd` run with `stdin` piped in whole — the write door reads its §4.4
+/// batch there, and the mint door ignores it.
+fn spawn_with_stdin(cmd: &mut Command, stdin: &str) -> Output {
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn mrd");
+    child
+        .stdin
+        .take()
+        .expect("piped stdin")
+        .write_all(stdin.as_bytes())
+        .expect("write stdin");
+    child.wait_with_output().expect("wait mrd")
 }
 
 /// Send `signal` to `pid` (a detached daemon we do not own as a child).
@@ -377,6 +386,80 @@ fn a_cross_root_scope_refuses_naming_both_workspaces_never_coverage() {
         "the refusal names BOTH workspaces: {err:?}"
     );
     assert_never_coverage(&out, "cross-root scope");
+}
+
+/// The blind-strip trap (safety constraint, dogfood f483c7da): a foreign
+/// bound root over a basename that ALSO EXISTS LOCALLY, guarded by the LOCAL
+/// file's own leaf token — the exact pair a strip-the-root-and-proceed
+/// implementation would accept, because a leaf token is content-only and the
+/// stripped spelling plus the local token is a satisfied premise. Both legs
+/// must refuse naming the root mismatch, and the commit leg must leave the
+/// disk untouched. A basename with no local twin cannot fail this test: the
+/// coverage check would refuse it for the wrong reason.
+#[test]
+fn a_foreign_root_scope_with_a_local_decoy_refuses_never_strips() {
+    let sb = sandbox();
+    // The local decoy: same basename as the sessions root's file, different
+    // bytes, sitting in the AMBIENT workspace this put writes.
+    let decoy = "# Notes\n\n## Design\n\nambient decoy body.\n";
+    std::fs::write(sb.ws.join("notes.md"), decoy).expect("local decoy");
+    let batch = r#"[{"target":{"hpath":[{"h":"Notes"},{"h":"Design"}]},"edit":{"match":{"old":"ambient decoy body","new":"counterfeit edit"}}}]"#;
+    // The LOCAL file's own leaf token, minted ambient inside ws — the token
+    // that makes the stripped premise TRUE.
+    let mint = sb.run_warm(&sb.ws, &["fingerprint", "notes.md"], "");
+    let (token, local_scope) = mint_pair(&mint, "ambient decoy mint");
+    let dry = sb.run_warm(
+        &sb.ws,
+        &[
+            "put",
+            "notes.md",
+            "--if-fingerprint",
+            &token,
+            "--scope",
+            "sessions:notes.md",
+            "--dry",
+        ],
+        batch,
+    );
+    let commit = sb.run_warm(
+        &sb.ws,
+        &[
+            "put",
+            "notes.md",
+            "--if-fingerprint",
+            &token,
+            "--scope",
+            "sessions:notes.md",
+        ],
+        batch,
+    );
+    let pid = sb.reap_daemon();
+
+    assert!(pid.is_some(), "the auto-spawned daemon wrote a pidfile");
+    assert_eq!(
+        local_scope, "notes.md",
+        "the ambient mint echoes the stripped spelling the trap would ride"
+    );
+    for (leg, out) in [("dry", &dry), ("commit", &commit)] {
+        assert_eq!(
+            code(out),
+            1,
+            "{leg}: a foreign-root scope refuses even with the local leaf token: {} / {}",
+            stdout(out),
+            stderr(out)
+        );
+        assert!(
+            stderr(out).contains("names root `sessions`"),
+            "{leg}: the refusal names the root mismatch, never silent stripping: {:?}",
+            stderr(out)
+        );
+        assert_never_coverage(out, leg);
+    }
+    let on_disk = std::fs::read_to_string(sb.ws.join("notes.md")).expect("read decoy");
+    assert_eq!(
+        on_disk, decoy,
+        "the commit leg wrote NOTHING through the trap"
+    );
 }
 
 /// An unbound root refuses as a root problem with the bound names enumerated
