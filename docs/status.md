@@ -78,7 +78,18 @@ mrd init [PATH] [--name NAME]
  shadowed descendant drawers (amendment M2)
 mrd unregister [PATH] drop the daemon entry (if a daemon answers) + the drawer
 mrd resolve [PATH] report how a path resolves — the tier that answered and
- the root it named (read-only; writes nothing)
+ the root it named (read-only; writes nothing). PATH
+ also takes the agent-plane `root:path` spelling: a
+ rooted ref answers WHERE THE REF LANDS, the MCP
+ resolve face's answer ported — the physical path, the
+ rooted lane, the bound root and its workspace, and
+ the canonical `root:path` spelling — resolved through
+ the read door's seam with no existence check and no
+ daemon contact. A typo'd or unbound root refuses as a
+ root problem (exit 1, the seam's refusal family, the
+ bound names enumerated), never a literal-path lookup
+ of the colon-bearing string. A `#` fragment refuses:
+ resolve answers at path grain
 mrd links [PATH] the corpus edge map (whole corpus, or one file),
  answered by the daemon (auto-spawned) or in-process
 mrd read <PATH>[#FRAG] [--section SEL]
@@ -97,10 +108,10 @@ mrd read <PATH>[#FRAG] [--section SEL]
  with the bound names enumerated (the pin door's
  refusal family, exit 1, {workspace,error} under
  --json) instead of degrading into an ambient lookup.
- The rooted lane spans the read and mint doors —
- `mrd fingerprint` resolves `[root:]path` through the
- same seam — while every other CLI door keeps its
- workspace-relative grammar. SEL is a
+ The rooted lane spans the read, mint, and resolve
+ doors — `mrd fingerprint` and `mrd resolve` resolve
+ `[root:]path` through the same seam — while every
+ other CLI door keeps its workspace-relative grammar. SEL is a
  heading chain, a `^id`, or a dewey ordinal — the
  chain joins on `/` and that delimiter is dead for
  heading text (§ the joined selector coat). A section
