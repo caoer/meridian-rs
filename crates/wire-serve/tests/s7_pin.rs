@@ -1,7 +1,7 @@
-//! S7: `mrd pin` mints a real `meridian-lock` pin — read-mint gate (D16),
-//! rev-neutral slug promotion (D15), content+lock in one `commit_batch` (D7).
-//! Drives `write::splice` on a real workspace; gate tests are single-session
-//! in-process (`ReadMintStore` across read then pin).
+//! S7: `mrd pin` mints a real `meridian-lock` pin — the pin-proof gate
+//! (§ A.3 proof law: the request carries the read's own token), rev-neutral
+//! slug promotion (D15), content+lock in one `commit_batch` (D7). Drives
+//! `write::splice` on a real workspace; gate tests are in-process read-then-pin.
 
 use wire::{Edit, EditShape, ErrorCode, Path as WPath, PinSpec, PutAt, Recovery, ResponseBody};
 use wire_serve::write::{SpliceArgs, splice};
@@ -50,6 +50,8 @@ fn pin_args(selector: &str) -> SpliceArgs {
             target: WPath("guide.md".into()),
             selector: wire::ReadSel::parse(selector),
             vibe: None,
+            fingerprint: None,
+            sec_rev: None,
         }),
     }
 }
@@ -482,50 +484,67 @@ fn a_crash_orphan_is_benign_and_a_re_pin_reuses_it() {
     assert_eq!(healed.fingerprint, fp_before);
 }
 
-// GATE 2: read-mint gate, single-session in-process
+// GATE 2: the pin-proof gate (§ A.3 proof law), single-session in-process
 
-/// Production-arm read into a session store (H1 shape).
-fn session_read(
-    root: &fs::WorkspaceRoot,
-    store: &receipt::read_mint::ReadMintStore,
-    actor: &str,
-    rel: &str,
-    selector: &str,
-) {
+/// A sections read as the engine serves it, returning the served section's
+/// proof pair: its `fp1.…` fingerprint and its `sec_rev` — the tokens a
+/// later pin of that section carries back.
+fn proof_read(root: &fs::WorkspaceRoot, rel: &str, selector: &str) -> (String, String) {
     let doc = fs::load(root, std::path::Path::new(rel)).expect("load");
     let params = wire_serve::read::ReadParams {
         sections: Some(vec![wire::ReadSel::parse(selector)]),
-        actor: Some(actor.to_owned()),
         ..Default::default()
     };
-    wire_serve::read::composed_read(
+    let body = wire_serve::read::composed_read(
         &doc,
         &WPath(rel.into()),
         &wire::Root("r0".into()),
         &params,
-        Some(store),
         &wire_serve::read::NO_DECORATIONS,
     )
     .expect("the read serves");
+    let ResponseBody::Read { sections, .. } = body else {
+        panic!("read body");
+    };
+    let row = &sections.expect("sections mode")[0];
+    (
+        row.fingerprint
+            .clone()
+            .expect("a served section carries its proof token"),
+        row.sec_rev.0.clone(),
+    )
 }
 
-fn agent_pin_args(actor: &str, selector: &str) -> SpliceArgs {
-    SpliceArgs {
-        premises: Vec::new(),
-        actor: Some(actor.to_owned()),
-        ..pin_args(selector)
-    }
+/// An actor pin carrying `proof` (and, when given, the read's `sec_rev`).
+fn agent_pin_args(
+    actor: &str,
+    selector: &str,
+    proof: Option<&str>,
+    sec_rev: Option<&str>,
+) -> SpliceArgs {
+    let mut args = pin_args(selector);
+    args.actor = Some(actor.to_owned());
+    let pin = args.pin.as_mut().expect("pin_args carries a pin");
+    pin.fingerprint = proof.map(str::to_owned);
+    pin.sec_rev = sec_rev.map(str::to_owned);
+    args
 }
 
-/// Unread pin refuses; covering read then admits the same request.
+/// Unproven actor pin refuses; the read's own token then admits the same
+/// request — one round trip, no server-side state anywhere.
 #[test]
-fn the_gate_refuses_an_unread_pin_and_admits_it_after_a_covering_read() {
+fn the_gate_refuses_an_unproven_pin_and_admits_it_with_the_reads_own_token() {
     let (_dir, root) = workspace();
-    let store = receipt::read_mint::ReadMintStore::new();
-    let args = agent_pin_args("agent-7", "Guide/Leader's Guideline");
 
-    let err = splice(&root, None, &args, &[], Some(&store)).expect_err("un-read pin refuses");
-    assert_eq!(err.code, ErrorCode::ReadMintRequired);
+    let err = splice(
+        &root,
+        None,
+        &agent_pin_args("agent-7", "Guide/Leader's Guideline", None, None),
+        &[],
+        None,
+    )
+    .expect_err("an unproven actor pin refuses");
+    assert_eq!(err.code, ErrorCode::PinProofRequired);
     assert_eq!(err.recovery, Recovery::Fix, "the caller reads, then pins");
     assert_eq!(err.path, Some(WPath("guide.md".into())));
     assert!(
@@ -564,176 +583,181 @@ fn the_gate_refuses_an_unread_pin_and_admits_it_after_a_covering_read() {
     assert_eq!(read_page(&root, "guide.md"), TARGET, "target untouched");
     assert_eq!(read_page(&root, "plan.md"), PINNER, "pinner untouched");
 
-    session_read(
-        &root,
-        &store,
-        "agent-7",
-        "guide.md",
-        "Guide/Leader's Guideline",
-    );
-    assert_eq!(store.len(), 1, "the read minted one receipt");
-    let out = splice(&root, None, &args, &[], Some(&store)).expect("the read-backed pin commits");
-    assert_eq!(
-        pin_fact(&out.body).fingerprint,
-        live_fingerprint(&root, "guide.md#Guide/Leader's Guideline")
-    );
-}
-
-/// The receipt is keyed to the RESOLVED NODE, never to the selector form the
-/// read used (dogfood r7 F2): the dewey ordinal is the toc's first column —
-/// the form a caller meets first — so a read by dewey and a pin by the same
-/// ordinal must mint and spend one receipt, not refuse "it was never read".
-#[test]
-fn a_dewey_read_mints_the_receipt_a_dewey_pin_spends() {
-    let (_dir, root) = workspace();
-    let store = receipt::read_mint::ReadMintStore::new();
-
-    // `## Leader's Guideline` is dewey 1.1 in TARGET's toc.
-    session_read(&root, &store, "agent-7", "guide.md", "1.1");
+    let (proof, _) = proof_read(&root, "guide.md", "Guide/Leader's Guideline");
     let out = splice(
         &root,
         None,
-        &agent_pin_args("agent-7", "1.1"),
+        &agent_pin_args("agent-7", "Guide/Leader's Guideline", Some(&proof), None),
         &[],
-        Some(&store),
+        None,
     )
-    .expect("the dewey read minted the receipt the dewey pin spends");
+    .expect("the read-backed pin commits");
     assert_eq!(
         pin_fact(&out.body).fingerprint,
         live_fingerprint(&root, "guide.md#Guide/Leader's Guideline")
     );
-}
-
-/// Same node, forms crossed the other way: a dewey read gates an hpath pin.
-#[test]
-fn a_dewey_read_gates_an_hpath_pin_of_the_same_node() {
-    let (_dir, root) = workspace();
-    let store = receipt::read_mint::ReadMintStore::new();
-
-    session_read(&root, &store, "agent-7", "guide.md", "1.1");
-    splice(
-        &root,
-        None,
-        &agent_pin_args("agent-7", "Guide/Leader's Guideline"),
-        &[],
-        Some(&store),
-    )
-    .expect("a dewey read of the node gates a heading-path pin of the node");
-}
-
-/// The dogfood recovery shape stays green: an hpath read gates a dewey pin.
-#[test]
-fn an_hpath_read_gates_a_dewey_pin_of_the_same_node() {
-    let (_dir, root) = workspace();
-    let store = receipt::read_mint::ReadMintStore::new();
-
-    session_read(
-        &root,
-        &store,
-        "agent-7",
-        "guide.md",
-        "Guide/Leader's Guideline",
-    );
-    splice(
-        &root,
-        None,
-        &agent_pin_args("agent-7", "1.1"),
-        &[],
-        Some(&store),
-    )
-    .expect("a heading-path read of the node gates a dewey pin of the node");
-}
-
-/// Both spellings land on one node, so the ledger holds ONE receipt — the
-/// re-read replaces in place instead of minting a second key for the same
-/// content.
-#[test]
-fn two_selector_forms_of_one_node_hold_one_receipt() {
-    let (_dir, root) = workspace();
-    let store = receipt::read_mint::ReadMintStore::new();
-
-    session_read(&root, &store, "agent-7", "guide.md", "1.1");
-    session_read(
-        &root,
-        &store,
-        "agent-7",
-        "guide.md",
-        "Guide/Leader's Guideline",
-    );
     assert_eq!(
-        store.len(),
-        1,
-        "two spellings of one node are one read fact, not two"
+        pin_fact(&out.body).fingerprint,
+        proof,
+        "the minted fact IS the carried proof — one token, read to pin"
     );
 }
 
-/// Gate is three-part (actor+path+selector); foreign/sibling receipts do not cover.
+/// The token is the NODE's, never the selector spelling's (dogfood r7 F2
+/// carried forward): a dewey read's token spends an hpath pin of the same
+/// node, and the reverse.
 #[test]
-fn another_actors_read_and_a_sibling_sections_read_both_fail_the_gate() {
+fn a_dewey_reads_token_spends_an_hpath_pin_and_the_reverse() {
     let (_dir, root) = workspace();
-    let store = receipt::read_mint::ReadMintStore::new();
 
-    session_read(
-        &root,
-        &store,
-        "somebody-else",
-        "guide.md",
-        "Guide/Leader's Guideline",
+    // `## Leader's Guideline` is dewey 1.1 in TARGET's toc.
+    let (by_dewey, _) = proof_read(&root, "guide.md", "1.1");
+    let (by_hpath, _) = proof_read(&root, "guide.md", "Guide/Leader's Guideline");
+    assert_eq!(
+        by_dewey, by_hpath,
+        "two spellings of one node serve one token"
     );
-    session_read(&root, &store, "agent-7", "guide.md", "Guide/Other");
 
+    splice(
+        &root,
+        None,
+        &agent_pin_args("agent-7", "Guide/Leader's Guideline", Some(&by_dewey), None),
+        &[],
+        None,
+    )
+    .expect("a dewey read's token spends a heading-path pin of the node");
+}
+
+/// Forms crossed the other way on a fresh workspace: an hpath read's token
+/// spends a dewey pin.
+#[test]
+fn an_hpath_reads_token_spends_a_dewey_pin_of_the_same_node() {
+    let (_dir, root) = workspace();
+
+    let (proof, _) = proof_read(&root, "guide.md", "Guide/Leader's Guideline");
+    splice(
+        &root,
+        None,
+        &agent_pin_args("agent-7", "1.1", Some(&proof), None),
+        &[],
+        None,
+    )
+    .expect("a heading-path read's token spends a dewey pin of the node");
+}
+
+/// Proof is selector-grained: a sibling section's token does not cover this
+/// pin — you cannot attest content you did not read.
+#[test]
+fn a_sibling_sections_token_fails_the_gate() {
+    let (_dir, root) = workspace();
+
+    let (other, _) = proof_read(&root, "guide.md", "Guide/Other");
     let err = splice(
         &root,
         None,
-        &agent_pin_args("agent-7", "Guide/Leader's Guideline"),
+        &agent_pin_args("agent-7", "Guide/Leader's Guideline", Some(&other), None),
         &[],
-        Some(&store),
+        None,
     )
-    .expect_err("neither receipt covers this selector");
-    assert_eq!(err.code, ErrorCode::ReadMintRequired);
+    .expect_err("a sibling's token does not cover this selector");
+    assert_eq!(err.code, ErrorCode::PinProofRequired);
     assert_eq!(read_page(&root, "guide.md"), TARGET, "nothing was written");
 }
 
-/// A ledgerless host (no session — an in-process caller) refuses actor pins
-/// and names that reason.
+/// An in-process actor pin with proof commits: no session layer is needed,
+/// because there is no server-side state to hold — the proof IS the request.
+/// (The old ledgerless-host refusal class died with the ledger.)
 #[test]
-fn a_host_with_no_session_refuses_an_actor_pin_and_says_why() {
+fn an_in_process_actor_pin_with_proof_commits() {
     let (_dir, root) = workspace();
-    let err = splice(
+    let (proof, _) = proof_read(&root, "guide.md", "Guide/Leader's Guideline");
+    splice(
         &root,
         None,
-        &agent_pin_args("agent-7", "Guide/Leader's Guideline"),
+        &agent_pin_args("agent-7", "Guide/Leader's Guideline", Some(&proof), None),
         &[],
         None,
     )
-    .expect_err("no ledger, no answer");
-    assert_eq!(err.code, ErrorCode::ReadMintRequired);
-    assert!(
-        err.message
-            .as_deref()
-            .is_some_and(|m| m.contains("no read-receipt ledger") && m.contains("resident daemon")),
-        "{:?}",
-        err.message
-    );
-    assert!(
-        err.message.as_deref().is_some_and(|m| !m.contains(".md#")),
-        "the ledgerless refusal joins target#selector (retired fragment grammar): {:?}",
-        err.message
-    );
+    .expect("proof rides the request, so an in-process actor pin serves");
 }
 
-/// GATE 7: receipt is "was it read", not "is it current" → `write_conflict` on drift.
+/// The CLI may pin proofless — but a token it DOES supply is verified: trust
+/// excuses absence, never a wrong token.
+#[test]
+fn a_cli_supplied_token_is_still_verified() {
+    let (_dir, root) = workspace();
+
+    let mut wrong = pin_args("Guide/Leader's Guideline");
+    let pin = wrong.pin.as_mut().expect("pin");
+    pin.fingerprint =
+        Some("fp1.b3:0000000000000000000000000000000000000000000000000000000000000000".into());
+    let err = splice(&root, None, &wrong, &[], None)
+        .expect_err("a wrong token refuses even on the trusted door");
+    assert_eq!(err.code, ErrorCode::PinProofRequired);
+    assert_eq!(read_page(&root, "guide.md"), TARGET, "nothing was written");
+
+    let (proof, _) = proof_read(&root, "guide.md", "Guide/Leader's Guideline");
+    let mut right = pin_args("Guide/Leader's Guideline");
+    let pin = right.pin.as_mut().expect("pin");
+    pin.fingerprint = Some(proof);
+    splice(&root, None, &right, &[], None).expect("a correct token passes the same door");
+}
+
+/// A re-pin after promotion passes on the SAME token: the marker moved the
+/// section's `sec_rev` but not its fingerprint (anchor removals), so no
+/// refresh of anything is owed — the D16 refresh class died with the ledger.
+#[test]
+fn a_re_pin_after_promotion_passes_on_the_same_token() {
+    let (_dir, root) = workspace();
+    let (proof, read_rev) = proof_read(&root, "guide.md", "Guide/Leader's Guideline");
+
+    let first = pin_fact(
+        &splice(
+            &root,
+            None,
+            &agent_pin_args(
+                "agent-7",
+                "Guide/Leader's Guideline",
+                Some(&proof),
+                Some(&read_rev),
+            ),
+            &[],
+            None,
+        )
+        .expect("the first pin commits")
+        .body,
+    );
+    assert!(first.promoted, "the first pin wrote the marker");
+
+    // Same token, same (now raw-byte-stale) read rev: the fingerprint compare
+    // passes first, so the moved `sec_rev` never refuses — a matching proof
+    // means the content is current, and anchor churn is not drift.
+    let second = pin_fact(
+        &splice(
+            &root,
+            None,
+            &agent_pin_args(
+                "agent-7",
+                "Guide/Leader's Guideline",
+                Some(&proof),
+                Some(&read_rev),
+            ),
+            &[],
+            None,
+        )
+        .expect("the re-pin passes on the very token the first read served")
+        .body,
+    );
+    assert!(!second.promoted, "the marker is reused, not re-written");
+    assert_eq!(second.fingerprint, proof);
+}
+
+/// GATE 7: proof binds content currency → `write_conflict` on drift when the
+/// read's rev is carried, with both revs named.
 #[test]
 fn a_rev_change_between_read_and_pin_is_a_write_conflict_not_a_silent_pin() {
     let (_dir, root) = workspace();
-    let store = receipt::read_mint::ReadMintStore::new();
-    session_read(
-        &root,
-        &store,
-        "agent-7",
-        "guide.md",
-        "Guide/Leader's Guideline",
-    );
+    let (proof, read_rev) = proof_read(&root, "guide.md", "Guide/Leader's Guideline");
 
     std::fs::write(
         root.0.join("guide.md"),
@@ -744,11 +768,16 @@ fn a_rev_change_between_read_and_pin_is_a_write_conflict_not_a_silent_pin() {
     let err = splice(
         &root,
         None,
-        &agent_pin_args("agent-7", "Guide/Leader's Guideline"),
+        &agent_pin_args(
+            "agent-7",
+            "Guide/Leader's Guideline",
+            Some(&proof),
+            Some(&read_rev),
+        ),
         &[],
-        Some(&store),
+        None,
     )
-    .expect_err("the stale receipt refuses");
+    .expect_err("the stale proof refuses");
     assert_eq!(err.code, ErrorCode::WriteConflict);
     assert!(
         err.expected.is_some() && err.actual.is_some(),
@@ -764,21 +793,46 @@ fn a_rev_change_between_read_and_pin_is_a_write_conflict_not_a_silent_pin() {
         "and it refused before the promotion — the gate is ordered first"
     );
 
-    session_read(
-        &root,
-        &store,
-        "agent-7",
-        "guide.md",
-        "Guide/Leader's Guideline",
-    );
+    let (fresh, _) = proof_read(&root, "guide.md", "Guide/Leader's Guideline");
     splice(
         &root,
         None,
-        &agent_pin_args("agent-7", "Guide/Leader's Guideline"),
+        &agent_pin_args("agent-7", "Guide/Leader's Guideline", Some(&fresh), None),
         &[],
-        Some(&store),
+        None,
     )
-    .expect("the re-read authorizes the pin");
+    .expect("the re-read's fresh token authorizes the pin");
+}
+
+/// Without the read's rev the gate cannot tell a moved world from a bad
+/// token, and the refusal says so — both causes, one remedy.
+#[test]
+fn without_the_read_rev_a_moved_world_refuses_as_a_proof_mismatch_naming_both_causes() {
+    let (_dir, root) = workspace();
+    let (proof, _) = proof_read(&root, "guide.md", "Guide/Leader's Guideline");
+
+    std::fs::write(
+        root.0.join("guide.md"),
+        TARGET.replace("review before you close.", "review AFTER you close."),
+    )
+    .expect("foreign edit");
+
+    let err = splice(
+        &root,
+        None,
+        &agent_pin_args("agent-7", "Guide/Leader's Guideline", Some(&proof), None),
+        &[],
+        None,
+    )
+    .expect_err("the stale proof refuses");
+    assert_eq!(err.code, ErrorCode::PinProofRequired);
+    assert!(
+        err.message
+            .as_deref()
+            .is_some_and(|m| m.contains("either the content moved")),
+        "with no rev to split on, the refusal names both causes: {:?}",
+        err.message
+    );
 }
 
 // Plan §6 edge cases
@@ -1233,6 +1287,8 @@ fn a_slash_bearing_heading_pins_end_to_end_and_stores_as_one_array_element() {
             ],
         },
         vibe: None,
+        fingerprint: None,
+        sec_rev: None,
     });
 
     let out = splice(&root, None, &args, &[], None)
@@ -1359,6 +1415,8 @@ fn pin_hpath_args(hpath: Vec<wire::HpathSeg>) -> SpliceArgs {
         target: WPath("guide.md".into()),
         selector: wire::ReadSel::Hpath { hpath },
         vibe: None,
+        fingerprint: None,
+        sec_rev: None,
     });
     args
 }

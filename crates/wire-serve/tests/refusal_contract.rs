@@ -26,9 +26,7 @@ fn both_selector_planes_refuses_at_the_exemplar_bar() {
             toc: Some(wire::ReadSel::parse("Scratch notes")),
             sections: Some(vec![wire::ReadSel::parse("Scratch notes/Findings")]),
             display_path: Some("notes.md".into()),
-            ..ReadParams::default()
         },
-        None,
         &NO_DECORATIONS,
     )
     .expect_err("passing both selector planes refuses");

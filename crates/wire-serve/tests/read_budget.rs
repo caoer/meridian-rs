@@ -55,7 +55,6 @@ fn read(raw: &str, params: &ReadParams) -> Result<ResponseBody, Box<wire::ErrorB
         &WPath("page.md".into()),
         &wire::Root("r".into()),
         params,
-        None,
         &NO_DECORATIONS,
     )
 }

@@ -1186,7 +1186,6 @@ fn dispatch_read(
             toc,
             sections,
             display_path,
-            actor,
         } if v3 => composed_read_warm(
             registry,
             ws,
@@ -1195,7 +1194,6 @@ fn dispatch_read(
                 toc,
                 sections,
                 display_path,
-                actor,
             },
         ),
         Op::Links { path, require_root } => warm_engine_read(registry, ws, |engine| {
@@ -1276,13 +1274,9 @@ fn dispatch_read(
                 plan_edits,
                 pin,
             };
-            // S7: session host — pin gate answers from the read-mint ledger.
-            // Handle outside any engine borrow (H1). `foreign` hands the
-            // cross-root pin gate the TARGET workspace's ledger (D-C): the
-            // per-workspace map behind a closure, keyed by the same canonical
-            // path the serving session's hello bound.
-            let mints = registry.read_mints(ws);
-            let foreign = |workspace: &Path| registry.read_mints(workspace);
+            // A pin's proof rides the request itself (§ A.3 proof law) — no
+            // session-side ledger exists to hand the choke-point.
+            //
             // U20b: numbered producer on this workspace's ring. The sink
             // allocates AND records inside the choke-point's flock
             // (`SeqSink::committed`), so no detect cycle can re-tell this
@@ -1293,15 +1287,11 @@ fn dispatch_read(
             // alone never authorizes the overlay.
             let cache = registry.domain_cache(ws);
             let observe = || registry.door_observation(ws, &cache, DOOR_COOKIE_TIMEOUT);
-            let out = wire_serve::write::splice_with_mints(
+            let out = wire_serve::write::splice(
                 &ws_root,
                 Some(&*ring),
                 &args,
                 &[],
-                wire_serve::write::Mints {
-                    ambient: Some(&mints),
-                    foreign: Some(&foreign),
-                },
                 Some(wire_serve::write::ResidentDoor {
                     cache: &cache,
                     observe: &observe,
@@ -1593,28 +1583,20 @@ fn mint_fingerprint(
 }
 
 /// Composed read over the warm engine: one borrow supplies doc, `file_rev`,
-/// and ambient root (D6 one-snapshot). Session host hands the read-mint ledger
-/// ([`Registry::read_mints`]) — taken before the engine borrow (H1).
+/// and ambient root (D6 one-snapshot). Reads mint nothing and take no
+/// identity (§ A.3 proof law).
 fn composed_read_warm(
     registry: &Registry,
     ws: &Path,
     path: &wire::Path,
     params: &wire_serve::read::ReadParams,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
-    let mints = registry.read_mints(ws);
     warm_engine_read(registry, ws, |engine| {
         let doc = doc_or_refusal(engine, ws, path)?;
         // S10: claim-link colors from the pinned corpus, same warm snapshot (D6).
         let decorations =
             wire_serve::read::page_decorations(&engine.index, &engine.docs, path.0.as_str());
-        wire_serve::read::composed_read(
-            &doc,
-            path,
-            &engine_root(engine),
-            params,
-            Some(&mints),
-            &decorations,
-        )
+        wire_serve::read::composed_read(&doc, path, &engine_root(engine), params, &decorations)
     })
 }
 

@@ -33,7 +33,7 @@ ruling, `docs/wire-contract.md` §3.3, 2026-08-06).
 | `wire` | The standing wire vocabulary: path/span/node_rev/fingerprint + op/request/response/error types (serde-only, zero I/O). Code may lag `docs/wire-contract.md` |
 | `wire-map` | The named model→wire projection seam: tree-flatten + prefix window + node ordering, as a tested library function |
 | `git` | The git plumbing organ: shell-out blob object ids, the eager `-w` write, and object reachability against a repo handle — git owns content-addressing, the engine never computes an oid. A `std`-only leaf |
-| `receipt` | The receipt family: the persisted outcome-as-fact line committed in the same batch as the edit, the append-only journal + forgery detector, the anchor freshness and blob three-state axes, and the ephemeral read-mint ledger |
+| `receipt` | The receipt family: the persisted outcome-as-fact line committed in the same batch as the edit, and the anchor freshness and blob three-state axes |
 | `transport` | Untyped NDJSON message envelope + codec seam (knows framing, never meaning) |
 | `policy` | Ruleset compilation and assertion evaluation under declared budgets; produces edit-time verdicts and the blocking armed-plane gate |
 | `query` | Corpus reads: backlinks, board queries, span-exact rename planning — borrows the model's index |

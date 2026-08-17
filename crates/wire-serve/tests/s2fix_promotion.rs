@@ -50,6 +50,8 @@ fn pin_args(pinning_page: &str, selector: &str) -> SpliceArgs {
             target: WPath("guide.md".into()),
             selector: wire::ReadSel::parse(selector),
             vibe: None,
+            fingerprint: None,
+            sec_rev: None,
         }),
     }
 }
@@ -132,6 +134,8 @@ fn a_slash_bearing_heading_is_no_longer_refused_and_the_pin_commits() {
             ],
         },
         vibe: None,
+        fingerprint: None,
+        sec_rev: None,
     });
 
     splice(&root, None, &args, &[], None).unwrap_or_else(|e| {

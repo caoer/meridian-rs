@@ -374,6 +374,23 @@ pub struct PinSpec {
     /// references it. Absent/`false` computes the oid read-only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vibe: Option<bool>,
+    /// The proof half (§ A.3 proof law, `splice.pin.proof`): the `fp1.…`
+    /// content-identity token the caller's own sections read served for the
+    /// pinned section. Required when the splice carries a real session
+    /// `actor` (absent refuses `pin_proof_required`); the bare CLI door may
+    /// omit it, but a supplied token is always verified — trust excuses
+    /// absence, never a wrong token. The engine recomputes the live token
+    /// under the write flock and compares; no server-side read state exists.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+    /// The write-conflict half, optional: the section CAS token (`sec_rev`)
+    /// the same read served. Consulted only when the fingerprint compare
+    /// fails — a supplied stale value turns the refusal into
+    /// `write_conflict{expected, actual}` (the world moved since the read);
+    /// matching or absent leaves it `pin_proof_required` (bad token, or a
+    /// moved world the caller gave no rev to tell apart).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sec_rev: Option<String>,
 }
 
 /// What a pin actually minted — the response half of [`PinSpec`], present
@@ -821,9 +838,10 @@ pub enum Op {
     /// is the caller's path spelling for the rendered header line (defaults
     /// to `path`) — the engine never invents host paths.
     ///
-    /// `actor` is the §9 read-provenance slot: the daemon-derived actor
-    /// stamped on the request — a wire input, never ambient, never
-    /// MCP-caller-settable.
+    /// No `actor` field: a read is identity-free and side-effect-free as a
+    /// type-level fact (§ A.3 proof law — the engine records no reads, so a
+    /// reader's identity would serve nothing). The retired field refuses at
+    /// the strict decode like any unknown field.
     Read {
         path: Path,
         /// The whole-call subtree scope, ONE selector in the tagged read
@@ -839,8 +857,6 @@ pub enum Op {
         sections: Option<Vec<ReadSel>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         display_path: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        actor: Option<String>,
     },
     /// The def-conformance verdict op (v3-only, like `read`): rebuild the
     /// candidate from put-plan-vocabulary `edits` over the current bytes at
@@ -1224,6 +1240,12 @@ pub struct ReadSectionOut {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hpath: Vec<HpathSeg>,
     pub sec_rev: NodeRev,
+    /// The section's own `fp1.…` content-identity token — the pin-proof half
+    /// a later `splice.pin` of this section carries back (§ A.3 proof law).
+    /// Absent only when the span holds no fingerprintable content (a
+    /// marker-only block), which is exactly a section no pin could claim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
     /// The section's own word count, over the raw `content` bytes below —
     /// the same number `toc[].words` publishes for this section, and the same
     /// one the rendered head carries whatever elision or decoration did to
@@ -2266,13 +2288,16 @@ pub enum ErrorCode {
     /// refusal in milliseconds while the drawer warms. Extras: `message`.
     /// Retry class — the same request serves once the rebuild lands.
     CorpusWarming,
-    /// A `splice.pin` from a real session actor whose selector no receipt
-    /// covers — you cannot attest content that was never in your context.
-    /// Extras: `path` + `message`. Fix class — read the exact selector in
-    /// sections mode, then pin. The bare CLI (`actor` absent) is
-    /// local-operator-trusted and never raises it; only the v3 pin path can
-    /// emit it.
-    ReadMintRequired,
+    /// A `splice.pin` whose proof fails the live compare — a real session
+    /// actor pinned without carrying its read's `fingerprint`, or the
+    /// supplied token does not match the target's live bytes (with no stale
+    /// `sec_rev` to tell a moved world apart — that split is
+    /// `write_conflict`). You cannot attest content that was never in your
+    /// context. Extras: `path` + `message`. Fix class — read the exact
+    /// selector in a sections read, carry the served `fingerprint`, pin
+    /// again. The bare CLI (`actor` absent) may pin proofless and never
+    /// raises the absence arm; a token it does supply is still compared.
+    PinProofRequired,
     /// The `splice.pin` target page or selector does not exist, so there is
     /// nothing to fingerprint — a pin over an unresolvable address would mint
     /// a dangling claim; refusing at mint time is the honest door. Extras:
@@ -2327,7 +2352,7 @@ impl ErrorCode {
             | ErrorCode::AmbiguousRef
             | ErrorCode::BindingBreak
             | ErrorCode::IndexIntegrity
-            | ErrorCode::ReadMintRequired
+            | ErrorCode::PinProofRequired
             | ErrorCode::PinTargetMissing
             | ErrorCode::GuardRequired
             | ErrorCode::RemoveRefused
