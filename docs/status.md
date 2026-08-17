@@ -948,6 +948,32 @@ the wrong reason: the site needed the cap, and nothing needed minting. Its
 Reason 1 — the other two declined voices are registrar-narrowed, hence out of
 the class — is independent and stands.
 
+**Amended for registration candidates (2026-08-17, card
+rules-silent-nonregistration).** A rules-tagged + `id:` page under a dot
+directory registered as NOTHING with no note anywhere: `mrd rules` printed
+`(no rules in effect)` at exit 0 and `mrd arm` refused with the generic
+`resolves to nothing` — silent non-registration reading as working law
+(measured live on the mw-face e2e: `.hidden/rules/x.md`; also the
+enclosing-root shape, where a workspace whose own MERIDIAN.md sits on a dot
+path resolves to the enclosing root and its every page is out of domain).
+F11's walk-law guard is amended NARROWLY: `mrd rules` now voices the
+workspace's dot-declined REGISTRATION CANDIDATES — registrar-narrowed
+(`rule_pages_among`, the same offers-itself law as its two sibling feeds),
+enumerated by the addressable walk filtered through the one dot predicate
+(`fs::dot_declined_markdown`), one bounded line (full count, `EXCLUDED_SHOWN`
+sample, remainder clause), complete list on the new `not_offered.workspace_dot`
+key of this verb's `--json`. Dot-tree pages whose frontmatter does not parse
+join `cannot be answered`. What F11 ruled otherwise stands: the population is
+candidates, never "all dot markdown" (the wrong-population guard); the voice
+is exit-neutral — findings and exit 1 stay attributable only to served-corpus
+conditions; the other enumerating faces' voices are untouched. The projection
+still serves none of these paths — which is exactly why the line exists: its
+one reader is the operator whose law is invisible. The other half is
+`mrd arm <ID>`: an `Unresolved` refusal whose id a domain-excluded candidate
+carries now names the file and the exclusion reason (a dot-prefixed path
+segment / a `meridian/domain.md` ignore rule) — the hard stop an operator hits
+before believing a door armed.
+
 ### `mrd check` — does the world still match the pins
 
 Both layer-0 planes the core reads are memory-free: the claim plane (pinned

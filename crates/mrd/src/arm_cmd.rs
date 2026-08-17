@@ -35,7 +35,7 @@
 
 use serde_json::json;
 
-use policy::armed::{ArmRequest, ArmRoot, Mode, parse_artifact};
+use policy::armed::{ArmFault, ArmRequest, ArmRoot, Mode, parse_artifact};
 use wire_serve::armed_disk::ArmSession;
 
 use crate::{Fail, Format, current_dir};
@@ -112,7 +112,30 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         }],
     )
     .map_err(|faults| {
-        let rendered: Vec<String> = faults.iter().map(ToString::to_string).collect();
+        let rendered: Vec<String> = faults
+            .iter()
+            .map(|fault| {
+                let mut line = fault.to_string();
+                // The silent-non-registration teaching (card
+                // rules-silent-nonregistration): an id that resolves to
+                // nothing MAY have a carrier the hash domain excludes — a
+                // page that reads as working law and governs nothing. Runs
+                // only on this failure path, never on a clean arm.
+                if let ArmFault::Unresolved { id, .. } = fault {
+                    for (page, reason) in excluded_carriers(&canonical, id) {
+                        use std::fmt::Write as _;
+                        let _ = write!(
+                            line,
+                            "\n  a page carrying id `{id}` exists and is OUTSIDE the hash \
+                             domain: `{page}`, excluded by {reason} — law that cannot be \
+                             hashed cannot be attested; move the page into the domain, then \
+                             arm at the rev `mrd rules` prints"
+                        );
+                    }
+                }
+                line
+            })
+            .collect();
         Fail::with_code(EXIT_REFUSED, rendered.join("\n"))
     })?;
     let fresh = act.rows()[0].clone();
@@ -143,6 +166,52 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         false,
     );
     Ok(())
+}
+
+/// The domain-excluded pages that carry `id` — the other half of the
+/// silent-non-registration lint (card rules-silent-nonregistration; the
+/// `mrd rules` half is its `not offered to registration` dot line).
+///
+/// Feeds are the two §12.1 exclusion classes (`fs::dot_declined_markdown`,
+/// `fs::declined_markdown`), each narrowed by the ONE registrar law
+/// (`rules_walk::rule_candidates_among`) — an id match here means the page
+/// would have REGISTERED had the domain held it. Enumeration failure yields
+/// an empty answer, never a second fault: this teaching decorates a refusal
+/// that already stands on its own.
+fn excluded_carriers(
+    workspace: &std::path::Path,
+    id: &policy::RuleId,
+) -> Vec<(String, &'static str)> {
+    let root = fs::WorkspaceRoot(workspace.to_path_buf());
+    let feeds = [
+        (
+            fs::dot_declined_markdown(&root),
+            "a dot-prefixed path segment",
+        ),
+        (
+            fs::declined_markdown(&root),
+            "a `meridian/domain.md` ignore rule",
+        ),
+    ];
+    let mut found = Vec::new();
+    for (feed, reason) in feeds {
+        let Ok(pages) = feed else { continue };
+        let readable: Vec<(String, String)> = pages
+            .into_iter()
+            .filter_map(|rel| {
+                std::fs::read_to_string(workspace.join(&rel))
+                    .ok()
+                    .map(|bytes| (rel, bytes))
+            })
+            .collect();
+        let (candidates, _undecidable) = crate::rules_walk::rule_candidates_among(&readable);
+        for (page, candidate) in candidates {
+            if candidate.as_ref() == Some(id) {
+                found.push((page, reason));
+            }
+        }
+    }
+    found
 }
 
 /// One report, two faces.

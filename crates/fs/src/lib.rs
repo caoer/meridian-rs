@@ -186,6 +186,70 @@ fn declined_dir(
     Ok(())
 }
 
+/// The OTHER declined class: every markdown file a dot-prefixed segment keeps
+/// out of the hash domain (§12.1 rule 2) — the addressable set's dot class, as
+/// sorted workspace-relative paths.
+///
+/// [`declined_markdown`] deliberately never enters a dot directory (dogfood
+/// F11): the faces that voice the custom-ignore class must not caveat paths
+/// the record projection refuses to serve. This enumeration is that guard's
+/// counterpart for the one reader the projection argument does not cover: an
+/// operator whose RULE page sits under a dot segment and silently governs
+/// nothing (card rules-silent-nonregistration). Consumers narrow it through
+/// the registrar before voicing — the population here is every dot-class md,
+/// and a sentence about rule pages may only be made about pages that offer
+/// themselves.
+///
+/// Only dot subtrees are entered — the dot-free tree is descended but its
+/// files are never listed — the subtree collector is the user rung's own
+/// ([`collect_declined_markdown`]), and a non-UTF-8 name is skipped exactly as
+/// [`declined_markdown`] skips it.
+///
+/// # Errors
+/// I/O failure traversing the root.
+pub fn dot_declined_markdown(root: &WorkspaceRoot) -> io::Result<Vec<String>> {
+    let mut declined = Vec::new();
+    dot_declined_dir(&root.0, Path::new(""), &mut declined)?;
+    let mut out: Vec<String> = declined
+        .iter()
+        .filter_map(|rel| rel.to_str().map(str::to_owned))
+        .collect();
+    out.sort();
+    Ok(out)
+}
+
+/// Descend the dot-free tree looking for dot-prefixed entries; every md file
+/// at or beneath one is declined. The dot test sits before the `is_dir`
+/// branch, so a dot FILE and a dot DIRECTORY are declined by the same line —
+/// the user rung's own discipline.
+fn dot_declined_dir(abs_dir: &Path, rel_dir: &Path, declined: &mut Vec<PathBuf>) -> io::Result<()> {
+    for entry in fs::read_dir(abs_dir)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let name = entry.file_name();
+        let Some(name_str) = name.to_str() else {
+            continue;
+        };
+        let rel = rel_dir.join(&name);
+        if domain::dot_segment(name_str) {
+            if file_type.is_dir() {
+                collect_declined_markdown(&entry.path(), &rel, declined)?;
+            } else if file_type.is_file()
+                && Path::new(&name)
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("md"))
+            {
+                declined.push(rel);
+            }
+            continue;
+        }
+        if file_type.is_dir() {
+            dot_declined_dir(&entry.path(), &rel, declined)?;
+        }
+    }
+    Ok(())
+}
+
 /// The disk behind the ambient root, as the question `model` asks — one
 /// predicate, one owner, the same division [`domain::Domain`] answers
 /// [`model::HashDomain`] under.
