@@ -1,0 +1,152 @@
+# TAG lane — linux/amd64. Ensures the engine binary for the tagged COMMIT
+# exists in the append-only registry, then prints the pin.
+#
+# Law: docs/release.md §5.4 (what the tag publishes) — read it before editing
+# this file. The keying decision (commit, never tag name, never `latest`) and
+# the 409 first-writer property are ruled there, not here.
+#
+# Why this lane exists at all when ci.yaml already publishes linux-amd64 on
+# every main push: a tag may point at a commit that never took that path (a
+# tag on a branch, a re-tag after a revert), and a release must not depend on
+# which route the commit arrived by. The registry probe below makes the common
+# case — a tag on an already-published main commit — a seconds-long no-op that
+# re-prints the pin instead of rebuilding it.
+#
+# Separate FILE, not a step in ci.yaml, because `labels` selects the agent per
+# WORKFLOW: the darwin sibling cannot live in the same file.
+when:
+  # RELEASE-SHAPED TAGS ONLY (docs/release.md §5.2 — `v<MAJOR>.<MINOR>.<PATCH>`).
+  # The repo also carries component and snapshot tags (`sidecar-v0.1.0`,
+  # `stage2-pin`); an unfiltered `event: tag` would publish a release for those.
+  - event: tag
+    ref: refs/tags/v*
+  # manual keeps the lane provable and re-runnable without minting a tag. It
+  # publishes under the commit key like every other route, so a manual run can
+  # only ever ADD the artifact this commit was always going to have.
+  - event: manual
+
+labels:
+  hostname: workstation-nyc-2
+
+steps:
+  - name: publish mrd (linux-amd64, keyed by commit)
+    image: "meridian-ci:2026-08-10"
+    pull: false
+    environment:
+      CARGO_HOME: /ci-cache/meridian-rs/cargo
+      CARGO_BUILD_JOBS: "8"
+      CARGO_INCREMENTAL: "0"
+      RUSTC_WRAPPER: sccache
+      SCCACHE_DIR: /ci-cache/sccache/publish
+      SCCACHE_CACHE_SIZE: 30G
+      CC: "sccache cc"
+      CXX: "sccache c++"
+      RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+      CARGO_TERM_COLOR: always
+      FORGEJO_TOKEN:
+        from_secret: forgejo_token
+    commands:
+      # ASK THE REGISTRY FIRST. The .sha256 sidecar is the probe: it is tiny,
+      # it is written after the binary, and reading it answers both questions
+      # at once — is this commit published, and with which digest.
+      - |
+        set -eu
+        # safe.directory FIRST — every git call below reads a workspace this
+        # container did not create.
+        git config --global --add safe.directory "$${CI_WORKSPACE}"
+        # PEEL THE SHA TO A COMMIT. On a `tag` event CI_COMMIT_SHA is the
+        # ANNOTATED TAG OBJECT, not the commit — measured 2026-08-17, pipeline
+        # 848: `2358c5007e13…` for tag v0.0.0-ci-probe whose commit is
+        # `ef7c15e6b590…`. Keying on it publishes bytes at an address no
+        # consumer can reach (`git rev-list -n 1 <tag>` answers the COMMIT,
+        # docs/release.md §5.4) and stamps the binary with a sha that is not a
+        # commit at all (§5.1). `^{commit}` peels a tag object and is a no-op
+        # on a commit sha, so push, manual and tag events all agree afterwards.
+        rev="$(git rev-parse "$${CI_COMMIT_SHA}^{commit}")"
+        echo "$${rev}" > /tmp/rev
+        echo "publishing under commit $${rev} (CI sha: $${CI_COMMIT_SHA})"
+        base="https://git.0xdao.app/api/packages/caoer115/generic/mrd/$${rev}"
+        code="$(curl -s -o /tmp/have.sha256 -w '%{http_code}' \
+          -H "Authorization: token $${FORGEJO_TOKEN}" "$${base}/mrd-linux-amd64.sha256")"
+        if [ "$${code}" = "200" ]; then
+          echo "already published for $${rev} — the FIRST bytes stay authoritative (append-only)"
+          echo "SKIP_BUILD=1" > /tmp/lane.env
+        else
+          echo "not published for $${rev} (HTTP $${code}) — building"
+          echo "SKIP_BUILD=0" > /tmp/lane.env
+        fi
+      # Identity, MEASURED not invented — this container's git probe cannot
+      # trust a workspace other uids write, so CI supplies the sha it checked
+      # out plus `-dirty` if the tree actually diverges (docs/release.md §5.1).
+      #
+      # The probe is the ENGINE'S OWN, flag for flag (crates/mrd/build_git.rs
+      # worktree_dirty): --untracked-files=no, --no-optional-locks. This lane
+      # shares one workspace with ci.yaml's lanes, which write untracked paths
+      # (`target-ci`, and `/target` is the only ignored one) — a bare probe
+      # would read those as a divergence and stamp a lie that a supplied
+      # MRD_BUILD_SHA then carries verbatim into the pin.
+      - |
+        set -eu
+        . /tmp/lane.env
+        [ "$${SKIP_BUILD}" = "0" ] || exit 0
+        rev="$(cat /tmp/rev)"
+        if [ -n "$(git --no-optional-locks status --porcelain --untracked-files=no)" ]; then
+          echo "MRD_BUILD_SHA=$${rev}-dirty" > /tmp/stamp.env
+          echo "WARNING tracked content diverges from $${rev} — stamping -dirty"
+          git --no-optional-locks status --porcelain --untracked-files=no
+        else
+          echo "MRD_BUILD_SHA=$${rev}" > /tmp/stamp.env
+        fi
+        cat /tmp/stamp.env
+        env $(cat /tmp/stamp.env) cargo build -q --locked --release -p mrd
+      # The artifact must be the thing consumers run, so ASK it. A build that
+      # cannot name the tree it came from must never reach a pin.
+      - |
+        set -eu
+        . /tmp/lane.env
+        [ "$${SKIP_BUILD}" = "0" ] || exit 0
+        ver="$(./target/release/mrd --version)"
+        echo "$${ver}"
+        case "$${ver}" in
+          *unknown*) echo "this build cannot name the tree it came from — refusing to publish it"; exit 1 ;;
+        esac
+        echo "$${ver}" | grep -q "$(cat /tmp/rev)" || {
+          echo "the stamp does not name $(cat /tmp/rev) — the pin would lie about what it is"; exit 1; }
+      - |
+        set -eu
+        . /tmp/lane.env
+        rev="$(cat /tmp/rev)"
+        base="https://git.0xdao.app/api/packages/caoer115/generic/mrd/$${rev}"
+        if [ "$${SKIP_BUILD}" = "0" ]; then
+          sha="$(sha256sum target/release/mrd | cut -d' ' -f1)"
+          echo "$${sha}  mrd-linux-amd64" > /tmp/mrd-linux-amd64.sha256
+          # RETRIES, safe because the store is append-only: an upload that
+          # landed answers 409 next time, never a second copy. The darwin
+          # sibling measured a `524` (Cloudflare origin-timeout) on the same
+          # PUT; this lane's path to the forge is shorter but not immune.
+          put() {
+            for delay in 0 15 45; do
+              [ "$delay" = 0 ] || sleep "$delay"
+              code="$(curl -s -o /tmp/put.out -w '%{http_code}' -X PUT \
+                -H "Authorization: token $${FORGEJO_TOKEN}" \
+                --upload-file "$$1" "$${base}/$$2")"
+              case "$${code}" in
+                201) echo "published $$2"; return 0 ;;
+                409) echo "$$2 already published for this commit — keeping the FIRST bytes (append-only)"; return 0 ;;
+              esac
+              echo "publish $$2: HTTP $${code} — retrying"
+              cat /tmp/put.out || true
+            done
+            echo "publish $$2 failed after 3 attempts: HTTP $${code}"
+            exit 1
+          }
+          put target/release/mrd mrd-linux-amd64
+          put /tmp/mrd-linux-amd64.sha256 mrd-linux-amd64.sha256
+        fi
+        # The pin is read back from the REGISTRY, never from the local build:
+        # on the 409 path the authoritative bytes are someone else's, and this
+        # is the number a consumer must record.
+        echo ''
+        echo 'pin for downstream .mrd-pin (linux-amd64):'
+        echo "  MRD_COMMIT=$${rev}"
+        echo "  MRD_SHA256=$$(curl -fsSL -H "Authorization: token $${FORGEJO_TOKEN}" "$${base}/mrd-linux-amd64.sha256" | cut -d' ' -f1)"
