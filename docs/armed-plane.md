@@ -71,6 +71,19 @@ leg keeps its fixed refusal ceiling; the hook leg may emit only its declared
 caps, with slice 1 pinned to `proto.send`. FIX and VIEW remain named
 deferrals.
 
+**The page must sit inside the workspace hash domain** (`wire-contract.md`
+§12.1): a rules-tagged page on a dot-segment path (`.hidden/rules/x.md`,
+anything under a dot directory), or one excluded by a `meridian/domain.md`
+ignore rule, registers as NOTHING — law that cannot be hashed cannot be
+attested. The exclusion is never silent (§12.1 enumerator clause; card
+rules-silent-nonregistration): `mrd rules` voices such registration candidates
+in one bounded line (complete list on the `not_offered.workspace_dot` key of
+its `--json`, exit-neutral), and `mrd arm <ID>` on an id whose only carrier is
+domain-excluded refuses naming the file and the exclusion reason. Watch the
+ENCLOSING-ROOT shape: a workspace whose own MERIDIAN.md sits on a dot path
+resolves to the enclosing root, and every page under it — not just the
+obviously hidden ones — is outside that root's domain.
+
 ### 2. Author the floor
 
 Write the predicate so a refusal always cites its passing scenario (the legal
