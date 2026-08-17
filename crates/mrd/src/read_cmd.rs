@@ -10,6 +10,14 @@
 //! read's fingerprint. `--section` (repeatable — a heading path, a dewey
 //! ordinal, or a `^anchor`) is the section read that serves bodies.
 //!
+//! PATH is the agent-plane `[root:]path` spelling: a head-colon ref enters the
+//! rooted lane ([`crate::rooted`]) and binds to the named root's workspace
+//! from the machine mount table before any engine contact — the root reading
+//! wins unconditionally (§4.1), so a typo'd or unbound root refuses and never
+//! degrades into an ambient literal-path lookup. The wire never carries the
+//! root prefix: the request's `path` is the rel half and `display_path` keeps
+//! the caller's rooted spelling.
+//!
 //! The `#FRAG` tail goes through the same selector door as `--section`
 //! (Law A-2: a fragment is selector bytes): a heading path scopes the whole
 //! call as its subtree; a `^id` or dewey spelling names one node, so it rides
@@ -40,21 +48,38 @@ use crate::{Fail, Format, current_dir};
 /// invocation (the CLI's own refusals, before any engine contact); exit 1 on any engine
 /// refusal (`bad_request`, `ref_not_found` …), message verbatim.
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
-    let parsed = Read::parse(args)?;
+    let mut parsed = Read::parse(args)?;
     let cwd = current_dir()?;
-    let resolved = crate::resolve::resolve_runtime(&cwd).map_err(|e| {
-        Fail::tool(format!(
-            "cannot resolve workspace for {}: {e}",
-            cwd.display()
-        ))
-    })?;
-    let (source, mut body, mint) = answer_read(&resolved.workspace, &cwd, &parsed)?;
+    // The rooted lane (§4.1 colon law): a head-colon spelling is an
+    // agent-plane address, never a literal path — resolve it to the named
+    // root's bound workspace before any engine contact. The ambient lane
+    // resolves from cwd exactly as before.
+    let workspace = if crate::rooted::is_rooted(&parsed.path) {
+        match crate::rooted::resolve(&parsed.path, "read", READ_CONSEQUENCE) {
+            Ok((rel, rooted)) => {
+                parsed.display = Some(parsed.path.clone());
+                parsed.path = rel;
+                let workspace = rooted.workspace.clone();
+                parsed.rooted = Some(rooted);
+                workspace
+            }
+            // The refusal frames with the workspace the caller stands in —
+            // no target workspace exists to name.
+            Err(error) => {
+                let ambient = ambient_workspace(&cwd)?;
+                return Err(engine::json_refusal(parsed.format, &ambient, &error));
+            }
+        }
+    } else {
+        ambient_workspace(&cwd)?
+    };
+    let (source, mut body, mint) = answer_read(&workspace, &cwd, &parsed)?;
 
     match parsed.format {
         Format::Json => {
             drop_duplicated_map(&mut body);
             let mut value = json!({
-                "workspace": resolved.workspace.display().to_string(),
+                "workspace": workspace.display().to_string(),
                 "source": source.label(),
                 "read": body,
             });
@@ -99,13 +124,42 @@ fn drop_duplicated_map(body: &mut Value) {
 
 /// The parsed `read` invocation.
 struct Read {
-    /// The workspace-relative file path (the part before `#`).
+    /// The workspace-relative file path (the part before `#`). In the rooted
+    /// lane [`dispatch`] rewrites it to the rel half — the wire never carries
+    /// a root prefix.
     path: String,
     /// The `#FRAG` tail, when given.
     frag: Option<String>,
     /// `--section` selectors, in order — non-empty is the section read.
     sections: Vec<String>,
     format: Format,
+    /// The rooted lane's typed spelling (`root:rel`, minus any fragment) —
+    /// the display the engine renders, so refusals and faces echo what the
+    /// caller wrote. `None` on the ambient lane.
+    display: Option<String>,
+    /// The resolved rooted ref — `Some` puts the teachings on the rooted
+    /// branch (no ambient cwd respelling, misses scoped to the named root).
+    rooted: Option<crate::rooted::RootedRef>,
+}
+
+impl Read {
+    /// The spelling the engine renders: the caller's own — rooted where the
+    /// caller wrote rooted, the bare path otherwise.
+    fn display(&self) -> &str {
+        self.display.as_deref().unwrap_or(&self.path)
+    }
+}
+
+/// The ambient workspace for `cwd`, per the settled resolution ladder — the
+/// lane every read took before the rooted lane existed.
+fn ambient_workspace(cwd: &Path) -> Result<std::path::PathBuf, Fail> {
+    let resolved = crate::resolve::resolve_runtime(cwd).map_err(|e| {
+        Fail::tool(format!(
+            "cannot resolve workspace for {}: {e}",
+            cwd.display()
+        ))
+    })?;
+    Ok(resolved.workspace)
 }
 
 impl Read {
@@ -142,6 +196,8 @@ impl Read {
             frag,
             sections,
             format: if json { Format::Json } else { Format::Human },
+            display: None,
+            rooted: None,
         })
     }
 }
@@ -182,7 +238,7 @@ fn answer_read(
         DaemonRead::Served { body, mint } => Ok((EngineSource::Daemon, body, mint)),
         DaemonRead::Refused(mut error) => {
             teach_bad_path(workspace, &mut error);
-            teach_cwd_respelling(workspace, cwd, &mut error);
+            teach_miss(workspace, cwd, r, &mut error);
             Err(engine::json_refusal(r.format, workspace, &error))
         }
         // The degrade never mints: capture is a resident-daemon fact — the
@@ -207,11 +263,35 @@ fn teach_bad_path(workspace: &Path, error: &mut ErrorBody) {
     crate::path_law::teach_bad_path(workspace, error, "read", READ_CONSEQUENCE);
 }
 
-/// The `file_not_found` companion to [`teach_bad_path`]: the family's fitted
-/// cwd respelling ([`crate::path_law::teach_cwd_respelling`] — one sentence,
-/// identical bytes at every door, one respell implementation).
-fn teach_cwd_respelling(workspace: &Path, cwd: &Path, error: &mut ErrorBody) {
-    crate::path_law::teach_cwd_respelling(workspace, cwd, error);
+/// The `file_not_found` companion to [`teach_bad_path`], split by lane:
+///
+/// - ambient — the family's fitted cwd respelling
+///   ([`crate::path_law::teach_cwd_respelling`] — one sentence, identical
+///   bytes at every door, one respell implementation);
+/// - rooted — the miss is scoped to the NAMED root (address-grammar §5.1
+///   C-2/F4): the refusal names which root was searched and where it binds,
+///   and the ambient respelling never runs — a "did you mean" pointing back
+///   into the caller's own tree is exactly the ambient fallback the colon
+///   law forbids.
+fn teach_miss(workspace: &Path, cwd: &Path, r: &Read, error: &mut ErrorBody) {
+    use std::fmt::Write as _;
+    match &r.rooted {
+        None => crate::path_law::teach_cwd_respelling(workspace, cwd, error),
+        Some(rooted) => {
+            if error.code != wire::ErrorCode::FileNotFound {
+                return;
+            }
+            let m = error.message.get_or_insert_with(String::new);
+            let _ = write!(
+                m,
+                " This was a rooted read: only root `{}` (bound at {}) was searched — the \
+                 rel half is spelled from that root's top level, never from the ambient \
+                 workspace.",
+                rooted.name,
+                rooted.workspace.display()
+            );
+        }
+    }
 }
 
 /// The whole daemon path: socket, ensure-up, `hello` (v3, workspace-bound), then the `read` op.
@@ -378,7 +458,7 @@ impl Read {
         let mut req = json!({
             "op": "read",
             "path": self.path,
-            "display_path": self.path,
+            "display_path": self.display(),
         });
         // Both selector fields are structured on the wire; this is where a typed string becomes
         // structure — once, at the edge, through the one selector door, so nothing inward of
@@ -418,7 +498,7 @@ fn in_process_read(workspace: &Path, cwd: &Path, r: &Read) -> Result<Value, Fail
     // The degrade teaches the same respelling the warm path teaches: a refusal that carries the
     // fitted spelling on one transport and not the other trains the habit only half the time.
     let doc = wire_serve::load_doc(&root, &wpath).map_err(|mut e| {
-        teach_cwd_respelling(workspace, cwd, &mut e);
+        teach_miss(workspace, cwd, r, &mut e);
         engine::json_refusal(r.format, workspace, &e)
     })?;
     let ambient = wire_serve::ambient_root(&root)
@@ -429,7 +509,7 @@ fn in_process_read(workspace: &Path, cwd: &Path, r: &Read) -> Result<Value, Fail
     let params = wire_serve::read::ReadParams {
         toc,
         sections,
-        display_path: Some(r.path.clone()),
+        display_path: Some(r.display().to_owned()),
     };
     // This degrade path loads one document, not the corpus, so it cannot color a pin whose
     // target is another page — the decorated face is the daemon's, and `mrd read` serves the
