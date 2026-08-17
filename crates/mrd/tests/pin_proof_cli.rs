@@ -8,7 +8,7 @@
 //! local-operator trust door allows stays allowed.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 use serde_json::Value;
 
@@ -60,16 +60,33 @@ impl Sandbox {
             .expect("spawn mrd")
     }
 
-    /// A marked workspace: the pinned target and the pinning page.
+    /// A git-backed marked workspace: the pinned target and the pinning page.
+    /// Git is real because the R4 blob plane refuses a pin it cannot anchor —
+    /// outside a git work tree, `mrd pin` refuses entirely.
     fn workspace(&self) -> PathBuf {
         let ws = self.tmp.path().join("project");
         std::fs::create_dir_all(&ws).expect("mkdir");
+        git(&ws, &["init", "-q"]);
+        git(&ws, &["config", "user.email", "pin@example.invalid"]);
+        git(&ws, &["config", "user.name", "pin"]);
         std::fs::write(ws.join("guide.md"), TARGET).expect("guide");
         std::fs::write(ws.join("plan.md"), PAGE).expect("plan");
         let init = self.run(&ws, &["init"]);
         assert!(init.status.success(), "init: {}", stderr(&init));
         ws
     }
+}
+
+fn git(dir: &Path, args: &[&str]) {
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("git runs in the test environment");
+    assert!(status.success(), "git {args:?}");
 }
 
 fn stdout(out: &Output) -> String {
