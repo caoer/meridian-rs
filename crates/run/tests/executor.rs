@@ -915,11 +915,14 @@ body
     }
 }
 
-/// The encoder half of ⑤-F2: a FRESH value that needs quoting (the live
-/// `manifest` case — a scalar containing `: `) lands quoted, and the
-/// follow-up value-identical write of the same string moves nothing.
+/// The verbatim half of ⑤-F2's boundary: a FRESH value still lands AS SENT —
+/// this plane is raw-grain by contract (s2fix_run_plane_fp pins the raw
+/// edges), so the fix is preservation-only and fresh values are untouched.
+/// The follow-up value-identical write of the same string moves nothing:
+/// either the preservation arm fires, or the verbatim arm reproduces the
+/// same bytes — idempotence-on-bytes holds on both paths.
 #[test]
-fn fresh_set_field_quotes_the_colon_scalar_and_is_then_idempotent() {
+fn fresh_set_field_lands_verbatim_and_is_then_idempotent() {
     let (_tmp, root) = workspace();
 
     let value = "worker — auditing outbox: effect migration";
@@ -935,8 +938,8 @@ fn fresh_set_field_quotes_the_colon_scalar_and_is_then_idempotent() {
     .unwrap();
     let first = page_text(&root);
     assert!(
-        first.contains(&format!("manifest: \"{value}\"")),
-        "a `: `-carrying scalar must land QUOTED, or the line reads back as a mapping:\n{first}"
+        first.contains(&format!("manifest: {value}")),
+        "a fresh run-plane value lands AS SENT (raw-grain contract):\n{first}"
     );
 
     let root_after_first = current_root(&root);
