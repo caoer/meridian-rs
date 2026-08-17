@@ -200,6 +200,18 @@ fn a_page_carries_its_own_options_and_no_false_promises() {
     assert!(test.contains("--spec PAGE"), "{test}");
 }
 
+/// `mrd arm --help` names the `--at` law in the flag's own terms — a
+/// workspace-relative DIRECTORY, default `.` — so a caller holding an absolute
+/// path learns the constraint from the page, not by trial.
+#[test]
+fn arm_help_names_the_workspace_relative_at_law() {
+    let page = stdout(&mrd(&["arm", "--help"]));
+    assert!(
+        page.contains("workspace-relative") && page.contains("default"),
+        "the --at teaching is on the page:\n{page}"
+    );
+}
+
 /// If a verb's synopsis offers a flag, and the options block has an entry for
 /// that flag, that entry appears on the verb's page.
 #[test]

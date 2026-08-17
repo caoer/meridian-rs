@@ -423,10 +423,11 @@ usage:
                            / 2 bad invocation or PATH outside workspace.
 ! mrd arm <ID> --mode <off|warn|block|armed> --rev <16HEX> [--at DIR] [--json]
                            the ARM act (the attest path): resolve ID at the arm
-                           root (--at, default `.` = workspace root, a
-                           DIRECTORY — never the resolver's layer:depth
-                           spelling), admit the attestation only if the live
-                           page rev equals --rev, and pin the winner into
+                           root (--at, a workspace-relative DIRECTORY, default
+                           `.` = the workspace root — never an absolute path,
+                           never the resolver's layer:depth spelling), admit
+                           the attestation only if the live page rev equals
+                           --rev, and pin the winner into
                            meridian/armed-rules.md — creating the once-armed
                            marker on the first arm. --rev is the attestation:
                            the rev the reviewer READ (`mrd rules` winner rev=;
