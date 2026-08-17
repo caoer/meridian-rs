@@ -69,12 +69,9 @@ pub enum PinOutcome {
 pub struct Registry {
     inner: RwLock<HashMap<PathBuf, WorkspaceEntry>>,
     engines: RwLock<HashMap<PathBuf, Arc<WorkspaceEngine>>>,
-    /// S6 read-is-the-mint ledger per workspace (D6/H1). Not on
-    /// [`WorkspaceEngine`]: rebuilds replace the engine and would evaporate
-    /// receipts. Session memory; dropped on idle-reap only.
-    read_mints: Mutex<HashMap<PathBuf, Arc<receipt::read_mint::ReadMintStore>>>,
-    /// U20b delta plane, one ring per workspace — same create/reap as
-    /// [`Self::read_mints`]. S6: key is canonical path (not a global ring).
+    /// U20b delta plane, one ring per workspace — created on first use,
+    /// dropped on idle-reap like [`Self::engines`]. S6: key is canonical
+    /// path (not a global ring).
     rings: Mutex<HashMap<PathBuf, Arc<crate::ring::WorkspaceRing>>>,
     /// G11 pre-warm quiet map: last [`fs::domain_stat_signature`] per warm
     /// workspace. Matching signature skips the corpus fold. Advisory only —
@@ -306,7 +303,6 @@ impl Registry {
             inner: RwLock::new(inner),
             // Cold: no engines; first `warm_or_build` rebuilds from disk.
             engines: RwLock::new(HashMap::new()),
-            read_mints: Mutex::new(HashMap::new()),
             // Cold: no rings; a pre-restart cursor dies on its instance ⇒
             // `root_unknown` (§7.1, B-01).
             rings: Mutex::new(HashMap::new()),
@@ -1196,22 +1192,6 @@ impl Registry {
         ring.subscribe()
     }
 
-    /// Read-is-the-mint ledger (S6), created on first use. `workspace` must be
-    /// canonical (same key as `engines`/`inner`). [`Arc`] so a slow read never
-    /// holds this map's lock.
-    #[must_use]
-    pub fn read_mints(&self, workspace: &Path) -> Arc<receipt::read_mint::ReadMintStore> {
-        let mut mints = self
-            .read_mints
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        Arc::clone(
-            mints
-                .entry(workspace.to_path_buf())
-                .or_insert_with(|| Arc::new(receipt::read_mint::ReadMintStore::new())),
-        )
-    }
-
     /// Pre-warm every already-warm workspace (P2 watch driver). Rebuilds only
     /// when content hash changed — latency only; correctness is fingerprint.
     /// Cold daemon: no-op. Snapshot warm keys under read lock, then release
@@ -1434,16 +1414,6 @@ impl Registry {
                 }
             }
             drop(engines);
-            let mut mints = self
-                .read_mints
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            for key in &candidates {
-                if mints.remove(key).is_some() {
-                    demoted.insert(key.clone());
-                }
-            }
-            drop(mints);
             // The resident memo SURVIVES the horizon under a live feed — the
             // §6.4 point: memo + dirty set make the re-warm O(dirty). With no
             // live feed there is no gap coverage, so the memo dies here as it
@@ -2798,12 +2768,11 @@ mod engine_tests {
 
         let fs_root = ::fs::WorkspaceRoot(canonical.clone());
         let observe = || reg.door_observation(&canonical, &cache, Duration::from_secs(10));
-        let out = wire_serve::write::splice_with_mints(
+        let out = wire_serve::write::splice(
             &fs_root,
             None,
             &splice_args("notes/plan.md", "August", "w1"),
             &[],
-            wire_serve::write::Mints::default(),
             Some(wire_serve::write::ResidentDoor {
                 cache: &cache,
                 observe: &observe,
@@ -2856,12 +2825,11 @@ mod engine_tests {
 
         let fs_root = ::fs::WorkspaceRoot(canonical.clone());
         let observe = || reg.door_observation(&canonical, &cache, Duration::from_secs(10));
-        wire_serve::write::splice_with_mints(
+        wire_serve::write::splice(
             &fs_root,
             None,
             &splice_args("notes/plan.md", "August", "w1"),
             &[],
-            wire_serve::write::Mints::default(),
             Some(wire_serve::write::ResidentDoor {
                 cache: &cache,
                 observe: &observe,
@@ -2918,12 +2886,11 @@ mod engine_tests {
 
         let fs_root = ::fs::WorkspaceRoot(canonical.clone());
         let observe = || reg.door_observation(&canonical, &cache, Duration::from_secs(10));
-        wire_serve::write::splice_with_mints(
+        wire_serve::write::splice(
             &fs_root,
             None,
             &splice_args("notes/plan.md", "August", "w1"),
             &[],
-            wire_serve::write::Mints::default(),
             Some(wire_serve::write::ResidentDoor {
                 cache: &cache,
                 observe: &observe,
@@ -2978,12 +2945,11 @@ mod engine_tests {
         let mut args = splice_args("notes/plan.md", "August", "w1");
         args.if_root = Some(wire::Root(r0.0.clone()));
         let observe = || reg.door_observation(&canonical, &cache, Duration::from_secs(10));
-        let err = wire_serve::write::splice_with_mints(
+        let err = wire_serve::write::splice(
             &fs_root,
             None,
             &args,
             &[],
-            wire_serve::write::Mints::default(),
             Some(wire_serve::write::ResidentDoor {
                 cache: &cache,
                 observe: &observe,

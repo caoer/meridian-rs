@@ -510,20 +510,15 @@ fn in_process_read(workspace: &Path, cwd: &Path, r: &Read) -> Result<Value, Fail
         toc,
         sections,
         display_path: Some(r.display().to_owned()),
-        // Read provenance is the daemon's to stamp; the local CLI sends none on
-        // both warm and degrade paths (symmetry with the wire call).
-        actor: None,
     };
-    // No actor and no session store, so the local CLI mints no read receipt on either path. This
-    // degrade path loads one document, not the corpus, so it cannot color a pin whose target is
-    // another page — the decorated face is the daemon's, and `mrd read` serves the stored
-    // spelling, which is also the spelling `mrd put` takes.
+    // This degrade path loads one document, not the corpus, so it cannot color a pin whose
+    // target is another page — the decorated face is the daemon's, and `mrd read` serves the
+    // stored spelling, which is also the spelling `mrd put` takes.
     let body = wire_serve::read::composed_read(
         &doc,
         &wpath,
         &ambient,
         &params,
-        None,
         &wire_serve::read::NO_DECORATIONS,
     )
     .map_err(|e| engine::json_refusal(r.format, workspace, &e))?;

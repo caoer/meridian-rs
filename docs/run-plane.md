@@ -319,8 +319,9 @@ it. **Which op answers it:** the composed `read` (§4.1, toc mode) carries
 `words_total`; the `toc` op's body is `{path, file_rev, root, nodes}` and
 carries none, so a whole-file `read(path)` asks both — `toc` for the rev and
 the section map, `read` for the count. Zero wire delta: both ops are already
-declared, and a toc-mode read mints no receipt, so the second ask is
-side-effect-free (ruling 2026-08-07, `words:` on the read face).
+declared, and a read mints nothing (reads are side-effect-free engine-wide
+since pin proof moved onto the request, wire-contract § A.3), so the second
+ask costs nothing but the call (ruling 2026-08-07, `words:` on the read face).
 
 **A composed read is BRACKETED by `file_rev`, or it refuses.** A whole-file
 `read(path)` is 2+N round trips — `toc`, one `cat` per frontmatter key, then the

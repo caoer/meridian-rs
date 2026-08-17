@@ -497,6 +497,15 @@ distinguish them: a receipt minted on ref A would gate a pin on ref B.** That is
 B-1 and B-3 are what prevent it, and B-1 alone is not enough — the trailing slash and the symlink
 are two different ways to spell the same tree, and only canonicalization collapses both.
 
+*(Amended 2026-08-16 — the read-mint ledger is deleted; pin proof rides the request,
+wire-contract § A.3.)* The motive above is historical narration and stands as measured. The
+bypass CLASS it names survives translation: the pin's proof compare must run against the
+**resolved TARGET root's** live bytes — never against an ambient root's same-named file —
+which the resolver guarantees through the same B-1/B-3 canonicalization. A same-named file
+with different content now fails the compare on its own bytes; two spellings of one tree
+collapse to one canonical target, exactly as B-1/B-3 rule. The mount laws of this section
+are unchanged by the ledger's death.
+
 ### 8.3 The negative cases
 
 | # | Input | Required outcome | Class |

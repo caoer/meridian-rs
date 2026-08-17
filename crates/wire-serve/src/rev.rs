@@ -110,6 +110,11 @@ pub fn project_response(frame: &mut Value) {
                 // confusing `pin_target_missing` from a spelling it cannot
                 // parse.
                 caps.push(Value::String("pin-cross-root".to_string()));
+                // Pin proof rides the request (§ A.3 proof law): `splice.pin`
+                // takes `fingerprint` (required for session actors) +
+                // optional `sec_rev`, sections reads serve a `fingerprint`
+                // per row, and no server-side read state exists.
+                caps.push(Value::String("splice.pin.proof".to_string()));
                 // The §4.4 set form: `files[]` on `splice`, sealed across the
                 // set (validate-all-then-apply, one fingerprint advance).
                 caps.push(Value::String("splice.set".to_string()));
@@ -407,6 +412,7 @@ mod tests {
                 "splice.plan_edits",
                 "splice.pin",
                 "pin-cross-root",
+                "splice.pin.proof",
                 "splice.set",
                 "splice.create_rev",
                 "create",
