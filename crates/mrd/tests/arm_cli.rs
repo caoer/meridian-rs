@@ -465,6 +465,71 @@ fn arming_an_unregistered_id_is_refused_naming_the_root() {
     );
 }
 
+/// An id whose ONLY carrier the hash domain excludes refuses with the fitted
+/// teaching: the file, and why it is out of domain — for both §12.1 classes.
+/// Silent non-registration must not read as a working door
+/// (card rules-silent-nonregistration).
+#[test]
+fn arming_a_domain_excluded_candidate_names_the_file_and_the_reason() {
+    let s = sandbox();
+
+    // Class 1: the dot-segment structural floor.
+    s.write(
+        ".hidden/rules/x.md",
+        "---\ntags: [type/rule, rules/check]\nid: hidden.law\npaths:\n  - tasks/**\n---\n\n# hidden\n",
+    );
+    let out = s.run(&[
+        "arm",
+        "hidden.law",
+        "--mode",
+        "block",
+        "--rev",
+        "0123456789abcdef",
+    ]);
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(out.status.code(), Some(1), "{text}");
+    assert!(
+        text.contains("hidden.law")
+            && text.contains(".hidden/rules/x.md")
+            && text.contains("dot-prefixed path segment"),
+        "the refusal names the id, the file, and the exclusion class: {text}"
+    );
+
+    // Class 2: an operator-declared `meridian/domain.md` ignore rule.
+    s.write(
+        "meridian/domain.md",
+        "---\nversion: 1\nignore:\n  - \"parked/**\"\n---\n\n# domain\n",
+    );
+    s.write(
+        "parked/rules/y.md",
+        "---\ntags: [type/rule, rules/check]\nid: parked.law\npaths:\n  - tasks/**\n---\n\n# parked\n",
+    );
+    let out = s.run(&[
+        "arm",
+        "parked.law",
+        "--mode",
+        "block",
+        "--rev",
+        "0123456789abcdef",
+    ]);
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(out.status.code(), Some(1), "{text}");
+    assert!(
+        text.contains("parked.law")
+            && text.contains("parked/rules/y.md")
+            && text.contains("ignore rule"),
+        "the refusal names the id, the file, and the ignore-rule class: {text}"
+    );
+}
+
 /// A hook asked to `block` is the `ModeKind` refusal, teaching the vocabulary —
 /// the § 4 split, reaching the operator at the verb.
 #[test]
