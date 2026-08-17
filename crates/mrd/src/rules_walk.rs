@@ -169,7 +169,7 @@ fn offer_root(
 /// which would be a fork of `policy`'s law that could disagree with it.
 ///
 /// ⛔ THERE ARE THREE STATES, NOT TWO, and collapsing them shipped wrong twice
-/// (rules_cmd's history): `RegisterFault::FrontmatterUnparsed` says in its own
+/// (`rules_cmd`'s history): `RegisterFault::FrontmatterUnparsed` says in its own
 /// words that whether the page carries a registration tag *cannot be
 /// answered*; EVERY OTHER fault variant presupposes the tag was there. So a
 /// page with a broken frontmatter block is neither a dropped rule page nor

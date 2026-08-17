@@ -1476,22 +1476,19 @@ fn an_armed_page_leaving_the_domain_is_named_not_dropped() {
 /// The workspace feed's OTHER exclusion class — the dot-segment structural
 /// floor — on the UNARMED axis, which is the only axis it has.
 ///
-/// ⛔ ASSERTION RE-POINTED, NOT DELETED — dogfood F11 (fp b3b:a9616651,
-/// 2026-08-15), card `rules-caveat-scope`. This gate used to assert the dot
-/// page is NAMED under `not offered to registration`. That naming is the
-/// defect F11 measured at scale: the caveat scan entered dot directories the
-/// record projection refuses to serve, and a dot-named snapshot dir produced
-/// 16 of 20 caveat lines plus the exit with them. The workspace caveat scan
-/// now walks by the projection's own dir law — a dot segment is never entered
-/// (`fs::domain::dot_segment`, one spelling with the hash-domain walk) — so a
-/// dot page is INVISIBLE to this face exactly as it is invisible to the vault
-/// and to everything the engine serves.
-///
-/// Decision 0017 ("never exclude silently") survives on the class it was
-/// minted for: the CUSTOM-IGNORE class stays named
-/// ([`dot_noise_is_invisible_while_a_custom_ignored_rule_page_is_still_named`]),
-/// and the USER rung's dot decline stays named — its bounded `rules/` tree has
-/// no projection to be consistent with
+/// ⛔ ASSERTION RE-POINTED TWICE, NOT DELETED. F11 (fp b3b:a9616651,
+/// 2026-08-15, card `rules-caveat-scope`) turned the original naming OFF: the
+/// caveat scan had entered dot directories the projection refuses to serve,
+/// and a dot-named snapshot dir produced 16 of 20 caveat lines. Card
+/// `rules-silent-nonregistration` (2026-08-17, mw-face live e2e) turns it
+/// back on NARROWLY: the silence made a registration CANDIDATE — a rules tag
+/// plus id under a dot dir — read as working law while governing nothing. The
+/// candidate population is voiced in ONE capped line (registrar-narrowed —
+/// the F11 wrong-population guard is the registrar, not the walk); dot NOISE
+/// stays invisible
+/// ([`dot_candidates_are_voiced_capped_while_dot_noise_stays_invisible`]);
+/// the voice is exit-neutral, so findings stay served-corpus conditions. The
+/// USER rung's dot decline stays named as before
 /// ([`a_dot_segment_user_rule_page_is_named_not_dropped`]).
 ///
 /// ⛔ THE TWO CLASSES ARE NOT SYMMETRIC AND THE ASYMMETRY IS A FINDING: a custom
@@ -1499,7 +1496,7 @@ fn an_armed_page_leaving_the_domain_is_named_not_dropped() {
 /// dot-segment page can never be armed at all, because it is never in the domain
 /// to be discovered.
 #[test]
-fn a_dot_segment_workspace_rule_page_is_invisible_like_the_projection_serves_it() {
+fn a_dot_segment_workspace_rule_candidate_is_voiced_and_never_registers() {
     let witness = engine_witness();
     let s = sandbox();
 
@@ -1528,40 +1525,57 @@ fn a_dot_segment_workspace_rule_page_is_invisible_like_the_projection_serves_it(
     assert_ne!(control, subject, "both arms identical:\n{subject}");
 
     // Fail-closed is untouched: the dot page never registers, so the id is
-    // gone from the law. Invisibility scopes the VOICE, never the enforcement.
+    // gone from the law. The voice scopes the SILENCE, never the enforcement.
     assert!(
-        !subject.contains("task.notify") && subject.contains("(no rules in effect)"),
+        subject.contains("(no rules in effect)"),
         "the dot page must not register:\n{witness}\n{subject}"
     );
+
+    // ⭐ THE CANDIDATE IS VOICED (card rules-silent-nonregistration): one
+    // capped line names the page, the class, and the machine key.
     assert!(
-        !subject.contains(".hidden/notify.md") && !subject.contains("not offered to registration"),
-        "a dot path is invisible to the caveat scan, as it is to the \
-         projection (F11):\n{witness}\n{subject}"
+        subject.contains("not offered to registration")
+            && subject.contains(".hidden/notify.md")
+            && subject.contains("dot-prefixed path segment")
+            && subject.contains("not_offered.workspace_dot"),
+        "a dot-dir registration candidate must be voiced, not silent:\n{witness}\n{subject}"
+    );
+
+    // And the machine half is complete.
+    let json = s.stdout(&["rules", ".", "--json"]);
+    let parsed: serde_json::Value = serde_json::from_str(&json).expect("rules --json parses");
+    assert_eq!(
+        parsed["rules"]["not_offered"]["workspace_dot"],
+        serde_json::json!([".hidden/notify.md"]),
+        "the complete dot-candidate list rides the wire key:\n{json}"
     );
 
     assert_eq!(control_rc, Some(0), "{control}");
     assert_eq!(
         subject_rc,
         Some(0),
-        "an invisible page is no finding:\n{subject}"
+        "the voice is exit-neutral — findings stay served-corpus conditions:\n{subject}"
     );
 }
 
-/// **THE F11 GATE, BOTH HALVES.** The caveat scan and the record projection
-/// apply ONE exclusion law.
+/// **THE F11 GATE, RE-POINTED (card rules-silent-nonregistration).** The
+/// amendment splits the dot class by RULE INTENT, and the registrar — never
+/// the walk — draws the line.
 ///
-/// Half 1 (the F11 receipt, in miniature): a dot-named snapshot directory —
-/// a rule-tagged page and a broken-frontmatter page inside it, the two
-/// populations that produced 16 of ZT's 20 caveat lines — yields ZERO caveat
-/// lines and a clean exit. The projection serves no record under a dot
-/// segment, so `mrd rules` caveats nothing under one.
+/// Half 1 (the F11 receipt, inverted narrowly): a dot-named snapshot dir —
+/// a rule-tagged page and a broken-frontmatter page, the two populations that
+/// produced 16 of ZT's 20 caveat lines — now yields exactly two BOUNDED
+/// lines: the candidate under `not offered to registration` (capped sample,
+/// complete list on `workspace_dot`) and the broken page under `cannot be
+/// answered`. Dot NOISE — md with no rule intent — stays invisible: the F11
+/// wrong-population guard survives as the registrar narrowing.
 ///
-/// Half 2 (the caveat discipline survives, decision 0017): the SAME two pages
-/// under a custom-ignored directory — operator-declared in
-/// `meridian/domain.md`, vault-visible — are still NAMED, each under its own
-/// verdict string, exit-neutral.
+/// Half 2 (decision 0017, unchanged): the SAME two pages under a
+/// custom-ignored directory — operator-declared in `meridian/domain.md`,
+/// vault-visible — are still NAMED, each under its own verdict string. Both
+/// classes stay exit-neutral.
 #[test]
-fn dot_noise_is_invisible_while_a_custom_ignored_rule_page_is_still_named() {
+fn dot_candidates_are_voiced_capped_while_dot_noise_stays_invisible() {
     let witness = engine_witness();
     let s = sandbox();
     s.write(
@@ -1575,7 +1589,7 @@ fn dot_noise_is_invisible_while_a_custom_ignored_rule_page_is_still_named() {
     );
     assert_eq!(control_rc, Some(0), "{control}");
 
-    // ── half 1: the dot-named snapshot dir, invisible ────────────────────────
+    // ── half 1: the dot-named snapshot dir — candidates voiced, noise not ────
     s.write(
         ".snap-copy/dropped-rule.md",
         &rule_page("hook", "task.dropped", "a copy nobody serves"),
@@ -1584,12 +1598,30 @@ fn dot_noise_is_invisible_while_a_custom_ignored_rule_page_is_still_named() {
         ".snap-copy/broken.md",
         "---\ntags: [rules/hook\n---\n\n# an unclosed flow sequence\n",
     );
-    let (subject, subject_err, subject_rc) = drive(&s, &["rules"]);
-    assert_eq!(
-        control, subject,
-        "a dot-named dir must not change the answer AT ALL:\n{witness}\n{subject}"
+    s.write(
+        ".snap-copy/plain-note.md",
+        "---\ntype: note\n---\n\n# no rule intent\n",
     );
-    assert_eq!(subject_rc, Some(0), "{subject}{subject_err}");
+    let (subject, subject_err, subject_rc) = drive(&s, &["rules"]);
+    assert_ne!(
+        control, subject,
+        "the dot candidates must change the answer now:\n{witness}\n{subject}"
+    );
+    assert!(
+        subject.contains("not offered to registration")
+            && subject.contains(".snap-copy/dropped-rule.md")
+            && subject.contains("dot-prefixed path segment"),
+        "the dot CANDIDATE is voiced:\n{witness}\n{subject}"
+    );
+    assert!(
+        subject.contains("cannot be answered") && subject.contains(".snap-copy/broken.md"),
+        "the undecidable page keeps its own verdict string:\n{subject}"
+    );
+    assert!(
+        !subject.contains("plain-note.md"),
+        "dot NOISE stays invisible — the registrar is the guard:\n{subject}"
+    );
+    assert_eq!(subject_rc, Some(0), "exit-neutral: {subject}{subject_err}");
 
     // ── half 2: the same shape, custom-ignored — named, exit-neutral ─────────
     s.write(
@@ -1615,7 +1647,7 @@ fn dot_noise_is_invisible_while_a_custom_ignored_rule_page_is_still_named() {
         "the undecidable page keeps its own verdict string:\n{voiced}"
     );
     assert!(
-        !voiced.contains(".snap-copy/"),
+        !voiced.contains("plain-note.md"),
         "and the dot noise stays invisible beside it:\n{voiced}"
     );
     assert_eq!(
