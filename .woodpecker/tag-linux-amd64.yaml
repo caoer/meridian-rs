@@ -107,15 +107,25 @@ steps:
         if [ "$${SKIP_BUILD}" = "0" ]; then
           sha="$(sha256sum target/release/mrd | cut -d' ' -f1)"
           echo "$${sha}  mrd-linux-amd64" > /tmp/mrd-linux-amd64.sha256
+          # RETRIES, safe because the store is append-only: an upload that
+          # landed answers 409 next time, never a second copy. The darwin
+          # sibling measured a `524` (Cloudflare origin-timeout) on the same
+          # PUT; this lane's path to the forge is shorter but not immune.
           put() {
-            code="$(curl -s -o /tmp/put.out -w '%{http_code}' -X PUT \
-              -H "Authorization: token $${FORGEJO_TOKEN}" \
-              --upload-file "$$1" "$${base}/$$2")"
-            case "$${code}" in
-              201) echo "published $$2" ;;
-              409) echo "$$2 already published for this commit — keeping the FIRST bytes (append-only)" ;;
-              *)   echo "publish $$2 failed: HTTP $${code}"; cat /tmp/put.out; exit 1 ;;
-            esac
+            for delay in 0 15 45; do
+              [ "$delay" = 0 ] || sleep "$delay"
+              code="$(curl -s -o /tmp/put.out -w '%{http_code}' -X PUT \
+                -H "Authorization: token $${FORGEJO_TOKEN}" \
+                --upload-file "$$1" "$${base}/$$2")"
+              case "$${code}" in
+                201) echo "published $$2"; return 0 ;;
+                409) echo "$$2 already published for this commit — keeping the FIRST bytes (append-only)"; return 0 ;;
+              esac
+              echo "publish $$2: HTTP $${code} — retrying"
+              cat /tmp/put.out || true
+            done
+            echo "publish $$2 failed after 3 attempts: HTTP $${code}"
+            exit 1
           }
           put target/release/mrd mrd-linux-amd64
           put /tmp/mrd-linux-amd64.sha256 mrd-linux-amd64.sha256
