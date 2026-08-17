@@ -297,8 +297,7 @@ fn alloc_ctx<'v>(heap: Heap<'v>, globals: &Globals, input: &MwCtxInput<'_>) -> V
         globals
             .iter()
             .find(|(n, _)| *n == name)
-            .map(|(_, v)| v.to_value())
-            .unwrap_or_else(Value::new_none)
+            .map_or_else(Value::new_none, |(_, v)| v.to_value())
     };
     heap.alloc(AllocStruct([
         ("op", heap.alloc(change.op.as_str())),

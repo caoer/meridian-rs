@@ -61,7 +61,7 @@ fn mint_pin(root: &fs::WorkspaceRoot) {
             fingerprint: None,
             sec_rev: None,
         }),
-        fields: Default::default(),
+        fields: BTreeMap::default(),
     };
     splice(root, None, &args, &[], None).expect("the pin commits");
 }
@@ -118,7 +118,7 @@ fn pin_free_args(path: &str) -> SpliceArgs {
         edits: Vec::new(),
         plan_edits: Vec::new(),
         pin: None,
-        fields: Default::default(),
+        fields: BTreeMap::default(),
     }
 }
 

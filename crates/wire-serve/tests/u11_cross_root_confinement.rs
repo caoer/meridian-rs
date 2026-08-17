@@ -3,6 +3,7 @@
 //! Pins: `..` / absolute / `root:` paths → `bad_path` + victim bytes untouched;
 //! in-workspace path still commits (S3-R8(c) acceptance).
 
+use std::collections::BTreeMap;
 use wire::{Edit, EditShape, ErrorCode, HpathSeg, Path as WPath, SecRef};
 use wire_serve::write::{SpliceArgs, splice};
 
@@ -56,7 +57,7 @@ fn args_for(path: &str) -> SpliceArgs {
         }],
         plan_edits: Vec::new(),
         pin: None,
-        fields: Default::default(),
+        fields: BTreeMap::default(),
     }
 }
 

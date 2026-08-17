@@ -4,6 +4,7 @@
 //! both files; rev-neutrality asserts fingerprint equality (with controls that prove the
 //! hash *can* move when bytes differ).
 
+use std::collections::BTreeMap;
 use wire::{Path as WPath, PinSpec, ResponseBody};
 use wire_serve::write::{SpliceArgs, splice};
 
@@ -53,7 +54,7 @@ fn pin_args(pinning_page: &str, selector: &str) -> SpliceArgs {
             fingerprint: None,
             sec_rev: None,
         }),
-        fields: Default::default(),
+        fields: BTreeMap::default(),
     }
 }
 

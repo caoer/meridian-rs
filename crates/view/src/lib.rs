@@ -18,7 +18,7 @@
 //! `results/sql-duckdb-append-cache-design.md` § Ruling interaction).
 
 mod base;
-/// The pinned DuckDB, re-exported so a consumer converting result cells
+/// The pinned `DuckDB`, re-exported so a consumer converting result cells
 /// (registry `mw_sql`) speaks THIS crate's engine version, never a second pin.
 pub use duckdb;
 

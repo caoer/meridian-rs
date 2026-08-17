@@ -33,7 +33,6 @@ pub mod armed_law;
 mod binding;
 mod change;
 mod check_eval;
-mod middleware_eval;
 mod declaration;
 /// I4 def-conformance (U8c): the engine-side port of meridian-go's write-time
 /// def validator — the pure verdict over (prev, candidate) documents the put
@@ -41,6 +40,7 @@ mod declaration;
 pub mod defs;
 mod gate;
 mod hook;
+mod middleware_eval;
 mod pack;
 mod reaction;
 mod registration;

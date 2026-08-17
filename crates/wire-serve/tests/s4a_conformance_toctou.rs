@@ -4,6 +4,7 @@
 //! pre-image. Fixture: `Answer` required-before-terminal; terminal write legal
 //! with Answer filled, refuses when foreign writer empties Answer.
 
+use std::collections::BTreeMap;
 use wire::{Edit, EditShape, ErrorCode, Path as WPath, PutAt, Recovery, ResponseBody, SecRef};
 use wire_serve::write::{SpliceArgs, splice};
 
@@ -52,7 +53,7 @@ fn splice_args(dry: bool) -> SpliceArgs {
         }],
         plan_edits: Vec::new(),
         pin: None,
-        fields: Default::default(),
+        fields: BTreeMap::default(),
     }
 }
 

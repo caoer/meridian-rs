@@ -132,14 +132,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     if parsed.force {
         request["force"] = json!(true);
     }
-    if !parsed.fields.is_empty() {
-        let map: serde_json::Map<String, Value> = parsed
-            .fields
-            .iter()
-            .map(|(k, v)| (k.clone(), json!(v)))
-            .collect();
-        request["fields"] = Value::Object(map);
-    }
+    attach_fields(&parsed, &mut request);
 
     let mut door = write_ipc::connect(&resolved.workspace)?;
     // The cap wall, client half (§3.2): a scoped premise rides only when the
@@ -173,19 +166,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
             engine::SCOPED_GUARDS_CAP,
         )));
     }
-    // The § A.2.1 cap wall, client half: `fields` rides only when the hello
-    // advertised `splice.fields` — refusing here, before any engine write, is
-    // the taught refusal; sending anyway would draw the strict wall's
-    // `bad_request` for a field this daemon never negotiated.
-    if !parsed.fields.is_empty() && !door.has_cap("splice.fields") {
-        return Err(Fail::tool(
-            "--field rides the middleware passthrough (wire-contract § A.2.1), but this \
-             daemon's hello does not serve the `splice.fields` cap — nothing was sent and \
-             nothing was written. Fixes: retry without --field, or restart the daemon so a \
-             build that advertises `splice.fields` binds the socket."
-                .to_owned(),
-        ));
-    }
+    fields_cap_wall(&parsed, &door)?;
     let body = write_ipc::call(&mut door, &request)
         .map_err(|e| refusal(&parsed, &resolved.workspace, &e))?;
     let body = write_ipc::project_body(&body);
@@ -218,6 +199,37 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         // `--validate` says nothing: the exit code is the whole answer.
         Format::Human if parsed.validate => {}
         Format::Human => print_human(&parsed, &body),
+    }
+    Ok(())
+}
+
+/// Attach the § A.2.1 `fields` passthrough to the frame — only when any
+/// `--field` was given, so a fieldless frame's bytes stand.
+fn attach_fields(parsed: &Put, request: &mut Value) {
+    if parsed.fields.is_empty() {
+        return;
+    }
+    let map: serde_json::Map<String, Value> = parsed
+        .fields
+        .iter()
+        .map(|(k, v)| (k.clone(), json!(v)))
+        .collect();
+    request["fields"] = Value::Object(map);
+}
+
+/// The § A.2.1 cap wall, client half: `fields` rides only when the hello
+/// advertised `splice.fields` — refusing here, before any engine write, is
+/// the taught refusal; sending anyway would draw the strict wall's
+/// `bad_request` for a field this daemon never negotiated.
+fn fields_cap_wall(parsed: &Put, door: &crate::script::wire_host::SocketDoor) -> Result<(), Fail> {
+    if !parsed.fields.is_empty() && !door.has_cap("splice.fields") {
+        return Err(Fail::tool(
+            "--field rides the middleware passthrough (wire-contract § A.2.1), but this \
+             daemon's hello does not serve the `splice.fields` cap — nothing was sent and \
+             nothing was written. Fixes: retry without --field, or restart the daemon so a \
+             build that advertises `splice.fields` binds the socket."
+                .to_owned(),
+        ));
     }
     Ok(())
 }

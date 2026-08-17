@@ -505,7 +505,12 @@ pub fn splice(
     ) {
         model::SpliceVerdict::Validated(b) => b,
         refused => {
-            return Err(verdict_to_wire(&refused, &effective_edits, &doc, &args.path));
+            return Err(verdict_to_wire(
+                &refused,
+                &effective_edits,
+                &doc,
+                &args.path,
+            ));
         }
     };
 
@@ -978,6 +983,27 @@ fn mw_fault_to_wire(row: &policy::ArmedRule, detail: String) -> Box<ErrorBody> {
     })
 }
 
+/// The ONE birth mint on the middleware plane (U12 census site): a newborn's
+/// candidate from its full body bytes. Reached from `run_door_middleware`
+/// (where its stored-form guard discharges) and from `commit_set`'s birth
+/// arm, whose unified per-entry discharge re-checks it at the seam.
+fn birth_candidate(content_path: &str, body: String) -> model::CandidateDocument {
+    model::candidate_of_body(content_path, body)
+}
+
+/// The ONE overlay re-seal mint on the middleware plane (U12 census site,
+/// class ReadOnly): the pending after-state of a member or a transformed
+/// birth, fed to the `ctx.sql`/`ctx.read` world or back into the birth door's
+/// own pipeline. On the member path the value is read and dropped — the
+/// LANDING member bytes are re-minted at `commit_set` from read#2.
+fn member_overlay_candidate(
+    content_path: &str,
+    raw: &str,
+    sealed: &model::ValidatedBatch,
+) -> model::CandidateDocument {
+    model::candidate_of_batch(content_path, raw, sealed)
+}
+
 /// One wire frontmatter upsert — the shape every middleware `set_field`
 /// compiles to, on this file and on members alike.
 fn mw_upsert(key: String, value: String) -> Edit {
@@ -1001,7 +1027,7 @@ fn mw_upsert(key: String, value: String) -> Edit {
 /// file's pending bytes, every member's pending bytes, every birth.
 ///
 /// # Errors
-/// A middleware `refuse` (convention_fault naming the rule), an evaluation
+/// A middleware `refuse` (`convention_fault` naming the rule), an evaluation
 /// fault (fail-closed), a member/birth validation refusal — in every case
 /// the write refuses whole and nothing lands.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -1129,7 +1155,7 @@ fn run_door_middleware(
                     let body = syntax::strip_fp(&body);
                     let body = translate_stored_body(body, &birth_path)
                         .map_err(|e| mw_member_refusal(&birth_path, e))?;
-                    let candidate = model::candidate_of_body(&birth_path.0, body.into_owned());
+                    let candidate = birth_candidate(&birth_path.0, body.into_owned());
                     stored_form_guard_lazy(None, &candidate, &birth_path)
                         .map_err(|e| mw_member_refusal(&birth_path, e))?;
                     if !syntax::fp_removals(candidate.raw()).is_empty() {
@@ -1203,7 +1229,7 @@ fn run_door_middleware(
                     ));
                 }
             };
-            let candidate = model::candidate_of_batch(&p, &base.raw, &member_sealed);
+            let candidate = member_overlay_candidate(&p, &base.raw, &member_sealed);
             overlay.insert(p.clone(), candidate.raw().to_string());
         }
     }
@@ -1291,7 +1317,8 @@ fn run_birth_middleware(
                     body,
                     rule_id: row.id().as_str().to_string(),
                 }),
-                policy::MwEmit::SetField { path: p, .. } | policy::MwEmit::Create { path: p, .. } => {
+                policy::MwEmit::SetField { path: p, .. }
+                | policy::MwEmit::Create { path: p, .. } => {
                     return Err(bad_request(format!(
                         "middleware `{}` emits to `{p}` from the create door — the birth door \
                          admits refuse, this-file set_field, and send only (V1 limit); route \
@@ -1316,6 +1343,11 @@ fn run_birth_middleware(
                 }
             };
             candidate = model::candidate_of_batch(&path.0, &base.raw, &mw_sealed);
+            // The transformed candidate is re-guarded HERE (its own U12
+            // discharge site): a middleware value could smuggle a stored-form
+            // violation into the born bytes between the door's pre-middleware
+            // guard and the landing.
+            stored_form_guard_lazy(None, &candidate, path)?;
             overlay.insert(path.0.clone(), candidate.raw().to_string());
         }
     }
@@ -1823,6 +1855,70 @@ pub enum CommitSetError {
     Io(std::io::Error),
 }
 
+/// Read#2 + re-validate every set entry before any byte moves (the commit
+/// seam's own pass). A birth's read#2 is the occupancy check (verified again
+/// at the fs verify wall); its candidate is built from the body bytes the
+/// driver already gated. ONE stored-form guard discharge per entry, edit and
+/// birth alike (U12: this is the seam's single mint + discharge site).
+#[allow(clippy::type_complexity)]
+fn validate_set_entries(
+    root: &fs::WorkspaceRoot,
+    entries: &[CommitSetEntry],
+    root_before: &Root,
+) -> Result<
+    (
+        Vec<Option<model::Document>>,
+        Vec<(Option<model::ValidatedBatch>, model::CandidateDocument)>,
+    ),
+    CommitSetError,
+> {
+    let mut befores: Vec<Option<model::Document>> = Vec::with_capacity(entries.len());
+    let mut owned: Vec<(Option<model::ValidatedBatch>, model::CandidateDocument)> =
+        Vec::with_capacity(entries.len());
+    for (index, entry) in entries.iter().enumerate() {
+        let (before, sealed, candidate) = match entry {
+            CommitSetEntry::Edit {
+                content_path,
+                batch,
+            } => {
+                let before =
+                    fs::load(root, FsPath::new(content_path)).map_err(CommitSetError::Io)?;
+                let sealed = match model::validate_batch(
+                    &before,
+                    Some(&model::MerkleRoot(root_before.0.clone())),
+                    batch,
+                    None,
+                ) {
+                    model::SpliceVerdict::Validated(batch) => batch,
+                    refused => {
+                        return Err(CommitSetError::Refused {
+                            index,
+                            verdict: refused,
+                        });
+                    }
+                };
+                let candidate = model::candidate_of_batch(content_path, &before.raw, &sealed);
+                (Some(before), Some(sealed), candidate)
+            }
+            CommitSetEntry::Birth { content_path, body } => {
+                (None, None, birth_candidate(content_path, body.clone()))
+            }
+        };
+        // ONE discharge per entry, edit and birth alike (U12: one guard call
+        // site in this seam) — a birth's pre-image is absence, so its arm is
+        // the birth-door shape `stored_form_guard_lazy(None, …)`.
+        stored_form_guard_lazy(
+            before.as_ref(),
+            &candidate,
+            &Path(entry.content_path().to_string()),
+        )
+        .map_err(CommitSetError::Env)?;
+        befores.push(before);
+        owned.push((sealed, candidate));
+    }
+    Ok((befores, owned))
+}
+
 /// Commit one SET and return its one Delta (§7.1 generalized: one Delta =
 /// one sealed set = one root advance, `files[]` carrying every member plus
 /// the receipt — cardinality is data). The `commit_batch` discipline per
@@ -1846,46 +1942,8 @@ pub fn commit_set(
     // observe (merkle-spec §6.1).
     let root_before = overlaid_root(cache).map_err(CommitSetError::Env)?;
 
-    // Read#2 + re-validate every member before any byte moves. A birth's
-    // read#2 is the occupancy check (verified again at the fs verify wall);
-    // its candidate is built from the body bytes the driver already gated.
-    let mut befores: Vec<Option<model::Document>> = Vec::with_capacity(req.entries.len());
-    let mut owned: Vec<(Option<model::ValidatedBatch>, model::CandidateDocument)> =
-        Vec::with_capacity(req.entries.len());
-    for (index, entry) in req.entries.iter().enumerate() {
-        match entry {
-            CommitSetEntry::Edit { content_path, batch } => {
-                let before =
-                    fs::load(root, FsPath::new(content_path)).map_err(CommitSetError::Io)?;
-                let sealed = match model::validate_batch(
-                    &before,
-                    Some(&model::MerkleRoot(root_before.0.clone())),
-                    batch,
-                    None,
-                ) {
-                    model::SpliceVerdict::Validated(batch) => batch,
-                    refused => {
-                        return Err(CommitSetError::Refused {
-                            index,
-                            verdict: refused,
-                        });
-                    }
-                };
-                let candidate = model::candidate_of_batch(content_path, &before.raw, &sealed);
-                stored_form_guard_lazy(Some(&before), &candidate, &Path(content_path.clone()))
-                    .map_err(CommitSetError::Env)?;
-                befores.push(Some(before));
-                owned.push((Some(sealed), candidate));
-            }
-            CommitSetEntry::Birth { content_path, body } => {
-                let candidate = model::candidate_of_body(content_path, body.clone());
-                stored_form_guard_lazy(None, &candidate, &Path(content_path.clone()))
-                    .map_err(CommitSetError::Env)?;
-                befores.push(None);
-                owned.push((None, candidate));
-            }
-        }
-    }
+    // Read#2 + re-validate every member before any byte moves.
+    let (befores, owned) = validate_set_entries(root, &req.entries, &root_before)?;
     let before_receipt = match &req.receipt {
         Some((rp, _)) => load_optional_set(root, rp)?,
         None => None,
@@ -6182,6 +6240,7 @@ mod tests {
 /// rows 13/14).
 #[cfg(test)]
 mod guarded_create_remove {
+    use std::collections::BTreeMap;
     use wire::{
         Edit, EditShape, ErrorCode, FileChange, HpathSeg, NodeRev, Path, Recovery, ReferrerKind,
         SecRef,
@@ -6211,7 +6270,7 @@ mod guarded_create_remove {
             now: None,
             if_root: None,
             dry: false,
-            fields: Default::default(),
+            fields: BTreeMap::default(),
         }
     }
 
@@ -6834,7 +6893,7 @@ mod guarded_create_remove {
             }],
             plan_edits: Vec::new(),
             pin: None,
-            fields: Default::default(),
+            fields: BTreeMap::default(),
         }
     }
 
@@ -7096,6 +7155,7 @@ mod guarded_create_remove {
 /// oracle — a fresh full-corpus law-1 disk fold the doors no longer run.
 #[cfg(test)]
 mod resident_write_path {
+    use std::collections::BTreeMap;
     use wire::{Edit, EditShape, ErrorCode, HpathSeg, NodeRev, Path, Root, SecRef};
 
     use crate::ambient_root;
@@ -7174,7 +7234,7 @@ mod resident_write_path {
             edits: vec![match_edit(old, new)],
             plan_edits: Vec::new(),
             pin: None,
-            fields: Default::default(),
+            fields: BTreeMap::default(),
         }
     }
 
@@ -7430,7 +7490,7 @@ mod resident_write_path {
             now: None,
             if_root: None,
             dry: false,
-            fields: Default::default(),
+            fields: BTreeMap::default(),
         }
     }
 

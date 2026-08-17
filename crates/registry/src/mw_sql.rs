@@ -62,7 +62,9 @@ fn cell(v: view::duckdb::types::ValueRef<'_>) -> SqlValue {
         ValueRef::UTinyInt(i) => SqlValue::Int(i64::from(i)),
         ValueRef::USmallInt(i) => SqlValue::Int(i64::from(i)),
         ValueRef::UInt(i) => SqlValue::Int(i64::from(i)),
-        ValueRef::UBigInt(i) => i64::try_from(i).map_or(SqlValue::Text(i.to_string()), SqlValue::Int),
+        ValueRef::UBigInt(i) => {
+            i64::try_from(i).map_or(SqlValue::Text(i.to_string()), SqlValue::Int)
+        }
         ValueRef::Float(f) => SqlValue::Float(f64::from(f)),
         ValueRef::Double(f) => SqlValue::Float(f),
         ValueRef::Text(bytes) => SqlValue::Text(String::from_utf8_lossy(bytes).into_owned()),

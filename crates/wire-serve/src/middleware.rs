@@ -2,7 +2,7 @@
 //! § A.2.1): the overlay world `ctx.sql` / `ctx.read` query, and the
 //! process-installed SQL backend seam.
 //!
-//! The backend seam exists because of the C2 topology law: `view` (the DuckDB
+//! The backend seam exists because of the C2 topology law: `view` (the `DuckDB`
 //! projection) is a write-only leaf no correctness crate may depend on, so
 //! `wire-serve` cannot build the projection itself. A host that links `view`
 //! (`mrd`, the resident daemon) installs a backend once at startup; a door

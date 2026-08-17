@@ -17,6 +17,7 @@
 //! lock edit is composed. The trade: legacy pages keep their squatting block
 //! until re-homed deliberately.
 
+use std::collections::BTreeMap;
 use wire::{Edit, EditShape, Path as WPath, PinSpec, PutAt, ResponseBody};
 use wire_map::facts::{read_facts, words_total};
 use wire_serve::write::{SpliceArgs, splice};
@@ -80,7 +81,7 @@ fn pin_args(selector: &str) -> SpliceArgs {
             fingerprint: None,
             sec_rev: None,
         }),
-        fields: Default::default(),
+        fields: BTreeMap::default(),
     }
 }
 

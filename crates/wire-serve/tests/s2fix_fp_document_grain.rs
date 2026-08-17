@@ -3,6 +3,7 @@
 //! Pins R22: no `@fp` in a claim-link position on disk; non-claim positions
 //! (fence, frontmatter, HTML comment, indented code) are explicit exclusions.
 
+use std::collections::BTreeMap;
 use wire::{
     CheckWriteEdit, Edit, EditShape, ErrorCode, Path as WPath, PlanEdit, PutAt, ResponseBody,
     SecRef,
@@ -33,7 +34,7 @@ fn args(edits: Vec<Edit>, plan_edits: Vec<PlanEdit>) -> SpliceArgs {
         edits,
         plan_edits,
         pin: None,
-        fields: Default::default(),
+        fields: BTreeMap::default(),
     }
 }
 
@@ -348,7 +349,7 @@ fn frontmatter_comments_and_indented_code_are_not_claim_link_positions() {
             now: None,
             if_root: None,
             dry: false,
-            fields: Default::default(),
+            fields: BTreeMap::default(),
         },
         &[],
     )

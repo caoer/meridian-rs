@@ -5,6 +5,7 @@
 
 use std::time::{Duration, Instant};
 
+use std::collections::BTreeMap;
 use wire::{Edit, EditShape, ErrorCode, HpathSeg, NodeRev, Path as WPath, PutAt, Recovery, SecRef};
 use wire_serve::write::{CreateArgs, RemoveArgs, SpliceArgs, create, remove, splice};
 
@@ -37,7 +38,7 @@ fn splice_args(text: &str) -> SpliceArgs {
         }],
         plan_edits: Vec::new(),
         pin: None,
-        fields: Default::default(),
+        fields: BTreeMap::default(),
     }
 }
 
@@ -91,7 +92,7 @@ fn held_lock_refuses_all_write_ops_then_retry_succeeds() {
                 now: None,
                 if_root: None,
                 dry: false,
-                fields: Default::default(),
+                fields: BTreeMap::default(),
             },
             &[],
         )
