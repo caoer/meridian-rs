@@ -1,4 +1,5 @@
 ---
+description: the meridian engine — corpus/wire/run/script planes and the mrd binary; docs/ carries the standing design law (wire-contract, run-plane, laws)
 type: meridian-root
 version: 1
 name: meridian-rs
