@@ -222,11 +222,7 @@ pub fn dot_declined_markdown(root: &WorkspaceRoot) -> io::Result<Vec<String>> {
 /// at or beneath one is declined. The dot test sits before the `is_dir`
 /// branch, so a dot FILE and a dot DIRECTORY are declined by the same line —
 /// the user rung's own discipline.
-fn dot_declined_dir(
-    abs_dir: &Path,
-    rel_dir: &Path,
-    declined: &mut Vec<PathBuf>,
-) -> io::Result<()> {
+fn dot_declined_dir(abs_dir: &Path, rel_dir: &Path, declined: &mut Vec<PathBuf>) -> io::Result<()> {
     for entry in fs::read_dir(abs_dir)? {
         let entry = entry?;
         let file_type = entry.file_type()?;
