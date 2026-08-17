@@ -240,6 +240,108 @@ it is a named residual — it is never rendered green by refusal.
 
 ---
 
+# Part A2 — Middleware on the write door (2026-08-17, mw-engine)
+
+Status: normative for the `rules/middleware` plane. Authority: session
+`17-10-field-notes-rework` `results/draft-put-as-starlark.md` +
+`results/plan-middleware.md`. Wire shape: `wire-contract.md` § A.2.1.
+
+CHECK is yes/no in front of the door. HOOK reacted after commit and could only
+`proto.send`. **Middleware is the third kind: check plus transform on the
+door itself.** One Starlark eval per armed in-scope middleware page, after CAS
+and batch validation, before bytes land. Its outputs:
+
+| Output | Lands | Who applies |
+|---|---|---|
+| `refuse(message=, passing=)` | nothing committed | engine |
+| `set_field(path=, key=, value=)` on THIS file | this put's own batch | engine |
+| `set_field` on OTHER files | **same sealed set** as this put | engine |
+| `create(path=, body=)` | birth in the same sealed set | engine |
+| `send(to=, body=)` | never disk — an **intent** on the response | **host realizes** (ccc-statusd) |
+
+One caller put may become many disk edits: that is middleware compiling a
+batch, not the caller folding payloads. The set is **validate-all-then-apply**
+— the caller's write, every middleware edit, and every birth land together or
+nothing does. Send cannot ride `write.lock`, so it stays an intent; the engine
+never marks it delivered (`armed.intents[]`, § A.2.1).
+
+## Registration and arming
+
+- A page registers by carrying `rules/middleware` in `tags:` plus an `id:`
+  (§ 2 grammar) — exactly like the other two kinds; no folder or filename is
+  load-bearing. Required frontmatter: `paths:` (scope globs). The leg's entry
+  point is `def middleware(ctx)` in the fenced ```starlark block.
+- **Mode vocabulary: `off | block`.** Middleware is door law — it can refuse
+  and it can transform, so its activation word is `block` (a middleware has no
+  `warn` tier, and `armed` stays hook vocabulary). This buys the fail-closed
+  law structurally: a red, unloadable, or unevaluable middleware row REFUSES
+  the write (`Mode::Block` enforces), exactly as a check row does — a drifted
+  transformer silently skipped would be law bypassed.
+- Arming is the same attest act (`mrd arm <ID> --mode block --rev R`); the
+  artifact row, the binding law over armed pages, and `armed_drift` all apply
+  unchanged.
+- Eval order within one write: in-scope armed middleware, **`id` ascending
+  (lexicographic)**. There is no `priority:` field — pad ids (`000-…`).
+
+## The ctx surface
+
+Middleware evaluates under the CHECK evaluator's limits (`CheckLimits`: fuel,
+heap, call-depth, source-size, nesting — no per-page `budget:` in V1) over one
+injected `ctx`:
+
+| Member | Carries |
+|---|---|
+| `ctx.op` | `"splice"` \| `"create"` — the caller's op |
+| `ctx.before` | this file before the put (`{path, nodes, frontmatter, edges}` — the `@2` doc facts) |
+| `ctx.after` | this file after the pending set SO FAR (caller put + earlier middleware transforms) |
+| `ctx.put` | the caller's own edit set: `{op, actor, force, edits, fields_changed, sections_changed, targets}` — what this put asked for, never rewritten by middleware |
+| `ctx.fields` | **opaque passthrough** dict from the put frame's `fields` (§ A.2.1). Engine does not interpret keys; `actor`/`now` stay §9 wire inputs |
+| `ctx.sql(query)` | ONE read-only SELECT against the current overlay world; returns rows (list of dicts). Not DuckDB DML — writes are `set_field`/`create` emits |
+| `ctx.read(path)` | that path's bytes in the same overlay world, or `None` |
+
+**The world** those two accessors read is: the workspace snapshot at flock
+time, overlaid with the pending after-state of this file and every edit/birth
+middleware already emitted (id order). MW2 reads the world as MW1 left it,
+plus this put. The overlay is snapshot-scoped — a later writer is invisible.
+`ctx.sql` builds its projection through the host-installed SQL backend
+(`wire_serve::middleware::install_sql_backend`; `mrd` and the resident daemon
+install a `view::build_memory`-backed one). A middleware that calls `ctx.sql`
+on a door with no backend fails CLOSED — the write refuses naming the gap.
+
+## Emits, compiled
+
+- `set_field` on this file joins the caller's own batch as a native
+  frontmatter upsert (`SecRef::FmKey`), then the whole augmented batch re-runs
+  the door pipeline: `@fp` strip, stored-form translation, lock-artifact
+  guard, I4 conformance, and the CHECK gate all judge the FINAL state — a
+  middleware cannot smuggle bytes past an armed check.
+- `set_field` on another file compiles to that file's own member batch; the
+  member runs the same validation and the same CHECK gate at its own path.
+- `create` births the page in the same set; an occupied path refuses the whole
+  set (`cas_mismatch`, expected absent). Birth bodies pass the same
+  document-grain strip and guards a `create` op's body does.
+- V1 limit, stated: the **create door** admits `refuse`, this-file
+  `set_field`, and `send` — a middleware firing cross-file edits or births
+  from a birth refuses loudly as unsupported. The **set door**
+  (`splice.set`) and the **remove door** evaluate no middleware in V1.
+- **Delete: not built.** No `remove` emit exists.
+
+## What retired
+
+The put-path HOOK feed is dead. `splice`/`splice.set`/`create` no longer
+evaluate `rules/hook` pages and their responses carry no reaction envelopes
+(`armed.effects` stays in the shape, empty on this path) — send is not an
+engine rule, and the silent-send lane it fed is exactly what middleware
+intents replace. `rules/hook` still fires on the external-change detector
+(`watch`), where there is no caller to answer. `rules/check` is untouched:
+refuse-only, same vocabulary, same tests.
+
+`mrd arm` remains the attester. First-arm `meridian/attested` is still a
+plane-wide permanent flip — arming the production sessions root stays parked
+(product call, not this plane's).
+
+---
+
 # Part B — Gate byte landing (U4.2)
 
 Status: enforcement doc for the U4.2 `gate()` seam. Law: U4.2; `wire-contract.md` § A.2; `laws.md` § the policy gate.
