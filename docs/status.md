@@ -2,7 +2,7 @@
 type: reference
 id: status
 status: standing
-updated: 2026-08-09
+updated: 2026-08-16
 description: What the binary exposes and verifies today, reproducible from the commands shown. Also the home of R12, the armed-plane exit reading.
 owns: [what the binary exposes today, R12 — the armed-plane exit reading]
 ---
@@ -83,7 +83,21 @@ mrd links [PATH] the corpus edge map (whole corpus, or one file),
 mrd read <PATH>[#FRAG] [--section SEL]
  the composed read: addressing + content + render at
  ONE engine snapshot (daemon or in-process; human
- output is the rendered text verbatim). SEL is a
+ output is the rendered text verbatim). PATH takes the
+ agent-plane `[root:]path` spelling (address-grammar
+ §4.1 colon law): a rooted ref binds to the named
+ root's workspace from the machine mount table
+ (~/MERIDIAN.md, read fresh per call — the same
+ name→workspace binding the MCP face and the engine's
+ pin-cross-root lane resolve), then reads the rel half
+ inside that root, warm and degrade alike. The root
+ reading wins unconditionally — a head colon is never
+ a literal path, so a typo'd or unbound root refuses
+ with the bound names enumerated (the pin door's
+ refusal family, exit 1, {workspace,error} under
+ --json) instead of degrading into an ambient lookup.
+ The rooted lane is read-only reach: every other CLI
+ door keeps its workspace-relative grammar. SEL is a
  heading chain, a `^id`, or a dewey ordinal — the
  chain joins on `/` and that delimiter is dead for
  heading text (§ the joined selector coat). A section
