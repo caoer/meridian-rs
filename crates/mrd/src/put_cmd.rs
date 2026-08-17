@@ -132,6 +132,14 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     if parsed.force {
         request["force"] = json!(true);
     }
+    if !parsed.fields.is_empty() {
+        let map: serde_json::Map<String, Value> = parsed
+            .fields
+            .iter()
+            .map(|(k, v)| (k.clone(), json!(v)))
+            .collect();
+        request["fields"] = Value::Object(map);
+    }
 
     let mut door = write_ipc::connect(&resolved.workspace)?;
     // The cap wall, client half (§3.2): a scoped premise rides only when the
@@ -164,6 +172,19 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
             engine::SCOPED_GUARDS_CAP,
             engine::SCOPED_GUARDS_CAP,
         )));
+    }
+    // The § A.2.1 cap wall, client half: `fields` rides only when the hello
+    // advertised `splice.fields` — refusing here, before any engine write, is
+    // the taught refusal; sending anyway would draw the strict wall's
+    // `bad_request` for a field this daemon never negotiated.
+    if !parsed.fields.is_empty() && !door.has_cap("splice.fields") {
+        return Err(Fail::tool(
+            "--field rides the middleware passthrough (wire-contract § A.2.1), but this \
+             daemon's hello does not serve the `splice.fields` cap — nothing was sent and \
+             nothing was written. Fixes: retry without --field, or restart the daemon so a \
+             build that advertises `splice.fields` binds the socket."
+                .to_owned(),
+        ));
     }
     let body = write_ipc::call(&mut door, &request)
         .map_err(|e| refusal(&parsed, &resolved.workspace, &e))?;
@@ -199,6 +220,14 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         Format::Human => print_human(&parsed, &body),
     }
     Ok(())
+}
+
+/// One `--field k=v` pair (§ A.2.1 passthrough): split at the FIRST `=`, both
+/// halves verbatim — no key vocabulary exists to validate against.
+fn parse_field(raw: &str) -> Result<(String, String), Fail> {
+    raw.split_once('=')
+        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        .ok_or_else(|| Fail::tool(format!("--field takes k=v, got `{raw}`")))
 }
 
 /// An engine refusal, on both faces — [`engine::json_refusal`], which owns the envelope for
@@ -339,6 +368,24 @@ fn print_human(parsed: &Put, body: &Value) {
             None => println!("  fired: {rule} {action} (receipt {receipt})"),
         }
     }
+    // § A.2.1 middleware intents (`armed.intents`): armed, never delivered —
+    // the host realizes them and answers on its own surface.
+    let mw = body
+        .get("armed")
+        .and_then(|armed| armed.get("intents"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten();
+    for intent in mw {
+        let rule = intent.get("rule_id").and_then(Value::as_str).unwrap_or("?");
+        let kind = intent.get("kind").and_then(Value::as_str).unwrap_or("?");
+        let to: Vec<&str> = intent
+            .get("to")
+            .and_then(Value::as_array)
+            .map(|xs| xs.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        println!("  intent: {rule} {kind} → {} (host realizes)", to.join(","));
+    }
 }
 
 /// The parsed `put` invocation.
@@ -355,6 +402,9 @@ struct Put {
     /// bytes (§5.4). Pair law at parse; mutually exclusive with `scope`;
     /// rides the wire as one `guards[]` entry, never top-level.
     scope_bytes: Option<String>,
+    /// `--field k=v` (repeatable): the § A.2.1 opaque passthrough, delivered
+    /// to middleware verbatim as `ctx.fields`. No key is interpreted.
+    fields: Vec<(String, String)>,
     /// `--dry`: rehearse and show the diff.
     dry: bool,
     /// `--validate`: rehearse and say nothing.
@@ -392,6 +442,7 @@ impl Put {
         let mut if_fingerprint: Option<String> = None;
         let mut scope: Option<String> = None;
         let mut scope_bytes: Option<String> = None;
+        let mut fields: Vec<(String, String)> = Vec::new();
         let mut dry = false;
         let mut validate = false;
         let mut force = false;
@@ -435,6 +486,7 @@ impl Put {
                     scope = Some(value.clone());
                 }
                 "--scope-bytes" => scope_bytes = Some(flag_value(&mut it, "--scope-bytes")?),
+                "--field" => fields.push(parse_field(&flag_value(&mut it, "--field")?)?),
                 "--receipt" => {
                     let value = it
                         .next()
@@ -471,6 +523,7 @@ impl Put {
             if_fingerprint,
             scope,
             scope_bytes,
+            fields,
             dry,
             validate,
             force,

@@ -19,7 +19,7 @@ pub(crate) const SPLICE_V2_FIELDS: [&str; 8] = [
 /// v3 `splice` fields: one owner of the set; amendments = V3 \\ V2.
 /// `scope` + `guards` ride the `scoped-guards` family cap (§5.4), not
 /// dotted `splice.scope` / `splice.guards` (one family, one flag).
-pub(crate) const SPLICE_V3_FIELDS: [&str; 13] = [
+pub(crate) const SPLICE_V3_FIELDS: [&str; 14] = [
     "path",
     "actor",
     "now",
@@ -33,6 +33,9 @@ pub(crate) const SPLICE_V3_FIELDS: [&str; 13] = [
     "files",
     "scope",
     "guards",
+    // § A.2.1 middleware passthrough (cap `splice.fields`) — single form
+    // only; the set form's walls never carry it (no middleware there in V1).
+    "fields",
 ];
 
 /// Guard-family fields that refuse un-negotiated on a frozen v2 session
@@ -707,7 +710,35 @@ fn decode_check_write(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
 }
 
 /// Birth-op fields. No `force` — guarded door has no forced-birth escape.
-pub(crate) const CREATE_FIELDS: [&str; 6] = ["path", "body", "actor", "now", "if_root", "dry"];
+pub(crate) const CREATE_FIELDS: [&str; 7] =
+    ["path", "body", "actor", "now", "if_root", "dry", "fields"];
+
+/// § A.2.1 `fields`: an optional object of STRING values, opaque — decoded
+/// shape only, no key interpreted. Absent decodes as the empty map.
+fn decode_fields(
+    obj: &Map<String, Value>,
+    op: &str,
+) -> Result<std::collections::BTreeMap<String, String>, Box<ErrorBody>> {
+    match obj.get("fields") {
+        None | Some(Value::Null) => Ok(std::collections::BTreeMap::new()),
+        Some(Value::Object(map)) => {
+            let mut out = std::collections::BTreeMap::new();
+            for (k, v) in map {
+                let Some(s) = v.as_str() else {
+                    return Err(bad_request(format!(
+                        "`fields` values must be strings on `{op}` (§ A.2.1 — the passthrough \
+                         is a flat string map): key `{k}` is not a string"
+                    )));
+                };
+                out.insert(k.clone(), s.to_owned());
+            }
+            Ok(out)
+        }
+        Some(_) => Err(bad_request(format!(
+            "`fields` must be an object of string values on `{op}` (§ A.2.1)"
+        ))),
+    }
+}
 
 /// Strict-decode `create`. Rev-agnostic; v3 gate at dispatch. `now` is RFC 3339.
 fn decode_create(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
@@ -728,6 +759,7 @@ fn decode_create(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
         now,
         if_root: opt_str(obj, op, "if_root")?.map(wire::Root),
         dry: opt_bool(obj, op, "dry")?,
+        fields: decode_fields(obj, op)?,
     })
 }
 
@@ -783,7 +815,7 @@ fn decode_splice(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody
     // single form's `path`+`edits`/`plan_edits`/`pin` (`bad_request` when both
     // or neither appear).
     if let Some(files_v) = obj.get("files") {
-        for single in ["path", "edits", "plan_edits", "pin"] {
+        for single in ["path", "edits", "plan_edits", "pin", "fields"] {
             if obj.contains_key(single) {
                 return Err(bad_request(format!(
                     "`files` and `{single}` are mutually exclusive on `splice` — the set form \
@@ -838,6 +870,7 @@ fn decode_splice(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody
         pin,
         scope,
         guards,
+        fields: decode_fields(obj, op)?,
     })
 }
 

@@ -1382,6 +1382,7 @@ fn birth(
         now: opts.now.clone(),
         if_root: None,
         dry: opts.dry,
+        fields: Default::default(),
     };
     match wire_serve::write::create(root, None, &args, &[]) {
         Ok(_) => Ok(BirthResult::Born),

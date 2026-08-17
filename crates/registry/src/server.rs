@@ -213,6 +213,9 @@ impl RunningServer {
         let entries = store.load();
         let registry = Registry::new_shared(store, config.cache_root.clone(), entries);
 
+        // The middleware door's ctx.sql backend (armed-plane Part A2) —
+        // installed before the first frame can reach a write.
+        crate::mw_sql::install();
         // We hold the singleton lock, so any existing socket is a stale leftover
         // from a crashed predecessor — remove it before binding.
         let _ = std::fs::remove_file(&config.socket_path);
@@ -1259,6 +1262,7 @@ fn dispatch_read(
             pin,
             scope,
             guards,
+            fields,
         } => {
             let (if_root, premises) =
                 wire_serve::guard::lower_premises(if_root, scope, &guards)?;
@@ -1278,6 +1282,7 @@ fn dispatch_read(
                 edits,
                 plan_edits,
                 pin,
+                fields,
             };
             // A pin's proof rides the request itself (§ A.3 proof law) — no
             // session-side ledger exists to hand the choke-point.
@@ -1357,6 +1362,7 @@ fn dispatch_read(
             now,
             if_root,
             dry,
+            fields,
         } if v3 => {
             let ws_root = fs::WorkspaceRoot(ws.to_path_buf());
             let args = wire_serve::write::CreateArgs {
@@ -1367,6 +1373,7 @@ fn dispatch_read(
                 now,
                 if_root,
                 dry: dry.unwrap_or(false),
+                fields,
             };
             // Birth is a root advance — owes the chain a seq. Sink records
             // inside the flock (`SeqSink::committed`) — see `Op::Splice`.
