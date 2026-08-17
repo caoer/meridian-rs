@@ -29,6 +29,16 @@
 //! desync guard binds the token to the CALLER's address). `--scope-bytes`
 //! stays ambient — raw bytes carry no root head.
 //!
+//! A `#` fragment on `PATH` refuses at path grain before either lane resolves
+//! (the resolve door's posture; card fingerprint-echoes-fragment): a mint
+//! binds a node, never a section, and both lanes previously mis-served — the
+//! rooted lane split the fragment off (`Addr::parse`) and minted the WHOLE
+//! FILE under a section echo, a §4.7 desync frozen into the receipt, while
+//! the ambient lane sent the literal `x.md#Sec` string and minted `absent`, a
+//! permanently true premise. Exit 1, an address answer like the rooted
+//! refusals; a name carrying a literal `#` keeps its lawful spelling,
+//! `--scope-bytes`.
+//!
 //! Walls, all exit 2 before any engine contact: the mint-pair law and the
 //! empty `--scope-bytes` at parse; the §1 path law on `PATH` after the
 //! workspace resolves (the engine would refuse the same shape message-less);
@@ -83,6 +93,30 @@ fn ambient_workspace(cwd: &std::path::Path) -> Result<std::path::PathBuf, Fail> 
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let mut parsed = Mint::parse(args)?;
     let cwd = current_dir()?;
+    // Path grain, the family's `#` door (card fingerprint-echoes-fragment):
+    // a fragment addresses a section, not a node, and a §4.7 mint binds ONE
+    // node — so the wall fires before either lane resolves, rooted and
+    // ambient alike. Stripping the fragment is not an option: the rooted
+    // lane's `Addr::parse` used to do exactly that, minting the whole file's
+    // token while the echo named the section — the desync the scope echo
+    // exists to prevent. The refusal is an address answer (exit 1, like the
+    // rooted refusals below), framed with the workspace the caller stands in.
+    if let Some(path) = &parsed.path
+        && path.contains('#')
+    {
+        let ambient = ambient_workspace(&cwd)?;
+        let mut error = ErrorBody::new(wire::ErrorCode::BadPath);
+        error.path = Some(WirePath(path.clone()));
+        error.message = Some(format!(
+            "{path} carries a `#` fragment, and a §4.7 mint binds at path grain — a \
+             fragment addresses a section, not a node, so the token would bind the \
+             whole file while the echo named the section. Re-issue with the bare \
+             `[root:]path` of the node to mint (sections are the read door's: \
+             `mrd read PATH#FRAG` or `--section`; a file whose NAME carries a \
+             literal `#` mints through `--scope-bytes`, §5.4). {MINT_CONSEQUENCE}"
+        ));
+        return Err(engine::json_refusal(parsed.format, &ambient, &error));
+    }
     // The rooted lane (§4.1 colon law): a head-colon PATH is an agent-plane
     // address, never a literal scope — resolve it to the named root's bound
     // workspace before any dial, and mint the rel half THERE. The ambient

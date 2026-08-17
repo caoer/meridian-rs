@@ -22,7 +22,11 @@
 //!   unbound root refuses as a ROOT problem — exit 1, never `absent`;
 //! - §5.6: a genuinely missing path inside a BOUND root still mints `absent`
 //!   — lawful absence stays a value, not an error;
-//! - D3: a colon after the first `/` stays an ordinary path byte.
+//! - D3: a colon after the first `/` stays an ordinary path byte;
+//! - path grain (card fingerprint-echoes-fragment): a `#` fragment refuses on
+//!   BOTH lanes before any dial — never stripped-and-served (the rooted lane
+//!   minted the whole file under a section echo), never `absent` (the ambient
+//!   lane's permanently true premise), never a token.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -368,6 +372,118 @@ fn malformed_rooted_heads_refuse_with_the_grammar_teaching() {
             stdout(&out)
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Path grain — a `#` fragment refuses on BOTH lanes before any dial (card
+// fingerprint-echoes-fragment): a mint binds a node, never a section.
+// ---------------------------------------------------------------------------
+
+/// The rooted trap, strongest form: the file exists AND the section exists,
+/// so a lane that split the fragment off (`Addr::parse` did) would happily
+/// mint the whole file's token and echo `#Design` beside it — the frozen
+/// §4.7 desync measured live at b1cd2a42. The refusal answers
+/// spawn-impossible: the address plane, before any dial.
+#[test]
+fn a_rooted_fragment_ref_refuses_at_path_grain_never_strips() {
+    let sb = sandbox();
+    let out = sb.run_undaemoned(&sb.ws, &["fingerprint", "sessions:notes.md#Design"]);
+    assert_eq!(
+        code(&out),
+        1,
+        "a fragment is an address fault, not a mint and not a daemon error: {}",
+        stderr(&out)
+    );
+    let err = stderr(&out);
+    assert!(
+        err.contains("carries a `#` fragment") && err.contains("path grain"),
+        "the refusal teaches the fragment law: {err:?}"
+    );
+    assert!(
+        err.contains("--scope-bytes"),
+        "the refusal names the lawful spelling for a literal-`#` name: {err:?}"
+    );
+    assert!(
+        !stdout(&out).contains("fingerprint:"),
+        "no token is minted on the refusal leg: {:?}",
+        stdout(&out)
+    );
+    assert!(
+        !stdout(&out).contains("absent") && !err.contains("absent"),
+        "a fragment is not a missing node — never `absent`: {:?} / {err:?}",
+        stdout(&out)
+    );
+}
+
+/// The ambient lane is the same fault (the card's ruling): pre-wall the
+/// literal `notes.md#Design` string rode the wire as a scope, missed, and
+/// minted `absent` at exit 0 — a permanently true premise whose guard can
+/// never fire. One wall, one teaching, both lanes.
+#[test]
+fn an_ambient_fragment_ref_refuses_identically_never_absent() {
+    let sb = sandbox();
+    let out = sb.run_undaemoned(&sb.ws, &["fingerprint", "notes.md#Design"]);
+    assert_eq!(
+        code(&out),
+        1,
+        "the ambient fragment refuses like the rooted one: {}",
+        stderr(&out)
+    );
+    let err = stderr(&out);
+    assert!(
+        err.contains("carries a `#` fragment") && err.contains("path grain"),
+        "one teaching on both lanes: {err:?}"
+    );
+    assert!(
+        !stdout(&out).contains("fingerprint:"),
+        "no token is minted on the refusal leg: {:?}",
+        stdout(&out)
+    );
+    assert!(
+        !stdout(&out).contains("absent") && !err.contains("absent"),
+        "the measured false accept: an ambient fragment must never mint `absent`: {:?} / {err:?}",
+        stdout(&out)
+    );
+}
+
+/// The `--json` face keeps `{workspace, error}` on the fragment leg — same
+/// envelope law as every other refusal of this door.
+#[test]
+fn a_fragment_refusal_emits_the_json_error_frame() {
+    let sb = sandbox();
+    let out = sb.run_undaemoned(&sb.ws, &["fingerprint", "sessions:notes.md#Design", "--json"]);
+    assert_eq!(code(&out), 1);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("refusal frame parses ({e}): {}", stdout(&out)));
+    assert!(v.get("workspace").is_some(), "frame carries workspace: {v}");
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("carries a `#` fragment")),
+        "frame carries the fragment teaching: {v}"
+    );
+}
+
+/// The wall leaves the lawful door open: a file whose NAME carries a literal
+/// `#` — the shape the PATH wall now refuses — still mints through
+/// `--scope-bytes`, the refusal's own remedy, proven true. (An undecodable or
+/// missing raw-byte name would answer `absent`/refusal; a served non-absent
+/// token proves the encoding reached the literal member.)
+#[test]
+fn a_literal_hash_name_still_mints_through_scope_bytes() {
+    let sb = sandbox();
+    std::fs::write(sb.ws.join("x#y.md"), "# X\n\nliteral hash file.\n").expect("literal member");
+    // base64url("x#y.md"), unpadded (RFC 4648 §5).
+    let out = sb.run_warm(&sb.ws, &["fingerprint", "--scope-bytes", "eCN5Lm1k"]);
+    let pid = sb.reap_daemon();
+
+    assert!(pid.is_some(), "the auto-spawned daemon wrote a pidfile");
+    assert_ne!(
+        token(&out, "scope-bytes literal-#"),
+        "absent",
+        "the literal-`#` member mints by its raw-byte spelling: {}",
+        stdout(&out)
+    );
 }
 
 /// The `--json` face keeps its `{workspace, error}` frame on the rooted
