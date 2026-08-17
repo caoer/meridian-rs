@@ -411,6 +411,35 @@ fn the_resolver_scope_spelling_is_refused_at_the_verb() {
     );
 }
 
+/// An absolute `--at` is a bad invocation (exit 2) whose refusal teaches the
+/// law instead of leaving it to trial: it names the workspace-relative
+/// constraint, quotes what was passed, and shows the `.` default. Acceptance
+/// is untouched — absolute paths stay refused.
+#[test]
+fn an_absolute_at_is_a_bad_invocation_teaching_the_constraint() {
+    let s = authored();
+    let out = s.run(&[
+        "arm",
+        "close-verdict",
+        "--mode",
+        "block",
+        "--rev",
+        "deadbeefdeadbeef",
+        "--at",
+        "/tmp",
+    ]);
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(out.status.code(), Some(2), "a bad invocation: {text}");
+    assert!(
+        text.contains("workspace-relative") && text.contains("/tmp") && text.contains("`.`"),
+        "the refusal names the constraint, what was passed, and the default: {text}"
+    );
+}
+
 /// A corrupt EXISTING artifact refuses the arm and is left untouched —
 /// overwriting an unreadable artifact would silently disarm unknown rows.
 #[test]
