@@ -99,7 +99,11 @@ impl Mode {
     pub fn admits(self, kind: RuleKind) -> bool {
         match self {
             Mode::Off => true,
-            Mode::Warn | Mode::Block => kind == RuleKind::Check,
+            Mode::Warn => kind == RuleKind::Check,
+            // Middleware is door law (armed-plane Part A2): its activation word
+            // is `block`, which buys the fail-closed red-row semantics a
+            // transformer on the door must have.
+            Mode::Block => kind == RuleKind::Check || kind == RuleKind::Middleware,
             Mode::Armed => kind == RuleKind::Hook,
         }
     }
@@ -123,6 +127,7 @@ impl Mode {
         match kind {
             RuleKind::Check => "off|warn|block",
             RuleKind::Hook => "off|armed",
+            RuleKind::Middleware => "off|block",
         }
     }
 }
@@ -554,6 +559,9 @@ impl std::fmt::Display for ArmFault {
                          is off, or it fires",
                     RuleKind::Check =>
                         "`armed` is hook vocabulary; a check declares how hard it acts",
+                    RuleKind::Middleware =>
+                        "middleware is door law with no warn tier: it is off, or it acts with \
+                         the power to refuse (`block`)",
                 },
             ),
             ArmFault::Drift {
