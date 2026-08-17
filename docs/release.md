@@ -347,7 +347,16 @@ at (§5.2) — never by the tag name, and there is **no `latest`**.
 **The tag NAMES the point; the commit KEYS the bytes.** A tag is a movable ref
 and a name is not a hash, so nothing a consumer pins may derive from it: a
 consumer resolves the tag to its commit once (`git rev-list -n 1 <tag>`) and
-records the pair above. That is the same pin the main-push publish already
+records the pair above.
+
+**Both sides must peel the same way, and CI's sha does not.** On a `tag` event
+the CI sha is the **annotated tag object**, not the commit — measured 2026-08-17
+(pipeline 848: `2358c5007e13…` for a tag whose commit is `ef7c15e6b590…`). Keyed
+on that, the bytes would sit at an address the consumer's `rev-list` never names,
+and the §5.1 stamp would carry a sha that is not a commit at all. Each lane
+therefore peels with `git rev-parse <sha>^{commit}` before it keys, stamps, or
+checks anything — a no-op on a commit sha, so push, manual and tag events all
+agree. That is the same pin the main-push publish already
 hands out, so a tag adds a platform — it does not add a second pin vocabulary.
 
 **Append-only is the property, not an accident of the store.** Rust builds here
