@@ -278,3 +278,40 @@ fn a_directory_that_no_longer_holds_substrate_is_prunable_again() {
          an ignore list naming it must be honoured like any other"
     );
 }
+
+/// The dot-declined enumeration (card rules-silent-nonregistration): every md
+/// on a dot-bearing path, at any depth, and NOTHING from the dot-free tree —
+/// the §12.1 rule-2 complement of [`fs::declined_markdown`], which never
+/// enters a dot directory (F11) and reports the custom-ignore class alone.
+#[test]
+fn dot_declined_markdown_is_the_dot_class_and_only_the_dot_class() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root_path = tmp.path();
+    write(root_path, "visible.md", "# in the domain\n");
+    write(root_path, "notes/plan.md", "# also in\n");
+    write(root_path, ".hidden/rules/x.md", "# a hidden candidate\n");
+    write(root_path, ".trash/old.md", "# deleted via the vault UI\n");
+    write(root_path, "a/.b/deep.md", "# nested dot dir\n");
+    write(root_path, "a/.loose.md", "# dot FILE, same line\n");
+    write(root_path, ".hidden/not-md.txt", "never listed\n");
+
+    let root = WorkspaceRoot(root_path.to_path_buf());
+    let declined = fs::dot_declined_markdown(&root).unwrap();
+    assert_eq!(
+        declined,
+        vec![
+            ".hidden/rules/x.md",
+            ".trash/old.md",
+            "a/.b/deep.md",
+            "a/.loose.md",
+        ],
+        "sorted, md-only, dot class exactly"
+    );
+
+    // And the custom-class enumerator still refuses to see any of it.
+    assert_eq!(
+        fs::declined_markdown(&root).unwrap(),
+        Vec::<String>::new(),
+        "declined_markdown stays blind to the dot class (F11)"
+    );
+}
