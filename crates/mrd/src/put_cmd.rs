@@ -18,6 +18,18 @@
 //! check a scoped premise — the taught refusal fires instead of a
 //! strict-wall `bad_request` from a field it never negotiated.
 //!
+//! `--scope` takes the agent-plane `[root:]path` spelling (address-grammar
+//! §4.1 colon law): a head-colon scope resolves through the one CLI seam
+//! ([`crate::rooted`]) and is accepted exactly when the named root binds the
+//! workspace this put writes — the spelling a rooted §4.7 mint echoes pastes
+//! beside its token, and the wire carries the rel half only. Any other
+//! landing is an address answer at exit 1 (`{workspace, error}` under
+//! `--json`): a bound root elsewhere names both workspaces, an unbound root
+//! enumerates what does bind, a `#` fragment refuses at path grain — never
+//! the §5.5 coverage refusal a literal send used to draw (card
+//! put-scope-rejects-rooted-mint-echo). The write TARGET keeps its
+//! workspace-relative grammar (§4.5 D11).
+//!
 //! `--scope-bytes B64` is the same premise for a node whose name the UTF-8
 //! `Path` noun cannot carry: B64 is base64url over the raw path bytes, and FP
 //! is the token the §4.7 `fingerprint {scope_bytes}` mint echoed. On the wire
@@ -72,7 +84,7 @@ use crate::{Fail, Format, current_dir, engine, write_ipc};
 /// flags, malformed stdin JSON, a malformed `--now` — the CLI's own refusals, before any engine
 /// contact); exit 1 on every engine refusal, `bad_request` included, message verbatim.
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
-    let parsed = Put::parse(args)?;
+    let mut parsed = Put::parse(args)?;
     let edits = read_stdin_edits()?;
     // The stdin Value is what rides the wire — re-serializing the decoded
     // Vec<Edit> is a second shape. Decode already proved the §4.4 wall.
@@ -83,7 +95,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
             cwd.display()
         ))
     })?;
-    admit_scope(&parsed, &resolved.workspace)?;
+    admit_scope(&mut parsed, &resolved.workspace)?;
     let mut request = json!({
         "op": "splice",
         "path": parsed.path,
@@ -195,25 +207,86 @@ fn refusal(parsed: &Put, workspace: &std::path::Path, error: &ErrorBody) -> Fail
     engine::json_refusal(parsed.format, workspace, error)
 }
 
-/// The §1 path-law wall for `--scope`, this face's half of the family
-/// admission (`crate::path_law`; dogfood 88877785): a violating spelling
-/// refuses exit 2 before any dial. The engine refuses the same shape but
-/// message-less — a bare `bad_path` echo that cannot name the flag, and the
-/// empty spelling echoes nothing at all. The `--json` face keeps the
-/// `{workspace, error}` frame, exactly as the links door's admission
-/// publishes it.
-fn admit_scope(parsed: &Put, workspace: &std::path::Path) -> Result<(), Fail> {
-    let Some(scope) = &parsed.scope else {
+/// The put door's §1 consequence clause — what did NOT happen because the
+/// refusal fired ([`crate::path_law`] holds the family message; this door
+/// states only its own name and consequence).
+const PUT_CONSEQUENCE: &str = "Nothing was sent and nothing was written.";
+
+/// The scope admission, two lanes. A head-colon spelling is the agent-plane
+/// `[root:]path` address (§4.1 colon law — the root reading wins, never a
+/// literal node name) and routes to [`admit_rooted_scope`], which rewrites
+/// `parsed.scope` to the rel half on the accepted leg. Every other spelling
+/// keeps the §1 path-law wall, this face's half of the family admission
+/// (`crate::path_law`; dogfood 88877785): a violating spelling refuses exit 2
+/// before any dial. The engine refuses the same shape but message-less — a
+/// bare `bad_path` echo that cannot name the flag, and the empty spelling
+/// echoes nothing at all. The `--json` face keeps the `{workspace, error}`
+/// frame, exactly as the links door's admission publishes it.
+fn admit_scope(parsed: &mut Put, workspace: &std::path::Path) -> Result<(), Fail> {
+    let Some(scope) = parsed.scope.clone() else {
         return Ok(());
     };
-    if !crate::path_law::violates_path_law(scope) {
+    if crate::rooted::is_rooted(&scope) {
+        parsed.scope = Some(admit_rooted_scope(parsed.format, &scope, workspace)?);
+        return Ok(());
+    }
+    if !crate::path_law::violates_path_law(&scope) {
         return Ok(());
     }
     let mut error = ErrorBody::new(wire::ErrorCode::BadPath);
     error.path = Some(WirePath(scope.clone()));
-    error.message = Some(crate::path_law::scope_bad_path_message(workspace, scope));
+    error.message = Some(crate::path_law::scope_bad_path_message(workspace, &scope));
     engine::json_error_frame(parsed.format, workspace, &error);
     Err(Fail::tool(engine::render_wire_error(&error)))
+}
+
+/// The rooted lane for `--scope` (card put-scope-rejects-rooted-mint-echo):
+/// the spelling a rooted §4.7 mint echoes, resolved through the one CLI seam
+/// ([`crate::rooted::resolve`]) and accepted exactly when the named root
+/// binds the workspace THIS PUT WRITES — the premise then names the same
+/// node as the stripped spelling, so the rel half is what rides the wire and
+/// the §5.4 `scope` field stays workspace-relative. Every other landing is
+/// an address answer (exit 1, `{workspace, error}` under `--json`, the
+/// seam's `bad_path` family), never premise coverage: before this lane a
+/// rooted or unbound-root scope rode the wire as a literal node name and
+/// surfaced as the §5.5 "no premise covers" refusal — a coverage answer for
+/// an address fault. A `#` fragment refuses at the same wall (the resolve
+/// door's path-grain posture): a premise binds a node, not a section, and
+/// silently stripping the fragment would bind a premise the caller did not
+/// spell.
+fn admit_rooted_scope(
+    format: Format,
+    scope: &str,
+    workspace: &std::path::Path,
+) -> Result<String, Fail> {
+    if scope.contains('#') {
+        let mut error = ErrorBody::new(wire::ErrorCode::BadPath);
+        error.path = Some(WirePath(scope.to_owned()));
+        error.message = Some(format!(
+            "--scope {scope} carries a `#` fragment, and a §5.4 premise binds at path \
+             grain — a fragment addresses a section, not a node. Re-issue with the bare \
+             `[root:]path` spelling of the node the §4.7 mint bound. {PUT_CONSEQUENCE}"
+        ));
+        return Err(engine::json_refusal(format, workspace, &error));
+    }
+    let (rel, rooted) = crate::rooted::resolve(scope, "put", PUT_CONSEQUENCE)
+        .map_err(|error| engine::json_refusal(format, workspace, &error))?;
+    if rooted.workspace.as_path() != workspace {
+        let mut error = ErrorBody::new(wire::ErrorCode::BadPath);
+        error.path = Some(WirePath(scope.to_owned()));
+        error.message = Some(format!(
+            "--scope {scope} names root `{name}`, which binds {bound} — but this put \
+             writes {ws}, and a §5.4 premise covers only nodes of the workspace being \
+             written. {PUT_CONSEQUENCE} Run the put from that root's workspace to pair \
+             this scope, or mint a premise for this workspace (`mrd fingerprint <path>`, \
+             §4.7).",
+            name = rooted.name,
+            bound = rooted.workspace.display(),
+            ws = workspace.display(),
+        ));
+        return Err(engine::json_refusal(format, workspace, &error));
+    }
+    Ok(rel)
 }
 
 /// The human summary: what landed (or was rehearsed), at which fingerprint — and one line per
