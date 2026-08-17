@@ -451,7 +451,10 @@ fn an_ambient_fragment_ref_refuses_identically_never_absent() {
 #[test]
 fn a_fragment_refusal_emits_the_json_error_frame() {
     let sb = sandbox();
-    let out = sb.run_undaemoned(&sb.ws, &["fingerprint", "sessions:notes.md#Design", "--json"]);
+    let out = sb.run_undaemoned(
+        &sb.ws,
+        &["fingerprint", "sessions:notes.md#Design", "--json"],
+    );
     assert_eq!(code(&out), 1);
     let v: serde_json::Value = serde_json::from_slice(&out.stdout)
         .unwrap_or_else(|e| panic!("refusal frame parses ({e}): {}", stdout(&out)));
