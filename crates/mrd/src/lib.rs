@@ -268,7 +268,11 @@ usage:
                            world token (v2-identical, no cap needed). PATH:
                            the named node's scoped token — workspace root,
                            folder, or file leaf (nodes `mrd read` cannot
-                           serve mint here). --scope-bytes B64 = base64url
+                           serve mint here). A `#` fragment on PATH refuses
+                           at path grain (exit 1), rooted and ambient alike:
+                           a mint binds a node, never a section — a name
+                           carrying a literal `#` mints via --scope-bytes.
+                           --scope-bytes B64 = base64url
                            over the raw path bytes, for names the UTF-8
                            Path noun cannot carry (§5.4). Exactly one
                            spelling — a mint names ONE node; both refuse at
