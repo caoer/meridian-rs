@@ -132,6 +132,7 @@ fn the_genesis_epoch_is_unarmed_ungated_and_grey() {
         now: None,
         if_root: None,
         dry: false,
+        fields: Default::default(),
     };
     let out = create(&root, None, &args, &[]).expect("the genesis write lands ungated");
 

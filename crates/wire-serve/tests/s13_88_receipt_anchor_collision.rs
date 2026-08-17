@@ -83,6 +83,7 @@ fn args_guarded(anchor: &str, dry: bool, if_node_rev: Option<NodeRev>) -> Splice
         }],
         plan_edits: Vec::new(),
         pin: None,
+        fields: Default::default(),
     }
 }
 

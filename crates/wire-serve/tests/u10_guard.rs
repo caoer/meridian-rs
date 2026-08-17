@@ -37,6 +37,7 @@ fn args(origin: Origin) -> SpliceArgs {
         edits: Vec::new(),
         plan_edits: Vec::new(),
         pin: None,
+        fields: Default::default(),
     }
 }
 
@@ -371,6 +372,7 @@ fn birth_is_guarded_by_absence_not_fingerprint() {
             now: Some("2026-08-03T12:00:00Z".into()),
             if_root: None,
             dry: false,
+            fields: Default::default(),
         },
         &[],
     );
@@ -387,6 +389,7 @@ fn birth_is_guarded_by_absence_not_fingerprint() {
             now: Some("2026-08-03T12:00:00Z".into()),
             if_root: None,
             dry: false,
+            fields: Default::default(),
         },
         &[],
     )

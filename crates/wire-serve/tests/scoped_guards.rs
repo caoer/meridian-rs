@@ -62,6 +62,7 @@ fn args(premises: Vec<Premise>) -> SpliceArgs {
         edits: vec![unguarded_edit()],
         plan_edits: Vec::new(),
         pin: None,
+        fields: Default::default(),
     }
 }
 

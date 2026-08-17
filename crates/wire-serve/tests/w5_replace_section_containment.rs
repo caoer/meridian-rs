@@ -77,6 +77,7 @@ fn replace(
                 rev: Some(rev.into()),
             }],
             pin: None,
+            fields: Default::default(),
         },
         &[],
         None,

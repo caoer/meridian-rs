@@ -33,6 +33,7 @@ fn args(edits: Vec<Edit>, plan_edits: Vec<PlanEdit>) -> SpliceArgs {
         edits,
         plan_edits,
         pin: None,
+        fields: Default::default(),
     }
 }
 
@@ -347,6 +348,7 @@ fn frontmatter_comments_and_indented_code_are_not_claim_link_positions() {
             now: None,
             if_root: None,
             dry: false,
+            fields: Default::default(),
         },
         &[],
     )

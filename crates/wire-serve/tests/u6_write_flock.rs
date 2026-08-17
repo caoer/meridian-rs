@@ -37,6 +37,7 @@ fn splice_args(text: &str) -> SpliceArgs {
         }],
         plan_edits: Vec::new(),
         pin: None,
+        fields: Default::default(),
     }
 }
 
@@ -90,6 +91,7 @@ fn held_lock_refuses_all_write_ops_then_retry_succeeds() {
                 now: None,
                 if_root: None,
                 dry: false,
+                fields: Default::default(),
             },
             &[],
         )

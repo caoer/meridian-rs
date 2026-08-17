@@ -53,6 +53,7 @@ fn pin_args(pinning_page: &str, selector: &str) -> SpliceArgs {
             fingerprint: None,
             sec_rev: None,
         }),
+        fields: Default::default(),
     }
 }
 

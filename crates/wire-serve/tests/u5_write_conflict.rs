@@ -40,6 +40,7 @@ fn racer_args(i: usize) -> SpliceArgs {
         }],
         plan_edits: Vec::new(),
         pin: None,
+        fields: Default::default(),
     }
 }
 

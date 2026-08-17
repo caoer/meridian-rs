@@ -66,6 +66,7 @@ fn a_detect_cycle_racing_a_splice_re_tells_nothing() {
         }],
         plan_edits: Vec::new(),
         pin: None,
+        fields: Default::default(),
     };
     let out = splice(&ws_root, Some(&ring), &args, &[], None).expect("the splice commits");
     let frame = out

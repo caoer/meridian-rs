@@ -43,6 +43,7 @@ fn args_for(path: String, target: SecRef) -> SpliceArgs {
         }],
         plan_edits: Vec::new(),
         pin: None,
+        fields: Default::default(),
     }
 }
 

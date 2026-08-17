@@ -56,6 +56,7 @@ fn args_for(path: &str) -> SpliceArgs {
         }],
         plan_edits: Vec::new(),
         pin: None,
+        fields: Default::default(),
     }
 }
 

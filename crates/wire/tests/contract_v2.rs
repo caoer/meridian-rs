@@ -520,6 +520,7 @@ fn worked_splice_frames_match_contract() {
                         span_after: wire::Span(49, 75),
                     }],
                     effects: vec![],
+                    intents: None,
                 },
                 receipt: Some(wire::ReceiptFact {
                     path: wire::Path("receipts/2026-07-18.md".into()),
@@ -610,6 +611,7 @@ fn worked_dry_splice_frame_matches_contract() {
                         span_after: wire::Span(4, 18),
                     }],
                     effects: vec![],
+                    intents: None,
                 },
                 receipt: None,
                 root_before: wire::Root(
@@ -760,6 +762,7 @@ fn absent_actor_now_absent_on_the_wire() {
             pin: None,
             scope: None,
             guards: Vec::new(),
+            fields: Default::default(),
         },
     };
     let v = serde_json::to_value(&request).unwrap();

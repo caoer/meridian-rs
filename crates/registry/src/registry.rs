@@ -2740,6 +2740,7 @@ mod engine_tests {
             edits: vec![match_edit(old, new)],
             plan_edits: Vec::new(),
             pin: None,
+            fields: Default::default(),
         }
     }
 

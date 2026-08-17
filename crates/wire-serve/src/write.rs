@@ -1089,6 +1089,9 @@ fn run_door_middleware(
                         )));
                     } else {
                         if !member_state.contains_key(&p) {
+                            // Member paths come from a Starlark program —
+                            // confine them exactly as caller paths are.
+                            path_confined(root, &Path(p.clone()))?;
                             let base = load_doc(root, &Path(p.clone()))
                                 .map_err(|e| mw_member_refusal(&Path(p.clone()), e))?;
                             member_state.insert(p.clone(), (base, Vec::new()));
