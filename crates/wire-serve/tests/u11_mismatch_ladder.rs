@@ -43,6 +43,7 @@ fn args(edits: Vec<Edit>) -> SpliceArgs {
         edits,
         plan_edits: Vec::new(),
         pin: None,
+        fields: Default::default(),
     }
 }
 
@@ -504,6 +505,7 @@ fn resend_by_the_book(root: &fs::WorkspaceRoot, err: &wire::ErrorBody, edit: ser
         edits,
         plan_edits,
         pin,
+        fields: Default::default(),
     };
     if let Err(e) = splice(root, None, &resend, &[], None) {
         panic!(

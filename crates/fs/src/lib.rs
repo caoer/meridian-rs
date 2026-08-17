@@ -3611,7 +3611,7 @@ impl Watcher {
 #[cfg(test)]
 mod tests {
     use super::{
-        SetMember, TEMP_SEQ, USER_RULES_DIR, WorkspaceRoot, apply_batch, apply_set,
+        SetMember, SetPayload, TEMP_SEQ, USER_RULES_DIR, WorkspaceRoot, apply_batch, apply_set,
         is_write_conflict, stage_batch, stage_set, temp_path_for, user_rule_pages, walk,
     };
     use std::fs;
@@ -3800,9 +3800,11 @@ mod tests {
             .zip(owned)
             .map(|(rel, (vb, cand))| SetMember {
                 content_path: rel,
-                batch: vb,
-                expected_content: SET_S0.as_bytes(),
-                candidate: cand,
+                payload: SetPayload::Edit {
+                    batch: vb,
+                    expected_content: SET_S0.as_bytes(),
+                    candidate: cand,
+                },
             })
             .collect()
     }
@@ -3984,15 +3986,19 @@ mod tests {
         let bad = vec![
             SetMember {
                 content_path: &rels[0],
-                batch: &with_receipt,
-                expected_content: PLAN_S0.as_bytes(),
-                candidate: &cand,
+                payload: SetPayload::Edit {
+                    batch: &with_receipt,
+                    expected_content: PLAN_S0.as_bytes(),
+                    candidate: &cand,
+                },
             },
             SetMember {
                 content_path: &rels[1],
-                batch: &owned[1].0,
-                expected_content: SET_S0.as_bytes(),
-                candidate: &owned[1].1,
+                payload: SetPayload::Edit {
+                    batch: &owned[1].0,
+                    expected_content: SET_S0.as_bytes(),
+                    candidate: &owned[1].1,
+                },
             },
         ];
         let err = apply_set(&root, &bad, None).expect_err("member-level receipt refuses");

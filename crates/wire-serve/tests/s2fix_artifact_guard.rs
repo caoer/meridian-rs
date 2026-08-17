@@ -51,6 +51,7 @@ fn args_for(path: &str, actor: Option<&str>, edits: Vec<Edit>, pin: Option<PinSp
         edits,
         plan_edits: Vec::new(),
         pin,
+        fields: Default::default(),
     }
 }
 
@@ -251,6 +252,7 @@ fn create_cannot_birth_a_page_carrying_a_lock() {
             now: None,
             if_root: None,
             dry: false,
+            fields: Default::default(),
         },
         &[],
     );

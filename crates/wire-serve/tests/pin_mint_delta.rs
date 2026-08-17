@@ -92,6 +92,7 @@ fn pin_args(pinner: &str, selector: &str, proof: &str) -> SpliceArgs {
             fingerprint: Some(proof.to_owned()),
             sec_rev: None,
         }),
+        fields: Default::default(),
     }
 }
 

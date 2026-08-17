@@ -754,6 +754,7 @@ fn vibe_pin_args(actor: &str, selector: &str, vibe: bool) -> SpliceArgs {
             fingerprint: None,
             sec_rev: None,
         }),
+        fields: Default::default(),
     }
 }
 
@@ -1229,6 +1230,7 @@ fn path_c_create_title() {
                 rev: None,
             }],
             pin: None,
+            fields: Default::default(),
         },
         &[],
         None,
@@ -1274,6 +1276,7 @@ fn path_d_create_position_exclusions() {
             now: None,
             if_root: None,
             dry: false,
+            fields: Default::default(),
         },
         &[],
     )

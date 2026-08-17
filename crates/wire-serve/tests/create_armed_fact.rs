@@ -51,6 +51,7 @@ fn args(plan_edits: Vec<PlanEdit>, receipt: bool) -> SpliceArgs {
         edits: Vec::new(),
         plan_edits,
         pin: None,
+        fields: Default::default(),
     }
 }
 

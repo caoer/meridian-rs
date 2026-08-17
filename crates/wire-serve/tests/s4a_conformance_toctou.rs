@@ -52,6 +52,7 @@ fn splice_args(dry: bool) -> SpliceArgs {
         }],
         plan_edits: Vec::new(),
         pin: None,
+        fields: Default::default(),
     }
 }
 

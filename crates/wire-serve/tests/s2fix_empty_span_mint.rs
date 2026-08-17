@@ -57,6 +57,7 @@ fn pin_args(target: &str, selector: &str) -> SpliceArgs {
             fingerprint: None,
             sec_rev: None,
         }),
+        fields: Default::default(),
     }
 }
 

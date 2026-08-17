@@ -123,6 +123,7 @@ fn pin_args(pinner: &str, target: &str, selector: &str, vibe: bool) -> SpliceArg
             fingerprint: None,
             sec_rev: None,
         }),
+        fields: Default::default(),
     }
 }
 

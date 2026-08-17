@@ -291,6 +291,7 @@ fn close_args(edits: Vec<Edit>) -> SpliceArgs {
         edits,
         plan_edits: Vec::new(),
         pin: None,
+        fields: Default::default(),
     }
 }
 

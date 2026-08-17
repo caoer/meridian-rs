@@ -75,6 +75,7 @@ fn splice_args(path: &str, old: &str, new: &str) -> SpliceArgs {
         edits: vec![match_edit(old, new)],
         plan_edits: Vec::new(),
         pin: None,
+        fields: Default::default(),
     }
 }
 
@@ -87,6 +88,7 @@ fn create_args(path: &str, body: &str) -> CreateArgs {
         now: None,
         if_root: None,
         dry: false,
+        fields: Default::default(),
     }
 }
 

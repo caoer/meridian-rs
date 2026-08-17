@@ -1475,6 +1475,7 @@ mod tests {
                 rev: Some(face.rev.clone()),
             }],
             pin: None,
+            fields: Default::default(),
         };
         let ws_root = fs::WorkspaceRoot(ws.clone());
         let refused = wire_serve::write::splice(&ws_root, None, &args, &[], None)
@@ -1887,6 +1888,7 @@ mod tests {
                 rev: None,
             }],
             pin: None,
+            fields: Default::default(),
         };
         let out = wire_serve::write::splice(
             &ws_root_of(&ws),
