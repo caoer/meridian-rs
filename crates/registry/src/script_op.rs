@@ -573,6 +573,7 @@ impl ScriptHost for LiveHost<'_> {
             edits: Vec::new(),
             plan_edits: items.clone(),
             pin: None,
+                fields: Default::default(),
         };
         let ring = self.registry.ring(&self.ws_path);
         let cache = self.registry.domain_cache(&self.ws_path);
@@ -914,6 +915,7 @@ fn commit(
                 edits: Vec::new(),
                 plan_edits: eval.armed.iter().map(|armed| armed.edit.clone()).collect(),
                 pin: None,
+                fields: Default::default(),
             };
             wire_serve::write::splice(
                 &ws_root,
