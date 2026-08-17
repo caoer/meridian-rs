@@ -29,6 +29,10 @@ pub(crate) struct RootedRef {
     pub(crate) name: addr::MountName,
     /// The root's canonical bound path — the workspace the read binds to.
     pub(crate) workspace: PathBuf,
+    /// The mount's declared-primary designation, carried from the one table
+    /// read so a door that renders the root row (resolve) never opens the
+    /// table a second time for it.
+    pub(crate) primary: bool,
 }
 
 /// Does this spelling enter the rooted lane at all? — the same lexical gate
@@ -131,6 +135,7 @@ pub(crate) fn resolve(
         RootedRef {
             name,
             workspace: workspace.to_path_buf(),
+            primary: mount.primary(),
         },
     ))
 }
