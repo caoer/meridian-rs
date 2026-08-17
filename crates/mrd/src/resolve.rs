@@ -97,8 +97,19 @@ fn resolve_unanchored(cwd: &Path, bare_workspace: PathBuf) -> Resolved {
 /// never a bare path (the ruling's "never silently"). Writes NOTHING: no drawer
 /// creation, no registration, no auto-GC, so a cwd-default tree with no daemon
 /// leaves the cache root untouched.
+///
+/// A `root:path` PATH takes the rooted lane instead ([`run_rooted`]): the
+/// agent-plane answer — where the ref lands — while the ladder report stays
+/// the ambient lanes' machine-bootstrap vocabulary (tier, drawer), the half
+/// that never crossed to the MCP face.
 pub(crate) fn run_command(target_arg: Option<&str>, format: Format) -> Result<(), Fail> {
     let cwd = current_dir()?;
+    // The rooted lane (§4.1 colon law): a head-colon PATH is an agent-plane
+    // address, never a literal path — canonicalizing the colon-bearing string
+    // against the workspace was the leaked lookup this lane closes.
+    if let Some(spelling) = target_arg.filter(|p| crate::rooted::is_rooted(p)) {
+        return run_rooted(spelling, &cwd, format);
+    }
     let base = match target_arg {
         Some(p) if Path::new(p).is_absolute() => PathBuf::from(p),
         Some(p) => cwd.join(p),
@@ -134,4 +145,85 @@ pub(crate) fn run_command(target_arg: Option<&str>, format: Format) -> Result<()
         }
     }
     Ok(())
+}
+
+/// The resolve door's §1 consequence clause — what did NOT happen because the
+/// refusal fired ([`crate::path_law`] holds the family message; this door
+/// states only its own name and consequence).
+const RESOLVE_CONSEQUENCE: &str = "Nothing was resolved.";
+
+/// Answer a rooted spelling: WHERE THE REF LANDS — the physical path, the
+/// lane, the bound root and its workspace, and the canonical `root:path`
+/// spelling. The MCP resolve face's answer, ported shape-for-shape; the
+/// resolution is the read door's seam ([`crate::rooted`]), so two doors
+/// cannot hold two opinions of one ref.
+///
+/// No existence check and no daemon contact: the mount table is the whole
+/// authority, and the answer names where the ref lands whether or not a file
+/// sits there today — absence is the engine's question (§5.6), never the
+/// address plane's. A resolution refusal is the address answer (exit 1,
+/// framed with the workspace the caller stands in), never a canonicalize of
+/// the literal colon-bearing string.
+fn run_rooted(spelling: &str, cwd: &Path, format: Format) -> Result<(), Fail> {
+    use wire::{ErrorBody, ErrorCode};
+
+    let refusal = |error: Box<ErrorBody>, format: Format| -> Result<(), Fail> {
+        // The refusal frames with the workspace the caller stands in — no
+        // target workspace exists to name.
+        let ambient = resolve_runtime(cwd)
+            .map_err(|e| {
+                Fail::tool(format!(
+                    "cannot resolve workspace for {}: {e}",
+                    cwd.display()
+                ))
+            })?
+            .workspace;
+        Err(crate::engine::json_refusal(format, &ambient, &error))
+    };
+
+    // Path grain, the MCP face's own `#` door: a fragment addresses a
+    // section, not a file, and silently resolving the path half would answer
+    // a question the caller did not ask.
+    if spelling.contains('#') {
+        let mut e = ErrorBody::new(ErrorCode::BadPath);
+        e.path = Some(wire::Path(spelling.to_owned()));
+        e.message = Some(format!(
+            "{spelling} carries a `#` fragment, and resolve answers at path grain — a \
+             fragment addresses a section, not a file. Re-issue with the bare `root:path` \
+             (sections are the read door's: `mrd read PATH#FRAG` or `--section`). \
+             {RESOLVE_CONSEQUENCE}"
+        ));
+        return refusal(Box::new(e), format);
+    }
+    match crate::rooted::resolve(spelling, "resolve", RESOLVE_CONSEQUENCE) {
+        Ok((rel, rooted)) => {
+            let landed = rooted.workspace.join(&rel);
+            match format {
+                Format::Json => {
+                    let value = json!({
+                        "workspace": rooted.workspace.display().to_string(),
+                        "source": "rooted",
+                        "root": rooted.name.as_str(),
+                        "primary": rooted.primary,
+                        "path": landed.display().to_string(),
+                        "ref": format!("{}:{rel}", rooted.name),
+                    });
+                    println!("{}", serde_json::to_string_pretty(&value).expect("json"));
+                }
+                Format::Human => {
+                    println!("{}", landed.display());
+                    println!("  lane: rooted — the ref names root {}", rooted.name);
+                    println!(
+                        "  root: {} (bound)  workspace:{}{}",
+                        rooted.name,
+                        rooted.workspace.display(),
+                        if rooted.primary { "  ← primary" } else { "" }
+                    );
+                    println!("  ref: {}:{rel}", rooted.name);
+                }
+            }
+            Ok(())
+        }
+        Err(error) => refusal(error, format),
+    }
 }
