@@ -6208,6 +6208,7 @@ mod guarded_create_remove {
             now: None,
             if_root: None,
             dry: false,
+            fields: Default::default(),
         }
     }
 
@@ -6830,6 +6831,7 @@ mod guarded_create_remove {
             }],
             plan_edits: Vec::new(),
             pin: None,
+            fields: Default::default(),
         }
     }
 
@@ -7169,6 +7171,7 @@ mod resident_write_path {
             edits: vec![match_edit(old, new)],
             plan_edits: Vec::new(),
             pin: None,
+            fields: Default::default(),
         }
     }
 
@@ -7424,6 +7427,7 @@ mod resident_write_path {
             now: None,
             if_root: None,
             dry: false,
+            fields: Default::default(),
         }
     }
 

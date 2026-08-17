@@ -364,6 +364,7 @@ mod scenarios {
             now: None,
             if_root: None,
             dry: false,
+            fields: Default::default(),
         }
     }
 
@@ -610,6 +611,7 @@ mod scenarios {
             }],
             plan_edits: Vec::new(),
             pin: None,
+            fields: Default::default(),
         }
     }
 
@@ -641,6 +643,7 @@ mod scenarios {
             }],
             plan_edits: Vec::new(),
             pin: None,
+            fields: Default::default(),
         }
     }
 
