@@ -59,14 +59,24 @@ steps:
       # Identity, MEASURED not invented (docs/release.md §5.1). The clone is
       # this user's own, so the probe reads a tree it owns — no safe.directory
       # dance, and a divergence here would be a real one.
+      #
+      # The probe is the ENGINE'S OWN, flag for flag (crates/mrd/build_git.rs
+      # worktree_dirty): --untracked-files=no because the question is whether
+      # this build is attributable to HEAD, and --no-optional-locks so the
+      # probe cannot write the index under a concurrent git. Measured why it
+      # matters: with a bare `git status --porcelain`, THIS STEP'S OWN .ci/
+      # scratch dir reads as a divergence, and the lane published
+      # d3accfbe4e28…-dirty for a tree that matched HEAD exactly. A supplied
+      # MRD_BUILD_SHA rides verbatim — the supplier owns the claim — so a
+      # sloppy probe here is a lie the binary then tells forever.
       - |
         set -eu
         . "$${CI_WORKSPACE}/.ci/lane.env"
         [ "$${SKIP_BUILD}" = "0" ] || exit 0
-        if [ -n "$(git status --porcelain)" ]; then
+        if [ -n "$(git --no-optional-locks status --porcelain --untracked-files=no)" ]; then
           echo "MRD_BUILD_SHA=$${CI_COMMIT_SHA}-dirty" > "$${CI_WORKSPACE}/.ci/stamp.env"
-          echo "WARNING workspace diverges from $${CI_COMMIT_SHA} — stamping -dirty"
-          git status --porcelain
+          echo "WARNING tracked content diverges from $${CI_COMMIT_SHA} — stamping -dirty"
+          git --no-optional-locks status --porcelain --untracked-files=no
         else
           echo "MRD_BUILD_SHA=$${CI_COMMIT_SHA}" > "$${CI_WORKSPACE}/.ci/stamp.env"
         fi

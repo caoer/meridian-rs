@@ -372,7 +372,13 @@ pin that can drift from the bytes. The tag's annotated message stays the release
 notes carrier (§5.3), and the registry stays the only place bytes live.
 
 Each lane refuses to publish a binary that cannot name the tree it came from —
-the §5.1 stamp is checked against the commit being built before any upload.
+the §5.1 stamp is checked against the commit being built before any upload —
+and each lane's dirty probe is the **engine's own**, flag for flag
+(`--untracked-files=no`, `--no-optional-locks`; `crates/mrd/build_git.rs`). A
+lane that supplies `MRD_BUILD_SHA` owns the claim, so a looser probe there
+publishes a divergence §5.1 says does not exist. Measured 2026-08-17: a bare
+`git status --porcelain` counted the lane's own scratch directory and stamped
+`-dirty` on a tree that matched HEAD exactly.
 
 ## §6 How the promise changes after a release
 

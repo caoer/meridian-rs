@@ -62,19 +62,25 @@ steps:
           echo "not published for $${rev} (HTTP $${code}) — building"
           echo "SKIP_BUILD=0" > /tmp/lane.env
         fi
-      # Identity, MEASURED not invented — the same rule ci.yaml's publish step
-      # follows: this container's git probe cannot trust a workspace other
-      # uids write, so CI supplies the sha it checked out plus `-dirty` if the
-      # tree actually diverges from it (docs/release.md §5.1).
+      # Identity, MEASURED not invented — this container's git probe cannot
+      # trust a workspace other uids write, so CI supplies the sha it checked
+      # out plus `-dirty` if the tree actually diverges (docs/release.md §5.1).
+      #
+      # The probe is the ENGINE'S OWN, flag for flag (crates/mrd/build_git.rs
+      # worktree_dirty): --untracked-files=no, --no-optional-locks. This lane
+      # shares one workspace with ci.yaml's lanes, which write untracked paths
+      # (`target-ci`, and `/target` is the only ignored one) — a bare probe
+      # would read those as a divergence and stamp a lie that a supplied
+      # MRD_BUILD_SHA then carries verbatim into the pin.
       - |
         set -eu
         . /tmp/lane.env
         [ "$${SKIP_BUILD}" = "0" ] || exit 0
         git config --global --add safe.directory "$${CI_WORKSPACE}"
-        if [ -n "$(git status --porcelain)" ]; then
+        if [ -n "$(git --no-optional-locks status --porcelain --untracked-files=no)" ]; then
           echo "MRD_BUILD_SHA=$${CI_COMMIT_SHA}-dirty" > /tmp/stamp.env
-          echo "WARNING workspace diverges from $${CI_COMMIT_SHA} — stamping -dirty"
-          git status --porcelain
+          echo "WARNING tracked content diverges from $${CI_COMMIT_SHA} — stamping -dirty"
+          git --no-optional-locks status --porcelain --untracked-files=no
         else
           echo "MRD_BUILD_SHA=$${CI_COMMIT_SHA}" > /tmp/stamp.env
         fi
