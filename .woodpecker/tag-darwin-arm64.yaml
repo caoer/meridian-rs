@@ -104,15 +104,28 @@ steps:
           # shasum, not sha256sum: the latter is not on every mac's PATH.
           sha="$(shasum -a 256 "$${CARGO_TARGET_DIR}/release/mrd" | cut -d' ' -f1)"
           echo "$${sha}  mrd-darwin-arm64" > "$${CI_WORKSPACE}/.ci/mrd-darwin-arm64.sha256"
+          # RETRIES, and the append-only store is what makes them safe: an
+          # upload that actually landed answers 409 on the next attempt, never
+          # a second copy, so a retry can neither duplicate nor replace bytes.
+          # Measured 2026-08-17 (pipeline 845): the ~53 MB binary PUT from this
+          # host answered `524` — Cloudflare's origin-timeout, raised in front
+          # of the forge, after the build had already succeeded. The upload is
+          # the fragile leg here, not the build.
           put() {
-            code="$(curl -s -o "$${CI_WORKSPACE}/.ci/put.out" -w '%{http_code}' -X PUT \
-              -H "Authorization: token $${FORGEJO_TOKEN}" \
-              --upload-file "$$1" "$${base}/$$2")"
-            case "$${code}" in
-              201) echo "published $$2" ;;
-              409) echo "$$2 already published for this commit — keeping the FIRST bytes (append-only)" ;;
-              *)   echo "publish $$2 failed: HTTP $${code}"; cat "$${CI_WORKSPACE}/.ci/put.out"; exit 1 ;;
-            esac
+            for delay in 0 15 45; do
+              [ "$delay" = 0 ] || sleep "$delay"
+              code="$(curl -s -o "$${CI_WORKSPACE}/.ci/put.out" -w '%{http_code}' -X PUT \
+                -H "Authorization: token $${FORGEJO_TOKEN}" \
+                --upload-file "$$1" "$${base}/$$2")"
+              case "$${code}" in
+                201) echo "published $$2"; return 0 ;;
+                409) echo "$$2 already published for this commit — keeping the FIRST bytes (append-only)"; return 0 ;;
+              esac
+              echo "publish $$2: HTTP $${code} — retrying"
+              cat "$${CI_WORKSPACE}/.ci/put.out" || true
+            done
+            echo "publish $$2 failed after 3 attempts: HTTP $${code}"
+            exit 1
           }
           put "$${CARGO_TARGET_DIR}/release/mrd" mrd-darwin-arm64
           put "$${CI_WORKSPACE}/.ci/mrd-darwin-arm64.sha256" mrd-darwin-arm64.sha256
