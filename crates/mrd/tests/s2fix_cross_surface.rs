@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
+use std::collections::BTreeMap;
 use wire::{ErrorCode, Path as WPath, PinSpec};
 use wire_serve::write::{SpliceArgs, splice};
 
@@ -754,7 +755,7 @@ fn vibe_pin_args(actor: &str, selector: &str, vibe: bool) -> SpliceArgs {
             fingerprint: None,
             sec_rev: None,
         }),
-        fields: Default::default(),
+        fields: BTreeMap::default(),
     }
 }
 
@@ -1230,7 +1231,7 @@ fn path_c_create_title() {
                 rev: None,
             }],
             pin: None,
-            fields: Default::default(),
+            fields: BTreeMap::default(),
         },
         &[],
         None,
@@ -1276,7 +1277,7 @@ fn path_d_create_position_exclusions() {
             now: None,
             if_root: None,
             dry: false,
-            fields: Default::default(),
+            fields: BTreeMap::default(),
         },
         &[],
     )

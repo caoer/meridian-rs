@@ -594,7 +594,7 @@ fn mint_board_card(
         now: spec.now.clone(),
         if_root: None,
         dry: false,
-        fields: Default::default(),
+        fields: BTreeMap::default(),
     };
     match wire_serve::write::create(root, None, &args, &[]) {
         Ok(_) => Ok(Some(path)),

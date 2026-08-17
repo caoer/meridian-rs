@@ -13,6 +13,7 @@
 //! says what the engine decided, and the defect was that the decision came
 //! after the write.
 
+use std::collections::BTreeMap;
 use wire::{Edit, EditShape, NodeRev, Path as WPath, PutAt, ReceiptAddr, ResponseBody, SecRef};
 use wire_serve::write::{SpliceArgs, splice};
 
@@ -83,7 +84,7 @@ fn args_guarded(anchor: &str, dry: bool, if_node_rev: Option<NodeRev>) -> Splice
         }],
         plan_edits: Vec::new(),
         pin: None,
-        fields: Default::default(),
+        fields: BTreeMap::default(),
     }
 }
 

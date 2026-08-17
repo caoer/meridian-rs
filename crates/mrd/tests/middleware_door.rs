@@ -43,11 +43,12 @@ fn write_page(root: &fs::WorkspaceRoot, path: &str, bytes: &str) {
 /// Arm every `(page, bytes, id, mode)` at the workspace root through the real
 /// ARM act, and stamp the once-armed marker.
 fn arm(root: &fs::WorkspaceRoot, pages: &[(&str, &str, &str, Mode)]) {
-    let index = policy::RuleIndex::discover(pages.iter().map(|(path, bytes, ..)| policy::PageRef {
-        layer: policy::ScopeLayer::Workspace,
-        page: path,
-        bytes,
-    }));
+    let index =
+        policy::RuleIndex::discover(pages.iter().map(|(path, bytes, ..)| policy::PageRef {
+            layer: policy::ScopeLayer::Workspace,
+            page: path,
+            bytes,
+        }));
     let artifact = policy::armed::arm(
         &index,
         &policy::armed::ArmRoot::workspace(),
@@ -122,7 +123,10 @@ fn a_transform_this_file_from_fields_lands_in_the_same_write() {
         "def middleware(ctx):\n    session = ctx.fields.get(\"session\")\n    if session != None:\n        set_field(path = ctx.after.path, key = \"session\", value = session)\n",
     );
     write_page(&root, "rules/stamp.md", &page);
-    arm(&root, &[("rules/stamp.md", &page, "000-stamp-session", Mode::Block)]);
+    arm(
+        &root,
+        &[("rules/stamp.md", &page, "000-stamp-session", Mode::Block)],
+    );
 
     let out = splice(
         &root,
@@ -134,7 +138,10 @@ fn a_transform_this_file_from_fields_lands_in_the_same_write() {
     .expect("the transformed write lands");
 
     let landed = read(&root, "tasks/fix.md");
-    assert!(landed.contains("status: review"), "caller edit landed: {landed}");
+    assert!(
+        landed.contains("status: review"),
+        "caller edit landed: {landed}"
+    );
     assert!(
         landed.contains("session: 0ecc9d6a"),
         "the middleware transform landed IN the same write: {landed}"
@@ -160,8 +167,16 @@ fn b_sql_selected_files_land_in_the_same_sealed_set_as_the_caller_put() {
     registry::mw_sql::install();
     let (_dir, root) = tmp_ws();
     write_page(&root, "tasks/handoff.md", CARD);
-    write_page(&root, "agents/a1.md", "---\nreports-to: old-leader\n---\n# a1\n");
-    write_page(&root, "agents/a2.md", "---\nreports-to: old-leader\n---\n# a2\n");
+    write_page(
+        &root,
+        "agents/a1.md",
+        "---\nreports-to: old-leader\n---\n# a1\n",
+    );
+    write_page(
+        &root,
+        "agents/a2.md",
+        "---\nreports-to: old-leader\n---\n# a2\n",
+    );
     write_page(&root, "agents/a3.md", "---\nreports-to: other\n---\n# a3\n");
     // On status → review, repoint every agent whose reports-to names
     // old-leader at the new one — the RELATIONSHIP-SYNC missing half.
@@ -170,7 +185,10 @@ fn b_sql_selected_files_land_in_the_same_sealed_set_as_the_caller_put() {
         "def middleware(ctx):\n    if \"status\" not in ctx.put.fields_changed:\n        return\n    rows = ctx.sql(\"SELECT path FROM frontmatter WHERE key = 'reports-to' AND value = 'old-leader'\")\n    for row in rows:\n        set_field(path = row[\"path\"], key = \"reports-to\", value = \"new-leader\")\n",
     );
     write_page(&root, "rules/reports-to.md", &page);
-    arm(&root, &[("rules/reports-to.md", &page, "000-reports-to", Mode::Block)]);
+    arm(
+        &root,
+        &[("rules/reports-to.md", &page, "000-reports-to", Mode::Block)],
+    );
 
     let out = splice(
         &root,
@@ -196,7 +214,12 @@ fn b_sql_selected_files_land_in_the_same_sealed_set_as_the_caller_put() {
     );
     // One sealed commit: one Delta, one seq, files[] carrying every member.
     let frame = out.committed.expect("committed");
-    let files: Vec<&str> = frame.delta.files.iter().map(|f| f.path.0.as_str()).collect();
+    let files: Vec<&str> = frame
+        .delta
+        .files
+        .iter()
+        .map(|f| f.path.0.as_str())
+        .collect();
     assert!(files.contains(&"tasks/handoff.md"), "{files:?}");
     assert!(files.contains(&"agents/a1.md"), "{files:?}");
     assert!(files.contains(&"agents/a2.md"), "{files:?}");
@@ -214,16 +237,38 @@ fn c_a_birth_lands_in_the_same_sealed_set() {
         "def middleware(ctx):\n    if ctx.after.frontmatter.get(\"status\") == \"done\":\n        create(path = \"tasks/followup.md\", body = \"---\\nstatus: open\\n---\\n# Follow up\\n\")\n",
     );
     write_page(&root, "rules/scaffold.md", &page);
-    arm(&root, &[("rules/scaffold.md", &page, "000-scaffold-followup", Mode::Block)]);
+    arm(
+        &root,
+        &[(
+            "rules/scaffold.md",
+            &page,
+            "000-scaffold-followup",
+            Mode::Block,
+        )],
+    );
 
-    let out = splice(&root, None, &status_splice("tasks/fix.md", "done", &[]), &[], None)
-        .expect("the birth-carrying set lands");
+    let out = splice(
+        &root,
+        None,
+        &status_splice("tasks/fix.md", "done", &[]),
+        &[],
+        None,
+    )
+    .expect("the birth-carrying set lands");
 
     assert!(read(&root, "tasks/fix.md").contains("status: done"));
     let born = read(&root, "tasks/followup.md");
-    assert!(born.contains("# Follow up"), "the follow-up card was born: {born}");
+    assert!(
+        born.contains("# Follow up"),
+        "the follow-up card was born: {born}"
+    );
     let frame = out.committed.expect("committed");
-    let files: Vec<&str> = frame.delta.files.iter().map(|f| f.path.0.as_str()).collect();
+    let files: Vec<&str> = frame
+        .delta
+        .files
+        .iter()
+        .map(|f| f.path.0.as_str())
+        .collect();
     assert!(
         files.contains(&"tasks/followup.md"),
         "the birth rides the ONE Delta: {files:?}"
@@ -232,10 +277,20 @@ fn c_a_birth_lands_in_the_same_sealed_set() {
     // The flip is atomic with the birth: replaying the same put now refuses
     // (occupied birth path) and the caller file stays at its landed bytes.
     let before = read(&root, "tasks/fix.md");
-    let err = splice(&root, None, &status_splice("tasks/fix.md", "done", &[]), &[], None)
-        .expect_err("re-birthing an occupied path refuses the whole set");
+    let err = splice(
+        &root,
+        None,
+        &status_splice("tasks/fix.md", "done", &[]),
+        &[],
+        None,
+    )
+    .expect_err("re-birthing an occupied path refuses the whole set");
     assert_eq!(err.code, ErrorCode::CasMismatch, "{err:?}");
-    assert_eq!(read(&root, "tasks/fix.md"), before, "nothing landed on the refusal");
+    assert_eq!(
+        read(&root, "tasks/fix.md"),
+        before,
+        "nothing landed on the refusal"
+    );
 }
 
 // ── (d) refuse rolls back everything ────────────────────────────────────────
@@ -250,12 +305,26 @@ fn d_a_middleware_refusal_lands_nothing() {
     );
     write_page(&root, "rules/no-self-review.md", &page);
     write_page(&root, "agents/witness.md", "---\nsaw: no\n---\n# w\n");
-    arm(&root, &[("rules/no-self-review.md", &page, "000-no-self-review", Mode::Block)]);
+    arm(
+        &root,
+        &[(
+            "rules/no-self-review.md",
+            &page,
+            "000-no-self-review",
+            Mode::Block,
+        )],
+    );
 
     let before_card = read(&root, "tasks/fix.md");
     let before_witness = read(&root, "agents/witness.md");
-    let err = splice(&root, None, &status_splice("tasks/fix.md", "review", &[]), &[], None)
-        .expect_err("the middleware refusal refuses the whole write");
+    let err = splice(
+        &root,
+        None,
+        &status_splice("tasks/fix.md", "review", &[]),
+        &[],
+        None,
+    )
+    .expect_err("the middleware refusal refuses the whole write");
     assert_eq!(err.code, ErrorCode::ConventionFault);
     let msg = err.message.as_deref().unwrap_or("");
     assert!(msg.contains("000-no-self-review"), "names the rule: {msg}");
@@ -263,7 +332,11 @@ fn d_a_middleware_refusal_lands_nothing() {
         msg.contains("rules/no-self-review.md#legal"),
         "cites the passing scenario: {msg}"
     );
-    assert_eq!(read(&root, "tasks/fix.md"), before_card, "caller bytes untouched");
+    assert_eq!(
+        read(&root, "tasks/fix.md"),
+        before_card,
+        "caller bytes untouched"
+    );
     assert_eq!(
         read(&root, "agents/witness.md"),
         before_witness,
@@ -286,10 +359,19 @@ fn e_send_rides_the_response_as_an_intent_and_nothing_claims_delivery() {
         "def middleware(ctx):\n    if ctx.after.frontmatter.get(\"status\") == \"review\":\n        send(to = [ctx.after.frontmatter.get(\"owner\")], body = \"fix -> review\")\n",
     );
     write_page(&root, "rules/notify.md", &page);
-    arm(&root, &[("rules/notify.md", &page, "000-notify-review", Mode::Block)]);
+    arm(
+        &root,
+        &[("rules/notify.md", &page, "000-notify-review", Mode::Block)],
+    );
 
-    let out = splice(&root, None, &status_splice("tasks/fix.md", "review", &[]), &[], None)
-        .expect("the send-emitting write lands");
+    let out = splice(
+        &root,
+        None,
+        &status_splice("tasks/fix.md", "review", &[]),
+        &[],
+        None,
+    )
+    .expect("the send-emitting write lands");
     let (armed, intents) = splice_parts(&out.body);
     let intents = intents.expect("intents present on a middleware door success");
     assert_eq!(intents.len(), 1);
@@ -297,7 +379,10 @@ fn e_send_rides_the_response_as_an_intent_and_nothing_claims_delivery() {
     assert_eq!(intents[0].to, vec!["agent:alice".to_string()]);
     assert_eq!(intents[0].body, "fix -> review");
     assert_eq!(intents[0].rule_id, "000-notify-review");
-    assert!(armed.effects.is_empty(), "no reaction envelope on the put path");
+    assert!(
+        armed.effects.is_empty(),
+        "no reaction envelope on the put path"
+    );
     // Nothing anywhere claims delivery — the serialized response carries the
     // intent verbatim and no delivery vocabulary.
     let json = serde_json::to_string(&out.body).expect("serializes");
@@ -316,9 +401,18 @@ fn fields_are_opaque_and_absent_fields_is_the_empty_map() {
         "def middleware(ctx):\n    if len(ctx.fields) == 0:\n        set_field(path = ctx.after.path, key = \"fields-seen\", value = \"none\")\n",
     );
     write_page(&root, "rules/echo.md", &page);
-    arm(&root, &[("rules/echo.md", &page, "000-fields-echo", Mode::Block)]);
-    splice(&root, None, &status_splice("tasks/fix.md", "open", &[]), &[], None)
-        .expect("fieldless put still evaluates middleware");
+    arm(
+        &root,
+        &[("rules/echo.md", &page, "000-fields-echo", Mode::Block)],
+    );
+    splice(
+        &root,
+        None,
+        &status_splice("tasks/fix.md", "open", &[]),
+        &[],
+        None,
+    )
+    .expect("fieldless put still evaluates middleware");
     assert!(read(&root, "tasks/fix.md").contains("fields-seen: none"));
 }
 
@@ -332,7 +426,15 @@ fn create_door_transforms_the_born_bytes_and_carries_intents() {
         "def middleware(ctx):\n    if ctx.op != \"create\":\n        return\n    created = ctx.fields.get(\"created\")\n    if created != None:\n        set_field(path = ctx.after.path, key = \"created\", value = created)\n    send(to = \"leader\", body = \"born: \" + ctx.after.path)\n",
     );
     write_page(&root, "rules/stamp-birth.md", &page);
-    arm(&root, &[("rules/stamp-birth.md", &page, "000-stamp-birth", Mode::Block)]);
+    arm(
+        &root,
+        &[(
+            "rules/stamp-birth.md",
+            &page,
+            "000-stamp-birth",
+            Mode::Block,
+        )],
+    );
 
     let mut fields = BTreeMap::new();
     fields.insert("created".to_string(), "2026-08-17".to_string());
@@ -377,10 +479,19 @@ fn an_unevaluable_middleware_fails_closed() {
         "def middleware(ctx):\n    intent(action = \"notify\")\n",
     );
     write_page(&root, "rules/broken.md", &page);
-    arm(&root, &[("rules/broken.md", &page, "000-broken", Mode::Block)]);
+    arm(
+        &root,
+        &[("rules/broken.md", &page, "000-broken", Mode::Block)],
+    );
     let before = read(&root, "tasks/fix.md");
-    let err = splice(&root, None, &status_splice("tasks/fix.md", "review", &[]), &[], None)
-        .expect_err("a middleware that cannot complete never reads as a pass");
+    let err = splice(
+        &root,
+        None,
+        &status_splice("tasks/fix.md", "review", &[]),
+        &[],
+        None,
+    )
+    .expect_err("a middleware that cannot complete never reads as a pass");
     assert_eq!(err.code, ErrorCode::ConventionFault);
     assert!(
         err.message.as_deref().unwrap_or("").contains("000-broken"),

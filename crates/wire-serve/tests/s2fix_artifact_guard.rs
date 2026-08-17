@@ -4,6 +4,7 @@
 //! `edits`, `plan_edits`, `write::create`, anchor promotion, legit `splice.pin`
 //! control; `run::executor` is separate (`crates/run/tests/executor.rs`).
 
+use std::collections::BTreeMap;
 use wire::{Edit, EditShape, ErrorCode, Path as WPath, PinSpec, PlanEdit, PutAt, SecRef};
 use wire_serve::write::{CreateArgs, SpliceArgs, splice};
 
@@ -51,7 +52,7 @@ fn args_for(path: &str, actor: Option<&str>, edits: Vec<Edit>, pin: Option<PinSp
         edits,
         plan_edits: Vec::new(),
         pin,
-        fields: Default::default(),
+        fields: BTreeMap::default(),
     }
 }
 
@@ -252,7 +253,7 @@ fn create_cannot_birth_a_page_carrying_a_lock() {
             now: None,
             if_root: None,
             dry: false,
-            fields: Default::default(),
+            fields: BTreeMap::default(),
         },
         &[],
     );

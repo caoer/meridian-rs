@@ -22,7 +22,7 @@ fn produce(root: &WorkspaceRoot, path: &str, body: &str) {
         now: None,
         if_root: None,
         dry: false,
-        fields: Default::default(),
+        fields: BTreeMap::default(),
     };
     create(root, None, &args, &[])
         .unwrap_or_else(|e| panic!("production create {path} refused: {e:?}"));
@@ -57,7 +57,7 @@ fn splice_through_the_write_path(root: &WorkspaceRoot, path: &str, old: &str, ne
         }],
         plan_edits: Vec::new(),
         pin: None,
-        fields: Default::default(),
+        fields: BTreeMap::default(),
     };
     splice(root, None, &args, &[], None)
         .unwrap_or_else(|e| panic!("production splice on {path} refused: {e:?}"));

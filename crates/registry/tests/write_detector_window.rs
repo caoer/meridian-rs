@@ -12,6 +12,7 @@
 //! executor's flock); this test pins the write paths to the same law.
 
 use registry::ring::WorkspaceRing;
+use std::collections::BTreeMap;
 use wire::{Edit, EditShape, SecRef};
 use wire_serve::guard::Origin;
 use wire_serve::write::{SpliceArgs, splice};
@@ -66,7 +67,7 @@ fn a_detect_cycle_racing_a_splice_re_tells_nothing() {
         }],
         plan_edits: Vec::new(),
         pin: None,
-        fields: Default::default(),
+        fields: BTreeMap::default(),
     };
     let out = splice(&ws_root, Some(&ring), &args, &[], None).expect("the splice commits");
     let frame = out

@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use serde_json::Value;
+use std::collections::BTreeMap;
 use wire_serve::write::{CreateArgs, create};
 
 // ── shared helpers ────────────────────────────────────────────────────────────
@@ -132,7 +133,7 @@ fn the_genesis_epoch_is_unarmed_ungated_and_grey() {
         now: None,
         if_root: None,
         dry: false,
-        fields: Default::default(),
+        fields: BTreeMap::default(),
     };
     let out = create(&root, None, &args, &[]).expect("the genesis write lands ungated");
 

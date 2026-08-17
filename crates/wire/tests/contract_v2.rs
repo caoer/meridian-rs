@@ -5,6 +5,7 @@
 //! the shapes the types serialize to, not byte-exact dispatch.
 
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 
 fn seg(h: &str) -> wire::HpathSeg {
     wire::HpathSeg {
@@ -762,7 +763,7 @@ fn absent_actor_now_absent_on_the_wire() {
             pin: None,
             scope: None,
             guards: Vec::new(),
-            fields: Default::default(),
+            fields: BTreeMap::default(),
         },
     };
     let v = serde_json::to_value(&request).unwrap();

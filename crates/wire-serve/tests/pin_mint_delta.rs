@@ -12,6 +12,7 @@
 //! one row (before tense = pre-promotion), a reused anchor mints nothing and
 //! frames nothing.
 
+use std::collections::BTreeMap;
 use wire::{FileChange, Path as WPath, PinSpec, ResponseBody};
 use wire_serve::write::{SpliceArgs, splice};
 
@@ -92,7 +93,7 @@ fn pin_args(pinner: &str, selector: &str, proof: &str) -> SpliceArgs {
             fingerprint: Some(proof.to_owned()),
             sec_rev: None,
         }),
-        fields: Default::default(),
+        fields: BTreeMap::default(),
     }
 }
 

@@ -3357,10 +3357,7 @@ fn stage_set(
                     discard_staged(&contents);
                     return Err(e);
                 }
-                (
-                    candidate.raw().as_bytes().to_vec(),
-                    StagedPreImage::Absent,
-                )
+                (candidate.raw().as_bytes().to_vec(), StagedPreImage::Absent)
             }
         };
         match stage_file(&root.0.join(m.content_path), &new_bytes) {

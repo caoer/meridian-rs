@@ -18,6 +18,7 @@
 //! in [`cross_root_pin_lifecycle`]. The parse-grain refusals below it consult
 //! no table and stay ordinary parallel tests.
 
+use std::collections::BTreeMap;
 use wire::{ErrorCode, Path as WPath, PinSpec, ResponseBody};
 use wire_serve::write::{SpliceArgs, splice};
 
@@ -123,7 +124,7 @@ fn pin_args(pinner: &str, target: &str, selector: &str, vibe: bool) -> SpliceArg
             fingerprint: None,
             sec_rev: None,
         }),
-        fields: Default::default(),
+        fields: BTreeMap::default(),
     }
 }
 

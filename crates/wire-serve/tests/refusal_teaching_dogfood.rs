@@ -14,6 +14,7 @@
 //! - opus P3-2: `file_not_found` on the degrade/write plane names the miss and
 //!   a servable Fix instead of echoing the path as a bare token.
 
+use std::collections::BTreeMap;
 use wire::{Edit, EditShape, ErrorCode, Path as WPath, SecRef};
 use wire_serve::write::{SpliceArgs, splice};
 
@@ -43,7 +44,7 @@ fn args_for(path: String, target: SecRef) -> SpliceArgs {
         }],
         plan_edits: Vec::new(),
         pin: None,
-        fields: Default::default(),
+        fields: BTreeMap::default(),
     }
 }
 

@@ -6,6 +6,7 @@
 //! too if a rung moves. The mint refusal is belt-on-belt, not the load-bearing
 //! guard — that lives in `ContentVerdict::EmptySpan`.
 
+use std::collections::BTreeMap;
 use wire::{ErrorCode, Path as WPath, PinSpec, Recovery, ResponseBody};
 use wire_serve::write::{SpliceArgs, splice};
 
@@ -57,7 +58,7 @@ fn pin_args(target: &str, selector: &str) -> SpliceArgs {
             fingerprint: None,
             sec_rev: None,
         }),
-        fields: Default::default(),
+        fields: BTreeMap::default(),
     }
 }
 
