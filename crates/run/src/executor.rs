@@ -1014,23 +1014,32 @@ fn plan_edit(doc: &Document, effect: &Effect) -> Result<PlannedEdit, ExecError> 
             let field = str_arg(effect, "field")?;
             let value = str_arg(effect, "value")?;
             let before = model::fm_upsert_before(doc, &field);
-            // ⑤-F2 (2026-08-17): the value passes the ONE § A.6.3c encoder the
-            // wire's upsert door already writes through — a value-identical
-            // write keeps the STORED spelling (quotes included), so its bytes,
-            // and with them the field hash and `prop_rev`, do not move. The
-            // raw pass-through this replaces re-composed `{key}: {value}`
-            // unquoted: the parsed value round-tripped while every
-            // value-identical `md.set_field` moved the line's bytes (quote
-            // drop), defeating idempotence-on-hash and littering git. Fresh
-            // values encode through the same seam (`yaml_safe_value` inside),
-            // which also closes the raw multi-line hole this arm had.
+            // ⑤-F2 (2026-08-17): a SINGLE-LINE value passes the ONE § A.6.3c
+            // encoder the wire's upsert door already writes through — a
+            // value-identical write keeps the STORED spelling (quotes
+            // included), so its bytes, and with them the field hash and
+            // `prop_rev`, do not move. The raw pass-through this replaces
+            // re-composed `{key}: {value}` unquoted: the parsed value
+            // round-tripped while every value-identical `md.set_field` moved
+            // the line's bytes (quote drop), defeating idempotence-on-hash
+            // and littering git.
+            //
+            // A MULTI-LINE value still lands RAW, deliberately: the
+            // fence-close window is pinned run-plane behavior
+            // (s2fix_run_plane_fp — the fp strip's COMPOSED arm guards the
+            // claim-forgery through it, and its anti-vacuity control asserts
+            // the window is genuinely open). Closing or escaping it is a
+            // semantic decision this quoting fix does not own.
             let stored_line = (before.span.start < before.span.end)
                 .then(|| doc.raw[before.span.clone()].to_string());
-            let text = policy::defs::yaml_preserve_or_encode(stored_line.as_deref(), &value)
-                .map_err(|_| ExecError::BadDescriptor {
-                    kind: effect.kind.as_str().to_owned(),
-                    reason: format!("md.set_field {field}: value must be a single line"),
-                })?;
+            let text = if value.contains(['\n', '\r']) {
+                value
+            } else {
+                policy::defs::yaml_preserve_or_encode(stored_line.as_deref(), &value)
+                    .unwrap_or_else(|_| {
+                        unreachable!("the § A.6.3c encoder refuses only multi-line values")
+                    })
+            };
             Ok(PlannedEdit {
                 edit: Edit {
                     target: Ref::FmKey(field.clone()),
