@@ -15,6 +15,20 @@
 //! read path — a file leaf the read served. Folders and raw-byte names have
 //! no servable read, so this door is their one CLI mint home.
 //!
+//! `PATH` is the agent-plane `[root:]path` spelling: a head-colon ref enters
+//! the rooted lane ([`crate::rooted`] — the read door's seam, one resolution
+//! per spelling) and mints the rel half's node in the NAMED root's bound
+//! workspace. The root reading wins unconditionally (§4.1): a typo'd or
+//! unbound root refuses as a root problem (exit 1) and never falls back to a
+//! literal mint in the ambient workspace — an `absent` minted for the literal
+//! string is a permanently TRUE premise, a false accept whose guard can never
+//! fire (card cli-fingerprint-rooted-ref-absent). A genuinely missing path
+//! inside a BOUND root still mints `absent` (§5.6 lawful absence). The wire
+//! never carries the root prefix: the request's `scope` is the rel half, and
+//! the scope echo on both faces is the caller's rooted spelling (the §4.7
+//! desync guard binds the token to the CALLER's address). `--scope-bytes`
+//! stays ambient — raw bytes carry no root head.
+//!
 //! Walls, all exit 2 before any engine contact: the mint-pair law and the
 //! empty `--scope-bytes` at parse; the §1 path law on `PATH` after the
 //! workspace resolves (the engine would refuse the same shape message-less);
@@ -44,20 +58,61 @@ mrd fingerprint mints through the running daemon (§4.7); there is no \
 in-process mint. The daemon must come up (`mrd daemon`, or the next call \
 auto-spawns it).";
 
-/// Run `mrd fingerprint [PATH | --scope-bytes B64] [--json]`. Errors
-/// [`Fail`] — exit 2 on a bad invocation or an unreachable daemon (the CLI's
-/// own refusals, before any mint); exit 1 on every engine refusal, message
-/// verbatim.
-pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
-    let parsed = Mint::parse(args)?;
-    let cwd = current_dir()?;
-    let resolved = crate::resolve::resolve_runtime(&cwd).map_err(|e| {
+/// The mint door's §1 consequence clause — what did NOT happen because the
+/// refusal fired ([`crate::path_law`] holds the family message; this door
+/// states only its own name and consequence).
+const MINT_CONSEQUENCE: &str = "Nothing was sent and no token was minted.";
+
+/// The ambient workspace for `cwd`, per the settled resolution ladder — the
+/// lane every mint took before the rooted lane existed (byte-identical to the
+/// read door's helper, the two doors sharing the lane).
+fn ambient_workspace(cwd: &std::path::Path) -> Result<std::path::PathBuf, Fail> {
+    let resolved = crate::resolve::resolve_runtime(cwd).map_err(|e| {
         Fail::tool(format!(
             "cannot resolve workspace for {}: {e}",
             cwd.display()
         ))
     })?;
-    admit_path(&parsed, &resolved.workspace)?;
+    Ok(resolved.workspace)
+}
+
+/// Run `mrd fingerprint [PATH | --scope-bytes B64] [--json]`. Errors
+/// [`Fail`] — exit 2 on a bad invocation or an unreachable daemon (the CLI's
+/// own refusals, before any mint); exit 1 on every engine refusal, message
+/// verbatim.
+pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
+    let mut parsed = Mint::parse(args)?;
+    let cwd = current_dir()?;
+    // The rooted lane (§4.1 colon law): a head-colon PATH is an agent-plane
+    // address, never a literal scope — resolve it to the named root's bound
+    // workspace before any dial, and mint the rel half THERE. The ambient
+    // lane resolves from cwd exactly as before. A resolution refusal is the
+    // address answer (exit 1), never `absent`: minting `absent` against the
+    // literal string in the ambient workspace was the false ACCEPT this lane
+    // closes.
+    let rooted_spelling = parsed
+        .path
+        .as_ref()
+        .filter(|p| crate::rooted::is_rooted(p))
+        .cloned();
+    let workspace = if let Some(spelling) = rooted_spelling {
+        match crate::rooted::resolve(&spelling, "fingerprint mint", MINT_CONSEQUENCE) {
+            Ok((rel, rooted)) => {
+                parsed.path = Some(rel);
+                parsed.display = Some(spelling);
+                rooted.workspace
+            }
+            // The refusal frames with the workspace the caller stands in —
+            // no target workspace exists to name.
+            Err(error) => {
+                let ambient = ambient_workspace(&cwd)?;
+                return Err(engine::json_refusal(parsed.format, &ambient, &error));
+            }
+        }
+    } else {
+        ambient_workspace(&cwd)?
+    };
+    admit_path(&parsed, &workspace)?;
 
     let client = registry::Client::from_default().map_err(|e| {
         Fail::tool(format!(
@@ -72,7 +127,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
             })
         ))
     })?;
-    let mut door = SocketDoor::connect(client.socket_path(), &resolved.workspace)
+    let mut door = SocketDoor::connect(client.socket_path(), &workspace)
         .map_err(|e| Fail::tool(format!("{MINT_DAEMON_DOWN} (cannot dial the daemon: {e})")))?;
 
     // The cap wall, client half (§3.2): a scoped mint rides only when the
@@ -103,13 +158,21 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     if let Some(b64) = &parsed.scope_bytes {
         request["scope_bytes"] = json!(b64);
     }
-    let body = mint_call(&mut door, &request)
-        .map_err(|e| engine::json_refusal(parsed.format, &resolved.workspace, &e))?;
+    let mut body = mint_call(&mut door, &request)
+        .map_err(|e| engine::json_refusal(parsed.format, &workspace, &e))?;
+    // The §4.7 desync guard in the caller's own frame: on the rooted lane the
+    // address the caller minted is the rooted spelling — echo it on both
+    // faces, never the rel half the wire carried. A rel-half echo reused in
+    // the ambient workspace names a DIFFERENT node: exactly the desync the
+    // echo exists to prevent.
+    if let (Some(display), Some(scope)) = (&parsed.display, body.get_mut("scope")) {
+        *scope = json!(display);
+    }
 
     match parsed.format {
         Format::Json => {
             let value = json!({
-                "workspace": resolved.workspace.display().to_string(),
+                "workspace": workspace.display().to_string(),
                 "mint": body,
             });
             println!("{}", serde_json::to_string_pretty(&value).expect("json"));
@@ -202,12 +265,7 @@ fn admit_path(parsed: &Mint, workspace: &std::path::Path) -> Result<(), Fail> {
          and no token was minted."
             .to_owned()
     } else {
-        crate::path_law::bad_path_message(
-            workspace,
-            path,
-            "fingerprint mint",
-            "Nothing was sent and no token was minted.",
-        )
+        crate::path_law::bad_path_message(workspace, path, "fingerprint mint", MINT_CONSEQUENCE)
     };
     let mut error = ErrorBody::new(wire::ErrorCode::BadPath);
     error.path = Some(WirePath(path.clone()));
@@ -225,6 +283,11 @@ struct Mint {
     /// bytes (§5.4). Mutually exclusive with [`Self::path`] at parse.
     scope_bytes: Option<String>,
     format: Format,
+    /// The rooted lane's typed spelling (`root:rel`) — the address the caller
+    /// minted, echoed on both faces in place of the wire's rel half (the §4.7
+    /// desync guard binds the token to the CALLER's address). `None` on the
+    /// ambient lane.
+    display: Option<String>,
 }
 
 impl Mint {
@@ -278,6 +341,7 @@ impl Mint {
             path,
             scope_bytes,
             format: if json { Format::Json } else { Format::Human },
+            display: None,
         })
     }
 }
