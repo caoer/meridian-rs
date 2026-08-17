@@ -456,6 +456,8 @@ mod tests {
             frame[field] = match field {
                 "dry" => json!(true),
                 "now" => json!("2026-07-26T13:30:00-04:00"),
+                // § A.2.1: the passthrough is an object of string values.
+                "fields" => json!({"k": "v"}),
                 _ => json!("x"),
             };
             let op = super::decode::decode(&obj(frame), super::rev::Rev::V3)
