@@ -916,7 +916,7 @@ body
 }
 
 /// The verbatim half of ⑤-F2's boundary: a FRESH value still lands AS SENT —
-/// this plane is raw-grain by contract (s2fix_run_plane_fp pins the raw
+/// this plane is raw-grain by contract (`s2fix_run_plane_fp` pins the raw
 /// edges), so the fix is preservation-only and fresh values are untouched.
 /// The follow-up value-identical write of the same string moves nothing:
 /// either the preservation arm fires, or the verbatim arm reproduces the
