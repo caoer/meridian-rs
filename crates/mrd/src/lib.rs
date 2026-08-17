@@ -31,6 +31,7 @@ mod reconcile_cmd;
 mod repair_cmd;
 mod resolve;
 mod rm_cmd;
+mod rooted;
 // The type-2 retirement DSL. Public because the coverage census asserts that the set of reason
 // words its fixtures exercise is the set `Reason::ALL` declares.
 pub mod retire_cmd;
@@ -225,7 +226,17 @@ usage:
                            (auto-spawned) or in-process.
   mrd read <PATH>[#FRAG] [--section SEL]
                            composed read at ONE engine snapshot (daemon or
-                           in-process). No --section = section map alone (dewey
+                           in-process). PATH is the agent-plane `[root:]path`
+                           spelling (address-grammar §4.1): a rooted ref reads
+                           inside the named root's workspace from the machine
+                           mount table (~/MERIDIAN.md, fresh per call) — the
+                           same name→workspace binding MCP serves. The root
+                           reading wins on a head colon, never a literal path:
+                           a typo'd or unbound root refuses (exit 1) naming
+                           the bound roots, and never falls back to an ambient
+                           lookup. Rooted reach is this door's only root: lane
+                           today; every other door stays workspace-relative.
+                           No --section = section map alone (dewey
                            n, depth, title, words, sec_rev) under the read's
                            fingerprint (the fp put --if-fingerprint takes).
                            --section (repeatable: heading path, dewey, or
