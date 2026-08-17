@@ -234,8 +234,10 @@ usage:
                            reading wins on a head colon, never a literal path:
                            a typo'd or unbound root refuses (exit 1) naming
                            the bound roots, and never falls back to an ambient
-                           lookup. Rooted reach is this door's only root: lane
-                           today; every other door stays workspace-relative.
+                           lookup. The rooted lane spans read, fingerprint,
+                           resolve, and put --scope (the premise spelling,
+                           accepted for the workspace the put writes); every
+                           other position stays workspace-relative.
                            No --section = section map alone (dewey
                            n, depth, title, words, sec_rev) under the read's
                            fingerprint (the fp put --if-fingerprint takes).
@@ -308,7 +310,14 @@ usage:
                            --if-fingerprint = world-grain guard.
                            --scope PATH pairs it to that node (sent only
                            when hello serves scoped-guards; taught
-                           refusal otherwise, nothing sent).
+                           refusal otherwise, nothing sent). --scope takes
+                           [root:]path (§4.1): a rooted scope is accepted
+                           when the named root binds the workspace this
+                           put writes — a rooted mint's echo pastes beside
+                           its token; the wire carries the rel half. A
+                           root binding elsewhere, or an unbound root,
+                           refuses naming the fault (exit 1), never as
+                           premise coverage.
                            --scope-bytes B64 = the same premise for a
                            raw-byte node name (base64url over the raw
                            path bytes, §5.4); rides the wire as one
@@ -569,8 +578,11 @@ options:
   --if-fingerprint FP      (script, put, pin) world-grain guard: refuse unless
                            the workspace still stands at FP.
   --scope PATH             (put) narrows --if-fingerprint to PATH; pair
-                           required. Sent only when hello serves scoped-guards;
-                           otherwise taught refusal, nothing sent.
+                           required. Takes [root:]path (§4.1): a rooted scope
+                           is accepted when the named root binds the workspace
+                           the put writes. Sent only when hello serves
+                           scoped-guards; otherwise taught refusal, nothing
+                           sent.
   --scope-bytes B64        (put, fingerprint) the raw-byte node spelling:
                            base64url over the raw path bytes, for names the
                            UTF-8 Path noun cannot carry (§5.4). On put it
