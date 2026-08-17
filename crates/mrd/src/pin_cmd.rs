@@ -3,7 +3,7 @@
 //! fingerprint.
 //!
 //! ```text
-//! mrd pin <PAGE> <TARGET>#<SELECTOR> [--vibe] [--dry] [--json]
+//! mrd pin <PAGE> <TARGET>#<SELECTOR> [--fingerprint TOKEN] [--vibe] [--dry] [--json]
 //! ```
 //!
 //! `PAGE` is the pinning page — the drawing end, whose lock records the claim
@@ -19,6 +19,11 @@
 //! Pin-proof requiredness keys on a daemon-derived session identity, and a CLI
 //! invocation has no session: the bare `mrd pin` is local-operator-trusted and
 //! may pin proofless, exactly as `mrd put` bypasses the host's authz.
+//!
+//! `--fingerprint` supplies the § A.3 proof anyway: trust excuses absence,
+//! never a wrong token, so a supplied token is always verified — the engine
+//! recomputes the live token under the write flock, and a wrong one refuses
+//! `pin_proof_required` with nothing written.
 //!
 //! Exit triad: 0 pinned (or `--dry` rehearsed) / 1 refused (`pin_proof_required`,
 //! `pin_target_missing`, `write_conflict`, an armed gate refusal — the engine's
@@ -42,7 +47,8 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         ))
     })?;
     // The CLI stamps no provenance: an absent actor is the local-operator trust
-    // door, so proof is not required of it (§ A.3 proof law) and none is sent.
+    // door, so proof is not required of it (§ A.3 proof law) — but a token the
+    // caller does supply rides the request and is verified engine-side.
     // A pin is the whole batch. `--force` is the local-operator refuse→rewrite
     // so the wire guard does not demand a node rev the pin verb never held
     // (the lock-block edit is engine-authored).
@@ -50,7 +56,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         target: WirePath(parsed.target.clone()),
         selector: wire::ReadSel::parse(&parsed.selector),
         vibe: parsed.vibe.then_some(true),
-        fingerprint: None,
+        fingerprint: parsed.fingerprint.clone(),
         sec_rev: None,
     };
     let mut request = json!({
@@ -136,6 +142,8 @@ struct Pin {
     target: String,
     /// The selector inside the target.
     selector: String,
+    /// `--fingerprint`: the supplied § A.3 proof token, verified engine-side.
+    fingerprint: Option<String>,
     vibe: bool,
     dry: bool,
     format: Format,
@@ -144,14 +152,22 @@ struct Pin {
 impl Pin {
     fn parse(args: &[String]) -> Result<Self, Fail> {
         let mut positional: Vec<String> = Vec::new();
+        let mut fingerprint: Option<String> = None;
         let mut vibe = false;
         let mut dry = false;
         let mut json = false;
-        for arg in args {
+        let mut it = args.iter();
+        while let Some(arg) = it.next() {
             match arg.as_str() {
                 "--json" => json = true,
                 "--vibe" => vibe = true,
                 "--dry" => dry = true,
+                "--fingerprint" => {
+                    let value = it
+                        .next()
+                        .ok_or_else(|| Fail::tool("--fingerprint needs a value".to_owned()))?;
+                    fingerprint = Some(value.clone());
+                }
                 flag if flag.starts_with('-') => {
                     return Err(Fail::tool(format!("unknown flag: {flag}")));
                 }
@@ -182,6 +198,7 @@ impl Pin {
             page: page.clone(),
             target: target.to_owned(),
             selector: selector.to_owned(),
+            fingerprint,
             vibe,
             dry,
             format: if json { Format::Json } else { Format::Human },
@@ -218,11 +235,25 @@ mod tests {
         let p =
             Pin::parse(&argv(&["a.md", "b.md#A", "--vibe", "--dry", "--json"])).expect("parses");
         assert!(p.vibe && p.dry);
+        assert!(p.fingerprint.is_none(), "no token was supplied");
         assert!(matches!(p.format, Format::Json));
 
         let bad = Pin::parse(&argv(&["a.md", "b.md#A", "--nope"])).expect_err("refused");
         assert_eq!(bad.code, 2);
         assert!(bad.message.contains("--nope"), "{}", bad.message);
+    }
+
+    /// `--fingerprint` carries the supplied § A.3 proof token through to the
+    /// parsed invocation; a valueless flag refuses exit 2 and names itself.
+    #[test]
+    fn a_supplied_fingerprint_lands_and_a_valueless_flag_refuses() {
+        let token = "fp1.b3:0000000000000000000000000000000000000000000000000000000000000000";
+        let p = Pin::parse(&argv(&["a.md", "b.md#A", "--fingerprint", token])).expect("parses");
+        assert_eq!(p.fingerprint.as_deref(), Some(token));
+
+        let bad = Pin::parse(&argv(&["a.md", "b.md#A", "--fingerprint"])).expect_err("refused");
+        assert_eq!(bad.code, 2);
+        assert!(bad.message.contains("--fingerprint"), "{}", bad.message);
     }
 
     /// A page-level pin cannot localize drift, so the grammar refuses one and says why.
