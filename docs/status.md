@@ -108,10 +108,13 @@ mrd read <PATH>[#FRAG] [--section SEL]
  with the bound names enumerated (the pin door's
  refusal family, exit 1, {workspace,error} under
  --json) instead of degrading into an ambient lookup.
- The rooted lane spans the read, mint, and resolve
- doors — `mrd fingerprint` and `mrd resolve` resolve
- `[root:]path` through the same seam — while every
- other CLI door keeps its workspace-relative grammar. SEL is a
+ The rooted lane spans the read, mint, resolve, and
+ put-premise doors — `mrd fingerprint` and `mrd
+ resolve` resolve `[root:]path` through the same seam,
+ and `mrd put --scope` accepts a rooted scope for the
+ workspace it writes — while every other CLI position
+ (the write TARGET included, §4.5 D11) keeps its
+ workspace-relative grammar. SEL is a
  heading chain, a `^id`, or a dewey ordinal — the
  chain joins on `/` and that delimiter is dead for
  heading text (§ the joined selector coat). A section
@@ -160,6 +163,10 @@ mrd fingerprint [PATH | --scope-bytes B64] [--json]
  names the root's bound workspace — token and address
  stay paired in the caller's own frame (the §4.7
  desync guard); the wire carries the rel half only.
+ The echo is copy-pasteable as minted: `mrd put
+ --scope` accepts the rooted spelling for the
+ workspace it writes, so token and echoed scope paste
+ from one mint into one put verbatim.
  `--scope-bytes` stays ambient — raw bytes carry no
  root head. Exactly one spelling — a mint names ONE
  node (§4.7); both refuse at parse, exit 2. Scoped
@@ -189,8 +196,26 @@ mrd put <PATH> [--dry | --validate] [--force] [--actor A] [--now T]
  node (wire-contract §5.4): FP is then that node's
  scoped token from the §4.7 mint arm, not the world
  value — a disjoint sibling's birth no longer refuses
- the put. The pair law is the CLI's own wall: `--scope`
- without `--if-fingerprint` is half a premise, exit 2.
+ the put. The scope takes the agent-plane `[root:]path`
+ spelling (address-grammar §4.1 colon law, the mint
+ door's own seam): a rooted scope is accepted exactly
+ when the named root binds the workspace this put
+ writes — the spelling a rooted §4.7 mint echoes
+ pastes beside its token verbatim — and the wire
+ carries the rel half only (the §5.4 `scope` field
+ stays workspace-relative on the wire). The root
+ reading wins on a head colon, never a literal node
+ name: a bound root whose workspace is NOT the one
+ this put writes refuses naming both workspaces, and a
+ typo'd or unbound root refuses as a root problem with
+ the bound names enumerated (exit 1, {workspace,error}
+ under --json, the seam's refusal family) — a rooted
+ scope never surfaces as the §5.5 "no premise covers"
+ coverage refusal. The write TARGET keeps its
+ workspace-relative grammar (§4.5 D11: a rooted PATH
+ still refuses at the write door). The pair law is
+ the CLI's own wall: `--scope` without
+ `--if-fingerprint` is half a premise, exit 2.
  The §1 path law is the same wall: a `--scope` spelling
  the law refuses (absolute, `.`/`..`/empty segment, or
  empty — the unquoted-shell-variable mistake) refuses
