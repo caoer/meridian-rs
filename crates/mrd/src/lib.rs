@@ -717,6 +717,10 @@ fn version() -> String {
 /// Parse `args` (argv without the program name) and run the selected verb.
 #[must_use]
 pub fn run(args: &[String]) -> ExitCode {
+    // The middleware door's ctx.sql backend (armed-plane Part A2): every mrd
+    // process can host an in-process write, so the projection seam is
+    // installed unconditionally at entry (idempotent).
+    registry::mw_sql::install();
     match dispatch(args) {
         Ok(()) => ExitCode::from(EXIT_OK),
         Err(fail) => {

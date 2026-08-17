@@ -9,6 +9,7 @@ use std::process::{Command, Output};
 
 use fs::WorkspaceRoot;
 use receipt::anchor::ObjectAnchor;
+use std::collections::BTreeMap;
 use wire::Path as WirePath;
 use wire_serve::write::{CreateArgs, create};
 
@@ -158,6 +159,7 @@ fn produce(root: &WorkspaceRoot, path: &str, body: &str) {
         now: None,
         if_root: None,
         dry: false,
+        fields: BTreeMap::default(),
     };
     create(root, None, &args, &[])
         .unwrap_or_else(|e| panic!("production create {path} refused: {e:?}"));

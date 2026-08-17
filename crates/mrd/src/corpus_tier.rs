@@ -1323,6 +1323,7 @@ fn apply_production_edit(
         edits,
         plan_edits: Vec::new(),
         pin: None,
+        fields: BTreeMap::default(),
     };
     // Exit 2, not the findings leg: the SPEC declared an edit the engine will not perform, which
     // is a bad input to this harness rather than the engine refusing a caller's request. The

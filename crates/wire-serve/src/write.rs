@@ -24,7 +24,7 @@
 //! and re-tell the just-committed change as external. The returned frame is
 //! data for the caller's response; a ringless in-process caller discards it.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::io::ErrorKind;
 use std::path::{Path as FsPath, PathBuf};
@@ -36,8 +36,8 @@ use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use policy::defs::multi_line_value_refusal;
 use wire::{
     Armed, ArmedEdit, Delta, DeltaFile, DeltaFrame, Edit, EditShape, ErrorBody, ErrorCode,
-    HpathSeg, NodeRev, Path, PutAt, ReceiptAddr, ReceiptFact, Referrer, ReferrerKind, ResponseBody,
-    Root, SecRef, Severity, Span, Verdict, WouldCorruptFamily,
+    HpathSeg, MwIntent, NodeRev, Path, PutAt, ReceiptAddr, ReceiptFact, Referrer, ReferrerKind,
+    ResponseBody, Root, SecRef, Severity, Span, Verdict, WouldCorruptFamily,
 };
 
 use crate::read::{ambiguous, to_model_ref};
@@ -310,6 +310,9 @@ pub struct SpliceArgs {
     /// same [`commit_batch`] rename. A pin-only splice carries no `edits`. The
     /// pin's actor is `self.actor` and nothing else.
     pub pin: Option<wire::PinSpec>,
+    /// § A.2.1 opaque passthrough, delivered to middleware verbatim as
+    /// `ctx.fields`. The engine interprets NO key.
+    pub fields: BTreeMap<String, String>,
 }
 
 /// The outcome of the write choke-point: the wire `Splice` response body plus,
@@ -443,7 +446,7 @@ pub fn splice(
     // lowered edits: `Some(title)` exactly on `create` rows, whose armed fact
     // names the BORN section (§ A.3 create door); the native face has no
     // birth shape, so its annotations are all `None`.
-    let (mut effective_edits, born) = if args.plan_edits.is_empty() {
+    let (mut effective_edits, mut born) = if args.plan_edits.is_empty() {
         let n = args.edits.len();
         (args.edits.clone(), vec![None; n])
     } else {
@@ -474,10 +477,9 @@ pub fn splice(
     premise_guard(&door, &args.premises, &root_before)?;
     let bypassed =
         crate::guard::validity_gate(args.force, &args.path, demands, &mut effective_edits)?;
-    let effective_edits = &effective_edits[..];
 
-    let (model_edits, before_facts) =
-        model_edits_and_before_facts(&doc, effective_edits, &args.path)?;
+    let (model_edits, mut before_facts) =
+        model_edits_and_before_facts(&doc, &effective_edits, &args.path)?;
     let mut batch = model::SpliceRequest {
         // The client's world guard was honored above, against the root it
         // actually pinned. The batch re-guards on the CURRENT root: a pin's
@@ -503,7 +505,12 @@ pub fn splice(
     ) {
         model::SpliceVerdict::Validated(b) => b,
         refused => {
-            return Err(verdict_to_wire(&refused, effective_edits, &doc, &args.path));
+            return Err(verdict_to_wire(
+                &refused,
+                &effective_edits,
+                &doc,
+                &args.path,
+            ));
         }
     };
 
@@ -513,11 +520,34 @@ pub fn splice(
     // doc is evaluating the committed doc.
     let mut after_doc = build_after_doc(&doc, &sealed, &args.path);
 
+    // The middleware door (armed-plane Part A2, § A.2.1): one eval per armed
+    // in-scope middleware page, id ascending, over the pending set — after
+    // CAS/validation, before bytes land. Self transforms join THIS batch and
+    // re-run everything below (strip, translation, guards, I4, the check
+    // gate), so a middleware cannot smuggle bytes past an armed check;
+    // cross-file transforms and births become sealed-set members; sends
+    // become response intents the host realizes.
+    let mut sealed = sealed;
+    let mw = run_door_middleware(
+        root,
+        &args.path,
+        args.actor.as_deref(),
+        args.force,
+        &args.fields,
+        &doc,
+        &root_before,
+        &mut effective_edits,
+        &mut born,
+        &mut batch,
+        &mut sealed,
+        &mut after_doc,
+        &mut before_facts,
+    )?;
+
     // The `@fp` strip runs over the candidate. It rewrites the batch's payloads
     // (so `commit_batch`'s re-validation lands the same bytes judged here) and
     // leaves a document-grain assertion behind it: any token still standing in
     // a claim-link position refuses loud instead of landing silently.
-    let mut sealed = sealed;
     strip_fp_candidate(
         &doc,
         &root_before,
@@ -554,7 +584,7 @@ pub fn splice(
 
     let armed_edits = simulate_armed_edits(
         after_doc.document(),
-        effective_edits,
+        &effective_edits,
         &before_facts,
         &born,
         &sealed,
@@ -603,6 +633,48 @@ pub fn splice(
     // Empty for every unforced write.
     verdicts.extend(crate::guard::bypass_verdicts(&bypassed, &doc, &args.path));
 
+    // Middleware members run the SAME single-form pipeline at their own paths
+    // (validate → strip → translate → guards → I4 → check gate), and births
+    // gate as births — any fault refuses the whole request with nothing
+    // landed (validate-all-then-apply, § A.2.1).
+    let mut mw_entries: Vec<SetEntryState> = Vec::new();
+    if !mw.members.is_empty() {
+        let member_args = SpliceSetArgs {
+            id: args.id,
+            files: mw.members.clone(),
+            origin: crate::guard::Origin::InProcess,
+            actor: args.actor.clone(),
+            now: args.now.clone(),
+            receipt: None,
+            if_root: None,
+            premises: Vec::new(),
+            dry: args.dry,
+            force: false,
+        };
+        for file in &member_args.files {
+            let entry =
+                validate_set_member(root, &member_args, file, &root_before, &[], &mut verdicts)
+                    .map_err(|e| mw_member_refusal(&file.path, e))?;
+            mw_entries.push(entry);
+        }
+    }
+    for (path, candidate) in &mw.births {
+        verdicts.extend(
+            crate::gate::gate_write(
+                root,
+                &crate::gate::absent_doc(path),
+                candidate.document(),
+                &[],
+                policy::ChangeOp::Create,
+                args.actor.as_deref(),
+                false,
+                candidate.document(),
+            )
+            .map_err(|e| mw_member_refusal(path, e))?
+            .verdicts,
+        );
+    }
+
     // Dry short-circuit (§4.4 batch law): everything except disk — no receipt,
     // no root advance, no Delta, no mkdir.
     if args.dry {
@@ -617,6 +689,8 @@ pub fn splice(
                     file_rev_after: None,
                     edits: armed_edits,
                     effects: Vec::new(),
+                    // § A.2.1: intents ride non-dry successes only.
+                    intents: None,
                 },
                 receipt: None,
                 root_before,
@@ -712,7 +786,7 @@ pub fn splice(
         Some(addr) => Some(receipt_input(
             root,
             args,
-            effective_edits,
+            &effective_edits,
             &root_before,
             &armed_edits,
             &born,
@@ -720,47 +794,76 @@ pub fn splice(
         )?),
         None => None,
     };
-    // The batch moves into the commit seam, so the edits the reaction reports
-    // on are captured while they are still here. The feeder below runs only if
-    // `commit_batch` succeeds.
-    let landed_edits = batch.edits.clone();
-    let mut frame = commit_batch(
-        seq,
-        // The workspace rides the flock, so root/flock cannot disagree.
-        &flock,
-        &CommitRequest {
+    // The commit: the plain single-file batch when middleware compiled no
+    // members, or ONE sealed set carrying the caller's batch, every
+    // middleware member, and every birth (§ A.2.1 — one root advance, one
+    // Delta of every file, receipt last).
+    let frame = if mw_entries.is_empty() && mw.births.is_empty() {
+        commit_batch(
+            seq,
+            // The workspace rides the flock, so root/flock cannot disagree.
+            &flock,
+            &CommitRequest {
+                content_path: args.path.0.clone(),
+                batch,
+                receipt: receipt_input,
+                actor: args.actor.clone(),
+                now: args.now.clone(),
+                promotion: promotion_row,
+            },
+            &door.cache,
+        )
+        .map_err(|e| match e {
+            CommitError::Refused(v) => verdict_to_wire(&v, &effective_edits, &doc, &args.path),
+            CommitError::Env(err) => err,
+            CommitError::Io(err) => commit_io_to_wire(&err, &args.path),
+        })?
+    } else {
+        let mut entries: Vec<CommitSetEntry> = Vec::with_capacity(1 + mw_entries.len());
+        entries.push(CommitSetEntry::Edit {
             content_path: args.path.0.clone(),
             batch,
-            receipt: receipt_input,
-            actor: args.actor.clone(),
-            now: args.now.clone(),
-            promotion: promotion_row,
-        },
-        &door.cache,
-    )
-    .map_err(|e| match e {
-        CommitError::Refused(v) => verdict_to_wire(&v, effective_edits, &doc, &args.path),
-        CommitError::Env(err) => err,
-        CommitError::Io(err) => commit_io_to_wire(&err, &args.path),
-    })?;
-
-    // Reaction mode (C3): evaluated only after the batch landed, and it can
-    // neither refuse nor mutate what landed (§4.4 — the notify path attaches at
-    // reaction mode, never at the gate). The outcome rides two carriers: this
-    // seq's frame, which the host flushes to subscribers, and the caller's
-    // `armed` feedback below.
-    //
-    // A fault means "emit no reaction", never "fail the write". It is not
-    // dropped either: it rides the frame as a `wire::EffectFinding::ArmedFault`.
-    let armed_effects = crate::reaction::feed_landed_change(
-        root,
-        &doc,
-        after_doc.document(),
-        &landed_edits,
-        policy::ChangeOp::Splice,
-        args.actor.as_deref(),
-    );
-    frame.effects.clone_from(&armed_effects);
+        });
+        entries.extend(mw_entries.iter().map(|e| CommitSetEntry::Edit {
+            content_path: e.path.0.clone(),
+            batch: e.batch.clone(),
+        }));
+        entries.extend(mw.births.iter().map(|(p, c)| CommitSetEntry::Birth {
+            content_path: p.0.clone(),
+            body: c.raw().to_string(),
+        }));
+        commit_set(
+            seq,
+            &flock,
+            &CommitSetRequest {
+                entries,
+                receipt: receipt_input,
+                actor: args.actor.clone(),
+                now: args.now.clone(),
+                promotion: promotion_row,
+            },
+            &door.cache,
+        )
+        .map_err(|e| match e {
+            CommitSetError::Refused { index, verdict } => {
+                // Entry 0 is the caller's own batch; later indexes are the
+                // middleware members, in member order (births never validate
+                // here — their occupancy check is the fs verify wall).
+                if index == 0 {
+                    verdict_to_wire(&verdict, &effective_edits, &doc, &args.path)
+                } else if let Some(entry) = mw_entries.get(index - 1) {
+                    mw_member_refusal(
+                        &entry.path,
+                        verdict_to_wire(&verdict, &entry.effective_edits, &entry.doc, &entry.path),
+                    )
+                } else {
+                    bad_request(format!("set commit refused at entry {index}: {verdict:?}"))
+                }
+            }
+            CommitSetError::Env(err) => err,
+            CommitSetError::Io(err) => commit_io_to_wire(&err, &args.path),
+        })?
+    };
 
     // The receipt FACT from the true post-state (host-block-leaf grain).
     let receipt_fact = resolve_receipt_fact(root, args.receipt.as_ref())?;
@@ -782,12 +885,12 @@ pub fn splice(
                 // stays `root_after`.
                 file_rev_after: Some(NodeRev(after_doc.document().root.node_rev.0.clone())),
                 edits: armed_edits,
-                // What this write armed, stated synchronously to the caller:
-                // matched rules, their intents and each canonical receipt
-                // address — never who gets notified, and never that anything
-                // was delivered. This response is complete before the host
-                // flushes the frame to any subscriber.
-                effects: armed_effects,
+                // The put-path HOOK feed is retired (§ A.2.1): no reaction
+                // envelopes ride a write response. What this write armed on
+                // the middleware plane rides `intents` — never who gets
+                // notified, never that anything was delivered.
+                effects: Vec::new(),
+                intents: Some(mw.intents),
             },
             receipt: receipt_fact,
             root_before: frame.delta.root_before.clone(),
@@ -800,6 +903,455 @@ pub fn splice(
         committed: Some(frame),
         candidate: None,
     })
+}
+
+// ---------------------------------------------------------------------------
+// The middleware door (armed-plane Part A2, wire-contract § A.2.1)
+// ---------------------------------------------------------------------------
+
+/// What one write's middleware evaluation compiled: cross-file members,
+/// births (each already stripped, translated, guarded), and `send` intents.
+/// Self transforms are not here — they joined the caller's own batch.
+#[derive(Default)]
+struct MwEmitted {
+    members: Vec<wire::SpliceFile>,
+    births: Vec<(Path, model::CandidateDocument)>,
+    intents: Vec<MwIntent>,
+}
+
+/// The armed in-scope middleware rows at `path`, `id` ascending. Armed-law
+/// FAULTS are not consulted here — the check gate downstream refuses them
+/// (a red/unloadable/unevaluable middleware row is `block`-mode and fails
+/// closed there), so a fault can never read as "no middleware".
+fn middleware_rows(root: &fs::WorkspaceRoot, path: &str) -> Vec<policy::ArmedRule> {
+    let law = crate::armed_disk::resolve_at(root, path);
+    let mut rows: Vec<policy::ArmedRule> = law
+        .rules()
+        .iter()
+        .filter(|armed| {
+            armed.mode().fires()
+                && armed.rule().middleware_source().is_some()
+                && armed.rule().matches_path(path)
+        })
+        .cloned()
+        .collect();
+    rows.sort_by(|a, b| a.id().as_str().cmp(b.id().as_str()));
+    rows
+}
+
+/// Stamp a middleware-member refusal with the whole-request clause.
+fn mw_member_refusal(path: &Path, mut e: Box<ErrorBody>) -> Box<ErrorBody> {
+    if e.path.is_none() {
+        e.path = Some(path.clone());
+    }
+    let clause = format!(
+        "The write refused whole at middleware member `{}`: a middleware-compiled set \
+         validates every member before any byte moves, so nothing landed.",
+        path.0
+    );
+    e.message = Some(match e.message.take() {
+        Some(msg) => format!("{msg} {clause}"),
+        None => clause,
+    });
+    e
+}
+
+/// A middleware program refusal → the wire refusal (the check gate's own
+/// `convention_fault` shape, naming each rule and citing its passing case).
+fn mw_refusal_to_wire(rule_id: &str, refusals: Vec<policy::Refusal>) -> Box<ErrorBody> {
+    crate::gate::gate_refusal_to_wire(policy::GateRefusal::Blocked {
+        violations: refusals
+            .into_iter()
+            .map(|r| policy::GateViolation {
+                rule: rule_id.to_string(),
+                message: r.message,
+                passing_scenario: r.passing_scenario,
+            })
+            .collect(),
+    })
+}
+
+/// A middleware evaluation fault → the fail-closed wire refusal, in the one
+/// armed-fault voice (`Unevaluable` — a law that cannot complete never reads
+/// as a pass).
+fn mw_fault_to_wire(row: &policy::ArmedRule, detail: String) -> Box<ErrorBody> {
+    crate::gate::gate_refusal_to_wire(policy::GateRefusal::ArmedLawFault {
+        faults: vec![policy::ArmedFault::Unevaluable {
+            row: row.row().clone(),
+            detail,
+        }],
+    })
+}
+
+/// The ONE birth mint on the middleware plane (U12 census site): a newborn's
+/// candidate from its full body bytes. Reached from `run_door_middleware`
+/// (where its stored-form guard discharges) and from `commit_set`'s birth
+/// arm, whose unified per-entry discharge re-checks it at the seam.
+fn birth_candidate(content_path: &str, body: String) -> model::CandidateDocument {
+    model::candidate_of_body(content_path, body)
+}
+
+/// The ONE overlay re-seal mint on the middleware plane (U12 census site,
+/// class ReadOnly): the pending after-state of a member or a transformed
+/// birth, fed to the `ctx.sql`/`ctx.read` world or back into the birth door's
+/// own pipeline. On the member path the value is read and dropped — the
+/// LANDING member bytes are re-minted at `commit_set` from read#2.
+fn member_overlay_candidate(
+    content_path: &str,
+    raw: &str,
+    sealed: &model::ValidatedBatch,
+) -> model::CandidateDocument {
+    model::candidate_of_batch(content_path, raw, sealed)
+}
+
+/// One wire frontmatter upsert — the shape every middleware `set_field`
+/// compiles to, on this file and on members alike.
+fn mw_upsert(key: String, value: String) -> Edit {
+    Edit {
+        target: SecRef::FmKey { fm_key: key },
+        edit: EditShape::Put {
+            at: PutAt::Upsert,
+            text: value,
+        },
+        if_node_rev: None,
+    }
+}
+
+/// Run the middleware door over one pending single-form splice (armed-plane
+/// Part A2): evaluate armed in-scope middleware `id` ascending; apply self
+/// transforms into the caller's batch (re-validating and rebuilding the
+/// candidate so the NEXT row reads the world as this one left it); compile
+/// cross-file transforms and births; collect `send` intents.
+///
+/// The overlay world `ctx.sql` / `ctx.read` query is maintained here: this
+/// file's pending bytes, every member's pending bytes, every birth.
+///
+/// # Errors
+/// A middleware `refuse` (`convention_fault` naming the rule), an evaluation
+/// fault (fail-closed), a member/birth validation refusal — in every case
+/// the write refuses whole and nothing lands.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn run_door_middleware(
+    root: &fs::WorkspaceRoot,
+    path: &Path,
+    actor: Option<&str>,
+    force: bool,
+    fields: &BTreeMap<String, String>,
+    doc: &model::Document,
+    root_before: &Root,
+    effective_edits: &mut Vec<Edit>,
+    born: &mut Vec<Option<crate::plan::Born>>,
+    batch: &mut model::SpliceRequest,
+    sealed: &mut model::ValidatedBatch,
+    after_doc: &mut model::CandidateDocument,
+    before_facts: &mut Vec<model::Target>,
+) -> Result<MwEmitted, Box<ErrorBody>> {
+    let rows = middleware_rows(root, &path.0);
+    let mut out = MwEmitted::default();
+    if rows.is_empty() {
+        return Ok(out);
+    }
+
+    // The overlay world: pending bytes shadowing disk.
+    let mut overlay: BTreeMap<String, String> = BTreeMap::new();
+    overlay.insert(path.0.clone(), after_doc.raw().to_string());
+    // Member accumulation: disk base doc + accumulated edits, first-touch order.
+    let mut member_order: Vec<String> = Vec::new();
+    let mut member_state: BTreeMap<String, (model::Document, Vec<Edit>)> = BTreeMap::new();
+
+    for row in &rows {
+        let source = row
+            .rule()
+            .middleware_source()
+            .expect("middleware_rows filtered on the leg");
+        let change = policy::derive_change(
+            doc,
+            after_doc.document(),
+            &batch.edits,
+            policy::Invocation {
+                op: policy::ChangeOp::Splice,
+                actor,
+                force,
+            },
+            &[],
+            &crate::gate::no_edges,
+        );
+        let world = crate::middleware::DoorWorld {
+            root,
+            overlay: &overlay,
+        };
+        let outcome = policy::run_middleware(
+            source,
+            &policy::MwCtxInput {
+                change: &change,
+                fields,
+            },
+            &world,
+            row.rule().limits(),
+        )
+        .map_err(|e| mw_fault_to_wire(row, e.to_string()))?;
+        if !outcome.refusals.is_empty() {
+            return Err(mw_refusal_to_wire(row.id().as_str(), outcome.refusals));
+        }
+
+        let mut self_added = false;
+        let mut members_touched: Vec<String> = Vec::new();
+        for emit in outcome.emits {
+            match emit {
+                policy::MwEmit::SetField {
+                    path: p,
+                    key,
+                    value,
+                } => {
+                    if p == path.0 {
+                        effective_edits.push(mw_upsert(key, value));
+                        born.push(None);
+                        self_added = true;
+                    } else if out.births.iter().any(|(b, _)| b.0 == p) {
+                        return Err(bad_request(format!(
+                            "middleware `{}` edits `{p}`, a file birthed in this same set — \
+                             fold the value into the create's body instead (V1 limit)",
+                            row.id()
+                        )));
+                    } else {
+                        if !member_state.contains_key(&p) {
+                            // Member paths come from a Starlark program —
+                            // confine them exactly as caller paths are.
+                            path_confined(root, &Path(p.clone()))?;
+                            let base = load_doc(root, &Path(p.clone()))
+                                .map_err(|e| mw_member_refusal(&Path(p.clone()), e))?;
+                            member_state.insert(p.clone(), (base, Vec::new()));
+                            member_order.push(p.clone());
+                        }
+                        if let Some((_, edits)) = member_state.get_mut(&p) {
+                            edits.push(mw_upsert(key, value));
+                        }
+                        if !members_touched.contains(&p) {
+                            members_touched.push(p);
+                        }
+                    }
+                }
+                policy::MwEmit::Create { path: p, body } => {
+                    let birth_path = Path(p.clone());
+                    path_confined(root, &birth_path)?;
+                    if p == path.0
+                        || member_state.contains_key(&p)
+                        || out.births.iter().any(|(b, _)| b.0 == p)
+                    {
+                        return Err(bad_request(format!(
+                            "middleware `{}` births `{p}`, which this set already writes — \
+                             one path, one member",
+                            row.id()
+                        )));
+                    }
+                    if let Some(actual) = occupant_rev(root, &birth_path)? {
+                        return Err(mw_member_refusal(
+                            &birth_path,
+                            cas_mismatch(&absent_rev(), &actual),
+                        ));
+                    }
+                    // The create door's own body pipeline: document-grain
+                    // strip → stored-form translation → guards.
+                    let body = syntax::strip_fp(&body);
+                    let body = translate_stored_body(body, &birth_path)
+                        .map_err(|e| mw_member_refusal(&birth_path, e))?;
+                    let candidate = birth_candidate(&birth_path.0, body.into_owned());
+                    stored_form_guard_lazy(None, &candidate, &birth_path)
+                        .map_err(|e| mw_member_refusal(&birth_path, e))?;
+                    if !syntax::fp_removals(candidate.raw()).is_empty() {
+                        return Err(bad_request(format!(
+                            "refused: an @fp claim token survived the document-grain strip in \
+                             {p} — the middleware birth was refused rather than landing a \
+                             fingerprint claim the engine never minted"
+                        )));
+                    }
+                    lock_artifact_guard(
+                        &crate::gate::absent_doc(&birth_path),
+                        candidate.document(),
+                        None,
+                        &birth_path,
+                    )
+                    .map_err(|e| mw_member_refusal(&birth_path, e))?;
+                    overlay.insert(p.clone(), candidate.raw().to_string());
+                    out.births.push((birth_path, candidate));
+                }
+                policy::MwEmit::Send { to, body } => {
+                    out.intents.push(MwIntent {
+                        kind: "send".to_string(),
+                        to,
+                        body,
+                        rule_id: row.id().as_str().to_string(),
+                    });
+                }
+            }
+        }
+
+        // Re-seal the caller's batch so the NEXT row's ctx.after and the
+        // overlay carry this row's self transforms.
+        if self_added {
+            let (model_edits, facts) = model_edits_and_before_facts(doc, effective_edits, path)?;
+            batch.edits = model_edits;
+            *before_facts = facts;
+            *sealed = match model::validate_batch(
+                doc,
+                Some(&model::MerkleRoot(root_before.0.clone())),
+                batch,
+                None,
+            ) {
+                model::SpliceVerdict::Validated(b) => b,
+                refused => {
+                    return Err(verdict_to_wire(&refused, effective_edits, doc, path));
+                }
+            };
+            *after_doc = build_after_doc(doc, sealed, path);
+            overlay.insert(path.0.clone(), after_doc.raw().to_string());
+        }
+
+        // Re-seal each touched member's pending bytes for the overlay.
+        for p in members_touched {
+            let member_path = Path(p.clone());
+            let Some((base, edits)) = member_state.get(&p) else {
+                continue;
+            };
+            let (model_edits, _) = model_edits_and_before_facts(base, edits, &member_path)
+                .map_err(|e| mw_member_refusal(&member_path, e))?;
+            let member_batch = model::SpliceRequest {
+                if_root: None,
+                edits: model_edits,
+                engine: None,
+            };
+            let member_sealed = match model::validate_batch(base, None, &member_batch, None) {
+                model::SpliceVerdict::Validated(b) => b,
+                refused => {
+                    return Err(mw_member_refusal(
+                        &member_path,
+                        verdict_to_wire(&refused, edits, base, &member_path),
+                    ));
+                }
+            };
+            let candidate = member_overlay_candidate(&p, &base.raw, &member_sealed);
+            overlay.insert(p.clone(), candidate.raw().to_string());
+        }
+    }
+
+    out.members = member_order
+        .into_iter()
+        .filter_map(|p| {
+            member_state.remove(&p).map(|(_, edits)| wire::SpliceFile {
+                path: Path(p),
+                edits,
+                plan_edits: Vec::new(),
+            })
+        })
+        .collect();
+    Ok(out)
+}
+
+/// The birth door's middleware run (create): self transforms + intents only —
+/// a middleware firing cross-file edits or births from a birth refuses loud
+/// (armed-plane Part A2, V1 limit).
+///
+/// # Errors
+/// As [`run_door_middleware`], plus the V1 cross-file refusal.
+fn run_birth_middleware(
+    root: &fs::WorkspaceRoot,
+    path: &Path,
+    actor: Option<&str>,
+    fields: &BTreeMap<String, String>,
+    mut candidate: model::CandidateDocument,
+) -> Result<(model::CandidateDocument, Vec<MwIntent>), Box<ErrorBody>> {
+    let rows = middleware_rows(root, &path.0);
+    let mut intents = Vec::new();
+    if rows.is_empty() {
+        return Ok((candidate, intents));
+    }
+    let absent = crate::gate::absent_doc(path);
+    let mut overlay: BTreeMap<String, String> = BTreeMap::new();
+    overlay.insert(path.0.clone(), candidate.raw().to_string());
+
+    for row in &rows {
+        let source = row
+            .rule()
+            .middleware_source()
+            .expect("middleware_rows filtered on the leg");
+        let change = policy::derive_change(
+            &absent,
+            candidate.document(),
+            &[],
+            policy::Invocation {
+                op: policy::ChangeOp::Create,
+                actor,
+                force: false,
+            },
+            &[],
+            &crate::gate::no_edges,
+        );
+        let world = crate::middleware::DoorWorld {
+            root,
+            overlay: &overlay,
+        };
+        let outcome = policy::run_middleware(
+            source,
+            &policy::MwCtxInput {
+                change: &change,
+                fields,
+            },
+            &world,
+            row.rule().limits(),
+        )
+        .map_err(|e| mw_fault_to_wire(row, e.to_string()))?;
+        if !outcome.refusals.is_empty() {
+            return Err(mw_refusal_to_wire(row.id().as_str(), outcome.refusals));
+        }
+        let mut self_edits: Vec<Edit> = Vec::new();
+        for emit in outcome.emits {
+            match emit {
+                policy::MwEmit::SetField {
+                    path: p,
+                    key,
+                    value,
+                } if p == path.0 => self_edits.push(mw_upsert(key, value)),
+                policy::MwEmit::Send { to, body } => intents.push(MwIntent {
+                    kind: "send".to_string(),
+                    to,
+                    body,
+                    rule_id: row.id().as_str().to_string(),
+                }),
+                policy::MwEmit::SetField { path: p, .. }
+                | policy::MwEmit::Create { path: p, .. } => {
+                    return Err(bad_request(format!(
+                        "middleware `{}` emits to `{p}` from the create door — the birth door \
+                         admits refuse, this-file set_field, and send only (V1 limit); route \
+                         cross-file work through a put on an existing record",
+                        row.id()
+                    )));
+                }
+            }
+        }
+        if !self_edits.is_empty() {
+            let base = build_doc(path, candidate.raw());
+            let (model_edits, _) = model_edits_and_before_facts(&base, &self_edits, path)?;
+            let mw_batch = model::SpliceRequest {
+                if_root: None,
+                edits: model_edits,
+                engine: None,
+            };
+            let mw_sealed = match model::validate_batch(&base, None, &mw_batch, None) {
+                model::SpliceVerdict::Validated(b) => b,
+                refused => {
+                    return Err(verdict_to_wire(&refused, &self_edits, &base, path));
+                }
+            };
+            candidate = model::candidate_of_batch(&path.0, &base.raw, &mw_sealed);
+            // The transformed candidate is re-guarded HERE (its own U12
+            // discharge site): a middleware value could smuggle a stored-form
+            // violation into the born bytes between the door's pre-middleware
+            // guard and the landing.
+            stored_form_guard_lazy(None, &candidate, path)?;
+            overlay.insert(path.0.clone(), candidate.raw().to_string());
+        }
+    }
+    Ok((candidate, intents))
 }
 
 // ---------------------------------------------------------------------------
@@ -946,6 +1498,7 @@ pub fn splice_set_with_cache(
                         file_rev_after: None,
                         edits: e.armed_edits,
                         effects: Vec::new(),
+                        intents: None,
                     })
                     .collect(),
                 receipt: None,
@@ -969,13 +1522,13 @@ pub fn splice_set_with_cache(
     // into the commit seam.
     let commit_entries: Vec<CommitSetEntry> = entries
         .iter()
-        .map(|e| CommitSetEntry {
+        .map(|e| CommitSetEntry::Edit {
             content_path: e.path.0.clone(),
             batch: e.batch.clone(),
         })
         .collect();
 
-    let mut frame = commit_set(
+    let frame = commit_set(
         seq,
         &flock,
         &CommitSetRequest {
@@ -983,6 +1536,7 @@ pub fn splice_set_with_cache(
             receipt: receipt_input,
             actor: args.actor.clone(),
             now: args.now.clone(),
+            promotion: None,
         },
         &door.cache,
     )
@@ -1003,28 +1557,19 @@ pub fn splice_set_with_cache(
         }
     })?;
 
-    // Reaction mode (C3): per landed member, after the set landed; outcomes
-    // ride this one frame and each member's own armed feedback.
+    // The put-path HOOK feed is retired (§ A.2.1): no reaction envelopes on
+    // write responses — send is middleware-intent vocabulary now, and the set
+    // door evaluates no middleware in V1, so its groups carry none of either.
     let mut armed_groups: Vec<Armed> = Vec::with_capacity(entries.len());
-    let mut frame_effects = Vec::new();
     for e in entries {
-        let effects = crate::reaction::feed_landed_change(
-            root,
-            &e.doc,
-            e.after_doc.document(),
-            &e.batch.edits,
-            policy::ChangeOp::Splice,
-            args.actor.as_deref(),
-        );
-        frame_effects.extend(effects.iter().cloned());
         armed_groups.push(Armed {
             file_rev_after: Some(NodeRev(e.after_doc.document().root.node_rev.0.clone())),
             path: e.path,
             edits: e.armed_edits,
-            effects,
+            effects: Vec::new(),
+            intents: None,
         });
     }
-    frame.effects = frame_effects;
 
     let receipt_fact = resolve_receipt_fact(root, args.receipt.as_ref())?;
 
@@ -1257,11 +1802,26 @@ fn receipt_set_input(
     ))
 }
 
-/// One set member at the commit seam: its path and its model batch.
+/// One set member at the commit seam: an edit (path + model batch) or a
+/// birth (path + full body bytes, post-strip/translate — armed-plane Part A2).
 #[derive(Debug, Clone)]
-pub struct CommitSetEntry {
-    pub content_path: String,
-    pub batch: model::SpliceRequest,
+pub enum CommitSetEntry {
+    /// Splice this member's sealed batch over its read#2 pre-image.
+    Edit {
+        content_path: String,
+        batch: model::SpliceRequest,
+    },
+    /// Birth this member — the destination must be absent at commit.
+    Birth { content_path: String, body: String },
+}
+
+impl CommitSetEntry {
+    fn content_path(&self) -> &str {
+        match self {
+            CommitSetEntry::Edit { content_path, .. }
+            | CommitSetEntry::Birth { content_path, .. } => content_path,
+        }
+    }
 }
 
 /// One set commit's inputs — the per-member batches plus the set-level
@@ -1272,6 +1832,11 @@ pub struct CommitSetRequest {
     pub receipt: Option<(String, model::ReceiptAppend)>,
     pub actor: Option<String>,
     pub now: Option<String>,
+    /// A pin's anchor promotion this call already landed under the same
+    /// flock — exactly [`CommitRequest::promotion`]'s law, on the set seam
+    /// (a middleware-augmented single splice may carry both a pin and
+    /// members).
+    pub promotion: Option<CommitPromotion>,
 }
 
 /// A set commit that did not emit — [`CommitError`]'s shape with the
@@ -1288,6 +1853,70 @@ pub enum CommitSetError {
     /// The atomic set write failed or the seam contract refused. `fs` names
     /// the file and the rollback outcome in the error text.
     Io(std::io::Error),
+}
+
+/// Read#2 + re-validate every set entry before any byte moves (the commit
+/// seam's own pass). A birth's read#2 is the occupancy check (verified again
+/// at the fs verify wall); its candidate is built from the body bytes the
+/// driver already gated. ONE stored-form guard discharge per entry, edit and
+/// birth alike (U12: this is the seam's single mint + discharge site).
+#[allow(clippy::type_complexity)]
+fn validate_set_entries(
+    root: &fs::WorkspaceRoot,
+    entries: &[CommitSetEntry],
+    root_before: &Root,
+) -> Result<
+    (
+        Vec<Option<model::Document>>,
+        Vec<(Option<model::ValidatedBatch>, model::CandidateDocument)>,
+    ),
+    CommitSetError,
+> {
+    let mut befores: Vec<Option<model::Document>> = Vec::with_capacity(entries.len());
+    let mut owned: Vec<(Option<model::ValidatedBatch>, model::CandidateDocument)> =
+        Vec::with_capacity(entries.len());
+    for (index, entry) in entries.iter().enumerate() {
+        let (before, sealed, candidate) = match entry {
+            CommitSetEntry::Edit {
+                content_path,
+                batch,
+            } => {
+                let before =
+                    fs::load(root, FsPath::new(content_path)).map_err(CommitSetError::Io)?;
+                let sealed = match model::validate_batch(
+                    &before,
+                    Some(&model::MerkleRoot(root_before.0.clone())),
+                    batch,
+                    None,
+                ) {
+                    model::SpliceVerdict::Validated(batch) => batch,
+                    refused => {
+                        return Err(CommitSetError::Refused {
+                            index,
+                            verdict: refused,
+                        });
+                    }
+                };
+                let candidate = model::candidate_of_batch(content_path, &before.raw, &sealed);
+                (Some(before), Some(sealed), candidate)
+            }
+            CommitSetEntry::Birth { content_path, body } => {
+                (None, None, birth_candidate(content_path, body.clone()))
+            }
+        };
+        // ONE discharge per entry, edit and birth alike (U12: one guard call
+        // site in this seam) — a birth's pre-image is absence, so its arm is
+        // the birth-door shape `stored_form_guard_lazy(None, …)`.
+        stored_form_guard_lazy(
+            before.as_ref(),
+            &candidate,
+            &Path(entry.content_path().to_string()),
+        )
+        .map_err(CommitSetError::Env)?;
+        befores.push(before);
+        owned.push((sealed, candidate));
+    }
+    Ok((befores, owned))
 }
 
 /// Commit one SET and return its one Delta (§7.1 generalized: one Delta =
@@ -1314,32 +1943,7 @@ pub fn commit_set(
     let root_before = overlaid_root(cache).map_err(CommitSetError::Env)?;
 
     // Read#2 + re-validate every member before any byte moves.
-    let mut befores: Vec<model::Document> = Vec::with_capacity(req.entries.len());
-    let mut owned: Vec<(model::ValidatedBatch, model::CandidateDocument)> =
-        Vec::with_capacity(req.entries.len());
-    for (index, entry) in req.entries.iter().enumerate() {
-        let before =
-            fs::load(root, FsPath::new(&entry.content_path)).map_err(CommitSetError::Io)?;
-        let sealed = match model::validate_batch(
-            &before,
-            Some(&model::MerkleRoot(root_before.0.clone())),
-            &entry.batch,
-            None,
-        ) {
-            model::SpliceVerdict::Validated(batch) => batch,
-            refused => {
-                return Err(CommitSetError::Refused {
-                    index,
-                    verdict: refused,
-                });
-            }
-        };
-        let candidate = model::candidate_of_batch(&entry.content_path, &before.raw, &sealed);
-        stored_form_guard_lazy(Some(&before), &candidate, &Path(entry.content_path.clone()))
-            .map_err(CommitSetError::Env)?;
-        befores.push(before);
-        owned.push((sealed, candidate));
-    }
+    let (befores, owned) = validate_set_entries(root, &req.entries, &root_before)?;
     let before_receipt = match &req.receipt {
         Some((rp, _)) => load_optional_set(root, rp)?,
         None => None,
@@ -1353,10 +1957,15 @@ pub fn commit_set(
         .zip(&befores)
         .zip(&owned)
         .map(|((entry, before), (sealed, candidate))| fs::SetMember {
-            content_path: FsPath::new(&entry.content_path),
-            batch: sealed,
-            expected_content: before.raw.as_bytes(),
-            candidate,
+            content_path: FsPath::new(entry.content_path()),
+            payload: match (sealed, before) {
+                (Some(batch), Some(before)) => fs::SetPayload::Edit {
+                    batch,
+                    expected_content: before.raw.as_bytes(),
+                    candidate,
+                },
+                _ => fs::SetPayload::Birth { candidate },
+            },
         })
         .collect();
     fs::apply_set(
@@ -1374,12 +1983,12 @@ pub fn commit_set(
     // domain-config surface. One advanced root serves the whole set.
     let mut files: Vec<DeltaFile> = Vec::new();
     for (entry, (before, (_, candidate))) in req.entries.iter().zip(befores.iter().zip(&owned)) {
-        overlay_written(cache, &entry.content_path, candidate.raw().as_bytes())
+        overlay_written(cache, entry.content_path(), candidate.raw().as_bytes())
             .map_err(CommitSetError::Env)?;
-        overlay_membership_from(cache, &entry.content_path, candidate.raw())
+        overlay_membership_from(cache, entry.content_path(), candidate.raw())
             .map_err(CommitSetError::Env)?;
-        if let Some(fd) = model::delta::file_delta(Some(before), Some(candidate.document())) {
-            files.push(wire_map::project_file_delta(&entry.content_path, &fd));
+        if let Some(fd) = model::delta::file_delta(before.as_ref(), Some(candidate.document())) {
+            files.push(wire_map::project_file_delta(entry.content_path(), &fd));
         }
     }
     if let Some((rp, append)) = &req.receipt {
@@ -1391,7 +2000,21 @@ pub fn commit_set(
             files.push(wire_map::project_file_delta(rp, &fd));
         }
     }
+    // A promotion into a file not already told above rides as its own row,
+    // and the frame spans from before the FIRST of this call's writes —
+    // [`commit_batch`]'s exact law, on the set seam.
+    if let Some(p) = &req.promotion
+        && !req.entries.iter().any(|e| e.content_path() == p.path)
+        && req.receipt.as_ref().is_none_or(|(rp, _)| *rp != p.path)
+        && let Some(fd) = model::delta::file_delta(Some(&p.before), Some(&p.after))
+    {
+        files.push(wire_map::project_file_delta(&p.path, &fd));
+    }
     let root_after = overlaid_root(cache).map_err(CommitSetError::Env)?;
+    let root_before = req
+        .promotion
+        .as_ref()
+        .map_or(root_before, |p| p.root_before.clone());
 
     let seq = crate::seq::allocate(seq, flock, &root_before, &root_after, &files);
     Ok(assemble_delta(
@@ -1443,6 +2066,9 @@ pub struct CreateArgs {
     pub if_root: Option<Root>,
     /// Dry run — everything except disk (no file, no root advance).
     pub dry: bool,
+    /// § A.2.1 opaque passthrough, delivered to middleware verbatim as
+    /// `ctx.fields`. The engine interprets NO key.
+    pub fields: BTreeMap<String, String>,
 }
 
 /// The outcome of a guarded `create` (birth). `committed`/`root_after` are absent
@@ -1461,6 +2087,9 @@ pub struct CreateOutcome {
     pub committed: Option<DeltaFrame>,
     pub verdicts: Vec<Verdict>,
     pub dry: bool,
+    /// § A.2.1 middleware intents the birth armed — `Some` (possibly empty)
+    /// on every non-dry landed birth, `None` on dry.
+    pub intents: Option<Vec<MwIntent>>,
 }
 
 /// Project a landed birth into its wire response body — one implementation both
@@ -1479,6 +2108,7 @@ pub fn create_response(path: Path, out: &CreateOutcome) -> ResponseBody {
         seq: out.committed.as_ref().map(|frame| frame.delta.seq),
         dry: out.dry.then_some(true),
         verdicts: out.verdicts.clone(),
+        intents: out.intents.clone(),
     }
 }
 
@@ -1590,6 +2220,18 @@ pub fn create_with_cache(
     // gate sees it). Its whole-file rev is the born file's rev.
     let after_doc = model::candidate_of_body(&args.path.0, body.into_owned());
 
+    // The middleware door on the birth (armed-plane Part A2): self
+    // transforms land IN the born bytes — one receipt, no unstamped birth —
+    // and `send` intents ride the reply. Every guard below judges the FINAL
+    // candidate, so a middleware cannot smuggle bytes past them.
+    let (after_doc, mw_intents) = run_birth_middleware(
+        root,
+        &args.path,
+        args.actor.as_deref(),
+        &args.fields,
+        after_doc,
+    )?;
+
     // The artifact guard on the birth path: an agent-plane cross-root address
     // still standing refuses instead of landing bytes no reader can follow. A
     // birth has no pre-image, so `None`.
@@ -1650,6 +2292,8 @@ pub fn create_with_cache(
             committed: None,
             verdicts,
             dry: true,
+            // § A.2.1: intents ride non-dry successes only.
+            intents: None,
         });
     }
 
@@ -1690,6 +2334,7 @@ pub fn create_with_cache(
         committed: Some(committed),
         verdicts,
         dry: false,
+        intents: Some(mw_intents),
     })
 }
 
@@ -1882,8 +2527,7 @@ fn referential_files(root: &fs::WorkspaceRoot) -> Result<fs::DomainFiles, Box<Er
 /// alive.
 fn inbound_referrers(target: &str, files: fs::DomainFiles) -> Vec<Referrer> {
     let (index, docs, _unserved) = fs::build_corpus(files);
-    let mut counts: std::collections::BTreeMap<(String, ReferrerKind), u64> =
-        std::collections::BTreeMap::new();
+    let mut counts: BTreeMap<(String, ReferrerKind), u64> = BTreeMap::new();
 
     for b in query::backlinks(&index, &docs, target) {
         if b.path == target {
@@ -5596,6 +6240,7 @@ mod tests {
 /// rows 13/14).
 #[cfg(test)]
 mod guarded_create_remove {
+    use std::collections::BTreeMap;
     use wire::{
         Edit, EditShape, ErrorCode, FileChange, HpathSeg, NodeRev, Path, Recovery, ReferrerKind,
         SecRef,
@@ -5625,6 +6270,7 @@ mod guarded_create_remove {
             now: None,
             if_root: None,
             dry: false,
+            fields: BTreeMap::default(),
         }
     }
 
@@ -6247,6 +6893,7 @@ mod guarded_create_remove {
             }],
             plan_edits: Vec::new(),
             pin: None,
+            fields: BTreeMap::default(),
         }
     }
 
@@ -6508,6 +7155,7 @@ mod guarded_create_remove {
 /// oracle — a fresh full-corpus law-1 disk fold the doors no longer run.
 #[cfg(test)]
 mod resident_write_path {
+    use std::collections::BTreeMap;
     use wire::{Edit, EditShape, ErrorCode, HpathSeg, NodeRev, Path, Root, SecRef};
 
     use crate::ambient_root;
@@ -6586,6 +7234,7 @@ mod resident_write_path {
             edits: vec![match_edit(old, new)],
             plan_edits: Vec::new(),
             pin: None,
+            fields: BTreeMap::default(),
         }
     }
 
@@ -6841,6 +7490,7 @@ mod resident_write_path {
             now: None,
             if_root: None,
             dry: false,
+            fields: BTreeMap::default(),
         }
     }
 

@@ -40,6 +40,7 @@ mod declaration;
 pub mod defs;
 mod gate;
 mod hook;
+mod middleware_eval;
 mod pack;
 mod reaction;
 mod registration;
@@ -65,6 +66,13 @@ pub use pack::{FactDoc, facts_from_document};
 /// meters all five guards (tick + heap + call-depth + source-size + nesting);
 /// [`CheckError`] is its typed failure surface.
 pub use check_eval::{CheckError, CheckLimits, CheckTelemetry};
+
+/// The DOOR leg's evaluation surface (armed-plane Part A2): one metered
+/// `middleware(ctx)` run per armed in-scope middleware page, its typed
+/// emissions ([`MwEmit`]), and the injected overlay-world seam ([`MwWorld`]).
+pub use middleware_eval::{
+    MwCtxInput, MwEmit, MwOutcome, MwWorld, SqlRow, SqlValue, run_middleware,
+};
 
 /// The DECLARATION layer: what a rule page's legs say. [`LoadError`] is its typed
 /// failure surface — it names the LEG, never a file, because a page has no

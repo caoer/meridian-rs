@@ -7,6 +7,7 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, Barrier};
 
+use std::collections::BTreeMap;
 use wire::{Edit, EditShape, ErrorCode, HpathSeg, Path as WPath, PutAt, Recovery, SecRef};
 use wire_serve::write::{SpliceArgs, splice};
 
@@ -40,6 +41,7 @@ fn racer_args(i: usize) -> SpliceArgs {
         }],
         plan_edits: Vec::new(),
         pin: None,
+        fields: BTreeMap::default(),
     }
 }
 

@@ -14,6 +14,7 @@
 
 use std::path::PathBuf;
 
+use std::collections::BTreeMap;
 use wire::{ErrorCode, HpathSeg, PlanEdit, ResponseBody};
 use wire_serve::write::{SpliceArgs, SpliceOutcome, splice};
 
@@ -77,6 +78,7 @@ fn replace(
                 rev: Some(rev.into()),
             }],
             pin: None,
+            fields: BTreeMap::default(),
         },
         &[],
         None,

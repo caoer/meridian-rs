@@ -1361,6 +1361,48 @@ When a workspace is **armed** (attested INDEX present), after CAS and before byt
 | `armed_drift{armed_rev,report_rev}` | refresh | armed law drifted |
 | `cas_mismatch{expected,actual}` | refresh | node or create/remove CAS failed |
 
+#### A.2.1 Middleware on the write door (2026-08-17, mw-engine)
+
+*(Amends A.2 — the armed plane's third kind. Full doctrine: `armed-plane.md`
+Part A2. This section is the wire shape only.)*
+
+- **`rules/middleware`** pages evaluate ON the write door — after CAS and
+  batch validation, before bytes land — in `id`-ascending order, mode
+  `off|block`. They may `refuse`, transform THIS file, transform OTHER files,
+  and birth files; every disk emit joins the caller's write in **one sealed
+  set** (validate-all-then-apply: everything lands or nothing does, one root
+  advance, one Delta carrying every member). They may also emit `send`
+  **intents**, which are never applied by the engine.
+- **Request field `fields`** (splice single form + create): an optional
+  `{string: string}` object, opaque to the engine — no key is interpreted, no
+  key is required. It is delivered to middleware verbatim as `ctx.fields`.
+  Hosts put caller context here (ccc-statusd: `created`, session, agent id);
+  `actor`/`now` remain the §9 envelope inputs, not `fields` keys. Absent
+  `fields` decodes as the empty map. The set form (`splice.set`) does not
+  carry it (no middleware evaluates there in V1 — a `fields` key on that form
+  refuses at the strict wall like any unknown field).
+- **Response field `armed.intents`** (splice; `intents` top-level on the
+  birth response, which has no `armed` group): on every non-dry successful
+  write through a door that evaluates middleware, an ARRAY — possibly empty,
+  never absent. V1 items are exactly:
+
+  ```json
+  { "kind": "send", "to": ["<seat-or-channel>", …], "body": "<text>", "rule_id": "<middleware id>" }
+  ```
+
+  `kind` is closed (V1: `send` only). The engine never marks an intent
+  delivered — realization is the host's (ccc-statusd), and a host must not
+  return its caller a bare success while an intent's realization result is
+  missing. An intent failure after commit names itself on the host's response;
+  the disk set STAYS (send is not this write).
+- **The put-path HOOK feed retired with this section.** Write responses carry
+  no reaction envelopes (`armed.effects` serializes empty on this path);
+  `rules/hook` + `proto.send` still ride the external-change detector only.
+  A middleware refusal refuses `convention_fault` naming the rule id and its
+  passing scenario, exactly as a check refusal does; middleware armed-law
+  faults (red / unloadable / unevaluable rows) fail closed under the same
+  A.2 codes.
+
 ### A.3 Composed `read`, `check_write`, `mounts`, `plan_edits`, `pin`, `create`, `hello.identity`
 
 | Surface | Role |

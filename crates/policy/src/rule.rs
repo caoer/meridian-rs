@@ -19,6 +19,7 @@ pub struct Rule {
     page: String,
     scope: Vec<String>,
     check_source: Option<String>,
+    middleware_source: Option<String>,
     hook: Option<Hook>,
     limits: CheckLimits,
 }
@@ -68,6 +69,20 @@ impl Rule {
     #[must_use]
     pub fn check_source(&self) -> Option<&str> {
         self.check_source.as_deref()
+    }
+
+    /// The door leg's program source, when the page carries `rules/middleware`
+    /// (armed-plane Part A2). Evaluated by [`crate::run_middleware`] at the
+    /// write door — never by the check gate and never by the reaction feeder.
+    #[must_use]
+    pub fn middleware_source(&self) -> Option<&str> {
+        self.middleware_source.as_deref()
+    }
+
+    /// The limits every leg of this rule evaluates under.
+    #[must_use]
+    pub fn limits(&self) -> CheckLimits {
+        self.limits
     }
 
     /// Run the law leg over one [`crate::Change`] under the rule's full limits.
@@ -273,6 +288,7 @@ fn entry_point(kind: RuleKind) -> &'static str {
     match kind {
         RuleKind::Check => "check_change",
         RuleKind::Hook => "on_change",
+        RuleKind::Middleware => "middleware",
     }
 }
 
@@ -367,6 +383,14 @@ fn load_rule_with_hook_loader(
         .contains(&RuleKind::Check)
         .then(|| crate::declaration::parse_check(bytes, limits).map_err(leg(RuleKind::Check)))
         .transpose()?;
+    // The door leg parses through the same declaration grammar as the law leg
+    // (`paths:` + one fenced block); what distinguishes it is its entry point
+    // and its evaluator (armed-plane Part A2).
+    let middleware = registration
+        .kinds()
+        .contains(&RuleKind::Middleware)
+        .then(|| crate::declaration::parse_check(bytes, limits).map_err(leg(RuleKind::Middleware)))
+        .transpose()?;
     let hook = registration
         .kinds()
         .contains(&RuleKind::Hook)
@@ -378,6 +402,10 @@ fn load_rule_with_hook_loader(
     // which is the reaction.
     for (kind, source) in [
         (RuleKind::Check, check.as_ref().map(|(_, source)| &**source)),
+        (
+            RuleKind::Middleware,
+            middleware.as_ref().map(|(_, source)| &**source),
+        ),
         (RuleKind::Hook, hook.as_ref().map(Hook::source)),
     ] {
         let entry = entry_point(kind);
@@ -390,13 +418,14 @@ fn load_rule_with_hook_loader(
         }
     }
 
-    // Scope: the law's `paths:` when the page carries a law, the reaction's when it
-    // carries only a reaction. A hook always answers scope through its own
-    // `matches_path`, so a dual-leg page may scope its law and its reaction apart.
-    let scope = match (&check, &hook) {
-        (Some((scope, _)), _) => scope.clone(),
-        (None, Some(hook)) => hook.scope().to_vec(),
-        (None, None) => Vec::new(),
+    // Scope: the law's `paths:` when the page carries a law, else the door
+    // leg's, else the reaction's. A hook always answers scope through its own
+    // `matches_path`, so a dual-leg page may scope its law and its reaction
+    // apart; check and middleware share the one `paths:` key by construction.
+    let scope = match (&check, &middleware, &hook) {
+        (Some((scope, _)), _, _) | (None, Some((scope, _)), _) => scope.clone(),
+        (None, None, Some(hook)) => hook.scope().to_vec(),
+        (None, None, None) => Vec::new(),
     };
 
     Ok(Rule {
@@ -405,6 +434,7 @@ fn load_rule_with_hook_loader(
         page: registration.page().to_string(),
         scope,
         check_source: check.map(|(_, source)| source),
+        middleware_source: middleware.map(|(_, source)| source),
         hook,
         limits,
     })

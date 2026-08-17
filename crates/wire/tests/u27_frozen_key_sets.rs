@@ -304,6 +304,7 @@ fn splice_body_key_set_is_frozen_plus_the_v3_pin_fact() {
             file_rev_after: None,
             edits: vec![],
             effects: vec![],
+            intents: None,
         },
         receipt: Some(ReceiptFact {
             path: path(),
@@ -354,6 +355,7 @@ fn armed_key_set_is_frozen_plus_two_passengers() {
             span_after: Span(49, 75),
         }],
         effects: vec![],
+        intents: None,
     };
     // `effects` skips when empty, so the maximal form re-inserts the key.
     let mut v = serde_json::to_value(&armed).expect("serializes");

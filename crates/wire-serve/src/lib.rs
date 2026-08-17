@@ -16,6 +16,7 @@ pub mod decode;
 pub mod gate;
 pub mod guard;
 pub mod ladder;
+pub mod middleware;
 pub mod mount_corpus;
 pub mod plan;
 pub(crate) mod positions;
@@ -405,6 +406,7 @@ mod tests {
             now,
             if_root,
             dry,
+            fields,
         } = op
         else {
             panic!("create op");
@@ -415,6 +417,10 @@ mod tests {
         assert_eq!(now.as_deref(), Some("2026-07-26T13:30:00-04:00"));
         assert_eq!(if_root, Some(wire::Root("b3:a".into())));
         assert_eq!(dry, Some(true));
+        assert!(
+            fields.is_empty(),
+            "absent `fields` decodes as the empty map"
+        );
     }
 
     /// Create decode is rev-agnostic; v3 gate is at dispatch (do not move refusal into decode).
@@ -453,6 +459,8 @@ mod tests {
             frame[field] = match field {
                 "dry" => json!(true),
                 "now" => json!("2026-07-26T13:30:00-04:00"),
+                // § A.2.1: the passthrough is an object of string values.
+                "fields" => json!({"k": "v"}),
                 _ => json!("x"),
             };
             let op = super::decode::decode(&obj(frame), super::rev::Rev::V3)

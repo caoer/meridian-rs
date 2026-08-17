@@ -9,6 +9,7 @@
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
+use std::collections::BTreeMap;
 use wire::{Edit, EditShape, ErrorCode, HpathSeg, NodeRev, Path as WPath, PutAt, SecRef};
 use wire_serve::guard::Origin;
 use wire_serve::ladder::DIFF_CAP_BYTES;
@@ -43,6 +44,7 @@ fn args(edits: Vec<Edit>) -> SpliceArgs {
         edits,
         plan_edits: Vec::new(),
         pin: None,
+        fields: BTreeMap::default(),
     }
 }
 
@@ -504,6 +506,7 @@ fn resend_by_the_book(root: &fs::WorkspaceRoot, err: &wire::ErrorBody, edit: ser
         edits,
         plan_edits,
         pin,
+        fields: BTreeMap::default(),
     };
     if let Err(e) = splice(root, None, &resend, &[], None) {
         panic!(
