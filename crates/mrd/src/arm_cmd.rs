@@ -304,8 +304,16 @@ impl Arm {
             )));
         }
 
-        let root = ArmRoot::parse(at.as_deref().unwrap_or("."))
-            .map_err(|fault| Fail::tool(format!("--at carries an unusable arm root: {fault}")))?;
+        // The refusal names what was passed and teaches the flag's own law —
+        // the sealed `ArmRoot::parse` fault speaks in artifact terms, so the
+        // wrapper owes the caller the CLI-face constraint and the default.
+        let at_given = at.as_deref().unwrap_or(".");
+        let root = ArmRoot::parse(at_given).map_err(|fault| {
+            Fail::tool(format!(
+                "--at `{at_given}` is not a legal arm root ({fault}) — --at takes a \
+                 workspace-relative directory, default `.` (the workspace root)"
+            ))
+        })?;
 
         Ok(Arm {
             id,
@@ -382,6 +390,28 @@ mod tests {
         assert!(
             fail.message.contains("off|warn|block") && fail.message.contains("off|armed"),
             "{}",
+            fail.message
+        );
+    }
+
+    #[test]
+    fn an_absolute_at_is_refused_teaching_the_workspace_relative_law() {
+        let fail = parse(&[
+            "x",
+            "--mode",
+            "block",
+            "--rev",
+            "0123456789abcdef",
+            "--at",
+            "/tmp",
+        ])
+        .expect_err("an absolute arm root is a bad invocation");
+        assert_eq!(fail.code, 2);
+        assert!(
+            fail.message.contains("workspace-relative")
+                && fail.message.contains("/tmp")
+                && fail.message.contains("`.`"),
+            "the refusal names the constraint, what was passed, and the default: {}",
             fail.message
         );
     }
