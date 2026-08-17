@@ -155,20 +155,6 @@ pub struct ReadParams {
     /// Nothing else picks the arm.
     pub sections: Option<Vec<wire::ReadSel>>,
     pub display_path: Option<String>,
-    /// §9 read provenance: the daemon-derived actor, carried to the read-mint
-    /// site. Never MCP-caller-settable; nothing below invents one.
-    pub actor: Option<String>,
-}
-
-/// The `actor == None` no-mint door, in one place.
-///
-/// A read mints a receipt only for a real daemon-derived identity. The bare CLI
-/// sends no actor and is local-operator-trusted — as `mrd put` skips the host's
-/// authz — so it mints nothing and the pin gate is bypassed for it. A blank
-/// actor is absent too: an empty string is not an identity, and admitting one
-/// would open a bucket every actor-less caller shares.
-pub(crate) fn mint_actor(actor: Option<&str>) -> Option<&str> {
-    actor.map(str::trim).filter(|a| !a.is_empty())
 }
 
 /// The composed read op: addressing + content + render served from one
@@ -177,10 +163,10 @@ pub(crate) fn mint_actor(actor: Option<&str>) -> Option<&str> {
 /// messages are the Go host face's verbatim strings, so the thin proxy
 /// forwards `error.message` without re-minting.
 ///
-/// `mint` is the read-is-the-mint ledger: present only for a host that holds
-/// a daemon-session layer (the registry daemon). A host with no session — the
-/// bare CLI, any in-process caller — passes `None` and mints nothing.
-/// Minting is sections-mode only.
+/// A read is identity-free and side-effect-free (§ A.3 proof law): it mints
+/// nothing and records nothing, on every host alike. What a sections-mode
+/// read serves instead is each section's own `fp1.…` fingerprint — the
+/// proof token a later `splice.pin` of that section carries back.
 ///
 /// `decorations` is the claim-link input, built by the caller
 /// ([`page_decorations`]) and passed through to the renderer as data;
@@ -203,7 +189,6 @@ pub fn composed_read(
     path: &Path,
     ambient: &Root,
     params: &ReadParams,
-    mint: Option<&receipt::read_mint::ReadMintStore>,
     decorations: &Decorations,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
     let facts = wire_map::facts::read_facts(&wire_map::project_toc(doc), doc.raw.as_bytes());
@@ -259,26 +244,7 @@ pub fn composed_read(
 
     if has_sections {
         let sels: Vec<wire::ReadSel> = params.sections.clone().unwrap_or_default();
-        let (body, rendered_sections, mint_keys) = composed_sections(doc, &facts, &sels, header)?;
-        // Read-is-the-mint: one receipt per section this call actually served
-        // — actor, canonical selector, `sec_rev` — off the raw rows whose
-        // bytes the caller received verbatim. A toc read mints nothing, and the
-        // rev bound is the raw face's `sec_rev`, never anything derived from
-        // the elided `rendered_text`. Unresolved selectors are absent from
-        // these rows, so a miss mints nothing.
-        if let (Some(store), Some(actor)) = (mint, mint_actor(params.actor.as_deref())) {
-            // Keyed on the RESOLVED NODE's canonical selector
-            // (`wire_map::facts::canonical_sel` — the key the pin gate looks
-            // up), never on the caller's spelling: any selector form that
-            // lands on a node — its dewey ordinal, a heading path in any
-            // admissible spelling — mints the receipt a pin of that node
-            // spends. Keying on the verbatim `row.sel` was the dogfood r7 F2
-            // defect: a dewey read minted a key no pin could find, and the
-            // refusal blamed a read that had happened.
-            for (key, row) in mint_keys.iter().zip(&rendered_sections) {
-                store.mint(actor, path.0.as_str(), key, &row.sec_rev.0);
-            }
-        }
+        let (body, rendered_sections) = composed_sections(doc, &facts, &sels, header)?;
         return Ok(ResponseBody::Read {
             path: path.clone(),
             file_rev: NodeRev(file_rev),
@@ -1091,14 +1057,7 @@ fn composed_sections(
     facts: &[wire_map::facts::ReadFact],
     sels: &[wire::ReadSel],
     header: render::Header<'_>,
-) -> Result<
-    (
-        SectionsRender,
-        Vec<wire::ReadSectionOut>,
-        Vec<wire::ReadSel>,
-    ),
-    Box<ErrorBody>,
-> {
+) -> Result<(SectionsRender, Vec<wire::ReadSectionOut>), Box<ErrorBody>> {
     let display = header.display_path;
     if sels.is_empty() {
         // Says what to pass, not what the caller "is in": `toc` is the
@@ -1259,25 +1218,31 @@ fn composed_sections(
     // `sections[].content` is the raw face — the verbatim bytes `sec_rev` was
     // minted over — so a put built from its content round-trips without
     // silently dropping an elided block. Elision lives in `rendered_text`
-    // alone. `words` pairs with the raw content it describes.
+    // alone. `words` pairs with the raw content it describes. `fingerprint`
+    // is the § A.3 proof half: the section's own `fp1.…` token, computed with
+    // the same anchor removals the pin door's live recompute uses, so the
+    // token a read serves is the token a pin compare accepts.
+    let removals = syntax::anchor_removals(&doc.raw);
     let sections: Vec<wire::ReadSectionOut> = rows
         .iter()
         .map(|row| {
             let content = wire_map::facts::section_content(row.fact, doc.raw.as_bytes());
             let content = String::from_utf8_lossy(&content).into_owned();
             let words = wire_map::facts::section_words(row.fact, doc.raw.as_bytes());
+            let span = usize::try_from(row.fact.span.0).unwrap_or(usize::MAX)
+                ..usize::try_from(row.fact.span.1).unwrap_or(usize::MAX);
+            let fingerprint = model::fingerprint::fingerprint_span(doc, &span, &removals)
+                .map(model::fingerprint::Fingerprint::into_string)
+                .ok();
             wire::ReadSectionOut {
                 sel: row.sel.clone(),
                 hpath: row.fact.hpath.clone(),
                 sec_rev: NodeRev(row.fact.sec_rev.clone()),
+                fingerprint,
                 words,
                 content,
             }
         })
-        .collect();
-    let mint_keys: Vec<wire::ReadSel> = rows
-        .iter()
-        .map(|row| wire_map::facts::canonical_sel(row.fact))
         .collect();
     Ok((
         SectionsRender {
@@ -1286,7 +1251,6 @@ fn composed_sections(
             unresolved,
         },
         sections,
-        mint_keys,
     ))
 }
 

@@ -15,30 +15,29 @@
 use wire::{FileChange, Path as WPath, PinSpec, ResponseBody};
 use wire_serve::write::{SpliceArgs, splice};
 
-/// Production-arm read into the session store — the covering read the D16
-/// gate demands of an actor-carrying pin.
-fn session_read(
-    root: &fs::WorkspaceRoot,
-    store: &receipt::read_mint::ReadMintStore,
-    actor: &str,
-    rel: &str,
-    selector: &str,
-) {
+/// Production-arm sections read, returning the served section's proof token —
+/// the § A.3 fingerprint an actor-carrying pin must carry back.
+fn proof_read(root: &fs::WorkspaceRoot, rel: &str, selector: &str) -> String {
     let doc = fs::load(root, std::path::Path::new(rel)).expect("load");
     let params = wire_serve::read::ReadParams {
         sections: Some(vec![wire::ReadSel::parse(selector)]),
-        actor: Some(actor.to_owned()),
         ..Default::default()
     };
-    wire_serve::read::composed_read(
+    let body = wire_serve::read::composed_read(
         &doc,
         &WPath(rel.into()),
         &wire::Root("r0".into()),
         &params,
-        Some(store),
         &wire_serve::read::NO_DECORATIONS,
     )
     .expect("the read serves");
+    let ResponseBody::Read { sections, .. } = body else {
+        panic!("read body");
+    };
+    sections.expect("sections mode")[0]
+        .fingerprint
+        .clone()
+        .expect("a served section carries its proof token")
 }
 
 /// Pinning page (no lock yet — first pin births one as file preamble).
@@ -70,8 +69,9 @@ fn workspace() -> (tempfile::TempDir, fs::WorkspaceRoot) {
     (dir, root)
 }
 
-/// Pin-only splice from `pinner` onto guide.md, actor-attributed.
-fn pin_args(pinner: &str, selector: &str) -> SpliceArgs {
+/// Pin-only splice from `pinner` onto guide.md, actor-attributed and
+/// carrying `proof` (§ A.3: a session actor pins with its read's token).
+fn pin_args(pinner: &str, selector: &str, proof: &str) -> SpliceArgs {
     SpliceArgs {
         premises: Vec::new(),
         id: None,
@@ -89,6 +89,8 @@ fn pin_args(pinner: &str, selector: &str) -> SpliceArgs {
             target: WPath("guide.md".into()),
             selector: wire::ReadSel::parse(selector),
             vibe: None,
+            fingerprint: Some(proof.to_owned()),
+            sec_rev: None,
         }),
     }
 }
@@ -109,22 +111,15 @@ fn rev(bytes: &str) -> String {
 #[test]
 fn a_promoting_pin_frames_the_targets_write() {
     let (_dir, root) = workspace();
-    let store = receipt::read_mint::ReadMintStore::new();
-    session_read(
-        &root,
-        &store,
-        "agent:pinner",
-        "guide.md",
-        "Guide/Leader's Guideline",
-    );
+    let proof = proof_read(&root, "guide.md", "Guide/Leader's Guideline");
     let pre_call = wire_serve::ambient_root(&root).expect("ambient");
 
     let out = splice(
         &root,
         None,
-        &pin_args("plan.md", "Guide/Leader's Guideline"),
+        &pin_args("plan.md", "Guide/Leader's Guideline", &proof),
         &[],
-        Some(&store),
+        None,
     )
     .expect("the promoting pin commits");
     let frame = out.committed.expect("a real pin commits a frame");
@@ -176,38 +171,26 @@ fn a_promoting_pin_frames_the_targets_write() {
 #[test]
 fn a_reused_anchor_pin_frames_no_target_row() {
     let (_dir, root) = workspace();
-    let store = receipt::read_mint::ReadMintStore::new();
-    session_read(
-        &root,
-        &store,
-        "agent:pinner",
-        "guide.md",
-        "Guide/Leader's Guideline",
-    );
+    let proof = proof_read(&root, "guide.md", "Guide/Leader's Guideline");
     splice(
         &root,
         None,
-        &pin_args("plan.md", "Guide/Leader's Guideline"),
+        &pin_args("plan.md", "Guide/Leader's Guideline", &proof),
         &[],
-        Some(&store),
+        None,
     )
     .expect("first pin mints");
     let minted = std::fs::read_to_string(root.0.join("guide.md")).expect("target");
 
     std::fs::write(root.0.join("second.md"), PINNER).expect("second pinner");
-    session_read(
-        &root,
-        &store,
-        "agent:pinner",
-        "guide.md",
-        "Guide/Leader's Guideline",
-    );
+    // The SAME token still proves the read: the promotion moved only the
+    // marker line, which the anchor-removal-normalized token never covers.
     let out = splice(
         &root,
         None,
-        &pin_args("second.md", "Guide/Leader's Guideline"),
+        &pin_args("second.md", "Guide/Leader's Guideline", &proof),
         &[],
-        Some(&store),
+        None,
     )
     .expect("the re-pin reuses the anchor");
     let frame = out.committed.expect("the lock write commits");
@@ -236,12 +219,11 @@ fn a_reused_anchor_pin_frames_no_target_row() {
 #[test]
 fn a_self_pin_folds_the_mint_into_the_pages_one_row() {
     let (_dir, root) = workspace();
-    let store = receipt::read_mint::ReadMintStore::new();
-    session_read(&root, &store, "agent:pinner", "plan.md", "Plan");
-    let mut args = pin_args("plan.md", "Plan");
+    let proof = proof_read(&root, "plan.md", "Plan");
+    let mut args = pin_args("plan.md", "Plan", &proof);
     args.pin.as_mut().expect("pin").target = WPath("plan.md".into());
 
-    let out = splice(&root, None, &args, &[], Some(&store)).expect("self-pin commits");
+    let out = splice(&root, None, &args, &[], None).expect("self-pin commits");
     let frame = out.committed.expect("one delta");
 
     assert_eq!(

@@ -312,34 +312,6 @@ pub struct SpliceArgs {
     pub pin: Option<wire::PinSpec>,
 }
 
-/// The read-mint ledgers a splice may consult (D16, and D-C of the
-/// cross-root pin design).
-///
-/// `ambient` is the pinning workspace's own ledger — the store [`splice`] has
-/// always taken. `foreign` answers for ANOTHER bound workspace, keyed by its
-/// canonical path: the registry's per-workspace ledger map behind a closure.
-///
-/// A receipt lives in the ledger of the workspace that SERVED the read, so a
-/// cross-root pin gate asks the TARGET root's ledger. Peeling the root and
-/// looking up the bare path in the ambient ledger would let a receipt minted
-/// on one file gate a pin on another — the read-mint bypass shape
-/// (`docs/address-grammar.md` §8.2), arrived at through the ledger instead of
-/// the mount table.
-#[derive(Default, Clone, Copy)]
-pub struct Mints<'a> {
-    /// The pinning workspace's own ledger.
-    pub ambient: Option<&'a receipt::read_mint::ReadMintStore>,
-    /// Another bound workspace's ledger, by canonical workspace path. `None`
-    /// on hosts with no per-workspace session layer — a session actor's
-    /// cross-root pin then refuses exactly as a ledgerless host refuses a
-    /// same-root one.
-    pub foreign: Option<ForeignMints<'a>>,
-}
-
-/// The per-workspace ledger resolver behind [`Mints::foreign`] — the
-/// registry's `read_mints` map as a closure.
-pub type ForeignMints<'a> = &'a dyn Fn(&std::path::Path) -> Arc<receipt::read_mint::ReadMintStore>;
-
 /// The outcome of the write choke-point: the wire `Splice` response body plus,
 /// on a real commit, the one emitted `DeltaFrame`. `committed` is `None` on a
 /// dry run.
@@ -381,42 +353,12 @@ pub struct SpliceOutcome {
 /// I/O failure in the commit after that rename lands can leave the marker
 /// behind. It is fingerprint-neutral and idempotently reused by the next pin.
 /// Every refusal rung, including all of the pin's, runs before that rename.
+#[allow(clippy::too_many_lines)]
 pub fn splice(
     root: &fs::WorkspaceRoot,
     seq: Option<&dyn crate::seq::SeqSink>,
     args: &SpliceArgs,
     rulesets: &[policy::CompiledRuleset],
-    mints: Option<&receipt::read_mint::ReadMintStore>,
-) -> Result<SpliceOutcome, Box<ErrorBody>> {
-    splice_with_mints(
-        root,
-        seq,
-        args,
-        rulesets,
-        Mints {
-            ambient: mints,
-            foreign: None,
-        },
-        None,
-    )
-}
-
-/// [`splice`] with the full ledger surface: the ambient store plus the
-/// per-workspace foreign resolver a cross-root pin gate needs (D-C), plus
-/// the optional daemon [`ResidentDoor`]. The resident registry calls this
-/// with `Registry::domain_cache` and its vouched observation; [`splice`]
-/// wraps it for every caller whose host has one ledger or none and no
-/// registry memo.
-///
-/// # Errors
-/// As [`splice`].
-#[allow(clippy::too_many_lines)]
-pub fn splice_with_mints(
-    root: &fs::WorkspaceRoot,
-    seq: Option<&dyn crate::seq::SeqSink>,
-    args: &SpliceArgs,
-    rulesets: &[policy::CompiledRuleset],
-    mints: Mints<'_>,
     supplied: Option<ResidentDoor<'_>>,
 ) -> Result<SpliceOutcome, Box<ErrorBody>> {
     // Workspace-root confinement: `Path::join` with an absolute path discards
@@ -452,13 +394,7 @@ pub fn splice_with_mints(
     // rev-recheck reads the same pre-image the batch will validate against,
     // and the promotion needs no second flock.
     let mut pin = match &args.pin {
-        Some(spec) => Some(mint_pin(
-            root,
-            spec,
-            args.actor.as_deref(),
-            args.force,
-            &mints,
-        )?),
+        Some(spec) => Some(mint_pin(root, spec, args.actor.as_deref(), args.force)?),
         None => None,
     };
     // The promotion's own gate ran at mint time — it must refuse before any
@@ -712,20 +648,12 @@ pub fn splice_with_mints(
     {
         fs::replace_file(&p.root, FsPath::new(&p.target.0), &p.candidate)
             .map_err(|e| io_to_wire(&e))?;
-        // D16: refresh the actor's receipt to the rev this engine write
-        // created. The promotion moved the section's `sec_rev` (a rev is over
-        // raw bytes) without moving one byte of what the actor read, so leaving
-        // the old rev would fail the actor's own gate on its next pin. Only for
-        // a receipt that already passed the gate at mint time; a foreign
-        // content change still refuses. The refresh lands in the ledger the
-        // gate consulted — the TARGET workspace's for a cross-root pin, keyed
-        // by the same root-relative path the read minted under.
-        let refresh = minted.foreign_ledger.as_deref().or(mints.ambient);
-        if let (Some(store), Some(actor)) =
-            (refresh, crate::read::mint_actor(args.actor.as_deref()))
-        {
-            store.mint(actor, &p.target.0, &minted.fact.selector, &p.sec_rev);
-        }
+        // No receipt refresh is owed here (the old D16 debt): the promotion
+        // moves the section's `sec_rev` but not its fingerprint (the marker
+        // line is anchor-removed from the token), and the § A.3 proof compare
+        // is on the fingerprint — so the caller's next pin passes on the same
+        // token its read served, with no server-side state to keep current.
+        //
         // The promotion moved the corpus root — this splice's own write. The
         // batch re-guards on the advanced value (re-comparing the client's
         // pre-promotion token would self-refuse `root_mismatch` on our own
@@ -2272,9 +2200,6 @@ struct PinMint {
     /// so no hold-and-wait cycle can form.
     #[allow(dead_code)] // held for Drop — the lock IS the use
     target_flock: Option<fs::WriteLock>,
-    /// Cross-root only: the TARGET workspace's read-mint ledger — the store
-    /// the gate consulted, and the one the D16 refresh must land in.
-    foreign_ledger: Option<Arc<receipt::read_mint::ReadMintStore>>,
 }
 
 /// An anchor promotion that has been decided and not written: the exact bytes,
@@ -2299,14 +2224,12 @@ struct PendingPromotion {
     /// and also the pinning page's pre-image when the target IS the pinning
     /// page.
     candidate: model::CandidateDocument,
-    /// The promoted section's `sec_rev` in those bytes — the D16 receipt refresh
-    /// the write owes (a rev this engine moved, invisible to the fingerprint).
-    sec_rev: String,
 }
 
-/// The pin prologue: resolve the target, gate it against the read-mint ledger,
-/// decide the stable anchor, and mint the fingerprint + blob oid over the bytes
-/// the promotion will land.
+/// The pin prologue: resolve the target, gate it against the request's own
+/// proof (§ A.3 proof law — the caller's read served the token it carries),
+/// decide the stable anchor, and mint the fingerprint + blob oid over the
+/// bytes the promotion will land.
 ///
 /// **This function writes nothing.** The promotion travels back as a
 /// [`PendingPromotion`] and the caller lands it after its last refusal rung.
@@ -2324,16 +2247,17 @@ struct PendingPromotion {
 /// is taken), `pin_target_missing` (no such page or selector),
 /// `ambiguous_ref` (the selector matches more than one node — no door may pin
 /// an occurrence the caller did not name; A.3 door symmetry),
-/// `read_mint_required` (D16 — a session actor pinning unread content),
-/// `write_conflict` (the receipt's rev is stale), a `convention_fault` /
-/// `armed_drift` / `index_integrity` gate refusal on the promotion, `io_error`.
+/// `pin_proof_required` (a session actor pinning with no proof, or a proof
+/// that does not match the live bytes), `write_conflict` (the supplied
+/// `sec_rev` is stale — the world moved since the caller's read), a
+/// `convention_fault` / `armed_drift` / `index_integrity` gate refusal on the
+/// promotion, `io_error`.
 #[allow(clippy::too_many_lines)]
 fn mint_pin(
     root: &fs::WorkspaceRoot,
     spec: &wire::PinSpec,
     actor: Option<&str>,
     force: bool,
-    mints: &Mints<'_>,
 ) -> Result<PinMint, Box<ErrorBody>> {
     let target = resolve_pin_target(root, &spec.target)?;
     // The spelling every fact, lock row and refusal names: the ruled
@@ -2364,20 +2288,6 @@ fn mint_pin(
         })?),
         None => None,
     };
-    // D-C: the gate consults the ledger of the workspace that SERVED the read
-    // — for a cross-root target, the TARGET workspace's (resolved through the
-    // same canonicalize-at-bind path the mount table keys by). The ambient
-    // ledger holding a receipt for a same-named file is a different fact and
-    // must not gate this pin (the §8.2 read-mint bypass shape).
-    let foreign_ledger = match &target.mount {
-        Some(_) => mints.foreign.map(|ledger_for| ledger_for(&target.root.0)),
-        None => None,
-    };
-    let gate_store = match &target.mount {
-        Some(_) => foreign_ledger.as_deref(),
-        None => mints.ambient,
-    };
-
     let mut target_doc = load_doc(&target.root, &target.rel).map_err(|e| {
         if e.code == ErrorCode::FileNotFound {
             pin_target_missing(&spelled, format!("no page at {} to pin", spelled.0))
@@ -2467,20 +2377,23 @@ fn mint_pin(
     // The raw segment array the lock's `path` array is built from.
     let fact_segments = fact.hpath.clone();
 
-    // D16: the gate, and its rev-recheck against the bytes on disk right now —
-    // a receipt answers "was it read", never "is it current". The ledger key
-    // is the target's ROOT-RELATIVE path — the spelling the serving
-    // workspace's reads minted under — while refusals name the caller's own.
-    read_mint_gate(
-        gate_store,
+    let fact_span = span_range(fact.span);
+    // The § A.3 proof gate: recompute the section's live `fp1.…` token over
+    // the bytes on disk right now — under the flock this splice already
+    // holds (the TARGET root's for a cross-root pin, so the compare runs
+    // against the resolved target's own bytes, never an ambient same-named
+    // file: the §8.2 bypass class) — and compare it to the token the
+    // request carries. The pre-promotion span serves because the token is
+    // anchor-removal-normalized: the promotion below cannot move it.
+    let live_fp = mint_fingerprint(&target_doc, &fact_span, &spelled, &selector_text)?;
+    pin_proof_gate(
+        spec,
         actor,
         &spelled,
-        &target.rel,
-        &selector,
+        &selector_text,
+        &live_fp,
         &fact.sec_rev,
     )?;
-
-    let fact_span = span_range(fact.span);
     let slot = promotion_slot(&target_doc.raw, fact_span.start);
     // The occurrence ordinal of the pinned node itself — the canonical
     // selector's LEAF segment carries `n` exactly when siblings collide
@@ -2526,10 +2439,10 @@ fn mint_pin(
     };
     let pinned_doc: &model::Document = promoted.as_ref().map_or(&target_doc, |c| c.document());
 
-    let (span, promoted_sec_rev, segments) = if promote {
+    let (span, segments) = if promote {
         post_promotion_facts(pinned_doc, &spelled, &selector)?
     } else {
-        (fact_span, String::new(), fact_segments)
+        (fact_span, fact_segments)
     };
 
     let fingerprint = mint_fingerprint(pinned_doc, &span, &spelled, &selector_text)?;
@@ -2561,20 +2474,18 @@ fn mint_pin(
             target: target.rel.clone(),
             before: target_doc,
             candidate,
-            sec_rev: promoted_sec_rev,
         }),
         gate,
         target_flock,
-        foreign_ledger,
     })
 }
 
 /// Re-resolve the pinned selector against the post-promotion bytes: the span the
-/// fingerprint will cover, the promoted section's `sec_rev`, and the raw segment
-/// array. A promotion widens the selector's node by the marker line, so the
-/// pre-promotion span would hash bytes that are no longer the selector's.
+/// fingerprint will cover, and the raw segment array. A promotion widens the
+/// selector's node by the marker line, so the pre-promotion span would hash
+/// bytes that are no longer the selector's.
 ///
-/// All three come from one fact, so "the lock row describes the bytes that were
+/// Both come from one fact, so "the lock row describes the bytes that were
 /// hashed" holds by construction.
 ///
 /// # Errors
@@ -2583,7 +2494,7 @@ fn post_promotion_facts(
     pinned_doc: &model::Document,
     target: &Path,
     selector: &wire::ReadSel,
-) -> Result<(std::ops::Range<usize>, String, Vec<HpathSeg>), Box<ErrorBody>> {
+) -> Result<(std::ops::Range<usize>, Vec<HpathSeg>), Box<ErrorBody>> {
     let facts = wire_map::facts::read_facts(
         &wire_map::project_toc(pinned_doc),
         pinned_doc.raw.as_bytes(),
@@ -2597,11 +2508,7 @@ fn post_promotion_facts(
             ),
         ));
     };
-    Ok((
-        span_range(fresh.span),
-        fresh.sec_rev.clone(),
-        fresh.hpath.clone(),
-    ))
+    Ok((span_range(fresh.span), fresh.hpath.clone()))
 }
 
 /// Mint the R4 lock row's structural fields — **the one-time conversion door**.
@@ -2874,92 +2781,105 @@ fn section_hpath_at(node: &model::Node, start: usize) -> Option<Vec<String>> {
         .find_map(|c| section_hpath_at(c, start))
 }
 
-/// The read-mint gate (D16 + D6), the whole refusal ladder in one place.
+/// A real session identity, or `None` for the trusted door.
 ///
-/// `actor == None` (or blank) is the bare CLI: local-operator-trusted, the gate
-/// is bypassed exactly as `mrd put` bypasses the host's authz. A real session
-/// actor must carry a receipt for this path and this selector — matching is
-/// exact, so reading a parent section does not authorize pinning a child, and
-/// only a sections-mode read mints at all. A held receipt is then re-checked
-/// against the live `sec_rev` under the caller's flock: a receipt is not a
-/// lease.
+/// The bare CLI sends no actor and is local-operator-trusted — as `mrd put`
+/// skips the host's authz — so proof is not REQUIRED of it. A blank actor is
+/// absent too: an empty string is not an identity.
+fn session_actor(actor: Option<&str>) -> Option<&str> {
+    actor.map(str::trim).filter(|a| !a.is_empty())
+}
+
+/// The pin-proof gate (§ A.3 proof law), the whole refusal ladder in one
+/// place. The caller proves it read the pinned content by carrying the
+/// section's own `fp1.…` token from its read; `live_fp` is the engine's
+/// recompute over the bytes on disk right now, under the caller's flock.
+///
+/// `actor == None` (or blank) is the bare CLI: local-operator-trusted, so an
+/// ABSENT proof passes — but a supplied token is still compared (trust
+/// excuses absence, never a wrong token). A real session actor must carry
+/// `fingerprint`.
 ///
 /// # Errors
-/// `read_mint_required` (no covering receipt, or a host with no session layer),
-/// `write_conflict` (the receipt covers a rev the target no longer carries).
-///
-/// `target` is the spelling refusals name back at the caller; `ledger_rel` is
-/// the target's ROOT-RELATIVE path — the key the serving workspace's reads
-/// minted under. Same-root the two coincide; cross-root the store is the
-/// TARGET workspace's ledger and the key stays bare (D-C).
-fn read_mint_gate(
-    store: Option<&receipt::read_mint::ReadMintStore>,
+/// `pin_proof_required` (a session actor carried no proof, or the token does
+/// not match the live bytes and no stale `sec_rev` tells a moved world
+/// apart), `write_conflict` (the supplied `sec_rev` is stale — the world
+/// moved since the caller's read; § A.7's register: bad input is never
+/// spoken as a moved world, and a moved world never as bad input).
+fn pin_proof_gate(
+    spec: &wire::PinSpec,
     actor: Option<&str>,
     target: &Path,
-    ledger_rel: &Path,
-    selector: &wire::ReadSel,
+    selector_text: &str,
+    live_fp: &str,
     live_sec_rev: &str,
 ) -> Result<(), Box<ErrorBody>> {
-    let Some(actor) = crate::read::mint_actor(actor) else {
-        return Ok(());
-    };
-    let asked = selector.display();
-    let Some(store) = store else {
-        return Err(read_mint_required(
+    let Some(proof) = spec.fingerprint.as_deref() else {
+        if session_actor(actor).is_none() {
+            return Ok(());
+        }
+        return Err(pin_proof_required(
             target,
             format!(
-                "pin of \"{asked}\" in {} refused: this host holds no read-receipt ledger, \
-                 so it cannot know that actor {actor} read the content (a ledgerless \
-                 in-process caller has no session — pin through the resident daemon, or \
-                 from the local CLI)",
-                target.0
-            ),
-        ));
-    };
-    let Some(receipt) = store.lookup(actor, &ledger_rel.0, selector) else {
-        // Name the cause the gate can tell apart: a receipt held under another
-        // identity means the caller's session id rotated; no receipt at all
-        // means the selector was never read, or the mint evaporated. Both end
-        // at the same one-round-trip fix.
-        let rotated = store.any_actor_read(&ledger_rel.0, selector);
-        let cause = if rotated {
-            "this session holds a receipt for that selector under a DIFFERENT identity, so \
-             yours rotated (a fork, a resume, a /clear mints under a new id)"
-        } else {
-            "no identity in this session has read it — either it was never read, or the mint \
-             evaporated (receipts are memory-only, so a daemon restart or an idle reap clears \
-             them)"
-        };
-        return Err(read_mint_required(
-            target,
-            format!(
-                "pin of \"{asked}\" in {} refused: actor {actor} holds no read receipt for \
-                 that selector — you cannot attest content that was never in your context. \
-                 Cause: {cause}. Fix, either way, in one round trip: re-read \"{asked}\" in \
-                 {} (a sections read, that exact selector) as {actor}, then pin again.",
+                "pin of \"{selector_text}\" in {} refused: the request carries no proof of \
+                 read — you cannot attest content that was never in your context. Fix in one \
+                 round trip: read \"{selector_text}\" in {} (a sections read, that exact \
+                 selector), carry the `fingerprint` the read serves on that section into the \
+                 pin, then send again.",
                 target.0, target.0
             ),
         ));
     };
-    if receipt.sec_rev != live_sec_rev {
+    if proof == live_fp {
+        return Ok(());
+    }
+    // The mismatch split: a supplied stale `sec_rev` proves the world moved
+    // since the caller's read — say that, with both revs. Without that
+    // evidence the gate cannot tell a moved world from a wrong token, so the
+    // refusal names both causes honestly and one remedy serves either.
+    if let Some(read_rev) = spec.sec_rev.as_deref()
+        && read_rev != live_sec_rev
+    {
         let mut e = ErrorBody::new(ErrorCode::WriteConflict);
         e.path = Some(target.clone());
-        e.expected = Some(NodeRev(receipt.sec_rev.clone()));
+        e.expected = Some(NodeRev(read_rev.to_owned()));
         e.actual = Some(NodeRev(live_sec_rev.to_owned()));
         e.message = Some(format!(
-            "pin of \"{asked}\" in {} refused: the receipt covers rev {} but the section now \
-             carries {live_sec_rev} — re-read the selector (that re-mints) and pin again",
-            target.0, receipt.sec_rev
+            "pin of \"{selector_text}\" in {} refused: the section moved since your read — \
+             your read served rev {read_rev} and it now carries {live_sec_rev}, so the \
+             content your proof covers is no longer what disk holds. Re-read the selector \
+             (the fresh read serves the fresh `fingerprint`) and pin again.",
+            target.0
         ));
         return Err(Box::new(e));
     }
-    Ok(())
+    // With a MATCHING `sec_rev` the raw bytes are provably what the read
+    // served, so only the token can be at fault; with none supplied the two
+    // causes are indistinguishable and the refusal names both honestly.
+    let cause = if spec.sec_rev.as_deref() == Some(live_sec_rev) {
+        "the section's raw bytes are exactly what your read served, so the token is not \
+         from a read of this section"
+    } else {
+        "either the content moved since your read, or the token is not from a read of \
+         this section"
+    };
+    Err(pin_proof_required(
+        target,
+        format!(
+            "pin of \"{selector_text}\" in {} refused: the carried proof does not match the \
+             section's live content — {cause}. Fix, either way, in one round trip: re-read \
+             \"{selector_text}\" in {} (a sections read, that exact selector) and pin again \
+             with the `fingerprint` that read serves.",
+            target.0, target.0
+        ),
+    ))
 }
 
-/// `read_mint_required` (D16): a session actor pinning content no receipt in
-/// this session covers. Fix class — read the exact selector, then pin.
-fn read_mint_required(target: &Path, message: String) -> Box<ErrorBody> {
-    let mut e = ErrorBody::new(ErrorCode::ReadMintRequired);
+/// `pin_proof_required` (§ A.3 proof law): a pin whose request carries no
+/// usable proof of read. Fix class — read the exact selector, carry the
+/// served `fingerprint`, then pin.
+fn pin_proof_required(target: &Path, message: String) -> Box<ErrorBody> {
+    let mut e = ErrorBody::new(ErrorCode::PinProofRequired);
     e.path = Some(target.clone());
     e.message = Some(message);
     Box::new(e)
@@ -6593,9 +6513,8 @@ mod resident_write_path {
     use crate::ambient_root;
 
     use super::{
-        CreateArgs, LockWriteArgs, Mints, PoisonError, RemoveArgs, ResidentDoor, SpliceArgs,
-        SpliceSetArgs, create, lock_write, remove, splice, splice_set, splice_with_mints,
-        write_cache,
+        CreateArgs, LockWriteArgs, PoisonError, RemoveArgs, ResidentDoor, SpliceArgs,
+        SpliceSetArgs, create, lock_write, remove, splice, splice_set, write_cache,
     };
 
     fn ws() -> (tempfile::TempDir, fs::WorkspaceRoot) {
@@ -6775,12 +6694,11 @@ mod resident_write_path {
             }
             memo.root(&root)
         };
-        let out = splice_with_mints(
+        let out = splice(
             &root,
             None,
             &splice_args("notes/plan.md", "August", "w1"),
             &[],
-            Mints::default(),
             Some(ResidentDoor {
                 cache: &cache,
                 observe: &observe,
@@ -6848,12 +6766,11 @@ mod resident_write_path {
             }
             memo.root(&root)
         };
-        splice_with_mints(
+        splice(
             &root,
             None,
             &splice_args("notes/plan.md", "August", "w1"),
             &[],
-            Mints::default(),
             Some(ResidentDoor {
                 cache: &cache,
                 observe: &observe,

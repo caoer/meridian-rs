@@ -3,7 +3,7 @@
 //!
 //! Host-held: the registry daemon (the one wire door since the sidecar's
 //! DROP, §3.3) holds one ring per workspace, born at first use and dropped on
-//! the `read_mints` horizon (`Registry::reap`). The retention law lives here,
+//! the idle-reap horizon (`Registry::reap`). The retention law lives here,
 //! not in the host, so a host change can never rewrite it.
 //!
 //! Transport, not memory: a bounded in-flight buffer for a live channel. It

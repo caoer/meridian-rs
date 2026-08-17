@@ -90,25 +90,21 @@ const DOORS: &[DoorPin] = &[
     // ---- wire-serve/write.rs — U12's own file, all five guarded ----
     DoorPin {
         file: WRITE_RS,
-        // The byte-landing body. `splice` itself is a thin coat since the
-        // cross-root pin ledger surface landed — it delegates to
-        // `splice_with_mints` and can land nothing itself, so the census
-        // follows the body that mints and discharges. Hollowing the coat is
-        // caught by `every_pinned_name_is_declared_exactly_once_in_its_file`
-        // (a renamed door) and by the mint-site census; a
-        // `splice_with_mints` losing its guard call fails here exactly as
-        // `splice` used to.
-        door_fn: "splice_with_mints",
+        // The byte-landing body. `splice` is the one write choke-point again
+        // — the `splice_with_mints` split died with the read-mint ledger
+        // (§ A.3 proof law: pin proof rides the request, so no ledger
+        // surface needs its own signature).
+        door_fn: "splice",
         mint_fn: "build_after_doc",
         guard_fn: Some("translate_stored_candidate"),
-        label: "splice_with_mints (via build_after_doc)",
+        label: "splice (via build_after_doc)",
         class: Door::TranslatedAndGuarded,
     },
     DoorPin {
         file: WRITE_RS,
         // Thin coat `create` delegates here so the daemon can pass
         // `Registry::domain_cache`. Census follows the body that mints
-        // and discharges (same shape as `splice` → `splice_with_mints`).
+        // and discharges.
         door_fn: "create_with_cache",
         mint_fn: "create_with_cache",
         guard_fn: Some("create_with_cache"),

@@ -58,6 +58,8 @@ fn mint_pin(root: &fs::WorkspaceRoot) {
             target: WPath("guide.md".into()),
             selector: wire::ReadSel::parse("Guide/Leader's Guideline"),
             vibe: None,
+            fingerprint: None,
+            sec_rev: None,
         }),
     };
     splice(root, None, &args, &[], None).expect("the pin commits");
@@ -90,7 +92,6 @@ fn read_decorated(root: &fs::WorkspaceRoot, rel: &str, sel: &str) -> ResponseBod
             sections: Some(vec![wire::ReadSel::parse(sel)]),
             ..ReadParams::default()
         },
-        None,
         &decorations,
     )
     .expect("the read serves")

@@ -620,11 +620,9 @@ fn decode_run_target(t: &Map<String, Value>, i: usize) -> Result<wire::RunTarget
 /// Composed `read` (v3-only at dispatch; decode is rev-agnostic).
 fn decode_read(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
     let op = "read";
-    check_fields(
-        obj,
-        op,
-        &["path", "toc", "sections", "display_path", "actor"],
-    )?;
+    // No `actor`: a read is identity-free (§ A.3 proof law) — the retired
+    // field refuses at this wall like any unknown field.
+    check_fields(obj, op, &["path", "toc", "sections", "display_path"])?;
     // `sections` and `toc` are structured on the wire: the caller states the
     // plane it means, so match order never decides. A joined-string address is
     // refused by name; its door is `wire::ReadSel::parse`, on the caller's side.
@@ -670,8 +668,6 @@ fn decode_read(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
         toc,
         sections,
         display_path: opt_str(obj, op, "display_path")?,
-        // §9 read-provenance: wire input, never ambient.
-        actor: opt_str(obj, op, "actor")?,
     })
 }
 
@@ -933,7 +929,11 @@ fn decode_pin(v: &Value) -> Result<wire::PinSpec, Box<ErrorBody>> {
     let Some(obj) = v.as_object() else {
         return Err(bad_request("`pin` must be an object on `splice`"));
     };
-    check_fields(obj, "pin", &["target", "selector", "vibe"])?;
+    check_fields(
+        obj,
+        "pin",
+        &["target", "selector", "vibe", "fingerprint", "sec_rev"],
+    )?;
     // The pin selector is tagged on the wire: a joined string re-creates the
     // `/` delimiter collision, so the string form is refused by name.
     let Some(raw_sel) = obj.get("selector") else {
@@ -967,6 +967,8 @@ fn decode_pin(v: &Value) -> Result<wire::PinSpec, Box<ErrorBody>> {
         target: req_path(obj, "pin", "target")?,
         selector,
         vibe: opt_bool(obj, "pin", "vibe")?,
+        fingerprint: opt_str(obj, "pin", "fingerprint")?,
+        sec_rev: opt_str(obj, "pin", "sec_rev")?,
     })
 }
 
