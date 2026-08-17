@@ -415,6 +415,15 @@ struct RulesReport {
     /// filter, so a workspace ignore rule does not reach it and its own skip
     /// does not reach the workspace.
     declined_user: Vec<String>,
+    /// RULE PAGES a dot-prefixed segment keeps out of the workspace hash
+    /// domain — the third declined population (card
+    /// rules-silent-nonregistration, amending F11 narrowly). Registrar-narrowed
+    /// like its two siblings, and CAPPED in prose unlike them: a dot tree holds
+    /// archived corpora (the F11 measurement was 16 rule-tagged pages in one
+    /// dot-named snapshot dir), so "narrowed" does not bound it. Complete list
+    /// on `not_offered.workspace_dot`. Exit-neutral: findings stay
+    /// served-corpus conditions.
+    declined_dot_workspace: Vec<String>,
     /// Excluded markdown whose rule-ness CANNOT BE ANSWERED, because its
     /// frontmatter does not parse. Neither a dropped rule page nor established
     /// not to be one — so it carries its own verdict string rather than being
@@ -590,8 +599,10 @@ fn build(workspace: &Path, at: &str, view: View) -> Result<RulesReport, Fail> {
     // the direction that certifies a defect — the worst direction — so the
     // view is asked first.
     let (workspace_declined, workspace_undecidable) = declined_workspace(workspace);
+    let (dot_declined, dot_undecidable) = declined_dot_workspace(workspace);
     let (user_declined, user_undecidable) = declined_user();
     let mut undecidable = workspace_undecidable;
+    undecidable.extend(dot_undecidable);
     undecidable.extend(user_undecidable);
     undecidable.sort();
     undecidable.dedup();
@@ -619,10 +630,41 @@ fn build(workspace: &Path, at: &str, view: View) -> Result<RulesReport, Fail> {
         unreadable,
         declined_workspace: workspace_declined,
         declined_user: user_declined,
+        declined_dot_workspace: dot_declined,
         undecidable,
         armed_orphans,
         armed_elsewhere,
     })
+}
+
+/// RULE PAGES a dot-prefixed segment keeps out of the workspace hash domain —
+/// the dot twin of [`declined_workspace`], amending F11 for the one population
+/// its silence turned dangerous: a registration candidate that reads as
+/// working law while governing nothing (card rules-silent-nonregistration;
+/// measured live on the mw-face e2e, `.hidden/rules/x.md`).
+///
+/// The F11 guards survive the amendment: the population is narrowed by ASKING
+/// THE REGISTRAR ([`rule_pages_among`], the same offers-itself law as both
+/// sibling feeds), never a path predicate, so dot NOISE — markdown with no
+/// rule intent, the 36-fixtures class — stays invisible; and the voice is
+/// exit-neutral. The enumeration is [`fs::dot_declined_markdown`]: the one dot
+/// predicate, dot subtrees only, never a second walk law here.
+fn declined_dot_workspace(workspace: &Path) -> (Vec<String>, Vec<String>) {
+    let root = fs::WorkspaceRoot(workspace.to_path_buf());
+    let Ok(declined) = fs::dot_declined_markdown(&root) else {
+        return (Vec::new(), Vec::new());
+    };
+    let outside: Vec<(String, String)> = declined
+        .into_iter()
+        .filter_map(|rel| {
+            // An unreadable or non-UTF-8 excluded file cannot be shown to carry
+            // a rule tag, so it is not claimed as one.
+            std::fs::read_to_string(workspace.join(&rel))
+                .ok()
+                .map(|bytes| (rel, bytes))
+        })
+        .collect();
+    rule_pages_among(&outside)
 }
 
 /// RULE PAGES the workspace hash domain does not carry — never "markdown the
@@ -670,14 +712,9 @@ fn declined_workspace(workspace: &Path) -> (Vec<String>, Vec<String>) {
 }
 
 /// Split `candidates` into the pages that OFFER THEMSELVES to rule
-/// registration and the pages whose rule-ness CANNOT BE ANSWERED.
-///
-/// ⛔ THERE ARE THREE STATES HERE, NOT TWO, and collapsing them is how this
-/// function shipped wrong twice. `RegisterFault::FrontmatterUnparsed` says in
-/// its own words that whether the page carries a registration tag *cannot be
-/// answered*; EVERY OTHER fault variant presupposes the tag was there. So a
-/// page with a broken frontmatter block is neither a dropped rule page nor
-/// established not to be one.
+/// registration and the pages whose rule-ness CANNOT BE ANSWERED — the
+/// three-state law, whose ⛔ block rides the one shared narrowing:
+/// [`crate::rules_walk::rule_candidates_among`].
 ///
 /// Receipt: this repo's own `frontmatter-unparseable.md` is a `meridian-config`
 /// fixture with an unclosed flow sequence. Counting it as a dropped rule page
@@ -687,34 +724,13 @@ fn declined_workspace(workspace: &Path) -> (Vec<String>, Vec<String>) {
 ///
 /// The registrar decides, never a predicate here: a second reading of what
 /// makes a rule page would be a fork of `policy`'s law that could disagree
-/// with it.
+/// with it. This adapter only drops the ids the voices here never print.
 fn rule_pages_among(candidates: &[(String, String)]) -> (Vec<String>, Vec<String>) {
-    let index = RuleIndex::discover(candidates.iter().map(|(page, bytes)| PageRef {
-        layer: ScopeLayer::Workspace,
-        page,
-        bytes,
-    }));
-    let mut offered: Vec<String> = index
-        .registered()
-        .iter()
-        .map(|r| r.page().to_owned())
-        .collect();
-    let mut undecidable = Vec::new();
-    for refusal in index.refused() {
-        if matches!(
-            refusal.fault(),
-            policy::RegisterFault::FrontmatterUnparsed { .. }
-        ) {
-            undecidable.push(refusal.page().to_owned());
-        } else {
-            offered.push(refusal.page().to_owned());
-        }
-    }
-    offered.sort();
-    offered.dedup();
-    undecidable.sort();
-    undecidable.dedup();
-    (offered, undecidable)
+    let (offered, undecidable) = crate::rules_walk::rule_candidates_among(candidates);
+    (
+        offered.into_iter().map(|(page, _id)| page).collect(),
+        undecidable,
+    )
 }
 
 /// RULE PAGES under the user `rules/` tree that a dot segment declined, from
@@ -1074,6 +1090,19 @@ fn render_human(report: &RulesReport) -> String {
             report.declined_workspace.join(", ")
         );
     }
+    // The dot class, registrar-narrowed like its siblings and CAPPED unlike
+    // them: a dot tree holds archived corpora (the F11 measurement), so the
+    // narrowing does not bound this population the way the dot-free tree
+    // bounds the custom class. Count full, sample capped, complete list on
+    // the machine key — the decision-0017 shape.
+    if !report.declined_dot_workspace.is_empty() {
+        let _ = writeln!(
+            out,
+            "not offered to registration — {} rule page(s) under the workspace root are declined by a dot-prefixed path segment, so no rule they carry is in this answer: {}. The complete list is the `not_offered.workspace_dot` key of this verb's `--json`.",
+            report.declined_dot_workspace.len(),
+            crate::capped_sample(&report.declined_dot_workspace)
+        );
+    }
     // The one declined population with no registrar narrowing in front of it:
     // `register` refuses on unparseable frontmatter BEFORE reading any tag, so
     // every malformed-frontmatter excluded file lands here, rule-intent or not
@@ -1190,6 +1219,10 @@ fn to_json(workspace: &Path, report: &RulesReport) -> Value {
             "not_offered": {
                 "workspace": report.declined_workspace,
                 "user": report.declined_user,
+                // STRICTLY ADDITIVE (card rules-silent-nonregistration): the
+                // workspace dot class, complete — the machine half of the
+                // capped prose line above it.
+                "workspace_dot": report.declined_dot_workspace,
                 "undecidable": report.undecidable,
             },
         }
@@ -1227,6 +1260,7 @@ mod tests {
             unreadable: Vec::new(),
             declined_workspace: Vec::new(),
             declined_user: Vec::new(),
+            declined_dot_workspace: Vec::new(),
             undecidable: Vec::new(),
             armed_orphans: Vec::new(),
             armed_elsewhere: Vec::new(),

@@ -164,6 +164,55 @@ fn offer_root(
     Ok(())
 }
 
+/// Split excluded pages into REGISTRATION CANDIDATES and pages whose rule-ness
+/// CANNOT BE ANSWERED, by asking the registrar — never a path predicate here,
+/// which would be a fork of `policy`'s law that could disagree with it.
+///
+/// ⛔ THERE ARE THREE STATES, NOT TWO, and collapsing them shipped wrong twice
+/// (rules_cmd's history): `RegisterFault::FrontmatterUnparsed` says in its own
+/// words that whether the page carries a registration tag *cannot be
+/// answered*; EVERY OTHER fault variant presupposes the tag was there. So a
+/// page with a broken frontmatter block is neither a dropped rule page nor
+/// established not to be one — it gets its own verdict list.
+///
+/// A candidate is `(page, Some(id))` when the page would have REGISTERED —
+/// the id an ARM refusal can be matched against — and `(page, None)` when it
+/// offered itself and was refused for anything but an unparseable frontmatter
+/// block. One narrowing law for every excluded feed: the custom-ignore class,
+/// the workspace dot class, and the user rung's dot decline
+/// (card rules-silent-nonregistration).
+#[must_use]
+pub fn rule_candidates_among(
+    candidates: &[(String, String)],
+) -> (Vec<(String, Option<policy::RuleId>)>, Vec<String>) {
+    let index = RuleIndex::discover(candidates.iter().map(|(page, bytes)| PageRef {
+        layer: ScopeLayer::Workspace,
+        page,
+        bytes,
+    }));
+    let mut offered: Vec<(String, Option<policy::RuleId>)> = index
+        .registered()
+        .iter()
+        .map(|r| (r.page().to_owned(), Some(r.id().clone())))
+        .collect();
+    let mut undecidable = Vec::new();
+    for refusal in index.refused() {
+        if matches!(
+            refusal.fault(),
+            policy::RegisterFault::FrontmatterUnparsed { .. }
+        ) {
+            undecidable.push(refusal.page().to_owned());
+        } else {
+            offered.push((refusal.page().to_owned(), None));
+        }
+    }
+    offered.sort_by(|a, b| a.0.cmp(&b.0));
+    offered.dedup_by(|a, b| a.0 == b.0);
+    undecidable.sort();
+    undecidable.dedup();
+    (offered, undecidable)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,6 +391,45 @@ mod tests {
         assert_eq!(walk.index().registered().len(), 1);
         assert_eq!(walk.index().refused().len(), 1);
         assert_eq!(walk.index().refused()[0].page(), "anonymous.md");
+    }
+
+    /// The three-state split: registered candidates carry their id, refused
+    /// ones offer themselves without one, and an unparseable frontmatter block
+    /// is undecidable — never claimed as either.
+    #[test]
+    fn rule_candidates_among_splits_the_three_states() {
+        let candidates = vec![
+            (".hidden/rules/x.md".to_owned(), page("mw.hidden-law")),
+            (
+                ".hidden/anonymous.md".to_owned(),
+                "---\ntags: [rules/hook]\n---\n\n# no id\n".to_owned(),
+            ),
+            (
+                ".hidden/broken.md".to_owned(),
+                "---\ntags: [rules/hook\n---\n\n# unclosed flow sequence\n".to_owned(),
+            ),
+            (
+                ".hidden/plain.md".to_owned(),
+                "---\ntype: note\n---\n\n# not a rule\n".to_owned(),
+            ),
+        ];
+        let (offered, undecidable) = rule_candidates_among(&candidates);
+        assert_eq!(
+            offered
+                .iter()
+                .map(|(page, id)| (page.as_str(), id.as_ref().map(policy::RuleId::as_str)))
+                .collect::<Vec<_>>(),
+            vec![
+                (".hidden/anonymous.md", None),
+                (".hidden/rules/x.md", Some("mw.hidden-law")),
+            ],
+            "candidates offer themselves; a registered one carries its id"
+        );
+        assert_eq!(
+            undecidable,
+            vec![".hidden/broken.md"],
+            "unparseable frontmatter is its own verdict"
+        );
     }
 
     #[test]
