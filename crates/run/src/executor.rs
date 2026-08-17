@@ -1014,12 +1014,46 @@ fn plan_edit(doc: &Document, effect: &Effect) -> Result<PlannedEdit, ExecError> 
             let field = str_arg(effect, "field")?;
             let value = str_arg(effect, "value")?;
             let before = model::fm_upsert_before(doc, &field);
+            // ⑤-F2 (2026-08-17): PRESERVATION ONLY. A value-identical write —
+            // the stored spelling already decodes (§ A.6.1) to exactly the
+            // caller's string — keeps the STORED spelling, quotes included,
+            // so its bytes, and with them the field hash and `prop_rev`, do
+            // not move. The raw re-composition this replaces dropped the
+            // quotes the wire door had written: the parsed value
+            // round-tripped while every value-identical `md.set_field` moved
+            // the line's bytes, defeating idempotence-on-hash and littering
+            // git with no-op diffs.
+            //
+            // Everything else still lands VERBATIM, deliberately — this
+            // plane's contract is raw-grain ("whole-value grains that must
+            // land as sent", the wire door's own words), and
+            // s2fix_run_plane_fp pins both raw edges: a pre-quoted claim-link
+            // value lands as sent, and the multi-line fence-close window
+            // stays genuinely open (the fp strip's COMPOSED arm guards the
+            // forgery through it). Encoding fresh values here (the wire
+            // door's yaml_safe_value arm) would break both pins; the ONE
+            // preservation predicate is shared instead
+            // (policy::defs::fm_spelling_preserves), with the same
+            // one-leading-space colon split fm_index reads a key line by.
+            let stored_value = (before.span.start < before.span.end)
+                .then(|| doc.raw[before.span.clone()].to_string())
+                .and_then(|line| {
+                    let colon = line.find(':')?;
+                    let rest = &line[colon + 1..];
+                    Some(rest.strip_prefix(' ').unwrap_or(rest).to_string())
+                });
+            let text = match &stored_value {
+                Some(stored) if policy::defs::fm_spelling_preserves(stored, &value) => {
+                    stored.trim().to_string()
+                }
+                _ => value,
+            };
             Ok(PlannedEdit {
                 edit: Edit {
                     target: Ref::FmKey(field.clone()),
                     edit: EditKind::Put {
                         at: PutAt::Upsert,
-                        text: value,
+                        text,
                     },
                     if_node_rev: Some(before.node_rev.clone()),
                 },
