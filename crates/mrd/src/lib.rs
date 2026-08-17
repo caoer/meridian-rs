@@ -287,11 +287,15 @@ usage:
                            refused / 2 bad invocation.
 ! mrd put <PATH> [--dry | --validate] [--force] [--actor A] [--now T]
           [--if-fingerprint FP] [--scope PATH | --scope-bytes B64]
-          [--receipt PATH#ANCHOR] [--json]
+          [--receipt PATH#ANCHOR] [--field K=V]... [--json]
                            batch write. STDIN = BARE JSON array
                            [{target, edit, if_node_rev?}] — the VALUE of
                            wire §4.4 edits, NEVER the full request object
                            (no id/op/path; those are argv).
+                           --field K=V (repeatable) = the § A.2.1 opaque
+                           middleware passthrough (ctx.fields); needs the
+                           daemon's splice.fields cap, refused client-side
+                           before any write when absent.
                            target: {\"hpath\":[{\"h\":\"Raw Title\"},...]} — the raw
                            heading path mrd read publishes ({\"n\":2} only on a
                            duplicate) / {\"anchor\":\"id\"} / {\"fm_key\":\"key\"}.
