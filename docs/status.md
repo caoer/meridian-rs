@@ -222,10 +222,12 @@ mrd rm <PAGE> --rev <FILE_REV> [--if-fingerprint FP] [--dry] [--actor A]
  {workspace, rm}; an engine refusal {workspace, error}.
  Exit triad: 0 removed|dry / 1 refused / 2 bad
  invocation
-mrd pin <PAGE> <TARGET>#<SELECTOR> [--vibe] [--dry] [--json]
+mrd pin <PAGE> <TARGET>#<SELECTOR> [--fingerprint TOKEN] [--vibe] [--dry] [--json]
  mint a meridian-lock pin: PAGE records the claim,
  TARGET#SELECTOR is the content being attested
- (heading path / `^id` / dewey — see § mrd pin)
+ (heading path / `^id` / dewey — see § mrd pin).
+ `--fingerprint` supplies the § A.3 proof token —
+ optional on this door, verified whenever supplied
 mrd repair [PAGE] [--dry] [--json]
  lost-pin repair: walk the repository's own history for
  the content of pins whose evidence is gone (both planes
@@ -658,6 +660,12 @@ every other write uses: one flock, one rename (`wire-contract.md`
  projected splice response under a `pin` key; human output is a confirmation
  line plus the minted fingerprint, the anchor, the blob, and the new workspace
  fingerprint.
+- **`--fingerprint TOKEN`** supplies the § A.3 pin proof: the `fp1.…`
+ content-identity token a sections read served for TARGET#SELECTOR. Optional
+ on this door — trust excuses absence — but a supplied token is always
+ verified: the engine recomputes the live token under the write flock and
+ compares, and a wrong token refuses `pin_proof_required` with nothing
+ written. A wrong token never silently replaces the live claim.
 - **No `--actor`.** Proof requiredness keys on a daemon-derived session
  identity, and a CLI invocation has no session: the bare `mrd pin` is
  local-operator-trusted and may pin proofless, exactly as `mrd put` bypasses
@@ -673,7 +681,9 @@ A pin written through the resident daemon or MCP carries its own proof: the
 the pin, and the engine recomputes the live token under the write flock and
 compares (wire-contract § A.3, the proof law). "You cannot attest content that
 was never in your context" — proven by carrying the content's own token, not
-by a server-side record of the read; the engine keeps none.
+by a server-side record of the read; the engine keeps none. `--fingerprint`
+puts the same token on the CLI door — optional there, verified whenever
+supplied.
 
 ### `mrd rules` — the effective law, shown
 
