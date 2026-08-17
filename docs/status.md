@@ -158,7 +158,16 @@ mrd fingerprint [PATH | --scope-bytes B64] [--json]
  an `absent` for a misspelled root is a permanently
  true premise whose guard can never fire. A genuinely
  missing path inside a BOUND root still mints `absent`
- (§5.6 lawful absence). On a rooted mint the scope
+ (§5.6 lawful absence). A `#` fragment on PATH refuses
+ at path grain, rooted and ambient alike (exit 1,
+ {workspace,error} under --json — the resolve door's
+ posture): a mint binds a node, never a section, so
+ splitting the fragment off would mint the WHOLE FILE
+ under a section echo — a §4.7 desync frozen into the
+ receipt — while the ambient literal would miss and
+ mint a permanently-true `absent`. A name carrying a
+ literal `#` mints through `--scope-bytes`. On a
+ rooted mint the scope
  echo is the caller's rooted spelling and {workspace}
  names the root's bound workspace — token and address
  stay paired in the caller's own frame (the §4.7
