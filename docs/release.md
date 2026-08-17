@@ -2,9 +2,9 @@
 type: contract
 id: release
 status: standing
-updated: 2026-08-09
+updated: 2026-08-17
 description: What a meridian-rs release promises, and the stamp + tag mechanics that make the promise cuttable.
-owns: [what a release promises, stamp and tag mechanics]
+owns: [what a release promises, stamp and tag mechanics, what a tag publishes]
 ---
 
 # Release definition
@@ -330,6 +330,49 @@ that pile under another name.
 Notes state what the release promises that the previous one did not, in the
 vocabulary of §2 and §3 — caps added, law amended — and cite sections, never
 prose claims.
+
+### §5.4 What the tag publishes
+
+A tag builds the engine for both served platforms and publishes each binary to
+Forgejo's **generic package registry**, keyed by the **commit** the tag points
+at (§5.2) — never by the tag name, and there is **no `latest`**.
+
+| Element | Shape |
+|---|---|
+| Base | `https://git.0xdao.app/api/packages/caoer115/generic/mrd/<COMMIT>` |
+| Files | `mrd-linux-amd64`, `mrd-darwin-arm64`, and a `.sha256` beside each |
+| The pin a consumer records | `(COMMIT, SHA256)` |
+| Re-publish of the same commit | HTTP **409**; the FIRST published bytes stay authoritative |
+
+**The tag NAMES the point; the commit KEYS the bytes.** A tag is a movable ref
+and a name is not a hash, so nothing a consumer pins may derive from it: a
+consumer resolves the tag to its commit once (`git rev-list -n 1 <tag>`) and
+records the pair above. That is the same pin the main-push publish already
+hands out, so a tag adds a platform — it does not add a second pin vocabulary.
+
+**Append-only is the property, not an accident of the store.** Rust builds here
+are not bit-reproducible, so a rebuild of the same commit differs byte-wise; the
+409 is what keeps that rebuild from silently invalidating a digest a consumer
+already recorded. The lanes exploit it directly: each **asks the registry first**
+and builds only when the artifact for this commit is absent, so a tag on a
+commit main already published is a fast no-op that re-prints the pin.
+
+| Artifact | Agent | Backend |
+|---|---|---|
+| `mrd-linux-amd64` | `workstation-nyc-2` | docker, the `Dockerfile.ci` image |
+| `mrd-darwin-arm64` | `zmax` | local — steps run on the host, against its own toolchain |
+
+A mac artifact needs a mac: no container on any Linux agent can produce one,
+which is why the darwin lane runs on a workstation agent with the local backend
+and why its `image:` names a **shell**, not an image.
+
+**No Forgejo release object is created, deliberately.** Release attachments are
+mutable and the registry is not; a release page would be a second home for the
+pin that can drift from the bytes. The tag's annotated message stays the release
+notes carrier (§5.3), and the registry stays the only place bytes live.
+
+Each lane refuses to publish a binary that cannot name the tree it came from —
+the §5.1 stamp is checked against the commit being built before any upload.
 
 ## §6 How the promise changes after a release
 
