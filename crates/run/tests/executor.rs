@@ -854,3 +854,106 @@ fn cap_denial_on_an_empty_grant_says_the_task_declares_none() {
         "names the declaration that grants: {m}"
     );
 }
+
+/// ⑤-F2 regression (2026-08-17). A value-identical `md.set_field` keeps the
+/// STORED spelling — quotes included — so the composed line's bytes, and with
+/// them the field hash / `prop_rev` / corpus root, do not move.
+///
+/// The defect this pins closed: the run plane re-composed `{key}: {value}`
+/// from the RAW caller string, so a stored `manifest: "a: b"` re-written with
+/// its own parsed value landed as `manifest: a: b` — the parsed value
+/// round-tripped while every value-identical write moved the line's bytes
+/// (quote drop), defeating idempotence-on-hash and littering git with no-op
+/// diffs. The fix routes the value through the ONE § A.6.3c encoder
+/// (`yaml_preserve_or_encode`) the wire's upsert door already uses.
+#[test]
+fn value_identical_set_field_keeps_stored_quoting_and_moves_no_hash() {
+    let (_tmp, root) = workspace();
+    let quoted_page = "\
+---
+manifest: \"worker — cas client: lock rewrite\"
+---
+
+# Tasks
+
+body
+";
+    std::fs::write(root.0.join("page.md"), quoted_page).unwrap();
+
+    // The caller writes the PARSED value — exactly what a read served it.
+    let before_root = current_root(&root);
+    let applied = apply(
+        &root,
+        &Req {
+            effects: &[set_field(
+                "manifest",
+                "worker — cas client: lock rewrite",
+                0,
+            )],
+            caps: write_caps(),
+            observed: before_root.clone(),
+            receipt: None,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        page_text(&root),
+        quoted_page,
+        "a value-identical set_field moved the page's bytes — the stored quoting was not preserved"
+    );
+    assert_eq!(
+        current_root(&root),
+        before_root,
+        "identical bytes must leave the corpus root unmoved (Merkle law)"
+    );
+    if let Some(event) = &applied.event {
+        assert_eq!(
+            event.fingerprint_before, event.fingerprint_after,
+            "a byte-identical write synthesized a moved fingerprint"
+        );
+    }
+}
+
+/// The encoder half of ⑤-F2: a FRESH value that needs quoting (the live
+/// `manifest` case — a scalar containing `: `) lands quoted, and the
+/// follow-up value-identical write of the same string moves nothing.
+#[test]
+fn fresh_set_field_quotes_the_colon_scalar_and_is_then_idempotent() {
+    let (_tmp, root) = workspace();
+
+    let value = "worker — auditing outbox: effect migration";
+    apply(
+        &root,
+        &Req {
+            effects: &[set_field("manifest", value, 0)],
+            caps: write_caps(),
+            observed: current_root(&root),
+            receipt: None,
+        },
+    )
+    .unwrap();
+    let first = page_text(&root);
+    assert!(
+        first.contains(&format!("manifest: \"{value}\"")),
+        "a `: `-carrying scalar must land QUOTED, or the line reads back as a mapping:\n{first}"
+    );
+
+    let root_after_first = current_root(&root);
+    apply(
+        &root,
+        &Req {
+            effects: &[set_field("manifest", value, 1)],
+            caps: write_caps(),
+            observed: root_after_first.clone(),
+            receipt: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        page_text(&root),
+        first,
+        "the value-identical re-write moved the line's bytes"
+    );
+    assert_eq!(current_root(&root), root_after_first);
+}
