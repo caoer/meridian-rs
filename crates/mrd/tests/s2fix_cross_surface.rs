@@ -705,34 +705,32 @@ fn criterion_3_one_corpus_every_state_three_kinds_of_visibility() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// CRITERION 2 — the read-mint gate, normal + VIBE
+// CRITERION 2 — the pin-proof gate (§ A.3), normal + VIBE
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// One engine session: a `ReadMintStore` held across a read call and then a
-/// pin call. Two CLI processes could not model it — the gate is keyed on a
-/// session ledger.
-fn session_read(
-    root: &fs::WorkspaceRoot,
-    store: &receipt::read_mint::ReadMintStore,
-    actor: &str,
-    rel: &str,
-    selector: &str,
-) {
+/// A sections read, returning the served section's proof token — the § A.3
+/// fingerprint an actor-carrying pin must carry back.
+fn proof_read(root: &fs::WorkspaceRoot, rel: &str, selector: &str) -> String {
     let doc = fs::load(root, Path::new(rel)).expect("load");
     let params = wire_serve::read::ReadParams {
         sections: Some(vec![wire::ReadSel::parse(selector)]),
-        actor: Some(actor.to_owned()),
         ..Default::default()
     };
-    wire_serve::read::composed_read(
+    let body = wire_serve::read::composed_read(
         &doc,
         &WPath(rel.into()),
         &wire::Root("r0".into()),
         &params,
-        Some(store),
         &wire_serve::read::NO_DECORATIONS,
     )
     .expect("the read serves");
+    let wire::ResponseBody::Read { sections, .. } = body else {
+        panic!("read body");
+    };
+    sections.expect("sections mode")[0]
+        .fingerprint
+        .clone()
+        .expect("a served section carries its proof token")
 }
 
 fn vibe_pin_args(actor: &str, selector: &str, vibe: bool) -> SpliceArgs {
@@ -753,17 +751,19 @@ fn vibe_pin_args(actor: &str, selector: &str, vibe: bool) -> SpliceArgs {
             target: WPath("guide.md".into()),
             selector: wire::ReadSel::parse(selector),
             vibe: vibe.then_some(true),
+            fingerprint: None,
+            sec_rev: None,
         }),
     }
 }
 
-/// Criterion 2 (R39): the read-mint gate is enforced on the agent path,
+/// Criterion 2 (R39): the pin-proof gate is enforced on the agent path,
 /// normal + vibe. Asserts the refusal, never a colour — a fix that admitted an
-/// un-read vibe pin and merely rendered it grey would still mint an
-/// attestation nobody read. The normal arm runs in the same session over the
-/// same store, so the two are proven to share one gate.
+/// unproven vibe pin and merely rendered it grey would still mint an
+/// attestation nobody read. The normal arm runs through the same gate, so the
+/// two are proven to share one door.
 #[test]
-fn criterion_2_the_gate_refuses_an_unread_vibe_pin_and_admits_a_read_one() {
+fn criterion_2_the_gate_refuses_an_unproven_vibe_pin_and_admits_a_proof_backed_one() {
     const PINNER: &str = "---\ntitle: Plan\n---\n\n# Plan\n\ndraws from the guide.\n";
     const TARGET: &str =
         "# Guide\n\n## Goal\n\nreview before you close.\n\n## Other\n\nunrelated.\n";
@@ -779,14 +779,13 @@ fn criterion_2_the_gate_refuses_an_unread_vibe_pin_and_admits_a_read_one() {
     git(dir.path(), &["config", "user.name", "fixv"]);
     let root = fs::WorkspaceRoot(dir.path().to_path_buf());
 
-    let store = receipt::read_mint::ReadMintStore::new();
-    let vibe = vibe_pin_args("agent-7", "Guide/Goal", true);
+    let mut vibe = vibe_pin_args("agent-7", "Guide/Goal", true);
 
-    // ── the assert that IS the claim: an un-read VIBE pin is REFUSED ──────────
-    let err = splice(&root, None, &vibe, &[], Some(&store)).expect_err("un-read vibe pin refuses");
+    // ── the assert that IS the claim: an unproven VIBE pin is REFUSED ─────────
+    let err = splice(&root, None, &vibe, &[], None).expect_err("unproven vibe pin refuses");
     assert_eq!(
         err.code,
-        ErrorCode::ReadMintRequired,
+        ErrorCode::PinProofRequired,
         "the vibe door is the SAME gate, typed the same way"
     );
     assert!(
@@ -807,19 +806,18 @@ fn criterion_2_the_gate_refuses_an_unread_vibe_pin_and_admits_a_read_one() {
         PINNER,
         "a refused vibe pin leaves the PINNER byte-identical"
     );
-    assert_eq!(store.len(), 0, "a refusal mints no receipt of its own");
+    // A sibling section's token does not open the vibe door either — proof
+    // is selector-grained: the compare runs over the pinned section's bytes.
+    let sibling = proof_read(&root, "guide.md", "Guide/Other");
+    vibe.pin.as_mut().expect("pin").fingerprint = Some(sibling);
+    let err = splice(&root, None, &vibe, &[], None)
+        .expect_err("a sibling section's token does not authorize this pin");
+    assert_eq!(err.code, ErrorCode::PinProofRequired);
 
-    // A read of the wrong selector does not open the vibe door either — the
-    // receipt is selector-grained.
-    session_read(&root, &store, "agent-7", "guide.md", "Guide/Other");
-    let err = splice(&root, None, &vibe, &[], Some(&store))
-        .expect_err("a sibling section's read does not authorize this pin");
-    assert_eq!(err.code, ErrorCode::ReadMintRequired);
-
-    // ── the same request, after a COVERING read: admitted ────────────────────
-    session_read(&root, &store, "agent-7", "guide.md", "Guide/Goal");
-    let out =
-        splice(&root, None, &vibe, &[], Some(&store)).expect("the read-backed vibe pin commits");
+    // ── the same request, carrying the COVERING read's token: admitted ────────
+    let proof = proof_read(&root, "guide.md", "Guide/Goal");
+    vibe.pin.as_mut().expect("pin").fingerprint = Some(proof);
+    let out = splice(&root, None, &vibe, &[], None).expect("the proof-backed vibe pin commits");
     let wire::ResponseBody::Splice { pin, .. } = &out.body else {
         panic!("splice body");
     };
@@ -837,15 +835,15 @@ fn criterion_2_the_gate_refuses_an_unread_vibe_pin_and_admits_a_read_one() {
         "the lock block carries the minted token:\n{landed}"
     );
 
-    // ── and the NORMAL arm, same session, same store: one gate, not two ───────
+    // ── and the NORMAL arm through the same gate: one door, not two ───────────
     let normal = vibe_pin_args("agent-mallory", "Guide/Other", false);
-    let err = splice(&root, None, &normal, &[], Some(&store))
-        .expect_err("a foreign actor's un-read NORMAL pin refuses identically");
-    assert_eq!(err.code, ErrorCode::ReadMintRequired);
+    let err = splice(&root, None, &normal, &[], None)
+        .expect_err("an unproven NORMAL pin refuses identically");
+    assert_eq!(err.code, ErrorCode::PinProofRequired);
 }
 
 /// The CLI half of criterion 2. `mrd pin` is the local-operator-trusted door
-/// (D16, no actor), so what the CLI proves is the mint: a real `fp1` token, a
+/// (no actor, so no proof demanded), so what the CLI proves is the mint: a real `fp1` token, a
 /// lock block on disk, and — for `--vibe` — the eager blob counted by the
 /// vibe-debt gauge.
 #[test]
@@ -953,7 +951,6 @@ fn decorate_the_way_the_daemon_does(ws: &Path, rel: &str, section: &str) -> Stri
         &WPath(rel.into()),
         &wire::Root("r0".into()),
         &params,
-        None,
         &decorations,
     )
     .expect("the read serves");
@@ -1305,7 +1302,7 @@ fn path_d_create_position_exclusions() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// F4 — the gate guards the door; the artifact is guarded separately (R25).
-/// `splice.pin` refuses `ReadMintRequired`, yet an ordinary `edits` batch
+/// `splice.pin` refuses `PinProofRequired`, yet an ordinary `edits` batch
 /// could write the same `meridian-lock` bytes as page text and read Green — a
 /// claim nobody computed. The assert is on the write, not the colour: a forged
 /// block that committed and rendered grey would still be a shipped forgery.

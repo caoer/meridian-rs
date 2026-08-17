@@ -32,7 +32,6 @@ fn read_of(body: &str, sections: Vec<ReadSel>) -> Result<ResponseBody, Box<wire:
             display_path: Some("dup.md".into()),
             ..ReadParams::default()
         },
-        None,
         &NO_DECORATIONS,
     )
 }

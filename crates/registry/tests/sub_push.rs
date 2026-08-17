@@ -503,13 +503,12 @@ fn a_valid_cursor_resumes_with_replay() {
     server.shutdown();
 }
 
-/// Mint isolation: push path mints nothing into the read-is-the-mint ledger.
-/// Deltas carry identities/revs/spans, never content — a receipt from a frame
-/// would open a write door for unread text. `sub` carries no actor.
-///
-/// *Mutation:* mint per pushed frame from `push_loop` — emptiness fails.
+/// Deltas carry identities/revs/spans, never content — and no server-side
+/// read state exists anywhere (§ A.3 proof law: pin proof rides the request),
+/// so a pushed frame structurally cannot open a write door. What this pins:
+/// the frame serves node revs (world facts), not read authority.
 #[test]
-fn a_pushed_frame_mints_no_read_receipt() {
+fn a_pushed_frame_carries_facts_never_read_authority() {
     let tmp = TempDir::new().unwrap();
     let ws = write_ws(&tmp.path().join("ws"), &[("plan.md", PLAN)]);
     let server = RunningServer::start(test_config(&tmp)).unwrap();
@@ -523,7 +522,9 @@ fn a_pushed_frame_mints_no_read_receipt() {
         "# Goals\n\nship by September\n\n# Notes\n\nnothing yet\n",
     );
     let frame = sub.next_frame().expect("a notification arrives");
-    // Frame carries the section's new rev — ledger lacks a receipt, not the info.
+    // The frame carries the section's new rev — a fact about the world, not a
+    // proof of anyone's read: the § A.3 proof a pin needs is the section's
+    // `fp1.…` token, which only a sections-mode READ serves.
     assert!(
         frame["delta"]["files"][0]["nodes"]
             .as_array()
@@ -532,39 +533,13 @@ fn a_pushed_frame_mints_no_read_receipt() {
             .any(|n| n["node_rev_after"].is_string()),
         "control: the frame carries node revs: {frame}"
     );
-
-    let canonical = workspace::canonicalize(&ws).unwrap();
-    let mints = server.registry().read_mints(&canonical);
-    for actor in ["agent:subscriber", "", "sub"] {
-        assert!(
-            mints
-                .lookup(actor, "plan.md", &wire::ReadSel::parse("Goals"))
-                .is_none(),
-            "the push path minted a receipt under {actor:?} — a read-only \
-             channel must not open a write door"
-        );
-    }
-
-    // Control: a genuine composed read by an actor does mint on the same ledger.
-    let mut reader = Conn::open(server.socket_path());
-    reader.call(&json!({
-        "op": "hello", "proto": 1, "contract": "v3",
-        "workspace": ws.to_str().unwrap(),
-    }));
-    let read = reader.call(&json!({
-        "op": "read", "path": "plan.md",
-        "sections": [{"hpath": [{"h": "Goals"}]}], "actor": "agent:reader",
-    }));
-    assert_eq!(
-        read["ok"],
-        json!(true),
-        "the control read is served: {read}"
-    );
     assert!(
-        mints
-            .lookup("agent:reader", "plan.md", &wire::ReadSel::parse("Goals"))
-            .is_some(),
-        "control: a real read mints where the push did not"
+        frame["delta"]["files"][0]["nodes"]
+            .as_array()
+            .expect("node entries")
+            .iter()
+            .all(|n| n.get("fingerprint").is_none()),
+        "a frame never serves the pin-proof token — reads do: {frame}"
     );
     server.shutdown();
 }
@@ -653,13 +628,16 @@ fn a_promoting_pin_pushes_the_targets_row_on_the_actors_frame() {
         "workspace": ws.to_str().unwrap(),
     }));
     assert_eq!(hello["ok"], json!(true), "{hello}");
-    // D16: the covering read mints the receipt the pin gate spends.
+    // § A.3 proof law: the covering read serves the token the pin carries.
     let read = ops.call(&json!({
         "op": "read", "path": "guide.md",
         "sections": [{"hpath": [{"h": "Guide"}, {"h": "Steps"}]}],
-        "actor": "agent:pinner",
     }));
     assert_eq!(read["ok"], json!(true), "{read}");
+    let proof = read["body"]["sections"][0]["fingerprint"]
+        .as_str()
+        .expect("a served section carries its proof token")
+        .to_string();
 
     let mut sub = Conn::open(server.socket_path());
     let sub_hello = sub.call(&json!({
@@ -677,13 +655,14 @@ fn a_promoting_pin_pushes_the_targets_row_on_the_actors_frame() {
     );
     let external = sub.next_frame().expect("the external edit is pushed");
 
-    // Frame 2: the promoting pin.
+    // Frame 2: the promoting pin, carrying the read's own token.
     let splice = ops.call(&json!({
         "id": 7, "op": "splice", "path": "plan.md",
         "actor": "agent:pinner", "now": "2026-08-15T12:00:00Z",
         "pin": {
             "target": "guide.md",
             "selector": {"hpath": [{"h": "Guide"}, {"h": "Steps"}]},
+            "fingerprint": proof,
         },
     }));
     assert_eq!(splice["ok"], json!(true), "the pin commits: {splice}");
