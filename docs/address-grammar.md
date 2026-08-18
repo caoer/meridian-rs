@@ -343,8 +343,28 @@ authority and a later reader re-measures rather than trusting this list.
 > coincides with the page's tree only for ambient refs, which is exactly the coincidence this
 > ruling breaks: the PAGE's tree now fills the declaring-root slot. The quote stands unaltered
 > as the receipt; the option's own earlier sentence ("today's code loads the permission ceiling
-> from where you stand") is the correct description, and the scope of assent is unharmed — the
-> hazard was stated correctly and three real alternatives were shown.
+> from where you stand") is the correct description, and the scope of assent is unharmed — a
+> real hazard class was named and three real alternatives were shown (on the hazard's
+> illustration, see the second note).
+>
+> *Second editorial note on the quoted option (reopened post-merge, 2026-08-18 — not part of
+> the assent):* the option's bypass ILLUSTRATION — read-only tree's *bash* tasks running under
+> a looser caller tree's ceiling — is not a mechanism that exists. **Caps do not apply to
+> bash** (`crates/run/src/caps.rs` module doc, citing `laws.md` § Amendment):
+> `resolve_authority` takes the bash branch FIRST and consults only the builtin,
+> non-overridable `READ_ONLY_PATTERNS` (`check-*`/`verify-*` — those names refuse a bash fence
+> at load); every other bash task resolves `Authority::Unsandboxed`, and the conventions
+> argument is never read on that branch — so a tree's declaration never governs its bash
+> tasks, and there is no bash ceiling for a caller's tree to be looser than. The REAL bypass
+> this ruling closes lives on the STARLARK path: `resolve_caps` consults the conventions
+> loaded from the declaring root, so a read-only `run.caps.*` ceiling over a task's `md.*`
+> writes was cd-swappable for a looser tree's — that is the hazard the authority law removes,
+> and the one the impl gate exercises. Scope of assent unaffected: the hazard class is real
+> and three alternatives were shown; only the illustration inside the option was wrong.
+> Provenance: the asking chain misread the exit-triad's "a bash fence under a read-only
+> convention" — which names the BUILTIN name-keyed fence — as tree-declared policy, and the
+> misreading traveled from the provisional brief through the option text into this ratified
+> quote.
 >
 > In consequence, as law: a rooted op behaves exactly as if the caller had cd'd into the named
 > root — conventions and caps load from the PAGE's own tree, receipts land in the page's
