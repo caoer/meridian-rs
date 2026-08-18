@@ -374,10 +374,14 @@ fn add_guarded_root(sb: &Sandbox) -> PathBuf {
     std::fs::write(guarded.join("task.md"), GUARDED_TASK).expect("guarded task");
     let config = sb.home.join("MERIDIAN.md");
     let mut raw = std::fs::read_to_string(&config).expect("config");
-    raw.push_str(&format!(
-        "\n```meridian-mount\nname: guarded\npath: {}\nvault: guarded\n```\n",
-        guarded.display()
-    ));
+    {
+        use std::fmt::Write as _;
+        let _ = write!(
+            raw,
+            "\n```meridian-mount\nname: guarded\npath: {}\nvault: guarded\n```\n",
+            guarded.display()
+        );
+    }
     std::fs::write(&config, raw).expect("config grows guarded");
     guarded
 }
