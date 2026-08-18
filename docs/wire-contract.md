@@ -2,7 +2,7 @@
 type: contract
 id: wire
 status: standing
-updated: 2026-08-16
+updated: 2026-08-18
 description: Standing wire constitution. One document. Docs define law; code may lag.
 owns: [the wire constitution — nouns, ops, guards, receipts, errors]
 ---
@@ -121,7 +121,7 @@ The wire has exactly five nouns. Four carry forward from `crates/wire` vocabular
 
 | Noun | Shape | Law |
 |---|---|---|
-| `Path` | string, `/`-separated, workspace-relative, UTF-8 | never absolute; no `..`; the workspace root is ambient (`fs::WorkspaceRoot`) |
+| `Path` | string, `/`-separated, workspace-relative, UTF-8 | never absolute; no `..`; the workspace root is ambient (`fs::WorkspaceRoot`); the agent-plane `[root:]path` spelling resolves at the DOOR — the wire carries the rel half only (§ A.12) |
 | `Span` | `[start, end)` byte pair, u64, serialized `[s,e]` | UTF-8 **bytes** on raw disk content — never chars, never UTF-16 (conversion to Obsidian's UTF-16 `Loc.offset` lives ONLY in the conformance harness) |
 | `NodeRev` | 16 lowercase hex = `blake3-256(span bytes)[:16]` | opaque to clients, equality-only; honest threat: §13.1 |
 | `Fingerprint` | `"b3:" + 64 hex`, full width | algorithm+domain prefixed; prefix bumps on domain-rule change (§12.3); never truncated |
@@ -1117,7 +1117,7 @@ Which files' bytes enter the workspace **fingerprint** (merkle content hash):
 
 Two consequences, stated because a v1.0.0 build inverted exactly this (dogfood 2026-08-09, s10 — the warm read door refused what the write door committed): a guarded write's CAS token (`node_rev_before` / `file_rev`) for an out-of-domain page is mintable at the read door like any other, never only by the write door itself; and `file_not_found` means exactly one thing at every door — **no such file under the workspace root** — so its teaching must not offer domain exclusion as a second reading of the miss.
 
-**The rule binds a DOOR FAMILY, and the family is every door the caller NAMES A PATH AT** — not the read/write pair the paragraph above happens to enumerate. `links <PATH>`, `walk <PAGE>` and `repair <PAGE>` take a path from the caller exactly as `cat` does, so each serves an out-of-domain path or is a door defect by the sentence above. Stated because a build served two of them and refused three, which reads as one law with an exception and is instead one law with three defects (dogfood 2026-08-09, f06 — the four-door reading of this paragraph was itself a subset of a nine-door family).
+**The rule binds a DOOR FAMILY, and the family is every door the caller NAMES A PATH AT** — not the read/write pair the paragraph above happens to enumerate. `links <PATH>`, `walk <PAGE>` and `repair <PAGE>` take a path from the caller exactly as `cat` does, so each serves an out-of-domain path or is a door defect by the sentence above. Stated because a build served two of them and refused three, which reads as one law with an exception and is instead one law with three defects (dogfood 2026-08-09, f06 — the four-door reading of this paragraph was itself a subset of a nine-door family). The same predicate bounds the rooted-ref lane (2026-08-18): every door the caller names a PAGE at resolves the agent-plane `[root:]path` spelling at the door — § A.12, `address-grammar.md` § 4.6.
 
 **Enumerators are the other half, and they are NOT bound to admit — they are bound to SAY** (ruled 2026-08-09, session decision 0017). A whole-corpus enumeration — `retire`'s sweep, the `sql` projection, `check`, bare `links` — stamps its answer `as_of` a fingerprint that an out-of-domain file's bytes cannot move, so carrying such a row under that stamp would publish a claim the stamp does not cover. An enumerator therefore MAY exclude what its attestation cannot reach, and **never silently: the exclusion is named in the output, and an enumeration that certifies ABSENCE either refuses or names what it did not see.** The engine already holds this shape for its neighbouring exclusion class — the unserved-member voice ("the file serves no spans/nodes … this scan does not see inside it") and `retire`'s refusal to certify over a partial corpus — and this rule is that reasoning carried to the domain-excluded case. The two halves compose: **a door that is asked about one path ADMITS; an enumeration that speaks for the whole corpus NAMES what it left out.**
 
@@ -3023,6 +3023,34 @@ opens the drawer file directly when unheld, and answers from `:memory:`
 last. ONE ladder for every caller (the NO-SANDBOX ruling, 2026-08-14,
 which retired OQ5's profile distinction); only `--rebuild` goes direct,
 because repair needs the file itself.
+
+### A.12 Rooted refs resolve at every page-taking door (docs-first, 2026-08-18, rooted-refs-everywhere)
+
+Every agent-facing door at which the caller names a page resolves the agent-plane `[root:]path`
+spelling through the one rooted lane. The law, its ratification receipt, the authority ruling
+(the page's tree governs — conventions, caps, and receipts follow the PAGE's workspace), the
+door-family snapshot, the preset-lane exception, and the superseded D11 wording all live in
+`address-grammar.md` § 4.6; the full record is llm-wiki
+`decisions/2026-08-18-rooted-refs-everywhere.md`. **On THIS contract the amendment changes
+nothing structural**, and that is the point worth stating here:
+
+- **Resolution happens at the door; the wire carries the rel half only.** The §1 `Path` law and
+  its head-colon confinement arm (`addr::confined`) stand unchanged — a raw `root:` head
+  arriving on the wire is an address that missed its door and refuses `bad_path`.
+- **The mechanism is the shipped workspace jail.** `hello` pins the declared workspace
+  exact-or-refuse, with no ancestor walk (*"a declaration never widens to an enclosing
+  registered workspace"*), and the connection stays attached to that workspace for reads and
+  writes alike — a rooted door resolves the root first and dials the resolved workspace, so
+  rooted writes need no wire change.
+- **The one in-band exception predates the amendment and is unchanged:** `splice.pin.target`
+  carries `name:rel` on the wire (pin-cross-root, § A.3).
+- **`run` over the wire (§ A.8) follows the authority law:** a rooted invocation executes under
+  the page's tree — its conventions, its caps ceiling, its workspace for receipts.
+- **The `script` lane's one-declared-root rule is convergence, not invention:** the customer
+  face (ccc-statusd MCP `script`) already states it verbatim — *"Every files[] entry resolves
+  through one root; that root is the workspace; in-program paths are relative to it."* Face
+  grammars still differ deliberately: the MCP face admits absolute and session-relative refs;
+  the mrd §1 path law does not, and this amendment does not harmonize them.
 
 ---
 
