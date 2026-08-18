@@ -174,6 +174,9 @@ mod scenario {
 
     use std::collections::BTreeMap;
 
+    /// Empty run-birth fields for this fixture.
+    static TEST_EMPTY_FIELDS: BTreeMap<String, String> = BTreeMap::new();
+
     use effects::{ArgValue, Effect, EffectKind, Provenance};
 
     use crate::caps::{Authority, CapSet};
@@ -295,6 +298,8 @@ mod scenario {
                 exec: None,
                 depth: 0,
                 delta: None,
+                fields: &TEST_EMPTY_FIELDS,
+                birth_seq: None,
             },
         )
     }

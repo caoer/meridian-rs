@@ -62,6 +62,10 @@ use wire::{Edit, EditShape, Path as WirePath, PutAt, SecRef};
 use wire_serve::write::{SpliceArgs, splice};
 
 use crate::test_cmd::{confine, parse_frontmatter, scan_blocks};
+
+/// Empty run-birth fields (cascade intents cannot birth).
+static EMPTY_RUN_FIELDS: std::collections::BTreeMap<String, String> =
+    std::collections::BTreeMap::new();
 use crate::{Fail, Format};
 
 /// Run `mrd test --corpus <SPEC> [--json]`: load the spec, load its rule pages, run every case
@@ -1196,6 +1200,9 @@ fn apply_generation(
         actor: None,
         depth: pending.depth,
         delta: None, // CLI host: no ring in reach (§18 row 12)
+        // Proof tier drives cascade intents only — no birth can arrive.
+        fields: &EMPTY_RUN_FIELDS,
+        birth_seq: None,
     });
     let applied = run::executor::apply(&root, &request).map_err(|error| {
         ProofFault::Refused(format!(

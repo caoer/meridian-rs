@@ -7,6 +7,10 @@ use std::collections::BTreeMap;
 use effects::{ArgValue, Domain, Effect, EffectKind, Provenance};
 use model::MerkleRoot;
 use run::caps::{Authority, CapSet};
+
+/// Empty run-birth fields for these fixtures.
+static TEST_EMPTY_FIELDS: std::collections::BTreeMap<String, String> =
+    std::collections::BTreeMap::new();
 use run::executor::{self, ApplyRequest, ExecError};
 
 const TOKEN: &str = "@green.b3af12cd";
@@ -86,6 +90,8 @@ fn apply(root: &fs::WorkspaceRoot, effects: &[Effect]) -> Result<executor::Appli
             actor: None,
             depth: 0,
             delta: None,
+            fields: &TEST_EMPTY_FIELDS,
+            birth_seq: None,
         },
     )
 }

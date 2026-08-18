@@ -102,6 +102,15 @@ pub struct ApplyRequest<'a> {
     /// `None` is the CLI entry — a separate process with no ring in reach —
     /// whose commits stay external change by the flock ruling.
     pub delta: Option<&'a dyn DeltaSink>,
+    /// § A.2.1 opaque passthrough for `md.create` births: delivered verbatim
+    /// to the create door as `ctx.fields` (armed middleware reads them; the
+    /// run plane interprets NO key). Empty on the CLI entry today; the § A.8
+    /// wire arm threads the frame's optional `fields` (cap `run.fields`).
+    pub fields: &'a BTreeMap<String, String>,
+    /// The workspace ring for door-committed births (`wire_serve::seq`), so
+    /// a daemon-side birth is numbered like any door write. `None` on the
+    /// CLI entry — its commits stay external change, exactly as `delta`.
+    pub birth_seq: Option<&'a dyn wire_serve::seq::SeqSink>,
 }
 
 /// The host seam of the run-delta ruling (§ A.8 Delta honesty): the daemon
@@ -287,6 +296,8 @@ impl IntentApply {
             actor: base.actor,
             depth: base.depth,
             delta: base.delta,
+            fields: base.fields,
+            birth_seq: base.birth_seq,
         }
     }
 }
@@ -381,6 +392,12 @@ pub enum ExecError {
     SectionNotFound { section: String },
     /// `md.append_section` names a heading appearing more than once.
     SectionAmbiguous { section: String, count: usize },
+    /// The create door refused an `md.create` birth (occupied path, armed
+    /// refusal, bad path, …) — the door's own error, carried verbatim. The
+    /// whole generation refuses; births realized EARLIER in the same
+    /// generation stay landed (no-rollback, decision #14) and are attested
+    /// by the door's own frames.
+    BirthRefused { path: String, detail: String },
     /// Another run holds the workspace lock (decision #9: `LOCK_NB` — a fast
     /// typed refusal, never a wait; a hung holder can never make callers hang).
     WorkspaceBusy,
@@ -463,6 +480,9 @@ impl std::fmt::Display for ExecError {
             ExecError::SectionNotFound { section } => write!(f, "no section '{section}'"),
             ExecError::SectionAmbiguous { section, count } => {
                 write!(f, "section '{section}' appears {count} times (ambiguous)")
+            }
+            ExecError::BirthRefused { path, detail } => {
+                write!(f, "birth refused at {path}: {detail}")
             }
             ExecError::WorkspaceBusy => write!(
                 f,
@@ -607,6 +627,11 @@ pub enum EditTarget {
     /// A section heading chain, root → governing heading.
     #[serde(rename = "sec")]
     Section(Vec<String>),
+    /// A file born through the create door (`md.create`) — the value is the
+    /// workspace-relative path. Its receipt row's `before` is empty (no
+    /// prior node exists) and `after` is the born whole-file rev.
+    #[serde(rename = "born")]
+    Born(String),
 }
 
 impl EditTarget {
@@ -622,6 +647,7 @@ impl EditTarget {
                     .map(|s| receipt::render_field(s).into_owned())
                     .collect(),
             ),
+            EditTarget::Born(path) => EditTarget::Born(receipt::render_field(path).into_owned()),
         }
     }
 }
@@ -698,6 +724,56 @@ pub fn admit(effects: &[Effect], authority: &Authority) -> Result<(), ExecError>
 /// flock cannot re-acquire on a second fd, so a self-locking call under a
 /// held lock would refuse itself as busy.
 ///
+/// The birth lane (`md.create`, the declared-task birth cap — ruled
+/// 2026-08-18): every birth goes through the CREATE DOOR, so occupied-path
+/// refusal (`cas_mismatch`), armed middleware stamps (`ctx.fields` =
+/// `req.fields` verbatim) and checks are the door's own, never
+/// re-implemented here. Births realize BEFORE the declaring-page batch,
+/// sequentially in emission order; the first refusal refuses the generation
+/// (earlier landed births stay — no rollback, decision #14 — attested by the
+/// door's own frames). Lock order holds: the caller holds run.lock and the
+/// door takes write.lock, the one legal order.
+fn realize_births(
+    root: &fs::WorkspaceRoot,
+    req: &ApplyRequest<'_>,
+) -> Result<Vec<ReceiptEdit>, ExecError> {
+    let mut births = Vec::new();
+    for effect in req.effects.iter().filter(|e| e.kind == EffectKind::Create) {
+        let path = str_arg(effect, "path")?;
+        let body = str_arg(effect, "body")?;
+        let args = wire_serve::write::CreateArgs {
+            id: None,
+            path: wire::Path(path.clone()),
+            body,
+            // §9: the receipt's own actor law — supplied verbatim, else the
+            // plane's self-label — so the door's frame and the run receipt
+            // name one identity.
+            actor: Some(
+                req.actor
+                    .map_or_else(|| format!("run:{}", req.task), str::to_owned),
+            ),
+            now: req.now.map(str::to_owned),
+            // No world pin on this door (no-guard-on-effects ruling).
+            if_root: None,
+            dry: false,
+            fields: req.fields.clone(),
+        };
+        let out = wire_serve::write::create(root, req.birth_seq, &args, &[]).map_err(|e| {
+            ExecError::BirthRefused {
+                path: path.clone(),
+                // The door's typed frame, carried whole (it has no Display).
+                detail: serde_json::to_string(e.as_ref()).unwrap_or_else(|_| format!("{e:?}")),
+            }
+        })?;
+        births.push(ReceiptEdit {
+            target: EditTarget::Born(path),
+            before: String::new(),
+            after: out.file_rev_after.0.clone(),
+        });
+    }
+    Ok(births)
+}
+
 /// # Errors
 /// [`ExecError`] — in every case NOTHING was applied.
 pub fn apply_under(
@@ -708,6 +784,14 @@ pub fn apply_under(
     // 1. THE CHOKE POINT — before any I/O.
     admit(req.effects, req.authority)?;
 
+    // 1b. THE BIRTH LANE — see [`realize_births`].
+    let births = realize_births(root, req)?;
+    let page_effects: Vec<&Effect> = req
+        .effects
+        .iter()
+        .filter(|e| e.kind != EffectKind::Create)
+        .collect();
+
     // 2. Load under the lock.
     let doc = fs::load(root, Path::new(req.page)).map_err(|e| ExecError::Page {
         path: req.page.to_owned(),
@@ -715,8 +799,8 @@ pub fn apply_under(
     })?;
 
     // 3. Plan edits, self-guarded with load-time revs.
-    let mut planned = Vec::with_capacity(req.effects.len());
-    for effect in req.effects {
+    let mut planned = Vec::with_capacity(page_effects.len());
+    for effect in &page_effects {
         planned.push(plan_edit(&doc, effect)?);
     }
 
@@ -748,9 +832,17 @@ pub fn apply_under(
         return Err(ExecError::ArmedRefusal { detail });
     }
 
-    // 7. Receipt (rides the same sealed commit — §6.1).
+    // 7. Receipt (rides the same sealed commit — §6.1). Birth rows lead the
+    // line, in realization order, before the page-edit rows.
     let receipt = match &req.receipt {
-        Some(addr) => Some(render_receipt(root, addr, req, &planned, &after_revs)?),
+        Some(addr) => Some(render_receipt(
+            root,
+            addr,
+            req,
+            &planned,
+            &after_revs,
+            &births,
+        )?),
         None => None,
     };
     let receipt_line = receipt.as_ref().map(|(_, _, line)| line.clone());
@@ -991,7 +1083,17 @@ fn descriptor_surface(effect: &Effect) -> Result<(&'static str, String), ExecErr
     let target = match effect.kind {
         EffectKind::SetField => str_arg(effect, "field")?,
         EffectKind::AppendSection => str_arg(effect, "section")?,
-        _ => unreachable!("md.* kinds are SetField | AppendSection"),
+        // The birth cap's capability grain is the path's FIRST segment
+        // (`tasks/foo.md` → `tasks`), so `md.create:tasks` scopes a
+        // directory with the cap grammar's existing exact-match semantics
+        // (the target charset admits no `/`). A root-level birth's grain is
+        // the path itself.
+        EffectKind::Create => {
+            let path = str_arg(effect, "path")?;
+            path.split_once('/')
+                .map_or(path.clone(), |(d, _)| d.to_owned())
+        }
+        _ => unreachable!("md.* kinds are SetField | AppendSection | Create"),
     };
     Ok((effect.kind.as_str(), target))
 }
@@ -1154,6 +1256,7 @@ fn render_receipt(
     req: &ApplyRequest<'_>,
     planned: &[PlannedEdit],
     after_revs: &[NodeRev],
+    births: &[ReceiptEdit],
 ) -> Result<(String, ReceiptAppend, String), ExecError> {
     let io_err = |e: io::Error| ExecError::Io {
         reason: format!("receipt: {e}"),
@@ -1174,14 +1277,23 @@ fn render_receipt(
         now: req.now.map(str::to_owned),
         root_pin: req.observed_root.0.clone(),
         task_rev: req.task_rev.to_owned(),
-        edits: planned
+        edits: births
             .iter()
-            .zip(after_revs)
-            .map(|(p, after)| ReceiptEdit {
-                target: p.identity.rendered(),
-                before: p.before.node_rev.0.clone(),
-                after: after.0.clone(),
+            .map(|b| ReceiptEdit {
+                target: b.target.rendered(),
+                before: b.before.clone(),
+                after: b.after.clone(),
             })
+            .chain(
+                planned
+                    .iter()
+                    .zip(after_revs)
+                    .map(|(p, after)| ReceiptEdit {
+                        target: p.identity.rendered(),
+                        before: p.before.node_rev.0.clone(),
+                        after: after.0.clone(),
+                    }),
+            )
             .collect(),
         // U13: the sealed exec facts enter the COMMITTED line here — the only
         // point that can put them there (this render commits internally).

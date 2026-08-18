@@ -45,6 +45,10 @@ use serde_json::json;
 
 use crate::{Fail, Format, current_dir};
 
+/// Empty run-birth fields for the CLI entry (no frame passthrough).
+static EMPTY_RUN_FIELDS: std::collections::BTreeMap<String, String> =
+    std::collections::BTreeMap::new();
+
 /// The run-plane leg of the triad: the invocation was well-formed, the plane refused or failed.
 const EXIT_RUN: u8 = 1;
 
@@ -413,6 +417,11 @@ fn execute(
         // A separate process with no ring in reach: CLI commits stay
         // external change (§18 row 12; § A.8 Delta honesty, CLI arm).
         delta: None,
+        // No frame fields ride the CLI entry today — a birth lands unstamped
+        // (the documented bare-door behavior); the wire arm is the stamped
+        // lane (cap `run.fields`). No ring in reach either.
+        fields: &EMPTY_RUN_FIELDS,
+        birth_seq: None,
     };
 
     // Bash stdout streams live to our stdout while the record tees it out-of-tree; starlark

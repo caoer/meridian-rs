@@ -967,7 +967,7 @@ const SERVER_NAME: &str = concat!("meridian-daemon/", env!("CARGO_PKG_VERSION"))
 /// cap. Field-only caps name surfaces the arms honor; `splice.verdicts` is
 /// §11.1, served `[]` (no pack loaded). `splice ∈ caps` ⇒ `node_rev` on every
 /// `toc`/`cat`/`extract` node (shared read arms).
-const CAPS: [&str; 17] = [
+const CAPS: [&str; 18] = [
     "toc",
     "cat",
     "extract",
@@ -988,6 +988,12 @@ const CAPS: [&str; 17] = [
     // top-level `intents`). A host attaches `fields` only when this cap is
     // advertised — an older engine's strict wall refuses the unknown field.
     "splice.fields",
+    // § A.8 run-plane births (the declared-task birth cap): the `fields`
+    // passthrough decodes on `run` and rides every `md.create` birth the run
+    // commits, verbatim, as middleware `ctx.fields`. A host attaches run
+    // `fields` only when this cap is advertised — an older engine's strict
+    // wall refuses the unknown field.
+    "run.fields",
     // U20b push channel (§4.7). `sub` converts this connection to push-only.
     "sub",
 ];
