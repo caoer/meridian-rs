@@ -18,8 +18,7 @@ use run::caps::Authority;
 use run::executor::{self, ApplyRequest, ReceiptAddr};
 
 /// Empty run-birth fields for these fixtures.
-static TEST_EMPTY_FIELDS: std::collections::BTreeMap<String, String> =
-    std::collections::BTreeMap::new();
+static TEST_EMPTY_FIELDS: BTreeMap<String, String> = BTreeMap::new();
 
 const PAGE: &str = "\
 ---

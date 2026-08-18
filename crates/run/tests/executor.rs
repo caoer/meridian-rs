@@ -9,8 +9,7 @@ use model::MerkleRoot;
 use run::caps::{Authority, CapSet};
 
 /// Empty run-birth fields for these fixtures.
-static TEST_EMPTY_FIELDS: std::collections::BTreeMap<String, String> =
-    std::collections::BTreeMap::new();
+static TEST_EMPTY_FIELDS: BTreeMap<String, String> = BTreeMap::new();
 use run::executor::{self, ApplyRequest, ExecError, ReceiptAddr};
 
 const PAGE: &str = "\

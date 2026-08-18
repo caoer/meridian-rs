@@ -46,8 +46,7 @@ use serde_json::json;
 use crate::{Fail, Format, current_dir};
 
 /// Empty run-birth fields for the CLI entry (no frame passthrough).
-static EMPTY_RUN_FIELDS: std::collections::BTreeMap<String, String> =
-    std::collections::BTreeMap::new();
+static EMPTY_RUN_FIELDS: BTreeMap<String, String> = BTreeMap::new();
 
 /// The run-plane leg of the triad: the invocation was well-formed, the plane refused or failed.
 const EXIT_RUN: u8 = 1;

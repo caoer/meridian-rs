@@ -14,8 +14,7 @@ use run::fence::GuaranteeClass;
 use run::runner::{self, RunSpec, RunnerError, TaskOutcome};
 
 /// Empty run-birth fields for these fixtures.
-static TEST_EMPTY_FIELDS: std::collections::BTreeMap<String, String> =
-    std::collections::BTreeMap::new();
+static TEST_EMPTY_FIELDS: BTreeMap<String, String> = BTreeMap::new();
 
 /// A one-task starlark page: `fix-x` sets `status` from its arg and emits a
 /// notice (the non-md surface).

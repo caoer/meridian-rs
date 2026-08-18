@@ -42,8 +42,7 @@ use run::caps::{Cap, CapSet};
 use run::executor::{Applied, ReceiptAddr};
 
 /// Empty run-birth fields for the realise lane (no fields ride it).
-static EMPTY_RUN_FIELDS: std::collections::BTreeMap<String, String> =
-    std::collections::BTreeMap::new();
+static EMPTY_RUN_FIELDS: BTreeMap<String, String> = BTreeMap::new();
 use run::runner::{self, RunSpec, TaskOutcome};
 
 /// The receipt file every realise apply appends to (workspace-relative). One

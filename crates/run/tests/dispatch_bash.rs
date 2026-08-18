@@ -14,8 +14,7 @@ use run::executor::{ExecError, ReceiptAddr, WorkspaceLock};
 use run::shim::ShimError;
 
 /// Empty run-birth fields for these fixtures.
-static TEST_EMPTY_FIELDS: std::collections::BTreeMap<String, String> =
-    std::collections::BTreeMap::new();
+static TEST_EMPTY_FIELDS: BTreeMap<String, String> = BTreeMap::new();
 use run::snapshot::Detection;
 
 const PAGE: &str = "\
