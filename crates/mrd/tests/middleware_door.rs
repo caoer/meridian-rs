@@ -513,6 +513,71 @@ fn create_door_transforms_the_born_bytes_and_carries_intents() {
     assert!(FsPath::new("tasks/born.md").is_relative());
 }
 
+/// The birth-stamp regression (2026-08-18): THREE `set_field` emits on a
+/// frontmatterless birth land ONE `---` block with every key parsing — the
+/// broken door compiled each upsert against the pre-edit blockless snapshot
+/// and stacked three blocks, so only `created` survived the parse. A birth
+/// already carrying a block keeps merging into it, caller keys preserved.
+#[test]
+fn create_door_stamps_a_frontmatterless_birth_with_one_block() {
+    let (_dir, root) = tmp_ws();
+    let page = mw_page(
+        "000-born-identity",
+        "def middleware(ctx):\n    if ctx.op != \"create\":\n        return\n    set_field(path = ctx.after.path, key = \"created\", value = \"2026-08-18T13:24\")\n    set_field(path = ctx.after.path, key = \"session\", value = \"18-00-adhoc\")\n    set_field(path = ctx.after.path, key = \"spawned-by\", value = \"[[64cb50a1]]\")\n",
+    );
+    write_page(&root, "rules/born-identity.md", &page);
+    arm(
+        &root,
+        &[(
+            "rules/born-identity.md",
+            &page,
+            "000-born-identity",
+            Mode::Block,
+        )],
+    );
+
+    let birth = |path: &str, body: &str| CreateArgs {
+        id: None,
+        path: Path(path.into()),
+        body: body.into(),
+        actor: None,
+        now: None,
+        if_root: None,
+        dry: false,
+        fields: BTreeMap::new(),
+    };
+    create(
+        &root,
+        None,
+        &birth("tasks/blockless.md", "# zz-born-card\n"),
+        &[],
+    )
+    .expect("the frontmatterless birth lands");
+    assert_eq!(
+        read(&root, "tasks/blockless.md"),
+        "---\ncreated: 2026-08-18T13:24\nsession: 18-00-adhoc\n\
+         spawned-by: \"[[64cb50a1]]\"\n---\n# zz-born-card\n",
+        "one merged block, every stamp a parsing key"
+    );
+
+    create(
+        &root,
+        None,
+        &birth(
+            "tasks/blocked.md",
+            "---\nstatus: Todo\n---\n# zz-born-card2\n",
+        ),
+        &[],
+    )
+    .expect("the block-carrying birth lands");
+    assert_eq!(
+        read(&root, "tasks/blocked.md"),
+        "---\ncreated: 2026-08-18T13:24\nsession: 18-00-adhoc\n\
+         spawned-by: \"[[64cb50a1]]\"\nstatus: Todo\n---\n# zz-born-card2\n",
+        "stamps merge into the existing block, caller keys preserved"
+    );
+}
+
 // ── fail-closed: an unevaluable middleware refuses ──────────────────────────
 
 #[test]
