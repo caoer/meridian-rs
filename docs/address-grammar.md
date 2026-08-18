@@ -304,16 +304,23 @@ should not be a factor to decide the behavior. this buys us durability."* Full r
 > (`wire-contract.md` § 12.1, whose own dogfood showed an enumerated family is read as a subset)
 > — so a door that is born taking a page is born inside this law.
 
-Members at the amendment date (mirroring the impl door audit, ACKed 2026-08-18): already rooted
-— `read`, `fingerprint`, `resolve`, `put --scope`. Converted by this ruling — `run`, `walk`,
-`repair`, `realise`, `links`, `rules`, `test --corpus` (the read side); `put` (the write TARGET),
-`rm`, `pin` (the PAGE position — the TARGET was already cross-root, pin-cross-root/D-A), and
-`script --files` (each entry `root:path`-capable under the one-declared-root convergence below).
-In the family but NOT YET converted — the preset lane (`unfold`, `reconcile`, `new`): see the
-stated exception below. Outside the family by predicate — arguments that name no page:
-`arm --at` (a directory scope, `armed-plane.md`), `test --history` and `status --cwd` (explicit
-tree arguments), `check`, `retire`, `skill`, `sql` (no page; its `--root` is a new workspace
-selector, not a page ref). The enumeration is a snapshot; the predicate governs.
+Members at the amendment date (mirroring the impl door audit, ACKed 2026-08-18, corrected same
+day): already rooted — `read`, `fingerprint`, `resolve`, `put --scope`. Converted by this ruling
+— `run`, `walk`, `repair`, `realise`, `links`, `rules` (the read side); `put` (the write
+TARGET), `rm`, `pin` (the PAGE position — the TARGET was already cross-root,
+pin-cross-root/D-A), and `script --files` (each entry `root:path`-capable under the
+one-declared-root convergence below). In the family but NOT YET converted — the preset lane
+(`unfold`, `reconcile`, `new`): see the stated exception below. Outside the family by predicate
+— arguments that name no page: `arm --at` (a directory scope, `armed-plane.md`), `test
+--history` and `status --cwd` (explicit tree arguments), `test --corpus` (its SPEC is a plain
+fixture FILE read from disk with cwd/absolute semantics, everything in it resolved relative to
+the spec's own directory — a compiler-source-style argument, not a corpus page; measured at the
+spec loader. The rule pages a spec names INSIDE itself are document positions, not door
+arguments — the § 9.1 distinction — so they are outside too), `check`, `retire`, `skill`, `sql`
+(no page; its `--root` is a new workspace selector, not a page ref). The enumeration is a
+MEASURED snapshot, not a designed set — two members moved after the first ACK when their
+resolution was read at the seam (`new` in, `test --corpus` out) — so the predicate stays the
+authority and a later reader re-measures rather than trusting this list.
 
 > **Authority: the page's tree governs — ZT's ruling by AUQ selection, 2026-08-18, session
 > `ef7c6b05`.** Scope of assent, stated precisely (the DX-01 standard — ratification carries its
