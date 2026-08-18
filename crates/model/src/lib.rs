@@ -2286,28 +2286,39 @@ impl CorpusIndex {
         }
         let key = linkpath.trim().trim_end_matches(".md").to_lowercase();
         let base = key.rsplit('/').next().unwrap_or(key.as_str()).to_string();
+        // Subdir linkpath (`a/b`) ⇒ a path ending in `a/b.md` (§4.5), never any
+        // `b.md`: the qualifier is part of the address. Match vault-root
+        // (`a/b.md`) or nested (`c/a/b.md`). A qualifier that matches no
+        // candidate leaves the link DANGLING (unresolved is first-class, §4.5)
+        // — the app never adopts a basename match for a missed path. The
+        // retired bare-basename degradation here turned nonexistent
+        // `agents/x/CARD` spellings into resolved edges onto real homes (or
+        // onto the SOURCE file itself), and the phantom inbound edge then
+        // blocked `mrd rm` of the adopted home (p1-fuzzy-resolve, 2026-08-18).
+        // The full spelling may still name a frontmatter alias: alias
+        // resolution is an exact full-spelling match, not a path walk.
+        if key.contains('/') {
+            if let Some(candidates) = self.by_basename.get(&base) {
+                let qualified = format!("{key}.md");
+                let suffix = format!("/{qualified}");
+                let narrowed: Vec<String> = candidates
+                    .iter()
+                    .filter(|p| {
+                        let lower = p.to_lowercase();
+                        lower == qualified || lower.ends_with(&suffix)
+                    })
+                    .cloned()
+                    .collect();
+                if !narrowed.is_empty() {
+                    return pick_source_relative(&narrowed, from);
+                }
+            }
+            return pick_source_relative(self.by_alias.get(&key)?, from);
+        }
         let candidates = self
             .by_basename
             .get(&base)
             .or_else(|| self.by_alias.get(&key))?;
-        // Subdir linkpath (`a/b`) ⇒ path ending in `a/b.md` (§4.5), not every
-        // `b.md`. Match vault-root (`a/b.md`) or nested (`c/a/b.md`); fall back
-        // to bare basename only if no qualifier hit (stale subpath best-effort).
-        if key.contains('/') {
-            let qualified = format!("{key}.md");
-            let suffix = format!("/{qualified}");
-            let narrowed: Vec<String> = candidates
-                .iter()
-                .filter(|p| {
-                    let lower = p.to_lowercase();
-                    lower == qualified || lower.ends_with(&suffix)
-                })
-                .cloned()
-                .collect();
-            if !narrowed.is_empty() {
-                return pick_source_relative(&narrowed, from);
-            }
-        }
         pick_source_relative(candidates, from)
     }
 
@@ -2789,11 +2800,77 @@ mod tests {
                 .is_some(),
             "a bare basename still resolves (source-relative pick over the set)",
         );
-        assert!(
-            index
-                .resolve_linkpath("nowhere/caveman", "sources/caveman.md")
-                .is_some(),
-            "a stale subpath degrades to the bare-basename resolution",
+        assert_eq!(
+            index.resolve_linkpath("nowhere/caveman", "sources/caveman.md"),
+            None,
+            "a missed subpath qualifier dangles — never a bare-basename pick",
+        );
+    }
+
+    /// A subdir-qualified linkpath whose path exists nowhere stays DANGLING —
+    /// stage 1 never adopts a bare-basename match for a missed qualifier
+    /// (unresolved is first-class, §4.5). Live finding p1-fuzzy-resolve
+    /// 2026-08-18 on `820d65e95`: the old degradation resolved
+    /// `[[agents/zz9qq7xx/CARD]]` (nonexistent) onto the real home
+    /// `agents/ef1dc8e4/CARD.md`, whose `mrd rm` then refused on the phantom
+    /// inbound edge; a fictitious target written inside a CARD resolved back
+    /// onto the source CARD itself.
+    #[test]
+    fn missed_subpath_qualifier_dangles_instead_of_adopting_basename() {
+        let mut index = CorpusIndex::new();
+        let empty = build(String::new(), syntax::parse(""));
+        for p in ["agents/ef1dc8e4/CARD.md", "agents/03576ba4/CARD.md"] {
+            index.insert(p, &empty);
+        }
+        assert_eq!(
+            index.resolve_linkpath("agents/zz9qq7xx/CARD", "agents/ef1dc8e4/NOTE.md"),
+            None,
+            "a nonexistent qualified target never adopts a foreign real home",
+        );
+        assert_eq!(
+            index.resolve_linkpath("agents/nonexist7777/CARD", "agents/03576ba4/CARD.md"),
+            None,
+            "a fictitious qualified target never resolves back onto its source",
+        );
+        assert_eq!(
+            index.resolve_linkpath("agents/03576ba4/CARD", "agents/ef1dc8e4/NOTE.md"),
+            Some("agents/03576ba4/CARD.md".to_string()),
+            "a real qualified spelling keeps resolving",
+        );
+        assert_eq!(
+            index.resolve_linkpath("Agents/03576ba4/card", "agents/ef1dc8e4/NOTE.md"),
+            Some("agents/03576ba4/CARD.md".to_string()),
+            "case tolerance on the qualifier stays (§4.5 stage 1)",
+        );
+        assert_eq!(
+            index.resolve_linkpath("CARD", "agents/ef1dc8e4/NOTE.md"),
+            Some("agents/ef1dc8e4/CARD.md".to_string()),
+            "a bare basename still resolves source-relative",
+        );
+    }
+
+    /// A slash-bearing frontmatter alias answers by exact full-spelling match
+    /// even when the spelling matches no path — alias resolution is a name
+    /// match, not a path walk, so the dangling rule for missed qualifiers
+    /// does not swallow it.
+    #[test]
+    fn slash_bearing_alias_resolves_when_no_path_matches() {
+        let mut index = CorpusIndex::new();
+        let raw = "---\naliases: [agents/x/card]\n---\nbody\n".to_string();
+        let aliased = build(raw.clone(), syntax::parse(&raw));
+        index.insert("foo/bar.md", &aliased);
+        let empty = build(String::new(), syntax::parse(""));
+        index.insert("agents/real/CARD.md", &empty);
+        assert_eq!(
+            index.resolve_linkpath("agents/x/card", "notes/from.md"),
+            Some("foo/bar.md".to_string()),
+            "the exact alias answers even though basename candidates exist \
+             and the path qualifier matches none of them",
+        );
+        assert_eq!(
+            index.resolve_linkpath("agents/x/nothing", "notes/from.md"),
+            None,
+            "no path, no alias — dangling",
         );
     }
 
