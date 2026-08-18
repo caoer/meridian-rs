@@ -1025,6 +1025,22 @@ struct FmUpsertPlan {
     before_rev: NodeRev,
 }
 
+/// Where a blockless document's synthesized `---` fences land relative to this
+/// upsert's line. Every batch edit plans against the same pre-batch bytes, so
+/// N block-synthesizing upserts left independent would stack N blocks — only
+/// the first parses. Instead the batch opens the block once, extends it, and
+/// closes it on the last: the fragments share the 0..0 insertion point and
+/// §4.4 same-point inserts apply in request order, concatenating into ONE
+/// well-formed block. `Whole` is the lone upsert carrying both fences;
+/// irrelevant (unused) when the key or a block already exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FmBlockSynth {
+    Whole,
+    Open,
+    Mid,
+    Close,
+}
+
 /// Plan a frontmatter-key upsert against the pre-batch document — the
 /// create-or-replace site for `{key}: {value}` (`PutAt::Upsert`). The insertion
 /// offset is server-derived (never a client byte offset, D-C1):
@@ -1032,8 +1048,10 @@ struct FmUpsertPlan {
 /// - key absent, frontmatter present → insert `{key}: {value}\n` right after the
 ///   opening `---\n` fence (first-key position); before-rev is the empty
 ///   insertion point's rev.
-/// - no frontmatter → synthesize `---\n{key}: {value}\n---\n` at byte 0.
-fn plan_fm_upsert(doc: &Document, key: &str, value: &str) -> FmUpsertPlan {
+/// - no frontmatter → synthesize the `---` block at byte 0, `synth` saying how
+///   this upsert's fragment wraps its fences ([`FmBlockSynth`] — batch-mates
+///   compose one block, a lone upsert carries the whole).
+fn plan_fm_upsert(doc: &Document, key: &str, value: &str, synth: FmBlockSynth) -> FmUpsertPlan {
     let line = format!("{key}: {value}");
     // key present → replace the whole key line (== `at:all` on the fm_key leaf).
     if let Ok(existing) = resolve_fm_key_resolved(doc, key) {
@@ -1060,7 +1078,12 @@ fn plan_fm_upsert(doc: &Document, key: &str, value: &str) -> FmUpsertPlan {
         None => FmUpsertPlan {
             target_span: 0..0,
             region: 0..0,
-            text: format!("---\n{line}\n---\n"),
+            text: match synth {
+                FmBlockSynth::Whole => format!("---\n{line}\n---\n"),
+                FmBlockSynth::Open => format!("---\n{line}\n"),
+                FmBlockSynth::Mid => format!("{line}\n"),
+                FmBlockSynth::Close => format!("{line}\n---\n"),
+            },
             before_rev: empty_rev,
         },
     }
@@ -1084,7 +1107,7 @@ fn fm_insert_offset(bytes: &[u8], block: &ByteSpan) -> usize {
 /// the empty-span rev (a create has no prior node). `value` does not affect it.
 #[must_use]
 pub fn fm_upsert_before(doc: &Document, key: &str) -> Target {
-    let plan = plan_fm_upsert(doc, key, "");
+    let plan = plan_fm_upsert(doc, key, "", FmBlockSynth::Whole);
     Target {
         span: plan.target_span,
         node_rev: plan.before_rev,
@@ -1408,6 +1431,29 @@ pub fn validate_batch(
 
     let raw = &doc.raw;
 
+    // On a blockless document every `fm_key` upsert synthesizes fences, and
+    // each plans against the same pre-batch bytes — so the batch's upserts
+    // compose ONE block ([`FmBlockSynth`]): count them up front, position each
+    // as it plans.
+    let is_fm_upsert = |e: &Edit| {
+        matches!(
+            (&e.edit, &e.target),
+            (
+                EditKind::Put {
+                    at: PutAt::Upsert,
+                    ..
+                },
+                Ref::FmKey(_)
+            )
+        )
+    };
+    let fm_synth_total = if find_frontmatter(&doc.root).is_none() {
+        batch.edits.iter().filter(|e| is_fm_upsert(e)).count()
+    } else {
+        0
+    };
+    let mut fm_synth_seen = 0usize;
+
     // 2. Per edit, in order: resolve → CAS → compute the replaced region. The
     // first failure (in edit order) is returned — the §5.2 single-error shape.
     let mut planned: Vec<PlannedEdit> = Vec::with_capacity(batch.edits.len());
@@ -1429,7 +1475,20 @@ pub fn validate_batch(
             Ref::FmKey(key),
         ) = (&edit.edit, &edit.target)
         {
-            let plan = plan_fm_upsert(doc, key, value);
+            let synth = if fm_synth_total < 2 {
+                FmBlockSynth::Whole
+            } else {
+                let pos = fm_synth_seen;
+                fm_synth_seen += 1;
+                if pos == 0 {
+                    FmBlockSynth::Open
+                } else if pos + 1 == fm_synth_total {
+                    FmBlockSynth::Close
+                } else {
+                    FmBlockSynth::Mid
+                }
+            };
+            let plan = plan_fm_upsert(doc, key, value, synth);
             if let Some(expected) = &edit.if_node_rev
                 && *expected != plan.before_rev
             {
@@ -3130,6 +3189,70 @@ mod tests {
             .as_str()[..16]
             .to_string();
         assert_eq!(inputs.node_rev.0, honest);
+    }
+
+    /// N `fm_key` upserts on a BLOCKLESS document land ONE synthesized block —
+    /// every key a line, all resolvable after the reparse. The broken shape
+    /// stacked N `---` blocks (each planned independently against the
+    /// pre-batch bytes), so only the first key parsed and the rest fell
+    /// through as body noise (create-door birth-stamp regression, 2026-08-18).
+    #[test]
+    fn fm_upserts_on_blockless_doc_compose_one_block() {
+        let raw = "# zz-born-card\n";
+        let doc = build(raw.to_string(), syntax::parse(raw));
+        let b = batch(vec![
+            put_edit(
+                Ref::FmKey("created".to_string()),
+                PutAt::Upsert,
+                "2026-08-18T13:24:07-04:00",
+            ),
+            put_edit(
+                Ref::FmKey("session".to_string()),
+                PutAt::Upsert,
+                "18-00-adhoc",
+            ),
+            put_edit(
+                Ref::FmKey("spawned-by".to_string()),
+                PutAt::Upsert,
+                "\"[[64cb50a1]]\"",
+            ),
+        ]);
+        let SpliceVerdict::Validated(vb) = validate_batch(&doc, None, &b, None) else {
+            panic!("three upserts on a blockless doc must validate");
+        };
+        let out = apply_validated(&doc.raw, &vb);
+        assert_eq!(
+            out,
+            "---\ncreated: 2026-08-18T13:24:07-04:00\nsession: 18-00-adhoc\n\
+             spawned-by: \"[[64cb50a1]]\"\n---\n# zz-born-card\n"
+        );
+        let new_doc = build(out.clone(), syntax::parse(&out));
+        for (k, v) in [
+            ("created", "created: 2026-08-18T13:24:07-04:00"),
+            ("session", "session: 18-00-adhoc"),
+            ("spawned-by", "spawned-by: \"[[64cb50a1]]\""),
+        ] {
+            let r = resolve(&new_doc, &Ref::FmKey(k.to_string())).expect(k);
+            assert_eq!(
+                &new_doc.raw[r.span.clone()],
+                v,
+                "{k} must parse as frontmatter"
+            );
+        }
+
+        // The lone upsert still carries the whole block (`Whole` arm).
+        let b1 = batch(vec![put_edit(
+            Ref::FmKey("created".to_string()),
+            PutAt::Upsert,
+            "2026-08-18",
+        )]);
+        let SpliceVerdict::Validated(vb1) = validate_batch(&doc, None, &b1, None) else {
+            panic!("one upsert on a blockless doc must validate");
+        };
+        assert_eq!(
+            apply_validated(&doc.raw, &vb1),
+            "---\ncreated: 2026-08-18\n---\n# zz-born-card\n"
+        );
     }
 
     /// U2.11 round-trip byte-stability: the grain the reader sees is exactly the
