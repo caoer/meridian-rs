@@ -54,24 +54,20 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     // agent-plane address, never a literal path — resolve it to the named
     // root's bound workspace before any engine contact. The ambient lane
     // resolves from cwd exactly as before.
-    let workspace = if crate::rooted::is_rooted(&parsed.path) {
-        match crate::rooted::resolve(&parsed.path, "read", READ_CONSEQUENCE) {
-            Ok((rel, rooted)) => {
-                parsed.display = Some(parsed.path.clone());
-                parsed.path = rel;
-                let workspace = rooted.workspace.clone();
-                parsed.rooted = Some(rooted);
-                workspace
-            }
-            // The refusal frames with the workspace the caller stands in —
-            // no target workspace exists to name.
-            Err(error) => {
-                let ambient = ambient_workspace(&cwd)?;
-                return Err(engine::json_refusal(parsed.format, &ambient, &error));
-            }
+    let workspace = match crate::rooted::enter(&parsed.path, "read", READ_CONSEQUENCE) {
+        Ok(Some((rel, rooted))) => {
+            parsed.display = Some(std::mem::replace(&mut parsed.path, rel));
+            let workspace = rooted.workspace.clone();
+            parsed.rooted = Some(rooted);
+            workspace
         }
-    } else {
-        ambient_workspace(&cwd)?
+        Ok(None) => ambient_workspace(&cwd)?,
+        // The refusal frames with the workspace the caller stands in —
+        // no target workspace exists to name.
+        Err(error) => {
+            let ambient = ambient_workspace(&cwd)?;
+            return Err(engine::json_refusal(parsed.format, &ambient, &error));
+        }
     };
     let (source, mut body, mint) = answer_read(&workspace, &cwd, &parsed)?;
 
