@@ -2,7 +2,7 @@
 type: spec
 id: run
 status: standing
-updated: 2026-08-09
+updated: 2026-08-18
 description: The run plane — how `mrd run` executes an addressed task block and turns what it emits into governed effects, plus preset and session birth.
 owns: [the run plane, preset and session birth]
 ---
@@ -1464,6 +1464,15 @@ self-declaration (`type: meridian-root`) — the artifact the config charter's
 `crates/config`, which owns what a valid declaration is. The retired marker
 files are not read and no fallback to them ships.
 
+**A rooted invocation's declaring root is the PAGE's tree (rooted-refs-everywhere, ZT
+2026-08-18 — address-grammar § 4.6).** `mrd run root:page` behaves exactly as if the caller had
+cd'd into the named root: the convention table above loads from THAT root's own `MERIDIAN.md`,
+the caps ceiling is that tree's, and the receipt lands in that workspace. The standing
+workspace contributes nothing to the ceiling — *"the runtime cwd should not be a factor to
+decide the behavior"* (ZT's motive, receipt at § 4.6). This closes the ceiling-by-cd bypass: a
+workspace that declares read-only can never have its own bash tasks run under a different
+tree's ceiling, chosen by where the caller stood.
+
 The grammar is the page grammar reused: flat dotted frontmatter keys with
 comma-separated cap lists. Flat is the reader's law, not a preference —
 `model`'s frontmatter scanner takes no YAML crate and skips every indented
@@ -1591,15 +1600,27 @@ Tree output happens **only** via an explicit `md.append_section` descriptor.
 Record ↔ receipt linkage:
 
 - The receipt line (in-tree, committed in the same splice batch as its
- edits) carries per-edit rev transitions — the foreign-edit anchors.
+ edits) carries per-edit rev transitions — **attested history, compared by
+ nothing** (the former decision-#26 foreign-edit scan is RETIRED — the
+ 2026-08-15 no-guard-on-effects amendment, § the no-guard amendment above;
+ the code states the same at its seam).
 - The receipt's `page` fact is the task page's **canonical
- workspace-relative spelling**, resolved once at the door that admitted the
- ref — never the invocation's argv bytes (wire-contract §2.1: every
- ref-carrying surface speaks that grammar and no other). One page therefore
- owns ONE receipt history however a caller spelled it, and the foreign-edit
- scan matches on that one key. A ref that resolves outside the workspace has
- no such spelling and rides verbatim — refusing it is the path-law door
- family's business, not the receipt's.
+ workspace-relative spelling in the workspace that runs it**, resolved once
+ at the door that admitted the ref — never the invocation's argv bytes
+ (wire-contract §2.1: every ref-carrying surface speaks that grammar and no
+ other). One page therefore owns ONE receipt history however a caller
+ spelled it. Its consumers today are the receipt address and the run
+ plane's page addressing — the scan that used to match on this key is
+ retired (above), and the CLI ruleset is empty (`S1_RULES`). A ROOTED ref
+ (`root:page` — address-grammar § 4.6, 2026-08-18) resolves to the named
+ root's workspace, where the page HAS that canonical spelling: the run
+ executes under the page's tree and the receipt lands in the page's
+ workspace, so the one-key law holds there unchanged. *(Superseded wording,
+ kept as the record: "…and the foreign-edit scan matches on that one key. A
+ ref that resolves outside the workspace has no such spelling and rides
+ verbatim — refusing it is the path-law door family's business, not the
+ receipt's." Both halves are dead: the scan is retired, and a rooted ref
+ now resolves instead of riding verbatim.)*
 - The exec record carries **invocation id + exit code + stdout sha256 +
  byte size + log address**, joining the receipt through the
  `ExecRecordSink` seam.

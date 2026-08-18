@@ -2,7 +2,7 @@
 type: reference
 id: status
 status: standing
-updated: 2026-08-16
+updated: 2026-08-18
 description: What the binary exposes and verifies today, reproducible from the commands shown. Also the home of R12, the armed-plane exit reading.
 owns: [what the binary exposes today, R12 — the armed-plane exit reading]
 ---
@@ -108,13 +108,19 @@ mrd read <PATH>[#FRAG] [--section SEL]
  with the bound names enumerated (the pin door's
  refusal family, exit 1, {workspace,error} under
  --json) instead of degrading into an ambient lookup.
- The rooted lane spans the read, mint, resolve, and
- put-premise doors — `mrd fingerprint` and `mrd
- resolve` resolve `[root:]path` through the same seam,
- and `mrd put --scope` accepts a rooted scope for the
- workspace it writes — while every other CLI position
- (the write TARGET included, §4.5 D11) keeps its
- workspace-relative grammar. SEL is a
+ The rooted lane spans EVERY page-taking door
+ (address-grammar §4.6, amended 2026-08-18): read,
+ fingerprint, resolve, links, walk, repair, realise,
+ run, rules, test --corpus, put (TARGET and --scope),
+ rm, pin (PAGE; TARGET was already cross-root), and
+ script --files — one resolution seam, the page's tree
+ governing conventions and receipts. The preset lane
+ (unfold/reconcile) refuses rooted refs with a
+ teaching until it rides the daemon (§4.6, the stated
+ exception); non-page arguments (arm --at, sql,
+ test --history, status --cwd) stay as they are. A
+ binary predating the amendment refuses or misreads
+ rooted refs at the converted doors. SEL is a
  heading chain, a `^id`, or a dewey ordinal — the
  chain joins on `/` and that delimiter is dead for
  heading text (§ the joined selector coat). A section
@@ -220,9 +226,13 @@ mrd put <PATH> [--dry | --validate] [--force] [--actor A] [--now T]
  the bound names enumerated (exit 1, {workspace,error}
  under --json, the seam's refusal family) — a rooted
  scope never surfaces as the §5.5 "no premise covers"
- coverage refusal. The write TARGET keeps its
- workspace-relative grammar (§4.5 D11: a rooted PATH
- still refuses at the write door). The pair law is
+ coverage refusal. The write TARGET takes the rooted
+ spelling too (re-ruled 2026-08-18, address-grammar
+ §4.6 — superseded: "§4.5 D11: a rooted PATH still
+ refuses at the write door"): a rooted put resolves to
+ the named root's workspace and writes there under
+ that tree's law; the wire still carries the rel half
+ only. The pair law is
  the CLI's own wall: `--scope` without
  `--if-fingerprint` is half a premise, exit 2.
  The §1 path law is the same wall: a `--scope` spelling
