@@ -58,21 +58,56 @@ const REALISE_ACTOR: &str = "mrd:realise";
 /// the mapping.
 pub(crate) fn run(args: &[String]) -> Result<(), Fail> {
     let parsed = Parsed::parse(args)?;
-    let root = crate::preset_cmd::resolve_root()?;
 
-    let page = parsed
+    let mut page = parsed
         .page
         .clone()
         .ok_or_else(|| Fail::tool("realise needs a PAGE argument".to_owned()))?;
 
-    realise_page(&root, &page, &parsed)
+    // The rooted lane (§4.1 colon law), under the 2026-08-18 authority ruling
+    // (rooted-refs-everywhere): a head-colon PAGE reconciles exactly as if the
+    // caller had cd'd into the named root — the check, the apply (which rides
+    // the run plane with `declaring_root` = this root), the receipt, and any
+    // pending-agent board card all bind to the PAGE's tree, never the
+    // standing one.
+    let (root, rooted) = match crate::rooted::enter(
+        &page,
+        "realise",
+        "Nothing was checked and no apply ran.",
+    ) {
+        Ok(Some((rel, rooted))) => {
+            page = rel;
+            (fs::WorkspaceRoot(rooted.workspace.clone()), Some(rooted))
+        }
+        Ok(None) => (crate::preset_cmd::resolve_root()?, None),
+        // The refusal frames with the workspace the caller stands in — no
+        // target workspace exists to name.
+        Err(error) => {
+            let ambient = crate::preset_cmd::resolve_root()?;
+            return Err(crate::engine::json_refusal(
+                parsed.format,
+                &ambient.0,
+                &error,
+            ));
+        }
+    };
+
+    realise_page(&root, &page, rooted.as_ref(), &parsed)
 }
 
-/// The reconciliation loop over one page's declared claim.
-fn realise_page(root: &fs::WorkspaceRoot, page: &str, parsed: &Parsed) -> Result<(), Fail> {
+/// The reconciliation loop over one page's declared claim. `rooted` is the
+/// resolved rooted ref when the caller spelled one — it scopes the miss
+/// teaching to the named root (F4) and suppresses the ambient cwd respelling.
+fn realise_page(
+    root: &fs::WorkspaceRoot,
+    page: &str,
+    rooted: Option<&crate::rooted::RootedRef>,
+    parsed: &Parsed,
+) -> Result<(), Fail> {
     // §1 admission, before the page is read: without it `fs::load` resolves an
     // absolute spelling verbatim and this door OPENS a page from outside the
-    // root (wire-contract §12.1, the door-family clause).
+    // root (wire-contract §12.1, the door-family clause). On the rooted lane
+    // the rel half is already confined ([`crate::rooted`]) — a no-op pass.
     crate::path_law::admit(
         &root.0,
         page,
@@ -83,7 +118,17 @@ fn realise_page(root: &fs::WorkspaceRoot, page: &str, parsed: &Parsed) -> Result
         // The miss speaks the family voice — the door's own fact, then the
         // fitted respelling when it is earned — never the raw io error, which
         // leaked `os error 2` at a door whose neighbours teach the grammar.
+        // The rooted miss is scoped to the NAMED root (F4): it names which
+        // root was searched and never carries the ambient cwd respelling.
         std::io::ErrorKind::NotFound => {
+            if let Some(r) = rooted {
+                return Fail::tool(format!(
+                    "no file at {page} in root `{}` ({}) — nothing was checked and no \
+                     apply ran.",
+                    r.name,
+                    root.0.display()
+                ));
+            }
             let mut m = format!(
                 "no file at {page} under the workspace root — nothing was checked and no \
                  apply ran."

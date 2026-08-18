@@ -75,18 +75,53 @@ use crate::{EXIT_FINDINGS, Fail, Format, current_dir, engine};
 /// tool failure (the workspace cannot be resolved, the corpus cannot be read, git cannot be
 /// asked, the lock door refused); exit 1 when any pin is a TRUE LOSS.
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
-    let parsed = Repair::parse(args)?;
+    let mut parsed = Repair::parse(args)?;
     let cwd = current_dir()?;
-    let resolved = crate::resolve::resolve_runtime(&cwd).map_err(|e| {
-        Fail::tool(format!(
-            "cannot resolve workspace for {}: {e}",
-            cwd.display()
-        ))
-    })?;
-    let canonical = workspace::canonicalize(&resolved.workspace).map_err(|e| {
+    // The rooted lane (§4.1 colon law): a head-colon PAGE is an agent-plane
+    // address, never a literal path — the scan, the history walk, and the
+    // lock write all bind to the NAMED root's workspace, exactly as if the
+    // caller stood there. The lock write stays in-process, which keeps parity
+    // with the daemon on this door class: the lock door carries no armed gate
+    // on any transport (CAS + flock + stored-form guard only,
+    // `wire_serve::write::lock_write`).
+    let entered = match parsed.page.as_deref() {
+        Some(p) => crate::rooted::enter(p, "repair", "Nothing was scanned and nothing was written."),
+        None => Ok(None),
+    };
+    let workspace = match entered {
+        Ok(Some((rel, rooted))) => {
+            parsed.display = std::mem::replace(&mut parsed.page, Some(rel));
+            parsed.rooted = Some(rooted.name);
+            rooted.workspace
+        }
+        Ok(None) => {
+            crate::resolve::resolve_runtime(&cwd)
+                .map_err(|e| {
+                    Fail::tool(format!(
+                        "cannot resolve workspace for {}: {e}",
+                        cwd.display()
+                    ))
+                })?
+                .workspace
+        }
+        // The refusal frames with the workspace the caller stands in — no
+        // target workspace exists to name.
+        Err(error) => {
+            let ambient = crate::resolve::resolve_runtime(&cwd)
+                .map_err(|e| {
+                    Fail::tool(format!(
+                        "cannot resolve workspace for {}: {e}",
+                        cwd.display()
+                    ))
+                })?
+                .workspace;
+            return Err(engine::json_refusal(parsed.format, &ambient, &error));
+        }
+    };
+    let canonical = workspace::canonicalize(&workspace).map_err(|e| {
         Fail::tool(format!(
             "cannot resolve workspace {} ({e})",
-            resolved.workspace.display()
+            workspace.display()
         ))
     })?;
     let root = fs::WorkspaceRoot(canonical.clone());
@@ -94,9 +129,11 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     // §1 admission, before any corpus is read: without it `admit_named_page`'s
     // `fs::load` resolves an absolute spelling verbatim and this door ACCEPTS a
     // page from outside the root (wire-contract §12.1, the door-family clause).
+    // On the rooted lane the rel half is already confined ([`crate::rooted`]),
+    // so this admission is a no-op pass there.
     if let Some(page) = parsed.page.as_deref() {
         crate::path_law::admit(
-            &resolved.workspace,
+            &workspace,
             page,
             "repair",
             "Nothing was scanned and nothing was written.",
@@ -114,13 +151,23 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         // is earned — the same sentence, the same one computation, as the read
         // door's.
         if !docs.contains_key(page) {
+            // The rooted miss is scoped to the NAMED root (F4): it echoes the
+            // caller's spelling, names which root was searched, and never
+            // carries the ambient cwd respelling — advice for a different
+            // mistake.
+            if let Some(name) = &parsed.rooted {
+                return Err(Fail::tool(format!(
+                    "no page `{}` — root `{name}` ({}) holds no page `{page}`, so there is \
+                     no lock block to repair.",
+                    parsed.display.as_deref().unwrap_or(page),
+                    workspace.display()
+                )));
+            }
             let mut m = format!(
                 "no page `{page}` in this workspace's corpus, so there is no lock block to \
                  repair. Give a workspace-relative path, or omit it to scan the whole corpus."
             );
-            if let Some(suffix) =
-                crate::path_law::cwd_respell_suffix(&resolved.workspace, &cwd, page)
-            {
+            if let Some(suffix) = crate::path_law::cwd_respell_suffix(&workspace, &cwd, page) {
                 m.push_str(&suffix);
             }
             return Err(Fail::tool(m));
@@ -827,6 +874,12 @@ struct Repair {
     page: Option<String>,
     dry: bool,
     format: Format,
+    /// The rooted lane's typed spelling (`root:rel`) — echoed in the miss
+    /// teaching so the caller sees what they wrote. `None` on the ambient lane.
+    display: Option<String>,
+    /// The named root — puts the miss teaching on the rooted branch (scoped
+    /// to that root, no ambient cwd respelling). `None` on the ambient lane.
+    rooted: Option<addr::MountName>,
 }
 
 impl Repair {
@@ -852,7 +905,13 @@ impl Repair {
                 }
             }
         }
-        Ok(Self { page, dry, format })
+        Ok(Self {
+            page,
+            dry,
+            format,
+            display: None,
+            rooted: None,
+        })
     }
 }
 

@@ -34,24 +34,34 @@ const EXIT_FINDING: u8 = 1;
 /// invocation, an unreadable workspace/corpus, a missing root, or an in-snapshot cycle; exit 1
 /// when the listing carries a red edge.
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
-    let parsed = Walk::parse(args)?;
+    let mut parsed = Walk::parse(args)?;
     let cwd = current_dir()?;
-    let resolved = crate::resolve::resolve_runtime(&cwd).map_err(|e| {
-        Fail::tool(format!(
-            "cannot resolve workspace for {}: {e}",
-            cwd.display()
-        ))
-    })?;
+    // The rooted lane (§4.1 colon law): a head-colon PAGE is an agent-plane
+    // address, never a literal path — resolve it to the named root's bound
+    // workspace and walk THERE. The ambient lane resolves from cwd exactly as
+    // before. A resolution refusal is the address answer (exit 1, the
+    // `{workspace, error}` frame under `--json`), never a literal-path walk.
+    let workspace = match crate::rooted::enter(&parsed.page, "walk", "Nothing was walked.") {
+        Ok(Some((rel, rooted))) => {
+            parsed.display = Some(std::mem::replace(&mut parsed.page, rel));
+            parsed.rooted = Some(rooted.name.clone());
+            rooted.workspace
+        }
+        Ok(None) => ambient_workspace(&cwd)?,
+        // The refusal frames with the workspace the caller stands in — no
+        // target workspace exists to name.
+        Err(error) => {
+            let ambient = ambient_workspace(&cwd)?;
+            return Err(crate::engine::json_refusal(parsed.format, &ambient, &error));
+        }
+    };
     // §1 admission, before any corpus is read: without it `admit_named_page`'s
     // `fs::load` resolves an absolute spelling verbatim and this door WALKS a
     // page from outside the root (wire-contract §12.1, the door-family clause).
-    crate::path_law::admit(
-        &resolved.workspace,
-        &parsed.page,
-        "walk",
-        "Nothing was walked.",
-    )?;
-    let InProcessCorpus { root, mut docs } = build_corpus_in_process(&resolved.workspace)?;
+    // On the rooted lane the rel half is already confined ([`crate::rooted`]),
+    // so this admission is a no-op pass there.
+    crate::path_law::admit(&workspace, &parsed.page, "walk", "Nothing was walked.")?;
+    let InProcessCorpus { root, mut docs } = build_corpus_in_process(&workspace)?;
     admit_named_page(&root, &mut docs, &parsed.page);
     let docs = docs;
 
@@ -67,7 +77,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     // The mount table, with a corpus for the roots this workspace's own lock addresses name and
     // no others. `mounts` owns the document maps; `corpus` borrows them — hence two bindings.
     let mounts = load_mounts_for(&lock_addressed_roots(&docs));
-    let domain = load_domain(&resolved.workspace)?;
+    let domain = load_domain(&workspace)?;
     // `root` is the one `build_corpus_in_process` returned above — the root this
     // corpus was BUILT from, and therefore the root its existence questions are
     // asked at (0045/0049), never the caller's cwd. Re-deriving it here would be
@@ -75,18 +85,23 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let corpus = mounts.rooted(&docs, &domain, &root);
     let mount_set = mounts.set();
 
-    let report = walk::walk_rooted(
+    let mut report = walk::walk_rooted(
         &corpus,
         mount_set,
         &parsed.page,
         parsed.direction,
         parsed.depth,
     )
-    .map_err(|e| walk_error(e, &resolved.workspace, &cwd))?;
+    .map_err(|e| walk_error(e, &workspace, &cwd, &parsed))?;
+    // The echo law at the face: the walk root renders as the caller wrote it.
+    // Entries are untouched — as-if-cd'd into the named root (see [`Walk`]).
+    if let Some(display) = &parsed.display {
+        report.root.clone_from(display);
+    }
 
     match parsed.format {
         Format::Json => {
-            let value = to_json(&resolved.workspace, &report);
+            let value = to_json(&workspace, &report);
             println!("{}", serde_json::to_string_pretty(&value).expect("json"));
         }
         Format::Human => print!("{}", render_human(&report)),
@@ -182,6 +197,15 @@ struct Walk {
     direction: Direction,
     depth: Option<u32>,
     format: Format,
+    /// The rooted lane's typed spelling (`root:rel`) — the walk root the face
+    /// echoes, so the caller sees what they wrote (the read door's echo law).
+    /// `None` on the ambient lane. Entries stay as-if-cd'd into the named
+    /// root: bare for that root's own pages, root-qualified for foreign pins —
+    /// exactly the render the same walk gives from inside the root.
+    display: Option<String>,
+    /// The named root — puts the miss teaching on the rooted branch (scoped
+    /// to that root, no ambient cwd respelling). `None` on the ambient lane.
+    rooted: Option<addr::MountName>,
 }
 
 impl Walk {
@@ -221,8 +245,23 @@ impl Walk {
             direction,
             depth,
             format: if json { Format::Json } else { Format::Human },
+            display: None,
+            rooted: None,
         })
     }
+}
+
+/// The ambient workspace for `cwd`, per the settled resolution ladder — the
+/// lane every walk took before the rooted lane existed (byte-identical to the
+/// read door's helper, the doors sharing the lane).
+fn ambient_workspace(cwd: &Path) -> Result<std::path::PathBuf, Fail> {
+    let resolved = crate::resolve::resolve_runtime(cwd).map_err(|e| {
+        Fail::tool(format!(
+            "cannot resolve workspace for {}: {e}",
+            cwd.display()
+        ))
+    })?;
+    Ok(resolved.workspace)
 }
 
 /// Parse a `--depth` value: a non-negative integer.
@@ -322,7 +361,7 @@ pub(crate) fn admit_named_page(
 }
 
 /// Map a [`WalkError`] to the exit-2 tool failure with a teaching diagnostic.
-fn walk_error(error: WalkError, workspace: &Path, cwd: &Path) -> Fail {
+fn walk_error(error: WalkError, workspace: &Path, cwd: &Path, parsed: &Walk) -> Fail {
     match error {
         // The refusal keeps its exact wording and gains its recovery only for
         // the enumeration gesture (laws.md § the face-honesty law, clause 3):
@@ -335,8 +374,21 @@ fn walk_error(error: WalkError, workspace: &Path, cwd: &Path) -> Fail {
              page, `mrd links --json` enumerates every file."
             ))
         }
-        // The miss carries the family's fitted respelling when it is earned —
-        // the same sentence, the same one computation, as the read door's.
+        // The rooted miss is scoped to the NAMED root (F4): it echoes the
+        // caller's spelling, names which root was searched, and never carries
+        // the ambient cwd respelling — advice for a different mistake.
+        WalkError::RootNotFound(page) if parsed.rooted.is_some() => {
+            let name = parsed.rooted.as_ref().expect("guarded by arm");
+            Fail::tool(format!(
+                "walk root not in the corpus: {} — no page `{page}` in root `{name}` \
+                 (workspace {})",
+                parsed.display.as_deref().unwrap_or(&page),
+                workspace.display()
+            ))
+        }
+        // The ambient miss carries the family's fitted respelling when it is
+        // earned — the same sentence, the same one computation, as the read
+        // door's.
         WalkError::RootNotFound(page) => {
             let mut m = format!("walk root not in the corpus: {page}");
             if let Some(suffix) = crate::path_law::cwd_respell_suffix(workspace, cwd, &page) {
