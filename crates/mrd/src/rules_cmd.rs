@@ -96,24 +96,49 @@ impl View {
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let parsed = Rules::parse(args)?;
     let cwd = current_dir()?;
-    let resolved = crate::resolve::resolve_runtime(&cwd).map_err(|e| {
-        Fail::tool(format!(
-            "cannot resolve workspace for {}: {e}",
-            cwd.display()
-        ))
-    })?;
-    let workspace = workspace::canonicalize(&resolved.workspace).map_err(|e| {
+    // The rooted lane (§4.1 colon law), under the 2026-08-18 authority ruling
+    // (rooted-refs-everywhere): a head-colon PATH asks what governs at that
+    // path IN THE NAMED ROOT — the report reads that tree's rule index (plus
+    // the user rung), exactly as if the caller stood there. The rel half is
+    // root-relative by definition, so the ambient cwd fitting below never
+    // touches it.
+    let entered = match parsed.path.as_deref() {
+        Some(p) => crate::rooted::enter(p, "rules", "Nothing was reported."),
+        None => Ok(None),
+    };
+    let ambient = || -> Result<std::path::PathBuf, Fail> {
+        Ok(crate::resolve::resolve_runtime(&cwd)
+            .map_err(|e| {
+                Fail::tool(format!(
+                    "cannot resolve workspace for {}: {e}",
+                    cwd.display()
+                ))
+            })?
+            .workspace)
+    };
+    let (base_workspace, rooted_rel) = match entered {
+        Ok(Some((rel, rooted))) => (rooted.workspace, Some(rel)),
+        Ok(None) => (ambient()?, None),
+        // The refusal frames with the workspace the caller stands in — no
+        // target workspace exists to name.
+        Err(error) => {
+            let ambient = ambient()?;
+            return Err(crate::engine::json_refusal(parsed.format, &ambient, &error));
+        }
+    };
+    let workspace = workspace::canonicalize(&base_workspace).map_err(|e| {
         Fail::tool(format!(
             "cannot resolve workspace {} ({e})",
-            resolved.workspace.display()
+            base_workspace.display()
         ))
     })?;
 
     // The default view narrows to the PATH argument; a single-layer view narrows
     // to the layer's own root.
-    let at = match parsed.view {
-        View::Effective => workspace_relative(&workspace, parsed.path.as_deref(), &cwd)?,
-        View::Workspace | View::User => String::new(),
+    let at = match (parsed.view, rooted_rel) {
+        (View::Effective, Some(rel)) => rel,
+        (View::Effective, None) => workspace_relative(&workspace, parsed.path.as_deref(), &cwd)?,
+        (View::Workspace | View::User, _) => String::new(),
     };
 
     let report = build(&workspace, &at, parsed.view)?;
