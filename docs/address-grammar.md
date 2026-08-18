@@ -298,19 +298,21 @@ should not be a factor to decide the behavior. this buys us durability."* Full r
 > **The law.** Every door at which the caller names a PAGE resolves the agent-plane
 > `[root:]path[#selector]` spelling, through the ONE rooted lane (parse → confinement → mount
 > table; the § 4.1 colon law, no fallback to a literal reading). No page-taking door refuses a
-> well-formed rooted ref as such, and none misreads it as a literal filename. The family is bound
-> by the predicate, not by a list — the wire contract's door-family shape (`wire-contract.md`
-> § 12.1, whose own dogfood showed an enumerated family is read as a subset) — so a door that is
-> born taking a page is born inside this law.
+> well-formed rooted ref as such — with ONE stated exception, the preset lane below, which
+> refuses with a teaching until it is converted — and none misreads it as a literal filename.
+> The family is bound by the predicate, not by a list — the wire contract's door-family shape
+> (`wire-contract.md` § 12.1, whose own dogfood showed an enumerated family is read as a subset)
+> — so a door that is born taking a page is born inside this law.
 
 Members at the amendment date (mirroring the impl door audit, ACKed 2026-08-18): already rooted
 — `read`, `fingerprint`, `resolve`, `put --scope`. Converted by this ruling — `run`, `walk`,
 `repair`, `realise`, `links`, `rules`, `test --corpus` (the read side); `put` (the write TARGET),
 `rm`, `pin` (the PAGE position — the TARGET was already cross-root, pin-cross-root/D-A), and
 `script --files` (each entry `root:path`-capable under the one-declared-root convergence below).
-Outside the family by predicate — arguments that name no page: `arm --at` (a directory scope,
-`armed-plane.md`), `test --history` and `status --cwd` (explicit tree arguments), `check`,
-`retire`, `skill`, `new` (an ID, not a page), `sql` (no page; its `--root` is a new workspace
+In the family but NOT YET converted — the preset lane (`unfold`, `reconcile`, `new`): see the
+stated exception below. Outside the family by predicate — arguments that name no page:
+`arm --at` (a directory scope, `armed-plane.md`), `test --history` and `status --cwd` (explicit
+tree arguments), `check`, `retire`, `skill`, `sql` (no page; its `--root` is a new workspace
 selector, not a page ref). The enumeration is a snapshot; the predicate governs.
 
 > **Authority: the page's tree governs — ZT's ruling by AUQ selection, 2026-08-18, session
@@ -326,6 +328,17 @@ selector, not a page ref). The enumeration is a snapshot; the predicate governs.
 > the same answer independently carries the principle: *"for mrd tool, the runtime cwd should not
 > be a factor to decide the behavior. this buys us durability."*
 >
+> *Editorial note on the quoted option (review finding, 2026-08-18 — not part of the assent):*
+> the option's last sentence, "authority already follows the declaring root", is misleading as a
+> description of shipped code. In shipped code the declaring root RESOLVES TO THE STANDING
+> workspace — `run_cmd.rs` sets `declaring_root = answer.root()`, and `workspace::Answer::root`
+> is the discovery ladder's answer (where the caller stands; `None` on a cwd default) — so it
+> coincides with the page's tree only for ambient refs, which is exactly the coincidence this
+> ruling breaks: the PAGE's tree now fills the declaring-root slot. The quote stands unaltered
+> as the receipt; the option's own earlier sentence ("today's code loads the permission ceiling
+> from where you stand") is the correct description, and the scope of assent is unharmed — the
+> hazard was stated correctly and three real alternatives were shown.
+>
 > In consequence, as law: a rooted op behaves exactly as if the caller had cd'd into the named
 > root — conventions and caps load from the PAGE's own tree, receipts land in the page's
 > workspace, and the standing workspace contributes nothing to the ceiling.
@@ -339,16 +352,17 @@ is why this amendment needs **no wire change**: the wire carries the rel half on
 `Path` law (`wire-contract.md`) with its head-colon confinement arm stands unchanged. A raw
 head-colon `Path` arriving on the wire is an address that missed its door, and refuses.
 
-> **One stated exception — the preset lane is NOT YET converted (2026-08-18).** `unfold` and
-> `reconcile` name a page but write IN-PROCESS, with no daemon dial — a rooted preset op would
-> therefore write into a foreign tree without that tree's armed gates ever firing. Under this
-> amendment's own authority law those gates are the target tree's right, so a lane that
-> structurally cannot fire them cannot resolve rooted refs yet: a rooted ref there **REFUSES
-> with a teaching** naming exactly this reason and the remedy (run it from inside the target
-> tree). Recorded as a lane AWAITING CONVERSION, in open tension with the ruling's motive —
-> these doors, and `new` (whose birth target is likewise cwd-chosen), stay cwd-determined until
-> then — never as a lane correctly cwd-bound forever. The named route is the preset lane riding
-> the daemon write path; when it does, the family predicate already covers it.
+> **One stated exception — the preset lane is NOT YET converted (2026-08-18).** `unfold`,
+> `reconcile`, and `new` name a page (`new`'s def token is a page position — *"resolve def
+> (presets/<KIND>.md or page path)"*, its own help) but write IN-PROCESS, with no daemon dial —
+> a rooted preset op would therefore write into a foreign tree without that tree's armed gates
+> ever firing. Under this amendment's own authority law those gates are the target tree's
+> right, so a lane that structurally cannot fire them cannot resolve rooted refs yet: a rooted
+> ref there **REFUSES with a teaching** naming exactly this reason and the remedy (run it from
+> inside the target tree). Recorded as a lane AWAITING CONVERSION, in open tension with the
+> ruling's motive — these three doors stay cwd-determined until then — never as a lane
+> correctly cwd-bound forever. The named route is the preset lane riding the daemon write path;
+> when it does, the family predicate already covers it.
 
 **Convergence, not invention.** The engine's customer face (the ccc-statusd MCP `script` tool)
 already ships this rule for its own multi-file door, verbatim: *"Every files[] entry resolves

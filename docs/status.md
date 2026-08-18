@@ -115,7 +115,7 @@ mrd read <PATH>[#FRAG] [--section SEL]
  rm, pin (PAGE; TARGET was already cross-root), and
  script --files — one resolution seam, the page's tree
  governing conventions and receipts. The preset lane
- (unfold/reconcile) refuses rooted refs with a
+ (unfold/reconcile/new) refuses rooted refs with a
  teaching until it rides the daemon (§4.6, the stated
  exception); non-page arguments (arm --at, sql,
  test --history, status --cwd) stay as they are. A
