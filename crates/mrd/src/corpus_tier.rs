@@ -64,8 +64,7 @@ use wire_serve::write::{SpliceArgs, splice};
 use crate::test_cmd::{confine, parse_frontmatter, scan_blocks};
 
 /// Empty run-birth fields (cascade intents cannot birth).
-static EMPTY_RUN_FIELDS: std::collections::BTreeMap<String, String> =
-    std::collections::BTreeMap::new();
+static EMPTY_RUN_FIELDS: BTreeMap<String, String> = BTreeMap::new();
 use crate::{Fail, Format};
 
 /// Run `mrd test --corpus <SPEC> [--json]`: load the spec, load its rule pages, run every case

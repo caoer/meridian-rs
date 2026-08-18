@@ -9,8 +9,7 @@ use model::MerkleRoot;
 use run::caps::{Authority, CapSet};
 
 /// Empty run-birth fields for these fixtures.
-static TEST_EMPTY_FIELDS: std::collections::BTreeMap<String, String> =
-    std::collections::BTreeMap::new();
+static TEST_EMPTY_FIELDS: BTreeMap<String, String> = BTreeMap::new();
 use run::executor::{self, ApplyRequest, ExecError};
 
 const TOKEN: &str = "@green.b3af12cd";
@@ -82,7 +81,7 @@ fn apply(root: &fs::WorkspaceRoot, effects: &[Effect]) -> Result<executor::Appli
             now: Some("2026-07-25T01:00:00Z"),
             effects,
             authority: &Authority::granted(
-                CapSet::parse("md.set_field md.append_section").unwrap(),
+                CapSet::parse("md.set_field md.append_section md.create").unwrap(),
             ),
             observed_root: &now,
             receipt: None,
@@ -293,9 +292,46 @@ fn the_md_write_surface_is_exactly_the_verbs_this_file_covers() {
         .collect();
     assert_eq!(
         md,
-        vec!["md.set_field", "md.append_section"],
+        vec!["md.set_field", "md.append_section", "md.create"],
         "a new md.* verb writes page bytes through `executor::apply` — give it its \
          claim-link test in this file before it ships"
+    );
+}
+
+/// `md.create` (the birth cap): the whole-body strip is the CREATE DOOR's
+/// (`wire_serve::write::create` runs `syntax::strip_fp` over the birth body —
+/// the same one grammar), so a claim-link token pasted into a birth body
+/// never reaches disk and the address lands intact.
+#[test]
+fn a_birth_body_token_never_reaches_disk() {
+    // Own fixture dir under target/ (this mac breaks corpus serving over
+    // /var/folders tempdirs; see birth_cap.rs).
+    let tmp = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    std::fs::write(tmp.path().join("page.md"), PAGE).unwrap();
+    let root = fs::WorkspaceRoot(tmp.path().to_path_buf());
+    let birth = effect(
+        EffectKind::Create,
+        &[
+            ("path", "tasks/born.md"),
+            (
+                "body",
+                &format!("# Born\n\n- see [[guide#^goal{TOKEN}|G]]\n"),
+            ),
+        ],
+    );
+    apply(&root, &[birth]).expect("the birth lands, stripped");
+    let born = std::fs::read_to_string(tmp.path().join("tasks/born.md")).unwrap();
+    assert!(
+        !born.contains(TOKEN),
+        "no @fp token may reach disk from a birth body:\n{born}"
+    );
+    assert!(
+        born.contains("- see [[guide#^goal|G]]"),
+        "the line landed with its address intact:\n{born}"
+    );
+    assert!(
+        syntax::fp_removals(&born).is_empty(),
+        "the one grammar sees no claim-link token in the born document:\n{born}"
     );
 }
 

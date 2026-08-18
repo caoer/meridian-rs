@@ -9,8 +9,7 @@ use run::caps::{Authority, CapSet};
 use run::executor::{self, ApplyRequest, ReceiptAddr};
 
 /// Empty run-birth fields for these fixtures.
-static TEST_EMPTY_FIELDS: std::collections::BTreeMap<String, String> =
-    std::collections::BTreeMap::new();
+static TEST_EMPTY_FIELDS: BTreeMap<String, String> = BTreeMap::new();
 
 /// The hostile probe shape, driven at each door.
 const HOSTILE: &str = "[[guide#^goal@green.b3af12cd|G]]";
