@@ -108,6 +108,12 @@ pub enum EffectKind {
     SetField,
     /// `md.append_section` — append content to a section.
     AppendSection,
+    /// `md.create` — birth a file through the create door (the declared-task
+    /// birth cap, SCHEMA §5 verb-fold map / create-task-page ruling
+    /// 2026-08-18: option 1, engine birth cap). Realized by the run executor
+    /// via `wire_serve::write::create` — occupied-path refusal, armed
+    /// middleware stamps, and checks are the DOOR's, never re-implemented.
+    Create,
     /// `daemon.refresh_view` — mark a resident view stale.
     RefreshView,
     /// `proto.send` — deliver a message to agent target(s).
@@ -122,9 +128,10 @@ pub enum EffectKind {
 
 impl EffectKind {
     /// Every descriptor kind, stable order — closed surface source of truth.
-    pub const ALL: [EffectKind; 7] = [
+    pub const ALL: [EffectKind; 8] = [
         EffectKind::SetField,
         EffectKind::AppendSection,
+        EffectKind::Create,
         EffectKind::RefreshView,
         EffectKind::Send,
         EffectKind::Remind,
@@ -138,6 +145,7 @@ impl EffectKind {
         match self {
             EffectKind::SetField => "md.set_field",
             EffectKind::AppendSection => "md.append_section",
+            EffectKind::Create => "md.create",
             EffectKind::RefreshView => "daemon.refresh_view",
             EffectKind::Send => "proto.send",
             EffectKind::Remind => "proto.remind",
@@ -150,7 +158,7 @@ impl EffectKind {
     #[must_use]
     pub fn domain(self) -> Domain {
         match self {
-            EffectKind::SetField | EffectKind::AppendSection => Domain::Md,
+            EffectKind::SetField | EffectKind::AppendSection | EffectKind::Create => Domain::Md,
             EffectKind::RefreshView => Domain::Daemon,
             EffectKind::Send | EffectKind::Remind | EffectKind::Ask | EffectKind::Notice => {
                 Domain::Proto
@@ -167,6 +175,7 @@ impl EffectKind {
         match self {
             EffectKind::SetField => "set_field",
             EffectKind::AppendSection => "append_section",
+            EffectKind::Create => "create",
             EffectKind::RefreshView => "refresh_view",
             EffectKind::Send => "send",
             EffectKind::Remind => "remind",

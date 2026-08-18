@@ -40,6 +40,14 @@ effects = { workspace = true }
 # change it produces — byte-landing parity with wire-serve. Policy stays I/O-free;
 # `crates/run/src/gate.rs` injects the disk reads.
 policy = { workspace = true }
+# The CREATE DOOR for `md.create` (the declared-task birth cap, ruled
+# 2026-08-18): a run-plane birth goes through `wire_serve::write::create` —
+# occupied-path refusal, armed middleware stamps, and checks are the door's,
+# never re-implemented here. This is the ONE run-plane use of wire-serve; the
+# splice path stays on `fs::apply_batch` + the mounted gate (byte-landing
+# parity comment above). No cycle: wire-serve does not depend on run.
+wire-serve = { workspace = true }
+wire = { workspace = true }
 # Block-id charset guard (`is_block_id`) — the ONE charset, ruling 011.
 syntax = { workspace = true }
 # The receipt-line FIELD law (`receipt::render_field`). The run plane composes a

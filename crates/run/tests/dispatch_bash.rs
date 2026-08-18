@@ -12,6 +12,9 @@ use run::dispatch_bash::{self, BashDispatch, BashError, Phase2};
 use run::exec::ExecStatus;
 use run::executor::{ExecError, ReceiptAddr, WorkspaceLock};
 use run::shim::ShimError;
+
+/// Empty run-birth fields for these fixtures.
+static TEST_EMPTY_FIELDS: BTreeMap<String, String> = BTreeMap::new();
 use run::snapshot::Detection;
 
 const PAGE: &str = "\
@@ -60,6 +63,8 @@ fn dispatch_of<'a>(source: &'a str, scratch: &'a tempfile::TempDir) -> BashDispa
         step_cwd: None,
         delta: None,
         observations: dispatch_bash::ObservationSource::Drawer,
+        fields: &TEST_EMPTY_FIELDS,
+        birth_seq: None,
     }
 }
 

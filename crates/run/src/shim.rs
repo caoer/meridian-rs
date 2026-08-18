@@ -51,6 +51,14 @@ pub enum ShimDescriptor {
         /// The content to append.
         content: String,
     },
+    /// `md.create` — birth a file through the create door (the declared-task
+    /// birth cap).
+    Create {
+        /// The workspace-relative path to birth.
+        path: String,
+        /// The new file's whole bytes.
+        body: String,
+    },
 }
 
 /// Why the stream refused. EVERY variant fails the whole phase-2 batch —
@@ -247,6 +255,13 @@ pub fn to_effects(
                         ("content".to_owned(), ArgValue::Str(content.clone())),
                     ]),
                 ),
+                ShimDescriptor::Create { path, body } => (
+                    EffectKind::Create,
+                    BTreeMap::from([
+                        ("path".to_owned(), ArgValue::Str(path.clone())),
+                        ("body".to_owned(), ArgValue::Str(body.clone())),
+                    ]),
+                ),
             };
             let effect = Effect {
                 kind,
@@ -304,6 +319,10 @@ fn parse_payload(index: usize, payload: &[u8]) -> Result<ShimDescriptor, ShimErr
                 section: a.to_owned(),
                 content: b.to_owned(),
             }
+        }),
+        "md.create" => (&["path", "body"], |a, b| ShimDescriptor::Create {
+            path: a.to_owned(),
+            body: b.to_owned(),
         }),
         _ => return Err(ShimError::UnknownOp { index, op }),
     };

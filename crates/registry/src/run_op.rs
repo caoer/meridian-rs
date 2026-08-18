@@ -41,6 +41,13 @@ use wire::{ErrorBody, ErrorCode};
 use crate::registry::Registry;
 use wire_serve::rev::Rev;
 
+/// Empty run-birth fields for callers with no frame passthrough in reach
+/// (the script plane's in-script `run()` — its entry carries no `fields`
+/// today, so a birth it commits lands unstamped, the documented bare-door
+/// behavior).
+pub(crate) static EMPTY_RUN_FIELDS: std::collections::BTreeMap<String, String> =
+    std::collections::BTreeMap::new();
+
 /// The wire arm hands the runner the same empty S1 ruleset as the CLI: the
 /// cascade short-circuits vacuously before any apply.
 const S1_RULES: &[effects::Rule] = &[];
@@ -79,6 +86,7 @@ pub(crate) fn serve_line(
         invocation,
         actor,
         now,
+        fields,
     } = op
     else {
         // decode() maps the "run" tag to Op::Run only; any other arm here is
@@ -90,6 +98,7 @@ pub(crate) fn serve_line(
         invocation,
         actor,
         now,
+        fields,
     };
     let rows = serve(registry, ws, &request);
     let mut frame = json!({"id": id, "ok": true, "body": {"targets": rows}});
@@ -119,6 +128,9 @@ struct RunArgs {
     invocation: String,
     actor: Option<String>,
     now: Option<String>,
+    /// § A.2.1 passthrough for run-plane births (cap `run.fields`) —
+    /// verbatim onto every `md.create` birth's `ctx.fields`.
+    fields: std::collections::BTreeMap<String, String>,
 }
 
 /// The attempt: per target in list order, drive the plane and mint one row.
@@ -131,12 +143,16 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
     // Delta honesty (§ A.8): every committed batch of every target mints its
     // frame on the bound workspace's ring, inside the executor's flock.
     let sink = crate::delta_sink::RingSink::new(registry.ring(ws));
+    // A second ring handle: the create door's SeqSink for run-plane births.
+    let birth_ring = registry.ring(ws);
     // Observation unification (engine-warm-cost design § 5): the daemon door
     // serves the bash bracket's observations from the workspace's resident
     // domain memo — the same instrument every currency pass runs on.
     let cache = registry.domain_cache(ws);
     let host = RunHost {
         sink: &sink,
+        birth_seq: &*birth_ring,
+        fields: &request.fields,
         cache: &cache,
     };
     let mut rows = Vec::with_capacity(request.targets.len());
@@ -162,6 +178,12 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
 /// submission, so the two instruments cannot drift apart between doors.
 pub(crate) struct RunHost<'a> {
     pub(crate) sink: &'a crate::delta_sink::RingSink,
+    /// The workspace ring as the create door's `SeqSink` — run-plane births
+    /// (`md.create`) mint numbered frames like any door write.
+    pub(crate) birth_seq: &'a dyn wire_serve::seq::SeqSink,
+    /// § A.2.1 run-frame `fields` (cap `run.fields`) — verbatim onto every
+    /// `md.create` birth's `ctx.fields` this request commits.
+    pub(crate) fields: &'a std::collections::BTreeMap<String, String>,
     pub(crate) cache: &'a std::sync::Mutex<fs::DomainCache>,
 }
 
@@ -251,6 +273,8 @@ fn execute_row(
         // runs at the bound workspace root.
         step_cwd: Some(ws),
         delta: Some(host.sink),
+        fields: host.fields,
+        birth_seq: Some(host.birth_seq),
         // The daemon lane (card run-observation-unification): bracket
         // observations from the resident domain memo; the drawer memo stays
         // the CLI's instrument.

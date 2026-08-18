@@ -299,6 +299,7 @@ fn close_args(edits: Vec<Edit>) -> SpliceArgs {
 /// ALLOCATION — one batch consumes exactly one seq — so the test has to supply
 /// an allocator; `None` is the in-process caller that numbers nothing (seq 0)
 /// and would make the claim vacuous rather than true.
+#[derive(Debug)]
 struct RingSink<'a>(&'a wire_serve::ring::RootRing);
 
 impl wire_serve::seq::SeqSink for RingSink<'_> {

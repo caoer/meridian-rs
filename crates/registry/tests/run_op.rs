@@ -838,3 +838,87 @@ fn an_effects_write_advances_the_folds_other_writers_premises_compare_against() 
     assert_eq!(committed["ok"], json!(true), "{committed}");
     server.shutdown();
 }
+
+// ── The § A.8 birth arm (md.create + run `fields`, cap `run.fields`) ─────────
+
+/// A page declaring a birth task: `md.create:tasks` scopes the grant to the
+/// tasks/ directory; the block births from its args.
+const BIRTHER: &str = "\
+---
+task.birth-card: \"[[#^birth-1]]\"
+task.birth-card.caps: \"md.create:tasks\"
+task.birth-card.args: slug
+---
+
+# Birther
+
+```starlark
+def run(ctx):
+    create(path = \"tasks/\" + ctx.args[0] + \".md\", body = \"# born card\\n\\nbody\\n\")
+```
+^birth-1
+";
+
+/// The wire birth arm end to end: a `run` frame with `fields` decodes (cap
+/// `run.fields`), the declared task births through the CREATE DOOR into its
+/// scoped directory, and the born bytes land on disk. A second run of the
+/// same target refuses through the door's occupied-path law while the row
+/// machinery keeps answering.
+#[test]
+fn a_declared_birth_lands_through_the_wire_arm_and_occupied_refuses_the_rerun() {
+    let tmp = TempDir::new().unwrap();
+    let ws = seeded(&tmp);
+    fs::write(ws.join("birther.md"), BIRTHER).unwrap();
+    let _server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(&test_config(&tmp).socket_path);
+    conn.hello_v3(&ws);
+
+    let mut frame = run_frame(
+        21,
+        "run-birth-1",
+        json!([{"page": "birther.md", "task": "birth-card", "args": ["zz-born"]}]),
+    );
+    frame["fields"] = json!({"session": "770a48c2", "agent": "770a48c2"});
+    let resp = conn.call(&frame);
+    let rows = rows_of(&resp);
+    assert_eq!(
+        rows[0]["state"],
+        json!("applied"),
+        "the birth lands: {resp}"
+    );
+    let born = fs::read_to_string(ws.join("tasks/zz-born.md")).unwrap();
+    assert!(born.contains("# born card"), "born bytes on disk: {born}");
+
+    // The rerun: same path, now occupied — the door refuses, the row answers.
+    let mut frame = run_frame(
+        22,
+        "run-birth-2",
+        json!([{"page": "birther.md", "task": "birth-card", "args": ["zz-born"]}]),
+    );
+    frame["fields"] = json!({"session": "770a48c2"});
+    let resp = conn.call(&frame);
+    let rows = rows_of(&resp);
+    assert_ne!(
+        rows[0]["state"],
+        json!("applied"),
+        "an occupied path never lands twice: {resp}"
+    );
+    let kept = fs::read_to_string(ws.join("tasks/zz-born.md")).unwrap();
+    assert!(kept.contains("# born card"), "first bytes stand: {kept}");
+}
+
+/// The § A.2.1 shape wall holds on `run`: a non-string `fields` value refuses
+/// the whole frame before any target runs.
+#[test]
+fn a_non_string_fields_value_refuses_the_run_frame() {
+    let tmp = TempDir::new().unwrap();
+    let ws = seeded(&tmp);
+    let _server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(&test_config(&tmp).socket_path);
+    conn.hello_v3(&ws);
+
+    let mut frame = run_frame(23, "run-badfields", json!([{"page": "tasks.md"}]));
+    frame["fields"] = json!({"k": 1});
+    let resp = conn.call(&frame);
+    assert_eq!(resp["ok"], json!(false), "the shape wall refuses: {resp}");
+}

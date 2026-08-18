@@ -8,6 +8,9 @@ use effects::{ArgValue, Effect, EffectKind, Provenance};
 use run::caps::{Authority, CapSet};
 use run::executor::{self, ApplyRequest, ReceiptAddr};
 
+/// Empty run-birth fields for these fixtures.
+static TEST_EMPTY_FIELDS: BTreeMap<String, String> = BTreeMap::new();
+
 /// The hostile probe shape, driven at each door.
 const HOSTILE: &str = "[[guide#^goal@green.b3af12cd|G]]";
 const RECEIPT_PATH: &str = "receipts/r.md";
@@ -57,6 +60,8 @@ fn receipt_after_apply(page_name: &str, seed: &str, effects: &[Effect]) -> Strin
             actor: None,
             depth: 0,
             delta: None,
+            fields: &TEST_EMPTY_FIELDS,
+            birth_seq: None,
         },
     )
     .expect("the apply commits — the claim is what the receipt may carry, not whether it runs");

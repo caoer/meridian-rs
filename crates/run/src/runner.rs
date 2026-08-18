@@ -25,6 +25,10 @@ use crate::fence::{GuaranteeClass, TaskLanguage};
 /// One run request: the addressed page/task plus the caller-supplied
 /// identity, receipts, and bash bracket inputs (§9 — nothing here mints or
 /// reads a clock).
+/// Empty `ctx.fields` for lanes where births cannot arrive (rehearse,
+/// cascade).
+static EMPTY_FIELDS: BTreeMap<String, String> = BTreeMap::new();
+
 #[derive(Debug)]
 pub struct RunSpec<'a> {
     /// The page the task lives on (workspace-relative).
@@ -72,6 +76,12 @@ pub struct RunSpec<'a> {
     /// of the run mints its Delta on the host's ring. `None` on the CLI
     /// entry — a separate process with no ring in reach.
     pub delta: Option<&'a dyn executor::DeltaSink>,
+    /// § A.2.1 passthrough for `md.create` births (`ctx.fields`, verbatim
+    /// to the create door). Empty on the CLI entry; the § A.8 wire arm
+    /// threads the frame's optional `fields` (hello cap `run.fields`).
+    pub fields: &'a BTreeMap<String, String>,
+    /// The workspace ring for door-committed births; `None` on the CLI entry.
+    pub birth_seq: Option<&'a dyn wire_serve::seq::SeqSink>,
     /// Where the bash bracket's corpus observations come from (card
     /// run-observation-unification): [`ObservationSource::Drawer`] on the CLI
     /// entry (fresh walks + the workspace drawer memo);
@@ -415,6 +425,9 @@ pub fn rehearse(
                 actor: spec.actor,
                 // A rehearsal never commits, so no Delta can honestly exist.
                 delta: None,
+                fields: &EMPTY_FIELDS,
+                // A rehearsal births nothing, so no ring frame can exist.
+                birth_seq: None,
             })
             .map_err(|e| RunnerError::Starlark(DispatchError::Eval(e)))?;
             // The choke point, rehearsal tense: the SAME admission the apply
@@ -478,6 +491,8 @@ fn dispatch(
                         limits: spec.limits,
                         actor: spec.actor,
                         delta: spec.delta,
+                        fields: spec.fields,
+                        birth_seq: spec.birth_seq,
                     },
                 )
                 .map_err(RunnerError::Starlark)?,
@@ -503,6 +518,8 @@ fn dispatch(
                     step_cwd: spec.step_cwd,
                     delta: spec.delta,
                     observations: spec.observations,
+                    fields: spec.fields,
+                    birth_seq: spec.birth_seq,
                 },
                 live,
             )
@@ -579,6 +596,10 @@ fn cascade(
                         actor: spec.actor,
                         depth: ev.depth,
                         delta: spec.delta,
+                        // Cascade intents are set_field/append only (the
+                        // adapter refuses the rest): no birth can arrive.
+                        fields: &EMPTY_FIELDS,
+                        birth_seq: None,
                     },
                 )
                 .map_err(|error| CascadeError::Apply {
