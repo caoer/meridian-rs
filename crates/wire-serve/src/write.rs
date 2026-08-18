@@ -689,8 +689,9 @@ pub fn splice(
                     file_rev_after: None,
                     edits: armed_edits,
                     effects: Vec::new(),
-                    // § A.2.1: intents ride non-dry successes only.
+                    // § A.2.1: intents/set ride non-dry successes only.
                     intents: None,
+                    set: None,
                 },
                 receipt: None,
                 root_before,
@@ -890,6 +891,7 @@ pub fn splice(
                 // the middleware plane rides `intents` — never who gets
                 // notified, never that anything was delivered.
                 effects: Vec::new(),
+                set: Some(armed_set_members(&mw, &frame.delta)),
                 intents: Some(mw.intents),
             },
             receipt: receipt_fact,
@@ -917,6 +919,44 @@ struct MwEmitted {
     members: Vec<wire::SpliceFile>,
     births: Vec<(Path, model::CandidateDocument)>,
     intents: Vec<MwIntent>,
+    /// § A.2.1 `armed.set` attribution: member/birth path → the middleware
+    /// id(s) whose emits compiled it, first-touch order, deduped per path.
+    rules_by_path: BTreeMap<String, Vec<String>>,
+}
+
+impl MwEmitted {
+    /// Record that `rule_id`'s emit touched `path` (member edit or birth).
+    fn attribute(&mut self, path: &str, rule_id: &str) {
+        let rules = self.rules_by_path.entry(path.to_string()).or_default();
+        if !rules.iter().any(|r| r == rule_id) {
+            rules.push(rule_id.to_string());
+        }
+    }
+}
+
+/// § A.2.1 `armed.set` rows: the sealed set's OTHER files — member edits,
+/// then births, in emit order — each repeated from the commit's own Delta
+/// row (a committed fact, never re-derived). The per-kind fallback is
+/// unreachable while `commit_set` emits one Delta carrying every member;
+/// it exists so a response is still shaped if that invariant ever breaks.
+fn armed_set_members(mw: &MwEmitted, delta: &wire::Delta) -> Vec<wire::ArmedSetMember> {
+    let row_for = |path: &str, fallback: wire::FileChange| {
+        let row = delta.files.iter().find(|f| f.path.0 == path);
+        wire::ArmedSetMember {
+            path: Path(path.to_string()),
+            change: row.map_or(fallback, |f| f.change),
+            file_rev_after: row.and_then(|f| f.file_rev_after.clone()),
+            rules: mw.rules_by_path.get(path).cloned().unwrap_or_default(),
+        }
+    };
+    let mut rows = Vec::with_capacity(mw.members.len() + mw.births.len());
+    for m in &mw.members {
+        rows.push(row_for(&m.path.0, wire::FileChange::Modified));
+    }
+    for (p, _) in &mw.births {
+        rows.push(row_for(&p.0, wire::FileChange::Created));
+    }
+    rows
 }
 
 /// The armed in-scope middleware rows at `path`, `id` ascending. Armed-law
@@ -1126,6 +1166,7 @@ fn run_door_middleware(
                         if let Some((_, edits)) = member_state.get_mut(&p) {
                             edits.push(mw_upsert(key, value));
                         }
+                        out.attribute(&p, row.id().as_str());
                         if !members_touched.contains(&p) {
                             members_touched.push(p);
                         }
@@ -1173,6 +1214,7 @@ fn run_door_middleware(
                     )
                     .map_err(|e| mw_member_refusal(&birth_path, e))?;
                     overlay.insert(p.clone(), candidate.raw().to_string());
+                    out.attribute(&p, row.id().as_str());
                     out.births.push((birth_path, candidate));
                 }
                 policy::MwEmit::Send { to, body } => {
@@ -1499,6 +1541,7 @@ pub fn splice_set_with_cache(
                         edits: e.armed_edits,
                         effects: Vec::new(),
                         intents: None,
+                        set: None,
                     })
                     .collect(),
                 receipt: None,
@@ -1568,6 +1611,7 @@ pub fn splice_set_with_cache(
             edits: e.armed_edits,
             effects: Vec::new(),
             intents: None,
+            set: None,
         });
     }
 

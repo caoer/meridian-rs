@@ -1898,6 +1898,30 @@ pub struct Armed {
     /// marks an intent delivered; realization is the host's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intents: Option<Vec<MwIntent>>,
+    /// § A.2.1 sealed-set members: every OTHER file this write's middleware
+    /// committed in the same set — member edits and births, never the
+    /// caller's own path, never commit machinery (receipt appends, pin
+    /// promotions). Presence law mirrors `intents`: `Some` — possibly
+    /// empty, never absent — on every non-dry successful write through a
+    /// door that evaluates middleware; `None` elsewhere. Rows repeat the
+    /// commit's own Delta facts so a host can put the sealed write's real
+    /// cross-file effects on its agent-facing receipt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub set: Option<Vec<ArmedSetMember>>,
+}
+
+/// One § A.2.1 sealed-set member row — a cross-file effect of the caller's
+/// own write. `path`/`change`/`file_rev_after` are lifted from the commit's
+/// Delta row for the file (a committed fact repeated, never re-derived);
+/// `rules` names the middleware id(s) whose emits compiled the member,
+/// first-touch order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArmedSetMember {
+    pub path: Path,
+    pub change: FileChange,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_rev_after: Option<NodeRev>,
+    pub rules: Vec<String>,
 }
 
 /// One § A.2.1 middleware intent — the V1 frozen item shape. Inert data the

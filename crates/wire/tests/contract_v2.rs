@@ -522,6 +522,7 @@ fn worked_splice_frames_match_contract() {
                     }],
                     effects: vec![],
                     intents: None,
+                    set: None,
                 },
                 receipt: Some(wire::ReceiptFact {
                     path: wire::Path("receipts/2026-07-18.md".into()),
@@ -613,6 +614,7 @@ fn worked_dry_splice_frame_matches_contract() {
                     }],
                     effects: vec![],
                     intents: None,
+                    set: None,
                 },
                 receipt: None,
                 root_before: wire::Root(

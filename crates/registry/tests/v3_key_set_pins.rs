@@ -528,11 +528,12 @@ fn the_splice_body_receipt_and_armed_key_sets_are_pinned() {
     );
     pin_keys(
         &got["body"]["armed"],
-        // `intents` joined with the middleware door (§ A.2.1, 2026-08-17):
+        // `intents` joined with the middleware door (§ A.2.1, 2026-08-17),
+        // `set` beside it (§ A.2.1 sealed-set members, 2026-08-18): each is
         // present — possibly empty — on every non-dry success through a door
         // that evaluates middleware, absent on dry (the dry pin below).
-        &["edits", "file_rev_after", "intents", "path"],
-        "splice armed (§4.4 as amended, decision 21; § A.2.1 intents)",
+        &["edits", "file_rev_after", "intents", "path", "set"],
+        "splice armed (§4.4 as amended, decision 21; § A.2.1 intents + set)",
     );
     let edits = got["body"]["armed"]["edits"].as_array().expect("edits");
     pin_keys(
