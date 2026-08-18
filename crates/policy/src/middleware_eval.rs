@@ -177,6 +177,18 @@ fn eval_middleware(
             let ctx_value = alloc_ctx(heap, &globals, input);
 
             let mut eval = Evaluator::new(&module);
+            // GC OFF, load-bearing (mw-splice-engine-eof, 2026-08-18):
+            // `ctx_value` lives in this Rust local across `eval_module`, and a
+            // Rust local is NOT a GC root. `with_temp_heap` enables GC, which
+            // fires at top-level statement boundaries once the heap crosses
+            // starlark's 100KB threshold — a ctx over a large doc (before+after
+            // nodes plus one-hop edge target_facts) crosses it alone, the ctx
+            // is collected mid-eval_module, and `eval_function(entry, [ctx])`
+            // then segfaults the process on the dangling Value. With GC off no
+            // value is ever invalidated; `set_max_heap_size` still caps the
+            // arena (over-cap fails closed as Budget), and the whole temp heap
+            // drops at scope end.
+            eval.disable_gc();
             if let Err(e) = eval.set_max_tick_count(step_guard) {
                 return Err(runtime(e));
             }
@@ -561,6 +573,65 @@ def middleware(ctx):
                     body: "t -> review".into(),
                 },
             ]
+        );
+    }
+
+    /// Regression (mw-splice-engine-eof, 2026-08-18): a ctx whose temp-heap
+    /// allocation crosses starlark's GC threshold (100KB) must survive
+    /// evaluation. Pre-fix, `eval_module` fired a GC at a top-level statement
+    /// boundary, the ctx Value (held in a Rust local, NOT a GC root) was
+    /// collected, and `eval_function` SEGFAULTED the process on the dangling
+    /// Value — this test dies with SIGSEGV on the unfixed evaluator.
+    #[test]
+    fn a_ctx_past_the_gc_threshold_survives_evaluation() {
+        use std::fmt::Write as _;
+        let mut md = String::from("---\nstatus: open\n---\n# Big\n\n");
+        for i in 0..500 {
+            let _ = write!(
+                md,
+                "## Section {i:03}\n\nThe hook plane unifies the four trigger families under \
+                 one armed row shape; each family keeps its own firing clock but shares the \
+                 severity ladder and the receipts contract. Row {i} carries its own receipts \
+                 line.\n\n"
+            );
+        }
+        let before = doc_of("results/big.md", &md);
+        let after = doc_of(
+            "results/big.md",
+            &md.replace("status: open", "status: review"),
+        );
+        let change = derive_change(
+            &before,
+            &after,
+            &[],
+            Invocation {
+                op: ChangeOp::Splice,
+                actor: Some("agent:770a48c2"),
+                force: false,
+            },
+            &[],
+            &|_| None,
+        );
+        let fields: BTreeMap<String, String> =
+            [("session".to_string(), "770a48c2".to_string())].into();
+        let out = run_middleware(
+            "def middleware(ctx):\n    if ctx.op == \"splice\" and ctx.after.frontmatter.get(\"status\") == \"review\":\n        set_field(path = ctx.after.path, key = \"session\", value = ctx.fields.get(\"session\"))\n",
+            &MwCtxInput {
+                change: &change,
+                fields: &fields,
+            },
+            &FakeWorld,
+            CheckLimits::default(),
+        )
+        .expect("a big ctx evaluates cleanly");
+        assert_eq!(
+            out.emits,
+            vec![MwEmit::SetField {
+                path: "results/big.md".into(),
+                key: "session".into(),
+                value: "770a48c2".into(),
+            }],
+            "the stamp landed through the big-ctx evaluation"
         );
     }
 
