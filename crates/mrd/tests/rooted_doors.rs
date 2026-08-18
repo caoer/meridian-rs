@@ -341,6 +341,103 @@ fn run_unbound_root_refuses_and_executes_nothing() {
     );
 }
 
+/// A page in the `guarded` root whose task explicitly grants `md.set_field` —
+/// which that root's own convention ceiling narrows to nothing.
+const GUARDED_TASK: &str = "\
+---
+status: open
+task.fix-status: \"[[#^fx-1]]\"
+task.fix-status.caps: md.set_field
+---
+
+# Guarded
+
+```starlark
+def run(ctx):
+    set_field(field = \"status\", value = \"done\")
+```
+^fx-1
+";
+
+/// Grow the sandbox a `guarded` root that declares a read-only convention
+/// (`run.caps.fix-*: \"\"` — an explicit empty ceiling) over [`GUARDED_TASK`],
+/// mounted beside `sessions`/`assets`.
+fn add_guarded_root(sb: &Sandbox) -> PathBuf {
+    let guarded = sb.home.parent().expect("sandbox layout").join("guarded");
+    std::fs::create_dir_all(guarded.join(".git")).expect("guarded anchor");
+    std::fs::write(
+        guarded.join("MERIDIAN.md"),
+        "---\ntype: meridian-root\nversion: 1\nname: guarded\n\"run.caps.fix-*\": \"\"\n---\n\n\
+         # Guarded root\n",
+    )
+    .expect("guarded declaration");
+    std::fs::write(guarded.join("task.md"), GUARDED_TASK).expect("guarded task");
+    let config = sb.home.join("MERIDIAN.md");
+    let mut raw = std::fs::read_to_string(&config).expect("config");
+    raw.push_str(&format!(
+        "\n```meridian-mount\nname: guarded\npath: {}\nvault: guarded\n```\n",
+        guarded.display()
+    ));
+    std::fs::write(&config, raw).expect("config grows guarded");
+    guarded
+}
+
+/// The ceiling half of the ratified authority ruling (the permission-bypass
+/// hazard that motivated it): the PAGE tree's read-only convention governs a
+/// rooted run no matter where the caller stands. The standing tree declares
+/// NOTHING, so a regression of `declaring_root` back to the standing tree
+/// would lift the ceiling and let the task run — this gate fails then.
+#[test]
+fn a_read_only_page_tree_is_not_bypassable_by_standing_elsewhere() {
+    let sb = sandbox();
+    let guarded = add_guarded_root(&sb);
+    let out = sb.run_degraded(&sb.ws, &["run", "guarded:task.md", "fix-status"]);
+    assert_eq!(
+        code(&out),
+        1,
+        "the PAGE tree's ceiling refuses the effect: {} {}",
+        stdout(&out),
+        stderr(&out)
+    );
+    let err = stderr(&out);
+    assert!(
+        err.contains("capability denied"),
+        "the refusal is the caps fault, not an address or page miss: {err:?}"
+    );
+    let page = std::fs::read_to_string(guarded.join("task.md")).expect("task page");
+    assert!(
+        page.contains("status: open"),
+        "nothing was applied under the ceiling: {page:?}"
+    );
+}
+
+/// The mirror: the same task invoked from INSIDE the page tree refuses
+/// identically — the refusal is that tree's ceiling, not an artifact of the
+/// rooted lane.
+#[test]
+fn the_ceiling_refuses_identically_from_inside_the_page_tree() {
+    let sb = sandbox();
+    let guarded = add_guarded_root(&sb);
+    let out = sb.run_degraded(&guarded, &["run", "task.md", "fix-status"]);
+    assert_eq!(
+        code(&out),
+        1,
+        "the same ceiling binds ambient too: {} {}",
+        stdout(&out),
+        stderr(&out)
+    );
+    assert!(
+        stderr(&out).contains("capability denied"),
+        "the identical caps fault: {:?}",
+        stderr(&out)
+    );
+    let page = std::fs::read_to_string(guarded.join("task.md")).expect("task page");
+    assert!(
+        page.contains("status: open"),
+        "nothing was applied: {page:?}"
+    );
+}
+
 // ── realise ──────────────────────────────────────────────────────────────────
 
 #[test]
