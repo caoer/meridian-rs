@@ -41,6 +41,26 @@ pub(crate) fn is_rooted(spelling: &str) -> bool {
     addr::head_carries_root_separator(spelling)
 }
 
+/// The peel-then-admit sequence, one call per door: `Ok(None)` for an ambient
+/// spelling — the caller's own §1 admission still applies to it — and
+/// `Ok(Some((rel, rooted)))` for a rooted spelling, resolved through
+/// [`resolve`]. The error is the seam's `bad_path` family; the door frames it
+/// in its own envelope (an address-plane refusal is exit 1, never exit 2).
+///
+/// Deliberately carries no fragment policy: whether a `#` is legal at a door
+/// is that door's own stance (read splits it, resolve/put refuse it), so the
+/// seam stays a pure de-duplication of the gate-then-resolve lines.
+pub(crate) fn enter(
+    spelling: &str,
+    door: &str,
+    consequence: &str,
+) -> Result<Option<(String, RootedRef)>, Box<ErrorBody>> {
+    if !is_rooted(spelling) {
+        return Ok(None);
+    }
+    resolve(spelling, door, consequence).map(Some)
+}
+
 /// Resolve a rooted spelling (the part before any `#`) to its root and bound
 /// workspace. `door` and `consequence` are the caller's own name and §1
 /// consequence clause, composed into every refusal exactly as
@@ -81,6 +101,30 @@ pub(crate) fn resolve(
              no second `root:` prefix). {consequence}"
         )));
     }
+    let rooted = resolve_name(&name, spelling, consequence)?;
+    Ok((rel, rooted))
+}
+
+/// The table half of [`resolve`]: a canonical root NAME to its bound
+/// workspace — shared with the door surfaces that take a bare name instead
+/// of a `root:path` spelling (`sql --root`). `spelling` is what the refusals
+/// echo: the caller's own bytes, rooted ref or bare name alike.
+///
+/// # Errors
+/// `bad_path` (§8) — an unreadable mount table, a root this machine does not
+/// bind (the refusal enumerates what DOES bind), or a declared-but-unbound
+/// root (the refusal carries the mount's own state word and detail).
+pub(crate) fn resolve_name(
+    name: &addr::MountName,
+    spelling: &str,
+    consequence: &str,
+) -> Result<RootedRef, Box<ErrorBody>> {
+    let refuse = |message: String| -> Box<ErrorBody> {
+        let mut e = ErrorBody::new(ErrorCode::BadPath);
+        e.path = Some(wire::Path(spelling.to_owned()));
+        e.message = Some(message);
+        Box::new(e)
+    };
     // The table, read fresh per call (the currency law the engine's pin door
     // and the MCP face both hold): a stale table would serve yesterday's
     // topology.
@@ -130,12 +174,9 @@ pub(crate) fn resolve(
              {consequence}"
         )));
     };
-    Ok((
-        rel,
-        RootedRef {
-            name,
-            workspace: workspace.to_path_buf(),
-            primary: mount.primary(),
-        },
-    ))
+    Ok(RootedRef {
+        name: name.clone(),
+        workspace: workspace.to_path_buf(),
+        primary: mount.primary(),
+    })
 }

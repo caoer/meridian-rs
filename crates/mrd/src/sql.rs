@@ -65,6 +65,11 @@ struct SqlArgs {
     json: bool,
     rebuild: bool,
     cwd: Option<PathBuf>,
+    /// `--root NAME`: the projection workspace by canonical root name, from
+    /// the machine mount table (2026-08-18 rooted-refs-everywhere addendum:
+    /// the runtime cwd should not be a factor). Mutually exclusive with
+    /// `--cwd` — both select the workspace.
+    root: Option<String>,
 }
 
 impl SqlArgs {
@@ -74,6 +79,7 @@ impl SqlArgs {
         let mut json = false;
         let mut rebuild = false;
         let mut cwd: Option<PathBuf> = None;
+        let mut root: Option<String> = None;
 
         let mut i = 0;
         while i < tail.len() {
@@ -96,6 +102,10 @@ impl SqlArgs {
                     let v = take_value(flag, inline, tail, &mut i)?;
                     cwd = Some(PathBuf::from(v));
                 }
+                "--root" => {
+                    let v = take_value(flag, inline, tail, &mut i)?;
+                    root = Some(v);
+                }
                 other if other.starts_with('-') => {
                     return Err(Fail::tool(format!("unknown flag: {other}")));
                 }
@@ -112,12 +122,21 @@ impl SqlArgs {
         if query.is_none() && !rebuild {
             return Err(Fail::tool("mrd sql needs a <query> argument".to_owned()));
         }
+        if root.is_some() && cwd.is_some() {
+            return Err(Fail::tool(
+                "--root and --cwd both select the projection workspace — pass one. \
+                 --root NAME reads the machine mount table; --cwd PATH walks the \
+                 resolution ladder from that directory."
+                    .to_owned(),
+            ));
+        }
         Ok(SqlArgs {
             query,
             fresh,
             json,
             rebuild,
             cwd,
+            root,
         })
     }
 }
@@ -257,17 +276,30 @@ impl Frame {
 /// an error — the frame is the honest report.
 pub(crate) fn run(tail: &[String]) -> Result<(), Fail> {
     let args = SqlArgs::parse(tail)?;
-    let cwd = match &args.cwd {
-        Some(p) => p.clone(),
-        None => current_dir()?,
+    // `--root NAME` selects the projection workspace by canonical root name
+    // (2026-08-18 rooted-refs-everywhere addendum): the mount table is the
+    // whole authority, the cwd plays no part, and an unbound name refuses
+    // enumerating what does bind — the rooted seam's own refusal family.
+    let workspace = if let Some(name_raw) = &args.root {
+        let name = addr::MountName::parse(name_raw)
+            .map_err(|e| Fail::tool(format!("--root {name_raw}: {e}")))?;
+        let rooted = crate::rooted::resolve_name(&name, name_raw, "No query ran.")
+            .map_err(|e| Fail::tool(crate::engine::render_wire_error(&e)))?;
+        rooted.workspace
+    } else {
+        let cwd = match &args.cwd {
+            Some(p) => p.clone(),
+            None => current_dir()?,
+        };
+        resolve_runtime(&cwd)
+            .map_err(|e| {
+                Fail::tool(format!(
+                    "cannot resolve workspace for {}: {e}",
+                    cwd.display()
+                ))
+            })?
+            .workspace
     };
-    let resolved = resolve_runtime(&cwd).map_err(|e| {
-        Fail::tool(format!(
-            "cannot resolve workspace for {}: {e}",
-            cwd.display()
-        ))
-    })?;
-    let workspace = resolved.workspace;
 
     // Ladder rung 1: the resident daemon answers first for EVERY caller —
     // lifecycle B makes it the cache file's single owner, so a held file is

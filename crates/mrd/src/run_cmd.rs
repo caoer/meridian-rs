@@ -97,6 +97,24 @@ fn fail_address_in(e: &AddressError, answer: &workspace::Answer, cwd: &Path) -> 
     }
 }
 
+/// The rooted miss: scoped to the NAMED root (F4) — it names which root was
+/// searched and its bound workspace, and never carries the ambient lane's
+/// tier word or cwd respelling, advice for a different mistake.
+fn fail_address_rooted(
+    e: &AddressError,
+    rooted: &crate::rooted::RootedRef,
+    root: &fs::WorkspaceRoot,
+) -> Fail {
+    match e {
+        AddressError::PageNotFound { .. } => Fail::tool(format!(
+            "{e} (root `{}`, workspace {})",
+            rooted.name,
+            root.0.display()
+        )),
+        _ => fail_address(e),
+    }
+}
+
 /// Cap faults split by leg: a bash fence under a read-only convention is the plane refusing a
 /// well-formed invocation (exit 1); malformed declarations are authoring faults (exit 2).
 fn fail_caps(e: &CapsError) -> Fail {
@@ -234,8 +252,39 @@ pub(crate) fn dispatch(tail: &[String]) -> Result<(), Fail> {
     let cwd = current_dir()?;
     let answer = workspace::resolve(&cwd)
         .map_err(|e| Fail::tool(format!("workspace resolution failed: {e:?}")))?;
-    // An unanchored tree runs against the cwd.
-    let root = fs::WorkspaceRoot(answer.root_or_cwd().to_path_buf());
+    // The rooted lane (§4.1 colon law), under the 2026-08-18 authority ruling
+    // (rooted-refs-everywhere): a head-colon PAGE runs exactly as if the
+    // caller had cd'd into the named root — the page load, the convention
+    // ceiling, the timeout, the scratch dir, and the receipt all bind to the
+    // PAGE's tree, never the standing one. The runtime cwd decides nothing on
+    // this lane. A resolution refusal is the address answer (exit 1, the
+    // `{workspace, error}` frame under `--json`), never a literal-path run.
+    let rooted = match crate::rooted::enter(
+        &parsed.page,
+        "run",
+        "Nothing was executed and no receipt was written.",
+    ) {
+        Ok(Some((rel, rooted))) => {
+            parsed.page = rel;
+            Some(rooted)
+        }
+        Ok(None) => None,
+        // The refusal frames with the workspace the caller stands in — no
+        // target workspace exists to name.
+        Err(error) => {
+            let ambient = answer.root_or_cwd().to_path_buf();
+            return Err(crate::engine::json_refusal(
+                parsed.format(),
+                &ambient,
+                &error,
+            ));
+        }
+    };
+    // An unanchored tree runs against the cwd (ambient lane only).
+    let root = match &rooted {
+        Some(r) => fs::WorkspaceRoot(r.workspace.clone()),
+        None => fs::WorkspaceRoot(answer.root_or_cwd().to_path_buf()),
+    };
     // §1 admission, before the page is read: without it `load_page` resolves an
     // absolute spelling verbatim and this door EXECUTED a page from outside the
     // workspace — writing the receipt into the workspace's own
@@ -250,21 +299,34 @@ pub(crate) fn dispatch(tail: &[String]) -> Result<(), Fail> {
         "run",
         "Nothing was executed and no receipt was written.",
     )?;
-    // §2.1 echo law at the argv boundary: receipts, the foreign-edit scan, and
-    // rule scoping key on the page's ONE workspace-relative spelling, so the
-    // admitted ref resolves here and rides root-relative everywhere below. A
-    // ref resolving outside the root has no such spelling and stays verbatim —
+    // §2.1 echo law at the argv boundary: the receipt and the plane's page
+    // addressing (pre-eval load, task resolution, the report's identity) key
+    // on the page's ONE workspace-relative spelling, so the admitted ref
+    // resolves here and rides root-relative everywhere below. (The
+    // foreign-edit scan that once keyed on it is RETIRED — the 2026-08-15
+    // no-guard-on-effects ruling — and the CLI hands the runner an empty
+    // ruleset, [`S1_RULES`], so no rule scoping consumes it here.) A ref
+    // resolving outside the root has no such spelling and stays verbatim —
     // refusing it is the path-law door family's business.
     if let Some(rel) = fs::workspace_relative(&root, &parsed.page) {
         parsed.page = rel;
     }
-    // The two roots answer different questions: `root_or_cwd` above is where files are read,
-    // `answer.root()` here is whether anything is entitled to declare policy. They coincide
-    // whenever the ladder answered; on a cwd default the second is `None`, so no convention
-    // ceiling is in force.
-    let declaring_root = answer.root();
-    let doc = address::load_page(&root, Path::new(&parsed.page))
-        .map_err(|e| fail_address_in(&e, &answer, &cwd))?;
+    // The two roots answer different questions: `root` above is where files
+    // are read, `declaring_root` here is whether anything is entitled to
+    // declare policy. On the ambient lane they coincide whenever the ladder
+    // answered (a cwd default declares nothing, so no convention ceiling is in
+    // force). On the rooted lane BOTH are the page's tree — the authority
+    // ruling: a workspace that declares read-only keeps its own ceiling no
+    // matter where the caller stands, so a rooted ref can never be a
+    // permission bypass by cd.
+    let declaring_root = match &rooted {
+        Some(r) => Some(r.workspace.as_path()),
+        None => answer.root(),
+    };
+    let doc = address::load_page(&root, Path::new(&parsed.page)).map_err(|e| match &rooted {
+        Some(r) => fail_address_rooted(&e, r, &root),
+        None => fail_address_in(&e, &answer, &cwd),
+    })?;
     let (conventions, _source) =
         caps::load_conventions(declaring_root).map_err(|e| fail_caps(&e))?;
 

@@ -20,6 +20,8 @@ fn findings(message: String) -> Fail {
 /// a faulting write — or a findings exit (1) when a declared scaffold path already existed.
 pub(crate) fn run(args: &[String]) -> Result<(), Fail> {
     let parsed = Parsed::parse(args)?;
+    // Not yet converted to the rooted lane — see [`crate::preset_cmd::refuse_rooted`].
+    crate::preset_cmd::refuse_rooted(&parsed.preset, "unfold", "Nothing was born.")?;
     let root = crate::preset_cmd::resolve_root()?;
     let preset_path = crate::preset_cmd::def_path(&parsed.preset);
 

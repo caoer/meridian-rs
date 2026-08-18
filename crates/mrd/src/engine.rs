@@ -172,34 +172,56 @@ pub(crate) struct Answer {
 /// or the degrade path hits a genuine corpus error (see [`answer_links`]).
 pub(crate) fn run_command(path_arg: Option<&str>, format: Format) -> Result<(), Fail> {
     let cwd = current_dir()?;
-    let resolved = crate::resolve::resolve_runtime(&cwd).map_err(|e| {
-        Fail::tool(format!(
-            "cannot resolve workspace for {}: {e}",
-            cwd.display()
-        ))
-    })?;
+    // The rooted lane (§4.1 colon law): a head-colon PATH is an agent-plane
+    // address, never a literal path — the edge map serves from the NAMED
+    // root's bound workspace, exactly as if the caller stood there. The
+    // ambient lane resolves from cwd exactly as before.
+    let entered = match path_arg {
+        Some(p) => crate::rooted::enter(p, "links", "Nothing was served."),
+        None => Ok(None),
+    };
+    let ambient = || -> Result<std::path::PathBuf, Fail> {
+        Ok(crate::resolve::resolve_runtime(&cwd)
+            .map_err(|e| {
+                Fail::tool(format!(
+                    "cannot resolve workspace for {}: {e}",
+                    cwd.display()
+                ))
+            })?
+            .workspace)
+    };
+    let (workspace, rooted_rel) = match entered {
+        Ok(Some((rel, rooted))) => (rooted.workspace, Some(rel)),
+        Ok(None) => (ambient()?, None),
+        // The refusal frames with the workspace the caller stands in — no
+        // target workspace exists to name.
+        Err(error) => {
+            let ambient = ambient()?;
+            return Err(json_refusal(format, &ambient, &error));
+        }
+    };
+    let path_arg = match &rooted_rel {
+        Some(rel) => Some(rel.as_str()),
+        None => path_arg,
+    };
     // §1 admission at the face, before any engine contact: the warm daemon
     // refuses a violating spelling but that refusal melts into the degrade
     // ([`try_daemon_links`] answers `None`), and the degrade's `load_doc`
     // resolves an absolute spelling verbatim — so this door SERVED a page from
     // outside the root (wire-contract §12.1, the door-family clause). The
     // refusal keeps the `--json` face's `{workspace, error}` frame, exactly as
-    // the degrade's own engine-refusal seam publishes it.
+    // the degrade's own engine-refusal seam publishes it. On the rooted lane
+    // the rel half is already confined ([`crate::rooted`]) — a no-op pass.
     if let Some(p) = path_arg
         && crate::path_law::violates_path_law(p)
     {
         let mut error = ErrorBody::new(wire::ErrorCode::BadPath);
         error.path = Some(WirePath(p.to_owned()));
-        crate::path_law::teach_bad_path(
-            &resolved.workspace,
-            &mut error,
-            "links",
-            "Nothing was served.",
-        );
-        json_error_frame(format, &resolved.workspace, &error);
+        crate::path_law::teach_bad_path(&workspace, &mut error, "links", "Nothing was served.");
+        json_error_frame(format, &workspace, &error);
         return Err(Fail::tool(render_wire_error(&error)));
     }
-    let answer = answer_links(&resolved.workspace, &cwd, path_arg, format)?;
+    let answer = answer_links(&workspace, &cwd, path_arg, format)?;
     // Read off the ANSWER, so warm and degrade voice one fact from one source:
     // an enumeration names the population it did not carry (§4.6 `excluded`).
     voice_excluded(&answer.body);
@@ -207,14 +229,14 @@ pub(crate) fn run_command(path_arg: Option<&str>, format: Format) -> Result<(), 
     match format {
         Format::Json => {
             let value = json!({
-                "workspace": resolved.workspace.display().to_string(),
+                "workspace": workspace.display().to_string(),
                 "source": answer.source.label(),
                 "links": answer.body,
             });
             println!("{}", serde_json::to_string_pretty(&value).expect("json"));
         }
         Format::Human => {
-            println!("workspace {}", resolved.workspace.display());
+            println!("workspace {}", workspace.display());
             println!("  source: {}", answer.source.label());
             render_links_human(&answer.body, path_arg.is_some());
         }

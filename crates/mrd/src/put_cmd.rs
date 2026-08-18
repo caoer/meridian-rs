@@ -95,7 +95,8 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
             cwd.display()
         ))
     })?;
-    admit_scope(&mut parsed, &resolved.workspace)?;
+    let workspace = rooted_write_target(&mut parsed, resolved.workspace)?;
+    admit_scope(&mut parsed, &workspace)?;
     let mut request = json!({
         "op": "splice",
         "path": parsed.path,
@@ -134,7 +135,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     }
     attach_fields(&parsed, &mut request);
 
-    let mut door = write_ipc::connect(&resolved.workspace)?;
+    let mut door = write_ipc::connect(&workspace)?;
     // The cap wall, client half (§3.2): a scoped premise rides only when the
     // connect-time hello advertised the family. Refusing HERE — before any
     // engine write — is the taught refusal; sending anyway would draw the
@@ -167,8 +168,8 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         )));
     }
     fields_cap_wall(&parsed, &door)?;
-    let body = write_ipc::call(&mut door, &request)
-        .map_err(|e| refusal(&parsed, &resolved.workspace, &e))?;
+    let body =
+        write_ipc::call(&mut door, &request).map_err(|e| refusal(&parsed, &workspace, &e))?;
     let body = write_ipc::project_body(&body);
 
     // The findings leg of the silent check: a passing rehearsal says nothing, so anything the
@@ -182,7 +183,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
             return Err(Fail::findings(format!(
                 "validate: {} finding(s) on {}, nothing written:\n{}",
                 verdicts,
-                parsed.path,
+                parsed.display(),
                 serde_json::to_string_pretty(&body["verdicts"]).expect("json")
             )));
         }
@@ -191,7 +192,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     match parsed.format {
         Format::Json => {
             let value = json!({
-                "workspace": resolved.workspace.display().to_string(),
+                "workspace": workspace.display().to_string(),
                 "put": body,
             });
             println!("{}", serde_json::to_string_pretty(&value).expect("json"));
@@ -252,6 +253,46 @@ fn refusal(parsed: &Put, workspace: &std::path::Path, error: &ErrorBody) -> Fail
 /// refusal fired ([`crate::path_law`] holds the family message; this door
 /// states only its own name and consequence).
 const PUT_CONSEQUENCE: &str = "Nothing was sent and nothing was written.";
+
+/// The rooted lane on the WRITE TARGET (§4.1 colon law, 2026-08-18
+/// rooted-refs-everywhere): a head-colon PATH names a page of the NAMED root,
+/// so the write dials the daemon with THAT workspace at the hello and the rel
+/// half rides the wire as `path` — the same split the rooted `--scope`
+/// already rides ("the rel half rides the wire"). The daemon serves the
+/// attached workspace exactly as if the caller stood there, so the TARGET
+/// tree's armed gates fire and its receipts land home. A `#` fragment refuses
+/// first (this door's own `--scope` stance): a write binds a file, and
+/// silently stripping the fragment would write the whole file while the
+/// caller named a section. An ambient spelling answers the ambient workspace
+/// unchanged. (Extracted from [`dispatch`] per the parse headroom law.)
+fn rooted_write_target(
+    parsed: &mut Put,
+    ambient: std::path::PathBuf,
+) -> Result<std::path::PathBuf, Fail> {
+    if !crate::rooted::is_rooted(&parsed.path) {
+        return Ok(ambient);
+    }
+    if parsed.path.contains('#') {
+        let mut error = ErrorBody::new(wire::ErrorCode::BadPath);
+        error.path = Some(WirePath(parsed.path.clone()));
+        error.message = Some(format!(
+            "{} carries a `#` fragment, and a write binds at path grain — a fragment \
+             addresses a section, not a file. Name the section in the edit selectors, \
+             not the path. {PUT_CONSEQUENCE}",
+            parsed.path
+        ));
+        return Err(engine::json_refusal(parsed.format, &ambient, &error));
+    }
+    match crate::rooted::resolve(&parsed.path, "put", PUT_CONSEQUENCE) {
+        Ok((rel, rooted)) => {
+            parsed.display = Some(std::mem::replace(&mut parsed.path, rel));
+            Ok(rooted.workspace)
+        }
+        // The refusal frames with the workspace the caller stands in — no
+        // target workspace exists to name.
+        Err(error) => Err(engine::json_refusal(parsed.format, &ambient, &error)),
+    }
+}
 
 /// The scope admission, two lanes. A head-colon spelling is the agent-plane
 /// `[root:]path` address (§4.1 colon law — the root reading wins, never a
@@ -347,7 +388,7 @@ fn print_human(parsed: &Put, body: &Value) {
     if parsed.dry {
         println!(
             "dry run: {} ({edits} edit(s)), nothing written",
-            parsed.path
+            parsed.display()
         );
         return;
     }
@@ -355,7 +396,7 @@ fn print_human(parsed: &Put, body: &Value) {
         .get("fingerprint_after")
         .and_then(Value::as_str)
         .unwrap_or("?");
-    println!("committed {} ({edits} edit(s))", parsed.path);
+    println!("committed {} ({edits} edit(s))", parsed.display());
     println!("  fingerprint: {after}");
     if let Some(receipt) = body
         .get("receipt")
@@ -403,6 +444,10 @@ fn print_human(parsed: &Put, body: &Value) {
 /// The parsed `put` invocation.
 struct Put {
     path: String,
+    /// The rooted lane's typed spelling (`root:rel`) — the write target the
+    /// human face echoes, so the caller sees what they wrote. `None` on the
+    /// ambient lane. The wire never carries it: `path` is the rel half.
+    display: Option<String>,
     actor: Option<String>,
     now: Option<String>,
     receipt: Option<ReceiptAddr>,
@@ -429,6 +474,12 @@ impl Put {
     /// Either face means the same run: everything except disk.
     fn rehearsal(&self) -> bool {
         self.dry || self.validate
+    }
+
+    /// The spelling the faces echo: the caller's own — rooted where the
+    /// caller wrote rooted, the bare path otherwise (the read door's law).
+    fn display(&self) -> &str {
+        self.display.as_deref().unwrap_or(&self.path)
     }
 }
 
@@ -529,6 +580,7 @@ impl Put {
         )?;
         Ok(Put {
             path,
+            display: None,
             actor,
             now,
             receipt,

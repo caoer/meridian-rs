@@ -22,15 +22,15 @@ use wire::ErrorBody;
 
 use crate::Fail;
 
-/// The §1 path-law admission the warm decoder applies (`req_path`), mirrored so
-/// the CLI doors and the wire cannot drift: workspace-relative, `/`-separated,
-/// never absolute, no `.`/`..`/empty segment.
+/// The §1 path-law admission the warm decoder applies (`req_path`), asked of
+/// the ONE confinement implementation ([`addr::confined`]) so the CLI doors
+/// and the wire cannot drift: workspace-relative, `/`-separated, never
+/// absolute, no `.`/`..`/empty segment, no root separator in the head. This
+/// was a hand-copy once, and it drifted on exactly the head-colon arm — the
+/// wire refused `root:page` while the CLI doors misread it as a literal
+/// filename (measured 2026-08-18 at `72099f257`).
 pub(crate) fn violates_path_law(path: &str) -> bool {
-    path.is_empty()
-        || path.starts_with('/')
-        || path
-            .split('/')
-            .any(|seg| seg.is_empty() || seg == "." || seg == "..")
+    !addr::confined(path)
 }
 
 /// The family `bad_path` teaching: the §1 rule with the door's own name and
@@ -47,7 +47,7 @@ pub(crate) fn bad_path_message(
     let mut m = format!(
         "{path} is not a workspace-relative path — the {door} door admits only \
          workspace-relative spellings (§1 path law: no absolute path, no `.`/`..`/empty \
-         segment). {consequence}"
+         segment, no `root:` prefix in the head). {consequence}"
     );
     if let Some(respell) = workspace_respell(workspace, path) {
         m.push_str(&respell);
