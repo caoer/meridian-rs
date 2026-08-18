@@ -2,7 +2,7 @@
 type: spec
 id: addr
 status: standing
-updated: 2026-08-07
+updated: 2026-08-18
 description: Normative spec for cross-root addressing, the mount table, and the `addr::Addr` type. Ships no engine code.
 owns: [cross-root addressing, mounts, "addr::Addr"]
 ---
@@ -187,6 +187,16 @@ A corpus-relative path whose **first segment contains `:`** cannot be named by a
 > the reason naming it unaddressable. It is never silently resolved, and never silently skipped —
 > a document the corpus holds but no address can name must be visible as such.
 
+**Amended 2026-08-18 (rooted-refs-everywhere — § 4.6).** The consequence above is about the
+LITERAL path: a first-segment `:` on disk stays unaddressable (D10), and no address can spell one
+into existence — every head-colon spelling IS an address (§ 4.1). What the amendment changed is
+the DOOR: a `root:`-bearing spelling arriving at a page-taking door is no longer refused there —
+it **resolves** as the address it is, root peeled, rel joined onto the named root's bound
+workspace. D11's old outcome (refusal at the write door) is superseded; the superseded wording
+and the ruling live in § 4.6. The wire is untouched: a raw head-colon `Path` ON THE WIRE still
+refuses (`addr::confined`), because the wire speaks corpus paths and the address plane resolves
+at the door.
+
 ### 4.3 `MountName`'s charset — ruled
 
 `[a-z0-9-]`, non-empty. Lowercase only, and **an uppercase byte REFUSES rather than being silently
@@ -251,11 +261,140 @@ an `@` re-join (a selector containing `@` prints as its own bytes).
 | D8 | `sessions:` | **REFUSED** | `AddrError::EmptyPath` |
 | D9 | `a:b:c.md` | **REFUSED** (two colons in the head) | `AddrError::AmbiguousColon` |
 | D10 | a corpus file at `sessions:notes.md` on disk | **grey**, unaddressable, named | `grey(unaddressable-path)` |
-| D11 | a `create`/`splice` targeting `sessions:notes.md` | **REFUSED at the write door** | `bad_path`, echoing the offending path |
+| D11 | a `create`/`splice` targeting `sessions:notes.md` | **RESOLVES through the rooted lane (§ 4.6)** — root `sessions`, rel `notes.md`, joined onto that root's bound workspace; the wire sees the rel half only | re-ruled 2026-08-18; a raw head-colon `Path` arriving ON THE WIRE still refuses `bad_path` |
 
 **The acceptance half (parse-acceptance), asserted in the same breath:** D1–D4 must PARSE. A grammar proven
 only by what it refuses is indistinguishable from one that refuses everything, and rows D2 and D3
 are the ones that keep this law from swallowing the ordinary corpus.
+
+> [!WARNING] D11 is re-ruled (rooted-refs-everywhere, ZT 2026-08-18) — the door RESOLVES what it used to refuse
+> Superseded wording, preserved as the record (it lived here as D11's outcome and, mirrored, at
+> the write door — `crates/wire-serve/src/write.rs`, `path_confined`'s doc): *"The head-colon arm
+> is part of confinement because a `root:` prefix selects WHICH tree a path is joined onto: a
+> `root:`-bearing spelling at a write door is an address, never a corpus path, and is refused
+> rather than creating a document no address can name (§4.2, D11)."*
+>
+> The first half survives untouched — a `root:`-bearing spelling IS an address, never a corpus
+> path; § 4.1's root-wins law is not amended. The refusal half is overturned, and its stated
+> motive is engaged rather than dodged: the refusal existed because admitting the spelling as a
+> PATH would have created a document no address can name. Resolving the spelling as the ADDRESS
+> it is removes that hazard at its root — the created document is named by `sessions:notes.md`
+> from everywhere and by `notes.md` inside its own tree, and the raw spelling never reaches a
+> path join. The unnameable-document class cannot occur through a door that resolves. What still
+> refuses: malformed heads (D5–D9, unchanged), an unbound or typo'd root (the rooted lane's
+> teaching refusal — never a fallback to a literal reading), the literal first-segment-`:` path
+> (D10 and § 4.2, unchanged), and a raw head-colon `Path` on the wire (an address that missed its
+> door). Ruling, scope, and authority: § 4.6.
+
+### 4.6 The rooted lane spans every page-taking door (rooted-refs-everywhere, ZT 2026-08-18)
+
+**Ratified — ZT, session `1ed46083`, 2026-08-18, typed verbatim:** *"let's brief 8fb49fe6 and
+ef7c6b05 to add root: resolves. including run / put / pin / realise / etc, anything that we can
+take a page as refernece, we should be able to resolve it."* Motive — ZT verbatim (AUQ, session
+`ef7c6b05`, same day): *"the root: ref is clear and no ambiguios, for mrd tool, the runtime cwd
+should not be a factor to decide the behavior. this buys us durability."* Full record: llm-wiki
+`decisions/2026-08-18-rooted-refs-everywhere.md`.
+
+> **Implementation status (2026-08-18 — the impl PR strikes this block when it merges).** The
+> law below is ratified and in force AS LAW; the door conversions land in the impl PR
+> (`8fb49fe6`, branch pending at this writing). Until that merges, the SHIPPED doors behave as
+> before — the refusals and literal misreads recorded as measured ground truth in the decision
+> page. This block exists so this page cannot claim live behavior the binary does not yet have
+> — the exact defect class this amendment was written against — and it dies at the moment it
+> stops being true.
+
+> **The law.** Every door at which the caller names a PAGE resolves the agent-plane
+> `[root:]path[#selector]` spelling, through the ONE rooted lane (parse → confinement → mount
+> table; the § 4.1 colon law, no fallback to a literal reading). No page-taking door refuses a
+> well-formed rooted ref as such — with ONE stated exception, the preset lane below, which
+> refuses with a teaching until it is converted — and none misreads it as a literal filename.
+> The family is bound by the predicate, not by a list — the wire contract's door-family shape
+> (`wire-contract.md` § 12.1, whose own dogfood showed an enumerated family is read as a subset)
+> — so a door that is born taking a page is born inside this law.
+
+Members at the amendment date (mirroring the impl door audit, ACKed 2026-08-18, corrected same
+day): already rooted — `read`, `fingerprint`, `resolve`, `put --scope`. Converted by this ruling
+— `run`, `walk`, `repair`, `realise`, `links`, `rules` (the read side); `put` (the write
+TARGET), `rm`, `pin` (the PAGE position — the TARGET was already cross-root,
+pin-cross-root/D-A), and `script --files` (each entry `root:path`-capable under the
+one-declared-root convergence below). In the family but NOT YET converted — the preset lane
+(`unfold`, `reconcile`, `new`): see the stated exception below. Outside the family by predicate
+— arguments that name no page: `arm --at` (a directory scope, `armed-plane.md`), `test
+--history` and `status --cwd` (explicit tree arguments), `test --corpus` (its SPEC is a plain
+fixture FILE read from disk with cwd/absolute semantics, everything in it resolved relative to
+the spec's own directory — a compiler-source-style argument, not a corpus page; measured at the
+spec loader. The rule pages a spec names INSIDE itself are document positions, not door
+arguments — the § 9.1 distinction — so they are outside too), `check`, `retire`, `skill`, `sql`
+(no page; its `--root` is a new workspace selector, not a page ref). The enumeration is a
+MEASURED snapshot, not a designed set — two members moved after the first ACK when their
+resolution was read at the seam (`new` in, `test --corpus` out) — so the predicate stays the
+authority and a later reader re-measures rather than trusting this list.
+
+> **Authority: the page's tree governs — ZT's ruling by AUQ selection, 2026-08-18, session
+> `ef7c6b05`.** Scope of assent, stated precisely (the DX-01 standard — ratification carries its
+> receipt): ZT **selected** the option labelled *"Page's tree governs (Recommended)"* — a clicked
+> label, not typed prose — and the option text he was shown and selected read, verbatim:
+> *"`root:x` behaves exactly as if you had cd'd into that root: caps/conventions load from the
+> PAGE's own tree, receipts land in the page's workspace. Closes the one live hazard — today's
+> code loads the permission ceiling from where you stand, so resolving root: without this would
+> let a read-only tree's bash tasks run under a looser caller tree's ceiling (permission bypass).
+> Matches shipped code shape: authority already follows the declaring root."* The alternatives
+> shown and not picked: the standing tree governs; both trees must permit. His own typed prose in
+> the same answer independently carries the principle: *"for mrd tool, the runtime cwd should not
+> be a factor to decide the behavior. this buys us durability."*
+>
+> *Editorial note on the quoted option (review finding, 2026-08-18 — not part of the assent):*
+> the option's last sentence, "authority already follows the declaring root", is misleading as a
+> description of shipped code. In shipped code the declaring root RESOLVES TO THE STANDING
+> workspace — `run_cmd.rs` sets `declaring_root = answer.root()`, and `workspace::Answer::root`
+> is the discovery ladder's answer (where the caller stands; `None` on a cwd default) — so it
+> coincides with the page's tree only for ambient refs, which is exactly the coincidence this
+> ruling breaks: the PAGE's tree now fills the declaring-root slot. The quote stands unaltered
+> as the receipt; the option's own earlier sentence ("today's code loads the permission ceiling
+> from where you stand") is the correct description, and the scope of assent is unharmed — the
+> hazard was stated correctly and three real alternatives were shown.
+>
+> In consequence, as law: a rooted op behaves exactly as if the caller had cd'd into the named
+> root — conventions and caps load from the PAGE's own tree, receipts land in the page's
+> workspace, and the standing workspace contributes nothing to the ceiling.
+
+**The mechanism is the workspace jail, and it is law, not implementation detail.** One resident
+daemon serves many workspaces; `hello` carries the workspace and pins it **exact-or-refuse, with
+no ancestor walk** (`registry.rs` `pin_declared` — *"a declaration never widens to an enclosing
+registered workspace"*), and the connection stays attached to that workspace for reads and writes
+alike. A rooted door therefore resolves the root FIRST and dials the resolved workspace — which
+is why this amendment needs **no wire change**: the wire carries the rel half only, and the § 1
+`Path` law (`wire-contract.md`) with its head-colon confinement arm stands unchanged. A raw
+head-colon `Path` arriving on the wire is an address that missed its door, and refuses.
+
+> **One stated exception — the preset lane is NOT YET converted (2026-08-18).** `unfold`,
+> `reconcile`, and `new` name a page (`new`'s def token is a page position — *"resolve def
+> (presets/<KIND>.md or page path)"*, its own help) but write IN-PROCESS, with no daemon dial —
+> a rooted preset op would therefore write into a foreign tree without that tree's armed gates
+> ever firing. Under this amendment's own authority law those gates are the target tree's
+> right, so a lane that structurally cannot fire them cannot resolve rooted refs yet: a rooted
+> ref there **REFUSES with a teaching** naming exactly this reason and the remedy (run it from
+> inside the target tree). Recorded as a lane AWAITING CONVERSION, in open tension with the
+> ruling's motive — these three doors stay cwd-determined until then — never as a lane
+> correctly cwd-bound forever. The named route is the preset lane riding the daemon write path;
+> when it does, the family predicate already covers it.
+
+**Convergence, not invention.** The engine's customer face (the ccc-statusd MCP `script` tool)
+already ships this rule for its own multi-file door, verbatim: *"Every files[] entry resolves
+through one root; that root is the workspace; in-program paths are relative to it"* — same ref
+grammar as its read/put. A program binds ONE declared root and in-program paths are that
+root-relative, which is also why cross-root reads inside one program do not arise as a question.
+The mrd doors converge on that shipped law rather than minting a second one.
+
+**Face grammars differ deliberately — do not harmonize.** The MCP face admits absolute and
+session-relative refs beside `root:path`; the mrd CLI's § 1 path law forbids absolute paths and
+`.`/`..` segments, and **this amendment does not touch that**. A later reader must not
+"harmonize" mrd into accepting absolute paths because the customer face does.
+
+**What stays outside the family.** A door argument that is not a page reference: the armed
+plane's arm root (a workspace-relative DIRECTORY — `armed-plane.md`) keeps its head-colon
+refusal, and `sql` names no page at all — its cwd-independence (an explicit `--root` selector,
+ZT's conditional directive) is CLI surface owned by the decision page, not address law.
 
 ---
 
@@ -540,6 +679,11 @@ An agent-plane address occupies exactly these positions and no others:
 3. **`meridian-lock` `ref:` values**;
 4. **`meridian-lock` `objects:` keys**.
 
+These four are positions inside a DOCUMENT — the stored-form translation's whole scope. They are
+NOT argv positions: which CLI arguments admit a rooted spelling is the § 4.6 door family's
+question, a different plane. (Stated 2026-08-18 because the overlap of the word "position" cost a
+reader a wrong turn.)
+
 ### 9.2 The transform is positional, never a byte transform — and the motive is measured
 
 > **A-1.** implementation's stored-form translation is **positional**. It identifies each address by its
@@ -734,6 +878,7 @@ hypothetical one.
 | the three ingress classes the compiler cannot reach | § 9.1's four positions |
 | what the body-level guard must be | § 5.1 C-3 — `resolve_linkpath` refuses a `:`-bearing head, asserted by a test |
 | the refusal wording to copy | § 6 — the pinned `const` exemplar, verbatim, with its teaching tail |
+| which doors resolve a rooted ref, and under whose authority | § 4.6 — every page-taking door, predicate-bound; the page's tree governs conventions and receipts; the wire carries the rel half only |
 
 **Decisions deliberately left open, and who owns each:**
 
