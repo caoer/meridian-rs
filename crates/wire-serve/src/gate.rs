@@ -208,6 +208,12 @@ fn drift_revs(fault: &policy::ArmedFault) -> Option<(String, String)> {
 
 /// Render stacked block violations into one teaching message that names each rule
 /// and cites its passing case (the legal path).
+///
+/// The sentence speaks the CALLER's vocabulary — rules refused the change —
+/// never the attestation plane's (card p2-face-honesty, 2026-08-18: "armed"
+/// is how a rule comes to be in force, plumbing a refused agent cannot act
+/// on; the rule name and its legal path are what it can). Hosts forward this
+/// message verbatim, so the register is fixed at this mint.
 fn render_violations(violations: &[policy::GateViolation]) -> String {
     let body = violations
         .iter()
@@ -219,10 +225,7 @@ fn render_violations(violations: &[policy::GateViolation]) -> String {
         })
         .collect::<Vec<_>>()
         .join("; ");
-    format!(
-        "armed change refused by {} rule(s): {body}",
-        violations.len()
-    )
+    format!("change refused by {} rule(s): {body}", violations.len())
 }
 
 /// The document's own path (the `NodeKind::Document` stamp), or empty.
