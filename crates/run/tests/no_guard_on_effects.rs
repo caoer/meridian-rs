@@ -17,6 +17,10 @@ use effects::{ArgValue, Effect, EffectKind, Provenance};
 use run::caps::Authority;
 use run::executor::{self, ApplyRequest, ReceiptAddr};
 
+/// Empty run-birth fields for these fixtures.
+static TEST_EMPTY_FIELDS: std::collections::BTreeMap<String, String> =
+    std::collections::BTreeMap::new();
+
 const PAGE: &str = "\
 ---
 status: todo
@@ -69,6 +73,8 @@ fn request<'a>(observed: &'a model::MerkleRoot, effects: &'a [Effect]) -> ApplyR
         actor: None,
         depth: 0,
         delta: None,
+        fields: &TEST_EMPTY_FIELDS,
+        birth_seq: None,
     }
 }
 

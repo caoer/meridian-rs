@@ -131,6 +131,10 @@ pub struct BashDispatch<'a> {
     /// the phase-1 pre-exec receipt commit and every phase-2 commit each
     /// offer their facts. `None` on the CLI entry.
     pub delta: Option<&'a dyn executor::DeltaSink>,
+    /// § A.2.1 passthrough for `md.create` births (`ctx.fields`, verbatim).
+    pub fields: &'a BTreeMap<String, String>,
+    /// The workspace ring for door-committed births; `None` on the CLI entry.
+    pub birth_seq: Option<&'a dyn wire_serve::seq::SeqSink>,
     /// Where the bracket's corpus observations come from: the CLI drawer memo
     /// or the daemon's resident domain cache.
     pub observations: ObservationSource<'a>,
@@ -440,6 +444,8 @@ fn locked_window(
             actor: d.actor,
             depth: 0,
             delta: d.delta,
+            fields: d.fields,
+            birth_seq: d.birth_seq,
         },
     )
     .map_err(BashError::Phase1)?;
@@ -652,6 +658,8 @@ fn completion_receipt(
             actor: d.actor,
             depth: 0,
             delta: d.delta,
+            fields: d.fields,
+            birth_seq: d.birth_seq,
         },
     ) {
         Ok(applied) => Phase2::RefusedExecFailed { applied },
@@ -690,6 +698,8 @@ fn apply_phase2(
             actor: d.actor,
             depth: 0,
             delta: d.delta,
+            fields: d.fields,
+            birth_seq: d.birth_seq,
         },
     ) {
         Ok(applied) => Phase2::Applied {

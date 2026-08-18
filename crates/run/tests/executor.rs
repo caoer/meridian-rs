@@ -7,6 +7,10 @@ use std::collections::BTreeMap;
 use effects::{ArgValue, Effect, EffectKind, Provenance};
 use model::MerkleRoot;
 use run::caps::{Authority, CapSet};
+
+/// Empty run-birth fields for these fixtures.
+static TEST_EMPTY_FIELDS: std::collections::BTreeMap<String, String> =
+    std::collections::BTreeMap::new();
 use run::executor::{self, ApplyRequest, ExecError, ReceiptAddr};
 
 const PAGE: &str = "\
@@ -96,6 +100,8 @@ fn apply(root: &fs::WorkspaceRoot, r: &Req<'_>) -> Result<executor::Applied, Exe
             actor: None,
             depth: 0,
             delta: None,
+            fields: &TEST_EMPTY_FIELDS,
+            birth_seq: None,
         },
     )
 }
@@ -545,6 +551,8 @@ fn receipt_commits_the_threaded_exec_facts() {
             actor: None,
             depth: 0,
             delta: None,
+            fields: &TEST_EMPTY_FIELDS,
+            birth_seq: None,
         },
     )
     .unwrap();
@@ -711,6 +719,8 @@ fn the_adapter_maps_canonical_intents_onto_the_production_batch() {
             actor: None,
             depth: 0,
             delta: None,
+            fields: &TEST_EMPTY_FIELDS,
+            birth_seq: None,
         }),
     )
     .expect("the production executor applies the adapted batch");

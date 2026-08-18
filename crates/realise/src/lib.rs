@@ -40,6 +40,10 @@ use std::time::Duration;
 use effects::EvalLimits;
 use run::caps::{Cap, CapSet};
 use run::executor::{Applied, ReceiptAddr};
+
+/// Empty run-birth fields for the realise lane (no fields ride it).
+static EMPTY_RUN_FIELDS: std::collections::BTreeMap<String, String> =
+    std::collections::BTreeMap::new();
 use run::runner::{self, RunSpec, TaskOutcome};
 
 /// The receipt file every realise apply appends to (workspace-relative). One
@@ -510,6 +514,10 @@ fn run_apply(
         actor: None,
         step_cwd: None,
         delta: None, // realise lane: delta status unchanged by the § A.8 ruling
+        // Realise addresses its own declared blocks; no birth fields ride
+        // this lane and no ring is in reach.
+        fields: &EMPTY_RUN_FIELDS,
+        birth_seq: None,
         // Realise drives the plane wherever it is hosted; it holds no resident
         // cache handle, so its observations keep the drawer instrument.
         observations: run::dispatch_bash::ObservationSource::Drawer,
