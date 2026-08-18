@@ -70,27 +70,24 @@ pub(crate) fn run(args: &[String]) -> Result<(), Fail> {
     // the run plane with `declaring_root` = this root), the receipt, and any
     // pending-agent board card all bind to the PAGE's tree, never the
     // standing one.
-    let (root, rooted) = match crate::rooted::enter(
-        &page,
-        "realise",
-        "Nothing was checked and no apply ran.",
-    ) {
-        Ok(Some((rel, rooted))) => {
-            page = rel;
-            (fs::WorkspaceRoot(rooted.workspace.clone()), Some(rooted))
-        }
-        Ok(None) => (crate::preset_cmd::resolve_root()?, None),
-        // The refusal frames with the workspace the caller stands in — no
-        // target workspace exists to name.
-        Err(error) => {
-            let ambient = crate::preset_cmd::resolve_root()?;
-            return Err(crate::engine::json_refusal(
-                parsed.format,
-                &ambient.0,
-                &error,
-            ));
-        }
-    };
+    let (root, rooted) =
+        match crate::rooted::enter(&page, "realise", "Nothing was checked and no apply ran.") {
+            Ok(Some((rel, rooted))) => {
+                page = rel;
+                (fs::WorkspaceRoot(rooted.workspace.clone()), Some(rooted))
+            }
+            Ok(None) => (crate::preset_cmd::resolve_root()?, None),
+            // The refusal frames with the workspace the caller stands in — no
+            // target workspace exists to name.
+            Err(error) => {
+                let ambient = crate::preset_cmd::resolve_root()?;
+                return Err(crate::engine::json_refusal(
+                    parsed.format,
+                    &ambient.0,
+                    &error,
+                ));
+            }
+        };
 
     realise_page(&root, &page, rooted.as_ref(), &parsed)
 }

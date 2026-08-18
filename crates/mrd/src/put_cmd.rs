@@ -95,50 +95,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
             cwd.display()
         ))
     })?;
-    // The rooted lane on the WRITE TARGET (§4.1 colon law, 2026-08-18
-    // rooted-refs-everywhere): a head-colon PATH names a page of the NAMED
-    // root, so the write dials the daemon with THAT workspace at the hello and
-    // the rel half rides the wire as `path` — the same split the rooted
-    // `--scope` already rides ("the rel half rides the wire"). The daemon
-    // serves the attached workspace exactly as if the caller stood there, so
-    // the TARGET tree's armed gates fire and its receipts land home. A `#`
-    // fragment refuses first (this door's own `--scope` stance): a write
-    // binds a file, and silently stripping the fragment would write the whole
-    // file while the caller named a section.
-    let workspace = if crate::rooted::is_rooted(&parsed.path) {
-        if parsed.path.contains('#') {
-            let mut error = ErrorBody::new(wire::ErrorCode::BadPath);
-            error.path = Some(WirePath(parsed.path.clone()));
-            error.message = Some(format!(
-                "{} carries a `#` fragment, and a write binds at path grain — a fragment \
-                 addresses a section, not a file. Name the section in the edit selectors, \
-                 not the path. {PUT_CONSEQUENCE}",
-                parsed.path
-            ));
-            return Err(engine::json_refusal(
-                parsed.format,
-                &resolved.workspace,
-                &error,
-            ));
-        }
-        match crate::rooted::resolve(&parsed.path, "put", PUT_CONSEQUENCE) {
-            Ok((rel, rooted)) => {
-                parsed.display = Some(std::mem::replace(&mut parsed.path, rel));
-                rooted.workspace
-            }
-            // The refusal frames with the workspace the caller stands in —
-            // no target workspace exists to name.
-            Err(error) => {
-                return Err(engine::json_refusal(
-                    parsed.format,
-                    &resolved.workspace,
-                    &error,
-                ));
-            }
-        }
-    } else {
-        resolved.workspace
-    };
+    let workspace = rooted_write_target(&mut parsed, resolved.workspace)?;
     admit_scope(&mut parsed, &workspace)?;
     let mut request = json!({
         "op": "splice",
@@ -211,8 +168,8 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         )));
     }
     fields_cap_wall(&parsed, &door)?;
-    let body = write_ipc::call(&mut door, &request)
-        .map_err(|e| refusal(&parsed, &workspace, &e))?;
+    let body =
+        write_ipc::call(&mut door, &request).map_err(|e| refusal(&parsed, &workspace, &e))?;
     let body = write_ipc::project_body(&body);
 
     // The findings leg of the silent check: a passing rehearsal says nothing, so anything the
@@ -296,6 +253,46 @@ fn refusal(parsed: &Put, workspace: &std::path::Path, error: &ErrorBody) -> Fail
 /// refusal fired ([`crate::path_law`] holds the family message; this door
 /// states only its own name and consequence).
 const PUT_CONSEQUENCE: &str = "Nothing was sent and nothing was written.";
+
+/// The rooted lane on the WRITE TARGET (§4.1 colon law, 2026-08-18
+/// rooted-refs-everywhere): a head-colon PATH names a page of the NAMED root,
+/// so the write dials the daemon with THAT workspace at the hello and the rel
+/// half rides the wire as `path` — the same split the rooted `--scope`
+/// already rides ("the rel half rides the wire"). The daemon serves the
+/// attached workspace exactly as if the caller stood there, so the TARGET
+/// tree's armed gates fire and its receipts land home. A `#` fragment refuses
+/// first (this door's own `--scope` stance): a write binds a file, and
+/// silently stripping the fragment would write the whole file while the
+/// caller named a section. An ambient spelling answers the ambient workspace
+/// unchanged. (Extracted from [`dispatch`] per the parse headroom law.)
+fn rooted_write_target(
+    parsed: &mut Put,
+    ambient: std::path::PathBuf,
+) -> Result<std::path::PathBuf, Fail> {
+    if !crate::rooted::is_rooted(&parsed.path) {
+        return Ok(ambient);
+    }
+    if parsed.path.contains('#') {
+        let mut error = ErrorBody::new(wire::ErrorCode::BadPath);
+        error.path = Some(WirePath(parsed.path.clone()));
+        error.message = Some(format!(
+            "{} carries a `#` fragment, and a write binds at path grain — a fragment \
+             addresses a section, not a file. Name the section in the edit selectors, \
+             not the path. {PUT_CONSEQUENCE}",
+            parsed.path
+        ));
+        return Err(engine::json_refusal(parsed.format, &ambient, &error));
+    }
+    match crate::rooted::resolve(&parsed.path, "put", PUT_CONSEQUENCE) {
+        Ok((rel, rooted)) => {
+            parsed.display = Some(std::mem::replace(&mut parsed.path, rel));
+            Ok(rooted.workspace)
+        }
+        // The refusal frames with the workspace the caller stands in — no
+        // target workspace exists to name.
+        Err(error) => Err(engine::json_refusal(parsed.format, &ambient, &error)),
+    }
+}
 
 /// The scope admission, two lanes. A head-colon spelling is the agent-plane
 /// `[root:]path` address (§4.1 colon law — the root reading wins, never a

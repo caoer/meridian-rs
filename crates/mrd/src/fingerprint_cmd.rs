@@ -130,7 +130,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     };
     let workspace = match entered {
         Ok(Some((rel, rooted))) => {
-            parsed.display = std::mem::replace(&mut parsed.path, Some(rel));
+            parsed.display = parsed.path.replace(rel);
             rooted.workspace
         }
         Ok(None) => ambient_workspace(&cwd)?,
