@@ -21,6 +21,8 @@ fn findings(message: String) -> Fail {
 /// declared path was occupied.
 pub(crate) fn run(args: &[String]) -> Result<(), Fail> {
     let parsed = Parsed::parse(args)?;
+    // Not yet converted to the rooted lane — see [`crate::preset_cmd::refuse_rooted`].
+    crate::preset_cmd::refuse_rooted(&parsed.preset, "reconcile", "Nothing was reconciled.")?;
     let root = crate::preset_cmd::resolve_root()?;
     let preset_path = crate::preset_cmd::def_path(&parsed.preset);
 

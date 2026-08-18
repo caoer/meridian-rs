@@ -38,7 +38,7 @@ use crate::{Fail, Format, current_dir, engine, write_ipc};
 /// invocation (missing or malformed positionals, unknown flags, a `bad_request` refusal); exit
 /// 1 on any other engine refusal, message verbatim.
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
-    let parsed = Pin::parse(args)?;
+    let mut parsed = Pin::parse(args)?;
     let cwd = current_dir()?;
     let resolved = crate::resolve::resolve_runtime(&cwd).map_err(|e| {
         Fail::tool(format!(
@@ -46,6 +46,30 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
             cwd.display()
         ))
     })?;
+    // The rooted lane on the PINNING PAGE (§4.1 colon law, 2026-08-18
+    // rooted-refs-everywhere): a head-colon PAGE names the drawing end in the
+    // NAMED root, so the splice dials the daemon with THAT workspace at the
+    // hello and the rel half rides as `path`. The TARGET keeps its own,
+    // already-shipped cross-root grammar (design D-A, resolved engine-side
+    // against the PINNING root — which is now the named root, exactly as if
+    // the caller stood there): a bare target stays in the named root, a
+    // `name:rel` target resolves through the mount table.
+    let workspace = match crate::rooted::enter(&parsed.page, "pin", "Nothing was written.") {
+        Ok(Some((rel, rooted))) => {
+            parsed.display = Some(std::mem::replace(&mut parsed.page, rel));
+            rooted.workspace
+        }
+        Ok(None) => resolved.workspace,
+        // The refusal frames with the workspace the caller stands in — no
+        // target workspace exists to name.
+        Err(error) => {
+            return Err(engine::json_refusal(
+                parsed.format,
+                &resolved.workspace,
+                &error,
+            ));
+        }
+    };
     // The CLI stamps no provenance: an absent actor is the local-operator trust
     // door, so proof is not required of it (§ A.3 proof law) — but a token the
     // caller does supply rides the request and is verified engine-side.
@@ -69,15 +93,15 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         request["dry"] = json!(true);
     }
 
-    let mut door = write_ipc::connect(&resolved.workspace)?;
+    let mut door = write_ipc::connect(&workspace)?;
     let body = write_ipc::call(&mut door, &request)
-        .map_err(|e| engine::json_refusal(parsed.format, &resolved.workspace, &e))?;
+        .map_err(|e| engine::json_refusal(parsed.format, &workspace, &e))?;
     let body = write_ipc::project_body(&body);
 
     match parsed.format {
         Format::Json => {
             let value = json!({
-                "workspace": resolved.workspace.display().to_string(),
+                "workspace": workspace.display().to_string(),
                 "pin": body,
             });
             println!("{}", serde_json::to_string_pretty(&value).expect("json"));
@@ -103,7 +127,7 @@ fn print_human(parsed: &Pin, body: &Value) {
         "{verb} {}#{} into {}",
         field("target"),
         parsed.selector,
-        parsed.page
+        parsed.display.as_deref().unwrap_or(&parsed.page)
     );
     println!("  fingerprint: {}", field("fingerprint"));
     let promoted = pin
@@ -138,6 +162,9 @@ fn print_human(parsed: &Pin, body: &Value) {
 struct Pin {
     /// The pinning page (workspace-relative) — the drawing end.
     page: String,
+    /// The rooted lane's typed spelling (`root:rel`) — the pinning page the
+    /// human face echoes. `None` on the ambient lane; the wire carries rel.
+    display: Option<String>,
     /// The pinned page.
     target: String,
     /// The selector inside the target.
@@ -196,6 +223,7 @@ impl Pin {
         }
         Ok(Pin {
             page: page.clone(),
+            display: None,
             target: target.to_owned(),
             selector: selector.to_owned(),
             fingerprint,

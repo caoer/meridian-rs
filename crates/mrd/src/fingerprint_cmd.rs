@@ -124,27 +124,22 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     // address answer (exit 1), never `absent`: minting `absent` against the
     // literal string in the ambient workspace was the false ACCEPT this lane
     // closes.
-    let rooted_spelling = parsed
-        .path
-        .as_ref()
-        .filter(|p| crate::rooted::is_rooted(p))
-        .cloned();
-    let workspace = if let Some(spelling) = rooted_spelling {
-        match crate::rooted::resolve(&spelling, "fingerprint mint", MINT_CONSEQUENCE) {
-            Ok((rel, rooted)) => {
-                parsed.path = Some(rel);
-                parsed.display = Some(spelling);
-                rooted.workspace
-            }
-            // The refusal frames with the workspace the caller stands in —
-            // no target workspace exists to name.
-            Err(error) => {
-                let ambient = ambient_workspace(&cwd)?;
-                return Err(engine::json_refusal(parsed.format, &ambient, &error));
-            }
+    let entered = match parsed.path.as_deref() {
+        Some(p) => crate::rooted::enter(p, "fingerprint mint", MINT_CONSEQUENCE),
+        None => Ok(None),
+    };
+    let workspace = match entered {
+        Ok(Some((rel, rooted))) => {
+            parsed.display = parsed.path.replace(rel);
+            rooted.workspace
         }
-    } else {
-        ambient_workspace(&cwd)?
+        Ok(None) => ambient_workspace(&cwd)?,
+        // The refusal frames with the workspace the caller stands in —
+        // no target workspace exists to name.
+        Err(error) => {
+            let ambient = ambient_workspace(&cwd)?;
+            return Err(engine::json_refusal(parsed.format, &ambient, &error));
+        }
     };
     admit_path(&parsed, &workspace)?;
 
