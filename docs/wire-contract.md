@@ -1395,6 +1395,28 @@ Part A2. This section is the wire shape only.)*
   return its caller a bare success while an intent's realization result is
   missing. An intent failure after commit names itself on the host's response;
   the disk set STAYS (send is not this write).
+- **Response field `armed.set`** (splice, single form; 2026-08-18, card
+  p2-face-honesty): on every non-dry successful write through a door that
+  evaluates middleware, an ARRAY — possibly empty, never absent — naming
+  every OTHER file the sealed set committed. The caller's own path never
+  appears (its facts are the response's existing `armed` group). V1 rows
+  are exactly:
+
+  ```json
+  { "path": "<root-relative>", "change": "modified" | "created",
+    "file_rev_after": "<16hex>", "rules": ["<middleware id>", …] }
+  ```
+
+  `path`, `change` and `file_rev_after` are lifted from the commit's own
+  Delta row for that file — the response repeats a committed fact, it never
+  re-derives one (`change` speaks the §7.1 vocabulary; V1 members are
+  member edits (`modified`) and births (`created`)). `rules` names the
+  middleware id(s) whose emits compiled the member, first-touch order.
+  Receipt appends and pin promotions are commit machinery, not middleware
+  members, and never appear. The field exists so a host can put the sealed
+  write's real cross-file effects on its agent-facing receipt: without it a
+  dependent file flipped in the same commit is visible only to a later
+  read, and the write's own face under-reports what it did.
 - **The put-path HOOK feed retired with this section.** Write responses carry
   no reaction envelopes (`armed.effects` serializes empty on this path);
   `rules/hook` + `proto.send` still ride the external-change detector only.

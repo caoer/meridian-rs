@@ -152,6 +152,11 @@ fn a_transform_this_file_from_fields_lands_in_the_same_write() {
         Some(0),
         "intents is present-empty on a middleware door success"
     );
+    assert_eq!(
+        armed.set.as_ref().map(Vec::len),
+        Some(0),
+        "set is present-empty when the middleware touched no OTHER file (§ A.2.1)"
+    );
     assert!(
         armed.effects.is_empty(),
         "the put-path hook feed is retired: no reaction envelopes"
@@ -224,6 +229,36 @@ fn b_sql_selected_files_land_in_the_same_sealed_set_as_the_caller_put() {
     assert!(files.contains(&"agents/a1.md"), "{files:?}");
     assert!(files.contains(&"agents/a2.md"), "{files:?}");
     assert!(!files.contains(&"agents/a3.md"), "{files:?}");
+
+    // § A.2.1 `armed.set`: the response names every OTHER file the sealed
+    // set committed — repeated from the Delta rows above, caller absent,
+    // each member attributed to the middleware that compiled it.
+    let (armed, _) = splice_parts(&out.body);
+    let set = armed
+        .set
+        .as_ref()
+        .expect("set present on a mw-door success");
+    let mut set_paths: Vec<&str> = set.iter().map(|m| m.path.0.as_str()).collect();
+    set_paths.sort_unstable();
+    assert_eq!(
+        set_paths,
+        vec!["agents/a1.md", "agents/a2.md"],
+        "members only, never the caller"
+    );
+    for m in set {
+        assert_eq!(m.change, wire::FileChange::Modified, "{m:?}");
+        assert_eq!(m.rules, vec!["000-reports-to".to_string()], "{m:?}");
+        let delta_row = frame
+            .delta
+            .files
+            .iter()
+            .find(|f| f.path == m.path)
+            .expect("every set row has its Delta row");
+        assert_eq!(
+            m.file_rev_after, delta_row.file_rev_after,
+            "the set row repeats the commit's own rev, never re-derives one"
+        );
+    }
 }
 
 // ── (c) birth in the same set ───────────────────────────────────────────────
@@ -273,6 +308,18 @@ fn c_a_birth_lands_in_the_same_sealed_set() {
         files.contains(&"tasks/followup.md"),
         "the birth rides the ONE Delta: {files:?}"
     );
+
+    // § A.2.1 `armed.set`: the birth is a cross-file effect and rides the
+    // response as a `created` member attributed to its middleware.
+    let (armed, _) = splice_parts(&out.body);
+    let set = armed
+        .set
+        .as_ref()
+        .expect("set present on a mw-door success");
+    assert_eq!(set.len(), 1, "{set:?}");
+    assert_eq!(set[0].path.0, "tasks/followup.md");
+    assert_eq!(set[0].change, wire::FileChange::Created);
+    assert_eq!(set[0].rules, vec!["000-scaffold-followup".to_string()]);
 
     // The flip is atomic with the birth: replaying the same put now refuses
     // (occupied birth path) and the caller file stays at its landed bytes.

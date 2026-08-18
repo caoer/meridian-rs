@@ -568,6 +568,16 @@ pub const V2_RESERVED_FIELDS: &[ReservedField] = &[
               frozen §4.4/§5.2 armed key set {path, edits}",
     },
     ReservedField {
+        key: "set",
+        position: Position::ResponseArmed,
+        author: "§ A.2.1 sealed-set members (armed.set)",
+        why: "the middleware door's cross-file member rows on the splice \
+              response; absent from the frozen §4.4/§5.2 armed key set \
+              {path, edits} — a middleware-armed workspace would put it on \
+              a v2 wire (`skip_serializing_if` skips on None, never on a \
+              v2 SESSION)",
+    },
+    ReservedField {
         key: "rescope",
         position: Position::NotificationRoot,
         author: "§ A.9 re-scope honesty",
@@ -643,12 +653,19 @@ fn demote_body_v2(body: &wire::ResponseBody) -> Option<wire::ResponseBody> {
     let wire::ResponseBody::Splice { armed, .. } = body else {
         return None;
     };
-    if armed.effects.is_empty() || !is_reserved("effects", Position::ResponseArmed) {
+    let effects_leak = !armed.effects.is_empty() && is_reserved("effects", Position::ResponseArmed);
+    let set_leak = armed.set.is_some() && is_reserved("set", Position::ResponseArmed);
+    if !effects_leak && !set_leak {
         return None;
     }
     let mut demoted = body.clone();
     if let wire::ResponseBody::Splice { armed, .. } = &mut demoted {
-        armed.effects.clear();
+        if effects_leak {
+            armed.effects.clear();
+        }
+        if set_leak {
+            armed.set = None;
+        }
     }
     Some(demoted)
 }
