@@ -1469,9 +1469,14 @@ files are not read and no fallback to them ships.
 cd'd into the named root: the convention table above loads from THAT root's own `MERIDIAN.md`,
 the caps ceiling is that tree's, and the receipt lands in that workspace. The standing
 workspace contributes nothing to the ceiling — *"the runtime cwd should not be a factor to
-decide the behavior"* (ZT's motive, receipt at § 4.6). This closes the ceiling-by-cd bypass: a
-workspace that declares read-only can never have its own bash tasks run under a different
-tree's ceiling, chosen by where the caller stood.
+decide the behavior"* (ZT's motive, receipt at § 4.6). This closes the ceiling-by-cd bypass on
+the plane where a declared ceiling exists — STARLARK: the `run.caps.*` table governing a
+task's `md.*` writes is now always the page's own tree's, never a looser table chosen by where
+the caller stood. (Bash holds no cap ladder at all — caps do not apply to bash, `laws.md`
+§ Amendment; its only fence is the builtin name-keyed `check-*`/`verify-*` refusal, which
+travels with the page whatever tree resolves it. Corrected 2026-08-18: an earlier spelling of
+this sentence illustrated the bypass with bash tasks — address-grammar § 4.6, second editorial
+note.)
 
 The grammar is the page grammar reused: flat dotted frontmatter keys with
 comma-separated cap lists. Flat is the reader's law, not a preference —
