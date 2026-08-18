@@ -13,6 +13,9 @@ use run::executor::ReceiptAddr;
 use run::fence::GuaranteeClass;
 use run::runner::{self, RunSpec, RunnerError, TaskOutcome};
 
+/// Empty run-birth fields for these fixtures.
+static TEST_EMPTY_FIELDS: BTreeMap<String, String> = BTreeMap::new();
+
 /// A one-task starlark page: `fix-x` sets `status` from its arg and emits a
 /// notice (the non-md surface).
 const STARLARK_PAGE: &str = "\
@@ -84,6 +87,8 @@ fn spec_for(scratch: &tempfile::TempDir, args: Vec<String>) -> RunSpec<'_> {
         step_cwd: None,
         delta: None,
         observations: run::dispatch_bash::ObservationSource::Drawer,
+        fields: &TEST_EMPTY_FIELDS,
+        birth_seq: None,
     }
 }
 

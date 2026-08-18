@@ -988,6 +988,13 @@ pub enum Op {
         /// Caller-supplied time fact per §9; the engine reads no clock.
         #[serde(skip_serializing_if = "Option::is_none")]
         now: Option<String>,
+        /// § A.2.1 opaque passthrough for run-plane births (`md.create`,
+        /// the declared-task birth cap): delivered verbatim to middleware as
+        /// `ctx.fields` on every birth this run commits. The engine
+        /// interprets NO key. Optional — #27 freeze adds no required field;
+        /// hosts attach it only when hello advertises `run.fields`.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        fields: BTreeMap<String, String>,
     },
 }
 

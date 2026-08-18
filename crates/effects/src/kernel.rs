@@ -375,6 +375,24 @@ fn effect_api(builder: &mut GlobalsBuilder) {
         Ok(NoneType)
     }
 
+    /// `md.create` — birth the file at `path` with `body` as its whole bytes,
+    /// with an optional advisory `message`. Realized through the create door
+    /// (occupied path refuses, armed middleware stamps, checks) — the birth
+    /// cap for declared tasks (SCHEMA §5, ruled 2026-08-18).
+    fn create(
+        #[starlark(require = named)] path: String,
+        #[starlark(require = named)] body: String,
+        #[starlark(require = named)] message: Option<String>,
+        eval: &mut Evaluator<'_, '_, '_>,
+    ) -> anyhow::Result<NoneType> {
+        let mut args = BTreeMap::new();
+        args.insert("path".to_owned(), ArgValue::Str(path));
+        args.insert("body".to_owned(), ArgValue::Str(body));
+        insert_opt(&mut args, "message", message);
+        store(eval)?.push(EffectKind::Create, args);
+        Ok(NoneType)
+    }
+
     /// `daemon.refresh_view` — mark the resident `view` stale.
     fn refresh_view(
         #[starlark(require = named)] view: String,

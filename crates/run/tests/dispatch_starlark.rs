@@ -9,6 +9,9 @@ use model::MerkleRoot;
 use run::caps::{Authority, CapSet};
 use run::dispatch_starlark::{self, DispatchError, StarlarkDispatch};
 use run::executor::{ExecError, ReceiptAddr};
+
+/// Empty run-birth fields for these fixtures.
+static TEST_EMPTY_FIELDS: BTreeMap<String, String> = BTreeMap::new();
 use run::fence::GuaranteeClass;
 
 const PAGE: &str = "\
@@ -49,6 +52,8 @@ fn dispatch_of<'a>(
         limits: EvalLimits::default(),
         actor: None,
         delta: None,
+        fields: &TEST_EMPTY_FIELDS,
+        birth_seq: None,
     }
 }
 

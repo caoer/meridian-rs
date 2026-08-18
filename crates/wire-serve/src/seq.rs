@@ -18,7 +18,7 @@ use wire::{DeltaFile, DeltaFrame, Root};
 /// lock ([`Self::committed`]), atomically with respect to the other producer.
 /// The roots and files are passed so it can record the frame it is numbering,
 /// not merely count.
-pub trait SeqSink {
+pub trait SeqSink: std::fmt::Debug {
     /// The `seq` this Delta carries. Monotone within one epoch.
     fn allocate(&self, root_before: &Root, root_after: &Root, files: &[DeltaFile]) -> u64;
 

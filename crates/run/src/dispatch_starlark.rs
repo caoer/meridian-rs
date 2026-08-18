@@ -50,6 +50,10 @@ pub struct StarlarkDispatch<'a> {
     /// The host's frame mint for committed batches (§ A.8 Delta honesty);
     /// `None` on the CLI entry and on evaluate-only callers.
     pub delta: Option<&'a dyn executor::DeltaSink>,
+    /// § A.2.1 passthrough for `md.create` births (`ctx.fields`, verbatim).
+    pub fields: &'a BTreeMap<String, String>,
+    /// The workspace ring for door-committed births; `None` on the CLI entry.
+    pub birth_seq: Option<&'a dyn wire_serve::seq::SeqSink>,
 }
 
 /// What one block dispatch produced: the FULL deterministic effect set (the
@@ -146,6 +150,8 @@ pub fn dispatch(
                     actor: d.actor,
                     depth: 0,
                     delta: d.delta,
+                    fields: d.fields,
+                    birth_seq: d.birth_seq,
                 },
             )
             .map_err(DispatchError::Exec)?,
