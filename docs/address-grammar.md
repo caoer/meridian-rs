@@ -295,6 +295,14 @@ take a page as refernece, we should be able to resolve it."* Motive — ZT verba
 should not be a factor to decide the behavior. this buys us durability."* Full record: llm-wiki
 `decisions/2026-08-18-rooted-refs-everywhere.md`.
 
+> **Implementation status (2026-08-18 — the impl PR strikes this block when it merges).** The
+> law below is ratified and in force AS LAW; the door conversions land in the impl PR
+> (`8fb49fe6`, branch pending at this writing). Until that merges, the SHIPPED doors behave as
+> before — the refusals and literal misreads recorded as measured ground truth in the decision
+> page. This block exists so this page cannot claim live behavior the binary does not yet have
+> — the exact defect class this amendment was written against — and it dies at the moment it
+> stops being true.
+
 > **The law.** Every door at which the caller names a PAGE resolves the agent-plane
 > `[root:]path[#selector]` spelling, through the ONE rooted lane (parse → confinement → mount
 > table; the § 4.1 colon law, no fallback to a literal reading). No page-taking door refuses a
