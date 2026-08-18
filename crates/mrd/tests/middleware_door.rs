@@ -234,10 +234,17 @@ fn b_sql_selected_files_land_in_the_same_sealed_set_as_the_caller_put() {
     // set committed — repeated from the Delta rows above, caller absent,
     // each member attributed to the middleware that compiled it.
     let (armed, _) = splice_parts(&out.body);
-    let set = armed.set.as_ref().expect("set present on a mw-door success");
+    let set = armed
+        .set
+        .as_ref()
+        .expect("set present on a mw-door success");
     let mut set_paths: Vec<&str> = set.iter().map(|m| m.path.0.as_str()).collect();
     set_paths.sort_unstable();
-    assert_eq!(set_paths, vec!["agents/a1.md", "agents/a2.md"], "members only, never the caller");
+    assert_eq!(
+        set_paths,
+        vec!["agents/a1.md", "agents/a2.md"],
+        "members only, never the caller"
+    );
     for m in set {
         assert_eq!(m.change, wire::FileChange::Modified, "{m:?}");
         assert_eq!(m.rules, vec!["000-reports-to".to_string()], "{m:?}");
@@ -305,7 +312,10 @@ fn c_a_birth_lands_in_the_same_sealed_set() {
     // § A.2.1 `armed.set`: the birth is a cross-file effect and rides the
     // response as a `created` member attributed to its middleware.
     let (armed, _) = splice_parts(&out.body);
-    let set = armed.set.as_ref().expect("set present on a mw-door success");
+    let set = armed
+        .set
+        .as_ref()
+        .expect("set present on a mw-door success");
     assert_eq!(set.len(), 1, "{set:?}");
     assert_eq!(set[0].path.0, "tasks/followup.md");
     assert_eq!(set[0].change, wire::FileChange::Created);
