@@ -111,7 +111,7 @@ mrd read <PATH>[#FRAG] [--section SEL]
  The rooted lane spans EVERY page-taking door
  (address-grammar §4.6, amended 2026-08-18): read,
  fingerprint, resolve, links, walk, repair, realise,
- run, rules, test --corpus, put (TARGET and --scope),
+ run, rules, put (TARGET and --scope),
  rm, pin (PAGE; TARGET was already cross-root), and
  script --files — one resolution seam, the page's tree
  governing conventions and receipts. The preset lane
