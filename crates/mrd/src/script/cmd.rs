@@ -65,6 +65,79 @@ use super::trace::{CommitLeg, Refusal, ScriptOutcome, ScriptTrace};
 use super::wire_host::{Door, Frame, SocketDoor, WireHost};
 use crate::{Fail, Format, current_dir, engine};
 
+/// The script door's §1 consequence clause — what did NOT happen because the
+/// refusal fired.
+const SCRIPT_CONSEQUENCE: &str = "Nothing was evaluated and nothing was written.";
+
+/// Resolve the rooted `--files` members to their ONE shared workspace,
+/// rewriting each rooted member to its rel half (the wire never carries a
+/// root prefix). `Ok(None)` when every member is bare, or when the rooted
+/// members all resolve to the ambient workspace itself (the bare form under
+/// another name — one name per thing).
+///
+/// The one-root law is the customer face's (ccc-statusd MCP script tool,
+/// verbatim): "Every entry must share one declared root. Inside the program
+/// each entry is that root-relative path." Members landing in two workspaces
+/// — two roots, or a bare member beside a foreign-rooted one — refuse loud.
+///
+/// # Errors
+/// The rooted seam's `bad_path` family, plus the mixed-tree refusal.
+fn rooted_files_workspace(
+    files: &mut [String],
+    ambient: &std::path::Path,
+) -> Result<Option<std::path::PathBuf>, Box<wire::ErrorBody>> {
+    let mut target: Option<(addr::MountName, std::path::PathBuf)> = None;
+    let mut bare = false;
+    for member in files.iter_mut() {
+        if !crate::rooted::is_rooted(member) {
+            bare = true;
+            continue;
+        }
+        let (rel, rooted) = crate::rooted::resolve(member, "script", SCRIPT_CONSEQUENCE)?;
+        match &target {
+            None => target = Some((rooted.name, rooted.workspace)),
+            Some((name, ws)) if *ws != rooted.workspace => {
+                let mut e = wire::ErrorBody::new(ErrorCode::BadPath);
+                e.path = Some(wire::Path(member.clone()));
+                e.message = Some(format!(
+                    "--files members resolve through more than one root (`{name}` and \
+                     `{}`) — every files[] entry resolves through one root; that root is \
+                     the workspace, and in-program paths are relative to it (the script \
+                     one-root law). One program is one guarded write to one workspace. \
+                     {SCRIPT_CONSEQUENCE}",
+                    rooted.name
+                ));
+                return Err(Box::new(e));
+            }
+            Some(_) => {}
+        }
+        *member = rel;
+    }
+    let Some((name, ws)) = target else {
+        return Ok(None);
+    };
+    // A rooted spelling of the ambient workspace itself is the bare form
+    // under another name — normalize (the pin door's same-root posture).
+    let ambient_canonical = workspace::canonicalize(ambient).unwrap_or_else(|_| ambient.to_path_buf());
+    if ws == ambient_canonical {
+        return Ok(None);
+    }
+    if bare {
+        let mut e = wire::ErrorBody::new(ErrorCode::BadPath);
+        e.message = Some(format!(
+            "--files mixes bare members (the ambient workspace, {}) with members rooted \
+             in `{name}` ({}) — every files[] entry resolves through one root; that root \
+             is the workspace, and in-program paths are relative to it (the script \
+             one-root law). Spell every member `{name}:rel`, or run from that root. \
+             {SCRIPT_CONSEQUENCE}",
+            ambient_canonical.display(),
+            ws.display()
+        ));
+        return Err(Box::new(e));
+    }
+    Ok(Some(ws))
+}
+
 /// The script entry's wall clock — the budget that binds around the kernel
 /// (pure evaluation is fuel-bounded; only wire I/O is unbounded in time).
 ///
@@ -78,7 +151,7 @@ pub(crate) const WALL_CLOCK: Duration = Duration::from_secs(7);
 /// Run `mrd script [flags] < script.star`. Errors [`Fail`] — exit 2 on a bad
 /// invocation; exit 1 when the run conflicted, faulted or was refused.
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
-    let parsed = Script::parse(args)?;
+    let mut parsed = Script::parse(args)?;
     let source = read_stdin_source()?;
     let cwd = current_dir()?;
     let resolved = crate::resolve::resolve_runtime(&cwd).map_err(|e| {
@@ -87,6 +160,28 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
             cwd.display()
         ))
     })?;
+    // The rooted lane on `--files` (§4.1 colon law, 2026-08-18
+    // rooted-refs-everywhere), under the customer face's one-root law — the
+    // ccc-statusd MCP script tool, verbatim: "Every files[] entry resolves
+    // through one root; that root is the workspace; in-program paths are
+    // relative to it." Rooted members resolve here, the ONE workspace they
+    // share binds the connection at the hello, and the rel halves ride the
+    // wire — a rooted glob member expands engine-side in that workspace,
+    // exactly as a bare glob does in the ambient one. Members landing in two
+    // trees refuse loud: one program is one guarded write to one workspace.
+    let workspace = match rooted_files_workspace(&mut parsed.files, &resolved.workspace) {
+        Ok(Some(ws)) => ws,
+        Ok(None) => resolved.workspace.clone(),
+        // The refusal frames with the workspace the caller stands in — no
+        // one target workspace exists to name.
+        Err(error) => {
+            return Err(engine::json_refusal(
+                parsed.output_format(),
+                &resolved.workspace,
+                &error,
+            ));
+        }
+    };
 
     // The script entry has no degrade leg: it must execute AS the caller, and a
     // daemonless in-process write arrives actor-absent (`run-plane.md` § the
@@ -101,7 +196,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
             })
         ))
     })?;
-    let mut door = SocketDoor::connect(client.socket_path(), &resolved.workspace)
+    let mut door = SocketDoor::connect(client.socket_path(), &workspace)
         .map_err(|e| Fail::tool(format!("cannot dial the daemon: {e}")))?;
 
     let trace = run(&mut door, &parsed, &source)?;
@@ -799,6 +894,11 @@ pub(crate) struct Script {
 }
 
 impl Script {
+    /// The output format, for the refusal envelope seam ([`engine::json_refusal`]).
+    pub(crate) fn output_format(&self) -> Format {
+        self.format
+    }
+
     fn parse(args: &[String]) -> Result<Self, Fail> {
         let mut actor = None;
         let mut now = None;
