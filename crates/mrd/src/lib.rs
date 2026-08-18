@@ -234,10 +234,16 @@ usage:
                            reading wins on a head colon, never a literal path:
                            a typo'd or unbound root refuses (exit 1) naming
                            the bound roots, and never falls back to an ambient
-                           lookup. The rooted lane spans read, fingerprint,
-                           resolve, and put --scope (the premise spelling,
-                           accepted for the workspace the put writes); every
-                           other position stays workspace-relative.
+                           lookup. The rooted lane spans every door that names
+                           a page (address-grammar §4.6): read, fingerprint,
+                           resolve, links, walk, repair, realise, run, rules,
+                           put (TARGET and --scope), rm, pin (PAGE; TARGET was
+                           already cross-root), script --files — one
+                           resolution seam. A rooted op runs under the NAMED
+                           root: conventions and receipts follow the page
+                           tree, never the cwd. unfold/reconcile/new refuse a
+                           rooted ref for now (their writes run in-process,
+                           where the named root's armed gates would not fire).
                            No --section = section map alone (dewey
                            n, depth, title, words, sec_rev) under the read's
                            fingerprint (the fp put --if-fingerprint takes).
@@ -474,12 +480,17 @@ usage:
   mrd cache ls             list registered drawers.
 ! mrd cache clean [--all]  reap stale / orphaned / retired drawers (--all:
                            every drawer).
-  mrd sql <query> [--fresh] [--json] [--rebuild] [--cwd PATH]
+  mrd sql <query> [--fresh] [--json] [--rebuild] [--cwd PATH | --root NAME]
                            SQL over the corpus projection (honest-tense
                            freshness frame), served from the drawer's
                            append-only sql.duckdb cache when a cache root
                            resolves, else an ephemeral in-memory build.
                            --rebuild recreates the cache file (repair verb).
+                           --root NAME selects the projection workspace by
+                           canonical root name from the machine mount table
+                           (§4.6 addendum — the cwd plays no part); an unbound
+                           name refuses naming the bound roots. One of
+                           --root/--cwd.
   mrd status [--cwd PATH]  pure-local drift + freshness: rules line (N
                            armed · M drifted · forced-since-realise:
                            not-tracked — the engine keeps no memory), then the
