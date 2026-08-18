@@ -626,6 +626,14 @@ fn run_predicate(
             let doc_value = alloc_doc(heap, facts);
 
             let mut eval = Evaluator::new(&module);
+            // GC OFF, load-bearing (mw-splice-engine-eof, 2026-08-18):
+            // `doc_value` lives in a Rust local across `eval_module` and is
+            // NOT a GC root — a GC fired once the heap crosses starlark's
+            // 100KB threshold (a large fact doc crosses it alone) collects it,
+            // and `eval_function` then segfaults on the dangling Value.
+            // `set_max_heap_size` still caps the arena; the temp heap drops
+            // whole at scope end.
+            eval.disable_gc();
             eval.set_max_tick_count(step_guard)
                 .map_err(|e| EvalError::Runtime(e.to_string()))?;
             eval.set_max_heap_size(mem_guard)
@@ -835,6 +843,41 @@ def check(doc):
             steps: 10_000,
             mem: 1 << 20,
         }
+    }
+
+    /// Regression (mw-splice-engine-eof, 2026-08-18): a fact doc whose
+    /// temp-heap allocation crosses starlark's GC threshold (100KB) must
+    /// survive evaluation. Pre-fix, `eval_module` fired a GC, collected the
+    /// doc Value held in a Rust local (not a GC root), and `eval_function`
+    /// SEGFAULTED the process — this test dies with SIGSEGV on the unfixed
+    /// evaluator.
+    #[test]
+    fn a_fact_doc_past_the_gc_threshold_survives_evaluation() {
+        use std::fmt::Write as _;
+        let mut md = String::new();
+        for i in 0..500 {
+            let _ = write!(
+                md,
+                "## Section {i:03}\nThe hook plane unifies the four trigger families under \
+                 one armed row shape; each family keeps its own firing clock but shares the \
+                 severity ladder and the receipts contract. Row {i} carries its own receipts \
+                 line.\n"
+            );
+        }
+        let facts = facts_from_markdown("results/big.md", &md);
+        let violations = eval_over_facts(
+            &blurb_predicates(),
+            &facts,
+            EvalBudget {
+                steps: 10_000_000,
+                mem: 256 << 20,
+            },
+        )
+        .expect("a big fact doc evaluates cleanly");
+        assert!(
+            violations.is_empty(),
+            "every section carries a blurb line: {violations:?}"
+        );
     }
 
     #[test]
