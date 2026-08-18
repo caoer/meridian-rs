@@ -2,7 +2,7 @@
 type: contract
 id: laws
 status: standing
-updated: 2026-08-16
+updated: 2026-08-18
 description: The three architecture laws, enforced as crate dependency edges rather than conventions, plus the charter of every crate.
 owns: [architecture laws, crate charters]
 ---
@@ -100,7 +100,7 @@ which laws it carries. In one line each:
 | `workspace` | Workspace identity: the discovery ladder (env override → git root → cwd default), canonicalization, the deny ceiling — pure filesystem functions (a leaf, `std` + `cache` only). The ladder answers ONE question — *which root does this path belong to* — and every answer names the rung that answered: `Answer::root` is `None` on the cwd default, so a caller cannot inherit an unanchored cwd silently (marker-retirement ruling, 2026-07-26). The two EXPLICIT planes are deliberately NOT rungs here: the mount table (`config::MountTable`) cannot be one without a dependency cycle, since `config` depends on this crate for the ceiling; and a declared root arrives on the serve path as the hello `workspace` field, pinned exactly by `registry::Registry::pin_declared`, because a daemon has no meaningful cwd to walk. All three planes meet at exactly one point: `deny_reason`, reused whole, never re-implemented |
 | `cache` | The hashed cache drawer: addressing, atomic sentinel registration, corrupt-is-a-miss probing, last-use GC |
 | `registry` | The daemon-held workspace registry: unix-socket RPC server + client, first-writer-wins, atomic state, idle-reap |
-| `mrd` | The workspace CLI — wires `workspace`/`cache`/`registry` into `init`/`unregister`/`resolve`/`cache`/`daemon`, and mounts the local run plane (`mrd run` via `crates/run`). A local CLIENT of the engine crates, never a resident organ and never on the serve path; its `run`→`model` edge stays a single reviewable dependency |
+| `mrd` | The workspace CLI — wires `workspace`/`cache`/`registry` into `init`/`unregister`/`resolve`/`cache`/`daemon`, and mounts the local run plane (`mrd run` via `crates/run`). A local CLIENT of the engine crates, never a resident organ and never on the serve path; its `run`→`model` edge stays a single reviewable dependency. **And the CLI rooted lane (`rooted.rs`)** — the ONE seam every page-taking door resolves `[root:]path` through (address-grammar § 4.6, 2026-08-18: the door family is predicate-bound; the page's tree governs a rooted op), so two doors cannot hold two opinions of one ref |
 | `testsuite` | Integration tests + the frozen ground-truth pack as data |
 | `perfsuite` | Perf harness and claims registry (out of default-members) |
 

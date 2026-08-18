@@ -2,7 +2,7 @@
 type: spec
 id: armed
 status: standing
-updated: 2026-08-06
+updated: 2026-08-18
 description: Normative spec for the floor-convention arming ladder (U4.4) and the `gate()` seam (U4.2).
 owns: [the arming ladder, the gate() seam]
 ---
@@ -158,7 +158,7 @@ one row per **(id, arm root)**:
 | `id` | the page's frontmatter `id:` |
 | `page` | workspace path of the RESOLVED page — the override winner |
 | `rev` | the page rev the row is attested at |
-| `scope` | the ARM ROOT: the root the resolution was narrowed to — a workspace-relative DIRECTORY, `.` for the workspace root. The resolver's `layer:depth` spelling (`workspace:0` in old `mrd rules` receipts) is refused at parse with a teaching: a head segment carrying `:` is the address grammar's `root:` qualifier (§ 4.2 D11), never a workspace path |
+| `scope` | the ARM ROOT: the root the resolution was narrowed to — a workspace-relative DIRECTORY, `.` for the workspace root. The resolver's `layer:depth` spelling (`workspace:0` in old `mrd rules` receipts) is refused at parse with a teaching: a head segment carrying `:` is the address grammar's `root:` qualifier (§ 4.1 colon law), never a workspace path. *(Citation moved from §4.2 D11 when D11 was re-ruled, 2026-08-18: the arm root is a DIRECTORY scope, not a page reference, so it sits outside the rooted-lane door family — address-grammar § 4.6 — and this refusal stands.)* |
 | `mode` | checks `off\|warn\|block` · hooks `off\|armed` |
 
 The act is one indivisible step — narrow to the arm root's chain, resolve through
