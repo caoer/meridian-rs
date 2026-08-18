@@ -6,6 +6,29 @@
 
 use crate::Fail;
 
+/// The preset lane's rooted-ref refusal (2026-08-18 rooted-refs-everywhere):
+/// `unfold` / `reconcile` / `new` take a def-page token — a page position — but
+/// are NOT YET converted to the rooted lane. They write through the in-process
+/// preset lane with no daemon dial, so a foreign tree's armed gates would not
+/// fire on their writes — exactly the hazard class the authority ruling
+/// closes at the daemon-dialing write doors. Refusing loud keeps that parity;
+/// the lane converts when preset writes ride the daemon.
+///
+/// # Errors
+/// Exit 2 (the door's own refusal, before anything is read or written) when
+/// `token` carries a `root:` head.
+pub(crate) fn refuse_rooted(token: &str, door: &str, consequence: &str) -> Result<(), Fail> {
+    if !crate::rooted::is_rooted(token) {
+        return Ok(());
+    }
+    Err(Fail::tool(format!(
+        "{token} is a rooted ref, and the {door} door does not serve the rooted lane yet: \
+         its writes run in-process (no daemon dial), so the named root's own armed gates \
+         would not fire on them. {consequence} For now run it from inside that root; the \
+         lane converts when preset writes ride the daemon like the other write doors."
+    )))
+}
+
 /// Resolve the ambient workspace to a canonical [`fs::WorkspaceRoot`] (the same resolution
 /// `pin`/`attest` run).
 ///

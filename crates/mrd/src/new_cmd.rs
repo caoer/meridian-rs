@@ -21,6 +21,8 @@ fn refused(message: String) -> Fail {
 /// faulting write — or a birth refusal (exit 1) rendered from the closed-taxonomy reason.
 pub(crate) fn run(args: &[String]) -> Result<(), Fail> {
     let parsed = Parsed::parse(args)?;
+    // Not yet converted to the rooted lane — see [`crate::preset_cmd::refuse_rooted`].
+    crate::preset_cmd::refuse_rooted(&parsed.kind, "new", "Nothing was born.")?;
     let root = crate::preset_cmd::resolve_root()?;
     let def_path = crate::preset_cmd::def_path(&parsed.kind);
 
