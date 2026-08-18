@@ -33,7 +33,7 @@ use crate::{Fail, Format, current_dir, engine, write_ipc};
 /// bad invocation (bad flags, a missing `--rev`, a malformed `--now`); exit 1
 /// on every engine refusal, message verbatim.
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
-    let parsed = Rm::parse(args)?;
+    let mut parsed = Rm::parse(args)?;
     let cwd = current_dir()?;
     let resolved = crate::resolve::resolve_runtime(&cwd).map_err(|e| {
         Fail::tool(format!(
@@ -41,6 +41,33 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
             cwd.display()
         ))
     })?;
+    // The rooted lane on the REMOVE TARGET (§4.1 colon law, 2026-08-18
+    // rooted-refs-everywhere): a head-colon PAGE names a page of the NAMED
+    // root, so the remove dials the daemon with THAT workspace at the hello
+    // and the rel half rides the wire as `path` — the put door's split. The
+    // daemon serves the attached workspace exactly as if the caller stood
+    // there: the guarded-remove machinery (referential check, CAS, flock)
+    // runs against the TARGET tree.
+    let workspace = match crate::rooted::enter(
+        &parsed.path,
+        "rm",
+        "Nothing was removed.",
+    ) {
+        Ok(Some((rel, rooted))) => {
+            parsed.display = Some(std::mem::replace(&mut parsed.path, rel));
+            rooted.workspace
+        }
+        Ok(None) => resolved.workspace,
+        // The refusal frames with the workspace the caller stands in — no
+        // target workspace exists to name.
+        Err(error) => {
+            return Err(engine::json_refusal(
+                parsed.format,
+                &resolved.workspace,
+                &error,
+            ));
+        }
+    };
     let mut request = json!({
         "op": "remove",
         "path": parsed.path,
@@ -59,9 +86,9 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         request["dry"] = json!(true);
     }
 
-    let mut door = write_ipc::connect(&resolved.workspace)?;
+    let mut door = write_ipc::connect(&workspace)?;
     let body = write_ipc::call(&mut door, &request)
-        .map_err(|e| engine::json_refusal(parsed.format, &resolved.workspace, &e))?;
+        .map_err(|e| engine::json_refusal(parsed.format, &workspace, &e))?;
     let body = write_ipc::project_body(&body);
 
     match parsed.format {
@@ -69,7 +96,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
             println!(
                 "{}",
                 serde_json::to_string_pretty(&json!({
-                    "workspace": resolved.workspace.display().to_string(),
+                    "workspace": workspace.display().to_string(),
                     "rm": body,
                 }))
                 .expect("json")
@@ -88,7 +115,10 @@ fn print_human(parsed: &Rm, body: &Value) {
         .and_then(Value::as_str)
         .unwrap_or("?");
     if parsed.dry {
-        println!("dry run: {} would be removed, nothing touched", parsed.path);
+        println!(
+            "dry run: {} would be removed, nothing touched",
+            parsed.display()
+        );
         println!("  file_rev: {rev}");
         return;
     }
@@ -96,7 +126,7 @@ fn print_human(parsed: &Rm, body: &Value) {
         .get("fingerprint_after")
         .and_then(Value::as_str)
         .unwrap_or("?");
-    println!("removed {}", parsed.path);
+    println!("removed {}", parsed.display());
     println!("  file_rev: {rev}");
     println!("  fingerprint: {after}");
 }
@@ -105,6 +135,9 @@ fn print_human(parsed: &Rm, body: &Value) {
 #[derive(Debug)]
 struct Rm {
     path: String,
+    /// The rooted lane's typed spelling (`root:rel`) — the target the human
+    /// face echoes. `None` on the ambient lane; the wire carries the rel half.
+    display: Option<String>,
     /// The record's whole-file rev from a prior read (remove-what-you-read).
     rev: String,
     actor: Option<String>,
@@ -112,6 +145,14 @@ struct Rm {
     if_fingerprint: Option<String>,
     dry: bool,
     format: Format,
+}
+
+impl Rm {
+    /// The spelling the faces echo: the caller's own — rooted where the
+    /// caller wrote rooted, the bare path otherwise (the read door's law).
+    fn display(&self) -> &str {
+        self.display.as_deref().unwrap_or(&self.path)
+    }
 }
 
 impl Rm {
@@ -187,6 +228,7 @@ impl Rm {
         };
         Ok(Rm {
             path,
+            display: None,
             rev,
             actor,
             now,
